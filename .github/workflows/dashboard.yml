@@ -1,16 +1,10 @@
-# Fleet Dashboard - GitHub Pages Deployment
+# Fleet Dashboard - Manual Deployment
 #
-# HOW TO SET UP:
-# 1. Go to repo Settings > Secrets and variables > Actions
-# 2. Add these secrets:
-#    - CARTRACK_AUTH         : Prod auth header ("Basic Q05HVDAwMDAy...")
-#    - CARTRACK_COOKIE       : Prod cookie (optional)
-#    - CARTRACK_DRIVERS_AUTH : Drivers auth header (optional, uses CARTRACK_AUTH if not set)
-#    - CARTRACK_DRIVERS_COOKIE : Drivers cookie (optional)
+# The auto-assign workflow handles scheduled dashboard deployments (every ~30 min).
+# This workflow is for manual one-off deploys or when only dashboard code changes.
 #
-# 3. Go to Settings > Pages > Source > select "GitHub Actions"
-#
-# The HTML is deployed once. It fetches live data every 15s via JavaScript.
+# No API credentials are injected into the HTML.
+# Data is baked in at build time from the API (server-side only).
 
 name: Deploy Fleet Dashboard
 
@@ -43,6 +37,13 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install requests
+
+      # Fetch existing activity log from GitHub Pages
+      - name: Fetch existing activity log
+        run: |
+          mkdir -p docs
+          curl -sL "https://ol0kat.github.io/auto-assign/activity_log.json" \
+            -o docs/activity_log.json || echo "[]" > docs/activity_log.json
 
       - name: Generate dashboard HTML
         env:

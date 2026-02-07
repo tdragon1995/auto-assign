@@ -19,6 +19,7 @@ import time
 import os
 import csv
 import sys
+import json
 from io import StringIO
 from datetime import datetime, timedelta
 from urllib.parse import quote_plus
@@ -56,11 +57,23 @@ DEFAULT_JOB_MAX_AGE = 60
 
 
 # =========================
+# Activity log (persisted for dashboard)
+# =========================
+ACTIVITY_LOG = []
+ACTIVITY_LOG_FILE = "docs/activity_log.json"
+
+
+# =========================
 # Helpers
 # =========================
 def log(msg, level="INFO"):
     ts = datetime.now().strftime("%H:%M:%S")
     print(f"[{ts}] [{level}] {msg}", flush=True)
+    ACTIVITY_LOG.append({
+        "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "level": level,
+        "msg": msg,
+    })
 
 
 def parse_time(time_str):
@@ -331,6 +344,27 @@ def auto_assign_cycle(config):
 
 
 # =========================
+# Activity log persistence
+# =========================
+def save_activity_log():
+    """Merge current run's log with existing history and save to JSON."""
+    existing = []
+    if os.path.exists(ACTIVITY_LOG_FILE):
+        try:
+            with open(ACTIVITY_LOG_FILE, 'r', encoding='utf-8') as f:
+                existing = json.load(f)
+        except Exception:
+            existing = []
+
+    combined = existing + ACTIVITY_LOG
+    combined = combined[-500:]  # Keep last 500 entries
+
+    os.makedirs(os.path.dirname(ACTIVITY_LOG_FILE) or '.', exist_ok=True)
+    with open(ACTIVITY_LOG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(combined, f, ensure_ascii=False)
+
+
+# =========================
 # Entry point
 # =========================
 def main():
@@ -343,6 +377,7 @@ def main():
     config = load_config_from_sheets()
     if not config:
         log("Failed to load config from Google Sheets, exiting", "FATAL")
+        save_activity_log()
         sys.exit(1)
 
     log(f"Config loaded: {len(config.get('mappings', []))} mapping(s)")
@@ -361,6 +396,7 @@ def main():
             time.sleep(1)
 
     log(f"Run time ({run_minutes} min) reached, exiting cleanly")
+    save_activity_log()
 
 
 if __name__ == "__main__":

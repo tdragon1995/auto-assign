@@ -2,10 +2,10 @@
 """
 Fleet Dashboard Generator
 
-Generates an interactive map dashboard that fetches live data every 15 seconds
-directly from the Cartrack API via JavaScript.
+Generates an interactive map dashboard with an activity log panel.
+Data is baked in at build time — no API credentials are exposed in the HTML.
 
-Build-time data is embedded as a fallback in case browser-side fetch fails (CORS).
+The auto-assign workflow rebuilds and deploys this every ~30 minutes.
 
 Required environment variables:
   CARTRACK_AUTH         - Prod Authorization header (for jobs + drivers)
@@ -118,22 +118,26 @@ def fetch_unassigned_jobs():
         return []
 
 
-def generate_html(drivers, jobs, generated_at):
-    prod_auth = os.environ.get("CARTRACK_AUTH", "")
-    prod_cookie = os.environ.get("CARTRACK_COOKIE", "")
-    drivers_auth = os.environ.get("CARTRACK_DRIVERS_AUTH") or prod_auth
-    drivers_cookie = os.environ.get("CARTRACK_DRIVERS_COOKIE") or prod_cookie
+def load_activity_log():
+    log_file = os.path.join("docs", "activity_log.json")
+    if os.path.exists(log_file):
+        try:
+            with open(log_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+
+def generate_html(drivers, jobs, activity_log, generated_at):
     status_config = {int(k): v for k, v in DRIVER_STATUS_CONFIG.items()}
 
     html = HTML_TEMPLATE
     html = html.replace("__BUILD_DRIVERS__", json.dumps(drivers))
     html = html.replace("__BUILD_JOBS__", json.dumps(jobs))
+    html = html.replace("__ACTIVITY_LOG__", json.dumps(activity_log, ensure_ascii=False))
     html = html.replace("__STATUS_CONFIG__", json.dumps(status_config))
     html = html.replace("__GENERATED_AT__", generated_at)
-    html = html.replace("__PROD_AUTH__", prod_auth)
-    html = html.replace("__PROD_COOKIE__", prod_cookie)
-    html = html.replace("__DRIVERS_AUTH__", drivers_auth)
-    html = html.replace("__DRIVERS_COOKIE__", drivers_cookie)
     return html
 
 
@@ -143,7 +147,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Fleet Dashboard</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚚</text></svg>">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x1F69A;</text></svg>">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
           integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
     <style>
@@ -168,13 +172,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             display:inline-flex;align-items:center;gap:5px;
             padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600;
         }
-        .live-badge.live{background:rgba(39,174,96,0.2);color:#27ae60}
-        .live-badge.stale{background:rgba(231,76,60,0.2);color:#e74c3c}
+        .live-badge.snapshot{background:rgba(52,152,219,0.2);color:#3498db}
         .live-badge .dot{
             width:6px;height:6px;border-radius:50%;background:currentColor;
         }
-        .live-badge.live .dot{animation:blink 1.5s infinite}
-        @keyframes blink{0%,100%{opacity:1}50%{opacity:0.2}}
 
         .section-title{
             font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:#6b7280;
@@ -210,16 +211,94 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         .demand-pin{animation:pulse-demand 2s infinite}
         .leaflet-popup-content-wrapper{border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,0.2)}
         .leaflet-popup-content{margin:12px 14px}
+
+        /* ============ Activity Log Panel ============ */
+        .log-panel{
+            position:absolute;top:15px;right:15px;z-index:1000;width:420px;
+            background:rgba(15,15,30,0.92);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+            border:1px solid rgba(255,255,255,0.08);border-radius:14px;color:#e0e0e0;
+            box-shadow:0 8px 32px rgba(0,0,0,0.4);
+            max-height:calc(100vh - 30px);display:flex;flex-direction:column;
+            transition:transform 0.3s ease, opacity 0.3s ease;
+        }
+        .log-panel.hidden{
+            transform:translateX(440px);opacity:0;pointer-events:none;
+        }
+        .log-header{
+            display:flex;align-items:center;justify-content:space-between;
+            padding:16px 20px 12px;border-bottom:1px solid rgba(255,255,255,0.06);flex-shrink:0;
+        }
+        .log-header h2{font-size:14px;font-weight:700;color:#fff;letter-spacing:-0.2px}
+        .log-close{
+            background:none;border:none;color:#6b7280;font-size:18px;cursor:pointer;
+            padding:2px 6px;border-radius:6px;transition:all 0.2s;
+        }
+        .log-close:hover{background:rgba(255,255,255,0.1);color:#fff}
+        .log-entries{
+            flex:1;overflow-y:auto;padding:8px 12px 12px;
+            scrollbar-width:thin;scrollbar-color:rgba(255,255,255,0.15) transparent;
+        }
+        .log-entries::-webkit-scrollbar{width:4px}
+        .log-entries::-webkit-scrollbar-track{background:transparent}
+        .log-entries::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.15);border-radius:4px}
+        .log-entry{
+            padding:4px 8px;margin:1px 0;border-radius:4px;font-size:11px;
+            font-family:'Consolas','Menlo','Monaco',monospace;line-height:1.5;
+            border-left:3px solid transparent;
+        }
+        .log-entry:hover{background:rgba(255,255,255,0.04)}
+        .log-entry .log-ts{color:#6b7280;margin-right:6px}
+        .log-entry .log-lvl{font-weight:700;margin-right:6px;min-width:42px;display:inline-block}
+        .log-entry.level-OK{border-left-color:#27ae60}
+        .log-entry.level-OK .log-lvl{color:#27ae60}
+        .log-entry.level-OK .log-msg{color:#a3d9b1}
+        .log-entry.level-ERROR{border-left-color:#e74c3c}
+        .log-entry.level-ERROR .log-lvl{color:#e74c3c}
+        .log-entry.level-ERROR .log-msg{color:#f0a8a1}
+        .log-entry.level-FATAL{border-left-color:#e74c3c}
+        .log-entry.level-FATAL .log-lvl{color:#e74c3c}
+        .log-entry.level-FATAL .log-msg{color:#f0a8a1}
+        .log-entry.level-WARN{border-left-color:#f39c12}
+        .log-entry.level-WARN .log-lvl{color:#f39c12}
+        .log-entry.level-WARN .log-msg{color:#f5d89a}
+        .log-entry.level-INFO{border-left-color:#3498db}
+        .log-entry.level-INFO .log-lvl{color:#3498db}
+        .log-entry.level-INFO .log-msg{color:#b0d4f1}
+        .log-empty{text-align:center;color:#4b5563;padding:40px 20px;font-size:12px}
+
+        .log-toggle-btn{
+            position:absolute;top:15px;right:15px;z-index:999;
+            background:rgba(15,15,30,0.88);backdrop-filter:blur(12px);
+            border:1px solid rgba(255,255,255,0.08);border-radius:10px;
+            color:#e0e0e0;padding:10px 16px;cursor:pointer;font-family:inherit;
+            font-size:12px;font-weight:600;transition:all 0.2s;
+            box-shadow:0 4px 16px rgba(0,0,0,0.3);
+        }
+        .log-toggle-btn:hover{background:rgba(30,30,60,0.95);color:#fff}
+        .log-toggle-btn.hidden{display:none}
+
+        .log-filter{
+            display:flex;gap:4px;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.06);flex-shrink:0;
+        }
+        .log-filter-btn{
+            background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);
+            border-radius:6px;color:#8b8b8b;padding:3px 8px;cursor:pointer;
+            font-size:10px;font-family:inherit;transition:all 0.2s;
+        }
+        .log-filter-btn:hover{background:rgba(255,255,255,0.12);color:#fff}
+        .log-filter-btn.active{background:rgba(52,152,219,0.2);border-color:rgba(52,152,219,0.4);color:#7ec8f0}
     </style>
 </head>
 <body>
 <div id="map"></div>
+
+<!-- Left sidebar: stats -->
 <div class="sidebar">
     <h1>Fleet Dashboard</h1>
-    <div class="meta-row" id="last-update">Built: __GENERATED_AT__</div>
+    <div class="meta-row" id="last-update">Updated: __GENERATED_AT__</div>
     <div class="meta-row">
-        <span class="live-badge stale" id="live-badge">
-            <span class="dot"></span><span id="badge-text">Connecting...</span>
+        <span class="live-badge snapshot">
+            <span class="dot"></span><span>Snapshot &middot; refreshed every ~30 min</span>
         </span>
     </div>
 
@@ -235,31 +314,37 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <button class="toggle-btn active" id="btn-dropoffs" onclick="toggleLayer('dropoffs')"><span class="ind"></span>Dropoffs</button>
     <button class="toggle-btn active" id="btn-routes" onclick="toggleLayer('routes')"><span class="ind"></span>Routes</button>
 
-    <div id="status-line">Starting...</div>
+    <div id="status-line"></div>
+</div>
+
+<!-- Activity Log toggle button (shown when panel is closed) -->
+<button class="log-toggle-btn" id="log-toggle" onclick="toggleLogPanel()">Activity Log</button>
+
+<!-- Right panel: activity log -->
+<div class="log-panel" id="log-panel">
+    <div class="log-header">
+        <h2>Activity Log</h2>
+        <button class="log-close" onclick="toggleLogPanel()">&times;</button>
+    </div>
+    <div class="log-filter">
+        <button class="log-filter-btn active" data-filter="all" onclick="filterLogs('all',this)">All</button>
+        <button class="log-filter-btn" data-filter="OK" onclick="filterLogs('OK',this)">Assigned</button>
+        <button class="log-filter-btn" data-filter="ERROR" onclick="filterLogs('ERROR',this)">Errors</button>
+        <button class="log-filter-btn" data-filter="WARN" onclick="filterLogs('WARN',this)">Warnings</button>
+    </div>
+    <div class="log-entries" id="log-entries"></div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script>
 // ==========================================================
-// API credentials (injected at build time from GitHub secrets)
+// Build-time data (no API credentials exposed)
 // ==========================================================
-const API = {
-    base: 'https://fleetapi-vn.cartrack.com/rest/delivery',
-    prodAuth: '__PROD_AUTH__',
-    prodCookie: '__PROD_COOKIE__',
-    driversAuth: '__DRIVERS_AUTH__',
-    driversCookie: '__DRIVERS_COOKIE__',
-};
-
 const STATUS_CONFIG = __STATUS_CONFIG__;
-
-// Build-time fallback data
-let currentDrivers = __BUILD_DRIVERS__;
-let currentJobs = __BUILD_JOBS__;
-let isLive = false;
-let hasFittedBounds = false;
-let refreshCount = 0;
+const currentDrivers = __BUILD_DRIVERS__;
+const currentJobs = __BUILD_JOBS__;
+const activityLog = __ACTIVITY_LOG__;
 
 // ==========================================================
 // Map
@@ -288,46 +373,10 @@ function toggleLayer(name) {
 }
 
 // ==========================================================
-// Parsing helpers (for live API responses)
-// ==========================================================
-function parseDrivers(apiData) {
-    return (apiData.data || [])
-        .filter(d => d.latitude != null && d.longitude != null)
-        .map(d => ({
-            name: ((d.first_name||'') + ' ' + (d.last_name||'')).trim() || 'Unknown',
-            lat: parseFloat(d.latitude), lon: parseFloat(d.longitude),
-            status_id: d.driver_status_id || 0,
-            phone: d.phone_number || '',
-            is_online: !!d.is_online,
-            is_active: !!d.is_active,
-        }));
-}
-
-function parseJobs(apiData) {
-    const cutoff = Date.now() - 2*60*60*1000;
-    return (apiData.data || [])
-        .filter(j => {
-            try { return new Date(j.create_ts.replace(' ','T')).getTime() >= cutoff; }
-            catch(e) { return true; }
-        })
-        .map(j => ({
-            id: j.job_id,
-            created: j.create_ts || '',
-            stops: (j.stops || [])
-                .filter(s => s.latitude != null && s.longitude != null)
-                .map(s => ({
-                    lat: parseFloat(s.latitude), lon: parseFloat(s.longitude),
-                    name: s.customer_name || s.name || s.address || 'Unknown',
-                    type: s.stop_type_id || 0,
-                    address: s.address || '',
-                })),
-        }))
-        .filter(j => j.stops.length > 0);
-}
-
-// ==========================================================
 // Render functions
 // ==========================================================
+function esc(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+
 function renderDrivers(drivers) {
     layers.drivers.clearLayers();
     drivers.forEach(d => {
@@ -436,97 +485,66 @@ function fitBounds() {
     else map.setView([10.8, 106.7], 12);
 }
 
-function esc(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+// ==========================================================
+// Activity Log
+// ==========================================================
+let currentFilter = 'all';
 
-function now() { return new Date().toLocaleTimeString('en-GB',{hour12:false}); }
+function renderActivityLog(filter) {
+    const el = document.getElementById('log-entries');
+    if (!activityLog || activityLog.length === 0) {
+        el.innerHTML = '<div class="log-empty">No activity log entries yet.<br>The auto-assign service writes logs every ~30 minutes.</div>';
+        return;
+    }
 
-function setBadge(live, text) {
-    const b = document.getElementById('live-badge');
-    const t = document.getElementById('badge-text');
-    b.className = 'live-badge ' + (live ? 'live' : 'stale');
-    t.textContent = text;
+    const filtered = filter === 'all'
+        ? activityLog
+        : activityLog.filter(e => e.level === filter || (filter === 'ERROR' && e.level === 'FATAL'));
+
+    if (filtered.length === 0) {
+        el.innerHTML = '<div class="log-empty">No entries matching this filter.</div>';
+        return;
+    }
+
+    // Show newest first
+    const reversed = [...filtered].reverse();
+    el.innerHTML = reversed.map(e => {
+        const ts = e.ts ? e.ts.substring(11) : '';  // HH:MM:SS from datetime
+        const lvl = e.level || 'INFO';
+        const msg = esc(e.msg || '');
+        return '<div class="log-entry level-' + lvl + '">' +
+            '<span class="log-ts">[' + ts + ']</span>' +
+            '<span class="log-lvl">[' + lvl + ']</span>' +
+            '<span class="log-msg">' + msg + '</span>' +
+            '</div>';
+    }).join('');
+}
+
+function filterLogs(filter, btn) {
+    currentFilter = filter;
+    document.querySelectorAll('.log-filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    renderActivityLog(filter);
+}
+
+function toggleLogPanel() {
+    const panel = document.getElementById('log-panel');
+    const toggle = document.getElementById('log-toggle');
+    panel.classList.toggle('hidden');
+    toggle.classList.toggle('hidden');
 }
 
 // ==========================================================
-// Live fetch (every 15 seconds)
-// ==========================================================
-async function fetchLive() {
-    refreshCount++;
-    const statusEl = document.getElementById('status-line');
-    statusEl.textContent = 'Refreshing... (#' + refreshCount + ')';
-
-    let gotDrivers = false, gotJobs = false;
-
-    // --- Fetch drivers ---
-    if (API.driversAuth) {
-        try {
-            const resp = await fetch(API.base + '/drivers?page=1&limit=1000', {
-                headers: { 'Authorization': API.driversAuth, 'Content-Type': 'application/json' },
-            });
-            if (resp.ok) {
-                currentDrivers = parseDrivers(await resp.json());
-                gotDrivers = true;
-            }
-        } catch(e) { console.warn('Driver fetch failed:', e); }
-    }
-
-    // --- Fetch jobs ---
-    if (API.prodAuth) {
-        try {
-            const resp = await fetch(API.base + '/jobs?filter%5Bjob_status_id%5D=2&page=1&per_page=100', {
-                headers: { 'Authorization': API.prodAuth, 'Content-Type': 'application/json' },
-            });
-            if (resp.ok) {
-                currentJobs = parseJobs(await resp.json());
-                gotJobs = true;
-            }
-        } catch(e) { console.warn('Jobs fetch failed:', e); }
-    }
-
-    // --- Re-render ---
-    renderDrivers(currentDrivers);
-    renderJobs(currentJobs);
-    updateStats(currentDrivers, currentJobs);
-    if (!hasFittedBounds && (currentDrivers.length || currentJobs.length)) {
-        fitBounds();
-        hasFittedBounds = true;
-    }
-
-    // --- Update status ---
-    const t = now();
-    document.getElementById('last-update').textContent = 'Updated: ' + t;
-    if (gotDrivers || gotJobs) {
-        isLive = true;
-        setBadge(true, 'Live \u00b7 ' + t);
-        statusEl.textContent = 'Live \u2022 ' + currentDrivers.length + ' drivers \u2022 ' + currentJobs.length + ' jobs \u2022 #' + refreshCount;
-    } else if (!isLive) {
-        setBadge(false, 'Build-time data');
-        statusEl.textContent = 'Using build-time data (API fetch failed \u2014 CORS?)';
-    }
-}
-
-// ==========================================================
-// Initial render + start polling
+// Initial render
 // ==========================================================
 renderDrivers(currentDrivers);
 renderJobs(currentJobs);
 updateStats(currentDrivers, currentJobs);
 fitBounds();
+renderActivityLog('all');
 
-// First live fetch immediately, then every 15s
-fetchLive();
-setInterval(fetchLive, 15000);
-
-// Countdown display
-let countdown = 15;
-setInterval(() => {
-    countdown--;
-    if (countdown <= 0) countdown = 15;
-    const el = document.getElementById('status-line');
-    if (isLive && countdown > 1) {
-        el.textContent = el.textContent.split(' \u2022 next')[0] + ' \u2022 next in ' + countdown + 's';
-    }
-}, 1000);
+const statusEl = document.getElementById('status-line');
+statusEl.textContent = currentDrivers.length + ' drivers \u2022 ' + currentJobs.length + ' jobs \u2022 ' + activityLog.length + ' log entries';
 </script>
 </body>
 </html>"""
@@ -544,8 +562,12 @@ def main():
     jobs = fetch_unassigned_jobs()
     print(f"  {len(jobs)} recent unassigned jobs")
 
+    print("Loading activity log...")
+    activity_log = load_activity_log()
+    print(f"  {len(activity_log)} log entries")
+
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    html = generate_html(drivers, jobs, generated_at)
+    html = generate_html(drivers, jobs, activity_log, generated_at)
 
     os.makedirs("docs", exist_ok=True)
     output_path = os.path.join("docs", "index.html")
@@ -553,7 +575,7 @@ def main():
         f.write(html)
 
     print(f"Dashboard written to {output_path}")
-    print(f"  Drivers: {len(drivers)} | Jobs: {len(jobs)} | Generated: {generated_at}")
+    print(f"  Drivers: {len(drivers)} | Jobs: {len(jobs)} | Logs: {len(activity_log)} | Generated: {generated_at}")
 
 
 if __name__ == "__main__":
