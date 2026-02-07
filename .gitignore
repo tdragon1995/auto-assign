@@ -6,3 +6,5 @@ build/
 *.spec
 *.egg-info/
 .env
+docs/
+_run_dashboard.py
