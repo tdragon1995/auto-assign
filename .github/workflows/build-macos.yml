@@ -2,7 +2,7 @@ name: Build macOS App
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     paths:
       - 'auto_assign.py'
       - '.github/workflows/build-macos.yml'
