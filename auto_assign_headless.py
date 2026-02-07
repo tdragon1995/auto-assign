@@ -270,7 +270,7 @@ def auto_assign_cycle(config):
 
         if status == 'clash':
             driver_list = [f"{m.get('driver_id')} ({m.get('shift_start')}-{m.get('shift_end')})" for m in drivers]
-            log(f"Job {job_id} - CLASH: {len(drivers)} drivers at {job_time.strftime('%H:%M')}: {', '.join(driver_list)}", "WARN")
+            log(f"Job {job_id} - CLASH: {len(drivers)} drivers on duty at {job_time.strftime('%H:%M')}: {', '.join(driver_list)}", "WARN")
             continue
 
         # Exactly one driver on duty
@@ -294,7 +294,8 @@ def auto_assign_cycle(config):
                 driver_data = data.get('driver', {})
                 resp_driver_name = f"{driver_data.get('first_name', '')} {driver_data.get('last_name', '')}".strip() or 'N/A'
 
-                log(f"ASSIGNED Job {job_id} | {resp_driver_name} -> {pickup_name}", "OK")
+                job_url = f"https://fleetweb-vn.cartrack.com/delivery/map?job={job_id}"
+                log(f"✓ Job {job_id} ({job_url}) | {resp_driver_name} → {pickup_name}", "OK")
 
                 # Google Maps route link
                 route_link = None
@@ -323,10 +324,10 @@ def auto_assign_cycle(config):
                         log("Zalo notification sent")
             else:
                 error_msg = response.get('message', str(response))
-                log(f"Job {job_id} failed: {error_msg}", "ERROR")
+                log(f"✗ Job {job_id} failed: {error_msg}", "ERROR")
 
         except Exception as e:
-            log(f"Job {job_id} error: {e}", "ERROR")
+            log(f"✗ Job {job_id} error: {e}", "ERROR")
 
 
 # =========================
