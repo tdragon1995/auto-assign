@@ -1,0 +1,46 @@
+# Auto-Assign Service
+#
+# Runs the headless auto-assign loop continuously.
+# Each run lasts 25 minutes, cron restarts every 30 minutes as a safety net.
+#
+# Required secrets:
+#   - CARTRACK_AUTH   : Prod Authorization header
+#   - CARTRACK_COOKIE : Prod Cookie header (optional)
+
+name: Auto-Assign Service
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # Every 30 minutes (safety net restart)
+  push:
+    branches: [master]
+    paths:
+      - 'auto_assign_headless.py'
+      - 'auto_assign.py'
+      - '.github/workflows/auto-assign.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: auto-assign
+  cancel-in-progress: false   # Don't kill a running instance
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install requests
+
+      - name: Run auto-assign service
+        env:
+          CARTRACK_AUTH: ${{ secrets.CARTRACK_AUTH }}
+          CARTRACK_COOKIE: ${{ secrets.CARTRACK_COOKIE }}
+          RUN_MINUTES: '25'
+        run: python auto_assign_headless.py
