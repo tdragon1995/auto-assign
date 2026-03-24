@@ -144,29 +144,7 @@ export default function QrPage() {
             )}
           </div>
 
-          {/* Driver info */}
-          <div className="rounded-lg border p-4 space-y-3">
-            <p className="text-sm font-semibold text-muted-foreground mb-1">
-              Driver Assignment
-            </p>
-            {route!.driver_name ? (
-              <>
-                <Row label="Driver" value={route!.driver_name} icon="👤" />
-                <Row
-                  label="Driver ID"
-                  value={route!.driver_id ?? "—"}
-                  icon="🔑"
-                  mono
-                />
-              </>
-            ) : (
-              <p className="text-destructive text-sm">
-                No driver mapped for this pickup location.
-              </p>
-            )}
-          </div>
-
-          {/* Assignment result */}
+{/* Assignment result */}
           {assignStatus === "success" && (
             <div className="rounded-lg border border-green-200 bg-green-50 p-4 text-sm text-green-800">
               {assignResult}
