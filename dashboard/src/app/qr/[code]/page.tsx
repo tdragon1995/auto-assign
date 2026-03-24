@@ -57,11 +57,12 @@ export default function QrPage() {
             fetch(`/api/check-duplicate?pickup=${match.pickup}&dropoff=${match.dropoff}`)
               .then((r) => r.json())
               .then((d) => {
+                console.log(`[QR] Duplicate check — ${d.total_jobs} jobs fetched`, { looking_for: { pickup: match.pickup, dropoff: match.dropoff }, jobs: d.debug });
                 if (d.blocked) {
-                  console.warn("[QR] Duplicate detected", { reference: d.reference });
+                  console.warn("[QR] BLOCKED — duplicate found", { reference: d.reference, stop_status_id: d.stop_status_id });
                   setDuplicateRef(d.reference);
                 } else {
-                  console.log("[QR] No duplicate found");
+                  console.log("[QR] No duplicate found — clear to create");
                   setDuplicateRef(null);
                 }
               })

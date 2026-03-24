@@ -16,6 +16,19 @@ export async function GET(req: NextRequest) {
   try {
     const { data: jobs } = await getActiveJobs(env);
 
+    // Return full debug snapshot so the client can log everything
+    const debug = jobs.map((job) => ({
+      job_id: job.job_id,
+      reference_number: job.reference_number,
+      job_status_id: job.job_status_id,
+      stops: job.stops.map((s) => ({
+        stop_type_id: s.stop_type_id,
+        stop_status_id: s.stop_status_id,
+        customer_id: s.customer_id,
+        customer_name: s.customer_name,
+      })),
+    }));
+
     for (const job of jobs) {
       const pickupStop = job.stops.find(
         (s) => s.stop_type_id === 1 && s.customer_id === pickup
@@ -29,12 +42,14 @@ export async function GET(req: NextRequest) {
             blocked: true,
             reference: job.reference_number ?? String(job.job_id),
             stop_status_id: status,
+            total_jobs: jobs.length,
+            debug,
           });
         }
       }
     }
 
-    return NextResponse.json({ blocked: false });
+    return NextResponse.json({ blocked: false, total_jobs: jobs.length, debug });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
