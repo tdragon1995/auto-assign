@@ -35,7 +35,7 @@ export default function QrPage() {
   const [assignStatus, setAssignStatus] = useState<Status>("idle");
   const [assignResult, setAssignResult] = useState<string>("");
 
-  const [duplicateRef, setDuplicateRef] = useState<string | null>(null);
+  const [duplicate, setDuplicate] = useState<{ ref: string; job_id: number } | null>(null);
   const [duplicateChecking, setDuplicateChecking] = useState(false);
 
   // Fetch the route data, then check for duplicates with live polling
@@ -59,11 +59,11 @@ export default function QrPage() {
               .then((d) => {
                 console.log(`[QR] Duplicate check — ${d.total_jobs} jobs fetched`, { looking_for: { pickup: match.pickup, dropoff: match.dropoff }, jobs: d.debug });
                 if (d.blocked) {
-                  console.warn("[QR] BLOCKED — duplicate found", { reference: d.reference, stop_status_id: d.stop_status_id });
-                  setDuplicateRef(d.reference);
+                  console.warn("[QR] BLOCKED — duplicate found", { job_id: d.job_id, reference: d.reference, stop_status_id: d.stop_status_id });
+                  setDuplicate({ ref: d.reference, job_id: d.job_id });
                 } else {
                   console.log("[QR] No duplicate found — clear to create");
-                  setDuplicateRef(null);
+                  setDuplicate(null);
                 }
               })
               .finally(() => setDuplicateChecking(false));
@@ -159,30 +159,31 @@ export default function QrPage() {
           {/* Route info */}
           <div className="rounded-lg border p-4 space-y-3">
             <Row label="Pickup" value={`${route!.psc_pickup}`} icon="📦" />
-            <Row
-              label="Dropoff"
-              value={`${route!.dropoff_location}`}
-              icon="📍"
-            />
-            <Row
-              label="Route"
-              value={`${route!.psc_pickup} ➡ ${route!.dropoff_location}`}
-              icon="🛵"
-            />
+            <Row label="Dropoff" value={`${route!.dropoff_location}`} icon="📍" />
+            <Row label="Route" value={`${route!.psc_pickup} ➡ ${route!.dropoff_location}`} icon="🛵" />
             {route!.ref_number && (
               <Row label="Ref" value={route!.ref_number} icon="🏷️" />
             )}
           </div>
 
           {/* Duplicate warning */}
-          {duplicateChecking && (
+          {duplicateChecking && !duplicate && (
             <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-4 text-sm text-yellow-800">
               Checking for existing jobs today...
             </div>
           )}
-          {duplicateRef && (
-            <div className="rounded-lg border border-orange-200 bg-orange-50 p-4 text-sm text-orange-800">
-              ⚠️ A job for this route already exists today ({duplicateRef}). Cannot create a duplicate.
+          {duplicate && (
+            <div className="rounded-lg border border-orange-300 bg-orange-50 p-4 text-sm text-orange-900 space-y-2">
+              <p className="font-semibold">🚫 Job already exists for this route today</p>
+              <p>A trip from <strong>{route!.psc_pickup}</strong> to <strong>{route!.dropoff_location}</strong> is already in progress.</p>
+              <a
+                href={`https://fleetweb-vn.cartrack.com/delivery/map?job=${duplicate.job_id}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-block underline font-medium text-orange-800 hover:text-orange-600"
+              >
+                View job {duplicate.ref} →
+              </a>
             </div>
           )}
 
@@ -205,7 +206,7 @@ export default function QrPage() {
             size="lg"
             onClick={handleAssign}
             disabled={
-              !!duplicateRef ||
+              !!duplicate ||
               duplicateChecking ||
               assignStatus === "loading" ||
               assignStatus === "success"
@@ -215,7 +216,7 @@ export default function QrPage() {
               ? "Creating job..."
               : assignStatus === "success"
                 ? "Job created"
-                : "Assign & Create Job"}
+                : "Create Job"}
           </Button>
           {assignStatus === "success" && (
             <Button

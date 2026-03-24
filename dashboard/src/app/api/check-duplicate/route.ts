@@ -40,6 +40,7 @@ export async function GET(req: NextRequest) {
         if (status === 1 || status === 2) {
           return NextResponse.json({
             blocked: true,
+            job_id: job.job_id,
             reference: job.reference_number ?? String(job.job_id),
             stop_status_id: status,
             total_jobs: jobs.length,
