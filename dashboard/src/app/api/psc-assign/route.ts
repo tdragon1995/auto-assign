@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
-import { getTodayJobs, type Env } from "@/lib/cartrack";
+import { getActiveJobs, type Env } from "@/lib/cartrack";
 
 export const runtime = "edge";
 export const preferredRegion = "sin1";
@@ -42,8 +42,8 @@ export async function POST(req: NextRequest) {
     }
 
     // Server-side duplicate gate
-    const { data: todayJobs } = await getTodayJobs(env);
-    for (const job of todayJobs) {
+    const { data: activeJobs } = await getActiveJobs(env);
+    for (const job of activeJobs) {
       const pickupStop = job.stops.find(
         (s) => s.stop_type_id === 1 && s.customer_id === pickup
       );

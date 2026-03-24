@@ -40,15 +40,16 @@ export default function QrPage() {
 
   // Fetch the route data, then check for duplicates with live polling
   useEffect(() => {
+    let interval: ReturnType<typeof setInterval> | null = null;
+
     fetch("/api/psc-routes")
       .then((r) => r.json())
       .then((d) => {
         const routes: PscRoute[] = d.data ?? [];
-        const match = routes.find(
-          (r) => r.psc_pickup.toUpperCase() === code
-        );
+        const match = routes.find((r) => r.psc_pickup.toUpperCase() === code);
         if (match) {
           setRoute(match);
+          setLoading(false);
           console.log("[QR] Page loaded", { code: match.psc_pickup, pickup: match.pickup, dropoff: match.dropoff, ref: match.ref_number });
 
           const checkDuplicate = () => {
@@ -57,7 +58,7 @@ export default function QrPage() {
               .then((r) => r.json())
               .then((d) => {
                 if (d.blocked) {
-                  console.warn("[QR] Duplicate detected", { reference: d.reference, stop_status_id: d.stop_status_id });
+                  console.warn("[QR] Duplicate detected", { reference: d.reference });
                   setDuplicateRef(d.reference);
                 } else {
                   console.log("[QR] No duplicate found");
@@ -68,17 +69,18 @@ export default function QrPage() {
           };
 
           checkDuplicate();
-          const interval = setInterval(checkDuplicate, 30_000);
-          return () => clearInterval(interval);
+          interval = setInterval(checkDuplicate, 30_000);
         } else {
           setNotFound(true);
+          setLoading(false);
         }
-        setLoading(false);
       })
       .catch(() => {
         setNotFound(true);
         setLoading(false);
       });
+
+    return () => { if (interval) clearInterval(interval); };
   }, [code]);
 
   const handleAssign = async () => {

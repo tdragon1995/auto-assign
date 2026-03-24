@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getTodayJobs, type Env } from "@/lib/cartrack";
+import { getActiveJobs, type Env } from "@/lib/cartrack";
 
 export const runtime = "edge";
 export const preferredRegion = "sin1";
@@ -14,7 +14,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const { data: jobs } = await getTodayJobs(env);
+    const { data: jobs } = await getActiveJobs(env);
 
     for (const job of jobs) {
       const pickupStop = job.stops.find(
