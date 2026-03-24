@@ -49,12 +49,21 @@ export default function QrPage() {
         );
         if (match) {
           setRoute(match);
+          console.log("[QR] Page loaded", { code: match.psc_pickup, pickup: match.pickup, dropoff: match.dropoff, ref: match.ref_number });
 
           const checkDuplicate = () => {
             setDuplicateChecking(true);
             fetch(`/api/check-duplicate?pickup=${match.pickup}&dropoff=${match.dropoff}`)
               .then((r) => r.json())
-              .then((d) => { if (d.blocked) setDuplicateRef(d.reference); else setDuplicateRef(null); })
+              .then((d) => {
+                if (d.blocked) {
+                  console.warn("[QR] Duplicate detected", { reference: d.reference, stop_status_id: d.stop_status_id });
+                  setDuplicateRef(d.reference);
+                } else {
+                  console.log("[QR] No duplicate found");
+                  setDuplicateRef(null);
+                }
+              })
               .finally(() => setDuplicateChecking(false));
           };
 
@@ -76,6 +85,7 @@ export default function QrPage() {
     if (!route) return;
     setAssignStatus("loading");
     setAssignResult("");
+    console.log("[QR] Create job clicked", { code: route.psc_pickup, pickup: route.pickup, dropoff: route.dropoff, ref: route.ref_number });
 
     try {
       const res = await fetch("/api/psc-assign", {
@@ -93,9 +103,11 @@ export default function QrPage() {
       const data = await res.json();
 
       if (res.ok && data.success) {
+        console.log("[QR] Job created successfully", { reference: data.reference });
         setAssignStatus("success");
         setAssignResult(`Job submitted → ${data.reference}`);
       } else {
+        console.error("[QR] Job creation failed", { error: data.error, status: res.status });
         setAssignStatus("error");
         setAssignResult(data.error || "Unknown error");
       }
