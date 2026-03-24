@@ -44,6 +44,8 @@ export async function POST(req: NextRequest) {
     // Server-side duplicate gate
     const { data: activeJobs } = await getActiveJobs(env);
     for (const job of activeJobs) {
+      if ((job.job_status_id ?? 0) > 4) continue;
+
       const pickupStop = job.stops.find(
         (s) => s.stop_type_id === 1 && s.customer_id === pickup
       );

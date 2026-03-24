@@ -30,6 +30,9 @@ export async function GET(req: NextRequest) {
     }));
 
     for (const job of jobs) {
+      // Skip jobs that are completed, cancelled or otherwise terminal (status > 4)
+      if ((job.job_status_id ?? 0) > 4) continue;
+
       const pickupStop = job.stops.find(
         (s) => s.stop_type_id === 1 && s.customer_id === pickup
       );
