@@ -89,7 +89,7 @@ function parseCSV(text: string): Record<string, string>[] {
 
 export async function loadConfigFromSheets(): Promise<Config | null> {
   try {
-    const res = await fetch(SHEET_URL, { cache: "no-store" });
+    const res = await fetch(MAPPING_SHEET_URL, { cache: "no-store" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
     const text = await res.text();
