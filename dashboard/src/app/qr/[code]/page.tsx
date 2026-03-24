@@ -35,7 +35,10 @@ export default function QrPage() {
   const [assignStatus, setAssignStatus] = useState<Status>("idle");
   const [assignResult, setAssignResult] = useState<string>("");
 
-  // Fetch the route data
+  const [duplicateRef, setDuplicateRef] = useState<string | null>(null);
+  const [duplicateChecking, setDuplicateChecking] = useState(false);
+
+  // Fetch the route data, then check for duplicates
   useEffect(() => {
     fetch("/api/psc-routes")
       .then((r) => r.json())
@@ -46,6 +49,13 @@ export default function QrPage() {
         );
         if (match) {
           setRoute(match);
+          setDuplicateChecking(true);
+          fetch(`/api/check-duplicate?pickup=${match.pickup}&dropoff=${match.dropoff}`)
+            .then((r) => r.json())
+            .then((d) => {
+              if (d.blocked) setDuplicateRef(d.reference);
+            })
+            .finally(() => setDuplicateChecking(false));
         } else {
           setNotFound(true);
         }
@@ -144,7 +154,19 @@ export default function QrPage() {
             )}
           </div>
 
-{/* Assignment result */}
+          {/* Duplicate warning */}
+          {duplicateChecking && (
+            <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-4 text-sm text-yellow-800">
+              Checking for existing jobs today...
+            </div>
+          )}
+          {duplicateRef && (
+            <div className="rounded-lg border border-orange-200 bg-orange-50 p-4 text-sm text-orange-800">
+              ⚠️ A job for this route already exists today ({duplicateRef}). Cannot create a duplicate.
+            </div>
+          )}
+
+          {/* Assignment result */}
           {assignStatus === "success" && (
             <div className="rounded-lg border border-green-200 bg-green-50 p-4 text-sm text-green-800">
               {assignResult}
@@ -163,6 +185,8 @@ export default function QrPage() {
             size="lg"
             onClick={handleAssign}
             disabled={
+              !!duplicateRef ||
+              duplicateChecking ||
               assignStatus === "loading" ||
               assignStatus === "success"
             }

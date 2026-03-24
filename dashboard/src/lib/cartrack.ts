@@ -18,6 +18,31 @@ function getHeaders(env: Env = "prod"): Record<string, string> {
   return headers;
 }
 
+export async function getTodayJobs(env: Env = "prod"): Promise<{ data: Job[] }> {
+  // Vietnam is UTC+7
+  const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
+  const nowVn = new Date(Date.now() + VN_OFFSET_MS);
+  const startOfDayUtc = new Date(
+    Date.UTC(nowVn.getUTCFullYear(), nowVn.getUTCMonth(), nowVn.getUTCDate()) - VN_OFFSET_MS
+  );
+  const endOfDayUtc = new Date(startOfDayUtc.getTime() + 24 * 60 * 60 * 1000);
+
+  const params = new URLSearchParams({
+    "filter[scheduled_delivery_ts_from]": String(Math.floor(startOfDayUtc.getTime() / 1000)),
+    "filter[scheduled_delivery_ts_to]": String(Math.floor(endOfDayUtc.getTime() / 1000)),
+    page: "1",
+    per_page: "100",
+  });
+
+  const res = await fetch(`${BASE_URL}/jobs?${params}`, {
+    headers: getHeaders(env),
+    cache: "no-store",
+  });
+
+  if (!res.ok) return { data: [] };
+  return res.json();
+}
+
 export async function getUnassignedJobs(
   page = 1,
   perPage = 50,
