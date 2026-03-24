@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
-import { type Env } from "@/lib/cartrack";
+import { getTodayJobs, type Env } from "@/lib/cartrack";
 
 export const runtime = "edge";
 export const preferredRegion = "sin1";
@@ -39,6 +39,24 @@ export async function POST(req: NextRequest) {
         { error: "Missing required fields" },
         { status: 400 }
       );
+    }
+
+    // Server-side duplicate gate
+    const { data: todayJobs } = await getTodayJobs(env);
+    for (const job of todayJobs) {
+      const pickupStop = job.stops.find(
+        (s) => s.stop_type_id === 1 && s.customer_id === pickup
+      );
+      const dropoffStop = job.stops.find((s) => s.customer_id === dropoff);
+      if (pickupStop && dropoffStop) {
+        const status = pickupStop.stop_status_id ?? 0;
+        if (status === 1 || status === 2) {
+          return NextResponse.json(
+            { error: `Duplicate job exists today (${job.reference_number ?? job.job_id})` },
+            { status: 409 }
+          );
+        }
+      }
     }
 
     const refLabel = ref_number || `${psc_pickup}▶️${dropoff_location}`;

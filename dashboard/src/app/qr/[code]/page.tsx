@@ -38,7 +38,7 @@ export default function QrPage() {
   const [duplicateRef, setDuplicateRef] = useState<string | null>(null);
   const [duplicateChecking, setDuplicateChecking] = useState(false);
 
-  // Fetch the route data, then check for duplicates
+  // Fetch the route data, then check for duplicates with live polling
   useEffect(() => {
     fetch("/api/psc-routes")
       .then((r) => r.json())
@@ -49,13 +49,18 @@ export default function QrPage() {
         );
         if (match) {
           setRoute(match);
-          setDuplicateChecking(true);
-          fetch(`/api/check-duplicate?pickup=${match.pickup}&dropoff=${match.dropoff}`)
-            .then((r) => r.json())
-            .then((d) => {
-              if (d.blocked) setDuplicateRef(d.reference);
-            })
-            .finally(() => setDuplicateChecking(false));
+
+          const checkDuplicate = () => {
+            setDuplicateChecking(true);
+            fetch(`/api/check-duplicate?pickup=${match.pickup}&dropoff=${match.dropoff}`)
+              .then((r) => r.json())
+              .then((d) => { if (d.blocked) setDuplicateRef(d.reference); else setDuplicateRef(null); })
+              .finally(() => setDuplicateChecking(false));
+          };
+
+          checkDuplicate();
+          const interval = setInterval(checkDuplicate, 30_000);
+          return () => clearInterval(interval);
         } else {
           setNotFound(true);
         }

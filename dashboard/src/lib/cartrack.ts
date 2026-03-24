@@ -36,7 +36,7 @@ export async function getTodayJobs(env: Env = "prod"): Promise<{ data: Job[] }> 
 
   const res = await fetch(`${BASE_URL}/jobs?${params}`, {
     headers: getHeaders(env),
-    cache: "no-store",
+    next: { revalidate: 60 },
   });
 
   if (!res.ok) return { data: [] };
