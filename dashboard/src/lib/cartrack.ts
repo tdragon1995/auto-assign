@@ -19,12 +19,7 @@ function getHeaders(env: Env = "prod"): Record<string, string> {
 }
 
 export async function getActiveJobs(env: Env = "prod"): Promise<{ data: Job[] }> {
-  // Fetch all non-completed, non-cancelled jobs
-  const params = new URLSearchParams({
-    "filter[job_status_id]": "1,2,3,4",
-    page: "1",
-    per_page: "100",
-  });
+  const params = new URLSearchParams({ page: "1", per_page: "100" });
 
   const res = await fetch(`${BASE_URL}/jobs?${params}`, {
     headers: getHeaders(env),
