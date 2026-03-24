@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 
 interface PscRoute {
   psc_pickup: string;
@@ -76,17 +75,8 @@ export default function LocationsPage() {
             return (
               <Card key={code} className="relative">
                 <CardHeader className="pb-2">
-                  <CardTitle className="flex items-center justify-between">
+                  <CardTitle>
                     <span>{route.psc_pickup}</span>
-                    {route.driver_name ? (
-                      <Badge variant="secondary" className="text-xs">
-                        {route.driver_name}
-                      </Badge>
-                    ) : (
-                      <Badge variant="destructive" className="text-xs">
-                        No driver
-                      </Badge>
-                    )}
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="flex flex-col items-center gap-3">
