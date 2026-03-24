@@ -19,7 +19,19 @@ function getHeaders(env: Env = "prod"): Record<string, string> {
 }
 
 export async function getActiveJobs(env: Env = "prod"): Promise<{ data: Job[] }> {
-  const params = new URLSearchParams({ page: "1", per_page: "100" });
+  // Vietnam is UTC+7
+  const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
+  const nowVn = new Date(Date.now() + VN_OFFSET_MS);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const dateStr = `${nowVn.getUTCFullYear()}-${pad(nowVn.getUTCMonth() + 1)}-${pad(nowVn.getUTCDate())}`;
+  const from = `${dateStr} 00:00:00`;
+  const to   = `${dateStr} 23:59:59`;
+
+  const params = new URLSearchParams({
+    "filter[scheduled_delivery_ts_from]": from,
+    "filter[scheduled_delivery_ts_to]": to,
+    limit: "10000",
+  });
 
   const res = await fetch(`${BASE_URL}/jobs?${params}`, {
     headers: getHeaders(env),
