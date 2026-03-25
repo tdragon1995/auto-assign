@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import {
   Card,
   CardContent,
@@ -26,7 +26,10 @@ type Status = "idle" | "loading" | "success" | "error";
 
 export default function QrPage() {
   const params = useParams<{ code: string }>();
+  const searchParams = useSearchParams();
   const code = decodeURIComponent(params.code ?? "").toUpperCase().trim();
+  const isStaging = searchParams.get("env") === "uat";
+  const envParam = isStaging ? "?env=uat" : "";
 
   const [route, setRoute] = useState<PscRoute | null>(null);
   const [loading, setLoading] = useState(true);
@@ -63,7 +66,7 @@ export default function QrPage() {
     setAssignResult("");
 
     try {
-      const res = await fetch("/api/psc-assign", {
+      const res = await fetch(`/api/psc-assign${envParam}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -125,6 +128,7 @@ export default function QrPage() {
           <CardTitle className="text-lg flex items-center gap-2">
             PSC Transport
             <Badge variant="outline">{route!.psc_pickup}</Badge>
+            {isStaging && <Badge variant="destructive">STAGING</Badge>}
           </CardTitle>
         </CardHeader>
 
