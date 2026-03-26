@@ -12,8 +12,6 @@
 name: Auto-Assign Service
 
 on:
-  schedule:
-    - cron: '*/30 * * * *'   # Every 30 minutes (safety net restart)
   push:
     branches: [master]
     paths:
