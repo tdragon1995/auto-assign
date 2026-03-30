@@ -21,13 +21,13 @@ function getHeaders(env: Env = "prod"): Record<string, string> {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function fetchJobsToday(status: number, from: string, to: string, env: Env): Promise<any[]> {
+async function fetchJobsToday(status: number | null, from: string, to: string, env: Env): Promise<any[]> {
   const params = new URLSearchParams({
-    "filter[job_status_id]": String(status),
     "filter[scheduled_delivery_ts_from]": from,
     "filter[scheduled_delivery_ts_to]": to,
     limit: "1000",
   });
+  if (status !== null) params.set("filter[job_status_id]", String(status));
 
   const res = await fetch(`${BASE_URL}/jobs?${params}`, {
     headers: getHeaders(env),
@@ -57,9 +57,10 @@ export async function POST(req: NextRequest) {
     const todayStart = `${today} 00:00:00`;
     const todayEnd = `${today} 23:59:59`;
 
-    const [assignLaterJobs, assignedJobs] = await Promise.all([
+    const [assignLaterJobs, assignedJobs, allTodayJobs] = await Promise.all([
       fetchJobsToday(2, todayStart, todayEnd, env), // status 2 = Assign Later
       fetchJobsToday(4, todayStart, todayEnd, env), // status 4 = Assigned
+      fetchJobsToday(null, todayStart, todayEnd, env), // all statuses for running number
     ]);
 
     const allJobs = [...assignLaterJobs, ...assignedJobs];
@@ -90,7 +91,12 @@ export async function POST(req: NextRequest) {
     }
 
     // --- Create the job ---
-    const refLabel = ref_number || `${psc_pickup}▶️${dropoff_location}`;
+    const refBase = ref_number || `${psc_pickup}▶️${dropoff_location}`;
+    const existingCount = allTodayJobs.filter((job: any) => {
+      const r: string = job.reference_number ?? "";
+      return r === refBase || r.startsWith(`${refBase}_`);
+    }).length;
+    const refLabel = `${refBase}_${existingCount + 1}`;
 
     const jobPayload = {
       job_type_id: 1,
