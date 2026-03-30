@@ -57,13 +57,8 @@ export async function POST(req: NextRequest) {
     const todayStart = `${today} 00:00:00`;
     const todayEnd = `${today} 23:59:59`;
 
-    const [assignLaterJobs, assignedJobs, allTodayJobs] = await Promise.all([
-      fetchJobsToday(2, todayStart, todayEnd, env), // status 2 = Assign Later
-      fetchJobsToday(4, todayStart, todayEnd, env), // status 4 = Assigned
-      fetchJobsToday(null, todayStart, todayEnd, env), // all statuses for running number
-    ]);
-
-    const allJobs = [...assignLaterJobs, ...assignedJobs];
+    const allTodayJobs = await fetchJobsToday(null, todayStart, todayEnd, env);
+    const allJobs = allTodayJobs;
 
     // Block only if the pickup stop is still active (Created=1, Started=2, Arrived=3)
     // Allow if stop is Completed=4 or Rejected=5
