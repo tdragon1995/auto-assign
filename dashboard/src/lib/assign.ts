@@ -350,6 +350,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", optimiz
           .split(",")
           .map((s) => s.trim())
           .filter(Boolean);
+        console.log("[optimize] optimizeEnabled:", optimizeEnabled, "| driverId:", driverId, "| pilotDrivers:", pilotDrivers);
         if (optimizeEnabled && pilotDrivers.includes(driverId)) {
           const vnDate = new Intl.DateTimeFormat("sv-SE", { timeZone: TZ })
             .format(new Date())

@@ -146,14 +146,20 @@ let _cookieExpiry = 0;
 
 /** Login to fleetweb and return a session cookie string, or null on failure. */
 async function getFleetwebCookie(): Promise<string | null> {
-  if (_cachedCookie && Date.now() < _cookieExpiry) return _cachedCookie;
+  if (_cachedCookie && Date.now() < _cookieExpiry) {
+    console.log("[optimize] Using cached fleetweb cookie (expires in", Math.round((_cookieExpiry - Date.now()) / 60000), "min)");
+    return _cachedCookie;
+  }
+
   const auth = process.env.CARTRACK_AUTH ?? "";
   const password = process.env.CARTRACK_WEB_PASS ?? "";
+  console.log("[optimize] CARTRACK_AUTH set:", !!auth, "| CARTRACK_WEB_PASS set:", !!password);
   if (!auth || !password) return null;
 
   // Decode account name from Basic auth header (ACCOUNT:apipassword)
   const decoded = atob(auth.replace(/^Basic\s+/, ""));
   const account = decoded.split(":")[0];
+  console.log("[optimize] Logging in as account:", account);
 
   try {
     const res = await fetch(JSONRPC_URL, {
@@ -177,15 +183,22 @@ async function getFleetwebCookie(): Promise<string | null> {
         },
       }),
     });
-    if (!res.ok) return null;
+    console.log("[optimize] ct_login response status:", res.status);
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      console.log("[optimize] ct_login failed body:", body);
+      return null;
+    }
 
-    // Extract all Set-Cookie values into a single cookie string
     const setCookies = res.headers.getSetCookie?.() ?? [];
+    console.log("[optimize] Set-Cookie headers received:", setCookies.length);
     if (!setCookies.length) return null;
     _cachedCookie = setCookies.map((c) => c.split(";")[0]).join("; ");
     _cookieExpiry = Date.now() + COOKIE_TTL_MS;
+    console.log("[optimize] Login successful, cookie cached");
     return _cachedCookie;
-  } catch {
+  } catch (e) {
+    console.log("[optimize] ct_login exception:", e);
     return null;
   }
 }
@@ -198,39 +211,45 @@ export async function optimizeDriverRoute(
   dateVn: string // YYYY-MM-DD in Vietnam time
 ): Promise<boolean> {
   const auth = process.env.CARTRACK_AUTH ?? "";
-  if (!auth) return false;
+  console.log("[optimize] optimizeDriverRoute called | driver:", driverId, "| date:", dateVn);
+  if (!auth) {
+    console.log("[optimize] CARTRACK_AUTH not set, aborting");
+    return false;
+  }
 
   const cookie = await getFleetwebCookie();
-  if (!cookie) return false;
-
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    Authorization: auth,
-    Cookie: cookie,
-  };
+  if (!cookie) {
+    console.log("[optimize] Could not get fleetweb cookie, aborting");
+    return false;
+  }
 
   try {
-    const res = await fetch(JSONRPC_URL, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        version: "2.0",
-        method: "delivery_route_stops_optimize",
-        id: 1,
-        params: {
-          data: {
-            routeId: `driver_${driverId}`,
-            scheduleType: "scheduled",
-            filter: {
-              from: `${dateVn}T00:00:00+07:00`,
-              to: `${dateVn}T23:59:59+07:00`,
-            },
+    const payload = {
+      version: "2.0",
+      method: "delivery_route_stops_optimize",
+      id: 1,
+      params: {
+        data: {
+          routeId: `driver_${driverId}`,
+          scheduleType: "scheduled",
+          filter: {
+            from: `${dateVn}T00:00:00+07:00`,
+            to: `${dateVn}T23:59:59+07:00`,
           },
         },
-      }),
+      },
+    };
+    console.log("[optimize] Sending optimize payload:", JSON.stringify(payload.params.data));
+    const res = await fetch(JSONRPC_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: auth, Cookie: cookie },
+      body: JSON.stringify(payload),
     });
+    const body = await res.text().catch(() => "");
+    console.log("[optimize] optimize response status:", res.status, "| body:", body.slice(0, 300));
     return res.ok;
-  } catch {
+  } catch (e) {
+    console.log("[optimize] optimize exception:", e);
     return false;
   }
 }
