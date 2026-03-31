@@ -18,7 +18,6 @@ export interface Config {
 export interface Stop {
   stop_id?: number;
   stop_type_id?: number;
-  stop_status_id?: number;
   customer_id?: string;
   customer_name?: string;
   name?: string;
@@ -31,7 +30,6 @@ export interface Stop {
 export interface Job {
   job_id: number;
   job_status_id?: number;
-  reference_number?: string;
   create_ts?: string;
   stops: Stop[];
 }
