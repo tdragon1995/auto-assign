@@ -1,5 +1,5 @@
 import type { Config, Job, LogEntry, LogLevel, Mapping } from "./types";
-import { getUnassignedJobs, assignJob, getJobDetails, getCustomerById, updateJobStops, type Env } from "./cartrack";
+import { getUnassignedJobs, assignJob, getJobDetails, getCustomerById, updateJobStops, optimizeDriverRoute, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
 
 const TZ = "Asia/Ho_Chi_Minh";
@@ -343,6 +343,19 @@ export async function autoAssignCycle(config: Config, env: Env = "prod"): Promis
             lines.join("\n")
           );
           if (sent) log("Zalo notification sent");
+        }
+
+        // Route optimisation — pilot drivers only
+        const pilotDrivers = (process.env.ROUTE_OPTIMIZE_PILOT ?? "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        if (pilotDrivers.includes(driverId)) {
+          const vnDate = new Intl.DateTimeFormat("sv-SE", { timeZone: TZ })
+            .format(new Date())
+            .slice(0, 10);
+          const ok = await optimizeDriverRoute(driverId, vnDate);
+          log(`Route optimise for ${driverId}: ${ok ? "triggered" : "skipped (no cookie or failed)"}`, ok ? "INFO" : "WARN");
         }
       } else {
         const errorMsg = body?.message ?? JSON.stringify(body);

@@ -18,30 +18,6 @@ function getHeaders(env: Env = "prod"): Record<string, string> {
   return headers;
 }
 
-export async function getActiveJobs(env: Env = "prod"): Promise<{ data: Job[] }> {
-  // Vietnam is UTC+7
-  const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
-  const nowVn = new Date(Date.now() + VN_OFFSET_MS);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const dateStr = `${nowVn.getUTCFullYear()}-${pad(nowVn.getUTCMonth() + 1)}-${pad(nowVn.getUTCDate())}`;
-  const from = `${dateStr} 00:00:00`;
-  const to   = `${dateStr} 23:59:59`;
-
-  const params = new URLSearchParams({
-    "filter[scheduled_delivery_ts_from]": from,
-    "filter[scheduled_delivery_ts_to]": to,
-    limit: "10000",
-  });
-
-  const res = await fetch(`${BASE_URL}/jobs?${params}`, {
-    headers: getHeaders(env),
-    cache: "no-store",
-  });
-
-  if (!res.ok) return { data: [] };
-  return res.json();
-}
-
 export async function getUnassignedJobs(
   page = 1,
   perPage = 50,
@@ -160,6 +136,44 @@ export async function updateJobStops(
   });
   const body = await res.json().catch(() => ({}));
   return { ok: res.ok, status: res.status, body };
+}
+
+/** Trigger route optimisation for a single driver (JSON-RPC).
+ *  Requires CARTRACK_WEB_COOKIE env var (session cookie from fleetweb-vn).
+ *  Returns true if the API accepted the request. */
+export async function optimizeDriverRoute(
+  driverId: string,
+  dateVn: string // YYYY-MM-DD in Vietnam time
+): Promise<boolean> {
+  const cookie = process.env.CARTRACK_WEB_COOKIE ?? "";
+  if (!cookie) return false;
+
+  const body = {
+    version: "2.0",
+    method: "delivery_route_stops_optimize",
+    id: 1,
+    params: {
+      data: {
+        routeId: `driver_${driverId}`,
+        scheduleType: "scheduled",
+        filter: {
+          from: `${dateVn}T00:00:00+07:00`,
+          to: `${dateVn}T23:59:59+07:00`,
+        },
+      },
+    },
+  };
+
+  try {
+    const res = await fetch("https://fleetweb-vn.cartrack.com/jsonrpc/index.php", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify(body),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 export async function getJobDetails(
