@@ -138,37 +138,89 @@ export async function updateJobStops(
   return { ok: res.ok, status: res.status, body };
 }
 
-/** Trigger route optimisation for a single driver (JSON-RPC).
- *  Requires CARTRACK_WEB_COOKIE env var (session cookie from fleetweb-vn).
+const JSONRPC_URL = "https://fleetweb-vn.cartrack.com/jsonrpc/index.php";
+
+/** Login to fleetweb and return a session cookie string, or null on failure. */
+async function getFleetwebCookie(): Promise<string | null> {
+  const auth = process.env.CARTRACK_AUTH ?? "";
+  const password = process.env.CARTRACK_WEB_PASS ?? "";
+  if (!auth || !password) return null;
+
+  // Decode account name from Basic auth header (ACCOUNT:apipassword)
+  const decoded = atob(auth.replace(/^Basic\s+/, ""));
+  const account = decoded.split(":")[0];
+
+  try {
+    const res = await fetch(JSONRPC_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: auth },
+      body: JSON.stringify({
+        version: "2.0",
+        method: "ct_login",
+        id: 1,
+        params: {
+          x: "x",
+          account,
+          username: "",
+          password,
+          locale: "en-ZA",
+          otp: "",
+          browserName: "",
+          version: "3.9.1",
+          environment: "live",
+          thirdParty: false,
+        },
+      }),
+    });
+    if (!res.ok) return null;
+
+    // Extract all Set-Cookie values into a single cookie string
+    const setCookies = res.headers.getSetCookie?.() ?? [];
+    if (!setCookies.length) return null;
+    return setCookies.map((c) => c.split(";")[0]).join("; ");
+  } catch {
+    return null;
+  }
+}
+
+/** Login then trigger route optimisation for a single driver (JSON-RPC).
+ *  Requires CARTRACK_AUTH + CARTRACK_WEB_PASS env vars.
  *  Returns true if the API accepted the request. */
 export async function optimizeDriverRoute(
   driverId: string,
   dateVn: string // YYYY-MM-DD in Vietnam time
 ): Promise<boolean> {
-  const cookie = process.env.CARTRACK_WEB_COOKIE ?? "";
+  const auth = process.env.CARTRACK_AUTH ?? "";
+  if (!auth) return false;
+
+  const cookie = await getFleetwebCookie();
   if (!cookie) return false;
 
-  const body = {
-    version: "2.0",
-    method: "delivery_route_stops_optimize",
-    id: 1,
-    params: {
-      data: {
-        routeId: `driver_${driverId}`,
-        scheduleType: "scheduled",
-        filter: {
-          from: `${dateVn}T00:00:00+07:00`,
-          to: `${dateVn}T23:59:59+07:00`,
-        },
-      },
-    },
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Authorization: auth,
+    Cookie: cookie,
   };
 
   try {
-    const res = await fetch("https://fleetweb-vn.cartrack.com/jsonrpc/index.php", {
+    const res = await fetch(JSONRPC_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Cookie: cookie },
-      body: JSON.stringify(body),
+      headers,
+      body: JSON.stringify({
+        version: "2.0",
+        method: "delivery_route_stops_optimize",
+        id: 1,
+        params: {
+          data: {
+            routeId: `driver_${driverId}`,
+            scheduleType: "scheduled",
+            filter: {
+              from: `${dateVn}T00:00:00+07:00`,
+              to: `${dateVn}T23:59:59+07:00`,
+            },
+          },
+        },
+      }),
     });
     return res.ok;
   } catch {
