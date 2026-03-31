@@ -137,7 +137,7 @@ export function buildGmapsRouteLink(
   );
 }
 
-export async function autoAssignCycle(config: Config, env: Env = "prod", optimizeEnabled = false): Promise<LogEntry[]> {
+export async function autoAssignCycle(config: Config, env: Env = "prod"): Promise<LogEntry[]> {
   const logs: LogEntry[] = [];
   const log = (msg: string, level: LogLevel = "INFO") => {
     logs.push(makeLog(msg, level));
@@ -350,8 +350,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", optimiz
           .split(",")
           .map((s) => s.trim())
           .filter(Boolean);
-        console.log("[optimize] optimizeEnabled:", optimizeEnabled, "| driverId:", driverId, "| pilotDrivers:", pilotDrivers);
-        if (optimizeEnabled && pilotDrivers.includes(driverId)) {
+        if (pilotDrivers.includes(driverId)) {
           const vnDate = new Intl.DateTimeFormat("sv-SE", { timeZone: TZ })
             .format(new Date())
             .slice(0, 10);
