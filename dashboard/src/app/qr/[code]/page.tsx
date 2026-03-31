@@ -176,7 +176,7 @@ export default function QrPage() {
               ? "Creating job..."
               : assignStatus === "success"
                 ? "Job created"
-                : "Assign & Create Job"}
+                : "Đề Nghị Giao Mẫu"}
           </Button>
           {assignStatus === "success" && (
             <Button
