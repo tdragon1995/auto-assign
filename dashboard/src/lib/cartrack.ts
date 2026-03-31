@@ -139,9 +139,14 @@ export async function updateJobStops(
 }
 
 const JSONRPC_URL = "https://fleetweb-vn.cartrack.com/jsonrpc/index.php";
+const COOKIE_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
+
+let _cachedCookie: string | null = null;
+let _cookieExpiry = 0;
 
 /** Login to fleetweb and return a session cookie string, or null on failure. */
 async function getFleetwebCookie(): Promise<string | null> {
+  if (_cachedCookie && Date.now() < _cookieExpiry) return _cachedCookie;
   const auth = process.env.CARTRACK_AUTH ?? "";
   const password = process.env.CARTRACK_WEB_PASS ?? "";
   if (!auth || !password) return null;
@@ -177,7 +182,9 @@ async function getFleetwebCookie(): Promise<string | null> {
     // Extract all Set-Cookie values into a single cookie string
     const setCookies = res.headers.getSetCookie?.() ?? [];
     if (!setCookies.length) return null;
-    return setCookies.map((c) => c.split(";")[0]).join("; ");
+    _cachedCookie = setCookies.map((c) => c.split(";")[0]).join("; ");
+    _cookieExpiry = Date.now() + COOKIE_TTL_MS;
+    return _cachedCookie;
   } catch {
     return null;
   }
