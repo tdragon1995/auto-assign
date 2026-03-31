@@ -44,19 +44,20 @@ interface PscJob {
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
-const STOP_STATUS: Record<number, { label: string; icon: string; color: string }> = {
-  1: { label: "Chờ",       icon: "⏳", color: "text-slate-400"  },
-  2: { label: "Đang đến",  icon: "🛵", color: "text-blue-600"   },
-  3: { label: "Đã đến",    icon: "📍", color: "text-orange-500" },
-  4: { label: "Xong",      icon: "✅", color: "text-green-600"  },
-  5: { label: "Thất bại",  icon: "❌", color: "text-red-500"    },
+// stop_status_id descriptions (from Cartrack)
+const STOP_STATUS: Record<number, { label: string; color: string }> = {
+  1: { label: "Tạo",          color: "text-slate-400"  },
+  2: { label: "Đang di chuyển", color: "text-blue-600" },
+  3: { label: "Tới Nơi",      color: "text-orange-500" },
+  4: { label: "Hoàn Thành",   color: "text-green-600"  },
+  5: { label: "Hủy",          color: "text-red-500"    },
 };
 
 const JOB_BADGE: Record<number, { label: string; cls: string }> = {
-  2: { label: "Chờ điều phối", cls: "bg-yellow-100 text-yellow-800" },
-  4: { label: "Đang xử lý",   cls: "bg-blue-100   text-blue-800"   },
-  5: { label: "Hoàn thành",   cls: "bg-green-100  text-green-800"  },
-  3: { label: "Thất bại",     cls: "bg-red-100    text-red-800"    },
+  2: { label: "Chờ điều phối", cls: "bg-yellow-100 text-yellow-700" },
+  4: { label: "Đang xử lý",   cls: "bg-blue-100   text-blue-700"   },
+  5: { label: "Hoàn Thành",   cls: "bg-green-100  text-green-700"  },
+  3: { label: "Hủy",          cls: "bg-red-100    text-red-700"    },
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -66,7 +67,6 @@ function fmtTime(ts?: string | null): string {
   return ts.slice(11, 16);
 }
 
-// Exclude jobs where all stops are still pending (1) or all failed (5)
 function shouldShow(job: PscJob): boolean {
   const ss = (job.stops ?? []).map((s) => s.stop_status_id);
   if (!ss.length) return false;
@@ -77,9 +77,9 @@ function shouldShow(job: PscJob): boolean {
 
 function tabPillCls(jobs: PscJob[]): string {
   const statuses = jobs.flatMap((j) => j.stops.map((s) => s.stop_status_id));
-  if (statuses.some((s) => s === 2)) return "bg-blue-100 text-blue-700";
+  if (statuses.some((s) => s === 2 || s === 3)) return "bg-blue-100 text-blue-700";
   if (statuses.some((s) => s === 4)) return "bg-green-100 text-green-700";
-  return "bg-slate-100 text-slate-600";
+  return "bg-slate-100 text-slate-500";
 }
 
 type AssignStatus = "idle" | "loading" | "success" | "error" | "duplicate";
@@ -106,6 +106,9 @@ export default function QrPage() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [activeTab, setActiveTab] = useState<"pickup" | "dropoff">("pickup");
 
+  // Photo lightbox
+  const [lightbox, setLightbox] = useState<string | null>(null);
+
   useEffect(() => {
     fetch("/api/psc-routes")
       .then((r) => r.json())
@@ -126,13 +129,11 @@ export default function QrPage() {
       const mine: PscJob[] = (data.jobs ?? []).filter((j: PscJob) =>
         j.stops?.some((s) => s.customer_id === pickupId) && shouldShow(j)
       );
-      // Active jobs (not completed) first, then completed — each group sorted by scheduled time
       const sortFn = (a: PscJob, b: PscJob) =>
         (a.scheduled_delivery_ts ?? a.create_ts ?? "").localeCompare(b.scheduled_delivery_ts ?? b.create_ts ?? "");
       const active = mine.filter((j) => j.job_status_id !== 5).sort(sortFn);
-      const done = mine.filter((j) => j.job_status_id === 5).sort(sortFn);
+      const done   = mine.filter((j) => j.job_status_id === 5).sort(sortFn);
       const sorted = [...active, ...done];
-
       setPickupJobs(sorted.filter((j) => j.stops.some((s) => s.customer_id === pickupId && s.stop_type_id === 1)));
       setDropoffJobs(sorted.filter((j) => j.stops.some((s) => s.customer_id === pickupId && s.stop_type_id === 2)));
       setLastUpdated(new Date());
@@ -199,258 +200,217 @@ export default function QrPage() {
   );
 
   const currentJobs = activeTab === "pickup" ? pickupJobs : dropoffJobs;
-  const hasActiveDriver = pickupJobs.some((j) => j.job_status_id === 4 && j.stops.some((s) => s.stop_status_id === 2));
+  const hasActiveDriver = pickupJobs.some((j) => j.job_status_id === 4 && j.stops.some((s) => s.stop_status_id === 2 || s.stop_status_id === 3));
   const allPickupsDone = pickupJobs.length > 0 && pickupJobs.every((j) => j.job_status_id === 5);
   const showRequestBtn = assignStatus !== "success" && assignStatus !== "duplicate";
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col">
+    <div className="min-h-screen bg-slate-50 flex flex-col text-sm">
+
+      {/* Lightbox overlay */}
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+          onClick={() => setLightbox(null)}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={lightbox} alt="" className="max-w-full max-h-full rounded-lg" />
+        </div>
+      )}
 
       {/* ── Sticky header ── */}
-      <div className="sticky top-0 z-20 bg-white border-b px-4 py-2.5 flex items-center justify-between shadow-sm">
-        <div>
-          <p className="text-[11px] text-slate-400 uppercase tracking-wide">Điểm lấy mẫu</p>
-          <p className="font-bold text-sm leading-tight">{route!.psc_pickup}</p>
-        </div>
+      <div className="sticky top-0 z-20 bg-white border-b px-3 py-2 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          {isStaging && <span className="text-[10px] font-bold bg-red-100 text-red-700 px-2 py-0.5 rounded-full">STAGING</span>}
-          <button
-            onClick={() => route && fetchJobs(route.pickup)}
-            disabled={jobsLoading}
-            className="size-8 flex items-center justify-center rounded-full hover:bg-slate-100 disabled:opacity-40 transition-colors"
-          >
-            <span className={jobsLoading ? "animate-spin inline-block" : ""}>🔄</span>
-          </button>
+          <div>
+            <p className="font-bold text-sm leading-none">{route!.psc_pickup}</p>
+            <p className="text-[10px] text-slate-400 mt-0.5">→ {route!.dropoff_location}</p>
+          </div>
+          {isStaging && <span className="text-[10px] font-bold bg-red-100 text-red-700 px-1.5 py-0.5 rounded">STAGING</span>}
         </div>
+        <button
+          onClick={() => route && fetchJobs(route.pickup)}
+          disabled={jobsLoading}
+          className="size-7 flex items-center justify-center rounded-full hover:bg-slate-100 disabled:opacity-40"
+        >
+          <span className={jobsLoading ? "animate-spin inline-block text-xs" : "text-xs"}>🔄</span>
+        </button>
       </div>
 
       {/* ── Banners ── */}
       {assignStatus === "success" && (
-        <div className="bg-green-50 border-b border-green-200 px-4 py-3 flex items-start gap-3">
-          <span className="text-lg">✅</span>
-          <div className="flex-1">
-            <p className="text-sm font-semibold text-green-800">Đã đặt Giao Nhận Mẫu thành công</p>
-            <p className="text-xs text-green-700">Vui lòng chuẩn bị mẫu sẵn sàng</p>
-          </div>
-          <button onClick={() => { setAssignStatus("idle"); setAssignRef(""); }} className="text-xs text-green-700 underline shrink-0 mt-0.5">Đặt thêm</button>
+        <div className="bg-green-50 border-b border-green-200 px-3 py-2 flex items-center justify-between gap-2">
+          <p className="text-xs text-green-800 font-medium">✅ Đã đặt Giao Nhận Mẫu — chuẩn bị mẫu sẵn sàng</p>
+          <button onClick={() => { setAssignStatus("idle"); setAssignRef(""); }} className="text-[11px] text-green-700 underline shrink-0">Đặt thêm</button>
         </div>
       )}
       {assignStatus === "duplicate" && (
-        <div className="bg-amber-50 border-b border-amber-200 px-4 py-3 flex items-start gap-3">
-          <span className="text-lg">⚠️</span>
-          <div>
-            <p className="text-sm font-semibold text-amber-800">Đã có yêu cầu hôm nay rồi</p>
-            <p className="text-xs text-amber-700">Xem trạng thái bên dưới</p>
-          </div>
+        <div className="bg-amber-50 border-b border-amber-200 px-3 py-2">
+          <p className="text-xs text-amber-800 font-medium">⚠️ Đã có yêu cầu hôm nay — xem bên dưới</p>
         </div>
       )}
       {assignStatus === "error" && (
-        <div className="bg-red-50 border-b border-red-200 px-4 py-3 flex items-start gap-2">
-          <span className="text-lg">❌</span>
-          <p className="text-sm text-red-700">{assignRef || "Lỗi không xác định. Vui lòng thử lại."}</p>
+        <div className="bg-red-50 border-b border-red-200 px-3 py-2">
+          <p className="text-xs text-red-700">❌ {assignRef || "Lỗi không xác định. Vui lòng thử lại."}</p>
         </div>
       )}
       {hasActiveDriver && assignStatus === "idle" && (
-        <div className="bg-blue-50 border-b border-blue-200 px-4 py-3 flex items-center gap-3">
-          <span className="relative flex size-2.5 shrink-0">
+        <div className="bg-blue-50 border-b border-blue-200 px-3 py-2 flex items-center gap-2">
+          <span className="relative flex size-2 shrink-0">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-            <span className="relative inline-flex rounded-full size-2.5 bg-blue-500" />
+            <span className="relative inline-flex rounded-full size-2 bg-blue-500" />
           </span>
-          <p className="text-sm font-medium text-blue-800">🛵 Giao Nhận Mẫu đang đến lấy mẫu — chuẩn bị sẵn nhé!</p>
+          <p className="text-xs font-medium text-blue-800">🛵 Giao Nhận Mẫu đang đến — chuẩn bị sẵn nhé!</p>
         </div>
       )}
       {allPickupsDone && assignStatus === "idle" && (
-        <div className="bg-green-50 border-b border-green-200 px-4 py-3 flex items-center gap-2">
-          <span>✅</span>
-          <p className="text-sm font-medium text-green-800">Tất cả mẫu đã được lấy hôm nay</p>
+        <div className="bg-green-50 border-b border-green-200 px-3 py-2">
+          <p className="text-xs font-medium text-green-800">✅ Tất cả mẫu đã được lấy hôm nay</p>
         </div>
       )}
 
       {/* ── Request button ── */}
       {showRequestBtn && (
-        <div className="bg-white border-b px-4 py-3">
-          <Button
-            className="w-full h-12 text-base font-semibold"
-            onClick={handleAssign}
-            disabled={assignStatus === "loading"}
-          >
+        <div className="bg-white border-b px-3 py-2">
+          <Button className="w-full h-10 font-semibold" onClick={handleAssign} disabled={assignStatus === "loading"}>
             {assignStatus === "loading" ? "Đang gửi..." : "🛵 Đặt Giao Nhận Mẫu"}
           </Button>
-          <p className="text-[11px] text-slate-400 text-center mt-1.5">
-            Mẫu sẽ được giao đến <span className="font-medium text-slate-600">{route!.dropoff_location}</span>
-          </p>
         </div>
       )}
 
       {/* ── Tabs ── */}
-      <div className="sticky top-[53px] z-10 flex bg-white border-b shadow-sm">
+      <div className="sticky top-[41px] z-10 flex bg-white border-b">
         {(["pickup", "dropoff"] as const).map((tab) => {
           const jobs = tab === "pickup" ? pickupJobs : dropoffJobs;
-          const label = tab === "pickup" ? "🛵 Giao Nhận Mẫu đến lấy" : "📥 Mẫu giao đến PSC";
+          const label = tab === "pickup" ? "🛵 GNM đến lấy" : "📥 Mẫu đến PSC";
           const pillCls = tabPillCls(jobs);
           return (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`flex-1 py-2.5 px-2 text-xs font-medium border-b-2 transition-colors flex items-center justify-center gap-1.5 ${
-                activeTab === tab
-                  ? "border-primary text-primary bg-blue-50/50"
-                  : "border-transparent text-slate-500 hover:text-slate-700"
+            <button key={tab} onClick={() => setActiveTab(tab)}
+              className={`flex-1 py-2 px-2 text-xs font-medium border-b-2 flex items-center justify-center gap-1 ${
+                activeTab === tab ? "border-primary text-primary" : "border-transparent text-slate-500"
               }`}
             >
               {label}
-              <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${pillCls}`}>{jobs.length}</span>
+              <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${pillCls}`}>{jobs.length}</span>
             </button>
           );
         })}
       </div>
 
-      {/* ── Last updated ── */}
-      <div className="px-4 pt-2 pb-1 flex items-center justify-between">
-        <p className="text-[11px] text-slate-400">
-          {lastUpdated
-            ? `Cập nhật lúc ${lastUpdated.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
-            : "Đang tải..."}
-        </p>
-        <p className="text-[11px] text-slate-400">Tự động làm mới mỗi 30s</p>
-      </div>
+      {/* ── Table ── */}
+      <div className="flex-1 overflow-auto">
+        {/* Column headers */}
+        {currentJobs.length > 0 && (
+          <div className="grid grid-cols-[1fr_1fr_auto] gap-x-2 px-3 pt-2 pb-1 text-[10px] font-semibold text-slate-400 uppercase tracking-wide border-b bg-slate-50">
+            <span>{activeTab === "pickup" ? "Lấy mẫu" : "Lấy từ"}</span>
+            <span>{activeTab === "pickup" ? "Giao đến" : "Giao tới đây"}</span>
+            <span>GNM</span>
+          </div>
+        )}
 
-      {/* ── Job cards ── */}
-      <div className="flex-1 px-4 pb-6 space-y-3">
         {currentJobs.length === 0 && !jobsLoading && (
-          <div className="flex flex-col items-center justify-center py-16 text-center gap-2">
-            <p className="text-4xl">{activeTab === "pickup" ? "🛵" : "📥"}</p>
-            <p className="text-sm text-slate-500 max-w-[240px] leading-relaxed">
+          <div className="flex flex-col items-center justify-center py-12 text-center gap-1">
+            <p className="text-2xl">{activeTab === "pickup" ? "🛵" : "📥"}</p>
+            <p className="text-xs text-slate-400 max-w-[200px] leading-relaxed">
               {activeTab === "pickup"
-                ? "Chưa có Giao Nhận Mẫu nào hôm nay.\nBấm nút bên trên để đặt."
-                : "Hôm nay chưa có mẫu nào được giao đến PSC này."}
+                ? "Chưa có chuyến nào. Bấm nút bên trên để đặt."
+                : "Hôm nay chưa có mẫu nào giao đến đây."}
             </p>
           </div>
         )}
-        {currentJobs.map((job) => (
-          <JobCard key={job.job_id} job={job} pickupId={route!.pickup} tab={activeTab} />
-        ))}
+
+        <div className="divide-y divide-slate-100">
+          {currentJobs.map((job) => (
+            <JobRow key={job.job_id} job={job} pickupId={route!.pickup} tab={activeTab} onPhoto={setLightbox} />
+          ))}
+        </div>
+
+        {lastUpdated && (
+          <p className="text-center text-[10px] text-slate-300 py-3">
+            Cập nhật {lastUpdated.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })} · tự động mỗi 30s
+          </p>
+        )}
       </div>
     </div>
   );
 }
 
-// ── JobCard ────────────────────────────────────────────────────────────────
+// ── JobRow ─────────────────────────────────────────────────────────────────
 
-function JobCard({ job, pickupId, tab }: { job: PscJob; pickupId: string; tab: "pickup" | "dropoff" }) {
-  const pscStop = job.stops?.find((s) => s.customer_id === pickupId);
+function JobRow({ job, pickupId, tab, onPhoto }: {
+  job: PscJob;
+  pickupId: string;
+  tab: "pickup" | "dropoff";
+  onPhoto: (url: string) => void;
+}) {
+  const pscStop   = job.stops?.find((s) => s.customer_id === pickupId);
   const otherStop = job.stops?.find((s) => s.customer_id !== pickupId);
-  const pickupStop = tab === "pickup" ? pscStop : otherStop;
+  const pickupStop  = tab === "pickup" ? pscStop   : otherStop;
   const dropoffStop = tab === "pickup" ? otherStop : pscStop;
 
-  const isDone = job.job_status_id === 5;
-  const driverLastName = job.driver?.last_name?.trim() || null;
-  const otherName = otherStop?.customer_name ?? "—";
-  const schedTime = fmtTime(job.scheduled_delivery_ts);
-  const badge = JOB_BADGE[job.job_status_id] ?? { label: "—", cls: "bg-slate-100 text-slate-700" };
+  const isDone        = job.job_status_id === 5;
+  const driverLastName = job.driver?.last_name?.trim() || "—";
+  const badge         = JOB_BADGE[job.job_status_id] ?? { label: "—", cls: "bg-slate-100 text-slate-600" };
+  const isEnRoute     = pscStop?.stop_status_id === 2 || pscStop?.stop_status_id === 3;
 
-  const pickupSt = STOP_STATUS[pickupStop?.stop_status_id ?? 1];
+  const pickupSt  = STOP_STATUS[pickupStop?.stop_status_id  ?? 1];
   const dropoffSt = STOP_STATUS[dropoffStop?.stop_status_id ?? 1];
 
-  const pickupPhotos = (pickupStop?.todos ?? []).flatMap((t) => t.images ?? []);
-  const dropoffPhotos = (dropoffStop?.todos ?? []).flatMap((t) => t.images ?? []);
+  const pickupTime  = fmtTime(pickupStop?.activity_completed_ts  ?? pickupStop?.activity_arrived_ts  ?? pickupStop?.activity_started_ts);
+  const dropoffTime = fmtTime(dropoffStop?.activity_completed_ts ?? dropoffStop?.activity_arrived_ts ?? dropoffStop?.activity_started_ts);
 
-  const isEnRoute = pscStop?.stop_status_id === 2;
+  const allPhotos = (job.stops ?? []).flatMap((s) => (s.todos ?? []).flatMap((t) => t.images ?? []));
 
   return (
-    <div className={`bg-white rounded-xl border shadow-sm overflow-hidden ${isDone ? "opacity-60" : ""}`}>
+    <div className={`px-3 py-2.5 ${isDone ? "bg-slate-50/60" : "bg-white"}`}>
+      {/* Row: 2 stop columns + driver column */}
+      <div className="grid grid-cols-[1fr_1fr_auto] gap-x-2 items-start">
 
-      {/* ── Header row ── */}
-      <div className="px-4 pt-3 pb-2 flex items-start justify-between gap-2">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1.5 mb-0.5">
-            {isEnRoute && (
-              <span className="relative flex size-2 shrink-0">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                <span className="relative inline-flex rounded-full size-2 bg-blue-500" />
-              </span>
-            )}
-            <p className="text-sm font-semibold text-slate-800">
-              {driverLastName ? `Giao Nhận Mẫu: ${driverLastName}` : "Chờ điều phối"}
-            </p>
-          </div>
-          {/* Other location — the answer to "from where / going where" */}
-          <p className="text-xs text-slate-500 truncate">
-            {tab === "pickup" ? `Đến: ${otherName}` : `Từ: ${otherName}`}
+        {/* Pickup stop */}
+        <div>
+          <p className="text-[11px] font-medium text-slate-700 leading-tight truncate">
+            {pickupStop?.customer_name ?? "—"}
+          </p>
+          <p className={`text-[11px] font-semibold mt-0.5 ${pickupSt.color}`}>
+            {pickupSt.label}
+            {pickupTime && <span className="text-slate-400 font-normal ml-1">{pickupTime}</span>}
           </p>
         </div>
-        <div className="flex flex-col items-end gap-1 shrink-0">
-          <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${badge.cls}`}>{badge.label}</span>
-          {schedTime && <span className="text-[11px] text-slate-400 tabular-nums">{schedTime}</span>}
+
+        {/* Dropoff stop */}
+        <div>
+          <p className="text-[11px] font-medium text-slate-700 leading-tight truncate">
+            {dropoffStop?.customer_name ?? "—"}
+          </p>
+          <p className={`text-[11px] font-semibold mt-0.5 ${dropoffSt.color}`}>
+            {dropoffSt.label}
+            {dropoffTime && <span className="text-slate-400 font-normal ml-1">{dropoffTime}</span>}
+          </p>
+        </div>
+
+        {/* Driver + badge */}
+        <div className="flex flex-col items-end gap-1 min-w-[72px]">
+          {isEnRoute && (
+            <span className="relative flex size-1.5">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+              <span className="relative inline-flex rounded-full size-1.5 bg-blue-500" />
+            </span>
+          )}
+          <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${badge.cls}`}>{badge.label}</span>
+          <span className="text-[11px] text-slate-500 text-right">{driverLastName}</span>
         </div>
       </div>
 
-      <div className="border-t border-slate-100 mx-4" />
-
-      {/* ── Stop statuses ── */}
-      <div className="px-4 py-2.5 space-y-2.5">
-        <StopLine
-          label={tab === "pickup" ? "Lấy mẫu tại đây" : otherStop?.customer_name ?? "Điểm lấy"}
-          stop={pickupStop}
-          statusInfo={pickupSt}
-        />
-        <StopLine
-          label={tab === "pickup" ? (otherStop?.customer_name ?? "Điểm đến") : "Giao đến đây"}
-          stop={dropoffStop}
-          statusInfo={dropoffSt}
-        />
-      </div>
-
-      {/* ── Photos ── */}
-      {(pickupPhotos.length > 0 || dropoffPhotos.length > 0) && (
-        <div className="px-4 pb-3 space-y-2 border-t border-slate-100 pt-2.5">
-          {pickupPhotos.length > 0 && (
-            <div>
-              <p className="text-[11px] text-slate-400 mb-1.5">📸 Ảnh khi lấy mẫu</p>
-              <div className="flex gap-2 overflow-x-auto pb-0.5">
-                {pickupPhotos.map((img) => (
-                  <a key={img.image_id} href={img.image_url} target="_blank" rel="noreferrer" className="shrink-0">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={img.image_url} alt="" className="size-16 rounded-lg object-cover border border-slate-200" />
-                  </a>
-                ))}
-              </div>
-            </div>
-          )}
-          {dropoffPhotos.length > 0 && (
-            <div>
-              <p className="text-[11px] text-slate-400 mb-1.5">📸 Ảnh khi giao mẫu</p>
-              <div className="flex gap-2 overflow-x-auto pb-0.5">
-                {dropoffPhotos.map((img) => (
-                  <a key={img.image_id} href={img.image_url} target="_blank" rel="noreferrer" className="shrink-0">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={img.image_url} alt="" className="size-16 rounded-lg object-cover border border-slate-200" />
-                  </a>
-                ))}
-              </div>
-            </div>
-          )}
+      {/* Photos — only if present, shown as small tappable thumbnails */}
+      {allPhotos.length > 0 && (
+        <div className="flex gap-1.5 mt-1.5 overflow-x-auto">
+          {allPhotos.map((img) => (
+            <button key={img.image_id} onClick={() => onPhoto(img.image_url)} className="shrink-0">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={img.image_url} alt="" className="size-10 rounded object-cover border border-slate-200" />
+            </button>
+          ))}
         </div>
       )}
-    </div>
-  );
-}
-
-// ── StopLine ───────────────────────────────────────────────────────────────
-
-function StopLine({ label, stop, statusInfo }: {
-  label: string;
-  stop: Stop | undefined;
-  statusInfo: { label: string; icon: string; color: string };
-}) {
-  const time = fmtTime(stop?.activity_completed_ts ?? stop?.activity_arrived_ts ?? stop?.activity_started_ts);
-  return (
-    <div className="flex items-center justify-between gap-2">
-      <p className="text-xs text-slate-600 truncate max-w-[55%] font-medium">{label}</p>
-      <div className="flex items-center gap-1 shrink-0">
-        <span className={`text-xs font-semibold ${statusInfo.color}`}>{statusInfo.icon} {statusInfo.label}</span>
-        {time && <span className="text-[11px] text-slate-400 tabular-nums">· {time}</span>}
-      </div>
     </div>
   );
 }
