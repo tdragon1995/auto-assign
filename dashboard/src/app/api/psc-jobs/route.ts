@@ -1,9 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { type Env } from "@/lib/cartrack";
 
-export const runtime = "edge";
-export const preferredRegion = "sin1";
-
 const BASE_URL = "https://fleetapi-vn.cartrack.com/rest/delivery";
 
 function getHeaders(env: Env = "prod"): Record<string, string> {

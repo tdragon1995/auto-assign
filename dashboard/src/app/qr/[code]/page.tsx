@@ -16,6 +16,19 @@ interface PscRoute {
   driver_name: string | null;
 }
 
+interface TodoImage {
+  image_id: number;
+  image_url: string;
+}
+
+interface Todo {
+  stop_todo_id: number;
+  todo_type_id: number; // 1=eSign, 2=photo, 5=note
+  description: string;
+  note: string | null;
+  images: TodoImage[];
+}
+
 interface Stop {
   stop_id: number;
   stop_type_id: number;
@@ -25,6 +38,7 @@ interface Stop {
   activity_started_ts: string | null;
   activity_arrived_ts: string | null;
   activity_completed_ts: string | null;
+  todos: Todo[];
 }
 
 interface PscJob {
@@ -297,14 +311,32 @@ function JobCard({ job, pickupId, done = false }: { job: PscJob; pickupId: strin
 function StopRow({ label, stop }: { label: string; stop: Stop }) {
   const info = STOP_STATUS[stop.stop_status_id] ?? { label: `#${stop.stop_status_id}`, icon: "?" };
   const time = fmtTime(stop.activity_completed_ts ?? stop.activity_arrived_ts ?? stop.activity_started_ts);
+  const photos = (stop.todos ?? []).flatMap((t) => t.images ?? []);
   return (
-    <div className="flex items-center justify-between text-sm">
-      <span className="text-muted-foreground text-xs truncate max-w-[50%]">{label}</span>
-      <span className="flex items-center gap-1 text-xs shrink-0">
-        <span>{info.icon}</span>
-        <span>{info.label}</span>
-        {time && <span className="text-muted-foreground">· {time}</span>}
-      </span>
+    <div className="space-y-1">
+      <div className="flex items-center justify-between text-sm">
+        <span className="text-muted-foreground text-xs truncate max-w-[50%]">{label}</span>
+        <span className="flex items-center gap-1 text-xs shrink-0">
+          <span>{info.icon}</span>
+          <span>{info.label}</span>
+          {time && <span className="text-muted-foreground">· {time}</span>}
+        </span>
+      </div>
+      {photos.length > 0 && (
+        <div className="flex flex-wrap gap-1 pl-1">
+          {photos.map((img, i) => (
+            <a
+              key={img.image_id}
+              href={img.image_url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs text-blue-600 underline"
+            >
+              📷 Ảnh {i + 1}
+            </a>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
