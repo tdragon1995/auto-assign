@@ -12,14 +12,12 @@
 name: Auto-Assign Service
 
 on:
-  push:
-    branches: [master]
-    paths:
-      - 'auto_assign_headless.py'
-      - 'auto_assign.py'
-      - 'generate_dashboard.py'
-      - '.github/workflows/auto-assign.yml'
   workflow_dispatch:
+    inputs:
+      disabled:
+        description: 'This workflow is disabled. Auto-assign is handled by the Vercel dashboard.'
+        required: true
+        default: 'true'
 
 concurrency:
   group: auto-assign
