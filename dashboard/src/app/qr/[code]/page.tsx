@@ -83,7 +83,7 @@ export default function QrPage() {
         setAssignResult(`Job submitted → ${data.reference}`);
       } else if (res.status === 409) {
         setAssignStatus("error");
-        setAssignResult(`Already booked today — ${data.message}`);
+        setAssignResult(`Job #${data.job_id}: Đơn liền trước chưa được giao, vui lòng đợi thêm. Xin cám ơn!`);
       } else {
         setAssignStatus("error");
         setAssignResult(data.error || "Unknown error");
