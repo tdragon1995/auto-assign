@@ -69,7 +69,7 @@ export default function LocationsPage() {
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {routes.map((route) => {
-            const code = encodeURIComponent(route.psc_pickup);
+            const code = route.pickup;
             const qrUrl = `${baseUrl}/qr/${code}`;
 
             return (

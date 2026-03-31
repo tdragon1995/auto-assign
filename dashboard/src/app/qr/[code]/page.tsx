@@ -27,7 +27,7 @@ type Status = "idle" | "loading" | "success" | "error";
 export default function QrPage() {
   const params = useParams<{ code: string }>();
   const searchParams = useSearchParams();
-  const code = decodeURIComponent(params.code ?? "").toUpperCase().trim();
+  const code = decodeURIComponent(params.code ?? "").trim();
   const isStaging = searchParams.get("env") === "uat";
   const envParam = isStaging ? "?env=uat" : "";
 
@@ -44,9 +44,7 @@ export default function QrPage() {
       .then((r) => r.json())
       .then((d) => {
         const routes: PscRoute[] = d.data ?? [];
-        const match = routes.find(
-          (r) => r.psc_pickup.toUpperCase() === code
-        );
+        const match = routes.find((r) => r.pickup === code);
         if (match) {
           setRoute(match);
         } else {
