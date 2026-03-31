@@ -85,7 +85,7 @@ export function Dashboard() {
         },
       ]);
     }
-  }, [env]);
+  }, [env, optimizeRoute]);
 
   // Toggle auto-assign
   const toggleService = useCallback(() => {
