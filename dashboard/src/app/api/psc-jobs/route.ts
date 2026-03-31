@@ -23,31 +23,37 @@ export async function GET(req: NextRequest) {
   const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
   const today = vnNow.toISOString().split("T")[0];
 
-  const allJobs: unknown[] = [];
-  let offset = 0;
-
   try {
     const headers = getHeaders(env);
-    while (true) {
+
+    const makeUrl = (offset: number) => {
       const params = new URLSearchParams({
         "filter[scheduled_delivery_ts_from]": `${today} 00:00:00`,
         "filter[scheduled_delivery_ts_to]": `${today} 23:59:59`,
         limit: String(PAGE_SIZE),
         offset: String(offset),
       });
+      return `${BASE_URL}/jobs?${params}`;
+    };
 
-      const res = await fetch(`${BASE_URL}/jobs?${params}`, {
-        headers,
-        next: { revalidate: 30 }, // shared cache across all PSC refreshes
-      });
-      if (!res.ok) break;
+    const fetchPage = (offset: number) =>
+      fetch(makeUrl(offset), { headers, next: { revalidate: 30 } })
+        .then((r) => (r.ok ? r.json() : { data: [] }))
+        .then((d) => (d.data ?? []) as unknown[]);
 
-      const data = await res.json();
-      const page: unknown[] = data.data ?? [];
-      allJobs.push(...page);
+    // Fetch first two pages in parallel — covers up to 1000 jobs in one round-trip
+    const [page0, page1] = await Promise.all([fetchPage(0), fetchPage(PAGE_SIZE)]);
+    const allJobs: unknown[] = [...page0, ...page1];
 
-      if (page.length < PAGE_SIZE) break; // last page
-      offset += PAGE_SIZE;
+    // If page1 was full there may be more — fetch remaining pages sequentially
+    if (page1.length === PAGE_SIZE) {
+      let offset = PAGE_SIZE * 2;
+      while (true) {
+        const page = await fetchPage(offset);
+        allJobs.push(...page);
+        if (page.length < PAGE_SIZE) break;
+        offset += PAGE_SIZE;
+      }
     }
 
     return NextResponse.json({ jobs: allJobs });

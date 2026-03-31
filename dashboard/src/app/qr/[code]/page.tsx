@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 
@@ -70,7 +70,7 @@ function fmtTime(ts?: string | null): string {
 function shouldShow(job: PscJob): boolean {
   const ss = (job.stops ?? []).map((s) => s.stop_status_id);
   if (!ss.length) return false;
-  if (ss.every((s) => s === 1)) return false;
+  // Only hide if all stops are Hủy (5) — pending jobs (all status 1) must still show
   if (ss.every((s) => s === 5)) return false;
   return true;
 }
@@ -109,16 +109,22 @@ export default function QrPage() {
   // Photo lightbox
   const [lightbox, setLightbox] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetch("/api/psc-routes")
-      .then((r) => r.json())
-      .then((d) => {
-        const match = (d.data ?? []).find((r: PscRoute) => r.pickup === code);
-        if (match) setRoute(match); else setNotFound(true);
-        setPageLoading(false);
-      })
-      .catch(() => { setNotFound(true); setPageLoading(false); });
-  }, [code]);
+  // Shared jobs cache so the periodic refresh reuses the same fetch
+  const jobsCacheRef = useRef<PscJob[] | null>(null);
+
+  const filterAndSetJobs = useCallback((allJobs: PscJob[], pickupId: string) => {
+    const mine = allJobs.filter((j) =>
+      j.stops?.some((s) => s.customer_id === pickupId) && shouldShow(j)
+    );
+    const sortFn = (a: PscJob, b: PscJob) =>
+      (a.scheduled_delivery_ts ?? a.create_ts ?? "").localeCompare(b.scheduled_delivery_ts ?? b.create_ts ?? "");
+    const active = mine.filter((j) => j.job_status_id !== 5).sort(sortFn);
+    const done   = mine.filter((j) => j.job_status_id === 5).sort(sortFn);
+    const sorted = [...active, ...done];
+    setPickupJobs(sorted.filter((j) => j.stops.some((s) => s.customer_id === pickupId && s.stop_type_id === 1)));
+    setDropoffJobs(sorted.filter((j) => j.stops.some((s) => s.customer_id === pickupId && s.stop_type_id === 2)));
+    setLastUpdated(new Date());
+  }, []);
 
   const fetchJobs = useCallback(async (pickupId: string) => {
     setJobsLoading(true);
@@ -126,25 +132,35 @@ export default function QrPage() {
       const res = await fetch(`/api/psc-jobs${envQuery}`);
       if (!res.ok) return;
       const data = await res.json();
-      const mine: PscJob[] = (data.jobs ?? []).filter((j: PscJob) =>
-        j.stops?.some((s) => s.customer_id === pickupId) && shouldShow(j)
-      );
-      const sortFn = (a: PscJob, b: PscJob) =>
-        (a.scheduled_delivery_ts ?? a.create_ts ?? "").localeCompare(b.scheduled_delivery_ts ?? b.create_ts ?? "");
-      const active = mine.filter((j) => j.job_status_id !== 5).sort(sortFn);
-      const done   = mine.filter((j) => j.job_status_id === 5).sort(sortFn);
-      const sorted = [...active, ...done];
-      setPickupJobs(sorted.filter((j) => j.stops.some((s) => s.customer_id === pickupId && s.stop_type_id === 1)));
-      setDropoffJobs(sorted.filter((j) => j.stops.some((s) => s.customer_id === pickupId && s.stop_type_id === 2)));
-      setLastUpdated(new Date());
+      const allJobs: PscJob[] = data.jobs ?? [];
+      jobsCacheRef.current = allJobs;
+      filterAndSetJobs(allJobs, pickupId);
     } finally {
       setJobsLoading(false);
     }
-  }, [envQuery]);
+  }, [envQuery, filterAndSetJobs]);
+
+  // Fetch routes and jobs in parallel on mount
+  useEffect(() => {
+    const routesPromise = fetch("/api/psc-routes").then((r) => r.json());
+    const jobsPromise = fetch(`/api/psc-jobs${envQuery}`).then((r) => r.json());
+
+    Promise.all([routesPromise, jobsPromise])
+      .then(([routesData, jobsData]) => {
+        const match = (routesData.data ?? []).find((r: PscRoute) => r.pickup === code);
+        if (!match) { setNotFound(true); setPageLoading(false); return; }
+        setRoute(match);
+        setPageLoading(false);
+        const allJobs: PscJob[] = jobsData.jobs ?? [];
+        jobsCacheRef.current = allJobs;
+        filterAndSetJobs(allJobs, match.pickup);
+      })
+      .catch(() => { setNotFound(true); setPageLoading(false); });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code]);
 
   useEffect(() => {
     if (!route) return;
-    fetchJobs(route.pickup);
     const interval = setInterval(() => fetchJobs(route.pickup), 30_000);
     return () => clearInterval(interval);
   }, [route, fetchJobs]);
