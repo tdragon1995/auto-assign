@@ -16,6 +16,7 @@ export function Dashboard() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isRunning, setIsRunning] = useState(false);
+  const [optimizeRoute, setOptimizeRoute] = useState(false);
   const [mappingCount, setMappingCount] = useState(0);
   const [pscRouteCount, setPscRouteCount] = useState(0);
   const [env, setEnv] = useState<Env>("prod");
@@ -67,7 +68,7 @@ export function Dashboard() {
   const runAssignCycle = useCallback(async (targetEnv?: Env) => {
     const e = targetEnv ?? env;
     try {
-      const res = await fetch(`/api/assign?env=${e}`, { method: "POST" });
+      const res = await fetch(`/api/assign?env=${e}&optimize=${optimizeRoute}`, { method: "POST" });
       if (res.ok) {
         const data = await res.json();
         if (data.logs?.length) {
@@ -182,10 +183,15 @@ export function Dashboard() {
           {/* Auto-Assign switch */}
           <div className="flex items-center gap-2">
             <span className="text-sm text-slate-300">Auto-Assign</span>
-            <Switch
-              checked={isRunning}
-              onCheckedChange={toggleService}
-            />
+            <Switch checked={isRunning} onCheckedChange={toggleService} />
+          </div>
+
+          <div className="w-px h-6 bg-slate-600" />
+
+          {/* Route Optimise switch */}
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-slate-300">Optimise Route</span>
+            <Switch checked={optimizeRoute} onCheckedChange={setOptimizeRoute} />
           </div>
           <Button
             variant="outline"
