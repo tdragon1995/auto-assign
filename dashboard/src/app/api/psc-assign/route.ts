@@ -60,17 +60,17 @@ export async function POST(req: NextRequest) {
     const allTodayJobs = await fetchJobsToday(null, todayStart, todayEnd, env);
     const allJobs = allTodayJobs;
 
-    // Block only if the pickup stop is still active (Created=1, Started=2, Arrived=3)
-    // Allow if stop is Completed=4 or Rejected=5
-    const ACTIVE_STOP_STATUSES = new Set([1, 2, 3]);
+    // Only block if the job itself is active: 2=Assign Later, 4=Assigned
+    // Allow re-booking for terminal statuses: 3=Rejected/Failed, 5=Completed, and any unknown status
+    const ACTIVE_JOB_STATUSES = new Set([2, 4]);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const duplicate = allJobs.find((job: any) =>
+      ACTIVE_JOB_STATUSES.has(job.job_status_id) &&
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       job.stops?.some((stop: any) =>
         stop.stop_type_id === 1 &&
-        stop.customer_id === pickup &&
-        ACTIVE_STOP_STATUSES.has(stop.stop_status_id)
+        stop.customer_id === pickup
       )
     );
 
