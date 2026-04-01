@@ -61,7 +61,7 @@ export async function POST(req: NextRequest) {
     const allJobs = allTodayJobs;
 
     // Only block if the job itself is active: 2=Assign Later, 4=Assigned
-    // Allow re-booking for terminal statuses: 3=Rejected/Failed, 5=Completed, and any unknown status
+    // Allow re-booking for terminal statuses: 3=Rejected/Failed, 5=Completed, 7=Cancelled
     const ACTIVE_JOB_STATUSES = new Set([2, 4]);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
