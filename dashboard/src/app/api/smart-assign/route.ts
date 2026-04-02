@@ -3,6 +3,7 @@ import { getDrivers, getUnassignedJobs, getFleetwebCookie, type Env } from "@/li
 
 const JSONRPC_URL = "https://fleetweb-vn.cartrack.com/jsonrpc/index.php";
 const TOP_N = 3;
+const GOONG_API = "https://rsapi.goong.io/v2/distancematrix";
 
 // ── Haversine ──────────────────────────────────────────────────────────────
 
@@ -46,6 +47,38 @@ async function valhallaRoute(
     };
   } catch {
     return null;
+  }
+}
+
+// ── Goong Distance Matrix v2 ───────────────────────────────────────────────
+
+async function goongMatrix(
+  originLat: number,
+  originLon: number,
+  destinations: { lat: number; lon: number }[]
+): Promise<({ distance_km: number; eta_mins: number } | null)[]> {
+  const apiKey = process.env.GOONG_API_KEY ?? "";
+  if (!apiKey || destinations.length === 0) return destinations.map(() => null);
+
+  const destStr = destinations.map((d) => `${d.lat},${d.lon}`).join("|");
+  const url = `${GOONG_API}?origins=${originLat},${originLon}&destinations=${encodeURIComponent(destStr)}&vehicle=bike&api_key=${apiKey}`;
+
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return destinations.map(() => null);
+    const data = await res.json();
+    const elements: { status: string; distance: { value: number }; duration: { value: number } }[] =
+      data.rows?.[0]?.elements ?? [];
+    return destinations.map((_, i) => {
+      const el = elements[i];
+      if (!el || el.status !== "OK") return null;
+      return {
+        distance_km: Math.round(el.distance.value / 100) / 10,
+        eta_mins: Math.round(el.duration.value / 60),
+      };
+    });
+  } catch {
+    return destinations.map(() => null);
   }
 }
 
@@ -163,7 +196,7 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // Valhalla routing — all (job × driver) pairs in parallel
+  // Routing — all jobs in parallel
   type RouteResult = { distance_km: number; eta_mins: number } | null;
   const routingMap = new Map<string, RouteResult>();
 
@@ -179,6 +212,23 @@ export async function POST(req: NextRequest) {
       tasks.map((t) => valhallaRoute(t.fromLat, t.fromLon, t.toLat, t.toLon))
     );
     tasks.forEach((t, i) => routingMap.set(t.key, results[i]));
+  }
+
+  if (provider === "goong" && intermediate.length > 0) {
+    const perJobResults = await Promise.all(
+      intermediate.map((s) =>
+        goongMatrix(
+          s.pickup_lat,
+          s.pickup_lon,
+          s.drivers.map((d) => ({ lat: d.lat, lon: d.lon }))
+        )
+      )
+    );
+    intermediate.forEach((s, si) => {
+      s.drivers.forEach((d, di) => {
+        routingMap.set(`${s.job_id}:${d.driver_id}`, perJobResults[si][di]);
+      });
+    });
   }
 
   // Fetch job counts

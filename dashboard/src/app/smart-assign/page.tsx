@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 
-type Provider = "haversine" | "valhalla";
+type Provider = "haversine" | "valhalla" | "goong";
 
 interface DriverSuggestion {
   driver_id: string;
@@ -49,8 +49,9 @@ function relativeTime(ts: string | null): string {
 
 function DriverCell({ d, provider }: { d: DriverSuggestion; provider: Provider }) {
   const dot = STATUS_DOT[d.status_id] ?? STATUS_DOT[4];
-  const isRouteFallback = provider === "valhalla" && d.distance_km == null;
-  const distLine = provider === "valhalla" && d.distance_km != null
+  const usesRouting = provider === "valhalla" || provider === "goong";
+  const isRouteFallback = usesRouting && d.distance_km == null;
+  const distLine = usesRouting && d.distance_km != null
     ? `${d.distance_km} km road · ${d.eta_mins ?? "?"}min`
     : `${d.haversine_km} km straight${isRouteFallback ? " ⚠️" : ""}`;
 
@@ -71,6 +72,7 @@ function DriverCell({ d, provider }: { d: DriverSuggestion; provider: Provider }
 const PROVIDERS: { key: Provider; label: string }[] = [
   { key: "haversine", label: "📐 Straight line" },
   { key: "valhalla",  label: "🛵 Valhalla (road)" },
+  { key: "goong",     label: "🗺️ Goong (road)" },
 ];
 
 export default function SmartAssignPage() {
