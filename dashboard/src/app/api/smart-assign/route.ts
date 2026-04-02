@@ -15,23 +15,23 @@ function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): nu
   return R * 2 * Math.asin(Math.sqrt(a));
 }
 
-async function fetchDriverJobCount(
-  driverId: string,
+// Fetch all driver routes in one call, return a map of driverId → unique job count
+async function fetchAllDriverJobCounts(
   dateVn: string,
   auth: string,
   cookie: string
-): Promise<number | null> {
+): Promise<Record<string, number>> {
   try {
     const res = await fetch(JSONRPC_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: auth, Cookie: cookie },
       body: JSON.stringify({
         version: "2.0",
-        method: "delivery_route_stops_index",
+        method: "delivery_timeline_route_list",
         id: 1,
         params: {
           data: {
-            routeId: `driver_${driverId}`,
+            scheduleType: "scheduled",
             filter: {
               from: `${dateVn}T00:00:00+07:00`,
               to: `${dateVn}T23:59:59+07:00`,
@@ -40,18 +40,20 @@ async function fetchDriverJobCount(
         },
       }),
     });
-    if (!res.ok) return null;
+    if (!res.ok) return {};
     const data = await res.json();
-    const routes = data.result?.routes ?? [];
-    const jobIds = new Set<number>();
+    const routes: { routeId: string; orderedStops?: { jobId: number }[] }[] = data.result?.routes ?? [];
+
+    const counts: Record<string, number> = {};
     for (const route of routes) {
-      for (const stop of route.orderedStops ?? []) {
-        if (stop.jobId) jobIds.add(stop.jobId);
-      }
+      // routeId = "driver_{uuid}" — extract the uuid
+      const driverId = route.routeId.replace(/^driver_/, "");
+      const jobIds = new Set(route.orderedStops?.map((s) => s.jobId).filter(Boolean) ?? []);
+      counts[driverId] = jobIds.size;
     }
-    return jobIds.size;
+    return counts;
   } catch {
-    return null;
+    return {};
   }
 }
 
@@ -127,11 +129,9 @@ export async function POST(req: NextRequest) {
   const cookie = await getFleetwebCookie();
 
   const jobCounts: Record<string, number | null> = {};
-  if (cookie && driverIdSet.size > 0) {
-    const entries = await Promise.all(
-      [...driverIdSet].map(async (id) => [id, await fetchDriverJobCount(id, today, auth, cookie)] as const)
-    );
-    entries.forEach(([id, count]) => { jobCounts[id] = count; });
+  if (cookie) {
+    const counts = await fetchAllDriverJobCounts(today, auth, cookie);
+    Object.assign(jobCounts, counts);
   }
 
   // Attach job counts to suggestions
