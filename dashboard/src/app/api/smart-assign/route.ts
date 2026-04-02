@@ -26,10 +26,20 @@ export async function POST(req: NextRequest) {
     (d) => d.latitude != null && d.longitude != null
   );
 
-  // Sort jobs oldest-first so longer-waiting jobs get priority
-  const jobs = (jobsRes.data ?? []).sort((a, b) =>
-    (a.create_ts ?? "").localeCompare(b.create_ts ?? "")
-  );
+  // Today's date range in Vietnam time (UTC+7)
+  const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
+  const today = vnNow.toISOString().split("T")[0]; // YYYY-MM-DD
+
+  // Keep today's jobs + jobs with no scheduled date (include gracefully)
+  const allJobs = jobsRes.data ?? [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const jobs = (allJobs as any[])
+    .filter((j) => {
+      const ts: string | null = j.scheduled_delivery_ts ?? null;
+      if (!ts) return true; // null schedule — include gracefully
+      return ts.startsWith(today);
+    })
+    .sort((a, b) => (a.create_ts ?? "").localeCompare(b.create_ts ?? ""));
 
   const assigned: {
     job_id: number;
@@ -37,6 +47,7 @@ export async function POST(req: NextRequest) {
     driver_name: string;
     pickup: string;
     distance_km: number;
+    unscheduled: boolean;
   }[] = [];
 
   const unmatched: { job_id: number; reason: string }[] = [];
@@ -85,7 +96,8 @@ export async function POST(req: NextRequest) {
       job_id: job.job_id,
       driver_id: nearest.delivery_driver_id,
       driver_name: `${nearest.first_name} ${nearest.last_name}`.trim(),
-      pickup: pickupStop.customer_name ?? pickupStop.customer_id,
+      pickup: pickupStop.customer_name ?? pickupStop.customer_id ?? "—",
+      unscheduled: !job.scheduled_delivery_ts,
       distance_km: Math.round(minDist * 10) / 10,
     });
     // Remove driver from pool so they aren't double-suggested

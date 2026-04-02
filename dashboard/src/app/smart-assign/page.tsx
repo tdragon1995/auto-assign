@@ -8,6 +8,7 @@ interface AssignedRow {
   driver_name: string;
   pickup: string;
   distance_km: number;
+  unscheduled: boolean;
 }
 
 interface UnmatchedRow {
@@ -99,7 +100,10 @@ export default function SmartAssignPage() {
                     {result.assigned.map((row) => (
                       <tr key={row.job_id}>
                         <td className="px-4 py-2 font-mono text-xs text-slate-500">#{row.job_id}</td>
-                        <td className="px-4 py-2 font-medium">{row.pickup}</td>
+                        <td className="px-4 py-2 font-medium">
+                          {row.pickup}
+                          {row.unscheduled && <span className="ml-1.5 text-[10px] bg-amber-100 text-amber-700 rounded px-1 py-0.5 font-semibold">No schedule</span>}
+                        </td>
                         <td className="px-4 py-2">{row.driver_name}</td>
                         <td className="px-4 py-2 text-right text-slate-500">{row.distance_km} km</td>
                       </tr>
