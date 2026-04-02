@@ -16,6 +16,9 @@ interface DriverSuggestion {
   jobs_total: number | null;
   jobs_active: number | null;
   jobs_done: number | null;
+  arrived_haversine_km: number | null;
+  arrived_distance_km: number | null;
+  arrived_eta_mins: number | null;
 }
 
 interface JobSuggestion {
@@ -64,6 +67,15 @@ function DriverCell({ d, provider }: { d: DriverSuggestion; provider: Provider }
         <span className="text-xs font-semibold text-slate-800 truncate">{d.driver_name}</span>
       </div>
       <span className="text-[11px] text-slate-500">{distLine} · {relativeTime(d.last_login_ts)}</span>
+      {d.arrived_haversine_km !== null && (
+        <span className="text-[11px] text-indigo-500 font-medium">
+          📍→🎯{" "}
+          {usesRouting && d.arrived_distance_km != null
+            ? `${d.arrived_distance_km} km · ${d.arrived_eta_mins ?? "?"}min`
+            : `${d.arrived_haversine_km} km straight`}
+          {usesRouting && d.arrived_distance_km == null ? " ⚠️" : ""}
+        </span>
+      )}
       <span className="text-[11px] text-slate-400">
         {d.jobs_total === null
           ? "— jobs"
