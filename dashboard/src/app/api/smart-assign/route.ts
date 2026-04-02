@@ -84,11 +84,19 @@ async function goongMatrix(
 
 // ── Driver job counts (one call for all drivers) ───────────────────────────
 
+interface DriverJobStats {
+  total: number;
+  active: number; // distinct jobs with any stop at status 1/2/3
+  done: number;   // distinct jobs with all stops at status 4/5
+}
+
+const ACTIVE_STOP_STATUSES = new Set([1, 2, 3]);
+
 async function fetchAllDriverJobCounts(
   dateVn: string,
   auth: string,
   cookie: string
-): Promise<Record<string, number>> {
+): Promise<Record<string, DriverJobStats>> {
   try {
     const res = await fetch(JSONRPC_URL, {
       method: "POST",
@@ -110,14 +118,26 @@ async function fetchAllDriverJobCounts(
     });
     if (!res.ok) return {};
     const data = await res.json();
-    const routes: { routeId: string; orderedStops?: { jobId: number }[] }[] = data.result?.routes ?? [];
-    const counts: Record<string, number> = {};
+    const routes: { routeId: string; orderedStops?: { jobId: number; stopStatusId: number }[] }[] =
+      data.result?.routes ?? [];
+    const stats: Record<string, DriverJobStats> = {};
     for (const route of routes) {
       const driverId = route.routeId.replace(/^driver_/, "");
-      const jobIds = new Set(route.orderedStops?.map((s) => s.jobId).filter(Boolean) ?? []);
-      counts[driverId] = jobIds.size;
+      // Map jobId → set of stopStatusIds seen for that job
+      const jobStatuses = new Map<number, Set<number>>();
+      for (const stop of route.orderedStops ?? []) {
+        if (!stop.jobId) continue;
+        if (!jobStatuses.has(stop.jobId)) jobStatuses.set(stop.jobId, new Set());
+        jobStatuses.get(stop.jobId)!.add(stop.stopStatusId);
+      }
+      const total = jobStatuses.size;
+      let active = 0;
+      for (const statuses of jobStatuses.values()) {
+        if ([...statuses].some((s) => ACTIVE_STOP_STATUSES.has(s))) active++;
+      }
+      stats[driverId] = { total, active, done: total - active };
     }
-    return counts;
+    return stats;
   } catch {
     return {};
   }
@@ -234,8 +254,8 @@ export async function POST(req: NextRequest) {
   // Fetch job counts
   const auth = process.env.CARTRACK_AUTH ?? "";
   const cookie = await getFleetwebCookie();
-  const jobCounts: Record<string, number | null> = {};
-  if (cookie) Object.assign(jobCounts, await fetchAllDriverJobCounts(today, auth, cookie));
+  const jobStats: Record<string, DriverJobStats> = {};
+  if (cookie) Object.assign(jobStats, await fetchAllDriverJobCounts(today, auth, cookie));
 
   // Assemble final response (strip internal lat/lon)
   const suggestions = intermediate.map((s) => ({
@@ -252,7 +272,9 @@ export async function POST(req: NextRequest) {
         eta_mins:     routing?.eta_mins    ?? null,
         status_id:    d.status_id,
         last_login_ts: d.last_login_ts,
-        job_count:    jobCounts[d.driver_id] ?? null,
+        jobs_total:  jobStats[d.driver_id]?.total  ?? null,
+        jobs_active: jobStats[d.driver_id]?.active ?? null,
+        jobs_done:   jobStats[d.driver_id]?.done   ?? null,
       };
     }),
   }));

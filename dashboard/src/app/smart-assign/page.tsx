@@ -13,7 +13,9 @@ interface DriverSuggestion {
   eta_mins: number | null;
   status_id: number;
   last_login_ts: string | null;
-  job_count: number | null;
+  jobs_total: number | null;
+  jobs_active: number | null;
+  jobs_done: number | null;
 }
 
 interface JobSuggestion {
@@ -63,7 +65,9 @@ function DriverCell({ d, provider }: { d: DriverSuggestion; provider: Provider }
       </div>
       <span className="text-[11px] text-slate-500">{distLine} · {relativeTime(d.last_login_ts)}</span>
       <span className="text-[11px] text-slate-400">
-        {d.job_count === null ? "— jobs" : `${d.job_count} job${d.job_count !== 1 ? "s" : ""} today`}
+        {d.jobs_total === null
+          ? "— jobs"
+          : `${d.jobs_active ?? 0}/${d.jobs_total} active · ${d.jobs_done ?? 0}/${d.jobs_total} done`}
       </span>
     </div>
   );
