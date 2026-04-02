@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDrivers, getUnassignedJobs, type Env } from "@/lib/cartrack";
+import { getDrivers, getUnassignedJobs, getFleetwebCookie, type Env } from "@/lib/cartrack";
+
+const JSONRPC_URL = "https://fleetweb-vn.cartrack.com/jsonrpc/index.php";
+const TOP_N = 3;
 
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371;
@@ -12,97 +15,134 @@ function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): nu
   return R * 2 * Math.asin(Math.sqrt(a));
 }
 
+async function fetchDriverJobCount(
+  driverId: string,
+  dateVn: string,
+  auth: string,
+  cookie: string
+): Promise<number | null> {
+  try {
+    const res = await fetch(JSONRPC_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: auth, Cookie: cookie },
+      body: JSON.stringify({
+        version: "2.0",
+        method: "delivery_route_stops_index",
+        id: 1,
+        params: {
+          data: {
+            routeId: `driver_${driverId}`,
+            filter: {
+              from: `${dateVn}T00:00:00+07:00`,
+              to: `${dateVn}T23:59:59+07:00`,
+            },
+          },
+        },
+      }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const routes = data.result?.routes ?? [];
+    const jobIds = new Set<number>();
+    for (const route of routes) {
+      for (const stop of route.orderedStops ?? []) {
+        if (stop.jobId) jobIds.add(stop.jobId);
+      }
+    }
+    return jobIds.size;
+  } catch {
+    return null;
+  }
+}
+
 export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
 
-  // Fetch drivers and unassigned jobs in parallel
+  const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
+  const today = vnNow.toISOString().split("T")[0];
+
+  // Fetch drivers + unassigned jobs in parallel
   const [allDrivers, jobsRes] = await Promise.all([
     getDrivers(env),
     getUnassignedJobs(1, 50, env),
   ]);
 
-  // Only keep drivers with valid GPS
-  const drivers = allDrivers.filter(
-    (d) => d.latitude != null && d.longitude != null
-  );
+  // Only drivers with valid GPS
+  const drivers = allDrivers.filter((d) => d.latitude != null && d.longitude != null);
 
-  // Today's date range in Vietnam time (UTC+7)
-  const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
-  const today = vnNow.toISOString().split("T")[0]; // YYYY-MM-DD
-
-  // Keep today's jobs + jobs with no scheduled date (include gracefully)
-  const allJobs = jobsRes.data ?? [];
+  // Filter jobs to today + unscheduled, oldest first
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const jobs = (allJobs as any[])
+  const jobs = ((jobsRes.data ?? []) as any[])
     .filter((j) => {
       const ts: string | null = j.scheduled_delivery_ts ?? null;
-      if (!ts) return true; // null schedule — include gracefully
+      if (!ts) return true;
       return ts.startsWith(today);
     })
     .sort((a, b) => (a.create_ts ?? "").localeCompare(b.create_ts ?? ""));
 
-  const assigned: {
+  // For each job, find top-N nearest drivers
+  const suggestions: {
     job_id: number;
-    driver_id: string;
-    driver_name: string;
     pickup: string;
-    distance_km: number;
     unscheduled: boolean;
+    drivers: { driver_id: string; driver_name: string; distance_km: number; status_id: number; last_login_ts: string | null }[];
   }[] = [];
 
-  const unmatched: { job_id: number; reason: string }[] = [];
-
-  // Driver pool — remove each driver once assigned
-  const pool = [...drivers];
+  const unmatchedJobs: { job_id: number; reason: string }[] = [];
+  const driverIdSet = new Set<string>();
 
   for (const job of jobs) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pickupStop = (job.stops as any[])?.find((s: any) => s.stop_type_id === 1);
 
     if (!pickupStop?.latitude || !pickupStop?.longitude) {
-      unmatched.push({ job_id: job.job_id, reason: "No pickup GPS" });
+      unmatchedJobs.push({ job_id: job.job_id, reason: "No pickup GPS" });
       continue;
     }
 
-    if (pool.length === 0) {
-      unmatched.push({ job_id: job.job_id, reason: "No drivers left in pool" });
-      continue;
-    }
+    // Sort all GPS-valid drivers by distance, take top N
+    const ranked = drivers
+      .map((d) => ({
+        driver_id: d.delivery_driver_id,
+        driver_name: d.last_name?.trim() || `${d.first_name} ${d.last_name}`.trim(),
+        distance_km: Math.round(haversineKm(pickupStop.latitude, pickupStop.longitude, d.latitude!, d.longitude!) * 10) / 10,
+        status_id: d.driver_status_id ?? 4,
+        last_login_ts: d.last_login_ts ?? null,
+      }))
+      .sort((a, b) => a.distance_km - b.distance_km)
+      .slice(0, TOP_N);
 
-    // Find nearest driver
-    let nearest = pool[0];
-    let minDist = haversineKm(
-      pickupStop.latitude,
-      pickupStop.longitude,
-      nearest.latitude!,
-      nearest.longitude!
-    );
+    ranked.forEach((d) => driverIdSet.add(d.driver_id));
 
-    for (const driver of pool.slice(1)) {
-      const dist = haversineKm(
-        pickupStop.latitude,
-        pickupStop.longitude,
-        driver.latitude!,
-        driver.longitude!
-      );
-      if (dist < minDist) {
-        minDist = dist;
-        nearest = driver;
-      }
-    }
-
-    // Suggest (no write to Cartrack)
-    assigned.push({
+    suggestions.push({
       job_id: job.job_id,
-      driver_id: nearest.delivery_driver_id,
-      driver_name: `${nearest.first_name} ${nearest.last_name}`.trim(),
       pickup: pickupStop.customer_name ?? pickupStop.customer_id ?? "—",
       unscheduled: !job.scheduled_delivery_ts,
-      distance_km: Math.round(minDist * 10) / 10,
+      drivers: ranked,
     });
-    // Remove driver from pool so they aren't double-suggested
-    pool.splice(pool.indexOf(nearest), 1);
   }
 
-  return NextResponse.json({ assigned, unmatched, drivers_with_gps: drivers.length });
+  // Fetch job counts for all unique driver IDs in parallel
+  const auth = process.env.CARTRACK_AUTH ?? "";
+  const cookie = await getFleetwebCookie();
+
+  const jobCounts: Record<string, number | null> = {};
+  if (cookie && driverIdSet.size > 0) {
+    const entries = await Promise.all(
+      [...driverIdSet].map(async (id) => [id, await fetchDriverJobCount(id, today, auth, cookie)] as const)
+    );
+    entries.forEach(([id, count]) => { jobCounts[id] = count; });
+  }
+
+  // Attach job counts to suggestions
+  const result = suggestions.map((s) => ({
+    ...s,
+    drivers: s.drivers.map((d) => ({ ...d, job_count: jobCounts[d.driver_id] ?? null })),
+  }));
+
+  return NextResponse.json({
+    suggestions: result,
+    unmatched: unmatchedJobs,
+    drivers_with_gps: drivers.length,
+  });
 }

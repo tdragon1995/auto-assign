@@ -145,7 +145,7 @@ let _cachedCookie: string | null = null;
 let _cookieExpiry = 0;
 
 /** Login to fleetweb and return a session cookie string, or null on failure. */
-async function getFleetwebCookie(): Promise<string | null> {
+export async function getFleetwebCookie(): Promise<string | null> {
   if (_cachedCookie && Date.now() < _cookieExpiry) return _cachedCookie;
   const auth = process.env.CARTRACK_AUTH ?? "";
   const password = process.env.CARTRACK_WEB_PASS ?? "";
