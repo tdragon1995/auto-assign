@@ -56,7 +56,7 @@ export default function SmartAssignPage() {
 
         {/* Action */}
         <Button onClick={run} disabled={status === "loading"} className="w-full h-12 text-base font-semibold">
-          {status === "loading" ? "Running..." : "🧭 Run Smart Assign"}
+          {status === "loading" ? "Calculating..." : "🧭 Preview Suggestions"}
         </Button>
 
         {status === "error" && (
@@ -71,7 +71,7 @@ export default function SmartAssignPage() {
             {/* Summary */}
             <div className="flex gap-3 text-sm">
               <span className="rounded-full bg-green-100 text-green-700 px-3 py-1 font-medium">
-                ✅ {result.assigned.length} assigned
+                🧭 {result.assigned.length} suggested
               </span>
               {result.unmatched.length > 0 && (
                 <span className="rounded-full bg-red-100 text-red-700 px-3 py-1 font-medium">

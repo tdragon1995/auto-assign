@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDrivers, getUnassignedJobs, assignJob, type Env } from "@/lib/cartrack";
+import { getDrivers, getUnassignedJobs, type Env } from "@/lib/cartrack";
 
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371;
@@ -80,27 +80,16 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Assign
-    const result = await assignJob(
-      nearest.delivery_driver_id,
-      job.job_id,
-      `${nearest.first_name} ${nearest.last_name}`.trim() || undefined,
-      env
-    );
-
-    if (result.status === 200) {
-      assigned.push({
-        job_id: job.job_id,
-        driver_id: nearest.delivery_driver_id,
-        driver_name: `${nearest.first_name} ${nearest.last_name}`.trim(),
-        pickup: pickupStop.customer_name ?? pickupStop.customer_id,
-        distance_km: Math.round(minDist * 10) / 10,
-      });
-      // Remove driver from pool
-      pool.splice(pool.indexOf(nearest), 1);
-    } else {
-      unmatched.push({ job_id: job.job_id, reason: `Assign API returned ${result.status}` });
-    }
+    // Suggest (no write to Cartrack)
+    assigned.push({
+      job_id: job.job_id,
+      driver_id: nearest.delivery_driver_id,
+      driver_name: `${nearest.first_name} ${nearest.last_name}`.trim(),
+      pickup: pickupStop.customer_name ?? pickupStop.customer_id,
+      distance_km: Math.round(minDist * 10) / 10,
+    });
+    // Remove driver from pool so they aren't double-suggested
+    pool.splice(pool.indexOf(nearest), 1);
   }
 
   return NextResponse.json({ assigned, unmatched, drivers_with_gps: drivers.length });
