@@ -4,6 +4,8 @@ import { getDrivers, getUnassignedJobs, getFleetwebCookie, type Env } from "@/li
 const JSONRPC_URL = "https://fleetweb-vn.cartrack.com/jsonrpc/index.php";
 const TOP_N = 3;
 
+// ── Haversine ──────────────────────────────────────────────────────────────
+
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371;
   const toRad = (d: number) => (d * Math.PI) / 180;
@@ -15,7 +17,40 @@ function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): nu
   return R * 2 * Math.asin(Math.sqrt(a));
 }
 
-// Fetch all driver routes in one call, return a map of driverId → unique job count
+// ── Valhalla ───────────────────────────────────────────────────────────────
+
+async function valhallaRoute(
+  fromLat: number, fromLon: number,
+  toLat: number, toLon: number
+): Promise<{ distance_km: number; eta_mins: number } | null> {
+  try {
+    const res = await fetch("https://valhalla1.openstreetmap.de/route", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        locations: [
+          { lat: fromLat, lon: fromLon },
+          { lat: toLat,   lon: toLon   },
+        ],
+        costing: "motorcycle",
+        directions_options: { units: "km" },
+      }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const summary = data.trip?.summary;
+    if (!summary) return null;
+    return {
+      distance_km: Math.round(summary.length * 10) / 10,
+      eta_mins: Math.round(summary.time / 60),
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ── Driver job counts (one call for all drivers) ───────────────────────────
+
 async function fetchAllDriverJobCounts(
   dateVn: string,
   auth: string,
@@ -43,10 +78,8 @@ async function fetchAllDriverJobCounts(
     if (!res.ok) return {};
     const data = await res.json();
     const routes: { routeId: string; orderedStops?: { jobId: number }[] }[] = data.result?.routes ?? [];
-
     const counts: Record<string, number> = {};
     for (const route of routes) {
-      // routeId = "driver_{uuid}" — extract the uuid
       const driverId = route.routeId.replace(/^driver_/, "");
       const jobIds = new Set(route.orderedStops?.map((s) => s.jobId).filter(Boolean) ?? []);
       counts[driverId] = jobIds.size;
@@ -57,92 +90,122 @@ async function fetchAllDriverJobCounts(
   }
 }
 
+// ── Main handler ───────────────────────────────────────────────────────────
+
 export async function POST(req: NextRequest) {
-  const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
+  const env      = (req.nextUrl.searchParams.get("env")      ?? "prod")      as Env;
+  const provider =  req.nextUrl.searchParams.get("provider") ?? "haversine";
 
   const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
   const today = vnNow.toISOString().split("T")[0];
 
-  // Fetch drivers + unassigned jobs in parallel
+  // Fetch drivers + jobs in parallel
   const [allDrivers, jobsRes] = await Promise.all([
     getDrivers(env),
     getUnassignedJobs(1, 50, env),
   ]);
 
-  // Only drivers with valid GPS
   const drivers = allDrivers.filter((d) => d.latitude != null && d.longitude != null);
 
-  // Filter jobs to today + unscheduled, oldest first
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const jobs = ((jobsRes.data ?? []) as any[])
-    .filter((j) => {
-      const ts: string | null = j.scheduled_delivery_ts ?? null;
-      if (!ts) return true;
-      return ts.startsWith(today);
-    })
+    .filter((j) => { const ts = j.scheduled_delivery_ts ?? null; return !ts || ts.startsWith(today); })
     .sort((a, b) => (a.create_ts ?? "").localeCompare(b.create_ts ?? ""));
 
-  // For each job, find top-N nearest drivers
-  const suggestions: {
+  // Compute haversine top-3 for each job (keep lat/lon for routing)
+  const intermediate: {
     job_id: number;
     pickup: string;
     unscheduled: boolean;
-    drivers: { driver_id: string; driver_name: string; distance_km: number; status_id: number; last_login_ts: string | null }[];
+    pickup_lat: number;
+    pickup_lon: number;
+    drivers: {
+      driver_id: string;
+      driver_name: string;
+      haversine_km: number;
+      status_id: number;
+      last_login_ts: string | null;
+      lat: number;
+      lon: number;
+    }[];
   }[] = [];
 
-  const unmatchedJobs: { job_id: number; reason: string }[] = [];
-  const driverIdSet = new Set<string>();
+  const unmatched: { job_id: number; reason: string }[] = [];
 
   for (const job of jobs) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pickupStop = (job.stops as any[])?.find((s: any) => s.stop_type_id === 1);
-
     if (!pickupStop?.latitude || !pickupStop?.longitude) {
-      unmatchedJobs.push({ job_id: job.job_id, reason: "No pickup GPS" });
+      unmatched.push({ job_id: job.job_id, reason: "No pickup GPS" });
       continue;
     }
 
-    // Sort all GPS-valid drivers by distance, take top N
     const ranked = drivers
       .map((d) => ({
-        driver_id: d.delivery_driver_id,
+        driver_id:   d.delivery_driver_id,
         driver_name: d.last_name?.trim() || `${d.first_name} ${d.last_name}`.trim(),
-        distance_km: Math.round(haversineKm(pickupStop.latitude, pickupStop.longitude, d.latitude!, d.longitude!) * 10) / 10,
-        status_id: d.driver_status_id ?? 4,
+        haversine_km: Math.round(haversineKm(pickupStop.latitude, pickupStop.longitude, d.latitude!, d.longitude!) * 10) / 10,
+        status_id:   d.driver_status_id ?? 4,
         last_login_ts: d.last_login_ts ?? null,
+        lat: d.latitude!,
+        lon: d.longitude!,
       }))
-      .sort((a, b) => a.distance_km - b.distance_km)
+      .sort((a, b) => a.haversine_km - b.haversine_km)
       .slice(0, TOP_N);
 
-    ranked.forEach((d) => driverIdSet.add(d.driver_id));
-
-    suggestions.push({
+    intermediate.push({
       job_id: job.job_id,
       pickup: pickupStop.customer_name ?? pickupStop.customer_id ?? "—",
       unscheduled: !job.scheduled_delivery_ts,
+      pickup_lat: pickupStop.latitude,
+      pickup_lon: pickupStop.longitude,
       drivers: ranked,
     });
   }
 
-  // Fetch job counts for all unique driver IDs in parallel
-  const auth = process.env.CARTRACK_AUTH ?? "";
-  const cookie = await getFleetwebCookie();
+  // Valhalla routing — all (job × driver) pairs in parallel
+  type RouteResult = { distance_km: number; eta_mins: number } | null;
+  const routingMap = new Map<string, RouteResult>();
 
-  const jobCounts: Record<string, number | null> = {};
-  if (cookie) {
-    const counts = await fetchAllDriverJobCounts(today, auth, cookie);
-    Object.assign(jobCounts, counts);
+  if (provider === "valhalla" && intermediate.length > 0) {
+    const tasks = intermediate.flatMap((s) =>
+      s.drivers.map((d) => ({
+        key: `${s.job_id}:${d.driver_id}`,
+        fromLat: s.pickup_lat, fromLon: s.pickup_lon,
+        toLat: d.lat, toLon: d.lon,
+      }))
+    );
+    const results = await Promise.all(
+      tasks.map((t) => valhallaRoute(t.fromLat, t.fromLon, t.toLat, t.toLon))
+    );
+    tasks.forEach((t, i) => routingMap.set(t.key, results[i]));
   }
 
-  // Attach job counts to suggestions
-  const result = suggestions.map((s) => ({
-    ...s,
-    drivers: s.drivers.map((d) => ({ ...d, job_count: jobCounts[d.driver_id] ?? null })),
+  // Fetch job counts
+  const auth = process.env.CARTRACK_AUTH ?? "";
+  const cookie = await getFleetwebCookie();
+  const jobCounts: Record<string, number | null> = {};
+  if (cookie) Object.assign(jobCounts, await fetchAllDriverJobCounts(today, auth, cookie));
+
+  // Assemble final response (strip internal lat/lon)
+  const suggestions = intermediate.map((s) => ({
+    job_id: s.job_id,
+    pickup: s.pickup,
+    unscheduled: s.unscheduled,
+    drivers: s.drivers.map((d) => {
+      const routing = routingMap.get(`${s.job_id}:${d.driver_id}`) ?? null;
+      return {
+        driver_id:    d.driver_id,
+        driver_name:  d.driver_name,
+        haversine_km: d.haversine_km,
+        distance_km:  routing?.distance_km ?? null,
+        eta_mins:     routing?.eta_mins    ?? null,
+        status_id:    d.status_id,
+        last_login_ts: d.last_login_ts,
+        job_count:    jobCounts[d.driver_id] ?? null,
+      };
+    }),
   }));
 
-  return NextResponse.json({
-    suggestions: result,
-    unmatched: unmatchedJobs,
-    drivers_with_gps: drivers.length,
-  });
+  return NextResponse.json({ suggestions, unmatched, drivers_with_gps: drivers.length, provider });
 }
