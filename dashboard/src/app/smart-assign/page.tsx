@@ -49,9 +49,10 @@ function relativeTime(ts: string | null): string {
 
 function DriverCell({ d, provider }: { d: DriverSuggestion; provider: Provider }) {
   const dot = STATUS_DOT[d.status_id] ?? STATUS_DOT[4];
+  const isRouteFallback = provider === "valhalla" && d.distance_km == null;
   const distLine = provider === "valhalla" && d.distance_km != null
     ? `${d.distance_km} km road · ${d.eta_mins ?? "?"}min`
-    : `${d.haversine_km} km (straight)`;
+    : `${d.haversine_km} km straight${isRouteFallback ? " ⚠️" : ""}`;
 
   return (
     <div className="flex flex-col gap-0.5 min-w-0">
