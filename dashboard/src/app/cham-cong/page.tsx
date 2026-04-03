@@ -25,28 +25,18 @@ export default function ChamCongPage() {
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
 
-  const [driverSearch, setDriverSearch] = useState("");
-  const [driverId, setDriverId] = useState("");
-  const [driverName, setDriverName] = useState("");
+  const [driverId,      setDriverId]      = useState(() => typeof window !== "undefined" ? localStorage.getItem(LS_DRIVER_ID)   ?? "" : "");
+  const [driverName,    setDriverName]    = useState(() => typeof window !== "undefined" ? localStorage.getItem(LS_DRIVER_NAME) ?? "" : "");
+  const [driverSearch,  setDriverSearch]  = useState(() => typeof window !== "undefined" ? localStorage.getItem(LS_DRIVER_NAME) ?? "" : "");
   const [showDriverList, setShowDriverList] = useState(false);
 
-  const [locationSearch, setLocationSearch] = useState("");
-  const [locationId, setLocationId] = useState("");
-  const [locationName, setLocationName] = useState("");
+  const [locationId,    setLocationId]    = useState(() => typeof window !== "undefined" ? localStorage.getItem(LS_LOC_ID)      ?? "" : "");
+  const [locationName,  setLocationName]  = useState(() => typeof window !== "undefined" ? localStorage.getItem(LS_LOC_NAME)    ?? "" : "");
+  const [locationSearch, setLocationSearch] = useState(() => typeof window !== "undefined" ? localStorage.getItem(LS_LOC_NAME)  ?? "" : "");
   const [showLocationList, setShowLocationList] = useState(false);
 
   const [status, setStatus] = useState<Status>("idle");
   const [message, setMessage] = useState("");
-
-  // Restore previous selection immediately on mount
-  useEffect(() => {
-    const savedDriverId   = localStorage.getItem(LS_DRIVER_ID) ?? "";
-    const savedDriverName = localStorage.getItem(LS_DRIVER_NAME) ?? "";
-    const savedLocId      = localStorage.getItem(LS_LOC_ID) ?? "";
-    const savedLocName    = localStorage.getItem(LS_LOC_NAME) ?? "";
-    if (savedDriverId) { setDriverId(savedDriverId); setDriverName(savedDriverName); setDriverSearch(savedDriverName); }
-    if (savedLocId)    { setLocationId(savedLocId);  setLocationName(savedLocName);  setLocationSearch(savedLocName); }
-  }, []);
 
   // Load dropdown data
   useEffect(() => {
