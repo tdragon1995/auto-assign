@@ -25,6 +25,8 @@ export default function ChamCongPage() {
   const [showDriverList, setShowDriverList] = useState(false);
   const [locationId, setLocationId] = useState("");
   const [locationName, setLocationName] = useState("");
+  const [locationSearch, setLocationSearch] = useState("");
+  const [showLocationList, setShowLocationList] = useState(false);
   const [status, setStatus] = useState<Status>("idle");
   const [message, setMessage] = useState("");
 
@@ -58,6 +60,16 @@ export default function ChamCongPage() {
         )
       : drivers,
     [drivers, driverSearch]
+  );
+
+  const filteredLocations = useMemo(() =>
+    locationSearch.trim()
+      ? locations.filter((l) =>
+          l.name.toLowerCase().includes(locationSearch.toLowerCase()) ||
+          l.address.toLowerCase().includes(locationSearch.toLowerCase())
+        )
+      : locations,
+    [locations, locationSearch]
   );
 
   function selectDriver(d: Driver) {
@@ -110,8 +122,6 @@ export default function ChamCongPage() {
     }
   }
 
-  const selectedLocation = locations.find((l) => l.customer_id === locationId);
-
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200 w-full max-w-md p-6 space-y-5">
@@ -151,27 +161,40 @@ export default function ChamCongPage() {
           )}
         </div>
 
-        {/* Location select */}
-        <div className="space-y-1">
+        {/* Location searchable dropdown */}
+        <div className="space-y-1 relative">
           <label className="text-sm font-medium text-gray-700">Địa điểm</label>
-          <select
+          <input
+            type="text"
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            value={locationId}
+            placeholder={locations.length ? "Tìm địa điểm..." : "Đang tải..."}
+            value={locationSearch}
             onChange={(e) => {
-              const l = locations.find((l) => l.customer_id === e.target.value);
-              setLocationId(e.target.value);
-              setLocationName(l?.name ?? "");
+              setLocationSearch(e.target.value);
+              setLocationId("");
+              setShowLocationList(true);
             }}
-          >
-            <option value="">{locations.length ? "-- Chọn địa điểm --" : "Đang tải..."}</option>
-            {locations.map((l) => (
-              <option key={l.customer_id} value={l.customer_id}>
-                {l.name}
-              </option>
-            ))}
-          </select>
-          {selectedLocation?.address && (
-            <p className="text-xs text-gray-400 px-1">{selectedLocation.address}</p>
+            onFocus={() => setShowLocationList(true)}
+            onBlur={() => setTimeout(() => setShowLocationList(false), 150)}
+          />
+          {showLocationList && filteredLocations.length > 0 && (
+            <ul className="absolute z-10 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-52 overflow-y-auto mt-1">
+              {filteredLocations.map((l) => (
+                <li
+                  key={l.customer_id}
+                  className="px-3 py-2 cursor-pointer hover:bg-blue-50"
+                  onMouseDown={() => {
+                    setLocationId(l.customer_id);
+                    setLocationName(l.name);
+                    setLocationSearch(l.name);
+                    setShowLocationList(false);
+                  }}
+                >
+                  <div className="text-sm font-medium text-gray-800">{l.name}</div>
+                  {l.address && <div className="text-xs text-gray-400">{l.address}</div>}
+                </li>
+              ))}
+            </ul>
           )}
         </div>
 
