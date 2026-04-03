@@ -91,14 +91,11 @@ export async function POST(req: NextRequest) {
     }
 
     const isCheckin = type === "check-in";
-    const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
-    const timeStr = vnNow.toISOString().slice(11, 16); // HH:mm
-
     const jobPayload = {
       job_type_id: 3,
       schedule_type_id: 1,
-      reference_number: `Chấm Công - ${psc_name} - ${isCheckin ? "Vào" : "Ra"} ${timeStr}`,
-      labels: [isCheckin ? "✅ Chấm công vào" : "🚪 Chấm công ra"],
+      reference_number: `Chấm Công - ${psc_name} - ${isCheckin ? "Vào" : "Ra"}`,
+      labels: [isCheckin ? "check_in" : "check_out"],
       stops: [
         {
           stop_type_id: 3,

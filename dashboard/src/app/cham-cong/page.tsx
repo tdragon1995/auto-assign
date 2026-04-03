@@ -16,20 +16,29 @@ interface Location {
 type ActionType = "check-in" | "check-out";
 type Status = "idle" | "loading" | "success" | "error";
 
+const LS_DRIVER_ID   = "cc_driver_id";
+const LS_DRIVER_NAME = "cc_driver_name";
+const LS_LOC_ID      = "cc_location_id";
+const LS_LOC_NAME    = "cc_location_name";
+
 export default function ChamCongPage() {
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
+
   const [driverSearch, setDriverSearch] = useState("");
   const [driverId, setDriverId] = useState("");
   const [driverName, setDriverName] = useState("");
   const [showDriverList, setShowDriverList] = useState(false);
+
+  const [locationSearch, setLocationSearch] = useState("");
   const [locationId, setLocationId] = useState("");
   const [locationName, setLocationName] = useState("");
-  const [locationSearch, setLocationSearch] = useState("");
   const [showLocationList, setShowLocationList] = useState(false);
+
   const [status, setStatus] = useState<Status>("idle");
   const [message, setMessage] = useState("");
 
+  // Load data + restore previous selection
   useEffect(() => {
     Promise.all([
       fetch("/api/drivers").then((r) => r.json()),
@@ -50,26 +59,43 @@ export default function ChamCongPage() {
         );
       setDrivers(sorted);
       setLocations(chamCongData.pscs ?? []);
+
+      // Restore previous selection from localStorage
+      const savedDriverId   = localStorage.getItem(LS_DRIVER_ID) ?? "";
+      const savedDriverName = localStorage.getItem(LS_DRIVER_NAME) ?? "";
+      const savedLocId      = localStorage.getItem(LS_LOC_ID) ?? "";
+      const savedLocName    = localStorage.getItem(LS_LOC_NAME) ?? "";
+
+      if (savedDriverId) {
+        setDriverId(savedDriverId);
+        setDriverName(savedDriverName);
+        setDriverSearch(savedDriverName);
+      }
+      if (savedLocId) {
+        setLocationId(savedLocId);
+        setLocationName(savedLocName);
+        setLocationSearch(savedLocName);
+      }
     });
   }, []);
 
   const filteredDrivers = useMemo(() =>
-    driverSearch.trim()
+    driverSearch.trim() && !driverId
       ? drivers.filter((d) =>
           d.driver_name.toLowerCase().includes(driverSearch.toLowerCase())
         )
       : drivers,
-    [drivers, driverSearch]
+    [drivers, driverSearch, driverId]
   );
 
   const filteredLocations = useMemo(() =>
-    locationSearch.trim()
+    locationSearch.trim() && !locationId
       ? locations.filter((l) =>
           l.name.toLowerCase().includes(locationSearch.toLowerCase()) ||
           l.address.toLowerCase().includes(locationSearch.toLowerCase())
         )
       : locations,
-    [locations, locationSearch]
+    [locations, locationSearch, locationId]
   );
 
   function selectDriver(d: Driver) {
@@ -77,6 +103,33 @@ export default function ChamCongPage() {
     setDriverName(d.driver_name);
     setDriverSearch(d.driver_name);
     setShowDriverList(false);
+    localStorage.setItem(LS_DRIVER_ID, d.driver_id);
+    localStorage.setItem(LS_DRIVER_NAME, d.driver_name);
+  }
+
+  function clearDriver() {
+    setDriverId("");
+    setDriverName("");
+    setDriverSearch("");
+    localStorage.removeItem(LS_DRIVER_ID);
+    localStorage.removeItem(LS_DRIVER_NAME);
+  }
+
+  function selectLocation(l: Location) {
+    setLocationId(l.customer_id);
+    setLocationName(l.name);
+    setLocationSearch(l.name);
+    setShowLocationList(false);
+    localStorage.setItem(LS_LOC_ID, l.customer_id);
+    localStorage.setItem(LS_LOC_NAME, l.name);
+  }
+
+  function clearLocation() {
+    setLocationId("");
+    setLocationName("");
+    setLocationSearch("");
+    localStorage.removeItem(LS_LOC_ID);
+    localStorage.removeItem(LS_LOC_NAME);
   }
 
   async function submit(type: ActionType) {
@@ -133,20 +186,30 @@ export default function ChamCongPage() {
         {/* Driver searchable dropdown */}
         <div className="space-y-1 relative">
           <label className="text-sm font-medium text-gray-700">Tài xế</label>
-          <input
-            type="text"
-            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder={drivers.length ? "Tìm tài xế..." : "Đang tải..."}
-            value={driverSearch}
-            onChange={(e) => {
-              setDriverSearch(e.target.value);
-              setDriverId("");
-              setShowDriverList(true);
-            }}
-            onFocus={() => setShowDriverList(true)}
-            onBlur={() => setTimeout(() => setShowDriverList(false), 150)}
-          />
-          {showDriverList && filteredDrivers.length > 0 && (
+          <div className="relative">
+            <input
+              type="text"
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder={drivers.length ? "Tìm tài xế..." : "Đang tải..."}
+              value={driverSearch}
+              onChange={(e) => {
+                setDriverSearch(e.target.value);
+                setDriverId("");
+                setShowDriverList(true);
+              }}
+              onFocus={() => setShowDriverList(true)}
+              onBlur={() => setTimeout(() => setShowDriverList(false), 150)}
+            />
+            {driverSearch && (
+              <button
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                onMouseDown={(e) => { e.preventDefault(); clearDriver(); }}
+              >
+                ×
+              </button>
+            )}
+          </div>
+          {showDriverList && !driverId && filteredDrivers.length > 0 && (
             <ul className="absolute z-10 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-52 overflow-y-auto mt-1">
               {filteredDrivers.map((d) => (
                 <li
@@ -164,31 +227,36 @@ export default function ChamCongPage() {
         {/* Location searchable dropdown */}
         <div className="space-y-1 relative">
           <label className="text-sm font-medium text-gray-700">Địa điểm</label>
-          <input
-            type="text"
-            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder={locations.length ? "Tìm địa điểm..." : "Đang tải..."}
-            value={locationSearch}
-            onChange={(e) => {
-              setLocationSearch(e.target.value);
-              setLocationId("");
-              setShowLocationList(true);
-            }}
-            onFocus={() => setShowLocationList(true)}
-            onBlur={() => setTimeout(() => setShowLocationList(false), 150)}
-          />
-          {showLocationList && filteredLocations.length > 0 && (
+          <div className="relative">
+            <input
+              type="text"
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder={locations.length ? "Tìm địa điểm..." : "Đang tải..."}
+              value={locationSearch}
+              onChange={(e) => {
+                setLocationSearch(e.target.value);
+                setLocationId("");
+                setShowLocationList(true);
+              }}
+              onFocus={() => setShowLocationList(true)}
+              onBlur={() => setTimeout(() => setShowLocationList(false), 150)}
+            />
+            {locationSearch && (
+              <button
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                onMouseDown={(e) => { e.preventDefault(); clearLocation(); }}
+              >
+                ×
+              </button>
+            )}
+          </div>
+          {showLocationList && !locationId && filteredLocations.length > 0 && (
             <ul className="absolute z-10 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-52 overflow-y-auto mt-1">
               {filteredLocations.map((l) => (
                 <li
                   key={l.customer_id}
                   className="px-3 py-2 cursor-pointer hover:bg-blue-50"
-                  onMouseDown={() => {
-                    setLocationId(l.customer_id);
-                    setLocationName(l.name);
-                    setLocationSearch(l.name);
-                    setShowLocationList(false);
-                  }}
+                  onMouseDown={() => selectLocation(l)}
                 >
                   <div className="text-sm font-medium text-gray-800">{l.name}</div>
                   {l.address && <div className="text-xs text-gray-400">{l.address}</div>}
