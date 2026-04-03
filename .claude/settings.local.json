@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(npx next build:*)",
+      "Bash(npx vercel --prod)",
+      "WebFetch(domain:docs.google.com)",
+      "Bash(where gh:*)",
+      "Bash(where git:*)",
+      "Bash(git --version)",
+      "Bash(git config:*)",
+      "Bash(cmd /c \"vercel --prod\")"
+    ]
+  }
+}
