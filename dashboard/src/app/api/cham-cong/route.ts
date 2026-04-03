@@ -101,7 +101,7 @@ export async function POST(req: NextRequest) {
       labels: [isCheckin ? "✅ Chấm công vào" : "🚪 Chấm công ra"],
       stops: [
         {
-          stop_type_id: isCheckin ? 1 : 2,
+          stop_type_id: 3,
           customer_id: psc_customer_id,
           customer_name: psc_name,
           duration: 5,
