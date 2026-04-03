@@ -86,16 +86,18 @@ async function goongMatrix(
 
 interface DriverJobStats {
   total: number;
-  active: number; // distinct jobs with any stop at status 1/2/3
-  done: number;   // distinct jobs with all stops at status 4/5
+  active: number;
+  done: number;
 }
+
+export type DetourLabel = "Arrived" | "En Route" | "Last Completed";
 
 interface DriverRouteData {
   stats: DriverJobStats;
-  // Last stop in route sequence with stopStatusId=3 (Arrived).
-  // "Last" = furthest along in planned order, so most likely their current physical position.
-  // If multiple status=3 stops exist (e.g. driver skipped completion), we take the last one.
-  arrivedStop: { jobId: number; stopId: number } | null;
+  // Best reference stop for detour estimation.
+  // Priority: Arrived (status=3) → En Route (status=2) → Last Completed (status=4, last in sequence)
+  // Coordinates come directly from delivery_timeline_route_list — no secondary fetch needed.
+  referenceStop: { lat: number; lon: number; label: DetourLabel } | null;
 }
 
 const ACTIVE_STOP_STATUSES = new Set([1, 2, 3]);
@@ -128,7 +130,7 @@ async function fetchAllDriverRouteData(
     const data = await res.json();
     const routes: {
       routeId: string;
-      orderedStops?: { jobId: number; stopId: number; stopStatusId: number }[];
+      orderedStops?: { jobId: number; stopId: number; stopStatusId: number; latitude: number; longitude: number }[];
     }[] = data.result?.routes ?? [];
 
     const result: Record<string, DriverRouteData> = {};
@@ -136,7 +138,7 @@ async function fetchAllDriverRouteData(
       const driverId = route.routeId.replace(/^driver_/, "");
       const stops = route.orderedStops ?? [];
 
-      // Job stats: map jobId → set of stopStatusIds
+      // Job stats
       const jobStatuses = new Map<number, Set<number>>();
       for (const stop of stops) {
         if (!stop.jobId) continue;
@@ -149,15 +151,27 @@ async function fetchAllDriverRouteData(
         if ([...statuses].some((s) => ACTIVE_STOP_STATUSES.has(s))) active++;
       }
 
-      // Arrived stop: last status=3 in route sequence
-      let arrivedStop: { jobId: number; stopId: number } | null = null;
+      // Reference stop — scan once, last-in-sequence wins per tier
+      // Arrived (3) > En Route (2) > Last Completed (4)
+      let arrived:       { lat: number; lon: number } | null = null;
+      let enRoute:       { lat: number; lon: number } | null = null;
+      let lastCompleted: { lat: number; lon: number } | null = null;
+
       for (const stop of stops) {
-        if (stop.stopStatusId === 3 && stop.jobId && stop.stopId) {
-          arrivedStop = { jobId: stop.jobId, stopId: stop.stopId };
-        }
+        if (!stop.latitude || !stop.longitude) continue;
+        const loc = { lat: stop.latitude, lon: stop.longitude };
+        if (stop.stopStatusId === 3) arrived       = loc;
+        if (stop.stopStatusId === 2) enRoute       = loc;
+        if (stop.stopStatusId === 4) lastCompleted = loc;
       }
 
-      result[driverId] = { stats: { total, active, done: total - active }, arrivedStop };
+      const referenceStop =
+        arrived       ? { ...arrived,       label: "Arrived"        as DetourLabel } :
+        enRoute       ? { ...enRoute,       label: "En Route"       as DetourLabel } :
+        lastCompleted ? { ...lastCompleted, label: "Last Completed" as DetourLabel } :
+        null;
+
+      result[driverId] = { stats: { total, active, done: total - active }, referenceStop };
     }
     return result;
   } catch {
@@ -168,16 +182,22 @@ async function fetchAllDriverRouteData(
 // ── Main handler ───────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
-  const env      = (req.nextUrl.searchParams.get("env")      ?? "prod")      as Env;
+  const env      = (req.nextUrl.searchParams.get("env")      ?? "prod") as Env;
   const provider =  req.nextUrl.searchParams.get("provider") ?? "haversine";
 
   const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
   const today = vnNow.toISOString().split("T")[0];
 
-  // Fetch drivers + jobs in parallel
-  const [allDrivers, jobsRes] = await Promise.all([
+  const auth   = process.env.CARTRACK_AUTH ?? "";
+  const cookie = await getFleetwebCookie();
+
+  // Fetch drivers, jobs, and route data all in parallel
+  const [allDrivers, jobsRes, routeData] = await Promise.all([
     getDrivers(env),
     getUnassignedJobs(1, 50, env),
+    cookie
+      ? fetchAllDriverRouteData(today, auth, cookie)
+      : Promise.resolve({} as Record<string, DriverRouteData>),
   ]);
 
   // Only suggest Online (1) and On Route (2) drivers
@@ -191,7 +211,11 @@ export async function POST(req: NextRequest) {
     .filter((j) => { const ts = j.scheduled_delivery_ts ?? null; return !ts || ts.startsWith(today); })
     .sort((a, b) => (a.create_ts ?? "").localeCompare(b.create_ts ?? ""));
 
-  // Compute haversine top-3 for each job (keep lat/lon for routing)
+  // Status rank for sort: Online (1) → 0, On Route (2) → 1
+  const statusRank = (s: number) => s === 1 ? 0 : 1;
+
+  // Compute haversine top-3 for each job
+  // Sort: haversine ASC → status rank ASC → jobs_done ASC (fairness) → last_login_ts DESC
   const intermediate: {
     job_id: number;
     pickup: string;
@@ -221,15 +245,24 @@ export async function POST(req: NextRequest) {
 
     const ranked = drivers
       .map((d) => ({
-        driver_id:   d.delivery_driver_id,
-        driver_name: d.last_name?.trim() || `${d.first_name} ${d.last_name}`.trim(),
+        driver_id:    d.delivery_driver_id,
+        driver_name:  d.last_name?.trim() || `${d.first_name} ${d.last_name}`.trim(),
         haversine_km: Math.round(haversineKm(pickupStop.latitude, pickupStop.longitude, d.latitude!, d.longitude!) * 10) / 10,
-        status_id:   d.driver_status_id ?? 4,
+        status_id:    d.driver_status_id ?? 4,
         last_login_ts: d.last_login_ts ?? null,
         lat: d.latitude!,
         lon: d.longitude!,
       }))
-      .sort((a, b) => a.haversine_km - b.haversine_km)
+      .sort((a, b) => {
+        if (a.haversine_km !== b.haversine_km) return a.haversine_km - b.haversine_km;
+        if (a.status_id !== b.status_id) return statusRank(a.status_id) - statusRank(b.status_id);
+        const aDone = routeData[a.driver_id]?.stats.done ?? 0;
+        const bDone = routeData[b.driver_id]?.stats.done ?? 0;
+        if (aDone !== bDone) return aDone - bDone; // fewer completed = more fair
+        const aTs = a.last_login_ts ?? "";
+        const bTs = b.last_login_ts ?? "";
+        return bTs.localeCompare(aTs); // more recent last seen wins
+      })
       .slice(0, TOP_N);
 
     intermediate.push({
@@ -242,7 +275,7 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // Routing — all jobs in parallel
+  // ── Phase 1: GPS → Pickup routing ─────────────────────────────────────────
   type RouteResult = { distance_km: number; eta_mins: number } | null;
   const routingMap = new Map<string, RouteResult>();
 
@@ -254,20 +287,14 @@ export async function POST(req: NextRequest) {
         toLat: d.lat, toLon: d.lon,
       }))
     );
-    const results = await Promise.all(
-      tasks.map((t) => valhallaRoute(t.fromLat, t.fromLon, t.toLat, t.toLon))
-    );
+    const results = await Promise.all(tasks.map((t) => valhallaRoute(t.fromLat, t.fromLon, t.toLat, t.toLon)));
     tasks.forEach((t, i) => routingMap.set(t.key, results[i]));
   }
 
   if (provider === "goong" && intermediate.length > 0) {
     const perJobResults = await Promise.all(
       intermediate.map((s) =>
-        goongMatrix(
-          s.pickup_lat,
-          s.pickup_lon,
-          s.drivers.map((d) => ({ lat: d.lat, lon: d.lon }))
-        )
+        goongMatrix(s.pickup_lat, s.pickup_lon, s.drivers.map((d) => ({ lat: d.lat, lon: d.lon })))
       )
     );
     intermediate.forEach((s, si) => {
@@ -277,118 +304,97 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // Fetch route data (job stats + arrived stops)
-  const auth = process.env.CARTRACK_AUTH ?? "";
-  const cookie = await getFleetwebCookie();
-  const routeData: Record<string, DriverRouteData> = {};
-  if (cookie) Object.assign(routeData, await fetchAllDriverRouteData(today, auth, cookie));
+  // ── Phase 2: Reference stop → Pickup routing ───────────────────────────────
+  // For each driver in any top-3, use their referenceStop (Arrived / En Route / Last Completed)
+  // as origin and compute detour distance to each job's pickup.
+  // Group by unique origin coordinate to deduplicate drivers at the same location.
+  const detourRoutingMap = new Map<string, RouteResult>(); // key: `${job_id}:${driver_id}`
 
-  // Resolve arrived stop coordinates via job details
-  // Collect unique jobIds that have an arrived stop across all drivers in our top-3 lists
   const relevantDriverIds = new Set(intermediate.flatMap((s) => s.drivers.map((d) => d.driver_id)));
-  const arrivedJobIds = new Set<number>();
-  for (const driverId of relevantDriverIds) {
-    const arrived = routeData[driverId]?.arrivedStop;
-    if (arrived) arrivedJobIds.add(arrived.jobId);
-  }
 
-  // Fetch job details in parallel to get stop lat/lon
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const jobStopIndex = new Map<number, any[]>(); // jobId → stops array
-  await Promise.all(
-    [...arrivedJobIds].map(async (jobId) => {
-      try {
-        const detail = await (await import("@/lib/cartrack")).getJobDetails(jobId, env);
-        const stops = detail?.data?.stops ?? [];
-        if (stops.length) jobStopIndex.set(jobId, stops);
-      } catch { /* skip on error */ }
-    })
-  );
+  // Build: originKey (`lat,lon`) → list of { driverIds[], pickups[] }
+  // so drivers at the same location share one Goong/Valhalla call
+  const originToDrivers = new Map<string, string[]>();
+  const originCoords    = new Map<string, { lat: number; lon: number }>();
 
-  // Build driverId → arrived stop {lat, lon}
-  const arrivedLocations = new Map<string, { lat: number; lon: number }>();
   for (const driverId of relevantDriverIds) {
-    const arrived = routeData[driverId]?.arrivedStop;
-    if (!arrived) continue;
-    const stops = jobStopIndex.get(arrived.jobId) ?? [];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const stop = stops.find((s: any) => s.stop_id === arrived.stopId);
-    if (stop?.latitude && stop?.longitude) {
-      arrivedLocations.set(driverId, { lat: stop.latitude, lon: stop.longitude });
+    const ref = routeData[driverId]?.referenceStop;
+    if (!ref) continue;
+    const key = `${ref.lat},${ref.lon}`;
+    if (!originToDrivers.has(key)) {
+      originToDrivers.set(key, []);
+      originCoords.set(key, { lat: ref.lat, lon: ref.lon });
     }
+    originToDrivers.get(key)!.push(driverId);
   }
 
-  // Compute arrived_stop → pickup routing (parallel, same provider)
-  const arrivedRoutingMap = new Map<string, RouteResult>(); // key: `${job_id}:${driver_id}`
-
-  if (arrivedLocations.size > 0 && intermediate.length > 0) {
+  if (originToDrivers.size > 0 && intermediate.length > 0) {
     if (provider === "valhalla") {
-      const tasks = intermediate.flatMap((s) =>
-        s.drivers
-          .filter((d) => arrivedLocations.has(d.driver_id))
-          .map((d) => {
-            const loc = arrivedLocations.get(d.driver_id)!;
-            return { key: `${s.job_id}:${d.driver_id}`, fromLat: loc.lat, fromLon: loc.lon, toLat: s.pickup_lat, toLon: s.pickup_lon };
-          })
-      );
-      const results = await Promise.all(tasks.map((t) => valhallaRoute(t.fromLat, t.fromLon, t.toLat, t.toLon)));
-      tasks.forEach((t, i) => arrivedRoutingMap.set(t.key, results[i]));
-
-    } else if (provider === "goong") {
-      // Group by driver: one Goong call per driver (arrived as origin, relevant pickups as destinations)
-      const byDriver = new Map<string, { jobId: number; pickupLat: number; pickupLon: number }[]>();
-      for (const s of intermediate) {
-        for (const d of s.drivers) {
-          if (!arrivedLocations.has(d.driver_id)) continue;
-          if (!byDriver.has(d.driver_id)) byDriver.set(d.driver_id, []);
-          byDriver.get(d.driver_id)!.push({ jobId: s.job_id, pickupLat: s.pickup_lat, pickupLon: s.pickup_lon });
+      // One call per unique origin × pickup pair (deduplicated by origin coordinate)
+      const tasks: { key: string; fromLat: number; fromLon: number; toLat: number; toLon: number; jobId: number; driverIds: string[] }[] = [];
+      for (const [originKey, driverIds] of originToDrivers) {
+        const from = originCoords.get(originKey)!;
+        for (const s of intermediate) {
+          tasks.push({ key: `${originKey}:${s.job_id}`, fromLat: from.lat, fromLon: from.lon, toLat: s.pickup_lat, toLon: s.pickup_lon, jobId: s.job_id, driverIds });
         }
       }
+      const results = await Promise.all(tasks.map((t) => valhallaRoute(t.fromLat, t.fromLon, t.toLat, t.toLon)));
+      tasks.forEach((t, i) => {
+        for (const driverId of t.driverIds) {
+          detourRoutingMap.set(`${t.jobId}:${driverId}`, results[i]);
+        }
+      });
+
+    } else if (provider === "goong") {
+      // One Goong call per unique origin, all pickups as destinations
       await Promise.all(
-        [...byDriver.entries()].map(async ([driverId, pickups]) => {
-          const loc = arrivedLocations.get(driverId)!;
-          const results = await goongMatrix(loc.lat, loc.lon, pickups.map((p) => ({ lat: p.pickupLat, lon: p.pickupLon })));
-          pickups.forEach((p, i) => arrivedRoutingMap.set(`${p.jobId}:${driverId}`, results[i]));
+        [...originToDrivers.entries()].map(async ([originKey, driverIds]) => {
+          const from = originCoords.get(originKey)!;
+          const pickups = intermediate.map((s) => ({ jobId: s.job_id, lat: s.pickup_lat, lon: s.pickup_lon }));
+          const results = await goongMatrix(from.lat, from.lon, pickups.map((p) => ({ lat: p.lat, lon: p.lon })));
+          pickups.forEach((p, i) => {
+            for (const driverId of driverIds) {
+              detourRoutingMap.set(`${p.jobId}:${driverId}`, results[i]);
+            }
+          });
         })
       );
 
-    } else {
-      // Haversine fallback — no extra network call needed, computed inline below
     }
+    // Haversine: computed inline in assembly below — no extra calls needed
   }
 
-  // Assemble final response (strip internal lat/lon)
+  // ── Assemble response ──────────────────────────────────────────────────────
   const suggestions = intermediate.map((s) => ({
     job_id: s.job_id,
     pickup: s.pickup,
     unscheduled: s.unscheduled,
     drivers: s.drivers.map((d) => {
-      const routing = routingMap.get(`${s.job_id}:${d.driver_id}`) ?? null;
-      const arrivedLoc = arrivedLocations.get(d.driver_id) ?? null;
+      const routing    = routingMap.get(`${s.job_id}:${d.driver_id}`) ?? null;
+      const ref        = routeData[d.driver_id]?.referenceStop ?? null;
+      const usesRouting = provider === "valhalla" || provider === "goong";
 
-      // Arrived → pickup straight-line (always available when arrived location is known)
-      const arrivedHaversineKm = arrivedLoc
-        ? Math.round(haversineKm(arrivedLoc.lat, arrivedLoc.lon, s.pickup_lat, s.pickup_lon) * 10) / 10
+      const detourHaversineKm = ref
+        ? Math.round(haversineKm(ref.lat, ref.lon, s.pickup_lat, s.pickup_lon) * 10) / 10
         : null;
-
-      // Arrived → pickup road routing (valhalla/goong); for haversine provider use straight-line only
-      const arrivedRouting = arrivedRoutingMap.get(`${s.job_id}:${d.driver_id}`) ?? null;
+      const detourRouting = usesRouting ? (detourRoutingMap.get(`${s.job_id}:${d.driver_id}`) ?? null) : null;
 
       return {
-        driver_id:    d.driver_id,
-        driver_name:  d.driver_name,
-        haversine_km: d.haversine_km,
-        distance_km:  routing?.distance_km ?? null,
-        eta_mins:     routing?.eta_mins    ?? null,
-        status_id:    d.status_id,
+        driver_id:     d.driver_id,
+        driver_name:   d.driver_name,
+        haversine_km:  d.haversine_km,
+        distance_km:   routing?.distance_km ?? null,
+        eta_mins:      routing?.eta_mins    ?? null,
+        status_id:     d.status_id,
         last_login_ts: d.last_login_ts,
-        jobs_total:  routeData[d.driver_id]?.stats.total  ?? null,
-        jobs_active: routeData[d.driver_id]?.stats.active ?? null,
-        jobs_done:   routeData[d.driver_id]?.stats.done   ?? null,
-        // Detour leg: arrived stop → pickup (null if driver has no status=3 stop or location unknown)
-        arrived_haversine_km: arrivedHaversineKm,
-        arrived_distance_km:  arrivedRouting?.distance_km ?? null,
-        arrived_eta_mins:     arrivedRouting?.eta_mins    ?? null,
+        jobs_total:    routeData[d.driver_id]?.stats.total  ?? null,
+        jobs_active:   routeData[d.driver_id]?.stats.active ?? null,
+        jobs_done:     routeData[d.driver_id]?.stats.done   ?? null,
+        // Detour: reference stop → pickup
+        detour_label:        ref?.label ?? null,
+        detour_haversine_km: detourHaversineKm,
+        detour_distance_km:  detourRouting?.distance_km ?? null,
+        detour_eta_mins:     detourRouting?.eta_mins    ?? null,
       };
     }),
   }));
