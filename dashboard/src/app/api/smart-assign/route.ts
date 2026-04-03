@@ -180,7 +180,11 @@ export async function POST(req: NextRequest) {
     getUnassignedJobs(1, 50, env),
   ]);
 
-  const drivers = allDrivers.filter((d) => d.latitude != null && d.longitude != null);
+  // Exclude Offline (4) and On Break (5) drivers
+  const EXCLUDED_DRIVER_STATUSES = new Set([4, 5]);
+  const drivers = allDrivers.filter(
+    (d) => d.latitude != null && d.longitude != null && !EXCLUDED_DRIVER_STATUSES.has(d.driver_status_id ?? 4)
+  );
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const jobs = ((jobsRes.data ?? []) as any[])
