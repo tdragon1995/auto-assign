@@ -38,7 +38,17 @@ export default function ChamCongPage() {
   const [status, setStatus] = useState<Status>("idle");
   const [message, setMessage] = useState("");
 
-  // Load data + restore previous selection
+  // Restore previous selection immediately on mount
+  useEffect(() => {
+    const savedDriverId   = localStorage.getItem(LS_DRIVER_ID) ?? "";
+    const savedDriverName = localStorage.getItem(LS_DRIVER_NAME) ?? "";
+    const savedLocId      = localStorage.getItem(LS_LOC_ID) ?? "";
+    const savedLocName    = localStorage.getItem(LS_LOC_NAME) ?? "";
+    if (savedDriverId) { setDriverId(savedDriverId); setDriverName(savedDriverName); setDriverSearch(savedDriverName); }
+    if (savedLocId)    { setLocationId(savedLocId);  setLocationName(savedLocName);  setLocationSearch(savedLocName); }
+  }, []);
+
+  // Load dropdown data
   useEffect(() => {
     Promise.all([
       fetch("/api/drivers").then((r) => r.json()),
@@ -59,23 +69,6 @@ export default function ChamCongPage() {
         );
       setDrivers(sorted);
       setLocations(chamCongData.pscs ?? []);
-
-      // Restore previous selection from localStorage
-      const savedDriverId   = localStorage.getItem(LS_DRIVER_ID) ?? "";
-      const savedDriverName = localStorage.getItem(LS_DRIVER_NAME) ?? "";
-      const savedLocId      = localStorage.getItem(LS_LOC_ID) ?? "";
-      const savedLocName    = localStorage.getItem(LS_LOC_NAME) ?? "";
-
-      if (savedDriverId) {
-        setDriverId(savedDriverId);
-        setDriverName(savedDriverName);
-        setDriverSearch(savedDriverName);
-      }
-      if (savedLocId) {
-        setLocationId(savedLocId);
-        setLocationName(savedLocName);
-        setLocationSearch(savedLocName);
-      }
     });
   }, []);
 
