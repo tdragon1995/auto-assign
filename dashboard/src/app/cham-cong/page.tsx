@@ -18,8 +18,6 @@ type Status = "idle" | "loading" | "success" | "error";
 
 const LS_DRIVER_ID   = "cc_driver_id";
 const LS_DRIVER_NAME = "cc_driver_name";
-const LS_LOC_ID      = "cc_location_id";
-const LS_LOC_NAME    = "cc_location_name";
 
 export default function ChamCongPage() {
   const [drivers, setDrivers] = useState<Driver[]>([]);
@@ -30,9 +28,9 @@ export default function ChamCongPage() {
   const [driverSearch,  setDriverSearch]  = useState(() => typeof window !== "undefined" ? localStorage.getItem(LS_DRIVER_NAME) ?? "" : "");
   const [showDriverList, setShowDriverList] = useState(false);
 
-  const [locationId,    setLocationId]    = useState(() => typeof window !== "undefined" ? localStorage.getItem(LS_LOC_ID)      ?? "" : "");
-  const [locationName,  setLocationName]  = useState(() => typeof window !== "undefined" ? localStorage.getItem(LS_LOC_NAME)    ?? "" : "");
-  const [locationSearch, setLocationSearch] = useState(() => typeof window !== "undefined" ? localStorage.getItem(LS_LOC_NAME)  ?? "" : "");
+  const [locationId,    setLocationId]    = useState("");
+  const [locationName,  setLocationName]  = useState("");
+  const [locationSearch, setLocationSearch] = useState("");
   const [showLocationList, setShowLocationList] = useState(false);
 
   const [status, setStatus] = useState<Status>("idle");
@@ -103,16 +101,12 @@ export default function ChamCongPage() {
     setLocationName(l.name);
     setLocationSearch(l.name);
     setShowLocationList(false);
-    localStorage.setItem(LS_LOC_ID, l.customer_id);
-    localStorage.setItem(LS_LOC_NAME, l.name);
   }
 
   function clearLocation() {
     setLocationId("");
     setLocationName("");
     setLocationSearch("");
-    localStorage.removeItem(LS_LOC_ID);
-    localStorage.removeItem(LS_LOC_NAME);
   }
 
   async function submit(type: ActionType) {
