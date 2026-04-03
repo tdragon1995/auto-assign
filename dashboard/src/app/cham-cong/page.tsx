@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 
 interface Driver {
-  customer_id: string;
   driver_id: string;
   driver_name: string;
 }
@@ -11,6 +10,7 @@ interface Driver {
 interface Location {
   customer_id: string;
   name: string;
+  address: string;
 }
 
 type ActionType = "check-in" | "check-out";
@@ -19,8 +19,10 @@ type Status = "idle" | "loading" | "success" | "error";
 export default function ChamCongPage() {
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
+  const [driverSearch, setDriverSearch] = useState("");
   const [driverId, setDriverId] = useState("");
   const [driverName, setDriverName] = useState("");
+  const [showDriverList, setShowDriverList] = useState(false);
   const [locationId, setLocationId] = useState("");
   const [locationName, setLocationName] = useState("");
   const [status, setStatus] = useState<Status>("idle");
@@ -31,12 +33,16 @@ export default function ChamCongPage() {
       fetch("/api/drivers").then((r) => r.json()),
       fetch("/api/cham-cong").then((r) => r.json()),
     ]).then(([driversData, chamCongData]) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sorted = (driversData.data ?? [])
-        .map((d: { delivery_driver_id: string; first_name: string; last_name: string }) => ({
-          customer_id: "",
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .filter((d: any) => d.is_active !== false)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .map((d: any): Driver => ({
           driver_id: d.delivery_driver_id,
           driver_name: `${d.first_name ?? ""} ${d.last_name ?? ""}`.trim(),
         }))
+        .filter((d: Driver) => d.driver_id && d.driver_name)
         .sort((a: Driver, b: Driver) =>
           a.driver_name.localeCompare(b.driver_name, "vi")
         );
@@ -44,6 +50,22 @@ export default function ChamCongPage() {
       setLocations(chamCongData.pscs ?? []);
     });
   }, []);
+
+  const filteredDrivers = useMemo(() =>
+    driverSearch.trim()
+      ? drivers.filter((d) =>
+          d.driver_name.toLowerCase().includes(driverSearch.toLowerCase())
+        )
+      : drivers,
+    [drivers, driverSearch]
+  );
+
+  function selectDriver(d: Driver) {
+    setDriverId(d.driver_id);
+    setDriverName(d.driver_name);
+    setDriverSearch(d.driver_name);
+    setShowDriverList(false);
+  }
 
   async function submit(type: ActionType) {
     if (!driverId || !locationId) {
@@ -88,6 +110,8 @@ export default function ChamCongPage() {
     }
   }
 
+  const selectedLocation = locations.find((l) => l.customer_id === locationId);
+
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200 w-full max-w-md p-6 space-y-5">
@@ -96,25 +120,35 @@ export default function ChamCongPage() {
           <p className="text-sm text-gray-500 mt-1">Chọn tài xế và địa điểm để chấm công vào / ra.</p>
         </div>
 
-        {/* Driver select */}
-        <div className="space-y-1">
+        {/* Driver searchable dropdown */}
+        <div className="space-y-1 relative">
           <label className="text-sm font-medium text-gray-700">Tài xế</label>
-          <select
+          <input
+            type="text"
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            value={driverId}
+            placeholder={drivers.length ? "Tìm tài xế..." : "Đang tải..."}
+            value={driverSearch}
             onChange={(e) => {
-              const d = drivers.find((d) => d.driver_id === e.target.value);
-              setDriverId(e.target.value);
-              setDriverName(d?.driver_name ?? "");
+              setDriverSearch(e.target.value);
+              setDriverId("");
+              setShowDriverList(true);
             }}
-          >
-            <option value="">-- Chọn tài xế --</option>
-            {drivers.map((d) => (
-              <option key={d.driver_id} value={d.driver_id}>
-                {d.driver_name}
-              </option>
-            ))}
-          </select>
+            onFocus={() => setShowDriverList(true)}
+            onBlur={() => setTimeout(() => setShowDriverList(false), 150)}
+          />
+          {showDriverList && filteredDrivers.length > 0 && (
+            <ul className="absolute z-10 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-52 overflow-y-auto mt-1">
+              {filteredDrivers.map((d) => (
+                <li
+                  key={d.driver_id}
+                  className="px-3 py-2 text-sm hover:bg-blue-50 cursor-pointer"
+                  onMouseDown={() => selectDriver(d)}
+                >
+                  {d.driver_name}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
 
         {/* Location select */}
@@ -129,13 +163,16 @@ export default function ChamCongPage() {
               setLocationName(l?.name ?? "");
             }}
           >
-            <option value="">-- Chọn địa điểm --</option>
+            <option value="">{locations.length ? "-- Chọn địa điểm --" : "Đang tải..."}</option>
             {locations.map((l) => (
               <option key={l.customer_id} value={l.customer_id}>
                 {l.name}
               </option>
             ))}
           </select>
+          {selectedLocation?.address && (
+            <p className="text-xs text-gray-400 px-1">{selectedLocation.address}</p>
+          )}
         </div>
 
         {/* Buttons */}
