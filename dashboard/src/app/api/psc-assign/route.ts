@@ -66,7 +66,7 @@ export async function POST(req: NextRequest) {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const duplicate = allJobs.find((job: any) => {
-      if (job.job_status_id === 7) return false;
+      if (job.job_status_id === 7 || job.job_status_id === 3) return false;
       const stops = job.stops ?? [];
       const hasActivePickup = stops.some((s: any) =>
         s.stop_type_id === 1 &&

@@ -70,7 +70,7 @@ export async function POST(req: NextRequest) {
       const countData = await countRes.json();
       const jobs: { reference_number?: string; job_status_id?: number }[] = countData.data ?? [];
       count = jobs.filter(
-        (j) => j.job_status_id !== 7 && (j.reference_number ?? "").startsWith(prefix)
+        (j) => j.job_status_id !== 7 && j.job_status_id !== 3 && (j.reference_number ?? "").startsWith(prefix)
       ).length;
     }
 
