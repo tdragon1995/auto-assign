@@ -65,15 +65,20 @@ export async function POST(req: NextRequest) {
     const ACTIVE_STOP_STATUSES = new Set([1, 2, 3]);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const duplicate = allJobs.find((job: any) =>
-      job.job_status_id !== 7 &&
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      job.stops?.some((stop: any) =>
-        stop.stop_type_id === 1 &&
-        stop.customer_id === pickup &&
-        ACTIVE_STOP_STATUSES.has(stop.stop_status_id)
-      )
-    );
+    const duplicate = allJobs.find((job: any) => {
+      if (job.job_status_id === 7) return false;
+      const stops = job.stops ?? [];
+      const hasActivePickup = stops.some((s: any) =>
+        s.stop_type_id === 1 &&
+        s.customer_id === pickup &&
+        ACTIVE_STOP_STATUSES.has(s.stop_status_id)
+      );
+      const hasMatchingDropoff = stops.some((s: any) =>
+        s.stop_type_id === 2 &&
+        s.customer_id === dropoff
+      );
+      return hasActivePickup && hasMatchingDropoff;
+    });
 
     if (duplicate) {
       return NextResponse.json(

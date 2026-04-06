@@ -1,9 +1,11 @@
 const SHEET_ID = "1Bqsm5atLYUQ4gMsL7zHrbrS6YUu7pEDa-Iy_j_wpCss";
 const PSC_SHEET_GID = "281585585";
 const MAPPING_SHEET_GID = "0";
+const TPL_SHEET_GID = "934328932";
 
 const PSC_SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${PSC_SHEET_GID}`;
 const MAPPING_SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${MAPPING_SHEET_GID}`;
+const TPL_SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${TPL_SHEET_GID}`;
 
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -13,6 +15,12 @@ export interface PscRoute {
   pickup: string;
   dropoff: string;
   ref_number: string;
+}
+
+export interface TplEntry {
+  psc_tinh: string;
+  tpl_name: string;
+  tpl_uuid: string;
 }
 
 export interface DriverMapping {
@@ -34,6 +42,7 @@ let routesCache: CacheEntry<PscRoute[]> | null = null;
 let mappingsCache: CacheEntry<DriverMapping[]> | null = null;
 // Pre-built lookup: customer_id → DriverMapping
 let mappingsIndex: Map<string, DriverMapping> | null = null;
+let tplCache: CacheEntry<TplEntry[]> | null = null;
 
 function isFresh<T>(entry: CacheEntry<T> | null): entry is CacheEntry<T> {
   return entry !== null && Date.now() - entry.ts < CACHE_TTL_MS;
@@ -44,6 +53,28 @@ export function invalidatePscCache() {
   routesCache = null;
   mappingsCache = null;
   mappingsIndex = null;
+  tplCache = null;
+}
+
+export async function loadTplEntries(): Promise<TplEntry[]> {
+  if (isFresh(tplCache)) return tplCache.data;
+
+  const res = await fetch(TPL_SHEET_URL, { cache: "no-store" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+  const text = await res.text();
+  const rows = parseCSV(text);
+
+  const data: TplEntry[] = rows
+    .filter((r) => r["psc-tinh"] && r["3pl_uuid"])
+    .map((r) => ({
+      psc_tinh: r["psc-tinh"] ?? "",
+      tpl_name: r["3pl"] ?? "",
+      tpl_uuid: r["3pl_uuid"] ?? "",
+    }));
+
+  tplCache = { data, ts: Date.now() };
+  return data;
 }
 
 // ── CSV parsing ──────────────────────────────────────────────────
