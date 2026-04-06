@@ -17,6 +17,7 @@ interface DriverSuggestion {
   jobs_active: number | null;
   jobs_done: number | null;
   detour_label: "Arrived" | "En Route" | "Last Completed" | null;
+  detour_customer: string | null;
   detour_haversine_km: number | null;
   detour_distance_km: number | null;
   detour_eta_mins: number | null;
@@ -70,7 +71,7 @@ function DriverCell({ d, provider }: { d: DriverSuggestion; provider: Provider }
       <span className="text-[11px] text-slate-500">{distLine} · {relativeTime(d.last_login_ts)}</span>
       {d.detour_haversine_km !== null && (
         <span className="text-[11px] text-indigo-500 font-medium">
-          {d.detour_label} →{" "}
+          {d.detour_label}{d.detour_customer ? ` @ ${d.detour_customer}` : ""} →{" "}
           {usesRouting && d.detour_distance_km != null
             ? `${d.detour_distance_km} km · ${d.detour_eta_mins ?? "?"}min`
             : `${d.detour_haversine_km} km straight`}

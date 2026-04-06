@@ -97,7 +97,7 @@ interface DriverRouteData {
   // Best reference stop for detour estimation.
   // Priority: Arrived (status=3) → En Route (status=2) → Last Completed (status=4, last in sequence)
   // Coordinates come directly from delivery_timeline_route_list — no secondary fetch needed.
-  referenceStop: { lat: number; lon: number; label: DetourLabel } | null;
+  referenceStop: { lat: number; lon: number; label: DetourLabel; customerName: string | null } | null;
 }
 
 const ACTIVE_STOP_STATUSES = new Set([1, 2, 3]);
@@ -130,7 +130,7 @@ async function fetchAllDriverRouteData(
     const data = await res.json();
     const routes: {
       routeId: string;
-      orderedStops?: { jobId: number; stopId: number; stopStatusId: number; latitude: number; longitude: number }[];
+      orderedStops?: { jobId: number; stopId: number; stopStatusId: number; latitude: number; longitude: number; customerName?: string }[];
     }[] = data.result?.routes ?? [];
 
     const result: Record<string, DriverRouteData> = {};
@@ -153,13 +153,13 @@ async function fetchAllDriverRouteData(
 
       // Reference stop — scan once, last-in-sequence wins per tier
       // Arrived (3) > En Route (2) > Last Completed (4)
-      let arrived:       { lat: number; lon: number } | null = null;
-      let enRoute:       { lat: number; lon: number } | null = null;
-      let lastCompleted: { lat: number; lon: number } | null = null;
+      let arrived:       { lat: number; lon: number; customerName: string | null } | null = null;
+      let enRoute:       { lat: number; lon: number; customerName: string | null } | null = null;
+      let lastCompleted: { lat: number; lon: number; customerName: string | null } | null = null;
 
       for (const stop of stops) {
         if (!stop.latitude || !stop.longitude) continue;
-        const loc = { lat: stop.latitude, lon: stop.longitude };
+        const loc = { lat: stop.latitude, lon: stop.longitude, customerName: stop.customerName ?? null };
         if (stop.stopStatusId === 3) arrived       = loc;
         if (stop.stopStatusId === 2) enRoute       = loc;
         if (stop.stopStatusId === 4) lastCompleted = loc;
@@ -392,6 +392,7 @@ export async function POST(req: NextRequest) {
         jobs_done:     routeData[d.driver_id]?.stats.done   ?? null,
         // Detour: reference stop → pickup
         detour_label:        ref?.label ?? null,
+        detour_customer:     ref?.customerName ?? null,
         detour_haversine_km: detourHaversineKm,
         detour_distance_km:  detourRouting?.distance_km ?? null,
         detour_eta_mins:     detourRouting?.eta_mins    ?? null,
