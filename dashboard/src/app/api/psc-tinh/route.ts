@@ -129,8 +129,13 @@ export async function POST(req: NextRequest) {
 
     const refNumber = `${prefix} ${count + 1}`;
 
-    // Build ETA window: time_from = time_to = eta (Vietnam UTC+8 offset per Cartrack docs)
-    const etaWindow = `${eta}:00+07:00`;
+    // Build ETA window: time_from = eta, time_to = eta + 5 min (Cartrack requires from < to)
+    const [etaH, etaM] = eta.split(":").map(Number);
+    const toMins = etaH * 60 + etaM + 5;
+    const toH = String(Math.floor(toMins / 60) % 24).padStart(2, "0");
+    const toMin = String(toMins % 60).padStart(2, "0");
+    const etaFrom = `${eta}:00+07:00`;
+    const etaTo = `${toH}:${toMin}:00+07:00`;
 
     const jobPayload = {
       job_type_id: 1,
@@ -143,7 +148,7 @@ export async function POST(req: NextRequest) {
           customer_id: tpl_uuid,
           customer_name: tpl_name,
           duration: 5,
-          delivery_windows: [{ time_from: etaWindow, time_to: etaWindow }],
+          delivery_windows: [{ time_from: etaFrom, time_to: etaTo }],
           todos: [
             { todo_type_id: 2, description: "📦 Chụp thấy rõ mẫu đã đóng gói trong hộp" },
             { todo_type_id: 2, description: "✍️ Chụp batchsheet đã ký" },
