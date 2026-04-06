@@ -21,6 +21,7 @@ export interface TplEntry {
   psc_tinh: string;
   tpl_name: string;
   tpl_uuid: string;
+  address: string;
 }
 
 export interface DriverMapping {
@@ -71,6 +72,7 @@ export async function loadTplEntries(): Promise<TplEntry[]> {
       psc_tinh: r["psc-tinh"] ?? "",
       tpl_name: r["3pl"] ?? "",
       tpl_uuid: r["3pl_uuid"] ?? "",
+      address: r["address"] ?? "",
     }));
 
   tplCache = { data, ts: Date.now() };

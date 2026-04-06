@@ -7,7 +7,6 @@ export const preferredRegion = "sin1";
 
 const BASE_URL = "https://fleetapi-vn.cartrack.com/rest/delivery";
 const D001_UUID = "3927b076-3af9-11ed-b939-506b8dbc8dfb";
-const CACHE_TTL_MS = 5 * 60 * 1000;
 
 function getHeaders(env: Env = "prod"): Record<string, string> {
   const suffix = env === "uat" ? "_UAT" : "";
@@ -19,74 +18,21 @@ function getHeaders(env: Env = "prod"): Record<string, string> {
   return headers;
 }
 
-// ── 3PL address cache (tpl_uuid → address) ───────────────────────────────────
-
-interface TplOption {
-  tpl_uuid: string;
-  tpl_name: string;
-  address: string;
-}
-
-let tplAddressCache: { data: Map<string, TplOption>; ts: number } | null = null;
-
-async function fetchTplOptions(env: Env): Promise<Map<string, TplOption>> {
-  if (tplAddressCache && Date.now() - tplAddressCache.ts < CACHE_TTL_MS) {
-    return tplAddressCache.data;
-  }
-
-  const entries = await loadTplEntries();
-  const headers = getHeaders(env);
-
-  // Deduplicate by uuid
-  const seen = new Set<string>();
-  const unique = entries.filter((e) => {
-    if (seen.has(e.tpl_uuid)) return false;
-    seen.add(e.tpl_uuid);
-    return true;
-  });
-
-  const results = await Promise.all(
-    unique.map(async (e) => {
-      try {
-        const res = await fetch(`${BASE_URL}/customers/${e.tpl_uuid}`, { headers });
-        if (!res.ok) return { tpl_uuid: e.tpl_uuid, tpl_name: e.tpl_name, address: "" };
-        const data = await res.json();
-        const c = data.data ?? data;
-        const address = [c.address_line_1, c.address_line_2].filter(Boolean).join(", ");
-        return { tpl_uuid: e.tpl_uuid, tpl_name: e.tpl_name, address };
-      } catch {
-        return { tpl_uuid: e.tpl_uuid, tpl_name: e.tpl_name, address: "" };
-      }
-    })
-  );
-
-  const map = new Map<string, TplOption>();
-  for (const r of results) map.set(r.tpl_uuid, r);
-
-  tplAddressCache = { data: map, ts: Date.now() };
-  return map;
-}
-
 // ── GET /api/psc-tinh?psc=D021 ───────────────────────────────────────────────
-// Returns the list of 3PL options for that PSC with addresses
+// Returns 3PL options from sheet (address already in sheet — no Cartrack fetch needed)
 
 export async function GET(req: NextRequest) {
-  const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
   const psc = req.nextUrl.searchParams.get("psc")?.trim().toUpperCase();
   if (!psc) return NextResponse.json({ error: "Missing psc param" }, { status: 400 });
 
   try {
-    const [entries, tplMap] = await Promise.all([
-      loadTplEntries(),
-      fetchTplOptions(env),
-    ]);
-
+    const entries = await loadTplEntries();
     const options = entries
       .filter((e) => e.psc_tinh.toUpperCase().includes(psc))
       .map((e) => ({
         tpl_uuid: e.tpl_uuid,
         tpl_name: e.tpl_name,
-        address: tplMap.get(e.tpl_uuid)?.address ?? "",
+        address: e.address,
       }));
 
     return NextResponse.json({ options });
@@ -101,8 +47,7 @@ export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
 
   try {
-    const { psc_code, psc_label, tpl_uuid, tpl_name, eta } = await req.json();
-    // psc_code: "D021", psc_label: "BRA - D021", tpl_uuid, tpl_name, eta: "HH:MM"
+    const { psc_code, tpl_uuid, tpl_name, eta } = await req.json();
 
     if (!psc_code || !tpl_uuid || !eta) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
@@ -110,7 +55,7 @@ export async function POST(req: NextRequest) {
 
     const headers = getHeaders(env);
 
-    // Count today's jobs from this PSC for reference_number
+    // Count today's non-cancelled jobs from this PSC for reference_number
     const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
     const today = vnNow.toISOString().split("T")[0];
     const prefix = `BRA - ${psc_code} - Mẫu`;
@@ -123,8 +68,10 @@ export async function POST(req: NextRequest) {
     let count = 0;
     if (countRes.ok) {
       const countData = await countRes.json();
-      const jobs: { reference_number?: string }[] = countData.data ?? [];
-      count = jobs.filter((j) => (j.reference_number ?? "").startsWith(prefix)).length;
+      const jobs: { reference_number?: string; job_status_id?: number }[] = countData.data ?? [];
+      count = jobs.filter(
+        (j) => j.job_status_id !== 7 && (j.reference_number ?? "").startsWith(prefix)
+      ).length;
     }
 
     const refNumber = `${prefix} ${count + 1}`;
