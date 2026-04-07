@@ -97,8 +97,8 @@ export async function POST(req: NextRequest) {
           duration: 5,
           delivery_windows: [{ time_from: etaFrom, time_to: etaTo }],
           todos: [
-            { todo_type_id: 2, description: "📦 Chụp thấy rõ mẫu đã đóng gói trong hộp" },
-            { todo_type_id: 2, description: "✍️ Chụp batchsheet đã ký" },
+            { todo_type_id: 2, description: "" },
+            { todo_type_id: 5, description: "" },
           ],
         },
         {
@@ -107,8 +107,8 @@ export async function POST(req: NextRequest) {
           customer_name: "D001 - Cao Thắng",
           duration: 10,
           todos: [
-            { todo_type_id: 2, description: "📋 Chụp các hộp thấy rõ batchsheet" },
-            { todo_type_id: 2, description: "🤝 Chụp phiếu bàn giao & hàng mang về" },
+            { todo_type_id: 2, description: "" },
+            { todo_type_id: 5, description: "" },
           ],
         },
       ],
