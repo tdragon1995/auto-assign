@@ -19,6 +19,8 @@ interface Order {
   dropoff_status: string;
   dropoff_color: string;
   eta: string | null;
+  pickup_name?: string;
+  pickup_address?: string;
 }
 
 const PSC_META: Record<string, { label: string; psc_code: string }> = {
@@ -54,12 +56,13 @@ export default function PscTinhPage() {
   const code = (params.code as string)?.toUpperCase();
   const meta = PSC_META[code];
 
+  const [tab, setTab] = useState<"request" | "status">("request");
+
   const [options, setOptions] = useState<TplOption[]>([]);
   const [loadError, setLoadError] = useState("");
   const [orders, setOrders] = useState<Order[]>([]);
-  const [ordersLoading, setOrdersLoading] = useState(true);
+  const [ordersLoading, setOrdersLoading] = useState(false);
 
-  // 3PL searchable input state
   const [tplQuery, setTplQuery] = useState("");
   const [selectedUuid, setSelectedUuid] = useState("");
   const [tplOpen, setTplOpen] = useState(false);
@@ -100,12 +103,12 @@ export default function PscTinhPage() {
     }
   }, [code]);
 
-  useEffect(() => {
-    loadOptions();
-    loadOrders();
-  }, [loadOptions, loadOrders]);
+  useEffect(() => { loadOptions(); }, [loadOptions]);
 
-  // Close dropdown on outside click
+  useEffect(() => {
+    if (tab === "status") loadOrders();
+  }, [tab, loadOrders]);
+
   useEffect(() => {
     function handleClick(e: MouseEvent) {
       if (tplRef.current && !tplRef.current.contains(e.target as Node)) {
@@ -169,7 +172,6 @@ export default function PscTinhPage() {
         setResult({ ok: true, msg: `Tạo thành công! ${data.reference} (Job #${data.job_id})` });
         setEta("");
         if (options.length > 1) clearTpl();
-        loadOrders();
       }
     } catch (e) {
       setResult({ ok: false, msg: String(e) });
@@ -183,134 +185,161 @@ export default function PscTinhPage() {
 
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col items-center p-4 gap-4">
-      {/* Today's orders */}
-      <div className="w-full max-w-sm bg-white rounded-2xl shadow border p-5 space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-bold text-slate-700">Yêu cầu hôm nay</h2>
-          <button onClick={loadOrders} className="text-xs text-blue-500 hover:underline">Làm mới</button>
-        </div>
-        {ordersLoading ? (
-          <p className="text-xs text-slate-400">Đang tải...</p>
-        ) : orders.length === 0 ? (
-          <p className="text-xs text-slate-400">Chưa có yêu cầu nào hôm nay.</p>
-        ) : (
-          <div className="space-y-2">
-            {orders.map((o) => (
-              <div key={o.job_id} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2.5 space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-slate-800">{o.reference}</span>
-                  {o.eta && <span className="text-xs text-slate-400">ETA {o.eta}</span>}
-                </div>
-                <div className="flex gap-1.5 flex-wrap">
-                  <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-600">
-                    {o.job_status}
-                  </span>
-                  <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md ${COLOR_CLASS[o.pickup_color]}`}>
-                    Lấy: {o.pickup_status}
-                  </span>
-                  <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md ${COLOR_CLASS[o.dropoff_color]}`}>
-                    Giao: {o.dropoff_status}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Form */}
-      <div className="w-full max-w-sm bg-white rounded-2xl shadow border p-6 space-y-5">
+      <div className="w-full max-w-sm bg-white rounded-2xl shadow border overflow-hidden">
         {/* Header */}
-        <div>
-          <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">Yêu cầu lấy mẫu</p>
-          <h1 className="text-2xl font-bold text-slate-800 mt-0.5">{meta.label}</h1>
-          <p className="text-sm text-slate-500 mt-1">Điểm đến: D001 — Cao Thắng</p>
+        <div className="px-6 pt-5 pb-4">
+          <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">Vận chuyển mẫu tỉnh</p>
+          <h1 className="text-xl font-bold text-slate-800 mt-0.5">{meta.label}</h1>
+          <p className="text-sm text-slate-500">Điểm đến: D001 — Cao Thắng</p>
         </div>
 
-        {loadError && (
-          <div className="rounded-lg bg-red-50 border border-red-200 p-3 text-sm text-red-700">
-            {loadError}
-          </div>
-        )}
-
-        <div className="space-y-4">
-          {/* 3PL searchable dropdown */}
-          <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-              Điểm lấy mẫu (3PL)
-            </label>
-            <div className="relative" ref={tplRef}>
-              <input
-                type="text"
-                value={tplQuery}
-                onChange={(e) => { setTplQuery(e.target.value); setSelectedUuid(""); setTplOpen(true); }}
-                onFocus={() => setTplOpen(true)}
-                placeholder="Tìm điểm lấy mẫu..."
-                className="w-full border rounded-xl px-3 py-2.5 pr-8 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-              />
-              {tplQuery && (
-                <button
-                  type="button"
-                  onClick={clearTpl}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-lg leading-none"
-                >
-                  ×
-                </button>
-              )}
-              {tplOpen && filtered.length > 0 && (
-                <ul className="absolute z-10 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-52 overflow-y-auto">
-                  {filtered.map((o) => (
-                    <li
-                      key={o.tpl_uuid}
-                      onMouseDown={() => selectTpl(o)}
-                      className="px-3 py-2.5 cursor-pointer hover:bg-slate-50"
-                    >
-                      <p className="text-sm font-medium text-slate-800">{o.tpl_name}</p>
-                      {o.address && <p className="text-xs text-slate-500 mt-0.5">{o.address}</p>}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </div>
-
-          {/* ETA */}
-          <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-              ETA — Giờ lấy mẫu dự kiến
-            </label>
-            <select
-              value={eta}
-              onChange={(e) => setEta(e.target.value)}
-              className="w-full border rounded-xl px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-            >
-              <option value="">-- Chọn giờ --</option>
-              {timeSlots.map((slot) => (
-                <option key={slot} value={slot}>{slot}</option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {/* Submit */}
-        <button
-          onClick={submit}
-          disabled={!canSubmit}
-          className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-        >
-          {loading ? "Đang tạo..." : "Gửi yêu cầu"}
-        </button>
-
-        {/* Result */}
-        {result && (
-          <div
-            className={`rounded-xl p-3.5 text-sm font-medium text-center ${
-              result.ok
-                ? "bg-emerald-50 border border-emerald-200 text-emerald-800"
-                : "bg-red-50 border border-red-200 text-red-800"
+        {/* Tab switcher */}
+        <div className="grid grid-cols-2 border-t border-slate-100">
+          <button
+            onClick={() => setTab("request")}
+            className={`py-2.5 text-sm font-semibold transition-colors ${
+              tab === "request"
+                ? "bg-blue-600 text-white"
+                : "bg-white text-slate-500 hover:bg-slate-50"
             }`}
           >
-            {result.msg}
+            Tạo yêu cầu
+          </button>
+          <button
+            onClick={() => setTab("status")}
+            className={`py-2.5 text-sm font-semibold transition-colors border-l border-slate-100 ${
+              tab === "status"
+                ? "bg-blue-600 text-white"
+                : "bg-white text-slate-500 hover:bg-slate-50"
+            }`}
+          >
+            Xem trạng thái
+          </button>
+        </div>
+
+        {/* Request tab */}
+        {tab === "request" && (
+          <div className="p-6 space-y-5">
+            {loadError && (
+              <div className="rounded-lg bg-red-50 border border-red-200 p-3 text-sm text-red-700">
+                {loadError}
+              </div>
+            )}
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                  Điểm lấy mẫu (3PL)
+                </label>
+                <div className="relative" ref={tplRef}>
+                  <input
+                    type="text"
+                    value={tplQuery}
+                    onChange={(e) => { setTplQuery(e.target.value); setSelectedUuid(""); setTplOpen(true); }}
+                    onFocus={() => setTplOpen(true)}
+                    placeholder="Tìm điểm lấy mẫu..."
+                    className="w-full border rounded-xl px-3 py-2.5 pr-8 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+                  />
+                  {tplQuery && (
+                    <button
+                      type="button"
+                      onClick={clearTpl}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-lg leading-none"
+                    >
+                      ×
+                    </button>
+                  )}
+                  {tplOpen && filtered.length > 0 && (
+                    <ul className="absolute z-10 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-52 overflow-y-auto">
+                      {filtered.map((o) => (
+                        <li
+                          key={o.tpl_uuid}
+                          onMouseDown={() => selectTpl(o)}
+                          className="px-3 py-2.5 cursor-pointer hover:bg-slate-50"
+                        >
+                          <p className="text-sm font-medium text-slate-800">{o.tpl_name}</p>
+                          {o.address && <p className="text-xs text-slate-500 mt-0.5">{o.address}</p>}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                  ETA — Giờ lấy mẫu dự kiến
+                </label>
+                <select
+                  value={eta}
+                  onChange={(e) => setEta(e.target.value)}
+                  className="w-full border rounded-xl px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+                >
+                  <option value="">-- Chọn giờ --</option>
+                  {timeSlots.map((slot) => (
+                    <option key={slot} value={slot}>{slot}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <button
+              onClick={submit}
+              disabled={!canSubmit}
+              className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            >
+              {loading ? "Đang tạo..." : "Gửi yêu cầu"}
+            </button>
+
+            {result && (
+              <div
+                className={`rounded-xl p-3.5 text-sm font-medium text-center ${
+                  result.ok
+                    ? "bg-emerald-50 border border-emerald-200 text-emerald-800"
+                    : "bg-red-50 border border-red-200 text-red-800"
+                }`}
+              >
+                {result.msg}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Status tab */}
+        {tab === "status" && (
+          <div className="p-5 space-y-3">
+            <div className="flex justify-end">
+              <button onClick={loadOrders} className="text-xs text-blue-500 hover:underline">Làm mới</button>
+            </div>
+            {ordersLoading ? (
+              <p className="text-xs text-slate-400 text-center py-4">Đang tải...</p>
+            ) : orders.length === 0 ? (
+              <p className="text-xs text-slate-400 text-center py-4">Chưa có yêu cầu nào hôm nay.</p>
+            ) : (
+              <div className="space-y-2">
+                {orders.map((o) => (
+                  <div key={o.job_id} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2.5 space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-slate-800">{o.reference}</span>
+                      {o.eta && <span className="text-xs text-slate-400">ETA {o.eta}</span>}
+                    </div>
+                    {o.pickup_name && (
+                      <p className="text-[11px] text-slate-500">
+                        {o.pickup_name}{o.pickup_address ? ` · ${o.pickup_address}` : ""}
+                      </p>
+                    )}
+                    <div className="flex gap-1.5 flex-wrap">
+                      <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-600">
+                        {o.job_status}
+                      </span>
+                      <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md ${COLOR_CLASS[o.dropoff_color]}`}>
+                        Giao D001: {o.dropoff_status}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
