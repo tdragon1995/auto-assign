@@ -68,7 +68,7 @@ export async function GET(req: NextRequest) {
       const jobs: any[] = data.data ?? [];
 
       const orders = jobs
-        .filter((j) => (j.reference_number ?? "").startsWith(prefix))
+        .filter((j) => (j.reference_number ?? "").startsWith(prefix) && j.job_status_id !== 3 && j.job_status_id !== 7)
         .sort((a, b) => (a.reference_number ?? "").localeCompare(b.reference_number ?? ""))
         .map((j) => {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
