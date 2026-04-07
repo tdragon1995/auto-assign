@@ -112,19 +112,6 @@ export async function POST(req: NextRequest) {
           ],
         },
       ],
-      items: [
-        {
-          description: "🧪 Mẫu",
-          weight: 0,
-          item_type_id: 1,
-          quantity: 1,
-          tracking_number: "",
-          todos: [
-            { todo_type_id: 3, stop_type_id: 1, is_required: true, description: "🔍 Quét mọi batchsheet" },
-            { todo_type_id: 5, stop_type_id: 2, is_required: true, description: "👤 Người nhận" },
-          ],
-        },
-      ],
     };
 
     const createRes = await fetch(`${BASE_URL}/jobs`, {
