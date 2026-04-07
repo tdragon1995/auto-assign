@@ -17,6 +17,7 @@ interface Order {
   pickup_color: string;
   dropoff_status: string;
   dropoff_color: string;
+  dropoff_update_ts: string | null;
   eta: string | null;
   pickup_name?: string;
   pickup_address?: string;
@@ -327,13 +328,15 @@ export default function PscTinhPage() {
                         {o.pickup_name}{o.pickup_address ? ` · ${o.pickup_address}` : ""}
                       </p>
                     )}
-                    <div className="flex gap-1.5 flex-wrap">
-                      <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-600">
-                        {o.job_status}
-                      </span>
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md ${COLOR_CLASS[o.dropoff_color]}`}>
                         Giao D001: {o.dropoff_status}
                       </span>
+                      {o.dropoff_update_ts && (
+                        <span className="text-[10px] text-slate-400">
+                          {o.dropoff_update_ts.slice(11, 16)}
+                        </span>
+                      )}
                     </div>
                   </div>
                 ))}

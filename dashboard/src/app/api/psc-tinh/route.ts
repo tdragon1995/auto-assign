@@ -84,6 +84,7 @@ export async function GET(req: NextRequest) {
             dropoff_status_id: dropoff?.stop_status_id ?? null,
             dropoff_status:    STOP_STATUS[dropoff?.stop_status_id]?.label ?? "—",
             dropoff_color:     STOP_STATUS[dropoff?.stop_status_id]?.color ?? "slate",
+            dropoff_update_ts: dropoff?.update_ts ?? null,
             eta: pickup?.delivery_windows?.[0]?.time_from?.slice(0, 5) ?? null,
           };
         });
