@@ -12,7 +12,6 @@ interface TplOption {
 interface Order {
   job_id: number;
   reference: string;
-  job_status_id: number;
   job_status: string;
   pickup_status: string;
   pickup_color: string;

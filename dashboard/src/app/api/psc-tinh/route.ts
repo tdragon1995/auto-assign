@@ -53,13 +53,17 @@ export async function GET(req: NextRequest) {
       const today = vnNow.toISOString().split("T")[0];
       const prefix = `BRA - ${psc} - Mẫu`;
 
-      const res = await fetch(
-        `${BASE_URL}/jobs?filter[scheduled_delivery_ts_from]=${today} 00:00:00&filter[scheduled_delivery_ts_to]=${today} 23:59:59&limit=1000`,
-        { headers, cache: "no-store" }
-      );
-      if (!res.ok) return NextResponse.json({ orders: [] });
+      const [jobsRes, tplEntries] = await Promise.all([
+        fetch(
+          `${BASE_URL}/jobs?filter[scheduled_delivery_ts_from]=${today} 00:00:00&filter[scheduled_delivery_ts_to]=${today} 23:59:59&limit=1000`,
+          { headers, cache: "no-store" }
+        ),
+        loadTplEntries(),
+      ]);
+      if (!jobsRes.ok) return NextResponse.json({ orders: [] });
 
-      const data = await res.json();
+      const tplByUuid = new Map(tplEntries.map((e) => [e.tpl_uuid, e.address]));
+      const data = await jobsRes.json();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const jobs: any[] = data.data ?? [];
 
@@ -72,12 +76,11 @@ export async function GET(req: NextRequest) {
           const pickup  = stops.find((s: any) => s.stop_type_id === 1);
           const dropoff = stops.find((s: any) => s.stop_type_id === 2);
           return {
-            job_id:        j.job_id,
-            reference:     j.reference_number,
-            job_status_id: j.job_status_id,
-            job_status:    JOB_STATUS[j.job_status_id] ?? "Không rõ",
+            job_id:    j.job_id,
+            reference: j.reference_number,
+            job_status: JOB_STATUS[j.job_status_id] ?? "Không rõ",
             pickup_name:    pickup?.customer_name ?? null,
-            pickup_address: pickup?.address ?? null,
+            pickup_address: tplByUuid.get(pickup?.customer_id) ?? null,
             dropoff_status_id: dropoff?.stop_status_id ?? null,
             dropoff_status:    STOP_STATUS[dropoff?.stop_status_id]?.label ?? "—",
             dropoff_color:     STOP_STATUS[dropoff?.stop_status_id]?.color ?? "slate",
