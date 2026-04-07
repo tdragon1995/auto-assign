@@ -323,14 +323,12 @@ export default function PscTinhPage() {
                       <span className="text-xs font-semibold text-slate-800">{o.reference}</span>
                       {o.eta && <span className="text-xs text-slate-400">ETA {o.eta}</span>}
                     </div>
-                    {o.pickup_name && (
-                      <p className="text-[11px] text-slate-500">
-                        {o.pickup_name}{o.pickup_address ? ` · ${o.pickup_address}` : ""}
-                      </p>
+                    {o.pickup_address && (
+                      <p className="text-[11px] text-slate-500">{o.pickup_address}</p>
                     )}
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md ${COLOR_CLASS[o.dropoff_color]}`}>
-                        {o.dropoff_status}
+                        Giao D001: {o.dropoff_status}
                       </span>
                       {o.dropoff_update_ts && (
                         <span className="text-[10px] text-slate-400">
