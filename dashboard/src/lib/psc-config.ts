@@ -43,7 +43,6 @@ let routesCache: CacheEntry<PscRoute[]> | null = null;
 let mappingsCache: CacheEntry<DriverMapping[]> | null = null;
 // Pre-built lookup: customer_id → DriverMapping
 let mappingsIndex: Map<string, DriverMapping> | null = null;
-let tplCache: CacheEntry<TplEntry[]> | null = null;
 
 function isFresh<T>(entry: CacheEntry<T> | null): entry is CacheEntry<T> {
   return entry !== null && Date.now() - entry.ts < CACHE_TTL_MS;
@@ -54,19 +53,16 @@ export function invalidatePscCache() {
   routesCache = null;
   mappingsCache = null;
   mappingsIndex = null;
-  tplCache = null;
 }
 
 export async function loadTplEntries(): Promise<TplEntry[]> {
-  if (isFresh(tplCache)) return tplCache.data;
-
   const res = await fetch(TPL_SHEET_URL, { cache: "no-store" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
   const text = await res.text();
   const rows = parseCSV(text);
 
-  const data: TplEntry[] = rows
+  return rows
     .filter((r) => r["psc-tinh"] && r["3pl_uuid"])
     .map((r) => ({
       psc_tinh: r["psc-tinh"] ?? "",
@@ -74,9 +70,6 @@ export async function loadTplEntries(): Promise<TplEntry[]> {
       tpl_uuid: r["3pl_uuid"] ?? "",
       address: r["address"] ?? "",
     }));
-
-  tplCache = { data, ts: Date.now() };
-  return data;
 }
 
 // ── CSV parsing ──────────────────────────────────────────────────
