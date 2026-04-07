@@ -69,6 +69,7 @@ export default function PscTinhPage() {
   const tplRef = useRef<HTMLDivElement>(null);
 
   const [eta, setEta] = useState("");
+  const [note, setNote] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
@@ -163,6 +164,7 @@ export default function PscTinhPage() {
           tpl_uuid: selectedUuid,
           tpl_name: selectedOption?.tpl_name ?? "",
           eta,
+          note,
         }),
       });
       const data = await res.json();
@@ -280,6 +282,19 @@ export default function PscTinhPage() {
                     <option key={slot} value={slot}>{slot}</option>
                   ))}
                 </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                  Ghi chú
+                </label>
+                <textarea
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  rows={2}
+                  placeholder="VD: 1 thùng, 2 thùng, 3 thùng, mẫu khẩn, cutoff 11h..."
+                  className="w-full border rounded-xl px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 resize-none"
+                />
               </div>
             </div>
 

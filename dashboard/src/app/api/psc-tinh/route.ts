@@ -123,7 +123,7 @@ export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
 
   try {
-    const { psc_code, tpl_uuid, tpl_name, eta } = await req.json();
+    const { psc_code, tpl_uuid, tpl_name, eta, note } = await req.json();
 
     if (!psc_code || !tpl_uuid || !eta) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
@@ -152,9 +152,9 @@ export async function POST(req: NextRequest) {
 
     const refNumber = `${prefix} ${count + 1}`;
 
-    // Build ETA window: time_from = eta, time_to = eta + 5 min (Cartrack requires from < to)
+    // Build ETA window: time_from = eta, time_to = eta + 30 min
     const [etaH, etaM] = eta.split(":").map(Number);
-    const toMins = etaH * 60 + etaM + 5;
+    const toMins = etaH * 60 + etaM + 30;
     const toH = String(Math.floor(toMins / 60) % 24).padStart(2, "0");
     const toMin = String(toMins % 60).padStart(2, "0");
     const etaFrom = `${eta}:00+07:00`;
@@ -165,6 +165,7 @@ export async function POST(req: NextRequest) {
       schedule_type_id: 1,
       reference_number: refNumber,
       labels: ["🛵 Vận chuyển mẫu tỉnh"],
+      notes: note || null,
       stops: [
         {
           stop_type_id: 1,
