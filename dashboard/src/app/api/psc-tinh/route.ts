@@ -165,13 +165,13 @@ export async function POST(req: NextRequest) {
       schedule_type_id: 1,
       reference_number: refNumber,
       labels: ["🛵 Vận chuyển mẫu tỉnh"],
-      notes: note || null,
       stops: [
         {
           stop_type_id: 1,
           customer_id: tpl_uuid,
           customer_name: tpl_name,
           duration: 5,
+          note: note || null,
           delivery_windows: [{ time_from: etaFrom, time_to: etaTo }],
           todos: [
             { todo_type_id: 2, description: "" },
