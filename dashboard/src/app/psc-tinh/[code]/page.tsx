@@ -9,11 +9,31 @@ interface TplOption {
   address: string;
 }
 
+interface Order {
+  job_id: number;
+  reference: string;
+  job_status_id: number;
+  job_status: string;
+  pickup_status: string;
+  pickup_color: string;
+  dropoff_status: string;
+  dropoff_color: string;
+  eta: string | null;
+}
+
 const PSC_META: Record<string, { label: string; psc_code: string }> = {
   D021: { label: "BRA - D021 (Mỹ Tho)", psc_code: "D021" },
   D023: { label: "BRA - D023 (Vũng Tàu)", psc_code: "D023" },
   D030: { label: "BRA - D030", psc_code: "D030" },
   D036: { label: "BRA - D036 (Tân An)", psc_code: "D036" },
+};
+
+const COLOR_CLASS: Record<string, string> = {
+  slate:  "bg-slate-200 text-slate-700",
+  blue:   "bg-blue-100 text-blue-700",
+  indigo: "bg-indigo-100 text-indigo-700",
+  green:  "bg-green-100 text-green-700",
+  red:    "bg-red-100 text-red-700",
 };
 
 function buildTimeSlots(): string[] {
@@ -36,6 +56,8 @@ export default function PscTinhPage() {
 
   const [options, setOptions] = useState<TplOption[]>([]);
   const [loadError, setLoadError] = useState("");
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [ordersLoading, setOrdersLoading] = useState(true);
 
   // 3PL searchable input state
   const [tplQuery, setTplQuery] = useState("");
@@ -46,6 +68,20 @@ export default function PscTinhPage() {
   const [eta, setEta] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  const loadOrders = useCallback(async () => {
+    if (!code) return;
+    setOrdersLoading(true);
+    try {
+      const res = await fetch(`/api/psc-tinh?psc=${code}&mode=orders`);
+      const data = await res.json();
+      setOrders(data.orders ?? []);
+    } catch {
+      setOrders([]);
+    } finally {
+      setOrdersLoading(false);
+    }
+  }, [code]);
 
   const loadOptions = useCallback(async () => {
     if (!code) return;
@@ -64,7 +100,10 @@ export default function PscTinhPage() {
     }
   }, [code]);
 
-  useEffect(() => { loadOptions(); }, [loadOptions]);
+  useEffect(() => {
+    loadOptions();
+    loadOrders();
+  }, [loadOptions, loadOrders]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -130,6 +169,7 @@ export default function PscTinhPage() {
         setResult({ ok: true, msg: `Tạo thành công! ${data.reference} (Job #${data.job_id})` });
         setEta("");
         if (options.length > 1) clearTpl();
+        loadOrders();
       }
     } catch (e) {
       setResult({ ok: false, msg: String(e) });
@@ -142,7 +182,43 @@ export default function PscTinhPage() {
   const timeSlots = buildTimeSlots();
 
   return (
-    <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-slate-100 flex flex-col items-center p-4 gap-4">
+      {/* Today's orders */}
+      <div className="w-full max-w-sm bg-white rounded-2xl shadow border p-5 space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-bold text-slate-700">Yêu cầu hôm nay</h2>
+          <button onClick={loadOrders} className="text-xs text-blue-500 hover:underline">Làm mới</button>
+        </div>
+        {ordersLoading ? (
+          <p className="text-xs text-slate-400">Đang tải...</p>
+        ) : orders.length === 0 ? (
+          <p className="text-xs text-slate-400">Chưa có yêu cầu nào hôm nay.</p>
+        ) : (
+          <div className="space-y-2">
+            {orders.map((o) => (
+              <div key={o.job_id} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2.5 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-800">{o.reference}</span>
+                  {o.eta && <span className="text-xs text-slate-400">ETA {o.eta}</span>}
+                </div>
+                <div className="flex gap-1.5 flex-wrap">
+                  <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-600">
+                    {o.job_status}
+                  </span>
+                  <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md ${COLOR_CLASS[o.pickup_color]}`}>
+                    Lấy: {o.pickup_status}
+                  </span>
+                  <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md ${COLOR_CLASS[o.dropoff_color]}`}>
+                    Giao: {o.dropoff_status}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Form */}
       <div className="w-full max-w-sm bg-white rounded-2xl shadow border p-6 space-y-5">
         {/* Header */}
         <div>

@@ -18,13 +18,81 @@ function getHeaders(env: Env = "prod"): Record<string, string> {
   return headers;
 }
 
-// ── GET /api/psc-tinh?psc=D021 ───────────────────────────────────────────────
-// Returns 3PL options from sheet (address already in sheet — no Cartrack fetch needed)
+// Stop/job status labels in Vietnamese
+const STOP_STATUS: Record<number, { label: string; color: string }> = {
+  1: { label: "Chờ lấy",    color: "slate"  },
+  2: { label: "Đang đến",   color: "blue"   },
+  3: { label: "Đã đến",     color: "indigo" },
+  4: { label: "Hoàn thành", color: "green"  },
+  5: { label: "Từ chối",    color: "red"    },
+};
+
+const JOB_STATUS: Record<number, string> = {
+  2: "Chờ phân công",
+  3: "Thất bại",
+  4: "Đã phân công",
+  5: "Hoàn thành",
+  7: "Đã huỷ",
+};
+
+// ── GET /api/psc-tinh?psc=D021 — 3PL options ─────────────────────────────────
+// GET /api/psc-tinh?psc=D021&mode=orders — today's orders for this PSC
 
 export async function GET(req: NextRequest) {
-  const psc = req.nextUrl.searchParams.get("psc")?.trim().toUpperCase();
+  const psc  = req.nextUrl.searchParams.get("psc")?.trim().toUpperCase();
+  const mode = req.nextUrl.searchParams.get("mode");
+  const env  = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
+
   if (!psc) return NextResponse.json({ error: "Missing psc param" }, { status: 400 });
 
+  // ── mode=orders: fetch today's jobs for this PSC ──────────────────────────
+  if (mode === "orders") {
+    try {
+      const headers = getHeaders(env);
+      const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
+      const today = vnNow.toISOString().split("T")[0];
+      const prefix = `BRA - ${psc} - Mẫu`;
+
+      const res = await fetch(
+        `${BASE_URL}/jobs?filter[scheduled_delivery_ts_from]=${today} 00:00:00&filter[scheduled_delivery_ts_to]=${today} 23:59:59&limit=1000`,
+        { headers, cache: "no-store" }
+      );
+      if (!res.ok) return NextResponse.json({ orders: [] });
+
+      const data = await res.json();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const jobs: any[] = data.data ?? [];
+
+      const orders = jobs
+        .filter((j) => (j.reference_number ?? "").startsWith(prefix))
+        .sort((a, b) => (a.reference_number ?? "").localeCompare(b.reference_number ?? ""))
+        .map((j) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const stops: any[] = j.stops ?? [];
+          const pickup  = stops.find((s: any) => s.stop_type_id === 1);
+          const dropoff = stops.find((s: any) => s.stop_type_id === 2);
+          return {
+            job_id:        j.job_id,
+            reference:     j.reference_number,
+            job_status_id: j.job_status_id,
+            job_status:    JOB_STATUS[j.job_status_id] ?? "Không rõ",
+            pickup_status_id:  pickup?.stop_status_id  ?? null,
+            pickup_status:     STOP_STATUS[pickup?.stop_status_id]?.label  ?? "—",
+            pickup_color:      STOP_STATUS[pickup?.stop_status_id]?.color  ?? "slate",
+            dropoff_status_id: dropoff?.stop_status_id ?? null,
+            dropoff_status:    STOP_STATUS[dropoff?.stop_status_id]?.label ?? "—",
+            dropoff_color:     STOP_STATUS[dropoff?.stop_status_id]?.color ?? "slate",
+            eta: pickup?.delivery_windows?.[0]?.time_from?.slice(0, 5) ?? null,
+          };
+        });
+
+      return NextResponse.json({ orders });
+    } catch (e) {
+      return NextResponse.json({ error: String(e) }, { status: 500 });
+    }
+  }
+
+  // ── default: 3PL options ──────────────────────────────────────────────────
   try {
     const entries = await loadTplEntries();
     const options = entries
