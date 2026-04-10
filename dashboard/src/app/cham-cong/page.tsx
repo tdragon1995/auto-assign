@@ -44,21 +44,17 @@ export default function ChamCongPage() {
 
   const [status, setStatus] = useState<Status>("idle");
   const [message, setMessage] = useState("");
+  const [initialLoading, setInitialLoading] = useState(true);
 
   // Pre-fetched shift state
   const shiftStateRef = useRef<ShiftState | null>(null);
   const [shiftFetching, setShiftFetching] = useState(false);
 
-  // Pre-fetch shift state on mount if driver already saved
+  // On mount: load dropdowns + pre-fetch shift state in parallel, then hide loader
   useEffect(() => {
     const savedId = typeof window !== "undefined" ? localStorage.getItem(LS_DRIVER_ID) : null;
-    if (savedId) fetchShiftState(savedId);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
-  // Load dropdown data
-  useEffect(() => {
-    Promise.all([
+    const dropdownsPromise = Promise.all([
       fetch("/api/drivers").then((r) => r.json()),
       fetch("/api/cham-cong").then((r) => r.json()),
     ]).then(([driversData, chamCongData]) => {
@@ -78,6 +74,13 @@ export default function ChamCongPage() {
       setDrivers(sorted);
       setLocations(chamCongData.pscs ?? []);
     });
+
+    const shiftPromise = savedId ? fetchShiftState(savedId) : Promise.resolve();
+
+    Promise.all([dropdownsPromise, shiftPromise]).finally(() => {
+      setInitialLoading(false);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Pre-fetch shift state when driver is selected
@@ -240,6 +243,15 @@ export default function ChamCongPage() {
       setStatus("error");
       setMessage("Không thể kết nối. Vui lòng thử lại.");
     }
+  }
+
+  if (initialLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center gap-3">
+        <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+        <p className="text-sm text-gray-400">Đang tải...</p>
+      </div>
+    );
   }
 
   return (
