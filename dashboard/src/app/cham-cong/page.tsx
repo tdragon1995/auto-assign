@@ -75,11 +75,8 @@ export default function ChamCongPage() {
       setLocations(chamCongData.pscs ?? []);
     });
 
-    const shiftPromise = savedId ? fetchShiftState(savedId) : Promise.resolve();
-
-    Promise.all([dropdownsPromise, shiftPromise]).finally(() => {
-      setInitialLoading(false);
-    });
+    dropdownsPromise.finally(() => setInitialLoading(false));
+    if (savedId) fetchShiftState(savedId);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
