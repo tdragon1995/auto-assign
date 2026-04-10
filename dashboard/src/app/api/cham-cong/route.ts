@@ -80,7 +80,7 @@ export async function GET(req: NextRequest) {
       const today = vnNow.toISOString().split("T")[0];
 
       const res = await fetch(
-        `${BASE_URL}/jobs?filter[driver_id]=${driverId}&filter[create_ts_from]=${today} 00:00:00&filter[create_ts_to]=${today} 23:59:59&limit=100`,
+        `${BASE_URL}/jobs?filter[driver_id]=${driverId}&filter[scheduled_delivery_ts_from]=${today} 00:00:00&filter[scheduled_delivery_ts_to]=${today} 23:59:59&limit=100`,
         { headers, cache: "no-store" }
       );
 
