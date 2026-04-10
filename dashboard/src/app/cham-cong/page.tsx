@@ -141,11 +141,14 @@ export default function ChamCongPage() {
       }
 
       setStatus("success");
-      setMessage(
-        type === "check-in"
-          ? `Chấm công vào thành công! Job #${data.job_id}`
-          : `Chấm công ra thành công! Job #${data.job_id}`
-      );
+      if (type === "check-in") {
+        setMessage(`Chấm công vào thành công! Job #${data.job_id}`);
+      } else {
+        const pendingNote = data.pending_jobs > 0
+          ? ` — Hiện tại đang vẫn còn ${data.pending_jobs} jobs! Liên hệ điều phối để kiểm tra trước khi rời ca!`
+          : "";
+        setMessage(`Chấm công ra thành công! Job #${data.job_id}${pendingNote}`);
+      }
     } catch {
       setStatus("error");
       setMessage("Không thể kết nối. Vui lòng thử lại.");

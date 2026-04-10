@@ -90,61 +90,66 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing or invalid fields" }, { status: 400 });
     }
 
-    // ── Validation: fetch today's cham-cong jobs for this driver ─────────
+    // ── Fetch all today's jobs for this driver (validation + pending count) ──
     const headers = getHeaders(env);
     const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
     const today = vnNow.toISOString().split("T")[0];
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let todayJobs: any[] = [];
     const checkRes = await fetch(
       `${BASE_URL}/jobs?filter[driver_id]=${driver_id}&filter[create_ts_from]=${today} 00:00:00&filter[create_ts_to]=${today} 23:59:59&limit=100`,
       { headers, cache: "no-store" }
     );
-
     if (checkRes.ok) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const checkData = await checkRes.json();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const todayJobs: any[] = checkData.data ?? [];
+      todayJobs = checkData.data ?? [];
+    }
 
-      const chamCongJobs = todayJobs.filter(
-        (j) =>
-          (j.reference_number ?? "").startsWith("Chấm Công -") &&
-          j.job_status_id !== 7 &&
-          j.job_status_id !== 3
+    const chamCongJobs = todayJobs.filter(
+      (j) =>
+        (j.reference_number ?? "").startsWith("Chấm Công -") &&
+        j.job_status_id !== 7 &&
+        j.job_status_id !== 3
+    );
+
+    const checkInCount       = chamCongJobs.filter((j) => (j.labels ?? []).includes("check_in")).length;
+    const completedCheckOuts = chamCongJobs.filter((j) => (j.labels ?? []).includes("check_out") && j.job_status_id === 5).length;
+    const activeCheckOuts    = chamCongJobs.filter((j) => (j.labels ?? []).includes("check_out") && j.job_status_id !== 5).length;
+    const hasOpenShift       = checkInCount > completedCheckOuts;
+
+    if (type === "check-in" && hasOpenShift) {
+      return NextResponse.json(
+        { error: "Đã có sẵn Task chấm công, vui lòng hoàn thành trong app Cartrack!" },
+        { status: 409 }
       );
-
-      const checkInCount        = chamCongJobs.filter((j) => (j.labels ?? []).includes("check_in")).length;
-      const completedCheckOuts  = chamCongJobs.filter((j) => (j.labels ?? []).includes("check_out") && j.job_status_id === 5).length;
-      const activeCheckOuts     = chamCongJobs.filter((j) => (j.labels ?? []).includes("check_out") && j.job_status_id !== 5).length;
-
-      // Shift is open if more check-ins than *completed* check-outs
-      const hasOpenShift = checkInCount > completedCheckOuts;
-
-      if (type === "check-in" && hasOpenShift) {
-        return NextResponse.json(
-          { error: "Đã có sẵn Task chấm công, vui lòng hoàn thành trong app Cartrack!" },
-          { status: 409 }
-        );
-      }
-      // Block check-out if a pending check-out already exists, or shift is fully closed
-      const alreadyCheckedOut =
-        activeCheckOuts > 0 ||
-        (completedCheckOuts > 0 && completedCheckOuts >= checkInCount);
-      if (type === "check-out" && alreadyCheckedOut) {
-        return NextResponse.json(
-          { error: activeCheckOuts > 0
-              ? "Đã có yêu cầu chấm công ra đang chờ xử lý."
-              : "Đã hoàn thành chấm công, vui lòng chọn Vào ca nếu tiếp tục làm việc!" },
-          { status: 409 }
-        );
-      }
+    }
+    const alreadyCheckedOut =
+      activeCheckOuts > 0 ||
+      (completedCheckOuts > 0 && completedCheckOuts >= checkInCount);
+    if (type === "check-out" && alreadyCheckedOut) {
+      return NextResponse.json(
+        { error: activeCheckOuts > 0
+            ? "Đã có yêu cầu chấm công ra đang chờ xử lý."
+            : "Đã hoàn thành chấm công, vui lòng chọn Vào ca nếu tiếp tục làm việc!" },
+        { status: 409 }
+      );
     }
 
     const isCheckin = type === "check-in";
+
+    // Pending delivery jobs today (status=4, not cham-cong) — for check-out success message
+    const pendingJobs = !isCheckin
+      ? todayJobs.filter(
+          (j) =>
+            !(j.reference_number ?? "").startsWith("Chấm Công -") &&
+            j.job_status_id === 4
+        ).length
+      : null;
     const jobPayload = {
       job_type_id: 3,
       schedule_type_id: 1,
-      reference_number: `Chấm Công - ${psc_name} - ${isCheckin ? "Vào" : "Ra"}`,
+      reference_number: `Chấm Công - ${isCheckin ? "Vào" : "Ra"}`,
       labels: [isCheckin ? "check_in" : "check_out"],
       stops: [
         {
@@ -179,7 +184,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    return NextResponse.json({ success: true, job_id: jobId });
+    return NextResponse.json({ success: true, job_id: jobId, pending_jobs: pendingJobs });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
