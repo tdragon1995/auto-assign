@@ -113,9 +113,12 @@ export async function POST(req: NextRequest) {
           j.job_status_id !== 3
       );
 
-      const checkInCount  = chamCongJobs.filter((j) => (j.labels ?? []).includes("check_in")).length;
-      const checkOutCount = chamCongJobs.filter((j) => (j.labels ?? []).includes("check_out")).length;
-      const hasOpenShift  = checkInCount > checkOutCount;
+      const checkInCount        = chamCongJobs.filter((j) => (j.labels ?? []).includes("check_in")).length;
+      const completedCheckOuts  = chamCongJobs.filter((j) => (j.labels ?? []).includes("check_out") && j.job_status_id === 5).length;
+      const activeCheckOuts     = chamCongJobs.filter((j) => (j.labels ?? []).includes("check_out") && j.job_status_id !== 5).length;
+
+      // Shift is open if more check-ins than *completed* check-outs
+      const hasOpenShift = checkInCount > completedCheckOuts;
 
       if (type === "check-in" && hasOpenShift) {
         return NextResponse.json(
@@ -123,10 +126,15 @@ export async function POST(req: NextRequest) {
           { status: 409 }
         );
       }
-      const alreadyCheckedOut = checkOutCount > 0 && checkOutCount >= checkInCount;
+      // Block check-out if a pending check-out already exists, or shift is fully closed
+      const alreadyCheckedOut =
+        activeCheckOuts > 0 ||
+        (completedCheckOuts > 0 && completedCheckOuts >= checkInCount);
       if (type === "check-out" && alreadyCheckedOut) {
         return NextResponse.json(
-          { error: "Tài xế đã chấm công ra rồi. Vui lòng chấm công vào trước." },
+          { error: activeCheckOuts > 0
+              ? "Đã có yêu cầu chấm công ra đang chờ xử lý."
+              : "Tài xế đã chấm công ra rồi. Vui lòng chấm công vào trước." },
           { status: 409 }
         );
       }
