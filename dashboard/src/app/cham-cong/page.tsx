@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 
 interface Driver {
   driver_id: string;
@@ -13,11 +13,20 @@ interface Location {
   address: string;
 }
 
+interface ShiftState {
+  checkInCount: number;
+  completedCheckOuts: number;
+  activeCheckOuts: number;
+  pendingJobs: number;
+  fetchedAt: number;
+}
+
 type ActionType = "check-in" | "check-out";
 type Status = "idle" | "loading" | "success" | "error";
 
 const LS_DRIVER_ID   = "cc_driver_id";
 const LS_DRIVER_NAME = "cc_driver_name";
+const SHIFT_STATE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 
 export default function ChamCongPage() {
   const [drivers, setDrivers] = useState<Driver[]>([]);
@@ -35,6 +44,10 @@ export default function ChamCongPage() {
 
   const [status, setStatus] = useState<Status>("idle");
   const [message, setMessage] = useState("");
+
+  // Pre-fetched shift state
+  const shiftStateRef = useRef<ShiftState | null>(null);
+  const [shiftFetching, setShiftFetching] = useState(false);
 
   // Load dropdown data
   useEffect(() => {
@@ -59,6 +72,22 @@ export default function ChamCongPage() {
       setLocations(chamCongData.pscs ?? []);
     });
   }, []);
+
+  // Pre-fetch shift state when driver is selected
+  async function fetchShiftState(id: string) {
+    setShiftFetching(true);
+    try {
+      const res = await fetch(`/api/cham-cong?driver_id=${id}`);
+      if (res.ok) {
+        const data = await res.json();
+        shiftStateRef.current = { ...data, fetchedAt: Date.now() };
+      }
+    } catch {
+      shiftStateRef.current = null;
+    } finally {
+      setShiftFetching(false);
+    }
+  }
 
   const filteredDrivers = useMemo(() =>
     driverSearch.trim() && !driverId
@@ -86,12 +115,15 @@ export default function ChamCongPage() {
     setShowDriverList(false);
     localStorage.setItem(LS_DRIVER_ID, d.driver_id);
     localStorage.setItem(LS_DRIVER_NAME, d.driver_name);
+    shiftStateRef.current = null;
+    fetchShiftState(d.driver_id);
   }
 
   function clearDriver() {
     setDriverId("");
     setDriverName("");
     setDriverSearch("");
+    shiftStateRef.current = null;
     localStorage.removeItem(LS_DRIVER_ID);
     localStorage.removeItem(LS_DRIVER_NAME);
   }
@@ -109,6 +141,24 @@ export default function ChamCongPage() {
     setLocationSearch("");
   }
 
+  async function getShiftState(): Promise<ShiftState | null> {
+    const cached = shiftStateRef.current;
+    if (cached && Date.now() - cached.fetchedAt < SHIFT_STATE_TTL_MS) {
+      return cached;
+    }
+    // Stale or missing — re-fetch now
+    try {
+      const res = await fetch(`/api/cham-cong?driver_id=${driverId}`);
+      if (!res.ok) return null;
+      const data = await res.json();
+      const state: ShiftState = { ...data, fetchedAt: Date.now() };
+      shiftStateRef.current = state;
+      return state;
+    } catch {
+      return null;
+    }
+  }
+
   async function submit(type: ActionType) {
     if (!driverId || !locationId) {
       setStatus("error");
@@ -118,6 +168,30 @@ export default function ChamCongPage() {
 
     setStatus("loading");
     setMessage("");
+
+    // ── Client-side validation using pre-fetched shift state ─────────────
+    const shift = await getShiftState();
+    if (shift) {
+      const hasOpenShift     = shift.checkInCount > shift.completedCheckOuts;
+      const alreadyCheckedOut =
+        shift.activeCheckOuts > 0 ||
+        (shift.completedCheckOuts > 0 && shift.completedCheckOuts >= shift.checkInCount);
+
+      if (type === "check-in" && hasOpenShift) {
+        setStatus("error");
+        setMessage("Đã có sẵn Task chấm công, vui lòng hoàn thành trong app Cartrack!");
+        return;
+      }
+      if (type === "check-out" && alreadyCheckedOut) {
+        setStatus("error");
+        setMessage(
+          shift.activeCheckOuts > 0
+            ? "Đã có yêu cầu chấm công ra đang chờ xử lý."
+            : "Đã hoàn thành chấm công, vui lòng chọn Vào ca nếu tiếp tục làm việc!"
+        );
+        return;
+      }
+    }
 
     try {
       const res = await fetch("/api/cham-cong", {
@@ -140,12 +214,17 @@ export default function ChamCongPage() {
         return;
       }
 
+      // Invalidate shift state after successful action
+      shiftStateRef.current = null;
+      fetchShiftState(driverId);
+
       setStatus("success");
       if (type === "check-in") {
         setMessage(`Chấm công vào thành công! Job #${data.job_id}`);
       } else {
-        const pendingNote = data.pending_jobs > 0
-          ? ` — Hiện tại đang vẫn còn ${data.pending_jobs} jobs! Liên hệ điều phối để kiểm tra trước khi rời ca!`
+        const pending = shift?.pendingJobs ?? 0;
+        const pendingNote = pending > 0
+          ? ` — Hiện tại vẫn đang còn ${pending} công việc chưa hoàn tất! Liên hệ điều phối trước khi rời ca.`
           : "";
         setMessage(`Chấm công ra thành công! Job #${data.job_id}${pendingNote}`);
       }
@@ -165,7 +244,10 @@ export default function ChamCongPage() {
 
         {/* Driver searchable dropdown */}
         <div className="space-y-1 relative">
-          <label className="text-sm font-medium text-gray-700">Tài xế</label>
+          <label className="text-sm font-medium text-gray-700">
+            Tài xế
+            {shiftFetching && <span className="ml-2 text-xs text-gray-400">Đang kiểm tra ca...</span>}
+          </label>
           <div className="relative">
             <input
               type="text"
