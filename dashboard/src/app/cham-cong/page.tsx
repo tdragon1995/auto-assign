@@ -49,6 +49,13 @@ export default function ChamCongPage() {
   const shiftStateRef = useRef<ShiftState | null>(null);
   const [shiftFetching, setShiftFetching] = useState(false);
 
+  // Pre-fetch shift state on mount if driver already saved
+  useEffect(() => {
+    const savedId = typeof window !== "undefined" ? localStorage.getItem(LS_DRIVER_ID) : null;
+    if (savedId) fetchShiftState(savedId);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Load dropdown data
   useEffect(() => {
     Promise.all([
@@ -143,10 +150,11 @@ export default function ChamCongPage() {
 
   async function getShiftState(): Promise<ShiftState | null> {
     const cached = shiftStateRef.current;
-    if (cached && Date.now() - cached.fetchedAt < SHIFT_STATE_TTL_MS) {
+    // Use cache if fresh, or if a fetch is already in progress (avoid duplicate call)
+    if (cached && (Date.now() - cached.fetchedAt < SHIFT_STATE_TTL_MS || shiftFetching)) {
       return cached;
     }
-    // Stale or missing — re-fetch now
+    // Stale and no fetch in progress — re-fetch now
     try {
       const res = await fetch(`/api/cham-cong?driver_id=${driverId}`);
       if (!res.ok) return null;
