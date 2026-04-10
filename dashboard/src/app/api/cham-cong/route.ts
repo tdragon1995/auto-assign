@@ -90,6 +90,47 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing or invalid fields" }, { status: 400 });
     }
 
+    // ── Validation: fetch today's cham-cong jobs for this driver ─────────
+    const headers = getHeaders(env);
+    const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
+    const today = vnNow.toISOString().split("T")[0];
+
+    const checkRes = await fetch(
+      `${BASE_URL}/jobs?filter[driver_id]=${driver_id}&filter[create_ts_from]=${today} 00:00:00&filter[create_ts_to]=${today} 23:59:59&limit=100`,
+      { headers, cache: "no-store" }
+    );
+
+    if (checkRes.ok) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const checkData = await checkRes.json();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const todayJobs: any[] = checkData.data ?? [];
+
+      const chamCongJobs = todayJobs.filter(
+        (j) =>
+          (j.reference_number ?? "").startsWith("Chấm Công -") &&
+          j.job_status_id !== 7 &&
+          j.job_status_id !== 3
+      );
+
+      const checkInCount  = chamCongJobs.filter((j) => (j.labels ?? []).includes("check_in")).length;
+      const checkOutCount = chamCongJobs.filter((j) => (j.labels ?? []).includes("check_out")).length;
+      const hasOpenShift  = checkInCount > checkOutCount;
+
+      if (type === "check-in" && hasOpenShift) {
+        return NextResponse.json(
+          { error: "Tài xế đang trong ca làm việc. Vui lòng chấm công ra trước." },
+          { status: 409 }
+        );
+      }
+      if (type === "check-out" && !hasOpenShift) {
+        return NextResponse.json(
+          { error: "Không có ca làm việc đang mở. Vui lòng chấm công vào trước." },
+          { status: 409 }
+        );
+      }
+    }
+
     const isCheckin = type === "check-in";
     const jobPayload = {
       job_type_id: 3,
