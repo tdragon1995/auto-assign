@@ -123,9 +123,10 @@ export async function POST(req: NextRequest) {
           { status: 409 }
         );
       }
-      if (type === "check-out" && !hasOpenShift) {
+      const alreadyCheckedOut = checkOutCount > 0 && checkOutCount >= checkInCount;
+      if (type === "check-out" && alreadyCheckedOut) {
         return NextResponse.json(
-          { error: "Không có ca làm việc đang mở. Vui lòng chấm công vào trước." },
+          { error: "Tài xế đã chấm công ra rồi. Vui lòng chấm công vào trước." },
           { status: 409 }
         );
       }
