@@ -122,7 +122,7 @@ export async function POST(req: NextRequest) {
 
       if (type === "check-in" && hasOpenShift) {
         return NextResponse.json(
-          { error: "Tài xế đang trong ca làm việc. Vui lòng chấm công ra trước." },
+          { error: "Đã có sẵn Task chấm công, vui lòng hoàn thành trong app Cartrack!" },
           { status: 409 }
         );
       }
@@ -134,7 +134,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json(
           { error: activeCheckOuts > 0
               ? "Đã có yêu cầu chấm công ra đang chờ xử lý."
-              : "Tài xế đã chấm công ra rồi. Vui lòng chấm công vào trước." },
+              : "Đã hoàn thành chấm công, vui lòng chọn Vào ca nếu tiếp tục làm việc!" },
           { status: 409 }
         );
       }
