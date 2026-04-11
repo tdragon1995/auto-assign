@@ -81,6 +81,7 @@ export async function GET(req: NextRequest) {
             job_status: JOB_STATUS[j.job_status_id] ?? "Không rõ",
             pickup_name:      pickup?.customer_name ?? null,
             pickup_address:   tplByUuid.get(pickup?.customer_id) ?? null,
+            pickup_stop_id:   (pickup?.stop_id ?? null) as number | null,
             pickup_status_id: (pickup?.stop_status_id ?? null) as number | null,
             dropoff_status_id: dropoff?.stop_status_id ?? null,
             dropoff_status:    STOP_STATUS[dropoff?.stop_status_id]?.label ?? "—",
@@ -214,23 +215,36 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// ── DELETE /api/psc-tinh?job_id=xxx — cancel a job ───────────────────────────
+// ── PATCH /api/psc-tinh — update pickup ETA ──────────────────────────────────
 
-export async function DELETE(req: NextRequest) {
+export async function PATCH(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
-  const jobId = req.nextUrl.searchParams.get("job_id");
-
-  if (!jobId) return NextResponse.json({ error: "Missing job_id" }, { status: 400 });
 
   try {
+    const { job_id, stop_id, eta } = await req.json();
+    if (!job_id || !stop_id || !eta) {
+      return NextResponse.json({ error: "Missing job_id, stop_id or eta" }, { status: 400 });
+    }
+
+    const [etaH, etaM] = (eta as string).split(":").map(Number);
+    const toMins = etaH * 60 + etaM + 30;
+    const toH = String(Math.floor(toMins / 60) % 24).padStart(2, "0");
+    const toMin = String(toMins % 60).padStart(2, "0");
+    const etaFrom = `${eta}:00+07:00`;
+    const etaTo   = `${toH}:${toMin}:00+07:00`;
+
     const headers = getHeaders(env);
-    const res = await fetch(`${BASE_URL}/jobs/${jobId}`, {
-      method: "DELETE",
+    const res = await fetch(`${BASE_URL}/jobs/${job_id}`, {
+      method: "PUT",
       headers,
+      body: JSON.stringify({
+        stops: [{ stop_id, delivery_windows: [{ time_from: etaFrom, time_to: etaTo }] }],
+      }),
     });
+
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      return NextResponse.json({ error: "Failed to cancel job", details: err }, { status: res.status });
+      return NextResponse.json({ error: "Failed to update ETA", details: err }, { status: res.status });
     }
     return NextResponse.json({ success: true });
   } catch (e) {

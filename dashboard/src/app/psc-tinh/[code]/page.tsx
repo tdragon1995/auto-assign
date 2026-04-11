@@ -13,9 +13,8 @@ interface Order {
   job_id: number;
   reference: string;
   job_status: string;
+  pickup_stop_id: number | null;
   pickup_status_id: number | null;
-  pickup_status: string;
-  pickup_color: string;
   dropoff_status: string;
   dropoff_color: string;
   dropoff_update_ts: string | null;
@@ -63,9 +62,10 @@ export default function PscTinhPage() {
   const [loadError, setLoadError] = useState("");
   const [orders, setOrders] = useState<Order[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
-  const [cancelTarget, setCancelTarget] = useState<Order | null>(null);
-  const [cancelLoading, setCancelLoading] = useState(false);
-  const [cancelError, setCancelError] = useState("");
+  const [editTarget, setEditTarget] = useState<Order | null>(null);
+  const [editEta, setEditEta] = useState("");
+  const [editLoading, setEditLoading] = useState(false);
+  const [editError, setEditError] = useState("");
 
   const [tplQuery, setTplQuery] = useState("");
   const [selectedUuid, setSelectedUuid] = useState("");
@@ -186,23 +186,28 @@ export default function PscTinhPage() {
     }
   };
 
-  const handleCancel = async () => {
-    if (!cancelTarget) return;
-    setCancelLoading(true);
-    setCancelError("");
+  const handleEditEta = async () => {
+    if (!editTarget || !editEta) return;
+    setEditLoading(true);
+    setEditError("");
     try {
-      const res = await fetch(`/api/psc-tinh?job_id=${cancelTarget.job_id}`, { method: "DELETE" });
+      const res = await fetch("/api/psc-tinh", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: editTarget.job_id, stop_id: editTarget.pickup_stop_id, eta: editEta }),
+      });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setCancelError(data.error ?? "Huỷ thất bại");
+        setEditError(data.error ?? "Cập nhật thất bại");
         return;
       }
-      setCancelTarget(null);
+      setEditTarget(null);
+      setEditEta("");
       await loadOrders();
     } catch {
-      setCancelError("Không thể kết nối. Vui lòng thử lại.");
+      setEditError("Không thể kết nối. Vui lòng thử lại.");
     } finally {
-      setCancelLoading(false);
+      setEditLoading(false);
     }
   };
 
@@ -378,10 +383,10 @@ export default function PscTinhPage() {
                       </div>
                       {o.pickup_status_id === 1 && (
                         <button
-                          onClick={() => { setCancelTarget(o); setCancelError(""); }}
-                          className="text-[10px] font-medium text-red-500 hover:text-red-700 whitespace-nowrap"
+                          onClick={() => { setEditTarget(o); setEditEta(o.eta ?? ""); setEditError(""); }}
+                          className="text-[10px] font-medium text-blue-500 hover:text-blue-700 whitespace-nowrap"
                         >
-                          Huỷ
+                          Sửa ETA
                         </button>
                       )}
                     </div>
@@ -393,36 +398,41 @@ export default function PscTinhPage() {
         )}
       </div>
 
-      {/* Cancel confirmation overlay */}
-      {cancelTarget && (
+      {/* Edit ETA overlay */}
+      {editTarget && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4">
           <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl p-5 space-y-4">
             <div className="space-y-1">
-              <p className="text-sm font-bold text-slate-800">Xác nhận huỷ yêu cầu</p>
-              <p className="text-sm text-slate-600">
-                <span className="font-semibold">{cancelTarget.reference}</span>
-                {cancelTarget.eta && (
-                  <span className="text-slate-400"> — ETA {cancelTarget.eta}</span>
-                )}
-              </p>
+              <p className="text-sm font-bold text-slate-800">Sửa giờ lấy mẫu (ETA)</p>
+              <p className="text-xs text-slate-500 font-semibold">{editTarget.reference}</p>
             </div>
-            {cancelError && (
-              <p className="text-xs text-red-600 font-medium">{cancelError}</p>
+            <select
+              value={editEta}
+              onChange={(e) => setEditEta(e.target.value)}
+              className="w-full border rounded-xl px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+            >
+              <option value="">-- Chọn giờ mới --</option>
+              {buildTimeSlots().map((slot) => (
+                <option key={slot} value={slot}>{slot}</option>
+              ))}
+            </select>
+            {editError && (
+              <p className="text-xs text-red-600 font-medium">{editError}</p>
             )}
             <div className="grid grid-cols-2 gap-3">
               <button
-                onClick={() => { setCancelTarget(null); setCancelError(""); }}
-                disabled={cancelLoading}
+                onClick={() => { setEditTarget(null); setEditEta(""); setEditError(""); }}
+                disabled={editLoading}
                 className="py-2.5 rounded-xl text-sm font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40 transition-colors"
               >
-                Không
+                Huỷ
               </button>
               <button
-                onClick={handleCancel}
-                disabled={cancelLoading}
-                className="py-2.5 rounded-xl text-sm font-bold bg-red-500 hover:bg-red-600 text-white disabled:opacity-40 transition-colors"
+                onClick={handleEditEta}
+                disabled={editLoading || !editEta}
+                className="py-2.5 rounded-xl text-sm font-bold bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-40 transition-colors"
               >
-                {cancelLoading ? "Đang huỷ..." : "Xác nhận huỷ"}
+                {editLoading ? "Đang lưu..." : "Xác nhận"}
               </button>
             </div>
           </div>
