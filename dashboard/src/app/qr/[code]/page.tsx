@@ -25,7 +25,11 @@ interface Stop {
   activity_started_ts?: string | null;
   activity_arrived_ts?: string | null;
   activity_completed_ts?: string | null;
-  todos?: { todo_type_id: number; description?: string }[];
+  todos?: {
+    todo_type_id: number;
+    description?: string;
+    images?: { image_id: number; image_url: string; is_deleted: boolean }[];
+  }[];
 }
 
 interface Job {
@@ -74,25 +78,73 @@ function todayVN(): string {
   return new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().split("T")[0];
 }
 
+function TodoItem({ todo }: { todo: Stop["todos"] extends (infer T)[] | undefined ? T : never }) {
+  const [expanded, setExpanded] = useState(false);
+  if (!todo) return null;
+
+  const emoji = TODO_EMOJI[todo.todo_type_id];
+  if (!emoji) return null;
+
+  const images = (todo.images ?? []).filter((img) => !img.is_deleted);
+  const hasImages = images.length > 0;
+  const isNote = todo.todo_type_id === 5;
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-1.5">
+        {hasImages ? (
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            className="flex items-center gap-1 text-sm active:opacity-70"
+          >
+            <span>{emoji}</span>
+            <span className="text-[11px] text-slate-500">×{images.length}</span>
+            <span className="text-[10px] text-blue-400">{expanded ? "▲" : "▼"}</span>
+          </button>
+        ) : (
+          <span className="text-sm">{emoji}</span>
+        )}
+        {isNote && todo.description && (
+          <span className="text-xs text-slate-600 italic">{todo.description}</span>
+        )}
+      </div>
+      {expanded && hasImages && (
+        <div className="grid grid-cols-2 gap-1.5 mt-1">
+          {images.map((img) => (
+            <a key={img.image_id} href={img.image_url} target="_blank" rel="noopener noreferrer">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={img.image_url}
+                alt=""
+                className="w-full rounded-lg object-cover aspect-square border border-slate-200"
+              />
+            </a>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StopCard({ stop }: { stop: Stop }) {
   const s = STOP_STATUS[stop.stop_status_id] ?? { label: "?", color: "bg-slate-100 text-slate-600" };
   const ts = latestTs(stop);
   const todos = (stop.todos ?? []).filter((t) => TODO_EMOJI[t.todo_type_id]);
 
   return (
-    <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 space-y-1">
+    <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 space-y-1.5">
       <div className="flex items-center justify-between">
         <span className="text-xs font-semibold text-slate-500">{STOP_TYPE[stop.stop_type_id] ?? "Stop"}</span>
         <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md ${s.color}`}>{s.label}</span>
       </div>
       <p className="text-sm font-medium text-slate-800">{stop.customer_name}</p>
       {stop.address_line_1 && <p className="text-xs text-slate-500">{stop.address_line_1}</p>}
-      <div className="flex items-center gap-2 flex-wrap">
-        {todos.map((t) => (
-          <span key={t.todo_type_id} className="text-base">{TODO_EMOJI[t.todo_type_id]}</span>
-        ))}
-        {ts && <span className="text-[10px] text-slate-400 ml-auto">{fmtTs(ts)}</span>}
-      </div>
+      {ts && <span className="text-[10px] text-slate-400">{fmtTs(ts)}</span>}
+      {todos.length > 0 && (
+        <div className="space-y-1.5 pt-0.5">
+          {todos.map((t) => <TodoItem key={t.todo_type_id} todo={t} />)}
+        </div>
+      )}
     </div>
   );
 }
@@ -146,32 +198,32 @@ export default function QrPage() {
       .catch(() => { setNotFound(true); setLoading(false); });
   }, [code]);
 
-  const loadJobs = useCallback(async () => {
+  const filterByLocation = useCallback(
+    (jobs: Job[]) => jobs.filter((j) => (j.stops ?? []).some((s) => s.customer_id === code)),
+    [code]
+  );
+
+  const loadJobs = useCallback(async (status: 4 | 5) => {
     setJobsLoading(true);
     try {
-      const [activeRes, doneRes] = await Promise.all([
-        fetch(`/api/location-jobs?date=${date}&status=4`),
-        fetch(`/api/location-jobs?date=${date}&status=5`),
-      ]);
-      const [activeData, doneData] = await Promise.all([activeRes.json(), doneRes.json()]);
-
-      const filterByLocation = (jobs: Job[]) =>
-        jobs.filter((j) =>
-          (j.stops ?? []).some((s) => s.customer_id === code)
-        );
-
-      setActiveJobs(filterByLocation(activeData.jobs ?? []));
-      setDoneJobs(filterByLocation(doneData.jobs ?? []));
+      const res = await fetch(`/api/location-jobs?date=${date}&status=${status}`);
+      const data = await res.json();
+      const filtered = filterByLocation(data.jobs ?? []);
+      if (status === 4) setActiveJobs(filtered);
+      else setDoneJobs(filtered);
     } catch {
-      setActiveJobs([]);
-      setDoneJobs([]);
+      if (status === 4) setActiveJobs([]);
+      else setDoneJobs([]);
     } finally {
       setJobsLoading(false);
     }
-  }, [date, code]);
+  }, [date, filterByLocation]);
 
-  // Load jobs when tab is open and date changes
-  useEffect(() => { if (tab !== null) loadJobs(); }, [loadJobs, tab]);
+  // Load when tab switches or date changes
+  useEffect(() => {
+    if (tab === "active") loadJobs(4);
+    else if (tab === "done") loadJobs(5);
+  }, [tab, loadJobs]);
 
   const handleAssign = async () => {
     if (!route) return;
@@ -309,7 +361,7 @@ export default function QrPage() {
                 onChange={(e) => setDate(e.target.value)}
                 className="flex-1 border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
               />
-              <button onClick={loadJobs} className="text-xs text-blue-500 hover:underline whitespace-nowrap">Làm mới</button>
+              <button onClick={() => tab === "active" ? loadJobs(4) : loadJobs(5)} className="text-xs text-blue-500 hover:underline whitespace-nowrap">Làm mới</button>
             </div>
 
             {jobsLoading ? (
