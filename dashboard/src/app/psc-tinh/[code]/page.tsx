@@ -13,6 +13,7 @@ interface Order {
   job_id: number;
   reference: string;
   job_status: string;
+  pickup_status_id: number | null;
   pickup_status: string;
   pickup_color: string;
   dropoff_status: string;
@@ -62,6 +63,9 @@ export default function PscTinhPage() {
   const [loadError, setLoadError] = useState("");
   const [orders, setOrders] = useState<Order[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
+  const [cancelTarget, setCancelTarget] = useState<Order | null>(null);
+  const [cancelLoading, setCancelLoading] = useState(false);
+  const [cancelError, setCancelError] = useState("");
 
   const [tplQuery, setTplQuery] = useState("");
   const [selectedUuid, setSelectedUuid] = useState("");
@@ -179,6 +183,26 @@ export default function PscTinhPage() {
       setResult({ ok: false, msg: String(e) });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleCancel = async () => {
+    if (!cancelTarget) return;
+    setCancelLoading(true);
+    setCancelError("");
+    try {
+      const res = await fetch(`/api/psc-tinh?job_id=${cancelTarget.job_id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setCancelError(data.error ?? "Huỷ thất bại");
+        return;
+      }
+      setCancelTarget(null);
+      await loadOrders();
+    } catch {
+      setCancelError("Không thể kết nối. Vui lòng thử lại.");
+    } finally {
+      setCancelLoading(false);
     }
   };
 
@@ -341,14 +365,24 @@ export default function PscTinhPage() {
                     {o.pickup_address && (
                       <p className="text-[11px] text-slate-500">{o.pickup_address}</p>
                     )}
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md ${COLOR_CLASS[o.dropoff_color]}`}>
-                        Giao D001: {o.dropoff_status}
-                      </span>
-                      {o.dropoff_update_ts && (
-                        <span className="text-[10px] text-slate-400">
-                          {o.dropoff_update_ts.slice(11, 16)}
+                    <div className="flex items-center justify-between gap-1.5">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md ${COLOR_CLASS[o.dropoff_color]}`}>
+                          Giao D001: {o.dropoff_status}
                         </span>
+                        {o.dropoff_update_ts && (
+                          <span className="text-[10px] text-slate-400">
+                            {o.dropoff_update_ts.slice(11, 16)}
+                          </span>
+                        )}
+                      </div>
+                      {o.pickup_status_id === 1 && (
+                        <button
+                          onClick={() => { setCancelTarget(o); setCancelError(""); }}
+                          className="text-[10px] font-medium text-red-500 hover:text-red-700 whitespace-nowrap"
+                        >
+                          Huỷ
+                        </button>
                       )}
                     </div>
                   </div>
@@ -358,6 +392,42 @@ export default function PscTinhPage() {
           </div>
         )}
       </div>
+
+      {/* Cancel confirmation overlay */}
+      {cancelTarget && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4">
+          <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl p-5 space-y-4">
+            <div className="space-y-1">
+              <p className="text-sm font-bold text-slate-800">Xác nhận huỷ yêu cầu</p>
+              <p className="text-sm text-slate-600">
+                <span className="font-semibold">{cancelTarget.reference}</span>
+                {cancelTarget.eta && (
+                  <span className="text-slate-400"> — ETA {cancelTarget.eta}</span>
+                )}
+              </p>
+            </div>
+            {cancelError && (
+              <p className="text-xs text-red-600 font-medium">{cancelError}</p>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={() => { setCancelTarget(null); setCancelError(""); }}
+                disabled={cancelLoading}
+                className="py-2.5 rounded-xl text-sm font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40 transition-colors"
+              >
+                Không
+              </button>
+              <button
+                onClick={handleCancel}
+                disabled={cancelLoading}
+                className="py-2.5 rounded-xl text-sm font-bold bg-red-500 hover:bg-red-600 text-white disabled:opacity-40 transition-colors"
+              >
+                {cancelLoading ? "Đang huỷ..." : "Xác nhận huỷ"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

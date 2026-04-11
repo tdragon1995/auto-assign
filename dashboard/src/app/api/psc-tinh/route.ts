@@ -79,8 +79,9 @@ export async function GET(req: NextRequest) {
             job_id:    j.job_id,
             reference: j.reference_number,
             job_status: JOB_STATUS[j.job_status_id] ?? "Không rõ",
-            pickup_name:    pickup?.customer_name ?? null,
-            pickup_address: tplByUuid.get(pickup?.customer_id) ?? null,
+            pickup_name:      pickup?.customer_name ?? null,
+            pickup_address:   tplByUuid.get(pickup?.customer_id) ?? null,
+            pickup_status_id: (pickup?.stop_status_id ?? null) as number | null,
             dropoff_status_id: dropoff?.stop_status_id ?? null,
             dropoff_status:    STOP_STATUS[dropoff?.stop_status_id]?.label ?? "—",
             dropoff_color:     STOP_STATUS[dropoff?.stop_status_id]?.color ?? "slate",
@@ -208,6 +209,30 @@ export async function POST(req: NextRequest) {
       reference: refNumber,
       job_id: created.data?.job_id,
     });
+  } catch (e) {
+    return NextResponse.json({ error: String(e) }, { status: 500 });
+  }
+}
+
+// ── DELETE /api/psc-tinh?job_id=xxx — cancel a job ───────────────────────────
+
+export async function DELETE(req: NextRequest) {
+  const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
+  const jobId = req.nextUrl.searchParams.get("job_id");
+
+  if (!jobId) return NextResponse.json({ error: "Missing job_id" }, { status: 400 });
+
+  try {
+    const headers = getHeaders(env);
+    const res = await fetch(`${BASE_URL}/jobs/${jobId}`, {
+      method: "DELETE",
+      headers,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      return NextResponse.json({ error: "Failed to cancel job", details: err }, { status: res.status });
+    }
+    return NextResponse.json({ success: true });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
