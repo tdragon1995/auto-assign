@@ -53,7 +53,7 @@ const STOP_STATUS: Record<number, { label: string; color: string }> = {
   5: { label: "Từ chối",    color: "bg-red-100 text-red-700"      },
 };
 
-const STOP_TYPE: Record<number, string> = { 1: "Lấy", 2: "Giao", 3: "Dropoff" };
+const STOP_TYPE: Record<number, string> = { 1: "Lấy", 2: "Giao", 3: "Giao hàng" };
 
 const TODO_EMOJI: Record<number, string> = {
   1: "✍️",
@@ -127,41 +127,91 @@ function TodoItem({ todo }: { todo: Stop["todos"] extends (infer T)[] | undefine
   );
 }
 
-function StopCard({ stop }: { stop: Stop }) {
+// Compact stop tile shown in the 2-col grid
+function StopTile({ stop, onClick }: { stop: Stop; onClick: () => void }) {
   const s = STOP_STATUS[stop.stop_status_id] ?? { label: "?", color: "bg-slate-100 text-slate-600" };
   const ts = latestTs(stop);
+
+  return (
+    <button
+      onClick={onClick}
+      className="w-full text-left rounded-lg border border-slate-100 bg-slate-50 px-2.5 py-2 space-y-1 active:bg-slate-100 transition-colors"
+    >
+      <div className="flex items-center justify-between gap-1">
+        <span className="text-[10px] font-semibold text-slate-400 uppercase">{STOP_TYPE[stop.stop_type_id] ?? "Stop"}</span>
+        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md ${s.color}`}>{s.label}</span>
+      </div>
+      <p className="text-xs font-semibold text-slate-800 leading-tight line-clamp-2">{stop.customer_name}</p>
+      {ts && <p className="text-[10px] text-slate-400">{fmtTs(ts)}</p>}
+    </button>
+  );
+}
+
+// Bottom sheet with full stop details; tap backdrop or Đóng to close
+function StopSheet({ stop, onClose }: { stop: Stop; onClose: () => void }) {
+  const s = STOP_STATUS[stop.stop_status_id] ?? { label: "?", color: "bg-slate-100 text-slate-600" };
   const todos = (stop.todos ?? []).filter((t) => TODO_EMOJI[t.todo_type_id]);
 
   return (
-    <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 space-y-1.5">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-semibold text-slate-500">{STOP_TYPE[stop.stop_type_id] ?? "Stop"}</span>
-        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md ${s.color}`}>{s.label}</span>
-      </div>
-      <p className="text-sm font-medium text-slate-800">{stop.customer_name}</p>
-      {stop.address_line_1 && <p className="text-xs text-slate-500">{stop.address_line_1}</p>}
-      {ts && <span className="text-[10px] text-slate-400">{fmtTs(ts)}</span>}
-      {todos.length > 0 && (
-        <div className="space-y-1.5 pt-0.5">
-          {todos.map((t) => <TodoItem key={t.todo_type_id} todo={t} />)}
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl p-5 space-y-3" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <p className="text-[10px] font-semibold text-slate-400 uppercase">{STOP_TYPE[stop.stop_type_id] ?? "Stop"}</p>
+            <p className="text-sm font-bold text-slate-800">{stop.customer_name}</p>
+          </div>
+          <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md whitespace-nowrap mt-0.5 ${s.color}`}>{s.label}</span>
         </div>
-      )}
+
+        {stop.address_line_1 && (
+          <p className="text-xs text-slate-500">{stop.address_line_1}</p>
+        )}
+
+        {(stop.activity_started_ts || stop.activity_arrived_ts || stop.activity_completed_ts) && (
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
+            {stop.activity_started_ts   && <span>Bắt đầu <span className="font-semibold text-slate-700">{fmtTs(stop.activity_started_ts)}</span></span>}
+            {stop.activity_arrived_ts   && <span>Đến <span className="font-semibold text-slate-700">{fmtTs(stop.activity_arrived_ts)}</span></span>}
+            {stop.activity_completed_ts && <span>Xong <span className="font-semibold text-slate-700">{fmtTs(stop.activity_completed_ts)}</span></span>}
+          </div>
+        )}
+
+        {todos.length > 0 && (
+          <div className="space-y-2 pt-1 border-t border-slate-100">
+            {todos.map((t) => <TodoItem key={t.todo_type_id} todo={t} />)}
+          </div>
+        )}
+
+        <button
+          onClick={onClose}
+          className="w-full py-2.5 rounded-xl text-sm font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
+        >
+          Đóng
+        </button>
+      </div>
     </div>
   );
 }
 
 function JobCard({ job }: { job: Job }) {
+  const [sheetStop, setSheetStop] = useState<Stop | null>(null);
+  const isSingleStop = job.stops.length === 1;
+
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-2 shadow-sm">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-mono text-slate-400">#{job.job_id}</span>
-        <span className="text-xs text-slate-500 truncate max-w-[60%] text-right">{job.reference_number}</span>
+    <>
+      <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-2 shadow-sm">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs text-slate-600">Tài xế: <span className="font-semibold">{driverName(job)}</span></span>
+          <span className="text-[10px] text-slate-400 truncate max-w-[50%] text-right">{job.reference_number}</span>
+        </div>
+        <div className={`grid gap-2 ${isSingleStop ? "grid-cols-1" : "grid-cols-2"}`}>
+          {job.stops.map((s) => (
+            <StopTile key={s.stop_id} stop={s} onClick={() => setSheetStop(s)} />
+          ))}
+        </div>
       </div>
-      <p className="text-xs text-slate-600">Tài xế: <span className="font-semibold">{driverName(job)}</span></p>
-      <div className="space-y-1.5">
-        {job.stops.map((s) => <StopCard key={s.stop_id} stop={s} />)}
-      </div>
-    </div>
+
+      {sheetStop && <StopSheet stop={sheetStop} onClose={() => setSheetStop(null)} />}
+    </>
   );
 }
 
