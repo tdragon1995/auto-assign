@@ -28,6 +28,7 @@ interface Stop {
   todos?: {
     todo_type_id: number;
     description?: string;
+    note?: string;
     images?: { image_id: number; image_url: string; is_deleted: boolean }[];
   }[];
 }
@@ -104,8 +105,8 @@ function TodoItem({ todo }: { todo: Stop["todos"] extends (infer T)[] | undefine
         ) : (
           <span className="text-sm">{emoji}</span>
         )}
-        {isNote && todo.description && (
-          <span className="text-xs text-slate-600 italic">{todo.description}</span>
+        {isNote && (todo.note || todo.description) && (
+          <span className="text-xs text-slate-600 italic">{todo.note || todo.description}</span>
         )}
       </div>
       {expanded && hasImages && (
