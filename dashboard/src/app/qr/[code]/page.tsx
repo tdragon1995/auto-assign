@@ -245,6 +245,7 @@ export default function QrPage() {
   const [activeJobs, setActiveJobs] = useState<Job[]>([]);
   const [doneJobs, setDoneJobs] = useState<Job[]>([]);
   const [jobsLoading, setJobsLoading] = useState(false);
+  const [search, setSearch] = useState("");
 
   // Fetch route config
   useEffect(() => {
@@ -347,7 +348,12 @@ export default function QrPage() {
     );
   }
 
-  const displayJobs = tab === "active" ? activeJobs : tab === "done" ? doneJobs : [];
+  const baseJobs = tab === "active" ? activeJobs : tab === "done" ? doneJobs : [];
+  const displayJobs = search.trim()
+    ? baseJobs.filter((j) =>
+        j.stops.some((s) => s.customer_name.toLowerCase().includes(search.toLowerCase()))
+      )
+    : baseJobs;
 
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col items-center p-4 gap-4">
@@ -431,13 +437,33 @@ export default function QrPage() {
               />
               <button onClick={() => tab === "active" ? loadJobs(4) : loadJobs(5)} className="text-xs text-blue-500 hover:underline whitespace-nowrap">Làm mới</button>
             </div>
+            <div className="relative">
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Tìm tên địa điểm..."
+                className="w-full border rounded-lg px-3 py-1.5 pr-7 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+              />
+              {search && (
+                <button
+                  onClick={() => setSearch("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-base leading-none"
+                >
+                  ×
+                </button>
+              )}
+            </div>
 
             {jobsLoading ? (
               <p className="text-xs text-slate-400 text-center py-6">Đang tải...</p>
             ) : displayJobs.length === 0 ? (
-              <p className="text-xs text-slate-400 text-center py-6">Không có đơn hàng.</p>
+              <p className="text-xs text-slate-400 text-center py-6">{search ? "Không tìm thấy kết quả." : "Không có đơn hàng."}</p>
             ) : (
               <div className="space-y-2">
+                {search && (
+                  <p className="text-[11px] text-slate-400 text-right">{displayJobs.length} kết quả</p>
+                )}
                 {displayJobs.map((j) => <JobCard key={j.job_id} job={j} />)}
               </div>
             )}
