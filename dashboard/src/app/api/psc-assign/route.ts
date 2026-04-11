@@ -92,12 +92,9 @@ export async function POST(req: NextRequest) {
     }
 
     // --- Create the job ---
-    const refBase = ref_number || `${psc_pickup}▶️${dropoff_location}`;
-    const existingCount = allTodayJobs.filter((job: any) => {
-      const r: string = job.reference_number ?? "";
-      return r === refBase || r.startsWith(`${refBase}_`);
-    }).length;
-    const refLabel = `${refBase}_${existingCount + 1}`;
+    const hh = String(vnNow.getUTCHours()).padStart(2, "0");
+    const mm = String(vnNow.getUTCMinutes()).padStart(2, "0");
+    const refLabel = ref_number || `${psc_pickup}▶️${dropoff_location}_${hh}:${mm}`;
 
     const jobPayload = {
       job_type_id: 1,
