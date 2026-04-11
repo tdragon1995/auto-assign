@@ -142,7 +142,7 @@ function StopTile({ stop, onClick }: { stop: Stop; onClick: () => void }) {
         <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md ${s.color}`}>{s.label}</span>
       </div>
       <div className="flex items-center justify-between gap-1">
-        <p className="text-xs font-semibold text-slate-800 leading-tight truncate">{stop.customer_name}</p>
+        <p className="text-xs font-semibold text-slate-800 leading-tight truncate" title={stop.customer_name}>{stop.customer_name}</p>
         <span className="text-slate-300 text-xs flex-shrink-0">›</span>
       </div>
       {ts && <p className="text-[10px] text-slate-400">{fmtTs(ts)}</p>}
