@@ -234,12 +234,29 @@ export async function PATCH(req: NextRequest) {
     const etaTo   = `${toH}:${toMin}:00+07:00`;
 
     const headers = getHeaders(env);
+
+    // Fetch full job to get all stop fields required by Cartrack PUT
+    const jobRes = await fetch(`${BASE_URL}/jobs/${job_id}`, { headers, cache: "no-store" });
+    if (!jobRes.ok) return NextResponse.json({ error: "Job not found" }, { status: 404 });
+    const jobData = await jobRes.json();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const currentStops: any[] = jobData.data?.stops ?? [];
+
+    const updatedStops = currentStops.map((s: any) => ({
+      stop_id:       s.stop_id,
+      stop_type_id:  s.stop_type_id,
+      customer_id:   s.customer_id,
+      customer_name: s.customer_name,
+      country_id:    s.country_id,
+      delivery_windows: s.stop_id === stop_id
+        ? [{ time_from: etaFrom, time_to: etaTo }]
+        : (s.delivery_windows ?? []),
+    }));
+
     const res = await fetch(`${BASE_URL}/jobs/${job_id}`, {
       method: "PUT",
       headers,
-      body: JSON.stringify({
-        stops: [{ stop_id, delivery_windows: [{ time_from: etaFrom, time_to: etaTo }] }],
-      }),
+      body: JSON.stringify({ stops: updatedStops }),
     });
 
     if (!res.ok) {
