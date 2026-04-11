@@ -40,7 +40,7 @@ interface Job {
   reference_number: string;
   job_status_id: number;
   scheduled_delivery_ts: string | null;
-  driver?: { first_name?: string; last_name?: string } | null;
+  driver?: { last_name?: string } | null;
   stops: Stop[];
 }
 
@@ -74,8 +74,7 @@ function fmtTs(ts: string | null): string {
 }
 
 function driverName(job: Job): string {
-  if (!job.driver) return "—";
-  return `${job.driver.first_name ?? ""} ${job.driver.last_name ?? ""}`.trim() || "—";
+  return job.driver?.last_name?.trim() || "—";
 }
 
 function todayVN(): string {
