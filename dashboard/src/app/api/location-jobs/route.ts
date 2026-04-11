@@ -30,23 +30,14 @@ export async function GET(req: NextRequest) {
   try {
     const headers = getHeaders(env);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const allJobs: any[] = [];
-    let page = 1;
-    const limit = 100;
-
-    while (true) {
-      const res = await fetch(
-        `${BASE_URL}/jobs?filter[scheduled_delivery_ts_from]=${date} 00:00:00&filter[scheduled_delivery_ts_to]=${date} 23:59:59&filter[job_status_id]=${status}&page=${page}&limit=${limit}`,
-        { headers, cache: "no-store" }
-      );
-      if (!res.ok) break;
-      const data = await res.json();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const jobs: any[] = data.data ?? [];
-      allJobs.push(...jobs);
-      if (jobs.length < limit) break;
-      page++;
-    }
+    const res = await fetch(
+      `${BASE_URL}/jobs?filter[scheduled_delivery_ts_from]=${date} 00:00:00&filter[scheduled_delivery_ts_to]=${date} 23:59:59&filter[job_status_id]=${status}&limit=1000`,
+      { headers, cache: "no-store" }
+    );
+    if (!res.ok) return NextResponse.json({ jobs: [] });
+    const data = await res.json();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const allJobs: any[] = data.data ?? [];
 
     return NextResponse.json({ jobs: allJobs });
   } catch (e) {

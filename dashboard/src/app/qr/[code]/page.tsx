@@ -133,7 +133,7 @@ export default function QrPage() {
   const [assignStatus, setAssignStatus] = useState<Status>("idle");
   const [assignResult, setAssignResult] = useState<string>("");
 
-  const [tab, setTab] = useState<TabType>("active");
+  const [tab, setTab] = useState<TabType | null>(null);
   const [date, setDate] = useState(todayVN());
   const [activeJobs, setActiveJobs] = useState<Job[]>([]);
   const [doneJobs, setDoneJobs] = useState<Job[]>([]);
@@ -177,8 +177,8 @@ export default function QrPage() {
     }
   }, [date, code]);
 
-  // Load jobs when date changes
-  useEffect(() => { loadJobs(); }, [loadJobs]);
+  // Load jobs when tab is open and date changes
+  useEffect(() => { if (tab !== null) loadJobs(); }, [loadJobs, tab]);
 
   const handleAssign = async () => {
     if (!route) return;
@@ -234,7 +234,7 @@ export default function QrPage() {
     );
   }
 
-  const displayJobs = tab === "active" ? activeJobs : doneJobs;
+  const displayJobs = tab === "active" ? activeJobs : tab === "done" ? doneJobs : [];
 
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col items-center p-4 gap-4">
@@ -297,28 +297,30 @@ export default function QrPage() {
           </button>
         </div>
 
-        <div className="p-4 space-y-3">
-          {/* Date picker + refresh */}
-          <div className="flex items-center gap-2">
-            <input
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              className="flex-1 border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-            />
-            <button onClick={loadJobs} className="text-xs text-blue-500 hover:underline whitespace-nowrap">Làm mới</button>
-          </div>
-
-          {jobsLoading ? (
-            <p className="text-xs text-slate-400 text-center py-6">Đang tải...</p>
-          ) : displayJobs.length === 0 ? (
-            <p className="text-xs text-slate-400 text-center py-6">Không có đơn hàng.</p>
-          ) : (
-            <div className="space-y-2">
-              {displayJobs.map((j) => <JobCard key={j.job_id} job={j} />)}
+        {tab !== null && (
+          <div className="p-4 space-y-3">
+            {/* Date picker + refresh */}
+            <div className="flex items-center gap-2">
+              <input
+                type="date"
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+                className="flex-1 border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+              />
+              <button onClick={loadJobs} className="text-xs text-blue-500 hover:underline whitespace-nowrap">Làm mới</button>
             </div>
-          )}
-        </div>
+
+            {jobsLoading ? (
+              <p className="text-xs text-slate-400 text-center py-6">Đang tải...</p>
+            ) : displayJobs.length === 0 ? (
+              <p className="text-xs text-slate-400 text-center py-6">Không có đơn hàng.</p>
+            ) : (
+              <div className="space-y-2">
+                {displayJobs.map((j) => <JobCard key={j.job_id} job={j} />)}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
