@@ -105,8 +105,8 @@ function TodoItem({ todo }: { todo: Stop["todos"] extends (infer T)[] | undefine
         ) : (
           <span className="text-sm">{emoji}</span>
         )}
-        {isNote && (todo.note || todo.description) && (
-          <span className="text-xs text-slate-600 italic">{todo.note || todo.description}</span>
+        {isNote && todo.note && (
+          <span className="text-xs text-slate-600 italic">{todo.note}</span>
         )}
       </div>
       {expanded && hasImages && (
