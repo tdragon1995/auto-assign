@@ -127,7 +127,7 @@ function TodoItem({ todo }: { todo: Stop["todos"] extends (infer T)[] | undefine
   );
 }
 
-// Compact stop tile shown in the 2-col grid
+// Compact stop tile — truncated name, status, timestamp, chevron hint
 function StopTile({ stop, onClick }: { stop: Stop; onClick: () => void }) {
   const s = STOP_STATUS[stop.stop_status_id] ?? { label: "?", color: "bg-slate-100 text-slate-600" };
   const ts = latestTs(stop);
@@ -141,46 +141,62 @@ function StopTile({ stop, onClick }: { stop: Stop; onClick: () => void }) {
         <span className="text-[10px] font-semibold text-slate-400 uppercase">{STOP_TYPE[stop.stop_type_id] ?? "Stop"}</span>
         <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md ${s.color}`}>{s.label}</span>
       </div>
-      <p className="text-xs font-semibold text-slate-800 leading-tight line-clamp-2">{stop.customer_name}</p>
+      <div className="flex items-center justify-between gap-1">
+        <p className="text-xs font-semibold text-slate-800 leading-tight truncate">{stop.customer_name}</p>
+        <span className="text-slate-300 text-xs flex-shrink-0">›</span>
+      </div>
       {ts && <p className="text-[10px] text-slate-400">{fmtTs(ts)}</p>}
     </button>
   );
 }
 
-// Bottom sheet with full stop details; tap backdrop or Đóng to close
-function StopSheet({ stop, onClose }: { stop: Stop; onClose: () => void }) {
+// Full stop detail block used inside the job sheet
+function StopDetail({ stop }: { stop: Stop }) {
   const s = STOP_STATUS[stop.stop_status_id] ?? { label: "?", color: "bg-slate-100 text-slate-600" };
   const todos = (stop.todos ?? []).filter((t) => TODO_EMOJI[t.todo_type_id]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4" onClick={onClose}>
-      <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl p-5 space-y-3" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-start justify-between gap-2">
-          <div>
-            <p className="text-[10px] font-semibold text-slate-400 uppercase">{STOP_TYPE[stop.stop_type_id] ?? "Stop"}</p>
-            <p className="text-sm font-bold text-slate-800">{stop.customer_name}</p>
-          </div>
-          <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md whitespace-nowrap mt-0.5 ${s.color}`}>{s.label}</span>
+    <div className="space-y-1.5">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className="text-[10px] font-semibold text-slate-400 uppercase">{STOP_TYPE[stop.stop_type_id] ?? "Stop"}</p>
+          <p className="text-sm font-bold text-slate-800">{stop.customer_name}</p>
         </div>
+        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md whitespace-nowrap ${s.color}`}>{s.label}</span>
+      </div>
+      {stop.address_line_1 && (
+        <p className="text-xs text-slate-500">{stop.address_line_1}</p>
+      )}
+      {(stop.activity_started_ts || stop.activity_arrived_ts || stop.activity_completed_ts) && (
+        <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-500">
+          {stop.activity_started_ts   && <span>Bắt đầu <span className="font-semibold text-slate-700">{fmtTs(stop.activity_started_ts)}</span></span>}
+          {stop.activity_arrived_ts   && <span>Đến <span className="font-semibold text-slate-700">{fmtTs(stop.activity_arrived_ts)}</span></span>}
+          {stop.activity_completed_ts && <span>Xong <span className="font-semibold text-slate-700">{fmtTs(stop.activity_completed_ts)}</span></span>}
+        </div>
+      )}
+      {todos.length > 0 && (
+        <div className="space-y-1.5 pt-0.5">
+          {todos.map((t) => <TodoItem key={t.todo_type_id} todo={t} />)}
+        </div>
+      )}
+    </div>
+  );
+}
 
-        {stop.address_line_1 && (
-          <p className="text-xs text-slate-500">{stop.address_line_1}</p>
-        )}
-
-        {(stop.activity_started_ts || stop.activity_arrived_ts || stop.activity_completed_ts) && (
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
-            {stop.activity_started_ts   && <span>Bắt đầu <span className="font-semibold text-slate-700">{fmtTs(stop.activity_started_ts)}</span></span>}
-            {stop.activity_arrived_ts   && <span>Đến <span className="font-semibold text-slate-700">{fmtTs(stop.activity_arrived_ts)}</span></span>}
-            {stop.activity_completed_ts && <span>Xong <span className="font-semibold text-slate-700">{fmtTs(stop.activity_completed_ts)}</span></span>}
+// Bottom sheet showing full job (both stops, driver, ref) — tap backdrop or Đóng to close
+function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl p-5 space-y-4 max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-2">
+          <p className="text-sm font-bold text-slate-800">Tài xế: {driverName(job)}</p>
+          <p className="text-[10px] text-slate-400 text-right break-all max-w-[55%]">{job.reference_number}</p>
+        </div>
+        {job.stops.map((s, i) => (
+          <div key={s.stop_id} className={i > 0 ? "pt-3 border-t border-slate-100" : ""}>
+            <StopDetail stop={s} />
           </div>
-        )}
-
-        {todos.length > 0 && (
-          <div className="space-y-2 pt-1 border-t border-slate-100">
-            {todos.map((t) => <TodoItem key={t.todo_type_id} todo={t} />)}
-          </div>
-        )}
-
+        ))}
         <button
           onClick={onClose}
           className="w-full py-2.5 rounded-xl text-sm font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
@@ -193,24 +209,19 @@ function StopSheet({ stop, onClose }: { stop: Stop; onClose: () => void }) {
 }
 
 function JobCard({ job }: { job: Job }) {
-  const [sheetStop, setSheetStop] = useState<Stop | null>(null);
+  const [sheetOpen, setSheetOpen] = useState(false);
   const isSingleStop = job.stops.length === 1;
 
   return (
     <>
-      <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-2 shadow-sm">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-xs text-slate-600">Tài xế: <span className="font-semibold">{driverName(job)}</span></span>
-          <span className="text-[10px] text-slate-400 truncate max-w-[50%] text-right">{job.reference_number}</span>
-        </div>
+      <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
         <div className={`grid gap-2 ${isSingleStop ? "grid-cols-1" : "grid-cols-2"}`}>
           {job.stops.map((s) => (
-            <StopTile key={s.stop_id} stop={s} onClick={() => setSheetStop(s)} />
+            <StopTile key={s.stop_id} stop={s} onClick={() => setSheetOpen(true)} />
           ))}
         </div>
       </div>
-
-      {sheetStop && <StopSheet stop={sheetStop} onClose={() => setSheetStop(null)} />}
+      {sheetOpen && <JobSheet job={job} onClose={() => setSheetOpen(false)} />}
     </>
   );
 }
@@ -260,6 +271,12 @@ export default function QrPage() {
       const res = await fetch(`/api/location-jobs?date=${date}&status=${status}`);
       const data = await res.json();
       const filtered = filterByLocation(data.jobs ?? []);
+      // Sort by latest stop activity timestamp, most recent first
+      filtered.sort((a, b) => {
+        const tsA = a.stops.map((s) => latestTs(s)).filter(Boolean).sort().at(-1) ?? "";
+        const tsB = b.stops.map((s) => latestTs(s)).filter(Boolean).sort().at(-1) ?? "";
+        return tsB.localeCompare(tsA);
+      });
       if (status === 4) setActiveJobs(filtered);
       else setDoneJobs(filtered);
     } catch {
