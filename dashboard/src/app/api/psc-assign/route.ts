@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { psc_pickup, dropoff_location, pickup, dropoff, ref_number } = body;
+    const { psc_pickup, dropoff_location, pickup, dropoff } = body;
 
     if (!pickup || !dropoff || !psc_pickup) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
@@ -92,9 +92,10 @@ export async function POST(req: NextRequest) {
     }
 
     // --- Create the job ---
+    // Always generate timestamp-based reference (ignore ref_number from config — Cartrack strips emoji)
     const hh = String(vnNow.getUTCHours()).padStart(2, "0");
     const mm = String(vnNow.getUTCMinutes()).padStart(2, "0");
-    const refLabel = ref_number || `${psc_pickup}▶️${dropoff_location}_${hh}:${mm}`;
+    const refLabel = `${psc_pickup}→${dropoff_location}_${hh}:${mm}`;
 
     const jobPayload = {
       job_type_id: 1,
