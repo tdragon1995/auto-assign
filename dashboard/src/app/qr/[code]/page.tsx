@@ -2,15 +2,8 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useSearchParams } from "next/navigation";
-import {
-  Card,
-  CardContent,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 
 interface PscRoute {
   psc_pickup: string;
@@ -239,55 +232,32 @@ export default function QrPage() {
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col items-center p-4 gap-4">
 
-      {/* Request card */}
-      <Card className="max-w-md w-full">
-        <CardHeader>
-          <CardTitle className="text-lg flex items-center gap-2">
-            PSC Transport
-            <Badge variant="outline">{route!.psc_pickup}</Badge>
-            {isStaging && <Badge variant="destructive">STAGING</Badge>}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="rounded-lg border p-4 space-y-3">
-            <Row label="Pickup" value={route!.psc_pickup} icon="📦" />
-            <Row label="Dropoff" value={route!.dropoff_location} icon="📍" />
-            <Row label="Route" value={`${route!.psc_pickup} ➡ ${route!.dropoff_location}`} icon="🛵" />
-            {route!.ref_number && <Row label="Ref" value={route!.ref_number} icon="🏷️" />}
-          </div>
-          {assignStatus === "success" && (
-            <div className="rounded-lg border border-green-200 bg-green-50 p-4 text-sm text-green-800">{assignResult}</div>
-          )}
-          {assignStatus === "error" && (
-            <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">{assignResult}</div>
-          )}
-        </CardContent>
-        <CardFooter className="flex flex-col gap-2">
-          <Button
-            className="w-full"
-            size="lg"
-            onClick={handleAssign}
-            disabled={assignStatus === "loading" || assignStatus === "success"}
-          >
-            {assignStatus === "loading" ? "Creating job..." : assignStatus === "success" ? "Job created" : "Đề Nghị Giao Mẫu"}
-          </Button>
-          {assignStatus === "success" && (
-            <Button variant="outline" className="w-full" onClick={() => { setAssignStatus("idle"); setAssignResult(""); }}>
-              Create another
-            </Button>
-          )}
-        </CardFooter>
-      </Card>
+      {/* Single card */}
+      <div className="w-full max-w-sm bg-white rounded-2xl shadow border overflow-hidden">
 
-      {/* Jobs card */}
-      <div className="w-full max-w-md bg-white rounded-2xl shadow border overflow-hidden">
+        {/* Header */}
+        <div className="px-6 pt-5 pb-4">
+          <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">PSC Transport</p>
+          <h1 className="text-xl font-bold text-slate-800 mt-0.5 flex items-center gap-2">
+            {route!.psc_pickup}
+            {isStaging && <Badge variant="destructive">STAGING</Badge>}
+          </h1>
+          <p className="text-sm text-slate-500">Điểm đến: {route!.dropoff_location}</p>
+        </div>
+
         {/* Tab switcher */}
-        <div className="grid grid-cols-2 border-b border-slate-100">
+        <div className="grid grid-cols-3 border-t border-slate-100">
+          <button
+            onClick={() => { setTab(null); setAssignStatus("idle"); setAssignResult(""); }}
+            className={`py-2.5 text-sm font-semibold transition-colors ${tab === null ? "bg-blue-600 text-white" : "bg-white text-slate-500 hover:bg-slate-50"}`}
+          >
+            Tạo yêu cầu
+          </button>
           <button
             onClick={() => setTab("active")}
-            className={`py-2.5 text-sm font-semibold transition-colors ${tab === "active" ? "bg-blue-600 text-white" : "bg-white text-slate-500 hover:bg-slate-50"}`}
+            className={`py-2.5 text-sm font-semibold transition-colors border-l border-slate-100 ${tab === "active" ? "bg-blue-600 text-white" : "bg-white text-slate-500 hover:bg-slate-50"}`}
           >
-            Đang diễn ra {activeJobs.length > 0 && `(${activeJobs.length})`}
+            Đang giao {activeJobs.length > 0 && `(${activeJobs.length})`}
           </button>
           <button
             onClick={() => setTab("done")}
@@ -297,9 +267,41 @@ export default function QrPage() {
           </button>
         </div>
 
+        {/* Giao mẫu tab */}
+        {tab === null && (
+          <div className="p-6 space-y-4">
+            <div className="space-y-2 text-sm">
+              <Row label="Pickup" value={route!.psc_pickup} icon="📦" />
+              <Row label="Dropoff" value={route!.dropoff_location} icon="📍" />
+              {route!.ref_number && <Row label="Ref" value={route!.ref_number} icon="🏷️" />}
+            </div>
+            {assignStatus === "success" && (
+              <div className="rounded-xl border border-green-200 bg-green-50 p-3.5 text-sm font-medium text-green-800">{assignResult}</div>
+            )}
+            {assignStatus === "error" && (
+              <div className="rounded-xl border border-red-200 bg-red-50 p-3.5 text-sm font-medium text-red-800">{assignResult}</div>
+            )}
+            <button
+              onClick={handleAssign}
+              disabled={assignStatus === "loading" || assignStatus === "success"}
+              className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            >
+              {assignStatus === "loading" ? "Đang tạo..." : assignStatus === "success" ? "Đã tạo" : "Đề Nghị Giao Mẫu"}
+            </button>
+            {assignStatus === "success" && (
+              <button
+                onClick={() => { setAssignStatus("idle"); setAssignResult(""); }}
+                className="w-full py-3 rounded-xl font-semibold text-slate-600 text-sm border border-slate-200 hover:bg-slate-50 transition-all"
+              >
+                Tạo thêm
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Jobs tabs */}
         {tab !== null && (
           <div className="p-4 space-y-3">
-            {/* Date picker + refresh */}
             <div className="flex items-center gap-2">
               <input
                 type="date"
