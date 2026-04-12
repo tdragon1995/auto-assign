@@ -57,8 +57,12 @@ export async function POST(req: NextRequest) {
     const todayStart = `${today} 00:00:00`;
     const todayEnd = `${today} 23:59:59`;
 
-    const allTodayJobs = await fetchJobsToday(null, todayStart, todayEnd, env);
-    const allJobs = allTodayJobs;
+    // Only fetch unassigned (2) and assigned (4) jobs — completed jobs can't have active pickup stops
+    const [unassignedJobs, assignedJobs] = await Promise.all([
+      fetchJobsToday(2, todayStart, todayEnd, env),
+      fetchJobsToday(4, todayStart, todayEnd, env),
+    ]);
+    const allJobs = [...unassignedJobs, ...assignedJobs];
 
     // Block if pickup stop is active (1=Created, 2=En Route, 3=Arrived) AND job is not cancelled (7)
     // Allow re-booking once pickup stop is Completed (4) or Rejected (5), or if job was cancelled
