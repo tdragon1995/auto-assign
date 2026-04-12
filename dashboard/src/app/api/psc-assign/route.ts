@@ -95,7 +95,7 @@ export async function POST(req: NextRequest) {
     // Always generate timestamp-based reference (ignore ref_number from config — Cartrack strips emoji)
     const hh = String(vnNow.getUTCHours()).padStart(2, "0");
     const mm = String(vnNow.getUTCMinutes()).padStart(2, "0");
-    const refLabel = `${psc_pickup}→${dropoff_location}_${hh}:${mm}`;
+    const refLabel = `${psc_pickup.replace(/^BRA\s*-\s*/i, "")}→${dropoff_location.replace(/^BRA\s*-\s*/i, "")}_${hh}:${mm}`;
 
     const jobPayload = {
       job_type_id: 1,
