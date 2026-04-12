@@ -239,18 +239,6 @@ export default function QrPage() {
 
   const [assignStatus, setAssignStatus] = useState<Status>("idle");
   const [assignResult, setAssignResult] = useState<string>("");
-  const [progress, setProgress] = useState(0);
-
-  useEffect(() => {
-    if (assignStatus === "loading") {
-      setProgress(0);
-      requestAnimationFrame(() => requestAnimationFrame(() => setProgress(90)));
-    } else if (assignStatus === "success" || assignStatus === "error") {
-      setProgress(100);
-    } else {
-      setProgress(0);
-    }
-  }, [assignStatus]);
 
   const [tab, setTab] = useState<TabType | null>(null);
   const [date, setDate] = useState(todayVN());
@@ -373,17 +361,6 @@ export default function QrPage() {
       {/* Single card */}
       <div className="w-full max-w-sm bg-white rounded-2xl shadow border overflow-hidden">
 
-        {/* Loading bar */}
-        <div className="h-1 bg-slate-100">
-          <div
-            className="h-full bg-blue-500 rounded-full"
-            style={{
-              width: `${progress}%`,
-              transition: progress === 0 ? "none" : progress === 100 ? "width 0.3s ease-out" : "width 7s ease-out",
-            }}
-          />
-        </div>
-
         {/* Header */}
         <div className="px-6 pt-5 pb-4">
           <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">PSC Transport</p>
@@ -422,7 +399,6 @@ export default function QrPage() {
             <div className="space-y-2 text-sm">
               <Row label="Pickup" value={route!.psc_pickup} icon="📦" />
               <Row label="Dropoff" value={route!.dropoff_location} icon="📍" />
-              {route!.ref_number && <Row label="Ref" value={route!.ref_number} icon="🏷️" />}
             </div>
             {assignStatus === "success" && (
               <div className="rounded-xl border border-green-200 bg-green-50 p-3.5 text-sm font-medium text-green-800">{assignResult}</div>
