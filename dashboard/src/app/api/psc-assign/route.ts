@@ -53,14 +53,14 @@ export async function POST(req: NextRequest) {
     // --- Duplicate check ---
     // Use Vietnam time (UTC+7) to define "today"
     const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
-    const today = vnNow.toISOString().split("T")[0]; // YYYY-MM-DD
-    const todayStart = `${today} 00:00:00`;
-    const todayEnd = `${today} 23:59:59`;
+    const toUTC = (d: Date) => d.toISOString().replace("T", " ").slice(0, 19);
+    const windowFrom = toUTC(new Date(vnNow.getTime() - 60 * 60 * 1000));
+    const windowTo   = toUTC(new Date(vnNow.getTime() + 60 * 60 * 1000));
 
-    // Only fetch unassigned (2) and assigned (4) jobs — completed jobs can't have active pickup stops
+    // Only fetch unassigned (2) and assigned (4) jobs in a 2-hour window around now
     const [unassignedJobs, assignedJobs] = await Promise.all([
-      fetchJobsToday(2, todayStart, todayEnd, env),
-      fetchJobsToday(4, todayStart, todayEnd, env),
+      fetchJobsToday(2, windowFrom, windowTo, env),
+      fetchJobsToday(4, windowFrom, windowTo, env),
     ]);
     const allJobs = [...unassignedJobs, ...assignedJobs];
 
