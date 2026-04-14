@@ -76,11 +76,14 @@ export async function GET(req: NextRequest) {
   if (driverId) {
     try {
       const headers = getHeaders(env);
-      const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
-      const today = vnNow.toISOString().split("T")[0];
+      // VN today in UTC: VN midnight = UTC prev-day 17:00:00, VN 23:59:59 = UTC today 16:59:59
+      const vnMidnight = new Date(Date.now() + 7 * 60 * 60 * 1000);
+      vnMidnight.setUTCHours(0, 0, 0, 0);
+      const createFrom = new Date(vnMidnight.getTime() - 7 * 60 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
+      const createTo   = new Date(vnMidnight.getTime() - 7 * 60 * 60 * 1000 + 24 * 60 * 60 * 1000 - 1000).toISOString().replace("T", " ").slice(0, 19);
 
       const res = await fetch(
-        `${BASE_URL}/jobs?filter[driver_id]=${driverId}&filter[scheduled_delivery_ts_from]=${today} 00:00:00&filter[scheduled_delivery_ts_to]=${today} 23:59:59&limit=100`,
+        `${BASE_URL}/jobs?filter[driver_id]=${driverId}&filter[create_ts_from]=${createFrom}&filter[create_ts_to]=${createTo}&limit=100`,
         { headers, cache: "no-store" }
       );
 

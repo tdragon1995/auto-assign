@@ -180,23 +180,15 @@ export default function ChamCongPage() {
     // ── Client-side validation using pre-fetched shift state ─────────────
     const shift = await getShiftState();
     if (shift) {
-      const hasOpenShift     = shift.checkInCount > shift.completedCheckOuts;
-      const alreadyCheckedOut =
-        shift.activeCheckOuts > 0 ||
-        (shift.completedCheckOuts > 0 && shift.completedCheckOuts >= shift.checkInCount);
-
+      const hasOpenShift = shift.checkInCount > shift.completedCheckOuts;
       if (type === "check-in" && hasOpenShift) {
         setStatus("error");
         setMessage("Đã có sẵn Task chấm công, vui lòng hoàn thành trong app Cartrack!");
         return;
       }
-      if (type === "check-out" && alreadyCheckedOut) {
+      if (type === "check-out" && shift.activeCheckOuts > 0) {
         setStatus("error");
-        setMessage(
-          shift.activeCheckOuts > 0
-            ? "Đã có yêu cầu chấm công ra đang chờ xử lý."
-            : "Đã hoàn thành chấm công, vui lòng chọn Vào ca nếu tiếp tục làm việc!"
-        );
+        setMessage("Đã có yêu cầu chấm công ra đang chờ xử lý.");
         return;
       }
     }
