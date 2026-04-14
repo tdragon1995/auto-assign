@@ -45,6 +45,7 @@ export default function ChamCongPage() {
 
   const [status, setStatus] = useState<Status>("idle");
   const [message, setMessage] = useState("");
+  const [pendingNames, setPendingNames] = useState<string[]>([]);
   const [initialLoading, setInitialLoading] = useState(true);
 
   // Pre-fetched shift state
@@ -181,6 +182,7 @@ export default function ChamCongPage() {
 
     setStatus("loading");
     setMessage("");
+    setPendingNames([]);
 
     // ── Client-side validation using pre-fetched shift state ─────────────
     const shift = await getShiftState();
@@ -219,18 +221,17 @@ export default function ChamCongPage() {
         return;
       }
 
-      // Refetch shift state after successful action to get fresh pending count
+      // Invalidate shift state after successful action
       shiftStateRef.current = null;
-      const freshShift = await fetchShiftState(driverId);
+      fetchShiftState(driverId);
 
       setStatus("success");
       if (type === "check-in") {
         setMessage(`Chấm công vào thành công! Job #${data.job_id}`);
       } else {
-        const pending = freshShift?.pendingJobs ?? 0;
-        const pendingNote = pending > 0
-          ? ` — Còn ${pending} công việc chưa hoàn tất: ${(freshShift?.pendingJobNames ?? []).join(", ")}. Liên hệ điều phối trước khi rời ca.`
-          : "";
+        const names = shift?.pendingJobNames ?? [];
+        setPendingNames(names);
+        const pendingNote = names.length > 0 ? " — Liên hệ điều phối trước khi rời ca." : "";
         setMessage(`Chấm công ra thành công! Job #${data.job_id}${pendingNote}`);
       }
     } catch {
@@ -372,6 +373,11 @@ export default function ChamCongPage() {
             }`}
           >
             {message}
+            {pendingNames.length > 0 && (
+              <ul className="mt-2 space-y-0.5 list-disc list-inside font-normal">
+                {pendingNames.map((name, i) => <li key={i}>{name}</li>)}
+              </ul>
+            )}
           </div>
         )}
       </div>

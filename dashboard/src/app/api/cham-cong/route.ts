@@ -108,6 +108,7 @@ export async function GET(req: NextRequest) {
       const pendingJobList = todayJobs.filter(
         (j: any) =>
           !(j.reference_number ?? "").startsWith("Chấm Công -") &&
+          !(j.labels ?? []).some((l: string) => l === "check_in" || l === "check_out") &&
           j.job_status_id === 4
       );
       const pendingJobs = pendingJobList.length;
