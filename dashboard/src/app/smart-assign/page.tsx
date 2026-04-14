@@ -3,14 +3,10 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 
-type Provider = "haversine" | "valhalla" | "goong";
-
 interface DriverSuggestion {
   driver_id: string;
   driver_name: string;
   haversine_km: number;
-  distance_km: number | null;
-  eta_mins: number | null;
   status_id: number;
   last_login_ts: string | null;
   jobs_total: number | null;
@@ -34,7 +30,6 @@ interface Result {
   suggestions: JobSuggestion[];
   unmatched: { job_id: number; reason: string }[];
   drivers_with_gps: number;
-  provider: Provider;
 }
 
 const STATUS_DOT: Record<number, { color: string; label: string }> = {
@@ -54,13 +49,8 @@ function relativeTime(ts: string | null): string {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
-function DriverCell({ d, provider }: { d: DriverSuggestion; provider: Provider }) {
+function DriverCell({ d }: { d: DriverSuggestion }) {
   const dot = STATUS_DOT[d.status_id] ?? STATUS_DOT[4];
-  const usesRouting = provider === "valhalla" || provider === "goong";
-  const isRouteFallback = usesRouting && d.distance_km == null;
-  const distLine = usesRouting && d.distance_km != null
-    ? `${d.distance_km} km road · ${d.eta_mins ?? "?"}min`
-    : `${d.haversine_km} km straight${isRouteFallback ? " ⚠️" : ""}`;
 
   return (
     <div className="flex flex-col gap-0.5 min-w-0">
@@ -68,14 +58,13 @@ function DriverCell({ d, provider }: { d: DriverSuggestion; provider: Provider }
         <span className={`inline-block size-2 rounded-full shrink-0 ${dot.color}`} title={dot.label} />
         <span className="text-xs font-semibold text-slate-800 truncate">{d.driver_name}</span>
       </div>
-      <span className="text-[11px] text-slate-500">{distLine} · {relativeTime(d.last_login_ts)}</span>
+      <span className="text-[11px] text-slate-500">{d.haversine_km} km straight · {relativeTime(d.last_login_ts)}</span>
       {d.detour_haversine_km !== null && (
         <span className="text-[11px] text-indigo-500 font-medium">
           {d.detour_label}{d.detour_customer ? ` @ ${d.detour_customer}` : ""} →{" "}
-          {usesRouting && d.detour_distance_km != null
+          {d.detour_distance_km != null
             ? `${d.detour_distance_km} km · ${d.detour_eta_mins ?? "?"}min`
             : `${d.detour_haversine_km} km straight`}
-          {usesRouting && d.detour_distance_km == null ? " ⚠️" : ""}
         </span>
       )}
       <span className="text-[11px] text-slate-400">
@@ -87,24 +76,17 @@ function DriverCell({ d, provider }: { d: DriverSuggestion; provider: Provider }
   );
 }
 
-const PROVIDERS: { key: Provider; label: string }[] = [
-  { key: "haversine", label: "📐 Straight line" },
-  { key: "valhalla",  label: "🛵 Valhalla (road)" },
-  { key: "goong",     label: "🗺️ Goong (road)" },
-];
-
 export default function SmartAssignPage() {
-  const [provider, setProvider] = useState<Provider>("haversine");
-  const [status, setStatus]     = useState<"idle" | "loading" | "done" | "error">("idle");
-  const [result, setResult]     = useState<Result | null>(null);
-  const [error, setError]       = useState("");
+  const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [result, setResult] = useState<Result | null>(null);
+  const [error, setError]   = useState("");
 
   const run = async () => {
     setStatus("loading");
     setResult(null);
     setError("");
     try {
-      const res = await fetch(`/api/smart-assign?provider=${provider}`, { method: "POST" });
+      const res = await fetch("/api/smart-assign", { method: "POST" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Unknown error");
       setResult(data);
@@ -122,25 +104,8 @@ export default function SmartAssignPage() {
         <div>
           <h1 className="text-2xl font-bold">Smart Assign</h1>
           <p className="text-sm text-slate-500 mt-1">
-            Top 3 nearest drivers per unassigned pickup — suggestions only, no writes to Cartrack.
+            Top 3 drivers per unassigned pickup — pre-filtered by haversine, ranked by Goong road distance from last reference stop.
           </p>
-        </div>
-
-        {/* Provider toggle */}
-        <div className="flex gap-2">
-          {PROVIDERS.map((p) => (
-            <button
-              key={p.key}
-              onClick={() => setProvider(p.key)}
-              className={`px-4 py-1.5 rounded-full text-sm font-medium border transition-colors ${
-                provider === p.key
-                  ? "bg-slate-900 text-white border-slate-900"
-                  : "bg-white text-slate-600 border-slate-200 hover:border-slate-400"
-              }`}
-            >
-              {p.label}
-            </button>
-          ))}
         </div>
 
         <Button onClick={run} disabled={status === "loading"} className="w-full h-12 text-base font-semibold">
@@ -191,7 +156,7 @@ export default function SmartAssignPage() {
                         {[0, 1, 2].map((i) =>
                           row.drivers[i] ? (
                             <td key={i} className="px-4 py-3 align-top">
-                              <DriverCell d={row.drivers[i]} provider={result.provider} />
+                              <DriverCell d={row.drivers[i]} />
                             </td>
                           ) : (
                             <td key={i} className="px-4 py-3 align-top text-xs text-slate-300">—</td>
