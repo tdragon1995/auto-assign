@@ -291,9 +291,10 @@ export async function autoAssignCycle(config: Config, env: Env = "prod"): Promis
     if (smartMapping) {
       // Shift gate — shared shift window for all smart candidates
       if (!isDriverOnShift(smartMapping, jobTime)) {
-        const jt = saigonHoursMinutes(jobTime);
-        const hhmm = `${String(jt.hours).padStart(2, "0")}:${String(jt.minutes).padStart(2, "0")}`;
-        log(`Job ${jobId} - SMART: off shift at ${hhmm}`, "WARN");
+        const jt   = saigonHoursMinutes(jobTime);
+        const now  = `${String(jt.hours).padStart(2, "0")}:${String(jt.minutes).padStart(2, "0")}`;
+        const win  = `${fmtShift(smartMapping.shift_start)}–${fmtShift(smartMapping.shift_end)}`;
+        log(`Job ${jobId} - SMART skipped: off shift (now ${now}, window ${win}) | ${jobCustomerName ?? customerId}`, "WARN");
         continue;
       }
 
@@ -307,7 +308,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod"): Promis
         try {
           const { status: apiStatus, body } = await assignJob(driverId, jobId, driverName, env);
           if (apiStatus === 200) {
-            log(`Job ${jobId} | SMART(1) → ${driverName}`, "OK");
+            log(`Job ${jobId} | SMART(1) → ${driverName} | ${jobCustomerName ?? customerId}`, "OK");
           } else {
             log(`Job ${jobId} - SMART(1) failed: ${body?.message ?? JSON.stringify(body)}`, "ERROR");
           }
@@ -320,7 +321,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod"): Promis
       // ── Multi-driver: haversine → Goong rank, assign top ─────────────────
       const pickupStop = job.stops.find((s) => s.stop_type_id === 1);
       if (!pickupStop?.latitude || !pickupStop?.longitude) {
-        log(`Job ${jobId} - SMART: no pickup GPS`, "ERROR");
+        log(`Job ${jobId} - SMART skipped: pickup has no GPS | ${jobCustomerName ?? customerId}`, "ERROR");
         continue;
       }
 
@@ -328,7 +329,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod"): Promis
         smartMapping.smart_driver_id.includes(d.delivery_driver_id)
       );
       if (candidates.length === 0) {
-        log(`Job ${jobId} - SMART: 0 of ${smartMapping.smart_driver_id.length} candidates have GPS`, "WARN");
+        log(`Job ${jobId} - SMART skipped: 0/${smartMapping.smart_driver_id.length} configured drivers have GPS | ${jobCustomerName ?? customerId}`, "WARN");
         continue;
       }
 
