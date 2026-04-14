@@ -190,12 +190,12 @@ export default function ChamCongPage() {
       const hasOpenShift = shift.checkInCount > shift.completedCheckOuts;
       if (type === "check-in" && hasOpenShift) {
         setStatus("error");
-        setMessage("Đã có sẵn Task chấm công, vui lòng hoàn thành trong app Cartrack!");
+        setMessage("Đã có task vào ca chưa hoàn thành. Vui lòng mở app Cartrack và hoàn thành task trước khi tạo mới!");
         return;
       }
       if (type === "check-out" && shift.activeCheckOuts > 0) {
         setStatus("error");
-        setMessage("Đã có yêu cầu chấm công ra đang chờ xử lý.");
+        setMessage("Đã có task ra ca chưa hoàn thành. Vui lòng mở app Cartrack và hoàn thành task!");
         return;
       }
     }
@@ -227,12 +227,11 @@ export default function ChamCongPage() {
 
       setStatus("success");
       if (type === "check-in") {
-        setMessage(`Chấm công vào thành công! Job #${data.job_id}`);
+        setMessage(`Đã tạo task vào ca (Job #${data.job_id}). Vui lòng mở app Cartrack và hoàn thành task để chấm công vào ca!`);
       } else {
         const names = shift?.pendingJobNames ?? [];
         setPendingNames(names);
-        const pendingNote = names.length > 0 ? " — Liên hệ điều phối trước khi rời ca." : "";
-        setMessage(`Chấm công ra thành công! Job #${data.job_id}${pendingNote}`);
+        setMessage(`Đã tạo task ra ca (Job #${data.job_id}). Vui lòng mở app Cartrack và hoàn thành task để chấm công ra ca!`);
       }
     } catch {
       setStatus("error");
@@ -374,9 +373,13 @@ export default function ChamCongPage() {
           >
             {message}
             {pendingNames.length > 0 && (
-              <ul className="mt-2 space-y-0.5 list-disc list-inside font-normal">
-                {pendingNames.map((name, i) => <li key={i}>{name}</li>)}
-              </ul>
+              <div className="mt-2 space-y-1 font-normal">
+                <p>Lưu ý, vẫn còn những công việc chưa hoàn tất:</p>
+                <ol className="list-decimal list-inside space-y-0.5">
+                  {pendingNames.map((name, i) => <li key={i}>{name}</li>)}
+                </ol>
+                <p>Vui lòng liên hệ điều phối trước khi rời ca!</p>
+              </div>
             )}
           </div>
         )}
