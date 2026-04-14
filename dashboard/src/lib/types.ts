@@ -1,6 +1,7 @@
 export interface Mapping {
   customer_id: string;
   driver_id: string;
+  smart_driver_id: string[]; // sheet col: smart_driver_id — comma-separated UUIDs; replaces fixed driver_id routing
   first_name_last_name: string;
   shift_start: { hours: number; minutes: number } | null;
   shift_end: { hours: number; minutes: number } | null;

@@ -1,8 +1,83 @@
-import type { Config, Job, LogEntry, LogLevel, Mapping } from "./types";
-import { getUnassignedJobs, assignJob, getJobDetails, getCustomerById, updateJobStops, optimizeDriverRoute, type Env } from "./cartrack";
+import type { Config, Driver, Job, LogEntry, LogLevel, Mapping } from "./types";
+import { getDrivers, getUnassignedJobs, assignJob, getJobDetails, getCustomerById, updateJobStops, optimizeDriverRoute, getFleetwebCookie, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
 
 const TZ = "Asia/Ho_Chi_Minh";
+const JSONRPC_URL = "https://fleetweb-vn.cartrack.com/jsonrpc/index.php";
+const GOONG_API   = "https://rsapi.goong.io/v2/distancematrix";
+
+// ── Smart-assign helpers ───────────────────────────────────────────────────
+
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.asin(Math.sqrt(a));
+}
+
+async function goongDistanceKm(
+  fromLat: number, fromLon: number, toLat: number, toLon: number
+): Promise<number | null> {
+  const apiKey = process.env.GOONG_API_KEY ?? "";
+  if (!apiKey) return null;
+  try {
+    const url = `${GOONG_API}?origins=${fromLat},${fromLon}&destinations=${toLat},${toLon}&vehicle=bike&api_key=${apiKey}`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const el = data.rows?.[0]?.elements?.[0];
+    if (!el || el.status !== "OK") return null;
+    return Math.round(el.distance.value / 100) / 10;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchSmartRouteData(
+  dateVn: string, auth: string, cookie: string
+): Promise<Record<string, { lat: number; lon: number } | null>> {
+  try {
+    const res = await fetch(JSONRPC_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: auth, Cookie: cookie },
+      body: JSON.stringify({
+        version: "2.0", method: "delivery_timeline_route_list", id: 1,
+        params: { data: { scheduleType: "scheduled", filter: {
+          from: `${dateVn}T00:00:00+07:00`,
+          to:   `${dateVn}T23:59:59+07:00`,
+        }}},
+      }),
+    });
+    if (!res.ok) return {};
+    const data = await res.json();
+    const routes: {
+      routeId: string;
+      orderedStops?: { stopStatusId: number; latitude: number; longitude: number }[];
+    }[] = data.result?.routes ?? [];
+
+    const result: Record<string, { lat: number; lon: number } | null> = {};
+    for (const route of routes) {
+      const driverId = route.routeId.replace(/^driver_/, "");
+      const stops = route.orderedStops ?? [];
+      let arrived: { lat: number; lon: number } | null = null;
+      let enRoute: { lat: number; lon: number } | null = null;
+      let lastCompleted: { lat: number; lon: number } | null = null;
+      for (const stop of stops) {
+        if (!stop.latitude || !stop.longitude) continue;
+        const loc = { lat: stop.latitude, lon: stop.longitude };
+        if (stop.stopStatusId === 3) arrived       = loc;
+        if (stop.stopStatusId === 2) enRoute       = loc;
+        if (stop.stopStatusId === 4) lastCompleted = loc;
+      }
+      result[driverId] = arrived ?? enRoute ?? lastCompleted ?? null;
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
 
 /** Current time formatted in Saigon timezone */
 function now(): string {
@@ -169,6 +244,22 @@ export async function autoAssignCycle(config: Config, env: Env = "prod"): Promis
 
   log(`Found ${jobs.length} recent job(s)`);
 
+  // ── Pre-fetch GPS + route data for smart-assign mappings ──────────────────
+  const hasSmartMappings = config.mappings.some((m) => m.smart_driver_id.length > 0);
+  let allGpsDrivers: Driver[] = [];
+  let smartRouteData: Record<string, { lat: number; lon: number } | null> = {};
+
+  if (hasSmartMappings) {
+    const auth   = process.env.CARTRACK_AUTH ?? "";
+    const [fetchedDrivers, cookie] = await Promise.all([getDrivers(env), getFleetwebCookie()]);
+    allGpsDrivers = fetchedDrivers.filter((d) => d.latitude != null && d.longitude != null);
+    if (cookie && auth) {
+      const vnDate = new Intl.DateTimeFormat("sv-SE", { timeZone: TZ }).format(new Date()).slice(0, 10);
+      smartRouteData = await fetchSmartRouteData(vnDate, auth, cookie);
+    }
+    log(`Smart-assign ready: ${allGpsDrivers.length} drivers with GPS`);
+  }
+
   for (const job of jobs) {
     const jobId = job.job_id;
     const customerId = getCustomerIdFromJob(job);
@@ -192,6 +283,91 @@ export async function autoAssignCycle(config: Config, env: Env = "prod"): Promis
       jobTime = new Date();
     }
 
+    // ── Smart-assign path ────────────────────────────────────────────────────
+    const smartMapping = config.mappings.find(
+      (m) => m.customer_id === customerId && m.smart_driver_id.length > 0
+    );
+
+    if (smartMapping) {
+      // Shift gate — shared shift window for all smart candidates
+      if (!isDriverOnShift(smartMapping, jobTime)) {
+        const jt = saigonHoursMinutes(jobTime);
+        const hhmm = `${String(jt.hours).padStart(2, "0")}:${String(jt.minutes).padStart(2, "0")}`;
+        log(`Job ${jobId} - SMART: off shift at ${hhmm}`, "WARN");
+        continue;
+      }
+
+      // ── 1-driver: straight assign (like fixed auto-assign) ────────────────
+      if (smartMapping.smart_driver_id.length === 1) {
+        const driverId   = smartMapping.smart_driver_id[0];
+        const gpsDriver  = allGpsDrivers.find((d) => d.delivery_driver_id === driverId);
+        const driverName = gpsDriver
+          ? `${gpsDriver.first_name} ${gpsDriver.last_name}`.trim()
+          : (smartMapping.first_name_last_name || driverId);
+        try {
+          const { status: apiStatus, body } = await assignJob(driverId, jobId, driverName, env);
+          if (apiStatus === 200) {
+            log(`Job ${jobId} | SMART(1) → ${driverName}`, "OK");
+          } else {
+            log(`Job ${jobId} - SMART(1) failed: ${body?.message ?? JSON.stringify(body)}`, "ERROR");
+          }
+        } catch (e) {
+          log(`Job ${jobId} - SMART(1) error: ${e}`, "ERROR");
+        }
+        continue;
+      }
+
+      // ── Multi-driver: haversine → Goong rank, assign top ─────────────────
+      const pickupStop = job.stops.find((s) => s.stop_type_id === 1);
+      if (!pickupStop?.latitude || !pickupStop?.longitude) {
+        log(`Job ${jobId} - SMART: no pickup GPS`, "ERROR");
+        continue;
+      }
+
+      const candidates = allGpsDrivers.filter((d) =>
+        smartMapping.smart_driver_id.includes(d.delivery_driver_id)
+      );
+      if (candidates.length === 0) {
+        log(`Job ${jobId} - SMART: 0 of ${smartMapping.smart_driver_id.length} candidates have GPS`, "WARN");
+        continue;
+      }
+
+      // Haversine pre-rank
+      const preRanked = candidates
+        .map((d) => ({
+          d,
+          hkm: Math.round(haversineKm(pickupStop.latitude!, pickupStop.longitude!, d.latitude!, d.longitude!) * 10) / 10,
+        }))
+        .sort((a, b) => a.hkm - b.hkm);
+
+      // Goong re-rank: reference stop → pickup
+      const withGoong = await Promise.all(
+        preRanked.map(async ({ d, hkm }) => {
+          const ref = smartRouteData[d.delivery_driver_id];
+          if (!ref) return { d, sortDist: hkm };
+          const roadKm   = await goongDistanceKm(ref.lat, ref.lon, pickupStop.latitude!, pickupStop.longitude!);
+          const refHkm   = Math.round(haversineKm(ref.lat, ref.lon, pickupStop.latitude!, pickupStop.longitude!) * 10) / 10;
+          return { d, sortDist: roadKm ?? refHkm };
+        })
+      );
+      withGoong.sort((a, b) => a.sortDist - b.sortDist);
+
+      const top        = withGoong[0];
+      const driverName = `${top.d.first_name} ${top.d.last_name}`.trim();
+      try {
+        const { status: apiStatus, body } = await assignJob(top.d.delivery_driver_id, jobId, driverName, env);
+        if (apiStatus === 200) {
+          log(`Job ${jobId} | SMART → ${driverName} (${top.sortDist} km) | ${pickupStop.customer_name ?? customerId}`, "OK");
+        } else {
+          log(`Job ${jobId} - SMART failed: ${body?.message ?? JSON.stringify(body)}`, "ERROR");
+        }
+      } catch (e) {
+        log(`Job ${jobId} - SMART error: ${e}`, "ERROR");
+      }
+      continue;
+    }
+
+    // ── Fixed driver path (original logic) ───────────────────────────────────
     const [drivers, status] = getDriversOnDuty(config, customerId, jobTime);
 
     if (status === "no_mapping") {
