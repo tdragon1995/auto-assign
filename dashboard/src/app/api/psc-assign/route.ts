@@ -21,13 +21,13 @@ function getHeaders(env: Env = "prod"): Record<string, string> {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function fetchJobsToday(status: number | null, from: string, to: string, env: Env): Promise<any[]> {
+async function fetchJobsToday(status: number, from: string, to: string, env: Env): Promise<any[]> {
   const params = new URLSearchParams({
-    "filter[scheduled_delivery_ts_from]": from,
-    "filter[scheduled_delivery_ts_to]": to,
+    "filter[create_ts_from]": from,
+    "filter[create_ts_to]": to,
+    "filter[job_status_id]": String(status),
     limit: "1000",
   });
-  if (status !== null) params.set("filter[job_status_id]", String(status));
 
   const res = await fetch(`${BASE_URL}/jobs?${params}`, {
     headers: getHeaders(env),
@@ -51,16 +51,16 @@ export async function POST(req: NextRequest) {
     }
 
     // --- Duplicate check ---
-    // Use Vietnam time (UTC+7) to define "today"
+    // Cartrack filters are GMT+7 — use VN date strings directly
     const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
-    const toUTC = (d: Date) => d.toISOString().replace("T", " ").slice(0, 19);
-    const windowFrom = toUTC(new Date(vnNow.getTime() - 60 * 60 * 1000));
-    const windowTo   = toUTC(new Date(vnNow.getTime() + 60 * 60 * 1000));
+    const today = vnNow.toISOString().split("T")[0];
+    const todayStart = `${today} 00:00:00`;
+    const todayEnd   = `${today} 23:59:59`;
 
-    // Only fetch unassigned (2) and assigned (4) jobs in a 2-hour window around now
+    // Fetch Assign Later (2) and Assigned (4) in parallel — only statuses that can block re-booking
     const [unassignedJobs, assignedJobs] = await Promise.all([
-      fetchJobsToday(2, windowFrom, windowTo, env),
-      fetchJobsToday(4, windowFrom, windowTo, env),
+      fetchJobsToday(2, todayStart, todayEnd, env),
+      fetchJobsToday(4, todayStart, todayEnd, env),
     ]);
     const allJobs = [...unassignedJobs, ...assignedJobs];
 
@@ -90,6 +90,7 @@ export async function POST(req: NextRequest) {
           error: "duplicate",
           message: `A job for this pickup already exists today (Job #${duplicate.job_id})`,
           job_id: duplicate.job_id,
+          reference_number: duplicate.reference_number ?? null,
         },
         { status: 409 }
       );
