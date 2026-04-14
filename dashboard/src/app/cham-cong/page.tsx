@@ -81,16 +81,20 @@ export default function ChamCongPage() {
   }, []);
 
   // Pre-fetch shift state when driver is selected
-  async function fetchShiftState(id: string) {
+  async function fetchShiftState(id: string): Promise<ShiftState | null> {
     setShiftFetching(true);
     try {
       const res = await fetch(`/api/cham-cong?driver_id=${id}`);
       if (res.ok) {
         const data = await res.json();
-        shiftStateRef.current = { ...data, fetchedAt: Date.now() };
+        const state: ShiftState = { ...data, fetchedAt: Date.now() };
+        shiftStateRef.current = state;
+        return state;
       }
+      return null;
     } catch {
       shiftStateRef.current = null;
+      return null;
     } finally {
       setShiftFetching(false);
     }
@@ -214,15 +218,15 @@ export default function ChamCongPage() {
         return;
       }
 
-      // Invalidate shift state after successful action
+      // Refetch shift state after successful action to get fresh pending count
       shiftStateRef.current = null;
-      fetchShiftState(driverId);
+      const freshShift = await fetchShiftState(driverId);
 
       setStatus("success");
       if (type === "check-in") {
         setMessage(`Chấm công vào thành công! Job #${data.job_id}`);
       } else {
-        const pending = shift?.pendingJobs ?? 0;
+        const pending = freshShift?.pendingJobs ?? 0;
         const pendingNote = pending > 0
           ? ` — Hiện tại vẫn đang còn ${pending} công việc chưa hoàn tất! Liên hệ điều phối trước khi rời ca.`
           : "";
