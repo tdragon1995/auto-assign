@@ -362,23 +362,27 @@ export default function ChamCongPage() {
 
         {/* Status message */}
         {message && (
-          <div
-            className={`rounded-lg px-4 py-3 text-sm font-medium ${
-              status === "success"
-                ? "bg-green-50 text-green-700 border border-green-200"
-                : status === "error"
-                ? "bg-red-50 text-red-700 border border-red-200"
-                : ""
-            }`}
-          >
-            {message}
+          <div className="space-y-3">
+            <div
+              className={`rounded-lg px-4 py-3 text-sm font-medium ${
+                status === "success"
+                  ? "bg-green-50 text-green-700 border border-green-200"
+                  : status === "error"
+                  ? "bg-red-50 text-red-700 border border-red-200"
+                  : ""
+              }`}
+            >
+              {message}
+            </div>
             {pendingNames.length > 0 && (
-              <div className="mt-2 space-y-1 font-normal">
-                <p>Lưu ý, vẫn còn những công việc chưa hoàn tất:</p>
-                <ol className="list-decimal list-inside space-y-0.5">
+              <div className="rounded-lg px-4 py-3 text-sm border border-yellow-300 bg-yellow-50 text-yellow-800">
+                <p className="font-semibold flex items-center gap-1.5">
+                  <span>⚠️</span> Lưu ý, vẫn còn những công việc chưa hoàn tất:
+                </p>
+                <ol className="list-decimal list-inside mt-1.5 space-y-0.5 font-normal">
                   {pendingNames.map((name, i) => <li key={i}>{name}</li>)}
                 </ol>
-                <p>Vui lòng liên hệ điều phối trước khi rời ca!</p>
+                <p className="mt-1.5 font-medium">Vui lòng liên hệ điều phối trước khi rời ca!</p>
               </div>
             )}
           </div>
