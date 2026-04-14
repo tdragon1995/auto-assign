@@ -18,6 +18,7 @@ interface ShiftState {
   completedCheckOuts: number;
   activeCheckOuts: number;
   pendingJobs: number;
+  pendingJobNames: string[];
   fetchedAt: number;
 }
 
@@ -228,7 +229,7 @@ export default function ChamCongPage() {
       } else {
         const pending = freshShift?.pendingJobs ?? 0;
         const pendingNote = pending > 0
-          ? ` — Hiện tại vẫn đang còn ${pending} công việc chưa hoàn tất! Liên hệ điều phối trước khi rời ca.`
+          ? ` — Còn ${pending} công việc chưa hoàn tất: ${(freshShift?.pendingJobNames ?? []).join(", ")}. Liên hệ điều phối trước khi rời ca.`
           : "";
         setMessage(`Chấm công ra thành công! Job #${data.job_id}${pendingNote}`);
       }

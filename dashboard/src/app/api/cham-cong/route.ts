@@ -104,13 +104,21 @@ export async function GET(req: NextRequest) {
       const checkInCount       = chamCongJobs.filter((j) => (j.labels ?? []).includes("check_in")).length;
       const completedCheckOuts = chamCongJobs.filter((j) => (j.labels ?? []).includes("check_out") && j.job_status_id === 5).length;
       const activeCheckOuts    = chamCongJobs.filter((j) => (j.labels ?? []).includes("check_out") && j.job_status_id !== 5).length;
-      const pendingJobs        = todayJobs.filter(
-        (j) =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pendingJobList = todayJobs.filter(
+        (j: any) =>
           !(j.reference_number ?? "").startsWith("Chấm Công -") &&
           j.job_status_id === 4
-      ).length;
+      );
+      const pendingJobs = pendingJobList.length;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pendingJobNames: string[] = pendingJobList.map((j: any) => {
+        const stops: any[] = j.stops ?? [];
+        const pickup = stops.find((s: any) => s.stop_type_id === 1) ?? stops[0];
+        return pickup?.customer_name ?? j.reference_number ?? `Job #${j.job_id}`;
+      });
 
-      return NextResponse.json({ checkInCount, completedCheckOuts, activeCheckOuts, pendingJobs });
+      return NextResponse.json({ checkInCount, completedCheckOuts, activeCheckOuts, pendingJobs, pendingJobNames });
     } catch (e) {
       return NextResponse.json({ error: String(e) }, { status: 500 });
     }
