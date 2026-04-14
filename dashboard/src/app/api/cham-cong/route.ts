@@ -113,8 +113,10 @@ export async function GET(req: NextRequest) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pendingJobNames: string[] = pendingJobList.map((j: any) => {
         const stops: any[] = j.stops ?? [];
-        const pickup = stops.find((s: any) => s.stop_type_id === 1) ?? stops[0];
-        return pickup?.customer_name ?? j.reference_number ?? `Job #${j.job_id}`;
+        const pickup  = stops.find((s: any) => s.stop_type_id === 1);
+        const dropoff = stops.find((s: any) => s.stop_type_id === 2);
+        if (pickup && dropoff) return `${pickup.customer_name} → ${dropoff.customer_name}`;
+        return pickup?.customer_name ?? dropoff?.customer_name ?? j.reference_number ?? `Job #${j.job_id}`;
       });
 
       return NextResponse.json({ checkInCount, completedCheckOuts, activeCheckOuts, pendingJobs, pendingJobNames });
