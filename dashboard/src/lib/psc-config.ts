@@ -3,9 +3,9 @@ const PSC_SHEET_GID = "281585585";
 const MAPPING_SHEET_GID = "0";
 const TPL_SHEET_GID = "934328932";
 
-const PSC_SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${PSC_SHEET_GID}`;
-const MAPPING_SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${MAPPING_SHEET_GID}`;
-const TPL_SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${TPL_SHEET_GID}`;
+const PSC_SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${PSC_SHEET_GID}`;
+const MAPPING_SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${MAPPING_SHEET_GID}`;
+const TPL_SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${TPL_SHEET_GID}`;
 
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 

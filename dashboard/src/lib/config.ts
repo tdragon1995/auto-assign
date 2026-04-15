@@ -4,9 +4,9 @@ const SHEET_ID = "1Bqsm5atLYUQ4gMsL7zHrbrS6YUu7pEDa-Iy_j_wpCss";
 const PSC_SHEET_GID = "281585585";
 const SUNDAY_SHEET_GID = "890109864";
 const MAPPING_SHEET_GID = "0";
-const PSC_SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${PSC_SHEET_GID}`;
-const MAPPING_SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${MAPPING_SHEET_GID}`;
-const SUNDAY_SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${SUNDAY_SHEET_GID}`;
+const PSC_SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${PSC_SHEET_GID}`;
+const MAPPING_SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${MAPPING_SHEET_GID}`;
+const SUNDAY_SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${SUNDAY_SHEET_GID}`;
 
 
 const DEFAULT_POLL_INTERVAL = 30;
