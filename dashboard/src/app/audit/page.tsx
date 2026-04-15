@@ -162,7 +162,7 @@ export default function AuditPage() {
         setStatus("warning");
         setJobId(data.job_id ?? null);
         setRefNumber(data.reference_number ?? "");
-        setMessage(data.warning ?? "Job tạo thành công nhưng không gán được tài xế.");
+        setMessage(data.warning ?? "Job đã tạo nhưng không gán được tài xế.");
         return;
       }
 
@@ -175,7 +175,7 @@ export default function AuditPage() {
       setStatus("success");
       setJobId(data.job_id ?? null);
       setRefNumber(data.reference_number ?? "");
-      setMessage(`Đã tạo audit thành công! Vui lòng mở app Cartrack và hoàn thành 8 ảnh kiểm tra.`);
+      setMessage(`Đã tạo task audit, vui lòng mở app Cartrack và hoàn thành chụp ảnh tác phong!`);
     } catch {
       setStatus("error");
       setMessage("Không thể kết nối. Vui lòng thử lại.");
