@@ -4,44 +4,19 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { StatsSidebar } from "./stats-sidebar";
-import { FleetMap } from "./fleet-map";
 import { ActivityLog } from "./activity-log";
 import { toast } from "sonner";
-import type { Driver, Job, LogEntry } from "@/lib/types";
+import type { LogEntry } from "@/lib/types";
 
 type Env = "prod" | "uat";
 
 export function Dashboard() {
-  const [drivers, setDrivers] = useState<Driver[]>([]);
-  const [jobs, setJobs] = useState<Job[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [mappingCount, setMappingCount] = useState(0);
   const [pscRouteCount, setPscRouteCount] = useState(0);
   const [env, setEnv] = useState<Env>("prod");
   const assignIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const dataIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // Fetch map data (drivers + jobs)
-  const fetchData = useCallback(async (targetEnv?: Env) => {
-    const e = targetEnv ?? env;
-    try {
-      const [driversRes, jobsRes] = await Promise.all([
-        fetch(`/api/drivers?env=${e}`),
-        fetch(`/api/jobs?env=${e}`),
-      ]);
-      if (driversRes.ok) {
-        const d = await driversRes.json();
-        setDrivers(d.data ?? []);
-      }
-      if (jobsRes.ok) {
-        const j = await jobsRes.json();
-        setJobs(j.data ?? []);
-      }
-    } catch {
-      // silently retry next interval
-    }
-  }, [env]);
 
   // Fetch config on mount
   useEffect(() => {
@@ -53,15 +28,6 @@ export function Dashboard() {
       })
       .catch(() => {});
   }, []);
-
-  // Data polling (15s)
-  useEffect(() => {
-    fetchData();
-    dataIntervalRef.current = setInterval(fetchData, 15_000);
-    return () => {
-      if (dataIntervalRef.current) clearInterval(dataIntervalRef.current);
-    };
-  }, [fetchData]);
 
   // Auto-assign cycle
   const runAssignCycle = useCallback(async (targetEnv?: Env) => {
@@ -115,7 +81,6 @@ export function Dashboard() {
   const handleEnvSwitch = useCallback((checked: boolean) => {
     const newEnv: Env = checked ? "uat" : "prod";
     setEnv(newEnv);
-    // Stop auto-assign when switching environments
     if (isRunning) {
       setIsRunning(false);
       if (assignIntervalRef.current) {
@@ -125,9 +90,8 @@ export function Dashboard() {
       toast.info(`Auto-assign stopped due to environment switch`);
     }
     setLogs([]);
-    fetchData(newEnv);
     toast.info(`Switched to ${newEnv.toUpperCase()}`);
-  }, [isRunning, fetchData]);
+  }, [isRunning]);
 
   // Refresh handler with toast
   const handleRefresh = useCallback(async () => {
@@ -139,14 +103,13 @@ export function Dashboard() {
       setMappingCount(configData.mappingCount ?? 0);
       setPscRouteCount(configData.pscRouteCount ?? 0);
 
-      await fetchData();
       if (isRunning) runAssignCycle();
 
       toast.success(`Google Sheet reloaded: ${configData.mappingCount} mapping(s), ${configData.pscRouteCount} PSC route(s) fetched`);
     } catch (err) {
       toast.error(`Refresh failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [fetchData, isRunning, runAssignCycle]);
+  }, [isRunning, runAssignCycle]);
 
   const isProd = env === "prod";
 
@@ -200,20 +163,13 @@ export function Dashboard() {
       <div className="flex flex-1 min-h-0 p-3 gap-3">
         {/* Left sidebar */}
         <StatsSidebar
-          drivers={drivers}
-          jobs={jobs}
           isRunning={isRunning}
           mappingCount={mappingCount}
           pscRouteCount={pscRouteCount}
         />
 
-        {/* Center: map */}
-        <div className="flex-1 min-w-0">
-          <FleetMap drivers={drivers} jobs={jobs} />
-        </div>
-
         {/* Right: activity log */}
-        <div className="w-96 shrink-0">
+        <div className="flex-1 min-w-0">
           <ActivityLog logs={logs} />
         </div>
       </div>
