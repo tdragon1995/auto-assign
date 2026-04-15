@@ -247,12 +247,19 @@ export async function autoAssignCycle(config: Config, env: Env = "prod"): Promis
 
   log(`Found ${jobs.length} recent job(s)`);
 
-  // ── Pre-fetch GPS + route data for smart-assign mappings ──────────────────
-  const hasSmartMappings = config.mappings.some((m) => m.smart_driver_id.length > 0);
+  // ── Pre-fetch GPS + route data only if a current job needs smart-assign ──────
+  const smartCustomerIds = new Set(
+    config.mappings.filter((m) => m.smart_driver_id.length > 0).map((m) => m.customer_id)
+  );
+  const hasSmartJobs = jobs.some((j) => {
+    const cid = getCustomerIdFromJob(j);
+    return cid !== null && smartCustomerIds.has(cid);
+  });
+
   let allGpsDrivers: Driver[] = [];
   let smartRouteData: Record<string, RefStop | null> = {};
 
-  if (hasSmartMappings) {
+  if (hasSmartJobs) {
     const auth   = process.env.CARTRACK_AUTH ?? "";
     const [fetchedDrivers, cookie] = await Promise.all([getDrivers(env), getFleetwebCookie()]);
     allGpsDrivers = fetchedDrivers.filter((d) => d.latitude != null && d.longitude != null);
