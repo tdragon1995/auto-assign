@@ -374,7 +374,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod"): Promis
 
     if (status === "no_mapping") {
       log(
-        `Job ${jobId} - NO MAPPING: customer ${customerId} not configured`,
+        `Job ${jobId} - NO MAPPING: ${jobCustomerName ?? customerId} not configured`,
         "ERROR"
       );
       continue;
