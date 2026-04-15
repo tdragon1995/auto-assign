@@ -338,20 +338,28 @@ export async function autoAssignCycle(config: Config, env: Env = "prod"): Promis
         const withGoong = await Promise.all(
           preRanked.map(async ({ d, hkm }) => {
             const ref = smartRouteData[d.delivery_driver_id];
-            if (!ref) return { d, sortDist: hkm };
+            if (!ref) return { d, sortDist: hkm, distLabel: `${hkm}km straight` };
             const roadKm = await goongDistanceKm(ref.lat, ref.lon, pickupStop.latitude!, pickupStop.longitude!);
             const refHkm = Math.round(haversineKm(ref.lat, ref.lon, pickupStop.latitude!, pickupStop.longitude!) * 10) / 10;
-            return { d, sortDist: roadKm ?? refHkm };
+            const sortDist = roadKm ?? refHkm;
+            const distLabel = roadKm != null ? `${roadKm}km road` : `${refHkm}km straight`;
+            return { d, sortDist, distLabel };
           })
         );
         withGoong.sort((a, b) => a.sortDist - b.sortDist);
+
+        // Log top 3 ranked candidates with distance type
+        const top3 = withGoong.slice(0, 3)
+          .map((x, i) => `${i + 1}. ${x.d.first_name} ${x.d.last_name} (${x.distLabel})`)
+          .join(" | ");
+        log(`Job ${jobId} | SMART ranking: ${top3}`, "INFO");
 
         const top        = withGoong[0];
         const driverName = `${top.d.first_name} ${top.d.last_name}`.trim();
         try {
           const { status: apiStatus, body } = await assignJob(top.d.delivery_driver_id, jobId, driverName, env);
           if (apiStatus === 200) {
-            log(`Job ${jobId} | SMART → ${driverName} (${top.sortDist} km) | ${pickupStop.customer_name ?? customerId}`, "OK");
+            log(`Job ${jobId} | SMART → ${driverName} (${top.distLabel}) | ${pickupStop.customer_name ?? customerId}`, "OK");
           } else {
             log(`Job ${jobId} - SMART failed: ${body?.message ?? JSON.stringify(body)}`, "ERROR");
           }
