@@ -384,15 +384,12 @@ export async function autoAssignCycle(config: Config, env: Env = "prod"): Promis
 
     if (status === "no_driver") {
       const shiftInfo = drivers
-        .map(
-          (m) =>
-            `${m.driver_id} (${fmtShift(m.shift_start)}-${fmtShift(m.shift_end)})`
-        )
+        .map((m) => `${m.first_name_last_name || m.driver_id} (${fmtShift(m.shift_start)}–${fmtShift(m.shift_end)})`)
         .join(", ");
       const jt = saigonHoursMinutes(jobTime);
       const hhmm = `${String(jt.hours).padStart(2, "0")}:${String(jt.minutes).padStart(2, "0")}`;
       log(
-        `Job ${jobId} - NO DRIVER ON DUTY at ${hhmm} | Configured: ${shiftInfo}`,
+        `Job ${jobId} - NO DRIVER ON DUTY at ${hhmm} | ${jobCustomerName ?? customerId} | Configured: ${shiftInfo}`,
         "ERROR"
       );
       continue;
@@ -400,15 +397,12 @@ export async function autoAssignCycle(config: Config, env: Env = "prod"): Promis
 
     if (status === "clash") {
       const driverList = drivers
-        .map(
-          (m) =>
-            `${m.driver_id} (${fmtShift(m.shift_start)}-${fmtShift(m.shift_end)})`
-        )
+        .map((m) => `${m.first_name_last_name || m.driver_id} (${fmtShift(m.shift_start)}–${fmtShift(m.shift_end)})`)
         .join(", ");
       const jt = saigonHoursMinutes(jobTime);
       const hhmm = `${String(jt.hours).padStart(2, "0")}:${String(jt.minutes).padStart(2, "0")}`;
       log(
-        `Job ${jobId} - CLASH: ${drivers.length} drivers on duty at ${hhmm}: ${driverList}`,
+        `Job ${jobId} - CLASH: ${drivers.length} drivers on duty at ${hhmm} | ${jobCustomerName ?? customerId} | ${driverList}`,
         "WARN"
       );
       continue;
