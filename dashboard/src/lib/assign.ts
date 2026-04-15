@@ -35,9 +35,11 @@ async function goongDistanceKm(
   }
 }
 
+type RefStop = { lat: number; lon: number; customerName: string | null };
+
 async function fetchSmartRouteData(
   dateVn: string, auth: string, cookie: string
-): Promise<Record<string, { lat: number; lon: number } | null>> {
+): Promise<Record<string, RefStop | null>> {
   try {
     const res = await fetch(JSONRPC_URL, {
       method: "POST",
@@ -54,19 +56,19 @@ async function fetchSmartRouteData(
     const data = await res.json();
     const routes: {
       routeId: string;
-      orderedStops?: { stopStatusId: number; latitude: number; longitude: number }[];
+      orderedStops?: { stopStatusId: number; latitude: number; longitude: number; customerName?: string }[];
     }[] = data.result?.routes ?? [];
 
-    const result: Record<string, { lat: number; lon: number } | null> = {};
+    const result: Record<string, RefStop | null> = {};
     for (const route of routes) {
       const driverId = route.routeId.replace(/^driver_/, "");
       const stops = route.orderedStops ?? [];
-      let arrived: { lat: number; lon: number } | null = null;
-      let enRoute: { lat: number; lon: number } | null = null;
-      let lastCompleted: { lat: number; lon: number } | null = null;
+      let arrived: RefStop | null = null;
+      let enRoute: RefStop | null = null;
+      let lastCompleted: RefStop | null = null;
       for (const stop of stops) {
         if (!stop.latitude || !stop.longitude) continue;
-        const loc = { lat: stop.latitude, lon: stop.longitude };
+        const loc: RefStop = { lat: stop.latitude, lon: stop.longitude, customerName: stop.customerName ?? null };
         if (stop.stopStatusId === 3) arrived       = loc;
         if (stop.stopStatusId === 2) enRoute       = loc;
         if (stop.stopStatusId === 4) lastCompleted = loc;
@@ -248,7 +250,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod"): Promis
   // ── Pre-fetch GPS + route data for smart-assign mappings ──────────────────
   const hasSmartMappings = config.mappings.some((m) => m.smart_driver_id.length > 0);
   let allGpsDrivers: Driver[] = [];
-  let smartRouteData: Record<string, { lat: number; lon: number } | null> = {};
+  let smartRouteData: Record<string, RefStop | null> = {};
 
   if (hasSmartMappings) {
     const auth   = process.env.CARTRACK_AUTH ?? "";
@@ -338,28 +340,28 @@ export async function autoAssignCycle(config: Config, env: Env = "prod"): Promis
         const withGoong = await Promise.all(
           preRanked.map(async ({ d, hkm }) => {
             const ref = smartRouteData[d.delivery_driver_id];
-            if (!ref) return { d, sortDist: hkm, distLabel: `${hkm}km straight` };
+            if (!ref) return { d, sortDist: hkm, distLabel: `${hkm}km GPS` };
             const roadKm = await goongDistanceKm(ref.lat, ref.lon, pickupStop.latitude!, pickupStop.longitude!);
             const refHkm = Math.round(haversineKm(ref.lat, ref.lon, pickupStop.latitude!, pickupStop.longitude!) * 10) / 10;
             const sortDist = roadKm ?? refHkm;
-            const distLabel = roadKm != null ? `${roadKm}km road` : `${refHkm}km straight`;
+            const refName  = ref.customerName ? `@${ref.customerName} ` : "";
+            const distLabel = roadKm != null
+              ? `${hkm}km GPS, ${refName}→ ${roadKm}km road`
+              : `${hkm}km GPS, ${refName}→ ${refHkm}km straight`;
             return { d, sortDist, distLabel };
           })
         );
         withGoong.sort((a, b) => a.sortDist - b.sortDist);
 
-        // Log top 3 ranked candidates with distance type
-        const top3 = withGoong.slice(0, 3)
-          .map((x, i) => `${i + 1}. ${x.d.first_name} ${x.d.last_name} (${x.distLabel})`)
-          .join(" | ");
-        log(`Job ${jobId} | SMART ranking: ${top3}`, "INFO");
-
         const top        = withGoong[0];
         const driverName = `${top.d.first_name} ${top.d.last_name}`.trim();
+        const rankStr    = withGoong.slice(0, 3)
+          .map((x, i) => `${i + 1}. ${x.d.first_name} ${x.d.last_name} (${x.distLabel})`)
+          .join(" | ");
         try {
           const { status: apiStatus, body } = await assignJob(top.d.delivery_driver_id, jobId, driverName, env);
           if (apiStatus === 200) {
-            log(`Job ${jobId} | SMART → ${driverName} (${top.distLabel}) | ${pickupStop.customer_name ?? customerId}`, "OK");
+            log(`Job ${jobId} | SMART → ${rankStr} | ${pickupStop.customer_name ?? customerId}`, "OK");
           } else {
             log(`Job ${jobId} - SMART failed: ${body?.message ?? JSON.stringify(body)}`, "ERROR");
           }
