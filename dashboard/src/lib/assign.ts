@@ -130,10 +130,11 @@ export function isDriverOnShift(
   const endMin = timeToMinutes(shift_end);
 
   // Overnight shift (e.g. 22:00 - 06:00)
+  // shift_start is exclusive: outgoing driver owns the boundary minute
   if (startMin > endMin) {
-    return jobMinutes >= startMin || jobMinutes <= endMin;
+    return jobMinutes > startMin || jobMinutes <= endMin;
   }
-  return jobMinutes >= startMin && jobMinutes <= endMin;
+  return jobMinutes > startMin && jobMinutes <= endMin;
 }
 
 export function getDriversOnDuty(
