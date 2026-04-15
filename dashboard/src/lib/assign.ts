@@ -285,20 +285,13 @@ export async function autoAssignCycle(config: Config, env: Env = "prod"): Promis
     }
 
     // ── Smart-assign path ────────────────────────────────────────────────────
+    // Find the smart mapping that is currently on-shift (not just the first one)
     const smartMapping = config.mappings.find(
-      (m) => m.customer_id === customerId && m.smart_driver_id.length > 0
+      (m) => m.customer_id === customerId && m.smart_driver_id.length > 0 && isDriverOnShift(m, jobTime)
     );
 
     if (smartMapping) {
-      // Shift gate — shared shift window for all smart candidates
-      if (!isDriverOnShift(smartMapping, jobTime)) {
-        const jt   = saigonHoursMinutes(jobTime);
-        const now  = `${String(jt.hours).padStart(2, "0")}:${String(jt.minutes).padStart(2, "0")}`;
-        const win  = `${fmtShift(smartMapping.shift_start)}–${fmtShift(smartMapping.shift_end)}`;
-        log(`Job ${jobId} - SMART skipped: off shift (now ${now}, window ${win}), falling back to fixed | ${jobCustomerName ?? customerId}`, "WARN");
-        // Fall through to fixed driver path below
-      } else {
-        // ── 1-driver: straight assign (like fixed auto-assign) ──────────────
+      // ── 1-driver: straight assign (like fixed auto-assign) ──────────────
         if (smartMapping.smart_driver_id.length === 1) {
           const driverId   = smartMapping.smart_driver_id[0];
           const gpsDriver  = allGpsDrivers.find((d) => d.delivery_driver_id === driverId);
@@ -366,7 +359,6 @@ export async function autoAssignCycle(config: Config, env: Env = "prod"): Promis
           log(`Job ${jobId} - SMART error: ${e}`, "ERROR");
         }
         continue;
-      }
     }
 
     // ── Fixed driver path (original logic) ───────────────────────────────────
