@@ -295,78 +295,78 @@ export async function autoAssignCycle(config: Config, env: Env = "prod"): Promis
         const jt   = saigonHoursMinutes(jobTime);
         const now  = `${String(jt.hours).padStart(2, "0")}:${String(jt.minutes).padStart(2, "0")}`;
         const win  = `${fmtShift(smartMapping.shift_start)}–${fmtShift(smartMapping.shift_end)}`;
-        log(`Job ${jobId} - SMART skipped: off shift (now ${now}, window ${win}) | ${jobCustomerName ?? customerId}`, "WARN");
-        continue;
-      }
+        log(`Job ${jobId} - SMART skipped: off shift (now ${now}, window ${win}), falling back to fixed | ${jobCustomerName ?? customerId}`, "WARN");
+        // Fall through to fixed driver path below
+      } else {
+        // ── 1-driver: straight assign (like fixed auto-assign) ──────────────
+        if (smartMapping.smart_driver_id.length === 1) {
+          const driverId   = smartMapping.smart_driver_id[0];
+          const gpsDriver  = allGpsDrivers.find((d) => d.delivery_driver_id === driverId);
+          const driverName = gpsDriver
+            ? `${gpsDriver.first_name} ${gpsDriver.last_name}`.trim()
+            : (smartMapping.first_name_last_name || driverId);
+          try {
+            const { status: apiStatus, body } = await assignJob(driverId, jobId, driverName, env);
+            if (apiStatus === 200) {
+              log(`Job ${jobId} | SMART(1) → ${driverName} | ${jobCustomerName ?? customerId}`, "OK");
+            } else {
+              log(`Job ${jobId} - SMART(1) failed: ${body?.message ?? JSON.stringify(body)}`, "ERROR");
+            }
+          } catch (e) {
+            log(`Job ${jobId} - SMART(1) error: ${e}`, "ERROR");
+          }
+          continue;
+        }
 
-      // ── 1-driver: straight assign (like fixed auto-assign) ────────────────
-      if (smartMapping.smart_driver_id.length === 1) {
-        const driverId   = smartMapping.smart_driver_id[0];
-        const gpsDriver  = allGpsDrivers.find((d) => d.delivery_driver_id === driverId);
-        const driverName = gpsDriver
-          ? `${gpsDriver.first_name} ${gpsDriver.last_name}`.trim()
-          : (smartMapping.first_name_last_name || driverId);
+        // ── Multi-driver: haversine → Goong rank, assign top ───────────────
+        const pickupStop = job.stops.find((s) => s.stop_type_id === 1);
+        if (!pickupStop?.latitude || !pickupStop?.longitude) {
+          log(`Job ${jobId} - SMART skipped: pickup has no GPS | ${jobCustomerName ?? customerId}`, "ERROR");
+          continue;
+        }
+
+        const candidates = allGpsDrivers.filter((d) =>
+          smartMapping.smart_driver_id.includes(d.delivery_driver_id)
+        );
+        if (candidates.length === 0) {
+          log(`Job ${jobId} - SMART skipped: 0/${smartMapping.smart_driver_id.length} configured drivers have GPS | ${jobCustomerName ?? customerId}`, "WARN");
+          continue;
+        }
+
+        // Haversine pre-rank
+        const preRanked = candidates
+          .map((d) => ({
+            d,
+            hkm: Math.round(haversineKm(pickupStop.latitude!, pickupStop.longitude!, d.latitude!, d.longitude!) * 10) / 10,
+          }))
+          .sort((a, b) => a.hkm - b.hkm);
+
+        // Goong re-rank: reference stop → pickup
+        const withGoong = await Promise.all(
+          preRanked.map(async ({ d, hkm }) => {
+            const ref = smartRouteData[d.delivery_driver_id];
+            if (!ref) return { d, sortDist: hkm };
+            const roadKm = await goongDistanceKm(ref.lat, ref.lon, pickupStop.latitude!, pickupStop.longitude!);
+            const refHkm = Math.round(haversineKm(ref.lat, ref.lon, pickupStop.latitude!, pickupStop.longitude!) * 10) / 10;
+            return { d, sortDist: roadKm ?? refHkm };
+          })
+        );
+        withGoong.sort((a, b) => a.sortDist - b.sortDist);
+
+        const top        = withGoong[0];
+        const driverName = `${top.d.first_name} ${top.d.last_name}`.trim();
         try {
-          const { status: apiStatus, body } = await assignJob(driverId, jobId, driverName, env);
+          const { status: apiStatus, body } = await assignJob(top.d.delivery_driver_id, jobId, driverName, env);
           if (apiStatus === 200) {
-            log(`Job ${jobId} | SMART(1) → ${driverName} | ${jobCustomerName ?? customerId}`, "OK");
+            log(`Job ${jobId} | SMART → ${driverName} (${top.sortDist} km) | ${pickupStop.customer_name ?? customerId}`, "OK");
           } else {
-            log(`Job ${jobId} - SMART(1) failed: ${body?.message ?? JSON.stringify(body)}`, "ERROR");
+            log(`Job ${jobId} - SMART failed: ${body?.message ?? JSON.stringify(body)}`, "ERROR");
           }
         } catch (e) {
-          log(`Job ${jobId} - SMART(1) error: ${e}`, "ERROR");
+          log(`Job ${jobId} - SMART error: ${e}`, "ERROR");
         }
         continue;
       }
-
-      // ── Multi-driver: haversine → Goong rank, assign top ─────────────────
-      const pickupStop = job.stops.find((s) => s.stop_type_id === 1);
-      if (!pickupStop?.latitude || !pickupStop?.longitude) {
-        log(`Job ${jobId} - SMART skipped: pickup has no GPS | ${jobCustomerName ?? customerId}`, "ERROR");
-        continue;
-      }
-
-      const candidates = allGpsDrivers.filter((d) =>
-        smartMapping.smart_driver_id.includes(d.delivery_driver_id)
-      );
-      if (candidates.length === 0) {
-        log(`Job ${jobId} - SMART skipped: 0/${smartMapping.smart_driver_id.length} configured drivers have GPS | ${jobCustomerName ?? customerId}`, "WARN");
-        continue;
-      }
-
-      // Haversine pre-rank
-      const preRanked = candidates
-        .map((d) => ({
-          d,
-          hkm: Math.round(haversineKm(pickupStop.latitude!, pickupStop.longitude!, d.latitude!, d.longitude!) * 10) / 10,
-        }))
-        .sort((a, b) => a.hkm - b.hkm);
-
-      // Goong re-rank: reference stop → pickup
-      const withGoong = await Promise.all(
-        preRanked.map(async ({ d, hkm }) => {
-          const ref = smartRouteData[d.delivery_driver_id];
-          if (!ref) return { d, sortDist: hkm };
-          const roadKm   = await goongDistanceKm(ref.lat, ref.lon, pickupStop.latitude!, pickupStop.longitude!);
-          const refHkm   = Math.round(haversineKm(ref.lat, ref.lon, pickupStop.latitude!, pickupStop.longitude!) * 10) / 10;
-          return { d, sortDist: roadKm ?? refHkm };
-        })
-      );
-      withGoong.sort((a, b) => a.sortDist - b.sortDist);
-
-      const top        = withGoong[0];
-      const driverName = `${top.d.first_name} ${top.d.last_name}`.trim();
-      try {
-        const { status: apiStatus, body } = await assignJob(top.d.delivery_driver_id, jobId, driverName, env);
-        if (apiStatus === 200) {
-          log(`Job ${jobId} | SMART → ${driverName} (${top.sortDist} km) | ${pickupStop.customer_name ?? customerId}`, "OK");
-        } else {
-          log(`Job ${jobId} - SMART failed: ${body?.message ?? JSON.stringify(body)}`, "ERROR");
-        }
-      } catch (e) {
-        log(`Job ${jobId} - SMART error: ${e}`, "ERROR");
-      }
-      continue;
     }
 
     // ── Fixed driver path (original logic) ───────────────────────────────────
