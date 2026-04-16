@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import type { LogEntry } from "@/lib/types";
 
 type Env = "prod" | "uat";
+type AssignMode = "smart" | "autoplan";
 
 export function Dashboard() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -16,6 +17,7 @@ export function Dashboard() {
   const [mappingCount, setMappingCount] = useState(0);
   const [pscRouteCount, setPscRouteCount] = useState(0);
   const [env, setEnv] = useState<Env>("prod");
+  const [assignMode, setAssignMode] = useState<AssignMode>("smart");
   const assignIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cycleInProgressRef = useRef(false);
 
@@ -31,12 +33,14 @@ export function Dashboard() {
   }, []);
 
   // Auto-assign cycle
-  const runAssignCycle = useCallback(async (targetEnv?: Env) => {
+  const runAssignCycle = useCallback(async (targetEnv?: Env, targetMode?: AssignMode) => {
     if (cycleInProgressRef.current) return;
     cycleInProgressRef.current = true;
     const e = targetEnv ?? env;
+    const m = targetMode ?? assignMode;
+    const endpoint = m === "autoplan" ? `/api/autoplan?env=${e}` : `/api/assign?env=${e}`;
     try {
-      const res = await fetch(`/api/assign?env=${e}`, { method: "POST" });
+      const res = await fetch(endpoint, { method: "POST" });
       if (res.ok) {
         const data = await res.json();
         if (data.logs?.length) {
@@ -98,6 +102,22 @@ export function Dashboard() {
     toast.info(`Switched to ${newEnv.toUpperCase()}`);
   }, [isRunning]);
 
+  // Switch assign mode
+  const handleModeSwitch = useCallback((mode: AssignMode) => {
+    if (mode === assignMode) return;
+    setAssignMode(mode);
+    if (isRunning) {
+      setIsRunning(false);
+      if (assignIntervalRef.current) {
+        clearInterval(assignIntervalRef.current);
+        assignIntervalRef.current = null;
+      }
+      toast.info(`Auto-assign stopped due to mode switch`);
+    }
+    setLogs([]);
+    toast.info(`Switched to ${mode === "autoplan" ? "Auto-Plan" : "Smart-Assign"}`);
+  }, [assignMode, isRunning]);
+
   // Refresh handler with toast
   const handleRefresh = useCallback(async () => {
     try {
@@ -143,6 +163,24 @@ export function Dashboard() {
               onCheckedChange={handleEnvSwitch}
             />
             <span className={`text-sm font-medium ${!isProd ? "text-amber-400" : "text-slate-400"}`}>UAT</span>
+          </div>
+
+          <div className="w-px h-6 bg-slate-600" />
+
+          {/* Mode toggle */}
+          <div className="flex items-center rounded-lg overflow-hidden border border-slate-600 text-xs font-semibold">
+            <button
+              onClick={() => handleModeSwitch("smart")}
+              className={`px-2.5 py-1 transition-colors ${assignMode === "smart" ? "bg-blue-600 text-white" : "text-slate-400 hover:text-white"}`}
+            >
+              Smart
+            </button>
+            <button
+              onClick={() => handleModeSwitch("autoplan")}
+              className={`px-2.5 py-1 transition-colors border-l border-slate-600 ${assignMode === "autoplan" ? "bg-violet-600 text-white" : "text-slate-400 hover:text-white"}`}
+            >
+              Auto-Plan
+            </button>
           </div>
 
           <div className="w-px h-6 bg-slate-600" />
