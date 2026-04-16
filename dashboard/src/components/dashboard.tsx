@@ -17,6 +17,7 @@ export function Dashboard() {
   const [pscRouteCount, setPscRouteCount] = useState(0);
   const [env, setEnv] = useState<Env>("prod");
   const assignIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const cycleInProgressRef = useRef(false);
 
   // Fetch config on mount
   useEffect(() => {
@@ -31,6 +32,8 @@ export function Dashboard() {
 
   // Auto-assign cycle
   const runAssignCycle = useCallback(async (targetEnv?: Env) => {
+    if (cycleInProgressRef.current) return;
+    cycleInProgressRef.current = true;
     const e = targetEnv ?? env;
     try {
       const res = await fetch(`/api/assign?env=${e}`, { method: "POST" });
@@ -49,6 +52,8 @@ export function Dashboard() {
           msg: "Failed to reach assign endpoint",
         },
       ]);
+    } finally {
+      cycleInProgressRef.current = false;
     }
   }, [env]);
 
