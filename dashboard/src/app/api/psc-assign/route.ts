@@ -74,7 +74,7 @@ export async function POST(req: NextRequest) {
 
     if (!acquireLock(lockKey)) {
       return NextResponse.json(
-        { error: "duplicate", message: "Đang tạo job này, vui lòng đợi." },
+        { error: "duplicate", message: "Yêu cầu cùng chi nhánh đang được tạo!" },
         { status: 409 }
       );
     }
