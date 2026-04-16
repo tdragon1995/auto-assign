@@ -316,7 +316,11 @@ export default function QrPage() {
         setAssignResult(`Job submitted → ${data.reference}`);
       } else if (res.status === 409) {
         setAssignStatus("error");
-        setAssignResult(`Job #${data.job_id}${data.reference_number ? ` (${data.reference_number})` : ""}: Đơn liền trước chưa nhận mẫu, vui lòng chờ thêm hoặc liên hệ đội điều phối. Xin cám ơn!`);
+        setAssignResult(
+          data.job_id
+            ? `Job #${data.job_id}${data.reference_number ? ` (${data.reference_number})` : ""}: Đơn liền trước chưa nhận mẫu, vui lòng chờ thêm hoặc liên hệ đội điều phối. Xin cám ơn!`
+            : (data.message ?? "Đang xử lý yêu cầu, vui lòng đợi.")
+        );
       } else {
         setAssignStatus("error");
         setAssignResult(data.error || "Unknown error");

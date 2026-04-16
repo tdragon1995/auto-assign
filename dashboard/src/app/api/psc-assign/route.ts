@@ -1,8 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
 import { type Env } from "@/lib/cartrack";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const preferredRegion = "sin1";
+
+// In-memory dedup lock: prevents race condition when two tabs submit within seconds of each other.
+// Key = `${pickup}-${dropoff}-${today}`, value = timestamp when lock was set.
+// Lock expires after 15s — long enough to cover Cartrack job creation + indexing delay.
+const creationLock = new Map<string, number>();
+const LOCK_TTL_MS = 15_000;
+
+function acquireLock(key: string): boolean {
+  const ts = creationLock.get(key);
+  if (ts !== undefined && Date.now() - ts < LOCK_TTL_MS) return false;
+  creationLock.set(key, Date.now());
+  return true;
+}
+
+function releaseLock(key: string): void {
+  creationLock.delete(key);
+}
 
 const BASE_URL = "https://fleetapi-vn.cartrack.com/rest/delivery";
 
@@ -41,6 +58,7 @@ async function fetchJobsToday(status: number, from: string, to: string, env: Env
 
 export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
+  let lockKey: string | null = null;
 
   try {
     const body = await req.json();
@@ -50,10 +68,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    // --- Duplicate check ---
-    // Cartrack filters are GMT+7 — use VN date strings directly
     const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
     const today = vnNow.toISOString().split("T")[0];
+    lockKey = `${pickup}-${dropoff}-${today}`;
+
+    if (!acquireLock(lockKey)) {
+      return NextResponse.json(
+        { error: "duplicate", message: "Đang tạo job này, vui lòng đợi." },
+        { status: 409 }
+      );
+    }
+
+    // --- Duplicate check ---
+    // Cartrack filters are GMT+7 — use VN date strings directly
     const todayStart = `${today} 00:00:00`;
     const todayEnd   = `${today} 23:59:59`;
 
@@ -85,6 +112,7 @@ export async function POST(req: NextRequest) {
     });
 
     if (duplicate) {
+      releaseLock(lockKey);
       return NextResponse.json(
         {
           error: "duplicate",
@@ -151,6 +179,7 @@ export async function POST(req: NextRequest) {
     });
 
     if (!createRes.ok) {
+      releaseLock(lockKey);
       const errBody = await createRes.json().catch(() => ({}));
       return NextResponse.json({ error: "Failed to create job", details: errBody }, { status: createRes.status });
     }
@@ -163,6 +192,7 @@ export async function POST(req: NextRequest) {
       job_id: created.data?.job_id,
     });
   } catch (e) {
+    if (lockKey) releaseLock(lockKey);
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
 }
