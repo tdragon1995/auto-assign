@@ -162,6 +162,7 @@ export default function PscTinhPage() {
     if (!selectedUuid || !eta) return;
     setLoading(true);
     setResult(null);
+    setTab("status");
     try {
       const res = await fetch("/api/psc-tinh", {
         method: "POST",
@@ -178,15 +179,17 @@ export default function PscTinhPage() {
       const data = await res.json();
       if (!res.ok) {
         setResult({ ok: false, msg: data.error ?? "Lỗi không xác định" });
+        setTab("request");
       } else {
         setResult({ ok: true, msg: `Tạo thành công! ${data.reference} (Job #${data.job_id})` });
         setEta("");
         if (options.length > 1) clearTpl();
         setHighlightJobId(data.job_id ?? null);
-        setTab("status");
+        loadOrders();
       }
     } catch (e) {
       setResult({ ok: false, msg: String(e) });
+      setTab("request");
     } finally {
       setLoading(false);
     }
@@ -341,13 +344,15 @@ export default function PscTinhPage() {
 
               <div>
                 <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                  Ghi chú
+                  Ghi chú đặc biệt
                 </label>
+                <p className="text-xs text-slate-500 mb-1.5">
+                  Từ 2 thùng trở lên, mẫu khẩn, có mẫu cutoff lúc xx giờ....
+                </p>
                 <textarea
                   value={note}
                   onChange={(e) => setNote(e.target.value)}
                   rows={2}
-                  placeholder="VD: 1 thùng, 2 thùng, 3 thùng, mẫu khẩn, cutoff 11h..."
                   className="w-full border rounded-xl px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 resize-none"
                 />
               </div>
