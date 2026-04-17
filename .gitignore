@@ -8,3 +8,4 @@ build/
 .env
 docs/
 _run_dashboard.py
+*.xlsx
