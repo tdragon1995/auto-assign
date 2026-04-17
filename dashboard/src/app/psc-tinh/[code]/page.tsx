@@ -388,7 +388,11 @@ export default function PscTinhPage() {
                   <div key={o.job_id} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2.5 space-y-1">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-semibold text-slate-800">{o.reference}</span>
-                      {o.eta && <span className="text-xs text-slate-400">Thời gian tới nhà xe {o.eta}</span>}
+                      {o.eta && (
+                        <span className="text-xs text-slate-500">
+                          Thời gian tới nhà xe <span className="font-bold text-slate-800">{o.eta}</span>
+                        </span>
+                      )}
                     </div>
                     {o.pickup_address && (
                       <p className="text-[11px] text-slate-500">{o.pickup_address}</p>
@@ -408,13 +412,13 @@ export default function PscTinhPage() {
                         <div className="flex items-center gap-2 whitespace-nowrap">
                           <button
                             onClick={() => { setEditTarget(o); setEditEta(o.eta ?? ""); setEditError(""); }}
-                            className="text-[10px] font-medium text-blue-500 hover:text-blue-700"
+                            className="text-xs font-bold px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors"
                           >
                             Sửa giờ
                           </button>
                           <button
                             onClick={() => { setCancelTarget(o); setCancelError(""); }}
-                            className="text-[10px] font-medium text-red-500 hover:text-red-700"
+                            className="text-xs font-bold px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white transition-colors"
                           >
                             Huỷ
                           </button>
