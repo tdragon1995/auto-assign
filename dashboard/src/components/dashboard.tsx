@@ -59,7 +59,7 @@ export function Dashboard() {
     } finally {
       cycleInProgressRef.current = false;
     }
-  }, [env]);
+  }, [env, assignMode]);
 
   // Toggle auto-assign
   const toggleService = useCallback(() => {
