@@ -25,7 +25,46 @@ function abbrStreet(raw: string): string {
   return initials + titleCase(words[words.length - 1]);
 }
 
-export default function NewCustomerPage() {
+const REJECT_REASONS = [
+  "Khách hàng không còn nhu cầu gửi mẫu",
+  "Đã book grab",
+  "Book dư",
+];
+
+export default function SalesPage() {
+  const [tab, setTab] = useState<"customer" | "reject">("customer");
+
+  // Reject job state
+  const [refNumber, setRefNumber] = useState("");
+  const [rejectReason, setRejectReason] = useState(REJECT_REASONS[0]);
+  const [rejectLoading, setRejectLoading] = useState(false);
+  const [rejectResult, setRejectResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  const rejectJob = async () => {
+    const ref = refNumber.trim();
+    if (!ref) return;
+    setRejectLoading(true);
+    setRejectResult(null);
+    try {
+      const res = await fetch("/api/sales/reject-job", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reference_number: ref, reject_reason: rejectReason }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setRejectResult({ ok: false, msg: data.error ?? "Từ chối thất bại" });
+      } else {
+        setRejectResult({ ok: true, msg: `Đã từ chối job #${data.job_id} (${ref})` });
+        setRefNumber("");
+      }
+    } catch (e) {
+      setRejectResult({ ok: false, msg: String(e) });
+    } finally {
+      setRejectLoading(false);
+    }
+  };
+
   const [maKh, setMaKh] = useState("");
   const [quanCu, setQuanCu] = useState("");
   const [tenDuong, setTenDuong] = useState("");
@@ -135,10 +174,79 @@ export default function NewCustomerPage() {
     <div className="min-h-screen bg-slate-100 flex flex-col items-center p-4 gap-4">
       <div className="w-full max-w-sm bg-white rounded-2xl shadow border overflow-hidden">
         <div className="px-6 pt-5 pb-4">
-          <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">Khách hàng mới</p>
-          <h1 className="text-xl font-bold text-slate-800 mt-0.5">Tạo khách hàng trên Cartrack</h1>
+          <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">Sales</p>
+          <h1 className="text-xl font-bold text-slate-800 mt-0.5">
+            {tab === "customer" ? "Tạo khách hàng" : "Từ chối job"}
+          </h1>
         </div>
 
+        <div className="grid grid-cols-2 border-t border-slate-100">
+          <button
+            onClick={() => setTab("customer")}
+            className={`py-2.5 text-sm font-semibold transition-colors ${
+              tab === "customer" ? "bg-blue-600 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+            }`}
+          >
+            Khách hàng mới
+          </button>
+          <button
+            onClick={() => setTab("reject")}
+            className={`py-2.5 text-sm font-semibold transition-colors border-l border-slate-100 ${
+              tab === "reject" ? "bg-blue-600 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+            }`}
+          >
+            Từ chối job
+          </button>
+        </div>
+
+        {tab === "reject" && (
+          <div className="p-6 space-y-4 border-t border-slate-100">
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Reference number</label>
+              <input
+                value={refNumber}
+                onChange={(e) => setRefNumber(e.target.value)}
+                placeholder="VD: 26041602062639822062"
+                className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Lý do từ chối</label>
+              <select
+                value={rejectReason}
+                onChange={(e) => setRejectReason(e.target.value)}
+                className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+              >
+                {REJECT_REASONS.map((r) => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+              </select>
+            </div>
+
+            <button
+              onClick={rejectJob}
+              disabled={!refNumber.trim() || rejectLoading}
+              className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-red-600 hover:bg-red-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            >
+              {rejectLoading ? "Đang từ chối..." : "Từ chối job"}
+            </button>
+
+            {rejectResult && (
+              <div
+                className={`rounded-xl p-3.5 text-sm font-medium text-center ${
+                  rejectResult.ok
+                    ? "bg-emerald-50 border border-emerald-200 text-emerald-800"
+                    : "bg-red-50 border border-red-200 text-red-800"
+                }`}
+              >
+                {rejectResult.msg}
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === "customer" && (
         <div className="p-6 space-y-4 border-t border-slate-100">
           <div>
             <label className="block text-sm font-semibold text-slate-700 mb-1.5">Mã KH</label>
@@ -269,6 +377,7 @@ export default function NewCustomerPage() {
             </div>
           )}
         </div>
+        )}
       </div>
     </div>
   );
