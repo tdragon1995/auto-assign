@@ -115,8 +115,8 @@ export default function PscTinhPage() {
   useEffect(() => { loadOptions(); }, [loadOptions]);
 
   useEffect(() => {
-    if (tab === "status" && !loading) loadOrders();
-  }, [tab, loadOrders, loading]);
+    if (tab === "status") loadOrders();
+  }, [tab, loadOrders]);
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -162,7 +162,6 @@ export default function PscTinhPage() {
     if (!selectedUuid || !eta) return;
     setLoading(true);
     setResult(null);
-    setTab("status");
     try {
       const res = await fetch("/api/psc-tinh", {
         method: "POST",
@@ -179,17 +178,15 @@ export default function PscTinhPage() {
       const data = await res.json();
       if (!res.ok) {
         setResult({ ok: false, msg: data.error ?? "Lỗi không xác định" });
-        setTab("request");
       } else {
         setResult({ ok: true, msg: `Tạo thành công! ${data.reference} (Job #${data.job_id})` });
         setEta("");
         if (options.length > 1) clearTpl();
         setHighlightJobId(data.job_id ?? null);
-        loadOrders();
+        setTab("status");
       }
     } catch (e) {
       setResult({ ok: false, msg: String(e) });
-      setTab("request");
     } finally {
       setLoading(false);
     }
@@ -386,10 +383,8 @@ export default function PscTinhPage() {
             <div className="flex justify-end">
               <button onClick={loadOrders} className="text-xs text-blue-500 hover:underline">Làm mới</button>
             </div>
-            {ordersLoading || loading ? (
-              <p className="text-xs text-slate-400 text-center py-4">
-                {loading ? "Đang tạo yêu cầu..." : "Đang tải..."}
-              </p>
+            {ordersLoading ? (
+              <p className="text-xs text-slate-400 text-center py-4">Đang tải...</p>
             ) : orders.length === 0 ? (
               <p className="text-xs text-slate-400 text-center py-4">Chưa có yêu cầu nào hôm nay.</p>
             ) : (
