@@ -33,9 +33,54 @@ export default function NewCustomerPage() {
   const [diaChi, setDiaChi] = useState("");
   const [lat, setLat] = useState("");
   const [lon, setLon] = useState("");
+  const [mapLink, setMapLink] = useState("");
+  const [linkLoading, setLinkLoading] = useState(false);
+  const [linkError, setLinkError] = useState("");
 
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  const extractFromLink = async () => {
+    const url = mapLink.trim();
+    if (!url) return;
+    setLinkLoading(true);
+    setLinkError("");
+    try {
+      // Client-side fast path
+      const patterns = [
+        /@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/,
+        /!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/,
+        /[?&]q=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/,
+        /[?&]ll=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/,
+      ];
+      for (const re of patterns) {
+        const m = url.match(re);
+        if (m) {
+          setLat(m[1]);
+          setLon(m[2]);
+          setLinkLoading(false);
+          return;
+        }
+      }
+      // Short link — resolve server-side
+      const res = await fetch("/api/geo/resolve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setLinkError(data.error ?? "Không đọc được link");
+        return;
+      }
+      setLat(String(data.latitude));
+      setLon(String(data.longitude));
+    } catch (e) {
+      setLinkError(String(e));
+    } finally {
+      setLinkLoading(false);
+    }
+  };
 
   const maKhValid = /^\d{5,8}$/.test(maKh);
 
@@ -151,6 +196,27 @@ export default function NewCustomerPage() {
               rows={2}
               className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 resize-none"
             />
+          </div>
+
+          <div>
+            <label className="block text-sm font-semibold text-slate-700 mb-1.5">Google Maps link</label>
+            <div className="flex gap-2">
+              <input
+                value={mapLink}
+                onChange={(e) => setMapLink(e.target.value)}
+                placeholder="Dán link Google Maps"
+                className="flex-1 border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+              />
+              <button
+                type="button"
+                onClick={extractFromLink}
+                disabled={linkLoading || !mapLink.trim()}
+                className="px-4 rounded-xl bg-slate-800 text-white text-sm font-semibold disabled:opacity-40"
+              >
+                {linkLoading ? "..." : "Lấy"}
+              </button>
+            </div>
+            {linkError && <p className="text-xs text-red-600 mt-1">{linkError}</p>}
           </div>
 
           <div className="grid grid-cols-2 gap-3">
