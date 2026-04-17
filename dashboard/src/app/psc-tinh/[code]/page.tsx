@@ -322,7 +322,7 @@ export default function PscTinhPage() {
 
               <div>
                 <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                  ETA — Giờ lấy mẫu dự kiến
+                  Thời gian tới nhà xe
                 </label>
                 <select
                   value={eta}
@@ -388,7 +388,7 @@ export default function PscTinhPage() {
                   <div key={o.job_id} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2.5 space-y-1">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-semibold text-slate-800">{o.reference}</span>
-                      {o.eta && <span className="text-xs text-slate-400">ETA {o.eta}</span>}
+                      {o.eta && <span className="text-xs text-slate-400">Thời gian tới nhà xe {o.eta}</span>}
                     </div>
                     {o.pickup_address && (
                       <p className="text-[11px] text-slate-500">{o.pickup_address}</p>
@@ -410,7 +410,7 @@ export default function PscTinhPage() {
                             onClick={() => { setEditTarget(o); setEditEta(o.eta ?? ""); setEditError(""); }}
                             className="text-[10px] font-medium text-blue-500 hover:text-blue-700"
                           >
-                            Sửa ETA
+                            Sửa giờ
                           </button>
                           <button
                             onClick={() => { setCancelTarget(o); setCancelError(""); }}
@@ -436,6 +436,9 @@ export default function PscTinhPage() {
             <div className="space-y-1">
               <p className="text-sm font-bold text-slate-800">Huỷ yêu cầu?</p>
               <p className="text-xs text-slate-500 font-semibold">{cancelTarget.reference}</p>
+              {cancelTarget.eta && (
+                <p className="text-xs text-slate-500">Thời gian tới nhà xe: <span className="font-semibold text-slate-700">{cancelTarget.eta}</span></p>
+              )}
               <p className="text-xs text-slate-500">Hành động này không thể hoàn tác.</p>
             </div>
             {cancelError && (
@@ -466,7 +469,7 @@ export default function PscTinhPage() {
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4">
           <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl p-5 space-y-4">
             <div className="space-y-1">
-              <p className="text-sm font-bold text-slate-800">Sửa giờ lấy mẫu (ETA)</p>
+              <p className="text-sm font-bold text-slate-800">Sửa thời gian tới nhà xe</p>
               <p className="text-xs text-slate-500 font-semibold">{editTarget.reference}</p>
             </div>
             <select

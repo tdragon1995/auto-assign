@@ -9,7 +9,20 @@
       "Bash(where git:*)",
       "Bash(git --version)",
       "Bash(git config:*)",
-      "Bash(cmd /c \"vercel --prod\")"
+      "Bash(cmd /c \"vercel --prod\")",
+      "Read(//c/Users/NguyenThanhLong/**)"
+    ]
+  },
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Review this session and update the memory files in C:\\Users\\NguyenThanhLong\\.claude\\projects\\c--Users-NguyenThanhLong-Downloads-auto-assign-repo\\memory\\ to reflect anything new learned about: the user's preferences or working style, the project's modules or architecture, Cartrack API details, or operational context about Diag logistics. Check MEMORY.md index is up to date. Only update files where something actually changed or was newly discovered this session. Skip if nothing new was learned."
+          }
+        ]
+      }
     ]
   }
 }
