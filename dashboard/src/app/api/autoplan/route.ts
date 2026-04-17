@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadConfigFromSheets } from "@/lib/config";
 import { getUnassignedJobs, getFleetwebCookie, type Env } from "@/lib/cartrack";
-import { isDriverOnShift, getCustomerIdFromJob } from "@/lib/assign";
+import { isDriverOnShift, getCustomerIdFromJob, isJobRecent, jobHasNotes } from "@/lib/assign";
 import type { LogEntry, LogLevel } from "@/lib/types";
 
 const JSONRPC_URL = "https://fleetweb-vn.cartrack.com/jsonrpc/index.php";
@@ -182,8 +182,11 @@ export async function POST(req: NextRequest) {
       fetchAssignedJobIds(onShiftDriverIds, dateVn, auth, cookie),
     ]);
 
+    const maxAge = config.job_max_age_minutes;
     const unassignedSmartJobIds = (unassignedData.data ?? [])
       .filter((j) => {
+        if (!isJobRecent(j, maxAge)) return false;
+        if (jobHasNotes(j)) return false;
         const cid = getCustomerIdFromJob(j);
         return cid !== null && smartCustomerIds.has(cid);
       })
