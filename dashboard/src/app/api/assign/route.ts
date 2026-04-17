@@ -5,6 +5,7 @@ import type { Env } from "@/lib/cartrack";
 
 export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
+  const skipSmart = req.nextUrl.searchParams.get("skipSmart") === "1";
   try {
     const config = await loadConfigFromSheets();
     if (!config) {
@@ -14,7 +15,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const logs = await autoAssignCycle(config, env);
+    const logs = await autoAssignCycle(config, env, skipSmart);
     return NextResponse.json({ logs });
   } catch (e) {
     return NextResponse.json(

@@ -215,7 +215,7 @@ export function buildGmapsRouteLink(
   );
 }
 
-export async function autoAssignCycle(config: Config, env: Env = "prod"): Promise<LogEntry[]> {
+export async function autoAssignCycle(config: Config, env: Env = "prod", skipSmart = false): Promise<LogEntry[]> {
   const logs: LogEntry[] = [];
   const log = (msg: string, level: LogLevel = "INFO") => {
     logs.push(makeLog(msg, level));
@@ -251,7 +251,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod"): Promis
   const smartCustomerIds = new Set(
     config.mappings.filter((m) => m.smart_driver_id.length > 0).map((m) => m.customer_id)
   );
-  const hasSmartJobs = jobs.some((j) => {
+  const hasSmartJobs = !skipSmart && jobs.some((j) => {
     const cid = getCustomerIdFromJob(j);
     return cid !== null && smartCustomerIds.has(cid);
   });
@@ -282,6 +282,10 @@ export async function autoAssignCycle(config: Config, env: Env = "prod"): Promis
 
     if (!customerId) {
       log(`Job ${jobId} - No pickup stop found`, "ERROR");
+      continue;
+    }
+
+    if (skipSmart && smartCustomerIds.has(customerId)) {
       continue;
     }
 
