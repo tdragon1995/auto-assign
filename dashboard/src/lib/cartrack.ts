@@ -18,6 +18,28 @@ function getHeaders(env: Env = "prod"): Record<string, string> {
   return headers;
 }
 
+export async function getDriverJobs(
+  driverId: string,
+  dateVn: string,
+  env: Env = "prod"
+): Promise<Job[]> {
+  const params = new URLSearchParams({
+    "filter[job_status_id]": "4",
+    "filter[create_ts_from]": `${dateVn} 00:00:00`,
+    "filter[create_ts_to]": `${dateVn} 23:59:59`,
+    per_page: "200",
+  });
+
+  const res = await fetch(`${BASE_URL}/drivers/${driverId}/jobs?${params}`, {
+    headers: getHeaders(env),
+    cache: "no-store",
+  });
+
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.data ?? [];
+}
+
 export async function getUnassignedJobs(
   page = 1,
   perPage = 50,

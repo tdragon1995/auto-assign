@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadConfigFromSheets } from "@/lib/config";
-import { getUnassignedJobs, getFleetwebCookie, type Env } from "@/lib/cartrack";
+import { getUnassignedJobs, getDriverJobs, getFleetwebCookie, type Env } from "@/lib/cartrack";
 import { isDriverOnShift, getCustomerIdFromJob, isJobRecent, jobHasNotes } from "@/lib/assign";
 import type { LogEntry, LogLevel } from "@/lib/types";
 
 const JSONRPC_URL = "https://fleetweb-vn.cartrack.com/jsonrpc/index.php";
 const TZ = "Asia/Ho_Chi_Minh";
+
+// Cooldown: skip auto-plan if fired within last 3 minutes
+let lastPlanFiredAt = 0;
+const COOLDOWN_MS = 3 * 60 * 1000;
 
 function nowTs(): string {
   const d = new Date();
@@ -41,60 +45,6 @@ function parseUnassignableJobIds(error: string): number[] {
     }
   }
   return ids;
-}
-
-// Fetch assigned job IDs for smart drivers where pickup stop hasn't started yet
-async function fetchAssignedJobIds(
-  smartDriverIds: Set<string>,
-  dateVn: string,
-  auth: string,
-  cookie: string
-): Promise<number[]> {
-  try {
-    const res = await fetch(JSONRPC_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: auth, Cookie: cookie },
-      body: JSON.stringify({
-        version: "2.0",
-        method: "delivery_timeline_route_list",
-        id: 2,
-        params: {
-          data: {
-            scheduleType: "scheduled",
-            filter: {
-              from: `${dateVn}T00:00:00+07:00`,
-              to:   `${dateVn}T23:59:59+07:00`,
-            },
-          },
-        },
-      }),
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-
-    const routes: {
-      routeId: string;
-      orderedStops?: {
-        jobId?: number;
-        stopTypeId?: number;
-        stopStatusId?: number;
-      }[];
-    }[] = data.result?.routes ?? [];
-
-    const jobIds: number[] = [];
-    for (const route of routes) {
-      const driverId = route.routeId.replace(/^driver_/, "");
-      if (!smartDriverIds.has(driverId)) continue;
-      for (const stop of route.orderedStops ?? []) {
-        if (stop.stopTypeId === 1 && stop.stopStatusId === 1 && stop.jobId != null) {
-          jobIds.push(stop.jobId);
-        }
-      }
-    }
-    return [...new Set(jobIds)];
-  } catch {
-    return [];
-  }
 }
 
 async function callAutoPlan(
@@ -140,6 +90,14 @@ export async function POST(req: NextRequest) {
   const log = (msg: string, level: LogLevel = "INFO") => logs.push(makeLog(msg, level));
 
   try {
+    // Cooldown check
+    const elapsed = Date.now() - lastPlanFiredAt;
+    if (elapsed < COOLDOWN_MS) {
+      const remaining = Math.ceil((COOLDOWN_MS - elapsed) / 1000);
+      log(`AUTO-PLAN: cooldown — next plan in ${remaining}s`);
+      return NextResponse.json({ logs });
+    }
+
     const config = await loadConfigFromSheets();
     if (!config) {
       log("Failed to load config", "ERROR");
@@ -170,19 +128,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ logs });
     }
 
-    const cookie = await getFleetwebCookie();
-    if (!cookie) {
-      log("AUTO-PLAN: could not obtain fleetweb cookie", "ERROR");
-      return NextResponse.json({ logs }, { status: 500 });
-    }
+    const maxAge = config.job_max_age_minutes;
 
-    // Fetch unassigned jobs + assigned-but-not-started jobs in parallel
-    const [unassignedData, assignedJobIds] = await Promise.all([
+    // Fetch unassigned jobs + driver assigned jobs in parallel
+    const driverIds = [...onShiftDriverIds];
+    const [unassignedData, ...driverJobArrays] = await Promise.all([
       getUnassignedJobs(1, 50, env),
-      fetchAssignedJobIds(onShiftDriverIds, dateVn, auth, cookie),
+      ...driverIds.map((id) => getDriverJobs(id, dateVn, env)),
     ]);
 
-    const maxAge = config.job_max_age_minutes;
+    // Filter unassigned jobs
     const unassignedSmartJobIds = (unassignedData.data ?? [])
       .filter((j) => {
         if (!isJobRecent(j, maxAge)) return false;
@@ -192,15 +147,35 @@ export async function POST(req: NextRequest) {
       })
       .map((j) => j.job_id);
 
-    let jobIds = [...new Set([...unassignedSmartJobIds, ...assignedJobIds])];
+    // Filter driver jobs: pickup not started + recent + no notes + customer match
+    const assignedSmartJobIds: number[] = [];
+    for (const jobs of driverJobArrays) {
+      for (const j of jobs) {
+        if (!isJobRecent(j, maxAge)) continue;
+        if (jobHasNotes(j)) continue;
+        const cid = getCustomerIdFromJob(j);
+        if (!cid || !smartCustomerIds.has(cid)) continue;
+        const pickupStop = (j.stops ?? []).find((s) => s.stop_type_id === 1);
+        if (!pickupStop || pickupStop.stop_status_id !== 1) continue;
+        assignedSmartJobIds.push(j.job_id);
+      }
+    }
+
+    let jobIds = [...new Set([...unassignedSmartJobIds, ...assignedSmartJobIds])];
 
     if (jobIds.length === 0) {
       log("AUTO-PLAN: no jobs to plan");
       return NextResponse.json({ logs });
     }
 
-    const driverIds = [...onShiftDriverIds];
-    log(`AUTO-PLAN: ${jobIds.length} job(s) [${unassignedSmartJobIds.length} unassigned + ${assignedJobIds.length} assigned] → ${driverIds.length} driver(s)`);
+    log(`AUTO-PLAN: ${jobIds.length} job(s) [${unassignedSmartJobIds.length} unassigned + ${assignedSmartJobIds.length} assigned] → ${driverIds.length} driver(s)`);
+
+    // Need fleetweb cookie for JSON-RPC autoplan call
+    const cookie = await getFleetwebCookie();
+    if (!cookie) {
+      log("AUTO-PLAN: could not obtain fleetweb cookie", "ERROR");
+      return NextResponse.json({ logs }, { status: 500 });
+    }
 
     // Fire auto-plan
     const result = await callAutoPlan(jobIds, driverIds, dateVn, auth, cookie);
@@ -222,12 +197,14 @@ export async function POST(req: NextRequest) {
         if (retry.error) {
           log(`AUTO-PLAN retry failed: ${retry.error}`, "ERROR");
         } else {
+          lastPlanFiredAt = Date.now();
           log(`AUTO-PLAN: ${jobIds.length} job(s) planned across ${driverIds.length} driver(s)`, "OK");
         }
       } else {
         log(`AUTO-PLAN error: ${result.error}`, "ERROR");
       }
     } else {
+      lastPlanFiredAt = Date.now();
       log(`AUTO-PLAN: ${jobIds.length} job(s) planned across ${driverIds.length} driver(s)`, "OK");
     }
 
