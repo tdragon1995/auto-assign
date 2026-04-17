@@ -215,6 +215,38 @@ export async function POST(req: NextRequest) {
   }
 }
 
+// ── DELETE /api/psc-tinh?job_id=123 — cancel job (only if not started) ───────
+
+export async function DELETE(req: NextRequest) {
+  const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
+  const jobId = req.nextUrl.searchParams.get("job_id");
+
+  if (!jobId) return NextResponse.json({ error: "Missing job_id" }, { status: 400 });
+
+  try {
+    const headers = getHeaders(env);
+
+    const jobRes = await fetch(`${BASE_URL}/jobs/${jobId}`, { headers, cache: "no-store" });
+    if (!jobRes.ok) return NextResponse.json({ error: "Job not found" }, { status: 404 });
+    const jobData = await jobRes.json();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const stops: any[] = jobData.data?.stops ?? [];
+    const pickup = stops.find((s) => s.stop_type_id === 1);
+    if (pickup && pickup.stop_status_id !== 1) {
+      return NextResponse.json({ error: "Không thể huỷ: tài xế đã bắt đầu công việc." }, { status: 409 });
+    }
+
+    const res = await fetch(`${BASE_URL}/jobs/${jobId}?force=true`, { method: "DELETE", headers });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      return NextResponse.json({ error: "Failed to cancel job", details: err }, { status: res.status });
+    }
+    return NextResponse.json({ success: true });
+  } catch (e) {
+    return NextResponse.json({ error: String(e) }, { status: 500 });
+  }
+}
+
 // ── PATCH /api/psc-tinh — update pickup ETA ──────────────────────────────────
 
 export async function PATCH(req: NextRequest) {

@@ -66,6 +66,9 @@ export default function PscTinhPage() {
   const [editEta, setEditEta] = useState("");
   const [editLoading, setEditLoading] = useState(false);
   const [editError, setEditError] = useState("");
+  const [cancelTarget, setCancelTarget] = useState<Order | null>(null);
+  const [cancelLoading, setCancelLoading] = useState(false);
+  const [cancelError, setCancelError] = useState("");
 
   const [tplQuery, setTplQuery] = useState("");
   const [selectedUuid, setSelectedUuid] = useState("");
@@ -208,6 +211,26 @@ export default function PscTinhPage() {
       setEditError("Không thể kết nối. Vui lòng thử lại.");
     } finally {
       setEditLoading(false);
+    }
+  };
+
+  const handleCancel = async () => {
+    if (!cancelTarget) return;
+    setCancelLoading(true);
+    setCancelError("");
+    try {
+      const res = await fetch(`/api/psc-tinh?job_id=${cancelTarget.job_id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setCancelError(data.error ?? "Huỷ thất bại");
+        return;
+      }
+      setCancelTarget(null);
+      await loadOrders();
+    } catch {
+      setCancelError("Không thể kết nối. Vui lòng thử lại.");
+    } finally {
+      setCancelLoading(false);
     }
   };
 
@@ -382,12 +405,20 @@ export default function PscTinhPage() {
                         )}
                       </div>
                       {o.pickup_status_id === 1 && (
-                        <button
-                          onClick={() => { setEditTarget(o); setEditEta(o.eta ?? ""); setEditError(""); }}
-                          className="text-[10px] font-medium text-blue-500 hover:text-blue-700 whitespace-nowrap"
-                        >
-                          Sửa ETA
-                        </button>
+                        <div className="flex items-center gap-2 whitespace-nowrap">
+                          <button
+                            onClick={() => { setEditTarget(o); setEditEta(o.eta ?? ""); setEditError(""); }}
+                            className="text-[10px] font-medium text-blue-500 hover:text-blue-700"
+                          >
+                            Sửa ETA
+                          </button>
+                          <button
+                            onClick={() => { setCancelTarget(o); setCancelError(""); }}
+                            className="text-[10px] font-medium text-red-500 hover:text-red-700"
+                          >
+                            Huỷ
+                          </button>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -397,6 +428,38 @@ export default function PscTinhPage() {
           </div>
         )}
       </div>
+
+      {/* Cancel confirm overlay */}
+      {cancelTarget && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4">
+          <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl p-5 space-y-4">
+            <div className="space-y-1">
+              <p className="text-sm font-bold text-slate-800">Huỷ yêu cầu?</p>
+              <p className="text-xs text-slate-500 font-semibold">{cancelTarget.reference}</p>
+              <p className="text-xs text-slate-500">Hành động này không thể hoàn tác.</p>
+            </div>
+            {cancelError && (
+              <p className="text-xs text-red-600 font-medium">{cancelError}</p>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={() => { setCancelTarget(null); setCancelError(""); }}
+                disabled={cancelLoading}
+                className="py-2.5 rounded-xl text-sm font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40 transition-colors"
+              >
+                Quay lại
+              </button>
+              <button
+                onClick={handleCancel}
+                disabled={cancelLoading}
+                className="py-2.5 rounded-xl text-sm font-bold bg-red-600 hover:bg-red-700 text-white disabled:opacity-40 transition-colors"
+              >
+                {cancelLoading ? "Đang huỷ..." : "Xác nhận huỷ"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Edit ETA overlay */}
       {editTarget && (
