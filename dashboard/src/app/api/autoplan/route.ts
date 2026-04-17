@@ -222,13 +222,13 @@ export async function POST(req: NextRequest) {
         if (retry.error) {
           log(`AUTO-PLAN retry failed: ${retry.error}`, "ERROR");
         } else {
-          log(`AUTO-PLAN fired (retry) | requestId: ${retry.requestId} | routingJob: ${retry.routingJobId} | ${jobIds.length} job(s) → ${driverIds.length} driver(s)`, "OK");
+          log(`AUTO-PLAN: ${jobIds.length} job(s) planned across ${driverIds.length} driver(s)`, "OK");
         }
       } else {
         log(`AUTO-PLAN error: ${result.error}`, "ERROR");
       }
     } else {
-      log(`AUTO-PLAN fired | requestId: ${result.requestId} | routingJob: ${result.routingJobId} | ${jobIds.length} job(s) → ${driverIds.length} driver(s)`, "OK");
+      log(`AUTO-PLAN: ${jobIds.length} job(s) planned across ${driverIds.length} driver(s)`, "OK");
     }
 
     return NextResponse.json({ logs });
