@@ -115,8 +115,8 @@ export default function PscTinhPage() {
   useEffect(() => { loadOptions(); }, [loadOptions]);
 
   useEffect(() => {
-    if (tab === "status") loadOrders();
-  }, [tab, loadOrders]);
+    if (tab === "status" && !loading) loadOrders();
+  }, [tab, loadOrders, loading]);
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -386,8 +386,10 @@ export default function PscTinhPage() {
             <div className="flex justify-end">
               <button onClick={loadOrders} className="text-xs text-blue-500 hover:underline">Làm mới</button>
             </div>
-            {ordersLoading ? (
-              <p className="text-xs text-slate-400 text-center py-4">Đang tải...</p>
+            {ordersLoading || loading ? (
+              <p className="text-xs text-slate-400 text-center py-4">
+                {loading ? "Đang tạo yêu cầu..." : "Đang tải..."}
+              </p>
             ) : orders.length === 0 ? (
               <p className="text-xs text-slate-400 text-center py-4">Chưa có yêu cầu nào hôm nay.</p>
             ) : (
