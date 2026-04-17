@@ -53,9 +53,10 @@ export default function SalesPage() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setRejectResult({ ok: false, msg: data.error ?? "Từ chối thất bại" });
+        setRejectResult({ ok: false, msg: data.error ?? "Huỷ thất bại" });
       } else {
-        setRejectResult({ ok: true, msg: `Đã từ chối job #${data.job_id} (${ref})` });
+        const who = data.pickup_customer_name ? `, ${data.pickup_customer_name}` : "";
+        setRejectResult({ ok: true, msg: `Đã huỷ thành công ${data.reference_number ?? ref}${who}` });
         setRefNumber("");
       }
     } catch (e) {
@@ -176,7 +177,7 @@ export default function SalesPage() {
         <div className="px-6 pt-5 pb-4">
           <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">Sales</p>
           <h1 className="text-xl font-bold text-slate-800 mt-0.5">
-            {tab === "customer" ? "Tạo khách hàng" : "Từ chối job"}
+            {tab === "customer" ? "Tạo khách hàng" : "Huỷ yêu cầu giao nhận"}
           </h1>
         </div>
 
@@ -195,14 +196,14 @@ export default function SalesPage() {
               tab === "reject" ? "bg-blue-600 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
             }`}
           >
-            Từ chối job
+            Huỷ yêu cầu giao nhận
           </button>
         </div>
 
         {tab === "reject" && (
           <div className="p-6 space-y-4 border-t border-slate-100">
             <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Reference number</label>
+              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Mã giao nhận</label>
               <input
                 value={refNumber}
                 onChange={(e) => setRefNumber(e.target.value)}
@@ -229,7 +230,7 @@ export default function SalesPage() {
               disabled={!refNumber.trim() || rejectLoading}
               className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-red-600 hover:bg-red-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
             >
-              {rejectLoading ? "Đang từ chối..." : "Từ chối job"}
+              {rejectLoading ? "Đang huỷ..." : "Huỷ yêu cầu giao nhận"}
             </button>
 
             {rejectResult && (

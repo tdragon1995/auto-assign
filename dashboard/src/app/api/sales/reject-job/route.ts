@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Job đã bị huỷ/từ chối trước đó" }, { status: 409 });
     }
 
-    // Only allow reject if pickup stop has not started (status_id === 1)
+    // Only allow reject if no stop has progressed beyond status 1 (Chờ lấy)
     const fullRes = await fetch(`${BASE_URL}/jobs/${job.job_id}`, {
       headers: { Authorization: auth, Accept: "application/json" },
       cache: "no-store",
@@ -58,8 +58,14 @@ export async function POST(req: NextRequest) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const stops: any[] = fullData.data?.stops ?? [];
     const pickup = stops.find((s) => s.stop_type_id === 1);
-    if (pickup && pickup.stop_status_id !== 1) {
-      return NextResponse.json({ error: "Không thể từ chối: tài xế đã bắt đầu công việc." }, { status: 409 });
+    const pickupCustomerName = pickup?.customer_name ?? null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const started = stops.some((s: any) =>
+      (s.stop_status_id != null && s.stop_status_id !== 1) ||
+      s.activity_started_ts || s.activity_arrived_ts || s.activity_completed_ts
+    );
+    if (started) {
+      return NextResponse.json({ error: "Không thể huỷ: tài xế đã bắt đầu công việc." }, { status: 409 });
     }
 
     const cookie = await getFleetwebCookie();
@@ -82,7 +88,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Từ chối thất bại", details: rpcData }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true, job_id: job.job_id });
+    return NextResponse.json({
+      success: true,
+      job_id: job.job_id,
+      reference_number: job.reference_number,
+      pickup_customer_name: pickupCustomerName,
+    });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
