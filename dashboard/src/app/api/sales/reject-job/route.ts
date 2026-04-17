@@ -46,6 +46,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Job đã bị huỷ/từ chối trước đó" }, { status: 409 });
     }
 
+    // Only allow reject if pickup stop has not started (status_id === 1)
+    const fullRes = await fetch(`${BASE_URL}/jobs/${job.job_id}`, {
+      headers: { Authorization: auth, Accept: "application/json" },
+      cache: "no-store",
+    });
+    if (!fullRes.ok) {
+      return NextResponse.json({ error: "Không lấy được chi tiết job" }, { status: 500 });
+    }
+    const fullData = await fullRes.json();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const stops: any[] = fullData.data?.stops ?? [];
+    const pickup = stops.find((s) => s.stop_type_id === 1);
+    if (pickup && pickup.stop_status_id !== 1) {
+      return NextResponse.json({ error: "Không thể từ chối: tài xế đã bắt đầu công việc." }, { status: 409 });
+    }
+
     const cookie = await getFleetwebCookie();
     if (!cookie) {
       return NextResponse.json({ error: "Không thể đăng nhập Cartrack fleetweb" }, { status: 500 });
