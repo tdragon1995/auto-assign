@@ -71,9 +71,7 @@ export default function PscTinhPage() {
   const [cancelError, setCancelError] = useState("");
   const [highlightJobId, setHighlightJobId] = useState<number | null>(null);
 
-  const [tplQuery, setTplQuery] = useState("");
   const [selectedUuid, setSelectedUuid] = useState("");
-  const [tplOpen, setTplOpen] = useState(false);
 
   const [eta, setEta] = useState("");
   const [note, setNote] = useState("");
@@ -104,7 +102,6 @@ export default function PscTinhPage() {
       setOptions(opts);
       if (opts.length === 1) {
         setSelectedUuid(opts[0].tpl_uuid);
-        setTplQuery(opts[0].tpl_name);
       }
     } catch (e) {
       setLoadError(String(e));
@@ -116,13 +113,6 @@ export default function PscTinhPage() {
   useEffect(() => {
     if (tab === "status") loadOrders();
   }, [tab, loadOrders]);
-
-  useEffect(() => {
-    if (!tplOpen) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => { document.body.style.overflow = prev; };
-  }, [tplOpen]);
 
   if (!meta) {
     return (
@@ -136,22 +126,13 @@ export default function PscTinhPage() {
   }
 
   const selectedOption = options.find((o) => o.tpl_uuid === selectedUuid);
-  const filtered = options.filter(
-    (o) =>
-      o.tpl_name.toLowerCase().includes(tplQuery.toLowerCase()) ||
-      o.address.toLowerCase().includes(tplQuery.toLowerCase())
-  );
 
   const selectTpl = (o: TplOption) => {
     setSelectedUuid(o.tpl_uuid);
-    setTplQuery(o.tpl_name);
-    setTplOpen(false);
   };
 
   const clearTpl = () => {
     setSelectedUuid("");
-    setTplQuery("");
-    setTplOpen(false);
   };
 
   const submit = async () => {
@@ -283,16 +264,27 @@ export default function PscTinhPage() {
                 <label className="block text-sm font-semibold text-slate-700 mb-1.5">
                   Điểm lấy mẫu (3PL)
                 </label>
-                <button
-                  type="button"
-                  onClick={() => { setTplQuery(""); setTplOpen(true); }}
-                  className="w-full flex items-center justify-between border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-                >
-                  <span className={selectedOption ? "text-slate-800 font-medium text-left" : "text-slate-400"}>
-                    {selectedOption ? selectedOption.tpl_name : "Chọn điểm lấy mẫu..."}
-                  </span>
-                  <span className="text-slate-400 ml-2">▾</span>
-                </button>
+                <div className="space-y-2">
+                  {options.length === 0 ? (
+                    <p className="text-sm text-slate-400">Đang tải...</p>
+                  ) : (
+                    options.map((o) => (
+                      <button
+                        key={o.tpl_uuid}
+                        type="button"
+                        onClick={() => selectTpl(o)}
+                        className={`w-full text-left rounded-xl border bg-white shadow-sm px-4 py-3 active:bg-slate-50 transition-colors ${
+                          o.tpl_uuid === selectedUuid
+                            ? "border-blue-500 ring-2 ring-blue-200"
+                            : "border-slate-200"
+                        }`}
+                      >
+                        <p className="text-base font-semibold text-slate-800">{o.tpl_name}</p>
+                        {o.address && <p className="text-sm text-slate-500 mt-1 leading-snug">{o.address}</p>}
+                      </button>
+                    ))
+                  )}
+                </div>
               </div>
 
               <div>
@@ -416,53 +408,6 @@ export default function PscTinhPage() {
           </div>
         )}
       </div>
-
-      {/* TPL picker full-screen sheet */}
-      {tplOpen && (
-        <div
-          className="fixed inset-0 z-50 bg-slate-100 flex flex-col"
-          style={{ height: "100dvh" }}
-        >
-          <div className="bg-white border-b border-slate-200 px-4 py-3 flex items-center gap-2">
-            <input
-              autoFocus
-              type="text"
-              value={tplQuery}
-              onChange={(e) => setTplQuery(e.target.value)}
-              placeholder="Tìm điểm lấy mẫu..."
-              className="flex-1 border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-            />
-            <button
-              type="button"
-              onClick={() => setTplOpen(false)}
-              className="px-3 py-2 text-sm font-semibold text-slate-600"
-            >
-              Đóng
-            </button>
-          </div>
-          <div className="flex-1 overflow-y-auto p-3 space-y-2">
-            {filtered.length === 0 ? (
-              <p className="p-4 text-sm text-slate-400 text-center">Không có kết quả</p>
-            ) : (
-              filtered.map((o) => (
-                <button
-                  key={o.tpl_uuid}
-                  type="button"
-                  onClick={() => selectTpl(o)}
-                  className={`w-full text-left rounded-xl border bg-white shadow-sm px-4 py-3 active:bg-slate-50 transition-colors ${
-                    o.tpl_uuid === selectedUuid
-                      ? "border-blue-400 ring-2 ring-blue-200"
-                      : "border-slate-200"
-                  }`}
-                >
-                  <p className="text-base font-semibold text-slate-800">{o.tpl_name}</p>
-                  {o.address && <p className="text-sm text-slate-500 mt-1 leading-snug">{o.address}</p>}
-                </button>
-              ))
-            )}
-          </div>
-        </div>
-      )}
 
       {/* Cancel confirm overlay */}
       {cancelTarget && (
