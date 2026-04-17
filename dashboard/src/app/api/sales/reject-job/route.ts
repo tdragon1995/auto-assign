@@ -25,13 +25,8 @@ export async function POST(req: NextRequest) {
 
     const auth = getAuth(env);
 
-    // Lookup job by reference_number within today's window (VN time)
-    const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
-    const today = vnNow.toISOString().split("T")[0];
-
+    // Lookup job by reference_number (no date filter)
     const qs = new URLSearchParams();
-    qs.set("filter[scheduled_delivery_ts_from]", `${today} 00:00:00`);
-    qs.set("filter[scheduled_delivery_ts_to]",   `${today} 23:59:59`);
     qs.set("filter[reference_number]", reference_number);
 
     const findRes = await fetch(`${BASE_URL}/jobs?${qs.toString()}`, {
@@ -45,7 +40,7 @@ export async function POST(req: NextRequest) {
     const jobs: { job_id: number; reference_number: string; job_status_id: number }[] = findData.data ?? [];
     const job = jobs.find((j) => (j.reference_number ?? "").trim() === reference_number.trim());
     if (!job) {
-      return NextResponse.json({ error: "Không tìm thấy reference_number trong hôm nay" }, { status: 404 });
+      return NextResponse.json({ error: "Không tìm thấy reference_number" }, { status: 404 });
     }
     if (job.job_status_id === 3 || job.job_status_id === 7) {
       return NextResponse.json({ error: "Job đã bị huỷ/từ chối trước đó" }, { status: 409 });
