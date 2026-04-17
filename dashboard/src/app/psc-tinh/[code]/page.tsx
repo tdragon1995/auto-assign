@@ -287,39 +287,16 @@ export default function PscTinhPage() {
                 <label className="block text-sm font-semibold text-slate-700 mb-1.5">
                   Điểm lấy mẫu (3PL)
                 </label>
-                <div className="relative" ref={tplRef}>
-                  <input
-                    type="text"
-                    value={tplQuery}
-                    onChange={(e) => { setTplQuery(e.target.value); setSelectedUuid(""); setTplOpen(true); }}
-                    onFocus={() => setTplOpen(true)}
-                    placeholder="Tìm điểm lấy mẫu..."
-                    className="w-full border rounded-xl px-3 py-2.5 pr-8 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-                  />
-                  {tplQuery && (
-                    <button
-                      type="button"
-                      onClick={clearTpl}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-lg leading-none"
-                    >
-                      ×
-                    </button>
-                  )}
-                  {tplOpen && filtered.length > 0 && (
-                    <ul className="absolute z-10 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-52 overflow-y-auto">
-                      {filtered.map((o) => (
-                        <li
-                          key={o.tpl_uuid}
-                          onMouseDown={() => selectTpl(o)}
-                          className="px-3 py-2.5 cursor-pointer hover:bg-slate-50"
-                        >
-                          <p className="text-sm font-medium text-slate-800">{o.tpl_name}</p>
-                          {o.address && <p className="text-xs text-slate-500 mt-0.5">{o.address}</p>}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
+                <button
+                  type="button"
+                  onClick={() => { setTplQuery(""); setTplOpen(true); }}
+                  className="w-full flex items-center justify-between border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+                >
+                  <span className={selectedOption ? "text-slate-800 font-medium text-left" : "text-slate-400"}>
+                    {selectedOption ? selectedOption.tpl_name : "Chọn điểm lấy mẫu..."}
+                  </span>
+                  <span className="text-slate-400 ml-2">▾</span>
+                </button>
               </div>
 
               <div>
@@ -329,7 +306,7 @@ export default function PscTinhPage() {
                 <select
                   value={eta}
                   onChange={(e) => setEta(e.target.value)}
-                  className="w-full border rounded-xl px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+                  className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
                 >
                   <option value="">-- Chọn giờ --</option>
                   {timeSlots.map((slot) => (
@@ -349,7 +326,7 @@ export default function PscTinhPage() {
                   value={note}
                   onChange={(e) => setNote(e.target.value)}
                   rows={2}
-                  className="w-full border rounded-xl px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 resize-none"
+                  className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 resize-none"
                 />
               </div>
             </div>
@@ -443,6 +420,56 @@ export default function PscTinhPage() {
           </div>
         )}
       </div>
+
+      {/* TPL picker bottom sheet */}
+      {tplOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-end bg-black/40"
+          onClick={() => setTplOpen(false)}
+        >
+          <div
+            className="w-full bg-white rounded-t-2xl shadow-xl flex flex-col"
+            style={{ maxHeight: "85vh" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-4 border-b border-slate-100 flex items-center gap-2">
+              <input
+                autoFocus
+                type="text"
+                value={tplQuery}
+                onChange={(e) => setTplQuery(e.target.value)}
+                placeholder="Tìm điểm lấy mẫu..."
+                className="flex-1 border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+              />
+              <button
+                type="button"
+                onClick={() => setTplOpen(false)}
+                className="px-3 py-2 text-sm font-semibold text-slate-600"
+              >
+                Đóng
+              </button>
+            </div>
+            <ul className="overflow-y-auto divide-y divide-slate-100">
+              {filtered.length === 0 ? (
+                <li className="p-4 text-sm text-slate-400 text-center">Không có kết quả</li>
+              ) : (
+                filtered.map((o) => (
+                  <li
+                    key={o.tpl_uuid}
+                    onClick={() => selectTpl(o)}
+                    className={`px-4 py-3 cursor-pointer active:bg-slate-100 ${
+                      o.tpl_uuid === selectedUuid ? "bg-blue-50" : ""
+                    }`}
+                  >
+                    <p className="text-base font-medium text-slate-800">{o.tpl_name}</p>
+                    {o.address && <p className="text-sm text-slate-500 mt-0.5">{o.address}</p>}
+                  </li>
+                ))
+              )}
+            </ul>
+          </div>
+        </div>
+      )}
 
       {/* Cancel confirm overlay */}
       {cancelTarget && (
