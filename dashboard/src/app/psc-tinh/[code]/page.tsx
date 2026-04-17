@@ -69,6 +69,7 @@ export default function PscTinhPage() {
   const [cancelTarget, setCancelTarget] = useState<Order | null>(null);
   const [cancelLoading, setCancelLoading] = useState(false);
   const [cancelError, setCancelError] = useState("");
+  const [highlightJobId, setHighlightJobId] = useState<number | null>(null);
 
   const [tplQuery, setTplQuery] = useState("");
   const [selectedUuid, setSelectedUuid] = useState("");
@@ -181,6 +182,8 @@ export default function PscTinhPage() {
         setResult({ ok: true, msg: `Tạo thành công! ${data.reference} (Job #${data.job_id})` });
         setEta("");
         if (options.length > 1) clearTpl();
+        setHighlightJobId(data.job_id ?? null);
+        setTab("status");
       }
     } catch (e) {
       setResult({ ok: false, msg: String(e) });
@@ -385,7 +388,14 @@ export default function PscTinhPage() {
             ) : (
               <div className="space-y-2">
                 {orders.map((o) => (
-                  <div key={o.job_id} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2.5 space-y-1">
+                  <div
+                    key={o.job_id}
+                    className={`rounded-xl border px-3 py-2.5 space-y-1 transition-colors ${
+                      o.job_id === highlightJobId
+                        ? "border-blue-400 bg-blue-50 ring-2 ring-blue-300"
+                        : "border-slate-100 bg-slate-50"
+                    }`}
+                  >
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-semibold text-slate-800">{o.reference}</span>
                       {o.eta && (
