@@ -7,10 +7,6 @@ import type { LogEntry, LogLevel } from "@/lib/types";
 const JSONRPC_URL = "https://fleetweb-vn.cartrack.com/jsonrpc/index.php";
 const TZ = "Asia/Ho_Chi_Minh";
 
-// Cooldown: skip auto-plan if fired within last 3 minutes
-let lastPlanFiredAt = 0;
-const COOLDOWN_MS = 3 * 60 * 1000;
-
 function nowTs(): string {
   const d = new Date();
   const parts = new Intl.DateTimeFormat("sv-SE", {
@@ -90,14 +86,6 @@ export async function POST(req: NextRequest) {
   const log = (msg: string, level: LogLevel = "INFO") => logs.push(makeLog(msg, level));
 
   try {
-    // Cooldown check
-    const elapsed = Date.now() - lastPlanFiredAt;
-    if (elapsed < COOLDOWN_MS) {
-      const remaining = Math.ceil((COOLDOWN_MS - elapsed) / 1000);
-      log(`AUTO-PLAN: cooldown — next plan in ${remaining}s`);
-      return NextResponse.json({ logs });
-    }
-
     const config = await loadConfigFromSheets();
     if (!config) {
       log("Failed to load config", "ERROR");
@@ -197,14 +185,12 @@ export async function POST(req: NextRequest) {
         if (retry.error) {
           log(`AUTO-PLAN retry failed: ${retry.error}`, "ERROR");
         } else {
-          lastPlanFiredAt = Date.now();
           log(`AUTO-PLAN: ${jobIds.length} job(s) planned across ${driverIds.length} driver(s)`, "OK");
         }
       } else {
         log(`AUTO-PLAN error: ${result.error}`, "ERROR");
       }
     } else {
-      lastPlanFiredAt = Date.now();
       log(`AUTO-PLAN: ${jobIds.length} job(s) planned across ${driverIds.length} driver(s)`, "OK");
     }
 
