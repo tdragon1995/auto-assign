@@ -183,7 +183,6 @@ export default function PscTinhPage() {
         setEta("");
         if (options.length > 1) clearTpl();
         setHighlightJobId(data.job_id ?? null);
-        setTab("status");
       }
     } catch (e) {
       setResult({ ok: false, msg: String(e) });
