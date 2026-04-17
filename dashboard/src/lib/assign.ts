@@ -36,10 +36,11 @@ async function goongDistanceKm(
 }
 
 type RefStop = { lat: number; lon: number; customerName: string | null };
+type DriverRouteInfo = { ref: RefStop | null; workload: number };
 
 async function fetchSmartRouteData(
   dateVn: string, auth: string, cookie: string
-): Promise<Record<string, RefStop | null>> {
+): Promise<Record<string, DriverRouteInfo>> {
   try {
     const res = await fetch(JSONRPC_URL, {
       method: "POST",
@@ -59,7 +60,7 @@ async function fetchSmartRouteData(
       orderedStops?: { stopStatusId: number; latitude: number; longitude: number; customerName?: string }[];
     }[] = data.result?.routes ?? [];
 
-    const result: Record<string, RefStop | null> = {};
+    const result: Record<string, DriverRouteInfo> = {};
     for (const route of routes) {
       const driverId = route.routeId.replace(/^driver_/, "");
       const stops = route.orderedStops ?? [];
@@ -73,7 +74,10 @@ async function fetchSmartRouteData(
         if (stop.stopStatusId === 2) enRoute       = loc;
         if (stop.stopStatusId === 4) lastCompleted = loc;
       }
-      result[driverId] = arrived ?? enRoute ?? lastCompleted ?? null;
+      result[driverId] = {
+        ref: arrived ?? enRoute ?? lastCompleted ?? null,
+        workload: stops.length,
+      };
     }
     return result;
   } catch {
@@ -257,7 +261,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
   });
 
   let allGpsDrivers: Driver[] = [];
-  let smartRouteData: Record<string, RefStop | null> = {};
+  let smartRouteData: Record<string, DriverRouteInfo> = {};
 
   if (hasSmartJobs) {
     const auth   = process.env.CARTRACK_AUTH ?? "";
@@ -350,19 +354,27 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
         // Goong re-rank: reference stop → pickup
         const withGoong = await Promise.all(
           preRanked.map(async ({ d, hkm }) => {
-            const ref = smartRouteData[d.delivery_driver_id];
-            if (!ref) return { d, sortDist: hkm, distLabel: `${hkm}km GPS` };
+            const info = smartRouteData[d.delivery_driver_id];
+            const ref = info?.ref ?? null;
+            const workload = info?.workload ?? 0;
+            const name = `${d.first_name} ${d.last_name}`.trim();
+            if (!ref) return { d, sortDist: hkm, workload, name, distLabel: `${hkm}km GPS (load ${workload})` };
             const roadKm = await goongDistanceKm(ref.lat, ref.lon, pickupStop.latitude!, pickupStop.longitude!);
             const refHkm = Math.round(haversineKm(ref.lat, ref.lon, pickupStop.latitude!, pickupStop.longitude!) * 10) / 10;
             const sortDist = roadKm ?? refHkm;
             const refName  = ref.customerName ? `@${ref.customerName} ` : "";
             const distLabel = roadKm != null
-              ? `${hkm}km GPS, ${refName}→ ${roadKm}km road`
-              : `${hkm}km GPS, ${refName}→ ${refHkm}km straight`;
-            return { d, sortDist, distLabel };
+              ? `${hkm}km GPS, ${refName}→ ${roadKm}km road (load ${workload})`
+              : `${hkm}km GPS, ${refName}→ ${refHkm}km straight (load ${workload})`;
+            return { d, sortDist, workload, name, distLabel };
           })
         );
-        withGoong.sort((a, b) => a.sortDist - b.sortDist);
+        // Tiebreakers: distance asc → workload asc → name asc
+        withGoong.sort((a, b) => {
+          if (a.sortDist !== b.sortDist) return a.sortDist - b.sortDist;
+          if (a.workload !== b.workload) return a.workload - b.workload;
+          return a.name.localeCompare(b.name);
+        });
 
         const top        = withGoong[0];
         const driverName = `${top.d.first_name} ${top.d.last_name}`.trim();
