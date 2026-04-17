@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useParams } from "next/navigation";
 
 interface TplOption {
@@ -74,7 +74,6 @@ export default function PscTinhPage() {
   const [tplQuery, setTplQuery] = useState("");
   const [selectedUuid, setSelectedUuid] = useState("");
   const [tplOpen, setTplOpen] = useState(false);
-  const tplRef = useRef<HTMLDivElement>(null);
 
   const [eta, setEta] = useState("");
   const [note, setNote] = useState("");
@@ -119,14 +118,11 @@ export default function PscTinhPage() {
   }, [tab, loadOrders]);
 
   useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (tplRef.current && !tplRef.current.contains(e.target as Node)) {
-        setTplOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, []);
+    if (!tplOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, [tplOpen]);
 
   if (!meta) {
     return (
@@ -421,52 +417,49 @@ export default function PscTinhPage() {
         )}
       </div>
 
-      {/* TPL picker bottom sheet */}
+      {/* TPL picker full-screen sheet */}
       {tplOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-end bg-black/40"
-          onClick={() => setTplOpen(false)}
+          className="fixed inset-0 z-50 bg-slate-100 flex flex-col"
+          style={{ height: "100dvh" }}
         >
-          <div
-            className="w-full bg-white rounded-t-2xl shadow-xl flex flex-col"
-            style={{ maxHeight: "85vh" }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="p-4 border-b border-slate-100 flex items-center gap-2">
-              <input
-                autoFocus
-                type="text"
-                value={tplQuery}
-                onChange={(e) => setTplQuery(e.target.value)}
-                placeholder="Tìm điểm lấy mẫu..."
-                className="flex-1 border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-              />
-              <button
-                type="button"
-                onClick={() => setTplOpen(false)}
-                className="px-3 py-2 text-sm font-semibold text-slate-600"
-              >
-                Đóng
-              </button>
-            </div>
-            <ul className="overflow-y-auto divide-y divide-slate-100">
-              {filtered.length === 0 ? (
-                <li className="p-4 text-sm text-slate-400 text-center">Không có kết quả</li>
-              ) : (
-                filtered.map((o) => (
-                  <li
-                    key={o.tpl_uuid}
-                    onClick={() => selectTpl(o)}
-                    className={`px-4 py-3 cursor-pointer active:bg-slate-100 ${
-                      o.tpl_uuid === selectedUuid ? "bg-blue-50" : ""
-                    }`}
-                  >
-                    <p className="text-base font-medium text-slate-800">{o.tpl_name}</p>
-                    {o.address && <p className="text-sm text-slate-500 mt-0.5">{o.address}</p>}
-                  </li>
-                ))
-              )}
-            </ul>
+          <div className="bg-white border-b border-slate-200 px-4 py-3 flex items-center gap-2">
+            <input
+              autoFocus
+              type="text"
+              value={tplQuery}
+              onChange={(e) => setTplQuery(e.target.value)}
+              placeholder="Tìm điểm lấy mẫu..."
+              className="flex-1 border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+            />
+            <button
+              type="button"
+              onClick={() => setTplOpen(false)}
+              className="px-3 py-2 text-sm font-semibold text-slate-600"
+            >
+              Đóng
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            {filtered.length === 0 ? (
+              <p className="p-4 text-sm text-slate-400 text-center">Không có kết quả</p>
+            ) : (
+              filtered.map((o) => (
+                <button
+                  key={o.tpl_uuid}
+                  type="button"
+                  onClick={() => selectTpl(o)}
+                  className={`w-full text-left rounded-xl border bg-white shadow-sm px-4 py-3 active:bg-slate-50 transition-colors ${
+                    o.tpl_uuid === selectedUuid
+                      ? "border-blue-400 ring-2 ring-blue-200"
+                      : "border-slate-200"
+                  }`}
+                >
+                  <p className="text-base font-semibold text-slate-800">{o.tpl_name}</p>
+                  {o.address && <p className="text-sm text-slate-500 mt-1 leading-snug">{o.address}</p>}
+                </button>
+              ))
+            )}
           </div>
         </div>
       )}
