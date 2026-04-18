@@ -114,6 +114,7 @@ export default function SalesPage() {
   const [tenDuong, setTenDuong] = useState("");
   const [tenKh, setTenKh] = useState("");
   const [diaChi, setDiaChi] = useState("");
+  const [phone, setPhone] = useState("");
   const [lat, setLat] = useState("");
   const [lon, setLon] = useState("");
   const [mapLink, setMapLink] = useState("");
@@ -191,6 +192,7 @@ export default function SalesPage() {
       const payload: Record<string, unknown> = {
         customer_name: customerName,
         address_line_1: diaChi.trim() || undefined,
+        contact_number: phone.trim() || undefined,
       };
       const latNum = parseFloat(lat);
       const lonNum = parseFloat(lon);
@@ -220,7 +222,7 @@ export default function SalesPage() {
           });
           setTripResult(null);
         }
-        setMaKh(""); setQuanCu(""); setTenDuong(""); setTenKh(""); setDiaChi(""); setLat(""); setLon("");
+        setMaKh(""); setQuanCu(""); setTenDuong(""); setTenKh(""); setDiaChi(""); setLat(""); setLon(""); setPhone("");
       }
     } catch (e) {
       setResult({ ok: false, msg: String(e) });
@@ -393,6 +395,17 @@ export default function SalesPage() {
               onChange={(e) => setDiaChi(e.target.value)}
               rows={2}
               className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 resize-none"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-semibold text-slate-700 mb-1.5">Số điện thoại liên hệ nhận mẫu</label>
+            <input
+              value={phone}
+              onChange={(e) => setPhone(e.target.value.replace(/\D/g, ""))}
+              inputMode="tel"
+              placeholder="VD: 0909123456"
+              className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
             />
           </div>
 

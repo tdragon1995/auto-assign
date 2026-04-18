@@ -65,14 +65,12 @@ export async function POST(req: NextRequest) {
       address_line_1,
       latitude,
       longitude,
-      contact_code,
       contact_number,
     } = body as {
       customer_name: string;
       address_line_1?: string;
       latitude?: number;
       longitude?: number;
-      contact_code?: string;
       contact_number?: string;
     };
 
@@ -102,7 +100,7 @@ export async function POST(req: NextRequest) {
     const payload: Record<string, unknown> = {
       customer_name,
       country_id: COUNTRY_ID,
-      contact_code: contact_code || DEFAULT_CONTACT_CODE,
+      contact_code: DEFAULT_CONTACT_CODE,
       contact_number: contact_number || "0",
     };
     if (address_line_1) payload.address_line_1 = address_line_1;
