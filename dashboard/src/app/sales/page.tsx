@@ -210,7 +210,7 @@ export default function SalesPage() {
       if (!res.ok) {
         setResult({ ok: false, msg: data.error ?? "Lỗi không xác định" });
       } else {
-        setResult({ ok: true, msg: "Tạo địa điểm lấy mẫu thành công, SPC sẽ được cập nhật sau." });
+        setResult({ ok: true, msg: "Tạo địa điểm lấy mẫu thành công, Sapoche sẽ được cập nhật sau." });
         const latNum = parseFloat(lat);
         const lonNum = parseFloat(lon);
         if (data.customer?.customer_id && !Number.isNaN(latNum) && !Number.isNaN(lonNum)) {
@@ -248,7 +248,7 @@ export default function SalesPage() {
       } else {
         setTripResult({
           ok: true,
-          msg: "Đã tạo chuyến, liên hệ điều phối để biết thêm thông tin!",
+          msg: "Tạo chuyến thành công, Liên hệ Logistics để biết thêm thông tin",
         });
         setNewCustomer(null);
         setTripNote("");

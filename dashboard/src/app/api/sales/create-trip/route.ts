@@ -75,7 +75,7 @@ export async function POST(req: NextRequest) {
       job_type_id: 1,
       schedule_type_id: 1,
       reference_number: refNumber,
-      labels: ["🏠 Sales"],
+      labels: ["🛵 Vận chuyển mẫu B2B"],
       stops: [
         {
           stop_type_id: 1,
