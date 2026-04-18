@@ -47,6 +47,7 @@ export interface Driver {
   latitude: number | null;
   longitude: number | null;
   driver_status_id: number;
+  start_location_customer_id?: string | null;
 }
 
 export type LogLevel = "OK" | "ERROR" | "WARN" | "INFO";

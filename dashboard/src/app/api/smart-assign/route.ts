@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDrivers, getUnassignedJobs, getFleetwebCookie, type Env } from "@/lib/cartrack";
+import { getDrivers, getUnassignedJobs, getFleetwebCookie, getCustomerById, type Env } from "@/lib/cartrack";
 
 const JSONRPC_URL = "https://fleetweb-vn.cartrack.com/jsonrpc/index.php";
 const TOP_N        = 3;
@@ -59,7 +59,7 @@ interface DriverJobStats {
   done: number;
 }
 
-export type DetourLabel = "Arrived" | "En Route" | "Last Completed";
+export type DetourLabel = "Arrived" | "En Route" | "Last Completed" | "Start Location";
 
 interface DriverRouteData {
   stats: DriverJobStats;
@@ -167,6 +167,29 @@ export async function POST(req: NextRequest) {
   const drivers = allDrivers.filter(
     (d) => d.latitude != null && d.longitude != null && !EXCLUDED_DRIVER_STATUSES.has(d.driver_status_id ?? 4)
   );
+
+  // ── Fallback: drivers with no route today → use start_location_customer coords ──
+  const missingDrivers = drivers.filter((d) => !routeData[d.delivery_driver_id]?.referenceStop && d.start_location_customer_id);
+  const uniqueStartCustomerIds = [...new Set(missingDrivers.map((d) => d.start_location_customer_id!))];
+  const customerCoords = new Map<string, { lat: number; lon: number; name: string | null }>();
+  await Promise.all(
+    uniqueStartCustomerIds.map(async (cid) => {
+      const res = await getCustomerById(cid, env);
+      const c = res?.data;
+      if (c?.latitude != null && c?.longitude != null) {
+        customerCoords.set(cid, { lat: c.latitude, lon: c.longitude, name: c.customer_name ?? null });
+      }
+    })
+  );
+  for (const d of missingDrivers) {
+    const coords = customerCoords.get(d.start_location_customer_id!);
+    if (!coords) continue;
+    const existing = routeData[d.delivery_driver_id] ?? { stats: { total: 0, active: 0, done: 0 }, referenceStop: null };
+    routeData[d.delivery_driver_id] = {
+      ...existing,
+      referenceStop: { lat: coords.lat, lon: coords.lon, label: "Start Location", customerName: coords.name },
+    };
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const jobs = ((jobsRes.data ?? []) as any[])
