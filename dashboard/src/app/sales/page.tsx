@@ -2,6 +2,49 @@
 
 import { useMemo, useState } from "react";
 
+const QUAN_CU_OPTIONS: { label: string; code: string }[] = [
+  { label: "Quận 1",     code: "D1"     },
+  { label: "Quận 3",     code: "D3"     },
+  { label: "Quận 10",    code: "D10"    },
+  { label: "Quận 11",    code: "D11"    },
+  { label: "Phú Nhuận",  code: "PNhuan" },
+  { label: "Bình Thạnh", code: "BThanh" },
+  { label: "Tân Bình",   code: "TBinh"  },
+  { label: "Gò Vấp",     code: "GVap"   },
+  { label: "Quận 4",     code: "D4"     },
+  { label: "Quận 5",     code: "D5"     },
+  { label: "Quận 6",     code: "D6"     },
+  { label: "Quận 7",     code: "D7"     },
+  { label: "Quận 8",     code: "D8"     },
+  { label: "Quận 12",    code: "D12"    },
+  { label: "Tân Phú",    code: "TPhu"   },
+  { label: "Bình Tân",   code: "BTan"   },
+  { label: "Thủ Đức",    code: "TDuc"   },
+  { label: "Quận 2",     code: "D2"     },
+  { label: "Quận 9",     code: "D9"     },
+  { label: "Bình Chánh", code: "BChanh" },
+  { label: "Nhà Bè",     code: "NBe"    },
+  { label: "Hóc Môn",    code: "HMon"   },
+  { label: "Củ Chi",     code: "CChi"   },
+  { label: "Cần Thạnh",  code: "CThanh" },
+  { label: "Dĩ An",      code: "DAn"    },
+  { label: "Thuận An",   code: "ThAn"   },
+  { label: "Thủ Dầu 1",  code: "TD1"    },
+  { label: "Tân Uyên",   code: "TUyen"  },
+  { label: "Bến Cát",    code: "BCat"   },
+  { label: "Biên Hòa",   code: "BHoa"   },
+  { label: "Nhơn Trạch", code: "NTrach" },
+  { label: "Long Thành", code: "LThanh" },
+  { label: "Vĩnh Cửu",   code: "VCuu"   },
+  { label: "Tam Phước",  code: "TPhuoc" },
+  { label: "Mỹ Tho",     code: "MTho"   },
+  { label: "Tân An",     code: "TAn"    },
+  { label: "Thủ Thừa",   code: "TThua"  },
+  { label: "Bến Lức",    code: "BLuc"   },
+  { label: "Trảng Bàng", code: "TBang"  },
+  { label: "Vũng Tàu",   code: "VTau"   },
+];
+
 function stripDiacritics(s: string): string {
   return s
     .normalize("NFD")
@@ -265,12 +308,16 @@ export default function SalesPage() {
 
           <div>
             <label className="block text-sm font-semibold text-slate-700 mb-1.5">Quận Cũ</label>
-            <input
+            <select
               value={quanCu}
               onChange={(e) => setQuanCu(e.target.value)}
-              placeholder="VD: Q1, BTh, TBinh..."
               className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-            />
+            >
+              <option value="">-- Chọn khu vực --</option>
+              {QUAN_CU_OPTIONS.map((o) => (
+                <option key={o.code} value={o.code}>{o.label} — {o.code}</option>
+              ))}
+            </select>
           </div>
 
           <div>
