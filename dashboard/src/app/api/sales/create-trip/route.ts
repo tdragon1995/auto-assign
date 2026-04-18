@@ -29,12 +29,13 @@ export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
 
   try {
-    const { customer_id, customer_name, lat, lon, ma_kh } = await req.json() as {
+    const { customer_id, customer_name, lat, lon, ma_kh, note } = await req.json() as {
       customer_id: string;
       customer_name: string;
       lat: number;
       lon: number;
       ma_kh: string;
+      note?: string | null;
     };
 
     if (!customer_id || !customer_name || lat == null || lon == null || !ma_kh) {
@@ -81,6 +82,7 @@ export async function POST(req: NextRequest) {
           customer_id,
           customer_name,
           duration: 5,
+          note: note || null,
           todos: [
             { todo_type_id: 5, description: "Note @ pickup" },
             { todo_type_id: 2, description: "Take a photo @ pickup" },

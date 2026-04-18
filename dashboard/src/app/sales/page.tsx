@@ -126,6 +126,7 @@ export default function SalesPage() {
   const [newCustomer, setNewCustomer] = useState<{ customer_id: string; customer_name: string; lat: number; lon: number; ma_kh: string } | null>(null);
   const [tripLoading, setTripLoading] = useState(false);
   const [tripResult, setTripResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [tripNote, setTripNote] = useState("");
 
   const extractFromLink = async () => {
     const url = mapLink.trim();
@@ -239,7 +240,7 @@ export default function SalesPage() {
       const res = await fetch("/api/sales/create-trip", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(newCustomer),
+        body: JSON.stringify({ ...newCustomer, note: tripNote.trim() || null }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -250,6 +251,7 @@ export default function SalesPage() {
           msg: "Đã tạo chuyến, liên hệ điều phối để biết thêm thông tin!",
         });
         setNewCustomer(null);
+        setTripNote("");
       }
     } catch (e) {
       setTripResult({ ok: false, msg: String(e) });
@@ -481,13 +483,25 @@ export default function SalesPage() {
           )}
 
           {newCustomer && (
-            <button
-              onClick={createTrip}
-              disabled={tripLoading}
-              className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-indigo-600 hover:bg-indigo-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-            >
-              {tripLoading ? "Đang tạo chuyến..." : "Tạo chuyến giao nhận"}
-            </button>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Ghi chú thêm</label>
+                <textarea
+                  value={tripNote}
+                  onChange={(e) => setTripNote(e.target.value)}
+                  rows={2}
+                  placeholder="VD: gọi trước khi đến, tầng 3..."
+                  className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 resize-none"
+                />
+              </div>
+              <button
+                onClick={createTrip}
+                disabled={tripLoading}
+                className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-indigo-600 hover:bg-indigo-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+              >
+                {tripLoading ? "Đang tạo chuyến..." : "Tạo chuyến giao nhận"}
+              </button>
+            </div>
           )}
 
           {tripResult && (
