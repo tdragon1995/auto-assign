@@ -72,7 +72,7 @@ export async function POST(req: NextRequest) {
 
     const jobPayload = {
       job_type_id: 1,
-      schedule_type_id: 2,
+      schedule_type_id: 1,
       reference_number: refNumber,
       labels: ["🏠 Sales"],
       stops: [
