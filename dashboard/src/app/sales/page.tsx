@@ -122,6 +122,9 @@ export default function SalesPage() {
 
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [newCustomer, setNewCustomer] = useState<{ customer_id: string; customer_name: string; lat: number; lon: number; ma_kh: string } | null>(null);
+  const [tripLoading, setTripLoading] = useState(false);
+  const [tripResult, setTripResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
   const extractFromLink = async () => {
     const url = mapLink.trim();
@@ -205,12 +208,51 @@ export default function SalesPage() {
         setResult({ ok: false, msg: data.error ?? "Lỗi không xác định" });
       } else {
         setResult({ ok: true, msg: `Tạo thành công: ${data.customer?.customer_name ?? customerName}` });
+        const latNum = parseFloat(lat);
+        const lonNum = parseFloat(lon);
+        if (data.customer?.customer_id && !Number.isNaN(latNum) && !Number.isNaN(lonNum)) {
+          setNewCustomer({
+            customer_id: data.customer.customer_id,
+            customer_name: data.customer.customer_name ?? customerName,
+            lat: latNum,
+            lon: lonNum,
+            ma_kh: maKh,
+          });
+          setTripResult(null);
+        }
         setMaKh(""); setQuanCu(""); setTenDuong(""); setTenKh(""); setDiaChi(""); setLat(""); setLon("");
       }
     } catch (e) {
       setResult({ ok: false, msg: String(e) });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const createTrip = async () => {
+    if (!newCustomer) return;
+    setTripLoading(true);
+    setTripResult(null);
+    try {
+      const res = await fetch("/api/sales/create-trip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newCustomer),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setTripResult({ ok: false, msg: data.error ?? "Tạo chuyến thất bại" });
+      } else {
+        setTripResult({
+          ok: true,
+          msg: `Đã tạo chuyến #${data.job_id} → ${data.dropoff_psc} (${data.distance_km} km)`,
+        });
+        setNewCustomer(null);
+      }
+    } catch (e) {
+      setTripResult({ ok: false, msg: String(e) });
+    } finally {
+      setTripLoading(false);
     }
   };
 
@@ -422,6 +464,28 @@ export default function SalesPage() {
               }`}
             >
               {result.msg}
+            </div>
+          )}
+
+          {newCustomer && (
+            <button
+              onClick={createTrip}
+              disabled={tripLoading}
+              className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-indigo-600 hover:bg-indigo-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            >
+              {tripLoading ? "Đang tạo chuyến..." : "Tạo chuyến giao nhận"}
+            </button>
+          )}
+
+          {tripResult && (
+            <div
+              className={`rounded-xl p-3.5 text-sm font-medium text-center ${
+                tripResult.ok
+                  ? "bg-emerald-50 border border-emerald-200 text-emerald-800"
+                  : "bg-red-50 border border-red-200 text-red-800"
+              }`}
+            >
+              {tripResult.msg}
             </div>
           )}
         </div>

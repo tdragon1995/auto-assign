@@ -15,6 +15,8 @@ export interface PscRoute {
   pickup: string;
   dropoff: string;
   ref_number: string;
+  lat: number | null;
+  lon: number | null;
 }
 
 export interface TplEntry {
@@ -147,6 +149,8 @@ export async function loadPscRoutes(): Promise<PscRoute[]> {
       pickup: r["pickup"] ?? "",
       dropoff: r["dropoff"] ?? "",
       ref_number: r["ref_number"] ?? "",
+      lat: r["lat"] ? parseFloat(r["lat"]) : null,
+      lon: r["long"] ? parseFloat(r["long"]) : null,
     }));
 
   routesCache = { data, ts: Date.now() };
