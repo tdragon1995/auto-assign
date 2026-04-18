@@ -245,7 +245,7 @@ export default function SalesPage() {
       } else {
         setTripResult({
           ok: true,
-          msg: `Đã tạo chuyến #${data.job_id} → ${data.dropoff_psc} (${data.distance_km} km)`,
+          msg: "Đã tạo chuyến, liên hệ điều phối để biết thêm thông tin!",
         });
         setNewCustomer(null);
       }
