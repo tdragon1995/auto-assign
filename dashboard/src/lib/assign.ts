@@ -6,6 +6,75 @@ const TZ = "Asia/Ho_Chi_Minh";
 const JSONRPC_URL = "https://fleetweb-vn.cartrack.com/jsonrpc/index.php";
 const GOONG_API   = "https://rsapi.goong.io/v2/distancematrix";
 
+const REST_BASE = "https://fleetapi-vn.cartrack.com/rest/delivery";
+
+const DUPLICATE_REJECT_REASON =
+  "Yêu cần gần nhất vẫn đang được thực hiện, quý khách vui lòng đợi thêm giây lát hoặc liên hệ Diag nếu cần được hỡ trợ!";
+
+// ── Duplicate-check helpers ────────────────────────────────────────────────
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function fetchAssignedJobsToday(vnDate: string, auth: string): Promise<any[]> {
+  const params = new URLSearchParams({
+    "filter[job_status_id]": "4",
+    "filter[create_ts_from]": `${vnDate} 00:00:00`,
+    "filter[create_ts_to]":   `${vnDate} 23:59:59`,
+    limit: "1000",
+  });
+  try {
+    const res = await fetch(`${REST_BASE}/jobs?${params}`, {
+      headers: { Authorization: auth, "Content-Type": "application/json" },
+      cache: "no-store",
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.data ?? [];
+  } catch {
+    return [];
+  }
+}
+
+// Returns pickup customer_ids that have an assigned job today with an active pickup
+// (pickup stop_status_id is not yet completed=4 or rejected=5 → customer can't re-book)
+async function buildActivePickupSet(vnDate: string, auth: string): Promise<Set<string>> {
+  const jobs = await fetchAssignedJobsToday(vnDate, auth);
+  const result = new Set<string>();
+  for (const job of jobs) {
+    if (job.job_status_id === 7 || job.job_status_id === 3) continue;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const stop of (job.stops ?? []) as any[]) {
+      if (
+        stop.stop_type_id === 1 &&
+        stop.customer_id &&
+        stop.stop_status_id !== 4 &&
+        stop.stop_status_id !== 5
+      ) {
+        result.add(stop.customer_id);
+      }
+    }
+  }
+  return result;
+}
+
+async function rejectJobAsDuplicate(jobId: number, auth: string, cookie: string): Promise<boolean> {
+  try {
+    const res = await fetch(JSONRPC_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: auth, Cookie: cookie },
+      body: JSON.stringify({
+        version: "2.0",
+        method: "delivery_reject_job",
+        id: 1,
+        params: { data: { jobIds: [jobId], rejectReason: DUPLICATE_REJECT_REASON } },
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    return res.ok && !data.error;
+  } catch {
+    return false;
+  }
+}
+
 // ── Smart-assign helpers ───────────────────────────────────────────────────
 
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -251,6 +320,13 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
 
   log(`Found ${jobs.length} recent job(s)`);
 
+  // ── Duplicate-check setup (1 extra GET /jobs?status=4 per cycle) ──────────
+  const vnDate = new Intl.DateTimeFormat("sv-SE", { timeZone: TZ }).format(new Date()).slice(0, 10);
+  const authSuffix = env === "uat" ? "_UAT" : "";
+  const auth = process.env[`CARTRACK_AUTH${authSuffix}`] ?? "";
+  const activePickupSet = await buildActivePickupSet(vnDate, auth);
+  let rejectCookie: string | null = null;
+
   // ── Pre-fetch GPS + route data only if a current job needs smart-assign ──────
   const smartCustomerIds = new Set(
     config.mappings.filter((m) => m.smart_driver_id.length > 0).map((m) => m.customer_id)
@@ -288,6 +364,19 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
       log(`Job ${jobId} - No pickup stop found`, "ERROR");
       continue;
     }
+
+    // ── Duplicate check ───────────────────────────────────────────────────────
+    if (activePickupSet.has(customerId)) {
+      if (!rejectCookie) rejectCookie = await getFleetwebCookie();
+      if (rejectCookie) {
+        const ok = await rejectJobAsDuplicate(jobId, auth, rejectCookie);
+        log(`Job ${jobId} - DUPLICATE REJECTED ${ok ? "OK" : "FAILED"}: ${jobCustomerName ?? customerId}`, ok ? "WARN" : "ERROR");
+      } else {
+        log(`Job ${jobId} - DUPLICATE: could not reject (no cookie) | ${jobCustomerName ?? customerId}`, "WARN");
+      }
+      continue;
+    }
+    activePickupSet.add(customerId);
 
     if (skipSmart && smartCustomerIds.has(customerId)) {
       continue;
