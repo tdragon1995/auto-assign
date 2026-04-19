@@ -53,10 +53,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Max 1000 rows per request" }, { status: 400 });
     }
 
-    // Sequential — one call at a time to avoid Goong 429s
+    // Sequential with 150ms gap — caps at ~6 RPS to stay under Goong rate limit
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
     const results: DistanceResult[] = [];
-    for (const row of rows) {
-      results.push(await queryGoong(row, apiKey));
+    for (let i = 0; i < rows.length; i++) {
+      results.push(await queryGoong(rows[i], apiKey));
+      if (i < rows.length - 1) await sleep(150);
     }
 
     return NextResponse.json({ results });
