@@ -271,6 +271,10 @@ export default function DistanceCheckingPage() {
                   <tr>
                     <th className="px-3 py-2 text-left">Pickup</th>
                     <th className="px-3 py-2 text-left">Dropoff</th>
+                    <th className="px-3 py-2 text-right">Lat 1</th>
+                    <th className="px-3 py-2 text-right">Long 1</th>
+                    <th className="px-3 py-2 text-right">Lat 2</th>
+                    <th className="px-3 py-2 text-right">Long 2</th>
                     <th className="px-3 py-2 text-right">Km</th>
                     <th className="px-3 py-2 text-right">Phút</th>
                     <th className="px-3 py-2 text-left">Ghi chú</th>
@@ -281,6 +285,10 @@ export default function DistanceCheckingPage() {
                     <tr key={i} className={r.error ? "bg-red-50/40" : "hover:bg-slate-50/60"}>
                       <td className="px-3 py-2 font-medium text-slate-800">{r.pickup}</td>
                       <td className="px-3 py-2 text-slate-600">{r.dropoff}</td>
+                      <td className="px-3 py-2 text-right text-slate-400 font-mono text-[11px]">{r.lat1}</td>
+                      <td className="px-3 py-2 text-right text-slate-400 font-mono text-[11px]">{r.lon1}</td>
+                      <td className="px-3 py-2 text-right text-slate-400 font-mono text-[11px]">{r.lat2}</td>
+                      <td className="px-3 py-2 text-right text-slate-400 font-mono text-[11px]">{r.lon2}</td>
                       <td className="px-3 py-2 text-right font-mono">
                         {r.distance_km != null ? r.distance_km : <span className="text-red-400">—</span>}
                       </td>
