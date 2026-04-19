@@ -6,7 +6,8 @@ export const preferredRegion = "sin1";
 const GOONG_API = "https://rsapi.goong.io/v2/distancematrix";
 
 export interface DistanceRow {
-  route: string;
+  pickup: string;
+  dropoff: string;
   lat1: number;
   lon1: number;
   lat2: number;
@@ -52,12 +53,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Max 1000 rows per request" }, { status: 400 });
     }
 
-    const BATCH = 1;
+    // Sequential — one call at a time to avoid Goong 429s
     const results: DistanceResult[] = [];
-    for (let i = 0; i < rows.length; i += BATCH) {
-      const batch = rows.slice(i, i + BATCH);
-      const batchResults = await Promise.all(batch.map((row) => queryGoong(row, apiKey)));
-      results.push(...batchResults);
+    for (const row of rows) {
+      results.push(await queryGoong(row, apiKey));
     }
 
     return NextResponse.json({ results });
