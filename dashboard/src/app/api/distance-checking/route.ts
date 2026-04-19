@@ -48,12 +48,12 @@ export async function POST(req: NextRequest) {
     if (!Array.isArray(rows) || rows.length === 0) {
       return NextResponse.json({ error: "No rows provided" }, { status: 400 });
     }
-    if (rows.length > 200) {
-      return NextResponse.json({ error: "Max 200 rows per request" }, { status: 400 });
+    if (rows.length > 1000) {
+      return NextResponse.json({ error: "Max 1000 rows per request" }, { status: 400 });
     }
 
-    // Process in batches of 5 to respect Goong rate limits
-    const BATCH = 5;
+    // Process in batches of 10 — balances Goong rate limits vs Vercel 30s edge timeout
+    const BATCH = 10;
     const results: DistanceResult[] = [];
     for (let i = 0; i < rows.length; i += BATCH) {
       const batch = rows.slice(i, i + BATCH);
