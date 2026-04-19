@@ -52,8 +52,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Max 1000 rows per request" }, { status: 400 });
     }
 
-    // Process in batches of 10 — balances Goong rate limits vs Vercel 30s edge timeout
-    const BATCH = 10;
+    // Process in batches of 5 — client sends chunks of 100, so this stays well under rate limits
+    const BATCH = 5;
     const results: DistanceResult[] = [];
     for (let i = 0; i < rows.length; i += BATCH) {
       const batch = rows.slice(i, i + BATCH);

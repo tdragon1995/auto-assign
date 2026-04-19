@@ -63,6 +63,7 @@ export default function DistanceCheckingPage() {
   const [fileName, setFileName] = useState("");
   const [status, setStatus]   = useState<"idle" | "loading" | "done" | "error">("idle");
   const [results, setResults] = useState<Result[]>([]);
+  const [progress, setProgress] = useState(0);
   const [runError, setRunError] = useState("");
 
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -86,16 +87,26 @@ export default function DistanceCheckingPage() {
   const run = async () => {
     if (rows.length === 0) return;
     setStatus("loading");
+    setResults([]);
+    setProgress(0);
     setRunError("");
+
+    const CHUNK = 100;
+    const accumulated: Result[] = [];
     try {
-      const res = await fetch("/api/distance-checking", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rows }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Unknown error");
-      setResults(data.results);
+      for (let i = 0; i < rows.length; i += CHUNK) {
+        const chunk = rows.slice(i, i + CHUNK);
+        const res = await fetch("/api/distance-checking", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rows: chunk }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "Unknown error");
+        accumulated.push(...data.results);
+        setProgress(accumulated.length);
+        setResults([...accumulated]);
+      }
       setStatus("done");
     } catch (e) {
       setRunError(String(e));
@@ -188,7 +199,7 @@ export default function DistanceCheckingPage() {
             disabled={status === "loading"}
             className="w-full h-12 text-base font-semibold"
           >
-            {status === "loading" ? `Đang tính… (${rows.length} tuyến)` : `🛵 Tính khoảng cách (${rows.length} tuyến)`}
+            {status === "loading" ? `Đang tính… ${progress}/${rows.length} tuyến` : `🛵 Tính khoảng cách (${rows.length} tuyến)`}
           </Button>
         )}
 
