@@ -120,7 +120,7 @@ export default function DistanceCheckingPage() {
     setProgress(0);
     setRunError("");
 
-    const CHUNK = 50;
+    const CHUNK = 20;
     const accumulated: Result[] = [];
     try {
       for (let i = 0; i < rows.length; i += CHUNK) {

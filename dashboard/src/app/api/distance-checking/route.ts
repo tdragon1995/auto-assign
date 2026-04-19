@@ -58,7 +58,7 @@ export async function POST(req: NextRequest) {
     const results: DistanceResult[] = [];
     for (let i = 0; i < rows.length; i++) {
       results.push(await queryGoong(rows[i], apiKey));
-      if (i < rows.length - 1) await sleep(150);
+      if (i < rows.length - 1) await sleep(1000);
     }
 
     return NextResponse.json({ results });
