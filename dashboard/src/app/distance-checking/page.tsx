@@ -130,7 +130,7 @@ export default function DistanceCheckingPage() {
         {/* Upload */}
         <div
           className="border-2 border-dashed border-slate-300 rounded-xl p-8 text-center cursor-pointer hover:border-blue-400 hover:bg-blue-50/40 transition-colors"
-          onClick={() => fileRef.current?.click()}
+          onClick={() => { if (fileRef.current) fileRef.current.value = ""; fileRef.current?.click(); }}
         >
           <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={handleFile} />
           {fileName ? (
