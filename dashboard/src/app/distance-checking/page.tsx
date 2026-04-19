@@ -91,7 +91,7 @@ export default function DistanceCheckingPage() {
     setProgress(0);
     setRunError("");
 
-    const CHUNK = 100;
+    const CHUNK = 50;
     const accumulated: Result[] = [];
     try {
       for (let i = 0; i < rows.length; i += CHUNK) {

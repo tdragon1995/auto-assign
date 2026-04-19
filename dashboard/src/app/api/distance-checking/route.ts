@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Max 1000 rows per request" }, { status: 400 });
     }
 
-    const BATCH = 3;
+    const BATCH = 1;
     const results: DistanceResult[] = [];
     for (let i = 0; i < rows.length; i += BATCH) {
       const batch = rows.slice(i, i + BATCH);
