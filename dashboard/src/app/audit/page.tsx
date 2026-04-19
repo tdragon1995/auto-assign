@@ -63,7 +63,7 @@ export default function AuditPage() {
             driver_last_name: d.last_name ?? "",
             driver_full_name: `${d.first_name ?? ""} ${d.last_name ?? ""}`.trim(),
           }))
-          .filter((d: Driver) => d.driver_id && d.driver_full_name)
+          .filter((d: Driver) => d.driver_id && d.driver_full_name && d.driver_full_name.startsWith("F - "))
           .sort((a: Driver, b: Driver) =>
             a.driver_full_name.localeCompare(b.driver_full_name, "vi")
           );
