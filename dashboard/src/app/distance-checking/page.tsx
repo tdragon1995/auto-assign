@@ -26,17 +26,18 @@ function parseCSV(text: string): { rows: Row[]; errors: string[] } {
   const missing = required.filter((h) => !headers.includes(h));
   if (missing.length) return { rows: [], errors: [`Thiếu cột: ${missing.join(", ")}`] };
 
-  const idx = (name: string) => headers.indexOf(name);
   const rows: Row[] = [];
   const errors: string[] = [];
 
   for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i].split(",").map((c) => c.trim());
-    const route = cols[idx("route")] ?? "";
-    const lat1 = parseFloat(cols[idx("lat1")] ?? "");
-    const lon1 = parseFloat(cols[idx("long1")] ?? "");
-    const lat2 = parseFloat(cols[idx("lat2")] ?? "");
-    const lon2 = parseFloat(cols[idx("long2")] ?? "");
+    const cols = lines[i].split(",");
+    if (cols.length < 5) { errors.push(`Dòng ${i + 1}: không đủ 5 cột`); continue; }
+    // Take last 4 as coords; everything before is the route name (handles commas in name)
+    const lon2  = parseFloat(cols[cols.length - 1].trim());
+    const lat2  = parseFloat(cols[cols.length - 2].trim());
+    const lon1  = parseFloat(cols[cols.length - 3].trim());
+    const lat1  = parseFloat(cols[cols.length - 4].trim());
+    const route = cols.slice(0, cols.length - 4).join(",").trim();
 
     if (!route) { errors.push(`Dòng ${i + 1}: thiếu tên route`); continue; }
     if ([lat1, lon1, lat2, lon2].some(isNaN)) { errors.push(`Dòng ${i + 1} (${route}): toạ độ không hợp lệ`); continue; }
