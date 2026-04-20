@@ -39,6 +39,11 @@ async function fetchAssignedJobsToday(vnDate: string, auth: string): Promise<any
 async function buildActivePickupSet(vnDate: string, auth: string): Promise<Set<string>> {
   const jobs = await fetchAssignedJobsToday(vnDate, auth);
   const result = new Set<string>();
+
+  // Current VN time in minutes-since-midnight
+  const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
+  const nowMinutes = vnNow.getUTCHours() * 60 + vnNow.getUTCMinutes();
+
   for (const job of jobs) {
     if (job.job_status_id === 7 || job.job_status_id === 3) continue;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -49,6 +54,18 @@ async function buildActivePickupSet(vnDate: string, auth: string): Promise<Set<s
         stop.stop_status_id !== 4 &&
         stop.stop_status_id !== 5
       ) {
+        // If pickup window starts >1h from now, don't block — allow a new immediate request
+        // time_from is time-only e.g. "08:30:00+07:00"
+        const timeFrom: string | undefined = stop.delivery_windows?.[0]?.time_from;
+        if (timeFrom) {
+          const m = timeFrom.match(/^(\d{2}):(\d{2})/);
+          if (m) {
+            const windowMinutes = parseInt(m[1]) * 60 + parseInt(m[2]);
+            let diff = windowMinutes - nowMinutes;
+            if (diff < 0) diff += 24 * 60; // handle overnight window
+            if (diff > 60) continue;
+          }
+        }
         result.add(stop.customer_id);
       }
     }
@@ -383,14 +400,24 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
       continue;
     }
 
-    // ── Duplicate check ───────────────────────────────────────────────────────
+    // ── Duplicate check: assign to proxy driver then JSONRPC-reject ──────────
     if (activePickupSet.has(customerId)) {
-      if (!rejectCookie) rejectCookie = await getFleetwebCookie();
-      if (rejectCookie) {
-        const ok = await rejectJobAsDuplicate(jobId, auth, rejectCookie);
-        log(`Job ${jobId} - DUPLICATE REJECTED ${ok ? "OK" : "FAILED"}: ${jobCustomerName ?? customerId}`, ok ? "WARN" : "ERROR");
+      const proxyDriverId = process.env.CARTRACK_REJECT_PROXY_DRIVER_ID ?? "";
+      if (proxyDriverId) {
+        const { status: assignStatus } = await assignJob(proxyDriverId, jobId, "Reject Proxy", env);
+        if (assignStatus === 200) {
+          if (!rejectCookie) rejectCookie = await getFleetwebCookie();
+          if (rejectCookie) {
+            const ok = await rejectJobAsDuplicate(jobId, auth, rejectCookie);
+            log(`Job ${jobId} - DUPLICATE: assigned→rejected ${ok ? "OK" : "FAILED"} | ${jobCustomerName ?? customerId}`, ok ? "WARN" : "ERROR");
+          } else {
+            log(`Job ${jobId} - DUPLICATE: assigned but no cookie to reject | ${jobCustomerName ?? customerId}`, "WARN");
+          }
+        } else {
+          log(`Job ${jobId} - DUPLICATE: proxy assign failed, skipped | ${jobCustomerName ?? customerId}`, "WARN");
+        }
       } else {
-        log(`Job ${jobId} - DUPLICATE: could not reject (no cookie) | ${jobCustomerName ?? customerId}`, "WARN");
+        log(`Job ${jobId} - DUPLICATE: no proxy driver configured, skipped | ${jobCustomerName ?? customerId}`, "WARN");
       }
       continue;
     }
