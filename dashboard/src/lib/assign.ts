@@ -405,7 +405,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
     const dropoffId = job.stops?.find((s) => s.stop_type_id === 2)?.customer_id ?? null;
     const routeKey = dropoffId ? `${customerId}:${dropoffId}` : null;
     const blockingJobId = routeKey ? activeRouteMap.get(routeKey) : undefined;
-    if (blockingJobId != null) {
+    if (blockingJobId != null && blockingJobId !== jobId) {
       const proxyDriverId = process.env.CARTRACK_REJECT_PROXY_DRIVER_ID ?? "";
       if (proxyDriverId) {
         const { status: assignStatus } = await assignJob(proxyDriverId, jobId, "Reject Proxy", env);
