@@ -347,6 +347,24 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
       const vnDate = new Intl.DateTimeFormat("sv-SE", { timeZone: TZ }).format(new Date()).slice(0, 10);
       smartRouteData = await fetchSmartRouteData(vnDate, auth, cookie);
     }
+
+    // Fallback: drivers with no route data today → use start_location_customer_id as ref
+    const noRefDrivers = allGpsDrivers.filter(
+      (d) => !smartRouteData[d.delivery_driver_id]?.ref && d.start_location_customer_id
+    );
+    if (noRefDrivers.length > 0) {
+      await Promise.all(noRefDrivers.map(async (d) => {
+        const customerData = await getCustomerById(d.start_location_customer_id!, env);
+        const c = customerData?.data;
+        if (c?.latitude != null && c?.longitude != null) {
+          smartRouteData[d.delivery_driver_id] = {
+            ref: { lat: c.latitude, lon: c.longitude, customerName: c.customer_name ?? null },
+            workload: smartRouteData[d.delivery_driver_id]?.workload ?? 0,
+          };
+        }
+      }));
+    }
+
     log(`Smart-assign ready: ${allGpsDrivers.length} drivers with GPS`);
   }
 
