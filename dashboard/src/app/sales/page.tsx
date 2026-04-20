@@ -262,7 +262,7 @@ export default function SalesPage() {
 
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col items-center p-4 gap-4">
-      <div className="w-full max-w-sm bg-white rounded-2xl shadow border overflow-hidden">
+      <div className="w-full max-w-md bg-white rounded-2xl shadow border overflow-hidden">
         <div className="px-6 pt-5 pb-4">
           <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">Sales</p>
           <h1 className="text-xl font-bold text-slate-800 mt-0.5">

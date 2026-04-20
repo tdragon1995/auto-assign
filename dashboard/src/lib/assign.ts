@@ -35,10 +35,11 @@ async function fetchAssignedJobsToday(vnDate: string, auth: string): Promise<any
 }
 
 // Returns pickup customer_ids that have an assigned job today with an active pickup
-// (pickup stop_status_id is not yet completed=4 or rejected=5 → customer can't re-book)
-async function buildActivePickupSet(vnDate: string, auth: string): Promise<Set<string>> {
+// Returns Map<"pickup_id:dropoff_id", blocking_job_id> for assigned jobs today
+// where the pickup stop is not yet completed/rejected and window is not >1h away.
+async function buildActiveRouteMap(vnDate: string, auth: string): Promise<Map<string, number>> {
   const jobs = await fetchAssignedJobsToday(vnDate, auth);
-  const result = new Set<string>();
+  const result = new Map<string, number>();
 
   // Current VN time in minutes-since-midnight
   const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
@@ -47,28 +48,28 @@ async function buildActivePickupSet(vnDate: string, auth: string): Promise<Set<s
   for (const job of jobs) {
     if (job.job_status_id === 7 || job.job_status_id === 3) continue;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    for (const stop of (job.stops ?? []) as any[]) {
-      if (
-        stop.stop_type_id === 1 &&
-        stop.customer_id &&
-        stop.stop_status_id !== 4 &&
-        stop.stop_status_id !== 5
-      ) {
-        // If pickup window starts >1h from now, don't block — allow a new immediate request
-        // time_from is time-only e.g. "08:30:00+07:00"
-        const timeFrom: string | undefined = stop.delivery_windows?.[0]?.time_from;
-        if (timeFrom) {
-          const m = timeFrom.match(/^(\d{2}):(\d{2})/);
-          if (m) {
-            const windowMinutes = parseInt(m[1]) * 60 + parseInt(m[2]);
-            let diff = windowMinutes - nowMinutes;
-            if (diff < 0) diff += 24 * 60; // handle overnight window
-            if (diff > 60) continue;
-          }
-        }
-        result.add(stop.customer_id);
+    const stops = (job.stops ?? []) as any[];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pickup  = stops.find((s: any) => s.stop_type_id === 1);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const dropoff = stops.find((s: any) => s.stop_type_id === 2);
+    if (!pickup?.customer_id || !dropoff?.customer_id) continue;
+    if (pickup.stop_status_id === 4 || pickup.stop_status_id === 5) continue;
+
+    // If pickup window starts >1h from now, don't block — allow a new immediate request
+    // time_from is time-only e.g. "08:30:00+07:00"
+    const timeFrom: string | undefined = pickup.delivery_windows?.[0]?.time_from;
+    if (timeFrom) {
+      const m = timeFrom.match(/^(\d{2}):(\d{2})/);
+      if (m) {
+        const windowMinutes = parseInt(m[1]) * 60 + parseInt(m[2]);
+        let diff = windowMinutes - nowMinutes;
+        if (diff < 0) diff += 24 * 60; // handle overnight window
+        if (diff > 60) continue;
       }
     }
+
+    result.set(`${pickup.customer_id}:${dropoff.customer_id}`, job.job_id);
   }
   return result;
 }
@@ -341,7 +342,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
   const vnDate = new Intl.DateTimeFormat("sv-SE", { timeZone: TZ }).format(new Date()).slice(0, 10);
   const authSuffix = env === "uat" ? "_UAT" : "";
   const auth = process.env[`CARTRACK_AUTH${authSuffix}`] ?? "";
-  const activePickupSet = await buildActivePickupSet(vnDate, auth);
+  const activeRouteMap = await buildActiveRouteMap(vnDate, auth);
   let rejectCookie: string | null = null;
 
   // ── Pre-fetch GPS + route data only if a current job needs smart-assign ──────
@@ -401,7 +402,10 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
     }
 
     // ── Duplicate check: assign to proxy driver then JSONRPC-reject ──────────
-    if (activePickupSet.has(customerId)) {
+    const dropoffId = job.stops?.find((s) => s.stop_type_id === 2)?.customer_id ?? null;
+    const routeKey = dropoffId ? `${customerId}:${dropoffId}` : null;
+    const blockingJobId = routeKey ? activeRouteMap.get(routeKey) : undefined;
+    if (blockingJobId != null) {
       const proxyDriverId = process.env.CARTRACK_REJECT_PROXY_DRIVER_ID ?? "";
       if (proxyDriverId) {
         const { status: assignStatus } = await assignJob(proxyDriverId, jobId, "Reject Proxy", env);
@@ -409,19 +413,19 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
           if (!rejectCookie) rejectCookie = await getFleetwebCookie();
           if (rejectCookie) {
             const ok = await rejectJobAsDuplicate(jobId, auth, rejectCookie);
-            log(`Job ${jobId} - DUPLICATE: assigned→rejected ${ok ? "OK" : "FAILED"} | ${jobCustomerName ?? customerId}`, ok ? "WARN" : "ERROR");
+            log(`Job ${jobId} - DUPLICATE of Job ${blockingJobId}: assigned→rejected ${ok ? "OK" : "FAILED"} | ${jobCustomerName ?? customerId}`, ok ? "WARN" : "ERROR");
           } else {
-            log(`Job ${jobId} - DUPLICATE: assigned but no cookie to reject | ${jobCustomerName ?? customerId}`, "WARN");
+            log(`Job ${jobId} - DUPLICATE of Job ${blockingJobId}: assigned but no cookie to reject | ${jobCustomerName ?? customerId}`, "WARN");
           }
         } else {
-          log(`Job ${jobId} - DUPLICATE: proxy assign failed, skipped | ${jobCustomerName ?? customerId}`, "WARN");
+          log(`Job ${jobId} - DUPLICATE of Job ${blockingJobId}: proxy assign failed, skipped | ${jobCustomerName ?? customerId}`, "WARN");
         }
       } else {
-        log(`Job ${jobId} - DUPLICATE: no proxy driver configured, skipped | ${jobCustomerName ?? customerId}`, "WARN");
+        log(`Job ${jobId} - DUPLICATE of Job ${blockingJobId}: no proxy driver configured, skipped | ${jobCustomerName ?? customerId}`, "WARN");
       }
       continue;
     }
-    activePickupSet.add(customerId);
+    if (routeKey) activeRouteMap.set(routeKey, jobId);
 
     if (skipSmart && smartCustomerIds.has(customerId)) {
       continue;
