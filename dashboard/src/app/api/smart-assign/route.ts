@@ -64,6 +64,7 @@ export type DetourLabel = "Arrived" | "En Route" | "Next Stop" | "First Stop" | 
 interface DriverRouteData {
   stats: DriverJobStats;
   referenceStop: { lat: number; lon: number; label: DetourLabel; customerName: string | null } | null;
+  lastCompletedTs: string | null;
 }
 
 const ACTIVE_STOP_STATUSES = new Set([1, 2, 3]);
@@ -97,7 +98,7 @@ async function fetchAllDriverRouteData(
     const data = await res.json();
     const routes: {
       routeId: string;
-      orderedStops?: { jobId: number; stopId: number; stopStatusId: number; latitude: number; longitude: number; customerName?: string }[];
+      orderedStops?: { jobId: number; stopId: number; stopStatusId: number; latitude: number; longitude: number; customerName?: string; activityCompletedTs?: string }[];
     }[] = data.result?.routes ?? [];
 
     const result: Record<string, DriverRouteData> = {};
@@ -153,7 +154,16 @@ async function fetchAllDriverRouteData(
         }
       }
 
-      result[driverId] = { stats: { total, active, done: total - active }, referenceStop };
+      // Latest completion timestamp across all status=4 stops
+      let lastCompletedTs: string | null = null;
+      for (const stop of stops) {
+        if (stop.stopStatusId !== 4 || !stop.activityCompletedTs) continue;
+        if (!lastCompletedTs || stop.activityCompletedTs > lastCompletedTs) {
+          lastCompletedTs = stop.activityCompletedTs;
+        }
+      }
+
+      result[driverId] = { stats: { total, active, done: total - active }, referenceStop, lastCompletedTs };
     }
     return result;
   } catch {
@@ -220,7 +230,7 @@ export async function POST(req: NextRequest) {
   for (const d of missingDrivers) {
     const coords = customerCoords.get(d.start_location_customer_id!);
     if (!coords) continue;
-    const existing = routeData[d.delivery_driver_id] ?? { stats: { total: 0, active: 0, done: 0 }, referenceStop: null };
+    const existing = routeData[d.delivery_driver_id] ?? { stats: { total: 0, active: 0, done: 0 }, referenceStop: null, lastCompletedTs: null };
     routeData[d.delivery_driver_id] = {
       ...existing,
       referenceStop: { lat: coords.lat, lon: coords.lon, label: "Start Location", customerName: coords.name },
@@ -338,6 +348,7 @@ export async function POST(req: NextRequest) {
           jobs_total:          routeData[d.driver_id]?.stats.total  ?? null,
           jobs_active:         routeData[d.driver_id]?.stats.active ?? null,
           jobs_done:           routeData[d.driver_id]?.stats.done   ?? null,
+          last_completed_ts:   routeData[d.driver_id]?.lastCompletedTs ?? null,
           detour_label:        ref?.label        ?? null,
           detour_customer:     ref?.customerName ?? null,
           detour_haversine_km: detourHaversineKm,
@@ -345,11 +356,17 @@ export async function POST(req: NextRequest) {
           detour_eta_mins:     detourRouting?.eta_mins    ?? null,
         };
       })
-      // Re-rank by Goong detour distance; fall back to detour haversine, then GPS haversine
+      // Re-rank: Goong detour (fallback detour haversine → GPS haversine)
+      //   → last_completed_ts ASC (null = most idle = highest priority)
+      //   → jobs_done ASC (fewer jobs done today = higher priority)
       .sort((a, b) => {
         const aDist = a.detour_distance_km ?? a.detour_haversine_km ?? a.haversine_km;
         const bDist = b.detour_distance_km ?? b.detour_haversine_km ?? b.haversine_km;
-        return aDist - bDist;
+        if (aDist !== bDist) return aDist - bDist;
+        const aTs = a.last_completed_ts ?? "";
+        const bTs = b.last_completed_ts ?? "";
+        if (aTs !== bTs) return aTs.localeCompare(bTs);
+        return (a.jobs_done ?? 0) - (b.jobs_done ?? 0);
       })
       .slice(0, TOP_N);
 

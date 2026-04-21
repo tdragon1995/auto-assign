@@ -9,7 +9,7 @@ const GOONG_API   = "https://rsapi.goong.io/v2/distancematrix";
 const REST_BASE = "https://fleetapi-vn.cartrack.com/rest/delivery";
 
 const DUPLICATE_REJECT_REASON =
-  "Yêu cần gần nhất vẫn đang được thực hiện, quý khách vui lòng đợi thêm giây lát hoặc liên hệ Diag nếu cần được hỡ trợ!";
+  "Yêu cầu liền kề vẫn đang được thực hiện, quý khách vui lòng đợi thêm giây lát hoặc liên hệ Diag nếu cần được hỗ trợ!";
 
 // ── Duplicate-check helpers ────────────────────────────────────────────────
 
@@ -124,7 +124,7 @@ async function goongDistanceKm(
 
 type RefStop = { lat: number; lon: number; customerName: string | null };
 type RefLabel = "Arrived" | "En Route" | "Next Stop" | "First Stop" | "Start Location";
-type DriverRouteInfo = { ref: RefStop | null; label: RefLabel | null; workload: number };
+type DriverRouteInfo = { ref: RefStop | null; label: RefLabel | null; workload: number; lastCompletedTs: string | null; jobsDone: number };
 
 const GPS_FRESH_MS = 15 * 60 * 1000;
 
@@ -147,7 +147,7 @@ async function fetchSmartRouteData(
     const data = await res.json();
     const routes: {
       routeId: string;
-      orderedStops?: { stopStatusId: number; latitude: number; longitude: number; customerName?: string }[];
+      orderedStops?: { stopStatusId: number; latitude: number; longitude: number; customerName?: string; activityCompletedTs?: string }[];
     }[] = data.result?.routes ?? [];
 
     const result: Record<string, DriverRouteInfo> = {};
@@ -183,7 +183,16 @@ async function fetchSmartRouteData(
         }
       }
 
-      result[driverId] = { ref, label, workload: stops.length };
+      let lastCompletedTs: string | null = null;
+      let jobsDone = 0;
+      for (const stop of stops) {
+        if (stop.stopStatusId !== 4) continue;
+        jobsDone++;
+        if (stop.activityCompletedTs && (!lastCompletedTs || stop.activityCompletedTs > lastCompletedTs)) {
+          lastCompletedTs = stop.activityCompletedTs;
+        }
+      }
+      result[driverId] = { ref, label, workload: stops.length, lastCompletedTs, jobsDone };
     }
     return result;
   } catch {
@@ -414,6 +423,8 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
             ref: { lat: c.latitude, lon: c.longitude, customerName: c.customer_name ?? null },
             label: "Start Location",
             workload: smartRouteData[d.delivery_driver_id]?.workload ?? 0,
+            lastCompletedTs: smartRouteData[d.delivery_driver_id]?.lastCompletedTs ?? null,
+            jobsDone: smartRouteData[d.delivery_driver_id]?.jobsDone ?? 0,
           };
         }
       }));
@@ -534,8 +545,10 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
             const info = smartRouteData[d.delivery_driver_id];
             const ref = info?.ref ?? null;
             const workload = info?.workload ?? 0;
+            const lastCompletedTs = info?.lastCompletedTs ?? null;
+            const jobsDone = info?.jobsDone ?? 0;
             const name = `${d.first_name} ${d.last_name}`.trim();
-            if (!ref) return { d, sortDist: hkm, workload, name, distLabel: `${hkm}km GPS (load ${workload})` };
+            if (!ref) return { d, sortDist: hkm, workload, lastCompletedTs, jobsDone, name, distLabel: `${hkm}km GPS (load ${workload})` };
             const roadKm = await goongDistanceKm(ref.lat, ref.lon, pickupStop.latitude!, pickupStop.longitude!);
             const refHkm = Math.round(haversineKm(ref.lat, ref.lon, pickupStop.latitude!, pickupStop.longitude!) * 10) / 10;
             const sortDist = roadKm ?? refHkm;
@@ -543,13 +556,16 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
             const distLabel = roadKm != null
               ? `${hkm}km GPS, ${refName}→ ${roadKm}km road (load ${workload})`
               : `${hkm}km GPS, ${refName}→ ${refHkm}km straight (load ${workload})`;
-            return { d, sortDist, workload, name, distLabel };
+            return { d, sortDist, workload, lastCompletedTs, jobsDone, name, distLabel };
           })
         );
-        // Tiebreakers: distance asc → workload asc → name asc
+        // Tiebreakers: distance asc → lastCompletedTs asc (null = most idle) → jobsDone asc → name asc
         withGoong.sort((a, b) => {
           if (a.sortDist !== b.sortDist) return a.sortDist - b.sortDist;
-          if (a.workload !== b.workload) return a.workload - b.workload;
+          const aTs = a.lastCompletedTs ?? "";
+          const bTs = b.lastCompletedTs ?? "";
+          if (aTs !== bTs) return aTs.localeCompare(bTs);
+          if (a.jobsDone !== b.jobsDone) return a.jobsDone - b.jobsDone;
           return a.name.localeCompare(b.name);
         });
 

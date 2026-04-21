@@ -12,6 +12,7 @@ interface DriverSuggestion {
   jobs_total: number | null;
   jobs_active: number | null;
   jobs_done: number | null;
+  last_completed_ts: string | null;
   detour_label: "Arrived" | "En Route" | "Next Stop" | "First Stop" | "Start Location" | null;
   detour_customer: string | null;
   detour_haversine_km: number | null;
