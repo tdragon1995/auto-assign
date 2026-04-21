@@ -123,7 +123,10 @@ async function goongDistanceKm(
 }
 
 type RefStop = { lat: number; lon: number; customerName: string | null };
-type DriverRouteInfo = { ref: RefStop | null; workload: number };
+type RefLabel = "Arrived" | "En Route" | "Next Stop" | "First Stop" | "Start Location";
+type DriverRouteInfo = { ref: RefStop | null; label: RefLabel | null; workload: number };
+
+const GPS_FRESH_MS = 15 * 60 * 1000;
 
 async function fetchSmartRouteData(
   dateVn: string, auth: string, cookie: string
@@ -151,20 +154,36 @@ async function fetchSmartRouteData(
     for (const route of routes) {
       const driverId = route.routeId.replace(/^driver_/, "");
       const stops = route.orderedStops ?? [];
-      let arrived: RefStop | null = null;
-      let enRoute: RefStop | null = null;
-      let lastCompleted: RefStop | null = null;
-      for (const stop of stops) {
-        if (!stop.latitude || !stop.longitude) continue;
-        const loc: RefStop = { lat: stop.latitude, lon: stop.longitude, customerName: stop.customerName ?? null };
-        if (stop.stopStatusId === 3) arrived       = loc;
-        if (stop.stopStatusId === 2) enRoute       = loc;
-        if (stop.stopStatusId === 4) lastCompleted = loc;
+      // Reference stop logic mirrors smart-assign: Arrived > En Route > Next pending after last completed > First pending (all pending)
+      const validStops = stops.filter((s) => s.latitude && s.longitude);
+      const arrivedStop = validStops.find((s) => s.stopStatusId === 3) ?? null;
+      const enRouteStop = validStops.find((s) => s.stopStatusId === 2) ?? null;
+
+      let ref: RefStop | null = null;
+      let label: RefLabel | null = null;
+      const toLoc = (s: { latitude: number; longitude: number; customerName?: string }): RefStop =>
+        ({ lat: s.latitude, lon: s.longitude, customerName: s.customerName ?? null });
+
+      if (arrivedStop) {
+        ref = toLoc(arrivedStop); label = "Arrived";
+      } else if (enRouteStop) {
+        ref = toLoc(enRouteStop); label = "En Route";
+      } else if (validStops.length > 0) {
+        let lastCompletedIdx = -1;
+        for (let i = validStops.length - 1; i >= 0; i--) {
+          if (validStops[i].stopStatusId === 4) { lastCompletedIdx = i; break; }
+        }
+        if (lastCompletedIdx === -1) {
+          if (validStops.every((s) => s.stopStatusId === 1)) {
+            ref = toLoc(validStops[0]); label = "First Stop";
+          }
+        } else {
+          const nextPending = validStops.slice(lastCompletedIdx + 1).find((s) => s.stopStatusId === 1);
+          if (nextPending) { ref = toLoc(nextPending); label = "Next Stop"; }
+        }
       }
-      result[driverId] = {
-        ref: arrived ?? enRoute ?? lastCompleted ?? null,
-        workload: stops.length,
-      };
+
+      result[driverId] = { ref, label, workload: stops.length };
     }
     return result;
   } catch {
@@ -366,10 +385,26 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
       smartRouteData = await fetchSmartRouteData(vnDate, auth, cookie);
     }
 
-    // Fallback: drivers with no route data today → use start_location_customer_id as ref
-    const noRefDrivers = allGpsDrivers.filter(
-      (d) => !smartRouteData[d.delivery_driver_id]?.ref && d.start_location_customer_id
-    );
+    // GPS-fresh override: if driver hasn't started (First Stop) but GPS is fresh, rely on GPS instead
+    const nowMs = Date.now();
+    for (const d of allGpsDrivers) {
+      const info = smartRouteData[d.delivery_driver_id];
+      if (info?.label !== "First Stop" || !d.last_login_ts) continue;
+      const loginMs = new Date(d.last_login_ts).getTime();
+      if (!Number.isFinite(loginMs)) continue;
+      if (nowMs - loginMs < GPS_FRESH_MS) {
+        smartRouteData[d.delivery_driver_id] = { ...info, ref: null, label: null };
+      }
+    }
+
+    // Fallback: drivers with NO route today → use start_location_customer_id as ref
+    // Guarded by workload === 0 so all-completed / GPS-fresh drivers keep the GPS path.
+    const noRefDrivers = allGpsDrivers.filter((d) => {
+      const info = smartRouteData[d.delivery_driver_id];
+      if (info?.ref) return false;
+      if (info && info.workload > 0) return false;
+      return !!d.start_location_customer_id;
+    });
     if (noRefDrivers.length > 0) {
       await Promise.all(noRefDrivers.map(async (d) => {
         const customerData = await getCustomerById(d.start_location_customer_id!, env);
@@ -377,6 +412,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
         if (c?.latitude != null && c?.longitude != null) {
           smartRouteData[d.delivery_driver_id] = {
             ref: { lat: c.latitude, lon: c.longitude, customerName: c.customer_name ?? null },
+            label: "Start Location",
             workload: smartRouteData[d.delivery_driver_id]?.workload ?? 0,
           };
         }

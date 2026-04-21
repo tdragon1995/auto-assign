@@ -59,7 +59,7 @@ interface DriverJobStats {
   done: number;
 }
 
-export type DetourLabel = "Arrived" | "En Route" | "Last Completed" | "Start Location";
+export type DetourLabel = "Arrived" | "En Route" | "Next Stop" | "First Stop" | "Start Location";
 
 interface DriverRouteData {
   stats: DriverJobStats;
@@ -67,6 +67,7 @@ interface DriverRouteData {
 }
 
 const ACTIVE_STOP_STATUSES = new Set([1, 2, 3]);
+const GPS_FRESH_MS = 15 * 60 * 1000;
 
 async function fetchAllDriverRouteData(
   dateVn: string,
@@ -117,24 +118,40 @@ async function fetchAllDriverRouteData(
         if ([...statuses].some((s) => ACTIVE_STOP_STATUSES.has(s))) active++;
       }
 
-      // Reference stop — Arrived (3) > En Route (2) > Last Completed (4)
-      let arrived:       { lat: number; lon: number; customerName: string | null } | null = null;
-      let enRoute:       { lat: number; lon: number; customerName: string | null } | null = null;
-      let lastCompleted: { lat: number; lon: number; customerName: string | null } | null = null;
+      // Reference stop logic:
+      //   Arrived (3) → "Arrived"
+      //   En Route (2) → "En Route"
+      //   Completed (4) + pending (1) after it → next pending, "Next Stop"
+      //   All pending (1) → first stop, "First Stop" (may be overridden to null later if GPS is fresh)
+      //   All completed / empty → null (falls back to GPS)
+      const validStops = stops.filter((s) => s.latitude && s.longitude);
+      const arrivedStop = validStops.find((s) => s.stopStatusId === 3) ?? null;
+      const enRouteStop = validStops.find((s) => s.stopStatusId === 2) ?? null;
 
-      for (const stop of stops) {
-        if (!stop.latitude || !stop.longitude) continue;
-        const loc = { lat: stop.latitude, lon: stop.longitude, customerName: stop.customerName ?? null };
-        if (stop.stopStatusId === 3) arrived       = loc;
-        if (stop.stopStatusId === 2) enRoute       = loc;
-        if (stop.stopStatusId === 4) lastCompleted = loc;
+      let referenceStop: DriverRouteData["referenceStop"] = null;
+      if (arrivedStop) {
+        referenceStop = { lat: arrivedStop.latitude, lon: arrivedStop.longitude, label: "Arrived", customerName: arrivedStop.customerName ?? null };
+      } else if (enRouteStop) {
+        referenceStop = { lat: enRouteStop.latitude, lon: enRouteStop.longitude, label: "En Route", customerName: enRouteStop.customerName ?? null };
+      } else if (validStops.length > 0) {
+        let lastCompletedIdx = -1;
+        for (let i = validStops.length - 1; i >= 0; i--) {
+          if (validStops[i].stopStatusId === 4) { lastCompletedIdx = i; break; }
+        }
+        if (lastCompletedIdx === -1) {
+          // No completed, no arrived/en-route → all pending
+          const allPending = validStops.every((s) => s.stopStatusId === 1);
+          if (allPending) {
+            const first = validStops[0];
+            referenceStop = { lat: first.latitude, lon: first.longitude, label: "First Stop", customerName: first.customerName ?? null };
+          }
+        } else {
+          const nextPending = validStops.slice(lastCompletedIdx + 1).find((s) => s.stopStatusId === 1);
+          if (nextPending) {
+            referenceStop = { lat: nextPending.latitude, lon: nextPending.longitude, label: "Next Stop", customerName: nextPending.customerName ?? null };
+          }
+        }
       }
-
-      const referenceStop =
-        arrived       ? { ...arrived,       label: "Arrived"        as DetourLabel } :
-        enRoute       ? { ...enRoute,       label: "En Route"       as DetourLabel } :
-        lastCompleted ? { ...lastCompleted, label: "Last Completed" as DetourLabel } :
-        null;
 
       result[driverId] = { stats: { total, active, done: total - active }, referenceStop };
     }
@@ -168,8 +185,27 @@ export async function POST(req: NextRequest) {
     (d) => d.latitude != null && d.longitude != null && !EXCLUDED_DRIVER_STATUSES.has(d.driver_status_id ?? 4)
   );
 
-  // ── Fallback: drivers with no route today → use start_location_customer coords ──
-  const missingDrivers = drivers.filter((d) => !routeData[d.delivery_driver_id]?.referenceStop && d.start_location_customer_id);
+  // ── GPS-fresh override: if driver hasn't started (First Stop) but GPS is fresh, use GPS instead ──
+  const nowMs = Date.now();
+  for (const d of drivers) {
+    const rd = routeData[d.delivery_driver_id];
+    if (rd?.referenceStop?.label !== "First Stop") continue;
+    if (!d.last_login_ts) continue;
+    const loginMs = new Date(d.last_login_ts).getTime();
+    if (!Number.isFinite(loginMs)) continue;
+    if (nowMs - loginMs < GPS_FRESH_MS) {
+      routeData[d.delivery_driver_id] = { ...rd, referenceStop: null };
+    }
+  }
+
+  // ── Fallback: drivers with NO route today → use start_location_customer coords ──
+  // (Guarded by stats.total === 0 so all-completed / GPS-fresh drivers don't get the start-location fallback.)
+  const missingDrivers = drivers.filter((d) => {
+    const rd = routeData[d.delivery_driver_id];
+    if (rd?.referenceStop) return false;
+    if (rd && rd.stats.total > 0) return false;
+    return !!d.start_location_customer_id;
+  });
   const uniqueStartCustomerIds = [...new Set(missingDrivers.map((d) => d.start_location_customer_id!))];
   const customerCoords = new Map<string, { lat: number; lon: number; name: string | null }>();
   await Promise.all(
