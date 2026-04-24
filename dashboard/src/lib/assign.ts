@@ -382,13 +382,18 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
     return cid !== null && smartCustomerIds.has(cid);
   });
 
+  // Note: `allGpsDrivers` now also includes drivers without GPS if they have a start_location
+  // (Phase 1 haversine falls back to start_location when GPS is unavailable).
   let allGpsDrivers: Driver[] = [];
   let smartRouteData: Record<string, DriverRouteInfo> = {};
+  const phase1Coords = new Map<string, { lat: number; lon: number }>();
 
   if (hasSmartJobs) {
     const auth   = process.env.CARTRACK_AUTH ?? "";
     const [fetchedDrivers, cookie] = await Promise.all([getDrivers(env), getFleetwebCookie()]);
-    allGpsDrivers = fetchedDrivers.filter((d) => d.latitude != null && d.longitude != null);
+    allGpsDrivers = fetchedDrivers.filter((d) =>
+      (d.latitude != null && d.longitude != null) || !!d.start_location_customer_id
+    );
     if (cookie && auth) {
       const vnDate = new Intl.DateTimeFormat("sv-SE", { timeZone: TZ }).format(new Date()).slice(0, 10);
       smartRouteData = await fetchSmartRouteData(vnDate, auth, cookie);
@@ -406,31 +411,55 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
       }
     }
 
-    // Fallback: drivers with NO route today → use start_location_customer_id as ref
-    // Guarded by workload === 0 so all-completed / GPS-fresh drivers keep the GPS path.
-    const noRefDrivers = allGpsDrivers.filter((d) => {
+    // ── Fetch start_location coords for drivers who need them ──
+    // Two reasons: (1) no GPS → Phase 1 fallback, (2) no route today → reference-stop fallback.
+    const startLocIdsNeeded = new Set<string>();
+    for (const d of allGpsDrivers) {
+      if (!d.start_location_customer_id) continue;
       const info = smartRouteData[d.delivery_driver_id];
-      if (info?.ref) return false;
-      if (info && info.workload > 0) return false;
-      return !!d.start_location_customer_id;
-    });
-    if (noRefDrivers.length > 0) {
-      await Promise.all(noRefDrivers.map(async (d) => {
-        const customerData = await getCustomerById(d.start_location_customer_id!, env);
+      const noGps = d.latitude == null || d.longitude == null;
+      const needsRefFallback = !info?.ref && (!info || info.workload === 0);
+      if (noGps || needsRefFallback) startLocIdsNeeded.add(d.start_location_customer_id);
+    }
+    const startLocCoords = new Map<string, { lat: number; lon: number; name: string | null }>();
+    await Promise.all(
+      [...startLocIdsNeeded].map(async (cid) => {
+        const customerData = await getCustomerById(cid, env);
         const c = customerData?.data;
         if (c?.latitude != null && c?.longitude != null) {
-          smartRouteData[d.delivery_driver_id] = {
-            ref: { lat: c.latitude, lon: c.longitude, customerName: c.customer_name ?? null },
-            label: "Start Location",
-            workload: smartRouteData[d.delivery_driver_id]?.workload ?? 0,
-            lastCompletedTs: smartRouteData[d.delivery_driver_id]?.lastCompletedTs ?? null,
-            jobsDone: smartRouteData[d.delivery_driver_id]?.jobsDone ?? 0,
-          };
+          startLocCoords.set(cid, { lat: c.latitude, lon: c.longitude, name: c.customer_name ?? null });
         }
-      }));
+      })
+    );
+
+    // Reference-stop fallback: drivers with NO route today → use start_location as ref
+    for (const d of allGpsDrivers) {
+      if (!d.start_location_customer_id) continue;
+      const info = smartRouteData[d.delivery_driver_id];
+      if (info?.ref) continue;
+      if (info && info.workload > 0) continue;
+      const coords = startLocCoords.get(d.start_location_customer_id);
+      if (!coords) continue;
+      smartRouteData[d.delivery_driver_id] = {
+        ref: { lat: coords.lat, lon: coords.lon, customerName: coords.name },
+        label: "Start Location",
+        workload: info?.workload ?? 0,
+        lastCompletedTs: info?.lastCompletedTs ?? null,
+        jobsDone: info?.jobsDone ?? 0,
+      };
     }
 
-    log(`Smart-assign ready: ${allGpsDrivers.length} drivers with GPS`);
+    // Phase 1 effective coords: GPS if available, else start_location fallback
+    for (const d of allGpsDrivers) {
+      if (d.latitude != null && d.longitude != null) {
+        phase1Coords.set(d.delivery_driver_id, { lat: d.latitude, lon: d.longitude });
+      } else if (d.start_location_customer_id) {
+        const coords = startLocCoords.get(d.start_location_customer_id);
+        if (coords) phase1Coords.set(d.delivery_driver_id, { lat: coords.lat, lon: coords.lon });
+      }
+    }
+
+    log(`Smart-assign ready: ${phase1Coords.size} candidate driver(s) (GPS or start_location)`);
   }
 
   for (const job of jobs) {
@@ -524,19 +553,23 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
         }
 
         const candidates = allGpsDrivers.filter((d) =>
-          smartMapping.smart_driver_id.includes(d.delivery_driver_id)
+          smartMapping.smart_driver_id.includes(d.delivery_driver_id) &&
+          phase1Coords.has(d.delivery_driver_id)
         );
         if (candidates.length === 0) {
-          log(`Job ${jobId} - SMART skipped: 0/${smartMapping.smart_driver_id.length} configured drivers have GPS | ${jobCustomerName ?? customerId}`, "WARN");
+          log(`Job ${jobId} - SMART skipped: 0/${smartMapping.smart_driver_id.length} configured drivers available (GPS or start_location) | ${jobCustomerName ?? customerId}`, "WARN");
           continue;
         }
 
-        // Haversine pre-rank
+        // Haversine pre-rank — uses effective coords (GPS if available, else start_location)
         const preRanked = candidates
-          .map((d) => ({
-            d,
-            hkm: Math.round(haversineKm(pickupStop.latitude!, pickupStop.longitude!, d.latitude!, d.longitude!) * 10) / 10,
-          }))
+          .map((d) => {
+            const c = phase1Coords.get(d.delivery_driver_id)!;
+            return {
+              d,
+              hkm: Math.round(haversineKm(pickupStop.latitude!, pickupStop.longitude!, c.lat, c.lon) * 10) / 10,
+            };
+          })
           .sort((a, b) => a.hkm - b.hkm);
 
         // Goong re-rank: reference stop → pickup

@@ -191,8 +191,10 @@ export async function POST(req: NextRequest) {
   ]);
 
   const EXCLUDED_DRIVER_STATUSES = new Set([3, 4, 5]);
+  // Include drivers without GPS if they have a start_location (used as Phase 1 fallback)
   const drivers = allDrivers.filter(
-    (d) => d.latitude != null && d.longitude != null && !EXCLUDED_DRIVER_STATUSES.has(d.driver_status_id ?? 4)
+    (d) => !EXCLUDED_DRIVER_STATUSES.has(d.driver_status_id ?? 4) &&
+      ((d.latitude != null && d.longitude != null) || !!d.start_location_customer_id)
   );
 
   // ── GPS-fresh override: if driver hasn't started (First Stop) but GPS is fresh, use GPS instead ──
@@ -208,18 +210,19 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // ── Fallback: drivers with NO route today → use start_location_customer coords ──
-  // (Guarded by stats.total === 0 so all-completed / GPS-fresh drivers don't get the start-location fallback.)
-  const missingDrivers = drivers.filter((d) => {
+  // ── Fetch start_location coords for drivers who need them ──
+  // Two reasons: (1) no GPS → Phase 1 fallback, (2) no route today → reference-stop fallback.
+  const customerIdsNeeded = new Set<string>();
+  for (const d of drivers) {
+    if (!d.start_location_customer_id) continue;
+    const noGps = d.latitude == null || d.longitude == null;
     const rd = routeData[d.delivery_driver_id];
-    if (rd?.referenceStop) return false;
-    if (rd && rd.stats.total > 0) return false;
-    return !!d.start_location_customer_id;
-  });
-  const uniqueStartCustomerIds = [...new Set(missingDrivers.map((d) => d.start_location_customer_id!))];
+    const needsRefFallback = !rd?.referenceStop && (!rd || rd.stats.total === 0);
+    if (noGps || needsRefFallback) customerIdsNeeded.add(d.start_location_customer_id);
+  }
   const customerCoords = new Map<string, { lat: number; lon: number; name: string | null }>();
   await Promise.all(
-    uniqueStartCustomerIds.map(async (cid) => {
+    [...customerIdsNeeded].map(async (cid) => {
       const res = await getCustomerById(cid, env);
       const c = res?.data;
       if (c?.latitude != null && c?.longitude != null) {
@@ -227,10 +230,16 @@ export async function POST(req: NextRequest) {
       }
     })
   );
-  for (const d of missingDrivers) {
-    const coords = customerCoords.get(d.start_location_customer_id!);
+
+  // Apply reference-stop fallback (only for drivers with no route today)
+  for (const d of drivers) {
+    if (!d.start_location_customer_id) continue;
+    const rd = routeData[d.delivery_driver_id];
+    if (rd?.referenceStop) continue;
+    if (rd && rd.stats.total > 0) continue;
+    const coords = customerCoords.get(d.start_location_customer_id);
     if (!coords) continue;
-    const existing = routeData[d.delivery_driver_id] ?? { stats: { total: 0, active: 0, done: 0 }, referenceStop: null, lastCompletedTs: null };
+    const existing = rd ?? { stats: { total: 0, active: 0, done: 0 }, referenceStop: null, lastCompletedTs: null };
     routeData[d.delivery_driver_id] = {
       ...existing,
       referenceStop: { lat: coords.lat, lon: coords.lon, label: "Start Location", customerName: coords.name },
@@ -271,15 +280,23 @@ export async function POST(req: NextRequest) {
     }
 
     const preFiltered = drivers
-      .map((d) => ({
-        driver_id:    d.delivery_driver_id,
-        driver_name:  d.last_name?.trim() || `${d.first_name} ${d.last_name}`.trim(),
-        haversine_km: Math.round(haversineKm(pickupStop.latitude, pickupStop.longitude, d.latitude!, d.longitude!) * 10) / 10,
-        status_id:    d.driver_status_id ?? 4,
-        last_login_ts: d.last_login_ts ?? null,
-        lat: d.latitude!,
-        lon: d.longitude!,
-      }))
+      .map((d) => {
+        // Effective coords: GPS if available, else start_location fallback
+        const startCoords = d.start_location_customer_id ? customerCoords.get(d.start_location_customer_id) : undefined;
+        const driverLat = d.latitude ?? startCoords?.lat;
+        const driverLon = d.longitude ?? startCoords?.lon;
+        if (driverLat == null || driverLon == null) return null;
+        return {
+          driver_id:    d.delivery_driver_id,
+          driver_name:  d.last_name?.trim() || `${d.first_name} ${d.last_name}`.trim(),
+          haversine_km: Math.round(haversineKm(pickupStop.latitude, pickupStop.longitude, driverLat, driverLon) * 10) / 10,
+          status_id:    d.driver_status_id ?? 4,
+          last_login_ts: d.last_login_ts ?? null,
+          lat: driverLat,
+          lon: driverLon,
+        };
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null)
       .sort((a, b) => a.haversine_km - b.haversine_km)
       .slice(0, PRE_FILTER_N);
 
