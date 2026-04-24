@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { type Env } from "@/lib/cartrack";
+import { loadPscRoutes } from "@/lib/psc-config";
 
 export const runtime = "edge";
 export const preferredRegion = "sin1";
@@ -7,6 +8,79 @@ export const preferredRegion = "sin1";
 const BASE_URL = "https://fleetapi-vn.cartrack.com/rest/delivery";
 const COUNTRY_ID = 235;
 const DEFAULT_CONTACT_CODE = "84";
+const LABCENTER_URL = "https://api.labcenter.vn/spc-delivery/api/locations/update-pick-drop-location";
+const LABCENTER_LOGIN_URL = "https://api-bknd.labcenter.vn/api/v1/auth/login";
+
+let labcenterTokenCache: { token: string; expiresAt: number } | null = null;
+
+async function getLabcenterToken(): Promise<string | null> {
+  const now = Date.now();
+  if (labcenterTokenCache && labcenterTokenCache.expiresAt > now + 60_000) {
+    return labcenterTokenCache.token;
+  }
+  const email = process.env.LABCENTER_EMAIL;
+  const password = process.env.LABCENTER_PASSWORD;
+  if (!email || !password) return null;
+
+  const res = await fetch(LABCENTER_LOGIN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password, "g-recaptcha-response": "randString" }),
+  });
+  if (!res.ok) return null;
+  const data = await res.json().catch(() => ({}));
+  const token: string | undefined = data?.token;
+  if (!token) return null;
+
+  let expiresAt = now + 60 * 60 * 1000;
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    if (payload?.exp) expiresAt = payload.exp * 1000;
+  } catch { /* keep default */ }
+
+  labcenterTokenCache = { token, expiresAt };
+  return token;
+}
+
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.asin(Math.sqrt(a));
+}
+
+async function registerLabcenterPickDrop(pickUuid: string, lat: number, lon: number): Promise<{ ok: boolean; drop_id?: string; error?: string }> {
+  const token = await getLabcenterToken();
+  if (!token) return { ok: false, error: "Labcenter login failed (check LABCENTER_EMAIL/LABCENTER_PASSWORD)" };
+
+  const routes = await loadPscRoutes();
+  const seen = new Set<string>();
+  let nearest: { uuid: string; km: number } | null = null;
+  for (const r of routes) {
+    if (!r.pickup || r.lat == null || r.lon == null) continue;
+    if (seen.has(r.pickup)) continue;
+    seen.add(r.pickup);
+    const km = haversineKm(lat, lon, r.lat, r.lon);
+    if (!nearest || km < nearest.km) nearest = { uuid: r.pickup, km };
+  }
+  if (!nearest) return { ok: false, error: "No PSC with coordinates found" };
+
+  const res = await fetch(LABCENTER_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ pick_id: pickUuid, drop_id: nearest.uuid, estimate_pick_up: 60 }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    return { ok: false, drop_id: nearest.uuid, error: `HTTP ${res.status}: ${text.slice(0, 200)}` };
+  }
+  return { ok: true, drop_id: nearest.uuid };
+}
 
 function getHeaders(env: Env = "prod"): Record<string, string> {
   const suffix = env === "uat" ? "_UAT" : "";
@@ -121,7 +195,18 @@ export async function POST(req: NextRequest) {
     }
 
     const created = await createRes.json();
-    return NextResponse.json({ success: true, customer: created.data });
+    const customer = created.data;
+
+    let labcenter: { ok: boolean; drop_id?: string; error?: string } | null = null;
+    if (customer?.customer_id && latitude != null && longitude != null) {
+      try {
+        labcenter = await registerLabcenterPickDrop(customer.customer_id, latitude, longitude);
+      } catch (e) {
+        labcenter = { ok: false, error: String(e) };
+      }
+    }
+
+    return NextResponse.json({ success: true, customer, labcenter });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
