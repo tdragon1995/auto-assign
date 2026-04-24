@@ -183,7 +183,6 @@ export async function POST(req: NextRequest) {
         {
           stop_type_id: 2,
           customer_id: D001_UUID,
-          customer_name: "D001 - Cao Thắng",
           duration: 10,
           todos: [
             { todo_type_id: 2, description: "" },
