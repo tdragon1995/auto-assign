@@ -6,7 +6,7 @@ Examples:
   /cartrack-call GET /jobs?filter[job_status_id]=2&limit=5
   /cartrack-call GET /drivers
   /cartrack-call GET /jobs/12345
-  /cartrack-call PUT /jobs/assign/<driverId> body={"job_ids":[12345]}
+  /cartrack-call PUT /jobs/assign/<driverUUID> body={"job_ids":[12345]}
   /cartrack-call jsonrpc delivery_timeline_route_list
   /cartrack-call jsonrpc delivery_reject_job body={"jobIds":[12345],"rejectReason":"test"}
 

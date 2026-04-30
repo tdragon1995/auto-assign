@@ -24,7 +24,7 @@ fetch unassigned jobs (status 2)
 2. If `alt_drop_off_id` is set on the mapping, call `PUT /jobs/{jobId}` to swap the dropoff customer **before** assignment.
 3. Derive job time from `create_ts` (treated as UTC+7).
 4. Check shift window: if `shift_start`/`shift_end` are set on the mapping, skip if current time is outside the window.
-5. Assign via `PUT /jobs/assign/{driverId}`.
+5. Assign via `PUT /jobs/assign/{driverUUID}` — always the driver UUID, never a display name.
 6. Fetch job details to get driver name, then send Zalo notification if `bot_token` + `chat_id` are set.
 7. If `ROUTE_OPTIMIZE_PILOT` includes the driver, fire `delivery_route_stops_optimize`.
 
@@ -94,8 +94,21 @@ Main mapping sheet (GID `0`) columns:
 | `bot_token` / `chat_id` | Zalo notification credentials |
 | `alt_drop_off_id` | If set, swap dropoff stop to this customer before assigning |
 
-Sheet ID and GIDs are hardcoded in `dashboard/src/lib/sheets.ts`.
+Sheet ID and GIDs are hardcoded in `dashboard/src/lib/sheets.ts`, which also owns `parseCSV` and `fetchSheetRows(gid)`. Both `config.ts` and `psc-config.ts` import from there — do not add another CSV parser.
+
+`config.ts` (`loadConfigFromSheets`) is intentionally uncached — the 30 s assign cycle must see fresh edits. `psc-config.ts` caches for 5 minutes and is invalidated by the dashboard Refresh button.
 
 ## Time helpers
 
-Three independent implementations of "now in Saigon / today's VN date" exist across `assign.ts` and `autoplan/route.ts`. One uses a `Date.now() + 7*60*60*1000` UTC-offset pattern; others use `Intl.DateTimeFormat`. VN does not observe DST so both are correct in practice, but the offset pattern is fragile — prefer `Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Ho_Chi_Minh' })` for any new time code.
+All Saigon time operations go through `dashboard/src/lib/time.ts`:
+
+| Export | Returns | Use case |
+|---|---|---|
+| `vnDate(d?)` | `"YYYY-MM-DD"` | Today's date for API filters and route windows |
+| `vnTimestamp(d?)` | `"YYYY-MM-DD HH:mm:ss"` | Log entry timestamps |
+| `vnHoursMinutes(d?)` | `{hours, minutes}` | Shift window comparisons |
+| `vnMinutesSinceMidnight(d?)` | `number` | Duplicate-window check |
+| `parseVnTimestamp(ts)` | `Date` | Parse Cartrack's `create_ts` strings (appends `+07:00`) |
+| `vnDayWindow(date?)` | `{from, to}` | JSON-RPC `filter` objects (`T00:00:00+07:00 / T23:59:59+07:00`) |
+
+Do not use `Date.now() + 7*60*60*1000` or inline `Intl.DateTimeFormat` for timezone work — add a helper to `time.ts` if needed.

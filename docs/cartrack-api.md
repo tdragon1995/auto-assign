@@ -75,13 +75,13 @@ Wrapper: `getDrivers(env)` — fetches page 1, limit 1000.
 
 Wrapper: `getDriverJobs(driverId, dateVn, env)` — filters `job_status_id=4`, date window via `create_ts_from/to`.
 
-### `PUT /jobs/assign/{identifier}` — assign a job
+### `PUT /jobs/assign/{driverUUID}` — assign a job
 
-Wrapper: `assignJob(driverId, jobId, firstName_lastName?, env)`
+Wrapper: `assignJob(driverId, jobId, env)`
 
 Body: `{ "job_ids": [jobId] }`
 
-Tries assignment by encoded display name first; falls back to UUID if HTTP ≠ 200. (Inference: Cartrack accepts either as the URL identifier.)
+Always uses the driver UUID in the URL path. Driver display names are used only for log messages in calling code, never as an API identifier.
 
 ### `PUT /jobs/{jobId}` — update a job
 
