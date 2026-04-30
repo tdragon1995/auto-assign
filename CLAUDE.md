@@ -6,9 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a **Fleet Auto-Assign** service for Cartrack (a Vietnamese fleet management platform). It automatically assigns unassigned delivery jobs to drivers based on customer–driver mappings stored in a Google Sheet.
 
-The repository has two parts:
-- `dashboard/` — Next.js 15 (React 19, TypeScript) web app deployed to **Vercel**
-- Root-level Python scripts (referenced in legacy CI workflows) — a GUI (`auto_assign.py`) and headless runner (`auto_assign_headless.py`) that predated the Vercel dashboard
+The active codebase is `dashboard/` — a Next.js 15 (React 19, TypeScript) web app deployed to **Vercel**.
 
 ## Dashboard Commands
 
@@ -94,9 +92,7 @@ All business logic uses `Asia/Ho_Chi_Minh` (UTC+7). Cartrack timestamps arrive w
 
 ## CI/CD
 
-- **`dashboard.yml`**: Deploys GitHub Pages static site via `generate_dashboard.py` on push to `master` (legacy static dashboard)
-- **`build-macos.yml`**: Builds PyInstaller `.app` from `auto_assign.py` on push to `master`
-- **`auto-assign.yml`**: Disabled — was a scheduled headless Python runner; auto-assign is now handled by the Vercel dashboard
+Deployment is handled automatically by Vercel on push to `master`. There are no active GitHub Actions workflows.
 
 ## Google Sheet
 
