@@ -18,6 +18,11 @@ const REST_BASE = "https://fleetapi-vn.cartrack.com/rest/delivery";
 const DUPLICATE_REJECT_REASON =
   "Yêu cầu liền kề vẫn đang được thực hiện, quý khách vui lòng đợi thêm giây lát hoặc liên hệ Diag nếu cần được hỗ trợ!";
 
+// Jobs carrying any of these labels are exempt from duplicate detection.
+// PSC tỉnh jobs are multi-leg provincial routes — the same pickup→dropoff pair
+// is expected to repeat across different legs and should never be blocked.
+const DUPLICATE_EXEMPT_LABELS = ["🛵 Vận chuyển mẫu tỉnh"];
+
 // ── Duplicate-check helpers ────────────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -499,7 +504,10 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
 
     // ── Duplicate check: assign to proxy driver then JSONRPC-reject ──────────
     const dropoffId = job.stops?.find((s) => s.stop_type_id === 2)?.customer_id ?? null;
-    const routeKey = dropoffId ? `${customerId}:${dropoffId}` : null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const jobLabels: string[] = (job as any).labels ?? [];
+    const isDuplicateExempt = jobLabels.some((l) => DUPLICATE_EXEMPT_LABELS.includes(l));
+    const routeKey = dropoffId && !isDuplicateExempt ? `${customerId}:${dropoffId}` : null;
     const blockingJobId = routeKey ? activeRouteMap.get(routeKey) : undefined;
     if (blockingJobId != null && blockingJobId !== jobId) {
       const proxyDriverId = process.env.CARTRACK_REJECT_PROXY_DRIVER_ID ?? "";
