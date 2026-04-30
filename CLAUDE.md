@@ -90,6 +90,24 @@ ROUTE_OPTIMIZE_PILOT=            # Comma-separated driver IDs for route optimisa
 
 All business logic uses `Asia/Ho_Chi_Minh` (UTC+7). Cartrack timestamps arrive without timezone suffix and are treated as UTC+7.
 
+## Known Footguns
+
+These are the things most likely to burn a future agent working on this codebase.
+
+1. **`job_status_id=4` does not mean a driver is assigned.** Cartrack can return a job with status `4 (Assigned)` while `delivery_driver_id` and `assigned_ts` are both `null`. Always check `delivery_driver_id` directly, not just status.
+
+2. **`getUnassignedJobs` has no time filter.** It only filters by `job_status_id=2`; the assign cycle then drops old jobs locally by `create_ts`. This is correct for ad-hoc jobs but wrong for scheduled/planned jobs — use `scheduled_delivery_ts` filtering for those.
+
+3. **`loadConfigFromSheets` is intentionally uncached.** The assign cycle runs every 30 s and must see fresh sheet edits immediately. Do not add a cache without also wiring a refresh path.
+
+4. **`CARTRACK_WEB_PASS` is missing from `.env.example`** but is required for JSON-RPC calls (`getFleetwebCookie`). Without it, `autoplan`, route optimisation, and duplicate-rejection all fail silently at login.
+
+5. **Duplicate detection silently exempts PSC tỉnh jobs.** Jobs with the label `🛵 Vận chuyển mẫu tỉnh` are skipped in the duplicate-blocking path. This is intentional but easy to miss when debugging "why wasn't this duplicate caught?"
+
+6. **Auto-Plan mode splits ownership.** In Auto-Plan mode the dashboard fires `/api/autoplan` (Cartrack's own planner, for smart drivers) AND `/api/assign?skipSmart=1` (local engine, for fixed-driver rows) in parallel. Tracing a missed assignment requires checking both paths.
+
+See `docs/business-rules.md` for deeper detail and `docs/cartrack-api.md` for API reference.
+
 ## CI/CD
 
 Deployment is handled automatically by Vercel on push to `master`. There are no active GitHub Actions workflows.
