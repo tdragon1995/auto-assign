@@ -455,7 +455,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
     if (blockingJobId != null && blockingJobId !== jobId) {
       const proxyDriverId = process.env.CARTRACK_REJECT_PROXY_DRIVER_ID ?? "";
       if (proxyDriverId) {
-        const { status: assignStatus } = await assignJob(proxyDriverId, jobId, "Reject Proxy", env);
+        const { status: assignStatus } = await assignJob(proxyDriverId, jobId, env);
         if (assignStatus === 200) {
           if (!rejectCookie) rejectCookie = await getFleetwebCookie();
           if (rejectCookie) {
@@ -501,7 +501,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
             ? `${gpsDriver.first_name} ${gpsDriver.last_name}`.trim()
             : (smartMapping.first_name_last_name || driverId);
           try {
-            const { status: apiStatus, body } = await assignJob(driverId, jobId, driverName, env);
+            const { status: apiStatus, body } = await assignJob(driverId, jobId, env);
             if (apiStatus === 200) {
               log(`Job ${jobId} | SMART(1) → ${driverName} | ${jobCustomerName ?? customerId}`, "OK");
             } else {
@@ -576,7 +576,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
           .map((x, i) => `${i + 1}. ${x.d.first_name} ${x.d.last_name} (${x.distLabel})`)
           .join(" | ");
         try {
-          const { status: apiStatus, body } = await assignJob(top.d.delivery_driver_id, jobId, driverName, env);
+          const { status: apiStatus, body } = await assignJob(top.d.delivery_driver_id, jobId, env);
           if (apiStatus === 200) {
             log(`Job ${jobId} | SMART → ${rankStr} | ${pickupStop.customer_name ?? customerId}`, "OK");
           } else {
@@ -676,12 +676,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
     }
 
     try {
-      const { status: apiStatus, body } = await assignJob(
-        driverId,
-        jobId,
-        mapping.first_name_last_name || undefined,
-        env
-      );
+      const { status: apiStatus, body } = await assignJob(driverId, jobId, env);
 
       if (apiStatus === 200) {
         const details = await getJobDetails(jobId, env);

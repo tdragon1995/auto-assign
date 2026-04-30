@@ -178,7 +178,7 @@ export async function POST(req: NextRequest) {
     const jobId: number | undefined = created.data?.job_id;
     if (!jobId) return NextResponse.json({ error: "No job_id returned from Cartrack" }, { status: 500 });
 
-    const assignResult = await assignJob(driver_id, jobId, driver_name, env);
+    const assignResult = await assignJob(driver_id, jobId, env);
     if (assignResult.status !== 200) {
       return NextResponse.json(
         { warning: "Job created but driver assignment failed", job_id: jobId, assign_status: assignResult.status },

@@ -93,46 +93,18 @@ export async function getDrivers(env: Env = "prod"): Promise<Driver[]> {
 export async function assignJob(
   driverId: string,
   jobId: number,
-  firstName_lastName?: string,
   env: Env = "prod"
 ): Promise<{
   status: number;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   body: any;
-  identifierUsed: string;
 }> {
-  const payload = { job_ids: [jobId] };
-  const headers = getHeaders(env);
-
-  // Try name-first if provided
-  if (firstName_lastName) {
-    const encoded = encodeURIComponent(firstName_lastName);
-    const res = await fetch(`${BASE_URL}/jobs/assign/${encoded}`, {
-      method: "PUT",
-      headers,
-      body: JSON.stringify(payload),
-    });
-    if (res.status === 200) {
-      return {
-        status: 200,
-        body: await res.json(),
-        identifierUsed: firstName_lastName,
-      };
-    }
-  }
-
-  // Fallback to driver UUID
   const res = await fetch(`${BASE_URL}/jobs/assign/${driverId}`, {
     method: "PUT",
-    headers,
-    body: JSON.stringify(payload),
+    headers: getHeaders(env),
+    body: JSON.stringify({ job_ids: [jobId] }),
   });
-
-  return {
-    status: res.status,
-    body: await res.json(),
-    identifierUsed: driverId,
-  };
+  return { status: res.status, body: await res.json() };
 }
 
 export async function getCustomerById(

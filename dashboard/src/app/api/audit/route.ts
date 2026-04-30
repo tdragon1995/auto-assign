@@ -254,7 +254,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Cartrack không trả về job_id" }, { status: 500 });
     }
 
-    const assignResult = await assignJob(driver_id, jobId, driver_full_name, env);
+    const assignResult = await assignJob(driver_id, jobId, env);
     if (assignResult.status !== 200) {
       return NextResponse.json(
         {
