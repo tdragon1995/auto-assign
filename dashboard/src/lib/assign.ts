@@ -1,8 +1,15 @@
 import type { Config, Driver, Job, LogEntry, LogLevel, Mapping } from "./types";
 import { getDrivers, getUnassignedJobs, assignJob, getJobDetails, getCustomerById, updateJobStops, optimizeDriverRoute, getFleetwebCookie, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
+import {
+  vnDate,
+  vnTimestamp,
+  vnHoursMinutes,
+  vnMinutesSinceMidnight,
+  vnDayWindow,
+  parseVnTimestamp,
+} from "./time";
 
-const TZ = "Asia/Ho_Chi_Minh";
 const JSONRPC_URL = "https://fleetweb-vn.cartrack.com/jsonrpc/index.php";
 const GOONG_API   = "https://rsapi.goong.io/v2/distancematrix";
 
@@ -42,8 +49,7 @@ async function buildActiveRouteMap(vnDate: string, auth: string): Promise<Map<st
   const result = new Map<string, number>();
 
   // Current VN time in minutes-since-midnight
-  const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
-  const nowMinutes = vnNow.getUTCHours() * 60 + vnNow.getUTCMinutes();
+  const nowMinutes = vnMinutesSinceMidnight();
 
   for (const job of jobs) {
     if (job.job_status_id === 7 || job.job_status_id === 3) continue;
@@ -137,10 +143,7 @@ async function fetchSmartRouteData(
       headers: { "Content-Type": "application/json", Authorization: auth, Cookie: cookie },
       body: JSON.stringify({
         version: "2.0", method: "delivery_timeline_route_list", id: 1,
-        params: { data: { scheduleType: "scheduled", filter: {
-          from: `${dateVn}T00:00:00+07:00`,
-          to:   `${dateVn}T23:59:59+07:00`,
-        }}},
+        params: { data: { scheduleType: "scheduled", filter: vnDayWindow(dateVn) }},
       }),
     });
     if (!res.ok) return {};
@@ -200,38 +203,8 @@ async function fetchSmartRouteData(
   }
 }
 
-/** Current time formatted in Saigon timezone */
-function now(): string {
-  const d = new Date();
-  const parts = new Intl.DateTimeFormat("sv-SE", {
-    timeZone: TZ,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).formatToParts(d);
-  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "00";
-  return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:${get("second")}`;
-}
-
-/** Get hours and minutes in Saigon timezone for a given Date */
-function saigonHoursMinutes(d: Date): { hours: number; minutes: number } {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: TZ,
-    hour: "numeric",
-    minute: "numeric",
-    hour12: false,
-  }).formatToParts(d);
-  const hours = parseInt(parts.find((p) => p.type === "hour")?.value ?? "0", 10);
-  const minutes = parseInt(parts.find((p) => p.type === "minute")?.value ?? "0", 10);
-  return { hours, minutes };
-}
-
 function makeLog(msg: string, level: LogLevel = "INFO"): LogEntry {
-  return { ts: now(), level, msg };
+  return { ts: vnTimestamp(), level, msg };
 }
 
 function timeToMinutes(t: { hours: number; minutes: number }): number {
@@ -245,7 +218,7 @@ export function isDriverOnShift(
   const { shift_start, shift_end } = mapping;
   if (!shift_start || !shift_end) return true; // no shift = always on
 
-  const { hours, minutes } = saigonHoursMinutes(jobTime);
+  const { hours, minutes } = vnHoursMinutes(jobTime);
   const jobMinutes = hours * 60 + minutes;
   const startMin = timeToMinutes(shift_start);
   const endMin = timeToMinutes(shift_end);
@@ -279,11 +252,7 @@ export function getDriversOnDuty(
 }
 
 export function isJobRecent(job: Job, maxAgeMinutes: number): boolean {
-  const createTs = job.create_ts;
-  if (!createTs) return false;
-
-  // Cartrack timestamps are Saigon local time (UTC+7), no TZ suffix
-  const jobTime = new Date(createTs.replace(" ", "T") + "+07:00");
+  const jobTime = parseVnTimestamp(job.create_ts);
   if (isNaN(jobTime.getTime())) return false;
 
   const cutoff = new Date(Date.now() - maxAgeMinutes * 60 * 1000);
@@ -367,10 +336,10 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
   log(`Found ${jobs.length} recent job(s)`);
 
   // ── Duplicate-check setup (1 extra GET /jobs?status=4 per cycle) ──────────
-  const vnDate = new Intl.DateTimeFormat("sv-SE", { timeZone: TZ }).format(new Date()).slice(0, 10);
+  const today = vnDate();
   const authSuffix = env === "uat" ? "_UAT" : "";
   const auth = process.env[`CARTRACK_AUTH${authSuffix}`] ?? "";
-  const activeRouteMap = await buildActiveRouteMap(vnDate, auth);
+  const activeRouteMap = await buildActiveRouteMap(today, auth);
   let rejectCookie: string | null = null;
 
   // ── Pre-fetch GPS + route data only if a current job needs smart-assign ──────
@@ -395,8 +364,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
       (d.latitude != null && d.longitude != null) || !!d.start_location_customer_id
     );
     if (cookie && auth) {
-      const vnDate = new Intl.DateTimeFormat("sv-SE", { timeZone: TZ }).format(new Date()).slice(0, 10);
-      smartRouteData = await fetchSmartRouteData(vnDate, auth, cookie);
+      smartRouteData = await fetchSmartRouteData(vnDate(), auth, cookie);
     }
 
     // GPS-fresh override: if driver hasn't started (First Stop) but GPS is fresh, rely on GPS instead
@@ -512,7 +480,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
 
     let jobTime: Date;
     try {
-      jobTime = new Date((job.create_ts ?? "").replace(" ", "T") + "+07:00");
+      jobTime = parseVnTimestamp(job.create_ts);
       if (isNaN(jobTime.getTime())) jobTime = new Date();
     } catch {
       jobTime = new Date();
@@ -635,7 +603,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
       const shiftInfo = drivers
         .map((m) => `${m.first_name_last_name || m.driver_id} (${fmtShift(m.shift_start)}–${fmtShift(m.shift_end)})`)
         .join(", ");
-      const jt = saigonHoursMinutes(jobTime);
+      const jt = vnHoursMinutes(jobTime);
       const hhmm = `${String(jt.hours).padStart(2, "0")}:${String(jt.minutes).padStart(2, "0")}`;
       log(
         `Job ${jobId} - NO DRIVER ON DUTY at ${hhmm} | ${jobCustomerName ?? customerId} | Configured: ${shiftInfo}`,
@@ -648,7 +616,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
       const driverList = drivers
         .map((m) => `${m.first_name_last_name || m.driver_id} (${fmtShift(m.shift_start)}–${fmtShift(m.shift_end)})`)
         .join(", ");
-      const jt = saigonHoursMinutes(jobTime);
+      const jt = vnHoursMinutes(jobTime);
       const hhmm = `${String(jt.hours).padStart(2, "0")}:${String(jt.minutes).padStart(2, "0")}`;
       log(
         `Job ${jobId} - CLASH: ${drivers.length} drivers on duty at ${hhmm} | ${jobCustomerName ?? customerId} | ${driverList}`,
@@ -774,10 +742,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
           .map((s) => s.trim())
           .filter(Boolean);
         if (pilotDrivers.includes(driverId)) {
-          const vnDate = new Intl.DateTimeFormat("sv-SE", { timeZone: TZ })
-            .format(new Date())
-            .slice(0, 10);
-          const ok = await optimizeDriverRoute(driverId, vnDate);
+          const ok = await optimizeDriverRoute(driverId, vnDate());
           log(`Route optimise for ${driverId}: ${ok ? "triggered" : "skipped (no cookie or failed)"}`, ok ? "INFO" : "WARN");
         }
       } else {

@@ -1,4 +1,5 @@
 import type { Driver, Job } from "./types";
+import { vnDayWindow } from "./time";
 
 export type Env = "prod" | "uat";
 
@@ -244,10 +245,7 @@ export async function optimizeDriverRoute(
           data: {
             routeId: `driver_${driverId}`,
             scheduleType: "scheduled",
-            filter: {
-              from: `${dateVn}T00:00:00+07:00`,
-              to: `${dateVn}T23:59:59+07:00`,
-            },
+            filter: vnDayWindow(dateVn),
           },
         },
       }),

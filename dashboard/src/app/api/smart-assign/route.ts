@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDrivers, getUnassignedJobs, getFleetwebCookie, getCustomerById, type Env } from "@/lib/cartrack";
+import { vnDate, vnDayWindow } from "@/lib/time";
 
 const JSONRPC_URL = "https://fleetweb-vn.cartrack.com/jsonrpc/index.php";
 const TOP_N        = 3;
@@ -86,10 +87,7 @@ async function fetchAllDriverRouteData(
         params: {
           data: {
             scheduleType: "scheduled",
-            filter: {
-              from: `${dateVn}T00:00:00+07:00`,
-              to: `${dateVn}T23:59:59+07:00`,
-            },
+            filter: vnDayWindow(dateVn),
           },
         },
       }),
@@ -176,8 +174,7 @@ async function fetchAllDriverRouteData(
 export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
 
-  const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
-  const today = vnNow.toISOString().split("T")[0];
+  const today = vnDate();
 
   const auth   = process.env.CARTRACK_AUTH ?? "";
   const cookie = await getFleetwebCookie();

@@ -2,29 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { loadConfigFromSheets } from "@/lib/config";
 import { getUnassignedJobs, getDriverJobs, getFleetwebCookie, type Env } from "@/lib/cartrack";
 import { isDriverOnShift, getCustomerIdFromJob, isJobRecent, jobHasNotes } from "@/lib/assign";
+import { vnDate, vnTimestamp, vnDayWindow } from "@/lib/time";
 import type { LogEntry, LogLevel } from "@/lib/types";
 
 const JSONRPC_URL = "https://fleetweb-vn.cartrack.com/jsonrpc/index.php";
-const TZ = "Asia/Ho_Chi_Minh";
-
-function nowTs(): string {
-  const d = new Date();
-  const parts = new Intl.DateTimeFormat("sv-SE", {
-    timeZone: TZ,
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-    hour12: false,
-  }).formatToParts(d);
-  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "00";
-  return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:${get("second")}`;
-}
 
 function makeLog(msg: string, level: LogLevel = "INFO"): LogEntry {
-  return { ts: nowTs(), level, msg };
-}
-
-function vnDateString(): string {
-  return new Intl.DateTimeFormat("sv-SE", { timeZone: TZ }).format(new Date()).slice(0, 10);
+  return { ts: vnTimestamp(), level, msg };
 }
 
 // Parse "JobID 34265464 is not assignable, JobID 34265135 is not assignable" → [34265464, 34265135]
@@ -62,10 +46,7 @@ async function callAutoPlan(
           jobIds,
           driverIds,
           scheduleType: "scheduled",
-          filter: {
-            from: `${dateVn}T00:00:00+07:00`,
-            to:   `${dateVn}T23:59:59+07:00`,
-          },
+          filter: vnDayWindow(dateVn),
         },
       },
     }),
@@ -93,7 +74,7 @@ export async function POST(req: NextRequest) {
     }
 
     const now = new Date();
-    const dateVn = vnDateString();
+    const dateVn = vnDate();
     const auth = process.env.CARTRACK_AUTH ?? "";
     if (!auth) {
       log("CARTRACK_AUTH not set", "ERROR");
