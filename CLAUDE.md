@@ -26,12 +26,13 @@ Copy `dashboard/.env.example` to `dashboard/.env.local`:
 
 ```
 CARTRACK_AUTH=Basic ...           # Required: Cartrack REST API auth header
-CARTRACK_COOKIE=CTSID=...        # Optional: session cookie for JSONRPC calls
+CARTRACK_COOKIE=CTSID=...        # Optional: session cookie for REST calls
 CARTRACK_AUTH_UAT=Basic ...      # UAT environment equivalent
 CARTRACK_COOKIE_UAT=...
-CARTRACK_REJECT_PROXY_DRIVER_ID= # Driver ID used to proxy-assign then reject duplicate jobs
+CARTRACK_WEB_PASS=               # Required for JSON-RPC (autoplan, route optimise, duplicate rejection)
+CARTRACK_REJECT_PROXY_DRIVER_ID= # Driver UUID used to proxy-assign then reject duplicate jobs
 GOONG_API_KEY=                   # Road distance API (goong.io); falls back to haversine if absent
-ROUTE_OPTIMIZE_PILOT=            # Comma-separated driver IDs for route optimisation pilot
+ROUTE_OPTIMIZE_PILOT=            # Comma-separated driver UUIDs for route optimisation pilot
 ```
 
 ## Architecture
