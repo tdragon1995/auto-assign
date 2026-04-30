@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadConfigFromSheets } from "@/lib/config";
 import { getUnassignedJobs, getDriverJobs, getFleetwebCookie, type Env } from "@/lib/cartrack";
-import { isDriverOnShift, getCustomerIdFromJob, isJobRecent, jobHasNotes } from "@/lib/assign";
+import { isDriverOnShift, getCustomerIdFromJob, isJobRecent, jobHasNotes, autoAssignCycle } from "@/lib/assign";
 import { vnDate, vnTimestamp, vnDayWindow } from "@/lib/time";
 import type { LogEntry, LogLevel } from "@/lib/types";
 
@@ -174,6 +174,10 @@ export async function POST(req: NextRequest) {
     } else {
       log(`AUTO-PLAN: ${jobIds.length} job(s) planned across ${driverIds.length} driver(s)`, "OK");
     }
+
+    // Run fixed-driver assignments (skipSmart=true — smart jobs handled above by Cartrack planner)
+    const fixedLogs = await autoAssignCycle(config, env, true);
+    logs.push(...fixedLogs);
 
     return NextResponse.json({ logs });
   } catch (e) {

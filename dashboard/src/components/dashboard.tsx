@@ -34,16 +34,15 @@ export function Dashboard() {
 
   // Auto-assign cycle
   // Smart mode: /api/assign handles all jobs (smart + fixed).
-  // Auto-plan mode: /api/autoplan handles smart jobs, /api/assign?skipSmart=1 handles fixed jobs.
+  // Auto-plan mode: /api/autoplan handles smart jobs via Cartrack planner + fixed jobs.
   const runAssignCycle = useCallback(async (targetEnv?: Env, targetMode?: AssignMode) => {
     if (cycleInProgressRef.current) return;
     cycleInProgressRef.current = true;
     const e = targetEnv ?? env;
     const m = targetMode ?? assignMode;
-    const endpoints =
-      m === "autoplan"
-        ? [`/api/autoplan?env=${e}`, `/api/assign?env=${e}&skipSmart=1`]
-        : [`/api/assign?env=${e}`];
+    const endpoints = m === "autoplan"
+      ? [`/api/autoplan?env=${e}`]
+      : [`/api/assign?env=${e}`];
     try {
       const responses = await Promise.all(endpoints.map((u) => fetch(u, { method: "POST" })));
       const allLogs: LogEntry[] = [];

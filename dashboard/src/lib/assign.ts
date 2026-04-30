@@ -285,6 +285,58 @@ function getCustomerNameFromJob(job: Job): string | null {
   return null;
 }
 
+/**
+ * Swap the dropoff customer on a job when alt_drop_off_id is configured.
+ * Returns true if the swap succeeded (or wasn't needed), false if it failed
+ * and the job should be skipped.
+ */
+async function applyAltDropoff(
+  jobId: number,
+  altDropOffId: string,
+  env: Env,
+  log: (msg: string, level?: LogLevel) => void
+): Promise<boolean> {
+  let altCustomerName = altDropOffId;
+  try {
+    const customerData = await getCustomerById(altDropOffId, env);
+    if (customerData?.data) {
+      const c = customerData.data;
+      altCustomerName = c.customer_name || c.name || altCustomerName;
+    }
+
+    const details = await getJobDetails(jobId, env);
+    const rawStops = (details.data?.stops ?? []) as {
+      stop_id?: number;
+      stop_type_id?: number;
+      customer_id?: string;
+      customer_name?: string;
+    }[];
+
+    const updatedStops = rawStops
+      .filter((s) => s.stop_id && s.stop_type_id && s.customer_id)
+      .map((s) => ({
+        stop_id: s.stop_id!,
+        stop_type_id: s.stop_type_id!,
+        customer_id: s.stop_type_id === 2 ? altDropOffId : s.customer_id!,
+        customer_name: s.stop_type_id === 2 ? altCustomerName : s.customer_name,
+      }));
+
+    if (updatedStops.length >= 2) {
+      const putRes = await updateJobStops(jobId, updatedStops, env);
+      if (putRes.ok) {
+        log(`Job ${jobId} - dropoff swapped to ${altCustomerName}`, "INFO");
+      } else {
+        log(`Job ${jobId} - dropoff swap failed (${putRes.status})`, "ERROR");
+        return false;
+      }
+    }
+    return true;
+  } catch (e) {
+    log(`Job ${jobId} - dropoff swap error: ${e}`, "ERROR");
+    return false;
+  }
+}
+
 export function buildGmapsRouteLink(
   lat1?: number | null,
   lng1?: number | null,
@@ -447,10 +499,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
 
     // ── Duplicate check: assign to proxy driver then JSONRPC-reject ──────────
     const dropoffId = job.stops?.find((s) => s.stop_type_id === 2)?.customer_id ?? null;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const jobLabels: string[] = (job as any).labels ?? [];
-    const isPscTinh = jobLabels.includes("🛵 Vận chuyển mẫu tỉnh");
-    const routeKey = dropoffId && !isPscTinh ? `${customerId}:${dropoffId}` : null;
+    const routeKey = dropoffId ? `${customerId}:${dropoffId}` : null;
     const blockingJobId = routeKey ? activeRouteMap.get(routeKey) : undefined;
     if (blockingJobId != null && blockingJobId !== jobId) {
       const proxyDriverId = process.env.CARTRACK_REJECT_PROXY_DRIVER_ID ?? "";
@@ -500,6 +549,10 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
           const driverName = gpsDriver
             ? `${gpsDriver.first_name} ${gpsDriver.last_name}`.trim()
             : (smartMapping.first_name_last_name || driverId);
+          if (smartMapping.alt_drop_off_id) {
+            const ok = await applyAltDropoff(jobId, smartMapping.alt_drop_off_id, env, log);
+            if (!ok) continue;
+          }
           try {
             const { status: apiStatus, body } = await assignJob(driverId, jobId, env);
             if (apiStatus === 200) {
@@ -575,6 +628,10 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
         const rankStr    = withGoong.slice(0, 3)
           .map((x, i) => `${i + 1}. ${x.d.first_name} ${x.d.last_name} (${x.distLabel})`)
           .join(" | ");
+        if (smartMapping.alt_drop_off_id) {
+          const ok = await applyAltDropoff(jobId, smartMapping.alt_drop_off_id, env, log);
+          if (!ok) continue;
+        }
         try {
           const { status: apiStatus, body } = await assignJob(top.d.delivery_driver_id, jobId, env);
           if (apiStatus === 200) {
@@ -632,47 +689,8 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
 
     // Alt drop-off: swap the dropoff customer before assigning
     if (mapping.alt_drop_off_id) {
-      try {
-        // Fetch alt customer name
-        let altCustomerName = mapping.alt_drop_off_id;
-        const customerData = await getCustomerById(mapping.alt_drop_off_id, env);
-        if (customerData?.data) {
-          const c = customerData.data;
-          altCustomerName = c.customer_name || c.name || altCustomerName;
-        }
-
-        const details = await getJobDetails(jobId, env);
-        const rawStops = (details.data?.stops ?? []) as {
-          stop_id?: number;
-          stop_type_id?: number;
-          customer_id?: string;
-          customer_name?: string;
-        }[];
-
-        const updatedStops = rawStops
-          .filter((s) => s.stop_id && s.stop_type_id && s.customer_id)
-          .map((s) => ({
-            stop_id: s.stop_id!,
-            stop_type_id: s.stop_type_id!,
-            customer_id:
-              s.stop_type_id === 2 ? mapping.alt_drop_off_id : s.customer_id!,
-            customer_name:
-              s.stop_type_id === 2 ? altCustomerName : s.customer_name,
-          }));
-
-        if (updatedStops.length >= 2) {
-          const putRes = await updateJobStops(jobId, updatedStops, env);
-          if (putRes.ok) {
-            log(`Job ${jobId} - dropoff swapped to ${altCustomerName}`, "INFO");
-          } else {
-            log(`Job ${jobId} - dropoff swap failed (${putRes.status})`, "ERROR");
-            continue;
-          }
-        }
-      } catch (e) {
-        log(`Job ${jobId} - dropoff swap error: ${e}`, "ERROR");
-        continue;
-      }
+      const ok = await applyAltDropoff(jobId, mapping.alt_drop_off_id, env, log);
+      if (!ok) continue;
     }
 
     try {
