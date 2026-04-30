@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { loadTplEntries } from "@/lib/psc-config";
+import { loadTplEntries, PSC_TINH_LABEL } from "@/lib/psc-config";
 import { type Env } from "@/lib/cartrack";
 
 export const runtime = "edge";
@@ -166,7 +166,7 @@ export async function POST(req: NextRequest) {
       job_type_id: 1,
       schedule_type_id: 1,
       reference_number: refNumber,
-      labels: ["🛵 Vận chuyển mẫu tỉnh"],
+      labels: [PSC_TINH_LABEL],
       stops: [
         {
           stop_type_id: 1,

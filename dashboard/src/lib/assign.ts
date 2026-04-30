@@ -1,6 +1,7 @@
 import type { Config, Driver, Job, LogEntry, LogLevel, Mapping } from "./types";
 import { getDrivers, getUnassignedJobs, assignJob, getJobDetails, getCustomerById, updateJobStops, optimizeDriverRoute, getFleetwebCookie, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
+import { PSC_TINH_LABEL } from "./psc-config";
 import {
   vnDate,
   vnTimestamp,
@@ -21,7 +22,7 @@ const DUPLICATE_REJECT_REASON =
 // Jobs carrying any of these labels are exempt from duplicate detection.
 // PSC tỉnh jobs are multi-leg provincial routes — the same pickup→dropoff pair
 // is expected to repeat across different legs and should never be blocked.
-const DUPLICATE_EXEMPT_LABELS = ["🛵 Vận chuyển mẫu tỉnh"];
+const DUPLICATE_EXEMPT_LABELS = [PSC_TINH_LABEL];
 
 // ── Duplicate-check helpers ────────────────────────────────────────────────
 
