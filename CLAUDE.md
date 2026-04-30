@@ -82,7 +82,7 @@ ROUTE_OPTIMIZE_PILOT=            # Comma-separated driver IDs for route optimisa
 ### Key Types (`src/lib/types.ts`)
 
 - `Mapping` — customer→driver config row from Google Sheet (includes `smart_driver_id[]`, shift times, Zalo tokens, `alt_drop_off_id`)
-- `Job` / `Stop` — Cartrack delivery job with stops (stop_type_id 1=pickup, 2=dropoff)
+- `Job` / `Stop` — Cartrack delivery job with stops (stop_type_id 1=pickup, 2=dropoff, 3=delivery)
 - `Driver` — Cartrack driver with GPS coords and status
 - `LogEntry` — `{ ts, level: "OK"|"INFO"|"WARN"|"ERROR", msg }`
 

@@ -161,7 +161,8 @@ Rejects a job after proxy-assignment (duplicate handling).
 | ID | Name |
 |---|---|
 | 1 | Pickup |
-| 2 | Delivery / Dropoff |
+| 2 | Dropoff |
+| 3 | Delivery |
 
 ### Driver status (`DRIVER_STATUS_CONFIG` in `types.ts`)
 
