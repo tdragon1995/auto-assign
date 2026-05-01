@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { goongMatrix } from "@/lib/distance";
 
 export const runtime = "edge";
 export const preferredRegion = "sin1";
-
-const GOONG_API = "https://rsapi.goong.io/v2/distancematrix";
 
 export interface DistanceRow {
   pickup: string;
@@ -20,29 +19,10 @@ export interface DistanceResult extends DistanceRow {
   error?: string;
 }
 
-async function queryGoong(row: DistanceRow, apiKey: string): Promise<DistanceResult> {
-  try {
-    const url = `${GOONG_API}?origins=${row.lat1},${row.lon1}&destinations=${row.lat2},${row.lon2}&vehicle=bike&api_key=${apiKey}`;
-    const res = await fetch(url);
-    if (!res.ok) return { ...row, distance_km: null, duration_mins: null, error: `HTTP ${res.status}` };
-    const data = await res.json();
-    const el = data.rows?.[0]?.elements?.[0];
-    if (!el || el.status !== "OK") {
-      return { ...row, distance_km: null, duration_mins: null, error: el?.status ?? "No result" };
-    }
-    return {
-      ...row,
-      distance_km: Math.round(el.distance.value / 100) / 10,
-      duration_mins: Math.round(el.duration.value / 60),
-    };
-  } catch (e) {
-    return { ...row, distance_km: null, duration_mins: null, error: String(e) };
-  }
-}
-
 export async function POST(req: NextRequest) {
-  const apiKey = process.env.GOONG_API_KEY ?? "";
-  if (!apiKey) return NextResponse.json({ error: "GOONG_API_KEY not set" }, { status: 500 });
+  if (!process.env.GOONG_API_KEY) {
+    return NextResponse.json({ error: "GOONG_API_KEY not set" }, { status: 500 });
+  }
 
   try {
     const { rows } = await req.json() as { rows: DistanceRow[] };
@@ -53,11 +33,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Max 1000 rows per request" }, { status: 400 });
     }
 
-    // Sequential with 150ms gap — caps at ~6 RPS to stay under Goong rate limit
+    // Sequential with 1s gap — caps at ~1 RPS to stay under Goong rate limit
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
     const results: DistanceResult[] = [];
     for (let i = 0; i < rows.length; i++) {
-      results.push(await queryGoong(rows[i], apiKey));
+      const row = rows[i];
+      const [r] = await goongMatrix(row.lat1, row.lon1, [{ lat: row.lat2, lon: row.lon2 }]);
+      results.push({
+        ...row,
+        distance_km: r?.distance_km ?? null,
+        duration_mins: r?.eta_mins ?? null,
+      });
       if (i < rows.length - 1) await sleep(1000);
     }
 

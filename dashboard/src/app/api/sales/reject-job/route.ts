@@ -1,18 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getFleetwebCookie, type Env } from "@/lib/cartrack";
+import { getFleetwebCookie, BASE_URL, JSONRPC_URL, getHeaders, type Env } from "@/lib/cartrack";
+import { isStopStarted } from "@/lib/job-filters";
 
 export const runtime = "edge";
 export const preferredRegion = "sin1";
-
-const BASE_URL = "https://fleetapi-vn.cartrack.com/rest/delivery";
-const JSONRPC_URL = "https://fleetweb-vn.cartrack.com/jsonrpc/index.php";
-
-function getAuth(env: Env = "prod"): string {
-  const suffix = env === "uat" ? "_UAT" : "";
-  const auth = process.env[`CARTRACK_AUTH${suffix}`] ?? "";
-  if (!auth) throw new Error(`CARTRACK_AUTH${suffix} not set`);
-  return auth;
-}
 
 export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
@@ -23,14 +14,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing reference_number or reject_reason" }, { status: 400 });
     }
 
-    const auth = getAuth(env);
+    const headers = getHeaders(env);
 
     // Lookup job by reference_number (no date filter)
     const qs = new URLSearchParams();
     qs.set("filter[reference_number]", reference_number);
 
     const findRes = await fetch(`${BASE_URL}/jobs?${qs.toString()}`, {
-      headers: { Authorization: auth, Accept: "application/json" },
+      headers,
       cache: "no-store",
     });
     if (!findRes.ok) {
@@ -48,7 +39,7 @@ export async function POST(req: NextRequest) {
 
     // Only allow reject if no stop has progressed beyond status 1 (Chờ lấy)
     const fullRes = await fetch(`${BASE_URL}/jobs/${job.job_id}`, {
-      headers: { Authorization: auth, Accept: "application/json" },
+      headers,
       cache: "no-store",
     });
     if (!fullRes.ok) {
@@ -57,13 +48,10 @@ export async function POST(req: NextRequest) {
     const fullData = await fullRes.json();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const stops: any[] = fullData.data?.stops ?? [];
-    const pickup = stops.find((s) => s.stop_type_id === 1);
+    const pickup = stops.find((s: any) => s.stop_type_id === 1);
     const pickupCustomerName = pickup?.customer_name ?? null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const started = stops.some((s: any) =>
-      (s.stop_status_id != null && s.stop_status_id !== 1) ||
-      s.activity_started_ts || s.activity_arrived_ts || s.activity_completed_ts
-    );
+    const started = stops.some((s: any) => isStopStarted(s));
     if (started) {
       return NextResponse.json({ error: "Không thể huỷ: tài xế đã bắt đầu công việc." }, { status: 409 });
     }
@@ -75,7 +63,7 @@ export async function POST(req: NextRequest) {
 
     const rpcRes = await fetch(JSONRPC_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: auth, Cookie: cookie },
+      headers: { ...headers, Cookie: cookie },
       body: JSON.stringify({
         version: "2.0",
         method: "delivery_reject_job",

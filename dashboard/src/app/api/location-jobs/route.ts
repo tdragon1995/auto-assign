@@ -1,20 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { type Env } from "@/lib/cartrack";
+import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 
 export const runtime = "edge";
 export const preferredRegion = "sin1";
-
-const BASE_URL = "https://fleetapi-vn.cartrack.com/rest/delivery";
-
-function getHeaders(env: Env = "prod"): Record<string, string> {
-  const suffix = env === "uat" ? "_UAT" : "";
-  const auth = process.env[`CARTRACK_AUTH${suffix}`] ?? "";
-  const cookie = process.env[`CARTRACK_COOKIE${suffix}`] ?? "";
-  if (!auth) throw new Error(`CARTRACK_AUTH${suffix} not set`);
-  const headers: Record<string, string> = { Authorization: auth, "Content-Type": "application/json" };
-  if (cookie) headers["Cookie"] = cookie;
-  return headers;
-}
 
 // GET /api/location-jobs?date=2026-04-11&status=4
 // Fetches all jobs for a given date + job_status_id, paginating until exhausted
@@ -29,7 +17,6 @@ export async function GET(req: NextRequest) {
 
   try {
     const headers = getHeaders(env);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const res = await fetch(
       `${BASE_URL}/jobs?filter[scheduled_delivery_ts_from]=${date} 00:00:00&filter[scheduled_delivery_ts_to]=${date} 23:59:59&filter[job_status_id]=${status}&limit=1000`,
       { headers, cache: "no-store" }

@@ -24,15 +24,25 @@ export interface Stop {
   customer_name?: string;
   name?: string;
   address?: string;
+  address_line_1?: string;
   latitude?: number | null;
   longitude?: number | null;
   note?: string;
+  activity_started_ts?: string | null;
+  activity_arrived_ts?: string | null;
+  activity_completed_ts?: string | null;
+  delivery_windows?: { time_from?: string; time_to?: string }[];
 }
 
 export interface Job {
   job_id: number;
   job_status_id?: number;
   create_ts?: string;
+  scheduled_delivery_ts?: string | null;
+  reference_number?: string;
+  labels?: string[];
+  delivery_driver_id?: string | null;
+  assigned_ts?: string | null;
   stops: Stop[];
 }
 

@@ -33,6 +33,8 @@ CARTRACK_WEB_PASS=               # Required for JSON-RPC (autoplan, route optimi
 CARTRACK_REJECT_PROXY_DRIVER_ID= # Driver UUID used to proxy-assign then reject duplicate jobs
 GOONG_API_KEY=                   # Road distance API (goong.io); falls back to haversine if absent
 ROUTE_OPTIMIZE_PILOT=            # Comma-separated driver UUIDs for route optimisation pilot
+LABCENTER_EMAIL=                 # Labcenter API login (used by /api/customers POST to sync pick/drop locations)
+LABCENTER_PASSWORD=              # Labcenter API password
 ```
 
 ## Architecture
@@ -69,16 +71,28 @@ ROUTE_OPTIMIZE_PILOT=            # Comma-separated driver UUIDs for route optimi
 | `GET /api/config` | Returns mapping/PSC route counts from sheets |
 | `GET /api/drivers` | Proxy to Cartrack drivers list |
 | `GET /api/jobs` | Proxy to Cartrack unassigned jobs |
-| `POST /api/psc-assign` | PSC provincial route assignment |
-| `GET /api/psc-routes` | Load PSC routes from sheet |
-| `GET /api/psc-tinh` | Provincial PSC route lookup |
-| `GET /api/smart-assign` | Smart-assign debug/status |
-| `GET /api/audit` | Job audit log |
-| `GET /api/cham-cong` | Attendance/check-in data |
-| `GET /api/distance-checking` | Driver–pickup distance queries |
+| `POST /api/psc-assign` | PSC sample-transport job creation (creates unassigned job; auto-assign picks it up) |
+| `GET /api/psc-routes` | Load PSC routes from sheet (pickup→dropoff pairs with GPS coords) |
+| `GET /api/psc-tinh` | Provincial PSC route lookup; `?psc=D021` for 3PL options, `?psc=D021&mode=orders` for today's orders; `DELETE` cancels a job |
+| `POST /api/smart-assign` | Smart-assign dry-run — returns ranked driver suggestions without assigning |
+| `GET /api/audit` | List locations for weekly audit job creation; `POST` creates the audit job and assigns it |
+| `GET /api/cham-cong` | Attendance (chấm công) — lists today's check-in/out jobs for a driver (`?driver_id=`); `POST` creates a check-in or check-out job |
+| `POST /api/distance-checking` | Batch Goong road-distance queries (`{ rows: DistanceRow[] }`); sequential with 1s gaps |
+| `GET /api/location-jobs` | Fetch all jobs for a date+status (`?date=YYYY-MM-DD&status=4`), paginating to exhaustion |
+| `GET /api/customers` | Check for duplicate customer name in Cartrack; `POST` creates a new customer and syncs pick/drop location to Labcenter |
 | `POST /api/geo/resolve` | Geocode/reverse-geocode via Goong |
-| `POST /api/sales/create-trip` | Sales trip creation |
-| `POST /api/sales/reject-job` | Sales job rejection |
+| `POST /api/sales/create-trip` | Creates a B2B sample-transport job (`🛵 Vận chuyển mẫu B2B`) and assigns it |
+| `POST /api/sales/reject-job` | Rejects a sales job by reference number via JSON-RPC (guards against started jobs) |
+
+### Shared Libraries
+
+| Module | Exports |
+|---|---|
+| `src/lib/cartrack.ts` | `BASE_URL`, `JSONRPC_URL`, `getHeaders`, all Cartrack REST/JSONRPC wrappers |
+| `src/lib/distance.ts` | `haversineKm`, `goongDistanceKm` (1→1), `goongMatrix` (1→N batch) |
+| `src/lib/job-filters.ts` | `JOB_STATUS`, `STOP_STATUS` maps; `isActiveStop`, `isCompletedOrRejectedStop`, `isStopStarted` |
+| `src/lib/smart-rank.ts` | `RefStop`, `RefLabel`, `GPS_FRESH_MS`, `selectReferenceStop`, `computeStopStats`, `rankingComparator` |
+| `src/lib/time.ts` | `vnDate`, `vnTimestamp`, `vnHoursMinutes`, `vnMinutesSinceMidnight`, `vnDayWindow`, `parseVnTimestamp` |
 
 ### Key Types (`src/lib/types.ts`)
 

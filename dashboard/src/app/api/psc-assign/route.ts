@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { type Env } from "@/lib/cartrack";
+import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
+import { vnDate, vnHoursMinutes } from "@/lib/time";
+import { isActiveStop } from "@/lib/job-filters";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -19,22 +21,6 @@ function acquireLock(key: string): boolean {
 
 function releaseLock(key: string): void {
   creationLock.delete(key);
-}
-
-const BASE_URL = "https://fleetapi-vn.cartrack.com/rest/delivery";
-
-function getHeaders(env: Env = "prod"): Record<string, string> {
-  const suffix = env === "uat" ? "_UAT" : "";
-  const auth = process.env[`CARTRACK_AUTH${suffix}`] ?? "";
-  const cookie = process.env[`CARTRACK_COOKIE${suffix}`] ?? "";
-  if (!auth) throw new Error(`CARTRACK_AUTH${suffix} not set`);
-
-  const headers: Record<string, string> = {
-    Authorization: auth,
-    "Content-Type": "application/json",
-  };
-  if (cookie) headers["Cookie"] = cookie;
-  return headers;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -68,8 +54,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
-    const today = vnNow.toISOString().split("T")[0];
+    const today = vnDate();
     lockKey = `${pickup}-${dropoff}-${today}`;
 
     if (!acquireLock(lockKey)) {
@@ -91,10 +76,8 @@ export async function POST(req: NextRequest) {
     ]);
     const allJobs = [...unassignedJobs, ...assignedJobs];
 
-    // Block if pickup stop is active (1=Created, 2=En Route, 3=Arrived) AND job is not cancelled (7)
-    // Allow re-booking once pickup stop is Completed (4) or Rejected (5), or if job was cancelled
-    const ACTIVE_STOP_STATUSES = new Set([1, 2, 3]);
-
+    // Block if pickup stop is active (Created/En Route/Arrived) AND job is not cancelled
+    // Allow re-booking once pickup stop is Completed (4) or Rejected (5), or job was cancelled
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const duplicate = allJobs.find((job: any) => {
       if (job.job_status_id === 7 || job.job_status_id === 3) return false;
@@ -102,7 +85,7 @@ export async function POST(req: NextRequest) {
       const hasActivePickup = stops.some((s: any) =>
         s.stop_type_id === 1 &&
         s.customer_id === pickup &&
-        ACTIVE_STOP_STATUSES.has(s.stop_status_id)
+        isActiveStop(s.stop_status_id)
       );
       const hasMatchingDropoff = stops.some((s: any) =>
         s.stop_type_id === 2 &&
@@ -126,8 +109,9 @@ export async function POST(req: NextRequest) {
 
     // --- Create the job ---
     // Always generate timestamp-based reference (ignore ref_number from config — Cartrack strips emoji)
-    const hh = String(vnNow.getUTCHours()).padStart(2, "0");
-    const mm = String(vnNow.getUTCMinutes()).padStart(2, "0");
+    const { hours, minutes } = vnHoursMinutes();
+    const hh = String(hours).padStart(2, "0");
+    const mm = String(minutes).padStart(2, "0");
     const refLabel = `${psc_pickup.replace(/^BRA\s*-\s*/i, "")}→${dropoff_location.replace(/^BRA\s*-\s*/i, "")}_${hh}:${mm}`;
 
     const jobPayload = {
