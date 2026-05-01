@@ -1,5 +1,5 @@
-import type { Config, Driver, Job, LogEntry, LogLevel, Mapping, TimelineRoute } from "./types";
-import { getDrivers, getUnassignedJobs, assignJob, getJobDetails, getCustomerById, updateJobStops, optimizeDriverRoute, getFleetwebCookie, JSONRPC_URL, type Env } from "./cartrack";
+import type { Config, Driver, Job, LogEntry, LogLevel, Mapping, QueuedJob, TimelineRoute } from "./types";
+import { getDrivers, getUnassignedJobs, assignJob, getJobDetails, getCustomerById, updateJobStops, optimizeDriverRoute, getFleetwebCookie, getStatus4UnassignedScheduled, getDriverJobs, JSONRPC_URL, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import {
@@ -30,8 +30,8 @@ const DUPLICATE_EXEMPT_LABELS = [PSC_TINH_LABEL];
 async function fetchAssignedJobsToday(vnDate: string, auth: string): Promise<any[]> {
   const params = new URLSearchParams({
     "filter[job_status_id]": "4",
-    "filter[create_ts_from]": `${vnDate} 00:00:00`,
-    "filter[create_ts_to]":   `${vnDate} 23:59:59`,
+    "filter[scheduled_delivery_ts_from]": `${vnDate} 00:00:00`,
+    "filter[scheduled_delivery_ts_to]":   `${vnDate} 23:59:59`,
     limit: "1000",
   });
   try {
@@ -201,6 +201,47 @@ export function isJobRecent(job: Job, maxAgeMinutes: number): boolean {
   return jobTime >= cutoff;
 }
 
+// ── Scheduled / planned job helpers ─────────────────────────────────────────
+
+export type JobKind = "asap" | "scheduled" | "planned" | "parked";
+
+const ELIGIBILITY_OFFSET_MIN = 30;
+
+function getPickupStop(job: Job) {
+  return (job.stops ?? []).find((s) => s.stop_type_id === 1);
+}
+
+/**
+ * Operational time at which a scheduled/planned job becomes eligible to be
+ * assigned to its real driver. Equals pickup `delivery_windows[0].time_to`
+ * minus 30 minutes. Returns null when there is no delivery window (= ASAP).
+ */
+export function getOperationalTime(job: Job): Date | null {
+  const pickup = getPickupStop(job);
+  const timeTo = pickup?.delivery_windows?.[0]?.time_to;
+  if (!timeTo) return null;
+
+  const m = timeTo.match(/^(\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!m) return null;
+  const hh = m[1], mm = m[2], ss = m[3] ?? "00";
+
+  // Use the date portion of scheduled_delivery_ts when present, else today VN.
+  const date = (job.scheduled_delivery_ts ?? "").slice(0, 10) || vnDate();
+  const base = parseVnTimestamp(`${date} ${hh}:${mm}:${ss}`);
+  if (isNaN(base.getTime())) return null;
+  return new Date(base.getTime() - ELIGIBILITY_OFFSET_MIN * 60 * 1000);
+}
+
+export function classifyJob(job: Job, proxyDriverId: string | null): JobKind {
+  if (proxyDriverId && job.delivery_driver_id === proxyDriverId) return "parked";
+  const hasWindow = !!getPickupStop(job)?.delivery_windows?.[0]?.time_to;
+  if (!hasWindow) return "asap";
+  if (job.job_status_id === 2) return "scheduled";
+  if (job.job_status_id === 4 && job.delivery_driver_id == null) return "planned";
+  // Fallback: status=4 with a driver != proxy is operationally none of our business.
+  return "asap";
+}
+
 export function jobHasNotes(job: Job): boolean {
   for (const stop of job.stops ?? []) {
     const note = stop.note;
@@ -297,40 +338,64 @@ export function buildGmapsRouteLink(
   );
 }
 
-export async function autoAssignCycle(config: Config, env: Env = "prod", skipSmart = false): Promise<LogEntry[]> {
+export async function autoAssignCycle(config: Config, env: Env = "prod", skipSmart = false): Promise<{ logs: LogEntry[]; queued: QueuedJob[] }> {
   const logs: LogEntry[] = [];
+  const queued: QueuedJob[] = [];
   const log = (msg: string, level: LogLevel = "INFO") => {
     logs.push(makeLog(msg, level));
   };
 
-  // Fetch unassigned jobs
-  let jobs: Job[];
+  const queueProxyId = process.env.CARTRACK_QUEUE_PROXY_DRIVER_ID || null;
+  const today = vnDate();
+
+  // ── Fetch all three job sources in parallel ────────────────────────────
+  // 1) status=2 (unassigned): ASAP + scheduled
+  // 2) status=4 + null driver, scheduled today: planned
+  // 3) jobs currently parked on the queue proxy: previously-queued scheduled/planned
+  let unassignedJobs: Job[] = [];
+  let plannedJobs: Job[] = [];
+  let parkedJobs: Job[] = [];
   try {
-    const data = await getUnassignedJobs(1, 50, env);
-    jobs = data.data ?? [];
+    const [u, p, pk] = await Promise.all([
+      getUnassignedJobs(1, 50, env).then((r) => r.data ?? []).catch(() => [] as Job[]),
+      getStatus4UnassignedScheduled(today, env).catch(() => [] as Job[]),
+      queueProxyId ? getDriverJobs(queueProxyId, today, env).catch(() => [] as Job[]) : Promise.resolve([] as Job[]),
+    ]);
+    unassignedJobs = u; plannedJobs = p; parkedJobs = pk;
   } catch (e) {
     log(`Error fetching jobs: ${e}`, "ERROR");
-    return logs;
+    return { logs, queued };
   }
 
-  if (jobs.length === 0) {
+  // Merge by job_id (last-write-wins; parked is freshest snapshot of those jobs)
+  const byId = new Map<number, Job>();
+  for (const j of unassignedJobs) byId.set(j.job_id, j);
+  for (const j of plannedJobs)    byId.set(j.job_id, j);
+  for (const j of parkedJobs)     byId.set(j.job_id, j);
+  const allJobs = [...byId.values()];
+
+  if (allJobs.length === 0) {
     log("No unassigned jobs");
-    return logs;
+    return { logs, queued };
   }
 
-  // Filter recent
+  // ASAP must be within the recency window; scheduled/planned/parked are gated
+  // by their operational time later instead.
   const maxAge = config.job_max_age_minutes;
-  jobs = jobs.filter((j) => isJobRecent(j, maxAge));
+  const jobs = allJobs.filter((j) => {
+    const kind = classifyJob(j, queueProxyId);
+    if (kind === "asap") return isJobRecent(j, maxAge);
+    return true;
+  });
 
   if (jobs.length === 0) {
     log(`No jobs within last ${maxAge} min`);
-    return logs;
+    return { logs, queued };
   }
 
-  log(`Found ${jobs.length} recent job(s)`);
+  log(`Found ${jobs.length} job(s) (${unassignedJobs.length} unassigned, ${plannedJobs.length} planned, ${parkedJobs.length} parked)`);
 
   // ── Duplicate-check setup (1 extra GET /jobs?status=4 per cycle) ──────────
-  const today = vnDate();
   const authSuffix = env === "uat" ? "_UAT" : "";
   const auth = process.env[`CARTRACK_AUTH${authSuffix}`] ?? "";
   const activeRouteMap = await buildActiveRouteMap(today, auth);
@@ -472,12 +537,58 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
       continue;
     }
 
+    // ── Scheduled/planned gating ────────────────────────────────────────────
+    // ASAP jobs use create_ts as their operational moment (existing behaviour).
+    // Scheduled/planned/parked jobs use `delivery_windows[0].time_to − 30min`;
+    // until that moment they sit on the queue proxy and surface in `queued`.
+    const kind = classifyJob(job, queueProxyId);
     let jobTime: Date;
-    try {
-      jobTime = parseVnTimestamp(job.create_ts);
-      if (isNaN(jobTime.getTime())) jobTime = new Date();
-    } catch {
-      jobTime = new Date();
+    if (kind === "asap") {
+      try {
+        jobTime = parseVnTimestamp(job.create_ts);
+        if (isNaN(jobTime.getTime())) jobTime = new Date();
+      } catch {
+        jobTime = new Date();
+      }
+    } else {
+      const opTime = getOperationalTime(job);
+      if (!opTime) {
+        log(`Job ${jobId} - SKIPPED: ${kind} job missing pickup delivery_windows`, "WARN");
+        continue;
+      }
+      if (Date.now() < opTime.getTime()) {
+        // Not yet eligible. Park on proxy (if not already), then surface in queue.
+        const queueKind: "scheduled" | "planned" = kind === "planned" ? "planned" : "scheduled";
+        let parkedOk = kind === "parked";
+        if (kind !== "parked" && queueProxyId) {
+          try {
+            const { status: ps } = await assignJob(queueProxyId, jobId, env);
+            parkedOk = ps === 200;
+            if (parkedOk) {
+              log(`Job ${jobId} - PARKED ${queueKind} on proxy until ${vnTimestamp(opTime)} | ${jobCustomerName ?? customerId}`);
+            } else {
+              log(`Job ${jobId} - PARK failed (status ${ps}) | ${jobCustomerName ?? customerId}`, "ERROR");
+            }
+          } catch (e) {
+            log(`Job ${jobId} - PARK error: ${e}`, "ERROR");
+          }
+        } else if (kind !== "parked" && !queueProxyId) {
+          log(`Job ${jobId} - ${queueKind} eligible at ${vnTimestamp(opTime)} (no queue proxy configured) | ${jobCustomerName ?? customerId}`);
+        }
+        if (parkedOk || kind === "parked") {
+          queued.push({
+            job_id: jobId,
+            customer_id: customerId,
+            customer_name: jobCustomerName,
+            kind: queueKind,
+            eligible_at: vnTimestamp(opTime),
+            parked_on_proxy: parkedOk,
+          });
+        }
+        continue;
+      }
+      // Eligible — assign to real driver using opTime as the shift-check basis.
+      jobTime = opTime;
     }
 
     // ── Smart-assign path ────────────────────────────────────────────────────
@@ -704,7 +815,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
     }
   }
 
-  return logs;
+  return { logs, queued };
 }
 
 function fmtShift(t: { hours: number; minutes: number } | null): string {

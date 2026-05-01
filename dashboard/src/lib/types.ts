@@ -43,7 +43,18 @@ export interface Job {
   labels?: string[];
   delivery_driver_id?: string | null;
   assigned_ts?: string | null;
+  allowed_to_start_at?: string | null;
+  send_to_driver_at?: string | null;
   stops: Stop[];
+}
+
+export interface QueuedJob {
+  job_id: number;
+  customer_id: string | null;
+  customer_name: string | null;
+  kind: "scheduled" | "planned";
+  eligible_at: string;
+  parked_on_proxy: boolean;
 }
 
 export interface Driver {
@@ -113,6 +124,7 @@ export interface LogEntry {
 
 export interface AssignResult {
   logs: LogEntry[];
+  queued: QueuedJob[];
 }
 
 export const DRIVER_STATUS_CONFIG: Record<

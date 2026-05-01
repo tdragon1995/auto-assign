@@ -15,8 +15,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const logs = await autoAssignCycle(config, env, skipSmart);
-    return NextResponse.json({ logs });
+    const { logs, queued } = await autoAssignCycle(config, env, skipSmart);
+    return NextResponse.json({ logs, queued });
   } catch (e) {
     return NextResponse.json(
       { logs: [{ ts: new Date().toISOString(), level: "ERROR", msg: String(e) }] },

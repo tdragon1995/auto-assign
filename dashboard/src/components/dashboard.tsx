@@ -6,13 +6,14 @@ import { Switch } from "@/components/ui/switch";
 import { StatsSidebar } from "./stats-sidebar";
 import { ActivityLog } from "./activity-log";
 import { toast } from "sonner";
-import type { LogEntry } from "@/lib/types";
+import type { LogEntry, QueuedJob } from "@/lib/types";
 
 type Env = "prod" | "uat";
 type AssignMode = "smart" | "autoplan";
 
 export function Dashboard() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [queued, setQueued] = useState<QueuedJob[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [mappingCount, setMappingCount] = useState(0);
   const [pscRouteCount, setPscRouteCount] = useState(0);
@@ -46,12 +47,15 @@ export function Dashboard() {
     try {
       const responses = await Promise.all(endpoints.map((u) => fetch(u, { method: "POST" })));
       const allLogs: LogEntry[] = [];
+      let latestQueued: QueuedJob[] | null = null;
       for (const res of responses) {
         if (!res.ok) continue;
         const data = await res.json();
         if (data.logs?.length) allLogs.push(...data.logs);
+        if (Array.isArray(data.queued)) latestQueued = data.queued;
       }
       if (allLogs.length) setLogs((prev) => [...prev, ...allLogs]);
+      if (latestQueued !== null) setQueued(latestQueued);
     } catch {
       setLogs((prev) => [
         ...prev,
@@ -216,9 +220,41 @@ export function Dashboard() {
           pscRouteCount={pscRouteCount}
         />
 
-        {/* Right: activity log */}
-        <div className="flex-1 min-w-0">
-          <ActivityLog logs={logs} />
+        {/* Right: activity log + queued panel */}
+        <div className="flex-1 min-w-0 flex flex-col gap-3">
+          <div className="flex-1 min-h-0">
+            <ActivityLog logs={logs} />
+          </div>
+          {queued.length > 0 && (
+            <div className="shrink-0 max-h-64 overflow-auto rounded-lg border border-slate-200 bg-white">
+              <div className="px-3 py-2 border-b border-slate-200 text-sm font-semibold flex items-center justify-between">
+                <span>Queued (scheduled / planned)</span>
+                <span className="text-slate-500 font-normal">{queued.length}</span>
+              </div>
+              <table className="w-full text-xs">
+                <thead className="bg-slate-50 text-slate-500">
+                  <tr>
+                    <th className="text-left px-3 py-1.5">Eligible at</th>
+                    <th className="text-left px-3 py-1.5">Job</th>
+                    <th className="text-left px-3 py-1.5">Customer</th>
+                    <th className="text-left px-3 py-1.5">Kind</th>
+                    <th className="text-left px-3 py-1.5">Parked</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {queued.map((q) => (
+                    <tr key={q.job_id} className="border-t border-slate-100">
+                      <td className="px-3 py-1.5 font-mono">{q.eligible_at}</td>
+                      <td className="px-3 py-1.5 font-mono">{q.job_id}</td>
+                      <td className="px-3 py-1.5">{q.customer_name ?? q.customer_id ?? "—"}</td>
+                      <td className="px-3 py-1.5">{q.kind}</td>
+                      <td className="px-3 py-1.5">{q.parked_on_proxy ? "✓" : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </div>
     </div>

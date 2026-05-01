@@ -174,7 +174,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Run fixed-driver assignments (skipSmart=true — smart jobs handled above by Cartrack planner)
-    const fixedLogs = await autoAssignCycle(config, env, true);
+    const { logs: fixedLogs } = await autoAssignCycle(config, env, true);
     logs.push(...fixedLogs);
 
     return NextResponse.json({ logs });

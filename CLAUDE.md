@@ -31,6 +31,7 @@ CARTRACK_AUTH_UAT=Basic ...      # UAT environment equivalent
 CARTRACK_COOKIE_UAT=...
 CARTRACK_WEB_PASS=               # Required for JSON-RPC (autoplan, route optimise, duplicate rejection)
 CARTRACK_REJECT_PROXY_DRIVER_ID= # Driver UUID used to proxy-assign then reject duplicate jobs
+CARTRACK_QUEUE_PROXY_DRIVER_ID=  # Driver UUID used to park scheduled/planned jobs until 30 min before window end
 GOONG_API_KEY=                   # Road distance API (goong.io); falls back to haversine if absent
 ROUTE_OPTIMIZE_PILOT=            # Comma-separated driver UUIDs for route optimisation pilot
 LABCENTER_EMAIL=                 # Labcenter API login (used by /api/customers POST to sync pick/drop locations)

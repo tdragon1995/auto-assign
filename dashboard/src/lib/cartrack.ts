@@ -61,6 +61,28 @@ export async function getUnassignedJobs(
   return res.json();
 }
 
+// Status=4 jobs scheduled for today with no driver yet (Cartrack "planned" jobs).
+// Cartrack has no null-driver filter, so we filter client-side.
+export async function getStatus4UnassignedScheduled(
+  dateVn: string,
+  env: Env = "prod"
+): Promise<Job[]> {
+  const params = new URLSearchParams({
+    "filter[job_status_id]": "4",
+    "filter[scheduled_delivery_ts_from]": `${dateVn} 00:00:00`,
+    "filter[scheduled_delivery_ts_to]": `${dateVn} 23:59:59`,
+    per_page: "200",
+  });
+  const res = await fetch(`${BASE_URL}/jobs?${params}`, {
+    headers: getHeaders(env),
+    cache: "no-store",
+  });
+  if (!res.ok) return [];
+  const data = await res.json();
+  const jobs: Job[] = data.data ?? [];
+  return jobs.filter((j) => j.delivery_driver_id == null);
+}
+
 export async function getDrivers(env: Env = "prod"): Promise<Driver[]> {
   const params = new URLSearchParams({ page: "1", limit: "1000" });
 
