@@ -3,6 +3,7 @@ import { getDrivers, getUnassignedJobs, getFleetwebCookie, getCustomerById, JSON
 import { vnDate, vnDayWindow } from "@/lib/time";
 import { haversineKm, goongMatrix } from "@/lib/distance";
 import { GPS_FRESH_MS, selectReferenceStop, computeStopStats, rankingComparator, type RefLabel } from "@/lib/smart-rank";
+import type { TimelineRoute } from "@/lib/types";
 
 const TOP_N        = 3;
 const PRE_FILTER_N = 10;
@@ -46,10 +47,7 @@ async function fetchAllDriverRouteData(
     });
     if (!res.ok) return {};
     const data = await res.json();
-    const routes: {
-      routeId: string;
-      orderedStops?: { jobId: number; stopId: number; stopStatusId: number; latitude: number; longitude: number; customerName?: string; activityCompletedTs?: string }[];
-    }[] = data.result?.routes ?? [];
+    const routes: TimelineRoute[] = data.result?.routes ?? [];
 
     const result: Record<string, DriverRouteData> = {};
     for (const route of routes) {

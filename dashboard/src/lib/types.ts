@@ -60,6 +60,49 @@ export interface Driver {
   start_location_customer_id?: string | null;
 }
 
+// --- delivery_timeline_route_list (JSONRPC) ---
+
+export interface TimelineDeliveryWindow {
+  stopId: number;
+  timeFrom: string; // e.g. "11:00:00+07"
+  timeTo: string;
+}
+
+export interface TimelineStop {
+  stopId: number;
+  jobId: number;
+  stopTypeId: number;
+  stopStatusId: number;
+  customerName: string;
+  deliveryDriverId: string;
+  referenceNumber: string;
+  sendToDriverAt: string | null;
+  allowedToStartAt: string | null;
+  scheduledDeliveryTs: string | null;
+  isPlanning: boolean;
+  firstStopStatusId: number;
+  deliveryDate: string;
+  jobStatusId: number;
+  deliveryWindows: TimelineDeliveryWindow[];
+  jobLabels: string[];
+  etaInSeconds: number;
+  latitude: number;
+  longitude: number;
+  activityCompletedTs: string | null;
+}
+
+export interface TimelineRoute {
+  routeId: string; // "driver_<uuid>"
+  orderedStops?: TimelineStop[];
+}
+
+export interface TimelineRouteListResult {
+  routes: TimelineRoute[];
+  meta: { total: number; peakMemUsage: string; avgMemPerElement: string };
+}
+
+// ---
+
 export type LogLevel = "OK" | "ERROR" | "WARN" | "INFO";
 
 export interface LogEntry {

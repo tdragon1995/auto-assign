@@ -3,6 +3,8 @@
  * Used by lib/assign.ts (production path) and app/api/smart-assign/route.ts (preview endpoint).
  */
 
+import type { TimelineStop } from "./types";
+
 export type RefLabel = "Arrived" | "En Route" | "Next Stop" | "First Stop" | "Start Location";
 
 export interface RefStop {
@@ -15,24 +17,16 @@ export interface RefStop {
 /** How long (ms) a driver's GPS fix is considered fresh enough to use instead of First Stop. */
 export const GPS_FRESH_MS = 15 * 60 * 1000;
 
-interface RouteStop {
-  stopStatusId: number;
-  latitude: number;
-  longitude: number;
-  customerName?: string;
-  activityCompletedTs?: string;
-}
-
 /**
  * Select the reference stop for a driver from their ordered timeline stops.
  * Priority: Arrived (3) → En Route (2) → Next pending after last completed → First pending
  * Returns null when no suitable stop is found (e.g. empty route or all completed).
  */
-export function selectReferenceStop(stops: RouteStop[]): RefStop | null {
+export function selectReferenceStop(stops: TimelineStop[]): RefStop | null {
   const valid = stops.filter((s) => s.latitude && s.longitude);
   if (valid.length === 0) return null;
 
-  const toLoc = (s: RouteStop, label: RefLabel): RefStop => ({
+  const toLoc = (s: TimelineStop, label: RefLabel): RefStop => ({
     lat: s.latitude,
     lon: s.longitude,
     label,
@@ -68,7 +62,7 @@ export interface DriverStopStats {
   lastCompletedTs: string | null;
 }
 
-export function computeStopStats(stops: RouteStop[]): DriverStopStats {
+export function computeStopStats(stops: TimelineStop[]): DriverStopStats {
   let active = 0;
   let lastCompletedTs: string | null = null;
   for (const s of stops) {

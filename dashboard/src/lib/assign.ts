@@ -1,4 +1,4 @@
-import type { Config, Driver, Job, LogEntry, LogLevel, Mapping } from "./types";
+import type { Config, Driver, Job, LogEntry, LogLevel, Mapping, TimelineRoute } from "./types";
 import { getDrivers, getUnassignedJobs, assignJob, getJobDetails, getCustomerById, updateJobStops, optimizeDriverRoute, getFleetwebCookie, JSONRPC_URL, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
@@ -123,10 +123,7 @@ async function fetchSmartRouteData(
     });
     if (!res.ok) return {};
     const data = await res.json();
-    const routes: {
-      routeId: string;
-      orderedStops?: { stopStatusId: number; latitude: number; longitude: number; customerName?: string; activityCompletedTs?: string }[];
-    }[] = data.result?.routes ?? [];
+    const routes: TimelineRoute[] = data.result?.routes ?? [];
 
     const result: Record<string, DriverRouteInfo> = {};
     for (const route of routes) {
