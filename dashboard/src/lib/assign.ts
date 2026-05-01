@@ -135,7 +135,7 @@ async function fetchSmartRouteData(
       const refStop = selectReferenceStop(stops);
       const stats = computeStopStats(stops);
       result[driverId] = {
-        ref:  refStop ? { lat: refStop.lat, lon: refStop.lon, customerName: refStop.customerName } : null,
+        ref:  refStop ? { lat: refStop.lat, lon: refStop.lon, label: refStop.label, customerName: refStop.customerName } : null,
         label: refStop?.label ?? null,
         workload: stops.length,
         lastCompletedTs: stats.lastCompletedTs,
@@ -406,7 +406,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
       const coords = startLocCoords.get(d.start_location_customer_id);
       if (!coords) continue;
       smartRouteData[d.delivery_driver_id] = {
-        ref: { lat: coords.lat, lon: coords.lon, customerName: coords.name },
+        ref: { lat: coords.lat, lon: coords.lon, label: "Start Location", customerName: coords.name },
         label: "Start Location",
         workload: info?.workload ?? 0,
         lastCompletedTs: info?.lastCompletedTs ?? null,
