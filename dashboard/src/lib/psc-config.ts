@@ -115,10 +115,7 @@ export async function loadDriverMappings(): Promise<DriverMapping[]> {
   return data;
 }
 
-/** O(1) lookup: PSC.pickup → config.customer_id → driver */
-export function findDriverForPickup(
-  _mappings: DriverMapping[],
-  pickupCustomerId: string
-): DriverMapping | null {
+/** O(1) lookup: PSC.pickup → config.customer_id → driver. Call loadDriverMappings() first. */
+export function findDriverForPickup(pickupCustomerId: string): DriverMapping | null {
   return mappingsIndex?.get(pickupCustomerId) ?? null;
 }

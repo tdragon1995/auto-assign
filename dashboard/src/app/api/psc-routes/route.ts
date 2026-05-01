@@ -6,13 +6,13 @@ export const preferredRegion = "sin1";
 
 export async function GET() {
   try {
-    const [routes, mappings] = await Promise.all([
+    const [routes] = await Promise.all([
       loadPscRoutes(),
       loadDriverMappings(),
     ]);
 
     const enriched = routes.map((r) => {
-      const driver = findDriverForPickup(mappings, r.pickup);
+      const driver = findDriverForPickup(r.pickup);
       return {
         ...r,
         driver_id: driver?.driver_id ?? null,
