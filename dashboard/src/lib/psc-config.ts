@@ -21,14 +21,6 @@ export interface TplEntry {
   address: string;
 }
 
-export interface DriverMapping {
-  customer_id: string;
-  driver_id: string;
-  driver_name: string;
-  shift_start: string;
-  shift_end: string;
-}
-
 // ── In-memory cache ──────────────────────────────────────────────
 
 interface CacheEntry<T> {
@@ -37,9 +29,6 @@ interface CacheEntry<T> {
 }
 
 let routesCache: CacheEntry<PscRoute[]> | null = null;
-let mappingsCache: CacheEntry<DriverMapping[]> | null = null;
-// Pre-built lookup: customer_id → DriverMapping
-let mappingsIndex: Map<string, DriverMapping> | null = null;
 
 function isFresh<T>(entry: CacheEntry<T> | null): entry is CacheEntry<T> {
   return entry !== null && Date.now() - entry.ts < CACHE_TTL_MS;
@@ -48,8 +37,6 @@ function isFresh<T>(entry: CacheEntry<T> | null): entry is CacheEntry<T> {
 /** Called by dashboard Refresh button to bust the cache */
 export function invalidatePscCache() {
   routesCache = null;
-  mappingsCache = null;
-  mappingsIndex = null;
 }
 
 export async function loadTplEntries(): Promise<TplEntry[]> {
@@ -86,36 +73,3 @@ export async function loadPscRoutes(): Promise<PscRoute[]> {
   return data;
 }
 
-export async function loadDriverMappings(): Promise<DriverMapping[]> {
-  if (isFresh(mappingsCache)) return mappingsCache.data;
-
-  const rows = await fetchSheetRows(SHEET_GID.mapping);
-
-  const data: DriverMapping[] = [];
-  const index = new Map<string, DriverMapping>();
-
-  for (const row of rows) {
-    const customer_id = row["customer_id"] ?? "";
-    const driver_id = row["driver_id"] ?? "";
-    if (!customer_id || !driver_id) continue;
-
-    const m: DriverMapping = {
-      customer_id,
-      driver_id,
-      driver_name: row["Driver"] ?? row["first_name_last_name"] ?? "",
-      shift_start: row["shift_start"] ?? "",
-      shift_end: row["shift_end"] ?? "",
-    };
-    data.push(m);
-    index.set(customer_id, m);
-  }
-
-  mappingsCache = { data, ts: Date.now() };
-  mappingsIndex = index;
-  return data;
-}
-
-/** O(1) lookup: PSC.pickup → config.customer_id → driver. Call loadDriverMappings() first. */
-export function findDriverForPickup(pickupCustomerId: string): DriverMapping | null {
-  return mappingsIndex?.get(pickupCustomerId) ?? null;
-}

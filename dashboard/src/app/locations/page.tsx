@@ -10,8 +10,6 @@ interface PscRoute {
   pickup: string;
   dropoff: string;
   ref_number: string;
-  driver_id: string | null;
-  driver_name: string | null;
 }
 
 export default function LocationsPage() {
