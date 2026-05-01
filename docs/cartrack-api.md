@@ -93,11 +93,10 @@ Wrapper: `getJobDetails(jobId, env)` — used after assignment to fetch driver n
 
 ### `GET /customers/{customerId}` — customer detail
 
-Wrapper: `getCustomerById(customerId, env)` — called in three situations:
+Wrapper: `getCustomerById(customerId, env)` — called in two situations:
 
-1. **Phase 1 GPS fallback** (`assign.ts` smart-assign setup): when a driver has `start_location_customer_id` set and **no live GPS**, the customer's `latitude`/`longitude` are used as the driver's effective position for haversine pre-ranking.
-2. **Reference-stop fallback** (`assign.ts` smart-assign setup): when a driver has live GPS but **no route data today** (workload = 0, no ref stop), the customer's coordinates are injected as a synthetic `"Start Location"` reference stop so Goong distance ranking still has a meaningful origin.
-3. **Alt dropoff name resolution** (`applyAltDropoff` in `assign.ts`): when `alt_drop_off_id` is configured on a mapping, the customer's `customer_name` is fetched here before the dropoff stop is swapped via `PUT /jobs/{jobId}`.
+1. **Start-location coordinates** (`assign.ts` smart-assign setup): fetches `latitude`/`longitude` for a driver's `start_location_customer_id` when the driver has no live GPS. The resolved coords are used as the driver's effective position for haversine pre-ranking and, when the driver has no route data for the day, also as a synthetic `"Start Location"` reference stop for Goong distance ranking.
+2. **Alt dropoff name resolution** (`applyAltDropoff` in `assign.ts`): fetches `customer_name` for `alt_drop_off_id` before the dropoff stop is swapped via `PUT /jobs/{jobId}`.
 
 ## JSON-RPC methods
 
