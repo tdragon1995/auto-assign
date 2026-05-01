@@ -104,9 +104,68 @@ Wrapper: `getCustomerById(customerId, env)` — called in two situations:
 
 Reads all driver route timelines for a day. Used by smart-assign ranking and the autoplan route.
 
-Filter: `scheduleType: "scheduled"`, `from/to: YYYY-MM-DDT00:00:00+07:00 / ...T23:59:59+07:00`
+Request filter:
+```json
+{
+  "scheduleType": "scheduled",
+  "from": "YYYY-MM-DDT00:00:00+07:00",
+  "to":   "YYYY-MM-DDT23:59:59+07:00"
+}
+```
 
-Response fields used: `routeId`, `orderedStops[].{jobId, stopId, stopStatusId, latitude, longitude, customerName, activityCompletedTs}`
+Response shape:
+```json
+{
+  "result": {
+    "routes": [
+      {
+        "routeId": "driver_<driverUUID>",
+        "orderedStops": [ "<Stop>" ]
+      }
+    ],
+    "meta": {
+      "total": 99,
+      "peakMemUsage": "<string>",
+      "avgMemPerElement": "<string>"
+    }
+  }
+}
+```
+
+Stop object (full shape from real data):
+
+| Field | Type | Notes |
+|---|---|---|
+| `stopId` | number | Stop primary key |
+| `jobId` | number | Parent job ID |
+| `stopTypeId` | number | 1=Pickup, 2=Dropoff, 3=Delivery |
+| `stopStatusId` | number | 1=Created, 2=Started, 3=Arrived, 4=Completed, 5=Rejected |
+| `customerName` | string | Display name of the customer |
+| `deliveryDriverId` | string (UUID) | Assigned driver |
+| `referenceNumber` | string | Job reference number |
+| `sendToDriverAt` | string \| null | ISO timestamp when sent to driver |
+| `allowedToStartAt` | string \| null | Earliest start timestamp |
+| `scheduledDeliveryTs` | string \| null | e.g. `"2026-04-02 14:30:19.718904+07"` |
+| `isPlanning` | boolean | True if in planning state |
+| `firstStopStatusId` | number | Status of the first stop in the job |
+| `deliveryDate` | string | ISO timestamp of actual/expected delivery |
+| `jobStatusId` | number | Parent job status |
+| `deliveryWindows` | array | Time windows (see below); empty `[]` if none |
+| `jobLabels` | string[] | Labels attached to the job |
+| `etaInSeconds` | number | ETA from driver position; 0 if unknown |
+| `latitude` | number | Stop GPS latitude (used by ranking code) |
+| `longitude` | number | Stop GPS longitude (used by ranking code) |
+| `activityCompletedTs` | string \| null | When the stop was completed (used by ranking code) |
+
+`deliveryWindows` element shape:
+
+| Field | Type | Example |
+|---|---|---|
+| `stopId` | number | Matches parent `stopId` |
+| `timeFrom` | string | `"11:00:00+07"` |
+| `timeTo` | string | `"11:30:00+07"` |
+
+Fields consumed by this codebase: `routeId`, `orderedStops[].{jobId, stopId, stopStatusId, latitude, longitude, customerName, activityCompletedTs}`
 
 ### `delivery_route_stops_optimize`
 
