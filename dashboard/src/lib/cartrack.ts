@@ -3,9 +3,9 @@ import { vnDayWindow } from "./time";
 
 export type Env = "prod" | "uat";
 
-const BASE_URL = "https://fleetapi-vn.cartrack.com/rest/delivery";
+export const BASE_URL = "https://fleetapi-vn.cartrack.com/rest/delivery";
 
-function getHeaders(env: Env = "prod"): Record<string, string> {
+export function getHeaders(env: Env = "prod"): Record<string, string> {
   const suffix = env === "uat" ? "_UAT" : "";
   const auth = process.env[`CARTRACK_AUTH${suffix}`] ?? "";
   const cookie = process.env[`CARTRACK_COOKIE${suffix}`] ?? "";
@@ -134,7 +134,7 @@ export async function updateJobStops(
   return { ok: res.ok, status: res.status, body };
 }
 
-const JSONRPC_URL = "https://fleetweb-vn.cartrack.com/jsonrpc/index.php";
+export const JSONRPC_URL = "https://fleetweb-vn.cartrack.com/jsonrpc/index.php";
 const COOKIE_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 let _cachedCookie: string | null = null;

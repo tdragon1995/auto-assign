@@ -1,39 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadTplEntries, PSC_TINH_LABEL } from "@/lib/psc-config";
-import { type Env } from "@/lib/cartrack";
+import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
+import { vnDate } from "@/lib/time";
+import { STOP_STATUS, JOB_STATUS } from "@/lib/job-filters";
 
 export const runtime = "edge";
 export const preferredRegion = "sin1";
 
-const BASE_URL = "https://fleetapi-vn.cartrack.com/rest/delivery";
 const D001_UUID = "3927b076-3af9-11ed-b939-506b8dbc8dfb";
-
-function getHeaders(env: Env = "prod"): Record<string, string> {
-  const suffix = env === "uat" ? "_UAT" : "";
-  const auth = process.env[`CARTRACK_AUTH${suffix}`] ?? "";
-  const cookie = process.env[`CARTRACK_COOKIE${suffix}`] ?? "";
-  if (!auth) throw new Error(`CARTRACK_AUTH${suffix} not set`);
-  const headers: Record<string, string> = { Authorization: auth, "Content-Type": "application/json" };
-  if (cookie) headers["Cookie"] = cookie;
-  return headers;
-}
-
-// Stop/job status labels in Vietnamese
-const STOP_STATUS: Record<number, { label: string; color: string }> = {
-  1: { label: "Chờ lấy",    color: "slate"  },
-  2: { label: "Đang đến",   color: "blue"   },
-  3: { label: "Đã đến",     color: "indigo" },
-  4: { label: "Hoàn thành", color: "green"  },
-  5: { label: "Từ chối",    color: "red"    },
-};
-
-const JOB_STATUS: Record<number, string> = {
-  2: "Chờ phân công",
-  3: "Thất bại",
-  4: "Đã phân công",
-  5: "Hoàn thành",
-  7: "Đã huỷ",
-};
 
 // ── GET /api/psc-tinh?psc=D021 — 3PL options ─────────────────────────────────
 // GET /api/psc-tinh?psc=D021&mode=orders — today's orders for this PSC
@@ -49,8 +23,7 @@ export async function GET(req: NextRequest) {
   if (mode === "orders") {
     try {
       const headers = getHeaders(env);
-      const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
-      const today = vnNow.toISOString().split("T")[0];
+      const today = vnDate();
       const prefix = `BRA - ${psc} - Mẫu`;
 
       const [jobsRes, tplEntries] = await Promise.all([
@@ -134,8 +107,7 @@ export async function POST(req: NextRequest) {
     const headers = getHeaders(env);
 
     // Count today's non-cancelled jobs from this PSC for reference_number
-    const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
-    const today = vnNow.toISOString().split("T")[0];
+    const today = vnDate();
     const prefix = `BRA - ${psc_code} - Mẫu`;
 
     const countRes = await fetch(

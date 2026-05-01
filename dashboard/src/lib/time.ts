@@ -1,5 +1,10 @@
 const TZ = "Asia/Ho_Chi_Minh";
 
+/** Current moment as a plain Date (identical to `new Date()`; use with vnDate/vnTimestamp/vnHoursMinutes). */
+export function vnNow(): Date {
+  return new Date();
+}
+
 /** "YYYY-MM-DD" for the given Date (default: now) in Saigon time. */
 export function vnDate(d: Date = new Date()): string {
   return new Intl.DateTimeFormat("sv-SE", { timeZone: TZ }).format(d).slice(0, 10);

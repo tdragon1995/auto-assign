@@ -1,5 +1,5 @@
 import type { Config, Driver, Job, LogEntry, LogLevel, Mapping } from "./types";
-import { getDrivers, getUnassignedJobs, assignJob, getJobDetails, getCustomerById, updateJobStops, optimizeDriverRoute, getFleetwebCookie, type Env } from "./cartrack";
+import { getDrivers, getUnassignedJobs, assignJob, getJobDetails, getCustomerById, updateJobStops, optimizeDriverRoute, getFleetwebCookie, JSONRPC_URL, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import {
@@ -10,9 +10,9 @@ import {
   vnDayWindow,
   parseVnTimestamp,
 } from "./time";
-
-const JSONRPC_URL = "https://fleetweb-vn.cartrack.com/jsonrpc/index.php";
-const GOONG_API   = "https://rsapi.goong.io/v2/distancematrix";
+import { haversineKm, goongDistanceKm } from "./distance";
+import { isCompletedOrRejectedStop } from "./job-filters";
+import { GPS_FRESH_MS, selectReferenceStop, computeStopStats, rankingComparator, type RefStop, type RefLabel } from "./smart-rank";
 
 const REST_BASE = "https://fleetapi-vn.cartrack.com/rest/delivery";
 
@@ -66,7 +66,7 @@ async function buildActiveRouteMap(vnDate: string, auth: string): Promise<Map<st
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const dropoff = stops.find((s: any) => s.stop_type_id === 2);
     if (!pickup?.customer_id || !dropoff?.customer_id) continue;
-    if (pickup.stop_status_id === 4 || pickup.stop_status_id === 5) continue;
+    if (isCompletedOrRejectedStop(pickup.stop_status_id ?? 0)) continue;
 
     // If pickup window starts >1h from now, don't block — allow a new immediate request
     // time_from is time-only e.g. "08:30:00+07:00"
@@ -107,38 +107,7 @@ async function rejectJobAsDuplicate(jobId: number, auth: string, cookie: string)
 
 // ── Smart-assign helpers ───────────────────────────────────────────────────
 
-function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 6371;
-  const toRad = (d: number) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.asin(Math.sqrt(a));
-}
-
-async function goongDistanceKm(
-  fromLat: number, fromLon: number, toLat: number, toLon: number
-): Promise<number | null> {
-  const apiKey = process.env.GOONG_API_KEY ?? "";
-  if (!apiKey) return null;
-  try {
-    const url = `${GOONG_API}?origins=${fromLat},${fromLon}&destinations=${toLat},${toLon}&vehicle=bike&api_key=${apiKey}`;
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const data = await res.json();
-    const el = data.rows?.[0]?.elements?.[0];
-    if (!el || el.status !== "OK") return null;
-    return Math.round(el.distance.value / 100) / 10;
-  } catch {
-    return null;
-  }
-}
-
-type RefStop = { lat: number; lon: number; customerName: string | null };
-type RefLabel = "Arrived" | "En Route" | "Next Stop" | "First Stop" | "Start Location";
 type DriverRouteInfo = { ref: RefStop | null; label: RefLabel | null; workload: number; lastCompletedTs: string | null; jobsDone: number };
-
-const GPS_FRESH_MS = 15 * 60 * 1000;
 
 async function fetchSmartRouteData(
   dateVn: string, auth: string, cookie: string
@@ -163,45 +132,15 @@ async function fetchSmartRouteData(
     for (const route of routes) {
       const driverId = route.routeId.replace(/^driver_/, "");
       const stops = route.orderedStops ?? [];
-      // Reference stop logic mirrors smart-assign: Arrived > En Route > Next pending after last completed > First pending (all pending)
-      const validStops = stops.filter((s) => s.latitude && s.longitude);
-      const arrivedStop = validStops.find((s) => s.stopStatusId === 3) ?? null;
-      const enRouteStop = validStops.find((s) => s.stopStatusId === 2) ?? null;
-
-      let ref: RefStop | null = null;
-      let label: RefLabel | null = null;
-      const toLoc = (s: { latitude: number; longitude: number; customerName?: string }): RefStop =>
-        ({ lat: s.latitude, lon: s.longitude, customerName: s.customerName ?? null });
-
-      if (arrivedStop) {
-        ref = toLoc(arrivedStop); label = "Arrived";
-      } else if (enRouteStop) {
-        ref = toLoc(enRouteStop); label = "En Route";
-      } else if (validStops.length > 0) {
-        let lastCompletedIdx = -1;
-        for (let i = validStops.length - 1; i >= 0; i--) {
-          if (validStops[i].stopStatusId === 4) { lastCompletedIdx = i; break; }
-        }
-        if (lastCompletedIdx === -1) {
-          if (validStops.every((s) => s.stopStatusId === 1)) {
-            ref = toLoc(validStops[0]); label = "First Stop";
-          }
-        } else {
-          const nextPending = validStops.slice(lastCompletedIdx + 1).find((s) => s.stopStatusId === 1);
-          if (nextPending) { ref = toLoc(nextPending); label = "Next Stop"; }
-        }
-      }
-
-      let lastCompletedTs: string | null = null;
-      let jobsDone = 0;
-      for (const stop of stops) {
-        if (stop.stopStatusId !== 4) continue;
-        jobsDone++;
-        if (stop.activityCompletedTs && (!lastCompletedTs || stop.activityCompletedTs > lastCompletedTs)) {
-          lastCompletedTs = stop.activityCompletedTs;
-        }
-      }
-      result[driverId] = { ref, label, workload: stops.length, lastCompletedTs, jobsDone };
+      const refStop = selectReferenceStop(stops);
+      const stats = computeStopStats(stops);
+      result[driverId] = {
+        ref:  refStop ? { lat: refStop.lat, lon: refStop.lon, customerName: refStop.customerName } : null,
+        label: refStop?.label ?? null,
+        workload: stops.length,
+        lastCompletedTs: stats.lastCompletedTs,
+        jobsDone: stats.done,
+      };
     }
     return result;
   } catch {
@@ -622,15 +561,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
             return { d, sortDist, workload, lastCompletedTs, jobsDone, name, distLabel };
           })
         );
-        // Tiebreakers: distance asc → lastCompletedTs asc (null = most idle) → jobsDone asc → name asc
-        withGoong.sort((a, b) => {
-          if (a.sortDist !== b.sortDist) return a.sortDist - b.sortDist;
-          const aTs = a.lastCompletedTs ?? "";
-          const bTs = b.lastCompletedTs ?? "";
-          if (aTs !== bTs) return aTs.localeCompare(bTs);
-          if (a.jobsDone !== b.jobsDone) return a.jobsDone - b.jobsDone;
-          return a.name.localeCompare(b.name);
-        });
+        withGoong.sort(rankingComparator);
 
         const top        = withGoong[0];
         const driverName = `${top.d.first_name} ${top.d.last_name}`.trim();

@@ -1,19 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadPscRoutes } from "@/lib/psc-config";
-import { assignJob, type Env } from "@/lib/cartrack";
+import { assignJob, BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
+import { vnDate, vnHoursMinutes } from "@/lib/time";
 
-const BASE_URL = "https://fleetapi-vn.cartrack.com/rest/delivery";
 const CACHE_TTL_MS = 5 * 60 * 1000;
-
-function getHeaders(env: Env = "prod"): Record<string, string> {
-  const suffix = env === "uat" ? "_UAT" : "";
-  const auth = process.env[`CARTRACK_AUTH${suffix}`] ?? "";
-  const cookie = process.env[`CARTRACK_COOKIE${suffix}`] ?? "";
-  if (!auth) throw new Error(`CARTRACK_AUTH${suffix} not set`);
-  const headers: Record<string, string> = { Authorization: auth, "Content-Type": "application/json" };
-  if (cookie) headers["Cookie"] = cookie;
-  return headers;
-}
 
 // ── Location cache (customer_id → address) ─────────────────────────────────
 
@@ -77,8 +67,7 @@ export async function GET(req: NextRequest) {
     try {
       const headers = getHeaders(env);
       // Cartrack filters use GMT+7 (VN time) — pass VN date strings directly
-      const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
-      const today = vnNow.toISOString().split("T")[0];
+      const today = vnDate();
 
       const res = await fetch(
         `${BASE_URL}/jobs?filter[driver_id]=${driverId}&filter[create_ts_from]=${today} 00:00:00&filter[create_ts_to]=${today} 23:59:59&limit=100`,

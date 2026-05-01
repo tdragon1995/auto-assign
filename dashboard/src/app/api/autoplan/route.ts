@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadConfigFromSheets } from "@/lib/config";
-import { getUnassignedJobs, getDriverJobs, getFleetwebCookie, type Env } from "@/lib/cartrack";
+import { getUnassignedJobs, getDriverJobs, getFleetwebCookie, JSONRPC_URL, type Env } from "@/lib/cartrack";
 import { isDriverOnShift, getCustomerIdFromJob, isJobRecent, jobHasNotes, autoAssignCycle } from "@/lib/assign";
 import { vnDate, vnTimestamp, vnDayWindow } from "@/lib/time";
 import type { LogEntry, LogLevel } from "@/lib/types";
-
-const JSONRPC_URL = "https://fleetweb-vn.cartrack.com/jsonrpc/index.php";
 
 function makeLog(msg: string, level: LogLevel = "INFO"): LogEntry {
   return { ts: vnTimestamp(), level, msg };

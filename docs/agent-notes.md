@@ -95,9 +95,16 @@ Phase 1 uses haversine to pre-filter to the top-N candidates. Phase 2 re-ranks w
 
 ---
 
-## getHeaders Duplication
+## Shared Libraries — Where to Put New Code
 
-`cartrack.ts` has a private `getHeaders(env)` helper. The same `Authorization`/`Cookie` header construction is re-implemented in at least 8 route files (`audit`, `cham-cong`, `distance-checking`, `drivers`, `jobs`, `location-jobs`, `psc-tinh`, `sales/*`). If auth logic changes, you must update all of them.
+`lib/cartrack.ts` exports `BASE_URL`, `JSONRPC_URL`, and `getHeaders` — all route files should import from here instead of redefining locally. Similarly:
+
+| New code | Goes in |
+|---|---|
+| Distance math | `lib/distance.ts` (`haversineKm`, `goongDistanceKm`, `goongMatrix`) |
+| Stop/job status predicates | `lib/job-filters.ts` (`isActiveStop`, `isStopStarted`, `STOP_STATUS`, `JOB_STATUS`) |
+| Smart-rank logic | `lib/smart-rank.ts` (`selectReferenceStop`, `computeStopStats`, `rankingComparator`) |
+| VN time helpers | `lib/time.ts` (`vnDate`, `vnHoursMinutes`, `vnTimestamp`) — never use `Date.now() + 7*60*60*1000` |
 
 ---
 
@@ -144,16 +151,16 @@ POST /api/psc-assign
 
 ---
 
-## Sustainability Improvements (not yet implemented)
+## Sustainability Improvements
 
-Ranked by ROI:
+Items marked ✅ are complete; remaining items are ordered by ROI.
 
-1. **Extract shared Cartrack client** — `getHeaders` is duplicated in 8+ files; extract to `lib/cartrack-client.ts`
-2. **`lib/distance.ts`** — haversine + Goong re-rank duplicated in `assign.ts` and `smart-assign/route.ts`
-3. **`vnNow()` / `vnToday()` helpers** — `Date.now()+7h` pattern and `toLocaleString('sv-SE')` used inconsistently across files
-4. **Fix auth shadowing** — `assign.ts:419` and `autoplan/route.ts:~78` shadow the env-aware auth variable
-5. **`lib/job-filters.ts`** — age filter, skip-note guard, and duplicate key builder repeated in multiple places
-6. **Consolidate smart-rank logic** — single `rankDrivers()` in `lib/distance.ts` used by both API routes
-7. **Type Cartrack responses** — `any` casts on REST responses make refactoring risky
-8. **Document Labcenter** — add `customers` endpoint and `LABCENTER_*` vars to CLAUDE.md and `.env.example`
-9. **Label taxonomy doc** — `PSC_TINH_LABEL` and other job labels should be listed in one place
+- ✅ **Extract shared Cartrack client** — `BASE_URL`, `JSONRPC_URL`, `getHeaders` exported from `lib/cartrack.ts`
+- ✅ **`lib/distance.ts`** — `haversineKm`, `goongDistanceKm`, `goongMatrix` shared by all callers
+- ✅ **VN time helpers** — `Date.now()+7h` pattern removed; use `vnDate()`/`vnHoursMinutes()` from `lib/time.ts`
+- ✅ **`lib/job-filters.ts`** — `STOP_STATUS`, `JOB_STATUS`, `isActiveStop`, `isStopStarted`, `isCompletedOrRejectedStop`
+- ✅ **`lib/smart-rank.ts`** — `selectReferenceStop`, `computeStopStats`, `rankingComparator` shared by `assign.ts` and `smart-assign/route.ts`
+- ✅ **Type Cartrack responses** — `Job` and `Stop` in `lib/types.ts` now include activity timestamps, labels, delivery_driver_id, etc.
+- ✅ **Document Labcenter** — `LABCENTER_EMAIL`/`LABCENTER_PASSWORD` in CLAUDE.md and `.env.example`; all API routes documented
+- **Fix auth shadowing** — `assign.ts` inner `buildActiveRouteMap` shadows the env-aware auth with `process.env.CARTRACK_AUTH` directly; smart-assign always uses prod fleetweb credentials regardless of `?env=uat`
+- **Label taxonomy** — `PSC_TINH_LABEL`, `"🛵 Vận chuyển mẫu PSC"`, `"🛵 Vận chuyển mẫu B2B"`, `"audit_weekly"`, `"check_in"`, `"check_out"` are scattered inline; consolidate in `lib/job-filters.ts`

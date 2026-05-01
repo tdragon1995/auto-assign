@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { assignJob, type Env } from "@/lib/cartrack";
+import { assignJob, BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { loadPscRoutes } from "@/lib/psc-config";
+import { vnDate, vnHoursMinutes } from "@/lib/time";
 
-const BASE_URL = "https://fleetapi-vn.cartrack.com/rest/delivery";
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
@@ -59,16 +59,6 @@ const AUDIT_ITEMS = [
   },
 ];
 
-function getHeaders(env: Env = "prod"): Record<string, string> {
-  const suffix = env === "uat" ? "_UAT" : "";
-  const auth = process.env[`CARTRACK_AUTH${suffix}`] ?? "";
-  const cookie = process.env[`CARTRACK_COOKIE${suffix}`] ?? "";
-  if (!auth) throw new Error(`CARTRACK_AUTH${suffix} not set`);
-  const headers: Record<string, string> = { Authorization: auth, "Content-Type": "application/json" };
-  if (cookie) headers["Cookie"] = cookie;
-  return headers;
-}
-
 // ── Location cache ─────────────────────────────────────────────────────────
 
 interface LocationEntry {
@@ -120,10 +110,10 @@ async function fetchLocations(env: Env): Promise<LocationEntry[]> {
 // driver_code = last segment after " - " in first_name (e.g. "F - C - DC100842" → "DC100842")
 // last_name_no_spaces = last_name with spaces removed (Vietnamese chars preserved)
 
-function buildReferenceNumber(vnNow: Date, firstName: string, lastName: string): string {
-  const yy = String(vnNow.getUTCFullYear()).slice(-2);
-  const mon = MONTHS[vnNow.getUTCMonth()];
-  const dd = String(vnNow.getUTCDate()).padStart(2, "0");
+function buildReferenceNumber(dateVn: string, firstName: string, lastName: string): string {
+  const [yyyy, mo, dd] = dateVn.split("-");
+  const yy = yyyy.slice(-2);
+  const mon = MONTHS[parseInt(mo) - 1];
   const parts = firstName.split(" - ");
   const driverCode = parts[parts.length - 1].trim();
   const lastNameNoSpaces = lastName.replace(/\s+/g, "");
@@ -139,8 +129,7 @@ export async function GET(req: NextRequest) {
   if (driverId) {
     try {
       const headers = getHeaders(env);
-      const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
-      const today = vnNow.toISOString().split("T")[0];
+      const today = vnDate();
 
       const res = await fetch(
         `${BASE_URL}/jobs?filter[driver_id]=${driverId}&filter[create_ts_from]=${today} 00:00:00&filter[create_ts_to]=${today} 23:59:59&limit=100`,
@@ -189,8 +178,7 @@ export async function POST(req: NextRequest) {
     }
 
     const headers = getHeaders(env);
-    const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
-    const today = vnNow.toISOString().split("T")[0];
+    const today = vnDate();
 
     // Duplicate check: block if driver already has an audit job today
     const checkRes = await fetch(
@@ -215,7 +203,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const refNumber = buildReferenceNumber(vnNow, driver_first_name ?? "", driver_last_name ?? "");
+    const refNumber = buildReferenceNumber(today, driver_first_name ?? "", driver_last_name ?? "");
 
     const jobPayload = {
       job_type_id: 3,

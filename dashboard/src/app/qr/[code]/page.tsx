@@ -74,7 +74,7 @@ function driverName(job: Job): string {
 }
 
 function todayVN(): string {
-  return new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().split("T")[0];
+  return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Ho_Chi_Minh" }).format(new Date()).slice(0, 10);
 }
 
 function TodoItem({ todo }: { todo: Stop["todos"] extends (infer T)[] | undefined ? T : never }) {

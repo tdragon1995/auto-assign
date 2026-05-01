@@ -39,8 +39,8 @@ const COLOR_CLASS: Record<string, string> = {
 };
 
 function buildTimeSlots(): string[] {
-  const now = new Date(Date.now() + 7 * 60 * 60 * 1000);
-  const currentMins = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const vnParts = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Ho_Chi_Minh", hour: "numeric", minute: "numeric", hour12: false }).formatToParts(new Date());
+  const currentMins = parseInt(vnParts.find(p => p.type === "hour")?.value ?? "0") * 60 + parseInt(vnParts.find(p => p.type === "minute")?.value ?? "0");
   const slots: string[] = [];
   for (let m = 0; m < 24 * 60; m += 5) {
     if (m <= currentMins) continue;

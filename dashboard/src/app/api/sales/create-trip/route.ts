@@ -1,29 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { type Env } from "@/lib/cartrack";
+import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { loadPscRoutes } from "@/lib/psc-config";
+import { haversineKm } from "@/lib/distance";
+import { vnDate, vnHoursMinutes } from "@/lib/time";
 
 export const runtime = "edge";
 export const preferredRegion = "sin1";
-
-const BASE_URL = "https://fleetapi-vn.cartrack.com/rest/delivery";
-
-function getHeaders(env: Env = "prod"): Record<string, string> {
-  const suffix = env === "uat" ? "_UAT" : "";
-  const auth = process.env[`CARTRACK_AUTH${suffix}`] ?? "";
-  if (!auth) throw new Error(`CARTRACK_AUTH${suffix} not set`);
-  return { Authorization: auth, "Content-Type": "application/json", Accept: "application/json" };
-}
-
-function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 6371;
-  const toRad = (d: number) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.asin(Math.sqrt(a));
-}
 
 export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
@@ -63,12 +45,10 @@ export async function POST(req: NextRequest) {
     }, { psc: pscs[0], dist: haversineKm(lat, lon, pscs[0].lat, pscs[0].lon) });
 
     // Reference: DDMMYYYY-hh:mm-{ma_kh}
-    const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
-    const dd   = String(vnNow.getUTCDate()).padStart(2, "0");
-    const mo   = String(vnNow.getUTCMonth() + 1).padStart(2, "0");
-    const yyyy = vnNow.getUTCFullYear();
-    const hh   = String(vnNow.getUTCHours()).padStart(2, "0");
-    const mm   = String(vnNow.getUTCMinutes()).padStart(2, "0");
+    const [yyyy, mo, dd] = vnDate().split("-");
+    const { hours, minutes } = vnHoursMinutes();
+    const hh = String(hours).padStart(2, "0");
+    const mm = String(minutes).padStart(2, "0");
     const refNumber = `${dd}${mo}${yyyy}-${hh}:${mm}-${ma_kh}`;
 
     const jobPayload = {

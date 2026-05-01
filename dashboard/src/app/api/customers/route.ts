@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { type Env } from "@/lib/cartrack";
+import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { loadPscRoutes } from "@/lib/psc-config";
+import { haversineKm } from "@/lib/distance";
 
 export const runtime = "edge";
 export const preferredRegion = "sin1";
-
-const BASE_URL = "https://fleetapi-vn.cartrack.com/rest/delivery";
 const COUNTRY_ID = 235;
 const DEFAULT_CONTACT_CODE = "84";
 const LABCENTER_URL = "https://api.labcenter.vn/spc-delivery/api/locations/update-pick-drop-location";
@@ -42,15 +41,6 @@ async function getLabcenterToken(): Promise<string | null> {
   return token;
 }
 
-function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 6371;
-  const toRad = (d: number) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.asin(Math.sqrt(a));
-}
-
 async function registerLabcenterPickDrop(pickUuid: string, lat: number, lon: number): Promise<{ ok: boolean; drop_id?: string; error?: string }> {
   const token = await getLabcenterToken();
   if (!token) return { ok: false, error: "Labcenter login failed (check LABCENTER_EMAIL/LABCENTER_PASSWORD)" };
@@ -80,16 +70,6 @@ async function registerLabcenterPickDrop(pickUuid: string, lat: number, lon: num
     return { ok: false, drop_id: nearest.uuid, error: `HTTP ${res.status}: ${text.slice(0, 200)}` };
   }
   return { ok: true, drop_id: nearest.uuid };
-}
-
-function getHeaders(env: Env = "prod"): Record<string, string> {
-  const suffix = env === "uat" ? "_UAT" : "";
-  const auth = process.env[`CARTRACK_AUTH${suffix}`] ?? "";
-  const cookie = process.env[`CARTRACK_COOKIE${suffix}`] ?? "";
-  if (!auth) throw new Error(`CARTRACK_AUTH${suffix} not set`);
-  const headers: Record<string, string> = { Authorization: auth, "Content-Type": "application/json", Accept: "application/json" };
-  if (cookie) headers["Cookie"] = cookie;
-  return headers;
 }
 
 // ── GET /api/customers?name=... — check duplicate by exact customer_name ─────

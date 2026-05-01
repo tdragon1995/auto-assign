@@ -1,56 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDrivers, getUnassignedJobs, getFleetwebCookie, getCustomerById, type Env } from "@/lib/cartrack";
+import { getDrivers, getUnassignedJobs, getFleetwebCookie, getCustomerById, JSONRPC_URL, type Env } from "@/lib/cartrack";
 import { vnDate, vnDayWindow } from "@/lib/time";
+import { haversineKm, goongMatrix } from "@/lib/distance";
+import { GPS_FRESH_MS, selectReferenceStop, computeStopStats, rankingComparator, type RefLabel } from "@/lib/smart-rank";
 
-const JSONRPC_URL = "https://fleetweb-vn.cartrack.com/jsonrpc/index.php";
 const TOP_N        = 3;
 const PRE_FILTER_N = 10;
-const GOONG_API    = "https://rsapi.goong.io/v2/distancematrix";
-
-// ── Haversine (pre-filter only) ────────────────────────────────────────────
-
-function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 6371;
-  const toRad = (d: number) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.asin(Math.sqrt(a));
-}
-
-// ── Goong Distance Matrix v2 ───────────────────────────────────────────────
-
-async function goongMatrix(
-  originLat: number,
-  originLon: number,
-  destinations: { lat: number; lon: number }[]
-): Promise<({ distance_km: number; eta_mins: number } | null)[]> {
-  const apiKey = process.env.GOONG_API_KEY ?? "";
-  if (!apiKey || destinations.length === 0) return destinations.map(() => null);
-
-  const destStr = destinations.map((d) => `${d.lat},${d.lon}`).join("|");
-  const url = `${GOONG_API}?origins=${originLat},${originLon}&destinations=${encodeURIComponent(destStr)}&vehicle=bike&api_key=${apiKey}`;
-
-  try {
-    const res = await fetch(url);
-    if (!res.ok) return destinations.map(() => null);
-    const data = await res.json();
-    const elements: { status: string; distance: { value: number }; duration: { value: number } }[] =
-      data.rows?.[0]?.elements ?? [];
-    return destinations.map((_, i) => {
-      const el = elements[i];
-      if (!el || el.status !== "OK") return null;
-      return {
-        distance_km: Math.round(el.distance.value / 100) / 10,
-        eta_mins: Math.round(el.duration.value / 60),
-      };
-    });
-  } catch {
-    return destinations.map(() => null);
-  }
-}
 
 // ── Driver route data (one call for all drivers) ───────────────────────────
 
@@ -60,16 +15,13 @@ interface DriverJobStats {
   done: number;
 }
 
-export type DetourLabel = "Arrived" | "En Route" | "Next Stop" | "First Stop" | "Start Location";
-
 interface DriverRouteData {
   stats: DriverJobStats;
-  referenceStop: { lat: number; lon: number; label: DetourLabel; customerName: string | null } | null;
+  referenceStop: { lat: number; lon: number; label: RefLabel; customerName: string | null } | null;
   lastCompletedTs: string | null;
 }
 
 const ACTIVE_STOP_STATUSES = new Set([1, 2, 3]);
-const GPS_FRESH_MS = 15 * 60 * 1000;
 
 async function fetchAllDriverRouteData(
   dateVn: string,
@@ -117,49 +69,8 @@ async function fetchAllDriverRouteData(
         if ([...statuses].some((s) => ACTIVE_STOP_STATUSES.has(s))) active++;
       }
 
-      // Reference stop logic:
-      //   Arrived (3) → "Arrived"
-      //   En Route (2) → "En Route"
-      //   Completed (4) + pending (1) after it → next pending, "Next Stop"
-      //   All pending (1) → first stop, "First Stop" (may be overridden to null later if GPS is fresh)
-      //   All completed / empty → null (falls back to GPS)
-      const validStops = stops.filter((s) => s.latitude && s.longitude);
-      const arrivedStop = validStops.find((s) => s.stopStatusId === 3) ?? null;
-      const enRouteStop = validStops.find((s) => s.stopStatusId === 2) ?? null;
-
-      let referenceStop: DriverRouteData["referenceStop"] = null;
-      if (arrivedStop) {
-        referenceStop = { lat: arrivedStop.latitude, lon: arrivedStop.longitude, label: "Arrived", customerName: arrivedStop.customerName ?? null };
-      } else if (enRouteStop) {
-        referenceStop = { lat: enRouteStop.latitude, lon: enRouteStop.longitude, label: "En Route", customerName: enRouteStop.customerName ?? null };
-      } else if (validStops.length > 0) {
-        let lastCompletedIdx = -1;
-        for (let i = validStops.length - 1; i >= 0; i--) {
-          if (validStops[i].stopStatusId === 4) { lastCompletedIdx = i; break; }
-        }
-        if (lastCompletedIdx === -1) {
-          // No completed, no arrived/en-route → all pending
-          const allPending = validStops.every((s) => s.stopStatusId === 1);
-          if (allPending) {
-            const first = validStops[0];
-            referenceStop = { lat: first.latitude, lon: first.longitude, label: "First Stop", customerName: first.customerName ?? null };
-          }
-        } else {
-          const nextPending = validStops.slice(lastCompletedIdx + 1).find((s) => s.stopStatusId === 1);
-          if (nextPending) {
-            referenceStop = { lat: nextPending.latitude, lon: nextPending.longitude, label: "Next Stop", customerName: nextPending.customerName ?? null };
-          }
-        }
-      }
-
-      // Latest completion timestamp across all status=4 stops
-      let lastCompletedTs: string | null = null;
-      for (const stop of stops) {
-        if (stop.stopStatusId !== 4 || !stop.activityCompletedTs) continue;
-        if (!lastCompletedTs || stop.activityCompletedTs > lastCompletedTs) {
-          lastCompletedTs = stop.activityCompletedTs;
-        }
-      }
+      const referenceStop = selectReferenceStop(stops);
+      const { lastCompletedTs } = computeStopStats(stops);
 
       result[driverId] = { stats: { total, active, done: total - active }, referenceStop, lastCompletedTs };
     }
