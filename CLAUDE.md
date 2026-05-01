@@ -43,7 +43,7 @@ ROUTE_OPTIMIZE_PILOT=            # Comma-separated driver UUIDs for route optimi
 
 2. **Dashboard UI** (`src/components/dashboard.tsx`) polls `POST /api/assign` every 30 seconds when running. Two modes:
    - **Smart mode**: calls `POST /api/assign` which handles all jobs
-   - **Auto-Plan mode**: calls `POST /api/autoplan` (Cartrack's timeline planner) + `POST /api/assign?skipSmart=1` for fixed-driver jobs in parallel
+   - **Auto-Plan mode**: calls `POST /api/autoplan` which runs Cartrack's timeline planner for smart drivers then fixed-driver assignment in the same request
 
 3. **Assign cycle** (`src/lib/assign.ts → autoAssignCycle`):
    - Fetches unassigned jobs (status 2) from Cartrack REST API
@@ -65,7 +65,7 @@ ROUTE_OPTIMIZE_PILOT=            # Comma-separated driver UUIDs for route optimi
 | Route | Purpose |
 |---|---|
 | `POST /api/assign` | Main assign cycle; `?env=prod\|uat`, `?skipSmart=1` |
-| `POST /api/autoplan` | Cartrack timeline auto-planner for smart drivers |
+| `POST /api/autoplan` | Cartrack timeline auto-planner for smart drivers + fixed-driver assignment |
 | `GET /api/config` | Returns mapping/PSC route counts from sheets |
 | `GET /api/drivers` | Proxy to Cartrack drivers list |
 | `GET /api/jobs` | Proxy to Cartrack unassigned jobs |
@@ -101,11 +101,9 @@ These are the things most likely to burn a future agent working on this codebase
 
 3. **`loadConfigFromSheets` is intentionally uncached.** The assign cycle runs every 30 s and must see fresh sheet edits immediately. Do not add a cache without also wiring a refresh path.
 
-4. **`CARTRACK_WEB_PASS` is missing from `.env.example`** but is required for JSON-RPC calls (`getFleetwebCookie`). Without it, `autoplan`, route optimisation, and duplicate-rejection all fail silently at login.
+4. **`CARTRACK_WEB_PASS` is required for JSON-RPC calls** (`getFleetwebCookie`). Without it, `autoplan`, route optimisation, and duplicate-rejection all fail silently at login.
 
-5. **Duplicate detection silently exempts PSC tỉnh jobs.** Jobs with the label `🛵 Vận chuyển mẫu tỉnh` are skipped in the duplicate-blocking path. This is intentional but easy to miss when debugging "why wasn't this duplicate caught?"
-
-6. **Auto-Plan mode splits ownership.** In Auto-Plan mode the dashboard fires `/api/autoplan` (Cartrack's own planner, for smart drivers) AND `/api/assign?skipSmart=1` (local engine, for fixed-driver rows) in parallel. Tracing a missed assignment requires checking both paths.
+5. **Duplicate detection exempts PSC tỉnh jobs by design.** The exempt label list lives in `DUPLICATE_EXEMPT_LABELS` at the top of `assign.ts`. The label string itself is `PSC_TINH_LABEL` exported from `psc-config.ts` — change it in one place.
 
 See `docs/business-rules.md` for deeper detail and `docs/cartrack-api.md` for API reference.
 
@@ -115,4 +113,4 @@ Deployment is handled automatically by Vercel on push to `master`. There are no 
 
 ## Google Sheet
 
-Sheet ID is hardcoded in `src/lib/config.ts` and `src/lib/psc-config.ts`. The mapping sheet (GID 0) has columns: `customer_id`, `driver_id`, `smart_driver_id` (comma-separated UUIDs), `first_name_last_name`, `shift_start`, `shift_end`, `bot_token`, `chat_id`, `alt_drop_off_id`.
+Sheet ID and GIDs are hardcoded in `src/lib/sheets.ts` (`SHEET_GID` enum). Both `config.ts` and `psc-config.ts` import from there. The mapping sheet (GID 0) has columns: `customer_id`, `driver_id`, `smart_driver_id` (comma-separated UUIDs), `first_name_last_name`, `shift_start`, `shift_end`, `bot_token`, `chat_id`, `alt_drop_off_id`.
