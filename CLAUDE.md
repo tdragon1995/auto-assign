@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a **Fleet Auto-Assign** service for Cartrack (a Vietnamese fleet management platform). It automatically assigns unassigned delivery jobs to drivers based on customer–driver mappings stored in a Google Sheet.
+This is a **Fleet Auto-Assign** service for Cartrack (a Telematics fleet management platform). It automatically assigns unassigned delivery jobs to drivers based on customer–driver mappings stored in a Google Sheet.
 
 The active codebase is `dashboard/` — a Next.js 15 (React 19, TypeScript) web app deployed to **Vercel**.
 
@@ -57,8 +57,8 @@ LABCENTER_PASSWORD=              # Labcenter API password
      - **Fixed path** (`driver_id` populated): looks up shift schedule; assigns single on-duty driver or logs clash/no-driver
 
 4. **Cartrack APIs** (`src/lib/cartrack.ts`):
-   - REST: `https://fleetapi-vn.cartrack.com/rest/delivery` — jobs, drivers, assignment
-   - JSONRPC: `https://fleetweb-vn.cartrack.com/jsonrpc/index.php` — timeline auto-plan, route optimisation, job rejection
+   - REST: `https://fleetapi-vn.cartrack.com/rest/delivery` — jobs, drivers, assignment, customers creation
+   - JSONRPC: `https://fleetweb-vn.cartrack.com/jsonrpc/index.php` — timeline, auto-plan, route optimisation, job rejection
 
 5. **PSC Routes** (`src/lib/psc-config.ts`): separate Google Sheet for PSC sample-transport jobs (provincial routes). Has a 5-minute in-memory cache; invalidated by the dashboard Refresh button.
 
