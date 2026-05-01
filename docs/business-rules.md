@@ -60,6 +60,8 @@ This means smart jobs and fixed jobs have entirely different assignment owners i
 
 ## Duplicate detection
 
+### Auto-assign (`POST /api/assign`)
+
 Before assigning any job, `buildActiveRouteMap()` fetches all assigned jobs (`status=4`) for today and builds a set of active pickup→dropoff pairs (keyed as `pickupCustomerId:dropoffCustomerId`).
 
 A new job is a **duplicate** when:
@@ -72,6 +74,23 @@ When a duplicate is detected:
 2. Reject it via `delivery_reject_job` JSON-RPC with a Vietnamese reason string.
 
 **PSC tỉnh jobs are exempt.** Jobs carrying the label `🛵 Vận chuyển mẫu tỉnh` are skipped in the duplicate-blocking path entirely.
+
+### PSC-assign (`POST /api/psc-assign`)
+
+Duplicate detection runs **before the job is created** — there is no proxy-assign/reject step.
+
+Two layers:
+
+1. **In-memory lock** (`creationLock` in `psc-assign/route.ts`): keyed on `${pickup}-${dropoff}-${today}`, TTL 15 s. Guards against race conditions when two browser tabs submit within seconds of each other. Returns 409 immediately if the lock is held.
+
+2. **Cartrack API check**: fetches both unassigned (`status=2`) and assigned (`status=4`) jobs for today, then blocks if any existing job has:
+   - A pickup stop (`stop_type_id === 1`) matching `customer_id === pickup` with an active status (`stopStatusId` in `{1 Created, 2 En Route, 3 Arrived}`), AND
+   - A dropoff stop (`stop_type_id === 2`) matching `customer_id === dropoff`.
+   - Cancelled (`status=7`) and rejected (`status=3`) jobs are excluded.
+
+   Returns 409 with a Vietnamese error message; the job is never created.
+
+Unlike auto-assign, PSC-assign has no 60-minute window guard — any active same-route job today blocks the request regardless of its scheduled time.
 
 ## PSC provincial routes
 
