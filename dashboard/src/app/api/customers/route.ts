@@ -52,6 +52,9 @@ async function registerLabcenterPickDrop(pickUuid: string, lat: number, lon: num
     if (!r.pickup || r.lat == null || r.lon == null) continue;
     if (seen.has(r.pickup)) continue;
     seen.add(r.pickup);
+    // Exclude BRA - D000 from the nearest-PSC search (depot, not a real drop-off).
+    const code = r.psc_pickup.replace(/^BRA\s*-\s*/i, "").trim().toUpperCase();
+    if (code === "D000") continue;
     const km = haversineKm(lat, lon, r.lat, r.lon);
     if (!nearest || km < nearest.km) nearest = { uuid: r.pickup, km };
   }
