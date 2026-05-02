@@ -13,6 +13,7 @@ const LATLON_PATTERNS_LATFIRST: RegExp[] = [
   /@(-?\d+\.\d+),(-?\d+\.\d+)/,                                  // /@lat,lon[,zoom]
   /!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/,                              // !3d<lat>!4d<lon> (place data)
   /[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)/,                             // ?q=lat,lon
+  /[?&]query=(-?\d+\.\d+),(-?\d+\.\d+)/,                         // ?api=1&query=lat,lon
   /[?&]ll=(-?\d+\.\d+),(-?\d+\.\d+)/,                            // ?ll=lat,lon
   /[?&]center=(-?\d+\.\d+),(-?\d+\.\d+)/,                        // ?center=lat,lon
   /[?&]destination=(-?\d+\.\d+),(-?\d+\.\d+)/,                   // ?destination=lat,lon
