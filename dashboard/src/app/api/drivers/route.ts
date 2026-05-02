@@ -5,9 +5,7 @@ export async function GET(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
   try {
     const drivers = await getDrivers(env);
-    const response = NextResponse.json({ data: drivers });
-    response.headers.set("Cache-Control", "no-store, must-revalidate");
-    return response;
+    return NextResponse.json({ data: drivers });
   } catch (e) {
     return NextResponse.json(
       { data: [], error: String(e) },
