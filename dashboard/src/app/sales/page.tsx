@@ -511,6 +511,7 @@ export default function SalesPage() {
               </button>
             </div>
             {linkError && <p className="text-xs text-red-600 mt-1">{linkError}</p>}
+            <p className="text-xs text-slate-500 mt-1">Để trống nếu đã chọn được địa chỉ đúng!</p>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
