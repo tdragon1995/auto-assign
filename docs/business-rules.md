@@ -8,21 +8,35 @@ Entry point: `autoAssignCycle()` in `dashboard/src/lib/assign.ts`
 Trigger: `POST /api/assign`, called by the dashboard every 30 s.
 
 ```
-fetch unassigned jobs (status 2)
-  → drop jobs older than job_max_age_minutes (default 60)
+fetch in parallel:
+  – status=2 unassigned         (ASAP + scheduled, no server time filter)
+  – status=4 + null driver      (planned, filtered by today's scheduled_delivery_ts)
+  – jobs on CARTRACK_QUEUE_PROXY_DRIVER_ID  (already-parked scheduled/planned)
+merge by job_id (last-write-wins so parked snapshot is fresh)
+  → classifyJob: asap | scheduled | planned | parked
+  → ASAP-only: drop if create_ts older than job_max_age_minutes (default 60)
   → drop jobs with stop notes
   → run duplicate check → proxy-assign + reject duplicates
   → for each remaining job:
-      smart_driver_id populated? → smart path
-      driver_id populated?       → fixed path
-      neither?                   → skip (no mapping)
+      ASAP                          → assign now using create_ts as job time
+      scheduled / planned / parked  → if now < operational time → park on queue proxy + queued[]
+                                      else                      → assign now using operational time as job time
+      smart_driver_id populated?    → smart path
+      driver_id populated?          → fixed path
+      neither?                      → skip (no mapping)
 ```
+
+**Operational time** = `pickup.delivery_windows[0].time_to − 30 min`, computed by `getOperationalTime`. ASAP jobs have no `delivery_windows` and skip this gate entirely.
+
+**Queue proxy.** Set `CARTRACK_QUEUE_PROXY_DRIVER_ID` to a dedicated driver UUID. Scheduled and planned jobs are assigned to that driver as a parking lot until their operational time arrives, then the regular `assignJob` overwrites the proxy assignment with the real driver. The cycle returns the parked-job snapshot in `{ logs, queued }` and the dashboard renders it under the activity log.
+
+**Status=4 with null driver is a real state.** Cartrack returns recurring "planned" jobs at `job_status_id=4` with `delivery_driver_id=null` and `assigned_ts=null`. They were invisible to the old cycle and are now picked up by `getStatus4UnassignedScheduled`.
 
 ## Fixed-driver path
 
 1. Find pickup stop (`stop_type_id === 1`) → look up `customer_id` in the sheet mapping.
 2. If `alt_drop_off_id` is set on the mapping, call `PUT /jobs/{jobId}` to swap the dropoff customer **before** assignment.
-3. Derive job time from `create_ts` (treated as UTC+7).
+3. Derive job time: ASAP jobs use `create_ts`; scheduled/planned/parked jobs use `getOperationalTime` (pickup window − 30 min). Both are treated as UTC+7.
 4. Check shift window: if `shift_start`/`shift_end` are set on the mapping, skip if current time is outside the window.
 5. Assign via `PUT /jobs/assign/{driverUUID}` — always the driver UUID, never a display name.
 6. Fetch job details to get driver name, then send Zalo notification if `bot_token` + `chat_id` are set.

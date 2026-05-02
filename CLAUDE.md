@@ -49,11 +49,18 @@ LABCENTER_PASSWORD=              # Labcenter API password
    - **Auto-Plan mode**: calls `POST /api/autoplan` which runs Cartrack's timeline planner for smart drivers then fixed-driver assignment in the same request
 
 3. **Assign cycle** (`src/lib/assign.ts → autoAssignCycle`):
-   - Fetches unassigned jobs (status 2) from Cartrack REST API
-   - Filters to jobs created within `job_max_age_minutes` (default 60)
+   - Fetches three job sources in parallel:
+     - status=2 (unassigned) — covers ASAP and scheduled jobs
+     - status=4 with null `delivery_driver_id`, filtered by today's `scheduled_delivery_ts` — Cartrack "planned" jobs from recurring plans
+     - jobs currently assigned to `CARTRACK_QUEUE_PROXY_DRIVER_ID` — previously parked scheduled/planned jobs
+   - Classifies each job (`classifyJob`) as **ASAP** (no `delivery_windows`), **scheduled** (status=2 + window), **planned** (status=4 + null driver + window), or **parked** (already on the queue proxy).
    - Skips jobs with stop notes
    - Runs duplicate-detection: if an active route with the same pickup→dropoff pair exists today, proxy-assigns then JSONRPC-rejects the duplicate
-   - For each job, chooses path:
+   - Time gate per kind:
+     - ASAP → `create_ts` within `job_max_age_minutes` (default 60)
+     - Scheduled / planned / parked → `getOperationalTime` = `pickup.delivery_windows[0].time_to − 30 min`
+   - When a scheduled/planned job is not yet eligible, the cycle parks it on `CARTRACK_QUEUE_PROXY_DRIVER_ID` and surfaces it in the response's `queued` array (rendered in a dashboard panel). At eligibility time, the standard assign overwrites the proxy assignment.
+   - For each eligible job, chooses path:
      - **Smart path** (`smart_driver_id` populated): ranks candidates by GPS/start-location proximity using haversine + optional Goong road distance; assigns closest driver
      - **Fixed path** (`driver_id` populated): looks up shift schedule; assigns single on-duty driver or logs clash/no-driver
 
@@ -67,7 +74,7 @@ LABCENTER_PASSWORD=              # Labcenter API password
 
 | Route | Purpose |
 |---|---|
-| `POST /api/assign` | Main assign cycle; `?env=prod\|uat`, `?skipSmart=1` |
+| `POST /api/assign` | Main assign cycle; `?env=prod\|uat`, `?skipSmart=1`. Returns `{ logs, queued }` — `queued` is the snapshot of scheduled/planned jobs parked on the queue proxy. |
 | `POST /api/autoplan` | Cartrack timeline auto-planner for smart drivers + fixed-driver assignment |
 | `GET /api/config` | Returns mapping/PSC route counts from sheets |
 | `GET /api/drivers` | Proxy to Cartrack drivers list |
@@ -101,6 +108,7 @@ LABCENTER_PASSWORD=              # Labcenter API password
 - `Job` / `Stop` — Cartrack delivery job with stops (stop_type_id 1=pickup, 2=dropoff, 3=delivery)
 - `Driver` — Cartrack driver with GPS coords and status
 - `LogEntry` — `{ ts, level: "OK"|"INFO"|"WARN"|"ERROR", msg }`
+- `QueuedJob` — `{ job_id, customer_id, customer_name, kind: "scheduled"|"planned", eligible_at, parked_on_proxy }`; returned alongside `logs` from the assign cycle
 
 ### Timezone
 
@@ -112,13 +120,19 @@ These are the things most likely to burn a future agent working on this codebase
 
 1. **`job_status_id=4` does not mean a driver is assigned.** Cartrack can return a job with status `4 (Assigned)` while `delivery_driver_id` and `assigned_ts` are both `null`. Always check `delivery_driver_id` directly, not just status.
 
-2. **`getUnassignedJobs` has no time filter.** It only filters by `job_status_id=2`; the assign cycle then drops old jobs locally by `create_ts`. This is correct for ad-hoc jobs but wrong for scheduled/planned jobs — use `scheduled_delivery_ts` filtering for those.
+2. **`getUnassignedJobs` has no time filter.** It only filters by `job_status_id=2` and returns both ASAP and scheduled jobs. The assign cycle splits them locally: ASAP is gated by `create_ts` recency, scheduled by `getOperationalTime`. Don't add a `create_ts_from/to` filter at source — it would silently drop scheduled jobs whose plan was created earlier than today. For status=4 planned jobs, use the dedicated `getStatus4UnassignedScheduled` helper which is bounded by `scheduled_delivery_ts`.
+
+   **Asymmetry to remember:** scheduled jobs at status=2 are *not* server-bounded in time, so a job scheduled for next Tuesday lands in today's response and gets parked on the queue proxy now. This is intentional — parking is idempotent (the next cycle classifies it as `parked` and skips re-assigning) — but it does mean the queue panel and the proxy driver's job list grow with all future-scheduled work.
 
 3. **`loadConfigFromSheets` is intentionally uncached.** The assign cycle runs every 30 s and must see fresh sheet edits immediately. Do not add a cache without also wiring a refresh path.
 
 4. **`CARTRACK_WEB_PASS` is required for JSON-RPC calls** (`getFleetwebCookie`). Without it, `autoplan`, route optimisation, and duplicate-rejection all fail silently at login.
 
 5. **Duplicate detection exempts PSC tỉnh jobs by design.** The exempt label list lives in `DUPLICATE_EXEMPT_LABELS` at the top of `assign.ts`. The label string itself is `PSC_TINH_LABEL` exported from `psc-config.ts` — change it in one place.
+
+6. **Two distinct proxy drivers.** `CARTRACK_REJECT_PROXY_DRIVER_ID` is used to land a duplicate job before JSON-RPC rejecting it. `CARTRACK_QUEUE_PROXY_DRIVER_ID` is used to **park** scheduled/planned jobs that aren't yet eligible. Don't reuse one for the other — the queue proxy's job list is read every cycle to detect already-parked jobs, so parking duplicate-rejection traffic on it would corrupt the queue.
+
+7. **`getOperationalTime` reads pickup `delivery_windows[0].time_to`.** That field is a time-of-day string like `"15:00:00+07:00"`, not a full timestamp. The helper combines it with the date portion of `scheduled_delivery_ts` (or today's VN date as fallback) and subtracts 30 minutes. If Cartrack ever returns multi-window pickups, only the first window is honoured.
 
 See `docs/business-rules.md` for deeper detail and `docs/cartrack-api.md` for API reference.
 
