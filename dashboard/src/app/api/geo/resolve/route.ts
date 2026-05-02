@@ -32,7 +32,7 @@ function looksLikePlausibleCoord(lat: number, lon: number): boolean {
     && (Math.abs(lat) > 0.001 || Math.abs(lon) > 0.001);
 }
 
-function extractLatLon(text: string): Coords | null {
+function scanText(text: string): Coords | null {
   for (const re of LATLON_PATTERNS_LATFIRST) {
     const m = text.match(re);
     if (m) {
@@ -47,6 +47,33 @@ function extractLatLon(text: string): Coords | null {
       const lon = parseFloat(m[1]);
       const lat = parseFloat(m[2]);
       if (looksLikePlausibleCoord(lat, lon)) return { lat, lon };
+    }
+  }
+  return null;
+}
+
+// Try the raw text, then a percent-decoded version (Firebase Dynamic Links and
+// some redirect bouncers embed the long URL as `%40lat%2Clon` inside JSON/href).
+// Also try unicode-escape decoded version (@ → @).
+function extractLatLon(text: string): Coords | null {
+  const direct = scanText(text);
+  if (direct) return direct;
+  try {
+    const decoded = decodeURIComponent(text.replace(/\+/g, " "));
+    if (decoded !== text) {
+      const hit = scanText(decoded);
+      if (hit) return hit;
+    }
+  } catch {
+    // malformed escapes — ignore
+  }
+  if (text.includes("\\u")) {
+    const unescaped = text.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
+      String.fromCharCode(parseInt(hex, 16))
+    );
+    if (unescaped !== text) {
+      const hit = scanText(unescaped);
+      if (hit) return hit;
     }
   }
   return null;

@@ -1,6 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+
+type Prediction = {
+  place_id: string;
+  description: string;
+  structured_formatting?: { main_text?: string; secondary_text?: string };
+};
 
 const QUAN_CU_OPTIONS: { label: string; code: string }[] = [
   { label: "Quận 1",     code: "D1"     },
@@ -118,6 +124,56 @@ export default function SalesPage() {
   const [lat, setLat] = useState("");
   const [lon, setLon] = useState("");
   const [mapLink, setMapLink] = useState("");
+  const [predictions, setPredictions] = useState<Prediction[]>([]);
+  const [showPredictions, setShowPredictions] = useState(false);
+  const [predictionsLoading, setPredictionsLoading] = useState(false);
+  const skipNextFetchRef = useRef(false);
+
+  useEffect(() => {
+    if (skipNextFetchRef.current) {
+      skipNextFetchRef.current = false;
+      return;
+    }
+    const q = diaChi.trim();
+    if (q.length < 3) {
+      setPredictions([]);
+      return;
+    }
+    const ac = new AbortController();
+    const t = setTimeout(async () => {
+      setPredictionsLoading(true);
+      try {
+        const res = await fetch(`/api/geo/autocomplete?input=${encodeURIComponent(q)}`, { signal: ac.signal });
+        const data = await res.json();
+        if (res.ok) setPredictions(data.predictions ?? []);
+      } catch {
+        // aborted or network — ignore
+      } finally {
+        setPredictionsLoading(false);
+      }
+    }, 250);
+    return () => {
+      clearTimeout(t);
+      ac.abort();
+    };
+  }, [diaChi]);
+
+  const selectPrediction = async (p: Prediction) => {
+    skipNextFetchRef.current = true;
+    setDiaChi(p.description);
+    setShowPredictions(false);
+    setPredictions([]);
+    try {
+      const res = await fetch(`/api/geo/place?place_id=${encodeURIComponent(p.place_id)}`);
+      const data = await res.json();
+      if (res.ok) {
+        setLat(String(data.latitude));
+        setLon(String(data.longitude));
+      }
+    } catch {
+      // ignore — user can still paste a maps link
+    }
+  };
   const [linkLoading, setLinkLoading] = useState(false);
   const [linkError, setLinkError] = useState("");
 
@@ -390,14 +446,39 @@ export default function SalesPage() {
             />
           </div>
 
-          <div>
+          <div className="relative">
             <label className="block text-sm font-semibold text-slate-700 mb-1.5">Địa chỉ</label>
             <textarea
               value={diaChi}
-              onChange={(e) => setDiaChi(e.target.value)}
+              onChange={(e) => { setDiaChi(e.target.value); setShowPredictions(true); }}
+              onFocus={() => setShowPredictions(true)}
+              onBlur={() => setTimeout(() => setShowPredictions(false), 150)}
               rows={2}
               className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 resize-none"
             />
+            {showPredictions && (predictionsLoading || predictions.length > 0) && (
+              <ul className="absolute z-10 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-64 overflow-y-auto">
+                {predictionsLoading && predictions.length === 0 && (
+                  <li className="px-3 py-2 text-sm text-slate-400">Đang tìm...</li>
+                )}
+                {predictions.map((p) => (
+                  <li
+                    key={p.place_id}
+                    onMouseDown={(e) => { e.preventDefault(); selectPrediction(p); }}
+                    className="px-3 py-2 text-sm hover:bg-slate-50 cursor-pointer border-b last:border-b-0 border-slate-100"
+                  >
+                    <div className="font-medium text-slate-800">
+                      {p.structured_formatting?.main_text ?? p.description}
+                    </div>
+                    {p.structured_formatting?.secondary_text && (
+                      <div className="text-xs text-slate-500 truncate">
+                        {p.structured_formatting.secondary_text}
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
 
           <div>
