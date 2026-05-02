@@ -47,19 +47,19 @@ export default function ChamCongPage() {
   const [message, setMessage] = useState("");
   const [pendingNames, setPendingNames] = useState<string[]>([]);
   const [initialLoading, setInitialLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Pre-fetched shift state
   const shiftStateRef = useRef<ShiftState | null>(null);
   const [shiftFetching, setShiftFetching] = useState(false);
 
-  // On mount: load dropdowns + pre-fetch shift state in parallel, then hide loader
-  useEffect(() => {
-    const savedId = typeof window !== "undefined" ? localStorage.getItem(LS_DRIVER_ID) : null;
+  async function loadDropdowns() {
+    try {
+      const [driversData, chamCongData] = await Promise.all([
+        fetch("/api/drivers").then((r) => r.json()),
+        fetch("/api/cham-cong").then((r) => r.json()),
+      ]);
 
-    const dropdownsPromise = Promise.all([
-      fetch("/api/drivers").then((r) => r.json()),
-      fetch("/api/cham-cong").then((r) => r.json()),
-    ]).then(([driversData, chamCongData]) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sorted = (driversData.data ?? [])
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -75,12 +75,30 @@ export default function ChamCongPage() {
         );
       setDrivers(sorted);
       setLocations(chamCongData.pscs ?? []);
-    });
+    } catch (e) {
+      console.error("Failed to load dropdowns:", e);
+    }
+  }
 
-    dropdownsPromise.finally(() => setInitialLoading(false));
+  // On mount: load dropdowns + pre-fetch shift state in parallel, then hide loader
+  useEffect(() => {
+    const savedId = typeof window !== "undefined" ? localStorage.getItem(LS_DRIVER_ID) : null;
+
+    const dropdownsPromise = loadDropdowns();
+
+    Promise.resolve(dropdownsPromise).finally(() => setInitialLoading(false));
     if (savedId) fetchShiftState(savedId);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function handleRefresh() {
+    setIsRefreshing(true);
+    try {
+      await loadDropdowns();
+    } finally {
+      setIsRefreshing(false);
+    }
+  }
 
   // Pre-fetch shift state when driver is selected
   async function fetchShiftState(id: string): Promise<ShiftState | null> {
@@ -251,9 +269,21 @@ export default function ChamCongPage() {
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200 w-full max-w-md p-6 space-y-5">
-        <div>
-          <h1 className="text-xl font-bold text-gray-900">Chấm Công</h1>
-          <p className="text-sm text-gray-500 mt-1">Chọn tài xế và địa điểm để chấm công vào / ra.</p>
+        <div className="flex items-start justify-between">
+          <div className="flex-1">
+            <h1 className="text-xl font-bold text-gray-900">Chấm Công</h1>
+            <p className="text-sm text-gray-500 mt-1">Chọn tài xế và địa điểm để chấm công vào / ra.</p>
+          </div>
+          <button
+            onClick={handleRefresh}
+            disabled={isRefreshing}
+            className="ml-2 p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-50"
+            title="Làm mới danh sách tài xế"
+          >
+            <svg className={`w-5 h-5 ${isRefreshing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          </button>
         </div>
 
         {/* Driver searchable dropdown */}

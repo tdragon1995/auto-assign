@@ -117,7 +117,9 @@ export async function GET(req: NextRequest) {
   // ── Location list ─────────────────────────────────────────────────────────
   try {
     const pscs = await fetchLocations(env);
-    return NextResponse.json({ pscs });
+    const response = NextResponse.json({ pscs });
+    response.headers.set("Cache-Control", "no-store, must-revalidate");
+    return response;
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
