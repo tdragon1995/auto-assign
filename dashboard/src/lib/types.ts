@@ -34,6 +34,12 @@ export interface Stop {
   delivery_windows?: { time_from?: string; time_to?: string }[];
 }
 
+export interface PlanRef {
+  plan_id: number;
+  // Cartrack returns more (name, rrule, target_driver_id, scheduled_time, …) — keep loose.
+  [k: string]: unknown;
+}
+
 export interface Job {
   job_id: number;
   job_status_id?: number;
@@ -45,6 +51,9 @@ export interface Job {
   assigned_ts?: string | null;
   allowed_to_start_at?: string | null;
   send_to_driver_at?: string | null;
+  is_visible?: boolean;
+  last_assigned_plan_id?: number | null;
+  plans?: PlanRef[];
   stops: Stop[];
 }
 

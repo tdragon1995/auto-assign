@@ -130,9 +130,13 @@ These are the things most likely to burn a future agent working on this codebase
 
 5. **Duplicate detection exempts PSC tỉnh jobs by design.** The exempt label list lives in `DUPLICATE_EXEMPT_LABELS` at the top of `assign.ts`. The label string itself is `PSC_TINH_LABEL` exported from `psc-config.ts` — change it in one place.
 
+   The duplicate-detection key is `customer_id:dropoff_id:time_to` (where `time_to` is the pickup `delivery_windows[0].time_to` or `""` for ASAP). Two jobs with the same trip but different windows do **not** collide. Two ASAP jobs (both empty `time_to`) still do.
+
 6. **Two distinct proxy drivers.** `CARTRACK_REJECT_PROXY_DRIVER_ID` is used to land a duplicate job before JSON-RPC rejecting it. `CARTRACK_QUEUE_PROXY_DRIVER_ID` is used to **park** scheduled/planned jobs that aren't yet eligible. Don't reuse one for the other — the queue proxy's job list is read every cycle to detect already-parked jobs, so parking duplicate-rejection traffic on it would corrupt the queue.
 
 7. **`getOperationalTime` reads pickup `delivery_windows[0].time_to`.** That field is a time-of-day string like `"15:00:00+07:00"`, not a full timestamp. The helper combines it with the date portion of `scheduled_delivery_ts` (or today's VN date as fallback) and subtracts 30 minutes. If Cartrack ever returns multi-window pickups, only the first window is honoured.
+
+8. **Cartrack plan templates carry `is_visible=false` and a non-empty `plans[]`.** Recurring plans stamp a template record (status=4, null driver, future-rolling `scheduled_delivery_ts`) and clone it into a new `job_id` (`is_visible=true`, `plans:[]`) at trigger time on the delivery day. The active code filters templates out at the top of `autoAssignCycle` — never park, assign, or reject them. The template's `last_assigned_plan_id` matches the clone's, but that's not a discriminator (both records share it). Cartrack's own planner will eventually assign the clone to its `target_driver_id`; we deliberately race it from the queue proxy so we can pick a smarter driver.
 
 See `docs/business-rules.md` for deeper detail and `docs/cartrack-api.md` for API reference.
 

@@ -32,6 +32,28 @@ merge by job_id (last-write-wins so parked snapshot is fresh)
 
 **Status=4 with null driver is a real state.** Cartrack returns recurring "planned" jobs at `job_status_id=4` with `delivery_driver_id=null` and `assigned_ts=null`. They were invisible to the old cycle and are now picked up by `getStatus4UnassignedScheduled`.
 
+### Recurring plans (template vs clone)
+
+A Cartrack recurring plan emits two distinct records over its lifetime:
+
+| Field | Template | Clone (trigger fire) |
+|---|---|---|
+| `job_id` | original (e.g. 34284325) | new (e.g. 34284556) |
+| `is_visible` | **`false`** | `true` |
+| `plans` | `[{ plan_id, rrule, target_driver_id, … }]` | `[]` |
+| `last_assigned_plan_id` | same plan_id | same plan_id (shared) |
+| `delivery_driver_id` | `null` | `null` initially → assigned later |
+| `scheduled_delivery_ts` | rolls forward to the next occurrence each trigger | the actual delivery day |
+| `delivery_windows` | the plan's window (e.g. 16:30–17:00) | identical |
+
+The cycle filters out **plan templates** (`is_visible === false && plans.length > 0`) at the top of `autoAssignCycle` — they're Cartrack-internal scheduling artefacts and must not be touched. Doing so would corrupt the recurring plan.
+
+The **clone** flows through the normal scheduled/planned path: park on the queue proxy, then reassign to a smart driver at operational time. Cartrack's own planner will assign the clone to `plans[].target_driver_id` eventually (observed: ~8 hours after creation), so we are deliberately racing Cartrack to deliver a smarter assignment first. If Cartrack wins, the clone simply isn't on the queue proxy next cycle — the queue snapshot self-heals.
+
+**Duplicate-detection key:** `customer_id:dropoff_id:time_to`. The widened key prevents two scheduled jobs at the same trip but different windows from false-colliding. ASAP jobs (no window) share an empty `time_to` slot and still collide as before.
+
+**Operational note.** Plan templates that the previous (broken) version of the engine parked on `CARTRACK_QUEUE_PROXY_DRIVER_ID` will continue to live there but will now be filtered out every cycle. Manually unassign them from the proxy in Cartrack web UI when convenient.
+
 ## Fixed-driver path
 
 1. Find pickup stop (`stop_type_id === 1`) → look up `customer_id` in the sheet mapping.

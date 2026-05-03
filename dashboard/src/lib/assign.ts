@@ -81,7 +81,8 @@ async function buildActiveRouteMap(vnDate: string, auth: string): Promise<Map<st
       }
     }
 
-    result.set(`${pickup.customer_id}:${dropoff.customer_id}`, job.job_id);
+    const tt = pickup.delivery_windows?.[0]?.time_to ?? "";
+    result.set(`${pickup.customer_id}:${dropoff.customer_id}:${tt}`, job.job_id);
   }
   return result;
 }
@@ -209,6 +210,12 @@ const ELIGIBILITY_OFFSET_MIN = 30;
 
 function getPickupStop(job: Job) {
   return (job.stops ?? []).find((s) => s.stop_type_id === 1);
+}
+
+// Pickup window's `time_to` string (e.g. "17:00:00+07:00"), or "" when the
+// pickup has no delivery_windows. Used to widen the duplicate-detection key.
+function pickupTimeTo(job: Job): string {
+  return getPickupStop(job)?.delivery_windows?.[0]?.time_to ?? "";
 }
 
 /**
@@ -372,7 +379,19 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
   for (const j of unassignedJobs) byId.set(j.job_id, j);
   for (const j of plannedJobs)    byId.set(j.job_id, j);
   for (const j of parkedJobs)     byId.set(j.job_id, j);
-  const allJobs = [...byId.values()];
+  const mergedJobs = [...byId.values()];
+
+  // Filter out Cartrack plan templates: is_visible=false AND non-empty plans[].
+  // These are internal scheduling artefacts that Cartrack clones at trigger time;
+  // touching them corrupts the recurring plan. The clone (is_visible=true,
+  // plans:[]) is the actionable instance.
+  const isPlanTemplate = (j: Job) =>
+    j.is_visible === false && (j.plans?.length ?? 0) > 0;
+  const allJobs = mergedJobs.filter((j) => !isPlanTemplate(j));
+  const skippedTemplates = mergedJobs.length - allJobs.length;
+  if (skippedTemplates > 0) {
+    log(`Skipped ${skippedTemplates} plan template(s)`);
+  }
 
   if (allJobs.length === 0) {
     log("No unassigned jobs");
@@ -509,7 +528,8 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const jobLabels: string[] = (job as any).labels ?? [];
     const isDuplicateExempt = jobLabels.some((l) => DUPLICATE_EXEMPT_LABELS.includes(l));
-    const routeKey = dropoffId && !isDuplicateExempt ? `${customerId}:${dropoffId}` : null;
+    const tt = pickupTimeTo(job);
+    const routeKey = dropoffId && !isDuplicateExempt ? `${customerId}:${dropoffId}:${tt}` : null;
     const blockingJobId = routeKey ? activeRouteMap.get(routeKey) : undefined;
     if (blockingJobId != null && blockingJobId !== jobId) {
       const proxyDriverId = process.env.CARTRACK_REJECT_PROXY_DRIVER_ID ?? "";
