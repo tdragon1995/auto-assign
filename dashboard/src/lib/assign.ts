@@ -75,8 +75,9 @@ async function buildActiveRouteMap(vnDate: string, auth: string): Promise<Map<st
       const m = timeFrom.match(/^(\d{2}):(\d{2})/);
       if (m) {
         const windowMinutes = parseInt(m[1]) * 60 + parseInt(m[2]);
-        let diff = windowMinutes - nowMinutes;
-        if (diff < 0) diff += 24 * 60; // handle overnight window
+        const diff = windowMinutes - nowMinutes;
+        // diff < 0: window already started/passed — still block (job is in-progress).
+        // diff > 60: window starts >1h from now — allow a fresh same-route request.
         if (diff > 60) continue;
       }
     }
