@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
-import { vnDate } from "@/lib/time";
+import { vnDate, vnHoursMinutes } from "@/lib/time";
 import { isActiveStop, JOB_STATUS, STOP_STATUS } from "@/lib/job-filters";
 
 export const runtime = "nodejs";
@@ -182,14 +182,28 @@ export async function POST(req: NextRequest) {
       ],
     };
 
+    let scheduleTypeId = 1;
+    let scheduledDeliveryTs: string | undefined;
+
     if (vendor.cutoff_hour !== undefined) {
-      const hh = `${String(vendor.cutoff_hour).padStart(2, "0")}:00:00+07:00`;
-      pickupStop.delivery_windows = [{ time_from: hh, time_to: hh }];
+      const hh = vendor.cutoff_hour;
+      const toStr   = `${String(hh).padStart(2, "0")}:00:00+07:00`;
+      const fromStr = `${String(hh - 1).padStart(2, "0")}:00:00+07:00`;
+      pickupStop.delivery_windows = [{ time_from: fromStr, time_to: toStr }];
+
+      const { hours } = vnHoursMinutes();
+      if (hours >= hh) {
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        scheduleTypeId       = 2;
+        scheduledDeliveryTs  = `${vnDate(tomorrow)} ${String(hh).padStart(2, "0")}:00:00`;
+      }
     }
 
-    const jobPayload = {
+    const jobPayload: Record<string, unknown> = {
       job_type_id:      1,
-      schedule_type_id: 1,
+      schedule_type_id: scheduleTypeId,
+      ...(scheduledDeliveryTs ? { scheduled_delivery_ts: scheduledDeliveryTs } : {}),
       reference_number: "ao_hard_copy",
       stops: [
         pickupStop,
