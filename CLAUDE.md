@@ -18,6 +18,10 @@ npm run build   # Production build
 npm run lint    # ESLint
 ```
 
+## Pre-push Checklist
+
+Always run `npm run build` from `dashboard/` before pushing. Vercel runs the same build — if it fails locally it will fail in production. Common mistake: removing a field from an object/type without grepping for all usages of that field in the same file (TypeScript will catch this at build time, not in the editor).
+
 No test suite exists currently.
 
 ## Environment Variables
