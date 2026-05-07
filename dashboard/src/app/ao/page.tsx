@@ -163,10 +163,14 @@ export default function AoPage() {
 
             <textarea
               value={note}
-              onChange={(e) => setNote(e.target.value)}
+              onChange={(e) => {
+                setNote(e.target.value);
+                e.target.style.height = "auto";
+                e.target.style.height = `${e.target.scrollHeight}px`;
+              }}
               placeholder="Ghi chú (tuỳ chọn)"
-              rows={2}
-              className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700 placeholder-slate-400 resize-none focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+              rows={3}
+              className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700 placeholder-slate-400 resize-none overflow-hidden focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
             />
 
             <button
