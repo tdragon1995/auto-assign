@@ -156,14 +156,7 @@ export default function AoPage() {
                     }`}
                   >
                     <p className="text-base font-semibold text-slate-800">{v.name}</p>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <p className="text-sm text-slate-500">Giao tới: {v.dropoff_label}</p>
-                      {v.note && (
-                        <span className="text-[11px] font-medium text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-md">
-                          {v.note}
-                        </span>
-                      )}
-                    </div>
+                    <p className="text-sm text-slate-500 mt-0.5">Giao tới: {v.dropoff_label}</p>
                   </button>
                 ))}
               </div>
