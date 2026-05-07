@@ -3,9 +3,11 @@
 import { useState, useEffect, useCallback } from "react";
 
 const VENDORS = [
-  { name: "Bệnh Viện Da Liễu", uuid: "1bc194a8-1f47-11f1-9378-fa163ee8d8ac", dropoff_label: "D001" },
-  { name: "Bệnh Viện Chợ Rẫy", uuid: "5c8efb94-38ad-11ed-b146-506b8dbc8dfb", dropoff_label: "D001" },
-  { name: "Trung tâm Pháp Y",  uuid: "9ae5f732-1cbb-11ef-967b-506b8d9879b5", dropoff_label: "D010" },
+  { name: "Bệnh Viện Da Liễu",         uuid: "1bc194a8-1f47-11f1-9378-fa163ee8d8ac" },
+  { name: "Bệnh Viện Chợ Rẫy",         uuid: "5c8efb94-38ad-11ed-b146-506b8dbc8dfb" },
+  { name: "Bệnh Viện Nhiệt Đới",        uuid: "ce8fbd00-2439-11ee-8a2d-506b8d9879b5" },
+  { name: "Thu Hồi Mẫu Đại Học Y Dược", uuid: "51742f2e-1748-11ef-808b-506b8d9879b5" },
+  { name: "Trung tâm Pháp Y",           uuid: "9ae5f732-1cbb-11ef-967b-506b8d9879b5" },
 ];
 
 interface Order {
@@ -32,6 +34,7 @@ export default function AoPage() {
   const [tab, setTab] = useState<"request" | "status">("request");
 
   const [selectedUuid, setSelectedUuid] = useState("");
+  const [note, setNote] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
@@ -68,14 +71,16 @@ export default function AoPage() {
       const res = await fetch("/api/ao", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ vendor_uuid: selectedUuid }),
+        body: JSON.stringify({ vendor_uuid: selectedUuid, note: note.trim() || null }),
       });
       const data = await res.json();
       if (!res.ok) {
         setResult({ ok: false, msg: data.message ?? data.error ?? "Lỗi không xác định" });
       } else {
-        setResult({ ok: true, msg: `Tạo thành công! Job #${data.job_id}` });
+        const vendorName = VENDORS.find((v) => v.uuid === selectedUuid)?.name ?? "";
+        setResult({ ok: true, msg: `Tạo thành công! Job #${data.job_id} — ${vendorName}` });
         setSelectedUuid("");
+        setNote("");
         setHighlightJobId(data.job_id ?? null);
       }
     } catch (e) {
@@ -155,6 +160,14 @@ export default function AoPage() {
                 </button>
               ))}
             </div>
+
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Ghi chú (tuỳ chọn)"
+              rows={2}
+              className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700 placeholder-slate-400 resize-none focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+            />
 
             <button
               onClick={submit}

@@ -28,6 +28,16 @@ const VENDORS: Vendor[] = [
     dropoff_uuid: D001_UUID,
   },
   {
+    name: "Bệnh Viện Nhiệt Đới",
+    uuid: "ce8fbd00-2439-11ee-8a2d-506b8d9879b5",
+    dropoff_uuid: D001_UUID,
+  },
+  {
+    name: "Thu Hồi Mẫu Đại Học Y Dược",
+    uuid: "51742f2e-1748-11ef-808b-506b8d9879b5",
+    dropoff_uuid: D001_UUID,
+  },
+  {
     name: "Trung tâm Pháp Y",
     uuid: "9ae5f732-1cbb-11ef-967b-506b8d9879b5",
     dropoff_uuid: D010_UUID,
@@ -123,7 +133,7 @@ export async function POST(req: NextRequest) {
   let lockKey: string | null = null;
 
   try {
-    const { vendor_uuid } = await req.json();
+    const { vendor_uuid, note } = await req.json() as { vendor_uuid: string; note?: string | null };
 
     if (!vendor_uuid) {
       return NextResponse.json({ error: "Missing vendor_uuid" }, { status: 400 });
@@ -177,6 +187,7 @@ export async function POST(req: NextRequest) {
       stop_type_id: 1,
       customer_id:  vendor_uuid,
       duration:     5,
+      note:         note || null,
       todos: [
         { todo_type_id: 2, description: "Chụp Hình Kết Quả", is_required: true },
       ],
