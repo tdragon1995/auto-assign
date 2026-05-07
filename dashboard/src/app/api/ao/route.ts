@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
-import { vnDate, vnTimestamp } from "@/lib/time";
+import { vnDate } from "@/lib/time";
 import { isActiveStop, JOB_STATUS, STOP_STATUS } from "@/lib/job-filters";
 
 export const runtime = "nodejs";
@@ -214,10 +214,9 @@ export async function POST(req: NextRequest) {
     }
 
     const jobPayload = {
-      job_type_id:           1,
-      schedule_type_id:      2,
-      scheduled_delivery_ts: vnTimestamp(),
-      reference_number:      "ao_hard_copy",
+      job_type_id:      1,
+      schedule_type_id: 1,
+      reference_number: "ao_hard_copy",
       stops: [
         pickupStop,
         {
