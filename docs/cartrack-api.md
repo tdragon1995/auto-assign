@@ -246,6 +246,10 @@ Rejects a job after proxy-assignment (duplicate handling).
 
 **Always use `schedule_type_id: 1` (ASAP) when creating jobs and omit `scheduled_delivery_ts`.** `schedule_type_id: 2` requires `scheduled_delivery_ts` to be a future timestamp — passing the current time causes a 422 "must be a date after now" error due to clock skew between the server and Cartrack. `schedule_type_id: 1` creates an immediate ASAP job with no timestamp dependency.
 
+## Stop creation rules
+
+**Never pass `customer_name` in a stop payload.** Cartrack resolves the display name from `customer_id` automatically. Passing `customer_name` overwrites the name stored against that customer in Cartrack, causing permanent data corruption for all future jobs at that location.
+
 ## Timezone
 
 All business-logic time is `Asia/Ho_Chi_Minh` (UTC+7). Cartrack timestamps arrive without a timezone suffix and are treated as UTC+7 by appending `+07:00` before parsing.

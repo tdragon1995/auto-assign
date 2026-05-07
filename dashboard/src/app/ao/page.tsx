@@ -139,27 +139,21 @@ export default function AoPage() {
         {/* Request tab */}
         {tab === "request" && (
           <div className="p-6 space-y-5">
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                Nhà cung cấp kết quả
-              </label>
-              <div className="space-y-2">
-                {VENDORS.map((v) => (
-                  <button
-                    key={v.uuid}
-                    type="button"
-                    onClick={() => setSelectedUuid(v.uuid)}
-                    className={`w-full text-left rounded-xl border bg-white shadow-sm px-4 py-3 active:bg-slate-50 transition-colors ${
-                      v.uuid === selectedUuid
-                        ? "border-blue-500 ring-2 ring-blue-200"
-                        : "border-slate-200"
-                    }`}
-                  >
-                    <p className="text-base font-semibold text-slate-800">{v.name}</p>
-                    <p className="text-sm text-slate-500 mt-0.5">Giao tới: {v.dropoff_label}</p>
-                  </button>
-                ))}
-              </div>
+            <div className="space-y-2">
+              {VENDORS.map((v) => (
+                <button
+                  key={v.uuid}
+                  type="button"
+                  onClick={() => setSelectedUuid(v.uuid)}
+                  className={`w-full text-left rounded-xl border bg-white shadow-sm px-4 py-3 active:bg-slate-50 transition-colors ${
+                    v.uuid === selectedUuid
+                      ? "border-blue-500 ring-2 ring-blue-200"
+                      : "border-slate-200"
+                  }`}
+                >
+                  <p className="text-base font-semibold text-slate-800">{v.name}</p>
+                </button>
+              ))}
             </div>
 
             <button

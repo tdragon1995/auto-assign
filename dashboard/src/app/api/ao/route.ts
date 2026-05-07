@@ -13,7 +13,6 @@ interface Vendor {
   name: string;
   uuid: string;
   dropoff_uuid: string;
-  dropoff_name: string;
   cutoff_hour?: number;
 }
 
@@ -22,19 +21,16 @@ const VENDORS: Vendor[] = [
     name: "Bệnh Viện Da Liễu",
     uuid: "1bc194a8-1f47-11f1-9378-fa163ee8d8ac",
     dropoff_uuid: D001_UUID,
-    dropoff_name: "BRA - D001",
   },
   {
     name: "Bệnh Viện Chợ Rẫy",
     uuid: "5c8efb94-38ad-11ed-b146-506b8dbc8dfb",
     dropoff_uuid: D001_UUID,
-    dropoff_name: "BRA - D001",
   },
   {
     name: "Trung tâm Pháp Y",
     uuid: "9ae5f732-1cbb-11ef-967b-506b8d9879b5",
     dropoff_uuid: D010_UUID,
-    dropoff_name: "BRA - D010",
     cutoff_hour: 12,
   },
 ];
@@ -58,12 +54,12 @@ function releaseLock(key: string): void {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function fetchJobsToday(status: number, from: string, to: string, env: Env): Promise<any[]> {
+async function fetchAoJobsToday(from: string, to: string, env: Env): Promise<any[]> {
   const params = new URLSearchParams({
     "filter[create_ts_from]": from,
     "filter[create_ts_to]": to,
-    "filter[job_status_id]": String(status),
-    limit: "1000",
+    "filter[reference_number]": "ao_hard_copy",
+    limit: "100",
   });
   const res = await fetch(`${BASE_URL}/jobs?${params}`, {
     headers: getHeaders(env),
@@ -81,32 +77,15 @@ export async function GET(req: NextRequest) {
   const mode = req.nextUrl.searchParams.get("mode");
 
   if (mode !== "orders") {
-    return NextResponse.json({
-      vendors: VENDORS.map((v) => ({ name: v.name, uuid: v.uuid, dropoff_name: v.dropoff_name, cutoff_hour: v.cutoff_hour ?? null })),
-    });
+    return NextResponse.json({ error: "Invalid mode" }, { status: 400 });
   }
 
   try {
     const today = vnDate();
-    const params = new URLSearchParams({
-      "filter[create_ts_from]": `${today} 00:00:00`,
-      "filter[create_ts_to]": `${today} 23:59:59`,
-      limit: "1000",
-    });
-
-    const res = await fetch(`${BASE_URL}/jobs?${params}`, {
-      headers: getHeaders(env),
-      cache: "no-store",
-    });
-
-    if (!res.ok) return NextResponse.json({ orders: [] });
-
-    const data = await res.json();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const jobs: any[] = data.data ?? [];
+    const jobs = await fetchAoJobsToday(`${today} 00:00:00`, `${today} 23:59:59`, env);
 
     const orders = jobs
-      .filter((j) => j.reference_number === "ao_hard_copy" && j.job_status_id !== 3 && j.job_status_id !== 7)
+      .filter((j) => j.job_status_id !== 3 && j.job_status_id !== 7)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .map((j) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -169,15 +148,11 @@ export async function POST(req: NextRequest) {
     const todayStart = `${today} 00:00:00`;
     const todayEnd   = `${today} 23:59:59`;
 
-    const [unassignedJobs, assignedJobs] = await Promise.all([
-      fetchJobsToday(2, todayStart, todayEnd, env),
-      fetchJobsToday(4, todayStart, todayEnd, env),
-    ]);
+    const todayJobs = await fetchAoJobsToday(todayStart, todayEnd, env);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const duplicate = [...unassignedJobs, ...assignedJobs].find((job: any) => {
+    const duplicate = todayJobs.find((job: any) => {
       if (job.job_status_id === 7 || job.job_status_id === 3) return false;
-      if (job.reference_number !== "ao_hard_copy") return false;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const stops: any[] = job.stops ?? [];
       const hasActivePickup    = stops.some((s: any) => s.stop_type_id === 1 && s.customer_id === vendor_uuid && isActiveStop(s.stop_status_id));
@@ -199,10 +174,9 @@ export async function POST(req: NextRequest) {
 
     // Pháp Y pickup gets a 12:00 deadline window; dropoff has no window constraint
     const pickupStop: Record<string, unknown> = {
-      stop_type_id:  1,
-      customer_id:   vendor_uuid,
-      customer_name: vendor.name,
-      duration:      5,
+      stop_type_id: 1,
+      customer_id:  vendor_uuid,
+      duration:     5,
       todos: [
         { todo_type_id: 2, description: "Chụp Hình Kết Quả", is_required: true },
       ],
@@ -220,10 +194,9 @@ export async function POST(req: NextRequest) {
       stops: [
         pickupStop,
         {
-          stop_type_id:  2,
-          customer_id:   vendor.dropoff_uuid,
-          customer_name: vendor.dropoff_name,
-          duration:      10,
+          stop_type_id: 2,
+          customer_id:  vendor.dropoff_uuid,
+          duration:     10,
           todos: [
             { todo_type_id: 5, description: "Tên Người Bàn Giao Kết Quả", is_required: true },
           ],
