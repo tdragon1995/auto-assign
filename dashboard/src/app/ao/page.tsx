@@ -7,6 +7,8 @@ const VENDORS = [
   { name: "Bệnh Viện Chợ Rẫy",         uuid: "5c8efb94-38ad-11ed-b146-506b8dbc8dfb" },
   { name: "Bệnh Viện Nhiệt Đới",        uuid: "ce8fbd00-2439-11ee-8a2d-506b8d9879b5" },
   { name: "Thu Hồi Mẫu Đại Học Y Dược", uuid: "51742f2e-1748-11ef-808b-506b8d9879b5" },
+  { name: "Medic",                       uuid: "49642318-38ae-11ed-91d5-506b8dbc8dfb" },
+  { name: "Trí Việt",                    uuid: "d81aa368-1210-11f1-9378-fa163ee8d8ac" },
   { name: "Trung tâm Pháp Y",           uuid: "9ae5f732-1cbb-11ef-967b-506b8d9879b5" },
 ];
 
@@ -118,7 +120,6 @@ export default function AoPage() {
         <div className="px-6 pt-5 pb-4">
           <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">Kết quả giấy</p>
           <h1 className="text-xl font-bold text-slate-800 mt-0.5">Lấy kết quả từ nhà cung cấp</h1>
-          <p className="text-sm text-slate-500">Điểm nhận: D001 / D010 — Cao Thắng</p>
         </div>
 
         {/* Tab switcher */}

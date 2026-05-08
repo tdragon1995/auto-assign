@@ -38,6 +38,16 @@ const VENDORS: Vendor[] = [
     dropoff_uuid: D001_UUID,
   },
   {
+    name: "Medic",
+    uuid: "49642318-38ae-11ed-91d5-506b8dbc8dfb",
+    dropoff_uuid: D001_UUID,
+  },
+  {
+    name: "Trí Việt",
+    uuid: "d81aa368-1210-11f1-9378-fa163ee8d8ac",
+    dropoff_uuid: D001_UUID,
+  },
+  {
     name: "Trung tâm Pháp Y",
     uuid: "9ae5f732-1cbb-11ef-967b-506b8d9879b5",
     dropoff_uuid: D010_UUID,
@@ -68,7 +78,7 @@ async function fetchAoJobsToday(from: string, to: string, env: Env): Promise<any
   const params = new URLSearchParams({
     "filter[create_ts_from]": from,
     "filter[create_ts_to]": to,
-    "filter[reference_number]": "ao_hard_copy",
+    "filter[reference_number]": "lay_ket_qua",
     limit: "100",
   });
   const res = await fetch(`${BASE_URL}/jobs?${params}`, {
@@ -80,7 +90,7 @@ async function fetchAoJobsToday(from: string, to: string, env: Env): Promise<any
   return data.data ?? [];
 }
 
-// ── GET /api/ao?mode=orders — today's ao_hard_copy jobs ──────────────────────
+// ── GET /api/ao?mode=orders — today's lay_ket_qua jobs ──────────────────────
 
 export async function GET(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
@@ -215,7 +225,7 @@ export async function POST(req: NextRequest) {
       job_type_id:      1,
       schedule_type_id: scheduleTypeId,
       ...(scheduledDeliveryTs ? { scheduled_delivery_ts: scheduledDeliveryTs } : {}),
-      reference_number: "ao_hard_copy",
+      reference_number: "lay_ket_qua",
       stops: [
         pickupStop,
         {
