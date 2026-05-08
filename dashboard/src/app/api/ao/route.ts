@@ -18,28 +18,13 @@ interface Vendor {
 
 const VENDORS: Vendor[] = [
   {
-    name: "Bệnh Viện Da Liễu",
-    uuid: "1bc194a8-1f47-11f1-9378-fa163ee8d8ac",
-    dropoff_uuid: D001_UUID,
-  },
-  {
-    name: "Bệnh Viện Chợ Rẫy",
-    uuid: "5c8efb94-38ad-11ed-b146-506b8dbc8dfb",
+    name: "Medic Karyotype",
+    uuid: "49642318-38ae-11ed-91d5-506b8dbc8dfb",
     dropoff_uuid: D001_UUID,
   },
   {
     name: "Bệnh Viện Nhiệt Đới",
     uuid: "ce8fbd00-2439-11ee-8a2d-506b8d9879b5",
-    dropoff_uuid: D001_UUID,
-  },
-  {
-    name: "Thu Hồi Mẫu Đại Học Y Dược",
-    uuid: "51742f2e-1748-11ef-808b-506b8d9879b5",
-    dropoff_uuid: D001_UUID,
-  },
-  {
-    name: "Medic",
-    uuid: "49642318-38ae-11ed-91d5-506b8dbc8dfb",
     dropoff_uuid: D001_UUID,
   },
   {
@@ -52,6 +37,21 @@ const VENDORS: Vendor[] = [
     uuid: "9ae5f732-1cbb-11ef-967b-506b8d9879b5",
     dropoff_uuid: D010_UUID,
     cutoff_hour: 12,
+  },
+  {
+    name: "Bệnh Viện Da Liễu",
+    uuid: "1bc194a8-1f47-11f1-9378-fa163ee8d8ac",
+    dropoff_uuid: D001_UUID,
+  },
+  {
+    name: "Thu Hồi Mẫu Đại Học Y Dược",
+    uuid: "51742f2e-1748-11ef-808b-506b8d9879b5",
+    dropoff_uuid: D001_UUID,
+  },
+  {
+    name: "Bệnh Viện Chợ Rẫy",
+    uuid: "5c8efb94-38ad-11ed-b146-506b8dbc8dfb",
+    dropoff_uuid: D001_UUID,
   },
 ];
 

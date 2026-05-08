@@ -3,13 +3,13 @@
 import { useState, useEffect, useCallback } from "react";
 
 const VENDORS = [
-  { name: "Bệnh Viện Da Liễu",         uuid: "1bc194a8-1f47-11f1-9378-fa163ee8d8ac" },
-  { name: "Bệnh Viện Chợ Rẫy",         uuid: "5c8efb94-38ad-11ed-b146-506b8dbc8dfb" },
+  { name: "Medic Karyotype",             uuid: "49642318-38ae-11ed-91d5-506b8dbc8dfb" },
   { name: "Bệnh Viện Nhiệt Đới",        uuid: "ce8fbd00-2439-11ee-8a2d-506b8d9879b5" },
-  { name: "Thu Hồi Mẫu Đại Học Y Dược", uuid: "51742f2e-1748-11ef-808b-506b8d9879b5" },
-  { name: "Medic",                       uuid: "49642318-38ae-11ed-91d5-506b8dbc8dfb" },
   { name: "Trí Việt",                    uuid: "d81aa368-1210-11f1-9378-fa163ee8d8ac" },
   { name: "Trung tâm Pháp Y",           uuid: "9ae5f732-1cbb-11ef-967b-506b8d9879b5" },
+  { name: "Bệnh Viện Da Liễu",          uuid: "1bc194a8-1f47-11f1-9378-fa163ee8d8ac" },
+  { name: "Thu Hồi Mẫu Đại Học Y Dược", uuid: "51742f2e-1748-11ef-808b-506b8d9879b5" },
+  { name: "Bệnh Viện Chợ Rẫy",          uuid: "5c8efb94-38ad-11ed-b146-506b8dbc8dfb" },
 ];
 
 interface Order {
