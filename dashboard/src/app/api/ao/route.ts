@@ -44,6 +44,11 @@ const VENDORS: Vendor[] = [
     dropoff_uuid: D001_UUID,
   },
   {
+    name: "Thu Hồi Mẫu Bệnh Viện Bưu Điện",
+    uuid: "be7d54b2-4d09-11f1-9378-fa163ee8d8ac",
+    dropoff_uuid: D001_UUID,
+  },
+  {
     name: "Thu Hồi Mẫu Đại Học Y Dược",
     uuid: "51742f2e-1748-11ef-808b-506b8d9879b5",
     dropoff_uuid: D001_UUID,
