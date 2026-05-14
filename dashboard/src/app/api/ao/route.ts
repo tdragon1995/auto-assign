@@ -83,7 +83,7 @@ async function fetchAoJobsToday(from: string, to: string, env: Env): Promise<any
   const params = new URLSearchParams({
     "filter[create_ts_from]": from,
     "filter[create_ts_to]": to,
-    "filter[reference_number]": "lay_ket_qua",
+    "filter[reference_number]": "lay_ket_qua_hoac_thu_hoi_mau",
     limit: "100",
   });
   const res = await fetch(`${BASE_URL}/jobs?${params}`, {
@@ -95,7 +95,7 @@ async function fetchAoJobsToday(from: string, to: string, env: Env): Promise<any
   return data.data ?? [];
 }
 
-// ── GET /api/ao?mode=orders — today's lay_ket_qua jobs ──────────────────────
+// ── GET /api/ao?mode=orders — today's lay_ket_qua_hoac_thu_hoi_mau jobs ──────────────────────
 
 export async function GET(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
@@ -230,7 +230,7 @@ export async function POST(req: NextRequest) {
       job_type_id:      1,
       schedule_type_id: scheduleTypeId,
       ...(scheduledDeliveryTs ? { scheduled_delivery_ts: scheduledDeliveryTs } : {}),
-      reference_number: "lay_ket_qua",
+      reference_number: "lay_ket_qua_hoac_thu_hoi_mau",
       stops: [
         pickupStop,
         {
