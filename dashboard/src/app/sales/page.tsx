@@ -450,10 +450,9 @@ export default function SalesPage() {
             <input
               value={tenDuong}
               onChange={(e) => setTenDuong(e.target.value)}
-              placeholder="VD: Điện Biên Phủ"
+              placeholder={"Chỉ điền tên đường, VD:\nĐường Điện Biên Phủ → Điện Biên Phủ\nĐường số 6 → 6\nĐường 3/2 → 3/2\nĐường Tỉnh Lộ 8 → Tỉnh Lộ 8"}
               className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
             />
-            <p className="text-xs text-slate-500 mt-1">Chỉ điền tên đường, vd: Đường Số 6, điền &quot;6&quot;; Đường 3/2, điền &quot;3/2&quot;</p>
             {tenDuong && (
               <p className="text-xs text-slate-500 mt-1">
                 Viết tắt: <span className="font-semibold text-slate-700">{abbrStreet(tenDuong)}</span>
@@ -466,12 +465,9 @@ export default function SalesPage() {
             <input
               value={tenKh}
               onChange={(e) => setTenKh(e.target.value)}
+              placeholder={"Điền tên khách hàng giống CRM\n*\nNhi Đồng 315 → ND315\nPhụ Sản 315 → PS315\nLão Khoa 315 → LK315\nTim Mạch 315 → TM315"}
               className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
             />
-            <p className="text-xs text-slate-500 mt-1">Điền tên KH giống CRM.</p>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Đối với khách hàng Phòng Khám 315: Nhi Đồng 315 → ND315 · Phụ Sản 315 → PS315 · Lão Khoa 315 → LK315 · Tim Mạch 315 → TM315
-            </p>
           </div>
 
           <div className="relative">
