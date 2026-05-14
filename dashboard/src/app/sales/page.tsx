@@ -183,6 +183,8 @@ export default function SalesPage() {
   const [tripLoading, setTripLoading] = useState(false);
   const [tripResult, setTripResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [tripNote, setTripNote] = useState("");
+  const [duplicates, setDuplicates] = useState<{ customer_id: string; customer_name: string }[] | null>(null);
+  const [houseNo, setHouseNo] = useState("");
 
   const extractFromLink = async () => {
     const url = mapLink.trim();
@@ -228,10 +230,15 @@ export default function SalesPage() {
 
   const maKhValid = /^\d{5,8}$/.test(maKh);
 
-  const customerName = useMemo(() => {
+  const { customerName, checkPrefix } = useMemo(() => {
+    const includeStreet = ["21362", "21361", "46651876"].includes(maKh);
     const abbr = abbrStreet(tenDuong);
-    const parts = [maKh, quanCu, abbr, `${tenKh} ${tenDuong}`.trim()].filter(Boolean);
-    return parts.join(" - ");
+    const lastPart = includeStreet
+      ? `${tenKh} ${tenDuong}`.trim()
+      : tenKh.trim();
+    const parts = [maKh, quanCu, abbr, lastPart].filter(Boolean);
+    const prefix = [maKh, quanCu, abbr].filter(Boolean).join(" - ");
+    return { customerName: parts.join(" - "), checkPrefix: prefix };
   }, [maKh, quanCu, tenDuong, tenKh]);
 
   const canSubmit =
@@ -241,15 +248,18 @@ export default function SalesPage() {
     tenKh.trim() &&
     !loading;
 
-  const submit = async () => {
+  const doSubmit = async (forceName?: string) => {
     if (!canSubmit) return;
+    const name = forceName ?? customerName;
     setLoading(true);
     setResult(null);
     try {
       const payload: Record<string, unknown> = {
-        customer_name: customerName,
+        customer_name: name,
         address_line_1: diaChi.trim() || undefined,
         contact_number: phone.trim() || undefined,
+        check_prefix: checkPrefix,
+        ...(forceName !== undefined ? { force: true } : {}),
       };
       const latNum = parseFloat(lat);
       const lonNum = parseFloat(lon);
@@ -264,21 +274,27 @@ export default function SalesPage() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setResult({ ok: false, msg: data.error ?? "Lỗi không xác định" });
+        if (res.status === 409 && data.matches?.length > 0) {
+          setDuplicates(data.matches);
+        } else {
+          setResult({ ok: false, msg: data.error ?? "Lỗi không xác định" });
+        }
       } else {
-        setResult({ ok: true, msg: "Tạo địa điểm lấy mẫu thành công, Sapoche sẽ được cập nhật sau." });
-        const latNum = parseFloat(lat);
-        const lonNum = parseFloat(lon);
-        if (data.customer?.customer_id && !Number.isNaN(latNum) && !Number.isNaN(lonNum)) {
+        setResult({ ok: true, msg: "Tạo địa điểm lấy mẫu thành công." });
+        const lat2 = parseFloat(lat);
+        const lon2 = parseFloat(lon);
+        if (data.customer?.customer_id && !Number.isNaN(lat2) && !Number.isNaN(lon2)) {
           setNewCustomer({
             customer_id: data.customer.customer_id,
-            customer_name: data.customer.customer_name ?? customerName,
-            lat: latNum,
-            lon: lonNum,
+            customer_name: data.customer.customer_name ?? name,
+            lat: lat2,
+            lon: lon2,
             ma_kh: maKh,
           });
           setTripResult(null);
         }
+        setDuplicates(null);
+        setHouseNo("");
         setMaKh(""); setQuanCu(""); setTenDuong(""); setTenKh(""); setDiaChi(""); setLat(""); setLon(""); setPhone("");
       }
     } catch (e) {
@@ -286,6 +302,18 @@ export default function SalesPage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const submit = () => doSubmit();
+
+  const submitForce = () => {
+    const includeStreet = ["21362", "21361", "46651876"].includes(maKh);
+    const abbr = abbrStreet(tenDuong);
+    const no = houseNo.trim();
+    const lastPart = includeStreet
+      ? `${tenKh} ${no} ${tenDuong}`.replace(/\s+/g, " ").trim()
+      : `${tenKh} ${no}`.replace(/\s+/g, " ").trim();
+    doSubmit([maKh, quanCu, abbr, lastPart].filter(Boolean).join(" - "));
   };
 
   const createTrip = async () => {
@@ -430,6 +458,7 @@ export default function SalesPage() {
               placeholder="VD: Điện Biên Phủ"
               className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
             />
+            <p className="text-xs text-slate-500 mt-1">Chỉ điền tên đường, vd: Đường Số 6, điền &quot;6&quot;; Đường 3/2, điền &quot;3/2&quot;</p>
             {tenDuong && (
               <p className="text-xs text-slate-500 mt-1">
                 Viết tắt: <span className="font-semibold text-slate-700">{abbrStreet(tenDuong)}</span>
@@ -444,6 +473,10 @@ export default function SalesPage() {
               onChange={(e) => setTenKh(e.target.value)}
               className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
             />
+            <p className="text-xs text-slate-500 mt-1">Điền tên KH giống CRM.</p>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Đối với khách hàng Phòng Khám 315: Nhi Đồng 315 → ND315 · Phụ Sản 315 → PS315 · Lão Khoa 315 → LK315 · Tim Mạch 315 → TM315
+            </p>
           </div>
 
           <div className="relative">
@@ -561,6 +594,35 @@ export default function SalesPage() {
               }`}
             >
               {result.msg}
+            </div>
+          )}
+
+          {duplicates && duplicates.length > 0 && (
+            <div className="rounded-xl bg-amber-50 border border-amber-200 p-3.5 space-y-3">
+              <p className="text-sm font-semibold text-amber-800">
+                Tìm thấy {duplicates.length} khách hàng có thể trùng:
+              </p>
+              <ul className="space-y-1">
+                {duplicates.map((d) => (
+                  <li key={d.customer_id} className="text-xs text-amber-700 font-mono break-all">{d.customer_name}</li>
+                ))}
+              </ul>
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Số nhà (để phân biệt)</label>
+                <input
+                  value={houseNo}
+                  onChange={(e) => setHouseNo(e.target.value)}
+                  placeholder="VD: 123, 45B, 12/34"
+                  className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
+                />
+              </div>
+              <button
+                onClick={submitForce}
+                disabled={loading}
+                className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-amber-600 hover:bg-amber-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+              >
+                {loading ? "Đang tạo..." : "Tạo dù có trùng"}
+              </button>
             </div>
           )}
 

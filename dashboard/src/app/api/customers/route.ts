@@ -123,12 +123,16 @@ export async function POST(req: NextRequest) {
       latitude,
       longitude,
       contact_number,
+      force,
+      check_prefix,
     } = body as {
       customer_name: string;
       address_line_1?: string;
       latitude?: number;
       longitude?: number;
       contact_number?: string;
+      force?: boolean;
+      check_prefix?: string;
     };
 
     if (!customer_name) {
@@ -137,21 +141,26 @@ export async function POST(req: NextRequest) {
 
     const headers = getHeaders(env);
 
-    // Duplicate guard — exact match on customer_name
-    const lower = customer_name.trim().toLowerCase();
-    let page = 1;
-    while (page <= 20) {
-      const res = await fetch(`${BASE_URL}/customers?page=${page}&limit=1000`, { headers, cache: "no-store" });
-      if (!res.ok) break;
-      const data = await res.json();
-      const rows: { customer_id: string; customer_name: string }[] = data.data ?? [];
-      if (rows.length === 0) break;
-      const hit = rows.find((r) => (r.customer_name ?? "").trim().toLowerCase() === lower);
-      if (hit) {
-        return NextResponse.json({ error: "Khách hàng đã tồn tại", match: hit }, { status: 409 });
+    // Duplicate guard — prefix match (skipped when force=true)
+    if (!force) {
+      const prefix = (check_prefix?.trim() ?? customer_name.trim()).toLowerCase();
+      const matches: { customer_id: string; customer_name: string }[] = [];
+      let page = 1;
+      while (page <= 20) {
+        const res = await fetch(`${BASE_URL}/customers?page=${page}&limit=1000`, { headers, cache: "no-store" });
+        if (!res.ok) break;
+        const data = await res.json();
+        const rows: { customer_id: string; customer_name: string }[] = data.data ?? [];
+        if (rows.length === 0) break;
+        for (const r of rows) {
+          if ((r.customer_name ?? "").trim().toLowerCase().startsWith(prefix)) matches.push(r);
+        }
+        if (rows.length < 1000) break;
+        page += 1;
       }
-      if (rows.length < 1000) break;
-      page += 1;
+      if (matches.length > 0) {
+        return NextResponse.json({ error: "Khách hàng đã tồn tại", matches }, { status: 409 });
+      }
     }
 
     const payload: Record<string, unknown> = {
