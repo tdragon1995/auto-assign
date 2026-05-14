@@ -371,7 +371,7 @@ export default function SalesPage() {
         {tab === "reject" && (
           <div className="p-6 space-y-4 border-t border-slate-100">
             <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Mã giao nhận</label>
+              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Mã Giao Nhận</label>
               <input
                 value={refNumber}
                 onChange={(e) => setRefNumber(e.target.value)}
@@ -381,7 +381,7 @@ export default function SalesPage() {
             </div>
 
             <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Lý do từ chối</label>
+              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Lý Do Từ Chối</label>
               <select
                 value={rejectReason}
                 onChange={(e) => setRejectReason(e.target.value)}
@@ -447,11 +447,12 @@ export default function SalesPage() {
 
           <div>
             <label className="block text-sm font-semibold text-slate-700 mb-1.5">Tên Đường</label>
-            <input
+            <textarea
               value={tenDuong}
-              onChange={(e) => setTenDuong(e.target.value)}
+              onChange={(e) => setTenDuong(e.target.value.replace(/\n/g, ""))}
+              rows={5}
               placeholder={"Chỉ điền tên đường, VD:\nĐường Điện Biên Phủ → Điện Biên Phủ\nĐường số 6 → 6\nĐường 3/2 → 3/2\nĐường Tỉnh Lộ 8 → Tỉnh Lộ 8"}
-              className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+              className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 resize-none"
             />
             {tenDuong && (
               <p className="text-xs text-slate-500 mt-1">
@@ -461,17 +462,18 @@ export default function SalesPage() {
           </div>
 
           <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">Tên khách hàng</label>
-            <input
+            <label className="block text-sm font-semibold text-slate-700 mb-1.5">Tên Khách Hàng</label>
+            <textarea
               value={tenKh}
-              onChange={(e) => setTenKh(e.target.value)}
+              onChange={(e) => setTenKh(e.target.value.replace(/\n/g, ""))}
+              rows={5}
               placeholder={"Điền tên khách hàng giống CRM\n*\nNhi Đồng 315 → ND315\nPhụ Sản 315 → PS315\nLão Khoa 315 → LK315\nTim Mạch 315 → TM315"}
-              className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+              className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 resize-none"
             />
           </div>
 
           <div className="relative">
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">Địa chỉ</label>
+            <label className="block text-sm font-semibold text-slate-700 mb-1.5">Địa Chỉ</label>
             <textarea
               value={diaChi}
               onChange={(e) => { setDiaChi(e.target.value); setShowPredictions(true); }}
@@ -506,7 +508,7 @@ export default function SalesPage() {
           </div>
 
           <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">Số điện thoại liên hệ nhận mẫu</label>
+            <label className="block text-sm font-semibold text-slate-700 mb-1.5">Số Điện Thoại Liên Hệ Nhận Mẫu</label>
             <input
               value={phone}
               onChange={(e) => setPhone(e.target.value.replace(/\D/g, ""))}
@@ -517,7 +519,7 @@ export default function SalesPage() {
           </div>
 
           <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">Google Maps link</label>
+            <label className="block text-sm font-semibold text-slate-700 mb-1.5">Google Maps Link</label>
             <div className="flex gap-2">
               <input
                 value={mapLink}
@@ -540,7 +542,7 @@ export default function SalesPage() {
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Vĩ độ</label>
+              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Vĩ Độ</label>
               <input
                 value={lat}
                 onChange={(e) => setLat(e.target.value)}
@@ -550,7 +552,7 @@ export default function SalesPage() {
               />
             </div>
             <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Kinh độ</label>
+              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Kinh Độ</label>
               <input
                 value={lon}
                 onChange={(e) => setLon(e.target.value)}
@@ -616,7 +618,7 @@ export default function SalesPage() {
           {newCustomer && (
             <div className="space-y-3">
               <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Ghi chú thêm</label>
+                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Ghi Chú Thêm</label>
                 <textarea
                   value={tripNote}
                   onChange={(e) => setTripNote(e.target.value)}
