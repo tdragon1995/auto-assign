@@ -144,13 +144,13 @@ export async function POST(req: NextRequest) {
     // Duplicate guard — prefix match (skipped when force=true)
     if (!force) {
       const prefix = (check_prefix?.trim() ?? customer_name.trim()).toLowerCase();
-      const matches: { customer_id: string; customer_name: string }[] = [];
+      const matches: { customer_id: string; customer_name: string; address_line_1?: string }[] = [];
       let page = 1;
       while (page <= 20) {
         const res = await fetch(`${BASE_URL}/customers?page=${page}&limit=1000`, { headers, cache: "no-store" });
         if (!res.ok) break;
         const data = await res.json();
-        const rows: { customer_id: string; customer_name: string }[] = data.data ?? [];
+        const rows: { customer_id: string; customer_name: string; address_line_1?: string }[] = data.data ?? [];
         if (rows.length === 0) break;
         for (const r of rows) {
           if ((r.customer_name ?? "").trim().toLowerCase().startsWith(prefix)) matches.push(r);

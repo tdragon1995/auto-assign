@@ -183,8 +183,7 @@ export default function SalesPage() {
   const [tripLoading, setTripLoading] = useState(false);
   const [tripResult, setTripResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [tripNote, setTripNote] = useState("");
-  const [duplicates, setDuplicates] = useState<{ customer_id: string; customer_name: string }[] | null>(null);
-  const [houseNo, setHouseNo] = useState("");
+  const [duplicates, setDuplicates] = useState<{ customer_id: string; customer_name: string; address_line_1?: string }[] | null>(null);
 
   const extractFromLink = async () => {
     const url = mapLink.trim();
@@ -280,7 +279,7 @@ export default function SalesPage() {
           setResult({ ok: false, msg: data.error ?? "Lỗi không xác định" });
         }
       } else {
-        setResult({ ok: true, msg: "Tạo địa điểm lấy mẫu thành công." });
+        setResult({ ok: true, msg: `Tạo địa điểm lấy mẫu thành công: ${data.customer?.customer_name ?? name}` });
         const lat2 = parseFloat(lat);
         const lon2 = parseFloat(lon);
         if (data.customer?.customer_id && !Number.isNaN(lat2) && !Number.isNaN(lon2)) {
@@ -294,7 +293,6 @@ export default function SalesPage() {
           setTripResult(null);
         }
         setDuplicates(null);
-        setHouseNo("");
         setMaKh(""); setQuanCu(""); setTenDuong(""); setTenKh(""); setDiaChi(""); setLat(""); setLon(""); setPhone("");
       }
     } catch (e) {
@@ -307,12 +305,9 @@ export default function SalesPage() {
   const submit = () => doSubmit();
 
   const submitForce = () => {
-    const includeStreet = ["21362", "21361", "46651876"].includes(maKh);
     const abbr = abbrStreet(tenDuong);
-    const no = houseNo.trim();
-    const lastPart = includeStreet
-      ? `${tenKh} ${no} ${tenDuong}`.replace(/\s+/g, " ").trim()
-      : `${tenKh} ${no}`.replace(/\s+/g, " ").trim();
+    const houseNo = diaChi.trim().match(/^([\w/]+)/)?.[1] ?? "";
+    const lastPart = `${tenKh} ${houseNo} ${tenDuong}`.replace(/\s+/g, " ").trim();
     doSubmit([maKh, quanCu, abbr, lastPart].filter(Boolean).join(" - "));
   };
 
@@ -602,26 +597,22 @@ export default function SalesPage() {
               <p className="text-sm font-semibold text-amber-800">
                 Tìm thấy {duplicates.length} khách hàng có thể trùng:
               </p>
-              <ul className="space-y-1">
+              <ul className="space-y-2">
                 {duplicates.map((d) => (
-                  <li key={d.customer_id} className="text-xs text-amber-700 font-mono break-all">{d.customer_name}</li>
+                  <li key={d.customer_id} className="text-xs text-amber-700">
+                    <span className="font-mono break-all">{d.customer_name}</span>
+                    {d.address_line_1 && (
+                      <span className="block text-amber-600 mt-0.5">{d.address_line_1}</span>
+                    )}
+                  </li>
                 ))}
               </ul>
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Số nhà (để phân biệt)</label>
-                <input
-                  value={houseNo}
-                  onChange={(e) => setHouseNo(e.target.value)}
-                  placeholder="VD: 123, 45B, 12/34"
-                  className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
-                />
-              </div>
               <button
                 onClick={submitForce}
                 disabled={loading}
                 className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-amber-600 hover:bg-amber-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
               >
-                {loading ? "Đang tạo..." : "Tạo dù có trùng"}
+                {loading ? "Đang tạo..." : "Khách hàng có nhiều địa điểm trên cùng đường"}
               </button>
             </div>
           )}
