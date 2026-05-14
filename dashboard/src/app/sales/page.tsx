@@ -245,6 +245,7 @@ export default function SalesPage() {
     quanCu.trim() &&
     tenDuong.trim() &&
     tenKh.trim() &&
+    phone.trim() &&
     !loading;
 
   const doSubmit = async (forceName?: string) => {
@@ -447,13 +448,18 @@ export default function SalesPage() {
 
           <div>
             <label className="block text-sm font-semibold text-slate-700 mb-1.5">Tên Đường</label>
-            <textarea
+            <input
               value={tenDuong}
-              onChange={(e) => setTenDuong(e.target.value.replace(/\n/g, ""))}
-              rows={5}
-              placeholder={"Chỉ điền tên đường, VD:\nĐường Điện Biên Phủ → Điện Biên Phủ\nĐường số 6 → 6\nĐường 3/2 → 3/2\nĐường Tỉnh Lộ 8 → Tỉnh Lộ 8"}
-              className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 resize-none"
+              onChange={(e) => setTenDuong(e.target.value)}
+              className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
             />
+            <p className="text-[10.5px] text-slate-400 mt-1 leading-relaxed">
+              Chỉ điền tên đường — không ghi "Đường" hay "Phố".<br />
+              Đường Điện Biên Phủ → <span className="font-semibold">Điện Biên Phủ</span><br />
+              Đường số 6 → <span className="font-semibold">6</span><br />
+              Đường 3/2 → <span className="font-semibold">3/2</span><br />
+              Đường Tỉnh Lộ 8 → <span className="font-semibold">Tỉnh Lộ 8</span>
+            </p>
             {tenDuong && (
               <p className="text-xs text-slate-500 mt-1">
                 Viết tắt: <span className="font-semibold text-slate-700">{abbrStreet(tenDuong)}</span>
@@ -463,13 +469,19 @@ export default function SalesPage() {
 
           <div>
             <label className="block text-sm font-semibold text-slate-700 mb-1.5">Tên Khách Hàng</label>
-            <textarea
+            <input
               value={tenKh}
-              onChange={(e) => setTenKh(e.target.value.replace(/\n/g, ""))}
-              rows={5}
-              placeholder={"Điền tên khách hàng giống CRM\n*\nNhi Đồng 315 → ND315\nPhụ Sản 315 → PS315\nLão Khoa 315 → LK315\nTim Mạch 315 → TM315"}
-              className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 resize-none"
+              onChange={(e) => setTenKh(e.target.value)}
+              className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
             />
+            <p className="text-[10.5px] text-slate-400 mt-1 leading-relaxed">
+              Điền tên khách hàng giống CRM.<br />
+              Riêng với hệ thống 315:<br />
+              Nhi Đồng 315 → <span className="font-semibold">ND315</span> &nbsp;
+              Phụ Sản 315 → <span className="font-semibold">PS315</span><br />
+              Lão Khoa 315 → <span className="font-semibold">LK315</span> &nbsp;
+              Tim Mạch 315 → <span className="font-semibold">TM315</span>
+            </p>
           </div>
 
           <div className="relative">
