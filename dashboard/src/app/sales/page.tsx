@@ -530,6 +530,7 @@ export default function SalesPage() {
             />
           </div>
 
+          {(!lat || !lon) && (
           <div>
             <label className="block text-sm font-semibold text-slate-700 mb-1.5">Google Maps Link</label>
             <div className="flex gap-2">
@@ -549,8 +550,8 @@ export default function SalesPage() {
               </button>
             </div>
             {linkError && <p className="text-xs text-red-600 mt-1">{linkError}</p>}
-            <p className="text-xs text-slate-500 mt-1">Để trống nếu đã chọn được địa chỉ đúng!</p>
           </div>
+          )}
 
           <div className="grid grid-cols-2 gap-3">
             <div>
