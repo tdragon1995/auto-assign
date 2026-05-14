@@ -444,6 +444,9 @@ export default function SalesPage() {
                 <option key={o.code} value={o.code}>{o.label} — {o.code}</option>
               ))}
             </select>
+            <p className="text-[10.5px] text-slate-400 mt-1 leading-relaxed">
+              Với khu vực xa trung tâm, chọn tỉnh hoặc thành phố như Thuận An, Dĩ An, Bến Cát, Biên Hòa...
+            </p>
           </div>
 
           <div>
