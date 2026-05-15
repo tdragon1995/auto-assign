@@ -578,6 +578,45 @@ export default function SalesPage() {
               )}
             </div>
 
+            {/* Địa Chỉ */}
+            <div className="relative">
+              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Địa Chỉ</label>
+              <div className="relative">
+                <FieldIcon paths={ICON_PIN} />
+                <input
+                  value={diaChi}
+                  onChange={(e) => { setDiaChi(e.target.value); setShowPredictions(true); }}
+                  onFocus={() => setShowPredictions(true)}
+                  onBlur={() => setTimeout(() => setShowPredictions(false), 150)}
+                  placeholder="Search..."
+                  className="w-full border rounded-xl pl-9 pr-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+                />
+              </div>
+              {showPredictions && (predictionsLoading || predictions.length > 0) && (
+                <ul className="absolute z-10 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-64 overflow-y-auto">
+                  {predictionsLoading && predictions.length === 0 && (
+                    <li className="px-3 py-2 text-sm text-slate-400">Đang tìm...</li>
+                  )}
+                  {predictions.map((p) => (
+                    <li
+                      key={p.place_id}
+                      onMouseDown={(e) => { e.preventDefault(); selectPrediction(p); }}
+                      className="px-3 py-2 text-sm hover:bg-slate-50 cursor-pointer border-b last:border-b-0 border-slate-100"
+                    >
+                      <div className="font-medium text-slate-800">
+                        {p.structured_formatting?.main_text ?? p.description}
+                      </div>
+                      {p.structured_formatting?.secondary_text && (
+                        <div className="text-xs text-slate-500 truncate">
+                          {p.structured_formatting.secondary_text}
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
             {/* Quận Cũ */}
             <div>
               <label className="block text-sm font-semibold text-slate-700 mb-1">Quận Cũ</label>
@@ -644,45 +683,6 @@ export default function SalesPage() {
                 <p className="text-xs text-slate-500 mt-1">
                   Viết tắt: <span className="font-semibold text-slate-700">{abbrStreet(tenDuong)}</span>
                 </p>
-              )}
-            </div>
-
-            {/* Địa Chỉ */}
-            <div className="relative">
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Địa Chỉ</label>
-              <div className="relative">
-                <FieldIcon paths={ICON_PIN} />
-                <input
-                  value={diaChi}
-                  onChange={(e) => { setDiaChi(e.target.value); setShowPredictions(true); }}
-                  onFocus={() => setShowPredictions(true)}
-                  onBlur={() => setTimeout(() => setShowPredictions(false), 150)}
-                  placeholder="Search..."
-                  className="w-full border rounded-xl pl-9 pr-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-                />
-              </div>
-              {showPredictions && (predictionsLoading || predictions.length > 0) && (
-                <ul className="absolute z-10 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-64 overflow-y-auto">
-                  {predictionsLoading && predictions.length === 0 && (
-                    <li className="px-3 py-2 text-sm text-slate-400">Đang tìm...</li>
-                  )}
-                  {predictions.map((p) => (
-                    <li
-                      key={p.place_id}
-                      onMouseDown={(e) => { e.preventDefault(); selectPrediction(p); }}
-                      className="px-3 py-2 text-sm hover:bg-slate-50 cursor-pointer border-b last:border-b-0 border-slate-100"
-                    >
-                      <div className="font-medium text-slate-800">
-                        {p.structured_formatting?.main_text ?? p.description}
-                      </div>
-                      {p.structured_formatting?.secondary_text && (
-                        <div className="text-xs text-slate-500 truncate">
-                          {p.structured_formatting.secondary_text}
-                        </div>
-                      )}
-                    </li>
-                  ))}
-                </ul>
               )}
             </div>
 
