@@ -8,6 +8,14 @@ type Prediction = {
   structured_formatting?: { main_text?: string; secondary_text?: string };
 };
 
+type ClientResult = { code: string; client_legal_name: string };
+
+const CLIENT_OVERRIDES: Record<string, string> = {
+  "21362": "PS315",
+  "21361": "TM315",
+  "46651876": "ND315",
+};
+
 const QUAN_CU_OPTIONS: { label: string; code: string }[] = [
   { label: "Quận 1",     code: "D1"     },
   { label: "Quận 3",     code: "D3"     },
@@ -54,7 +62,7 @@ const QUAN_CU_OPTIONS: { label: string; code: string }[] = [
 function stripDiacritics(s: string): string {
   return s
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[̀-ͯ]/g, "")
     .replace(/đ/g, "d")
     .replace(/Đ/g, "D");
 }
@@ -73,6 +81,48 @@ function abbrStreet(raw: string): string {
   const initials = words.slice(0, -1).map((w) => w[0].toUpperCase()).join("");
   return initials + titleCase(words[words.length - 1]);
 }
+
+function Icon({ paths, className }: { paths: string[]; className?: string }) {
+  return (
+    <svg
+      className={`w-4 h-4 ${className ?? ""}`}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      viewBox="0 0 24 24"
+    >
+      {paths.map((d, i) => (
+        <path key={i} strokeLinecap="round" strokeLinejoin="round" d={d} />
+      ))}
+    </svg>
+  );
+}
+
+function FieldIcon({ paths }: { paths: string[] }) {
+  return (
+    <span className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+      <Icon paths={paths} />
+    </span>
+  );
+}
+
+const ICON_SEARCH = ["M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"];
+const ICON_PIN = [
+  "M15 10.5a3 3 0 11-6 0 3 3 0 016 0z",
+  "M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z",
+];
+const ICON_MAP = [
+  "M9 6.75V15m6-6v8.25m.503 3.498l4.875-2.437c.381-.19.622-.58.622-1.006V4.82c0-.836-.88-1.38-1.628-1.006l-3.869 1.934c-.317.159-.69.159-1.006 0L9.503 3.252a1.125 1.125 0 00-1.006 0L3.622 5.689C3.24 5.88 3 6.27 3 6.695V19.18c0 .836.88 1.38 1.628 1.006l3.869-1.934c.317-.159.69-.159 1.006 0l4.994 2.497c.317.158.69.158 1.006 0z",
+];
+const ICON_USER = [
+  "M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z",
+];
+const ICON_PHONE = [
+  "M2.25 6.75c0 8.284 6.716 15 15 15h2.25a2.25 2.25 0 002.25-2.25v-1.372c0-.516-.351-.966-.852-1.091l-4.423-1.106c-.44-.11-.902.055-1.173.417l-.97 1.293c-.282.376-.769.542-1.21.38a12.035 12.035 0 01-7.143-7.143c-.162-.441.004-.928.38-1.21l1.293-.97c.363-.271.527-.734.417-1.173L6.963 3.102a1.125 1.125 0 00-1.091-.852H4.5A2.25 2.25 0 002.25 4.5v2.25z",
+];
+const ICON_LINK = [
+  "M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244",
+];
 
 const REJECT_REASONS = [
   "Khách hàng không còn nhu cầu gửi mẫu",
@@ -115,6 +165,7 @@ export default function SalesPage() {
     }
   };
 
+  // Customer form state
   const [maKh, setMaKh] = useState("");
   const [quanCu, setQuanCu] = useState("");
   const [tenDuong, setTenDuong] = useState("");
@@ -124,6 +175,53 @@ export default function SalesPage() {
   const [lat, setLat] = useState("");
   const [lon, setLon] = useState("");
   const [mapLink, setMapLink] = useState("");
+
+  // Client search (Thông Tin Khách Hàng)
+  const [clientSearch, setClientSearch] = useState("");
+  const [clientResults, setClientResults] = useState<ClientResult[]>([]);
+  const [showClientResults, setShowClientResults] = useState(false);
+  const [clientSearchLoading, setClientSearchLoading] = useState(false);
+  const [clientSelected, setClientSelected] = useState(false);
+
+  useEffect(() => {
+    if (clientSelected) return;
+    const q = clientSearch.trim();
+    if (q.length < 2) { setClientResults([]); return; }
+    const ac = new AbortController();
+    const t = setTimeout(async () => {
+      setClientSearchLoading(true);
+      try {
+        const res = await fetch(`/api/labcenter/client?q=${encodeURIComponent(q)}`, { signal: ac.signal });
+        const data = await res.json();
+        if (res.ok) setClientResults(data.results ?? []);
+      } catch {
+        // aborted or network — ignore
+      } finally {
+        setClientSearchLoading(false);
+      }
+    }, 300);
+    return () => { clearTimeout(t); ac.abort(); };
+  }, [clientSearch, clientSelected]);
+
+  const selectClient = (r: ClientResult) => {
+    const name = CLIENT_OVERRIDES[r.code] ?? r.client_legal_name;
+    setMaKh(r.code);
+    setTenKh(name);
+    setClientSearch(`${r.code} — ${r.client_legal_name}`);
+    setClientSelected(true);
+    setShowClientResults(false);
+    setClientResults([]);
+  };
+
+  const clearClient = () => {
+    setMaKh("");
+    setTenKh("");
+    setClientSearch("");
+    setClientSelected(false);
+    setClientResults([]);
+  };
+
+  // Address autocomplete
   const [predictions, setPredictions] = useState<Prediction[]>([]);
   const [showPredictions, setShowPredictions] = useState(false);
   const [predictionsLoading, setPredictionsLoading] = useState(false);
@@ -135,10 +233,7 @@ export default function SalesPage() {
       return;
     }
     const q = diaChi.trim();
-    if (q.length < 3) {
-      setPredictions([]);
-      return;
-    }
+    if (q.length < 3) { setPredictions([]); return; }
     const ac = new AbortController();
     const t = setTimeout(async () => {
       setPredictionsLoading(true);
@@ -152,10 +247,7 @@ export default function SalesPage() {
         setPredictionsLoading(false);
       }
     }, 250);
-    return () => {
-      clearTimeout(t);
-      ac.abort();
-    };
+    return () => { clearTimeout(t); ac.abort(); };
   }, [diaChi]);
 
   const selectPrediction = async (p: Prediction) => {
@@ -174,9 +266,9 @@ export default function SalesPage() {
       // ignore — user can still paste a maps link
     }
   };
+
   const [linkLoading, setLinkLoading] = useState(false);
   const [linkError, setLinkError] = useState("");
-
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [newCustomer, setNewCustomer] = useState<{ customer_id: string; customer_name: string; lat: number; lon: number; ma_kh: string } | null>(null);
@@ -191,7 +283,6 @@ export default function SalesPage() {
     setLinkLoading(true);
     setLinkError("");
     try {
-      // Client-side fast path
       const patterns = [
         /@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/,
         /!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/,
@@ -200,24 +291,15 @@ export default function SalesPage() {
       ];
       for (const re of patterns) {
         const m = url.match(re);
-        if (m) {
-          setLat(m[1]);
-          setLon(m[2]);
-          setLinkLoading(false);
-          return;
-        }
+        if (m) { setLat(m[1]); setLon(m[2]); setLinkLoading(false); return; }
       }
-      // Short link — resolve server-side
       const res = await fetch("/api/geo/resolve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url }),
       });
       const data = await res.json();
-      if (!res.ok) {
-        setLinkError(data.error ?? "Không đọc được link");
-        return;
-      }
+      if (!res.ok) { setLinkError(data.error ?? "Không đọc được link"); return; }
       setLat(String(data.latitude));
       setLon(String(data.longitude));
     } catch (e) {
@@ -295,6 +377,7 @@ export default function SalesPage() {
         }
         setDuplicates(null);
         setMaKh(""); setQuanCu(""); setTenDuong(""); setTenKh(""); setDiaChi(""); setLat(""); setLon(""); setPhone("");
+        setClientSearch(""); setClientSelected(false); setClientResults([]);
       }
     } catch (e) {
       setResult({ ok: false, msg: String(e) });
@@ -326,10 +409,7 @@ export default function SalesPage() {
       if (!res.ok) {
         setTripResult({ ok: false, msg: data.error ?? "Tạo chuyến thất bại" });
       } else {
-        setTripResult({
-          ok: true,
-          msg: "Tạo chuyến thành công, Liên hệ Logistics để biết thêm thông tin",
-        });
+        setTripResult({ ok: true, msg: "Tạo chuyến thành công, Liên hệ Logistics để biết thêm thông tin" });
         setNewCustomer(null);
         setTripNote("");
       }
@@ -380,7 +460,6 @@ export default function SalesPage() {
                 className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
               />
             </div>
-
             <div>
               <label className="block text-sm font-semibold text-slate-700 mb-1.5">Lý Do Từ Chối</label>
               <select
@@ -393,7 +472,6 @@ export default function SalesPage() {
                 ))}
               </select>
             </div>
-
             <button
               onClick={rejectJob}
               disabled={!refNumber.trim() || rejectLoading}
@@ -401,15 +479,12 @@ export default function SalesPage() {
             >
               {rejectLoading ? "Đang huỷ..." : "Huỷ yêu cầu giao nhận"}
             </button>
-
             {rejectResult && (
-              <div
-                className={`rounded-xl p-3.5 text-sm font-medium text-center ${
-                  rejectResult.ok
-                    ? "bg-emerald-50 border border-emerald-200 text-emerald-800"
-                    : "bg-red-50 border border-red-200 text-red-800"
-                }`}
-              >
+              <div className={`rounded-xl p-3.5 text-sm font-medium text-center ${
+                rejectResult.ok
+                  ? "bg-emerald-50 border border-emerald-200 text-emerald-800"
+                  : "bg-red-50 border border-red-200 text-red-800"
+              }`}>
                 {rejectResult.msg}
               </div>
             )}
@@ -417,267 +492,306 @@ export default function SalesPage() {
         )}
 
         {tab === "customer" && (
-        <div className="p-6 space-y-4 border-t border-slate-100">
-          <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">Mã KH</label>
-            <input
-              value={maKh}
-              onChange={(e) => setMaKh(e.target.value.replace(/\D/g, ""))}
-              inputMode="numeric"
-              placeholder="5-8 chữ số"
-              className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-            />
-            {maKh && !maKhValid && (
-              <p className="text-xs text-red-600 mt-1">Mã KH phải là số, 5-8 chữ số.</p>
-            )}
-          </div>
+          <div className="p-6 space-y-4 border-t border-slate-100">
 
-          <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1">Quận Cũ</label>
-            <p className="text-[10.5px] text-slate-400 mb-1.5 leading-relaxed">
-              Với khu vực xa trung tâm, chọn tỉnh hoặc thành phố như Thuận An, Dĩ An, Bến Cát, Biên Hòa...
-            </p>
-            <select
-              value={quanCu}
-              onChange={(e) => setQuanCu(e.target.value)}
-              className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-            >
-              <option value="">-- Chọn khu vực --</option>
-              {QUAN_CU_OPTIONS.map((o) => (
-                <option key={o.code} value={o.code}>{o.label} — {o.code}</option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1">Tên Đường</label>
-            <p className="text-[10.5px] text-slate-400 mb-1.5 leading-relaxed">
-              Chỉ điền tên đường — không ghi "Đường" hay "Phố".<br />
-              Đường Điện Biên Phủ → <span className="font-semibold">Điện Biên Phủ</span><br />
-              Đường số 6 → <span className="font-semibold">6</span><br />
-              Đường 3/2 → <span className="font-semibold">3/2</span><br />
-              Đường Tỉnh Lộ 8 → <span className="font-semibold">Tỉnh Lộ 8</span>
-            </p>
-            <input
-              value={tenDuong}
-              onChange={(e) => setTenDuong(e.target.value)}
-              className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-            />
-            {tenDuong && (
-              <p className="text-xs text-slate-500 mt-1">
-                Viết tắt: <span className="font-semibold text-slate-700">{abbrStreet(tenDuong)}</span>
+            {/* Thông Tin Khách Hàng — search by code or name */}
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">Thông Tin Khách Hàng</label>
+              <p className="text-[10.5px] text-slate-400 mb-1.5 leading-relaxed">
+                Điền Client Code hoặc tên khách hàng
               </p>
-            )}
-          </div>
-
-          <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1">Tên Khách Hàng</label>
-            <p className="text-[10.5px] text-slate-400 mb-1.5 leading-relaxed">
-              Điền tên khách hàng giống CRM.<br />
-              Riêng với hệ thống 315:<br />
-              Nhi Đồng 315 → <span className="font-semibold">ND315</span> &nbsp;
-              Phụ Sản 315 → <span className="font-semibold">PS315</span><br />
-              Lão Khoa 315 → <span className="font-semibold">LK315</span> &nbsp;
-              Tim Mạch 315 → <span className="font-semibold">TM315</span>
-            </p>
-            <input
-              value={tenKh}
-              onChange={(e) => setTenKh(e.target.value)}
-              className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-            />
-          </div>
-
-          <div className="relative">
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">Địa Chỉ</label>
-            <div className="relative">
-              <svg
-                className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none"
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={2}
-              >
-                <circle cx="11" cy="11" r="8" />
-                <path strokeLinecap="round" d="M21 21l-4.35-4.35" />
-              </svg>
-              <input
-                value={diaChi}
-                onChange={(e) => { setDiaChi(e.target.value); setShowPredictions(true); }}
-                onFocus={() => setShowPredictions(true)}
-                onBlur={() => setTimeout(() => setShowPredictions(false), 150)}
-                placeholder="Search..."
-                className="w-full border rounded-xl pl-9 pr-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-              />
-            </div>
-            {showPredictions && (predictionsLoading || predictions.length > 0) && (
-              <ul className="absolute z-10 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-64 overflow-y-auto">
-                {predictionsLoading && predictions.length === 0 && (
-                  <li className="px-3 py-2 text-sm text-slate-400">Đang tìm...</li>
-                )}
-                {predictions.map((p) => (
-                  <li
-                    key={p.place_id}
-                    onMouseDown={(e) => { e.preventDefault(); selectPrediction(p); }}
-                    className="px-3 py-2 text-sm hover:bg-slate-50 cursor-pointer border-b last:border-b-0 border-slate-100"
-                  >
-                    <div className="font-medium text-slate-800">
-                      {p.structured_formatting?.main_text ?? p.description}
-                    </div>
-                    {p.structured_formatting?.secondary_text && (
-                      <div className="text-xs text-slate-500 truncate">
-                        {p.structured_formatting.secondary_text}
-                      </div>
+              <div className="relative">
+                <div className="relative">
+                  <FieldIcon paths={ICON_SEARCH} />
+                  <input
+                    value={clientSearch}
+                    onChange={(e) => { setClientSearch(e.target.value); setShowClientResults(true); }}
+                    onFocus={() => { if (!clientSelected) setShowClientResults(true); }}
+                    onBlur={() => setTimeout(() => setShowClientResults(false), 150)}
+                    readOnly={clientSelected}
+                    placeholder="Search..."
+                    className={`w-full border rounded-xl pl-9 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 ${clientSelected ? "pr-8 cursor-default" : "pr-3"}`}
+                  />
+                  {clientSelected && (
+                    <button
+                      type="button"
+                      onMouseDown={(e) => { e.preventDefault(); clearClient(); }}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                      aria-label="Xoá"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+                {showClientResults && !clientSelected && (clientSearchLoading || clientResults.length > 0) && (
+                  <ul className="absolute z-10 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-64 overflow-y-auto">
+                    {clientSearchLoading && clientResults.length === 0 && (
+                      <li className="px-3 py-2 text-sm text-slate-400">Đang tìm...</li>
                     )}
-                  </li>
-                ))}
-              </ul>
+                    {clientResults.map((r) => (
+                      <li
+                        key={r.code}
+                        onMouseDown={(e) => { e.preventDefault(); selectClient(r); }}
+                        className="px-3 py-2 text-sm hover:bg-slate-50 cursor-pointer border-b last:border-b-0 border-slate-100"
+                      >
+                        <span className="font-mono text-xs text-slate-500 mr-2">{r.code}</span>
+                        <span className="font-medium text-slate-800">{r.client_legal_name}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              {maKh && !maKhValid && (
+                <p className="text-xs text-red-600 mt-1">Mã KH không hợp lệ.</p>
+              )}
+            </div>
+
+            {/* Tên Khách Hàng — always locked, auto-filled from search */}
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Tên Khách Hàng</label>
+              <div className="relative flex items-center w-full border rounded-xl pl-9 pr-3 py-2.5 text-sm bg-slate-50 min-h-[38px]">
+                <FieldIcon paths={ICON_USER} />
+                <span className={tenKh ? "text-slate-800 font-medium" : "text-slate-400 italic"}>
+                  {tenKh || "Tự động điền khi chọn khách hàng"}
+                </span>
+              </div>
+            </div>
+
+            {/* Quận Cũ */}
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">Quận Cũ</label>
+              <p className="text-[10.5px] text-slate-400 mb-1.5 leading-relaxed">
+                Với khu vực xa trung tâm, chọn tỉnh hoặc thành phố như Thuận An, Dĩ An, Bến Cát, Biên Hòa...
+              </p>
+              <div className="relative">
+                <FieldIcon paths={ICON_PIN} />
+                <select
+                  value={quanCu}
+                  onChange={(e) => setQuanCu(e.target.value)}
+                  className="w-full border rounded-xl pl-9 pr-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 appearance-none"
+                >
+                  <option value="">-- Chọn khu vực --</option>
+                  {QUAN_CU_OPTIONS.map((o) => (
+                    <option key={o.code} value={o.code}>{o.label} — {o.code}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Tên Đường */}
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">Tên Đường</label>
+              <p className="text-[10.5px] text-slate-400 mb-1.5 leading-relaxed">
+                Chỉ điền tên đường — không ghi "Đường" hay "Phố".<br />
+                Đường Điện Biên Phủ → <span className="font-semibold">Điện Biên Phủ</span><br />
+                Đường số 6 → <span className="font-semibold">6</span><br />
+                Đường 3/2 → <span className="font-semibold">3/2</span><br />
+                Đường Tỉnh Lộ 8 → <span className="font-semibold">Tỉnh Lộ 8</span>
+              </p>
+              <div className="relative">
+                <FieldIcon paths={ICON_MAP} />
+                <input
+                  value={tenDuong}
+                  onChange={(e) => setTenDuong(e.target.value)}
+                  className="w-full border rounded-xl pl-9 pr-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+                />
+              </div>
+              {tenDuong && (
+                <p className="text-xs text-slate-500 mt-1">
+                  Viết tắt: <span className="font-semibold text-slate-700">{abbrStreet(tenDuong)}</span>
+                </p>
+              )}
+            </div>
+
+            {/* Địa Chỉ */}
+            <div className="relative">
+              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Địa Chỉ</label>
+              <div className="relative">
+                <FieldIcon paths={ICON_PIN} />
+                <input
+                  value={diaChi}
+                  onChange={(e) => { setDiaChi(e.target.value); setShowPredictions(true); }}
+                  onFocus={() => setShowPredictions(true)}
+                  onBlur={() => setTimeout(() => setShowPredictions(false), 150)}
+                  placeholder="Search..."
+                  className="w-full border rounded-xl pl-9 pr-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+                />
+              </div>
+              {showPredictions && (predictionsLoading || predictions.length > 0) && (
+                <ul className="absolute z-10 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-64 overflow-y-auto">
+                  {predictionsLoading && predictions.length === 0 && (
+                    <li className="px-3 py-2 text-sm text-slate-400">Đang tìm...</li>
+                  )}
+                  {predictions.map((p) => (
+                    <li
+                      key={p.place_id}
+                      onMouseDown={(e) => { e.preventDefault(); selectPrediction(p); }}
+                      className="px-3 py-2 text-sm hover:bg-slate-50 cursor-pointer border-b last:border-b-0 border-slate-100"
+                    >
+                      <div className="font-medium text-slate-800">
+                        {p.structured_formatting?.main_text ?? p.description}
+                      </div>
+                      {p.structured_formatting?.secondary_text && (
+                        <div className="text-xs text-slate-500 truncate">
+                          {p.structured_formatting.secondary_text}
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            {/* Số Điện Thoại */}
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Số Điện Thoại Liên Hệ Nhận Mẫu</label>
+              <div className="relative">
+                <FieldIcon paths={ICON_PHONE} />
+                <input
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value.replace(/\D/g, ""))}
+                  inputMode="tel"
+                  placeholder="VD: 0909123456"
+                  className="w-full border rounded-xl pl-9 pr-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+                />
+              </div>
+            </div>
+
+            {/* Google Maps Link */}
+            {(!lat || !lon) && (
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Google Maps Link</label>
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <FieldIcon paths={ICON_LINK} />
+                    <input
+                      value={mapLink}
+                      onChange={(e) => setMapLink(e.target.value)}
+                      placeholder="Dán link Google Maps"
+                      className="w-full border rounded-xl pl-9 pr-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={extractFromLink}
+                    disabled={linkLoading || !mapLink.trim()}
+                    className="px-4 rounded-xl bg-slate-800 text-white text-sm font-semibold disabled:opacity-40"
+                  >
+                    {linkLoading ? "..." : "Lấy"}
+                  </button>
+                </div>
+                {linkError && <p className="text-xs text-red-600 mt-1">{linkError}</p>}
+              </div>
             )}
-          </div>
 
-          <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">Số Điện Thoại Liên Hệ Nhận Mẫu</label>
-            <input
-              value={phone}
-              onChange={(e) => setPhone(e.target.value.replace(/\D/g, ""))}
-              inputMode="tel"
-              placeholder="VD: 0909123456"
-              className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-            />
-          </div>
-
-          {(!lat || !lon) && (
-          <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">Google Maps Link</label>
-            <div className="flex gap-2">
-              <input
-                value={mapLink}
-                onChange={(e) => setMapLink(e.target.value)}
-                placeholder="Dán link Google Maps"
-                className="flex-1 border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-              />
-              <button
-                type="button"
-                onClick={extractFromLink}
-                disabled={linkLoading || !mapLink.trim()}
-                className="px-4 rounded-xl bg-slate-800 text-white text-sm font-semibold disabled:opacity-40"
-              >
-                {linkLoading ? "..." : "Lấy"}
-              </button>
+            {/* Vĩ Độ / Kinh Độ */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Vĩ Độ</label>
+                <input
+                  value={lat}
+                  onChange={(e) => setLat(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="10.7626"
+                  className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Kinh Độ</label>
+                <input
+                  value={lon}
+                  onChange={(e) => setLon(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="106.6602"
+                  className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+                />
+              </div>
             </div>
-            {linkError && <p className="text-xs text-red-600 mt-1">{linkError}</p>}
-          </div>
-          )}
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Vĩ Độ</label>
-              <input
-                value={lat}
-                onChange={(e) => setLat(e.target.value)}
-                inputMode="decimal"
-                placeholder="10.7626"
-                className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Kinh Độ</label>
-              <input
-                value={lon}
-                onChange={(e) => setLon(e.target.value)}
-                inputMode="decimal"
-                placeholder="106.6602"
-                className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-              />
-            </div>
-          </div>
+            {customerName && (
+              <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+                <p className="text-xs font-medium text-slate-500 mb-1">Tên trên Cartrack</p>
+                <p className="text-sm font-semibold text-slate-800 break-words">{customerName}</p>
+              </div>
+            )}
 
-          {customerName && (
-            <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
-              <p className="text-xs font-medium text-slate-500 mb-1">Tên trên Cartrack</p>
-              <p className="text-sm font-semibold text-slate-800 break-words">{customerName}</p>
-            </div>
-          )}
+            <button
+              onClick={submit}
+              disabled={!canSubmit}
+              className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            >
+              {loading ? "Đang kiểm tra & tạo..." : "Tạo khách hàng"}
+            </button>
 
-          <button
-            onClick={submit}
-            disabled={!canSubmit}
-            className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-          >
-            {loading ? "Đang kiểm tra & tạo..." : "Tạo khách hàng"}
-          </button>
-
-          {result && (
-            <div
-              className={`rounded-xl p-3.5 text-sm font-medium text-center ${
+            {result && (
+              <div className={`rounded-xl p-3.5 text-sm font-medium text-center ${
                 result.ok
                   ? "bg-emerald-50 border border-emerald-200 text-emerald-800"
                   : "bg-red-50 border border-red-200 text-red-800"
-              }`}
-            >
-              {result.msg}
-            </div>
-          )}
-
-          {duplicates && duplicates.length > 0 && (
-            <div className="rounded-xl bg-amber-50 border border-amber-200 p-3.5 space-y-3">
-              <p className="text-sm font-semibold text-amber-800">
-                Tìm thấy {duplicates.length} khách hàng có thể trùng:
-              </p>
-              <ul className="space-y-2">
-                {duplicates.map((d) => (
-                  <li key={d.customer_id} className="text-xs text-amber-700">
-                    <span className="font-mono break-all">{d.customer_name}</span>
-                    {d.address_line_1 && (
-                      <span className="block text-amber-600 mt-0.5">{d.address_line_1}</span>
-                    )}
-                  </li>
-                ))}
-              </ul>
-              <button
-                onClick={submitForce}
-                disabled={loading}
-                className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-amber-600 hover:bg-amber-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-              >
-                {loading ? "Đang tạo..." : "Khách hàng có nhiều địa điểm trên cùng đường"}
-              </button>
-            </div>
-          )}
-
-          {newCustomer && (
-            <div className="space-y-3">
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Ghi Chú Thêm</label>
-                <textarea
-                  value={tripNote}
-                  onChange={(e) => setTripNote(e.target.value)}
-                  rows={2}
-                  placeholder="VD: gọi trước khi đến, tầng 3..."
-                  className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 resize-none"
-                />
+              }`}>
+                {result.msg}
               </div>
-              <button
-                onClick={createTrip}
-                disabled={tripLoading}
-                className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-indigo-600 hover:bg-indigo-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-              >
-                {tripLoading ? "Đang tạo chuyến..." : "Tạo chuyến giao nhận"}
-              </button>
-            </div>
-          )}
+            )}
 
-          {tripResult && (
-            <div
-              className={`rounded-xl p-3.5 text-sm font-medium text-center ${
+            {duplicates && duplicates.length > 0 && (
+              <div className="rounded-xl bg-amber-50 border border-amber-200 p-3.5 space-y-3">
+                <p className="text-sm font-semibold text-amber-800">
+                  Tìm thấy {duplicates.length} khách hàng có thể trùng:
+                </p>
+                <ul className="space-y-2">
+                  {duplicates.map((d) => (
+                    <li key={d.customer_id} className="text-xs text-amber-700">
+                      <span className="font-mono break-all">{d.customer_name}</span>
+                      {d.address_line_1 && (
+                        <span className="block text-amber-600 mt-0.5">{d.address_line_1}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                <button
+                  onClick={submitForce}
+                  disabled={loading}
+                  className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-amber-600 hover:bg-amber-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                >
+                  {loading ? "Đang tạo..." : "Khách hàng có nhiều địa điểm trên cùng đường"}
+                </button>
+              </div>
+            )}
+
+            {newCustomer && (
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-1.5">Ghi Chú Thêm</label>
+                  <textarea
+                    value={tripNote}
+                    onChange={(e) => setTripNote(e.target.value)}
+                    rows={2}
+                    placeholder="VD: gọi trước khi đến, tầng 3..."
+                    className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 resize-none"
+                  />
+                </div>
+                <button
+                  onClick={createTrip}
+                  disabled={tripLoading}
+                  className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-indigo-600 hover:bg-indigo-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                >
+                  {tripLoading ? "Đang tạo chuyến..." : "Tạo chuyến giao nhận"}
+                </button>
+              </div>
+            )}
+
+            {tripResult && (
+              <div className={`rounded-xl p-3.5 text-sm font-medium text-center ${
                 tripResult.ok
                   ? "bg-emerald-50 border border-emerald-200 text-emerald-800"
                   : "bg-red-50 border border-red-200 text-red-800"
-              }`}
-            >
-              {tripResult.msg}
-            </div>
-          )}
-        </div>
+              }`}>
+                {tripResult.msg}
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>
