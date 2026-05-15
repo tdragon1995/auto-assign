@@ -1,2 +1,4 @@
 .env
 *.xlsx
+dashboard/public/geo/*.geojson
+!dashboard/public/geo/districts.geojson
