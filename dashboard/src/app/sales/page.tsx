@@ -433,7 +433,10 @@ export default function SalesPage() {
           </div>
 
           <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">Quận Cũ</label>
+            <label className="block text-sm font-semibold text-slate-700 mb-1">Quận Cũ</label>
+            <p className="text-[10.5px] text-slate-400 mb-1.5 leading-relaxed">
+              Với khu vực xa trung tâm, chọn tỉnh hoặc thành phố như Thuận An, Dĩ An, Bến Cát, Biên Hòa...
+            </p>
             <select
               value={quanCu}
               onChange={(e) => setQuanCu(e.target.value)}
@@ -444,25 +447,22 @@ export default function SalesPage() {
                 <option key={o.code} value={o.code}>{o.label} — {o.code}</option>
               ))}
             </select>
-            <p className="text-[10.5px] text-slate-400 mt-1 leading-relaxed">
-              Với khu vực xa trung tâm, chọn tỉnh hoặc thành phố như Thuận An, Dĩ An, Bến Cát, Biên Hòa...
-            </p>
           </div>
 
           <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">Tên Đường</label>
-            <input
-              value={tenDuong}
-              onChange={(e) => setTenDuong(e.target.value)}
-              className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-            />
-            <p className="text-[10.5px] text-slate-400 mt-1 leading-relaxed">
+            <label className="block text-sm font-semibold text-slate-700 mb-1">Tên Đường</label>
+            <p className="text-[10.5px] text-slate-400 mb-1.5 leading-relaxed">
               Chỉ điền tên đường — không ghi "Đường" hay "Phố".<br />
               Đường Điện Biên Phủ → <span className="font-semibold">Điện Biên Phủ</span><br />
               Đường số 6 → <span className="font-semibold">6</span><br />
               Đường 3/2 → <span className="font-semibold">3/2</span><br />
               Đường Tỉnh Lộ 8 → <span className="font-semibold">Tỉnh Lộ 8</span>
             </p>
+            <input
+              value={tenDuong}
+              onChange={(e) => setTenDuong(e.target.value)}
+              className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+            />
             {tenDuong && (
               <p className="text-xs text-slate-500 mt-1">
                 Viết tắt: <span className="font-semibold text-slate-700">{abbrStreet(tenDuong)}</span>
@@ -471,13 +471,8 @@ export default function SalesPage() {
           </div>
 
           <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">Tên Khách Hàng</label>
-            <input
-              value={tenKh}
-              onChange={(e) => setTenKh(e.target.value)}
-              className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-            />
-            <p className="text-[10.5px] text-slate-400 mt-1 leading-relaxed">
+            <label className="block text-sm font-semibold text-slate-700 mb-1">Tên Khách Hàng</label>
+            <p className="text-[10.5px] text-slate-400 mb-1.5 leading-relaxed">
               Điền tên khách hàng giống CRM.<br />
               Riêng với hệ thống 315:<br />
               Nhi Đồng 315 → <span className="font-semibold">ND315</span> &nbsp;
@@ -485,18 +480,36 @@ export default function SalesPage() {
               Lão Khoa 315 → <span className="font-semibold">LK315</span> &nbsp;
               Tim Mạch 315 → <span className="font-semibold">TM315</span>
             </p>
+            <input
+              value={tenKh}
+              onChange={(e) => setTenKh(e.target.value)}
+              className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+            />
           </div>
 
           <div className="relative">
             <label className="block text-sm font-semibold text-slate-700 mb-1.5">Địa Chỉ</label>
-            <textarea
-              value={diaChi}
-              onChange={(e) => { setDiaChi(e.target.value); setShowPredictions(true); }}
-              onFocus={() => setShowPredictions(true)}
-              onBlur={() => setTimeout(() => setShowPredictions(false), 150)}
-              rows={2}
-              className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 resize-none"
-            />
+            <div className="relative">
+              <svg
+                className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none"
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <circle cx="11" cy="11" r="8" />
+                <path strokeLinecap="round" d="M21 21l-4.35-4.35" />
+              </svg>
+              <input
+                value={diaChi}
+                onChange={(e) => { setDiaChi(e.target.value); setShowPredictions(true); }}
+                onFocus={() => setShowPredictions(true)}
+                onBlur={() => setTimeout(() => setShowPredictions(false), 150)}
+                placeholder="Search..."
+                className="w-full border rounded-xl pl-9 pr-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+              />
+            </div>
             {showPredictions && (predictionsLoading || predictions.length > 0) && (
               <ul className="absolute z-10 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-64 overflow-y-auto">
                 {predictionsLoading && predictions.length === 0 && (
