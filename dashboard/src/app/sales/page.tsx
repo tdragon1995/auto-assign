@@ -573,7 +573,6 @@ export default function SalesPage() {
                         className="px-3 py-2 text-sm hover:bg-slate-50 cursor-pointer border-b last:border-b-0 border-slate-100"
                       >
                         <span className="font-medium text-slate-800">{o.label}</span>
-                        <span className="ml-2 text-xs text-slate-400">{o.code}</span>
                       </li>
                     ))}
                   </ul>
