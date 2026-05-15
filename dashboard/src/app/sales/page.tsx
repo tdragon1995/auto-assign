@@ -111,9 +111,6 @@ const ICON_PIN = [
   "M15 10.5a3 3 0 11-6 0 3 3 0 016 0z",
   "M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z",
 ];
-const ICON_MAP = [
-  "M9 6.75V15m6-6v8.25m.503 3.498l4.875-2.437c.381-.19.622-.58.622-1.006V4.82c0-.836-.88-1.38-1.628-1.006l-3.869 1.934c-.317.159-.69.159-1.006 0L9.503 3.252a1.125 1.125 0 00-1.006 0L3.622 5.689C3.24 5.88 3 6.27 3 6.695V19.18c0 .836.88 1.38 1.628 1.006l3.869-1.934c.317-.159.69-.159 1.006 0l4.994 2.497c.317.158.69.158 1.006 0z",
-];
 const ICON_USER = [
   "M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z",
 ];
@@ -552,14 +549,11 @@ export default function SalesPage() {
                 Đường 3/2 → <span className="font-semibold">3/2</span><br />
                 Đường Tỉnh Lộ 8 → <span className="font-semibold">Tỉnh Lộ 8</span>
               </p>
-              <div className="relative">
-                <FieldIcon paths={ICON_MAP} />
-                <input
-                  value={tenDuong}
-                  onChange={(e) => setTenDuong(e.target.value)}
-                  className="w-full border rounded-xl pl-9 pr-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-                />
-              </div>
+              <input
+                value={tenDuong}
+                onChange={(e) => setTenDuong(e.target.value)}
+                className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+              />
               {tenDuong && (
                 <p className="text-xs text-slate-500 mt-1">
                   Viết tắt: <span className="font-semibold text-slate-700">{abbrStreet(tenDuong)}</span>
