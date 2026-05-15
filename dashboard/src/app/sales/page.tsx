@@ -120,9 +120,6 @@ const ICON_USER = [
 const ICON_PHONE = [
   "M2.25 6.75c0 8.284 6.716 15 15 15h2.25a2.25 2.25 0 002.25-2.25v-1.372c0-.516-.351-.966-.852-1.091l-4.423-1.106c-.44-.11-.902.055-1.173.417l-.97 1.293c-.282.376-.769.542-1.21.38a12.035 12.035 0 01-7.143-7.143c-.162-.441.004-.928.38-1.21l1.293-.97c.363-.271.527-.734.417-1.173L6.963 3.102a1.125 1.125 0 00-1.091-.852H4.5A2.25 2.25 0 002.25 4.5v2.25z",
 ];
-const ICON_LINK = [
-  "M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244",
-];
 
 const REJECT_REASONS = [
   "Khách hàng không còn nhu cầu gửi mẫu",
@@ -174,7 +171,6 @@ export default function SalesPage() {
   const [phone, setPhone] = useState("");
   const [lat, setLat] = useState("");
   const [lon, setLon] = useState("");
-  const [mapLink, setMapLink] = useState("");
 
   // Client search (Thông Tin Khách Hàng)
   const [clientSearch, setClientSearch] = useState("");
@@ -267,8 +263,6 @@ export default function SalesPage() {
     }
   };
 
-  const [linkLoading, setLinkLoading] = useState(false);
-  const [linkError, setLinkError] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [newCustomer, setNewCustomer] = useState<{ customer_id: string; customer_name: string; lat: number; lon: number; ma_kh: string } | null>(null);
@@ -276,38 +270,6 @@ export default function SalesPage() {
   const [tripResult, setTripResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [tripNote, setTripNote] = useState("");
   const [duplicates, setDuplicates] = useState<{ customer_id: string; customer_name: string; address_line_1?: string }[] | null>(null);
-
-  const extractFromLink = async () => {
-    const url = mapLink.trim();
-    if (!url) return;
-    setLinkLoading(true);
-    setLinkError("");
-    try {
-      const patterns = [
-        /@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/,
-        /!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/,
-        /[?&]q=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/,
-        /[?&]ll=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/,
-      ];
-      for (const re of patterns) {
-        const m = url.match(re);
-        if (m) { setLat(m[1]); setLon(m[2]); setLinkLoading(false); return; }
-      }
-      const res = await fetch("/api/geo/resolve", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url }),
-      });
-      const data = await res.json();
-      if (!res.ok) { setLinkError(data.error ?? "Không đọc được link"); return; }
-      setLat(String(data.latitude));
-      setLon(String(data.longitude));
-    } catch (e) {
-      setLinkError(String(e));
-    } finally {
-      setLinkLoading(false);
-    }
-  };
 
   const maKhValid = /^\d{5,8}$/.test(maKh);
 
@@ -655,57 +617,6 @@ export default function SalesPage() {
                   inputMode="tel"
                   placeholder="VD: 0909123456"
                   className="w-full border rounded-xl pl-9 pr-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-                />
-              </div>
-            </div>
-
-            {/* Google Maps Link */}
-            {(!lat || !lon) && (
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Google Maps Link</label>
-                <div className="flex gap-2">
-                  <div className="relative flex-1">
-                    <FieldIcon paths={ICON_LINK} />
-                    <input
-                      value={mapLink}
-                      onChange={(e) => setMapLink(e.target.value)}
-                      placeholder="Dán link Google Maps"
-                      className="w-full border rounded-xl pl-9 pr-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={extractFromLink}
-                    disabled={linkLoading || !mapLink.trim()}
-                    className="px-4 rounded-xl bg-slate-800 text-white text-sm font-semibold disabled:opacity-40"
-                  >
-                    {linkLoading ? "..." : "Lấy"}
-                  </button>
-                </div>
-                {linkError && <p className="text-xs text-red-600 mt-1">{linkError}</p>}
-              </div>
-            )}
-
-            {/* Vĩ Độ / Kinh Độ */}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Vĩ Độ</label>
-                <input
-                  value={lat}
-                  onChange={(e) => setLat(e.target.value)}
-                  inputMode="decimal"
-                  placeholder="10.7626"
-                  className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Kinh Độ</label>
-                <input
-                  value={lon}
-                  onChange={(e) => setLon(e.target.value)}
-                  inputMode="decimal"
-                  placeholder="106.6602"
-                  className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
                 />
               </div>
             </div>
