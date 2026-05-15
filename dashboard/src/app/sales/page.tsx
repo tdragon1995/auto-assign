@@ -169,6 +169,34 @@ export default function SalesPage() {
   const [lat, setLat] = useState("");
   const [lon, setLon] = useState("");
 
+  // Quận Cũ search
+  const [quanSearch, setQuanSearch] = useState("");
+  const [showQuanResults, setShowQuanResults] = useState(false);
+  const [quanSelected, setQuanSelected] = useState(false);
+
+  const filteredQuan = quanSearch.trim()
+    ? QUAN_CU_OPTIONS.filter((o) => {
+        const q = stripDiacritics(quanSearch).toLowerCase();
+        return (
+          stripDiacritics(o.label).toLowerCase().includes(q) ||
+          o.code.toLowerCase().includes(q)
+        );
+      })
+    : QUAN_CU_OPTIONS;
+
+  const selectQuan = (o: { label: string; code: string }) => {
+    setQuanCu(o.code);
+    setQuanSearch(o.label);
+    setQuanSelected(true);
+    setShowQuanResults(false);
+  };
+
+  const clearQuan = () => {
+    setQuanCu("");
+    setQuanSearch("");
+    setQuanSelected(false);
+  };
+
   // Client search (Thông Tin Khách Hàng)
   const [clientSearch, setClientSearch] = useState("");
   const [clientResults, setClientResults] = useState<ClientResult[]>([]);
@@ -337,6 +365,7 @@ export default function SalesPage() {
         setDuplicates(null);
         setMaKh(""); setQuanCu(""); setTenDuong(""); setTenKh(""); setDiaChi(""); setLat(""); setLon(""); setPhone("");
         setClientSearch(""); setClientSelected(false); setClientResults([]);
+        setQuanSearch(""); setQuanSelected(false);
       }
     } catch (e) {
       setResult({ ok: false, msg: String(e) });
@@ -525,17 +554,44 @@ export default function SalesPage() {
                 Với khu vực xa trung tâm, chọn tỉnh hoặc thành phố như Thuận An, Dĩ An, Bến Cát, Biên Hòa...
               </p>
               <div className="relative">
-                <FieldIcon paths={ICON_PIN} />
-                <select
-                  value={quanCu}
-                  onChange={(e) => setQuanCu(e.target.value)}
-                  className="w-full border rounded-xl pl-9 pr-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 appearance-none"
-                >
-                  <option value="">-- Chọn khu vực --</option>
-                  {QUAN_CU_OPTIONS.map((o) => (
-                    <option key={o.code} value={o.code}>{o.label} — {o.code}</option>
-                  ))}
-                </select>
+                <div className="relative">
+                  <FieldIcon paths={ICON_PIN} />
+                  <input
+                    value={quanSearch}
+                    onChange={(e) => { setQuanSearch(e.target.value); setShowQuanResults(true); }}
+                    onFocus={() => { if (!quanSelected) setShowQuanResults(true); }}
+                    onBlur={() => setTimeout(() => setShowQuanResults(false), 150)}
+                    readOnly={quanSelected}
+                    placeholder="Search..."
+                    className={`w-full border rounded-xl pl-9 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 ${quanSelected ? "pr-8 cursor-default" : "pr-3"}`}
+                  />
+                  {quanSelected && (
+                    <button
+                      type="button"
+                      onMouseDown={(e) => { e.preventDefault(); clearQuan(); }}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                      aria-label="Xoá"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+                {showQuanResults && !quanSelected && filteredQuan.length > 0 && (
+                  <ul className="absolute z-10 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-64 overflow-y-auto">
+                    {filteredQuan.map((o) => (
+                      <li
+                        key={o.code}
+                        onMouseDown={(e) => { e.preventDefault(); selectQuan(o); }}
+                        className="px-3 py-2 text-sm hover:bg-slate-50 cursor-pointer border-b last:border-b-0 border-slate-100"
+                      >
+                        <span className="font-medium text-slate-800">{o.label}</span>
+                        <span className="ml-2 text-xs text-slate-400">{o.code}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             </div>
 
