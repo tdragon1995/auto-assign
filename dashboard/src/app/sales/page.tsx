@@ -82,6 +82,39 @@ function abbrStreet(raw: string): string {
   return initials + titleCase(words[words.length - 1]);
 }
 
+// --- District auto-detection (point-in-polygon) ---
+type DistrictFeature = { properties: { code: string }; geometry: { type: string; coordinates: unknown } };
+let districtsCache: DistrictFeature[] | null = null;
+
+function raycast(pt: [number, number], ring: number[][]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+    if ((yi > pt[1]) !== (yj > pt[1]) && pt[0] < ((xj - xi) * (pt[1] - yi)) / (yj - yi) + xi)
+      inside = !inside;
+  }
+  return inside;
+}
+
+function ptInGeom(lon: number, lat: number, geom: { type: string; coordinates: unknown }): boolean {
+  const pt: [number, number] = [lon, lat];
+  if (geom.type === "Polygon") return raycast(pt, (geom.coordinates as number[][][])[0]);
+  if (geom.type === "MultiPolygon")
+    return (geom.coordinates as number[][][][]).some(poly => raycast(pt, poly[0]));
+  return false;
+}
+
+async function detectDistrict(lon: number, lat: number): Promise<string | null> {
+  if (!districtsCache) {
+    try {
+      const res = await fetch("/geo/districts.geojson");
+      if (!res.ok) return null;
+      districtsCache = (await res.json()).features;
+    } catch { return null; }
+  }
+  return districtsCache!.find(f => ptInGeom(lon, lat, f.geometry as { type: string; coordinates: unknown }))?.properties.code ?? null;
+}
+
 function Icon({ paths, className }: { paths: string[]; className?: string }) {
   return (
     <svg
@@ -194,6 +227,11 @@ export default function SalesPage() {
     setQuanSelected(false);
   };
 
+  // When no option selected, abbreviate free text into quanCu (fallback)
+  useEffect(() => {
+    if (!quanSelected) setQuanCu(abbrStreet(quanSearch.trim()));
+  }, [quanSearch, quanSelected]);
+
   // Client search (Thông Tin Khách Hàng)
   const [clientSearch, setClientSearch] = useState("");
   const [clientResults, setClientResults] = useState<ClientResult[]>([]);
@@ -277,8 +315,15 @@ export default function SalesPage() {
       const res = await fetch(`/api/geo/place?place_id=${encodeURIComponent(p.place_id)}`);
       const data = await res.json();
       if (res.ok) {
-        setLat(String(data.latitude));
-        setLon(String(data.longitude));
+        const latNum: number = data.latitude;
+        const lonNum: number = data.longitude;
+        setLat(String(latNum));
+        setLon(String(lonNum));
+        const code = await detectDistrict(lonNum, latNum);
+        if (code) {
+          const option = QUAN_CU_OPTIONS.find(o => o.code === code);
+          if (option && !quanSelected) selectQuan(option);
+        }
       }
     } catch {
       // ignore — user can still paste a maps link
