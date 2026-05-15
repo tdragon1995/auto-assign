@@ -18,62 +18,31 @@ interface Result extends Row {
   error?: string;
 }
 
-// Auto-detects tab (Excel paste) or comma (CSV) separator
+// Each line: "lat1 long1 lat2 long2" (space/tab/comma separated, no header)
 function parseText(text: string): { rows: Row[]; errors: string[] } {
   const lines = text.split("\n").map((l) => l.replace(/\r$/, "").trim()).filter(Boolean);
-  if (lines.length < 2) return { rows: [], errors: ["Cần ít nhất 1 dòng dữ liệu (không kể header)"] };
-
-  const sep = lines[0].includes("\t") ? "\t" : ",";
-  const headers = lines[0].split(sep).map((h) => h.trim().toLowerCase());
-  const required = ["pickup", "dropoff", "lat1", "long1", "lat2", "long2"];
-  const missing = required.filter((h) => !headers.includes(h));
-  if (missing.length) return { rows: [], errors: [`Thiếu cột: ${missing.join(", ")}`] };
+  if (lines.length === 0) return { rows: [], errors: ["Không có dữ liệu"] };
 
   const rows: Row[] = [];
   const errors: string[] = [];
-
-  for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i].split(sep);
-    if (cols.length < 6) { errors.push(`Dòng ${i + 1}: không đủ 6 cột`); continue; }
-
-    if (sep === "\t") {
-      // Tab-separated: columns are clean, use header index
-      const idx = (name: string) => headers.indexOf(name);
-      const pickup  = cols[idx("pickup")]?.trim() ?? "";
-      const dropoff = cols[idx("dropoff")]?.trim() ?? "";
-      const lat1    = parseFloat(cols[idx("lat1")]?.trim() ?? "");
-      const lon1    = parseFloat(cols[idx("long1")]?.trim() ?? "");
-      const lat2    = parseFloat(cols[idx("lat2")]?.trim() ?? "");
-      const lon2    = parseFloat(cols[idx("long2")]?.trim() ?? "");
-      if (!pickup)                             { errors.push(`Dòng ${i + 1}: thiếu pickup`); continue; }
-      if ([lat1, lon1, lat2, lon2].some(isNaN)) { errors.push(`Dòng ${i + 1} (${pickup}): toạ độ không hợp lệ`); continue; }
-      rows.push({ pickup, dropoff, lat1, lon1, lat2, lon2 });
-    } else {
-      // CSV: names may contain commas — last 4 cols are always coords,
-      // second-to-last text col = dropoff, everything before = pickup
-      const lon2    = parseFloat(cols[cols.length - 1].trim());
-      const lat2    = parseFloat(cols[cols.length - 2].trim());
-      const lon1    = parseFloat(cols[cols.length - 3].trim());
-      const lat1    = parseFloat(cols[cols.length - 4].trim());
-      const textCols = cols.slice(0, cols.length - 4);
-      const dropoff  = textCols[textCols.length - 1]?.trim() ?? "";
-      const pickup   = textCols.slice(0, textCols.length - 1).join(",").trim();
-      if (!pickup)                             { errors.push(`Dòng ${i + 1}: thiếu pickup`); continue; }
-      if ([lat1, lon1, lat2, lon2].some(isNaN)) { errors.push(`Dòng ${i + 1} (${pickup}): toạ độ không hợp lệ`); continue; }
-      rows.push({ pickup, dropoff, lat1, lon1, lat2, lon2 });
-    }
+  for (let i = 0; i < lines.length; i++) {
+    const cols = lines[i].split(/[\t,\s]+/).map((s) => s.trim()).filter(Boolean);
+    if (cols.length < 4) { errors.push(`Dòng ${i + 1}: cần 4 giá trị (lat1 long1 lat2 long2)`); continue; }
+    const lat1 = parseFloat(cols[0]);
+    const lon1 = parseFloat(cols[1]);
+    const lat2 = parseFloat(cols[2]);
+    const lon2 = parseFloat(cols[3]);
+    if ([lat1, lon1, lat2, lon2].some(isNaN)) { errors.push(`Dòng ${i + 1}: toạ độ không hợp lệ`); continue; }
+    rows.push({ pickup: String(i + 1), dropoff: "", lat1, lon1, lat2, lon2 });
   }
-
   return { rows, errors };
 }
 
 function toCSV(results: Result[]): string {
-  const header = "pickup,dropoff,lat1,long1,lat2,long2,distance_km,duration_mins,error";
+  const header = "lat1,long1,lat2,long2,distance_km,duration_mins,error";
   const lines = results.map((r) =>
-    [`"${r.pickup}"`, `"${r.dropoff}"`, r.lat1, r.lon1, r.lat2, r.lon2,
-      r.distance_km ?? "", r.duration_mins ?? "", r.error ?? ""].join(",")
+    [r.lat1, r.lon1, r.lat2, r.lon2, r.distance_km ?? "", r.duration_mins ?? "", r.error ?? ""].join(",")
   );
-  // UTF-8 BOM so Excel opens correctly
   return "\uFEFF" + [header, ...lines].join("\n");
 }
 
@@ -164,8 +133,7 @@ export default function DistanceCheckingPage() {
         <div>
           <h1 className="text-2xl font-bold">Kiểm tra khoảng cách</h1>
           <p className="text-sm text-slate-500 mt-1">
-            6 cột: <code className="bg-slate-100 px-1 rounded text-xs">pickup, dropoff, lat1, long1, lat2, long2</code>
-            {" "}— upload CSV hoặc paste thẳng từ Excel
+            Mỗi dòng: <code className="bg-slate-100 px-1 rounded text-xs">lat1 long1 lat2 long2</code> — ngăn cách bởi khoảng trắng, tab, hoặc dấu phẩy. Không cần header.
           </p>
         </div>
 
@@ -189,7 +157,7 @@ export default function DistanceCheckingPage() {
         {/* Paste area */}
         <textarea
           className="w-full h-36 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-mono text-slate-700 resize-y focus:outline-none focus:ring-2 focus:ring-blue-400"
-          placeholder={"pickup\tdropoff\tlat1\tlong1\tlat2\tlong2\nD001\tD007\t10.77\t106.68\t10.85\t106.72"}
+          placeholder={"10.77 106.68 10.85 106.72\n10.80 106.70 10.90 106.75"}
           value={pasteText}
           onChange={handlePaste}
         />
@@ -214,8 +182,7 @@ export default function DistanceCheckingPage() {
             <table className="w-full text-xs min-w-[600px]">
               <thead className="bg-slate-50 border-b text-slate-500 uppercase tracking-wide">
                 <tr>
-                  <th className="px-3 py-2 text-left">Pickup</th>
-                  <th className="px-3 py-2 text-left">Dropoff</th>
+                  <th className="px-3 py-2 text-right">#</th>
                   <th className="px-3 py-2 text-right">Lat 1</th>
                   <th className="px-3 py-2 text-right">Long 1</th>
                   <th className="px-3 py-2 text-right">Lat 2</th>
@@ -225,8 +192,7 @@ export default function DistanceCheckingPage() {
               <tbody className="divide-y divide-slate-100">
                 {rows.slice(0, 10).map((r, i) => (
                   <tr key={i} className="hover:bg-slate-50/60">
-                    <td className="px-3 py-2 font-medium text-slate-800">{r.pickup}</td>
-                    <td className="px-3 py-2 text-slate-600">{r.dropoff}</td>
+                    <td className="px-3 py-2 text-right text-slate-400">{r.pickup}</td>
                     <td className="px-3 py-2 text-right text-slate-500">{r.lat1}</td>
                     <td className="px-3 py-2 text-right text-slate-500">{r.lon1}</td>
                     <td className="px-3 py-2 text-right text-slate-500">{r.lat2}</td>
@@ -266,11 +232,10 @@ export default function DistanceCheckingPage() {
             </div>
 
             <div className="rounded-lg border bg-white overflow-x-auto">
-              <table className="w-full text-xs min-w-[640px]">
+              <table className="w-full text-xs min-w-[480px]">
                 <thead className="bg-slate-50 border-b text-slate-500 uppercase tracking-wide">
                   <tr>
-                    <th className="px-3 py-2 text-left">Pickup</th>
-                    <th className="px-3 py-2 text-left">Dropoff</th>
+                    <th className="px-3 py-2 text-right">#</th>
                     <th className="px-3 py-2 text-right">Lat 1</th>
                     <th className="px-3 py-2 text-right">Long 1</th>
                     <th className="px-3 py-2 text-right">Lat 2</th>
@@ -283,8 +248,7 @@ export default function DistanceCheckingPage() {
                 <tbody className="divide-y divide-slate-100">
                   {results.map((r, i) => (
                     <tr key={i} className={r.error ? "bg-red-50/40" : "hover:bg-slate-50/60"}>
-                      <td className="px-3 py-2 font-medium text-slate-800">{r.pickup}</td>
-                      <td className="px-3 py-2 text-slate-600">{r.dropoff}</td>
+                      <td className="px-3 py-2 text-right text-slate-400">{r.pickup}</td>
                       <td className="px-3 py-2 text-right text-slate-400 font-mono text-[11px]">{r.lat1}</td>
                       <td className="px-3 py-2 text-right text-slate-400 font-mono text-[11px]">{r.lon1}</td>
                       <td className="px-3 py-2 text-right text-slate-400 font-mono text-[11px]">{r.lat2}</td>
