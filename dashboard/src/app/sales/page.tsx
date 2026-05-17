@@ -439,7 +439,8 @@ export default function SalesPage() {
       if (!res.ok) {
         setTripResult({ ok: false, msg: data.error ?? "Tạo chuyến thất bại" });
       } else {
-        setTripResult({ ok: true, msg: "Tạo chuyến thành công, Liên hệ Logistics để biết thêm thông tin" });
+        const dropoff = data.dropoff_psc ? ` → Giao tại ${data.dropoff_psc}` : "";
+        setTripResult({ ok: true, msg: `Tạo chuyến thành công${dropoff}` });
         setNewCustomer(null);
         setTripNote("");
       }
