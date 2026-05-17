@@ -641,7 +641,7 @@ export default function SalesPage() {
                 <input
                   value={refNumber}
                   onChange={(e) => setRefNumber(e.target.value)}
-                  placeholder="VD: 26042026-14:30-39822062"
+                  placeholder="Dán Mã Giao Nhận Từ SPC"
                   className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
                 />
               </div>
