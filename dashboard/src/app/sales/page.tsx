@@ -221,15 +221,21 @@ export default function SalesPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Fetch live status once when cancel tab is opened
-  useEffect(() => {
-    if (tab !== "reject" || !lastCreatedJob) return;
+  const refreshLastJobStatus = (job?: LastCreatedJob | null) => {
+    const target = job ?? lastCreatedJob;
+    if (!target) return;
     setLastJobStatusLoading(true);
-    fetch(`/api/sales/job-status?ref=${encodeURIComponent(lastCreatedJob.reference_number)}`)
+    fetch(`/api/sales/job-status?ref=${encodeURIComponent(target.reference_number)}`)
       .then((r) => r.ok ? r.json() : null)
       .then((d) => { if (d?.job_status_id != null) setLastJobStatus(d.job_status_id); })
       .catch(() => {})
       .finally(() => setLastJobStatusLoading(false));
+  };
+
+  // Fetch live status once when cancel tab is opened
+  useEffect(() => {
+    if (tab !== "reject" || !lastCreatedJob) return;
+    refreshLastJobStatus();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
@@ -533,7 +539,7 @@ export default function SalesPage() {
         <div className="px-6 pt-5 pb-4">
           <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">Sales</p>
           <h1 className="text-xl font-bold text-slate-800 mt-0.5">
-            {tab === "customer" ? "Tạo khách hàng" : "Huỷ yêu cầu giao nhận"}
+            {tab === "customer" ? "Tạo địa điểm lấy mẫu cho khách hàng mới" : "Huỷ yêu cầu giao nhận"}
           </h1>
         </div>
 
@@ -566,21 +572,33 @@ export default function SalesPage() {
                 <div className="rounded-xl border border-slate-200 p-3.5 space-y-3">
                   <div className="flex items-start justify-between gap-2">
                     <p className="font-mono text-xs text-slate-500 break-all">{lastCreatedJob.reference_number}</p>
-                    {lastJobStatusLoading ? (
-                      <span className="text-xs text-slate-400 shrink-0">...</span>
-                    ) : lastJobStatus != null ? (
-                      <span className={`shrink-0 text-xs font-semibold px-2 py-0.5 rounded-full ${
-                        lastJobStatus === 4 ? "bg-blue-100 text-blue-700" :
-                        lastJobStatus === 5 ? "bg-emerald-100 text-emerald-700" :
-                        lastJobStatus === 7 ? "bg-slate-100 text-slate-500" :
-                        "bg-amber-100 text-amber-700"
-                      }`}>
-                        {lastJobStatus === 4 ? "Đã phân công" :
-                         lastJobStatus === 5 ? "Hoàn thành" :
-                         lastJobStatus === 7 ? "Đã huỷ" :
-                         "Chờ phân công"}
-                      </span>
-                    ) : null}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {lastJobStatusLoading ? (
+                        <span className="text-xs text-slate-400">...</span>
+                      ) : lastJobStatus != null ? (
+                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
+                          lastJobStatus === 4 ? "bg-blue-100 text-blue-700" :
+                          lastJobStatus === 5 ? "bg-emerald-100 text-emerald-700" :
+                          lastJobStatus === 7 ? "bg-slate-100 text-slate-500" :
+                          "bg-amber-100 text-amber-700"
+                        }`}>
+                          {lastJobStatus === 4 ? "Đã phân công" :
+                           lastJobStatus === 5 ? "Hoàn thành" :
+                           lastJobStatus === 7 ? "Đã huỷ" :
+                           "Chờ phân công"}
+                        </span>
+                      ) : null}
+                      <button
+                        onClick={() => refreshLastJobStatus()}
+                        disabled={lastJobStatusLoading}
+                        className="text-slate-400 hover:text-slate-600 disabled:opacity-40 transition-colors"
+                        aria-label="Làm mới trạng thái"
+                      >
+                        <svg className={`w-3.5 h-3.5 ${lastJobStatusLoading ? "animate-spin" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+                        </svg>
+                      </button>
+                    </div>
                   </div>
                   <div className="space-y-1 text-sm">
                     <div className="flex gap-2">
@@ -856,7 +874,7 @@ export default function SalesPage() {
               disabled={!canSubmit}
               className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
             >
-              {loading ? "Đang kiểm tra & tạo..." : "Tạo khách hàng"}
+              {loading ? "Đang kiểm tra & tạo..." : "Tạo địa điểm lấy mẫu cho khách hàng mới"}
             </button>
 
             {result && (
@@ -911,7 +929,7 @@ export default function SalesPage() {
                   disabled={tripLoading}
                   className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-indigo-600 hover:bg-indigo-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
                 >
-                  {tripLoading ? "Đang tạo chuyến..." : "Tạo chuyến giao nhận"}
+                  {tripLoading ? "Đang tạo chuyến..." : "Khách hàng có mẫu, tạo yêu cầu giao nhận"}
                 </button>
               </div>
             )}
