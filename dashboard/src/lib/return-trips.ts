@@ -1,4 +1,4 @@
-import type { Config, LogLevel } from "./types";
+import type { Config, Mapping, LogLevel } from "./types";
 import { BASE_URL, getHeaders, getJobsByStatusAndDate, assignJob, type Env } from "./cartrack";
 import { vnDate, vnHoursMinutes } from "./time";
 
@@ -8,6 +8,17 @@ const PSC_OUTBOUND_LABEL = "🛵 Vận chuyển mẫu PSC";
 // Race-condition guard across overlapping 30s cycles
 const inFlightReturns = new Set<number>(); // keyed by outbound job_id
 const IN_FLIGHT_TTL_MS = 60_000;
+
+function isOnShift(mapping: Mapping, now: Date): boolean {
+  const { shift_start, shift_end } = mapping;
+  if (!shift_start || !shift_end) return true;
+  const { hours, minutes } = vnHoursMinutes(now);
+  const nowMin = hours * 60 + minutes;
+  const startMin = shift_start.hours * 60 + shift_start.minutes;
+  const endMin = shift_end.hours * 60 + shift_end.minutes;
+  if (startMin > endMin) return nowMin > startMin || nowMin <= endMin;
+  return nowMin > startMin && nowMin <= endMin;
+}
 
 function shortName(name: string): string {
   return name.replace(/^BRA\s*-\s*/i, "");
@@ -36,10 +47,7 @@ async function createReturnJob(
         customer_id: fromCustomerId,
         customer_name: fromCustomerName,
         duration: 5,
-        todos: [
-          { todo_type_id: 2, description: "📦 Chụp vật tư / tài liệu đã đóng gói" },
-          { todo_type_id: 2, description: "✍️ Chụp phiếu bàn giao đã ký" },
-        ],
+        todos: [],
       },
       {
         stop_type_id: 2,
@@ -47,8 +55,7 @@ async function createReturnJob(
         customer_name: toCustomerName,
         duration: 10,
         todos: [
-          { todo_type_id: 2, description: "📋 Chụp vật tư đã giao thấy rõ" },
-          { todo_type_id: 2, description: "🤝 Chụp người nhận tại PSC" },
+          { todo_type_id: 2, description: "📦 Chụp vật tư / tài liệu (nếu có)" },
         ],
       },
     ],
@@ -99,19 +106,21 @@ export async function detectAndCreateReturnTrips(
     getJobsByStatusAndDate(4, today, env),
   ]);
 
-  // Build set of from:to pairs that already have an active return trip (status 2 or 4).
+  // Build set of from:to:driver keys that already have an active return trip (status 2 or 4).
+  // Per-driver so two drivers completing the same route each get their own return.
   // Status 5/3/7 (done/failed/cancelled) intentionally excluded — allows new returns for subsequent outbounds.
-  const blockingReturnPairs = new Set<string>(); // "fromId:toId"
+  const blockingReturnKeys = new Set<string>(); // "fromId:toId:driverId"
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const job of [...activeStatus2, ...activeStatus4] as any[]) {
     const labels: string[] = job.labels ?? [];
     if (!labels.includes(PSC_RETURN_LABEL)) continue;
+    if (!job.delivery_driver_id) continue; // unassigned — can't key by driver, skip
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pickupStop = (job.stops ?? []).find((s: any) => s.stop_type_id === 1);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const dropoffStop = (job.stops ?? []).find((s: any) => s.stop_type_id === 2);
     if (pickupStop?.customer_id && dropoffStop?.customer_id) {
-      blockingReturnPairs.add(`${pickupStop.customer_id}:${dropoffStop.customer_id}`);
+      blockingReturnKeys.add(`${pickupStop.customer_id}:${dropoffStop.customer_id}:${job.delivery_driver_id}`);
     }
   }
 
@@ -130,19 +139,30 @@ export async function detectAndCreateReturnTrips(
 
     if (!pickupStop?.customer_id || !dropoffStop?.customer_id) continue;
 
+    // Shift check: driver must be on shift right now for the PSC they just serviced
+    const pscCustomerId: string = pickupStop.customer_id;
+    const driverMappings = config.mappings.filter(
+      (m) =>
+        m.customer_id === pscCustomerId &&
+        (m.driver_id === outbound.delivery_driver_id ||
+          m.smart_driver_id.includes(outbound.delivery_driver_id))
+    );
+    const now = new Date();
+    if (driverMappings.length > 0 && !driverMappings.some((m) => isOnShift(m, now))) continue;
+
     // Return trip is the inverse: from where the outbound ended, back to the PSC
     const fromCustomerId: string = dropoffStop.customer_id;
     const fromCustomerName: string = dropoffStop.customer_name ?? dropoffStop.name ?? fromCustomerId;
     const toCustomerId: string = pickupStop.customer_id;
     const toCustomerName: string = pickupStop.customer_name ?? pickupStop.name ?? toCustomerId;
 
-    const pairKey = `${fromCustomerId}:${toCustomerId}`;
-    if (blockingReturnPairs.has(pairKey)) continue;
+    const returnKey = `${fromCustomerId}:${toCustomerId}:${outbound.delivery_driver_id}`;
+    if (blockingReturnKeys.has(returnKey)) continue;
     if (inFlightReturns.has(outbound.job_id)) continue;
 
     inFlightReturns.add(outbound.job_id);
     setTimeout(() => inFlightReturns.delete(outbound.job_id), IN_FLIGHT_TTL_MS);
-    blockingReturnPairs.add(pairKey); // protect later iterations in same cycle
+    blockingReturnKeys.add(returnKey); // protect same driver in same cycle
 
     try {
       const newJobId = await createReturnJob(fromCustomerId, fromCustomerName, toCustomerId, toCustomerName, env);
@@ -151,7 +171,7 @@ export async function detectAndCreateReturnTrips(
     } catch (e) {
       log(`Return trip failed for outbound ${outbound.job_id}: ${e}`, "ERROR");
       inFlightReturns.delete(outbound.job_id);
-      blockingReturnPairs.delete(pairKey); // allow retry next cycle
+      blockingReturnKeys.delete(returnKey); // allow retry next cycle
     }
   }
 }
