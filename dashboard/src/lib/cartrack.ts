@@ -241,3 +241,24 @@ export async function getJobDetails(
   if (!res.ok) return { data: {} };
   return res.json();
 }
+
+export async function getJobsByStatusAndDate(
+  statusId: number,
+  dateVn: string, // "YYYY-MM-DD"
+  env: Env = "prod"
+): Promise<Job[]> {
+  const params = new URLSearchParams({
+    "filter[job_status_id]": String(statusId),
+    "filter[scheduled_delivery_ts_from]": `${dateVn} 00:00:00`,
+    "filter[scheduled_delivery_ts_to]": `${dateVn} 23:59:59`,
+    page: "1",
+    per_page: "1000",
+  });
+  const r = await fetch(`${BASE_URL}/jobs?${params}`, {
+    headers: getHeaders(env),
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(`getJobsByStatusAndDate ${statusId} failed: ${r.status}`);
+  const json = await r.json();
+  return json.data ?? [];
+}

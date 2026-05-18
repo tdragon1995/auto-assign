@@ -2,6 +2,7 @@ import type { Config, Driver, Job, LogEntry, LogLevel, Mapping, TimelineRoute } 
 import { getDrivers, getUnassignedJobs, assignJob, getJobDetails, getCustomerById, updateJobStops, optimizeDriverRoute, getFleetwebCookie, JSONRPC_URL, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
+import { detectAndCreateReturnTrips, PSC_RETURN_LABEL } from "./return-trips";
 import {
   vnDate,
   vnTimestamp,
@@ -22,7 +23,7 @@ const DUPLICATE_REJECT_REASON =
 // Jobs carrying any of these labels are exempt from duplicate detection.
 // PSC tỉnh jobs are multi-leg provincial routes — the same pickup→dropoff pair
 // is expected to repeat across different legs and should never be blocked.
-const DUPLICATE_EXEMPT_LABELS = [PSC_TINH_LABEL];
+const DUPLICATE_EXEMPT_LABELS = [PSC_TINH_LABEL, PSC_RETURN_LABEL];
 
 // ── Duplicate-check helpers ────────────────────────────────────────────────
 
@@ -303,6 +304,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
     logs.push(makeLog(msg, level));
   };
 
+  try {
   // Fetch unassigned jobs
   let jobs: Job[];
   try {
@@ -705,6 +707,13 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
   }
 
   return logs;
+  } finally {
+    try {
+      await detectAndCreateReturnTrips(config, env, log);
+    } catch (e) {
+      log(`Return-trip hook failed: ${e}`, "ERROR");
+    }
+  }
 }
 
 function fmtShift(t: { hours: number; minutes: number } | null): string {
