@@ -155,6 +155,7 @@ const ICON_PHONE = [
 ];
 
 const REJECT_REASONS = [
+  "Khách hàng chưa có mẫu",
   "Khách hàng không còn nhu cầu gửi mẫu",
   "Đã book grab",
   "Book dư",
@@ -232,7 +233,7 @@ export default function SalesPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
-  const rejectLastJob = async () => {
+  const rejectLastJob = async (overrideReason?: string) => {
     if (!lastCreatedJob) return;
     setLastJobCancelLoading(true);
     setLastJobCancelResult(null);
@@ -240,7 +241,7 @@ export default function SalesPage() {
       const res = await fetch("/api/sales/reject-job", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reference_number: lastCreatedJob.reference_number, reject_reason: rejectReason }),
+        body: JSON.stringify({ reference_number: lastCreatedJob.reference_number, reject_reason: overrideReason ?? rejectReason }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -603,7 +604,7 @@ export default function SalesPage() {
                         {REJECT_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
                       </select>
                       <button
-                        onClick={rejectLastJob}
+                        onClick={() => rejectLastJob()}
                         disabled={lastJobCancelLoading}
                         className="w-full py-2.5 rounded-xl font-bold text-white text-sm bg-red-600 hover:bg-red-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
                       >
@@ -916,12 +917,28 @@ export default function SalesPage() {
             )}
 
             {tripResult && (
-              <div className={`rounded-xl p-3.5 text-sm font-medium text-center ${
-                tripResult.ok
-                  ? "bg-emerald-50 border border-emerald-200 text-emerald-800"
-                  : "bg-red-50 border border-red-200 text-red-800"
-              }`}>
-                {tripResult.msg}
+              <div className="space-y-2">
+                <div className={`rounded-xl p-3.5 text-sm font-medium text-center ${
+                  tripResult.ok
+                    ? "bg-emerald-50 border border-emerald-200 text-emerald-800"
+                    : "bg-red-50 border border-red-200 text-red-800"
+                }`}>
+                  {tripResult.msg}
+                </div>
+                {tripResult.ok && lastCreatedJob && !lastJobCancelResult?.ok && (
+                  <button
+                    onClick={() => rejectLastJob("Khách hàng chưa có mẫu")}
+                    disabled={lastJobCancelLoading}
+                    className="w-full py-2.5 rounded-xl font-semibold text-red-600 text-sm border border-red-200 bg-white hover:bg-red-50 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                  >
+                    {lastJobCancelLoading ? "Đang huỷ..." : "Huỷ — Khách hàng chưa có mẫu"}
+                  </button>
+                )}
+                {lastJobCancelResult?.ok && (
+                  <div className="rounded-xl p-3 text-sm font-medium text-center bg-slate-50 border border-slate-200 text-slate-600">
+                    {lastJobCancelResult.msg}
+                  </div>
+                )}
               </div>
             )}
           </div>
