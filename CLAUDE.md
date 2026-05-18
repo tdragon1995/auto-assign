@@ -39,6 +39,8 @@ GOONG_API_KEY=                   # Road distance API (goong.io); falls back to h
 ROUTE_OPTIMIZE_PILOT=            # Comma-separated driver UUIDs for route optimisation pilot
 LABCENTER_EMAIL=                 # Labcenter API login (used by /api/customers POST to sync pick/drop locations)
 LABCENTER_PASSWORD=              # Labcenter API password
+LABCENTER_RECEPTIONIST_EMAIL=    # Separate receptionist account for /api/labcenter/client (client search in sales form)
+LABCENTER_RECEPTIONIST_PASSWORD= # Password for receptionist account
 ```
 
 ## Architecture
@@ -87,6 +89,8 @@ LABCENTER_PASSWORD=              # Labcenter API password
 | `POST /api/geo/resolve` | Geocode/reverse-geocode via Goong |
 | `POST /api/sales/create-trip` | Creates a B2B sample-transport job (`🛵 Vận chuyển mẫu B2B`) and assigns it |
 | `POST /api/sales/reject-job` | Rejects a sales job by reference number via JSON-RPC (guards against started jobs) |
+| `GET /api/sales/job-status` | Looks up a single job's `job_status_id` by `?ref=reference_number`; used by the cancel tab to show live status |
+| `GET /api/sales/search-trips` | Searches today's B2B trips by `?ma_kh=` (matches reference_number suffix); returns status 2+4 jobs only |
 
 ### Shared Libraries
 
@@ -127,7 +131,18 @@ See `docs/business-rules.md` for deeper detail and `docs/cartrack-api.md` for AP
 
 ## CI/CD
 
-Deployment is handled automatically by Vercel on push to `master`. There are no active GitHub Actions workflows.
+Deployment is triggered automatically by Vercel on push to `master`, but the GitHub integration occasionally misses pushes. If a push doesn't deploy within ~2 minutes, trigger manually:
+
+```bash
+# Must run from the REPO ROOT — not from dashboard/
+npx vercel --prod --scope longnguyenthanh075-5963s-projects
+```
+
+**Important:** Never run `vercel --prod` from `dashboard/`. That subdirectory has no `.vercel/` link and the CLI will create a new orphan project instead of deploying to `diag-logistics`. The correct `.vercel/project.json` (pointing to `prj_DQHaXcRc31jOI58J7NU8cNK1iO4C` / `diag-logistics`) lives at the repo root.
+
+Production URL: **https://diag-logistics.vercel.app** (also aliased as `https://auto-assign-opal.vercel.app`).
+
+There are no active GitHub Actions workflows.
 
 ## Google Sheet
 
