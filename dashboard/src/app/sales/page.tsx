@@ -10,11 +10,10 @@ type Prediction = {
 
 type ClientResult = { code: string; client_legal_name: string };
 
-type CancelTrip = {
-  job_id: number;
+type LastCreatedJob = {
   reference_number: string;
-  job_status_id: number;
-  stops: Array<{ stop_type_id?: number; customer_name?: string; stop_status_id?: number }>;
+  pickup_customer_name: string;
+  dropoff_psc: string;
 };
 
 const CLIENT_OVERRIDES: Record<string, string> = {
@@ -196,57 +195,65 @@ export default function SalesPage() {
     }
   };
 
-  // Search trips by maKH
-  const [cancelMaKh, setCancelMaKh] = useState("");
-  const [cancelLoading, setCancelLoading] = useState(false);
-  const [foundTrips, setFoundTrips] = useState<CancelTrip[] | null>(null);
-  const [cancelSearched, setCancelSearched] = useState(false);
-  const [tripReasons, setTripReasons] = useState<Record<number, string>>({});
-  const [tripCancelLoading, setTripCancelLoading] = useState<Record<number, boolean>>({});
-  const [tripCancelResult, setTripCancelResult] = useState<Record<number, { ok: boolean; msg: string }>>({});
+  // Last created trip — persisted in sessionStorage so refresh survives
+  const SESSION_KEY = "sales_last_created_job";
+  const [lastCreatedJob, setLastCreatedJobState] = useState<LastCreatedJob | null>(null);
+  const [lastJobStatus, setLastJobStatus] = useState<number | null>(null);
+  const [lastJobStatusLoading, setLastJobStatusLoading] = useState(false);
+  const [lastJobCancelLoading, setLastJobCancelLoading] = useState(false);
+  const [lastJobCancelResult, setLastJobCancelResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
-  const searchTrips = async () => {
-    const q = cancelMaKh.trim();
-    if (!q) return;
-    setCancelLoading(true);
-    setFoundTrips(null);
-    setCancelSearched(false);
-    setTripCancelResult({});
+  const setLastCreatedJob = (job: LastCreatedJob | null) => {
+    setLastCreatedJobState(job);
     try {
-      const res = await fetch(`/api/sales/search-trips?ma_kh=${encodeURIComponent(q)}`);
-      const data = await res.json();
-      setFoundTrips(data.jobs ?? []);
-      setCancelSearched(true);
-    } catch {
-      setFoundTrips([]);
-      setCancelSearched(true);
-    } finally {
-      setCancelLoading(false);
-    }
+      if (job) sessionStorage.setItem(SESSION_KEY, JSON.stringify(job));
+      else sessionStorage.removeItem(SESSION_KEY);
+    } catch { /* ignore */ }
   };
 
-  const rejectTrip = async (jobId: number, refNum: string) => {
-    const reason = tripReasons[jobId] ?? REJECT_REASONS[0];
-    setTripCancelLoading((p) => ({ ...p, [jobId]: true }));
-    setTripCancelResult((p) => { const n = { ...p }; delete n[jobId]; return n; });
+  // Restore from sessionStorage on mount
+  useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem(SESSION_KEY);
+      if (saved) setLastCreatedJobState(JSON.parse(saved));
+    } catch { /* ignore */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Fetch live status once when cancel tab is opened
+  useEffect(() => {
+    if (tab !== "reject" || !lastCreatedJob) return;
+    setLastJobStatusLoading(true);
+    fetch(`/api/sales/job-status?ref=${encodeURIComponent(lastCreatedJob.reference_number)}`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => { if (d?.job_status_id != null) setLastJobStatus(d.job_status_id); })
+      .catch(() => {})
+      .finally(() => setLastJobStatusLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  const rejectLastJob = async () => {
+    if (!lastCreatedJob) return;
+    setLastJobCancelLoading(true);
+    setLastJobCancelResult(null);
     try {
       const res = await fetch("/api/sales/reject-job", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reference_number: refNum, reject_reason: reason }),
+        body: JSON.stringify({ reference_number: lastCreatedJob.reference_number, reject_reason: rejectReason }),
       });
       const data = await res.json();
       if (!res.ok) {
-        setTripCancelResult((p) => ({ ...p, [jobId]: { ok: false, msg: data.error ?? "Huỷ thất bại" } }));
+        setLastJobCancelResult({ ok: false, msg: data.error ?? "Huỷ thất bại" });
       } else {
-        const who = data.pickup_customer_name ? `, ${data.pickup_customer_name}` : "";
-        setTripCancelResult((p) => ({ ...p, [jobId]: { ok: true, msg: `Đã huỷ${who}` } }));
-        setFoundTrips((p) => p?.filter((t) => t.job_id !== jobId) ?? null);
+        setLastJobCancelResult({ ok: true, msg: "Đã huỷ thành công" });
+        setLastCreatedJob(null);
+        setLastJobStatus(null);
       }
     } catch (e) {
-      setTripCancelResult((p) => ({ ...p, [jobId]: { ok: false, msg: String(e) } }));
+      setLastJobCancelResult({ ok: false, msg: String(e) });
     } finally {
-      setTripCancelLoading((p) => ({ ...p, [jobId]: false }));
+      setLastJobCancelLoading(false);
     }
   };
 
@@ -502,6 +509,13 @@ export default function SalesPage() {
       } else {
         const dropoff = data.dropoff_psc ? ` → Giao tại ${data.dropoff_psc}` : "";
         setTripResult({ ok: true, msg: `Tạo chuyến thành công${dropoff}` });
+        setLastCreatedJob({
+          reference_number: data.reference_number,
+          pickup_customer_name: newCustomer.customer_name,
+          dropoff_psc: data.dropoff_psc ?? "",
+        });
+        setLastJobStatus(2);
+        setLastJobCancelResult(null);
         setNewCustomer(null);
         setTripNote("");
       }
@@ -544,118 +558,91 @@ export default function SalesPage() {
         {tab === "reject" && (
           <div className="p-6 space-y-5 border-t border-slate-100">
 
-            {/* Search by maKH */}
-            <div className="space-y-3">
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1">Tìm theo Mã KH</label>
-                <p className="text-[10.5px] text-slate-400 mb-1.5 leading-relaxed">Nhập client code để tìm chuyến hôm nay</p>
-                <div className="flex gap-2">
-                  <div className="relative flex-1">
-                    <FieldIcon paths={ICON_SEARCH} />
-                    <input
-                      value={cancelMaKh}
-                      onChange={(e) => setCancelMaKh(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter") searchTrips(); }}
-                      placeholder="VD: 39822062"
-                      className="w-full border rounded-xl pl-9 pr-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-                    />
+            {/* Last created job card */}
+            {lastCreatedJob ? (
+              <div className="space-y-3">
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Chuyến vừa tạo</p>
+                <div className="rounded-xl border border-slate-200 p-3.5 space-y-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="font-mono text-xs text-slate-500 break-all">{lastCreatedJob.reference_number}</p>
+                    {lastJobStatusLoading ? (
+                      <span className="text-xs text-slate-400 shrink-0">...</span>
+                    ) : lastJobStatus != null ? (
+                      <span className={`shrink-0 text-xs font-semibold px-2 py-0.5 rounded-full ${
+                        lastJobStatus === 4 ? "bg-blue-100 text-blue-700" :
+                        lastJobStatus === 5 ? "bg-emerald-100 text-emerald-700" :
+                        lastJobStatus === 7 ? "bg-slate-100 text-slate-500" :
+                        "bg-amber-100 text-amber-700"
+                      }`}>
+                        {lastJobStatus === 4 ? "Đã phân công" :
+                         lastJobStatus === 5 ? "Hoàn thành" :
+                         lastJobStatus === 7 ? "Đã huỷ" :
+                         "Chờ phân công"}
+                      </span>
+                    ) : null}
                   </div>
-                  <button
-                    onClick={searchTrips}
-                    disabled={!cancelMaKh.trim() || cancelLoading}
-                    className="px-4 py-2 rounded-xl font-semibold text-white text-sm bg-slate-700 hover:bg-slate-800 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-                  >
-                    {cancelLoading ? "..." : "Tìm"}
-                  </button>
+                  <div className="space-y-1 text-sm">
+                    <div className="flex gap-2">
+                      <span className="text-[10px] font-bold uppercase text-slate-400 pt-0.5 w-8 shrink-0">LẤY</span>
+                      <span className="text-slate-800 font-medium">{lastCreatedJob.pickup_customer_name}</span>
+                    </div>
+                    {lastCreatedJob.dropoff_psc && (
+                      <div className="flex gap-2">
+                        <span className="text-[10px] font-bold uppercase text-slate-400 pt-0.5 w-8 shrink-0">GIAO</span>
+                        <span className="text-slate-800 font-medium">{lastCreatedJob.dropoff_psc}</span>
+                      </div>
+                    )}
+                  </div>
+                  {!lastJobCancelResult?.ok && lastJobStatus !== 5 && lastJobStatus !== 7 && (
+                    <>
+                      <select
+                        value={rejectReason}
+                        onChange={(e) => setRejectReason(e.target.value)}
+                        className="w-full border rounded-xl px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+                      >
+                        {REJECT_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
+                      </select>
+                      <button
+                        onClick={rejectLastJob}
+                        disabled={lastJobCancelLoading}
+                        className="w-full py-2.5 rounded-xl font-bold text-white text-sm bg-red-600 hover:bg-red-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                      >
+                        {lastJobCancelLoading ? "Đang huỷ..." : "Huỷ chuyến này"}
+                      </button>
+                    </>
+                  )}
+                  {lastJobCancelResult && (
+                    <div className={`rounded-xl p-3 text-sm font-medium text-center ${
+                      lastJobCancelResult.ok
+                        ? "bg-emerald-50 border border-emerald-200 text-emerald-800"
+                        : "bg-red-50 border border-red-200 text-red-800"
+                    }`}>
+                      {lastJobCancelResult.msg}
+                    </div>
+                  )}
                 </div>
               </div>
-
-              {cancelSearched && foundTrips !== null && (
-                foundTrips.length === 0 ? (
-                  <p className="text-sm text-slate-400 text-center py-3">Không tìm thấy chuyến nào hôm nay</p>
-                ) : (
-                  <div className="space-y-3">
-                    {foundTrips.map((trip) => {
-                      const pickup = trip.stops.find((s) => s.stop_type_id === 1);
-                      const dropoff = trip.stops.find((s) => s.stop_type_id === 2);
-                      const statusColors = trip.job_status_id === 4
-                        ? "bg-blue-100 text-blue-700"
-                        : "bg-amber-100 text-amber-700";
-                      const statusLabel = trip.job_status_id === 4 ? "Đã phân công" : "Chờ phân công";
-                      const result = tripCancelResult[trip.job_id];
-                      const isCancelling = tripCancelLoading[trip.job_id];
-                      return (
-                        <div key={trip.job_id} className="rounded-xl border border-slate-200 p-3.5 space-y-3">
-                          <div className="flex items-start justify-between gap-2">
-                            <p className="font-mono text-xs text-slate-500 break-all">{trip.reference_number}</p>
-                            <span className={`shrink-0 text-xs font-semibold px-2 py-0.5 rounded-full ${statusColors}`}>{statusLabel}</span>
-                          </div>
-                          <div className="space-y-1 text-sm">
-                            <div className="flex gap-2">
-                              <span className="text-[10px] font-bold uppercase text-slate-400 pt-0.5 w-8 shrink-0">LẤY</span>
-                              <span className="text-slate-800 font-medium">{pickup?.customer_name ?? "—"}</span>
-                            </div>
-                            <div className="flex gap-2">
-                              <span className="text-[10px] font-bold uppercase text-slate-400 pt-0.5 w-8 shrink-0">GIAO</span>
-                              <span className="text-slate-800 font-medium">{dropoff?.customer_name ?? "—"}</span>
-                            </div>
-                          </div>
-                          {!result?.ok && (
-                            <>
-                              <select
-                                value={tripReasons[trip.job_id] ?? REJECT_REASONS[0]}
-                                onChange={(e) => setTripReasons((p) => ({ ...p, [trip.job_id]: e.target.value }))}
-                                className="w-full border rounded-xl px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-                              >
-                                {REJECT_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
-                              </select>
-                              <button
-                                onClick={() => rejectTrip(trip.job_id, trip.reference_number)}
-                                disabled={isCancelling}
-                                className="w-full py-2.5 rounded-xl font-bold text-white text-sm bg-red-600 hover:bg-red-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-                              >
-                                {isCancelling ? "Đang huỷ..." : "Huỷ chuyến này"}
-                              </button>
-                            </>
-                          )}
-                          {result && (
-                            <div className={`rounded-xl p-3 text-sm font-medium text-center ${
-                              result.ok
-                                ? "bg-emerald-50 border border-emerald-200 text-emerald-800"
-                                : "bg-red-50 border border-red-200 text-red-800"
-                            }`}>
-                              {result.msg}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )
-              )}
-            </div>
+            ) : (
+              <p className="text-sm text-slate-400 text-center py-2">Chưa có chuyến nào được tạo trong phiên này</p>
+            )}
 
             <div className="border-t border-slate-100 pt-5 space-y-4">
               <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Huỷ bằng Mã Giao Nhận</p>
-              <div>
-                <input
-                  value={refNumber}
-                  onChange={(e) => setRefNumber(e.target.value)}
-                  placeholder="Dán Mã Giao Nhận Từ SPC"
-                  className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-                />
-              </div>
-              <div>
-                <select
-                  value={rejectReason}
-                  onChange={(e) => setRejectReason(e.target.value)}
-                  className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-                >
-                  {REJECT_REASONS.map((r) => (
-                    <option key={r} value={r}>{r}</option>
-                  ))}
-                </select>
-              </div>
+              <input
+                value={refNumber}
+                onChange={(e) => setRefNumber(e.target.value)}
+                placeholder="Dán Mã Giao Nhận Từ SPC"
+                className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+              />
+              <select
+                value={rejectReason}
+                onChange={(e) => setRejectReason(e.target.value)}
+                className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+              >
+                {REJECT_REASONS.map((r) => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+              </select>
               <button
                 onClick={rejectJob}
                 disabled={!refNumber.trim() || rejectLoading}
