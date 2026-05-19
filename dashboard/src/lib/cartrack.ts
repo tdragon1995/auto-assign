@@ -90,6 +90,14 @@ export async function getDrivers(env: Env = "prod"): Promise<Driver[]> {
   );
 }
 
+export async function deleteJob(jobId: number, env: Env = "prod"): Promise<boolean> {
+  const res = await fetch(`${BASE_URL}/jobs/${jobId}?force=true`, {
+    method: "DELETE",
+    headers: getHeaders(env),
+  });
+  return res.ok;
+}
+
 export async function assignJob(
   driverId: string,
   jobId: number,

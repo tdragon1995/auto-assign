@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { assignJob, BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
+import { assignJob, deleteJob, BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { loadPscRoutes } from "@/lib/psc-config";
 import { vnDate, vnHoursMinutes } from "@/lib/time";
 
@@ -242,16 +242,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Cartrack không trả về job_id" }, { status: 500 });
     }
 
-    const assignResult = await assignJob(driver_id, jobId, env);
+    let assignResult = await assignJob(driver_id, jobId, env);
+    for (let attempt = 1; attempt <= 2 && assignResult.status !== 200; attempt++) {
+      assignResult = await assignJob(driver_id, jobId, env);
+    }
+
     if (assignResult.status !== 200) {
+      await deleteJob(jobId, env);
       return NextResponse.json(
-        {
-          warning: "Job đã tạo nhưng không thể gán tài xế",
-          job_id: jobId,
-          reference_number: refNumber,
-          assign_status: assignResult.status,
-        },
-        { status: 207 }
+        { error: "Tạo audit chưa thành công, vui lòng thử lại. Liên hệ điều phối nếu vẫn gặp lỗi!" },
+        { status: 500 }
       );
     }
 

@@ -15,7 +15,7 @@ interface Location {
   address: string;
 }
 
-type Status = "idle" | "loading" | "success" | "error" | "warning";
+type Status = "idle" | "loading" | "success" | "error";
 
 const LS_DRIVER_ID         = "audit_driver_id";
 const LS_DRIVER_FIRST_NAME = "audit_driver_first_name";
@@ -158,14 +158,6 @@ export default function AuditPage() {
         return;
       }
 
-      if (res.status === 207) {
-        setStatus("warning");
-        setJobId(data.job_id ?? null);
-        setRefNumber(data.reference_number ?? "");
-        setMessage(data.warning ?? "Job đã tạo nhưng không gán được tài xế.");
-        return;
-      }
-
       if (!res.ok) {
         setStatus("error");
         setMessage(data.error ?? "Có lỗi xảy ra. Vui lòng thử lại.");
@@ -289,16 +281,13 @@ export default function AuditPage() {
             className={`rounded-lg px-4 py-3 text-sm font-medium ${
               status === "success"
                 ? "bg-green-50 text-green-700 border border-green-200"
-                : status === "warning"
-                ? "bg-yellow-50 text-yellow-800 border border-yellow-300"
                 : status === "error"
                 ? "bg-red-50 text-red-700 border border-red-200"
                 : ""
             }`}
           >
-            {status === "warning" && <span className="mr-1">⚠️</span>}
             {message}
-            {(status === "success" || status === "warning") && jobId && (
+            {status === "success" && jobId && (
               <p className="mt-1 font-normal text-xs opacity-75">
                 Job #{jobId} · {refNumber}
               </p>

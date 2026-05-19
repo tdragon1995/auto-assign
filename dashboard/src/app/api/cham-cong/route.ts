@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadPscRoutes } from "@/lib/psc-config";
-import { assignJob, BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
+import { assignJob, deleteJob, BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { vnDate, vnHoursMinutes } from "@/lib/time";
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -167,11 +167,16 @@ export async function POST(req: NextRequest) {
     const jobId: number | undefined = created.data?.job_id;
     if (!jobId) return NextResponse.json({ error: "No job_id returned from Cartrack" }, { status: 500 });
 
-    const assignResult = await assignJob(driver_id, jobId, env);
+    let assignResult = await assignJob(driver_id, jobId, env);
+    for (let attempt = 1; attempt <= 2 && assignResult.status !== 200; attempt++) {
+      assignResult = await assignJob(driver_id, jobId, env);
+    }
+
     if (assignResult.status !== 200) {
+      await deleteJob(jobId, env);
       return NextResponse.json(
-        { warning: "Job created but driver assignment failed", job_id: jobId, assign_status: assignResult.status },
-        { status: 207 }
+        { error: "Tạo chấm công chưa thành công, vui lòng thử lại. Liên hệ điều phối nếu vẫn gặp lỗi!" },
+        { status: 500 }
       );
     }
 

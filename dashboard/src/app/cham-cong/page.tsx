@@ -215,7 +215,7 @@ export default function ChamCongPage() {
 
       const data = await res.json();
 
-      if (!res.ok && res.status !== 207) {
+      if (!res.ok) {
         setStatus("error");
         setMessage(data.error ?? "Có lỗi xảy ra.");
         return;
