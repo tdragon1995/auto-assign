@@ -5,7 +5,7 @@
 
 import type { TimelineStop } from "./types";
 
-export type RefLabel = "Arrived" | "En Route" | "Next Stop" | "First Stop" | "Start Location";
+export type RefLabel = "Arrived" | "En Route" | "Next Stop" | "First Stop" | "Last Completed" | "Start Location";
 
 export interface RefStop {
   lat: number;
@@ -19,8 +19,8 @@ export const GPS_FRESH_MS = 15 * 60 * 1000;
 
 /**
  * Select the reference stop for a driver from their ordered timeline stops.
- * Priority: Arrived (3) → En Route (2) → Next pending after last completed → First pending
- * Returns null when no suitable stop is found (e.g. empty route or all completed).
+ * Priority: Arrived (3) → En Route (2) → Next pending after last completed → First pending → Last completed
+ * Returns null when no suitable stop is found (e.g. empty route).
  */
 export function selectReferenceStop(stops: TimelineStop[]): RefStop | null {
   const valid = stops.filter((s) => s.latitude && s.longitude);
@@ -51,7 +51,7 @@ export function selectReferenceStop(stops: TimelineStop[]): RefStop | null {
 
   const nextPending = valid.slice(lastCompletedIdx + 1).find((s) => s.stopStatusId === 1);
   if (nextPending) return toLoc(nextPending, "Next Stop");
-  return null;
+  return toLoc(valid[lastCompletedIdx], "Last Completed");
 }
 
 /** Stats derived from a driver's timeline stops. */
