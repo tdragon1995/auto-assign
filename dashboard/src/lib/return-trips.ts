@@ -106,9 +106,31 @@ export async function detectAndCreateReturnTrips(
     getJobsByStatusAndDate(4, today, env),
   ]);
 
+  // Split completed jobs into outbounds and completed returns (same fetch, no extra API call).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const completedReturns = (completedJobs as any[]).filter(
+    (j) => (j.labels ?? []).includes(PSC_RETURN_LABEL) && j.delivery_driver_id && j.create_ts
+  );
+
+  // Index completed returns: "fromId:toId:driverId" → sorted create_ts strings.
+  // Used to detect outbounds that were already handled: a return created AFTER the outbound's
+  // dropoff completion means that outbound has been processed — skip it even if the return is now done.
+  const completedReturnIndex = new Map<string, string[]>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  for (const ret of completedReturns as any[]) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rPickup  = (ret.stops ?? []).find((s: any) => s.stop_type_id === 1);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rDropoff = (ret.stops ?? []).find((s: any) => s.stop_type_id === 2);
+    if (!rPickup?.customer_id || !rDropoff?.customer_id) continue;
+    const key = `${rPickup.customer_id}:${rDropoff.customer_id}:${ret.delivery_driver_id}`;
+    const arr = completedReturnIndex.get(key) ?? [];
+    arr.push(ret.create_ts as string);
+    completedReturnIndex.set(key, arr);
+  }
+
   // Build set of from:to:driver keys that already have an active return trip (status 2 or 4).
   // Per-driver so two drivers completing the same route each get their own return.
-  // Status 5/3/7 (done/failed/cancelled) intentionally excluded — allows new returns for subsequent outbounds.
   const blockingReturnKeys = new Set<string>(); // "fromId:toId:driverId"
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const job of [...activeStatus2, ...activeStatus4] as any[]) {
@@ -157,6 +179,15 @@ export async function detectAndCreateReturnTrips(
     const toCustomerName: string = pickupStop.customer_name ?? pickupStop.name ?? toCustomerId;
 
     const returnKey = `${fromCustomerId}:${toCustomerId}:${outbound.delivery_driver_id}`;
+
+    // Skip if a completed return already exists that was created AFTER this outbound's dropoff finished.
+    // "YYYY-MM-DD HH:MM:SS" string comparison works for same-day Cartrack timestamps.
+    const outboundDoneAt: string = (dropoffStop.activity_completed_ts ?? "").slice(0, 19);
+    if (outboundDoneAt) {
+      const priorReturns = completedReturnIndex.get(returnKey) ?? [];
+      if (priorReturns.some((ts) => ts.slice(0, 19) > outboundDoneAt)) continue;
+    }
+
     if (blockingReturnKeys.has(returnKey)) continue;
     if (inFlightReturns.has(outbound.job_id)) continue;
 
