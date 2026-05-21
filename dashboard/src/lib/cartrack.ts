@@ -86,6 +86,7 @@ export async function getDrivers(env: Env = "prod"): Promise<Driver[]> {
       longitude: d.longitude ?? null,
       driver_status_id: d.driver_status_id ?? 4,
       start_location_customer_id: d.start_location_customer_id ?? null,
+      shift_time_start: d.shift_time_start ?? null,
     })
   );
 }

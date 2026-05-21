@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDrivers, getUnassignedJobs, getFleetwebCookie, getCustomerById, JSONRPC_URL, type Env } from "@/lib/cartrack";
 import { vnDate, vnDayWindow } from "@/lib/time";
 import { haversineKm, goongMatrix } from "@/lib/distance";
-import { GPS_FRESH_MS, selectReferenceStop, computeStopStats, rankingComparator, type RefLabel } from "@/lib/smart-rank";
+import { selectReferenceStop, computeStopStats, ROUTE_STATE_PRIORITY, type RefLabel } from "@/lib/smart-rank";
 import type { TimelineRoute } from "@/lib/types";
 
 const TOP_N        = 3;
@@ -18,7 +18,7 @@ interface DriverJobStats {
 
 interface DriverRouteData {
   stats: DriverJobStats;
-  referenceStop: { lat: number; lon: number; label: RefLabel; customerName: string | null } | null;
+  referenceStop: { lat: number; lon: number; label: RefLabel; customerName: string | null; tiebreakTs: string | null } | null;
   lastCompletedTs: string | null;
 }
 
@@ -27,7 +27,8 @@ const ACTIVE_STOP_STATUSES = new Set([1, 2, 3]);
 async function fetchAllDriverRouteData(
   dateVn: string,
   auth: string,
-  cookie: string
+  cookie: string,
+  shiftStartByDriverId: Record<string, string | null>
 ): Promise<Record<string, DriverRouteData>> {
   try {
     const res = await fetch(JSONRPC_URL, {
@@ -67,7 +68,7 @@ async function fetchAllDriverRouteData(
         if ([...statuses].some((s) => ACTIVE_STOP_STATUSES.has(s))) active++;
       }
 
-      const referenceStop = selectReferenceStop(stops);
+      const referenceStop = selectReferenceStop(stops, shiftStartByDriverId[driverId] ?? null);
       const { lastCompletedTs } = computeStopStats(stops);
 
       result[driverId] = { stats: { total, active, done: total - active }, referenceStop, lastCompletedTs };
@@ -88,33 +89,22 @@ export async function POST(req: NextRequest) {
   const auth   = process.env.CARTRACK_AUTH ?? "";
   const cookie = await getFleetwebCookie();
 
-  const [allDrivers, jobsRes, routeData] = await Promise.all([
-    getDrivers(env),
-    getUnassignedJobs(1, 50, env),
-    cookie
-      ? fetchAllDriverRouteData(today, auth, cookie)
-      : Promise.resolve({} as Record<string, DriverRouteData>),
-  ]);
-
+  const allDrivers = await getDrivers(env);
   const EXCLUDED_DRIVER_STATUSES = new Set([3, 4, 5]);
   // Include drivers without GPS if they have a start_location (used as Phase 1 fallback)
   const drivers = allDrivers.filter(
     (d) => !EXCLUDED_DRIVER_STATUSES.has(d.driver_status_id ?? 4) &&
       ((d.latitude != null && d.longitude != null) || !!d.start_location_customer_id)
   );
+  const shiftStartByDriverId: Record<string, string | null> = {};
+  for (const d of drivers) shiftStartByDriverId[d.delivery_driver_id] = d.shift_time_start ?? null;
 
-  // ── GPS-fresh override: if driver hasn't started (First Stop) but GPS is fresh, use GPS instead ──
-  const nowMs = Date.now();
-  for (const d of drivers) {
-    const rd = routeData[d.delivery_driver_id];
-    if (rd?.referenceStop?.label !== "First Stop") continue;
-    if (!d.last_login_ts) continue;
-    const loginMs = new Date(d.last_login_ts).getTime();
-    if (!Number.isFinite(loginMs)) continue;
-    if (nowMs - loginMs < GPS_FRESH_MS) {
-      routeData[d.delivery_driver_id] = { ...rd, referenceStop: null };
-    }
-  }
+  const [jobsRes, routeData] = await Promise.all([
+    getUnassignedJobs(1, 50, env),
+    cookie
+      ? fetchAllDriverRouteData(today, auth, cookie, shiftStartByDriverId)
+      : Promise.resolve({} as Record<string, DriverRouteData>),
+  ]);
 
   // ── Fetch start_location coords for drivers who need them ──
   // Two reasons: (1) no GPS → Phase 1 fallback, (2) no route today → reference-stop fallback.
@@ -148,7 +138,13 @@ export async function POST(req: NextRequest) {
     const existing = rd ?? { stats: { total: 0, active: 0, done: 0 }, referenceStop: null, lastCompletedTs: null };
     routeData[d.delivery_driver_id] = {
       ...existing,
-      referenceStop: { lat: coords.lat, lon: coords.lon, label: "Start Location", customerName: coords.name },
+      referenceStop: {
+        lat: coords.lat,
+        lon: coords.lon,
+        label: "Start Location",
+        customerName: coords.name,
+        tiebreakTs: d.shift_time_start ?? null,
+      },
     };
   }
 
@@ -277,21 +273,26 @@ export async function POST(req: NextRequest) {
           detour_haversine_km: detourHaversineKm,
           detour_distance_km:  detourRouting?.distance_km ?? null,
           detour_eta_mins:     detourRouting?.eta_mins    ?? null,
+          _priority:           ref ? ROUTE_STATE_PRIORITY[ref.label] : 0,
+          _tiebreakTs:         ref?.tiebreakTs ?? null,
         };
       })
-      // Re-rank: Goong detour (fallback detour haversine → GPS haversine)
-      //   → last_completed_ts ASC (null = most idle = highest priority)
-      //   → jobs_done ASC (fewer jobs done today = higher priority)
+      // Re-rank: distance ASC → route-state priority DESC → per-label tiebreak ts ASC
+      //   → jobs_done ASC. tiebreak ts semantics live in selectReferenceStop.
       .sort((a, b) => {
         const aDist = a.detour_distance_km ?? a.detour_haversine_km ?? a.haversine_km;
         const bDist = b.detour_distance_km ?? b.detour_haversine_km ?? b.haversine_km;
         if (aDist !== bDist) return aDist - bDist;
-        const aTs = a.last_completed_ts ?? "";
-        const bTs = b.last_completed_ts ?? "";
+        if (a._priority !== b._priority) return b._priority - a._priority;
+        const aTs = a._tiebreakTs ?? "";
+        const bTs = b._tiebreakTs ?? "";
         if (aTs !== bTs) return aTs.localeCompare(bTs);
         return (a.jobs_done ?? 0) - (b.jobs_done ?? 0);
       })
-      .slice(0, TOP_N);
+      .slice(0, TOP_N)
+      // Drop internal sort keys before returning to client
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      .map(({ _priority, _tiebreakTs, ...rest }) => rest);
 
     return { job_id: s.job_id, pickup: s.pickup, unscheduled: s.unscheduled, drivers: rankedDrivers };
   });

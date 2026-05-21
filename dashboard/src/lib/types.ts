@@ -58,6 +58,7 @@ export interface Driver {
   longitude: number | null;
   driver_status_id: number;
   start_location_customer_id?: string | null;
+  shift_time_start?: string | null;
 }
 
 // --- delivery_timeline_route_list (JSONRPC) ---
@@ -89,6 +90,8 @@ export interface TimelineStop {
   latitude: number;
   longitude: number;
   activityCompletedTs: string | null;
+  activityArrivedTs: string | null;
+  activityStartedTs: string | null;
 }
 
 export interface TimelineRoute {

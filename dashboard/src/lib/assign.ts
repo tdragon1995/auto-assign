@@ -13,7 +13,7 @@ import {
 } from "./time";
 import { haversineKm, goongDistanceKm } from "./distance";
 import { isCompletedOrRejectedStop } from "./job-filters";
-import { GPS_FRESH_MS, selectReferenceStop, computeStopStats, rankingComparator, type RefStop, type RefLabel } from "./smart-rank";
+import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, type RefStop, type RefLabel } from "./smart-rank";
 
 const REST_BASE = "https://fleetapi-vn.cartrack.com/rest/delivery";
 
@@ -111,7 +111,8 @@ async function rejectJobAsDuplicate(jobId: number, auth: string, cookie: string)
 type DriverRouteInfo = { ref: RefStop | null; label: RefLabel | null; workload: number; lastCompletedTs: string | null; jobsDone: number };
 
 async function fetchSmartRouteData(
-  dateVn: string, auth: string, cookie: string
+  dateVn: string, auth: string, cookie: string,
+  shiftStartByDriverId: Record<string, string | null>
 ): Promise<Record<string, DriverRouteInfo>> {
   try {
     const res = await fetch(JSONRPC_URL, {
@@ -130,10 +131,10 @@ async function fetchSmartRouteData(
     for (const route of routes) {
       const driverId = route.routeId.replace(/^driver_/, "");
       const stops = route.orderedStops ?? [];
-      const refStop = selectReferenceStop(stops);
+      const refStop = selectReferenceStop(stops, shiftStartByDriverId[driverId] ?? null);
       const stats = computeStopStats(stops);
       result[driverId] = {
-        ref:  refStop ? { lat: refStop.lat, lon: refStop.lon, label: refStop.label, customerName: refStop.customerName } : null,
+        ref: refStop,
         label: refStop?.label ?? null,
         workload: stops.length,
         lastCompletedTs: stats.lastCompletedTs,
@@ -359,20 +360,10 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
     allGpsDrivers = fetchedDrivers.filter((d) =>
       (d.latitude != null && d.longitude != null) || !!d.start_location_customer_id
     );
+    const shiftStartByDriverId: Record<string, string | null> = {};
+    for (const d of allGpsDrivers) shiftStartByDriverId[d.delivery_driver_id] = d.shift_time_start ?? null;
     if (cookie && auth) {
-      smartRouteData = await fetchSmartRouteData(vnDate(), auth, cookie);
-    }
-
-    // GPS-fresh override: if driver hasn't started (First Stop) but GPS is fresh, rely on GPS instead
-    const nowMs = Date.now();
-    for (const d of allGpsDrivers) {
-      const info = smartRouteData[d.delivery_driver_id];
-      if (info?.label !== "First Stop" || !d.last_login_ts) continue;
-      const loginMs = new Date(d.last_login_ts).getTime();
-      if (!Number.isFinite(loginMs)) continue;
-      if (nowMs - loginMs < GPS_FRESH_MS) {
-        smartRouteData[d.delivery_driver_id] = { ...info, ref: null, label: null };
-      }
+      smartRouteData = await fetchSmartRouteData(vnDate(), auth, cookie, shiftStartByDriverId);
     }
 
     // ── Fetch start_location coords for drivers who need them ──
@@ -405,7 +396,13 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
       const coords = startLocCoords.get(d.start_location_customer_id);
       if (!coords) continue;
       smartRouteData[d.delivery_driver_id] = {
-        ref: { lat: coords.lat, lon: coords.lon, label: "Start Location", customerName: coords.name },
+        ref: {
+          lat: coords.lat,
+          lon: coords.lon,
+          label: "Start Location",
+          customerName: coords.name,
+          tiebreakTs: d.shift_time_start ?? null,
+        },
         label: "Start Location",
         workload: info?.workload ?? 0,
         lastCompletedTs: info?.lastCompletedTs ?? null,
@@ -546,18 +543,20 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
             const info = smartRouteData[d.delivery_driver_id];
             const ref = info?.ref ?? null;
             const workload = info?.workload ?? 0;
-            const lastCompletedTs = info?.lastCompletedTs ?? null;
+            const tiebreakTs = ref?.tiebreakTs ?? null;
+            const priority = ref ? ROUTE_STATE_PRIORITY[ref.label] : 0;
+            const labelTag = ref ? `[${ref.label}] ` : "";
             const jobsDone = info?.jobsDone ?? 0;
             const name = `${d.first_name} ${d.last_name}`.trim();
-            if (!ref) return { d, sortDist: hkm, workload, lastCompletedTs, jobsDone, name, distLabel: `${hkm}km GPS (load ${workload})` };
+            if (!ref) return { d, sortDist: hkm, priority, workload, tiebreakTs, jobsDone, name, distLabel: `${hkm}km GPS (load ${workload})` };
             const roadKm = await goongDistanceKm(ref.lat, ref.lon, pickupStop.latitude!, pickupStop.longitude!);
             const refHkm = Math.round(haversineKm(ref.lat, ref.lon, pickupStop.latitude!, pickupStop.longitude!) * 10) / 10;
             const sortDist = roadKm ?? refHkm;
             const refName  = ref.customerName ? `@${ref.customerName} ` : "";
             const distLabel = roadKm != null
-              ? `${hkm}km GPS, ${refName}→ ${roadKm}km road (load ${workload})`
-              : `${hkm}km GPS, ${refName}→ ${refHkm}km straight (load ${workload})`;
-            return { d, sortDist, workload, lastCompletedTs, jobsDone, name, distLabel };
+              ? `${labelTag}${hkm}km GPS, ${refName}→ ${roadKm}km road (load ${workload})`
+              : `${labelTag}${hkm}km GPS, ${refName}→ ${refHkm}km straight (load ${workload})`;
+            return { d, sortDist, priority, workload, tiebreakTs, jobsDone, name, distLabel };
           })
         );
         withGoong.sort(rankingComparator);
