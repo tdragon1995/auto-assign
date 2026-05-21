@@ -71,9 +71,9 @@ export function Dashboard() {
     setIsRunning((prev) => {
       const next = !prev;
       if (next) {
-        // Start: run immediately then every 30s
+        // Start: run immediately then every 3 minutes
         runAssignCycle();
-        assignIntervalRef.current = setInterval(runAssignCycle, 30_000);
+        assignIntervalRef.current = setInterval(runAssignCycle, 180_000);
       } else {
         if (assignIntervalRef.current) {
           clearInterval(assignIntervalRef.current);

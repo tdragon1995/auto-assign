@@ -4,6 +4,12 @@ import { fetchSheetRows, SHEET_GID } from "./sheets";
 const DEFAULT_POLL_INTERVAL = 30;
 const DEFAULT_JOB_MAX_AGE = 60;
 
+let cachedConfig: Config | null = null;
+
+export function invalidateConfigCache(): void {
+  cachedConfig = null;
+}
+
 export function parseTime(
   str: string | undefined
 ): { hours: number; minutes: number } | null {
@@ -23,6 +29,7 @@ export function parseTime(
 }
 
 export async function loadConfigFromSheets(): Promise<Config | null> {
+  if (cachedConfig) return cachedConfig;
   try {
     const rows = await fetchSheetRows(SHEET_GID.mapping);
 
@@ -48,11 +55,12 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
       });
     }
 
-    return {
+    cachedConfig = {
       mappings,
       poll_interval_seconds: DEFAULT_POLL_INTERVAL,
       job_max_age_minutes: DEFAULT_JOB_MAX_AGE,
     };
+    return cachedConfig;
   } catch (e) {
     console.error("Error loading config from sheets:", e);
     return null;

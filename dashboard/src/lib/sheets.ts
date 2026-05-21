@@ -8,7 +8,8 @@ export const SHEET_GID = {
 } as const;
 
 export function sheetCsvUrl(gid: string): string {
-  return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${gid}`;
+  // gviz/tq exports all rows regardless of any active sheet filter
+  return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${gid}`;
 }
 
 function parseCSVLine(line: string): string[] {
