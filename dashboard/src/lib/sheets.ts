@@ -7,9 +7,17 @@ export const SHEET_GID = {
   tpl: "934328932",
 } as const;
 
+// Separate spreadsheet used for Sunday driver mappings
+const SUNDAY_SHEET_ID = "1AF0Vst3zaXv8U3mi43LIkxCWDFaiYwnHsx1mIgz4JT8";
+const SUNDAY_SHEET_GID = "1996956460";
+
 export function sheetCsvUrl(gid: string): string {
   // gviz/tq exports all rows regardless of any active sheet filter
   return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${gid}`;
+}
+
+export function sundayMappingCsvUrl(): string {
+  return `https://docs.google.com/spreadsheets/d/${SUNDAY_SHEET_ID}/gviz/tq?tqx=out:csv&gid=${SUNDAY_SHEET_GID}`;
 }
 
 function parseCSVLine(line: string): string[] {
@@ -70,6 +78,12 @@ export async function fetchSheetRows(
   gid: string
 ): Promise<Record<string, string>[]> {
   const res = await fetch(sheetCsvUrl(gid), { cache: "no-store" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return parseCSV(await res.text());
+}
+
+export async function fetchSundayMappingRows(): Promise<Record<string, string>[]> {
+  const res = await fetch(sundayMappingCsvUrl(), { cache: "no-store" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return parseCSV(await res.text());
 }

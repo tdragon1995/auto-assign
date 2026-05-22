@@ -5,6 +5,11 @@ export function vnNow(): Date {
   return new Date();
 }
 
+/** Whether the given Date (default: now) falls on a Sunday in Saigon time. */
+export function vnIsSunday(d: Date = new Date()): boolean {
+  return new Intl.DateTimeFormat("en-US", { timeZone: TZ, weekday: "long" }).format(d) === "Sunday";
+}
+
 /** "YYYY-MM-DD" for the given Date (default: now) in Saigon time. */
 export function vnDate(d: Date = new Date()): string {
   return new Intl.DateTimeFormat("sv-SE", { timeZone: TZ }).format(d).slice(0, 10);

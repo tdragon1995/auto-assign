@@ -1,5 +1,6 @@
 import type { Config, Mapping } from "./types";
-import { fetchSheetRows, SHEET_GID } from "./sheets";
+import { fetchSheetRows, fetchSundayMappingRows, SHEET_GID } from "./sheets";
+import { vnIsSunday } from "./time";
 
 const DEFAULT_POLL_INTERVAL = 30;
 const DEFAULT_JOB_MAX_AGE = 60;
@@ -31,7 +32,9 @@ export function parseTime(
 export async function loadConfigFromSheets(): Promise<Config | null> {
   if (cachedConfig) return cachedConfig;
   try {
-    const rows = await fetchSheetRows(SHEET_GID.mapping);
+    const rows = vnIsSunday()
+      ? await fetchSundayMappingRows()
+      : await fetchSheetRows(SHEET_GID.mapping);
 
     const mappings: Mapping[] = [];
     for (const row of rows) {
