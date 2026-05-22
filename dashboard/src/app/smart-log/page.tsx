@@ -91,6 +91,7 @@ export default function SmartLogPage() {
   const [runs, setRuns] = useState<SmartRunEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [configured, setConfigured] = useState<boolean | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -98,6 +99,7 @@ export default function SmartLogPage() {
     try {
       const res = await fetch("/api/smart-log?limit=100");
       const data = await res.json();
+      setConfigured(data.configured ?? false);
       if (data.error) throw new Error(data.error);
       setRuns(data.runs ?? []);
     } catch (e) {
@@ -124,6 +126,19 @@ export default function SmartLogPage() {
           </div>
         </CardHeader>
         <CardContent>
+          {configured === false && !loading && (
+            <div className="text-xs bg-orange-50 border border-orange-200 rounded p-2 mb-3 font-mono">
+              <span className="text-orange-700 font-semibold">Redis not connected.</span>
+              {" "}Vercel dashboard → Storage → Upstash → Redis → Create → Connect to this project.
+              Env vars needed: <code>UPSTASH_REDIS_REST_URL</code> + <code>UPSTASH_REDIS_REST_TOKEN</code>.
+            </div>
+          )}
+          {configured === true && !loading && runs.length === 0 && (
+            <div className="text-xs bg-blue-50 border border-blue-200 rounded p-2 mb-3 font-mono text-blue-700">
+              Redis is connected. Waiting for the first smart-assign cycle with jobs to process.
+              A cycle only stores here if at least one job went through smart-assign.
+            </div>
+          )}
           {error && (
             <p className="text-xs text-red-600 font-mono mb-2">{error}</p>
           )}

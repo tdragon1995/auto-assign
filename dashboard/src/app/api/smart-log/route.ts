@@ -6,10 +6,16 @@ export async function GET(req: NextRequest) {
     parseInt(req.nextUrl.searchParams.get("limit") ?? "100", 10),
     500
   );
+
+  const configured = !!(
+    process.env.UPSTASH_REDIS_REST_URL &&
+    process.env.UPSTASH_REDIS_REST_TOKEN
+  );
+
   try {
     const runs = await getSmartRuns(limit);
-    return NextResponse.json({ runs });
+    return NextResponse.json({ configured, runs });
   } catch (e) {
-    return NextResponse.json({ error: String(e) }, { status: 500 });
+    return NextResponse.json({ configured, error: String(e) }, { status: 500 });
   }
 }
