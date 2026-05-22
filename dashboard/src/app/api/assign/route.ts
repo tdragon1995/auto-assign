@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { loadConfigFromSheets } from "@/lib/config";
 import { autoAssignCycle } from "@/lib/assign";
 import type { Env } from "@/lib/cartrack";
+import { pushSmartRun } from "@/lib/smart-log-kv";
 
 export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
@@ -16,6 +17,8 @@ export async function POST(req: NextRequest) {
     }
 
     const logs = await autoAssignCycle(config, env, skipSmart);
+    // Fire-and-forget: don't let KV failures block the response
+    pushSmartRun(logs).catch(() => {});
     return NextResponse.json({ logs });
   } catch (e) {
     return NextResponse.json(
