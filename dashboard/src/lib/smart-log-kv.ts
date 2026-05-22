@@ -1,8 +1,15 @@
-import { kv } from "@vercel/kv";
+import { Redis } from "@upstash/redis";
 import type { LogEntry } from "./types";
 
 const KV_KEY = "smart:runs";
 const MAX_RUNS = 500;
+
+function getRedis() {
+  const url   = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) return null;
+  return new Redis({ url, token });
+}
 
 export interface SmartRunEntry {
   ts: string;
@@ -18,23 +25,29 @@ function isSmartLog(entry: LogEntry): boolean {
 
 /** Persist smart-assign log entries from a completed assign cycle. */
 export async function pushSmartRun(allLogs: LogEntry[]): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+
   const entries = allLogs.filter(isSmartLog);
   if (entries.length === 0) return;
 
   const run: SmartRunEntry = {
-    ts: entries[0].ts,
+    ts:    entries[0].ts,
     ok:    entries.filter((e) => e.level === "OK").length,
     warn:  entries.filter((e) => e.level === "WARN").length,
     error: entries.filter((e) => e.level === "ERROR").length,
     entries,
   };
 
-  await kv.lpush(KV_KEY, JSON.stringify(run));
-  await kv.ltrim(KV_KEY, 0, MAX_RUNS - 1);
+  await redis.lpush(KV_KEY, JSON.stringify(run));
+  await redis.ltrim(KV_KEY, 0, MAX_RUNS - 1);
 }
 
 /** Read the most recent N runs (default 100). */
 export async function getSmartRuns(limit = 100): Promise<SmartRunEntry[]> {
-  const raw = await kv.lrange<string>(KV_KEY, 0, limit - 1);
+  const redis = getRedis();
+  if (!redis) return [];
+
+  const raw = await redis.lrange<string>(KV_KEY, 0, limit - 1);
   return raw.map((r) => (typeof r === "string" ? JSON.parse(r) : r) as SmartRunEntry);
 }
