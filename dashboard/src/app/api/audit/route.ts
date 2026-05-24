@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { assignJob, deleteJob, BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
-import { loadPscRoutes } from "@/lib/psc-config";
-import { vnDate, vnHoursMinutes } from "@/lib/time";
-
-const CACHE_TTL_MS = 5 * 60 * 1000;
+import { vnDate } from "@/lib/time";
+import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 
@@ -59,52 +57,6 @@ const AUDIT_ITEMS = [
   },
 ];
 
-// ── Location cache ─────────────────────────────────────────────────────────
-
-interface LocationEntry {
-  customer_id: string;
-  name: string;
-  address: string;
-}
-
-let locationsCache: { data: LocationEntry[]; ts: number } | null = null;
-
-async function fetchLocations(env: Env): Promise<LocationEntry[]> {
-  if (locationsCache && Date.now() - locationsCache.ts < CACHE_TTL_MS) {
-    return locationsCache.data;
-  }
-
-  const routes = await loadPscRoutes();
-  const seen = new Set<string>();
-  const pickups: { customer_id: string; name: string }[] = [];
-  for (const r of routes) {
-    if (r.pickup && r.psc_pickup && !seen.has(r.pickup)) {
-      seen.add(r.pickup);
-      pickups.push({ customer_id: r.pickup, name: r.psc_pickup });
-    }
-  }
-
-  const headers = getHeaders(env);
-  const enriched = await Promise.all(
-    pickups.map(async (p) => {
-      try {
-        const res = await fetch(`${BASE_URL}/customers/${p.customer_id}`, { headers });
-        if (!res.ok) return { ...p, address: "" };
-        const data = await res.json();
-        const c = data.data ?? data;
-        const address = [c.address_line_1, c.address_line_2].filter(Boolean).join(", ");
-        return { customer_id: p.customer_id, name: p.name, address };
-      } catch {
-        return { ...p, address: "" };
-      }
-    })
-  );
-
-  enriched.sort((a, b) => a.name.localeCompare(b.name, "vi"));
-  locationsCache = { data: enriched, ts: Date.now() };
-  return enriched;
-}
-
 // ── Reference number builder ───────────────────────────────────────────────
 // Format: audit_{YY}_{mon}_{dd}_{driver_code}_{last_name_no_spaces}
 // driver_code = last segment after " - " in first_name (e.g. "F - C - DC100842" → "DC100842")
@@ -156,12 +108,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  try {
-    const pscs = await fetchLocations(env);
-    return NextResponse.json({ pscs });
-  } catch (e) {
-    return NextResponse.json({ error: String(e) }, { status: 500 });
-  }
+  return NextResponse.json({ pscs: DIAG_LOCATIONS });
 }
 
 // ── POST /api/audit — create audit job + auto-assign to driver ────────────
