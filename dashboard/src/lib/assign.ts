@@ -373,7 +373,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
       if (!d.start_location_customer_id) continue;
       const info = smartRouteData[d.delivery_driver_id];
       const noGps = d.latitude == null || d.longitude == null;
-      const needsRefFallback = !info?.ref && (!info || info.workload === 0);
+      const needsRefFallback = !info?.ref;
       if (noGps || needsRefFallback) startLocIdsNeeded.add(d.start_location_customer_id);
     }
     const startLocCoords = new Map<string, { lat: number; lon: number; name: string | null }>();
@@ -387,12 +387,11 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
       })
     );
 
-    // Reference-stop fallback: drivers with NO route today → use start_location as ref
+    // Reference-stop fallback: drivers with no usable ref (no route, or all stops windowed) → use start_location
     for (const d of allGpsDrivers) {
       if (!d.start_location_customer_id) continue;
       const info = smartRouteData[d.delivery_driver_id];
       if (info?.ref) continue;
-      if (info && info.workload > 0) continue;
       const coords = startLocCoords.get(d.start_location_customer_id);
       if (!coords) continue;
       smartRouteData[d.delivery_driver_id] = {

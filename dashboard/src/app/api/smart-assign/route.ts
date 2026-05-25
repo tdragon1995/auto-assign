@@ -113,7 +113,7 @@ export async function POST(req: NextRequest) {
     if (!d.start_location_customer_id) continue;
     const noGps = d.latitude == null || d.longitude == null;
     const rd = routeData[d.delivery_driver_id];
-    const needsRefFallback = !rd?.referenceStop && (!rd || rd.stats.total === 0);
+    const needsRefFallback = !rd?.referenceStop;
     if (noGps || needsRefFallback) customerIdsNeeded.add(d.start_location_customer_id);
   }
   const customerCoords = new Map<string, { lat: number; lon: number; name: string | null }>();
@@ -127,12 +127,11 @@ export async function POST(req: NextRequest) {
     })
   );
 
-  // Apply reference-stop fallback (only for drivers with no route today)
+  // Reference-stop fallback: no usable ref (no route, or all stops windowed) → use start_location
   for (const d of drivers) {
     if (!d.start_location_customer_id) continue;
     const rd = routeData[d.delivery_driver_id];
     if (rd?.referenceStop) continue;
-    if (rd && rd.stats.total > 0) continue;
     const coords = customerCoords.get(d.start_location_customer_id);
     if (!coords) continue;
     const existing = rd ?? { stats: { total: 0, active: 0, done: 0 }, referenceStop: null, lastCompletedTs: null };
