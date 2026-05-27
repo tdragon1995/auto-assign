@@ -49,7 +49,7 @@ LABCENTER_RECEPTIONIST_PASSWORD= # Password for receptionist account
 
 1. **Config** is loaded on each assign cycle from a public Google Sheet (CSV export) via `src/lib/config.ts`. It maps `customer_id → driver_id` with optional shift windows and Zalo notification tokens.
 
-2. **Dashboard UI** (`src/components/dashboard.tsx`) polls `POST /api/assign` every 30 seconds when running. Two modes:
+2. **Dashboard UI** (`src/components/dashboard.tsx`) polls `POST /api/assign` every 3 minutes when running (hardcoded `180_000` ms in `dashboard.tsx`). Two modes:
    - **Smart mode**: calls `POST /api/assign` which handles all jobs
    - **Auto-Plan mode**: calls `POST /api/autoplan` which runs Cartrack's timeline planner for smart drivers then fixed-driver assignment in the same request
 

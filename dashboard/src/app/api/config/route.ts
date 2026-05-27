@@ -23,7 +23,6 @@ export async function GET() {
     return NextResponse.json({
       mappingCount: config.mappings.length,
       pscRouteCount: pscRoutes.length,
-      pollInterval: config.poll_interval_seconds,
       jobMaxAge: config.job_max_age_minutes,
       status: "ok",
     });

@@ -12,7 +12,6 @@ export interface Mapping {
 
 export interface Config {
   mappings: Mapping[];
-  poll_interval_seconds: number;
   job_max_age_minutes: number;
 }
 
