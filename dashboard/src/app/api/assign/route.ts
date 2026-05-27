@@ -23,8 +23,11 @@ export async function POST(req: NextRequest) {
     }
 
     const logs = await autoAssignCycle(config, env, skipSmart);
-    // Fire-and-forget: don't let KV failures block the response
-    pushSmartRun(logs).catch(() => {});
+    try {
+      await pushSmartRun(logs);
+    } catch (e) {
+      logs.push({ ts: new Date().toISOString(), level: "WARN", msg: `Smart-log KV write failed: ${e}` });
+    }
     return NextResponse.json({ logs });
   } catch (e) {
     return NextResponse.json(
