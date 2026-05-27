@@ -121,7 +121,7 @@ These are the things most likely to burn a future agent working on this codebase
 
 2. **`getUnassignedJobs` has no time filter.** It only filters by `job_status_id=2`; the assign cycle then drops old jobs locally by `create_ts`. This is correct for ad-hoc jobs but wrong for scheduled/planned jobs — use `scheduled_delivery_ts` filtering for those.
 
-3. **`loadConfigFromSheets` is intentionally uncached.** The assign cycle runs every 30 s and must see fresh sheet edits immediately. Do not add a cache without also wiring a refresh path.
+3. **`loadConfigFromSheets` has an in-memory cache.** It only re-fetches the sheet after `invalidateConfigCache()` is called (dashboard Refresh button). If the sheet fetch ever returns suspiciously few rows (network hiccup), the bad result gets cached and all subsequent cycles see an empty mapping — causing widespread NO MAPPING errors until the server restarts or Refresh is clicked.
 
 4. **`CARTRACK_WEB_PASS` is required for JSON-RPC calls** (`getFleetwebCookie`). Without it, `autoplan`, route optimisation, and duplicate-rejection all fail silently at login.
 
@@ -131,12 +131,19 @@ See `docs/business-rules.md` for deeper detail and `docs/cartrack-api.md` for AP
 
 ## CI/CD
 
-Deployment is triggered automatically by Vercel on push to `master`, but the GitHub integration occasionally misses pushes. If a push doesn't deploy within ~2 minutes, trigger manually:
+### Standard deploy — always use `./deploy.sh`
 
 ```bash
-# Must run from the REPO ROOT — not from dashboard/
-npx vercel --prod --scope longnguyenthanh075-5963s-projects
+# From repo root:
+git add <files>
+git commit -m "..."
+git push origin master
+./deploy.sh
 ```
+
+`deploy.sh` enforces that local is clean and in sync with `origin/master` before building and deploying. **Never run `npx vercel --prod` directly** — it uploads local files bypassing git, causing Vercel and git to silently diverge. Any subsequent deploy from another machine or GitHub integration will overwrite your untracked changes.
+
+If GitHub integration deploys within ~2 minutes of the push, the `./deploy.sh` step is optional — but running it is always safe (it's idempotent).
 
 **Important:** Never run `vercel --prod` from `dashboard/`. That subdirectory has no `.vercel/` link and the CLI will create a new orphan project instead of deploying to `diag-logistics`. The correct `.vercel/project.json` (pointing to `prj_DQHaXcRc31jOI58J7NU8cNK1iO4C` / `diag-logistics`) lives at the repo root.
 
