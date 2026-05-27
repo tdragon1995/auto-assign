@@ -2,9 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { loadConfigFromSheets } from "@/lib/config";
 import { autoAssignCycle } from "@/lib/assign";
 import type { Env } from "@/lib/cartrack";
-import { pushSmartRun } from "@/lib/smart-log-kv";
+import { pushSmartRun, touchLastRun, getLastRunTs } from "@/lib/smart-log-kv";
+
+export async function GET() {
+  const lastRunTs = await getLastRunTs();
+  return NextResponse.json({ lastRunTs });
+}
 
 export async function POST(req: NextRequest) {
+  touchLastRun().catch(() => {});
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
   const skipSmart = req.nextUrl.searchParams.get("skipSmart") === "1";
   try {

@@ -18,10 +18,22 @@ export function Dashboard() {
   const [pscRouteCount, setPscRouteCount] = useState(0);
   const [env, setEnv] = useState<Env>("prod");
   const [assignMode, setAssignMode] = useState<AssignMode>("smart");
+  const [otherAdminActive, setOtherAdminActive] = useState(false);
   const assignIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cycleInProgressRef = useRef(false);
 
-  // Fetch config on mount
+  const checkOtherAdmin = useCallback(() => {
+    fetch("/api/assign")
+      .then((r) => r.json())
+      .then((d: { lastRunTs?: string }) => {
+        if (!d.lastRunTs) { setOtherAdminActive(false); return; }
+        const diffMs = Date.now() - new Date(d.lastRunTs).getTime();
+        setOtherAdminActive(diffMs < 5 * 60 * 1000);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Fetch config + check other admin on mount
   useEffect(() => {
     fetch("/api/config")
       .then((r) => r.json())
@@ -30,7 +42,8 @@ export function Dashboard() {
         setPscRouteCount(d.pscRouteCount ?? 0);
       })
       .catch(() => {});
-  }, []);
+    checkOtherAdmin();
+  }, [checkOtherAdmin]);
 
   // Auto-assign cycle
   // Smart mode: /api/assign handles all jobs (smart + fixed).
@@ -125,6 +138,7 @@ export function Dashboard() {
 
   // Refresh handler with toast
   const handleRefresh = useCallback(async () => {
+    checkOtherAdmin();
     try {
       const configRes = await fetch("/api/config");
       if (!configRes.ok) throw new Error(`Config returned ${configRes.status}`);
@@ -135,11 +149,12 @@ export function Dashboard() {
 
       if (isRunning) runAssignCycle();
 
+      checkOtherAdmin();
       toast.success(`Google Sheet reloaded: ${configData.mappingCount} mapping(s), ${configData.pscRouteCount} PSC route(s) fetched`);
     } catch (err) {
       toast.error(`Refresh failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [isRunning, runAssignCycle]);
+  }, [isRunning, runAssignCycle, checkOtherAdmin]);
 
   const isProd = env === "prod";
 
@@ -155,6 +170,13 @@ export function Dashboard() {
       >
         {isProd ? "PRODUCTION" : "UAT"}
       </div>
+
+      {/* Other-admin warning */}
+      {otherAdminActive && (
+        <div className="bg-amber-400 text-amber-950 px-4 py-2 text-center text-sm font-medium shrink-0">
+          ⚠️ Đang có admin khác đang bật hệ thống tự động. Vui lòng đợi thêm!
+        </div>
+      )}
 
       {/* Header */}
       <header className="bg-slate-900 text-white px-4 py-3 flex items-center justify-between shrink-0">
@@ -192,8 +214,8 @@ export function Dashboard() {
 
           {/* Auto-Assign switch */}
           <div className="flex items-center gap-2">
-            <span className="text-sm text-slate-300">Auto-Assign</span>
-            <Switch checked={isRunning} onCheckedChange={toggleService} />
+            <span className={`text-sm ${otherAdminActive ? "text-slate-500" : "text-slate-300"}`}>Auto-Assign</span>
+            <Switch checked={isRunning} onCheckedChange={toggleService} disabled={otherAdminActive} />
           </div>
 
           <Button

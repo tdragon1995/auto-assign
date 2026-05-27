@@ -28,6 +28,21 @@ type Status = "idle" | "loading" | "success" | "error";
 const LS_DRIVER_ID   = "cc_driver_id";
 const LS_DRIVER_NAME = "cc_driver_name";
 const SHIFT_STATE_TTL_MS = 2 * 60 * 1000; // 2 minutes
+const SS_DRIVERS_KEY = "cc_drivers_cache";
+
+async function fetchDriversCached(): Promise<unknown> {
+  if (typeof window !== "undefined") {
+    try {
+      const raw = sessionStorage.getItem(SS_DRIVERS_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch { /* ignore parse errors */ }
+  }
+  const data = await fetch("/api/drivers").then((r) => r.json());
+  try {
+    sessionStorage.setItem(SS_DRIVERS_KEY, JSON.stringify(data));
+  } catch { /* ignore storage errors */ }
+  return data;
+}
 
 export default function ChamCongPage() {
   const [drivers, setDrivers] = useState<Driver[]>([]);
@@ -57,11 +72,11 @@ export default function ChamCongPage() {
     const savedId = typeof window !== "undefined" ? localStorage.getItem(LS_DRIVER_ID) : null;
 
     const dropdownsPromise = Promise.all([
-      fetch("/api/drivers").then((r) => r.json()),
+      fetchDriversCached(),
       fetch("/api/cham-cong").then((r) => r.json()),
     ]).then(([driversData, chamCongData]) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const sorted = (driversData.data ?? [])
+      const sorted = ((driversData as any).data ?? [])
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .filter((d: any) => d.is_active !== false)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -4,6 +4,8 @@ import type { LogEntry } from "./types";
 const KV_KEY = "smart:runs";
 const MAX_RUNS = 500;
 
+const LAST_ASSIGN_KEY = "assign:last_run_ts";
+
 function getRedis() {
   const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
@@ -41,6 +43,20 @@ export async function pushSmartRun(allLogs: LogEntry[]): Promise<void> {
 
   await redis.lpush(KV_KEY, JSON.stringify(run));
   await redis.ltrim(KV_KEY, 0, MAX_RUNS - 1);
+}
+
+/** Record that /api/assign was just called (fire-and-forget safe). */
+export async function touchLastRun(): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  await redis.set(LAST_ASSIGN_KEY, new Date().toISOString(), { ex: 600 });
+}
+
+/** Return the ISO timestamp of the last /api/assign call, or null. */
+export async function getLastRunTs(): Promise<string | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  return redis.get<string>(LAST_ASSIGN_KEY);
 }
 
 /** Read the most recent N runs (default 100). */
