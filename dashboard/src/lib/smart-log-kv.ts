@@ -2,7 +2,7 @@ import { Redis } from "@upstash/redis";
 import type { LogEntry } from "./types";
 
 const KV_KEY = "smart:runs";
-const MAX_RUNS = 500;
+const MAX_RUNS = 240; // ~1 day at 3-min intervals × 12 business hours
 
 const LAST_ASSIGN_KEY = "assign:last_run_ts";
 
@@ -43,6 +43,7 @@ export async function pushSmartRun(allLogs: LogEntry[]): Promise<void> {
 
   await redis.lpush(KV_KEY, JSON.stringify(run));
   await redis.ltrim(KV_KEY, 0, MAX_RUNS - 1);
+  await redis.expire(KV_KEY, 86400); // hard 24-hour TTL
 }
 
 export interface LastRunEntry {

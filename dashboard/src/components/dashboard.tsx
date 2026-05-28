@@ -5,11 +5,14 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { StatsSidebar } from "./stats-sidebar";
 import { ActivityLog } from "./activity-log";
+import { ScheduleJobPanel } from "./schedule-job-panel";
+import { SmartLogHistory } from "./smart-log-history";
 import { toast } from "sonner";
 import type { LogEntry } from "@/lib/types";
 
 type Env = "prod" | "uat";
 type AssignMode = "smart" | "autoplan";
+type RightTab = "live" | "history";
 
 export function Dashboard() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -18,6 +21,7 @@ export function Dashboard() {
   const [pscRouteCount, setPscRouteCount] = useState(0);
   const [env, setEnv] = useState<Env>("prod");
   const [assignMode, setAssignMode] = useState<AssignMode>("smart");
+  const [rightTab, setRightTab] = useState<RightTab>("live");
   const [otherAdminActive, setOtherAdminActive] = useState(false);
   const [tabId] = useState(() => {
     if (typeof window === "undefined") return "ssr";
@@ -252,15 +256,49 @@ export function Dashboard() {
       {/* Body */}
       <div className="flex flex-1 min-h-0 p-3 gap-3">
         {/* Left sidebar */}
-        <StatsSidebar
-          isRunning={isRunning}
-          mappingCount={mappingCount}
-          pscRouteCount={pscRouteCount}
-        />
+        <div className="flex flex-col gap-3 w-64 shrink-0">
+          <StatsSidebar
+            isRunning={isRunning}
+            mappingCount={mappingCount}
+            pscRouteCount={pscRouteCount}
+          />
+          <ScheduleJobPanel env={env} />
+        </div>
 
-        {/* Right: activity log */}
-        <div className="flex-1 min-w-0">
-          <ActivityLog logs={logs} />
+        {/* Right: tabbed log panel */}
+        <div className="flex-1 min-w-0 flex flex-col gap-1">
+          {/* Tab bar */}
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={() => setRightTab("live")}
+              className={`px-3 py-1 text-xs font-semibold rounded transition-colors border ${
+                rightTab === "live"
+                  ? "bg-slate-800 text-white border-slate-700"
+                  : "text-slate-400 border-transparent hover:text-white"
+              }`}
+            >
+              Live Log
+            </button>
+            <button
+              onClick={() => setRightTab("history")}
+              className={`px-3 py-1 text-xs font-semibold rounded transition-colors border ${
+                rightTab === "history"
+                  ? "bg-slate-800 text-white border-slate-700"
+                  : "text-slate-400 border-transparent hover:text-white"
+              }`}
+            >
+              Smart History
+            </button>
+          </div>
+
+          {/* Tab content */}
+          <div className="flex-1 min-h-0">
+            {rightTab === "live" ? (
+              <ActivityLog logs={logs} />
+            ) : (
+              <SmartLogHistory />
+            )}
+          </div>
         </div>
       </div>
     </div>
