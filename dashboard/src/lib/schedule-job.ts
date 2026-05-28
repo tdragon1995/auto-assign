@@ -23,6 +23,7 @@ export interface ScheduleJobRow {
   pickup_id: string;
   dropoff_id: string;
   delivery_window: string;
+  reference: string;
   days: boolean[];
 }
 
@@ -52,10 +53,11 @@ export function vnWeekdayIndex(d: Date = new Date()): number {
 export async function loadScheduleJobRows(): Promise<ScheduleJobRow[]> {
   const rows = await fetchSheetRows(SHEET_GID.schedule_job);
   return rows.map((r, i) => ({
-    rowIndex: i + 2, // sheet row number (1-indexed, +1 for header)
+    rowIndex: i + 2,
     pickup_id: (r.pickup_id ?? "").trim(),
     dropoff_id: (r.dropoff_id ?? "").trim(),
     delivery_window: (r.delivery_windows ?? "").trim(),
+    reference: (r.reference ?? "").trim(),
     days: WEEKDAY_COLUMNS.map((col) => parseBool(r[col])),
   }));
 }
@@ -89,7 +91,8 @@ export function buildReferenceNumber(
   row: ScheduleJobRow,
   dateStr: string,
 ): string {
-  return `schedule_${row.pickup_id.slice(0, 8)}_${row.dropoff_id.slice(0, 8)}_${row.delivery_window}_${dateStr}`;
+  const base = row.reference || `schedule_${row.pickup_id.slice(0, 8)}_${row.delivery_window}`;
+  return `${base}_${dateStr}`;
 }
 
 /** Look for an existing job with the same reference_number created today. */
@@ -199,6 +202,14 @@ export async function createScheduleJob(
     delivery_window: row.delivery_window,
     reference_number: refNumber,
   };
+
+  if (!row.reference) {
+    return {
+      ...base,
+      status: "ERROR",
+      message: `Missing reference value in sheet row ${row.rowIndex}`,
+    };
+  }
 
   if (!TIME_RE.test(row.delivery_window)) {
     return {

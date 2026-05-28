@@ -142,13 +142,8 @@ export function ScheduleJobPanel({ env }: Props) {
                     key={r.reference_number}
                     className={`border-l-2 px-2 py-1 border-b last:border-b-0 ${STATUS_STYLES[r.status]}`}
                   >
-                    <div className="font-medium">
-                      Dòng {r.rowIndex} · {r.delivery_window}
-                    </div>
-                    <div className="text-[10px] opacity-70 truncate">
-                      {r.pickup_id.slice(0, 8)}… → {r.dropoff_id.slice(0, 8)}…
-                    </div>
-                    <div className="text-[11px]">{r.message}</div>
+                    <div className="font-medium text-[11px]">{r.message}</div>
+                    <div className="text-[10px] opacity-60 truncate">{r.reference_number}</div>
                   </div>
                 ))}
               </div>
