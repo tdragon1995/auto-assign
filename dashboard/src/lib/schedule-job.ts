@@ -137,7 +137,6 @@ function buildJobPayload(
   refNumber: string,
   pickupName: string,
   dropoffName: string,
-  dateStr: string,
 ) {
   const pickupTo = addMinutes(row.delivery_window, 30);
   return {
@@ -145,7 +144,6 @@ function buildJobPayload(
     schedule_type_id: 1,
     reference_number: refNumber,
     labels: [SCHEDULE_JOB_LABEL],
-    scheduled_delivery_ts: `${dateStr} ${row.delivery_window}:00`,
     stops: [
       {
         stop_type_id: 1,
@@ -154,8 +152,8 @@ function buildJobPayload(
         duration: 5,
         delivery_windows: [
           {
-            time_from: `${dateStr} ${row.delivery_window}:00`,
-            time_to: `${dateStr} ${pickupTo}:00`,
+            time_from: `${row.delivery_window}:00+07:00`,
+            time_to: `${pickupTo}:00+07:00`,
           },
         ],
         todos: [
@@ -226,7 +224,7 @@ export async function createScheduleJob(
       getCustomerName(row.dropoff_id, env),
     ]);
 
-    const payload = buildJobPayload(row, refNumber, pickupName, dropoffName, dateStr);
+    const payload = buildJobPayload(row, refNumber, pickupName, dropoffName);
 
     const res = await fetch(`${BASE_URL}/jobs`, {
       method: "POST",
