@@ -53,12 +53,7 @@ export function selectReferenceStop(
   stops: TimelineStop[],
   driverShiftStartTs?: string | null
 ): RefStop | null {
-  const windowedJobIds = new Set(
-    stops.filter((s) => s.deliveryWindows?.length > 0).map((s) => s.jobId)
-  );
-  const valid = stops.filter(
-    (s) => s.latitude && s.longitude && !windowedJobIds.has(s.jobId)
-  );
+  const valid = stops.filter((s) => s.latitude && s.longitude);
   if (valid.length === 0) return null;
 
   const toRef = (s: TimelineStop, label: RefLabel, tiebreakTs: string | null): RefStop => ({
