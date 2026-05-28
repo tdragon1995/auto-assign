@@ -19,19 +19,31 @@ export function Dashboard() {
   const [env, setEnv] = useState<Env>("prod");
   const [assignMode, setAssignMode] = useState<AssignMode>("smart");
   const [otherAdminActive, setOtherAdminActive] = useState(false);
+  const [tabId] = useState(() => {
+    if (typeof window === "undefined") return "ssr";
+    const existing = sessionStorage.getItem("dashboard:tab_id");
+    if (existing) return existing;
+    const newId = typeof crypto !== "undefined" && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `tab-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    sessionStorage.setItem("dashboard:tab_id", newId);
+    return newId;
+  });
   const assignIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cycleInProgressRef = useRef(false);
 
   const checkOtherAdmin = useCallback(() => {
     fetch("/api/assign")
       .then((r) => r.json())
-      .then((d: { lastRunTs?: string }) => {
+      .then((d: { lastRunTs?: string; tabId?: string }) => {
         if (!d.lastRunTs) { setOtherAdminActive(false); return; }
         const diffMs = Date.now() - new Date(d.lastRunTs).getTime();
-        setOtherAdminActive(diffMs < 5 * 60 * 1000);
+        const recent = diffMs < 5 * 60 * 1000;
+        const isMe = d.tabId === tabId;
+        setOtherAdminActive(recent && !isMe);
       })
       .catch(() => {});
-  }, []);
+  }, [tabId]);
 
   // Fetch config + check other admin on mount
   useEffect(() => {
@@ -54,8 +66,8 @@ export function Dashboard() {
     const e = targetEnv ?? env;
     const m = targetMode ?? assignMode;
     const endpoints = m === "autoplan"
-      ? [`/api/autoplan?env=${e}`]
-      : [`/api/assign?env=${e}`];
+      ? [`/api/autoplan?env=${e}&tab=${tabId}`]
+      : [`/api/assign?env=${e}&tab=${tabId}`];
     try {
       const responses = await Promise.all(endpoints.map((u) => fetch(u, { method: "POST" })));
       const allLogs: LogEntry[] = [];
@@ -77,7 +89,7 @@ export function Dashboard() {
     } finally {
       cycleInProgressRef.current = false;
     }
-  }, [env, assignMode]);
+  }, [env, assignMode, tabId]);
 
   // Toggle auto-assign
   const toggleService = useCallback(() => {
@@ -173,8 +185,16 @@ export function Dashboard() {
 
       {/* Other-admin warning */}
       {otherAdminActive && (
-        <div className="bg-amber-400 text-amber-950 px-4 py-2 text-center text-sm font-medium shrink-0">
-          ⚠️ Đang có admin khác đang bật hệ thống tự động. Vui lòng đợi thêm!
+        <div className="bg-amber-400 text-amber-950 px-4 py-2 flex items-center justify-center gap-3 text-sm font-medium shrink-0">
+          <span>⚠️ Đang có admin khác đang bật hệ thống tự động. Vui lòng đợi thêm!</span>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 text-amber-950 border-amber-900 hover:bg-amber-300"
+            onClick={() => setOtherAdminActive(false)}
+          >
+            Bỏ qua
+          </Button>
         </div>
       )}
 

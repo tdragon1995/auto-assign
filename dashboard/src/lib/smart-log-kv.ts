@@ -45,18 +45,27 @@ export async function pushSmartRun(allLogs: LogEntry[]): Promise<void> {
   await redis.ltrim(KV_KEY, 0, MAX_RUNS - 1);
 }
 
-/** Record that /api/assign was just called (fire-and-forget safe). */
-export async function touchLastRun(): Promise<void> {
-  const redis = getRedis();
-  if (!redis) return;
-  await redis.set(LAST_ASSIGN_KEY, new Date().toISOString(), { ex: 600 });
+export interface LastRunEntry {
+  ts: string;
+  tabId: string;
 }
 
-/** Return the ISO timestamp of the last /api/assign call, or null. */
-export async function getLastRunTs(): Promise<string | null> {
+/** Record that /api/assign was just called by tabId (fire-and-forget safe). */
+export async function touchLastRun(tabId: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  const entry: LastRunEntry = { ts: new Date().toISOString(), tabId };
+  await redis.set(LAST_ASSIGN_KEY, JSON.stringify(entry), { ex: 600 });
+}
+
+/** Return the last /api/assign entry, or null. */
+export async function getLastRunEntry(): Promise<LastRunEntry | null> {
   const redis = getRedis();
   if (!redis) return null;
-  return redis.get<string>(LAST_ASSIGN_KEY);
+  const raw = await redis.get<string | LastRunEntry>(LAST_ASSIGN_KEY);
+  if (!raw) return null;
+  if (typeof raw === "object") return raw;
+  try { return JSON.parse(raw) as LastRunEntry; } catch { return null; }
 }
 
 /** Read the most recent N runs (default 100). */
