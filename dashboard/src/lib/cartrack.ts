@@ -1,9 +1,11 @@
 import type { Driver, Job } from "./types";
-import { vnDayWindow } from "./time";
+import { vnDate, vnDayWindow } from "./time";
 
 export type Env = "prod" | "uat";
 
 export const BASE_URL = "https://fleetapi-vn.cartrack.com/rest/delivery";
+
+export const PROXY_DRIVER_ID = "a8c48608-45d0-11f1-9378-fa163ee8d8ac";
 
 export function getHeaders(env: Env = "prod"): Record<string, string> {
   const suffix = env === "uat" ? "_UAT" : "";
@@ -44,10 +46,14 @@ export async function getDriverJobs(
 export async function getUnassignedJobs(
   page = 1,
   perPage = 50,
-  env: Env = "prod"
+  env: Env = "prod",
+  dateVn?: string,
 ): Promise<{ data: Job[] }> {
+  const today = dateVn ?? vnDate();
   const params = new URLSearchParams({
     "filter[job_status_id]": "2",
+    "filter[create_ts_from]": `${today} 00:00:00`,
+    "filter[create_ts_to]": `${today} 23:59:59`,
     page: String(page),
     per_page: String(perPage),
   });
@@ -141,6 +147,31 @@ export async function updateJobStops(
   });
   const body = await res.json().catch(() => ({}));
   return { ok: res.ok, status: res.status, body };
+}
+
+export async function updateJobSendToDriverAt(
+  jobId: number,
+  sendToDriverAt: string,
+  env: Env = "prod"
+): Promise<{ ok: boolean; status: number }> {
+  const res = await fetch(`${BASE_URL}/jobs/${jobId}`, {
+    method: "PUT",
+    headers: getHeaders(env),
+    body: JSON.stringify({ send_to_driver_at: sendToDriverAt }),
+  });
+  return { ok: res.ok, status: res.status };
+}
+
+export async function unassignJob(
+  jobId: number,
+  env: Env = "prod"
+): Promise<{ ok: boolean; status: number }> {
+  const res = await fetch(`${BASE_URL}/jobs/${jobId}`, {
+    method: "PUT",
+    headers: getHeaders(env),
+    body: JSON.stringify({ delivery_driver_id: null }),
+  });
+  return { ok: res.ok, status: res.status };
 }
 
 export const JSONRPC_URL = "https://fleetweb-vn.cartrack.com/jsonrpc/index.php";

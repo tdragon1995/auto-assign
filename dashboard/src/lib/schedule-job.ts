@@ -1,6 +1,6 @@
-import { BASE_URL, getCustomerById, getHeaders, type Env } from "./cartrack";
+import { BASE_URL, PROXY_DRIVER_ID, assignJob, getCustomerById, getHeaders, type Env } from "./cartrack";
 import { SHEET_GID, fetchSheetRows } from "./sheets";
-import { vnDate } from "./time";
+import { vnDate, vnTimestamp } from "./time";
 
 const WEEKDAY_COLUMNS = [
   "sunday",
@@ -24,6 +24,7 @@ export interface ScheduleJobRow {
   dropoff_id: string;
   delivery_window: string;
   reference: string;
+  sent_to_driver_before: number;
   days: boolean[];
 }
 
@@ -58,6 +59,7 @@ export async function loadScheduleJobRows(): Promise<ScheduleJobRow[]> {
     dropoff_id: (r.dropoff_id ?? "").trim(),
     delivery_window: (r.delivery_windows ?? "").trim(),
     reference: (r.reference ?? "").trim(),
+    sent_to_driver_before: parseInt(r.sent_to_driver_before ?? "", 10) || 60,
     days: WEEKDAY_COLUMNS.map((col) => parseBool(r[col])),
   }));
 }
@@ -140,6 +142,7 @@ function buildJobPayload(
   refNumber: string,
   pickupName: string,
   dropoffName: string,
+  sendToDriverAt: string,
 ) {
   const pickupTo = addMinutes(row.delivery_window, 30);
   return {
@@ -147,6 +150,7 @@ function buildJobPayload(
     schedule_type_id: 1,
     reference_number: refNumber,
     labels: [SCHEDULE_JOB_LABEL],
+    send_to_driver_at: sendToDriverAt,
     stops: [
       {
         stop_type_id: 1,
@@ -235,7 +239,12 @@ export async function createScheduleJob(
       getCustomerName(row.dropoff_id, env),
     ]);
 
-    const payload = buildJobPayload(row, refNumber, pickupName, dropoffName);
+    // send_to_driver_at = delivery_window - sent_to_driver_before minutes
+    const windowDate = new Date(`${dateStr}T${row.delivery_window}:00+07:00`);
+    const sendAt = new Date(windowDate.getTime() - row.sent_to_driver_before * 60 * 1000);
+    const sendToDriverAt = vnTimestamp(sendAt);
+
+    const payload = buildJobPayload(row, refNumber, pickupName, dropoffName, sendToDriverAt);
 
     const res = await fetch(`${BASE_URL}/jobs`, {
       method: "POST",
@@ -255,10 +264,25 @@ export async function createScheduleJob(
     const created = await res.json().catch(() => ({}));
     const jobId = created?.data?.job_id;
 
+    if (!jobId) {
+      return { ...base, status: "ERROR", message: "Job created but no job_id returned" };
+    }
+
+    // Park in proxy driver — driver receives it at send_to_driver_at
+    const parkRes = await assignJob(PROXY_DRIVER_ID, jobId, env);
+    if (parkRes.status !== 200) {
+      return {
+        ...base,
+        status: "ERROR",
+        message: `Created Job #${jobId} but proxy assign failed (HTTP ${parkRes.status})`,
+        job_id: jobId,
+      };
+    }
+
     return {
       ...base,
       status: "OK",
-      message: `Created Job #${jobId}`,
+      message: `Created Job #${jobId} · parked until ${sendToDriverAt}`,
       job_id: jobId,
     };
   } catch (e) {

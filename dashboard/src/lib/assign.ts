@@ -1,5 +1,5 @@
 import type { Config, Driver, Job, LogEntry, LogLevel, Mapping, TimelineRoute } from "./types";
-import { getDrivers, getUnassignedJobs, assignJob, getJobDetails, getCustomerById, updateJobStops, optimizeDriverRoute, getFleetwebCookie, JSONRPC_URL, type Env } from "./cartrack";
+import { getDrivers, getUnassignedJobs, getDriverJobs, assignJob, getJobDetails, getCustomerById, updateJobStops, updateJobSendToDriverAt, unassignJob, optimizeDriverRoute, getFleetwebCookie, JSONRPC_URL, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL } from "./return-trips";
@@ -195,13 +195,6 @@ export function getDriversOnDuty(
   return [onDuty, "clash"];
 }
 
-export function isJobRecent(job: Job, maxAgeMinutes: number): boolean {
-  const jobTime = parseVnTimestamp(job.create_ts);
-  if (isNaN(jobTime.getTime())) return false;
-
-  const cutoff = new Date(Date.now() - maxAgeMinutes * 60 * 1000);
-  return jobTime >= cutoff;
-}
 
 export function jobHasNotes(job: Job): boolean {
   for (const stop of job.stops ?? []) {
@@ -299,6 +292,41 @@ export function buildGmapsRouteLink(
   );
 }
 
+/** Parse "YYYY-MM-DD HH:MM:SS+07" or "YYYY-MM-DD HH:MM:SS+07:00" to Date. */
+function parseSendToDriverAt(ts: string | null | undefined): Date | null {
+  if (!ts) return null;
+  const normalized = ts.trim().replace(" ", "T").replace(/\+(\d{2})$/, "+$1:00");
+  const d = new Date(normalized);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/** Parse pickup delivery_window time_from ("H:i:sP") to a full Date for dateVn. */
+function parsePickupWindowTime(timeStr: string, dateVn: string): Date | null {
+  const m = timeStr.match(/^(\d{1,2}):(\d{2}):\d{2}([+-]\d{2}:?\d{2})$/);
+  if (!m) return null;
+  const tz = m[3].includes(":") ? m[3] : m[3].replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+  return new Date(`${dateVn}T${m[1].padStart(2, "0")}:${m[2]}:00${tz}`);
+}
+
+/**
+ * Release parked jobs from the proxy driver whose send_to_driver_at has passed.
+ * Sets each job back to unassigned so the next assign cycle picks it up.
+ */
+async function releaseDueProxyJobs(dateVn: string, env: Env, log: (msg: string, level?: LogLevel) => void): Promise<void> {
+  const proxyJobs = await getDriverJobs(PROXY_DRIVER_ID, dateVn, env);
+  const now = Date.now();
+  for (const job of proxyJobs) {
+    const sendAt = parseSendToDriverAt(job.send_to_driver_at);
+    if (!sendAt || sendAt.getTime() > now) continue;
+    const { ok, status } = await unassignJob(job.job_id, env);
+    if (ok) {
+      log(`Job ${job.job_id} - RELEASED from proxy driver (was parked until ${job.send_to_driver_at})`, "INFO");
+    } else {
+      log(`Job ${job.job_id} - Release failed (HTTP ${status})`, "WARN");
+    }
+  }
+}
+
 export async function autoAssignCycle(config: Config, env: Env = "prod", skipSmart = false): Promise<LogEntry[]> {
   const logs: LogEntry[] = [];
   const log = (msg: string, level: LogLevel = "INFO") => {
@@ -306,10 +334,14 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
   };
 
   try {
+  // ── Release parked proxy jobs whose send_to_driver_at has passed ──────────
+  const today = vnDate();
+  await releaseDueProxyJobs(today, env, log);
+
   // Fetch unassigned jobs
   let jobs: Job[];
   try {
-    const data = await getUnassignedJobs(1, 50, env);
+    const data = await getUnassignedJobs(1, 50, env, today);
     jobs = data.data ?? [];
   } catch (e) {
     log(`Error fetching jobs: ${e}`, "ERROR");
@@ -321,19 +353,9 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
     return logs;
   }
 
-  // Filter recent
-  const maxAge = config.job_max_age_minutes;
-  jobs = jobs.filter((j) => isJobRecent(j, maxAge));
-
-  if (jobs.length === 0) {
-    log(`No jobs within last ${maxAge} min`);
-    return logs;
-  }
-
-  log(`Found ${jobs.length} recent job(s)`);
+  log(`Found ${jobs.length} unassigned job(s)`);
 
   // ── Duplicate-check setup (1 extra GET /jobs?status=4 per cycle) ──────────
-  const today = vnDate();
   const authSuffix = env === "uat" ? "_UAT" : "";
   const auth = process.env[`CARTRACK_AUTH${authSuffix}`] ?? "";
   const activeRouteMap = await buildActiveRouteMap(today, auth);
@@ -465,6 +487,30 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
       continue;
     }
     if (routeKey) activeRouteMap.set(routeKey, jobId);
+
+    // ── Delivery window gate: park jobs whose window is >60 min away ─────────
+    const pickupStop = job.stops?.find((s) => s.stop_type_id === 1);
+    const windowTimeFrom = pickupStop?.delivery_windows?.[0]?.time_from;
+    if (windowTimeFrom) {
+      const windowDate = parsePickupWindowTime(windowTimeFrom, today);
+      if (windowDate) {
+        const diffMin = (windowDate.getTime() - Date.now()) / 60_000;
+        if (diffMin > 60) {
+          const sendAt = new Date(windowDate.getTime() - 60 * 60 * 1000);
+          const sendAtStr = vnTimestamp(sendAt);
+          const [setRes, assignRes] = await Promise.all([
+            updateJobSendToDriverAt(jobId, sendAtStr, env),
+            assignJob(PROXY_DRIVER_ID, jobId, env),
+          ]);
+          if (assignRes.status === 200 && setRes.ok) {
+            log(`Job ${jobId} - PARKED until ${sendAtStr} (window: ${windowTimeFrom}) | ${jobCustomerName ?? customerId}`, "INFO");
+          } else {
+            log(`Job ${jobId} - Park failed: set=${setRes.status} assign=${assignRes.status} | ${jobCustomerName ?? customerId}`, "WARN");
+          }
+          continue;
+        }
+      }
+    }
 
     if (skipSmart && smartCustomerIds.has(customerId)) {
       continue;

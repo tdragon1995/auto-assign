@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadConfigFromSheets } from "@/lib/config";
 import { getUnassignedJobs, getDriverJobs, getFleetwebCookie, JSONRPC_URL, type Env } from "@/lib/cartrack";
-import { isDriverOnShift, getCustomerIdFromJob, isJobRecent, jobHasNotes, autoAssignCycle } from "@/lib/assign";
+import { isDriverOnShift, getCustomerIdFromJob, jobHasNotes, autoAssignCycle } from "@/lib/assign";
 import { vnDate, vnTimestamp, vnDayWindow } from "@/lib/time";
 import type { LogEntry, LogLevel } from "@/lib/types";
 
@@ -95,30 +95,26 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ logs });
     }
 
-    const maxAge = config.job_max_age_minutes;
-
     // Fetch unassigned jobs + driver assigned jobs in parallel
     const driverIds = [...onShiftDriverIds];
     const [unassignedData, ...driverJobArrays] = await Promise.all([
-      getUnassignedJobs(1, 50, env),
+      getUnassignedJobs(1, 50, env, dateVn),
       ...driverIds.map((id) => getDriverJobs(id, dateVn, env)),
     ]);
 
     // Filter unassigned jobs
     const unassignedSmartJobIds = (unassignedData.data ?? [])
       .filter((j) => {
-        if (!isJobRecent(j, maxAge)) return false;
         if (jobHasNotes(j)) return false;
         const cid = getCustomerIdFromJob(j);
         return cid !== null && smartCustomerIds.has(cid);
       })
       .map((j) => j.job_id);
 
-    // Filter driver jobs: pickup not started + recent + no notes + customer match
+    // Filter driver jobs: pickup not started + no notes + customer match
     const assignedSmartJobIds: number[] = [];
     for (const jobs of driverJobArrays) {
       for (const j of jobs) {
-        if (!isJobRecent(j, maxAge)) continue;
         if (jobHasNotes(j)) continue;
         const cid = getCustomerIdFromJob(j);
         if (!cid || !smartCustomerIds.has(cid)) continue;

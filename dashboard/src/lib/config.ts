@@ -2,7 +2,6 @@ import type { Config, Mapping } from "./types";
 import { fetchSheetRows, fetchSundayMappingRows, SHEET_GID } from "./sheets";
 import { vnIsSunday } from "./time";
 
-const DEFAULT_JOB_MAX_AGE = 60;
 
 let cachedConfig: Config | null = null;
 
@@ -57,10 +56,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
       });
     }
 
-    cachedConfig = {
-      mappings,
-      job_max_age_minutes: DEFAULT_JOB_MAX_AGE,
-    };
+    cachedConfig = { mappings };
     return cachedConfig;
   } catch (e) {
     console.error("Error loading config from sheets:", e);

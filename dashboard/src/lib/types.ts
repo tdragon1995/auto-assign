@@ -12,7 +12,6 @@ export interface Mapping {
 
 export interface Config {
   mappings: Mapping[];
-  job_max_age_minutes: number;
 }
 
 export interface Stop {
@@ -38,6 +37,7 @@ export interface Job {
   job_status_id?: number;
   create_ts?: string;
   scheduled_delivery_ts?: string | null;
+  send_to_driver_at?: string | null;
   reference_number?: string;
   labels?: string[];
   delivery_driver_id?: string | null;

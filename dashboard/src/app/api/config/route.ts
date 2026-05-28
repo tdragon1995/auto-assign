@@ -23,7 +23,6 @@ export async function GET() {
     return NextResponse.json({
       mappingCount: config.mappings.length,
       pscRouteCount: pscRoutes.length,
-      jobMaxAge: config.job_max_age_minutes,
       status: "ok",
     });
   } catch (e) {
