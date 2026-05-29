@@ -8,12 +8,13 @@ import { ActivityLog } from "./activity-log";
 import { ScheduleJobPanel } from "./schedule-job-panel";
 import { SmartLogHistory } from "./smart-log-history";
 import { NoteReviewPanel } from "./note-review-panel";
+import { JobAdminPanel } from "./job-admin-panel";
 import { toast } from "sonner";
 import type { LogEntry } from "@/lib/types";
 
 type Env = "prod" | "uat";
 type AssignMode = "smart" | "autoplan";
-type RightTab = "live" | "history";
+type RightTab = "live" | "history" | "admin";
 
 export function Dashboard() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -261,14 +262,26 @@ export function Dashboard() {
             >
               Smart History
             </button>
+            <button
+              onClick={() => setRightTab("admin")}
+              className={`px-3 py-1 text-xs font-semibold rounded transition-colors border ${
+                rightTab === "admin"
+                  ? "bg-slate-800 text-white border-slate-700"
+                  : "text-slate-400 border-transparent hover:text-white"
+              }`}
+            >
+              Quản trị job
+            </button>
           </div>
 
           {/* Tab content */}
           <div className="flex-1 min-h-0">
             {rightTab === "live" ? (
               <ActivityLog logs={logs} />
-            ) : (
+            ) : rightTab === "history" ? (
               <SmartLogHistory />
+            ) : (
+              <JobAdminPanel env={env} />
             )}
           </div>
         </div>

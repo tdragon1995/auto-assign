@@ -122,6 +122,21 @@ export async function assignJob(
   return { status: res.status, body: await res.json() };
 }
 
+/** Force-complete a job. Cartrack's PUT /jobs/{id}/complete acts on the path id only;
+ *  the body is ignored, so we send an empty one. Raw status/body returned for diagnosis. */
+export async function completeJob(
+  jobId: number,
+  env: Env = "prod"
+): Promise<{ ok: boolean; status: number; body: unknown }> {
+  const res = await fetch(`${BASE_URL}/jobs/${jobId}/complete`, {
+    method: "PUT",
+    headers: { ...getHeaders(env), Accept: "application/json" },
+    body: JSON.stringify({}),
+  });
+  const body = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, body };
+}
+
 export async function getCustomerById(
   customerId: string,
   env: Env = "prod"
