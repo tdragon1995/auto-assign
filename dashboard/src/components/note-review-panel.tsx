@@ -11,6 +11,32 @@ interface HeldJob {
   note: string;
 }
 
+const NOTE_PREVIEW_LIMIT = 100;
+
+/** Note content with a blue "Xem thêm / Thu gọn" toggle when it's long. */
+function HeldNote({ note }: { note: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const isLong = note.length > NOTE_PREVIEW_LIMIT;
+  const shown = !isLong || expanded ? note : `${note.slice(0, NOTE_PREVIEW_LIMIT).trimEnd()}…`;
+  return (
+    <div className="mt-1 rounded border border-amber-300 bg-amber-100/70 px-2 py-1">
+      <span className="text-[10px] font-bold uppercase tracking-wide text-amber-700">Ghi chú</span>
+      <p className="mt-0.5 break-words font-medium text-amber-950">
+        {shown}
+        {isLong && (
+          <button
+            type="button"
+            onClick={() => setExpanded((e) => !e)}
+            className="ml-1 font-semibold text-blue-600 hover:text-blue-800"
+          >
+            {expanded ? "Thu gọn" : "Xem thêm"}
+          </button>
+        )}
+      </p>
+    </div>
+  );
+}
+
 /**
  * Lists unassigned jobs the engine held back because a stop has a note, and lets
  * the admin assign one anyway. Renders nothing when there are no held jobs.
@@ -77,10 +103,7 @@ export function NoteReviewPanel({ env }: { env: "prod" | "uat" }) {
             <div className="font-medium">
               Job {job.job_id} · {job.customer}
             </div>
-            <div className="mt-1 rounded border border-amber-300 bg-amber-100/70 px-2 py-1">
-              <span className="text-[10px] font-bold uppercase tracking-wide text-amber-700">Ghi chú</span>
-              <p className="mt-0.5 break-words font-medium text-amber-950">{job.note}</p>
-            </div>
+            <HeldNote note={job.note} />
             <Button
               size="sm"
               variant="outline"
