@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { StatsSidebar } from "./stats-sidebar";
@@ -17,39 +17,34 @@ type RightTab = "live" | "history";
 export function Dashboard() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isRunning, setIsRunning] = useState(false);
+  const [armUntil, setArmUntil] = useState<number | null>(null);
+  const [armedBy, setArmedBy] = useState<string>("");
   const [mappingCount, setMappingCount] = useState(0);
   const [pscRouteCount, setPscRouteCount] = useState(0);
   const [env, setEnv] = useState<Env>("prod");
   const [assignMode, setAssignMode] = useState<AssignMode>("smart");
   const [rightTab, setRightTab] = useState<RightTab>("live");
-  const [otherAdminActive, setOtherAdminActive] = useState(false);
-  const [tabId] = useState(() => {
-    if (typeof window === "undefined") return "ssr";
-    const existing = sessionStorage.getItem("dashboard:tab_id");
-    if (existing) return existing;
-    const newId = typeof crypto !== "undefined" && crypto.randomUUID
-      ? crypto.randomUUID()
-      : `tab-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    sessionStorage.setItem("dashboard:tab_id", newId);
-    return newId;
-  });
-  const assignIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const cycleInProgressRef = useRef(false);
 
-  const checkOtherAdmin = useCallback(() => {
-    fetch("/api/assign")
-      .then((r) => r.json())
-      .then((d: { lastRunTs?: string; tabId?: string }) => {
-        if (!d.lastRunTs) { setOtherAdminActive(false); return; }
-        const diffMs = Date.now() - new Date(d.lastRunTs).getTime();
-        const recent = diffMs < 5 * 60 * 1000;
-        const isMe = d.tabId === tabId;
-        setOtherAdminActive(recent && !isMe);
-      })
-      .catch(() => {});
-  }, [tabId]);
+  // Single source of truth: pull the switch state + live log from the server.
+  // The cron robot runs the cycles; this tab only reflects what the server did.
+  const syncStatus = useCallback(async () => {
+    try {
+      const [armRes, logRes] = await Promise.all([
+        fetch("/api/assign/arm"),
+        fetch("/api/assign/log?limit=300"),
+      ]);
+      const arm = await armRes.json();
+      setIsRunning(!!arm.armed);
+      setArmUntil(arm.state?.armedUntil ?? null);
+      setArmedBy(arm.state?.armedBy ?? "");
+      const logData = await logRes.json();
+      if (Array.isArray(logData.logs)) setLogs(logData.logs);
+    } catch {
+      /* transient network error — keep last known state */
+    }
+  }, []);
 
-  // Fetch config + check other admin on mount
+  // Load config once + poll switch/log every 15s.
   useEffect(() => {
     fetch("/api/config")
       .then((r) => r.json())
@@ -58,103 +53,83 @@ export function Dashboard() {
         setPscRouteCount(d.pscRouteCount ?? 0);
       })
       .catch(() => {});
-    checkOtherAdmin();
-  }, [checkOtherAdmin]);
+    syncStatus();
+    const id = setInterval(syncStatus, 15_000);
+    return () => clearInterval(id);
+  }, [syncStatus]);
 
-  // Auto-assign cycle
-  // Smart mode: /api/assign handles all jobs (smart + fixed).
-  // Auto-plan mode: /api/autoplan handles smart jobs via Cartrack planner + fixed jobs.
-  const runAssignCycle = useCallback(async (targetEnv?: Env, targetMode?: AssignMode) => {
-    if (cycleInProgressRef.current) return;
-    cycleInProgressRef.current = true;
-    const e = targetEnv ?? env;
-    const m = targetMode ?? assignMode;
-    const endpoints = m === "autoplan"
-      ? [`/api/autoplan?env=${e}&tab=${tabId}`]
-      : [`/api/assign?env=${e}&tab=${tabId}`];
-    try {
-      const responses = await Promise.all(endpoints.map((u) => fetch(u, { method: "POST" })));
-      const allLogs: LogEntry[] = [];
-      for (const res of responses) {
-        if (!res.ok) continue;
-        const data = await res.json();
-        if (data.logs?.length) allLogs.push(...data.logs);
+  // Turn the switch ON — arm the server-side engine until 18:00 VN.
+  const arm = useCallback(async () => {
+    let by = "";
+    if (typeof window !== "undefined") {
+      by = localStorage.getItem("dashboard:admin_name") ?? "";
+      if (!by) {
+        by = (window.prompt("Tên người bật (để ghi nhận):") ?? "").trim();
+        if (by) localStorage.setItem("dashboard:admin_name", by);
       }
-      if (allLogs.length) setLogs((prev) => [...prev, ...allLogs]);
-    } catch {
-      setLogs((prev) => [
-        ...prev,
-        {
-          ts: new Date().toISOString().replace("T", " ").slice(0, 19),
-          level: "ERROR" as const,
-          msg: "Failed to reach assign endpoint",
-        },
-      ]);
-    } finally {
-      cycleInProgressRef.current = false;
     }
-  }, [env, assignMode, tabId]);
-
-  // Toggle auto-assign
-  const toggleService = useCallback(() => {
-    setIsRunning((prev) => {
-      const next = !prev;
-      if (next) {
-        // Start: run immediately then every 3 minutes
-        runAssignCycle();
-        assignIntervalRef.current = setInterval(runAssignCycle, 180_000);
-      } else {
-        if (assignIntervalRef.current) {
-          clearInterval(assignIntervalRef.current);
-          assignIntervalRef.current = null;
-        }
+    try {
+      const res = await fetch("/api/assign/arm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ env, mode: assignMode, by }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.armed) {
+        toast.error(data.error ?? "Không thể bật tự động");
+        return;
       }
-      return next;
-    });
-  }, [runAssignCycle]);
+      setIsRunning(true);
+      setArmUntil(data.state?.armedUntil ?? null);
+      setArmedBy(data.state?.armedBy ?? by);
+      toast.success("Đã bật — robot tự động chạy đến 22:00");
+    } catch {
+      toast.error("Không thể bật tự động");
+    }
+  }, [env, assignMode]);
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (assignIntervalRef.current) clearInterval(assignIntervalRef.current);
-    };
+  // Turn the switch OFF immediately.
+  const disarm = useCallback(async () => {
+    try {
+      await fetch("/api/assign/arm", { method: "DELETE" });
+    } catch {
+      /* best effort — next poll reflects true state */
+    }
+    setIsRunning(false);
+    setArmUntil(null);
+    setArmedBy("");
+    toast.info("Đã tắt tự động");
   }, []);
 
-  // Switch environment
+  const toggleService = useCallback((next: boolean) => {
+    if (next) arm(); else disarm();
+  }, [arm, disarm]);
+
+  // Switch environment — disarm first so a stale env can't keep assigning.
   const handleEnvSwitch = useCallback((checked: boolean) => {
     const newEnv: Env = checked ? "uat" : "prod";
     setEnv(newEnv);
     if (isRunning) {
-      setIsRunning(false);
-      if (assignIntervalRef.current) {
-        clearInterval(assignIntervalRef.current);
-        assignIntervalRef.current = null;
-      }
-      toast.info(`Auto-assign stopped due to environment switch`);
+      disarm();
+      toast.info("Tự động đã tắt do đổi môi trường");
     }
-    setLogs([]);
     toast.info(`Switched to ${newEnv.toUpperCase()}`);
-  }, [isRunning]);
+  }, [isRunning, disarm]);
 
-  // Switch assign mode
+  // Switch assign mode — disarm first so a stale mode can't keep assigning.
   const handleModeSwitch = useCallback((mode: AssignMode) => {
     if (mode === assignMode) return;
     setAssignMode(mode);
     if (isRunning) {
-      setIsRunning(false);
-      if (assignIntervalRef.current) {
-        clearInterval(assignIntervalRef.current);
-        assignIntervalRef.current = null;
-      }
-      toast.info(`Auto-assign stopped due to mode switch`);
+      disarm();
+      toast.info("Tự động đã tắt do đổi chế độ");
     }
-    setLogs([]);
     toast.info(`Switched to ${mode === "autoplan" ? "Auto-Plan" : "Smart-Assign"}`);
-  }, [assignMode, isRunning]);
+  }, [assignMode, isRunning, disarm]);
 
   // Refresh handler with toast
   const handleRefresh = useCallback(async () => {
-    checkOtherAdmin();
+    syncStatus();
     try {
       const configRes = await fetch("/api/config");
       if (!configRes.ok) throw new Error(`Config returned ${configRes.status}`);
@@ -162,15 +137,11 @@ export function Dashboard() {
       if (configData.status === "error") throw new Error(configData.error);
       setMappingCount(configData.mappingCount ?? 0);
       setPscRouteCount(configData.pscRouteCount ?? 0);
-
-      if (isRunning) runAssignCycle();
-
-      checkOtherAdmin();
       toast.success(`Google Sheet reloaded: ${configData.mappingCount} mapping(s), ${configData.pscRouteCount} PSC route(s) fetched`);
     } catch (err) {
       toast.error(`Refresh failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [isRunning, runAssignCycle, checkOtherAdmin]);
+  }, [syncStatus]);
 
   const isProd = env === "prod";
 
@@ -187,18 +158,14 @@ export function Dashboard() {
         {isProd ? "PRODUCTION" : "UAT"}
       </div>
 
-      {/* Other-admin warning */}
-      {otherAdminActive && (
-        <div className="bg-amber-400 text-amber-950 px-4 py-2 flex items-center justify-center gap-3 text-sm font-medium shrink-0">
-          <span>⚠️ Đang có admin khác đang bật hệ thống tự động. Vui lòng đợi thêm!</span>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-7 text-amber-950 border-amber-900 hover:bg-amber-300"
-            onClick={() => setOtherAdminActive(false)}
-          >
-            Bỏ qua
-          </Button>
+      {/* Armed-status banner */}
+      {isRunning && (
+        <div className="bg-emerald-500 text-emerald-950 px-4 py-1.5 text-center text-sm font-medium shrink-0">
+          🟢 Tự động đang BẬT — tự tắt lúc{" "}
+          {armUntil
+            ? new Date(armUntil).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Ho_Chi_Minh" })
+            : "22:00"}
+          {armedBy ? ` · bật bởi ${armedBy}` : ""}
         </div>
       )}
 
@@ -238,8 +205,8 @@ export function Dashboard() {
 
           {/* Auto-Assign switch */}
           <div className="flex items-center gap-2">
-            <span className={`text-sm ${otherAdminActive ? "text-slate-500" : "text-slate-300"}`}>Auto-Assign</span>
-            <Switch checked={isRunning} onCheckedChange={toggleService} disabled={otherAdminActive} />
+            <span className="text-sm text-slate-300">Auto-Assign</span>
+            <Switch checked={isRunning} onCheckedChange={toggleService} />
           </div>
 
           <Button
