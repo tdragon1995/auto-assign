@@ -45,14 +45,12 @@ async function createReturnJob(
       {
         stop_type_id: 1,
         customer_id: fromCustomerId,
-        customer_name: fromCustomerName,
         duration: 5,
         todos: [],
       },
       {
         stop_type_id: 2,
         customer_id: toCustomerId,
-        customer_name: toCustomerName,
         duration: 10,
         todos: [
           { todo_type_id: 2, description: "📦 Chụp vật tư / tài liệu (nếu có)" },

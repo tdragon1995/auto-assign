@@ -246,7 +246,6 @@ async function applyAltDropoff(
       stop_id?: number;
       stop_type_id?: number;
       customer_id?: string;
-      customer_name?: string;
     }[];
 
     const updatedStops = rawStops
@@ -255,7 +254,6 @@ async function applyAltDropoff(
         stop_id: s.stop_id!,
         stop_type_id: s.stop_type_id!,
         customer_id: s.stop_type_id === 2 ? altDropOffId : s.customer_id!,
-        customer_name: s.stop_type_id === 2 ? altCustomerName : s.customer_name,
       }));
 
     if (updatedStops.length >= 2) {

@@ -71,13 +71,12 @@ export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
 
   try {
-    const { driver_id, driver_name, psc_customer_id, psc_name, type } = await req.json();
+    const { driver_id, psc_customer_id, type } = await req.json();
 
     if (!driver_id || !psc_customer_id || (type !== "check-in" && type !== "check-out")) {
       return NextResponse.json({ error: "Missing or invalid fields" }, { status: 400 });
     }
 
-    const headers = getHeaders(env);
     const isCheckin = type === "check-in";
     const jobPayload = {
       job_type_id: 3,
@@ -88,7 +87,6 @@ export async function POST(req: NextRequest) {
         {
           stop_type_id: 3,
           customer_id: psc_customer_id,
-          customer_name: psc_name,
           duration: 5,
         },
       ],

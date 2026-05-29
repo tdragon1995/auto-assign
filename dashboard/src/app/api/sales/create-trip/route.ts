@@ -11,16 +11,15 @@ export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
 
   try {
-    const { customer_id, customer_name, lat, lon, ma_kh, note } = await req.json() as {
+    const { customer_id, lat, lon, ma_kh, note } = await req.json() as {
       customer_id: string;
-      customer_name: string;
       lat: number;
       lon: number;
       ma_kh: string;
       note?: string | null;
     };
 
-    if (!customer_id || !customer_name || lat == null || lon == null || !ma_kh) {
+    if (!customer_id || lat == null || lon == null || !ma_kh) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
@@ -60,7 +59,6 @@ export async function POST(req: NextRequest) {
         {
           stop_type_id: 1,
           customer_id,
-          customer_name,
           duration: 5,
           note: note || null,
           todos: [
@@ -72,7 +70,6 @@ export async function POST(req: NextRequest) {
         {
           stop_type_id: 2,
           customer_id: closest.psc.customer_id,
-          customer_name: closest.psc.customer_name,
           duration: 5,
           todos: [
             { todo_type_id: 5, description: "Note @ dropoff" },

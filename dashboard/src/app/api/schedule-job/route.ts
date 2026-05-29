@@ -29,53 +29,15 @@ export async function POST(req: NextRequest) {
       : "manual";
 
   try {
-    let retryOnly = undefined;
-    if (isRetry) {
-      const last = await getLastRun();
-      if (!last) {
-        return NextResponse.json(
-          { error: "No previous run found to retry from" },
-          { status: 400 },
-        );
-      }
-      retryOnly = last.results.filter((r) => r.status === "ERROR");
-      if (retryOnly.length === 0) {
-        return NextResponse.json({
-          message: "Nothing to retry — last run had no errors",
-          last,
-        });
-      }
-    }
+    const { date, weekday, results } = await runScheduleJobCycle(env);
 
-    const { date, weekday, results } = await runScheduleJobCycle(env, { retryOnly });
-
-    // For retry, merge new results back into the previous run record so the
-    // dashboard shows the latest status per row.
-    let record;
-    if (isRetry) {
-      const last = await getLastRun();
-      const merged = (last?.results ?? []).map((prev) => {
-        const updated = results.find(
-          (r) => r.reference_number === prev.reference_number,
-        );
-        return updated ?? prev;
-      });
-      record = {
-        ts: new Date().toISOString(),
-        date,
-        weekday,
-        trigger,
-        results: merged,
-      };
-    } else {
-      record = {
-        ts: new Date().toISOString(),
-        date,
-        weekday,
-        trigger,
-        results,
-      };
-    }
+    const record = {
+      ts: new Date().toISOString(),
+      date,
+      weekday,
+      trigger,
+      results,
+    };
 
     await saveLastRun(record);
 

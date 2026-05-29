@@ -137,7 +137,7 @@ export async function getCustomerById(
 
 export async function updateJobStops(
   jobId: number,
-  stops: { stop_id: number; stop_type_id: number; customer_id: string; customer_name?: string }[],
+  stops: { stop_id: number; stop_type_id: number; customer_id: string; country_id?: number; delivery_windows?: { time_from: string; time_to: string }[] }[],
   env: Env = "prod"
 ): Promise<{ ok: boolean; status: number; body: unknown }> {
   const res = await fetch(`${BASE_URL}/jobs/${jobId}`, {

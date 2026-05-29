@@ -1,4 +1,4 @@
-import { BASE_URL, PROXY_DRIVER_ID, assignJob, getCustomerById, getHeaders, type Env } from "./cartrack";
+import { BASE_URL, PROXY_DRIVER_ID, assignJob, getHeaders, type Env } from "./cartrack";
 import { SHEET_GID, fetchSheetRows } from "./sheets";
 import { vnDate, vnTimestamp } from "./time";
 
@@ -123,25 +123,9 @@ async function findExistingJob(
   return match?.job_id ?? null;
 }
 
-async function getCustomerName(
-  customerId: string,
-  env: Env,
-): Promise<string> {
-  const res = await getCustomerById(customerId, env);
-  const data = res?.data;
-  const composed = [data?.first_name, data?.last_name]
-    .filter(Boolean)
-    .join(" ")
-    .trim();
-  const name = data?.customer_name ?? data?.name ?? composed;
-  return name || customerId;
-}
-
 function buildJobPayload(
   row: ScheduleJobRow,
   refNumber: string,
-  pickupName: string,
-  dropoffName: string,
   sendToDriverAt: string,
 ) {
   const pickupTo = addMinutes(row.delivery_window, 30);
@@ -155,7 +139,6 @@ function buildJobPayload(
       {
         stop_type_id: 1,
         customer_id: row.pickup_id,
-        customer_name: pickupName,
         duration: 5,
         delivery_windows: [
           {
@@ -179,7 +162,6 @@ function buildJobPayload(
       {
         stop_type_id: 2,
         customer_id: row.dropoff_id,
-        customer_name: dropoffName,
         duration: 5,
         todos: [
           {
@@ -234,17 +216,12 @@ export async function createScheduleJob(
       };
     }
 
-    const [pickupName, dropoffName] = await Promise.all([
-      getCustomerName(row.pickup_id, env),
-      getCustomerName(row.dropoff_id, env),
-    ]);
-
     // send_to_driver_at = delivery_window - sent_to_driver_before minutes
     const windowDate = new Date(`${dateStr}T${row.delivery_window}:00+07:00`);
     const sendAt = new Date(windowDate.getTime() - row.sent_to_driver_before * 60 * 1000);
     const sendToDriverAt = vnTimestamp(sendAt);
 
-    const payload = buildJobPayload(row, refNumber, pickupName, dropoffName, sendToDriverAt);
+    const payload = buildJobPayload(row, refNumber, sendToDriverAt);
 
     const res = await fetch(`${BASE_URL}/jobs`, {
       method: "POST",
@@ -296,20 +273,15 @@ export async function createScheduleJob(
 
 export async function runScheduleJobCycle(
   env: Env,
-  options: { retryOnly?: ScheduleJobResult[] } = {},
 ): Promise<{ date: string; weekday: number; results: ScheduleJobResult[] }> {
   const date = vnDate();
   const weekday = vnWeekdayIndex();
 
-  let targets: ScheduleJobRow[];
-  if (options.retryOnly && options.retryOnly.length > 0) {
-    const allRows = await loadScheduleJobRows();
-    const retryRefs = new Set(options.retryOnly.map((r) => r.reference_number));
-    targets = allRows.filter((r) => retryRefs.has(buildReferenceNumber(r, date)));
-  } else {
-    const allRows = await loadScheduleJobRows();
-    targets = filterRowsForToday(allRows, weekday);
-  }
+  // Always re-fetch fresh rows from the sheet and filter by today.
+  // Retry re-runs the same set — findExistingJob inside createScheduleJob
+  // returns SKIPPED for jobs already created, so only true failures get retried.
+  const allRows = await loadScheduleJobRows();
+  const targets = filterRowsForToday(allRows, weekday);
 
   const results: ScheduleJobResult[] = [];
   for (const row of targets) {

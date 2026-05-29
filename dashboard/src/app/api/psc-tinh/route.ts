@@ -98,7 +98,7 @@ export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
 
   try {
-    const { psc_code, tpl_uuid, tpl_name, eta, note } = await req.json();
+    const { psc_code, tpl_uuid, eta, note } = await req.json();
 
     if (!psc_code || !tpl_uuid || !eta) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
@@ -143,7 +143,6 @@ export async function POST(req: NextRequest) {
         {
           stop_type_id: 1,
           customer_id: tpl_uuid,
-          customer_name: tpl_name,
           duration: 5,
           note: note || null,
           delivery_windows: [{ time_from: etaFrom, time_to: etaTo }],
@@ -249,7 +248,6 @@ export async function PATCH(req: NextRequest) {
       stop_id:       s.stop_id,
       stop_type_id:  s.stop_type_id,
       customer_id:   s.customer_id,
-      customer_name: s.customer_name,
       country_id:    s.country_id,
       delivery_windows: s.stop_id === stop_id
         ? [{ time_from: etaFrom, time_to: etaTo }]

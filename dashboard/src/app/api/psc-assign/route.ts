@@ -123,7 +123,6 @@ export async function POST(req: NextRequest) {
         {
           stop_type_id: 1,
           customer_id: pickup,
-          customer_name: psc_pickup,
           duration: 5,
           todos: [
             { todo_type_id: 2, description: "📦 Chụp thấy rõ mẫu đã đóng gói trong hộp" },
@@ -133,7 +132,6 @@ export async function POST(req: NextRequest) {
         {
           stop_type_id: 2,
           customer_id: dropoff,
-          customer_name: dropoff_location,
           duration: 10,
           todos: [
             { todo_type_id: 2, description: "📋 Chụp các hộp thấy rõ batchsheet" },

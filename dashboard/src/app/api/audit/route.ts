@@ -117,7 +117,7 @@ export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
 
   try {
-    const { driver_id, driver_first_name, driver_last_name, driver_full_name, location_customer_id, location_name } =
+    const { driver_id, driver_first_name, driver_last_name, driver_full_name, location_customer_id } =
       await req.json();
 
     if (!driver_id || !location_customer_id) {
@@ -162,7 +162,6 @@ export async function POST(req: NextRequest) {
         {
           stop_type_id: 3,
           customer_id: location_customer_id,
-          customer_name: location_name,
           duration: 5,
           note: "Công việc kiểm tra tác phong Nhân viên giao nhận",
         },
