@@ -56,6 +56,47 @@ function renderMsg(msg: string) {
   return <>{parts}</>;
 }
 
+const LOG_PREVIEW_LIMIT = 160;
+
+/** One log row; long messages collapse with a blue "Xem thêm" toggle. */
+function LogLine({ entry }: { entry: LogEntry }) {
+  const [expanded, setExpanded] = useState(false);
+  const isNote =
+    entry.msg.includes("has note") || entry.msg.includes("despite note");
+  const isLong = entry.msg.length > LOG_PREVIEW_LIMIT;
+  const shown =
+    !isLong || expanded ? entry.msg : `${entry.msg.slice(0, LOG_PREVIEW_LIMIT).trimEnd()}…`;
+
+  return (
+    <div
+      className={`p-1.5 rounded border ${
+        isNote
+          ? "bg-purple-50 border-purple-300 border-l-4 border-l-purple-500"
+          : LEVEL_BG[entry.level]
+      }`}
+    >
+      <span className="text-muted-foreground">{entry.ts.slice(11, 19)} </span>
+      {isNote ? (
+        <span className="font-semibold text-purple-700">📝 NOTE </span>
+      ) : (
+        <span className={`font-semibold ${LEVEL_STYLES[entry.level]}`}>
+          [{entry.level}]{" "}
+        </span>
+      )}
+      <span>{renderMsg(shown)}</span>
+      {isLong && (
+        <button
+          type="button"
+          onClick={() => setExpanded((e) => !e)}
+          className="ml-1 font-semibold text-blue-600 hover:text-blue-800"
+        >
+          {expanded ? "Thu gọn" : "Xem thêm"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function ActivityLog({ logs }: ActivityLogProps) {
   const [filter, setFilter] = useState<Filter>("All");
 
@@ -93,32 +134,9 @@ export function ActivityLog({ logs }: ActivityLogProps) {
                 No log entries yet
               </p>
             )}
-            {[...filtered].reverse().map((entry, i) => {
-              const isNote =
-                entry.msg.includes("has note") || entry.msg.includes("despite note");
-              return (
-                <div
-                  key={`${entry.ts}-${i}`}
-                  className={`p-1.5 rounded border ${
-                    isNote
-                      ? "bg-purple-50 border-purple-300 border-l-4 border-l-purple-500"
-                      : LEVEL_BG[entry.level]
-                  }`}
-                >
-                  <span className="text-muted-foreground">
-                    {entry.ts.slice(11, 19)}{" "}
-                  </span>
-                  {isNote ? (
-                    <span className="font-semibold text-purple-700">📝 NOTE{" "}</span>
-                  ) : (
-                    <span className={`font-semibold ${LEVEL_STYLES[entry.level]}`}>
-                      [{entry.level}]{" "}
-                    </span>
-                  )}
-                  <span>{renderMsg(entry.msg)}</span>
-                </div>
-              );
-            })}
+            {[...filtered].reverse().map((entry, i) => (
+              <LogLine key={`${entry.ts}-${i}`} entry={entry} />
+            ))}
           </div>
         </ScrollArea>
       </CardContent>
