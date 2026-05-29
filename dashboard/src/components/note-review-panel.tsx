@@ -77,7 +77,10 @@ export function NoteReviewPanel({ env }: { env: "prod" | "uat" }) {
             <div className="font-medium">
               Job {job.job_id} · {job.customer}
             </div>
-            <div className="text-muted-foreground italic mt-0.5 break-words">“{job.note}”</div>
+            <div className="mt-1 rounded border border-amber-300 bg-amber-100/70 px-2 py-1">
+              <span className="text-[10px] font-bold uppercase tracking-wide text-amber-700">Ghi chú</span>
+              <p className="mt-0.5 break-words font-medium text-amber-950">{job.note}</p>
+            </div>
             <Button
               size="sm"
               variant="outline"

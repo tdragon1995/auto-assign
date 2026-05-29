@@ -213,8 +213,10 @@ export async function releaseCycleLock(): Promise<void> {
 // Only these INFO lines are worth keeping; every other INFO is per-cycle noise
 // ("No unassigned jobs", "Found N…", "Smart-assign ready", "Zalo sent",
 // route-optimise-triggered) and is dropped from storage. OK/WARN/ERROR are
-// always kept.
-const INFO_KEEP_PATTERNS = ["has note", "RELEASED", "PARKED", "swapped"];
+// always kept. Note-skip lines are intentionally NOT kept — they'd repeat every
+// cycle for the same held job; the dashboard note-review panel shows them
+// instead. (The WARN "assigning despite note" override line is still kept.)
+const INFO_KEEP_PATTERNS = ["RELEASED", "PARKED", "swapped"];
 
 function shouldStore(entry: LogEntry): boolean {
   if (entry.level !== "INFO") return true;
