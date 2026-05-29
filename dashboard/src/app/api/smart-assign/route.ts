@@ -18,7 +18,10 @@ interface DriverJobStats {
 
 interface DriverRouteData {
   stats: DriverJobStats;
-  referenceStop: { lat: number; lon: number; label: RefLabel; customerName: string | null; tiebreakTs: string | null } | null;
+  referenceStop: {
+    lat: number; lon: number; label: RefLabel; customerName: string | null; tiebreakTs: string | null;
+    altLat?: number | null; altLon?: number | null;
+  } | null;
   lastCompletedTs: string | null;
 }
 
@@ -224,12 +227,18 @@ export async function POST(req: NextRequest) {
   for (const driverId of relevantDriverIds) {
     const ref = routeData[driverId]?.referenceStop;
     if (!ref) continue;
-    const key = `${ref.lat},${ref.lon}`;
-    if (!originToDrivers.has(key)) {
-      originToDrivers.set(key, []);
-      originCoords.set(key, { lat: ref.lat, lon: ref.lon });
+    // Primary ref + (for "Next Stop") the last completed stop. Each becomes a
+    // Goong origin; the min distance across them is taken when assembling.
+    const pts: { lat: number; lon: number }[] = [{ lat: ref.lat, lon: ref.lon }];
+    if (ref.altLat != null && ref.altLon != null) pts.push({ lat: ref.altLat, lon: ref.altLon });
+    for (const pt of pts) {
+      const key = `${pt.lat},${pt.lon}`;
+      if (!originToDrivers.has(key)) {
+        originToDrivers.set(key, []);
+        originCoords.set(key, pt);
+      }
+      originToDrivers.get(key)!.push(driverId);
     }
-    originToDrivers.get(key)!.push(driverId);
   }
 
   if (originToDrivers.size > 0 && intermediate.length > 0) {
@@ -240,7 +249,15 @@ export async function POST(req: NextRequest) {
         const results = await goongMatrix(from.lat, from.lon, pickups.map((p) => ({ lat: p.lat, lon: p.lon })));
         pickups.forEach((p, i) => {
           for (const driverId of driverIds) {
-            detourRoutingMap.set(`${p.jobId}:${driverId}`, results[i]);
+            const mapKey = `${p.jobId}:${driverId}`;
+            const cand = results[i];
+            const existing = detourRoutingMap.get(mapKey);
+            // A driver may have 2 origins (next + last completed); keep the min.
+            if (existing == null) {
+              detourRoutingMap.set(mapKey, cand);
+            } else if (cand != null && cand.distance_km < existing.distance_km) {
+              detourRoutingMap.set(mapKey, cand);
+            }
           }
         });
       })
@@ -253,9 +270,14 @@ export async function POST(req: NextRequest) {
       .map((d) => {
         const ref           = routeData[d.driver_id]?.referenceStop ?? null;
         const detourRouting = detourRoutingMap.get(`${s.job_id}:${d.driver_id}`) ?? null;
-        const detourHaversineKm = ref
-          ? Math.round(haversineKm(ref.lat, ref.lon, s.pickup_lat, s.pickup_lon) * 10) / 10
-          : null;
+        let detourHaversineKm: number | null = null;
+        if (ref) {
+          let best = haversineKm(ref.lat, ref.lon, s.pickup_lat, s.pickup_lon);
+          if (ref.altLat != null && ref.altLon != null) {
+            best = Math.min(best, haversineKm(ref.altLat, ref.altLon, s.pickup_lat, s.pickup_lon));
+          }
+          detourHaversineKm = Math.round(best * 10) / 10;
+        }
 
         return {
           driver_id:           d.driver_id,

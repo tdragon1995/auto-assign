@@ -592,13 +592,26 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
             const jobsDone = info?.jobsDone ?? 0;
             const name = `${d.first_name} ${d.last_name}`.trim();
             if (!ref) return { d, sortDist: hkm, priority, workload, tiebreakTs, jobsDone, name, distLabel: `${hkm}km GPS (load ${workload})` };
-            const roadKm = await goongDistanceKm(ref.lat, ref.lon, pickupStop.latitude!, pickupStop.longitude!);
-            const refHkm = Math.round(haversineKm(ref.lat, ref.lon, pickupStop.latitude!, pickupStop.longitude!) * 10) / 10;
-            const sortDist = roadKm ?? refHkm;
+            // Distance reference points: primary ref; for "Next Stop" also the
+            // last completed stop (driver may still be there). Take the min.
+            const refPts: { lat: number; lon: number }[] = [{ lat: ref.lat, lon: ref.lon }];
+            if (ref.altLat != null && ref.altLon != null) refPts.push({ lat: ref.altLat, lon: ref.altLon });
+            const roads = await Promise.all(
+              refPts.map((p) => goongDistanceKm(p.lat, p.lon, pickupStop.latitude!, pickupStop.longitude!))
+            );
+            const straights = refPts.map(
+              (p) => Math.round(haversineKm(p.lat, p.lon, pickupStop.latitude!, pickupStop.longitude!) * 10) / 10
+            );
+            const effPerPoint = refPts.map((_, i) => roads[i] ?? straights[i]);
+            const bestIdx = effPerPoint.reduce((bi, e, i) => (e < effPerPoint[bi] ? i : bi), 0);
+            const roadKm = roads[bestIdx];
+            const refHkm = straights[bestIdx];
+            const sortDist = effPerPoint[bestIdx];
             const refName  = ref.customerName ? `@${ref.customerName} ` : "";
+            const minTag   = refPts.length > 1 ? (bestIdx === 1 ? "via prev " : "via next ") : "";
             const distLabel = roadKm != null
-              ? `${labelTag}${hkm}km GPS, ${refName}→ ${roadKm}km road (load ${workload})`
-              : `${labelTag}${hkm}km GPS, ${refName}→ ${refHkm}km straight (load ${workload})`;
+              ? `${labelTag}${hkm}km GPS, ${minTag}${refName}→ ${roadKm}km road (load ${workload})`
+              : `${labelTag}${hkm}km GPS, ${minTag}${refName}→ ${refHkm}km straight (load ${workload})`;
             return { d, sortDist, priority, workload, tiebreakTs, jobsDone, name, distLabel };
           })
         );

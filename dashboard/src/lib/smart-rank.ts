@@ -20,6 +20,15 @@ export interface RefStop {
   customerName: string | null;
   /** Timestamp used in tiebreak — semantics depend on label (see selectReferenceStop). */
   tiebreakTs: string | null;
+  /**
+   * Secondary distance reference: the driver's last completed stop.
+   * Only set for "Next Stop" — the driver finished their previous stop but has
+   * not started the next leg (status 1, not 2), so they may still be physically
+   * at the last completed location. Distance ranking takes the min over
+   * {lat,lon} (next stop) and {altLat,altLon} (last completed stop).
+   */
+  altLat?: number | null;
+  altLon?: number | null;
 }
 
 /**
@@ -72,11 +81,15 @@ export function selectReferenceStop(
 
   let lastCompletedIdx = -1;
   let maxCompletedTs: string | null = null;
+  let lastDoneByTime: TimelineStop | null = null;
   for (let i = 0; i < valid.length; i++) {
     if (valid[i].stopStatusId !== 4) continue;
     lastCompletedIdx = i;
     const ts = valid[i].activityCompletedTs;
-    if (ts && (!maxCompletedTs || ts > maxCompletedTs)) maxCompletedTs = ts;
+    if (ts && (!maxCompletedTs || ts > maxCompletedTs)) {
+      maxCompletedTs = ts;
+      lastDoneByTime = valid[i];
+    }
   }
 
   if (lastCompletedIdx === -1) {
@@ -87,7 +100,16 @@ export function selectReferenceStop(
   }
 
   const nextPending = valid.slice(lastCompletedIdx + 1).find((s) => s.stopStatusId === 1);
-  if (nextPending) return toRef(nextPending, "Next Stop", maxCompletedTs);
+  if (nextPending) {
+    // Driver hasn't started this leg yet → may still be at the last completed
+    // stop. Attach it as a secondary distance reference (min of both is used).
+    const lastDone = lastDoneByTime ?? valid[lastCompletedIdx];
+    return {
+      ...toRef(nextPending, "Next Stop", maxCompletedTs),
+      altLat: lastDone.latitude ?? null,
+      altLon: lastDone.longitude ?? null,
+    };
+  }
 
   return toRef(valid[valid.length - 1], "Available", maxCompletedTs);
 }
