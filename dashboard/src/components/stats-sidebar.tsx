@@ -6,9 +6,17 @@ interface StatsSidebarProps {
   isRunning: boolean;
   mappingCount: number;
   pscRouteCount: number;
+  lastChecked: string | null;
 }
 
-export function StatsSidebar({ isRunning, mappingCount, pscRouteCount }: StatsSidebarProps) {
+export function StatsSidebar({ isRunning, mappingCount, pscRouteCount, lastChecked }: StatsSidebarProps) {
+  const lastCheckedLabel = lastChecked
+    ? new Date(lastChecked).toLocaleTimeString("vi-VN", {
+        hour: "2-digit",
+        minute: "2-digit",
+        timeZone: "Asia/Ho_Chi_Minh",
+      })
+    : null;
   return (
     <Card className="py-4">
       <CardHeader className="pb-2">
@@ -28,6 +36,9 @@ export function StatsSidebar({ isRunning, mappingCount, pscRouteCount }: StatsSi
         </p>
         <p className="text-xs text-muted-foreground">
           {pscRouteCount} PSC route(s) loaded
+        </p>
+        <p className="text-xs text-muted-foreground mt-1">
+          System last checked: {lastCheckedLabel ?? "—"}
         </p>
       </CardContent>
     </Card>

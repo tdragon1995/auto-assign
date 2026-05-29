@@ -3,6 +3,7 @@ import { getDrivers, getUnassignedJobs, getDriverJobs, assignJob, getJobDetails,
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL } from "./return-trips";
+import { setHeldJobs, type HeldJob } from "./smart-log-kv";
 import {
   vnDate,
   vnTimestamp,
@@ -151,6 +152,30 @@ function makeLog(msg: string, level: LogLevel = "INFO"): LogEntry {
   return { ts: vnTimestamp(), level, msg };
 }
 
+/**
+ * Turn a Cartrack error response body into a short, readable reason instead of
+ * dumping raw JSON into the log. Prefers `message`, then field-level `errors`,
+ * then a truncated stringify.
+ */
+function friendlyError(body: unknown, max = 180): string {
+  let text: string;
+  if (body && typeof body === "object") {
+    const b = body as Record<string, unknown>;
+    if (typeof b.message === "string" && b.message.trim()) {
+      text = b.message.trim();
+    } else if (b.errors && typeof b.errors === "object") {
+      text = Object.entries(b.errors as Record<string, unknown>)
+        .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join("; ") : String(v)}`)
+        .join(" | ");
+    } else {
+      text = JSON.stringify(b);
+    }
+  } else {
+    text = String(body);
+  }
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
 function timeToMinutes(t: { hours: number; minutes: number }): number {
   return t.hours * 60 + t.minutes;
 }
@@ -206,6 +231,18 @@ export function jobHasNotes(job: Job): boolean {
   return false;
 }
 
+/** All meaningful stop notes on a job, joined — for showing why it was skipped. */
+export function getJobNoteText(job: Job): string {
+  const notes: string[] = [];
+  for (const stop of job.stops ?? []) {
+    const note = stop.note;
+    if (note && note.trim() && note.trim() !== "Call before delivery") {
+      notes.push(note.trim());
+    }
+  }
+  return notes.join(" | ");
+}
+
 export function getCustomerIdFromJob(job: Job): string | null {
   for (const stop of job.stops ?? []) {
     if (stop.stop_type_id === 1) return stop.customer_id ?? null;
@@ -213,7 +250,7 @@ export function getCustomerIdFromJob(job: Job): string | null {
   return null;
 }
 
-function getCustomerNameFromJob(job: Job): string | null {
+export function getCustomerNameFromJob(job: Job): string | null {
   for (const stop of job.stops ?? []) {
     if (stop.stop_type_id === 1) {
       return stop.customer_name || stop.name || stop.address || null;
@@ -325,7 +362,14 @@ async function releaseDueProxyJobs(dateVn: string, env: Env, log: (msg: string, 
   }
 }
 
-export async function autoAssignCycle(config: Config, env: Env = "prod", skipSmart = false): Promise<LogEntry[]> {
+export async function autoAssignCycle(
+  config: Config,
+  env: Env = "prod",
+  skipSmart = false,
+  // Targeted manual assign: process only these job(s) and bypass their note
+  // gate. Used by the "assign anyway" action on note-held jobs.
+  onlyJobIds?: Set<number>,
+): Promise<LogEntry[]> {
   const logs: LogEntry[] = [];
   const log = (msg: string, level: LogLevel = "INFO") => {
     logs.push(makeLog(msg, level));
@@ -333,8 +377,9 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
 
   try {
   // ── Release parked proxy jobs whose send_to_driver_at has passed ──────────
+  // Skipped on a targeted manual assign — that's not a full cycle.
   const today = vnDate();
-  await releaseDueProxyJobs(today, env, log);
+  if (!onlyJobIds) await releaseDueProxyJobs(today, env, log);
 
   // Fetch unassigned jobs
   let jobs: Job[];
@@ -346,8 +391,15 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
     return logs;
   }
 
+  // Targeted manual assign: narrow to just the requested job(s).
+  if (onlyJobIds) jobs = jobs.filter((j) => onlyJobIds.has(j.job_id));
+
+  // Jobs held back this cycle because a stop has a note (full cycle only).
+  const heldJobs: HeldJob[] = [];
+
   if (jobs.length === 0) {
     log("No unassigned jobs");
+    if (!onlyJobIds) await setHeldJobs(heldJobs);
     return logs;
   }
 
@@ -448,12 +500,18 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
     const jobCustomerName = getCustomerNameFromJob(job);
 
     if (jobHasNotes(job)) {
-      log(`Job ${jobId} - SKIPPED: stop has note`);
-      continue;
+      if (!onlyJobIds?.has(jobId)) {
+        log(`Job ${jobId} - SKIPPED (has note): "${getJobNoteText(job)}" | ${jobCustomerName ?? customerId}`);
+        heldJobs.push({ job_id: jobId, customer: jobCustomerName ?? customerId ?? "—", note: getJobNoteText(job) });
+        continue;
+      }
+      log(`Job ${jobId} - ASSIGNING despite note (manual override): "${getJobNoteText(job)}" | ${jobCustomerName ?? customerId}`, "WARN");
     }
 
     if (!customerId) {
-      log(`Job ${jobId} - No pickup stop found`, "ERROR");
+      // Not a real issue (e.g. delivery-only jobs) — keep at INFO so it's not
+      // surfaced as an error and is dropped from the stored log.
+      log(`Job ${jobId} - No pickup stop found`, "INFO");
       continue;
     }
 
@@ -545,7 +603,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
             if (apiStatus === 200) {
               log(`Job ${jobId} | SMART(1) → ${driverName} | ${jobCustomerName ?? customerId}`, "OK");
             } else {
-              log(`Job ${jobId} - SMART(1) failed: ${body?.message ?? JSON.stringify(body)}`, "ERROR");
+              log(`Job ${jobId} - SMART(1) failed: ${friendlyError(body)}`, "ERROR");
             }
           } catch (e) {
             log(`Job ${jobId} - SMART(1) error: ${e}`, "ERROR");
@@ -631,7 +689,7 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
           if (apiStatus === 200) {
             log(`Job ${jobId} | SMART → ${rankStr} | ${pickupStop.customer_name ?? customerId}`, "OK");
           } else {
-            log(`Job ${jobId} - SMART failed: ${body?.message ?? JSON.stringify(body)}`, "ERROR");
+            log(`Job ${jobId} - SMART failed: ${friendlyError(body)}`, "ERROR");
           }
         } catch (e) {
           log(`Job ${jobId} - SMART error: ${e}`, "ERROR");
@@ -753,14 +811,14 @@ export async function autoAssignCycle(config: Config, env: Env = "prod", skipSma
           log(`Route optimise for ${driverId}: ${ok ? "triggered" : "skipped (no cookie or failed)"}`, ok ? "INFO" : "WARN");
         }
       } else {
-        const errorMsg = body?.message ?? JSON.stringify(body);
-        log(`Job ${jobId} failed: ${errorMsg}`, "ERROR");
+        log(`Job ${jobId} failed: ${friendlyError(body)}`, "ERROR");
       }
     } catch (e) {
       log(`Job ${jobId} error: ${e}`, "ERROR");
     }
   }
 
+  if (!onlyJobIds) await setHeldJobs(heldJobs);
   return logs;
   } finally {
     try {

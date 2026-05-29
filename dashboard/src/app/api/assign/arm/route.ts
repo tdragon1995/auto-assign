@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getArmState, setArmState, clearArmState, type ArmState } from "@/lib/smart-log-kv";
+import { getArmState, setArmState, clearArmState, getCronHeartbeat, type ArmState } from "@/lib/smart-log-kv";
 import { vnDate, parseVnTimestamp } from "@/lib/time";
 
 // The switch auto-disarms at 22:00 Asia/Ho_Chi_Minh. Arming always succeeds:
@@ -15,10 +15,10 @@ function nextAutoOffMs(): number {
   return parseVnTimestamp(`${tomorrow} ${AUTO_OFF_HHMMSS}`).getTime();
 }
 
-/** Current switch state. */
+/** Current switch state + last cron heartbeat. */
 export async function GET() {
-  const state = await getArmState();
-  return NextResponse.json({ armed: !!state, state });
+  const [state, lastChecked] = await Promise.all([getArmState(), getCronHeartbeat()]);
+  return NextResponse.json({ armed: !!state, state, lastChecked });
 }
 
 /** Turn the switch ON until the next 22:00 VN auto-off. */

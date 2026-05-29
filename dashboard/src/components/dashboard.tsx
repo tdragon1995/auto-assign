@@ -7,6 +7,7 @@ import { StatsSidebar } from "./stats-sidebar";
 import { ActivityLog } from "./activity-log";
 import { ScheduleJobPanel } from "./schedule-job-panel";
 import { SmartLogHistory } from "./smart-log-history";
+import { NoteReviewPanel } from "./note-review-panel";
 import { toast } from "sonner";
 import type { LogEntry } from "@/lib/types";
 
@@ -19,6 +20,7 @@ export function Dashboard() {
   const [isRunning, setIsRunning] = useState(false);
   const [armUntil, setArmUntil] = useState<number | null>(null);
   const [armedBy, setArmedBy] = useState<string>("");
+  const [lastChecked, setLastChecked] = useState<string | null>(null);
   const [mappingCount, setMappingCount] = useState(0);
   const [pscRouteCount, setPscRouteCount] = useState(0);
   const [env, setEnv] = useState<Env>("prod");
@@ -37,6 +39,7 @@ export function Dashboard() {
       setIsRunning(!!arm.armed);
       setArmUntil(arm.state?.armedUntil ?? null);
       setArmedBy(arm.state?.armedBy ?? "");
+      setLastChecked(arm.lastChecked ?? null);
       const logData = await logRes.json();
       if (Array.isArray(logData.logs)) setLogs(logData.logs);
     } catch {
@@ -228,7 +231,9 @@ export function Dashboard() {
             isRunning={isRunning}
             mappingCount={mappingCount}
             pscRouteCount={pscRouteCount}
+            lastChecked={lastChecked}
           />
+          <NoteReviewPanel env={env} />
           <ScheduleJobPanel env={env} />
         </div>
 

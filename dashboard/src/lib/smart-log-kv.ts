@@ -12,6 +12,14 @@ const ARM_KEY = "assign:arm_state";
 // Per-cycle lock so two overlapping cron pings can't run a cycle at once.
 const CYCLE_LOCK_KEY = "assign:cycle_lock";
 
+// Liveness: timestamp of the last cron ping (armed or not), so the dashboard
+// can show "System last checked: HH:MM" even when nothing was logged.
+const HEARTBEAT_KEY = "assign:heartbeat_ts";
+
+// Jobs the last full cycle held back because a stop has a note. Refreshed each
+// armed cycle; read by the dashboard's note-review panel (no Cartrack poll).
+const HELD_JOBS_KEY = "assign:held_jobs";
+
 // Server-backed live log: flat list of recent entries (all levels), so the
 // dashboard ticker survives reloads and shows cycles that ran with no tab open.
 const RUN_LOG_KEY = "assign:run_log";
@@ -131,6 +139,56 @@ export async function clearArmState(): Promise<void> {
   await redis.del(ARM_KEY);
 }
 
+// ── Liveness heartbeat ─────────────────────────────────────────────────────
+
+/** Record that the cron just pinged (called on every authorized ping). */
+export async function setCronHeartbeat(): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  await redis.set(HEARTBEAT_KEY, new Date().toISOString(), { ex: 86400 });
+}
+
+/** ISO timestamp of the last cron ping, or null. */
+export async function getCronHeartbeat(): Promise<string | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  const raw = await redis.get<string>(HEARTBEAT_KEY);
+  return raw ?? null;
+}
+
+// ── Note-held jobs (for the dashboard note-review panel) ───────────────────
+
+export interface HeldJob {
+  job_id: number;
+  customer: string;
+  note: string;
+}
+
+/** Replace the held-jobs list (called by a full cycle; pass [] to clear). */
+export async function setHeldJobs(jobs: HeldJob[]): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  await redis.set(HELD_JOBS_KEY, JSON.stringify(jobs), { ex: 86400 });
+}
+
+/** Current held-jobs list. */
+export async function getHeldJobs(): Promise<HeldJob[]> {
+  const redis = getRedis();
+  if (!redis) return [];
+  const raw = await redis.get<string | HeldJob[]>(HELD_JOBS_KEY);
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  try { return JSON.parse(raw) as HeldJob[]; } catch { return []; }
+}
+
+/** Drop one job from the held list (after it's been assigned anyway). */
+export async function removeHeldJob(jobId: number): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  const next = (await getHeldJobs()).filter((j) => j.job_id !== jobId);
+  await redis.set(HELD_JOBS_KEY, JSON.stringify(next), { ex: 86400 });
+}
+
 // ── Overlap lock — one cycle at a time, safe at any cron frequency ──────────
 
 /** Try to claim the cycle lock. Returns true if claimed (caller may run the
@@ -152,12 +210,25 @@ export async function releaseCycleLock(): Promise<void> {
 
 // ── Server-backed live log ─────────────────────────────────────────────────
 
-/** Append a cycle's log entries to the rolling live-log list (24h TTL). */
+// Only these INFO lines are worth keeping; every other INFO is per-cycle noise
+// ("No unassigned jobs", "Found N…", "Smart-assign ready", "Zalo sent",
+// route-optimise-triggered) and is dropped from storage. OK/WARN/ERROR are
+// always kept.
+const INFO_KEEP_PATTERNS = ["has note", "RELEASED", "PARKED", "swapped"];
+
+function shouldStore(entry: LogEntry): boolean {
+  if (entry.level !== "INFO") return true;
+  return INFO_KEEP_PATTERNS.some((p) => entry.msg.includes(p));
+}
+
+/** Append a cycle's important log entries to the rolling live-log list (24h TTL). */
 export async function pushRunLog(logs: LogEntry[]): Promise<void> {
   const redis = getRedis();
-  if (!redis || logs.length === 0) return;
+  if (!redis) return;
+  const kept = logs.filter(shouldStore);
+  if (kept.length === 0) return;
   // lpush in chronological order ⇒ newest entry ends up at the head.
-  await redis.lpush(RUN_LOG_KEY, ...logs.map((l) => JSON.stringify(l)));
+  await redis.lpush(RUN_LOG_KEY, ...kept.map((l) => JSON.stringify(l)));
   await redis.ltrim(RUN_LOG_KEY, 0, MAX_LOG_ENTRIES - 1);
   await redis.expire(RUN_LOG_KEY, 86400);
 }

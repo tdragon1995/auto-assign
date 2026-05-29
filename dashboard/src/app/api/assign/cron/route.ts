@@ -9,6 +9,7 @@ import {
   releaseCycleLock,
   pushSmartRun,
   pushRunLog,
+  setCronHeartbeat,
 } from "@/lib/smart-log-kv";
 
 // The cycle (Cartrack + Goong calls) can take a while; give it headroom.
@@ -28,6 +29,10 @@ export async function GET(req: NextRequest) {
   if (!authorized(req)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
+
+  // Liveness: record every authorized ping so the dashboard can show the system
+  // is alive even when nothing gets logged.
+  await setCronHeartbeat().catch(() => {});
 
   // 1) Is the switch on? Disarmed pings must stop here — cheap, no Sheet/Cartrack.
   const arm = await getArmState();
