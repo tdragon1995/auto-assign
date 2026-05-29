@@ -1,6 +1,18 @@
-import { NextRequest, NextResponse } from "next/server";
-import { getArmState, setArmState, clearArmState, getCronHeartbeat, type ArmState } from "@/lib/smart-log-kv";
+import { NextRequest, NextResponse, after } from "next/server";
+import {
+  getArmState,
+  setArmState,
+  clearArmState,
+  getCronHeartbeat,
+  acquireCycleLock,
+  releaseCycleLock,
+  type ArmState,
+} from "@/lib/smart-log-kv";
+import { runArmedCycle } from "@/lib/run-cycle";
 import { vnDate, parseVnTimestamp } from "@/lib/time";
+
+// Headroom for the immediate first cycle kicked off after arming.
+export const maxDuration = 60;
 
 // The switch auto-disarms at 22:00 Asia/Ho_Chi_Minh. Arming always succeeds:
 // before 22:00 → armed until today's 22:00; after 22:00 → armed until the NEXT
@@ -41,6 +53,23 @@ export async function POST(req: NextRequest) {
   };
 
   await setArmState(state);
+
+  // Kick off the first cycle right away (after the response) so we don't wait
+  // for the next cron ping. Lock-guarded so it can't overlap a cron cycle.
+  after(async () => {
+    try {
+      const gotLock = await acquireCycleLock();
+      if (!gotLock) return; // a cron cycle is already running — it covers the first run
+      try {
+        await runArmedCycle(state, req.nextUrl.origin);
+      } finally {
+        await releaseCycleLock().catch(() => {});
+      }
+    } catch {
+      /* first-run is best-effort; the next cron ping will run a full cycle */
+    }
+  });
+
   return NextResponse.json({ armed: true, state });
 }
 
