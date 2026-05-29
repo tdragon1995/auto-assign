@@ -30,6 +30,14 @@ export async function POST(req: NextRequest) {
       const label = JOB_STATUS[statusId] ?? "huỷ/thất bại";
       return NextResponse.json({ error: `Job đã ${label.toLowerCase()}` }, { status: 409 });
     }
+    // Cartrack only completes jobs assigned to a driver (status 4 alone is not enough —
+    // delivery_driver_id can be null while status reads 4; check the driver directly).
+    if (!data.delivery_driver_id) {
+      return NextResponse.json(
+        { error: "Chỉ hoàn thành được job đã giao cho tài xế" },
+        { status: 409 }
+      );
+    }
 
     const result = await completeJob(jobId, env);
     if (!result.ok) {

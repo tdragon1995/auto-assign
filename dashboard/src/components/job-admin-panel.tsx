@@ -239,6 +239,10 @@ export function JobAdminPanel({ env }: { env: Env }) {
                   <p className="text-sm text-slate-500 text-center py-1">
                     {statusId === 5 ? "Job đã hoàn thành rồi." : `Không thể hoàn thành: job ${(JOB_STATUS[statusId!] ?? "").toLowerCase()}.`}
                   </p>
+                ) : !job.delivery_driver_id ? (
+                  <p className="text-sm text-slate-500 text-center py-1">
+                    Chỉ hoàn thành được job đã giao cho tài xế.
+                  </p>
                 ) : (
                   <Button
                     onClick={doComplete}

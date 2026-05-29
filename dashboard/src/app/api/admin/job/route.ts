@@ -28,17 +28,21 @@ export async function GET(req: NextRequest) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const dropoff = stops.find((s: any) => s.stop_type_id === 2);
 
+    // Cartrack leaves the denormalized stop.customer_name stale after a dropoff swap;
+    // the nested customer object is resolved live, so prefer it for display.
     return NextResponse.json({
       job_id: data.job_id,
       job_status_id: data.job_status_id ?? null,
       reference_number: data.reference_number ?? null,
       delivery_driver_id: data.delivery_driver_id ?? null,
-      pickup: pickup ? { customer_name: pickup.customer_name ?? null } : null,
+      pickup: pickup
+        ? { customer_name: pickup.customer?.customer_name ?? pickup.customer_name ?? null }
+        : null,
       dropoff: dropoff
         ? {
             stop_id: dropoff.stop_id ?? null,
-            customer_id: dropoff.customer_id ?? null,
-            customer_name: dropoff.customer_name ?? null,
+            customer_id: dropoff.customer?.customer_id ?? dropoff.customer_id ?? null,
+            customer_name: dropoff.customer?.customer_name ?? dropoff.customer_name ?? null,
           }
         : null,
       started: stops.some((s) => isStopStarted(s)),
