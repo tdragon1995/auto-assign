@@ -58,7 +58,7 @@ export function Dashboard() {
     return () => clearInterval(id);
   }, [syncStatus]);
 
-  // Turn the switch ON — arm the server-side engine until 18:00 VN.
+  // Turn the switch ON — arm the server-side engine until the next 22:00 VN.
   const arm = useCallback(async () => {
     let by = "";
     if (typeof window !== "undefined") {

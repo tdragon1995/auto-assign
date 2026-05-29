@@ -2,12 +2,17 @@ import { NextRequest, NextResponse } from "next/server";
 import { getArmState, setArmState, clearArmState, type ArmState } from "@/lib/smart-log-kv";
 import { vnDate, parseVnTimestamp } from "@/lib/time";
 
-// The switch auto-disarms at 22:00 Asia/Ho_Chi_Minh each day (end of the
-// 04:55–22:00 operating window). Arming is refused once past this time.
+// The switch auto-disarms at 22:00 Asia/Ho_Chi_Minh. Arming always succeeds:
+// before 22:00 → armed until today's 22:00; after 22:00 → armed until the NEXT
+// day's 22:00 (so you can turn it on late; it just runs until tomorrow's
+// auto-off). Turn it off manually anytime.
 const AUTO_OFF_HHMMSS = "22:00:00";
 
-function endOfBusinessDayMs(): number {
-  return parseVnTimestamp(`${vnDate()} ${AUTO_OFF_HHMMSS}`).getTime();
+function nextAutoOffMs(): number {
+  const todayOff = parseVnTimestamp(`${vnDate()} ${AUTO_OFF_HHMMSS}`).getTime();
+  if (Date.now() < todayOff) return todayOff;
+  const tomorrow = vnDate(new Date(Date.now() + 24 * 60 * 60 * 1000));
+  return parseVnTimestamp(`${tomorrow} ${AUTO_OFF_HHMMSS}`).getTime();
 }
 
 /** Current switch state. */
@@ -16,7 +21,7 @@ export async function GET() {
   return NextResponse.json({ armed: !!state, state });
 }
 
-/** Turn the switch ON until end of business day (18:00 VN). */
+/** Turn the switch ON until the next 22:00 VN auto-off. */
 export async function POST(req: NextRequest) {
   let body: { env?: string; mode?: string; by?: string } = {};
   try {
@@ -25,13 +30,7 @@ export async function POST(req: NextRequest) {
     /* empty body is fine — defaults applied below */
   }
 
-  const armedUntil = endOfBusinessDayMs();
-  if (Date.now() >= armedUntil) {
-    return NextResponse.json(
-      { armed: false, error: "Đã quá 18:00 — vui lòng bật lại vào sáng mai." },
-      { status: 409 }
-    );
-  }
+  const armedUntil = nextAutoOffMs();
 
   const state: ArmState = {
     armedUntil,
