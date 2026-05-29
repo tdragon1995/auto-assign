@@ -28,7 +28,7 @@ export function Dashboard() {
   const [rightTab, setRightTab] = useState<RightTab>("live");
 
   // Single source of truth: pull the switch state + live log from the server.
-  // The cron robot runs the cycles; this tab only reflects what the server did.
+  // The cron runs the cycles; this tab only reflects what the server did.
   const syncStatus = useCallback(async () => {
     try {
       const [armRes, logRes] = await Promise.all([
@@ -85,7 +85,7 @@ export function Dashboard() {
       setIsRunning(true);
       setArmUntil(data.state?.armedUntil ?? null);
       setArmedBy(data.state?.armedBy ?? by);
-      toast.success("Đã bật — robot tự động chạy đến 22:00");
+      toast.success("Đã bật — System tự động chạy đến 22:00");
     } catch {
       toast.error("Không thể bật tự động");
     }
