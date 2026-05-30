@@ -3,6 +3,7 @@ import { loadTplEntries, PSC_TINH_LABEL } from "@/lib/psc-config";
 import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { vnDate } from "@/lib/time";
 import { STOP_STATUS, JOB_STATUS } from "@/lib/job-filters";
+import { pushRunLog } from "@/lib/smart-log-kv";
 
 export const runtime = "edge";
 export const preferredRegion = "sin1";
@@ -175,10 +176,16 @@ export async function POST(req: NextRequest) {
     }
 
     const created = await createRes.json();
+    const jobId = created.data?.job_id;
+    void pushRunLog([{
+      ts: new Date().toISOString(),
+      level: "OK",
+      msg: `[PSC-tỉnh] Tạo chuyến: Job ${jobId} | ${psc_code} | ETA ${eta} | Ref: ${refNumber}`,
+    }]);
     return NextResponse.json({
       success: true,
       reference: refNumber,
-      job_id: created.data?.job_id,
+      job_id: jobId,
     });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
@@ -211,6 +218,11 @@ export async function DELETE(req: NextRequest) {
       const err = await res.json().catch(() => ({}));
       return NextResponse.json({ error: "Failed to cancel job", details: err }, { status: res.status });
     }
+    void pushRunLog([{
+      ts: new Date().toISOString(),
+      level: "OK",
+      msg: `[PSC-tỉnh] Huỷ job: Job ${jobId}`,
+    }]);
     return NextResponse.json({ success: true });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
@@ -264,6 +276,11 @@ export async function PATCH(req: NextRequest) {
       const err = await res.json().catch(() => ({}));
       return NextResponse.json({ error: "Failed to update ETA", details: err }, { status: res.status });
     }
+    void pushRunLog([{
+      ts: new Date().toISOString(),
+      level: "OK",
+      msg: `[PSC-tỉnh] Cập nhật ETA: Job ${job_id} → ${eta}`,
+    }]);
     return NextResponse.json({ success: true });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });

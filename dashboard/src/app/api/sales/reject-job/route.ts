@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getFleetwebCookie, BASE_URL, JSONRPC_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { isStopStarted } from "@/lib/job-filters";
+import { pushRunLog } from "@/lib/smart-log-kv";
 
 export const runtime = "edge";
 export const preferredRegion = "sin1";
@@ -76,6 +77,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Từ chối thất bại", details: rpcData }, { status: 500 });
     }
 
+    void pushRunLog([{
+      ts: new Date().toISOString(),
+      level: "OK",
+      msg: `[Sales] Huỷ job: Job ${job.job_id} | Ref: ${job.reference_number} | KH: ${pickupCustomerName ?? "—"} | Lý do: ${reject_reason}`,
+    }]);
     return NextResponse.json({
       success: true,
       job_id: job.job_id,

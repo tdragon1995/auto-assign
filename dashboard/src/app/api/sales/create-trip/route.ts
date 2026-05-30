@@ -3,6 +3,7 @@ import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { loadPscRoutes } from "@/lib/psc-config";
 import { haversineKm } from "@/lib/distance";
 import { vnDate, vnHoursMinutes } from "@/lib/time";
+import { pushRunLog } from "@/lib/smart-log-kv";
 
 export const runtime = "edge";
 export const preferredRegion = "sin1";
@@ -92,9 +93,15 @@ export async function POST(req: NextRequest) {
     }
 
     const created = await createRes.json();
+    const jobId = created.data?.job_id;
+    void pushRunLog([{
+      ts: new Date().toISOString(),
+      level: "OK",
+      msg: `[Sales] Tạo chuyến B2B: Job ${jobId} | Ref: ${refNumber} | Dropoff: ${closest.psc.customer_name}`,
+    }]);
     return NextResponse.json({
       success: true,
-      job_id: created.data?.job_id,
+      job_id: jobId,
       reference_number: refNumber,
       dropoff_psc: closest.psc.customer_name,
       distance_km: Math.round(closest.dist * 10) / 10,

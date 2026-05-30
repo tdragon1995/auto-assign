@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { vnDate, vnHoursMinutes } from "@/lib/time";
 import { isActiveStop, JOB_STATUS, STOP_STATUS } from "@/lib/job-filters";
+import { pushRunLog } from "@/lib/smart-log-kv";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -257,7 +258,13 @@ export async function POST(req: NextRequest) {
     }
 
     const created = await createRes.json();
-    return NextResponse.json({ success: true, job_id: created.data?.job_id });
+    const jobId = created.data?.job_id;
+    void pushRunLog([{
+      ts: new Date().toISOString(),
+      level: "OK",
+      msg: `[AO] Tạo job lấy kết quả: Job ${jobId} | Vendor: ${vendor.name}`,
+    }]);
+    return NextResponse.json({ success: true, job_id: jobId });
   } catch (e) {
     if (lockKey) releaseLock(lockKey);
     return NextResponse.json({ error: String(e) }, { status: 500 });
@@ -290,6 +297,11 @@ export async function DELETE(req: NextRequest) {
       const err = await res.json().catch(() => ({}));
       return NextResponse.json({ error: "Failed to cancel job", details: err }, { status: res.status });
     }
+    void pushRunLog([{
+      ts: new Date().toISOString(),
+      level: "OK",
+      msg: `[AO] Huỷ job: Job ${jobId}`,
+    }]);
     return NextResponse.json({ success: true });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
