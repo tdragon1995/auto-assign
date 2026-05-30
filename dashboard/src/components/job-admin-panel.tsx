@@ -16,7 +16,7 @@ interface JobSummary {
   job_status_id: number | null;
   reference_number: string | null;
   delivery_driver_id: string | null;
-  pickup: { customer_name: string | null } | null;
+  pickup: { stop_id: number | null; customer_id: string | null; customer_name: string | null } | null;
   dropoff: { stop_id: number | null; customer_id: string | null; customer_name: string | null } | null;
   started: boolean;
 }
@@ -129,22 +129,43 @@ export function JobAdminPanel({ env }: { env: Env }) {
       const res = await fetch(`/api/admin/change-dropoff?env=${env}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ job_id: job.job_id, new_dropoff_customer_id: pscId }),
+        // Pass stop metadata so the server can skip its own getJobDetails round-trip.
+        body: JSON.stringify({
+          job_id: job.job_id,
+          new_dropoff_customer_id: pscId,
+          job_status_id: job.job_status_id,
+          pickup_stop_id: job.pickup?.stop_id,
+          pickup_customer_id: job.pickup?.customer_id,
+          dropoff_stop_id: job.dropoff?.stop_id,
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
         toast.error(data.error ?? "Đổi điểm giao thất bại");
         return;
       }
-      toast.success(`Đã đổi điểm giao sang ${data.dropoff_name ?? pscName}`);
+      const newName = data.dropoff_name ?? pscName;
+      toast.success(`Đã đổi điểm giao sang ${newName}`);
       clearPsc();
-      await fetchJob(String(job.job_id));
+      // Update state locally — no re-fetch needed; we know exactly what changed.
+      setJob((prev) =>
+        prev
+          ? {
+              ...prev,
+              dropoff: {
+                stop_id: prev.dropoff?.stop_id ?? null,
+                customer_id: pscId,
+                customer_name: newName,
+              },
+            }
+          : prev
+      );
     } catch {
       toast.error("Lỗi kết nối, vui lòng thử lại");
     } finally {
       setChanging(false);
     }
-  }, [job, pscId, pscName, env, fetchJob, clearPsc]);
+  }, [job, pscId, pscName, env, clearPsc]);
 
   const filteredPscs = useMemo(() => {
     const q = pscSearch.trim().toLowerCase();

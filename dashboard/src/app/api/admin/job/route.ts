@@ -36,7 +36,11 @@ export async function GET(req: NextRequest) {
       reference_number: data.reference_number ?? null,
       delivery_driver_id: data.delivery_driver_id ?? null,
       pickup: pickup
-        ? { customer_name: pickup.customer?.customer_name ?? pickup.customer_name ?? null }
+        ? {
+            stop_id: pickup.stop_id ?? null,
+            customer_id: pickup.customer?.customer_id ?? pickup.customer_id ?? null,
+            customer_name: pickup.customer?.customer_name ?? pickup.customer_name ?? null,
+          }
         : null,
       dropoff: dropoff
         ? {
