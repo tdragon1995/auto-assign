@@ -113,13 +113,13 @@ export function JobAdminPanel({ env }: { env: Env }) {
         return;
       }
       toast.success(`Đã hoàn thành Job ${job.job_id}`);
-      await fetchJob(String(job.job_id));
+      setJob((prev) => prev ? { ...prev, job_status_id: 5 } : prev);
     } catch {
       toast.error("Lỗi kết nối, vui lòng thử lại");
     } finally {
       setCompleting(false);
     }
-  }, [job, env, fetchJob]);
+  }, [job, env]);
 
   const doChangeDropoff = useCallback(async () => {
     if (!job || !pscId) return;
