@@ -523,12 +523,17 @@ export async function autoAssignCycle(
     const jobCustomerName = getCustomerNameFromJob(job);
 
     if (jobHasNotes(job)) {
-      if (!onlyJobIds?.has(jobId)) {
-        log(`Job ${jobId} - SKIPPED (has note): "${getJobNoteText(job)}" | ${jobCustomerName ?? customerId}`);
-        heldJobs.push({ job_id: jobId, customer: jobCustomerName ?? customerId ?? "—", note: getJobNoteText(job) });
-        continue;
+      // Jobs with a delivery window bypass the note gate — the window parking path
+      // handles them. The note is driver context, not a blocker for scheduled jobs.
+      const hasWindow = !!(job.stops?.find((s) => s.stop_type_id === 1)?.delivery_windows?.[0]?.time_from);
+      if (!hasWindow) {
+        if (!onlyJobIds?.has(jobId)) {
+          log(`Job ${jobId} - SKIPPED (has note): "${getJobNoteText(job)}" | ${jobCustomerName ?? customerId}`);
+          heldJobs.push({ job_id: jobId, customer: jobCustomerName ?? customerId ?? "—", note: getJobNoteText(job) });
+          continue;
+        }
+        log(`Job ${jobId} - ASSIGNING despite note (manual override): "${getJobNoteText(job)}" | ${jobCustomerName ?? customerId}`, "WARN");
       }
-      log(`Job ${jobId} - ASSIGNING despite note (manual override): "${getJobNoteText(job)}" | ${jobCustomerName ?? customerId}`, "WARN");
     }
 
     if (!customerId) {
