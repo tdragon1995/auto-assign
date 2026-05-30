@@ -58,14 +58,20 @@ function renderMsg(msg: string) {
 
 const LOG_PREVIEW_LIMIT = 160;
 
-/** One log row; long messages collapse with a blue "Xem thêm" toggle. */
+/** One log row. Long messages collapse to a single truncated line with the
+ *  blue toggle inline on that same row (never dropping to its own row). */
 function LogLine({ entry }: { entry: LogEntry }) {
   const [expanded, setExpanded] = useState(false);
   const isNote =
     entry.msg.includes("has note") || entry.msg.includes("despite note");
   const isLong = entry.msg.length > LOG_PREVIEW_LIMIT;
-  const shown =
-    !isLong || expanded ? entry.msg : `${entry.msg.slice(0, LOG_PREVIEW_LIMIT).trimEnd()}…`;
+  const collapsed = isLong && !expanded;
+
+  const tag = isNote ? (
+    <span className="shrink-0 font-semibold text-purple-700">📝 NOTE </span>
+  ) : (
+    <span className={`shrink-0 font-semibold ${LEVEL_STYLES[entry.level]}`}>[{entry.level}] </span>
+  );
 
   return (
     <div
@@ -75,24 +81,20 @@ function LogLine({ entry }: { entry: LogEntry }) {
           : LEVEL_BG[entry.level]
       }`}
     >
-      <span className="text-muted-foreground">{entry.ts.slice(11, 19)} </span>
-      {isNote ? (
-        <span className="font-semibold text-purple-700">📝 NOTE </span>
-      ) : (
-        <span className={`font-semibold ${LEVEL_STYLES[entry.level]}`}>
-          [{entry.level}]{" "}
-        </span>
-      )}
-      <span>{renderMsg(shown)}</span>
-      {isLong && (
-        <button
-          type="button"
-          onClick={() => setExpanded((e) => !e)}
-          className="ml-1 font-semibold text-blue-600 hover:text-blue-800"
-        >
-          {expanded ? "Thu gọn" : "Xem thêm"}
-        </button>
-      )}
+      <div className={collapsed ? "flex items-baseline gap-1" : ""}>
+        <span className="shrink-0 text-muted-foreground">{entry.ts.slice(11, 19)} </span>
+        {tag}
+        <span className={collapsed ? "min-w-0 truncate" : ""}>{renderMsg(entry.msg)}</span>
+        {isLong && (
+          <button
+            type="button"
+            onClick={() => setExpanded((e) => !e)}
+            className="shrink-0 ml-1 font-semibold text-blue-600 hover:text-blue-800"
+          >
+            {expanded ? "Thu gọn" : "Xem thêm"}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
