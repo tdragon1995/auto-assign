@@ -27,6 +27,16 @@ export function parseTime(
   return { hours, minutes };
 }
 
+const DRIVER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Driver IDs from the sheet are usable only if they're real UUIDs. Broken
+ *  spreadsheet references (#REF!, #N/A, …), blanks, or other junk would build a
+ *  malformed assign URL (e.g. PUT /jobs/assign/#REF → Cartrack HTML 404), so we
+ *  drop them at load time. */
+export function isValidDriverId(id: string): boolean {
+  return DRIVER_ID_RE.test(id.trim());
+}
+
 export async function loadConfigFromSheets(): Promise<Config | null> {
   if (cachedConfig) return cachedConfig;
   try {
@@ -37,9 +47,13 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     const mappings: Mapping[] = [];
     for (const row of rows) {
       const customer_id = row["customer_id"] ?? "";
-      const driver_id = row["driver_id"] ?? "";
+      const driver_id = (row["driver_id"] ?? "").trim();
+      // Drop junk smart-driver entries (e.g. a broken #REF sheet ref) so they
+      // can never build a malformed assign URL. An invalid fixed driver_id is
+      // left in place and reported at assign time (assign.ts), where it shows
+      // in the Activity Log.
       const smart_driver_id = (row["smart_driver_id"] ?? "")
-        .split(",").map((s) => s.trim()).filter(Boolean);
+        .split(",").map((s) => s.trim()).filter(isValidDriverId);
 
       if (!customer_id || (!driver_id && smart_driver_id.length === 0)) continue;
 

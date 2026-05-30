@@ -4,6 +4,7 @@ import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL } from "./return-trips";
 import { setHeldJobs, type HeldJob } from "./smart-log-kv";
+import { isValidDriverId } from "./config";
 import {
   vnDate,
   vnTimestamp,
@@ -783,6 +784,14 @@ export async function autoAssignCycle(
     const mapping = drivers[0];
     const driverId = mapping.driver_id;
     if (!driverId) continue;
+
+    // A broken sheet cell (#REF!, #N/A, …) would build a malformed assign URL
+    // (/jobs/assign/#REF → Cartrack HTML 404). Catch it here with a clear,
+    // visible message instead of a cryptic JSON-parse crash.
+    if (!isValidDriverId(driverId)) {
+      log(`Job ${jobId} - invalid driver_id "${driverId}" for ${jobCustomerName ?? customerId} — fix the Google Sheet`, "ERROR");
+      continue;
+    }
 
     // Alt drop-off: swap the dropoff customer before assigning
     if (mapping.alt_drop_off_id) {
