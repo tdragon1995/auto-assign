@@ -313,6 +313,7 @@ async function applyAltDropoff(
         stop_id: s.stop_id!,
         stop_type_id: s.stop_type_id!,
         customer_id: s.stop_type_id === 2 ? altDropOffId : s.customer_id!,
+        ...(s.stop_type_id === 2 ? { customer_name: altCustomerName } : {}),
       }));
 
     if (updatedStops.length >= 2) {

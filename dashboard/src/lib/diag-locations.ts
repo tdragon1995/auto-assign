@@ -4,10 +4,11 @@
 export interface DiagLocation {
   customer_id: string;
   name: string;
+  customer_name: string; // "BRA - D001" — the actual Cartrack customer_name for this stop
   address: string;
 }
 
-export const DIAG_LOCATIONS: DiagLocation[] = [
+const RAW_LOCATIONS: Omit<DiagLocation, "customer_name">[] = [
   { customer_id: "3927b076-3af9-11ed-b939-506b8dbc8dfb", name: "D001", address: "414 - 420 Cao Thắng, Phường 12, Quận 10, Thành phố Hồ Chí Minh" },
   { customer_id: "7bc36d6c-3d6a-11ed-a1ac-506b8dbc8dfb", name: "D002", address: "309 Trần Phú, Phường 8, Quận 5, Thành phố Hồ Chí Minh" },
   { customer_id: "557ec732-3af9-11ed-b159-506b8dbc8dfb", name: "D003", address: "231 Hoàng Văn Thụ, Phường 8, Quận Phú Nhuận, Thành phố Hồ Chí Minh" },
@@ -53,3 +54,8 @@ export const DIAG_LOCATIONS: DiagLocation[] = [
   { customer_id: "3d68332c-6698-11f0-a623-506b8d982279", name: "D050", address: "211 Lê Văn Sỹ, Phường 12, Quận 3, Thành Phố Hồ Chí Minh" },
   { customer_id: "4daa0bca-2d7b-11f1-9378-fa163ee8d8ac", name: "D051", address: "51 Võ Nguyên Giáp, Thảo Điền, An Khánh, Hồ Chí Minh" },
 ];
+
+export const DIAG_LOCATIONS: DiagLocation[] = RAW_LOCATIONS.map((l) => ({
+  ...l,
+  customer_name: `BRA - ${l.name}`,
+}));

@@ -49,7 +49,7 @@ export async function POST(req: NextRequest) {
 
       const updatedStops = [
         { stop_id: Number(pickup_stop_id), stop_type_id: 1, customer_id: String(pickup_customer_id) },
-        { stop_id: Number(dropoff_stop_id), stop_type_id: 2, customer_id: psc.customer_id },
+        { stop_id: Number(dropoff_stop_id), stop_type_id: 2, customer_id: psc.customer_id, customer_name: psc.customer_name },
       ];
 
       const putRes = await updateJobStops(jobId, updatedStops, env);
@@ -89,6 +89,7 @@ export async function POST(req: NextRequest) {
         stop_id: s.stop_id!,
         stop_type_id: s.stop_type_id!,
         customer_id: s.stop_type_id === 2 ? psc.customer_id : s.customer_id!,
+        ...(s.stop_type_id === 2 ? { customer_name: psc.customer_name } : {}),
       }));
 
     if (updatedStops.length < 2 || !updatedStops.some((s) => s.stop_type_id === 2)) {
