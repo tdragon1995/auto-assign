@@ -750,12 +750,12 @@ export async function autoAssignCycle(
 
     if (status === "no_driver") {
       const shiftInfo = drivers
-        .map((m) => `${m.first_name_last_name || m.driver_id} (${fmtShift(m.shift_start)}–${fmtShift(m.shift_end)})`)
+        .map((m) => `${fmtShift(m.shift_start)}–${fmtShift(m.shift_end)}`)
         .join(", ");
       const jt = vnHoursMinutes(jobTime);
       const hhmm = `${String(jt.hours).padStart(2, "0")}:${String(jt.minutes).padStart(2, "0")}`;
       log(
-        `Job ${jobId} - NO DRIVER ON DUTY at ${hhmm} | ${jobCustomerName ?? customerId} | Configured: ${shiftInfo}`,
+        `Job ${jobId} - NO DRIVER ON DUTY at ${hhmm} | ${jobCustomerName ?? customerId} | Shifts: ${shiftInfo}`,
         "ERROR"
       );
       continue;
@@ -763,7 +763,7 @@ export async function autoAssignCycle(
 
     if (status === "clash") {
       const driverList = drivers
-        .map((m) => `${m.first_name_last_name || m.driver_id} (${fmtShift(m.shift_start)}–${fmtShift(m.shift_end)})`)
+        .map((m) => `${m.first_name_last_name || "?"} ${fmtShift(m.shift_start)}–${fmtShift(m.shift_end)}`)
         .join(", ");
       const jt = vnHoursMinutes(jobTime);
       const hhmm = `${String(jt.hours).padStart(2, "0")}:${String(jt.minutes).padStart(2, "0")}`;
