@@ -152,16 +152,38 @@ function makeLog(msg: string, level: LogLevel = "INFO"): LogEntry {
   return { ts: vnTimestamp(), level, msg };
 }
 
+/** True when Cartrack's 422 means the driver is on-break or offline. */
+function isDriverUnavailable(body: unknown): boolean {
+  if (!body || typeof body !== "object") return false;
+  const ct = (body as Record<string, unknown>).error as Record<string, unknown> | undefined;
+  const msgs = (ct?.data as Record<string, unknown> | undefined)?.delivery_driver_id;
+  return Array.isArray(msgs) && msgs.some(
+    (m: unknown) => typeof m === "string" && m.includes("does not exist or the current status")
+  );
+}
+
+
 /**
  * Turn a Cartrack error response body into a short, readable reason instead of
- * dumping raw JSON into the log. Prefers `message`, then field-level `errors`,
- * then a truncated stringify.
+ * dumping raw JSON into the log.
+ * Cartrack wraps validation errors as { error: { message, data: { field: [msgs] } } }.
  */
 function friendlyError(body: unknown, max = 180): string {
   let text: string;
   if (body && typeof body === "object") {
     const b = body as Record<string, unknown>;
-    if (typeof b.message === "string" && b.message.trim()) {
+    // Driver on-break / offline — most common assign failure, give a clear label.
+    if (isDriverUnavailable(b)) return "Driver on-break or offline";
+    // Cartrack's nested { error: { message, data: { field: [...] } } } structure.
+    const ct = b.error as Record<string, unknown> | undefined;
+    const ctData = ct?.data as Record<string, unknown> | undefined;
+    if (ctData && typeof ctData === "object") {
+      text = Object.entries(ctData)
+        .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join("; ") : String(v)}`)
+        .join(" | ");
+    } else if (typeof ct?.message === "string" && ct.message.trim()) {
+      text = ct.message.trim();
+    } else if (typeof b.message === "string" && b.message.trim()) {
       text = b.message.trim();
     } else if (b.errors && typeof b.errors === "object") {
       text = Object.entries(b.errors as Record<string, unknown>)
@@ -684,15 +706,32 @@ export async function autoAssignCycle(
           const ok = await applyAltDropoff(jobId, smartMapping.alt_drop_off_id, env, log);
           if (!ok) continue;
         }
-        try {
-          const { status: apiStatus, body } = await assignJob(top.d.delivery_driver_id, jobId, env);
-          if (apiStatus === 200) {
-            log(`Job ${jobId} | SMART → ${rankStr} | ${pickupStop.customer_name ?? customerId}`, "OK");
-          } else {
-            log(`Job ${jobId} - SMART failed: ${friendlyError(body)}`, "ERROR");
+        // Try candidates in ranked order; fall through to next if on-break/offline.
+        let assigned = false;
+        for (let attempt = 0; attempt < withGoong.length; attempt++) {
+          const candidate = withGoong[attempt];
+          const candidateName = `${candidate.d.first_name} ${candidate.d.last_name}`.trim();
+          try {
+            const { status: apiStatus, body } = await assignJob(candidate.d.delivery_driver_id, jobId, env);
+            if (apiStatus === 200) {
+              const tag = attempt > 0 ? `[#${attempt + 1}] ` : "";
+              log(`Job ${jobId} | SMART ${tag}→ ${rankStr} | ${pickupStop.customer_name ?? customerId}`, "OK");
+              assigned = true;
+              break;
+            } else if (isDriverUnavailable(body)) {
+              log(`Job ${jobId} - SMART #${attempt + 1} ${candidateName}: on-break or offline, trying next`, "WARN");
+            } else {
+              log(`Job ${jobId} - SMART failed: ${friendlyError(body)}`, "ERROR");
+              break;
+            }
+          } catch (e) {
+            log(`Job ${jobId} - SMART error: ${e}`, "ERROR");
+            break;
           }
-        } catch (e) {
-          log(`Job ${jobId} - SMART error: ${e}`, "ERROR");
+        }
+        if (!assigned) {
+          const names = withGoong.map((x) => `${x.d.first_name} ${x.d.last_name}`.trim()).join(", ");
+          log(`Job ${jobId} - SMART: all ${withGoong.length} candidate(s) on-break or unavailable (${names})`, "ERROR");
         }
         continue;
     }
