@@ -22,10 +22,10 @@ export async function runArmedCycle(arm: ArmState, origin: string): Promise<LogE
       logs = [{ ts: new Date().toISOString(), level: "ERROR", msg: "Failed to load config" }];
     } else {
       logs = await autoAssignCycle(config, arm.env as Env, false);
-      await pushSmartRun(logs).catch(() => {});
+      await pushSmartRun(logs).catch((e) => console.error("[run-cycle] pushSmartRun failed:", e));
     }
   }
 
-  await pushRunLog(logs).catch(() => {});
+  await pushRunLog(logs).catch((e) => console.error("[run-cycle] pushRunLog failed:", e));
   return logs;
 }

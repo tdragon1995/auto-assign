@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { runArmedCycle } from "@/lib/run-cycle";
 import {
   getArmState,
@@ -42,17 +42,17 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ran: false, skipped: "locked" });
   }
 
-  try {
-    const logs = await runArmedCycle(arm, req.nextUrl.origin);
-    const counts = {
-      ok: logs.filter((l) => l.level === "OK").length,
-      warn: logs.filter((l) => l.level === "WARN").length,
-      error: logs.filter((l) => l.level === "ERROR").length,
-    };
-    return NextResponse.json({ ran: true, mode: arm.mode, env: arm.env, counts, entries: logs.length });
-  } catch (e) {
-    return NextResponse.json({ ran: false, error: String(e) }, { status: 500 });
-  } finally {
-    await releaseCycleLock().catch(() => {});
-  }
+  // Respond immediately so cron-job.org (30s max) doesn't time out.
+  // The cycle continues in after() for up to maxDuration (60s).
+  after(async () => {
+    try {
+      await runArmedCycle(arm, req.nextUrl.origin);
+    } catch (e) {
+      console.error("[cron] runArmedCycle failed:", e);
+    } finally {
+      await releaseCycleLock().catch(() => {});
+    }
+  });
+
+  return NextResponse.json({ ran: true, mode: arm.mode, env: arm.env });
 }

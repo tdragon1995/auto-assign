@@ -1,4 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+dist/
+build/
+*.spec
+*.egg-info/
 .env
+docs/
+_run_dashboard.py
 *.xlsx
-dashboard/public/geo/*.geojson
-!dashboard/public/geo/districts.geojson
+.vercel
+.env*.local

@@ -7,7 +7,7 @@ import { StatsSidebar } from "./stats-sidebar";
 import { ActivityLog } from "./activity-log";
 import { ScheduleJobPanel } from "./schedule-job-panel";
 import { SmartLogHistory } from "./smart-log-history";
-import { NoteReviewPanel } from "./note-review-panel";
+import { NoteReviewPanel, type HeldJob } from "./note-review-panel";
 import { JobAdminPanel } from "./job-admin-panel";
 import { toast } from "sonner";
 import type { LogEntry } from "@/lib/types";
@@ -22,6 +22,7 @@ export function Dashboard() {
   const [armUntil, setArmUntil] = useState<number | null>(null);
   const [armedBy, setArmedBy] = useState<string>("");
   const [lastChecked, setLastChecked] = useState<string | null>(null);
+  const [held, setHeld] = useState<HeldJob[]>([]);
   const [mappingCount, setMappingCount] = useState(0);
   const [pscRouteCount, setPscRouteCount] = useState(0);
   const [env, setEnv] = useState<Env>("prod");
@@ -32,23 +33,22 @@ export function Dashboard() {
   // The cron runs the cycles; this tab only reflects what the server did.
   const syncStatus = useCallback(async () => {
     try {
-      const [armRes, logRes] = await Promise.all([
-        fetch("/api/assign/arm"),
-        fetch("/api/assign/log?limit=300"),
-      ]);
-      const arm = await armRes.json();
-      setIsRunning(!!arm.armed);
-      setArmUntil(arm.state?.armedUntil ?? null);
-      setArmedBy(arm.state?.armedBy ?? "");
-      setLastChecked(arm.lastChecked ?? null);
-      const logData = await logRes.json();
-      if (Array.isArray(logData.logs)) setLogs(logData.logs);
+      const res = await fetch("/api/assign/status");
+      const data = await res.json();
+      setIsRunning(!!data.armed);
+      setArmUntil(data.state?.armedUntil ?? null);
+      setArmedBy(data.state?.armedBy ?? "");
+      setLastChecked(data.lastChecked ?? null);
+      if (Array.isArray(data.logs)) setLogs(data.logs);
+      if (Array.isArray(data.held)) setHeld(data.held);
     } catch {
       /* transient network error — keep last known state */
     }
   }, []);
 
-  // Load config once + poll switch/log every 15s.
+  // Load config once, then poll status every 30s — but only while the tab is
+  // visible. A backgrounded tab pauses (and resumes + refreshes on return), so
+  // it stops firing pointless invocations when nobody's looking.
   useEffect(() => {
     fetch("/api/config")
       .then((r) => r.json())
@@ -57,9 +57,19 @@ export function Dashboard() {
         setPscRouteCount(d.pscRouteCount ?? 0);
       })
       .catch(() => {});
+
+    let id: ReturnType<typeof setInterval> | null = null;
+    const start = () => { if (!id) id = setInterval(syncStatus, 90_000); };
+    const stop = () => { if (id) { clearInterval(id); id = null; } };
+    const onVisibility = () => {
+      if (document.hidden) stop();
+      else { syncStatus(); start(); }
+    };
+
     syncStatus();
-    const id = setInterval(syncStatus, 15_000);
-    return () => clearInterval(id);
+    start();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => { stop(); document.removeEventListener("visibilitychange", onVisibility); };
   }, [syncStatus]);
 
   // Turn the switch ON — arm the server-side engine until the next 22:00 VN.
@@ -234,7 +244,7 @@ export function Dashboard() {
             pscRouteCount={pscRouteCount}
             lastChecked={lastChecked}
           />
-          <NoteReviewPanel env={env} />
+          <NoteReviewPanel held={held} env={env} onRefresh={syncStatus} />
           <ScheduleJobPanel env={env} />
         </div>
 

@@ -1,11 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
-interface HeldJob {
+export interface HeldJob {
   job_id: number;
   customer: string;
   note: string;
@@ -39,27 +39,20 @@ function HeldNote({ note }: { note: string }) {
 
 /**
  * Lists unassigned jobs the engine held back because a stop has a note, and lets
- * the admin assign one anyway. Renders nothing when there are no held jobs.
+ * the admin assign one anyway. `held` is fed by the dashboard's status poll (no
+ * polling of its own); `onRefresh` re-pulls after an assign. Renders nothing
+ * when there are no held jobs.
  */
-export function NoteReviewPanel({ env }: { env: "prod" | "uat" }) {
-  const [held, setHeld] = useState<HeldJob[]>([]);
+export function NoteReviewPanel({
+  held,
+  env,
+  onRefresh,
+}: {
+  held: HeldJob[];
+  env: "prod" | "uat";
+  onRefresh: () => void;
+}) {
   const [busyId, setBusyId] = useState<number | null>(null);
-
-  const load = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/assign/held?env=${env}`);
-      const data = await res.json();
-      if (Array.isArray(data.held)) setHeld(data.held);
-    } catch {
-      /* transient — keep last known list */
-    }
-  }, [env]);
-
-  useEffect(() => {
-    load();
-    const id = setInterval(load, 20_000);
-    return () => clearInterval(id);
-  }, [load]);
 
   const assignAnyway = useCallback(
     async (job: HeldJob) => {
@@ -81,10 +74,10 @@ export function NoteReviewPanel({ env }: { env: "prod" | "uat" }) {
         toast.error(`Không giao được Job ${job.job_id}`);
       } finally {
         setBusyId(null);
-        load();
+        onRefresh();
       }
     },
-    [env, load],
+    [env, onRefresh],
   );
 
   if (held.length === 0) return null;
