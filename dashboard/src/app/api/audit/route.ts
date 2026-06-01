@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { assignJob, deleteJob, BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
+import { deleteJob, BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { vnDate } from "@/lib/time";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 
@@ -157,6 +157,7 @@ export async function POST(req: NextRequest) {
       schedule_type_id: 1,
       reference_number: refNumber,
       labels: ["audit_weekly"],
+      delivery_driver_id: driver_id, // assign at creation — single call (Cartrack returns job_status_id 4)
       items: AUDIT_ITEMS,
       stops: [
         {
@@ -188,12 +189,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Cartrack không trả về job_id" }, { status: 500 });
     }
 
-    let assignResult = await assignJob(driver_id, jobId, env);
-    for (let attempt = 1; attempt <= 2 && assignResult.status !== 200; attempt++) {
-      assignResult = await assignJob(driver_id, jobId, env);
-    }
-
-    if (assignResult.status !== 200) {
+    // Defensive: a 200 can still come back unassigned (status 4 ≠ driver set). Verify, else roll back.
+    if (created.data?.delivery_driver_id !== driver_id) {
       await deleteJob(jobId, env);
       return NextResponse.json(
         { error: "Tạo audit chưa thành công, vui lòng thử lại. Liên hệ điều phối nếu vẫn gặp lỗi!" },

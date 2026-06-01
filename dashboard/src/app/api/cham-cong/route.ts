@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { assignJob, deleteJob, BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
+import { deleteJob, BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { vnDate } from "@/lib/time";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 
@@ -83,6 +83,7 @@ export async function POST(req: NextRequest) {
       schedule_type_id: 1,
       reference_number: `Chấm Công - ${isCheckin ? "Vào" : "Ra"}`,
       labels: [isCheckin ? "check_in" : "check_out"],
+      delivery_driver_id: driver_id, // assign at creation — single call (Cartrack returns job_status_id 4)
       stops: [
         {
           stop_type_id: 3,
@@ -107,12 +108,8 @@ export async function POST(req: NextRequest) {
     const jobId: number | undefined = created.data?.job_id;
     if (!jobId) return NextResponse.json({ error: "No job_id returned from Cartrack" }, { status: 500 });
 
-    let assignResult = await assignJob(driver_id, jobId, env);
-    for (let attempt = 1; attempt <= 2 && assignResult.status !== 200; attempt++) {
-      assignResult = await assignJob(driver_id, jobId, env);
-    }
-
-    if (assignResult.status !== 200) {
+    // Defensive: a 200 can still come back unassigned (status 4 ≠ driver set). Verify, else roll back.
+    if (created.data?.delivery_driver_id !== driver_id) {
       await deleteJob(jobId, env);
       return NextResponse.json(
         { error: "Tạo chấm công chưa thành công, vui lòng thử lại. Liên hệ điều phối nếu vẫn gặp lỗi!" },
