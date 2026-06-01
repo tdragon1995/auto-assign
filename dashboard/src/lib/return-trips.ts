@@ -1,5 +1,5 @@
 import type { Config, Mapping, LogLevel } from "./types";
-import { BASE_URL, getHeaders, getJobsByStatusAndDate, assignJob, type Env } from "./cartrack";
+import { BASE_URL, getHeaders, getJobsByStatusAndDate, type Env } from "./cartrack";
 import { vnDate, vnHoursMinutes } from "./time";
 
 export const PSC_RETURN_LABEL = "🛵 Vận chuyển mẫu PSC (về)";
@@ -30,6 +30,7 @@ function hhmm(): string {
 }
 
 async function createReturnJob(
+  driverId: string,
   fromCustomerId: string,
   fromCustomerName: string,
   toCustomerId: string,
@@ -41,6 +42,7 @@ async function createReturnJob(
     schedule_type_id: 1,
     reference_number: `${shortName(fromCustomerName)}→${shortName(toCustomerName)}_${hhmm()}`,
     labels: [PSC_RETURN_LABEL],
+    delivery_driver_id: driverId, // assign at creation — single call (no separate assignJob)
     stops: [
       {
         stop_type_id: 1,
@@ -85,6 +87,9 @@ async function createReturnJob(
   const json = await res.json();
   const jobId = json.data?.job_id;
   if (!jobId) throw new Error("createReturnJob: no job_id in response");
+  if (json.data?.delivery_driver_id !== driverId) {
+    throw new Error(`createReturnJob: job ${jobId} created but not assigned to ${driverId}`);
+  }
   return jobId as number;
 }
 
@@ -194,9 +199,8 @@ export async function detectAndCreateReturnTrips(
     blockingReturnKeys.add(returnKey); // protect same driver in same cycle
 
     try {
-      const newJobId = await createReturnJob(fromCustomerId, fromCustomerName, toCustomerId, toCustomerName, env);
-      await assignJob(outbound.delivery_driver_id, newJobId, env);
-      log(`Return trip ${shortName(fromCustomerName)}→${shortName(toCustomerName)} → driver (from outbound ${outbound.job_id})`, "OK");
+      const newJobId = await createReturnJob(outbound.delivery_driver_id, fromCustomerId, fromCustomerName, toCustomerId, toCustomerName, env);
+      log(`Return trip ${shortName(fromCustomerName)}→${shortName(toCustomerName)} #${newJobId} → driver (from outbound ${outbound.job_id})`, "OK");
     } catch (e) {
       log(`Return trip failed for outbound ${outbound.job_id}: ${e}`, "ERROR");
       inFlightReturns.delete(outbound.job_id);
