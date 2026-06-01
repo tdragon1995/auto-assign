@@ -81,18 +81,34 @@ function LogLine({ entry }: { entry: LogEntry }) {
           : LEVEL_BG[entry.level]
       }`}
     >
-      <div className={collapsed ? "flex items-baseline gap-1" : ""}>
-        <span className="shrink-0 text-muted-foreground">{entry.ts.slice(11, 19)} </span>
+      <div>
+        <span className="text-muted-foreground">{entry.ts.slice(11, 19)} </span>
         {tag}
-        <span className={collapsed ? "min-w-0 truncate" : ""}>{renderMsg(entry.msg)}</span>
-        {isLong && (
-          <button
-            type="button"
-            onClick={() => setExpanded((e) => !e)}
-            className="shrink-0 ml-1 font-semibold text-blue-600 hover:text-blue-800"
-          >
-            {expanded ? "Thu gọn" : "Xem thêm"}
-          </button>
+        {collapsed ? (
+          <>
+            {renderMsg(entry.msg.slice(0, LOG_PREVIEW_LIMIT))}
+            <span>… </span>
+            <button
+              type="button"
+              onClick={() => setExpanded((e) => !e)}
+              className="font-semibold text-blue-600 hover:text-blue-800 whitespace-nowrap"
+            >
+              Xem thêm
+            </button>
+          </>
+        ) : (
+          <>
+            {renderMsg(entry.msg)}
+            {isLong && (
+              <button
+                type="button"
+                onClick={() => setExpanded((e) => !e)}
+                className="ml-1 font-semibold text-blue-600 hover:text-blue-800"
+              >
+                {" Thu gọn"}
+              </button>
+            )}
+          </>
         )}
       </div>
     </div>
