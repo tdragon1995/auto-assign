@@ -11,3 +11,7 @@ _run_dashboard.py
 *.xlsx
 .vercel
 .env*.local
+
+# Claude Code machine-local files (never deploy these)
+.claude/settings.local.json
+.claude/worktrees/
