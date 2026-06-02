@@ -326,6 +326,7 @@ export default function SalesPage() {
   const [maKh, setMaKh] = useState("");
   const [quanCu, setQuanCu] = useState("");
   const [tenDuong, setTenDuong] = useState("");
+  const [showStreetModal, setShowStreetModal] = useState(false);
   const [tenKh, setTenKh] = useState("");
   const [diaChi, setDiaChi] = useState("");
   const [phone, setPhone] = useState("");
@@ -445,7 +446,8 @@ export default function SalesPage() {
     setShowPredictions(false);
     setPredictions([]);
     const street = streetFromPrediction(p);
-    if (street) setTenDuong(street);
+    setTenDuong(street);
+    setShowStreetModal(true); // confirm the derived street
     // Quận Cũ: prefer Goong's compound.district; refresh on every pick.
     const goongOpt = optionFromDistrict(p.compound?.district);
     if (goongOpt) selectQuan(goongOpt);
@@ -812,7 +814,10 @@ export default function SalesPage() {
 
             {/* Địa Chỉ */}
             <div className="relative">
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Địa Chỉ</label>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">Địa Chỉ</label>
+              <p className="text-[10.5px] text-slate-400 mb-1.5 leading-relaxed">
+                Sẽ hiển thị trên giao diện của khách hàng.
+              </p>
               <div className="relative">
                 <FieldIcon paths={ICON_PIN} />
                 <input
@@ -857,15 +862,13 @@ export default function SalesPage() {
               </p>
               <div className="relative">
                 <div className="relative">
-                  <FieldIcon paths={ICON_PIN} />
                   <input
                     value={quanSearch}
                     onChange={(e) => { setQuanSearch(e.target.value); setShowQuanResults(true); }}
                     onFocus={() => { if (!quanSelected) setShowQuanResults(true); }}
                     onBlur={() => setTimeout(() => setShowQuanResults(false), 150)}
                     readOnly={quanSelected}
-                    placeholder="Search..."
-                    className={`w-full border rounded-xl pl-9 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 ${quanSelected ? "pr-8 cursor-default" : "pr-3"}`}
+                    className={`w-full border rounded-xl pl-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 ${quanSelected ? "pr-8 cursor-default" : "pr-3"}`}
                   />
                   {quanSelected && (
                     <button
@@ -896,27 +899,71 @@ export default function SalesPage() {
               </div>
             </div>
 
-            {/* Tên Đường */}
+            {/* Tên Đường — auto-derived from the address pick, confirmed via popup */}
             <div>
               <label className="block text-sm font-semibold text-slate-700 mb-1">Tên Đường</label>
-              <p className="text-[10.5px] text-slate-400 mb-1.5 leading-relaxed">
-                Chỉ điền tên đường — không ghi "Đường" hay "Phố".<br />
-                Đường Điện Biên Phủ → <span className="font-semibold">Điện Biên Phủ</span><br />
-                Đường số 6 → <span className="font-semibold">6</span><br />
-                Đường 3/2 → <span className="font-semibold">3/2</span><br />
-                Đường Tỉnh Lộ 8 → <span className="font-semibold">Tỉnh Lộ 8</span>
-              </p>
-              <input
-                value={tenDuong}
-                onChange={(e) => setTenDuong(e.target.value)}
-                className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-              />
-              {tenDuong && (
-                <p className="text-xs text-slate-500 mt-1">
-                  Viết tắt: <span className="font-semibold text-slate-700">{abbrStreet(tenDuong)}</span>
-                </p>
+              {tenDuong ? (
+                <button
+                  type="button"
+                  onClick={() => setShowStreetModal(true)}
+                  className="w-full flex items-center justify-between gap-2 border rounded-xl px-3 py-3 bg-slate-50 text-left hover:bg-slate-100 transition-colors"
+                >
+                  <span className="text-base font-medium text-slate-800 break-words">
+                    {tenDuong}
+                    <span className="text-slate-400 font-normal text-sm"> · {abbrStreet(tenDuong)}</span>
+                  </span>
+                  <span className="text-xs font-semibold text-blue-600 shrink-0">Sửa</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setShowStreetModal(true)}
+                  className="w-full border border-dashed rounded-xl px-3 py-3 text-sm text-slate-500 hover:bg-slate-50 transition-colors text-left"
+                >
+                  Chọn địa chỉ ở trên để tự lấy tên đường, hoặc bấm để nhập
+                </button>
               )}
             </div>
+
+            {/* Street confirm popup */}
+            {showStreetModal && (
+              <div
+                className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+                onClick={() => setShowStreetModal(false)}
+              >
+                <div
+                  className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-5 space-y-3"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <h3 className="text-base font-bold text-slate-800">Xác nhận tên đường</h3>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    Chỉ tên đường — không số nhà, không "Đường"/"Phố".<br />
+                    VD: Sư Vạn Hạnh · 3/2 · Tỉnh Lộ 8
+                  </p>
+                  <input
+                    value={tenDuong}
+                    onChange={(e) => setTenDuong(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && tenDuong.trim()) setShowStreetModal(false); }}
+                    autoFocus
+                    placeholder="VD: Sư Vạn Hạnh"
+                    className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+                  />
+                  {tenDuong.trim() && (
+                    <p className="text-xs text-slate-500">
+                      Viết tắt: <span className="font-semibold text-slate-700">{abbrStreet(tenDuong)}</span>
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setShowStreetModal(false)}
+                    disabled={!tenDuong.trim()}
+                    className="w-full py-3 rounded-xl font-bold text-white text-base bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                  >
+                    Xác nhận
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Số Điện Thoại */}
             <div>
