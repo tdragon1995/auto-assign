@@ -8,6 +8,7 @@ type Prediction = {
   structured_formatting?: { main_text?: string; secondary_text?: string };
   types?: string[];
   terms?: { offset?: number; value: string }[];
+  compound?: { district?: string; commune?: string; province?: string };
 };
 
 type ClientResult = { code: string; client_legal_name: string };
@@ -49,6 +50,7 @@ const QUAN_CU_OPTIONS: { label: string; code: string }[] = [
   { label: "Hóc Môn",    code: "HMon"   },
   { label: "Củ Chi",     code: "CChi"   },
   { label: "Cần Thạnh",  code: "CThanh" },
+  { label: "Cần Giờ",    code: "CGio"   },
   { label: "Dĩ An",      code: "DAn"    },
   { label: "Thuận An",   code: "ThAn"   },
   { label: "Thủ Dầu 1",  code: "TD1"    },
@@ -67,6 +69,11 @@ const QUAN_CU_OPTIONS: { label: string; code: string }[] = [
   { label: "Vũng Tàu",   code: "VTau"   },
 ];
 
+// Goong district names that don't match a Quận Cũ label verbatim (normalized → code).
+const DISTRICT_ALIASES: Record<string, string> = {
+  "thu dau mot": "TD1", // label is "Thủ Dầu 1"
+};
+
 function stripDiacritics(s: string): string {
   return s
     .normalize("NFD")
@@ -78,6 +85,22 @@ function stripDiacritics(s: string): string {
 function titleCase(word: string): string {
   if (!word) return "";
   return word[0].toUpperCase() + word.slice(1).toLowerCase();
+}
+
+// Map a Goong compound.district name ("Quận 10", "Thành phố Thủ Đức",
+// "Huyện Củ Chi") to a Quận Cũ option. Returns null if it isn't in the list.
+function optionFromDistrict(district?: string): { label: string; code: string } | null {
+  if (!district) return null;
+  const norm = (s: string) => stripDiacritics(s).trim().toLowerCase().replace(/\s+/g, " ");
+  const d = norm(district);
+  const stripped = d.replace(/^(quan|huyen|thanh pho|thi xa|thi tran|tp\.?)\s+/, "");
+  const aliasCode = DISTRICT_ALIASES[d] ?? DISTRICT_ALIASES[stripped];
+  return (
+    (aliasCode ? QUAN_CU_OPTIONS.find((o) => o.code === aliasCode) : null) ??
+    QUAN_CU_OPTIONS.find((o) => norm(o.label) === d) ??
+    QUAN_CU_OPTIONS.find((o) => norm(o.label) === stripped) ??
+    null
+  );
 }
 
 // "Điện Biên Phủ" → "DBPhu"
@@ -423,6 +446,9 @@ export default function SalesPage() {
     setPredictions([]);
     const street = streetFromPrediction(p);
     if (street) setTenDuong(street);
+    // Quận Cũ: prefer Goong's compound.district; refresh on every pick.
+    const goongOpt = optionFromDistrict(p.compound?.district);
+    if (goongOpt) selectQuan(goongOpt);
     try {
       const res = await fetch(`/api/geo/place?place_id=${encodeURIComponent(p.place_id)}`);
       const data = await res.json();
@@ -431,10 +457,13 @@ export default function SalesPage() {
         const lonNum: number = data.longitude;
         setLat(String(latNum));
         setLon(String(lonNum));
-        const code = await detectDistrict(lonNum, latNum);
-        if (code) {
-          const option = QUAN_CU_OPTIONS.find(o => o.code === code);
-          if (option && !quanSelected) selectQuan(option);
+        // Fall back to point-in-polygon only when Goong's district didn't map.
+        if (!goongOpt) {
+          const code = await detectDistrict(lonNum, latNum);
+          if (code) {
+            const option = QUAN_CU_OPTIONS.find(o => o.code === code);
+            if (option) selectQuan(option);
+          }
         }
       }
     } catch {
