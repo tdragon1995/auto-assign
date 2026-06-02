@@ -62,10 +62,6 @@ export default function PscTinhPage() {
   const [loadError, setLoadError] = useState("");
   const [orders, setOrders] = useState<Order[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
-  const [editTarget, setEditTarget] = useState<Order | null>(null);
-  const [editEta, setEditEta] = useState("");
-  const [editLoading, setEditLoading] = useState(false);
-  const [editError, setEditError] = useState("");
   const [cancelTarget, setCancelTarget] = useState<Order | null>(null);
   const [cancelLoading, setCancelLoading] = useState(false);
   const [cancelError, setCancelError] = useState("");
@@ -165,31 +161,6 @@ export default function PscTinhPage() {
       setResult({ ok: false, msg: String(e) });
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleEditEta = async () => {
-    if (!editTarget || !editEta) return;
-    setEditLoading(true);
-    setEditError("");
-    try {
-      const res = await fetch("/api/psc-tinh", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ job_id: editTarget.job_id, stop_id: editTarget.pickup_stop_id, eta: editEta }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        setEditError(data.error ?? "Cập nhật thất bại");
-        return;
-      }
-      setEditTarget(null);
-      setEditEta("");
-      await loadOrders();
-    } catch {
-      setEditError("Không thể kết nối. Vui lòng thử lại.");
-    } finally {
-      setEditLoading(false);
     }
   };
 
@@ -387,12 +358,6 @@ export default function PscTinhPage() {
                       {o.pickup_status_id === 1 && (
                         <div className="flex items-center gap-2 whitespace-nowrap">
                           <button
-                            onClick={() => { setEditTarget(o); setEditEta(o.eta ?? ""); setEditError(""); }}
-                            className="text-xs font-bold px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors"
-                          >
-                            Sửa giờ
-                          </button>
-                          <button
                             onClick={() => { setCancelTarget(o); setCancelError(""); }}
                             className="text-xs font-bold px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white transition-colors"
                           >
@@ -444,46 +409,6 @@ export default function PscTinhPage() {
         </div>
       )}
 
-      {/* Edit ETA overlay */}
-      {editTarget && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4">
-          <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl p-5 space-y-4">
-            <div className="space-y-1">
-              <p className="text-sm font-bold text-slate-800">Sửa thời gian tới nhà xe</p>
-              <p className="text-xs text-slate-500 font-semibold">{editTarget.reference}</p>
-            </div>
-            <select
-              value={editEta}
-              onChange={(e) => setEditEta(e.target.value)}
-              className="w-full border rounded-xl px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-            >
-              <option value="">-- Chọn giờ mới --</option>
-              {buildTimeSlots().map((slot) => (
-                <option key={slot} value={slot}>{slot}</option>
-              ))}
-            </select>
-            {editError && (
-              <p className="text-xs text-red-600 font-medium">{editError}</p>
-            )}
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                onClick={() => { setEditTarget(null); setEditEta(""); setEditError(""); }}
-                disabled={editLoading}
-                className="py-2.5 rounded-xl text-sm font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40 transition-colors"
-              >
-                Huỷ
-              </button>
-              <button
-                onClick={handleEditEta}
-                disabled={editLoading || !editEta}
-                className="py-2.5 rounded-xl text-sm font-bold bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-40 transition-colors"
-              >
-                {editLoading ? "Đang lưu..." : "Xác nhận"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
