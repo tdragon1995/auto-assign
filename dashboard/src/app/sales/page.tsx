@@ -6,6 +6,8 @@ type Prediction = {
   place_id: string;
   description: string;
   structured_formatting?: { main_text?: string; secondary_text?: string };
+  types?: string[];
+  terms?: { offset?: number; value: string }[];
 };
 
 type ClientResult = { code: string; client_legal_name: string };
@@ -86,6 +88,33 @@ function abbrStreet(raw: string): string {
   if (words.length === 1) return titleCase(words[0]);
   const initials = words.slice(0, -1).map((w) => w[0].toUpperCase()).join("");
   return initials + titleCase(words[words.length - 1]);
+}
+
+// Strip a leading house number + "Đường/Phố/Số" prefixes to leave a bare street.
+// "341 Sư Vạn Hạnh" → "Sư Vạn Hạnh"; "Đường số 6" → "6"; numbered streets ("3/2") survive.
+function cleanStreet(raw: string): string {
+  let out = raw.trim();
+  const noNum = out.replace(/^\d+[\w/]*\s+/u, "").trim();
+  if (noNum && /\p{L}/u.test(noNum)) out = noNum;
+  let prev: string;
+  do {
+    prev = out;
+    out = out.replace(/^(đường|phố|duong|pho|số|so)\s+/iu, "").trim();
+  } while (out !== prev);
+  return out;
+}
+
+// Derive a bare street name from a Goong prediction.
+// types street|house_number → main_text is the street line; POIs hide it inside terms.
+function streetFromPrediction(p: Prediction): string {
+  const main = (p.structured_formatting?.main_text ?? p.description.split(",")[0] ?? "").trim();
+  const types = p.types ?? [];
+  let candidate = main;
+  if (!types.includes("street") && !types.includes("house_number")) {
+    const term = (p.terms ?? []).map((t) => t.value).find((v) => /^\s*\d+\S*\s+\p{L}/u.test(v));
+    if (term) candidate = term.trim();
+  }
+  return cleanStreet(candidate);
 }
 
 // --- District auto-detection (point-in-polygon) ---
@@ -386,6 +415,8 @@ export default function SalesPage() {
     setDiaChi(p.description);
     setShowPredictions(false);
     setPredictions([]);
+    const street = streetFromPrediction(p);
+    if (street) setTenDuong(street);
     try {
       const res = await fetch(`/api/geo/place?place_id=${encodeURIComponent(p.place_id)}`);
       const data = await res.json();
@@ -497,7 +528,12 @@ export default function SalesPage() {
     const abbr = abbrStreet(tenDuong);
     const houseNo = diaChi.trim().match(/^([\w/]+)/)?.[1] ?? "";
     const lastPart = `${tenKh} ${houseNo} ${tenDuong}`.replace(/\s+/g, " ").trim();
-    doSubmit([maKh, quanCu, abbr, lastPart].filter(Boolean).join(" - "));
+    const forceName = [maKh, quanCu, abbr, lastPart].filter(Boolean).join(" - ");
+    if (duplicates?.some((d) => d.customer_name.trim().toLowerCase() === forceName.trim().toLowerCase())) {
+      setResult({ ok: false, msg: "Tên địa điểm trùng với địa điểm đã tồn tại. Vui lòng điền số nhà trong trường Địa Chỉ để phân biệt." });
+      return;
+    }
+    doSubmit(forceName);
   };
 
   const createTrip = async () => {
