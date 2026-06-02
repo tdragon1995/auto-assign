@@ -91,28 +91,34 @@ function abbrStreet(raw: string): string {
 }
 
 // Strip a leading house number + "Đường/Phố/Số" prefixes to leave a bare street.
-// "341 Sư Vạn Hạnh" → "Sư Vạn Hạnh"; "Đường số 6" → "6"; numbered streets ("3/2") survive.
+// "341 Sư Vạn Hạnh" → "Sư Vạn Hạnh"; "414-416 Cao Thắng" → "Cao Thắng";
+// "Đường số 6" → "6"; numbered streets ("3/2", "6") survive.
 function cleanStreet(raw: string): string {
   let out = raw.trim();
-  const noNum = out.replace(/^\d+[\w/]*\s+/u, "").trim();
-  if (noNum && /\p{L}/u.test(noNum)) out = noNum;
+  // Drop a leading house-number token (starts with a digit) when street words remain.
+  const tokens = out.split(/\s+/);
+  if (tokens.length > 1 && /^\d/.test(tokens[0])) {
+    const rest = tokens.slice(1).join(" ").trim();
+    if (/\p{L}/u.test(rest)) out = rest;
+  }
+  // Drop leading "Đường"/"Đ."/"Phố"/"Số" prefixes (e.g. "Đường số 6" → "6", "Đ. 3 Tháng 2" → "3 Tháng 2").
   let prev: string;
   do {
     prev = out;
-    out = out.replace(/^(đường|phố|duong|pho|số|so)\s+/iu, "").trim();
+    out = out.replace(/^(đường|đ\.?|phố|duong|pho|số|so)\s+/iu, "").trim();
   } while (out !== prev);
   return out;
 }
 
 // Derive a bare street name from a Goong prediction.
-// types street|house_number → main_text is the street line; POIs hide it inside terms.
+// The "<house number> <street>" line is the term that begins with a house number —
+// admin terms (Phường/Quận/Thành phố) and POI/building names never start with a digit.
+// Streets with no house number (types: street) fall back to main_text.
 function streetFromPrediction(p: Prediction): string {
-  const main = (p.structured_formatting?.main_text ?? p.description.split(",")[0] ?? "").trim();
-  const types = p.types ?? [];
-  let candidate = main;
-  if (!types.includes("street") && !types.includes("house_number")) {
-    const term = (p.terms ?? []).map((t) => t.value).find((v) => /^\s*\d+\S*\s+\p{L}/u.test(v));
-    if (term) candidate = term.trim();
+  const terms = (p.terms ?? []).map((t) => t.value.trim()).filter(Boolean);
+  let candidate = terms.find((v) => /^\d\S*\s+\S/u.test(v)) ?? "";
+  if (!candidate) {
+    candidate = (p.structured_formatting?.main_text ?? p.description.split(",")[0] ?? "").trim();
   }
   return cleanStreet(candidate);
 }
