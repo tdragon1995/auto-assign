@@ -243,3 +243,42 @@ export async function getRunLog(limit = 300): Promise<LogEntry[]> {
   const entries = raw.map((r) => (typeof r === "string" ? JSON.parse(r) : r) as LogEntry);
   return entries.reverse();
 }
+
+export interface StatusBundle {
+  state: ArmState | null;
+  lastChecked: string | null;
+  logs: LogEntry[];
+  held: HeldJob[];
+}
+
+/** One pipeline request to Upstash instead of 4 separate HTTP calls. */
+export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
+  const redis = getRedis();
+  if (!redis) return { state: null, lastChecked: null, logs: [], held: [] };
+
+  const pipe = redis.pipeline();
+  pipe.get(ARM_KEY);
+  pipe.get(HEARTBEAT_KEY);
+  pipe.lrange(RUN_LOG_KEY, 0, logLimit - 1);
+  pipe.get(HELD_JOBS_KEY);
+  const [rawState, rawHeartbeat, rawLogs, rawHeld] = await pipe.exec();
+
+  const state = parseMaybe<ArmState>(rawState as string | ArmState | null);
+  const validState = state && Date.now() < state.armedUntil ? state : null;
+
+  const lastChecked = typeof rawHeartbeat === "string" ? rawHeartbeat : null;
+
+  const logEntries = ((rawLogs as (string | LogEntry)[]) ?? [])
+    .map((r) => (typeof r === "string" ? JSON.parse(r) : r) as LogEntry)
+    .reverse();
+
+  let held: HeldJob[] = [];
+  if (rawHeld) {
+    if (Array.isArray(rawHeld)) held = rawHeld as HeldJob[];
+    else if (typeof rawHeld === "string") {
+      try { held = JSON.parse(rawHeld); } catch { /* ignore */ }
+    }
+  }
+
+  return { state: validState, lastChecked, logs: logEntries, held };
+}

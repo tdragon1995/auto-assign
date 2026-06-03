@@ -1,16 +1,11 @@
 import { NextResponse } from "next/server";
-import { getArmState, getCronHeartbeat, getRunLog, getHeldJobs } from "@/lib/smart-log-kv";
+import { getStatusBundle } from "@/lib/smart-log-kv";
 
 /**
  * One poll for the whole dashboard: switch state, heartbeat, live log, and the
- * note-held list — so the tab makes a single request instead of three.
+ * note-held list — single pipeline request to Upstash instead of 4 separate calls.
  */
 export async function GET() {
-  const [state, lastChecked, logs, held] = await Promise.all([
-    getArmState(),
-    getCronHeartbeat(),
-    getRunLog(100),
-    getHeldJobs(),
-  ]);
+  const { state, lastChecked, logs, held } = await getStatusBundle(100);
   return NextResponse.json({ armed: !!state, state, lastChecked, logs, held });
 }
