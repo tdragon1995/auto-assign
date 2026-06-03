@@ -117,6 +117,17 @@ export interface AssignResult {
   logs: LogEntry[];
 }
 
+export interface PickupWarning {
+  job_id: number;
+  reference_number: string | null;
+  pickup_customer_name: string | null;
+  driver_id: string;
+  driver_name: string | null;
+  reason: "overdue" | "window_expiring";
+  minutes_late?: number;    // overdue: minutes past 30
+  window_time_to?: string;  // window_expiring: raw "HH:mm:ss+07:00"
+}
+
 export const DRIVER_STATUS_CONFIG: Record<
   number,
   { name: string; color: string }

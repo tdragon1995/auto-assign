@@ -1,10 +1,10 @@
-import type { Config, Driver, Job, LogEntry, LogLevel, Mapping, TimelineRoute } from "./types";
+import type { Config, Driver, Job, LogEntry, LogLevel, Mapping, PickupWarning, TimelineRoute } from "./types";
 import { getDrivers, getUnassignedJobs, getDriverJobs, assignJob, getJobDetails, getCustomerById, updateJobStops, updateJobSendToDriverAt, unassignJob, optimizeDriverRoute, getFleetwebCookie, JSONRPC_URL, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL } from "./return-trips";
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
-import { setHeldJobs, type HeldJob } from "./smart-log-kv";
+import { setHeldJobs, setPickupWarnings, type HeldJob } from "./smart-log-kv";
 import { isValidDriverId } from "./config";
 import {
   vnDate,
@@ -51,11 +51,9 @@ async function fetchAssignedJobsToday(vnDate: string, auth: string): Promise<any
   }
 }
 
-// Returns pickup customer_ids that have an assigned job today with an active pickup
 // Returns Map<"pickup_id:dropoff_id", blocking_job_id> for assigned jobs today
 // where the pickup stop is not yet completed/rejected and window is not >1h away.
-async function buildActiveRouteMap(vnDate: string, auth: string): Promise<Map<string, number>> {
-  const jobs = await fetchAssignedJobsToday(vnDate, auth);
+function buildActiveRouteMap(jobs: any[]): Map<string, number> {
   const result = new Map<string, number>();
 
   // Current VN time in minutes-since-midnight
@@ -91,6 +89,102 @@ async function buildActiveRouteMap(vnDate: string, auth: string): Promise<Map<st
     result.set(`${pickup.customer_id}:${dropoff.customer_id}`, job.job_id);
   }
   return result;
+}
+
+
+function computePickupWarnings(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  assignedJobs: any[],
+  driverMap: Map<string, Driver>,
+  today: string,
+): PickupWarning[] {
+  const now = Date.now();
+  const THIRTY_MIN_MS  = 30 * 60 * 1000;
+  const FIFTEEN_MIN_MS = 15 * 60 * 1000;
+
+  // Build: driverId → Set<stop_id> for in-progress stops across all assigned jobs.
+  const driverInProgressStopIds = new Map<string, Set<number>>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  for (const job of assignedJobs) {
+    const driverId: string | null = job.delivery_driver_id;
+    if (!driverId) continue;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const s of (job.stops ?? []) as any[]) {
+      if (s.activity_started_ts && !s.activity_completed_ts) {
+        if (!driverInProgressStopIds.has(driverId)) {
+          driverInProgressStopIds.set(driverId, new Set());
+        }
+        driverInProgressStopIds.get(driverId)!.add(s.stop_id);
+      }
+    }
+  }
+
+  const warnings: PickupWarning[] = [];
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  for (const job of assignedJobs) {
+    const driverId: string | null = job.delivery_driver_id;
+    if (!driverId) continue;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pickup = (job.stops ?? [] as any[]).find((s: any) => s.stop_type_id === 1);
+    if (!pickup) continue;
+    if (pickup.activity_started_ts) continue;
+
+    const hasWindow =
+      Array.isArray(pickup.delivery_windows) && pickup.delivery_windows.length > 0;
+
+    let reason: PickupWarning["reason"] | null = null;
+    let extra: Partial<PickupWarning> = {};
+
+    if (!hasWindow) {
+      // Case 1: no window — warn if sent to driver 30+ min ago
+      const sentAt = parseSendToDriverAt(job.send_to_driver_at);
+      if (!sentAt) continue;
+      const elapsed = now - sentAt.getTime();
+      if (elapsed >= THIRTY_MIN_MS) {
+        reason = "overdue";
+        extra = { minutes_late: Math.floor(elapsed / 60000) - 30 };
+      }
+    } else {
+      // Case 2: has window — warn if now >= time_from + 15 min
+      const timeFrom: string | undefined = pickup.delivery_windows[0]?.time_from;
+      if (!timeFrom) continue;
+      const hhmm = timeFrom.match(/^(\d{2}:\d{2}:\d{2})/);
+      if (!hhmm) continue;
+      const timeFromDate = new Date(`${today}T${hhmm[1]}+07:00`);
+      if (isNaN(timeFromDate.getTime())) continue;
+      if (now >= timeFromDate.getTime() + FIFTEEN_MIN_MS) {
+        reason = "window_expiring";
+        extra = { window_time_to: pickup.delivery_windows[0]?.time_to ?? null };
+      }
+    }
+
+    if (!reason) continue;
+
+    // Skip if driver is actively working on another stop right now.
+    const inProgressIds = driverInProgressStopIds.get(driverId);
+    const busyElsewhere =
+      inProgressIds && [...inProgressIds].some((id) => id !== pickup.stop_id);
+    if (busyElsewhere) continue;
+
+    const driver = driverMap.get(driverId);
+    const driverName = driver
+      ? `${driver.first_name} ${driver.last_name}`.trim() || null
+      : null;
+
+    warnings.push({
+      job_id: job.job_id,
+      reference_number: job.reference_number ?? null,
+      pickup_customer_name: pickup.customer_name ?? null,
+      driver_id: driverId,
+      driver_name: driverName,
+      reason,
+      ...extra,
+    });
+  }
+
+  return warnings;
 }
 
 async function rejectJobAsDuplicate(jobId: number, auth: string, cookie: string): Promise<boolean> {
@@ -433,10 +527,11 @@ export async function autoAssignCycle(
 
   log(`Found ${jobs.length} unassigned job(s)`);
 
-  // ── Duplicate-check setup (1 extra GET /jobs?status=4 per cycle) ──────────
+  // ── Fetch assigned jobs once — reused for duplicate-check AND warnings ──────
   const authSuffix = env === "uat" ? "_UAT" : "";
   const auth = process.env[`CARTRACK_AUTH${authSuffix}`] ?? "";
-  const activeRouteMap = await buildActiveRouteMap(today, auth);
+  const assignedJobsToday = await fetchAssignedJobsToday(today, auth);
+  const activeRouteMap = buildActiveRouteMap(assignedJobsToday);
   let rejectCookie: string | null = null;
 
   // ── Pre-fetch GPS + route data only if a current job needs smart-assign ──────
@@ -876,7 +971,13 @@ export async function autoAssignCycle(
     }
   }
 
-  if (!onlyJobIds) await setHeldJobs(heldJobs);
+  if (!onlyJobIds) {
+    const driverMap = new Map(allGpsDrivers.map((d) => [d.delivery_driver_id, d]));
+    await Promise.all([
+      setHeldJobs(heldJobs),
+      setPickupWarnings(computePickupWarnings(assignedJobsToday, driverMap, today)),
+    ]);
+  }
   return logs;
   } finally {
     // Forward via-legs first (driver is en route toward the via PSC — more time-sensitive).

@@ -1,5 +1,5 @@
 import { Redis } from "@upstash/redis";
-import type { LogEntry } from "./types";
+import type { LogEntry, PickupWarning } from "./types";
 
 const KV_KEY = "smart:runs";
 const MAX_RUNS = 240; // ~1 day at 3-min intervals × 12 business hours
@@ -19,6 +19,9 @@ const HEARTBEAT_KEY = "assign:heartbeat_ts";
 // Jobs the last full cycle held back because a stop has a note. Refreshed each
 // armed cycle; read by the dashboard's note-review panel (no Cartrack poll).
 const HELD_JOBS_KEY = "assign:held_jobs";
+
+// Pickup warnings computed from the last full cycle's assigned-jobs snapshot.
+const PICKUP_WARNINGS_KEY = "assign:pickup_warnings";
 
 // Server-backed live log: flat list of recent entries (all levels), so the
 // dashboard ticker survives reloads and shows cycles that ran with no tab open.
@@ -181,6 +184,13 @@ export async function getHeldJobs(): Promise<HeldJob[]> {
   try { return JSON.parse(raw) as HeldJob[]; } catch { return []; }
 }
 
+/** Replace the pickup-warning list (called at end of each full cycle). */
+export async function setPickupWarnings(warnings: PickupWarning[]): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  await redis.set(PICKUP_WARNINGS_KEY, JSON.stringify(warnings), { ex: 86400 });
+}
+
 /** Drop one job from the held list (after it's been assigned anyway). */
 export async function removeHeldJob(jobId: number): Promise<void> {
   const redis = getRedis();
@@ -249,19 +259,21 @@ export interface StatusBundle {
   lastChecked: string | null;
   logs: LogEntry[];
   held: HeldJob[];
+  warnings: PickupWarning[];
 }
 
-/** One pipeline request to Upstash instead of 4 separate HTTP calls. */
+/** One pipeline request to Upstash instead of 5 separate HTTP calls. */
 export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
   const redis = getRedis();
-  if (!redis) return { state: null, lastChecked: null, logs: [], held: [] };
+  if (!redis) return { state: null, lastChecked: null, logs: [], held: [], warnings: [] };
 
   const pipe = redis.pipeline();
   pipe.get(ARM_KEY);
   pipe.get(HEARTBEAT_KEY);
   pipe.lrange(RUN_LOG_KEY, 0, logLimit - 1);
   pipe.get(HELD_JOBS_KEY);
-  const [rawState, rawHeartbeat, rawLogs, rawHeld] = await pipe.exec();
+  pipe.get(PICKUP_WARNINGS_KEY);
+  const [rawState, rawHeartbeat, rawLogs, rawHeld, rawWarnings] = await pipe.exec();
 
   const state = parseMaybe<ArmState>(rawState as string | ArmState | null);
   const validState = state && Date.now() < state.armedUntil ? state : null;
@@ -280,5 +292,13 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
     }
   }
 
-  return { state: validState, lastChecked, logs: logEntries, held };
+  let warnings: PickupWarning[] = [];
+  if (rawWarnings) {
+    if (Array.isArray(rawWarnings)) warnings = rawWarnings as PickupWarning[];
+    else if (typeof rawWarnings === "string") {
+      try { warnings = JSON.parse(rawWarnings); } catch { /* ignore */ }
+    }
+  }
+
+  return { state: validState, lastChecked, logs: logEntries, held, warnings };
 }
