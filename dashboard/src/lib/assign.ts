@@ -3,6 +3,7 @@ import { getDrivers, getUnassignedJobs, getDriverJobs, assignJob, getJobDetails,
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL } from "./return-trips";
+import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
 import { setHeldJobs, type HeldJob } from "./smart-log-kv";
 import { isValidDriverId } from "./config";
 import {
@@ -62,6 +63,9 @@ async function buildActiveRouteMap(vnDate: string, auth: string): Promise<Map<st
 
   for (const job of jobs) {
     if (job.job_status_id === 7 || job.job_status_id === 3) continue;
+    // Via-legs are supplementary pickups (intentional double-coverage) — they must not
+    // block a location's own request, so keep them out of the active-route map.
+    if ((job.labels ?? []).includes(PSC_VIA_LABEL)) continue;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const stops = (job.stops ?? []) as any[];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -875,6 +879,12 @@ export async function autoAssignCycle(
   if (!onlyJobIds) await setHeldJobs(heldJobs);
   return logs;
   } finally {
+    // Forward via-legs first (driver is en route toward the via PSC — more time-sensitive).
+    try {
+      await detectAndCreateViaLegs(env, log);
+    } catch (e) {
+      log(`Via-leg hook failed: ${e}`, "ERROR");
+    }
     try {
       await detectAndCreateReturnTrips(config, env, log);
     } catch (e) {

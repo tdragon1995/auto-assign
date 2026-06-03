@@ -3,7 +3,7 @@ import { BASE_URL, getHeaders, getJobsByStatusAndDate, type Env } from "./cartra
 import { vnDate, vnHoursMinutes } from "./time";
 
 export const PSC_RETURN_LABEL = "🛵 Vận chuyển mẫu PSC (về)";
-const PSC_OUTBOUND_LABEL = "🛵 Vận chuyển mẫu PSC";
+export const PSC_OUTBOUND_LABEL = "🛵 Vận chuyển mẫu PSC";
 
 // Race-condition guard across overlapping 30s cycles
 const inFlightReturns = new Set<number>(); // keyed by outbound job_id

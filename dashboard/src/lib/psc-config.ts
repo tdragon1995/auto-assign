@@ -1,7 +1,5 @@
 import { fetchSheetRows, SHEET_GID } from "./sheets";
 
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-
 export const PSC_TINH_LABEL = "🛵 Vận chuyển mẫu tỉnh";
 
 export interface PscRoute {
@@ -12,6 +10,13 @@ export interface PscRoute {
   ref_number: string;
   lat: number | null;
   lon: number | null;
+  /** Via-route: customer_id of an intermediate PSC the driver stops at en route (e.g. D046).
+   *  Empty for normal routes. Drives the pinned via-leg + pickup-stop to-do. */
+  via_pickup: string;
+  /** Display name of the via PSC, for to-do text and the via-leg reference. */
+  via_pickup_name: string;
+  /** When true, the QR page hides the request tab — location does not accept self-requests. */
+  no_request: boolean;
 }
 
 export interface TplEntry {
@@ -25,13 +30,12 @@ export interface TplEntry {
 
 interface CacheEntry<T> {
   data: T;
-  ts: number;
 }
 
 let routesCache: CacheEntry<PscRoute[]> | null = null;
 
 function isFresh<T>(entry: CacheEntry<T> | null): entry is CacheEntry<T> {
-  return entry !== null && Date.now() - entry.ts < CACHE_TTL_MS;
+  return entry !== null;
 }
 
 /** Called by dashboard Refresh button to bust the cache */
@@ -67,9 +71,12 @@ export async function loadPscRoutes(): Promise<PscRoute[]> {
       ref_number: r["ref_number"] ?? "",
       lat: r["lat"] ? parseFloat(r["lat"]) : null,
       lon: r["long"] ? parseFloat(r["long"]) : null,
+      via_pickup: r["via_pickup"] ?? "",
+      via_pickup_name: r["via_pickup_name"] ?? "",
+      no_request: r["no_request"]?.toUpperCase() === "TRUE",
     }));
 
-  routesCache = { data, ts: Date.now() };
+  routesCache = { data };
   return data;
 }
 

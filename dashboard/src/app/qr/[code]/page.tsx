@@ -11,6 +11,9 @@ interface PscRoute {
   pickup: string;
   dropoff: string;
   ref_number: string;
+  via_pickup?: string;
+  via_pickup_name?: string;
+  no_request?: boolean;
 }
 
 interface Stop {
@@ -252,8 +255,10 @@ export default function QrPage() {
       .then((d) => {
         const routes: PscRoute[] = d.data ?? [];
         const match = routes.find((r) => r.pickup === code);
-        if (match) setRoute(match);
-        else setNotFound(true);
+        if (match) {
+          setRoute(match);
+          if (match.no_request) setTab("active");
+        } else setNotFound(true);
         setLoading(false);
       })
       .catch(() => { setNotFound(true); setLoading(false); });
@@ -306,6 +311,8 @@ export default function QrPage() {
           pickup: route.pickup,
           dropoff: route.dropoff,
           ref_number: route.ref_number,
+          via_pickup: route.via_pickup,
+          via_pickup_name: route.via_pickup_name,
         }),
       });
       const data = await res.json();
@@ -374,16 +381,18 @@ export default function QrPage() {
         </div>
 
         {/* Tab switcher */}
-        <div className="grid grid-cols-3 border-t border-slate-100">
-          <button
-            onClick={() => { setTab(null); setAssignStatus("idle"); setAssignResult(""); }}
-            className={`py-2.5 text-sm font-semibold transition-colors ${tab === null ? "bg-blue-600 text-white" : "bg-white text-slate-500 hover:bg-slate-50"}`}
-          >
-            Tạo yêu cầu
-          </button>
+        <div className={`grid border-t border-slate-100 ${route!.no_request ? "grid-cols-2" : "grid-cols-3"}`}>
+          {!route!.no_request && (
+            <button
+              onClick={() => { setTab(null); setAssignStatus("idle"); setAssignResult(""); }}
+              className={`py-2.5 text-sm font-semibold transition-colors ${tab === null ? "bg-blue-600 text-white" : "bg-white text-slate-500 hover:bg-slate-50"}`}
+            >
+              Tạo yêu cầu
+            </button>
+          )}
           <button
             onClick={() => setTab("active")}
-            className={`py-2.5 text-sm font-semibold transition-colors border-l border-slate-100 ${tab === "active" ? "bg-blue-600 text-white" : "bg-white text-slate-500 hover:bg-slate-50"}`}
+            className={`py-2.5 text-sm font-semibold transition-colors ${!route!.no_request ? "border-l border-slate-100" : ""} ${tab === "active" ? "bg-blue-600 text-white" : "bg-white text-slate-500 hover:bg-slate-50"}`}
           >
             Đang giao {activeJobs.length > 0 && `(${activeJobs.length})`}
           </button>

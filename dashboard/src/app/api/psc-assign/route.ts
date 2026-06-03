@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { vnDate, vnHoursMinutes } from "@/lib/time";
 import { isActiveStop } from "@/lib/job-filters";
+import { PSC_VIA_LABEL } from "@/lib/via-legs";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -48,7 +49,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { psc_pickup, dropoff_location, pickup, dropoff } = body;
+    const { psc_pickup, dropoff_location, pickup, dropoff, via_pickup_name } = body;
 
     if (!pickup || !dropoff || !psc_pickup) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
@@ -81,6 +82,8 @@ export async function POST(req: NextRequest) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const duplicate = allJobs.find((job: any) => {
       if (job.job_status_id === 7 || job.job_status_id === 3) return false;
+      // Via-legs are intentional double-coverage — they don't block a location's own request.
+      if ((job.labels ?? []).includes(PSC_VIA_LABEL)) return false;
       const stops = job.stops ?? [];
       const hasActivePickup = stops.some((s: any) =>
         s.stop_type_id === 1 &&
@@ -114,6 +117,19 @@ export async function POST(req: NextRequest) {
     const mm = String(minutes).padStart(2, "0");
     const refLabel = `${psc_pickup.replace(/^BRA\s*-\s*/i, "")}→${dropoff_location.replace(/^BRA\s*-\s*/i, "")}_${hh}:${mm}`;
 
+    // Via-route (e.g. D007/D004 stopping by D046): remind the driver to also grab the via PSC's
+    // inbound box at this pickup, to hand over informally when passing through the via PSC.
+    const pickupTodos = [
+      { todo_type_id: 2, description: "📦 Chụp thấy rõ mẫu đã đóng gói trong hộp" },
+      { todo_type_id: 2, description: "✍️ Chụp batchsheet đã ký" },
+    ];
+    if (via_pickup_name) {
+      pickupTodos.push({
+        todo_type_id: 2,
+        description: `📦 Lấy thêm hộp vật tư/tài liệu của ${via_pickup_name} để giao dọc đường`,
+      });
+    }
+
     const jobPayload = {
       job_type_id: 1,
       schedule_type_id: 1,
@@ -124,10 +140,7 @@ export async function POST(req: NextRequest) {
           stop_type_id: 1,
           customer_id: pickup,
           duration: 5,
-          todos: [
-            { todo_type_id: 2, description: "📦 Chụp thấy rõ mẫu đã đóng gói trong hộp" },
-            { todo_type_id: 2, description: "✍️ Chụp batchsheet đã ký" },
-          ],
+          todos: pickupTodos,
         },
         {
           stop_type_id: 2,
