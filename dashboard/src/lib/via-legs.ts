@@ -113,6 +113,7 @@ export async function detectAndCreateViaLegs(
   env: Env,
   log: (msg: string, level?: LogLevel) => void
 ): Promise<void> {
+  // Hard-coded routes ([[psc-routes-data]]) — identical on every instance, no staleness.
   const routes = await loadPscRoutes();
 
   // Map "originPickupId:dropoffId" → via config, for rows that declare a via PSC.

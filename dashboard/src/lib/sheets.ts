@@ -77,7 +77,11 @@ export function parseCSV(text: string): Record<string, string>[] {
 export async function fetchSheetRows(
   gid: string
 ): Promise<Record<string, string>[]> {
-  const res = await fetch(sheetCsvUrl(gid), { cache: "no-store" });
+  // `cache: "no-store"` only bypasses our/Next's fetch cache — Google's CDN still serves a
+  // cached copy of the export URL for several minutes. A unique cache-busting param makes the
+  // CDN treat each request as a new URL and regenerate, so we always read the live sheet.
+  const url = `${sheetCsvUrl(gid)}&_cb=${Date.now()}`;
+  const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return parseCSV(await res.text());
 }

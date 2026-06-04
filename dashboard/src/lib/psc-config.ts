@@ -1,4 +1,5 @@
 import { fetchSheetRows, SHEET_GID } from "./sheets";
+import { PSC_ROUTES } from "./psc-routes-data";
 
 export const PSC_TINH_LABEL = "🛵 Vận chuyển mẫu tỉnh";
 
@@ -26,22 +27,9 @@ export interface TplEntry {
   address: string;
 }
 
-// ── In-memory cache ──────────────────────────────────────────────
-
-interface CacheEntry<T> {
-  data: T;
-}
-
-let routesCache: CacheEntry<PscRoute[]> | null = null;
-
-function isFresh<T>(entry: CacheEntry<T> | null): entry is CacheEntry<T> {
-  return entry !== null;
-}
-
-/** Called by dashboard Refresh button to bust the cache */
-export function invalidatePscCache() {
-  routesCache = null;
-}
+/** No-op: PSC routes are hard-coded ([[psc-routes-data]]), so there's no cache to bust.
+ *  Kept so the dashboard Refresh button (/api/config) keeps its import. */
+export function invalidatePscCache() {}
 
 export async function loadTplEntries(): Promise<TplEntry[]> {
   const rows = await fetchSheetRows(SHEET_GID.tpl);
@@ -56,27 +44,14 @@ export async function loadTplEntries(): Promise<TplEntry[]> {
     }));
 }
 
+/**
+ * Load PSC routes — returns the hard-coded table ([[psc-routes-data]]).
+ *
+ * No sheet fetch, cache, or CDN: the data is baked into the deployment, so it's identical
+ * across every Vercel instance and runtime and propagates only via deploy. Kept async (and
+ * returning a copy) so callers and the signature are unchanged.
+ */
 export async function loadPscRoutes(): Promise<PscRoute[]> {
-  if (isFresh(routesCache)) return routesCache.data;
-
-  const rows = await fetchSheetRows(SHEET_GID.psc);
-
-  const data = rows
-    .filter((r) => r["psc_pickup"] && r["pickup"])
-    .map((r) => ({
-      psc_pickup: r["psc_pickup"] ?? "",
-      dropoff_location: r["dropoff_location"] ?? "",
-      pickup: r["pickup"] ?? "",
-      dropoff: r["dropoff"] ?? "",
-      ref_number: r["ref_number"] ?? "",
-      lat: r["lat"] ? parseFloat(r["lat"]) : null,
-      lon: r["long"] ? parseFloat(r["long"]) : null,
-      via_pickup: r["via_pickup"] ?? "",
-      via_pickup_name: r["via_pickup_name"] ?? "",
-      no_request: r["no_request"]?.toUpperCase() === "TRUE",
-    }));
-
-  routesCache = { data };
-  return data;
+  return [...PSC_ROUTES];
 }
 
