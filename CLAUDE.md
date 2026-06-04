@@ -131,21 +131,18 @@ See `docs/business-rules.md` for deeper detail and `docs/cartrack-api.md` for AP
 
 ## CI/CD
 
-### Standard deploy — always use `./deploy.sh`
+### Standard deploy — just push to `master`
 
 ```bash
 # From repo root:
 git add <files>
 git commit -m "..."
 git push origin master
-./deploy.sh
 ```
 
-`deploy.sh` enforces that local is clean and in sync with `origin/master` before building and deploying. **Never run `npx vercel --prod` directly** — it uploads local files bypassing git, causing Vercel and git to silently diverge. Any subsequent deploy from another machine or GitHub integration will overwrite your untracked changes.
+The **GitHub→Vercel integration auto-deploys `master` to production** within ~2 minutes of the push. That push is the whole deploy — do not also run `./deploy.sh`, or you get two redundant builds of the same commit (one CLI `>_`, one git `-o-`). Always run `npm run build` from `dashboard/` before pushing (Vercel runs the same build).
 
-If GitHub integration deploys within ~2 minutes of the push, the `./deploy.sh` step is optional — but running it is always safe (it's idempotent).
-
-**Important:** Never run `vercel --prod` from `dashboard/`. That subdirectory has no `.vercel/` link and the CLI will create a new orphan project instead of deploying to `diag-logistics`. The correct `.vercel/project.json` (pointing to `prj_DQHaXcRc31jOI58J7NU8cNK1iO4C` / `diag-logistics`) lives at the repo root.
+**`./deploy.sh` is a fallback only** — use it if the GitHub integration is ever disabled or stalls. It enforces a clean tree in sync with `origin/master`, then runs `npx vercel --prod` from the repo root. **Never run `npx vercel --prod` directly** (especially from `dashboard/`, which has no `.vercel/` link — the CLI would create an orphan project instead of deploying to `diag-logistics`). The correct `.vercel/project.json` (`prj_DQHaXcRc31jOI58J7NU8cNK1iO4C` / `diag-logistics`) lives at the repo root.
 
 Production URL: **https://diag-logistics.vercel.app** (also aliased as `https://auto-assign-opal.vercel.app`).
 
