@@ -327,6 +327,8 @@ export default function SalesPage() {
   const [quanCu, setQuanCu] = useState("");
   const [tenDuong, setTenDuong] = useState("");
   const [showStreetModal, setShowStreetModal] = useState(false);
+  const [addressPicked, setAddressPicked] = useState(false);
+  const [showClientNameModal, setShowClientNameModal] = useState(false);
   const [tenKh, setTenKh] = useState("");
   const [diaChi, setDiaChi] = useState("");
   const [phone, setPhone] = useState("");
@@ -401,6 +403,7 @@ export default function SalesPage() {
     setClientSelected(true);
     setShowClientResults(false);
     setClientResults([]);
+    setShowClientNameModal(true); // confirm / override the client name
   };
 
   const clearClient = () => {
@@ -445,6 +448,7 @@ export default function SalesPage() {
     setDiaChi(p.description);
     setShowPredictions(false);
     setPredictions([]);
+    setAddressPicked(true); // reveal Quận Cũ + Tên Đường
     const street = streetFromPrediction(p);
     setTenDuong(street);
     setShowStreetModal(true); // confirm the derived street
@@ -480,8 +484,14 @@ export default function SalesPage() {
   const [tripResult, setTripResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [tripNote, setTripNote] = useState("");
   const [duplicates, setDuplicates] = useState<{ customer_id: string; customer_name: string; address_line_1?: string }[] | null>(null);
+  // Snapshot of what was submitted, kept visible after submit for troubleshooting.
+  const [lastSubmitted, setLastSubmitted] = useState<{
+    name: string; maKh: string; quanCu: string; tenDuong: string; abbr: string;
+    tenKh: string; phone: string; diaChi: string; coords: string;
+  } | null>(null);
 
   const maKhValid = /^\d{5,8}$/.test(maKh);
+  const hasCoords = !Number.isNaN(parseFloat(lat)) && !Number.isNaN(parseFloat(lon));
 
   const { customerName, checkPrefix } = useMemo(() => {
     const includeStreet = ["21362", "21361", "46651876"].includes(maKh);
@@ -500,6 +510,7 @@ export default function SalesPage() {
     tenDuong.trim() &&
     tenKh.trim() &&
     phone.trim() &&
+    hasCoords &&
     !loading;
 
   const doSubmit = async (forceName?: string) => {
@@ -507,6 +518,11 @@ export default function SalesPage() {
     const name = forceName ?? customerName;
     setLoading(true);
     setResult(null);
+    setLastSubmitted({
+      name, maKh, quanCu, tenDuong, abbr: abbrStreet(tenDuong),
+      tenKh, phone, diaChi: diaChi.trim(),
+      coords: hasCoords ? `${parseFloat(lat)}, ${parseFloat(lon)}` : "(chưa có)",
+    });
     try {
       const payload: Record<string, unknown> = {
         customer_name: name,
@@ -551,6 +567,7 @@ export default function SalesPage() {
         setMaKh(""); setQuanCu(""); setTenDuong(""); setTenKh(""); setDiaChi(""); setLat(""); setLon(""); setPhone("");
         setClientSearch(""); setClientSelected(false); setClientResults([]);
         setQuanSearch(""); setQuanSelected(false);
+        setAddressPicked(false); setShowStreetModal(false); setShowClientNameModal(false);
       }
     } catch (e) {
       setResult({ ok: false, msg: String(e) });
@@ -812,6 +829,23 @@ export default function SalesPage() {
               )}
             </div>
 
+            {/* Tên Khách Hàng — confirmed via popup after picking a client */}
+            {clientSelected && (
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">Tên Khách Hàng</label>
+                <button
+                  type="button"
+                  onClick={() => setShowClientNameModal(true)}
+                  className="w-full flex items-center justify-between gap-2 border rounded-xl px-3 py-3 bg-slate-50 text-left hover:bg-slate-100 transition-colors"
+                >
+                  <span className="text-base font-medium text-slate-800 break-words">
+                    {tenKh || <span className="text-slate-400 font-normal">(chưa có tên — bấm để nhập)</span>}
+                  </span>
+                  <span className="text-xs font-semibold text-blue-600 shrink-0">Sửa</span>
+                </button>
+              </div>
+            )}
+
             {/* Địa Chỉ */}
             <div className="relative">
               <label className="block text-sm font-semibold text-slate-700 mb-1">Địa Chỉ</label>
@@ -854,7 +888,8 @@ export default function SalesPage() {
               )}
             </div>
 
-            {/* Quận Cũ */}
+            {/* Quận Cũ — appears after an address is picked (auto-filled, editable) */}
+            {addressPicked && (
             <div>
               <label className="block text-sm font-semibold text-slate-700 mb-1">Quận Cũ</label>
               <p className="text-[10.5px] text-slate-400 mb-1.5 leading-relaxed">
@@ -898,8 +933,10 @@ export default function SalesPage() {
                 )}
               </div>
             </div>
+            )}
 
             {/* Tên Đường — auto-derived from the address pick, confirmed via popup */}
+            {addressPicked && (
             <div>
               <label className="block text-sm font-semibold text-slate-700 mb-1">Tên Đường</label>
               {tenDuong ? (
@@ -920,10 +957,45 @@ export default function SalesPage() {
                   onClick={() => setShowStreetModal(true)}
                   className="w-full border border-dashed rounded-xl px-3 py-3 text-sm text-slate-500 hover:bg-slate-50 transition-colors text-left"
                 >
-                  Chọn địa chỉ ở trên để tự lấy tên đường, hoặc bấm để nhập
+                  Không lấy được tên đường — bấm để nhập
                 </button>
               )}
             </div>
+            )}
+
+            {/* Client name confirm popup */}
+            {showClientNameModal && (
+              <div
+                className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+                onClick={() => setShowClientNameModal(false)}
+              >
+                <div
+                  className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-5 space-y-3"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <h3 className="text-base font-bold text-slate-800">Xác nhận tên khách hàng</h3>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    Kiểm tra hoặc sửa lại tên hiển thị của khách hàng.
+                  </p>
+                  <input
+                    value={tenKh}
+                    onChange={(e) => setTenKh(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && tenKh.trim()) setShowClientNameModal(false); }}
+                    autoFocus
+                    placeholder="Tên khách hàng"
+                    className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowClientNameModal(false)}
+                    disabled={!tenKh.trim()}
+                    className="w-full py-3 rounded-xl font-bold text-white text-base bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                  >
+                    Xác nhận
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Street confirm popup */}
             {showStreetModal && (
@@ -987,6 +1059,12 @@ export default function SalesPage() {
               </div>
             )}
 
+            {!hasCoords && maKhValid && quanCu.trim() && tenDuong.trim() && tenKh.trim() && phone.trim() && (
+              <p className="text-xs text-amber-600 font-medium -mt-1">
+                ⚠ Chọn Địa Chỉ từ gợi ý để lấy toạ độ — bắt buộc để tạo địa điểm và yêu cầu giao nhận.
+              </p>
+            )}
+
             <button
               onClick={submit}
               disabled={!canSubmit}
@@ -1002,6 +1080,20 @@ export default function SalesPage() {
                   : "bg-red-50 border border-red-200 text-red-800"
               }`}>
                 {result.msg}
+              </div>
+            )}
+
+            {lastSubmitted && (
+              <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-xs text-slate-600 space-y-0.5">
+                <p className="font-semibold text-slate-500 mb-1">Dữ liệu đã nhập</p>
+                <p>• Tên tạo: <span className="font-medium text-slate-800 break-words">{lastSubmitted.name}</span></p>
+                <p>• Mã KH: <span className="font-medium text-slate-800">{lastSubmitted.maKh || "(trống)"}</span></p>
+                <p>• Quận Cũ: <span className="font-medium text-slate-800">{lastSubmitted.quanCu || "(trống)"}</span></p>
+                <p>• Tên đường: <span className="font-medium text-slate-800">{lastSubmitted.tenDuong || "(trống)"}</span> → {lastSubmitted.abbr || "(trống)"}</p>
+                <p>• Tên KH: <span className="font-medium text-slate-800">{lastSubmitted.tenKh || "(trống)"}</span></p>
+                <p>• SĐT: <span className="font-medium text-slate-800">{lastSubmitted.phone || "(trống)"}</span></p>
+                <p>• Địa chỉ: <span className="font-medium text-slate-800 break-words">{lastSubmitted.diaChi || "(trống)"}</span></p>
+                <p>• Toạ độ: <span className="font-medium text-slate-800">{lastSubmitted.coords}</span></p>
               </div>
             )}
 
