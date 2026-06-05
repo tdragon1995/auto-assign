@@ -161,16 +161,6 @@ export function Dashboard() {
 
   return (
     <div className="flex flex-col h-screen">
-      {/* Environment banner */}
-      <div
-        className={`px-4 py-1.5 text-center text-sm font-semibold tracking-wide shrink-0 ${
-          isProd
-            ? "bg-red-600 text-white"
-            : "bg-amber-400 text-amber-950"
-        }`}
-      >
-        {isProd ? "PRODUCTION" : "UAT"}
-      </div>
 
       {/* Header */}
       <header className="bg-slate-900 text-white px-4 py-3 flex items-center justify-between shrink-0">
