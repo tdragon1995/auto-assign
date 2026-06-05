@@ -4,10 +4,11 @@ import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import type { LogEntry, LogLevel } from "@/lib/types";
+import type { LogEntry, LogLevel, PickupWarning } from "@/lib/types";
 
 interface ActivityLogProps {
   logs: LogEntry[];
+  warnings?: PickupWarning[];
 }
 
 const FILTERS = ["All", "OK", "ERROR", "WARN", "INFO"] as const;
@@ -115,7 +116,7 @@ function LogLine({ entry }: { entry: LogEntry }) {
   );
 }
 
-export function ActivityLog({ logs }: ActivityLogProps) {
+export function ActivityLog({ logs, warnings = [] }: ActivityLogProps) {
   const [filter, setFilter] = useState<Filter>("All");
 
   const filtered =
@@ -130,18 +131,48 @@ export function ActivityLog({ logs }: ActivityLogProps) {
             {logs.length} entries
           </span>
         </div>
-        <div className="flex gap-1 mt-1">
-          {FILTERS.map((f) => (
-            <Button
-              key={f}
-              variant={filter === f ? "default" : "outline"}
-              size="sm"
-              className="h-6 text-xs px-2"
-              onClick={() => setFilter(f)}
-            >
-              {f}
-            </Button>
-          ))}
+        <div className="flex items-center justify-between gap-2 mt-1">
+          <div className="flex gap-1 shrink-0">
+            {FILTERS.map((f) => (
+              <Button
+                key={f}
+                variant={filter === f ? "default" : "outline"}
+                size="sm"
+                className="h-6 text-xs px-2"
+                onClick={() => setFilter(f)}
+              >
+                {f}
+              </Button>
+            ))}
+          </div>
+          {warnings.length > 0 && (
+            <div className="flex gap-1.5 flex-wrap justify-end min-w-0">
+              {warnings.map((w) => (
+                <div
+                  key={w.job_id}
+                  className="flex items-center gap-1 bg-amber-50 border border-amber-300 rounded px-2 py-0.5 text-xs font-mono whitespace-nowrap"
+                >
+                  <span className="text-amber-500">⚠</span>
+                  <a
+                    href={`https://fleetweb-vn.cartrack.com/delivery/map?job=${w.job_id}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-indigo-600 underline hover:text-indigo-800"
+                  >
+                    {w.job_id}
+                  </a>
+                  {w.pickup_customer_name && (
+                    <span className="text-slate-500 max-w-[140px] truncate">
+                      · {w.pickup_customer_name}
+                    </span>
+                  )}
+                  <span className="font-bold text-red-600">
+                    +{w.minutes_late ?? 0}&apos;
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </CardHeader>
       <CardContent className="flex-1 min-h-0">

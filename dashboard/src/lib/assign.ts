@@ -979,18 +979,9 @@ export async function autoAssignCycle(
 
   if (!onlyJobIds) {
     const driverMap = new Map(allGpsDrivers.map((d) => [d.delivery_driver_id, d]));
-    const pickupWarnings = computePickupWarnings(assignedJobsToday, driverMap, today);
-    for (const w of pickupWarnings) {
-      const who = w.driver_name ?? w.driver_id;
-      const customer = w.pickup_customer_name ?? "—";
-      const detail = w.reason === "overdue"
-        ? `chưa lấy +${w.minutes_late} phút`
-        : `quá giờ lấy mẫu`;
-      log(`Job ${w.job_id} - PICKUP LATE: ${customer} | ${who} | ${detail}`, "WARN");
-    }
     await Promise.all([
       setHeldJobs(heldJobs),
-      setPickupWarnings(pickupWarnings),
+      setPickupWarnings(computePickupWarnings(assignedJobsToday, driverMap, today)),
     ]);
   }
   return logs;
