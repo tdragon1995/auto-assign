@@ -6,6 +6,6 @@ import { getStatusBundle } from "@/lib/smart-log-kv";
  * note-held list — single pipeline request to Upstash instead of 4 separate calls.
  */
 export async function GET() {
-  const { state, lastChecked, logs, held } = await getStatusBundle(100);
-  return NextResponse.json({ armed: !!state, state, lastChecked, logs, held });
+  const { state, lastChecked, logs, held, warnings } = await getStatusBundle(100);
+  return NextResponse.json({ armed: !!state, state, lastChecked, logs, held, warnings });
 }
