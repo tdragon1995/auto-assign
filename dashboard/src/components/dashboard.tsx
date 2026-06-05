@@ -9,9 +9,8 @@ import { ScheduleJobPanel } from "./schedule-job-panel";
 import { SmartLogHistory } from "./smart-log-history";
 import { NoteReviewPanel, type HeldJob } from "./note-review-panel";
 import { JobAdminPanel } from "./job-admin-panel";
-import { PickupWarningPanel } from "./pickup-warning-panel";
 import { toast } from "sonner";
-import type { LogEntry, PickupWarning } from "@/lib/types";
+import type { LogEntry } from "@/lib/types";
 
 type Env = "prod" | "uat";
 type AssignMode = "smart" | "autoplan";
@@ -24,7 +23,6 @@ export function Dashboard() {
   const [armedBy, setArmedBy] = useState<string>("");
   const [lastChecked, setLastChecked] = useState<string | null>(null);
   const [held, setHeld] = useState<HeldJob[]>([]);
-  const [warnings, setWarnings] = useState<PickupWarning[]>([]);
   const [mappingCount, setMappingCount] = useState(0);
   const [pscRouteCount, setPscRouteCount] = useState(0);
   const [env, setEnv] = useState<Env>("prod");
@@ -43,7 +41,6 @@ export function Dashboard() {
       setLastChecked(data.lastChecked ?? null);
       if (Array.isArray(data.logs)) setLogs(data.logs);
       if (Array.isArray(data.held)) setHeld(data.held);
-      if (Array.isArray(data.warnings)) setWarnings(data.warnings);
     } catch {
       /* transient network error — keep last known state */
     }
@@ -175,17 +172,6 @@ export function Dashboard() {
         {isProd ? "PRODUCTION" : "UAT"}
       </div>
 
-      {/* Armed-status banner */}
-      {isRunning && (
-        <div className="bg-emerald-500 text-emerald-950 px-4 py-1.5 text-center text-sm font-medium shrink-0">
-          🟢 Tự động đang BẬT — tự tắt lúc{" "}
-          {armUntil
-            ? new Date(armUntil).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Ho_Chi_Minh" })
-            : "22:00"}
-          {armedBy ? ` · bật bởi ${armedBy}` : ""}
-        </div>
-      )}
-
       {/* Header */}
       <header className="bg-slate-900 text-white px-4 py-3 flex items-center justify-between shrink-0">
         <h1 className="text-lg font-semibold">Fleet Auto-Assign Dashboard</h1>
@@ -247,7 +233,6 @@ export function Dashboard() {
             pscRouteCount={pscRouteCount}
             lastChecked={lastChecked}
           />
-          <PickupWarningPanel warnings={warnings} />
           <NoteReviewPanel held={held} env={env} onRefresh={syncStatus} />
           <ScheduleJobPanel env={env} />
         </div>
