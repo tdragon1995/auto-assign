@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { type Env } from "@/lib/cartrack";
+import { getJobDetails, updateJobStops, type Env } from "@/lib/cartrack";
 import { autoAssignCycle } from "@/lib/assign";
 import { loadConfigFromSheets } from "@/lib/config";
 import {
@@ -20,10 +20,12 @@ export async function GET() {
   return NextResponse.json({ held });
 }
 
-/** POST { jobId } — assign that one job despite its note (manual override). */
+/** POST { jobId, scheduledAt? } — assign or schedule a held job despite its note.
+ *  scheduledAt: "YYYY-MM-DD HH:MM:SS" VN time — parks to proxy driver queue.
+ *  Omit scheduledAt to run the full assign cycle immediately. */
 export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
-  let body: { jobId?: number } = {};
+  let body: { jobId?: number; scheduledAt?: string } = {};
   try {
     body = await req.json();
   } catch {
@@ -32,6 +34,22 @@ export async function POST(req: NextRequest) {
   const jobId = Number(body.jobId);
   if (!jobId || Number.isNaN(jobId)) {
     return NextResponse.json({ ok: false, error: "Missing jobId" }, { status: 400 });
+  }
+
+  // ── Scheduled path: proxy-assign + set send_to_driver_at, no cycle lock needed ──
+  if (body.scheduledAt) {
+    const [assignRes, setRes] = await Promise.all([
+      assignJob(PROXY_DRIVER_ID, jobId, env),
+      updateJobSendToDriverAt(jobId, body.scheduledAt, env),
+    ]);
+    if (assignRes.status === 200 && setRes.ok) {
+      await removeHeldJob(jobId).catch(() => {});
+      return NextResponse.json({ ok: true, scheduled: true });
+    }
+    return NextResponse.json(
+      { ok: false, error: `Lên lịch thất bại (assign ${assignRes.status}, set ${setRes.status})` },
+      { status: 500 }
+    );
   }
 
   // Share the cycle lock so this can't run alongside a cron cycle.

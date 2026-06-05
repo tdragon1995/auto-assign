@@ -13,23 +13,44 @@ export interface HeldJob {
 
 const NOTE_PREVIEW_LIMIT = 100;
 
-/** Note content with a blue "Xem thêm / Thu gọn" toggle when it's long. The
- *  collapsed view stays on a single line so the toggle never drops to its own row. */
+// 15-min time slots: 00:00 … 23:45
+const TIME_SLOTS: { h: number; m: number; label: string }[] = Array.from(
+  { length: 96 },
+  (_, i) => {
+    const h = Math.floor(i / 4);
+    const m = (i % 4) * 15;
+    return { h, m, label: `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}` };
+  }
+);
+
+function vnNow(): { h: number; m: number } {
+  const d = new Date(Date.now() + 7 * 60 * 60 * 1000); // UTC+7
+  return { h: d.getUTCHours(), m: d.getUTCMinutes() };
+}
+
+function vnDateOffset(offset: number): string {
+  const d = new Date(Date.now() + 7 * 60 * 60 * 1000);
+  d.setUTCDate(d.getUTCDate() + offset);
+  return d.toISOString().slice(0, 10);
+}
+
+function availableSlots(dayOffset: number): typeof TIME_SLOTS {
+  if (dayOffset > 0) return TIME_SLOTS;
+  const { h, m } = vnNow();
+  return TIME_SLOTS.filter((s) => s.h > h || (s.h === h && s.m > m));
+}
+
 function HeldNote({ note }: { note: string }) {
   const [expanded, setExpanded] = useState(false);
   const isLong = note.length > NOTE_PREVIEW_LIMIT;
   return (
-    <div className="mt-1 rounded border border-amber-300 bg-amber-100/70 px-2 py-1">
+    <div className="rounded border border-amber-300 bg-amber-100/70 px-2 py-1">
       <span className="text-[10px] font-bold uppercase tracking-wide text-amber-700">Ghi chú</span>
       {!isLong || expanded ? (
         <p className="mt-0.5 break-words font-medium text-amber-950">
           {note}
           {isLong && (
-            <button
-              type="button"
-              onClick={() => setExpanded(false)}
-              className="ml-1 font-semibold text-blue-600 hover:text-blue-800"
-            >
+            <button type="button" onClick={() => setExpanded(false)} className="ml-1 font-semibold text-blue-600 hover:text-blue-800">
               Thu gọn
             </button>
           )}
@@ -37,11 +58,7 @@ function HeldNote({ note }: { note: string }) {
       ) : (
         <div className="mt-0.5 flex items-baseline gap-1 font-medium text-amber-950">
           <span className="min-w-0 truncate">{note}</span>
-          <button
-            type="button"
-            onClick={() => setExpanded(true)}
-            className="shrink-0 font-semibold text-blue-600 hover:text-blue-800"
-          >
+          <button type="button" onClick={() => setExpanded(true)} className="shrink-0 font-semibold text-blue-600 hover:text-blue-800">
             Xem thêm
           </button>
         </div>
@@ -51,25 +68,47 @@ function HeldNote({ note }: { note: string }) {
 }
 
 /**
- * Lists unassigned jobs the engine held back because a stop has a note, and lets
- * the admin assign one anyway. `held` is fed by the dashboard's status poll (no
- * polling of its own); `onRefresh` re-pulls after an assign. Renders nothing
- * when there are no held jobs.
+ * Lists note-held jobs. `held` is fed by the dashboard status poll (no polling
+ * of its own). `onAssigned` removes the job immediately from the parent list;
+ * `onRefresh` then confirms server state.
  */
 export function NoteReviewPanel({
   held,
   env,
   onRefresh,
+  onAssigned,
 }: {
   held: HeldJob[];
   env: "prod" | "uat";
   onRefresh: () => void;
+  onAssigned: (jobId: number) => void;
 }) {
   const [busyId, setBusyId] = useState<number | null>(null);
+  // Per-job schedule state: dayOffset 0/1/2, selected time label "HH:MM" or null
+  const [schedules, setSchedules] = useState<Record<number, { dayOffset: number; timeLabel: string | null }>>({});
+
+  const getSched = (jobId: number) => schedules[jobId] ?? { dayOffset: 0, timeLabel: null };
+
+  const patchSched = (jobId: number, patch: Partial<{ dayOffset: number; timeLabel: string | null }>) =>
+    setSchedules((prev) => ({ ...prev, [jobId]: { ...getSched(jobId), ...patch } }));
+
+  const handleDayOffset = (jobId: number, offset: number) => {
+    const { timeLabel } = getSched(jobId);
+    // If switching back to today and the selected time is now in the past, clear it.
+    if (offset === 0 && timeLabel) {
+      const [hStr, mStr] = timeLabel.split(":");
+      const now = vnNow();
+      if (parseInt(hStr) < now.h || (parseInt(hStr) === now.h && parseInt(mStr) <= now.m)) {
+        patchSched(jobId, { dayOffset: 0, timeLabel: null });
+        return;
+      }
+    }
+    patchSched(jobId, { dayOffset: offset });
+  };
 
   const assignAnyway = useCallback(
     async (job: HeldJob) => {
-      if (!window.confirm(`Giao Job ${job.job_id} dù có ghi chú?\n\n"${job.note}"`)) return;
+      if (!window.confirm(`Giao ngay Job ${job.job_id} dù có ghi chú?\n\n"${job.note}"`)) return;
       setBusyId(job.job_id);
       try {
         const res = await fetch(`/api/assign/held?env=${env}`, {
@@ -80,6 +119,7 @@ export function NoteReviewPanel({
         const data = await res.json();
         if (data.ok || data.assigned) {
           toast.success(`Đã giao Job ${job.job_id}`);
+          onAssigned(job.job_id);
         } else {
           toast.error(data.error ?? `Không giao được Job ${job.job_id}`);
         }
@@ -90,7 +130,7 @@ export function NoteReviewPanel({
         onRefresh();
       }
     },
-    [env, onRefresh],
+    [env, onRefresh, onAssigned],
   );
 
   if (held.length === 0) return null;
@@ -104,23 +144,106 @@ export function NoteReviewPanel({
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-2">
-        {held.map((job) => (
-          <div key={job.job_id} className="text-xs border rounded p-2 bg-orange-50 border-orange-200">
-            <div className="font-medium">
-              Job {job.job_id} · {job.customer}
+        {held.map((job) => {
+          const { dayOffset, timeLabel } = getSched(job.job_id);
+          const isBusy = busyId === job.job_id;
+          const slots = availableSlots(dayOffset);
+
+          const scheduleJob = async () => {
+            if (!timeLabel) return;
+            const scheduledAt = `${vnDateOffset(dayOffset)} ${timeLabel}:00`;
+            setBusyId(job.job_id);
+            try {
+              const res = await fetch(`/api/assign/held?env=${env}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ jobId: job.job_id, scheduledAt }),
+              });
+              const data = await res.json();
+              if (data.ok) {
+                toast.success(`Đã lên lịch Job ${job.job_id} lúc ${timeLabel}`);
+                onAssigned(job.job_id);
+              } else {
+                toast.error(data.error ?? `Không lên lịch được Job ${job.job_id}`);
+              }
+            } catch {
+              toast.error("Lỗi kết nối, vui lòng thử lại");
+            } finally {
+              setBusyId(null);
+              onRefresh();
+            }
+          };
+
+          return (
+            <div key={job.job_id} className="space-y-1.5 text-xs border rounded p-2 bg-orange-50 border-orange-200">
+              {/* Header */}
+              <div className="font-medium">
+                <a
+                  href={`https://fleetweb-vn.cartrack.com/delivery/map?job=${job.job_id}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline text-indigo-600 hover:text-indigo-800"
+                >
+                  Job {job.job_id}
+                </a>
+                {" · "}
+                {job.customer}
+              </div>
+
+              <HeldNote note={job.note} />
+
+              {/* Schedule row: date chips + time dropdown */}
+              <div className="flex items-center gap-1 flex-wrap">
+                <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Hẹn</span>
+                {[0, 1, 2].map((offset) => (
+                  <button
+                    key={offset}
+                    type="button"
+                    onClick={() => handleDayOffset(job.job_id, offset)}
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-semibold transition-colors ${
+                      dayOffset === offset
+                        ? "bg-indigo-600 text-white"
+                        : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                    }`}
+                  >
+                    {offset === 0 ? "Hôm nay" : `+${offset}`}
+                  </button>
+                ))}
+                <select
+                  value={timeLabel ?? ""}
+                  onChange={(e) => patchSched(job.job_id, { timeLabel: e.target.value || null })}
+                  className="ml-auto rounded border border-slate-300 bg-white px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                >
+                  <option value="">-- giờ --</option>
+                  {slots.map((s) => (
+                    <option key={s.label} value={s.label}>{s.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Action buttons */}
+              <div className="flex gap-1.5">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-6 text-xs px-2 flex-1"
+                  disabled={isBusy}
+                  onClick={() => assignAnyway(job)}
+                >
+                  {isBusy ? "Đang xử lý…" : "Giao ngay"}
+                </Button>
+                <Button
+                  size="sm"
+                  className="h-6 text-xs px-2 flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40"
+                  disabled={isBusy || !timeLabel}
+                  onClick={scheduleJob}
+                >
+                  {isBusy ? "Đang xử lý…" : "Lên lịch"}
+                </Button>
+              </div>
             </div>
-            <HeldNote note={job.note} />
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-6 text-xs px-2 mt-1.5"
-              disabled={busyId === job.job_id}
-              onClick={() => assignAnyway(job)}
-            >
-              {busyId === job.job_id ? "Đang giao…" : "Giao dù có ghi chú"}
-            </Button>
-          </div>
-        ))}
+          );
+        })}
       </CardContent>
     </Card>
   );

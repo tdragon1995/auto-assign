@@ -225,7 +225,12 @@ export function Dashboard() {
             pscRouteCount={pscRouteCount}
             lastChecked={lastChecked}
           />
-          <NoteReviewPanel held={held} env={env} onRefresh={syncStatus} />
+          <NoteReviewPanel
+            held={held}
+            env={env}
+            onRefresh={syncStatus}
+            onAssigned={(jobId) => setHeld((prev) => prev.filter((j) => j.job_id !== jobId))}
+          />
           <ScheduleJobPanel env={env} />
         </div>
 
