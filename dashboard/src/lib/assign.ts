@@ -915,19 +915,33 @@ export async function autoAssignCycle(
       const { status: apiStatus, body } = await assignJob(driverId, jobId, env);
 
       if (apiStatus === 200) {
-        const details = await getJobDetails(jobId, env);
-        const data = details.data ?? {};
-        const stops = data.stops ?? [];
+        // The unassigned job already carries stop names + coords, and the driver
+        // name is in the sheet mapping — no need to re-fetch the job after assign.
+        // Exception: alt_drop_off_id swaps the dropoff server-side, so job.stops
+        // still holds the OLD dropoff; re-fetch only then to reflect the swap.
+        let pickupName: string;
+        let dropoffName: string;
+        let pickupLat: number | null | undefined;
+        let pickupLon: number | null | undefined;
+        let dropoffLat: number | null | undefined;
+        let dropoffLon: number | null | undefined;
+        const respDriverName = mapping.first_name_last_name || driverId;
 
-        const pickupName =
-          stops[0]?.customer_name ?? "N/A";
-        const dropoffName =
-          stops[1]?.customer_name ?? "N/A";
-
-        const driverData = data.driver ?? {};
-        const respDriverName =
-          `${driverData.first_name ?? ""} ${driverData.last_name ?? ""}`.trim() ||
-          "N/A";
+        if (mapping.alt_drop_off_id) {
+          const details = await getJobDetails(jobId, env);
+          const stops = details.data?.stops ?? [];
+          pickupName  = stops[0]?.customer_name ?? jobCustomerName ?? "N/A";
+          dropoffName = stops[1]?.customer_name ?? "N/A";
+          pickupLat = stops[0]?.latitude;  pickupLon = stops[0]?.longitude;
+          dropoffLat = stops[1]?.latitude; dropoffLon = stops[1]?.longitude;
+        } else {
+          const pickupStop  = job.stops?.find((s) => s.stop_type_id === 1);
+          const dropoffStop = job.stops?.find((s) => s.stop_type_id === 2);
+          pickupName  = pickupStop?.customer_name ?? jobCustomerName ?? "N/A";
+          dropoffName = dropoffStop?.customer_name ?? "N/A";
+          pickupLat = pickupStop?.latitude;  pickupLon = pickupStop?.longitude;
+          dropoffLat = dropoffStop?.latitude; dropoffLon = dropoffStop?.longitude;
+        }
 
         log(
           `Job ${jobId} | ${respDriverName} -> ${pickupName}`,
@@ -935,15 +949,7 @@ export async function autoAssignCycle(
         );
 
         // Build route link
-        let routeLink: string | null = null;
-        if (stops.length >= 2) {
-          routeLink = buildGmapsRouteLink(
-            stops[0]?.latitude,
-            stops[0]?.longitude,
-            stops[1]?.latitude,
-            stops[1]?.longitude
-          );
-        }
+        const routeLink = buildGmapsRouteLink(pickupLat, pickupLon, dropoffLat, dropoffLon);
 
         // Zalo notification
         const { bot_token, chat_id } = mapping;
@@ -1012,12 +1018,12 @@ export async function autoAssignCycle(
 
     // Forward via-legs first (driver is en route toward the via PSC — more time-sensitive).
     try {
-      await detectAndCreateViaLegs(env, log, shared && { s4: shared.s4, s5: shared.s5 });
+      await detectAndCreateViaLegs(env, log);
     } catch (e) {
       log(`Via-leg hook failed: ${e}`, "ERROR");
     }
     try {
-      await detectAndCreateReturnTrips(config, env, log, shared);
+      await detectAndCreateReturnTrips(config, env, log);
     } catch (e) {
       log(`Return-trip hook failed: ${e}`, "ERROR");
     }
