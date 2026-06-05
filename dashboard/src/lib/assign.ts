@@ -102,8 +102,11 @@ function computePickupWarnings(
   const THIRTY_MIN_MS  = 30 * 60 * 1000;
   const FIFTEEN_MIN_MS = 15 * 60 * 1000;
 
-  // Build: driverId → Set<stop_id> for in-progress stops across all assigned jobs.
+  // Build per-driver lookup tables from all assigned jobs:
+  //   inProgressStopIds — stops currently started but not completed
+  //   lastCompletedMs   — epoch ms of the most recent completed stop
   const driverInProgressStopIds = new Map<string, Set<number>>();
+  const driverLastCompletedMs   = new Map<string, number>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const job of assignedJobs) {
     const driverId: string | null = job.delivery_driver_id;
@@ -115,6 +118,13 @@ function computePickupWarnings(
           driverInProgressStopIds.set(driverId, new Set());
         }
         driverInProgressStopIds.get(driverId)!.add(s.stop_id);
+      }
+      if (s.activity_completed_ts) {
+        const t = parseSendToDriverAt(s.activity_completed_ts);
+        if (t) {
+          const prev = driverLastCompletedMs.get(driverId) ?? 0;
+          if (t.getTime() > prev) driverLastCompletedMs.set(driverId, t.getTime());
+        }
       }
     }
   }
@@ -167,6 +177,11 @@ function computePickupWarnings(
     const busyElsewhere =
       inProgressIds && [...inProgressIds].some((id) => id !== pickup.stop_id);
     if (busyElsewhere) continue;
+
+    // Skip if driver completed any stop within the last 30 min — they may
+    // still be in transit to this pickup after finishing their previous job.
+    const lastCompleted = driverLastCompletedMs.get(driverId) ?? 0;
+    if (lastCompleted && now - lastCompleted < THIRTY_MIN_MS) continue;
 
     const driver = driverMap.get(driverId);
     const driverName = driver
