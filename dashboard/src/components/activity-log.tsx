@@ -146,29 +146,41 @@ export function ActivityLog({ logs, warnings = [] }: ActivityLogProps) {
             ))}
           </div>
           {warnings.length > 0 && (
-            <div className="flex gap-1.5 flex-wrap justify-end min-w-0">
+            <div className="flex gap-2 overflow-x-auto min-w-0 pb-0.5">
               {warnings.map((w) => (
                 <div
                   key={w.job_id}
-                  className="flex items-center gap-1 bg-amber-50 border border-amber-300 rounded px-2 py-0.5 text-xs font-mono whitespace-nowrap"
+                  className="shrink-0 bg-amber-50 border border-amber-300 rounded-lg px-2.5 py-1.5 text-xs min-w-[170px] max-w-[220px] space-y-0.5"
                 >
-                  <span className="text-amber-500">⚠</span>
-                  <a
-                    href={`https://fleetweb-vn.cartrack.com/delivery/map?job=${w.job_id}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-indigo-600 underline hover:text-indigo-800"
-                  >
-                    {w.job_id}
-                  </a>
-                  {w.pickup_customer_name && (
-                    <span className="text-slate-500 max-w-[140px] truncate">
-                      · {w.pickup_customer_name}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1">
+                      <span className="text-amber-500 leading-none">⚠</span>
+                      <a
+                        href={`https://fleetweb-vn.cartrack.com/delivery/map?job=${w.job_id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-mono font-semibold text-indigo-600 underline hover:text-indigo-800"
+                      >
+                        {w.job_id}
+                      </a>
+                    </div>
+                    <span className="font-bold text-red-600 bg-red-50 border border-red-200 rounded px-1.5 py-0.5 leading-none whitespace-nowrap">
+                      +{w.minutes_late ?? 0}&apos;
                     </span>
+                  </div>
+                  {w.pickup_customer_name && (
+                    <p
+                      className="text-slate-700 font-medium truncate leading-snug"
+                      title={w.pickup_customer_name}
+                    >
+                      {w.pickup_customer_name}
+                    </p>
                   )}
-                  <span className="font-bold text-red-600">
-                    +{w.minutes_late ?? 0}&apos;
-                  </span>
+                  {w.driver_name && (
+                    <p className="text-slate-400 truncate leading-snug" title={w.driver_name}>
+                      {w.driver_name}
+                    </p>
+                  )}
                 </div>
               ))}
             </div>
