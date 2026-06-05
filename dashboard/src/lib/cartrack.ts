@@ -43,6 +43,28 @@ export async function getDriverJobs(
   return data.data ?? [];
 }
 
+/** Fetch all assigned jobs for a driver with no date filter.
+ *  Used by releaseDueProxyJobs so multi-day parked jobs (created on a previous
+ *  day) are still found and released when their send_to_driver_at arrives. */
+export async function getAllAssignedDriverJobs(
+  driverId: string,
+  env: Env = "prod"
+): Promise<Job[]> {
+  const params = new URLSearchParams({
+    "filter[job_status_id]": "4",
+    per_page: "200",
+  });
+
+  const res = await fetch(`${BASE_URL}/drivers/${driverId}/jobs?${params}`, {
+    headers: getHeaders(env),
+    cache: "no-store",
+  });
+
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.data ?? [];
+}
+
 export async function getUnassignedJobs(
   page = 1,
   perPage = 50,
@@ -152,7 +174,7 @@ export async function getCustomerById(
 
 export async function updateJobStops(
   jobId: number,
-  stops: { stop_id: number; stop_type_id: number; customer_id: string; customer_name?: string; country_id?: number; delivery_windows?: { time_from: string; time_to: string }[] }[],
+  stops: { stop_id: number; stop_type_id: number; customer_id: string; customer_name?: string; note?: string; country_id?: number; delivery_windows?: { time_from: string; time_to: string }[] }[],
   env: Env = "prod"
 ): Promise<{ ok: boolean; status: number; body: unknown }> {
   const res = await fetch(`${BASE_URL}/jobs/${jobId}`, {
@@ -182,11 +204,15 @@ export async function updateJobScheduledDeliveryTs(
   scheduledDeliveryTs: string, // "YYYY-MM-DD HH:MM:SS"
   env: Env = "prod"
 ): Promise<{ ok: boolean; status: number; body: unknown }> {
+  const datePart = scheduledDeliveryTs.slice(0, 10); // "YYYY-MM-DD"
   const res = await fetch(`${BASE_URL}/jobs/${jobId}`, {
     method: "PUT",
     headers: getHeaders(env),
-    // schedule_type_id 2 = Scheduled — required for delivery_windows to be accepted.
-    body: JSON.stringify({ scheduled_delivery_ts: scheduledDeliveryTs, schedule_type_id: 2 }),
+    body: JSON.stringify({
+      schedule_type_id: 2,           // Scheduled — required for delivery_windows
+      scheduled_delivery_ts: scheduledDeliveryTs,
+      allowed_to_start_at: `${datePart} 00:00:00+07:00`,
+    }),
   });
   const body = await res.json().catch(() => ({}));
   return { ok: res.ok, status: res.status, body };

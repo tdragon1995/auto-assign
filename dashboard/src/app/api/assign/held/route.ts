@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
     // Step 2: add delivery_windows to the pickup stop.
     const details = await getJobDetails(jobId, env);
     const rawStops = (details.data?.stops ?? []) as {
-      stop_id?: number; stop_type_id?: number; customer_id?: string; customer_name?: string;
+      stop_id?: number; stop_type_id?: number; customer_id?: string; customer_name?: string; note?: string;
     }[];
     const updatedStops = rawStops
       .filter((s) => s.stop_id && s.stop_type_id && s.customer_id)
@@ -73,6 +73,7 @@ export async function POST(req: NextRequest) {
         stop_type_id: s.stop_type_id!,
         customer_id: s.customer_id!,
         ...(s.customer_name ? { customer_name: s.customer_name } : {}),
+        ...(s.note ? { note: s.note } : {}),
         ...(s.stop_type_id === 1
           ? { delivery_windows: [{ time_from: timeFrom, time_to: timeTo }] }
           : {}),

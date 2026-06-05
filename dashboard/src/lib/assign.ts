@@ -1,5 +1,5 @@
 import type { Config, Driver, Job, LogEntry, LogLevel, Mapping, PickupWarning, TimelineRoute } from "./types";
-import { getDrivers, getUnassignedJobs, getDriverJobs, assignJob, getJobDetails, getCustomerById, updateJobStops, updateJobSendToDriverAt, unassignJob, optimizeDriverRoute, getFleetwebCookie, JSONRPC_URL, PROXY_DRIVER_ID, type Env } from "./cartrack";
+import { getDrivers, getUnassignedJobs, getDriverJobs, getAllAssignedDriverJobs, assignJob, getJobDetails, getCustomerById, updateJobStops, updateJobSendToDriverAt, unassignJob, optimizeDriverRoute, getFleetwebCookie, getJobsByStatusAndDate, JSONRPC_URL, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL } from "./return-trips";
@@ -476,7 +476,9 @@ function parsePickupWindowTime(timeStr: string, dateVn: string): Date | null {
  * Sets each job back to unassigned so the next assign cycle picks it up.
  */
 async function releaseDueProxyJobs(dateVn: string, env: Env, log: (msg: string, level?: LogLevel) => void): Promise<void> {
-  const proxyJobs = await getDriverJobs(PROXY_DRIVER_ID, dateVn, env);
+  // No date filter — multi-day parked jobs are created on a previous day so
+  // filtering by create_ts = today would miss them.
+  const proxyJobs = await getAllAssignedDriverJobs(PROXY_DRIVER_ID, env);
   const now = Date.now();
   for (const job of proxyJobs) {
     const sendAt = parseSendToDriverAt(job.send_to_driver_at);
@@ -682,7 +684,12 @@ export async function autoAssignCycle(
     const pickupStop = job.stops?.find((s) => s.stop_type_id === 1);
     const windowTimeFrom = pickupStop?.delivery_windows?.[0]?.time_from;
     if (windowTimeFrom) {
-      const windowDate = parsePickupWindowTime(windowTimeFrom, today);
+      // For scheduled jobs (scheduled_delivery_ts set to a future date), use that
+      // date when parsing the window time — otherwise multi-day windows are always
+      // parsed against today and appear to be in the past.
+      const schedDate = job.scheduled_delivery_ts?.slice(0, 10);
+      const windowDateStr = schedDate && schedDate > today ? schedDate : today;
+      const windowDate = parsePickupWindowTime(windowTimeFrom, windowDateStr);
       if (windowDate) {
         const diffMin = (windowDate.getTime() - Date.now()) / 60_000;
         if (diffMin > 60) {
@@ -986,14 +993,31 @@ export async function autoAssignCycle(
   }
   return logs;
   } finally {
+    // Both follow-up steps need today's status 2/4/5 job lists. Fetch each list
+    // ONCE and share it — previously via-legs and return-trips each fetched their
+    // own, so status 4 was pulled 3×/cycle and status 5 2×/cycle. If the shared
+    // prefetch fails, fall through to each step self-fetching (pass undefined).
+    const followToday = vnDate();
+    let shared: { s2: Job[]; s4: Job[]; s5: Job[] } | undefined;
+    try {
+      const [s2, s4, s5] = await Promise.all([
+        getJobsByStatusAndDate(2, followToday, env),
+        getJobsByStatusAndDate(4, followToday, env),
+        getJobsByStatusAndDate(5, followToday, env),
+      ]);
+      shared = { s2, s4, s5 };
+    } catch (e) {
+      log(`Follow-up prefetch failed, each step will self-fetch: ${e}`, "WARN");
+    }
+
     // Forward via-legs first (driver is en route toward the via PSC — more time-sensitive).
     try {
-      await detectAndCreateViaLegs(env, log);
+      await detectAndCreateViaLegs(env, log, shared && { s4: shared.s4, s5: shared.s5 });
     } catch (e) {
       log(`Via-leg hook failed: ${e}`, "ERROR");
     }
     try {
-      await detectAndCreateReturnTrips(config, env, log);
+      await detectAndCreateReturnTrips(config, env, log, shared);
     } catch (e) {
       log(`Return-trip hook failed: ${e}`, "ERROR");
     }
