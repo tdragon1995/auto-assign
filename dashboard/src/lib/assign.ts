@@ -157,17 +157,8 @@ function computePickupWarnings(
         extra = { minutes_late: Math.floor(elapsed / 60000) - 30 };
       }
     } else {
-      // Case 2: has window — warn if now >= time_from + 15 min
-      const timeFrom: string | undefined = pickup.delivery_windows[0]?.time_from;
-      if (!timeFrom) continue;
-      const hhmm = timeFrom.match(/^(\d{2}:\d{2}:\d{2})/);
-      if (!hhmm) continue;
-      const timeFromDate = new Date(`${today}T${hhmm[1]}+07:00`);
-      if (isNaN(timeFromDate.getTime())) continue;
-      if (now >= timeFromDate.getTime() + FIFTEEN_MIN_MS) {
-        reason = "window_expiring";
-        extra = { window_time_to: pickup.delivery_windows[0]?.time_to ?? null };
-      }
+      // Case 2 (delivery window): stashed — not active yet
+      continue;
     }
 
     if (!reason) continue;
