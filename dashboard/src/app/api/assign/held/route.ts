@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getJobDetails, updateJobStops, type Env } from "@/lib/cartrack";
+import { getJobDetails, updateJobStops, updateJobScheduledDeliveryTs, type Env } from "@/lib/cartrack";
 import { autoAssignCycle } from "@/lib/assign";
 import { loadConfigFromSheets } from "@/lib/config";
 import {
@@ -63,10 +63,14 @@ export async function POST(req: NextRequest) {
           : {}),
       }));
 
-    const putRes = await updateJobStops(jobId, updatedStops, env);
-    if (!putRes.ok) {
+    // Run both PUTs in parallel: delivery_windows on pickup stop + scheduled_delivery_ts on job.
+    const [stopsRes, schedRes] = await Promise.all([
+      updateJobStops(jobId, updatedStops, env),
+      updateJobScheduledDeliveryTs(jobId, String(body.scheduledAt), env),
+    ]);
+    if (!stopsRes.ok || !schedRes.ok) {
       return NextResponse.json(
-        { ok: false, error: `Lên lịch thất bại (${putRes.status})` },
+        { ok: false, error: `Lên lịch thất bại (stops ${stopsRes.status}, sched ${schedRes.status})` },
         { status: 502 }
       );
     }

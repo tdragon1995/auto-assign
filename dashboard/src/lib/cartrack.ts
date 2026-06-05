@@ -177,6 +177,19 @@ export async function updateJobSendToDriverAt(
   return { ok: res.ok, status: res.status };
 }
 
+export async function updateJobScheduledDeliveryTs(
+  jobId: number,
+  scheduledDeliveryTs: string, // "YYYY-MM-DD HH:MM:SS"
+  env: Env = "prod"
+): Promise<{ ok: boolean; status: number }> {
+  const res = await fetch(`${BASE_URL}/jobs/${jobId}`, {
+    method: "PUT",
+    headers: getHeaders(env),
+    body: JSON.stringify({ scheduled_delivery_ts: scheduledDeliveryTs }),
+  });
+  return { ok: res.ok, status: res.status };
+}
+
 export async function unassignJob(
   jobId: number,
   env: Env = "prod"
