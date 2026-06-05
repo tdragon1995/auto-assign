@@ -181,13 +181,15 @@ export async function updateJobScheduledDeliveryTs(
   jobId: number,
   scheduledDeliveryTs: string, // "YYYY-MM-DD HH:MM:SS"
   env: Env = "prod"
-): Promise<{ ok: boolean; status: number }> {
+): Promise<{ ok: boolean; status: number; body: unknown }> {
   const res = await fetch(`${BASE_URL}/jobs/${jobId}`, {
     method: "PUT",
     headers: getHeaders(env),
-    body: JSON.stringify({ scheduled_delivery_ts: scheduledDeliveryTs }),
+    // schedule_type_id 2 = Scheduled — required for delivery_windows to be accepted.
+    body: JSON.stringify({ scheduled_delivery_ts: scheduledDeliveryTs, schedule_type_id: 2 }),
   });
-  return { ok: res.ok, status: res.status };
+  const body = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, body };
 }
 
 export async function unassignJob(

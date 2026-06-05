@@ -46,7 +46,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "Invalid scheduledAt format" }, { status: 400 });
     }
     const timeFrom = `${timePart}+07:00`;
+    // time_to = time_from + 30 min (Cartrack rejects zero-length windows)
+    const [hh, mm, ss] = timePart.split(":").map(Number);
+    const toTotal = hh * 60 + mm + 30;
+    const timeTo = `${String(Math.floor(toTotal / 60) % 24).padStart(2, "0")}:${String(toTotal % 60).padStart(2, "0")}:${String(ss).padStart(2, "0")}+07:00`;
 
+    // Step 1: convert job to Scheduled type + set scheduled_delivery_ts.
+    // Must succeed before Cartrack accepts delivery_windows on the stops.
+    const schedRes = await updateJobScheduledDeliveryTs(jobId, String(body.scheduledAt), env);
+    if (!schedRes.ok) {
+      return NextResponse.json(
+        { ok: false, error: `Lên lịch thất bại (sched ${schedRes.status})`, details: schedRes.body },
+        { status: 502 }
+      );
+    }
+
+    // Step 2: add delivery_windows to the pickup stop.
     const details = await getJobDetails(jobId, env);
     const rawStops = (details.data?.stops ?? []) as {
       stop_id?: number; stop_type_id?: number; customer_id?: string; customer_name?: string;
@@ -59,21 +74,18 @@ export async function POST(req: NextRequest) {
         customer_id: s.customer_id!,
         ...(s.customer_name ? { customer_name: s.customer_name } : {}),
         ...(s.stop_type_id === 1
-          ? { delivery_windows: [{ time_from: timeFrom, time_to: timeFrom }] }
+          ? { delivery_windows: [{ time_from: timeFrom, time_to: timeTo }] }
           : {}),
       }));
 
-    // Run both PUTs in parallel: delivery_windows on pickup stop + scheduled_delivery_ts on job.
-    const [stopsRes, schedRes] = await Promise.all([
-      updateJobStops(jobId, updatedStops, env),
-      updateJobScheduledDeliveryTs(jobId, String(body.scheduledAt), env),
-    ]);
-    if (!stopsRes.ok || !schedRes.ok) {
+    const stopsRes = await updateJobStops(jobId, updatedStops, env);
+    if (!stopsRes.ok) {
       return NextResponse.json(
-        { ok: false, error: `Lên lịch thất bại (stops ${stopsRes.status}, sched ${schedRes.status})` },
+        { ok: false, error: `Lên lịch thất bại (stops ${stopsRes.status})`, details: stopsRes.body },
         { status: 502 }
       );
     }
+
     await removeHeldJob(jobId).catch(() => {});
     return NextResponse.json({ ok: true, scheduled: true });
   }
