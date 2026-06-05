@@ -36,20 +36,42 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "Missing jobId" }, { status: 400 });
   }
 
-  // ── Scheduled path: proxy-assign + set send_to_driver_at, no cycle lock needed ──
+  // ── Scheduled path: add delivery_window to pickup stop, leave unassigned ──────
+  // The engine picks it up next cycle: note gate bypasses (hasWindow), window
+  // parking parks it to the proxy queue at the right time.
   if (body.scheduledAt) {
-    const [assignRes, setRes] = await Promise.all([
-      assignJob(PROXY_DRIVER_ID, jobId, env),
-      updateJobSendToDriverAt(jobId, body.scheduledAt, env),
-    ]);
-    if (assignRes.status === 200 && setRes.ok) {
-      await removeHeldJob(jobId).catch(() => {});
-      return NextResponse.json({ ok: true, scheduled: true });
+    // Extract "HH:MM:SS" from "YYYY-MM-DD HH:MM:SS"
+    const timePart = String(body.scheduledAt).match(/(\d{2}:\d{2}:\d{2})$/)?.[1];
+    if (!timePart) {
+      return NextResponse.json({ ok: false, error: "Invalid scheduledAt format" }, { status: 400 });
     }
-    return NextResponse.json(
-      { ok: false, error: `Lên lịch thất bại (assign ${assignRes.status}, set ${setRes.status})` },
-      { status: 500 }
-    );
+    const timeFrom = `${timePart}+07:00`;
+
+    const details = await getJobDetails(jobId, env);
+    const rawStops = (details.data?.stops ?? []) as {
+      stop_id?: number; stop_type_id?: number; customer_id?: string; customer_name?: string;
+    }[];
+    const updatedStops = rawStops
+      .filter((s) => s.stop_id && s.stop_type_id && s.customer_id)
+      .map((s) => ({
+        stop_id: s.stop_id!,
+        stop_type_id: s.stop_type_id!,
+        customer_id: s.customer_id!,
+        ...(s.customer_name ? { customer_name: s.customer_name } : {}),
+        ...(s.stop_type_id === 1
+          ? { delivery_windows: [{ time_from: timeFrom, time_to: timeFrom }] }
+          : {}),
+      }));
+
+    const putRes = await updateJobStops(jobId, updatedStops, env);
+    if (!putRes.ok) {
+      return NextResponse.json(
+        { ok: false, error: `Lên lịch thất bại (${putRes.status})` },
+        { status: 502 }
+      );
+    }
+    await removeHeldJob(jobId).catch(() => {});
+    return NextResponse.json({ ok: true, scheduled: true });
   }
 
   // Share the cycle lock so this can't run alongside a cron cycle.
