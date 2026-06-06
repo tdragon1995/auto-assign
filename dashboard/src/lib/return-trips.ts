@@ -1,4 +1,4 @@
-import type { Config, Mapping, LogLevel } from "./types";
+import type { Config, Mapping, LogLevel, Job } from "./types";
 import { BASE_URL, getHeaders, getJobsByStatusAndDate, type Env } from "./cartrack";
 import { vnDate, vnHoursMinutes } from "./time";
 
@@ -96,18 +96,29 @@ async function createReturnJob(
 export async function detectAndCreateReturnTrips(
   config: Config,
   env: Env,
-  log: (msg: string, level?: LogLevel) => void
+  log: (msg: string, level?: LogLevel) => void,
+  // Pre-fetched today's status-2/4/5 lists shared by the cycle. When omitted
+  // (e.g. standalone call), fetch them here.
+  prefetched?: { s2: Job[]; s4: Job[]; s5: Job[] },
 ): Promise<void> {
   // Only applies to drivers in any smart-assign pool (pilot gate)
   const allSmartDriverIds = new Set(config.mappings.flatMap((m) => m.smart_driver_id));
 
-  const today = vnDate();
-
-  const [completedJobs, activeStatus2, activeStatus4] = await Promise.all([
-    getJobsByStatusAndDate(5, today, env),
-    getJobsByStatusAndDate(2, today, env),
-    getJobsByStatusAndDate(4, today, env),
-  ]);
+  let completedJobs: Job[];
+  let activeStatus2: Job[];
+  let activeStatus4: Job[];
+  if (prefetched) {
+    completedJobs = prefetched.s5;
+    activeStatus2 = prefetched.s2;
+    activeStatus4 = prefetched.s4;
+  } else {
+    const today = vnDate();
+    [completedJobs, activeStatus2, activeStatus4] = await Promise.all([
+      getJobsByStatusAndDate(5, today, env),
+      getJobsByStatusAndDate(2, today, env),
+      getJobsByStatusAndDate(4, today, env),
+    ]);
+  }
 
   // Split completed jobs into outbounds and completed returns (same fetch, no extra API call).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

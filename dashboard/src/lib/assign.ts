@@ -511,11 +511,13 @@ export async function autoAssignCycle(
   const today = vnDate();
   if (!onlyJobIds) await releaseDueProxyJobs(today, env, log);
 
-  // Fetch unassigned jobs
+  // Fetch unassigned jobs by scheduled_delivery_ts = today.
+  // Using scheduled_delivery_ts (not create_ts) means multi-day parked jobs
+  // released from the proxy driver are found on their scheduled day regardless
+  // of when they were created.
   let jobs: Job[];
   try {
-    const data = await getUnassignedJobs(1, 50, env, today);
-    jobs = data.data ?? [];
+    jobs = await getJobsByStatusAndDate(2, today, env);
   } catch (e) {
     log(`Error fetching jobs: ${e}`, "ERROR");
     return logs;

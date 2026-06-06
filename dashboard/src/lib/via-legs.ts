@@ -1,4 +1,4 @@
-import type { LogLevel } from "./types";
+import type { LogLevel, Job } from "./types";
 import { BASE_URL, getHeaders, getJobsByStatusAndDate, type Env } from "./cartrack";
 import { vnDate, vnHoursMinutes, vnTimestamp } from "./time";
 import { loadPscRoutes } from "./psc-config";
@@ -111,7 +111,10 @@ async function createViaLeg(
  */
 export async function detectAndCreateViaLegs(
   env: Env,
-  log: (msg: string, level?: LogLevel) => void
+  log: (msg: string, level?: LogLevel) => void,
+  // Pre-fetched today's status-4/5 lists shared by the cycle. When omitted (e.g.
+  // standalone call), fetch them here.
+  prefetched?: { s4: Job[]; s5: Job[] },
 ): Promise<void> {
   // Hard-coded routes ([[psc-routes-data]]) — identical on every instance, no staleness.
   const routes = await loadPscRoutes();
@@ -128,11 +131,17 @@ export async function detectAndCreateViaLegs(
   }
   if (viaConfig.size === 0) return; // nothing configured — no-op
 
-  const today = vnDate();
-  const [s4, s5] = await Promise.all([
-    getJobsByStatusAndDate(4, today, env),
-    getJobsByStatusAndDate(5, today, env),
-  ]);
+  let s4: Job[];
+  let s5: Job[];
+  if (prefetched) {
+    ({ s4, s5 } = prefetched);
+  } else {
+    const today = vnDate();
+    [s4, s5] = await Promise.all([
+      getJobsByStatusAndDate(4, today, env),
+      getJobsByStatusAndDate(5, today, env),
+    ]);
+  }
 
   // Index existing via-legs (status 4 + 5) by "via:dropoff:driver" → sorted create_ts strings.
   // Used to skip an outbound whose run already produced a via-leg after its pickup completed.
