@@ -135,11 +135,15 @@ function computePickupWarnings(
   for (const job of assignedJobs) {
     const driverId: string | null = job.delivery_driver_id;
     if (!driverId) continue;
+    // Guard: skip jobs that are no longer active (cancelled/failed/deleted)
+    if (job.job_status_id !== 4) continue;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pickup = (job.stops ?? [] as any[]).find((s: any) => s.stop_type_id === 1);
     if (!pickup) continue;
     if (pickup.activity_started_ts) continue;
+    // Guard: skip if stop is already completed or rejected
+    if (isCompletedOrRejectedStop(pickup.stop_status_id ?? 0)) continue;
 
     const hasWindow =
       Array.isArray(pickup.delivery_windows) && pickup.delivery_windows.length > 0;

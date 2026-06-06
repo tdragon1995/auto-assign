@@ -184,11 +184,13 @@ export async function getHeldJobs(): Promise<HeldJob[]> {
   try { return JSON.parse(raw) as HeldJob[]; } catch { return []; }
 }
 
-/** Replace the pickup-warning list (called at end of each full cycle). */
+/** Replace the pickup-warning list (called at end of each full cycle).
+ *  TTL is 10 min — short enough that stale warnings self-clear if cycles stop
+ *  (e.g. system disarmed), but long enough to survive a couple missed pings. */
 export async function setPickupWarnings(warnings: PickupWarning[]): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
-  await redis.set(PICKUP_WARNINGS_KEY, JSON.stringify(warnings), { ex: 86400 });
+  await redis.set(PICKUP_WARNINGS_KEY, JSON.stringify(warnings), { ex: 600 });
 }
 
 /** Drop one job from the held list (after it's been assigned anyway). */
