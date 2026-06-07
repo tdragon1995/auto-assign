@@ -205,13 +205,21 @@ export async function updateJobScheduledDeliveryTs(
   env: Env = "prod"
 ): Promise<{ ok: boolean; status: number; body: unknown }> {
   const datePart = scheduledDeliveryTs.slice(0, 10); // "YYYY-MM-DD"
+  // Cartrack requires allowed_to_start_at to be AFTER now. Midnight of the scheduled
+  // date is ideal for a future day (driver may start anytime that day), but is in the
+  // PAST for a same-day schedule → 422. Clamp to the later of midnight and ~now+2min
+  // (both as VN-time "YYYY-MM-DD HH:MM:SS" strings, so a lexical compare is chronological).
+  const midnight = `${datePart} 00:00:00`;
+  const vnNowPlus = new Date(Date.now() + 7 * 3_600_000 + 2 * 60_000)
+    .toISOString().slice(0, 19).replace("T", " ");
+  const allowedToStartAt = midnight > vnNowPlus ? midnight : vnNowPlus;
   const res = await fetch(`${BASE_URL}/jobs/${jobId}`, {
     method: "PUT",
     headers: getHeaders(env),
     body: JSON.stringify({
       schedule_type_id: 2,           // Scheduled — required for delivery_windows
       scheduled_delivery_ts: scheduledDeliveryTs,
-      allowed_to_start_at: `${datePart} 00:00:00`,
+      allowed_to_start_at: allowedToStartAt,
     }),
   });
   const body = await res.json().catch(() => ({}));
