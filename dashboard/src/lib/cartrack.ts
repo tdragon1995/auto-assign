@@ -144,6 +144,35 @@ export async function assignJob(
   return { status: res.status, body: await res.json() };
 }
 
+/** Assign a driver to an EXISTING job via the update endpoint (PUT /jobs/{id} with
+ *  delivery_driver_id). Unlike PUT /jobs/assign/{driver} (which returns an empty body),
+ *  this returns the full job INCLUDING the nested `driver` object — so the caller gets
+ *  the driver's name from the same call, no getDrivers lookup needed. Verified prod
+ *  2026-06-07: flips status 2→4, sets assigned_ts, and the job still reaches the driver
+ *  app (send_to_driver_at stays null — that field only governs delayed sending). Use for
+ *  single-driver assigns; keep assignJob (reassign) for the smart multi-driver fallback
+ *  so its on-break 422 error shape stays intact. */
+export async function assignJobViaUpdate(
+  jobId: number,
+  driverId: string,
+  env: Env = "prod"
+): Promise<{
+  status: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  body: any;
+  driverName: string | null;
+}> {
+  const res = await fetch(`${BASE_URL}/jobs/${jobId}`, {
+    method: "PUT",
+    headers: getHeaders(env),
+    body: JSON.stringify({ delivery_driver_id: driverId }),
+  });
+  const body = await res.json().catch(() => ({}));
+  const d = body?.data?.driver;
+  const driverName = d ? `${d.first_name ?? ""} ${d.last_name ?? ""}`.trim() || null : null;
+  return { status: res.status, body, driverName };
+}
+
 /** Force-complete a job. Cartrack's PUT /jobs/{id}/complete acts on the path id only;
  *  the body is ignored, so we send an empty one. Raw status/body returned for diagnosis. */
 export async function completeJob(

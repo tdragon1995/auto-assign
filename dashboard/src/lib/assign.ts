@@ -1,5 +1,5 @@
 import type { Config, Driver, Job, LogEntry, LogLevel, Mapping, PickupWarning, TimelineRoute } from "./types";
-import { getDrivers, getUnassignedJobs, getDriverJobs, getAllAssignedDriverJobs, assignJob, getCustomerById, updateJobStops, updateJobSendToDriverAt, unassignJob, optimizeDriverRoute, getFleetwebCookie, getJobsByStatusAndDate, JSONRPC_URL, PROXY_DRIVER_ID, type Env } from "./cartrack";
+import { getDrivers, getUnassignedJobs, getDriverJobs, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, updateJobSendToDriverAt, unassignJob, optimizeDriverRoute, getFleetwebCookie, getJobsByStatusAndDate, JSONRPC_URL, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL } from "./return-trips";
@@ -757,17 +757,16 @@ export async function autoAssignCycle(
       // ── 1-driver: straight assign (like fixed auto-assign) ──────────────
         if (smartMapping.smart_driver_id.length === 1) {
           const driverId   = smartMapping.smart_driver_id[0];
-          const gpsDriver  = allGpsDrivers.find((d) => d.delivery_driver_id === driverId);
-          const driverName = gpsDriver
-            ? `${gpsDriver.first_name} ${gpsDriver.last_name}`.trim()
-            : (smartMapping.first_name_last_name || driverId);
           if (smartMapping.alt_drop_off_id) {
             const alt = await applyAltDropoff(jobId, smartMapping.alt_drop_off_id, job.stops ?? [], env, log);
             if (!alt.ok) continue;
           }
           try {
-            const { status: apiStatus, body } = await assignJob(driverId, jobId, env);
+            // Assign via the update endpoint — it returns the driver, so the name comes
+            // straight from Cartrack's response (no driver-list fetch needed).
+            const { status: apiStatus, body, driverName: ctName } = await assignJobViaUpdate(jobId, driverId, env);
             if (apiStatus === 200) {
+              const driverName = ctName || smartMapping.first_name_last_name || driverId;
               log(`Job ${jobId} | SMART(1) → ${driverName} | ${jobCustomerName ?? customerId}`, "OK");
             } else {
               log(`Job ${jobId} - SMART(1) failed: ${friendlyError(body)}`, "ERROR");
@@ -940,14 +939,17 @@ export async function autoAssignCycle(
     }
 
     try {
-      const { status: apiStatus, body } = await assignJob(driverId, jobId, env);
+      // Assign via the update endpoint — returns the driver, so the name comes from
+      // Cartrack's response (no driver-list fetch). Single driver, no on-break fallback.
+      const { status: apiStatus, body, driverName: ctName } = await assignJobViaUpdate(jobId, driverId, env);
 
       if (apiStatus === 200) {
         // Everything for the log + Zalo comes from data already in hand — no
         // getJobDetails. Pickup is unchanged → read off job.stops. For an alt-dropoff
         // job the dropoff was swapped, so its new name + coords come from the
         // applyAltDropoff result (it already fetched the alt customer record).
-        const respDriverName = mapping.first_name_last_name || driverId;
+        // Name from Cartrack's assign response, then sheet, then UUID.
+        const respDriverName = ctName || mapping.first_name_last_name || driverId;
         const pickupStop  = job.stops?.find((s) => s.stop_type_id === 1);
         const dropoffStop = job.stops?.find((s) => s.stop_type_id === 2);
         const pickupName  = pickupStop?.customer_name ?? jobCustomerName ?? "N/A";
