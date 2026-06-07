@@ -1,5 +1,5 @@
 import type { Config, Driver, Job, LogEntry, LogLevel, Mapping, PickupWarning, TimelineRoute } from "./types";
-import { getDrivers, getUnassignedJobs, getDriverJobs, getAllAssignedDriverJobs, assignJob, getJobDetails, getCustomerById, updateJobStops, updateJobSendToDriverAt, unassignJob, optimizeDriverRoute, getFleetwebCookie, getJobsByStatusAndDate, JSONRPC_URL, PROXY_DRIVER_ID, type Env } from "./cartrack";
+import { getDrivers, getUnassignedJobs, getDriverJobs, getAllAssignedDriverJobs, assignJob, getCustomerById, updateJobStops, updateJobSendToDriverAt, unassignJob, optimizeDriverRoute, getFleetwebCookie, getJobsByStatusAndDate, JSONRPC_URL, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL } from "./return-trips";
@@ -95,7 +95,6 @@ function buildActiveRouteMap(jobs: any[]): Map<string, number> {
 function computePickupWarnings(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   assignedJobs: any[],
-  driverMap: Map<string, Driver>,
   today: string,
 ): PickupWarning[] {
   const now = Date.now();
@@ -178,9 +177,12 @@ function computePickupWarnings(
     const lastCompleted = driverLastCompletedMs.get(driverId) ?? 0;
     if (lastCompleted && now - lastCompleted < THIRTY_MIN_MS) continue;
 
-    const driver = driverMap.get(driverId);
+    // Driver name straight off the job's embedded `driver` object — Cartrack returns
+    // it fully populated on every assigned job (incl. offline / no-GPS drivers), so no
+    // driver-list fetch is needed to resolve the name here.
+    const driver = job.driver;
     const driverName = driver
-      ? `${driver.first_name} ${driver.last_name}`.trim() || null
+      ? `${driver.first_name ?? ""} ${driver.last_name ?? ""}`.trim() || null
       : null;
 
     warnings.push({
@@ -395,33 +397,45 @@ export function getCustomerNameFromJob(job: Job): string | null {
  * Returns true if the swap succeeded (or wasn't needed), false if it failed
  * and the job should be skipped.
  */
+type AltDropoffResult = {
+  ok: boolean;
+  dropoffName?: string;
+  dropoffLat?: number | null;
+  dropoffLon?: number | null;
+};
+
+/**
+ * Swap a job's dropoff to `altDropOffId` before assigning. Takes the in-hand
+ * `jobStops` (from the unassigned job) so it needs no getJobDetails, and returns
+ * the new dropoff's name + coords (from the alt customer record it already fetches)
+ * so the caller can log/notify the swap without re-fetching either.
+ */
 async function applyAltDropoff(
   jobId: number,
   altDropOffId: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  jobStops: any[],
   env: Env,
   log: (msg: string, level?: LogLevel) => void
-): Promise<boolean> {
+): Promise<AltDropoffResult> {
   let altCustomerName = altDropOffId;
+  let altLat: number | null | undefined;
+  let altLon: number | null | undefined;
   try {
     const customerData = await getCustomerById(altDropOffId, env);
     if (customerData?.data) {
       const c = customerData.data;
       altCustomerName = c.customer_name || c.name || altCustomerName;
+      altLat = c.latitude;
+      altLon = c.longitude;
     }
 
-    const details = await getJobDetails(jobId, env);
-    const rawStops = (details.data?.stops ?? []) as {
-      stop_id?: number;
-      stop_type_id?: number;
-      customer_id?: string;
-    }[];
-
-    const updatedStops = rawStops
+    const updatedStops = (jobStops ?? [])
       .filter((s) => s.stop_id && s.stop_type_id && s.customer_id)
       .map((s) => ({
-        stop_id: s.stop_id!,
-        stop_type_id: s.stop_type_id!,
-        customer_id: s.stop_type_id === 2 ? altDropOffId : s.customer_id!,
+        stop_id: s.stop_id,
+        stop_type_id: s.stop_type_id,
+        customer_id: s.stop_type_id === 2 ? altDropOffId : s.customer_id,
         ...(s.stop_type_id === 2 ? { customer_name: altCustomerName } : {}),
       }));
 
@@ -431,13 +445,13 @@ async function applyAltDropoff(
         log(`Job ${jobId} - dropoff swapped to ${altCustomerName}`, "INFO");
       } else {
         log(`Job ${jobId} - dropoff swap failed (${putRes.status})`, "ERROR");
-        return false;
+        return { ok: false };
       }
     }
-    return true;
+    return { ok: true, dropoffName: altCustomerName, dropoffLat: altLat, dropoffLon: altLon };
   } catch (e) {
     log(`Job ${jobId} - dropoff swap error: ${e}`, "ERROR");
-    return false;
+    return { ok: false };
   }
 }
 
@@ -542,10 +556,11 @@ export async function autoAssignCycle(
   log(`Found ${jobs.length} unassigned job(s)`);
 
   // ── Fetch assigned jobs once — reused for duplicate-check AND warnings ──────
+  // Fire it now but await it after the smart-driver fetch below, so the two
+  // independent reads overlap instead of running as two serial waves.
   const authSuffix = env === "uat" ? "_UAT" : "";
   const auth = process.env[`CARTRACK_AUTH${authSuffix}`] ?? "";
-  const assignedJobsToday = await fetchAssignedJobsToday(today, auth);
-  const activeRouteMap = buildActiveRouteMap(assignedJobsToday);
+  const assignedJobsPromise = fetchAssignedJobsToday(today, auth);
   let rejectCookie: string | null = null;
 
   // ── Pre-fetch GPS + route data only if a current job needs smart-assign ──────
@@ -630,6 +645,11 @@ export async function autoAssignCycle(
 
     log(`Smart-assign ready: ${phase1Coords.size} candidate driver(s) (GPS or start_location)`);
   }
+
+  // Resolve the assigned-jobs fetch kicked off above (it ran in parallel with the
+  // smart-driver fetch). Reused for duplicate-check (this loop) and pickup warnings.
+  const assignedJobsToday = await assignedJobsPromise;
+  const activeRouteMap = buildActiveRouteMap(assignedJobsToday);
 
   for (const job of jobs) {
     const jobId = job.job_id;
@@ -742,8 +762,8 @@ export async function autoAssignCycle(
             ? `${gpsDriver.first_name} ${gpsDriver.last_name}`.trim()
             : (smartMapping.first_name_last_name || driverId);
           if (smartMapping.alt_drop_off_id) {
-            const ok = await applyAltDropoff(jobId, smartMapping.alt_drop_off_id, env, log);
-            if (!ok) continue;
+            const alt = await applyAltDropoff(jobId, smartMapping.alt_drop_off_id, job.stops ?? [], env, log);
+            if (!alt.ok) continue;
           }
           try {
             const { status: apiStatus, body } = await assignJob(driverId, jobId, env);
@@ -828,8 +848,8 @@ export async function autoAssignCycle(
           .map((x, i) => `${i + 1}. ${x.d.first_name} ${x.d.last_name} (${x.distLabel})`)
           .join(" | ");
         if (smartMapping.alt_drop_off_id) {
-          const ok = await applyAltDropoff(jobId, smartMapping.alt_drop_off_id, env, log);
-          if (!ok) continue;
+          const alt = await applyAltDropoff(jobId, smartMapping.alt_drop_off_id, job.stops ?? [], env, log);
+          if (!alt.ok) continue;
         }
         // Try candidates in ranked order; fall through to next if on-break/offline.
         let assigned = false;
@@ -911,43 +931,31 @@ export async function autoAssignCycle(
       continue;
     }
 
-    // Alt drop-off: swap the dropoff customer before assigning
+    // Alt drop-off: swap the dropoff customer before assigning. Keep the result so the
+    // post-assign block can read the new dropoff name + coords without a getJobDetails.
+    let altResult: AltDropoffResult | null = null;
     if (mapping.alt_drop_off_id) {
-      const ok = await applyAltDropoff(jobId, mapping.alt_drop_off_id, env, log);
-      if (!ok) continue;
+      altResult = await applyAltDropoff(jobId, mapping.alt_drop_off_id, job.stops ?? [], env, log);
+      if (!altResult.ok) continue;
     }
 
     try {
       const { status: apiStatus, body } = await assignJob(driverId, jobId, env);
 
       if (apiStatus === 200) {
-        // The unassigned job already carries stop names + coords, and the driver
-        // name is in the sheet mapping — no need to re-fetch the job after assign.
-        // Exception: alt_drop_off_id swaps the dropoff server-side, so job.stops
-        // still holds the OLD dropoff; re-fetch only then to reflect the swap.
-        let pickupName: string;
-        let dropoffName: string;
-        let pickupLat: number | null | undefined;
-        let pickupLon: number | null | undefined;
-        let dropoffLat: number | null | undefined;
-        let dropoffLon: number | null | undefined;
+        // Everything for the log + Zalo comes from data already in hand — no
+        // getJobDetails. Pickup is unchanged → read off job.stops. For an alt-dropoff
+        // job the dropoff was swapped, so its new name + coords come from the
+        // applyAltDropoff result (it already fetched the alt customer record).
         const respDriverName = mapping.first_name_last_name || driverId;
-
-        if (mapping.alt_drop_off_id) {
-          const details = await getJobDetails(jobId, env);
-          const stops = details.data?.stops ?? [];
-          pickupName  = stops[0]?.customer_name ?? jobCustomerName ?? "N/A";
-          dropoffName = stops[1]?.customer_name ?? "N/A";
-          pickupLat = stops[0]?.latitude;  pickupLon = stops[0]?.longitude;
-          dropoffLat = stops[1]?.latitude; dropoffLon = stops[1]?.longitude;
-        } else {
-          const pickupStop  = job.stops?.find((s) => s.stop_type_id === 1);
-          const dropoffStop = job.stops?.find((s) => s.stop_type_id === 2);
-          pickupName  = pickupStop?.customer_name ?? jobCustomerName ?? "N/A";
-          dropoffName = dropoffStop?.customer_name ?? "N/A";
-          pickupLat = pickupStop?.latitude;  pickupLon = pickupStop?.longitude;
-          dropoffLat = dropoffStop?.latitude; dropoffLon = dropoffStop?.longitude;
-        }
+        const pickupStop  = job.stops?.find((s) => s.stop_type_id === 1);
+        const dropoffStop = job.stops?.find((s) => s.stop_type_id === 2);
+        const pickupName  = pickupStop?.customer_name ?? jobCustomerName ?? "N/A";
+        const pickupLat = pickupStop?.latitude;
+        const pickupLon = pickupStop?.longitude;
+        const dropoffName = altResult?.dropoffName ?? dropoffStop?.customer_name ?? "N/A";
+        const dropoffLat = altResult ? altResult.dropoffLat : dropoffStop?.latitude;
+        const dropoffLon = altResult ? altResult.dropoffLon : dropoffStop?.longitude;
 
         log(
           `Job ${jobId} | ${respDriverName} -> ${pickupName}`,
@@ -997,10 +1005,9 @@ export async function autoAssignCycle(
   }
 
   if (!onlyJobIds) {
-    const driverMap = new Map(allGpsDrivers.map((d) => [d.delivery_driver_id, d]));
     await Promise.all([
       setHeldJobs(heldJobs),
-      setPickupWarnings(computePickupWarnings(assignedJobsToday, driverMap, today)),
+      setPickupWarnings(computePickupWarnings(assignedJobsToday, today)),
     ]);
   }
   return logs;
@@ -1023,13 +1030,15 @@ export async function autoAssignCycle(
     }
 
     // Forward via-legs first (driver is en route toward the via PSC — more time-sensitive).
+    // Pass the shared prefetch so neither step re-fetches the status 2/4/5 lists; falls
+    // back to self-fetch when `shared` is undefined (prefetch above failed).
     try {
-      await detectAndCreateViaLegs(env, log);
+      await detectAndCreateViaLegs(env, log, shared && { s4: shared.s4, s5: shared.s5 });
     } catch (e) {
       log(`Via-leg hook failed: ${e}`, "ERROR");
     }
     try {
-      await detectAndCreateReturnTrips(config, env, log);
+      await detectAndCreateReturnTrips(config, env, log, shared);
     } catch (e) {
       log(`Return-trip hook failed: ${e}`, "ERROR");
     }
