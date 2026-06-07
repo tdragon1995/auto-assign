@@ -211,7 +211,7 @@ export async function updateJobScheduledDeliveryTs(
     body: JSON.stringify({
       schedule_type_id: 2,           // Scheduled — required for delivery_windows
       scheduled_delivery_ts: scheduledDeliveryTs,
-      allowed_to_start_at: `${datePart} 00:00:00+07:00`,
+      allowed_to_start_at: `${datePart} 00:00:00`,
     }),
   });
   const body = await res.json().catch(() => ({}));

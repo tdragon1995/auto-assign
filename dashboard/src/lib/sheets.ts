@@ -3,21 +3,17 @@ const SHEET_ID = "1Bqsm5atLYUQ4gMsL7zHrbrS6YUu7pEDa-Iy_j_wpCss";
 export const SHEET_GID = {
   mapping: "0",
   psc: "281585585",
-  sunday: "890109864",
+  sunday: "1277313355",
   tpl: "934328932",
   schedule_job: "834076876",
 } as const;
-
-// Separate spreadsheet used for Sunday driver mappings
-const SUNDAY_SHEET_ID = "1AF0Vst3zaXv8U3mi43LIkxCWDFaiYwnHsx1mIgz4JT8";
-const SUNDAY_SHEET_GID = "1996956460";
 
 export function sheetCsvUrl(gid: string): string {
   return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${gid}`;
 }
 
 export function sundayMappingCsvUrl(): string {
-  return `https://docs.google.com/spreadsheets/d/${SUNDAY_SHEET_ID}/export?format=csv&gid=${SUNDAY_SHEET_GID}`;
+  return sheetCsvUrl(SHEET_GID.sunday);
 }
 
 function parseCSVLine(line: string): string[] {
