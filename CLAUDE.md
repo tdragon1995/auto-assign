@@ -76,7 +76,6 @@ LABCENTER_RECEPTIONIST_PASSWORD= # Password for receptionist account
 | `POST /api/autoplan` | Cartrack timeline auto-planner for smart drivers + fixed-driver assignment |
 | `GET /api/config` | Returns mapping/PSC route counts from sheets |
 | `GET /api/drivers` | Proxy to Cartrack drivers list |
-| `GET /api/jobs` | Proxy to Cartrack unassigned jobs |
 | `POST /api/psc-assign` | PSC sample-transport job creation (creates unassigned job; auto-assign picks it up) |
 | `GET /api/psc-routes` | Load PSC routes from sheet (pickup→dropoff pairs with GPS coords) |
 | `GET /api/psc-tinh` | Provincial PSC route lookup; `?psc=D021` for 3PL options, `?psc=D021&mode=orders` for today's orders; `DELETE` cancels a job |
