@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadTplEntries, PSC_TINH_LABEL } from "@/lib/psc-config";
 import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
-import { vnDate } from "@/lib/time";
+import { vnDate, vnTimestamp } from "@/lib/time";
 import { STOP_STATUS, JOB_STATUS } from "@/lib/job-filters";
 import { pushRunLog } from "@/lib/smart-log-kv";
 
@@ -178,7 +178,7 @@ export async function POST(req: NextRequest) {
     const created = await createRes.json();
     const jobId = created.data?.job_id;
     void pushRunLog([{
-      ts: new Date().toISOString(),
+      ts: vnTimestamp(),
       level: "OK",
       msg: `[PSC-tỉnh] Tạo chuyến: Job ${jobId} | ${psc_code} | ETA ${eta} | Ref: ${refNumber}`,
     }]);
@@ -219,7 +219,7 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: "Failed to cancel job", details: err }, { status: res.status });
     }
     void pushRunLog([{
-      ts: new Date().toISOString(),
+      ts: vnTimestamp(),
       level: "OK",
       msg: `[PSC-tỉnh] Huỷ job: Job ${jobId}`,
     }]);

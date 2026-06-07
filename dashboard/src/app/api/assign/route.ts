@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { loadConfigFromSheets } from "@/lib/config";
 import { autoAssignCycle } from "@/lib/assign";
 import type { Env } from "@/lib/cartrack";
+import { vnTimestamp } from "@/lib/time";
 import { pushSmartRun, touchLastRun, getLastRunEntry } from "@/lib/smart-log-kv";
 
 export async function GET() {
@@ -18,7 +19,7 @@ export async function POST(req: NextRequest) {
     const config = await loadConfigFromSheets();
     if (!config) {
       return NextResponse.json(
-        { logs: [{ ts: new Date().toISOString(), level: "ERROR", msg: "Failed to load config" }] },
+        { logs: [{ ts: vnTimestamp(), level: "ERROR", msg: "Failed to load config" }] },
         { status: 500 }
       );
     }
@@ -27,12 +28,12 @@ export async function POST(req: NextRequest) {
     try {
       await pushSmartRun(logs);
     } catch (e) {
-      logs.push({ ts: new Date().toISOString(), level: "WARN", msg: `Smart-log KV write failed: ${e}` });
+      logs.push({ ts: vnTimestamp(), level: "WARN", msg: `Smart-log KV write failed: ${e}` });
     }
     return NextResponse.json({ logs });
   } catch (e) {
     return NextResponse.json(
-      { logs: [{ ts: new Date().toISOString(), level: "ERROR", msg: String(e) }] },
+      { logs: [{ ts: vnTimestamp(), level: "ERROR", msg: String(e) }] },
       { status: 500 }
     );
   }

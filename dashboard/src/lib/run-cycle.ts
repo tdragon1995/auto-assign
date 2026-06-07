@@ -2,6 +2,7 @@ import { loadConfigFromSheets } from "./config";
 import { autoAssignCycle } from "./assign";
 import { pushSmartRun, pushRunLog, type ArmState } from "./smart-log-kv";
 import type { LogEntry } from "./types";
+import { vnTimestamp } from "./time";
 import type { Env } from "./cartrack";
 
 /**
@@ -19,7 +20,7 @@ export async function runArmedCycle(arm: ArmState, origin: string): Promise<LogE
   } else {
     const config = await loadConfigFromSheets();
     if (!config) {
-      logs = [{ ts: new Date().toISOString(), level: "ERROR", msg: "Failed to load config" }];
+      logs = [{ ts: vnTimestamp(), level: "ERROR", msg: "Failed to load config" }];
     } else {
       logs = await autoAssignCycle(config, arm.env as Env, false);
       await pushSmartRun(logs).catch((e) => console.error("[run-cycle] pushSmartRun failed:", e));
