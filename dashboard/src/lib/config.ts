@@ -1,12 +1,18 @@
 import type { Config, Mapping } from "./types";
-import { fetchSheetRows, fetchSundayMappingRows, SHEET_GID } from "./sheets";
+import { fetchSheetRows, SHEET_GID } from "./sheets";
 import { vnIsSunday } from "./time";
 
 
 let cachedConfig: Config | null = null;
+let cachedAt = 0;
+// Re-fetch after this long so a sheet edit (and the Sat→Sun mapping switch) self-heals
+// without a redeploy. Each serverless instance caches independently, so without a TTL a
+// stale load (e.g. a transiently empty Sunday read) would persist for that instance's life.
+const CONFIG_TTL_MS = 5 * 60 * 1000;
 
 export function invalidateConfigCache(): void {
   cachedConfig = null;
+  cachedAt = 0;
 }
 
 export function parseTime(
@@ -38,10 +44,10 @@ export function isValidDriverId(id: string): boolean {
 }
 
 export async function loadConfigFromSheets(): Promise<Config | null> {
-  if (cachedConfig) return cachedConfig;
+  if (cachedConfig && Date.now() - cachedAt < CONFIG_TTL_MS) return cachedConfig;
   try {
     const rows = vnIsSunday()
-      ? await fetchSundayMappingRows()
+      ? await fetchSheetRows(SHEET_GID.sunday)
       : await fetchSheetRows(SHEET_GID.mapping);
 
     const mappings: Mapping[] = [];
@@ -70,10 +76,20 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
       });
     }
 
+    if (mappings.length === 0) {
+      // Zero mappings is almost certainly a bad/empty fetch (there are always
+      // hundreds). Don't cache it — keep any prior good cache, else return null so
+      // the next cycle retries instead of locking in an empty mapping.
+      console.error("Config load returned 0 mappings — not caching");
+      return cachedConfig;
+    }
+
     cachedConfig = { mappings };
+    cachedAt = Date.now();
     return cachedConfig;
   } catch (e) {
     console.error("Error loading config from sheets:", e);
-    return null;
+    // Prefer stale cache over nothing on a transient fetch failure.
+    return cachedConfig;
   }
 }

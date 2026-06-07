@@ -12,10 +12,6 @@ export function sheetCsvUrl(gid: string): string {
   return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${gid}`;
 }
 
-export function sundayMappingCsvUrl(): string {
-  return sheetCsvUrl(SHEET_GID.sunday);
-}
-
 function parseCSVLine(line: string): string[] {
   const fields: string[] = [];
   let current = "";
@@ -82,8 +78,3 @@ export async function fetchSheetRows(
   return parseCSV(await res.text());
 }
 
-export async function fetchSundayMappingRows(): Promise<Record<string, string>[]> {
-  const res = await fetch(sundayMappingCsvUrl(), { cache: "no-store" });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return parseCSV(await res.text());
-}
