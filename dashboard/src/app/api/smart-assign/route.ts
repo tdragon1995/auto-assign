@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDrivers, getUnassignedJobs, getFleetwebCookie, getCustomerById, JSONRPC_URL, type Env } from "@/lib/cartrack";
+import { getDrivers, getJobsByStatusAndDate, getFleetwebCookie, getCustomerById, JSONRPC_URL, type Env } from "@/lib/cartrack";
 import { vnDate, vnDayWindow } from "@/lib/time";
 import { haversineKm, goongMatrix } from "@/lib/distance";
 import { selectReferenceStop, computeStopStats, ROUTE_STATE_PRIORITY, type RefLabel } from "@/lib/smart-rank";
@@ -102,8 +102,8 @@ export async function POST(req: NextRequest) {
   const shiftStartByDriverId: Record<string, string | null> = {};
   for (const d of drivers) shiftStartByDriverId[d.delivery_driver_id] = d.shift_time_start ?? null;
 
-  const [jobsRes, routeData] = await Promise.all([
-    getUnassignedJobs(1, 50, env),
+  const [unassignedJobs, routeData] = await Promise.all([
+    getJobsByStatusAndDate(2, today, env),
     cookie
       ? fetchAllDriverRouteData(today, auth, cookie, shiftStartByDriverId)
       : Promise.resolve({} as Record<string, DriverRouteData>),
@@ -151,7 +151,7 @@ export async function POST(req: NextRequest) {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const jobs = ((jobsRes.data ?? []) as any[])
+  const jobs = ((unassignedJobs ?? []) as any[])
     .filter((j) => { const ts = j.scheduled_delivery_ts ?? null; return !ts || ts.startsWith(today); })
     .sort((a, b) => (a.create_ts ?? "").localeCompare(b.create_ts ?? ""));
 

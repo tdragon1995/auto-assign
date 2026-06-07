@@ -32,10 +32,14 @@ const DUPLICATE_EXEMPT_LABELS = [PSC_TINH_LABEL, PSC_RETURN_LABEL];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function fetchAssignedJobsToday(vnDate: string, auth: string): Promise<any[]> {
+  // Filter by scheduled_delivery_ts (not create_ts): the duplicate-route map and the
+  // pickup warnings care about what's being DELIVERED today, not what was created today
+  // — so a job created yesterday for today is included, and one created today for a
+  // future day is not. Matches the main cycle's getJobsByStatusAndDate(2) filter.
   const params = new URLSearchParams({
     "filter[job_status_id]": "4",
-    "filter[create_ts_from]": `${vnDate} 00:00:00`,
-    "filter[create_ts_to]":   `${vnDate} 23:59:59`,
+    "filter[scheduled_delivery_ts_from]": `${vnDate} 00:00:00`,
+    "filter[scheduled_delivery_ts_to]":   `${vnDate} 23:59:59`,
     limit: "1000",
   });
   try {
