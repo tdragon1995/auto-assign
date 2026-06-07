@@ -110,18 +110,31 @@ export function NoteReviewPanel({
     async (job: HeldJob) => {
       if (!window.confirm(`Giao ngay Job ${job.job_id} dù có ghi chú?\n\n"${job.note}"`)) return;
       setBusyId(job.job_id);
+      // The server returns 409 (busy) when a cron cycle holds the lock. Queue in the
+      // browser: retry every 3s for up to ~30s, so the server never idle-waits on the
+      // clock. Each attempt is a cheap fast request until the cycle frees the lock.
+      const MAX_ATTEMPTS = 10;
+      const RETRY_DELAY_MS = 3000;
       try {
-        const res = await fetch(`/api/assign/held?env=${env}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ jobId: job.job_id }),
-        });
-        const data = await res.json();
-        if (data.ok || data.assigned) {
-          toast.success(`Đã giao Job ${job.job_id}`);
-          onAssigned(job.job_id);
-        } else {
-          toast.error(data.error ?? `Không giao được Job ${job.job_id}`);
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+          const res = await fetch(`/api/assign/held?env=${env}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ jobId: job.job_id }),
+          });
+          if (res.status === 409 && attempt < MAX_ATTEMPTS) {
+            // System busy with a cycle — wait, then retry.
+            await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+            continue;
+          }
+          const data = await res.json();
+          if (data.ok || data.assigned) {
+            toast.success(`Đã giao Job ${job.job_id}`);
+            onAssigned(job.job_id);
+          } else {
+            toast.error(data.error ?? `Không giao được Job ${job.job_id}`);
+          }
+          break;
         }
       } catch {
         toast.error(`Không giao được Job ${job.job_id}`);

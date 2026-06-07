@@ -91,10 +91,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, scheduled: true });
   }
 
-  // Share the cycle lock so this can't run alongside a cron cycle.
+  // Share the cycle lock so this can't run alongside a cron cycle. Returns 409 fast
+  // on collision; the client queues by retrying (keeps the server from idle-waiting).
   const gotLock = await acquireCycleLock();
   if (!gotLock) {
-    return NextResponse.json({ ok: false, error: "A cycle is already running — try again in a moment." }, { status: 409 });
+    return NextResponse.json({ ok: false, busy: true, error: "Hệ thống đang bận, vui lòng thử lại sau giây lát." }, { status: 409 });
   }
 
   try {
