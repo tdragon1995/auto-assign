@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "CARTRACK_REJECT_PROXY_DRIVER_ID not configured" }, { status: 500 });
     }
     const assignRes = await fetch(`${BASE_URL}/jobs/${job.job_id}`, {
-      method: "PATCH",
+      method: "PUT",
       headers,
       body: JSON.stringify({ delivery_driver_id: proxyDriverId }),
       cache: "no-store",
