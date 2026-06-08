@@ -145,7 +145,7 @@ export function ActivityLog({ logs, warnings = [] }: ActivityLogProps) {
           ))}
         </div>
         {warnings.length > 0 && (
-          <div className="mt-1.5">
+          <div className="mt-1.5 min-w-0">
             <div className="flex items-center gap-1 mb-1 text-xs font-semibold text-amber-700">
               <span className="leading-none">⚠</span>
               <span>Lấy mẫu chậm</span>
@@ -153,7 +153,7 @@ export function ActivityLog({ logs, warnings = [] }: ActivityLogProps) {
                 {warnings.length}
               </span>
             </div>
-            <div className="flex gap-2 overflow-x-auto w-full pb-1">
+            <div className="flex gap-2 overflow-x-auto min-w-0 w-full pb-1">
               {warnings.map((w) => (
                 <div
                   key={w.job_id}
