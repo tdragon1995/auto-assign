@@ -193,7 +193,7 @@ export default function AuditPage() {
 
         {/* Driver searchable dropdown */}
         <div className="space-y-1 relative">
-          <label className="text-sm font-medium text-gray-700">Tài xế</label>
+          <label className="text-sm font-medium text-gray-700">Nhân Viên Giao Nhận</label>
           <div className="relative">
             <input
               type="text"

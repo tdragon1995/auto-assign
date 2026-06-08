@@ -274,7 +274,7 @@ export default function ChamCongPage() {
         {/* Driver searchable dropdown */}
         <div className="space-y-1 relative">
           <label className="text-sm font-medium text-gray-700">
-            Tài xế
+            Nhân Viên Giao Nhận
             {shiftFetching && <span className="ml-2 text-xs text-gray-400">Đang kiểm tra ca...</span>}
           </label>
           <div className="relative">

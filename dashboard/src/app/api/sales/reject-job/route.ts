@@ -58,6 +58,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Không thể huỷ: tài xế đã bắt đầu công việc." }, { status: 409 });
     }
 
+    // Always assign to proxy driver first, then reject via JSON-RPC
+    const proxyDriverId = process.env.CARTRACK_REJECT_PROXY_DRIVER_ID ?? "";
+    if (!proxyDriverId) {
+      return NextResponse.json({ error: "CARTRACK_REJECT_PROXY_DRIVER_ID not configured" }, { status: 500 });
+    }
+    const assignRes = await fetch(`${BASE_URL}/jobs/${job.job_id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ delivery_driver_id: proxyDriverId }),
+      cache: "no-store",
+    });
+    if (!assignRes.ok) {
+      return NextResponse.json({ error: "Không thể giao job cho proxy driver trước khi huỷ" }, { status: 500 });
+    }
+
     const cookie = await getFleetwebCookie();
     if (!cookie) {
       return NextResponse.json({ error: "Không thể đăng nhập Cartrack fleetweb" }, { status: 500 });
@@ -75,7 +90,11 @@ export async function POST(req: NextRequest) {
     });
     const rpcData = await rpcRes.json().catch(() => ({}));
     if (!rpcRes.ok || rpcData.error) {
-      return NextResponse.json({ error: "Từ chối thất bại", details: rpcData }, { status: 500 });
+      const errorMsg = rpcData.error?.message ?? rpcData.error ?? "Cartrack API error";
+      return NextResponse.json({
+        error: `Từ chối thất bại: ${errorMsg}`,
+        details: rpcData
+      }, { status: 500 });
     }
 
     void pushRunLog([{
