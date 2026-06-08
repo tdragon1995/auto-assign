@@ -35,8 +35,9 @@ const SS_DRIVERS_KEY = "cc_drivers_cache";
 
 const TIME_SLOTS: string[] = (() => {
   const slots: string[] = [];
-  for (let h = 0; h < 24; h++) {
+  for (let h = 5; h <= 22; h++) {
     for (let m = 0; m < 60; m += 30) {
+      if (h === 22 && m > 0) break;
       slots.push(`${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`);
     }
   }
@@ -57,12 +58,8 @@ async function fetchDriversCached(): Promise<unknown> {
   return data;
 }
 
-function tomorrowStr(): string {
-  // Use VN timezone so the min date is always correct regardless of device locale
-  const vnToday = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Ho_Chi_Minh" }).format(new Date()).slice(0, 10);
-  const [y, mo, d] = vnToday.split("-").map(Number);
-  const t = new Date(y, mo - 1, d + 1);
-  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+function todayVnStr(): string {
+  return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Ho_Chi_Minh" }).format(new Date()).slice(0, 10);
 }
 
 function vnWeekday(dateStr: string): string {
@@ -94,6 +91,7 @@ function DateField({ value, min, onChange }: { value: string; min: string; onCha
         min={min}
         value={value}
         onChange={(e) => { if (!e.target.value || e.target.value >= min) onChange(e.target.value); }}
+        onKeyDown={(e) => e.preventDefault()}
         className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
       />
     </div>
@@ -372,6 +370,8 @@ export default function ChamCongPage() {
       });
 
       if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        setLeaveError(errData.error ?? "Đơn bị lỗi, vui lòng gửi lại hoặc chụp màn hình gửi vào nhóm Zalo công việc để được hỗ trợ!");
         setLeaveStatus("error");
         return;
       }
@@ -393,7 +393,8 @@ export default function ChamCongPage() {
       setLeaveSuccessTitle(title);
       setLeaveCopyText(copyText);
       setLeaveStatus("success");
-    } catch {
+    } catch (e) {
+      setLeaveError(`Lỗi kết nối: ${String(e)}`);
       setLeaveStatus("error");
     }
   }
@@ -416,7 +417,7 @@ export default function ChamCongPage() {
     );
   }
 
-  const tomorrow = tomorrowStr();
+  const today = todayVnStr();
 
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
@@ -657,7 +658,7 @@ export default function ChamCongPage() {
                         <label className="text-sm font-medium text-gray-700">Nghỉ từ ngày</label>
                         <DateField
                           value={leaveFromDate}
-                          min={tomorrow}
+                          min={today}
                           onChange={(v) => { setLeaveFromDate(v); if (leaveToDate && v > leaveToDate) setLeaveToDate(""); }}
                         />
                       </div>
@@ -665,7 +666,7 @@ export default function ChamCongPage() {
                         <label className="text-sm font-medium text-gray-700">Đến ngày</label>
                         <DateField
                           value={leaveToDate}
-                          min={leaveFromDate || tomorrow}
+                          min={leaveFromDate || today}
                           onChange={setLeaveToDate}
                         />
                       </div>
@@ -677,7 +678,7 @@ export default function ChamCongPage() {
                     <div className="space-y-3">
                       <div className="space-y-1">
                         <label className="text-sm font-medium text-gray-700">Ngày nghỉ</label>
-                        <DateField value={leaveDate} min={tomorrow} onChange={setLeaveDate} />
+                        <DateField value={leaveDate} min={today} onChange={setLeaveDate} />
                       </div>
                       <div className="grid grid-cols-2 gap-3">
                         <div className="space-y-1">
@@ -717,7 +718,7 @@ export default function ChamCongPage() {
                   {leaveType === "nghi_viec" && (
                     <div className="space-y-1">
                       <label className="text-sm font-medium text-gray-700">Ngày làm việc cuối cùng</label>
-                      <DateField value={leaveDate} min={tomorrow} onChange={setLeaveDate} />
+                      <DateField value={leaveDate} min={today} onChange={setLeaveDate} />
                     </div>
                   )}
 
