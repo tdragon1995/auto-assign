@@ -775,7 +775,8 @@ export async function autoAssignCycle(
           const driverId   = smartMapping.smart_driver_id[0];
           const lc1 = isDriverOnLeave(driverId, leaveEntries);
           if (lc1.onLeave) {
-            log(`Job ${jobId} - SMART(1) SKIP: driver on leave (${lc1.reason}) | ${jobCustomerName ?? customerId}`, "WARN");
+            const dn1 = lc1.driverName || smartMapping.first_name_last_name || driverId;
+            log(`Job ${jobId} - SMART(1) SKIP: ${dn1} on leave (${lc1.reason}) | ${jobCustomerName ?? customerId}`, "WARN");
             continue;
           }
           if (smartMapping.alt_drop_off_id) {
@@ -810,7 +811,8 @@ export async function autoAssignCycle(
           if (!phase1Coords.has(d.delivery_driver_id)) return false;
           const lc = isDriverOnLeave(d.delivery_driver_id, leaveEntries);
           if (lc.onLeave) {
-            log(`Job ${jobId} - SMART: skip ${d.delivery_driver_id} on leave (${lc.reason})`, "INFO");
+            const dn = lc.driverName || `${d.first_name} ${d.last_name}`.trim() || d.delivery_driver_id;
+            log(`Job ${jobId} - SMART: skip ${dn} on leave (${lc.reason})`, "INFO");
             return false;
           }
           return true;
@@ -951,7 +953,8 @@ export async function autoAssignCycle(
 
     const lcFixed = isDriverOnLeave(driverId, leaveEntries);
     if (lcFixed.onLeave) {
-      log(`Job ${jobId} - SKIP: ${mapping.first_name_last_name || driverId} on leave (${lcFixed.reason}) | ${jobCustomerName ?? customerId}`, "WARN");
+      const dnFixed = lcFixed.driverName || mapping.first_name_last_name || driverId;
+      log(`Job ${jobId} - SKIP: ${dnFixed} on leave (${lcFixed.reason}) | ${jobCustomerName ?? customerId}`, "WARN");
       continue;
     }
 

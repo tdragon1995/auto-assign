@@ -3,6 +3,7 @@ import { vnDate, vnMinutesSinceMidnight } from "./time";
 
 export interface LeaveEntry {
   driver_id: string;
+  driver_name: string;
   loai_nghi: string;
   leave_from: string;       // YYYY-MM-DD (for nghỉ việc: already +1 day)
   leave_to: string | null;  // YYYY-MM-DD
@@ -63,8 +64,9 @@ export async function loadLeaveEntries(): Promise<LeaveEntry[]> {
       // [0] Timestamp  [1] driver_id  [2] driver_name  [3] Loại nghỉ
       // [4] leave_from [5] leave_to   [6] gio_bat_dau  [7] gio_ket_thuc
       return {
-        driver_id: parseField(f[1]),
-        loai_nghi: parseField(f[3]),
+        driver_id:   parseField(f[1]),
+        driver_name: parseField(f[2]),
+        loai_nghi:   parseField(f[3]),
         leave_from: parseField(f[4]),
         leave_to:   parseField(f[5]) || null,
         gio_bat_dau:  parseField(f[6]) || null,
@@ -83,30 +85,30 @@ export async function loadLeaveEntries(): Promise<LeaveEntry[]> {
 export function isDriverOnLeave(
   driverId: string,
   entries: LeaveEntry[],
-): { onLeave: boolean; reason?: string } {
+): { onLeave: boolean; driverName?: string; reason?: string } {
   const today = vnDate();
   const nowMins = vnMinutesSinceMidnight();
 
   for (const e of entries) {
     if (e.driver_id !== driverId) continue;
+    const driverName = e.driver_name || undefined;
 
     if (e.loai_nghi === "Nghỉ nguyên buổi") {
       const to = e.leave_to ?? e.leave_from;
       if (today >= e.leave_from && today <= to) {
-        return { onLeave: true, reason: `Nghỉ nguyên buổi ${e.leave_from}→${to}` };
+        return { onLeave: true, driverName, reason: `Nghỉ nguyên buổi ${e.leave_from}→${to}` };
       }
     } else if (e.loai_nghi === "Nghỉ nửa buổi") {
       if (today === e.leave_from) {
         const start = timeToMins(e.gio_bat_dau);
         const end   = timeToMins(e.gio_ket_thuc);
         if (start >= 0 && end >= 0 && nowMins >= start && nowMins <= end) {
-          return { onLeave: true, reason: `Nghỉ nửa buổi ${e.gio_bat_dau}–${e.gio_ket_thuc}` };
+          return { onLeave: true, driverName, reason: `Nghỉ nửa buổi ${e.gio_bat_dau}–${e.gio_ket_thuc}` };
         }
       }
     } else if (e.loai_nghi === "Nghỉ việc") {
-      // leave_from stored as last_working_day + 1 — skip from this date onwards
       if (today >= e.leave_from) {
-        return { onLeave: true, reason: `Nghỉ việc (từ ${e.leave_from})` };
+        return { onLeave: true, driverName, reason: `Nghỉ việc (từ ${e.leave_from})` };
       }
     }
   }
