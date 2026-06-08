@@ -191,7 +191,7 @@ export default function ChamCongPage() {
   async function submit(type: ActionType) {
     if (!driverId || !locationId) {
       setStatus("error");
-      setMessage("Vui lòng chọn tài xế và địa điểm.");
+      setMessage("Vui lòng chọn tên và địa điểm");
       return;
     }
 
@@ -268,7 +268,7 @@ export default function ChamCongPage() {
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200 w-full max-w-md p-6 space-y-5">
         <div>
           <h1 className="text-xl font-bold text-gray-900">Chấm Công</h1>
-          <p className="text-sm text-gray-500 mt-1">Chọn tài xế và địa điểm để chấm công vào / ra.</p>
+          <p className="text-sm text-gray-500 mt-1">Chọn tên và địa điểm để chấm công vào / ra.</p>
         </div>
 
         {/* Driver searchable dropdown */}
@@ -281,7 +281,7 @@ export default function ChamCongPage() {
             <input
               type="text"
               className="w-full border border-gray-300 rounded-lg px-3 py-2 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder={drivers.length ? "Tìm tài xế..." : "Đang tải..."}
+              placeholder={drivers.length ? "Chọn tên..." : "Đang tải..."}
               value={driverSearch}
               onChange={(e) => {
                 setDriverSearch(e.target.value);

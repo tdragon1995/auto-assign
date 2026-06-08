@@ -127,7 +127,7 @@ export default function AuditPage() {
   async function submit() {
     if (!driverId || !locationId) {
       setStatus("error");
-      setMessage("Vui lòng chọn tài xế và địa điểm.");
+      setMessage("Vui lòng chọn tên và địa điểm");
       return;
     }
 
@@ -198,7 +198,7 @@ export default function AuditPage() {
             <input
               type="text"
               className="w-full border border-gray-300 rounded-lg px-3 py-2 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder={drivers.length ? "Tìm tài xế..." : "Đang tải..."}
+              placeholder={drivers.length ? "Chọn tên..." : "Đang tải..."}
               value={driverSearch}
               onChange={(e) => { setDriverSearch(e.target.value); setDriverId(""); setShowDriverList(true); }}
               onFocus={() => setShowDriverList(true)}
