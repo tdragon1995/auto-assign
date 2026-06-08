@@ -745,7 +745,15 @@ export async function autoAssignCycle(
 
     let jobTime: Date;
     try {
-      jobTime = parseVnTimestamp(job.create_ts);
+      // A job with a delivery window (scheduled / released-from-parking) is shift-checked
+      // against its WINDOW time on the scheduled date — NOT scheduled_delivery_ts, whose
+      // time is the (often pre-shift) create time for ASAP-converted jobs. e.g. a job
+      // created 05:56 with a 14:30 window must check 14:30 (on shift), not 05:56 (pre-06:00).
+      const schedDate = job.scheduled_delivery_ts?.slice(0, 10) || today;
+      const windowed = windowTimeFrom ? parsePickupWindowTime(windowTimeFrom, schedDate) : null;
+      jobTime = windowed && !isNaN(windowed.getTime())
+        ? windowed
+        : parseVnTimestamp(job.scheduled_delivery_ts || job.create_ts);
       if (isNaN(jobTime.getTime())) jobTime = new Date();
     } catch {
       jobTime = new Date();
