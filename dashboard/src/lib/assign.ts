@@ -97,6 +97,10 @@ function buildActiveRouteMap(jobs: any[]): Map<string, number> {
 }
 
 
+// Emoji-stripped PSC label text — matches both the app's 🛵-prefixed label and
+// Cartrack recurring-plan jobs that carry a plain "Vận chuyển mẫu PSC" label.
+const PSC_LABEL_TEXT = PSC_OUTBOUND_LABEL.replace(/^[^\p{L}]+/u, "").trim();
+
 function computePickupWarnings(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   assignedJobs: any[],
@@ -141,8 +145,12 @@ function computePickupWarnings(
     if (!driverId) continue;
     // Guard: skip jobs that are no longer active (cancelled/failed/deleted)
     if (job.job_status_id !== 4) continue;
-    // PSC outbound routes have their own scheduling — no late-pickup alert needed
-    if ((job.labels ?? []).includes(PSC_OUTBOUND_LABEL)) continue;
+    // PSC outbound routes have their own scheduling — no late-pickup alert needed.
+    // Match on the emoji-stripped text: app-created jobs carry the 🛵-prefixed
+    // PSC_OUTBOUND_LABEL, but Cartrack recurring-plan jobs use a plain
+    // "Vận chuyển mẫu PSC" label without the emoji, so exact-match misses them.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if ((job.labels ?? []).some((l: any) => typeof l === "string" && l.includes(PSC_LABEL_TEXT))) continue;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pickup = (job.stops ?? [] as any[]).find((s: any) => s.stop_type_id === 1);
