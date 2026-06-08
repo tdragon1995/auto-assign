@@ -18,7 +18,7 @@ async function getNghiPhepSheetName(
   return cachedNghiPhepSheetName;
 }
 
-export async function appendNghiPhep(row: (string | null)[]): Promise<void> {
+export async function appendNghiPhep(rows: (string | null)[][]): Promise<void> {
   const keyJson = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
   if (!keyJson) throw new Error("GOOGLE_SERVICE_ACCOUNT_KEY is not set");
 
@@ -45,6 +45,6 @@ export async function appendNghiPhep(row: (string | null)[]): Promise<void> {
     range: `${quotedName}!A1`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
-    requestBody: { values: [row] },
+    requestBody: { values: rows },
   });
 }
