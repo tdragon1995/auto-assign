@@ -1,4 +1,4 @@
-const SHEET_ID = "1Bqsm5atLYUQ4gMsL7zHrbrS6YUu7pEDa-Iy_j_wpCss";
+export const SHEET_ID = "1Bqsm5atLYUQ4gMsL7zHrbrS6YUu7pEDa-Iy_j_wpCss";
 
 export const SHEET_GID = {
   mapping: "0",
@@ -6,6 +6,7 @@ export const SHEET_GID = {
   sunday: "1277313355",
   tpl: "934328932",
   schedule_job: "834076876",
+  nghi_phep: "158238549",
 } as const;
 
 export function sheetCsvUrl(gid: string): string {

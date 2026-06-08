@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo, useRef } from "react";
+import { Copy, Check } from "lucide-react";
 
 interface Driver {
   driver_id: string;
@@ -24,54 +25,102 @@ interface ShiftState {
 
 type ActionType = "check-in" | "check-out";
 type Status = "idle" | "loading" | "success" | "error";
+type Tab = "cham-cong" | "nghi-phep";
+type LeaveType = "nguyen_buoi" | "nua_buoi" | "nghi_viec";
 
 const LS_DRIVER_ID   = "cc_driver_id";
 const LS_DRIVER_NAME = "cc_driver_name";
-const SHIFT_STATE_TTL_MS = 2 * 60 * 1000; // 2 minutes
+const SHIFT_STATE_TTL_MS = 2 * 60 * 1000;
 const SS_DRIVERS_KEY = "cc_drivers_cache";
+
+const TIME_SLOTS: string[] = (() => {
+  const slots: string[] = [];
+  for (let h = 0; h < 24; h++) {
+    for (let m = 0; m < 60; m += 30) {
+      slots.push(`${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`);
+    }
+  }
+  return slots;
+})();
 
 async function fetchDriversCached(): Promise<unknown> {
   if (typeof window !== "undefined") {
     try {
       const raw = sessionStorage.getItem(SS_DRIVERS_KEY);
       if (raw) return JSON.parse(raw);
-    } catch { /* ignore parse errors */ }
+    } catch { /* ignore */ }
   }
   const data = await fetch("/api/drivers").then((r) => r.json());
   try {
     sessionStorage.setItem(SS_DRIVERS_KEY, JSON.stringify(data));
-  } catch { /* ignore storage errors */ }
+  } catch { /* ignore */ }
   return data;
 }
 
+function tomorrowStr(): string {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  const y = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${mo}-${day}`;
+}
+
+function vnWeekday(dateStr: string): string {
+  if (!dateStr) return "";
+  const [y, mo, d] = dateStr.split("-").map(Number);
+  const dt = new Date(y, mo - 1, d);
+  const days = ["Chủ Nhật", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7"];
+  return days[dt.getDay()];
+}
+
+function fmtDate(dateStr: string): string {
+  if (!dateStr) return "";
+  const [y, mo, d] = dateStr.split("-");
+  return `${d}/${mo}/${y}`;
+}
+
 export default function ChamCongPage() {
+  // ── Shared ────────────────────────────────────────────────────────────────
+  const [tab, setTab] = useState<Tab>("cham-cong");
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
-
-  const [driverId,      setDriverId]      = useState(() => typeof window !== "undefined" ? localStorage.getItem(LS_DRIVER_ID)   ?? "" : "");
-  const [driverName,    setDriverName]    = useState(() => typeof window !== "undefined" ? localStorage.getItem(LS_DRIVER_NAME) ?? "" : "");
-  const [driverSearch,  setDriverSearch]  = useState(() => typeof window !== "undefined" ? localStorage.getItem(LS_DRIVER_NAME) ?? "" : "");
-  const [showDriverList, setShowDriverList] = useState(false);
-
-  const [locationId,    setLocationId]    = useState("");
-  const [locationName,  setLocationName]  = useState("");
-  const [locationSearch, setLocationSearch] = useState("");
-  const [showLocationList, setShowLocationList] = useState(false);
-
-  const [status, setStatus] = useState<Status>("idle");
-  const [message, setMessage] = useState("");
-  const [pendingNames, setPendingNames] = useState<string[]>([]);
   const [initialLoading, setInitialLoading] = useState(true);
 
-  // Pre-fetched shift state
-  const shiftStateRef = useRef<ShiftState | null>(null);
+  const [driverId,       setDriverId]      = useState(() => typeof window !== "undefined" ? localStorage.getItem(LS_DRIVER_ID)   ?? "" : "");
+  const [driverName,     setDriverName]    = useState(() => typeof window !== "undefined" ? localStorage.getItem(LS_DRIVER_NAME) ?? "" : "");
+  const [driverSearch,   setDriverSearch]  = useState(() => typeof window !== "undefined" ? localStorage.getItem(LS_DRIVER_NAME) ?? "" : "");
+  const [showDriverList, setShowDriverList] = useState(false);
+
+  // ── Chấm Công tab ─────────────────────────────────────────────────────────
+  const [locationId,       setLocationId]      = useState("");
+  const [locationName,     setLocationName]    = useState("");
+  const [locationSearch,   setLocationSearch]  = useState("");
+  const [showLocationList, setShowLocationList] = useState(false);
+  const [ccStatus,   setCcStatus]  = useState<Status>("idle");
+  const [ccMessage,  setCcMessage] = useState("");
+  const [pendingNames, setPendingNames] = useState<string[]>([]);
+  const shiftStateRef  = useRef<ShiftState | null>(null);
   const [shiftFetching, setShiftFetching] = useState(false);
 
-  // On mount: load dropdowns + pre-fetch shift state in parallel, then hide loader
+  // ── Nộp Đơn Nghỉ tab ──────────────────────────────────────────────────────
+  const [leaveType,         setLeaveType]         = useState<LeaveType>("nguyen_buoi");
+  const [leaveFromDate,     setLeaveFromDate]     = useState("");
+  const [leaveToDate,       setLeaveToDate]       = useState("");
+  const [leaveDate,         setLeaveDate]         = useState("");
+  const [leaveStartTime,    setLeaveStartTime]    = useState("");
+  const [leaveEndTime,      setLeaveEndTime]      = useState("");
+  const [leaveStatus,       setLeaveStatus]       = useState<Status>("idle");
+  const [leaveError,        setLeaveError]        = useState("");
+  const [leaveCopyText,     setLeaveCopyText]     = useState("");
+  const [leaveSuccessTitle, setLeaveSuccessTitle] = useState("");
+  const [copied, setCopied] = useState(false);
+
+  // ── Init ──────────────────────────────────────────────────────────────────
   useEffect(() => {
     const savedId = typeof window !== "undefined" ? localStorage.getItem(LS_DRIVER_ID) : null;
 
-    const dropdownsPromise = Promise.all([
+    Promise.all([
       fetchDriversCached(),
       fetch("/api/cham-cong").then((r) => r.json()),
     ]).then(([driversData, chamCongData]) => {
@@ -84,20 +133,17 @@ export default function ChamCongPage() {
           driver_id: d.delivery_driver_id,
           driver_name: `${d.first_name ?? ""} ${d.last_name ?? ""}`.trim(),
         }))
-        .filter((d: Driver) => d.driver_id && d.driver_name && d.driver_name.startsWith("P - "))
-        .sort((a: Driver, b: Driver) =>
-          a.driver_name.localeCompare(b.driver_name, "vi")
-        );
+        .filter((d: Driver) => d.driver_id && d.driver_name)
+        .sort((a: Driver, b: Driver) => a.driver_name.localeCompare(b.driver_name, "vi"));
       setDrivers(sorted);
       setLocations(chamCongData.pscs ?? []);
-    });
+    }).finally(() => setInitialLoading(false));
 
-    dropdownsPromise.finally(() => setInitialLoading(false));
     if (savedId) fetchShiftState(savedId);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Pre-fetch shift state when driver is selected
+  // ── Shift state ───────────────────────────────────────────────────────────
   async function fetchShiftState(id: string): Promise<ShiftState | null> {
     setShiftFetching(true);
     try {
@@ -117,23 +163,27 @@ export default function ChamCongPage() {
     }
   }
 
+  async function getShiftState(): Promise<ShiftState | null> {
+    const cached = shiftStateRef.current;
+    if (cached && (Date.now() - cached.fetchedAt < SHIFT_STATE_TTL_MS || shiftFetching)) return cached;
+    try {
+      const res = await fetch(`/api/cham-cong?driver_id=${driverId}`);
+      if (!res.ok) return null;
+      const data = await res.json();
+      const state: ShiftState = { ...data, fetchedAt: Date.now() };
+      shiftStateRef.current = state;
+      return state;
+    } catch {
+      return null;
+    }
+  }
+
+  // ── Driver dropdown ───────────────────────────────────────────────────────
   const filteredDrivers = useMemo(() =>
     driverSearch.trim() && !driverId
-      ? drivers.filter((d) =>
-          d.driver_name.toLowerCase().includes(driverSearch.toLowerCase())
-        )
+      ? drivers.filter((d) => d.driver_name.toLowerCase().includes(driverSearch.toLowerCase()))
       : drivers,
     [drivers, driverSearch, driverId]
-  );
-
-  const filteredLocations = useMemo(() =>
-    locationSearch.trim() && !locationId
-      ? locations.filter((l) =>
-          l.name.toLowerCase().includes(locationSearch.toLowerCase()) ||
-          l.address.toLowerCase().includes(locationSearch.toLowerCase())
-        )
-      : locations,
-    [locations, locationSearch, locationId]
   );
 
   function selectDriver(d: Driver) {
@@ -156,6 +206,17 @@ export default function ChamCongPage() {
     localStorage.removeItem(LS_DRIVER_NAME);
   }
 
+  // ── Location dropdown ─────────────────────────────────────────────────────
+  const filteredLocations = useMemo(() =>
+    locationSearch.trim() && !locationId
+      ? locations.filter((l) =>
+          l.name.toLowerCase().includes(locationSearch.toLowerCase()) ||
+          l.address.toLowerCase().includes(locationSearch.toLowerCase())
+        )
+      : locations,
+    [locations, locationSearch, locationId]
+  );
+
   function selectLocation(l: Location) {
     setLocationId(l.customer_id);
     setLocationName(l.name);
@@ -169,48 +230,28 @@ export default function ChamCongPage() {
     setLocationSearch("");
   }
 
-  async function getShiftState(): Promise<ShiftState | null> {
-    const cached = shiftStateRef.current;
-    // Use cache if fresh, or if a fetch is already in progress (avoid duplicate call)
-    if (cached && (Date.now() - cached.fetchedAt < SHIFT_STATE_TTL_MS || shiftFetching)) {
-      return cached;
-    }
-    // Stale and no fetch in progress — re-fetch now
-    try {
-      const res = await fetch(`/api/cham-cong?driver_id=${driverId}`);
-      if (!res.ok) return null;
-      const data = await res.json();
-      const state: ShiftState = { ...data, fetchedAt: Date.now() };
-      shiftStateRef.current = state;
-      return state;
-    } catch {
-      return null;
-    }
-  }
-
-  async function submit(type: ActionType) {
+  // ── Chấm Công submit ──────────────────────────────────────────────────────
+  async function submitChamCong(type: ActionType) {
     if (!driverId || !locationId) {
-      setStatus("error");
-      setMessage("Vui lòng chọn tên và địa điểm");
+      setCcStatus("error");
+      setCcMessage("Vui lòng chọn tên và địa điểm");
       return;
     }
-
-    setStatus("loading");
-    setMessage("");
+    setCcStatus("loading");
+    setCcMessage("");
     setPendingNames([]);
 
-    // ── Client-side validation using pre-fetched shift state ─────────────
     const shift = await getShiftState();
     if (shift) {
       const hasOpenShift = shift.checkInCount > shift.completedCheckOuts;
       if (type === "check-in" && hasOpenShift) {
-        setStatus("error");
-        setMessage("Đã có task vào ca chưa hoàn thành. Vui lòng mở app Cartrack và hoàn thành task trước khi tạo mới!");
+        setCcStatus("error");
+        setCcMessage("Đã có task vào ca chưa hoàn thành. Vui lòng mở app Cartrack và hoàn thành task trước khi tạo mới!");
         return;
       }
       if (type === "check-out" && shift.activeCheckOuts > 0) {
-        setStatus("error");
-        setMessage("Đã có task ra ca chưa hoàn thành. Vui lòng mở app Cartrack và hoàn thành task!");
+        setCcStatus("error");
+        setCcMessage("Đã có task ra ca chưa hoàn thành. Vui lòng mở app Cartrack và hoàn thành task!");
         return;
       }
     }
@@ -219,41 +260,127 @@ export default function ChamCongPage() {
       const res = await fetch("/api/cham-cong", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          driver_id: driverId,
-          driver_name: driverName,
-          psc_customer_id: locationId,
-          psc_name: locationName,
-          type,
-        }),
+        body: JSON.stringify({ driver_id: driverId, driver_name: driverName, psc_customer_id: locationId, psc_name: locationName, type }),
       });
-
       const data = await res.json();
-
       if (!res.ok) {
-        setStatus("error");
-        setMessage(data.error ?? "Có lỗi xảy ra.");
+        setCcStatus("error");
+        setCcMessage(data.error ?? "Có lỗi xảy ra.");
         return;
       }
-
-      // Invalidate shift state after successful action
       shiftStateRef.current = null;
       fetchShiftState(driverId);
-
-      setStatus("success");
+      setCcStatus("success");
       if (type === "check-in") {
-        setMessage(`Đã tạo task vào ca (Job #${data.job_id}). Vui lòng mở app Cartrack và hoàn thành task để chấm công vào ca!`);
+        setCcMessage(`Đã tạo task vào ca (Job #${data.job_id}). Vui lòng mở app Cartrack và hoàn thành task để chấm công vào ca!`);
       } else {
         const names = shift?.pendingJobNames ?? [];
         setPendingNames(names);
-        setMessage(`Đã tạo task ra ca (Job #${data.job_id}). Vui lòng mở app Cartrack và hoàn thành task để chấm công ra ca!`);
+        setCcMessage(`Đã tạo task ra ca (Job #${data.job_id}). Vui lòng mở app Cartrack và hoàn thành task để chấm công ra ca!`);
       }
     } catch {
-      setStatus("error");
-      setMessage("Không thể kết nối. Vui lòng thử lại.");
+      setCcStatus("error");
+      setCcMessage("Không thể kết nối. Vui lòng thử lại.");
     }
   }
 
+  // ── Leave form ────────────────────────────────────────────────────────────
+  const endTimeSlots = useMemo(() => {
+    if (!leaveStartTime) return TIME_SLOTS;
+    const [sh, sm] = leaveStartTime.split(":").map(Number);
+    const minMins = sh * 60 + sm + 60;
+    return TIME_SLOTS.filter((t) => {
+      const [eh, em] = t.split(":").map(Number);
+      return eh * 60 + em >= minMins;
+    });
+  }, [leaveStartTime]);
+
+  function resetLeaveForm() {
+    setLeaveType("nguyen_buoi");
+    setLeaveFromDate("");
+    setLeaveToDate("");
+    setLeaveDate("");
+    setLeaveStartTime("");
+    setLeaveEndTime("");
+    setLeaveStatus("idle");
+    setLeaveError("");
+    setLeaveCopyText("");
+    setLeaveSuccessTitle("");
+    setCopied(false);
+  }
+
+  async function submitLeave() {
+    setLeaveError("");
+    if (!driverId) {
+      setLeaveError("Vui lòng chọn tên nhân viên");
+      return;
+    }
+    if (leaveType === "nguyen_buoi") {
+      if (!leaveFromDate || !leaveToDate) { setLeaveError("Vui lòng chọn đầy đủ ngày nghỉ từ và đến"); return; }
+      if (leaveToDate < leaveFromDate)    { setLeaveError("Ngày kết thúc phải bằng hoặc sau ngày bắt đầu"); return; }
+    } else if (leaveType === "nua_buoi") {
+      if (!leaveDate)      { setLeaveError("Vui lòng chọn ngày nghỉ"); return; }
+      if (!leaveStartTime) { setLeaveError("Vui lòng chọn giờ bắt đầu"); return; }
+      if (!leaveEndTime)   { setLeaveError("Vui lòng chọn giờ kết thúc"); return; }
+    } else {
+      if (!leaveDate) { setLeaveError("Vui lòng chọn ngày làm việc cuối cùng"); return; }
+    }
+
+    setLeaveStatus("loading");
+
+    const payload = {
+      driver_id: driverId,
+      driver_name: driverName,
+      loai_nghi: leaveType,
+      ngay_bat_dau: leaveType === "nguyen_buoi" ? leaveFromDate : leaveDate,
+      ngay_ket_thuc: leaveType === "nguyen_buoi" ? leaveToDate : undefined,
+      gio_bat_dau:   leaveType === "nua_buoi"    ? leaveStartTime : undefined,
+      gio_ket_thuc:  leaveType === "nua_buoi"    ? leaveEndTime   : undefined,
+    };
+
+    try {
+      const res = await fetch("/api/nghi-phep", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        setLeaveStatus("error");
+        return;
+      }
+
+      let title = "";
+      let copyText = "";
+
+      if (leaveType === "nguyen_buoi") {
+        title = "Nộp đơn nghỉ thành công!";
+        copyText = `Tôi, ${driverName} đã nộp yêu cầu nghỉ từ ${fmtDate(leaveFromDate)} (${vnWeekday(leaveFromDate)}) đến ${fmtDate(leaveToDate)} (${vnWeekday(leaveToDate)}). Nhờ đội điều phối hỗ trợ sắp xếp để không gián đoạn công việc!`;
+      } else if (leaveType === "nua_buoi") {
+        title = "Nộp đơn nghỉ thành công!";
+        copyText = `Tôi, ${driverName} đã nộp yêu cầu nghỉ từ ${leaveStartTime} đến ${leaveEndTime} ngày ${fmtDate(leaveDate)} (${vnWeekday(leaveDate)}). Nhờ đội điều phối hỗ trợ sắp xếp để không gián đoạn công việc!`;
+      } else {
+        title = "Hoàn tất nộp đơn nghỉ việc, xin cám ơn bạn đã hợp tác trong thời gian qua!";
+        copyText = `Tôi, ${driverName} đã nộp đơn chấm dứt hợp tác làm việc với Diag. Ngày cuối cùng làm việc là ${fmtDate(leaveDate)} (${vnWeekday(leaveDate)}). Nhờ đội điều phối hỗ trợ sắp xếp và hướng dẫn các thủ tục bàn giao!`;
+      }
+
+      setLeaveSuccessTitle(title);
+      setLeaveCopyText(copyText);
+      setLeaveStatus("success");
+    } catch {
+      setLeaveStatus("error");
+    }
+  }
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(leaveCopyText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { /* ignore */ }
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────
   if (initialLoading) {
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center gap-3">
@@ -263,145 +390,327 @@ export default function ChamCongPage() {
     );
   }
 
+  const tomorrow = tomorrowStr();
+
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-200 w-full max-w-md p-6 space-y-5">
-        <div>
-          <h1 className="text-xl font-bold text-gray-900">Chấm Công</h1>
-          <p className="text-sm text-gray-500 mt-1">Chọn tên và địa điểm để chấm công vào / ra.</p>
-        </div>
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-200 w-full max-w-md overflow-hidden">
 
-        {/* Driver searchable dropdown */}
-        <div className="space-y-1 relative">
-          <label className="text-sm font-medium text-gray-700">
-            Nhân Viên Giao Nhận
-            {shiftFetching && <span className="ml-2 text-xs text-gray-400">Đang kiểm tra ca...</span>}
-          </label>
-          <div className="relative">
-            <input
-              type="text"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder={drivers.length ? "Chọn tên..." : "Đang tải..."}
-              value={driverSearch}
-              onChange={(e) => {
-                setDriverSearch(e.target.value);
-                setDriverId("");
-                setShowDriverList(true);
-              }}
-              onFocus={() => setShowDriverList(true)}
-              onBlur={() => setTimeout(() => setShowDriverList(false), 150)}
-            />
-            {driverSearch && (
-              <button
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                onMouseDown={(e) => { e.preventDefault(); clearDriver(); }}
-              >
-                ×
-              </button>
-            )}
-          </div>
-          {showDriverList && !driverId && filteredDrivers.length > 0 && (
-            <ul className="absolute z-10 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-52 overflow-y-auto mt-1">
-              {filteredDrivers.map((d) => (
-                <li
-                  key={d.driver_id}
-                  className="px-3 py-2 text-sm hover:bg-blue-50 cursor-pointer"
-                  onMouseDown={() => selectDriver(d)}
-                >
-                  {d.driver_name}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        {/* Location searchable dropdown */}
-        <div className="space-y-1 relative">
-          <label className="text-sm font-medium text-gray-700">Địa điểm</label>
-          <div className="relative">
-            <input
-              type="text"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder={locations.length ? "Tìm địa điểm..." : "Đang tải..."}
-              value={locationSearch}
-              onChange={(e) => {
-                setLocationSearch(e.target.value);
-                setLocationId("");
-                setShowLocationList(true);
-              }}
-              onFocus={() => setShowLocationList(true)}
-              onBlur={() => setTimeout(() => setShowLocationList(false), 150)}
-            />
-            {locationSearch && (
-              <button
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                onMouseDown={(e) => { e.preventDefault(); clearLocation(); }}
-              >
-                ×
-              </button>
-            )}
-          </div>
-          {showLocationList && !locationId && filteredLocations.length > 0 && (
-            <ul className="absolute z-10 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-52 overflow-y-auto mt-1">
-              {filteredLocations.map((l) => (
-                <li
-                  key={l.customer_id}
-                  className="px-3 py-2 cursor-pointer hover:bg-blue-50"
-                  onMouseDown={() => selectLocation(l)}
-                >
-                  <div className="text-sm font-medium text-gray-800">{l.name}</div>
-                  {l.address && <div className="text-xs text-gray-400">{l.address}</div>}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        {/* Buttons */}
-        <div className="grid grid-cols-2 gap-3 pt-1">
+        {/* Tab bar */}
+        <div className="flex border-b border-gray-200">
           <button
-            disabled={status === "loading"}
-            onClick={() => submit("check-in")}
-            className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-semibold rounded-xl py-3 text-sm transition-colors"
+            onClick={() => setTab("cham-cong")}
+            className={`flex-1 py-3.5 text-sm font-semibold transition-colors ${
+              tab === "cham-cong"
+                ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/40"
+                : "text-gray-500 hover:text-gray-700"
+            }`}
           >
-            {status === "loading" ? "Đang xử lý..." : "Vào Ca"}
+            Chấm Công
           </button>
           <button
-            disabled={status === "loading"}
-            onClick={() => submit("check-out")}
-            className="bg-red-500 hover:bg-red-600 disabled:opacity-50 text-white font-semibold rounded-xl py-3 text-sm transition-colors"
+            onClick={() => setTab("nghi-phep")}
+            className={`flex-1 py-3.5 text-sm font-semibold transition-colors ${
+              tab === "nghi-phep"
+                ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/40"
+                : "text-gray-500 hover:text-gray-700"
+            }`}
           >
-            {status === "loading" ? "Đang xử lý..." : "Ra Ca"}
+            Nộp Đơn Nghỉ
           </button>
         </div>
 
-        {/* Status message */}
-        {message && (
-          <div className="space-y-3">
-            <div
-              className={`rounded-lg px-4 py-3 text-sm font-medium ${
-                status === "success"
-                  ? "bg-green-50 text-green-700 border border-green-200"
-                  : status === "error"
-                  ? "bg-red-50 text-red-700 border border-red-200"
-                  : ""
-              }`}
-            >
-              {message}
+        <div className="p-6 space-y-5">
+
+          {/* ── Shared: Driver dropdown ─────────────────────────────────── */}
+          <div className="space-y-1 relative">
+            <label className="text-sm font-medium text-gray-700">
+              Nhân Viên Giao Nhận
+              {shiftFetching && tab === "cham-cong" && (
+                <span className="ml-2 text-xs text-gray-400">Đang kiểm tra ca...</span>
+              )}
+            </label>
+            <div className="relative">
+              <input
+                type="text"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder={drivers.length ? "Chọn tên..." : "Đang tải..."}
+                value={driverSearch}
+                onChange={(e) => { setDriverSearch(e.target.value); setDriverId(""); setShowDriverList(true); }}
+                onFocus={() => setShowDriverList(true)}
+                onBlur={() => setTimeout(() => setShowDriverList(false), 150)}
+              />
+              {driverSearch && (
+                <button
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                  onMouseDown={(e) => { e.preventDefault(); clearDriver(); }}
+                >
+                  ×
+                </button>
+              )}
             </div>
-            {pendingNames.length > 0 && (
-              <div className="rounded-lg px-4 py-3 text-sm border border-yellow-300 bg-yellow-50 text-yellow-800">
-                <p className="font-semibold flex items-center gap-1.5">
-                  <span>⚠️</span> Lưu ý, vẫn còn những công việc chưa hoàn tất:
-                </p>
-                <ol className="list-decimal list-inside mt-1.5 space-y-0.5 font-normal">
-                  {pendingNames.map((name, i) => <li key={i}>{name}</li>)}
-                </ol>
-                <p className="mt-1.5 font-medium">Vui lòng liên hệ điều phối trước khi rời ca!</p>
-              </div>
+            {showDriverList && !driverId && filteredDrivers.length > 0 && (
+              <ul className="absolute z-10 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-52 overflow-y-auto mt-1">
+                {filteredDrivers.map((d) => (
+                  <li
+                    key={d.driver_id}
+                    className="px-3 py-2 text-sm hover:bg-blue-50 cursor-pointer"
+                    onMouseDown={() => selectDriver(d)}
+                  >
+                    {d.driver_name}
+                  </li>
+                ))}
+              </ul>
             )}
           </div>
-        )}
+
+          {/* ── Chấm Công tab ───────────────────────────────────────────── */}
+          {tab === "cham-cong" && (
+            <>
+              {/* Location dropdown */}
+              <div className="space-y-1 relative">
+                <label className="text-sm font-medium text-gray-700">Địa điểm</label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder={locations.length ? "Tìm địa điểm..." : "Đang tải..."}
+                    value={locationSearch}
+                    onChange={(e) => { setLocationSearch(e.target.value); setLocationId(""); setShowLocationList(true); }}
+                    onFocus={() => setShowLocationList(true)}
+                    onBlur={() => setTimeout(() => setShowLocationList(false), 150)}
+                  />
+                  {locationSearch && (
+                    <button
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                      onMouseDown={(e) => { e.preventDefault(); clearLocation(); }}
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+                {showLocationList && !locationId && filteredLocations.length > 0 && (
+                  <ul className="absolute z-10 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-52 overflow-y-auto mt-1">
+                    {filteredLocations.map((l) => (
+                      <li
+                        key={l.customer_id}
+                        className="px-3 py-2 cursor-pointer hover:bg-blue-50"
+                        onMouseDown={() => selectLocation(l)}
+                      >
+                        <div className="text-sm font-medium text-gray-800">{l.name}</div>
+                        {l.address && <div className="text-xs text-gray-400">{l.address}</div>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              {/* Check-in / Check-out buttons */}
+              <div className="grid grid-cols-2 gap-3 pt-1">
+                <button
+                  disabled={ccStatus === "loading"}
+                  onClick={() => submitChamCong("check-in")}
+                  className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-semibold rounded-xl py-3 text-sm transition-colors"
+                >
+                  {ccStatus === "loading" ? "Đang xử lý..." : "Vào Ca"}
+                </button>
+                <button
+                  disabled={ccStatus === "loading"}
+                  onClick={() => submitChamCong("check-out")}
+                  className="bg-red-500 hover:bg-red-600 disabled:opacity-50 text-white font-semibold rounded-xl py-3 text-sm transition-colors"
+                >
+                  {ccStatus === "loading" ? "Đang xử lý..." : "Ra Ca"}
+                </button>
+              </div>
+
+              {/* Chấm công status message */}
+              {ccMessage && (
+                <div className="space-y-3">
+                  <div
+                    className={`rounded-lg px-4 py-3 text-sm font-medium ${
+                      ccStatus === "success"
+                        ? "bg-green-50 text-green-700 border border-green-200"
+                        : ccStatus === "error"
+                        ? "bg-red-50 text-red-700 border border-red-200"
+                        : ""
+                    }`}
+                  >
+                    {ccMessage}
+                  </div>
+                  {pendingNames.length > 0 && (
+                    <div className="rounded-lg px-4 py-3 text-sm border border-yellow-300 bg-yellow-50 text-yellow-800">
+                      <p className="font-semibold flex items-center gap-1.5">
+                        <span>⚠️</span> Lưu ý, vẫn còn những công việc chưa hoàn tất:
+                      </p>
+                      <ol className="list-decimal list-inside mt-1.5 space-y-0.5 font-normal">
+                        {pendingNames.map((name, i) => <li key={i}>{name}</li>)}
+                      </ol>
+                      <p className="mt-1.5 font-medium">Vui lòng liên hệ điều phối trước khi rời ca!</p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ── Nộp Đơn Nghỉ tab ────────────────────────────────────────── */}
+          {tab === "nghi-phep" && (
+            <>
+              {leaveStatus === "success" ? (
+                /* Success view */
+                <div className="space-y-4">
+                  <div className="rounded-lg px-4 py-3 bg-green-50 border border-green-200">
+                    <p className="text-sm font-semibold text-green-700">{leaveSuccessTitle}</p>
+                  </div>
+
+                  {/* Zalo copy box */}
+                  <button
+                    onClick={handleCopy}
+                    className="w-full text-left rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 hover:bg-gray-100 transition-colors"
+                  >
+                    <p className="text-sm text-gray-800 leading-relaxed">{leaveCopyText}</p>
+                    <div className="flex items-center gap-1.5 mt-2.5 text-xs text-gray-500">
+                      {copied ? (
+                        <Check size={14} className="text-green-600 shrink-0" />
+                      ) : (
+                        <Copy size={14} className="shrink-0" />
+                      )}
+                      <span>{copied ? "Đã copy!" : "Bấm vào để copy và dán vào nhóm Zalo công việc"}</span>
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={resetLeaveForm}
+                    className="w-full border border-gray-300 rounded-xl py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+                  >
+                    Nộp thêm đơn khác
+                  </button>
+                </div>
+              ) : (
+                /* Leave form */
+                <>
+                  {/* Loại nghỉ */}
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-gray-700">Loại nghỉ</label>
+                    <select
+                      value={leaveType}
+                      onChange={(e) => {
+                        setLeaveType(e.target.value as LeaveType);
+                        setLeaveFromDate(""); setLeaveToDate(""); setLeaveDate("");
+                        setLeaveStartTime(""); setLeaveEndTime(""); setLeaveError("");
+                      }}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                    >
+                      <option value="nguyen_buoi">Nghỉ nguyên buổi (nghỉ toàn bộ ca làm)</option>
+                      <option value="nua_buoi">Nghỉ nửa buổi (nghỉ một/một vài tiếng ở đầu hoặc cuối ca)</option>
+                      <option value="nghi_viec">Nghỉ việc (Kết thúc hợp tác)</option>
+                    </select>
+                  </div>
+
+                  {/* Nghỉ nguyên buổi: date range */}
+                  {leaveType === "nguyen_buoi" && (
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <label className="text-sm font-medium text-gray-700">Nghỉ từ ngày</label>
+                        <input
+                          type="date"
+                          min={tomorrow}
+                          value={leaveFromDate}
+                          onChange={(e) => {
+                            setLeaveFromDate(e.target.value);
+                            if (leaveToDate && e.target.value > leaveToDate) setLeaveToDate("");
+                          }}
+                          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-sm font-medium text-gray-700">Đến ngày</label>
+                        <input
+                          type="date"
+                          min={leaveFromDate || tomorrow}
+                          value={leaveToDate}
+                          onChange={(e) => setLeaveToDate(e.target.value)}
+                          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Nghỉ nửa buổi: date + time range */}
+                  {leaveType === "nua_buoi" && (
+                    <div className="space-y-3">
+                      <div className="space-y-1">
+                        <label className="text-sm font-medium text-gray-700">Ngày nghỉ</label>
+                        <input
+                          type="date"
+                          min={tomorrow}
+                          value={leaveDate}
+                          onChange={(e) => setLeaveDate(e.target.value)}
+                          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <label className="text-sm font-medium text-gray-700">Giờ bắt đầu</label>
+                          <select
+                            value={leaveStartTime}
+                            onChange={(e) => { setLeaveStartTime(e.target.value); setLeaveEndTime(""); }}
+                            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                          >
+                            <option value="">-- Chọn --</option>
+                            {TIME_SLOTS.map((t) => <option key={t} value={t}>{t}</option>)}
+                          </select>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-sm font-medium text-gray-700">Giờ kết thúc</label>
+                          <select
+                            value={leaveEndTime}
+                            onChange={(e) => setLeaveEndTime(e.target.value)}
+                            disabled={!leaveStartTime}
+                            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white disabled:opacity-50"
+                          >
+                            <option value="">-- Chọn --</option>
+                            {endTimeSlots.map((t) => <option key={t} value={t}>{t}</option>)}
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Nghỉ việc: last working day */}
+                  {leaveType === "nghi_viec" && (
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium text-gray-700">Ngày làm việc cuối cùng</label>
+                      <input
+                        type="date"
+                        min={tomorrow}
+                        value={leaveDate}
+                        onChange={(e) => setLeaveDate(e.target.value)}
+                        className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                  )}
+
+                  {/* Error */}
+                  {(leaveError || leaveStatus === "error") && (
+                    <div className="rounded-lg px-4 py-3 bg-red-50 border border-red-200 text-sm text-red-700">
+                      {leaveError || "Đơn bị lỗi, vui lòng gửi lại hoặc chụp màn hình gửi vào nhóm Zalo công việc để được hỗ trợ!"}
+                    </div>
+                  )}
+
+                  <button
+                    disabled={leaveStatus === "loading"}
+                    onClick={submitLeave}
+                    className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold rounded-xl py-3 text-sm transition-colors"
+                  >
+                    {leaveStatus === "loading" ? "Đang gửi..." : "Nộp Đơn"}
+                  </button>
+                </>
+              )}
+            </>
+          )}
+
+        </div>
       </div>
     </div>
   );
