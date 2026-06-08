@@ -2,7 +2,7 @@ import type { Config, Driver, Job, LogEntry, LogLevel, Mapping, PickupWarning, T
 import { getDrivers, getUnassignedJobs, getDriverJobs, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, updateJobSendToDriverAt, unassignJob, optimizeDriverRoute, getFleetwebCookie, getJobsByStatusAndDate, JSONRPC_URL, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
-import { detectAndCreateReturnTrips, PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from "./return-trips";
+import { detectAndCreateReturnTrips, PSC_RETURN_LABEL } from "./return-trips";
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
 import { setHeldJobs, setPickupWarnings, type HeldJob } from "./smart-log-kv";
 import { isValidDriverId } from "./config";
@@ -97,10 +97,6 @@ function buildActiveRouteMap(jobs: any[]): Map<string, number> {
 }
 
 
-// Emoji-stripped PSC label text — matches both the app's 🛵-prefixed label and
-// Cartrack recurring-plan jobs that carry a plain "Vận chuyển mẫu PSC" label.
-const PSC_LABEL_TEXT = PSC_OUTBOUND_LABEL.replace(/^[^\p{L}]+/u, "").trim();
-
 function computePickupWarnings(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   assignedJobs: any[],
@@ -145,16 +141,23 @@ function computePickupWarnings(
     if (!driverId) continue;
     // Guard: skip jobs that are no longer active (cancelled/failed/deleted)
     if (job.job_status_id !== 4) continue;
-    // PSC outbound routes have their own scheduling — no late-pickup alert needed.
-    // Match on the emoji-stripped text: app-created jobs carry the 🛵-prefixed
-    // PSC_OUTBOUND_LABEL, but Cartrack recurring-plan jobs use a plain
-    // "Vận chuyển mẫu PSC" label without the emoji, so exact-match misses them.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if ((job.labels ?? []).some((l: any) => typeof l === "string" && l.includes(PSC_LABEL_TEXT))) continue;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const pickup = (job.stops ?? [] as any[]).find((s: any) => s.stop_type_id === 1);
+    const stops = (job.stops ?? []) as any[];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pickup  = stops.find((s: any) => s.stop_type_id === 1);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const dropoff = stops.find((s: any) => s.stop_type_id === 2);
     if (!pickup) continue;
+
+    // Inter-branch transport routes (both ends are "BRA - …" branches) run on
+    // their own recurring schedule — their send_to_driver_at is a plan-template
+    // date from months ago, so the late-pickup alert is meaningless. Skip them.
+    if (
+      (pickup.customer_name ?? "").includes("BRA - ") &&
+      (dropoff?.customer_name ?? "").includes("BRA - ")
+    ) continue;
+
     if (pickup.activity_started_ts) continue;
     // Guard: skip if stop is already completed or rejected
     if (isCompletedOrRejectedStop(pickup.stop_status_id ?? 0)) continue;

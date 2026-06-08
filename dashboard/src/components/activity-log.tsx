@@ -131,39 +131,43 @@ export function ActivityLog({ logs, warnings = [] }: ActivityLogProps) {
             {logs.length} entries
           </span>
         </div>
-        <div className="flex items-center justify-between gap-2 mt-1">
-          <div className="flex gap-1 shrink-0">
-            {FILTERS.map((f) => (
-              <Button
-                key={f}
-                variant={filter === f ? "default" : "outline"}
-                size="sm"
-                className="h-6 text-xs px-2"
-                onClick={() => setFilter(f)}
-              >
-                {f}
-              </Button>
-            ))}
-          </div>
-          {warnings.length > 0 && (
-            <div className="flex gap-2 overflow-x-auto min-w-0 pb-0.5">
+        <div className="flex gap-1 mt-1">
+          {FILTERS.map((f) => (
+            <Button
+              key={f}
+              variant={filter === f ? "default" : "outline"}
+              size="sm"
+              className="h-6 text-xs px-2"
+              onClick={() => setFilter(f)}
+            >
+              {f}
+            </Button>
+          ))}
+        </div>
+        {warnings.length > 0 && (
+          <div className="mt-1.5">
+            <div className="flex items-center gap-1 mb-1 text-xs font-semibold text-amber-700">
+              <span className="leading-none">⚠</span>
+              <span>Lấy mẫu chậm</span>
+              <span className="rounded-full bg-amber-100 border border-amber-300 px-1.5 leading-none py-0.5 text-amber-800">
+                {warnings.length}
+              </span>
+            </div>
+            <div className="flex gap-2 overflow-x-auto w-full pb-1">
               {warnings.map((w) => (
                 <div
                   key={w.job_id}
-                  className="shrink-0 bg-amber-50 border border-amber-300 rounded-lg px-2.5 py-1.5 text-xs min-w-[170px] max-w-[220px] space-y-0.5"
+                  className="shrink-0 bg-amber-50 border border-amber-300 rounded-lg px-2.5 py-1.5 text-xs w-[190px] space-y-0.5"
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1">
-                      <span className="text-amber-500 leading-none">⚠</span>
-                      <a
-                        href={`https://fleetweb-vn.cartrack.com/delivery/map?job=${w.job_id}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="font-mono font-semibold text-indigo-600 underline hover:text-indigo-800"
-                      >
-                        {w.job_id}
-                      </a>
-                    </div>
+                    <a
+                      href={`https://fleetweb-vn.cartrack.com/delivery/map?job=${w.job_id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-mono font-semibold text-indigo-600 underline hover:text-indigo-800"
+                    >
+                      {w.job_id}
+                    </a>
                     <span className="font-bold text-red-600 bg-red-50 border border-red-200 rounded px-1.5 py-0.5 leading-none whitespace-nowrap">
                       +{w.minutes_late ?? 0}&apos;
                     </span>
@@ -184,8 +188,8 @@ export function ActivityLog({ logs, warnings = [] }: ActivityLogProps) {
                 </div>
               ))}
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </CardHeader>
       <CardContent className="flex-1 min-h-0">
         <ScrollArea className="h-full">
