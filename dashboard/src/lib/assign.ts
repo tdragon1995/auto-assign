@@ -17,6 +17,7 @@ import {
 import { haversineKm, goongDistanceKm } from "./distance";
 import { isCompletedOrRejectedStop } from "./job-filters";
 import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, type RefStop, type RefLabel } from "./smart-rank";
+import { loadLeaveEntries, isDriverOnLeave } from "./leave-config";
 
 const REST_BASE = "https://fleetapi-vn.cartrack.com/rest/delivery";
 
@@ -533,6 +534,7 @@ export async function autoAssignCycle(
   // ── Release parked proxy jobs whose send_to_driver_at has passed ──────────
   // Skipped on a targeted manual assign — that's not a full cycle.
   const today = vnDate();
+  const leaveEntries = await loadLeaveEntries().catch(() => []);
   if (!onlyJobIds) await releaseDueProxyJobs(today, env, log);
 
   // Fetch unassigned jobs by scheduled_delivery_ts = today.
@@ -771,6 +773,11 @@ export async function autoAssignCycle(
       // ── 1-driver: straight assign (like fixed auto-assign) ──────────────
         if (smartMapping.smart_driver_id.length === 1) {
           const driverId   = smartMapping.smart_driver_id[0];
+          const lc1 = isDriverOnLeave(driverId, leaveEntries);
+          if (lc1.onLeave) {
+            log(`Job ${jobId} - SMART(1) SKIP: driver on leave (${lc1.reason}) | ${jobCustomerName ?? customerId}`, "WARN");
+            continue;
+          }
           if (smartMapping.alt_drop_off_id) {
             const alt = await applyAltDropoff(jobId, smartMapping.alt_drop_off_id, job.stops ?? [], env, log);
             if (!alt.ok) continue;
@@ -798,10 +805,16 @@ export async function autoAssignCycle(
           continue;
         }
 
-        const candidates = allGpsDrivers.filter((d) =>
-          smartMapping.smart_driver_id.includes(d.delivery_driver_id) &&
-          phase1Coords.has(d.delivery_driver_id)
-        );
+        const candidates = allGpsDrivers.filter((d) => {
+          if (!smartMapping.smart_driver_id.includes(d.delivery_driver_id)) return false;
+          if (!phase1Coords.has(d.delivery_driver_id)) return false;
+          const lc = isDriverOnLeave(d.delivery_driver_id, leaveEntries);
+          if (lc.onLeave) {
+            log(`Job ${jobId} - SMART: skip ${d.delivery_driver_id} on leave (${lc.reason})`, "INFO");
+            return false;
+          }
+          return true;
+        });
         if (candidates.length === 0) {
           log(`Job ${jobId} - SMART skipped: 0/${smartMapping.smart_driver_id.length} configured drivers available (GPS or start_location) | ${jobCustomerName ?? customerId}`, "WARN");
           continue;
@@ -935,6 +948,12 @@ export async function autoAssignCycle(
     const mapping = drivers[0];
     const driverId = mapping.driver_id;
     if (!driverId) continue;
+
+    const lcFixed = isDriverOnLeave(driverId, leaveEntries);
+    if (lcFixed.onLeave) {
+      log(`Job ${jobId} - SKIP: ${mapping.first_name_last_name || driverId} on leave (${lcFixed.reason}) | ${jobCustomerName ?? customerId}`, "WARN");
+      continue;
+    }
 
     // A broken sheet cell (#REF!, #N/A, …) would build a malformed assign URL
     // (/jobs/assign/#REF → Cartrack HTML 404). Catch it here with a clear,

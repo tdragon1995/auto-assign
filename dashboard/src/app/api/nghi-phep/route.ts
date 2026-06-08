@@ -46,8 +46,16 @@ export async function POST(req: NextRequest) {
       // leave_to = leave_from (same day)
       rows = [[ts, driver_id, driver_name, loaiNghiText, ngay_bat_dau, ngay_bat_dau, gio_bat_dau ?? null, gio_ket_thuc ?? null]];
     } else {
-      // nghi_viec — single row, no end date
-      rows = [[ts, driver_id, driver_name, loaiNghiText, ngay_bat_dau, null, null, null]];
+      // nghi_viec — store leave_from as last_working_day + 1 so the engine
+      // skips the driver starting from the day AFTER their last working day
+      const lastDay = new Date(ngay_bat_dau + "T00:00:00");
+      lastDay.setDate(lastDay.getDate() + 1);
+      const skipFrom = [
+        lastDay.getFullYear(),
+        String(lastDay.getMonth() + 1).padStart(2, "0"),
+        String(lastDay.getDate()).padStart(2, "0"),
+      ].join("-");
+      rows = [[ts, driver_id, driver_name, loaiNghiText, skipFrom, null, null, null]];
     }
 
     await appendNghiPhep(rows);
