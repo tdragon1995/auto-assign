@@ -58,12 +58,11 @@ async function fetchDriversCached(): Promise<unknown> {
 }
 
 function tomorrowStr(): string {
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  const y = d.getFullYear();
-  const mo = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${mo}-${day}`;
+  // Use VN timezone so the min date is always correct regardless of device locale
+  const vnToday = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Ho_Chi_Minh" }).format(new Date()).slice(0, 10);
+  const [y, mo, d] = vnToday.split("-").map(Number);
+  const t = new Date(y, mo - 1, d + 1);
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
 }
 
 function vnWeekday(dateStr: string): string {
@@ -94,7 +93,7 @@ function DateField({ value, min, onChange }: { value: string; min: string; onCha
         type="date"
         min={min}
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => { if (!e.target.value || e.target.value >= min) onChange(e.target.value); }}
         className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
       />
     </div>
@@ -650,6 +649,17 @@ export default function ChamCongPage() {
                         />
                       </div>
                     </div>
+                  )}
+
+                  {(leaveType === "nguyen_buoi" || leaveType === "nua_buoi") && (
+                    <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                      ⏰ Cần báo trước 3 – 7 ngày để không gián đoạn công việc
+                    </p>
+                  )}
+                  {leaveType === "nghi_viec" && (
+                    <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                      ⏰ Cần báo trước tối thiểu 14 ngày để không gián đoạn công việc
+                    </p>
                   )}
 
                   {/* Nghỉ nửa buổi: date + time range */}
