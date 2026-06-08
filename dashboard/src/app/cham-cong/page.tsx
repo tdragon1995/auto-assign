@@ -77,22 +77,30 @@ function fmtDate(dateStr: string): string {
 }
 
 function DateField({ value, min, onChange }: { value: string; min: string; onChange: (v: string) => void }) {
+  const ref = useRef<HTMLInputElement>(null);
+
+  function open() {
+    try { ref.current?.showPicker(); } catch { ref.current?.focus(); }
+  }
+
   return (
-    <div className="relative">
+    <div className="relative cursor-pointer" onClick={open}>
       <Calendar size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none z-10" />
-      <div className="w-full border border-gray-300 rounded-lg pl-9 pr-3 py-2 text-sm min-h-[38px]">
+      <div className="w-full border border-gray-300 rounded-lg pl-9 pr-10 py-2 text-sm min-h-[38px] select-none">
         {value
           ? <span className="text-gray-900">{fmtDate(value)}</span>
           : <span className="text-gray-400">Chọn ngày</span>
         }
       </div>
+      {/* Visible calendar toggle icon on the right (desktop hint) */}
+      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none text-xs">▼</span>
       <input
+        ref={ref}
         type="date"
         min={min}
         value={value}
         onChange={(e) => { if (!e.target.value || e.target.value >= min) onChange(e.target.value); }}
-        onKeyDown={(e) => e.preventDefault()}
-        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+        className="sr-only"
       />
     </div>
   );
