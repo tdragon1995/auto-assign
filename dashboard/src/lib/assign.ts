@@ -2,7 +2,7 @@ import type { Config, Driver, Job, LogEntry, LogLevel, Mapping, PickupWarning, T
 import { getDrivers, getUnassignedJobs, getDriverJobs, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, updateJobSendToDriverAt, unassignJob, optimizeDriverRoute, getFleetwebCookie, getJobsByStatusAndDate, JSONRPC_URL, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
-import { detectAndCreateReturnTrips, PSC_RETURN_LABEL } from "./return-trips";
+import { detectAndCreateReturnTrips, PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from "./return-trips";
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
 import { setHeldJobs, setPickupWarnings, type HeldJob } from "./smart-log-kv";
 import { isValidDriverId } from "./config";
@@ -140,6 +140,8 @@ function computePickupWarnings(
     if (!driverId) continue;
     // Guard: skip jobs that are no longer active (cancelled/failed/deleted)
     if (job.job_status_id !== 4) continue;
+    // PSC outbound routes have their own scheduling — no late-pickup alert needed
+    if ((job.labels ?? []).includes(PSC_OUTBOUND_LABEL)) continue;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pickup = (job.stops ?? [] as any[]).find((s: any) => s.stop_type_id === 1);
