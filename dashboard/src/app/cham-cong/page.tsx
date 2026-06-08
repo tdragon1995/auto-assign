@@ -133,7 +133,7 @@ export default function ChamCongPage() {
           driver_id: d.delivery_driver_id,
           driver_name: `${d.first_name ?? ""} ${d.last_name ?? ""}`.trim(),
         }))
-        .filter((d: Driver) => d.driver_id && d.driver_name)
+        .filter((d: Driver) => d.driver_id && d.driver_name && d.driver_name.startsWith("P - "))
         .sort((a: Driver, b: Driver) => a.driver_name.localeCompare(b.driver_name, "vi"));
       setDrivers(sorted);
       setLocations(chamCongData.pscs ?? []);
