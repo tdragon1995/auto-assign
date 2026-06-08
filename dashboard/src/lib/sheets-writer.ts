@@ -42,7 +42,7 @@ export async function appendNghiPhep(row: (string | null)[]): Promise<void> {
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
-    range: `${quotedName}!A:H`,
+    range: `${quotedName}!A1`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: [row] },
