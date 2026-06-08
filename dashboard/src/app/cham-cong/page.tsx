@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo, useRef } from "react";
-import { Copy, Check } from "lucide-react";
+import { Copy, Check, Calendar, Clock, ClipboardCheck, FileText } from "lucide-react";
 
 interface Driver {
   driver_id: string;
@@ -76,8 +76,29 @@ function vnWeekday(dateStr: string): string {
 
 function fmtDate(dateStr: string): string {
   if (!dateStr) return "";
-  const [y, mo, d] = dateStr.split("-");
-  return `${d}/${mo}/${y}`;
+  const [y, mo, d] = dateStr.split("-").map(Number);
+  return `Ngày ${d} tháng ${mo}, ${y}`;
+}
+
+function DateField({ value, min, onChange }: { value: string; min: string; onChange: (v: string) => void }) {
+  return (
+    <div className="relative">
+      <Calendar size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none z-10" />
+      <div className="w-full border border-gray-300 rounded-lg pl-9 pr-3 py-2 text-sm min-h-[38px]">
+        {value
+          ? <span className="text-gray-900">{fmtDate(value)}</span>
+          : <span className="text-gray-400">Chọn ngày</span>
+        }
+      </div>
+      <input
+        type="date"
+        min={min}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+      />
+    </div>
+  );
 }
 
 export default function ChamCongPage() {
@@ -355,13 +376,13 @@ export default function ChamCongPage() {
 
       if (leaveType === "nguyen_buoi") {
         title = "Nộp đơn nghỉ thành công!";
-        copyText = `Tôi, ${driverName} đã nộp yêu cầu nghỉ từ ${fmtDate(leaveFromDate)} (${vnWeekday(leaveFromDate)}) đến ${fmtDate(leaveToDate)} (${vnWeekday(leaveToDate)}). Nhờ đội điều phối hỗ trợ sắp xếp để không gián đoạn công việc!`;
+        copyText = `⚠️ Tôi, ${driverName} đã nộp yêu cầu nghỉ từ ${fmtDate(leaveFromDate)} (${vnWeekday(leaveFromDate)}) đến ${fmtDate(leaveToDate)} (${vnWeekday(leaveToDate)}). Nhờ đội điều phối hỗ trợ sắp xếp để không gián đoạn công việc!`;
       } else if (leaveType === "nua_buoi") {
         title = "Nộp đơn nghỉ thành công!";
-        copyText = `Tôi, ${driverName} đã nộp yêu cầu nghỉ từ ${leaveStartTime} đến ${leaveEndTime} ngày ${fmtDate(leaveDate)} (${vnWeekday(leaveDate)}). Nhờ đội điều phối hỗ trợ sắp xếp để không gián đoạn công việc!`;
+        copyText = `⚠️ Tôi, ${driverName} đã nộp yêu cầu nghỉ từ ${leaveStartTime} đến ${leaveEndTime} ngày ${fmtDate(leaveDate)} (${vnWeekday(leaveDate)}). Nhờ đội điều phối hỗ trợ sắp xếp để không gián đoạn công việc!`;
       } else {
         title = "Hoàn tất nộp đơn nghỉ việc, xin cám ơn bạn đã hợp tác trong thời gian qua!";
-        copyText = `Tôi, ${driverName} đã nộp đơn chấm dứt hợp tác làm việc với Diag. Ngày cuối cùng làm việc là ${fmtDate(leaveDate)} (${vnWeekday(leaveDate)}). Nhờ đội điều phối hỗ trợ sắp xếp và hướng dẫn các thủ tục bàn giao!`;
+        copyText = `⚠️ Tôi, ${driverName} đã nộp đơn chấm dứt hợp tác làm việc với Diag. Ngày cuối cùng làm việc là ${fmtDate(leaveDate)} (${vnWeekday(leaveDate)}). Nhờ đội điều phối hỗ trợ sắp xếp và hướng dẫn các thủ tục bàn giao!`;
       }
 
       setLeaveSuccessTitle(title);
@@ -400,22 +421,24 @@ export default function ChamCongPage() {
         <div className="flex border-b border-gray-200">
           <button
             onClick={() => setTab("cham-cong")}
-            className={`flex-1 py-3.5 text-sm font-semibold transition-colors ${
+            className={`flex-1 py-3.5 text-sm font-semibold transition-colors flex items-center justify-center gap-1.5 ${
               tab === "cham-cong"
                 ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/40"
                 : "text-gray-500 hover:text-gray-700"
             }`}
           >
+            <ClipboardCheck size={15} />
             Chấm Công
           </button>
           <button
             onClick={() => setTab("nghi-phep")}
-            className={`flex-1 py-3.5 text-sm font-semibold transition-colors ${
+            className={`flex-1 py-3.5 text-sm font-semibold transition-colors flex items-center justify-center gap-1.5 ${
               tab === "nghi-phep"
                 ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/40"
                 : "text-gray-500 hover:text-gray-700"
             }`}
           >
+            <FileText size={15} />
             Nộp Đơn Nghỉ
           </button>
         </div>
@@ -609,28 +632,21 @@ export default function ChamCongPage() {
 
                   {/* Nghỉ nguyên buổi: date range */}
                   {leaveType === "nguyen_buoi" && (
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-3">
                       <div className="space-y-1">
                         <label className="text-sm font-medium text-gray-700">Nghỉ từ ngày</label>
-                        <input
-                          type="date"
-                          min={tomorrow}
+                        <DateField
                           value={leaveFromDate}
-                          onChange={(e) => {
-                            setLeaveFromDate(e.target.value);
-                            if (leaveToDate && e.target.value > leaveToDate) setLeaveToDate("");
-                          }}
-                          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          min={tomorrow}
+                          onChange={(v) => { setLeaveFromDate(v); if (leaveToDate && v > leaveToDate) setLeaveToDate(""); }}
                         />
                       </div>
                       <div className="space-y-1">
                         <label className="text-sm font-medium text-gray-700">Đến ngày</label>
-                        <input
-                          type="date"
-                          min={leaveFromDate || tomorrow}
+                        <DateField
                           value={leaveToDate}
-                          onChange={(e) => setLeaveToDate(e.target.value)}
-                          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          min={leaveFromDate || tomorrow}
+                          onChange={setLeaveToDate}
                         />
                       </div>
                     </div>
@@ -641,37 +657,37 @@ export default function ChamCongPage() {
                     <div className="space-y-3">
                       <div className="space-y-1">
                         <label className="text-sm font-medium text-gray-700">Ngày nghỉ</label>
-                        <input
-                          type="date"
-                          min={tomorrow}
-                          value={leaveDate}
-                          onChange={(e) => setLeaveDate(e.target.value)}
-                          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        />
+                        <DateField value={leaveDate} min={tomorrow} onChange={setLeaveDate} />
                       </div>
                       <div className="grid grid-cols-2 gap-3">
                         <div className="space-y-1">
                           <label className="text-sm font-medium text-gray-700">Giờ bắt đầu</label>
-                          <select
-                            value={leaveStartTime}
-                            onChange={(e) => { setLeaveStartTime(e.target.value); setLeaveEndTime(""); }}
-                            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-                          >
-                            <option value="">-- Chọn --</option>
-                            {TIME_SLOTS.map((t) => <option key={t} value={t}>{t}</option>)}
-                          </select>
+                          <div className="relative">
+                            <Clock size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none z-10" />
+                            <select
+                              value={leaveStartTime}
+                              onChange={(e) => { setLeaveStartTime(e.target.value); setLeaveEndTime(""); }}
+                              className="w-full border border-gray-300 rounded-lg pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                            >
+                              <option value="">-- Chọn --</option>
+                              {TIME_SLOTS.map((t) => <option key={t} value={t}>{t}</option>)}
+                            </select>
+                          </div>
                         </div>
                         <div className="space-y-1">
                           <label className="text-sm font-medium text-gray-700">Giờ kết thúc</label>
-                          <select
-                            value={leaveEndTime}
-                            onChange={(e) => setLeaveEndTime(e.target.value)}
-                            disabled={!leaveStartTime}
-                            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white disabled:opacity-50"
-                          >
-                            <option value="">-- Chọn --</option>
-                            {endTimeSlots.map((t) => <option key={t} value={t}>{t}</option>)}
-                          </select>
+                          <div className="relative">
+                            <Clock size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none z-10" />
+                            <select
+                              value={leaveEndTime}
+                              onChange={(e) => setLeaveEndTime(e.target.value)}
+                              disabled={!leaveStartTime}
+                              className="w-full border border-gray-300 rounded-lg pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white disabled:opacity-50"
+                            >
+                              <option value="">-- Chọn --</option>
+                              {endTimeSlots.map((t) => <option key={t} value={t}>{t}</option>)}
+                            </select>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -681,13 +697,7 @@ export default function ChamCongPage() {
                   {leaveType === "nghi_viec" && (
                     <div className="space-y-1">
                       <label className="text-sm font-medium text-gray-700">Ngày làm việc cuối cùng</label>
-                      <input
-                        type="date"
-                        min={tomorrow}
-                        value={leaveDate}
-                        onChange={(e) => setLeaveDate(e.target.value)}
-                        className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
+                      <DateField value={leaveDate} min={tomorrow} onChange={setLeaveDate} />
                     </div>
                   )}
 
