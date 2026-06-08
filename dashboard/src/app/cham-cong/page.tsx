@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo, useRef } from "react";
-import { Copy, Check, Calendar, Clock, ClipboardCheck, FileText } from "lucide-react";
+import { Copy, Check, Calendar, Clock, ClipboardCheck, FileText, NotepadText } from "lucide-react";
 
 interface Driver {
   driver_id: string;
@@ -26,7 +26,7 @@ interface ShiftState {
 type ActionType = "check-in" | "check-out";
 type Status = "idle" | "loading" | "success" | "error";
 type Tab = "cham-cong" | "nghi-phep";
-type LeaveType = "nguyen_buoi" | "nua_buoi" | "nghi_viec";
+type LeaveType = "" | "nguyen_buoi" | "nua_buoi" | "nghi_viec";
 
 const LS_DRIVER_ID   = "cc_driver_id";
 const LS_DRIVER_NAME = "cc_driver_name";
@@ -124,7 +124,7 @@ export default function ChamCongPage() {
   const [shiftFetching, setShiftFetching] = useState(false);
 
   // ── Nộp Đơn Nghỉ tab ──────────────────────────────────────────────────────
-  const [leaveType,         setLeaveType]         = useState<LeaveType>("nguyen_buoi");
+  const [leaveType,         setLeaveType]         = useState<LeaveType>("");
   const [leaveFromDate,     setLeaveFromDate]     = useState("");
   const [leaveToDate,       setLeaveToDate]       = useState("");
   const [leaveDate,         setLeaveDate]         = useState("");
@@ -305,6 +305,14 @@ export default function ChamCongPage() {
   }
 
   // ── Leave form ────────────────────────────────────────────────────────────
+  const canSubmitLeave = useMemo(() => {
+    if (!driverId || !leaveType) return false;
+    if (leaveType === "nguyen_buoi") return !!(leaveFromDate && leaveToDate);
+    if (leaveType === "nua_buoi")    return !!(leaveDate && leaveStartTime && leaveEndTime);
+    if (leaveType === "nghi_viec")   return !!leaveDate;
+    return false;
+  }, [driverId, leaveType, leaveFromDate, leaveToDate, leaveDate, leaveStartTime, leaveEndTime]);
+
   const endTimeSlots = useMemo(() => {
     if (!leaveStartTime) return TIME_SLOTS;
     const [sh, sm] = leaveStartTime.split(":").map(Number);
@@ -316,7 +324,7 @@ export default function ChamCongPage() {
   }, [leaveStartTime]);
 
   function resetLeaveForm() {
-    setLeaveType("nguyen_buoi");
+    setLeaveType("");
     setLeaveFromDate("");
     setLeaveToDate("");
     setLeaveDate("");
@@ -331,10 +339,8 @@ export default function ChamCongPage() {
 
   async function submitLeave() {
     setLeaveError("");
-    if (!driverId) {
-      setLeaveError("Vui lòng chọn tên nhân viên");
-      return;
-    }
+    if (!driverId) { setLeaveError("Vui lòng chọn tên nhân viên"); return; }
+    if (!leaveType) { setLeaveError("Vui lòng chọn loại nghỉ"); return; }
     if (leaveType === "nguyen_buoi") {
       if (!leaveFromDate || !leaveToDate) { setLeaveError("Vui lòng chọn đầy đủ ngày nghỉ từ và đến"); return; }
       if (leaveToDate < leaveFromDate)    { setLeaveError("Ngày kết thúc phải bằng hoặc sau ngày bắt đầu"); return; }
@@ -375,13 +381,13 @@ export default function ChamCongPage() {
 
       if (leaveType === "nguyen_buoi") {
         title = "Nộp đơn nghỉ thành công!";
-        copyText = `⚠️ Tôi, ${driverName} đã nộp yêu cầu nghỉ từ ${fmtDate(leaveFromDate)} (${vnWeekday(leaveFromDate)}) đến ${fmtDate(leaveToDate)} (${vnWeekday(leaveToDate)}). Nhờ đội điều phối hỗ trợ sắp xếp để không gián đoạn công việc!`;
+        copyText = `⚠️ Thông Báo Nghỉ Nguyên Buổi, ${driverName} đã nộp yêu cầu nghỉ từ ${fmtDate(leaveFromDate)} (${vnWeekday(leaveFromDate)}) đến ${fmtDate(leaveToDate)} (${vnWeekday(leaveToDate)}). Nhờ đội điều phối hỗ trợ sắp xếp để không gián đoạn công việc!`;
       } else if (leaveType === "nua_buoi") {
         title = "Nộp đơn nghỉ thành công!";
-        copyText = `⚠️ Tôi, ${driverName} đã nộp yêu cầu nghỉ từ ${leaveStartTime} đến ${leaveEndTime} ngày ${fmtDate(leaveDate)} (${vnWeekday(leaveDate)}). Nhờ đội điều phối hỗ trợ sắp xếp để không gián đoạn công việc!`;
+        copyText = `⚠️ Thông Báo Nghỉ Nửa Buổi, ${driverName} đã nộp yêu cầu nghỉ từ ${leaveStartTime} đến ${leaveEndTime} ngày ${fmtDate(leaveDate)} (${vnWeekday(leaveDate)}). Nhờ đội điều phối hỗ trợ sắp xếp để không gián đoạn công việc!`;
       } else {
         title = "Hoàn tất nộp đơn nghỉ việc, xin cám ơn bạn đã hợp tác trong thời gian qua!";
-        copyText = `⚠️ Tôi, ${driverName} đã nộp đơn chấm dứt hợp tác làm việc với Diag. Ngày cuối cùng làm việc là ${fmtDate(leaveDate)} (${vnWeekday(leaveDate)}). Nhờ đội điều phối hỗ trợ sắp xếp và hướng dẫn các thủ tục bàn giao!`;
+        copyText = `⚠️ Thông Báo Nghỉ Việc, ${driverName} đã nộp đơn chấm dứt hợp tác làm việc với Diag. Ngày cuối cùng làm việc là ${fmtDate(leaveDate)} (${vnWeekday(leaveDate)}). Nhờ đội điều phối hỗ trợ sắp xếp và hướng dẫn các thủ tục bàn giao!`;
       }
 
       setLeaveSuccessTitle(title);
@@ -591,7 +597,7 @@ export default function ChamCongPage() {
                     className="w-full text-left rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 hover:bg-gray-100 transition-colors"
                   >
                     <p className="text-sm text-gray-800 leading-relaxed">{leaveCopyText}</p>
-                    <div className="flex items-center gap-1.5 mt-2.5 text-xs text-gray-500">
+                    <div className="flex items-center gap-1.5 mt-2.5 text-xs text-blue-600">
                       {copied ? (
                         <Check size={14} className="text-green-600 shrink-0" />
                       ) : (
@@ -623,11 +629,26 @@ export default function ChamCongPage() {
                       }}
                       className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                     >
+                      <option value="">-- Chọn loại nghỉ --</option>
                       <option value="nguyen_buoi">Nghỉ nguyên buổi (nghỉ toàn bộ ca làm)</option>
                       <option value="nua_buoi">Nghỉ nửa buổi (nghỉ một/một vài tiếng ở đầu hoặc cuối ca)</option>
                       <option value="nghi_viec">Nghỉ việc (Kết thúc hợp tác)</option>
                     </select>
                   </div>
+
+                  {/* Disclaimers — always right beneath the selector */}
+                  {(leaveType === "nguyen_buoi" || leaveType === "nua_buoi") && (
+                    <p className="flex items-center gap-1.5 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                      <NotepadText size={13} className="shrink-0" />
+                      Cần báo trước 3 – 7 ngày để không gián đoạn công việc
+                    </p>
+                  )}
+                  {leaveType === "nghi_viec" && (
+                    <p className="flex items-center gap-1.5 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                      <NotepadText size={13} className="shrink-0" />
+                      Cần báo trước tối thiểu 14 ngày để không gián đoạn công việc
+                    </p>
+                  )}
 
                   {/* Nghỉ nguyên buổi: date range */}
                   {leaveType === "nguyen_buoi" && (
@@ -649,17 +670,6 @@ export default function ChamCongPage() {
                         />
                       </div>
                     </div>
-                  )}
-
-                  {(leaveType === "nguyen_buoi" || leaveType === "nua_buoi") && (
-                    <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                      ⏰ Cần báo trước 3 – 7 ngày để không gián đoạn công việc
-                    </p>
-                  )}
-                  {leaveType === "nghi_viec" && (
-                    <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                      ⏰ Cần báo trước tối thiểu 14 ngày để không gián đoạn công việc
-                    </p>
                   )}
 
                   {/* Nghỉ nửa buổi: date + time range */}
@@ -719,9 +729,9 @@ export default function ChamCongPage() {
                   )}
 
                   <button
-                    disabled={leaveStatus === "loading"}
+                    disabled={leaveStatus === "loading" || !canSubmitLeave}
                     onClick={submitLeave}
-                    className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold rounded-xl py-3 text-sm transition-colors"
+                    className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold rounded-xl py-3 text-sm transition-colors"
                   >
                     {leaveStatus === "loading" ? "Đang gửi..." : "Nộp Đơn"}
                   </button>

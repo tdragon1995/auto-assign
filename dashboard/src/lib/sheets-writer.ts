@@ -37,10 +37,12 @@ export async function appendNghiPhep(row: (string | null)[]): Promise<void> {
 
   const sheets = google.sheets({ version: "v4", auth });
   const sheetName = await getNghiPhepSheetName(sheets);
+  // Sheet names with spaces must be wrapped in single quotes in A1 notation
+  const quotedName = `'${sheetName.replace(/'/g, "''")}'`;
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
-    range: `${sheetName}!A:H`,
+    range: `${quotedName}!A:H`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: [row] },
