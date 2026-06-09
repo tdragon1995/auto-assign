@@ -269,6 +269,16 @@ export default function ChamCongPage() {
     [driverName]
   );
 
+  // Count of schedule rows matching the selected driver (0 when schedule not loaded yet).
+  const driverShiftCount = useMemo(() => {
+    if (!schedule || !driverCleanName) return 0;
+    const q = driverCleanName.toLowerCase();
+    return (
+      schedule.morning.filter((e) => e.name.toLowerCase().includes(q)).length +
+      schedule.afternoon.filter((e) => e.name.toLowerCase().includes(q)).length
+    );
+  }, [schedule, driverCleanName]);
+
   // ── Lịch CN: lazy-load on first open ──────────────────────────────────────
   useEffect(() => {
     if (tab !== "lich-cn" || schedule || scheduleStatus === "loading") return;
@@ -557,15 +567,15 @@ export default function ChamCongPage() {
             className={`flex-1 py-3 text-xs font-semibold transition-colors flex items-center justify-center gap-1 whitespace-nowrap relative ${
               tab === "lich-cn"
                 ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/40"
-                : driverCleanName
-                ? "text-blue-500 hover:text-blue-700"
                 : "text-gray-500 hover:text-gray-700"
             }`}
           >
             <CalendarDays size={14} />
             Lịch CN
-            {driverCleanName && tab !== "lich-cn" && (
-              <span className="absolute top-2 right-3 w-1.5 h-1.5 rounded-full bg-blue-500" />
+            {driverShiftCount > 0 && tab !== "lich-cn" && (
+              <span className="absolute top-1.5 right-2 min-w-[16px] h-4 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center px-1 leading-none">
+                {driverShiftCount}
+              </span>
             )}
           </button>
         </div>
