@@ -289,13 +289,21 @@ export default function ChamCongPage() {
     );
   }, [schedule, driverCleanName]);
 
-const filteredSchedule = useMemo(() => {
-    if (!schedule) return { morning: [], afternoon: [] };
+  const filteredSchedule = useMemo(() => {
+    if (!schedule) return { morning: [], afternoon: [], emptyCount: 0 };
     const q = scheduleSearch.toLowerCase().trim();
-    if (!q) return { morning: schedule.morning, afternoon: schedule.afternoon };
-    const match = (e: ScheduleEntry) =>
-      e.name.toLowerCase().includes(q) || e.addr.toLowerCase().includes(q);
-    return { morning: schedule.morning.filter(match), afternoon: schedule.afternoon.filter(match) };
+    // Empty slots (no assigned driver) are always shown regardless of search.
+    const keep = (e: ScheduleEntry) =>
+      !e.name ||
+      !q ||
+      e.name.toLowerCase().includes(q) ||
+      e.addr.toLowerCase().includes(q);
+    const morning = schedule.morning.filter(keep);
+    const afternoon = schedule.afternoon.filter(keep);
+    const emptyCount =
+      morning.filter((e) => !e.name).length +
+      afternoon.filter((e) => !e.name).length;
+    return { morning, afternoon, emptyCount };
   }, [schedule, scheduleSearch]);
 
   // ── Driver dropdown ───────────────────────────────────────────────────────
@@ -936,6 +944,12 @@ const filteredSchedule = useMemo(() => {
                   {filteredSchedule.morning.length === 0 && filteredSchedule.afternoon.length === 0 && (
                     <p className="text-center text-sm text-gray-400 py-6">
                       {scheduleSearch ? "Không tìm thấy kết quả." : "Chưa có lịch."}
+                    </p>
+                  )}
+
+                  {filteredSchedule.emptyCount > 0 && (
+                    <p className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2.5 leading-relaxed">
+                      📋 Vui lòng liên hệ lên nhóm làm việc để đăng ký ca làm việc còn trống!
                     </p>
                   )}
                 </>
