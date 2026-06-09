@@ -290,20 +290,18 @@ export default function ChamCongPage() {
   }, [schedule, driverCleanName]);
 
   const filteredSchedule = useMemo(() => {
-    if (!schedule) return { morning: [], afternoon: [], emptyCount: 0 };
+    if (!schedule) return { morning: [], afternoon: [], emptySlots: [] };
     const q = scheduleSearch.toLowerCase().trim();
-    // Empty slots (no assigned driver) are always shown regardless of search.
-    const keep = (e: ScheduleEntry) =>
-      !e.name ||
-      !q ||
-      e.name.toLowerCase().includes(q) ||
-      e.addr.toLowerCase().includes(q);
-    const morning = schedule.morning.filter(keep);
-    const afternoon = schedule.afternoon.filter(keep);
-    const emptyCount =
-      morning.filter((e) => !e.name).length +
-      afternoon.filter((e) => !e.name).length;
-    return { morning, afternoon, emptyCount };
+    const matchesFilled = (e: ScheduleEntry) =>
+      !!e.name && (!q || e.name.toLowerCase().includes(q) || e.addr.toLowerCase().includes(q));
+    const morning   = schedule.morning.filter(matchesFilled);
+    const afternoon = schedule.afternoon.filter(matchesFilled);
+    // Empty slots are always collected from the full list, separate from matched rows.
+    const emptySlots = [
+      ...schedule.morning.filter((e) => !e.name),
+      ...schedule.afternoon.filter((e) => !e.name),
+    ];
+    return { morning, afternoon, emptySlots };
   }, [schedule, scheduleSearch]);
 
   // ── Driver dropdown ───────────────────────────────────────────────────────
@@ -941,16 +939,37 @@ export default function ChamCongPage() {
                   <ShiftSection title="🌅 Ca sáng" accent="amber" rows={filteredSchedule.morning} />
                   <ShiftSection title="🌆 Ca chiều" accent="blue" rows={filteredSchedule.afternoon} />
 
-                  {filteredSchedule.morning.length === 0 && filteredSchedule.afternoon.length === 0 && (
+                  {filteredSchedule.morning.length === 0 && filteredSchedule.afternoon.length === 0 && filteredSchedule.emptySlots.length === 0 && (
                     <p className="text-center text-sm text-gray-400 py-6">
                       {scheduleSearch ? "Không tìm thấy kết quả." : "Chưa có lịch."}
                     </p>
                   )}
 
-                  {filteredSchedule.emptyCount > 0 && (
-                    <p className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2.5 leading-relaxed">
-                      📋 Vui lòng liên hệ lên nhóm làm việc để đăng ký ca làm việc còn trống!
-                    </p>
+                  {filteredSchedule.emptySlots.length > 0 && (
+                    <div className="rounded-xl border border-dashed border-gray-300 overflow-hidden">
+                      <div className="bg-gray-100 text-gray-500 text-sm font-bold px-4 py-2.5 flex items-center justify-between">
+                        <span>Ca trống chưa có người</span>
+                        <span className="text-xs font-semibold">{filteredSchedule.emptySlots.length}</span>
+                      </div>
+                      <ul className="divide-y divide-gray-100">
+                        {filteredSchedule.emptySlots.map((r, i) => (
+                          <li key={`empty-${i}`} className="px-4 py-2.5 flex gap-2">
+                            <span className="text-xs text-gray-400 w-5 shrink-0 pt-0.5">{i + 1}</span>
+                            <div className="min-w-0 flex-1">
+                              {r.addr && <p className="text-sm text-gray-600">{r.addr}</p>}
+                              {r.ca && (
+                                <div className="mt-1">
+                                  <span className="inline-block text-xs font-medium text-gray-700 bg-gray-100 rounded px-1.5 py-0.5">{r.ca}</span>
+                                </div>
+                              )}
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                      <p className="text-xs text-blue-700 bg-blue-50 border-t border-blue-100 px-4 py-2.5 leading-relaxed">
+                        📋 Vui lòng liên hệ lên nhóm làm việc để đăng ký ca làm việc còn trống!
+                      </p>
+                    </div>
                   )}
                 </>
               )}
