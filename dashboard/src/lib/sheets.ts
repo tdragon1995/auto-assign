@@ -79,3 +79,18 @@ export async function fetchSheetRows(
   return parseCSV(await res.text());
 }
 
+/** Fetch a tab by its visible name (gviz CSV endpoint) instead of gid. Useful for
+ *  display-only sheets whose gid isn't tracked in SHEET_GID and may be re-created. */
+export function gvizCsvUrl(sheetName: string): string {
+  return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&headers=1&sheet=${encodeURIComponent(sheetName)}`;
+}
+
+export async function fetchSheetRowsByName(
+  sheetName: string
+): Promise<Record<string, string>[]> {
+  const url = `${gvizCsvUrl(sheetName)}&_cb=${Date.now()}`;
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return parseCSV(await res.text());
+}
+

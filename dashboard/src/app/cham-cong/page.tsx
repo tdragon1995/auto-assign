@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo, useRef } from "react";
-import { Copy, Check, Calendar, Clock, ClipboardCheck, FileText, NotepadText, Share2 } from "lucide-react";
+import { Copy, Check, Calendar, Clock, ClipboardCheck, FileText, NotepadText, Share2, CalendarDays, Search } from "lucide-react";
 
 interface Driver {
   driver_id: string;
@@ -25,8 +25,61 @@ interface ShiftState {
 
 type ActionType = "check-in" | "check-out";
 type Status = "idle" | "loading" | "success" | "error";
-type Tab = "cham-cong" | "nghi-phep";
+type Tab = "cham-cong" | "nghi-phep" | "lich-cn";
 type LeaveType = "" | "nguyen_buoi" | "nua_buoi" | "nghi_viec";
+
+interface ScheduleEntry {
+  stt: string;
+  name: string;
+  addr: string;
+  ca: string;
+  note: string;
+  phone: string;
+}
+
+interface ScheduleData {
+  morning: ScheduleEntry[];
+  afternoon: ScheduleEntry[];
+  dateLabel: string;
+}
+
+function ShiftSection({ title, accent, rows }: { title: string; accent: "amber" | "blue"; rows: ScheduleEntry[] }) {
+  if (rows.length === 0) return null;
+  const head = accent === "amber" ? "bg-amber-500" : "bg-blue-600";
+  return (
+    <div className="rounded-xl border border-gray-200 overflow-hidden">
+      <div className={`${head} text-white text-sm font-bold px-4 py-2.5 flex items-center justify-between`}>
+        <span>{title}</span>
+        <span className="text-xs font-semibold opacity-90">{rows.length}</span>
+      </div>
+      <ul className="divide-y divide-gray-100">
+        {rows.map((r, i) => (
+          <li key={`${r.stt}-${i}`} className="px-4 py-2.5 flex gap-2">
+            <span className="text-xs text-gray-400 w-5 shrink-0 pt-0.5">{i + 1}</span>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-gray-800">
+                {r.name || <span className="text-red-600">— Chưa có người —</span>}
+              </p>
+              {r.addr && <p className="text-sm text-gray-600">{r.addr}</p>}
+              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                {r.ca && (
+                  <span className="inline-block text-xs font-medium text-gray-700 bg-gray-100 rounded px-1.5 py-0.5">
+                    {r.ca}
+                  </span>
+                )}
+                {r.note && (
+                  <span className="inline-block text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
+                    {r.note}
+                  </span>
+                )}
+              </div>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 const LS_DRIVER_ID   = "cc_driver_id";
 const LS_DRIVER_NAME = "cc_driver_name";
@@ -143,6 +196,11 @@ export default function ChamCongPage() {
   const [leaveSuccessTitle, setLeaveSuccessTitle] = useState("");
   const [copied, setCopied] = useState(false);
 
+  // ── Lịch CN tab ───────────────────────────────────────────────────────────
+  const [schedule,       setSchedule]       = useState<ScheduleData | null>(null);
+  const [scheduleStatus, setScheduleStatus] = useState<Status>("idle");
+  const [scheduleSearch, setScheduleSearch] = useState("");
+
   // ── Init ──────────────────────────────────────────────────────────────────
   useEffect(() => {
     const savedId = typeof window !== "undefined" ? localStorage.getItem(LS_DRIVER_ID) : null;
@@ -204,6 +262,29 @@ export default function ChamCongPage() {
       return null;
     }
   }
+
+  // ── Lịch CN: lazy-load on first open ──────────────────────────────────────
+  useEffect(() => {
+    if (tab !== "lich-cn" || schedule || scheduleStatus === "loading") return;
+    setScheduleStatus("loading");
+    fetch("/api/sunday-schedule")
+      .then((r) => r.json())
+      .then((d: ScheduleData & { error?: string }) => {
+        if (d.error) { setScheduleStatus("error"); return; }
+        setSchedule({ morning: d.morning ?? [], afternoon: d.afternoon ?? [], dateLabel: d.dateLabel ?? "" });
+        setScheduleStatus("success");
+      })
+      .catch(() => setScheduleStatus("error"));
+  }, [tab, schedule, scheduleStatus]);
+
+  const filteredSchedule = useMemo(() => {
+    if (!schedule) return { morning: [], afternoon: [] };
+    const q = scheduleSearch.toLowerCase().trim();
+    if (!q) return { morning: schedule.morning, afternoon: schedule.afternoon };
+    const match = (e: ScheduleEntry) =>
+      e.name.toLowerCase().includes(q) || e.addr.toLowerCase().includes(q);
+    return { morning: schedule.morning.filter(match), afternoon: schedule.afternoon.filter(match) };
+  }, [schedule, scheduleSearch]);
 
   // ── Driver dropdown ───────────────────────────────────────────────────────
   const filteredDrivers = useMemo(() =>
@@ -442,31 +523,43 @@ export default function ChamCongPage() {
         <div className="flex border-b border-gray-200">
           <button
             onClick={() => setTab("cham-cong")}
-            className={`flex-1 py-3.5 text-sm font-semibold transition-colors flex items-center justify-center gap-1.5 ${
+            className={`flex-1 py-3 text-xs font-semibold transition-colors flex items-center justify-center gap-1 whitespace-nowrap ${
               tab === "cham-cong"
                 ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/40"
                 : "text-gray-500 hover:text-gray-700"
             }`}
           >
-            <ClipboardCheck size={15} />
+            <ClipboardCheck size={14} />
             Chấm Công
           </button>
           <button
             onClick={() => setTab("nghi-phep")}
-            className={`flex-1 py-3.5 text-sm font-semibold transition-colors flex items-center justify-center gap-1.5 ${
+            className={`flex-1 py-3 text-xs font-semibold transition-colors flex items-center justify-center gap-1 whitespace-nowrap ${
               tab === "nghi-phep"
                 ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/40"
                 : "text-gray-500 hover:text-gray-700"
             }`}
           >
-            <FileText size={15} />
-            Nộp Đơn Nghỉ
+            <FileText size={14} />
+            Đơn Nghỉ
+          </button>
+          <button
+            onClick={() => setTab("lich-cn")}
+            className={`flex-1 py-3 text-xs font-semibold transition-colors flex items-center justify-center gap-1 whitespace-nowrap ${
+              tab === "lich-cn"
+                ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/40"
+                : "text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            <CalendarDays size={14} />
+            Lịch CN
           </button>
         </div>
 
         <div className="p-6 space-y-5">
 
-          {/* ── Shared: Driver dropdown ─────────────────────────────────── */}
+          {/* ── Shared: Driver dropdown (hidden on the read-only schedule tab) ── */}
+          {tab !== "lich-cn" && (
           <div className="space-y-1 relative">
             <label className="text-sm font-medium text-gray-700">
               Nhân Viên Giao Nhận
@@ -507,6 +600,7 @@ export default function ChamCongPage() {
               </ul>
             )}
           </div>
+          )}
 
           {/* ── Chấm Công tab ───────────────────────────────────────────── */}
           {tab === "cham-cong" && (
@@ -765,6 +859,65 @@ export default function ChamCongPage() {
                   >
                     {leaveStatus === "loading" ? "Đang gửi..." : "Nộp Đơn"}
                   </button>
+                </>
+              )}
+            </>
+          )}
+
+          {/* ── Lịch CN tab ─────────────────────────────────────────────── */}
+          {tab === "lich-cn" && (
+            <>
+              {scheduleStatus === "loading" && (
+                <div className="flex flex-col items-center justify-center py-10 gap-3">
+                  <div className="w-7 h-7 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                  <p className="text-sm text-gray-400">Đang tải lịch...</p>
+                </div>
+              )}
+
+              {scheduleStatus === "error" && (
+                <div className="rounded-lg px-4 py-3 bg-red-50 border border-red-200 text-sm text-red-700">
+                  Không tải được lịch. Vui lòng thử lại sau.
+                </div>
+              )}
+
+              {scheduleStatus === "success" && schedule && (
+                <>
+                  <div className="text-center">
+                    <p className="text-xs uppercase tracking-wide text-gray-400 font-semibold">
+                      Lịch làm việc Chủ Nhật
+                    </p>
+                    {schedule.dateLabel && (
+                      <p className="text-base font-bold text-gray-800">Ngày {schedule.dateLabel}</p>
+                    )}
+                  </div>
+
+                  <div className="relative">
+                    <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                    <input
+                      type="text"
+                      className="w-full border border-gray-300 rounded-lg pl-9 pr-8 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="Tìm tên hoặc địa điểm..."
+                      value={scheduleSearch}
+                      onChange={(e) => setScheduleSearch(e.target.value)}
+                    />
+                    {scheduleSearch && (
+                      <button
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                        onClick={() => setScheduleSearch("")}
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+
+                  <ShiftSection title="🌅 Ca sáng" accent="amber" rows={filteredSchedule.morning} />
+                  <ShiftSection title="🌆 Ca chiều" accent="blue" rows={filteredSchedule.afternoon} />
+
+                  {filteredSchedule.morning.length === 0 && filteredSchedule.afternoon.length === 0 && (
+                    <p className="text-center text-sm text-gray-400 py-6">
+                      {scheduleSearch ? "Không tìm thấy kết quả." : "Chưa có lịch."}
+                    </p>
+                  )}
                 </>
               )}
             </>
