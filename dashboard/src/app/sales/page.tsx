@@ -374,6 +374,7 @@ export default function SalesPage() {
   const [showClientResults, setShowClientResults] = useState(false);
   const [clientSearchLoading, setClientSearchLoading] = useState(false);
   const [clientSelected, setClientSelected] = useState(false);
+  const [clientBlurred, setClientBlurred] = useState(false);
 
   useEffect(() => {
     if (clientSelected) return;
@@ -412,6 +413,7 @@ export default function SalesPage() {
     setClientSearch("");
     setClientSelected(false);
     setClientResults([]);
+    setClientBlurred(false);
   };
 
   // Address autocomplete
@@ -788,7 +790,10 @@ export default function SalesPage() {
                     value={clientSearch}
                     onChange={(e) => { setClientSearch(e.target.value); setShowClientResults(true); }}
                     onFocus={() => { if (!clientSelected) setShowClientResults(true); }}
-                    onBlur={() => setTimeout(() => setShowClientResults(false), 150)}
+                    onBlur={() => {
+                      setTimeout(() => setShowClientResults(false), 150);
+                      if (!clientSelected && clientSearch.trim()) setClientBlurred(true);
+                    }}
                     readOnly={clientSelected}
                     placeholder="Search..."
                     className={`w-full border rounded-xl pl-9 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 ${clientSelected ? "pr-8 cursor-default" : "pr-3"}`}
@@ -824,6 +829,9 @@ export default function SalesPage() {
                   </ul>
                 )}
               </div>
+              {clientBlurred && !clientSelected && clientSearch.trim() && (
+                <p className="text-xs text-red-600 mt-1">Vui lòng chọn khách hàng từ danh sách gợi ý.</p>
+              )}
               {maKh && !maKhValid && (
                 <p className="text-xs text-red-600 mt-1">Mã KH không hợp lệ.</p>
               )}
