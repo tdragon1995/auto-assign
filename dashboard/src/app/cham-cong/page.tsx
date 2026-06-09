@@ -946,8 +946,8 @@ export default function ChamCongPage() {
                   )}
 
                   {filteredSchedule.emptySlots.length > 0 && (
-                    <div className="rounded-xl border border-dashed border-gray-300 overflow-hidden">
-                      <div className="bg-gray-100 text-gray-500 text-sm font-bold px-4 py-2.5 flex items-center justify-between">
+                    <div className="rounded-xl border border-dashed border-red-300 overflow-hidden">
+                      <div className="bg-red-500 text-white text-sm font-bold px-4 py-2.5 flex items-center justify-between">
                         <span>Ca trống chưa có người</span>
                         <span className="text-xs font-semibold">{filteredSchedule.emptySlots.length}</span>
                       </div>
