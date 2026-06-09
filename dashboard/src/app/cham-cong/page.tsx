@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo, useRef } from "react";
-import { Copy, Check, Calendar, Clock, ClipboardCheck, FileText, NotepadText } from "lucide-react";
+import { Copy, Check, Calendar, Clock, ClipboardCheck, FileText, NotepadText, Share2 } from "lucide-react";
 
 interface Driver {
   driver_id: string;
@@ -415,6 +415,12 @@ export default function ChamCongPage() {
     } catch { /* ignore */ }
   }
 
+  async function handleShare() {
+    try {
+      await navigator.share({ text: leaveCopyText });
+    } catch { /* user cancelled or unsupported */ }
+  }
+
   // ── Render ────────────────────────────────────────────────────────────────
   if (initialLoading) {
     return (
@@ -601,20 +607,34 @@ export default function ChamCongPage() {
                   </div>
 
                   {/* Zalo copy box */}
-                  <button
-                    onClick={handleCopy}
-                    className="w-full text-left rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 hover:bg-gray-100 transition-colors"
-                  >
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
                     <p className="text-sm text-gray-800 leading-relaxed">{leaveCopyText}</p>
-                    <div className="flex items-center gap-1.5 mt-2.5 text-xs text-blue-600">
-                      {copied ? (
-                        <Check size={14} className="text-green-600 shrink-0" />
-                      ) : (
-                        <Copy size={14} className="shrink-0" />
+                    <div className="flex items-center gap-2 mt-2.5">
+                      <button
+                        onClick={handleCopy}
+                        className="flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-800 transition-colors"
+                      >
+                        {copied ? (
+                          <Check size={14} className="text-green-600 shrink-0" />
+                        ) : (
+                          <Copy size={14} className="shrink-0" />
+                        )}
+                        <span>{copied ? "Đã copy!" : "Copy"}</span>
+                      </button>
+                      {typeof navigator !== "undefined" && !!navigator.share && (
+                        <>
+                          <span className="text-gray-300">|</span>
+                          <button
+                            onClick={handleShare}
+                            className="flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-800 transition-colors"
+                          >
+                            <Share2 size={14} className="shrink-0" />
+                            <span>Chia sẻ</span>
+                          </button>
+                        </>
                       )}
-                      <span>{copied ? "Đã copy!" : "Bấm vào để copy và dán vào nhóm Zalo công việc"}</span>
                     </div>
-                  </button>
+                  </div>
 
                   <button
                     onClick={resetLeaveForm}
