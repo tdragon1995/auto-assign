@@ -100,7 +100,8 @@ function DateField({ value, min, onChange }: { value: string; min: string; onCha
         min={min}
         value={value}
         onChange={(e) => { if (!e.target.value || e.target.value >= min) onChange(e.target.value); }}
-        className="sr-only"
+        className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
+        tabIndex={-1}
       />
     </div>
   );
