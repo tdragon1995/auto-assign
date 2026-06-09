@@ -205,10 +205,12 @@ export default function ChamCongPage() {
   useEffect(() => {
     const savedId = typeof window !== "undefined" ? localStorage.getItem(LS_DRIVER_ID) : null;
 
+    setScheduleStatus("loading");
     Promise.all([
       fetchDriversCached(),
       fetch("/api/cham-cong").then((r) => r.json()),
-    ]).then(([driversData, chamCongData]) => {
+      fetch("/api/sunday-schedule").then((r) => r.json()),
+    ]).then(([driversData, chamCongData, scheduleData]) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sorted = ((driversData as any).data ?? [])
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -222,6 +224,14 @@ export default function ChamCongPage() {
         .sort((a: Driver, b: Driver) => a.driver_name.localeCompare(b.driver_name, "vi"));
       setDrivers(sorted);
       setLocations(chamCongData.pscs ?? []);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sd = scheduleData as any;
+      if (!sd.error) {
+        setSchedule({ morning: sd.morning ?? [], afternoon: sd.afternoon ?? [], dateLabel: sd.dateLabel ?? "" });
+        setScheduleStatus("success");
+      } else {
+        setScheduleStatus("error");
+      }
     }).finally(() => setInitialLoading(false));
 
     if (savedId) fetchShiftState(savedId);
@@ -279,21 +289,7 @@ export default function ChamCongPage() {
     );
   }, [schedule, driverCleanName]);
 
-  // ── Lịch CN: lazy-load on first open ──────────────────────────────────────
-  useEffect(() => {
-    if (tab !== "lich-cn" || schedule || scheduleStatus === "loading") return;
-    setScheduleStatus("loading");
-    fetch("/api/sunday-schedule")
-      .then((r) => r.json())
-      .then((d: ScheduleData & { error?: string }) => {
-        if (d.error) { setScheduleStatus("error"); return; }
-        setSchedule({ morning: d.morning ?? [], afternoon: d.afternoon ?? [], dateLabel: d.dateLabel ?? "" });
-        setScheduleStatus("success");
-      })
-      .catch(() => setScheduleStatus("error"));
-  }, [tab, schedule, scheduleStatus]);
-
-  const filteredSchedule = useMemo(() => {
+const filteredSchedule = useMemo(() => {
     if (!schedule) return { morning: [], afternoon: [] };
     const q = scheduleSearch.toLowerCase().trim();
     if (!q) return { morning: schedule.morning, afternoon: schedule.afternoon };
