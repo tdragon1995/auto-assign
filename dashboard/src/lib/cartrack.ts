@@ -234,7 +234,7 @@ export async function updateJobScheduledDeliveryTs(
   env: Env = "prod"
 ): Promise<{ ok: boolean; status: number; body: unknown }> {
   const datePart = scheduledDeliveryTs.slice(0, 10); // "YYYY-MM-DD"
-  // Cartrack requires allowed_to_start_at to be AFTER now. Midnight of the scheduled
+  // Cartrack requires the timestamps below to be AFTER now. Midnight of the scheduled
   // date is ideal for a future day (driver may start anytime that day), but is in the
   // PAST for a same-day schedule → 422. Clamp to the later of midnight and ~now+2min
   // (both as VN-time "YYYY-MM-DD HH:MM:SS" strings, so a lexical compare is chronological).
@@ -247,7 +247,14 @@ export async function updateJobScheduledDeliveryTs(
     headers: getHeaders(env),
     body: JSON.stringify({
       schedule_type_id: 2,           // Scheduled — required for delivery_windows
-      scheduled_delivery_ts: scheduledDeliveryTs,
+      // scheduled_delivery_ts gates mobile-app visibility: Cartrack keeps the job hidden
+      // from the driver (is_visible=false) while now <= scheduled_delivery_ts. Pointing it
+      // at the window/arrival time therefore hides the job until arrival. Instead use the
+      // early clamped value: its DATE is still the delivery day (the assign cycle fetches
+      // parked jobs by scheduled_delivery_ts = today), but its time-of-day is day-start, so
+      // is_visible flips true at the start of the delivery day — well before the driver is
+      // assigned. The real appointment time lives in the stop's delivery_windows.
+      scheduled_delivery_ts: allowedToStartAt,
       allowed_to_start_at: allowedToStartAt,
     }),
   });

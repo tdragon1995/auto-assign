@@ -223,7 +223,12 @@ export async function POST(req: NextRequest) {
         const tomorrow = new Date();
         tomorrow.setDate(tomorrow.getDate() + 1);
         scheduleTypeId       = 2;
-        scheduledDeliveryTs  = `${vnDate(tomorrow)} ${String(hh).padStart(2, "0")}:00:00`;
+        // Keep scheduled_delivery_ts on the delivery day but at day-start, NOT the cutoff
+        // hour. scheduled_delivery_ts gates mobile-app visibility (is_visible=false while
+        // now <= scheduled_delivery_ts), so a cutoff-hour value would hide the job from the
+        // driver until that hour. Day-start keeps the date (so the engine still finds it
+        // tomorrow) while staying visible all day; the window is carried by delivery_windows.
+        scheduledDeliveryTs  = `${vnDate(tomorrow)} 00:00:00`;
       }
     }
 
