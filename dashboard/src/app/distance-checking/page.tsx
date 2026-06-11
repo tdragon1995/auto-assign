@@ -89,11 +89,21 @@ export default function DistanceCheckingPage() {
     setProgress(0);
     setRunError("");
 
-    const CHUNK = 20;
-    const accumulated: Result[] = [];
+    const CHUNK = 50;
+    // Order indices by pickup so identical pickups cluster into the same chunk
+    // and the server can collapse them into one matrix call.
+    const order = rows
+      .map((r, i) => ({ i, key: `${r.lat1.toFixed(6)},${r.lon1.toFixed(6)}` }))
+      .sort((a, b) => a.key.localeCompare(b.key))
+      .map((o) => o.i);
+
+    // Fill results back at their original positions for stable display/CSV order.
+    const byOriginal: (Result | undefined)[] = new Array(rows.length);
+    let done = 0;
     try {
-      for (let i = 0; i < rows.length; i += CHUNK) {
-        const chunk = rows.slice(i, i + CHUNK);
+      for (let i = 0; i < order.length; i += CHUNK) {
+        const idxChunk = order.slice(i, i + CHUNK);
+        const chunk = idxChunk.map((idx) => rows[idx]);
         const res = await fetch("/api/distance-checking", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -101,9 +111,10 @@ export default function DistanceCheckingPage() {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "Unknown error");
-        accumulated.push(...data.results);
-        setProgress(accumulated.length);
-        setResults([...accumulated]);
+        (data.results as Result[]).forEach((r, j) => { byOriginal[idxChunk[j]] = r; });
+        done += idxChunk.length;
+        setProgress(done);
+        setResults(byOriginal.filter((r): r is Result => r != null));
       }
       setStatus("done");
     } catch (e) {

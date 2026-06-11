@@ -16,9 +16,10 @@ export async function goongDistanceKm(
   fromLat: number,
   fromLon: number,
   toLat: number,
-  toLon: number
+  toLon: number,
+  apiKey?: string
 ): Promise<number | null> {
-  const results = await goongMatrix(fromLat, fromLon, [{ lat: toLat, lon: toLon }]);
+  const results = await goongMatrix(fromLat, fromLon, [{ lat: toLat, lon: toLon }], apiKey);
   return results[0]?.distance_km ?? null;
 }
 
@@ -31,9 +32,9 @@ export interface GoongResult {
 export async function goongMatrix(
   originLat: number,
   originLon: number,
-  destinations: { lat: number; lon: number }[]
+  destinations: { lat: number; lon: number }[],
+  apiKey: string = process.env.GOONG_API_KEY ?? ""
 ): Promise<(GoongResult | null)[]> {
-  const apiKey = process.env.GOONG_API_KEY ?? "";
   if (!apiKey || destinations.length === 0) return destinations.map(() => null);
 
   const destStr = destinations.map((d) => `${d.lat},${d.lon}`).join("|");
