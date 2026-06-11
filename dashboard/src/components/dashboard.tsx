@@ -104,10 +104,19 @@ export function Dashboard() {
     }
   }, [env, assignMode]);
 
-  // Turn the switch OFF immediately.
-  const disarm = useCallback(async () => {
+  // Turn the switch OFF immediately. `reason` is set for auto-disarm (env/mode
+  // switch); a manual off leaves it empty. Both record who, for the alert email.
+  const disarm = useCallback(async (reason?: string) => {
     try {
-      await fetch("/api/assign/arm", { method: "DELETE" });
+      const by =
+        typeof window !== "undefined"
+          ? localStorage.getItem("dashboard:admin_name") ?? ""
+          : "";
+      const qs = new URLSearchParams();
+      if (by) qs.set("by", by);
+      if (reason) qs.set("reason", reason);
+      const suffix = qs.toString() ? `?${qs.toString()}` : "";
+      await fetch(`/api/assign/arm${suffix}`, { method: "DELETE" });
     } catch {
       /* best effort — next poll reflects true state */
     }
@@ -126,7 +135,7 @@ export function Dashboard() {
     const newEnv: Env = checked ? "uat" : "prod";
     setEnv(newEnv);
     if (isRunning) {
-      disarm();
+      disarm("đổi môi trường");
       toast.info("Tự động đã tắt do đổi môi trường");
     }
     toast.info(`Switched to ${newEnv.toUpperCase()}`);
@@ -137,7 +146,7 @@ export function Dashboard() {
     if (mode === assignMode) return;
     setAssignMode(mode);
     if (isRunning) {
-      disarm();
+      disarm("đổi chế độ");
       toast.info("Tự động đã tắt do đổi chế độ");
     }
     toast.info(`Switched to ${mode === "autoplan" ? "Auto-Plan" : "Smart-Assign"}`);

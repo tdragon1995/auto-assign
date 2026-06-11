@@ -159,6 +159,53 @@ export async function getCronHeartbeat(): Promise<string | null> {
   return raw ?? null;
 }
 
+// ── Disarm record + business-hours alert debounce ───────────────────────────
+
+// Who turned the switch off last (captured at disarm time, since clearArmState
+// deletes the arm_state that holds armedBy). Read by the disarm alert email.
+const LAST_DISARM_KEY = "assign:last_disarm";
+// Debounce flag so the cron emails once per disarm episode, not every 3-min ping.
+// Cleared on re-arm; otherwise a short TTL re-nudges if the engine stays off.
+const DISARM_ALERT_KEY = "assign:disarm_alert_sent";
+
+export interface DisarmRecord {
+  by: string;       // operator name from dashboard localStorage (best-effort)
+  ts: string;       // ISO time of the disarm
+  reason?: string;  // "" for a manual off; e.g. "đổi môi trường" for auto-disarm
+}
+
+/** Record who turned the switch off (called by the DELETE arm handler). */
+export async function setLastDisarm(by: string, reason?: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  const rec: DisarmRecord = { by: by.slice(0, 60), ts: new Date().toISOString(), reason };
+  await redis.set(LAST_DISARM_KEY, JSON.stringify(rec), { ex: 86400 });
+}
+
+/** Last disarm record, or null (e.g. engine was never armed today). */
+export async function getLastDisarm(): Promise<DisarmRecord | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  return parseMaybe<DisarmRecord>(await redis.get<string | DisarmRecord>(LAST_DISARM_KEY));
+}
+
+/** Atomically claim the right to send one disarm alert. Returns true only for
+ *  the caller that set the flag; later pings get false until it's cleared/expires.
+ *  No Redis ⇒ false (don't spam without a debounce store). */
+export async function claimDisarmAlert(ttlSec = 10800): Promise<boolean> {
+  const redis = getRedis();
+  if (!redis) return false;
+  const res = await redis.set(DISARM_ALERT_KEY, new Date().toISOString(), { nx: true, ex: ttlSec });
+  return res === "OK";
+}
+
+/** Clear the debounce flag so the next disarm episode re-alerts (called on arm). */
+export async function clearDisarmAlert(): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  await redis.del(DISARM_ALERT_KEY);
+}
+
 // ── Note-held jobs (for the dashboard note-review panel) ───────────────────
 
 export interface HeldJob {

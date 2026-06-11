@@ -6,6 +6,7 @@ import {
   releaseCycleLock,
   setCronHeartbeat,
 } from "@/lib/smart-log-kv";
+import { maybeAlertDisarmed } from "@/lib/disarm-alert";
 
 // The cycle (Cartrack + Goong calls) can take a while; give it headroom.
 export const maxDuration = 60;
@@ -32,6 +33,9 @@ export async function GET(req: NextRequest) {
   // 1) Is the switch on? Disarmed pings must stop here — cheap, no Sheet/Cartrack.
   const arm = await getArmState();
   if (!arm) {
+    // Off during business hours is a problem (no return trips get created).
+    // Email once per disarm episode; runs after the response so the ping is fast.
+    after(() => maybeAlertDisarmed().catch(() => {}));
     return NextResponse.json({ ran: false, skipped: "disarmed" });
   }
 

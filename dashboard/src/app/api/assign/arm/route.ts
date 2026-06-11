@@ -6,6 +6,8 @@ import {
   getCronHeartbeat,
   acquireCycleLock,
   releaseCycleLock,
+  setLastDisarm,
+  clearDisarmAlert,
   type ArmState,
 } from "@/lib/smart-log-kv";
 import { runArmedCycle } from "@/lib/run-cycle";
@@ -53,6 +55,9 @@ export async function POST(req: NextRequest) {
   };
 
   await setArmState(state);
+  // Re-arming ends the disarm episode — reset the alert debounce so the next
+  // off-during-hours event emails again.
+  await clearDisarmAlert().catch(() => {});
 
   // Kick off the first cycle right away (after the response) so we don't wait
   // for the next cron ping. Lock-guarded so it can't overlap a cron cycle.
@@ -73,8 +78,13 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ armed: true, state });
 }
 
-/** Turn the switch OFF immediately. */
-export async function DELETE() {
+/** Turn the switch OFF immediately. `?by=` records the operator and `?reason=`
+ *  distinguishes a manual off from an auto-disarm (env/mode switch), so the
+ *  business-hours alert can name who turned it off. */
+export async function DELETE(req: NextRequest) {
   await clearArmState();
+  const by = (req.nextUrl.searchParams.get("by") ?? "").trim();
+  const reason = (req.nextUrl.searchParams.get("reason") ?? "").trim();
+  await setLastDisarm(by, reason || undefined).catch(() => {});
   return NextResponse.json({ armed: false, state: null });
 }
