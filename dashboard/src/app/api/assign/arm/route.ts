@@ -11,23 +11,14 @@ import {
   type ArmState,
 } from "@/lib/smart-log-kv";
 import { runArmedCycle } from "@/lib/run-cycle";
-import { vnDate, parseVnTimestamp } from "@/lib/time";
+import { nextAutoOffMs } from "@/lib/auto-arm";
 
 // Headroom for the immediate first cycle kicked off after arming.
 export const maxDuration = 60;
 
-// The switch auto-disarms at 22:00 Asia/Ho_Chi_Minh. Arming always succeeds:
-// before 22:00 → armed until today's 22:00; after 22:00 → armed until the NEXT
-// day's 22:00 (so you can turn it on late; it just runs until tomorrow's
-// auto-off). Turn it off manually anytime.
-const AUTO_OFF_HHMMSS = "22:00:00";
-
-function nextAutoOffMs(): number {
-  const todayOff = parseVnTimestamp(`${vnDate()} ${AUTO_OFF_HHMMSS}`).getTime();
-  if (Date.now() < todayOff) return todayOff;
-  const tomorrow = vnDate(new Date(Date.now() + 24 * 60 * 60 * 1000));
-  return parseVnTimestamp(`${tomorrow} ${AUTO_OFF_HHMMSS}`).getTime();
-}
+// Manual arm always succeeds and runs until the next 22:00 VN auto-off (shared
+// with the cron's auto-arm). The engine also auto-arms across 05:30–22:00, so a
+// manual arm is mainly for arming early, switching env/mode, or after a manual off.
 
 /** Current switch state + last cron heartbeat. */
 export async function GET() {

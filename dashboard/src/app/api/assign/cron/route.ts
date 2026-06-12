@@ -6,6 +6,7 @@ import {
   releaseCycleLock,
   setCronHeartbeat,
 } from "@/lib/smart-log-kv";
+import { autoArmIfDue } from "@/lib/auto-arm";
 import { maybeAlertDisarmed } from "@/lib/disarm-alert";
 
 // The cycle (Cartrack + Goong calls) can take a while; give it headroom.
@@ -30,13 +31,17 @@ export async function GET(req: NextRequest) {
   // is alive even when nothing gets logged.
   await setCronHeartbeat().catch(() => {});
 
-  // 1) Is the switch on? Disarmed pings must stop here — cheap, no Sheet/Cartrack.
-  const arm = await getArmState();
+  // 1) Switch off? Inside 05:30–22:00 the engine should be running, so self-heal
+  //    by auto-arming. A fresh *manual* disarm also emails an alert (who/when).
+  //    Outside the window (overnight) we leave it off.
+  let arm = await getArmState();
   if (!arm) {
-    // Off during business hours is a problem (no return trips get created).
-    // Email once per disarm episode; runs after the response so the ping is fast.
-    after(() => maybeAlertDisarmed().catch(() => {}));
-    return NextResponse.json({ ran: false, skipped: "disarmed" });
+    const auto = await autoArmIfDue();
+    if (!auto) {
+      return NextResponse.json({ ran: false, skipped: "disarmed" });
+    }
+    if (auto.alert) after(() => maybeAlertDisarmed().catch(() => {}));
+    arm = auto.state; // freshly auto-armed — fall through and run a cycle now
   }
 
   // 2) One cycle at a time — skip if a previous ping (or the arm-time first run)
