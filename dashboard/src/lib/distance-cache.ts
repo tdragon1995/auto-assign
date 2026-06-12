@@ -8,7 +8,7 @@ import { goongMatrix, goongMatrixMultiOrigin, type GoongResult } from "./distanc
  * long TTL is safe; a cache loss just costs one Goong re-fetch.
  */
 
-const TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
+const TTL_SECONDS = 40 * 24 * 60 * 60; // 40 days
 
 function getRedis() {
   const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
