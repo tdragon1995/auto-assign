@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDrivers, getJobsByStatusAndDate, getFleetwebCookie, getCustomerById, JSONRPC_URL, type Env } from "@/lib/cartrack";
 import { vnDate, vnDayWindow } from "@/lib/time";
-import { haversineKm, goongMatrix } from "@/lib/distance";
+import { haversineKm } from "@/lib/distance";
+import { roadDistancesFromPoint } from "@/lib/distance-cache";
 import { selectReferenceStop, computeStopStats, ROUTE_STATE_PRIORITY, type RefLabel } from "@/lib/smart-rank";
 import type { TimelineRoute } from "@/lib/types";
 
@@ -246,7 +247,7 @@ export async function POST(req: NextRequest) {
       [...originToDrivers.entries()].map(async ([originKey, driverIds]) => {
         const from    = originCoords.get(originKey)!;
         const pickups = intermediate.map((s) => ({ jobId: s.job_id, lat: s.pickup_lat, lon: s.pickup_lon }));
-        const results = await goongMatrix(from.lat, from.lon, pickups.map((p) => ({ lat: p.lat, lon: p.lon })));
+        const results = await roadDistancesFromPoint(from, pickups.map((p) => ({ lat: p.lat, lon: p.lon })));
         pickups.forEach((p, i) => {
           for (const driverId of driverIds) {
             const mapKey = `${p.jobId}:${driverId}`;
