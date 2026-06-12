@@ -8,10 +8,12 @@ import {
   releaseCycleLock,
   setLastDisarm,
   clearDisarmAlert,
+  pushRunLog,
   type ArmState,
 } from "@/lib/smart-log-kv";
 import { runArmedCycle } from "@/lib/run-cycle";
 import { nextAutoOffMs } from "@/lib/auto-arm";
+import { vnTimestamp } from "@/lib/time";
 
 // Headroom for the immediate first cycle kicked off after arming.
 export const maxDuration = 60;
@@ -49,6 +51,13 @@ export async function POST(req: NextRequest) {
   // Re-arming ends the disarm episode — reset the alert debounce so the next
   // off-during-hours event emails again.
   await clearDisarmAlert().catch(() => {});
+  // Make on/off events visible in the activity log — the Jun 11 midday outage
+  // was invisible precisely because disarms left no trace here.
+  void pushRunLog([{
+    ts: vnTimestamp(),
+    level: "OK",
+    msg: `🟢 ENGINE ARMED by ${state.armedBy || "?"} (${state.mode}, ${state.env})`,
+  }]).catch(() => {});
 
   // Kick off the first cycle right away (after the response) so we don't wait
   // for the next cron ping. Lock-guarded so it can't overlap a cron cycle.
@@ -77,5 +86,10 @@ export async function DELETE(req: NextRequest) {
   const by = (req.nextUrl.searchParams.get("by") ?? "").trim();
   const reason = (req.nextUrl.searchParams.get("reason") ?? "").trim();
   await setLastDisarm(by, reason || undefined).catch(() => {});
+  void pushRunLog([{
+    ts: vnTimestamp(),
+    level: "WARN",
+    msg: `🔴 ENGINE DISARMED by ${by || "?"}${reason ? ` — ${reason}` : ""}`,
+  }]).catch(() => {});
   return NextResponse.json({ armed: false, state: null });
 }

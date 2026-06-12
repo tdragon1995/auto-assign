@@ -1,8 +1,9 @@
-import { vnDate, vnMinutesSinceMidnight, parseVnTimestamp } from "./time";
+import { vnDate, vnMinutesSinceMidnight, vnTimestamp, parseVnTimestamp } from "./time";
 import {
   getLastDisarm,
   setArmState,
   clearDisarmAlert,
+  pushRunLog,
   type ArmState,
 } from "./smart-log-kv";
 
@@ -71,6 +72,16 @@ export async function autoArmIfDue(): Promise<AutoArmResult | null> {
   // Clear the debounce so the *next* manual disarm alerts again (each disarm →
   // its own email, since the engine is re-armed between them).
   await clearDisarmAlert().catch(() => {});
+
+  // Visible trace in the activity log: routine morning arm is OK; self-healing
+  // a fresh manual off is a WARN naming who had turned it off.
+  void pushRunLog([{
+    ts: vnTimestamp(),
+    level: alert ? "WARN" : "OK",
+    msg: alert
+      ? `🟠 ENGINE AUTO-ARMED — was turned off by ${rec?.by || "?"} during business hours`
+      : "🟢 ENGINE AUTO-ARMED (05:30–22:00 window)",
+  }]).catch(() => {});
 
   return { state, alert };
 }
