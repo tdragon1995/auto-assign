@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 import { loadConfigFromSheets, invalidateConfigCache } from "@/lib/config";
 import { loadPscRoutes, invalidatePscCache } from "@/lib/psc-config";
+import { invalidateStartLocCache } from "@/lib/assign";
 
 export async function GET() {
   try {
-    // Bust both caches so fresh sheet data is loaded
+    // Bust the caches so fresh sheet data (and start-location coords) is loaded
     invalidateConfigCache();
     invalidatePscCache();
+    invalidateStartLocCache();
 
     const [config, pscRoutes] = await Promise.all([
       loadConfigFromSheets(),

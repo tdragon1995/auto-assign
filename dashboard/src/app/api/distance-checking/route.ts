@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { goongMatrix } from "@/lib/distance";
+import { roadDistancesFromPoint } from "@/lib/distance-cache";
 
 export const runtime = "edge";
 export const preferredRegion = "sin1";
@@ -26,6 +26,13 @@ const DISTANCE_API_KEY = process.env.GOONG_API_KEY_DISTANCE || process.env.GOONG
 // Max destinations per Goong matrix call (Goong documents no hard cap; keep
 // URLs/payloads sane).
 const MAX_DEST_PER_CALL = 10;
+
+// Parallel matrix calls per wave. A 10-simultaneous burst against this key
+// returned all 200s (live test 2026-06-12), so 5 concurrent with a short gap
+// stays well inside that headroom — vs the old 1 call/second pacing that made
+// a 100-call sheet take 2+ minutes of mostly sleeping.
+const CONCURRENCY = 5;
+const WAVE_GAP_MS = 250;
 
 // Group rows that share a pickup so each distinct pickup costs one matrix call
 // (1 origin → N destinations) instead of one call per row.
@@ -60,27 +67,48 @@ export async function POST(req: NextRequest) {
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
     const results: DistanceResult[] = new Array(rows.length);
 
-    // One matrix call per pickup (chunked if it has many dropoffs). 1s gap
-    // between calls caps at ~1 RPS to stay under Goong's rate limit.
-    let firstCall = true;
+    // Flatten groups into chunks: one matrix call per pickup, split if it has
+    // more than MAX_DEST_PER_CALL dropoffs.
+    interface Chunk { lat1: number; lon1: number; indices: number[] }
+    const chunks: Chunk[] = [];
     for (const { lat1, lon1, indices } of groups.values()) {
       for (let off = 0; off < indices.length; off += MAX_DEST_PER_CALL) {
-        const slice = indices.slice(off, off + MAX_DEST_PER_CALL);
-        const dests = slice.map((idx) => ({ lat: rows[idx].lat2, lon: rows[idx].lon2 }));
-
-        if (!firstCall) await sleep(1000);
-        firstCall = false;
-
-        const matrix = await goongMatrix(lat1, lon1, dests, DISTANCE_API_KEY);
-        slice.forEach((idx, j) => {
-          const r = matrix[j];
-          results[idx] = {
-            ...rows[idx],
-            distance_km: r?.distance_km ?? null,
-            duration_mins: r?.eta_mins ?? null,
-          };
-        });
+        chunks.push({ lat1, lon1, indices: indices.slice(off, off + MAX_DEST_PER_CALL) });
       }
+    }
+
+    // Returns true if at least one element came back — an all-null chunk almost
+    // always means the call itself failed (timeout/429), not N unroutable pairs.
+    // roadDistancesFromPoint serves self-pairs and cached pairs without calling
+    // Goong at all, so re-checking a sheet costs almost nothing.
+    const runChunk = async (chunk: Chunk): Promise<boolean> => {
+      const dests = chunk.indices.map((idx) => ({ lat: rows[idx].lat2, lon: rows[idx].lon2 }));
+      const matrix = await roadDistancesFromPoint(
+        { lat: chunk.lat1, lon: chunk.lon1 }, dests, DISTANCE_API_KEY
+      );
+      chunk.indices.forEach((idx, j) => {
+        const r = matrix[j];
+        results[idx] = {
+          ...rows[idx],
+          distance_km: r?.distance_km ?? null,
+          duration_mins: r?.eta_mins ?? null,
+        };
+      });
+      return matrix.some((r) => r !== null);
+    };
+
+    const failedChunks: Chunk[] = [];
+    for (let i = 0; i < chunks.length; i += CONCURRENCY) {
+      if (i > 0) await sleep(WAVE_GAP_MS);
+      const wave = chunks.slice(i, i + CONCURRENCY);
+      const ok = await Promise.all(wave.map(runChunk));
+      wave.forEach((c, j) => { if (!ok[j]) failedChunks.push(c); });
+    }
+
+    // Retry failed chunks once, gently paced, in case the burst tripped a limit.
+    for (const chunk of failedChunks) {
+      await sleep(1000);
+      await runChunk(chunk);
     }
 
     return NextResponse.json({ results });

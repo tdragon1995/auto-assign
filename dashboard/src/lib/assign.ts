@@ -14,12 +14,12 @@ import {
   vnDayWindow,
   parseVnTimestamp,
 } from "./time";
-import { haversineKm, goongDistanceKm } from "./distance";
+import { haversineKm } from "./distance";
+import { roadDistancesToPoint } from "./distance-cache";
 import { isCompletedOrRejectedStop } from "./job-filters";
 import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, type RefStop, type RefLabel } from "./smart-rank";
 import { loadLeaveEntries, isDriverOnLeave } from "./leave-config";
 
-const REST_BASE = "https://fleetapi-vn.cartrack.com/rest/delivery";
 
 const DUPLICATE_REJECT_REASON =
   "Yêu cầu liền kề vẫn đang được thực hiện, quý khách vui lòng đợi thêm giây lát hoặc liên hệ Diag nếu cần được hỗ trợ!";
@@ -29,30 +29,35 @@ const DUPLICATE_REJECT_REASON =
 // is expected to repeat across different legs and should never be blocked.
 const DUPLICATE_EXEMPT_LABELS = [PSC_TINH_LABEL, PSC_RETURN_LABEL];
 
+// ── Start-location coords cache ─────────────────────────────────────────────
+// A driver's home base is static config; refetching it from Cartrack every
+// cycle is thousands of identical calls/day. Positive results only (a transient
+// fetch hiccup must not pin a driver as "no coords" for a day). 24h TTL; the
+// dashboard Refresh (GET /api/config) busts it alongside the sheet caches.
+const START_LOC_TTL_MS = 24 * 60 * 60 * 1000;
+const startLocCache = new Map<
+  string,
+  { coords: { lat: number; lon: number; name: string | null }; fetchedAt: number }
+>();
+
+export function invalidateStartLocCache(): void {
+  startLocCache.clear();
+}
+
 // ── Duplicate-check helpers ────────────────────────────────────────────────
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function fetchAssignedJobsToday(vnDate: string, auth: string): Promise<any[]> {
-  // Filter by scheduled_delivery_ts (not create_ts): the duplicate-route map and the
-  // pickup warnings care about what's being DELIVERED today, not what was created today
-  // — so a job created yesterday for today is included, and one created today for a
-  // future day is not. Matches the main cycle's getJobsByStatusAndDate(2) filter.
-  const params = new URLSearchParams({
-    "filter[job_status_id]": "4",
-    "filter[scheduled_delivery_ts_from]": `${vnDate} 00:00:00`,
-    "filter[scheduled_delivery_ts_to]":   `${vnDate} 23:59:59`,
-    limit: "1000",
-  });
+/**
+ * Today's status-4 jobs (scheduled_delivery_ts filter — what's being DELIVERED
+ * today, matching getJobsByStatusAndDate). Returns null on failure, NOT [] —
+ * callers must be able to tell "no assigned jobs" from "fetch failed", because
+ * reusing a silently-empty list in the follow-up steps would let return-trip
+ * dedup create duplicate trips.
+ */
+async function fetchAssignedJobsToday(vnDate: string, env: Env): Promise<Job[] | null> {
   try {
-    const res = await fetch(`${REST_BASE}/jobs?${params}`, {
-      headers: { Authorization: auth, "Content-Type": "application/json" },
-      cache: "no-store",
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return data.data ?? [];
+    return await getJobsByStatusAndDate(4, vnDate, env);
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -541,6 +546,18 @@ export async function autoAssignCycle(
     logs.push(makeLog(msg, level));
   };
 
+  // Shared with the follow-up steps in `finally` so they can reuse this cycle's
+  // fetches instead of re-downloading the same lists seconds later.
+  // - cycleStartS2: the status-2 list from cycle start. Safe to reuse because the
+  //   return-trip dedup checks the UNION of s2+s4 — a job this cycle assigned
+  //   moved between the lists but never left the union. Full cycles only (a
+  //   targeted manual assign narrows the list, which would starve the dedup).
+  // - assignedJobsToday: the status-4 list; null means the fetch FAILED, in which
+  //   case the follow-ups must self-fetch — trusting an empty list would let
+  //   return-trip dedup create duplicate trips.
+  let cycleStartS2: Job[] | null = null;
+  let assignedJobsToday: Job[] | null = null;
+
   try {
   // ── Release parked proxy jobs whose send_to_driver_at has passed ──────────
   // Skipped on a targeted manual assign — that's not a full cycle.
@@ -559,6 +576,7 @@ export async function autoAssignCycle(
     log(`Error fetching jobs: ${e}`, "ERROR");
     return logs;
   }
+  if (!onlyJobIds) cycleStartS2 = jobs;
 
   // Targeted manual assign: narrow to just the requested job(s).
   if (onlyJobIds) jobs = jobs.filter((j) => onlyJobIds.has(j.job_id));
@@ -579,7 +597,7 @@ export async function autoAssignCycle(
   // independent reads overlap instead of running as two serial waves.
   const authSuffix = env === "uat" ? "_UAT" : "";
   const auth = process.env[`CARTRACK_AUTH${authSuffix}`] ?? "";
-  const assignedJobsPromise = fetchAssignedJobsToday(today, auth);
+  const assignedJobsPromise = fetchAssignedJobsToday(today, env);
   let rejectCookie: string | null = null;
 
   // ── Pre-fetch GPS + route data only if a current job needs smart-assign ──────
@@ -620,12 +638,21 @@ export async function autoAssignCycle(
       if (noGps || needsRefFallback) startLocIdsNeeded.add(d.start_location_customer_id);
     }
     const startLocCoords = new Map<string, { lat: number; lon: number; name: string | null }>();
+    const nowMs = Date.now();
+    const startLocToFetch: string[] = [];
+    for (const cid of startLocIdsNeeded) {
+      const hit = startLocCache.get(`${env}:${cid}`);
+      if (hit && nowMs - hit.fetchedAt < START_LOC_TTL_MS) startLocCoords.set(cid, hit.coords);
+      else startLocToFetch.push(cid);
+    }
     await Promise.all(
-      [...startLocIdsNeeded].map(async (cid) => {
+      startLocToFetch.map(async (cid) => {
         const customerData = await getCustomerById(cid, env);
         const c = customerData?.data;
         if (c?.latitude != null && c?.longitude != null) {
-          startLocCoords.set(cid, { lat: c.latitude, lon: c.longitude, name: c.customer_name ?? null });
+          const coords = { lat: c.latitude, lon: c.longitude, name: c.customer_name ?? null };
+          startLocCoords.set(cid, coords);
+          startLocCache.set(`${env}:${cid}`, { coords, fetchedAt: nowMs });
         }
       })
     );
@@ -666,9 +693,12 @@ export async function autoAssignCycle(
   }
 
   // Resolve the assigned-jobs fetch kicked off above (it ran in parallel with the
-  // smart-driver fetch). Reused for duplicate-check (this loop) and pickup warnings.
-  const assignedJobsToday = await assignedJobsPromise;
-  const activeRouteMap = buildActiveRouteMap(assignedJobsToday);
+  // smart-driver fetch). Reused for duplicate-check (this loop), pickup warnings,
+  // and — when it verifiably succeeded — the follow-up steps in `finally`.
+  // null = fetch failed: duplicate-check fails open (same as before), and the
+  // follow-ups self-fetch instead of trusting an empty list.
+  assignedJobsToday = await assignedJobsPromise;
+  const activeRouteMap = buildActiveRouteMap(assignedJobsToday ?? []);
 
   for (const job of jobs) {
     const jobId = job.job_id;
@@ -842,41 +872,47 @@ export async function autoAssignCycle(
           })
           .sort((a, b) => a.hkm - b.hkm);
 
-        // Goong re-rank: reference stop → pickup
-        const withGoong = await Promise.all(
-          preRanked.map(async ({ d, hkm }) => {
-            const info = smartRouteData[d.delivery_driver_id];
-            const ref = info?.ref ?? null;
-            const workload = info?.workload ?? 0;
-            const tiebreakTs = ref?.tiebreakTs ?? null;
-            const priority = ref ? ROUTE_STATE_PRIORITY[ref.label] : 0;
-            const labelTag = ref ? `[${ref.label}] ` : "";
-            const jobsDone = info?.jobsDone ?? 0;
-            const name = `${d.first_name} ${d.last_name}`.trim();
-            if (!ref) return { d, sortDist: hkm, priority, workload, tiebreakTs, jobsDone, name, distLabel: `${hkm}km GPS (load ${workload})` };
-            // Distance reference points: primary ref; for "Next Stop" also the
-            // last completed stop (driver may still be there). Take the min.
-            const refPts: { lat: number; lon: number }[] = [{ lat: ref.lat, lon: ref.lon }];
-            if (ref.altLat != null && ref.altLon != null) refPts.push({ lat: ref.altLat, lon: ref.altLon });
-            const roads = await Promise.all(
-              refPts.map((p) => goongDistanceKm(p.lat, p.lon, pickupStop.latitude!, pickupStop.longitude!))
-            );
-            const straights = refPts.map(
-              (p) => Math.round(haversineKm(p.lat, p.lon, pickupStop.latitude!, pickupStop.longitude!) * 10) / 10
-            );
-            const effPerPoint = refPts.map((_, i) => roads[i] ?? straights[i]);
-            const bestIdx = effPerPoint.reduce((bi, e, i) => (e < effPerPoint[bi] ? i : bi), 0);
-            const roadKm = roads[bestIdx];
-            const refHkm = straights[bestIdx];
-            const sortDist = effPerPoint[bestIdx];
-            const refName  = ref.customerName ? `@${ref.customerName} ` : "";
-            const minTag   = refPts.length > 1 ? (bestIdx === 1 ? "via prev " : "via next ") : "";
-            const distLabel = roadKm != null
-              ? `${labelTag}${hkm}km GPS, ${minTag}${refName}→ ${roadKm}km road (load ${workload})`
-              : `${labelTag}${hkm}km GPS, ${minTag}${refName}→ ${refHkm}km straight (load ${workload})`;
-            return { d, sortDist, priority, workload, tiebreakTs, jobsDone, name, distLabel };
-          })
-        );
+        // Goong re-rank: reference stop → pickup. Every candidate's reference
+        // points (primary ref; for "Next Stop" also the last completed stop —
+        // driver may still be there; min of both wins) resolve in ONE pass per
+        // job: self-pairs are 0 km for free, repeats and known pairs come from
+        // the Redis cache, and only the misses ride a single multi-origin
+        // matrix request — instead of up to two 1×1 Goong round trips per
+        // candidate. Nulls still fall back to haversine per point.
+        const pickupPt = { lat: pickupStop.latitude!, lon: pickupStop.longitude! };
+        const prepped = preRanked.map(({ d, hkm }) => {
+          const info = smartRouteData[d.delivery_driver_id];
+          const ref = info?.ref ?? null;
+          const refPts: { lat: number; lon: number }[] = ref ? [{ lat: ref.lat, lon: ref.lon }] : [];
+          if (ref && ref.altLat != null && ref.altLon != null) refPts.push({ lat: ref.altLat, lon: ref.altLon });
+          return { d, hkm, info, ref, refPts };
+        });
+        const flatRoads = await roadDistancesToPoint(prepped.flatMap((p) => p.refPts), pickupPt);
+        let ptCursor = 0;
+        const withGoong = prepped.map(({ d, hkm, info, ref, refPts }) => {
+          const workload = info?.workload ?? 0;
+          const tiebreakTs = ref?.tiebreakTs ?? null;
+          const priority = ref ? ROUTE_STATE_PRIORITY[ref.label] : 0;
+          const labelTag = ref ? `[${ref.label}] ` : "";
+          const jobsDone = info?.jobsDone ?? 0;
+          const name = `${d.first_name} ${d.last_name}`.trim();
+          if (!ref) return { d, sortDist: hkm, priority, workload, tiebreakTs, jobsDone, name, distLabel: `${hkm}km GPS (load ${workload})` };
+          const roads = refPts.map(() => flatRoads[ptCursor++]?.distance_km ?? null);
+          const straights = refPts.map(
+            (p) => Math.round(haversineKm(p.lat, p.lon, pickupPt.lat, pickupPt.lon) * 10) / 10
+          );
+          const effPerPoint = refPts.map((_, i) => roads[i] ?? straights[i]);
+          const bestIdx = effPerPoint.reduce((bi, e, i) => (e < effPerPoint[bi] ? i : bi), 0);
+          const roadKm = roads[bestIdx];
+          const refHkm = straights[bestIdx];
+          const sortDist = effPerPoint[bestIdx];
+          const refName  = ref.customerName ? `@${ref.customerName} ` : "";
+          const minTag   = refPts.length > 1 ? (bestIdx === 1 ? "via prev " : "via next ") : "";
+          const distLabel = roadKm != null
+            ? `${labelTag}${hkm}km GPS, ${minTag}${refName}→ ${roadKm}km road (load ${workload})`
+            : `${labelTag}${hkm}km GPS, ${minTag}${refName}→ ${refHkm}km straight (load ${workload})`;
+          return { d, sortDist, priority, workload, tiebreakTs, jobsDone, name, distLabel };
+        });
         withGoong.sort(rankingComparator);
 
         const top        = withGoong[0];
@@ -1053,21 +1089,24 @@ export async function autoAssignCycle(
   if (!onlyJobIds) {
     await Promise.all([
       setHeldJobs(heldJobs),
-      setPickupWarnings(computePickupWarnings(assignedJobsToday, today)),
+      setPickupWarnings(computePickupWarnings(assignedJobsToday ?? [], today)),
     ]);
   }
   return logs;
   } finally {
-    // Both follow-up steps need today's status 2/4/5 job lists. Fetch each list
-    // ONCE and share it — previously via-legs and return-trips each fetched their
-    // own, so status 4 was pulled 3×/cycle and status 5 2×/cycle. If the shared
-    // prefetch fails, fall through to each step self-fetching (pass undefined).
+    // Both follow-up steps need today's status 2/4/5 job lists. Reuse this
+    // cycle's own fetches where they verifiably succeeded (see the declarations
+    // at the top of this function for why that's safe); only status 5 has no
+    // earlier fetch to reuse. Jobs that changed state mid-cycle (assigned 2→4,
+    // completed 4→5) stay visible: the dedup pot is the s2∪s4 union, and a
+    // just-assigned job's stops can't be "started" yet, so via-legs couldn't
+    // act on it this cycle anyway — the next cycle sees it fresh.
     const followToday = vnDate();
     let shared: { s2: Job[]; s4: Job[]; s5: Job[] } | undefined;
     try {
       const [s2, s4, s5] = await Promise.all([
-        getJobsByStatusAndDate(2, followToday, env),
-        getJobsByStatusAndDate(4, followToday, env),
+        cycleStartS2 ?? getJobsByStatusAndDate(2, followToday, env),
+        assignedJobsToday ?? getJobsByStatusAndDate(4, followToday, env),
         getJobsByStatusAndDate(5, followToday, env),
       ]);
       shared = { s2, s4, s5 };

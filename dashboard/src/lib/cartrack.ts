@@ -387,18 +387,42 @@ export async function getJobsByStatusAndDate(
   dateVn: string, // "YYYY-MM-DD"
   env: Env = "prod"
 ): Promise<Job[]> {
-  const params = new URLSearchParams({
-    "filter[job_status_id]": String(statusId),
-    "filter[scheduled_delivery_ts_from]": `${dateVn} 00:00:00`,
-    "filter[scheduled_delivery_ts_to]": `${dateVn} 23:59:59`,
-    page: "1",
-    per_page: "1000",
-  });
-  const r = await fetch(`${BASE_URL}/jobs?${params}`, {
-    headers: getHeaders(env),
-    cache: "no-store",
-  });
-  if (!r.ok) throw new Error(`getJobsByStatusAndDate ${statusId} failed: ${r.status}`);
-  const json = await r.json();
-  return json.data ?? [];
+  // Paginate to exhaustion: a single page caps at 1000 rows and busy days now
+  // approach that (825 assigned jobs on 2026-06-12). Silent truncation would
+  // drop jobs from duplicate detection, via-legs and return-trip dedup.
+  const PAGE_SIZE = 1000;
+  const MAX_PAGES = 5;
+  const all: Job[] = [];
+  const seen = new Set<number>();
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const params = new URLSearchParams({
+      "filter[job_status_id]": String(statusId),
+      "filter[scheduled_delivery_ts_from]": `${dateVn} 00:00:00`,
+      "filter[scheduled_delivery_ts_to]": `${dateVn} 23:59:59`,
+      page: String(page),
+      limit: String(PAGE_SIZE),
+      per_page: String(PAGE_SIZE),
+    });
+    const r = await fetch(`${BASE_URL}/jobs?${params}`, {
+      headers: getHeaders(env),
+      cache: "no-store",
+    });
+    if (!r.ok) throw new Error(`getJobsByStatusAndDate ${statusId} failed: ${r.status}`);
+    const json = await r.json();
+    const batch: Job[] = json.data ?? [];
+    let added = 0;
+    for (const j of batch) {
+      if (seen.has(j.job_id)) continue;
+      seen.add(j.job_id);
+      all.push(j);
+      added++;
+    }
+    // A short page is the last page. `added === 0` guards against an API that
+    // ignores `page` and replays the same rows forever.
+    if (batch.length < PAGE_SIZE || added === 0) break;
+    if (page === MAX_PAGES) {
+      console.warn(`[cartrack] getJobsByStatusAndDate(${statusId}, ${dateVn}) hit the ${MAX_PAGES}-page cap — list may be truncated`);
+    }
+  }
+  return all;
 }
