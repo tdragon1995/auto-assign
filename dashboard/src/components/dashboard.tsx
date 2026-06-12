@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { StatsSidebar } from "./stats-sidebar";
@@ -32,15 +32,38 @@ export function Dashboard() {
 
   // Single source of truth: one KV read returns switch state, live log, held
   // jobs, and pickup warnings — all updated by the cron cycle, zero extra calls.
+  // After the first full fetch, polls send ?since=<newest ts we have> and merge
+  // the few new entries instead of re-downloading the same 100 every 90s. The
+  // boundary second is requested inclusively, so dedupe by ts|level|msg.
+  const lastLogTsRef = useRef<string | null>(null);
   const syncStatus = useCallback(async () => {
     try {
-      const res = await fetch("/api/assign/status");
+      const since = lastLogTsRef.current;
+      const qs = since ? `?since=${encodeURIComponent(since)}` : "";
+      const res = await fetch(`/api/assign/status${qs}`);
       const data = await res.json();
       setIsRunning(!!data.armed);
       setArmUntil(data.state?.armedUntil ?? null);
       setArmedBy(data.state?.armedBy ?? "");
       setLastChecked(data.lastChecked ?? null);
-      if (Array.isArray(data.logs)) setLogs(data.logs);
+      if (Array.isArray(data.logs)) {
+        const incoming = data.logs as LogEntry[];
+        if (!since) {
+          setLogs(incoming);
+          if (incoming.length) lastLogTsRef.current = incoming[incoming.length - 1].ts;
+        } else if (incoming.length) {
+          setLogs((prev) => {
+            const seen = new Set(
+              prev.filter((l) => l.ts >= since).map((l) => `${l.ts}|${l.level}|${l.msg}`)
+            );
+            const fresh = incoming.filter((l) => !seen.has(`${l.ts}|${l.level}|${l.msg}`));
+            if (fresh.length === 0) return prev;
+            const merged = [...prev, ...fresh].slice(-300);
+            lastLogTsRef.current = merged[merged.length - 1].ts;
+            return merged;
+          });
+        }
+      }
       if (Array.isArray(data.held)) setHeld(data.held);
       if (Array.isArray(data.warnings)) setWarnings(data.warnings);
     } catch {
