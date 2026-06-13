@@ -1,6 +1,22 @@
 import { sheetCsvUrl, SHEET_GID } from "./sheets";
 import { vnDate, vnMinutesSinceMidnight } from "./time";
 
+/** The 3PL-express (Grab) booking proxy. When a substitute slot resolves to
+ *  this UUID it means the leave is covered by a 3PL-express booking, NOT a real
+ *  driver — so it must never be auto-assigned a job. Distinct from the parking
+ *  PROXY_DRIVER_ID and the duplicate-reject proxy. */
+export const PROXY_3PL_DRIVER_ID = "6437bace-6578-11f1-9378-fa163ee8d8ac";
+
+/** One substitute slot on a leave row. `id` comes from the sheet's
+ *  xlookup(name) formula; `name` is a supervisor-facing label only — the
+ *  authoritative name is read from Cartrack's assign response. */
+export interface SubEntry {
+  id: string;
+  name: string;
+  from: string | null; // HH:MM — daily coverage window start
+  to: string | null;   // HH:MM — daily coverage window end
+}
+
 export interface LeaveEntry {
   driver_id: string;
   driver_name: string;
@@ -9,6 +25,7 @@ export interface LeaveEntry {
   leave_to: string | null;  // YYYY-MM-DD
   gio_bat_dau: string | null; // HH:MM
   gio_ket_thuc: string | null;
+  subs: SubEntry[];         // substitutes covering this driver's leave (0–4)
 }
 
 let cache: { entries: LeaveEntry[]; fetchedAt: number } | null = null;
@@ -18,23 +35,36 @@ function parseField(f: string | undefined): string {
   return (f ?? "").trim();
 }
 
-// Minimal CSV line parser (handles double-quoted fields)
-function parseCsvLine(line: string): string[] {
-  const fields: string[] = [];
+// Full CSV tokenizer (RFC-4180-ish): handles quoted fields containing commas,
+// escaped quotes ("") AND embedded newlines. A line-by-line parser is unsafe
+// here because scheduled_trips/note cells span multiple lines — and they sit
+// BEFORE the substitute columns, so a naive split would shift every sub field.
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
   let cur = "";
   let inQ = false;
-  for (const ch of line) {
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
     if (inQ) {
-      if (ch === '"') inQ = false;
-      else cur += ch;
+      if (ch === '"') {
+        if (text[i + 1] === '"') { cur += '"'; i++; }
+        else inQ = false;
+      } else cur += ch;
+    } else if (ch === '"') {
+      inQ = true;
+    } else if (ch === ",") {
+      row.push(cur); cur = "";
+    } else if (ch === "\r") {
+      /* ignore CR */
+    } else if (ch === "\n") {
+      row.push(cur); rows.push(row); row = []; cur = "";
     } else {
-      if (ch === '"') { inQ = true; }
-      else if (ch === ',') { fields.push(cur); cur = ""; }
-      else cur += ch;
+      cur += ch;
     }
   }
-  fields.push(cur);
-  return fields;
+  if (cur !== "" || row.length > 0) { row.push(cur); rows.push(row); }
+  return rows;
 }
 
 function timeToMins(t: string | null): number {
@@ -51,26 +81,44 @@ export async function loadLeaveEntries(): Promise<LeaveEntry[]> {
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-    const text = await res.text();
-    const lines = text
-      .split("\n")
-      .map((l) => l.replace(/\r$/, ""))
-      .filter((l) => l.trim());
+    const rows = parseCsv(await res.text());
+    if (rows.length < 2) {
+      cache = { entries: [], fetchedAt: Date.now() };
+      return [];
+    }
 
-    // First line is header — skip it
-    const entries: LeaveEntry[] = lines.slice(1).map((line) => {
-      const f = parseCsvLine(line);
-      // Column order matches what /api/nghi-phep writes:
-      // [0] Timestamp  [1] driver_id  [2] driver_name  [3] Loại nghỉ
-      // [4] leave_from [5] leave_to   [6] gio_bat_dau  [7] gio_ket_thuc
+    // Header-keyed access — robust to column re-ordering/additions (the sub
+    // blocks). First occurrence of each header name wins.
+    const col: Record<string, number> = {};
+    rows[0].forEach((h, i) => { const k = h.trim(); if (!(k in col)) col[k] = i; });
+    const get = (f: string[], name: string): string => {
+      const i = col[name];
+      return i == null ? "" : parseField(f[i]);
+    };
+
+    const buildSub = (f: string[], n: number): SubEntry | null => {
+      const id = get(f, `sub${n}_id`);
+      if (!id) return null;
       return {
-        driver_id:   parseField(f[1]),
-        driver_name: parseField(f[2]),
-        loai_nghi:   parseField(f[3]),
-        leave_from: parseField(f[4]),
-        leave_to:   parseField(f[5]) || null,
-        gio_bat_dau:  parseField(f[6]) || null,
-        gio_ket_thuc: parseField(f[7]) || null,
+        id,
+        name: get(f, `sub${n}_name`),
+        from: get(f, `sub${n}_from`) || null,
+        to:   get(f, `sub${n}_to`) || null,
+      };
+    };
+
+    const entries: LeaveEntry[] = rows.slice(1).map((f) => {
+      const subs: SubEntry[] = [];
+      for (let n = 1; n <= 4; n++) { const s = buildSub(f, n); if (s) subs.push(s); }
+      return {
+        driver_id:    get(f, "driver_id"),
+        driver_name:  get(f, "driver"),
+        loai_nghi:    get(f, "Loại Nghỉ"),
+        leave_from:   get(f, "leave_from"),
+        leave_to:     get(f, "leave_to") || null,
+        gio_bat_dau:  get(f, "leave_from_hr") || null,
+        gio_ket_thuc: get(f, "leave_to_hr") || null,
+        subs,
       };
       // NOTE: do NOT require loai_nghi here. Many rows are typed straight into
       // the sheet with a date + time window but a blank "Loại Nghỉ" cell; those
@@ -88,7 +136,7 @@ export async function loadLeaveEntries(): Promise<LeaveEntry[]> {
 export function isDriverOnLeave(
   driverId: string,
   entries: LeaveEntry[],
-): { onLeave: boolean; driverName?: string; reason?: string } {
+): { onLeave: boolean; driverName?: string; reason?: string; entry?: LeaveEntry } {
   const today = vnDate();
   const nowMins = vnMinutesSinceMidnight();
 
@@ -99,19 +147,19 @@ export function isDriverOnLeave(
     if (e.loai_nghi === "Nghỉ nguyên buổi") {
       const to = e.leave_to ?? e.leave_from;
       if (today >= e.leave_from && today <= to) {
-        return { onLeave: true, driverName, reason: `Nghỉ nguyên buổi ${e.leave_from}→${to}` };
+        return { onLeave: true, driverName, reason: `Nghỉ nguyên buổi ${e.leave_from}→${to}`, entry: e };
       }
     } else if (e.loai_nghi === "Nghỉ nửa buổi") {
       if (today === e.leave_from) {
         const start = timeToMins(e.gio_bat_dau);
         const end   = timeToMins(e.gio_ket_thuc);
         if (start >= 0 && end >= 0 && nowMins >= start && nowMins <= end) {
-          return { onLeave: true, driverName, reason: `Nghỉ nửa buổi ${e.gio_bat_dau}–${e.gio_ket_thuc}` };
+          return { onLeave: true, driverName, reason: `Nghỉ nửa buổi ${e.gio_bat_dau}–${e.gio_ket_thuc}`, entry: e };
         }
       }
     } else if (e.loai_nghi === "Nghỉ việc") {
       if (today >= e.leave_from) {
-        return { onLeave: true, driverName, reason: `Nghỉ việc (từ ${e.leave_from})` };
+        return { onLeave: true, driverName, reason: `Nghỉ việc (từ ${e.leave_from})`, entry: e };
       }
     } else {
       // Unlabeled / manually-typed leave (blank "Loại Nghỉ"): a date range with
@@ -125,14 +173,57 @@ export function isDriverOnLeave(
         const end   = timeToMins(e.gio_ket_thuc);
         const hasWindow = start >= 0 && end > start;
         if (!hasWindow) {
-          return { onLeave: true, driverName, reason: `Nghỉ cả ngày ${e.leave_from}${to !== e.leave_from ? `→${to}` : ""}` };
+          return { onLeave: true, driverName, reason: `Nghỉ cả ngày ${e.leave_from}${to !== e.leave_from ? `→${to}` : ""}`, entry: e };
         }
         if (nowMins >= start && nowMins <= end) {
-          return { onLeave: true, driverName, reason: `Nghỉ ${e.gio_bat_dau}–${e.gio_ket_thuc}` };
+          return { onLeave: true, driverName, reason: `Nghỉ ${e.gio_bat_dau}–${e.gio_ket_thuc}`, entry: e };
         }
       }
     }
   }
 
   return { onLeave: false };
+}
+
+/**
+ * Resolve which substitute should cover an on-leave driver right now, mirroring
+ * the fixed-path clash model: exactly one covering sub → assign; 2+ overlapping
+ * → clash (flag, don't assign); none → no cover. The 3PL-express proxy and any
+ * sub whose own row puts them on leave at this moment are dropped first (so a
+ * proxy-only leave resolves to "none" — handled by a 3PL booking, not a driver).
+ * Sub windows are HH:MM; a blank sub
+ * window inherits the leave's own window (leave_from_hr–leave_to_hr), and a
+ * full-day leave (no hour window) means the sub covers the whole day.
+ */
+export function resolveSubstitute(
+  entry: LeaveEntry,
+  entries: LeaveEntry[],
+):
+  | { status: "ok"; subId: string }
+  | { status: "clash"; subIds: string[] }
+  | { status: "none" } {
+  const nowMins = vnMinutesSinceMidnight();
+
+  const covering = entry.subs.filter((s) => {
+    if (!s.id) return false;
+    if (s.id === PROXY_3PL_DRIVER_ID) return false; // 3PL-express proxy, never a real assignee
+    if (isDriverOnLeave(s.id, entries).onLeave) return false; // sub is themselves off
+    let start = timeToMins(s.from);
+    let end   = timeToMins(s.to);
+    let hasWindow = start >= 0 && end > start;
+    if (!hasWindow) {
+      // Blank sub window → inherit the leave's own window (leave_from_hr–leave_to_hr).
+      start = timeToMins(entry.gio_bat_dau);
+      end   = timeToMins(entry.gio_ket_thuc);
+      hasWindow = start >= 0 && end > start;
+    }
+    if (!hasWindow) return true; // leave is full-day (no hour window) → covers all day
+    return nowMins >= start && nowMins <= end;
+  });
+
+  // De-dup by id so the same sub listed in two slots isn't a false clash.
+  const ids = [...new Set(covering.map((s) => s.id))];
+  if (ids.length === 0) return { status: "none" };
+  if (ids.length > 1) return { status: "clash", subIds: ids };
+  return { status: "ok", subId: ids[0] };
 }

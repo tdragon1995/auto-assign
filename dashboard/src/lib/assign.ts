@@ -18,7 +18,7 @@ import { haversineKm } from "./distance";
 import { roadDistancesToPoint } from "./distance-cache";
 import { isCompletedOrRejectedStop } from "./job-filters";
 import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, type RefStop, type RefLabel } from "./smart-rank";
-import { loadLeaveEntries, isDriverOnLeave } from "./leave-config";
+import { loadLeaveEntries, isDriverOnLeave, resolveSubstitute } from "./leave-config";
 
 
 const DUPLICATE_REJECT_REASON =
@@ -820,11 +820,21 @@ export async function autoAssignCycle(
     if (smartMapping) {
       // ── 1-driver: straight assign (like fixed auto-assign) ──────────────
         if (smartMapping.smart_driver_id.length === 1) {
-          const driverId   = smartMapping.smart_driver_id[0];
+          let driverId   = smartMapping.smart_driver_id[0];
+          let subFor: string | null = null;
           const lc1 = isDriverOnLeave(driverId, leaveEntries);
           if (lc1.onLeave) {
-            log(`Job ${jobId} - SMART(1) SKIP: ${lc1.driverName ?? driverId} on leave (${lc1.reason}) | ${jobCustomerName ?? customerId}`, "WARN");
-            continue;
+            const sub = resolveSubstitute(lc1.entry!, leaveEntries);
+            if (sub.status === "clash") {
+              log(`Job ${jobId} - SUB CLASH: ${sub.subIds.length} substitutes cover for ${lc1.driverName ?? driverId} now | ${jobCustomerName ?? customerId}`, "WARN");
+              continue;
+            }
+            if (sub.status === "none") {
+              log(`Job ${jobId} - SMART(1) SKIP: ${lc1.driverName ?? driverId} on leave (${lc1.reason}), no substitute covers now | ${jobCustomerName ?? customerId}`, "WARN");
+              continue;
+            }
+            subFor = lc1.driverName ?? driverId;
+            driverId = sub.subId;
           }
           if (smartMapping.alt_drop_off_id) {
             const alt = await applyAltDropoff(jobId, smartMapping.alt_drop_off_id, job.stops ?? [], env, log);
@@ -835,8 +845,9 @@ export async function autoAssignCycle(
             // straight from Cartrack's response (no driver-list fetch needed).
             const { status: apiStatus, body, driverName: ctName } = await assignJobViaUpdate(jobId, driverId, env);
             if (apiStatus === 200) {
-              const driverName = ctName || smartMapping.first_name_last_name || driverId;
-              log(`Job ${jobId} | SMART(1) → ${driverName} | ${jobCustomerName ?? customerId}`, "OK");
+              const driverName = ctName || (subFor ? driverId : smartMapping.first_name_last_name) || driverId;
+              const who = subFor ? `${driverName} (sub for ${subFor})` : driverName;
+              log(`Job ${jobId} | SMART(1) → ${who} | ${jobCustomerName ?? customerId}`, "OK");
             } else {
               log(`Job ${jobId} - SMART(1) failed: ${friendlyError(body)}`, "ERROR");
             }
@@ -853,14 +864,11 @@ export async function autoAssignCycle(
           continue;
         }
 
+        // On-leave drivers stay in the pool so they can still be the "picked"
+        // (nearest) candidate — the assign loop below swaps in their substitute.
         const candidates = allGpsDrivers.filter((d) => {
           if (!smartMapping.smart_driver_id.includes(d.delivery_driver_id)) return false;
           if (!phase1Coords.has(d.delivery_driver_id)) return false;
-          const lc = isDriverOnLeave(d.delivery_driver_id, leaveEntries);
-          if (lc.onLeave) {
-            log(`Job ${jobId} - SMART: skip ${lc.driverName ?? d.delivery_driver_id} on leave (${lc.reason})`, "INFO");
-            return false;
-          }
           return true;
         });
         if (candidates.length === 0) {
@@ -933,18 +941,52 @@ export async function autoAssignCycle(
         }
         // Try candidates in ranked order; fall through to next if on-break/offline.
         let assigned = false;
+        let subClash = false;
         for (let attempt = 0; attempt < withGoong.length; attempt++) {
           const candidate = withGoong[attempt];
           const candidateName = `${candidate.d.first_name} ${candidate.d.last_name}`.trim();
+
+          // If this (nearest) candidate is on leave, hand the job to their
+          // substitute instead of the next-nearest driver.
+          let targetId = candidate.d.delivery_driver_id;
+          let subFor: string | null = null;
+          const lc = isDriverOnLeave(targetId, leaveEntries);
+          if (lc.onLeave) {
+            const sub = resolveSubstitute(lc.entry!, leaveEntries);
+            if (sub.status === "clash") {
+              log(`Job ${jobId} - SUB CLASH: ${sub.subIds.length} substitutes cover for ${lc.driverName ?? candidateName} now | ${pickupStop.customer_name ?? customerId}`, "WARN");
+              subClash = true;
+              break;
+            }
+            if (sub.status === "none") {
+              log(`Job ${jobId} - SMART #${attempt + 1} ${candidateName}: on leave (${lc.reason}), no substitute — trying next`, "INFO");
+              continue;
+            }
+            targetId = sub.subId;
+            subFor = lc.driverName ?? candidateName;
+          }
+
           try {
-            const { status: apiStatus, body } = await assignJob(candidate.d.delivery_driver_id, jobId, env);
+            // Substitute → assign via update endpoint to read the sub's real name
+            // from Cartrack's response (sub#_name in the sheet is reference-only).
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            let apiStatus: number, body: any, ctName: string | null = null;
+            if (subFor) {
+              const r = await assignJobViaUpdate(jobId, targetId, env);
+              apiStatus = r.status; body = r.body; ctName = r.driverName;
+            } else {
+              const r = await assignJob(targetId, jobId, env);
+              apiStatus = r.status; body = r.body;
+            }
             if (apiStatus === 200) {
               const tag = attempt > 0 ? `[#${attempt + 1}] ` : "";
-              log(`Job ${jobId} | SMART ${tag}→ ${rankStr} | ${pickupStop.customer_name ?? customerId}`, "OK");
+              const who = subFor ? `${ctName || targetId} (sub for ${subFor})` : rankStr;
+              log(`Job ${jobId} | SMART ${tag}→ ${who} | ${pickupStop.customer_name ?? customerId}`, "OK");
               assigned = true;
               break;
             } else if (isDriverUnavailable(body)) {
-              log(`Job ${jobId} - SMART #${attempt + 1} ${candidateName}: on-break or offline, trying next`, "WARN");
+              const who = subFor ? `sub ${ctName || targetId}` : candidateName;
+              log(`Job ${jobId} - SMART #${attempt + 1} ${who}: on-break or offline, trying next`, "WARN");
             } else {
               log(`Job ${jobId} - SMART failed: ${friendlyError(body)}`, "ERROR");
               break;
@@ -954,6 +996,7 @@ export async function autoAssignCycle(
             break;
           }
         }
+        if (subClash) continue;
         if (!assigned) {
           const names = withGoong.map((x) => `${x.d.first_name} ${x.d.last_name}`.trim()).join(", ");
           log(`Job ${jobId} - SMART: all ${withGoong.length} candidate(s) on-break or unavailable (${names})`, "ERROR");
@@ -1000,13 +1043,23 @@ export async function autoAssignCycle(
 
     // Exactly one driver on duty
     const mapping = drivers[0];
-    const driverId = mapping.driver_id;
+    let driverId = mapping.driver_id;
     if (!driverId) continue;
 
+    let subFor: string | null = null;
     const lcFixed = isDriverOnLeave(driverId, leaveEntries);
     if (lcFixed.onLeave) {
-      log(`Job ${jobId} - SKIP: ${lcFixed.driverName ?? driverId} on leave (${lcFixed.reason}) | ${jobCustomerName ?? customerId}`, "WARN");
-      continue;
+      const sub = resolveSubstitute(lcFixed.entry!, leaveEntries);
+      if (sub.status === "clash") {
+        log(`Job ${jobId} - SUB CLASH: ${sub.subIds.length} substitutes cover for ${lcFixed.driverName ?? driverId} now | ${jobCustomerName ?? customerId}`, "WARN");
+        continue;
+      }
+      if (sub.status === "none") {
+        log(`Job ${jobId} - SKIP: ${lcFixed.driverName ?? driverId} on leave (${lcFixed.reason}), no substitute covers now | ${jobCustomerName ?? customerId}`, "WARN");
+        continue;
+      }
+      subFor = lcFixed.driverName ?? driverId;
+      driverId = sub.subId;
     }
 
     // A broken sheet cell (#REF!, #N/A, …) would build a malformed assign URL
@@ -1036,7 +1089,7 @@ export async function autoAssignCycle(
         // job the dropoff was swapped, so its new name + coords come from the
         // applyAltDropoff result (it already fetched the alt customer record).
         // Name from Cartrack's assign response, then sheet, then UUID.
-        const respDriverName = ctName || mapping.first_name_last_name || driverId;
+        const respDriverName = ctName || (subFor ? driverId : mapping.first_name_last_name) || driverId;
         const pickupStop  = job.stops?.find((s) => s.stop_type_id === 1);
         const dropoffStop = job.stops?.find((s) => s.stop_type_id === 2);
         const pickupName  = pickupStop?.customer_name ?? jobCustomerName ?? "N/A";
@@ -1047,7 +1100,7 @@ export async function autoAssignCycle(
         const dropoffLon = altResult ? altResult.dropoffLon : dropoffStop?.longitude;
 
         log(
-          `Job ${jobId} | ${respDriverName} -> ${pickupName}`,
+          `Job ${jobId} | ${subFor ? `${respDriverName} (sub for ${subFor})` : respDriverName} -> ${pickupName}`,
           "OK"
         );
 
