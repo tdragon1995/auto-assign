@@ -87,6 +87,25 @@ function toCSV(results: Result[]): string {
   return "\uFEFF" + [header, ...lines].join("\n");
 }
 
+// A pair already stored in the Redis cache (returned by GET /api/distance-checking).
+interface CachedRecord {
+  key: string;
+  fromLat: number | null;
+  fromLon: number | null;
+  toLat: number | null;
+  toLon: number | null;
+  distance_km: number | null;
+  eta_mins: number | null;
+}
+
+function cachedToCSV(records: CachedRecord[]): string {
+  const header = "key,fromLat,fromLon,toLat,toLon,distance_km,eta_mins";
+  const lines = records.map((r) =>
+    [csvCell(r.key), r.fromLat ?? "", r.fromLon ?? "", r.toLat ?? "", r.toLon ?? "", r.distance_km ?? "", r.eta_mins ?? ""].join(",")
+  );
+  return "\uFEFF" + [header, ...lines].join("\n");
+}
+
 export default function DistanceCheckingPage() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [rows, setRows]           = useState<Row[]>([]);
@@ -97,6 +116,7 @@ export default function DistanceCheckingPage() {
   const [results, setResults]     = useState<Result[]>([]);
   const [progress, setProgress]   = useState(0);
   const [runError, setRunError]   = useState("");
+  const [cacheLoading, setCacheLoading] = useState(false);
 
   const applyText = (text: string) => {
     setResults([]);
@@ -175,15 +195,38 @@ export default function DistanceCheckingPage() {
     }
   };
 
-  const download = () => {
-    const csv = toCSV(results);
+  const saveCSV = (csv: string, name: string) => {
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `distances_${(fileName || "result").replace(/\.csv$/i, "")}_result.csv`;
+    a.download = name;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const download = () => {
+    saveCSV(toCSV(results), `distances_${(fileName || "result").replace(/\.csv$/i, "")}_result.csv`);
+  };
+
+  // Download everything already stored in the Redis cache (no Goong calls).
+  const downloadCached = async () => {
+    setCacheLoading(true);
+    try {
+      const res = await fetch("/api/distance-checking");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Lỗi tải cache");
+      const records = (data.records ?? []) as CachedRecord[];
+      if (records.length === 0) {
+        alert("Cache trống (hoặc Redis chưa được cấu hình).");
+        return;
+      }
+      saveCSV(cachedToCSV(records), `cached-distances_${records.length}.csv`);
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setCacheLoading(false);
+    }
   };
 
   const successCount = results.filter((r) => r.distance_km != null).length;
@@ -197,11 +240,16 @@ export default function DistanceCheckingPage() {
     <div className="min-h-screen bg-slate-50 p-6">
       <div className="max-w-5xl mx-auto space-y-6">
 
-        <div>
-          <h1 className="text-2xl font-bold">Kiểm tra khoảng cách</h1>
-          <p className="text-sm text-slate-500 mt-1">
-            Mỗi dòng: <code className="bg-slate-100 px-1 rounded text-xs">lat1 long1 lat2 long2</code> — ngăn cách bởi khoảng trắng, tab, hoặc dấu phẩy. Không cần header.
-          </p>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-bold">Kiểm tra khoảng cách</h1>
+            <p className="text-sm text-slate-500 mt-1">
+              Mỗi dòng: <code className="bg-slate-100 px-1 rounded text-xs">lat1 long1 lat2 long2</code> — ngăn cách bởi khoảng trắng, tab, hoặc dấu phẩy. Không cần header.
+            </p>
+          </div>
+          <Button variant="outline" size="sm" onClick={downloadCached} disabled={cacheLoading} className="shrink-0" title="Tải toàn bộ dữ liệu đã lưu trong cache (không gọi API)">
+            {cacheLoading ? "Đang tải…" : "⬇ Tải cache đã lưu"}
+          </Button>
         </div>
 
         {/* Upload */}

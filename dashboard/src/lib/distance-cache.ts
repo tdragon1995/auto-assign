@@ -169,3 +169,68 @@ export async function roadDistancesFromPoint(
     (miss) => goongMatrix(origin.lat, origin.lon, miss.map((m) => m.to), apiKey),
   );
 }
+
+export interface CachedRecord {
+  key: string;
+  fromLat: number | null;
+  fromLon: number | null;
+  toLat: number | null;
+  toLon: number | null;
+  distance_km: number | null;
+  eta_mins: number | null;
+}
+
+function safeParse(s: string): unknown {
+  try { return JSON.parse(s); } catch { return null; }
+}
+
+// Pull numeric coords out of a key (fallback for entries written before exact
+// coords were stored in the value).
+function keyCoords(key: string) {
+  const [from = "", to = ""] = key.replace(/^dist:v1:/, "").split(">");
+  const [a, b] = from.split(",");
+  const [c, d] = to.split(",");
+  const num = (s?: string) => (s && !isNaN(Number(s)) ? Number(s) : null);
+  return { fromLat: num(a), fromLon: num(b), toLat: num(c), toLon: num(d) };
+}
+
+/**
+ * Dump every cached pair (`dist:v1:*`) for download/backup. Read-only — SCAN
+ * (cursor loop, never KEYS) + pipelined MGET. Prefers the exact coords stored
+ * in the value; falls back to the truncated coords from the key for older
+ * entries. Returns [] when Redis isn't configured.
+ */
+export async function exportCachedDistances(): Promise<CachedRecord[]> {
+  const redis = getRedis();
+  if (!redis) return [];
+
+  const keys: string[] = [];
+  let cursor = "0";
+  do {
+    const [next, batch] = await redis.scan(cursor, { match: "dist:v1:*", count: 500 });
+    keys.push(...batch);
+    cursor = String(next);
+  } while (cursor !== "0");
+
+  const out: CachedRecord[] = [];
+  const CHUNK = 256;
+  for (let i = 0; i < keys.length; i += CHUNK) {
+    const slice = keys.slice(i, i + CHUNK);
+    const values = await redis.mget<(StoredDistance | string | null)[]>(...slice);
+    slice.forEach((key, j) => {
+      const raw = values[j];
+      const v = (typeof raw === "string" ? safeParse(raw) : raw) as StoredDistance | null;
+      const k = keyCoords(key);
+      out.push({
+        key,
+        fromLat: v?.from?.lat ?? k.fromLat,
+        fromLon: v?.from?.lon ?? k.fromLon,
+        toLat: v?.to?.lat ?? k.toLat,
+        toLon: v?.to?.lon ?? k.toLon,
+        distance_km: typeof v?.distance_km === "number" ? v.distance_km : null,
+        eta_mins: typeof v?.eta_mins === "number" ? v.eta_mins : null,
+      });
+    });
+  }
+  return out;
+}

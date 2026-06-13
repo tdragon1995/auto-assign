@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { roadDistancesFromPoint, type DistanceSource } from "@/lib/distance-cache";
+import { roadDistancesFromPoint, exportCachedDistances, type DistanceSource } from "@/lib/distance-cache";
 
 export const runtime = "edge";
 export const preferredRegion = "sin1";
@@ -115,6 +115,16 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({ results });
+  } catch (e) {
+    return NextResponse.json({ error: String(e) }, { status: 500 });
+  }
+}
+
+// Download every cached pair currently in Redis (dist:v1:*). Read-only.
+export async function GET() {
+  try {
+    const records = await exportCachedDistances();
+    return NextResponse.json({ count: records.length, records });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
