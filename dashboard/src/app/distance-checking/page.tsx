@@ -10,12 +10,32 @@ interface Row {
   lon1: number;
   lat2: number;
   lon2: number;
+  // Original coordinate text exactly as typed/uploaded. parseFloat→String()
+  // strips trailing zeros (e.g. "106.7200000" → "106.72") and can round very
+  // long values, so we keep the raw strings for display and CSV export.
+  lat1Raw: string;
+  lon1Raw: string;
+  lat2Raw: string;
+  lon2Raw: string;
 }
 
 interface Result extends Row {
   distance_km: number | null;
   duration_mins: number | null;
   error?: string;
+}
+
+// Shape we actually rely on from the API — only the computed fields. The echoed
+// coordinates are ignored in favour of the original raw strings.
+interface ApiResult {
+  distance_km: number | null;
+  duration_mins: number | null;
+  error?: string;
+}
+
+// Quote a CSV cell if it contains a comma, quote, or newline (RFC 4180).
+function csvCell(value: string): string {
+  return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }
 
 // Each line: "lat1 long1 lat2 long2" (space/tab/comma separated, no header)
@@ -33,7 +53,10 @@ function parseText(text: string): { rows: Row[]; errors: string[] } {
     const lat2 = parseFloat(cols[2]);
     const lon2 = parseFloat(cols[3]);
     if ([lat1, lon1, lat2, lon2].some(isNaN)) { errors.push(`Dòng ${i + 1}: toạ độ không hợp lệ`); continue; }
-    rows.push({ pickup: String(i + 1), dropoff: "", lat1, lon1, lat2, lon2 });
+    rows.push({
+      pickup: String(i + 1), dropoff: "", lat1, lon1, lat2, lon2,
+      lat1Raw: cols[0], lon1Raw: cols[1], lat2Raw: cols[2], lon2Raw: cols[3],
+    });
   }
   return { rows, errors };
 }
@@ -41,7 +64,7 @@ function parseText(text: string): { rows: Row[]; errors: string[] } {
 function toCSV(results: Result[]): string {
   const header = "lat1,long1,lat2,long2,distance_km,duration_mins,error";
   const lines = results.map((r) =>
-    [r.lat1, r.lon1, r.lat2, r.lon2, r.distance_km ?? "", r.duration_mins ?? "", r.error ?? ""].join(",")
+    [r.lat1Raw, r.lon1Raw, r.lat2Raw, r.lon2Raw, r.distance_km ?? "", r.duration_mins ?? "", csvCell(r.error ?? "")].join(",")
   );
   return "\uFEFF" + [header, ...lines].join("\n");
 }
@@ -111,7 +134,17 @@ export default function DistanceCheckingPage() {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "Unknown error");
-        (data.results as Result[]).forEach((r, j) => { byOriginal[idxChunk[j]] = r; });
+        // Merge computed fields onto the original row so the raw coordinate
+        // strings (full precision) survive — never trust the echoed coords.
+        (data.results as ApiResult[]).forEach((r, j) => {
+          const orig = rows[idxChunk[j]];
+          byOriginal[idxChunk[j]] = {
+            ...orig,
+            distance_km: r.distance_km,
+            duration_mins: r.duration_mins,
+            error: r.error,
+          };
+        });
         done += idxChunk.length;
         setProgress(done);
         setResults(byOriginal.filter((r): r is Result => r != null));
@@ -204,10 +237,10 @@ export default function DistanceCheckingPage() {
                 {rows.slice(0, 10).map((r, i) => (
                   <tr key={i} className="hover:bg-slate-50/60">
                     <td className="px-3 py-2 text-right text-slate-400">{r.pickup}</td>
-                    <td className="px-3 py-2 text-right text-slate-500">{r.lat1}</td>
-                    <td className="px-3 py-2 text-right text-slate-500">{r.lon1}</td>
-                    <td className="px-3 py-2 text-right text-slate-500">{r.lat2}</td>
-                    <td className="px-3 py-2 text-right text-slate-500">{r.lon2}</td>
+                    <td className="px-3 py-2 text-right text-slate-500">{r.lat1Raw}</td>
+                    <td className="px-3 py-2 text-right text-slate-500">{r.lon1Raw}</td>
+                    <td className="px-3 py-2 text-right text-slate-500">{r.lat2Raw}</td>
+                    <td className="px-3 py-2 text-right text-slate-500">{r.lon2Raw}</td>
                   </tr>
                 ))}
               </tbody>
@@ -260,10 +293,10 @@ export default function DistanceCheckingPage() {
                   {results.map((r, i) => (
                     <tr key={i} className={r.error ? "bg-red-50/40" : "hover:bg-slate-50/60"}>
                       <td className="px-3 py-2 text-right text-slate-400">{r.pickup}</td>
-                      <td className="px-3 py-2 text-right text-slate-400 font-mono text-[11px]">{r.lat1}</td>
-                      <td className="px-3 py-2 text-right text-slate-400 font-mono text-[11px]">{r.lon1}</td>
-                      <td className="px-3 py-2 text-right text-slate-400 font-mono text-[11px]">{r.lat2}</td>
-                      <td className="px-3 py-2 text-right text-slate-400 font-mono text-[11px]">{r.lon2}</td>
+                      <td className="px-3 py-2 text-right text-slate-400 font-mono text-[11px]">{r.lat1Raw}</td>
+                      <td className="px-3 py-2 text-right text-slate-400 font-mono text-[11px]">{r.lon1Raw}</td>
+                      <td className="px-3 py-2 text-right text-slate-400 font-mono text-[11px]">{r.lat2Raw}</td>
+                      <td className="px-3 py-2 text-right text-slate-400 font-mono text-[11px]">{r.lon2Raw}</td>
                       <td className="px-3 py-2 text-right font-mono">
                         {r.distance_km != null ? r.distance_km : <span className="text-red-400">—</span>}
                       </td>

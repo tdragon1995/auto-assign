@@ -10,6 +10,17 @@ import { goongMatrix, goongMatrixMultiOrigin, type GoongResult } from "./distanc
 
 const TTL_SECONDS = 40 * 24 * 60 * 60; // 40 days
 
+type Pt = { lat: number; lon: number };
+
+// What we persist per pair: the distance, plus the exact (full-precision)
+// coordinates as received from Cartrack / distance-checking. The KEY is
+// truncated to 5 dp (below) purely for matching/hit-rate; the VALUE keeps the
+// real coords so exports and downstream lookups aren't limited to the grid.
+interface StoredDistance extends GoongResult {
+  from: Pt;
+  to: Pt;
+}
+
 function getRedis() {
   const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
@@ -17,9 +28,17 @@ function getRedis() {
   return new Redis({ url, token });
 }
 
-// 5-decimal rounding (~1 m) so float noise doesn't split identical pairs.
+// Truncate to the 5th decimal (~1 m) — read the digits, do NOT round. Rounding
+// half-up split near-identical points across the x.xxxxx5 boundary (one rounds
+// up, its neighbour down) into two keys, costing avoidable Goong calls and
+// breaking exact-match lookups. Truncation puts the cell edge on the round
+// number, so coords differing only past the 5th decimal collapse to one key.
+// Mirrors Excel TRUNC(x, 5). toFixed(8) first sheds float noise (…0000002),
+// then we cut at 5 decimals without rounding.
 function coord(n: number): string {
-  return n.toFixed(5);
+  const s = n.toFixed(8);
+  const dot = s.indexOf(".");
+  return s.slice(0, dot + 6); // integer part + "." + 5 digits
 }
 
 function distKey(fromLat: number, fromLon: number, toLat: number, toLon: number): string {
@@ -49,7 +68,7 @@ async function getCachedDistances(keys: string[]): Promise<(GoongResult | null)[
 }
 
 /** Write-behind after a Goong fetch. Failed lookups (null) must never be cached. */
-async function setCachedDistances(entries: { key: string; value: GoongResult }[]): Promise<void> {
+async function setCachedDistances(entries: { key: string; value: StoredDistance }[]): Promise<void> {
   if (entries.length === 0) return;
   const redis = getRedis();
   if (!redis) return;
@@ -105,11 +124,14 @@ async function resolvePairs(
 
   if (misses.length > 0) {
     const fetched = await fetchMisses(misses.map((i) => unique[i]));
-    const toStore: { key: string; value: GoongResult }[] = [];
+    const toStore: { key: string; value: StoredDistance }[] = [];
     fetched.forEach((f, j) => {
       if (!f) return;
       results[misses[j]] = f;
-      toStore.push({ key: keyOf(unique[misses[j]]), value: f });
+      // Persist the distance keyed by the truncated coords, but store the exact
+      // coordinates that produced it (as sent from CT / distance-checking).
+      const u = unique[misses[j]];
+      toStore.push({ key: keyOf(u), value: { ...f, from: u.from, to: u.to } });
     });
     await setCachedDistances(toStore);
   }
