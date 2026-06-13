@@ -110,6 +110,9 @@ function computePickupWarnings(
   const now = Date.now();
   const THIRTY_MIN_MS  = 30 * 60 * 1000;
   const FIFTEEN_MIN_MS = 15 * 60 * 1000;
+  // Overdue grace for non-windowed (ASAP) pickups, measured from scheduled_delivery_ts.
+  const OVERDUE_MIN = 30;
+  const OVERDUE_MS  = OVERDUE_MIN * 60 * 1000;
 
   // Build per-driver lookup tables from all assigned jobs:
   //   inProgressStopIds — stops currently started but not completed
@@ -174,13 +177,19 @@ function computePickupWarnings(
     let extra: Partial<PickupWarning> = {};
 
     if (!hasWindow) {
-      // Case 1: no window — warn if sent to driver 30+ min ago
-      const sentAt = parseSendToDriverAt(job.send_to_driver_at);
-      if (!sentAt) continue;
-      const elapsed = now - sentAt.getTime();
-      if (elapsed >= THIRTY_MIN_MS) {
+      // Case 1: no window (ASAP pickup) — warn if it has been waiting 30+ min and the
+      // pickup still hasn't started. Anchored on scheduled_delivery_ts, NOT
+      // send_to_driver_at: the latter is null for directly-assigned jobs (so they could
+      // never warn) and Cartrack re-stamps it on every reassignment (so a bounced job's
+      // clock kept resetting and hid hours of delay — e.g. jobs 34335798 / 34335650).
+      // scheduled_delivery_ts is always present here (it's the getJobsByStatusAndDate
+      // filter, ≈ create time for ASAP jobs) and is stable across reassignment.
+      const anchor = parseVnTimestamp(job.scheduled_delivery_ts);
+      if (isNaN(anchor.getTime())) continue;
+      const elapsed = now - anchor.getTime();
+      if (elapsed >= OVERDUE_MS) {
         reason = "overdue";
-        extra = { minutes_late: Math.floor(elapsed / 60000) - 30 };
+        extra = { minutes_late: Math.floor(elapsed / 60000) - OVERDUE_MIN };
       }
     } else {
       // Case 2 (delivery window): stashed — not active yet
