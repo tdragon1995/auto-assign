@@ -28,6 +28,14 @@ const LEVEL_BG: Record<LogLevel, string> = {
   INFO: "bg-blue-50 border-blue-200",
 };
 
+/** Late duration: under 60 min as +N', otherwise +Xh / +Xh YY'. */
+function fmtLate(m: number): string {
+  if (m < 60) return `+${m}'`;
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return mm ? `+${h}h${mm}'` : `+${h}h`;
+}
+
 const JOB_ID_RE = /\bJob (\d+)\b/g;
 
 function renderMsg(msg: string) {
@@ -169,7 +177,7 @@ export function ActivityLog({ logs, warnings = [] }: ActivityLogProps) {
                       {w.job_id}
                     </a>
                     <span className="font-bold text-red-600 bg-red-50 border border-red-200 rounded px-1.5 py-0.5 leading-none whitespace-nowrap">
-                      +{w.minutes_late ?? 0}&apos;
+                      {fmtLate(w.minutes_late ?? 0)}
                     </span>
                   </div>
                   {w.pickup_customer_name && (

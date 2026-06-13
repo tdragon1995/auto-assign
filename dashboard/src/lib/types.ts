@@ -121,7 +121,7 @@ export interface PickupWarning {
   job_id: number;
   reference_number: string | null;
   pickup_customer_name: string | null;
-  driver_id: string;
+  driver_id: string | null;   // null = no driver assigned (orphaned status-4 job)
   driver_name: string | null;
   reason: "overdue" | "window_expiring";
   minutes_late?: number;    // overdue: minutes past 30
