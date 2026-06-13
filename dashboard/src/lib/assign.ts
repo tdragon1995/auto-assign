@@ -150,6 +150,14 @@ function computePickupWarnings(
     // Guard: skip jobs that are no longer active (cancelled/failed/deleted)
     if (job.job_status_id !== 4) continue;
 
+    // Skip jobs released from a recurring Cartrack route plan: these carry a
+    // last_assigned_plan_id (and a populated `plans` array), and their
+    // scheduled_delivery_ts is a fixed daily plan slot (e.g. 05:00), not an ASAP
+    // request — so a "30+ min overdue" alert off that slot is meaningless noise
+    // (PSC→3PL transport legs, recurring provincial pickups, etc.). The customer
+    // late-pickup warning is only meaningful for ad-hoc (non-plan) jobs.
+    if (job.last_assigned_plan_id != null || (Array.isArray(job.plans) && job.plans.length > 0)) continue;
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const stops = (job.stops ?? []) as any[];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
