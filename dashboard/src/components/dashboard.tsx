@@ -13,7 +13,6 @@ import { toast } from "sonner";
 import type { LogEntry, PickupWarning } from "@/lib/types";
 
 type Env = "prod" | "uat";
-type AssignMode = "smart" | "autoplan";
 type RightTab = "live" | "history" | "admin";
 
 export function Dashboard() {
@@ -27,7 +26,6 @@ export function Dashboard() {
   const [mappingCount, setMappingCount] = useState(0);
   const [pscRouteCount, setPscRouteCount] = useState(0);
   const [env, setEnv] = useState<Env>("prod");
-  const [assignMode, setAssignMode] = useState<AssignMode>("smart");
   const [rightTab, setRightTab] = useState<RightTab>("live");
 
   // Single source of truth: one KV read returns switch state, live log, held
@@ -111,7 +109,7 @@ export function Dashboard() {
       const res = await fetch("/api/assign/arm", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ env, mode: assignMode, by }),
+        body: JSON.stringify({ env, by }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.armed) {
@@ -125,7 +123,7 @@ export function Dashboard() {
     } catch {
       toast.error("Không thể bật tự động");
     }
-  }, [env, assignMode]);
+  }, [env]);
 
   // Turn the switch OFF immediately. `reason` is set for auto-disarm (env/mode
   // switch); a manual off leaves it empty. Both record who, for the alert email.
@@ -164,17 +162,6 @@ export function Dashboard() {
     toast.info(`Switched to ${newEnv.toUpperCase()}`);
   }, [isRunning, disarm]);
 
-  // Switch assign mode — disarm first so a stale mode can't keep assigning.
-  const handleModeSwitch = useCallback((mode: AssignMode) => {
-    if (mode === assignMode) return;
-    setAssignMode(mode);
-    if (isRunning) {
-      disarm("đổi chế độ");
-      toast.info("Tự động đã tắt do đổi chế độ");
-    }
-    toast.info(`Switched to ${mode === "autoplan" ? "Auto-Plan" : "Smart-Assign"}`);
-  }, [assignMode, isRunning, disarm]);
-
   // Refresh handler with toast
   const handleRefresh = useCallback(async () => {
     syncStatus();
@@ -208,24 +195,6 @@ export function Dashboard() {
               onCheckedChange={handleEnvSwitch}
             />
             <span className={`text-sm font-medium ${!isProd ? "text-amber-400" : "text-slate-400"}`}>UAT</span>
-          </div>
-
-          <div className="w-px h-6 bg-slate-600" />
-
-          {/* Mode toggle */}
-          <div className="flex items-center rounded-lg overflow-hidden border border-slate-600 text-xs font-semibold">
-            <button
-              onClick={() => handleModeSwitch("smart")}
-              className={`px-2.5 py-1 transition-colors ${assignMode === "smart" ? "bg-blue-600 text-white" : "text-slate-400 hover:text-white"}`}
-            >
-              Smart
-            </button>
-            <button
-              onClick={() => handleModeSwitch("autoplan")}
-              className={`px-2.5 py-1 transition-colors border-l border-slate-600 ${assignMode === "autoplan" ? "bg-violet-600 text-white" : "text-slate-400 hover:text-white"}`}
-            >
-              Auto-Plan
-            </button>
           </div>
 
           <div className="w-px h-6 bg-slate-600" />

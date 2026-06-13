@@ -55,7 +55,7 @@ export async function GET(req: NextRequest) {
   // The cycle continues in after() for up to maxDuration (60s).
   after(async () => {
     try {
-      await runArmedCycle(arm, req.nextUrl.origin);
+      await runArmedCycle(arm);
     } catch (e) {
       console.error("[cron] runArmedCycle failed:", e);
     } finally {
@@ -63,5 +63,5 @@ export async function GET(req: NextRequest) {
     }
   });
 
-  return NextResponse.json({ ran: true, mode: arm.mode, env: arm.env });
+  return NextResponse.json({ ran: true, env: arm.env });
 }

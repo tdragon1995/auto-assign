@@ -33,7 +33,7 @@ CARTRACK_AUTH=Basic ...           # Required: Cartrack REST API auth header
 CARTRACK_COOKIE=CTSID=...        # Optional: session cookie for REST calls
 CARTRACK_AUTH_UAT=Basic ...      # UAT environment equivalent
 CARTRACK_COOKIE_UAT=...
-CARTRACK_WEB_PASS=               # Required for JSON-RPC (autoplan, route optimise, duplicate rejection)
+CARTRACK_WEB_PASS=               # Required for JSON-RPC (route optimise, duplicate rejection)
 CARTRACK_REJECT_PROXY_DRIVER_ID= # Driver UUID used to proxy-assign then reject duplicate jobs
 GOONG_API_KEY=                   # Road distance API (goong.io); falls back to haversine if absent
 ROUTE_OPTIMIZE_PILOT=            # Comma-separated driver UUIDs for route optimisation pilot
@@ -49,9 +49,7 @@ LABCENTER_RECEPTIONIST_PASSWORD= # Password for receptionist account
 
 1. **Config** is loaded on each assign cycle from a public Google Sheet (CSV export) via `src/lib/config.ts`. It maps `customer_id → driver_id` with optional shift windows and Zalo notification tokens.
 
-2. **Dashboard UI** (`src/components/dashboard.tsx`) polls `POST /api/assign` every 3 minutes when running (hardcoded `180_000` ms in `dashboard.tsx`). Two modes:
-   - **Smart mode**: calls `POST /api/assign` which handles all jobs
-   - **Auto-Plan mode**: calls `POST /api/autoplan` which runs Cartrack's timeline planner for smart drivers then fixed-driver assignment in the same request
+2. **Dashboard UI** (`src/components/dashboard.tsx`) polls `POST /api/assign` every 3 minutes when running (hardcoded `180_000` ms in `dashboard.tsx`). It calls `POST /api/assign`, which handles all jobs (smart + fixed) in one cycle.
 
 3. **Assign cycle** (`src/lib/assign.ts → autoAssignCycle`):
    - Fetches unassigned jobs (status 2) from Cartrack REST API
@@ -64,7 +62,7 @@ LABCENTER_RECEPTIONIST_PASSWORD= # Password for receptionist account
 
 4. **Cartrack APIs** (`src/lib/cartrack.ts`):
    - REST: `https://fleetapi-vn.cartrack.com/rest/delivery` — jobs, drivers, assignment, customers creation
-   - JSONRPC: `https://fleetweb-vn.cartrack.com/jsonrpc/index.php` — timeline, auto-plan, route optimisation, job rejection
+   - JSONRPC: `https://fleetweb-vn.cartrack.com/jsonrpc/index.php` — route optimisation, job rejection
 
 5. **PSC Routes** (`src/lib/psc-config.ts`): separate Google Sheet for PSC sample-transport jobs (provincial routes). Has a 5-minute in-memory cache; invalidated by the dashboard Refresh button.
 
@@ -73,7 +71,6 @@ LABCENTER_RECEPTIONIST_PASSWORD= # Password for receptionist account
 | Route | Purpose |
 |---|---|
 | `POST /api/assign` | Main assign cycle; `?env=prod\|uat`, `?skipSmart=1` |
-| `POST /api/autoplan` | Cartrack timeline auto-planner for smart drivers + fixed-driver assignment |
 | `GET /api/config` | Returns mapping/PSC route counts from sheets |
 | `GET /api/drivers` | Proxy to Cartrack drivers list |
 | `POST /api/psc-assign` | PSC sample-transport job creation (creates unassigned job; auto-assign picks it up) |
@@ -123,7 +120,7 @@ These are the things most likely to burn a future agent working on this codebase
 
 3. **`loadConfigFromSheets` has an in-memory cache.** It only re-fetches the sheet after `invalidateConfigCache()` is called (dashboard Refresh button). If the sheet fetch ever returns suspiciously few rows (network hiccup), the bad result gets cached and all subsequent cycles see an empty mapping — causing widespread NO MAPPING errors until the server restarts or Refresh is clicked.
 
-4. **`CARTRACK_WEB_PASS` is required for JSON-RPC calls** (`getFleetwebCookie`). Without it, `autoplan`, route optimisation, and duplicate-rejection all fail silently at login.
+4. **`CARTRACK_WEB_PASS` is required for JSON-RPC calls** (`getFleetwebCookie`). Without it, route optimisation and duplicate-rejection both fail silently at login.
 
 5. **Duplicate detection exempts PSC tỉnh jobs by design.** The exempt label list lives in `DUPLICATE_EXEMPT_LABELS` at the top of `assign.ts`. The label string itself is `PSC_TINH_LABEL` exported from `psc-config.ts` — change it in one place.
 

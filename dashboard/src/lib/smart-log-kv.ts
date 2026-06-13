@@ -107,7 +107,6 @@ export interface ArmState {
   armedTs: string;             // ISO time the switch was turned on
   armedBy: string;             // free-text label (no auth, so best-effort)
   env: "prod" | "uat";
-  mode: "smart" | "autoplan";
 }
 
 function parseMaybe<T extends object>(raw: string | T | null): T | null {

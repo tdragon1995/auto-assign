@@ -43,7 +43,7 @@ export interface AutoArmResult {
  * engine should be running, so self-heal by arming it (prod / smart, armedBy
  * "auto"). Returns null to leave it off:
  *   - outside the window (overnight — auto-off is intended), or
- *   - during the short grace after an env/mode switch (a reasoned disarm), so we
+ *   - during the short grace after an env switch (a reasoned disarm), so we
  *     don't fight the operator finishing their re-arm.
  * `alert` is true only for a fresh *bare* manual disarm — someone deliberately
  * turned a running engine off during the window. An overnight/never-armed off is
@@ -56,7 +56,7 @@ export async function autoArmIfDue(): Promise<AutoArmResult | null> {
   const ageMs = rec ? Date.now() - new Date(rec.ts).getTime() : Infinity;
   const isFresh = ageMs < FRESH_DISARM_MS;
 
-  // Leave an in-progress env/mode switch alone briefly; it self-heals once stale.
+  // Leave an in-progress env switch alone briefly; it self-heals once stale.
   if (rec?.reason && isFresh) return null;
 
   const alert = !!rec && !rec.reason && isFresh;
@@ -66,7 +66,6 @@ export async function autoArmIfDue(): Promise<AutoArmResult | null> {
     armedTs: new Date().toISOString(),
     armedBy: "auto",
     env: "prod",
-    mode: "smart",
   };
   await setArmState(state);
   // Clear the debounce so the *next* manual disarm alerts again (each disarm →
