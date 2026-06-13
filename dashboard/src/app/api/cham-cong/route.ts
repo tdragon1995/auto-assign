@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { deleteJob, BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
+import { deleteJob, BASE_URL, getHeaders, isDriverUnavailableError, type Env } from "@/lib/cartrack";
 import { vnDate } from "@/lib/time";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 
@@ -101,6 +101,12 @@ export async function POST(req: NextRequest) {
 
     if (!createRes.ok) {
       const errBody = await createRes.json().catch(() => ({}));
+      if (isDriverUnavailableError(errBody)) {
+        return NextResponse.json(
+          { error: 'Nhân viên đang ở trạng thái "Nghỉ ngơi": Cần cập nhật trạng thái và thử lại!' },
+          { status: 409 }
+        );
+      }
       return NextResponse.json({ error: "Failed to create job", details: errBody }, { status: createRes.status });
     }
 

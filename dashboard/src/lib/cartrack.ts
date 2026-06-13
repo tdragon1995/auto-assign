@@ -21,6 +21,21 @@ export function getHeaders(env: Env = "prod"): Record<string, string> {
   return headers;
 }
 
+/**
+ * True when a Cartrack job create/assign response means the target driver is
+ * on-break or offline — its driver_status_id doesn't allow assignment. Cartrack
+ * returns the same `delivery_driver_id` validation message for both states
+ * ("...does not exist or the current status..."), so they're indistinguishable here.
+ */
+export function isDriverUnavailableError(body: unknown): boolean {
+  if (!body || typeof body !== "object") return false;
+  const ct = (body as Record<string, unknown>).error as Record<string, unknown> | undefined;
+  const msgs = (ct?.data as Record<string, unknown> | undefined)?.delivery_driver_id;
+  return Array.isArray(msgs) && msgs.some(
+    (m: unknown) => typeof m === "string" && m.includes("does not exist or the current status")
+  );
+}
+
 export async function getDriverJobs(
   driverId: string,
   dateVn: string,
