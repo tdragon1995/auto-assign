@@ -1079,7 +1079,8 @@ export async function autoAssignCycle(
           log(`Route optimise for ${driverId}: ${ok ? "triggered" : "skipped (no cookie or failed)"}`, ok ? "INFO" : "WARN");
         }
       } else {
-        log(`Job ${jobId} failed: ${friendlyError(body)}`, "ERROR");
+        const pickupName = job.stops?.find((s) => s.stop_type_id === 1)?.customer_name ?? jobCustomerName ?? "N/A";
+        log(`Job ${jobId} failed: ${friendlyError(body)} | ${pickupName}`, "ERROR");
       }
     } catch (e) {
       log(`Job ${jobId} error: ${e}`, "ERROR");
