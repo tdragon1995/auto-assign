@@ -72,7 +72,10 @@ export async function loadLeaveEntries(): Promise<LeaveEntry[]> {
         gio_bat_dau:  parseField(f[6]) || null,
         gio_ket_thuc: parseField(f[7]) || null,
       };
-    }).filter((e) => e.driver_id && e.loai_nghi && e.leave_from);
+      // NOTE: do NOT require loai_nghi here. Many rows are typed straight into
+      // the sheet with a date + time window but a blank "Loại Nghỉ" cell; those
+      // are still real leave and must reach isDriverOnLeave (see its else-branch).
+    }).filter((e) => e.driver_id && e.leave_from);
 
     cache = { entries, fetchedAt: Date.now() };
     return entries;
@@ -109,6 +112,24 @@ export function isDriverOnLeave(
     } else if (e.loai_nghi === "Nghỉ việc") {
       if (today >= e.leave_from) {
         return { onLeave: true, driverName, reason: `Nghỉ việc (từ ${e.leave_from})` };
+      }
+    } else {
+      // Unlabeled / manually-typed leave (blank "Loại Nghỉ"): a date range with
+      // an optional daily time window. driver_id is resolved from the name by
+      // the sheet's xlookup() formula. On-leave today when within the date range;
+      // honour the [gio_bat_dau, gio_ket_thuc] window when one is given, else
+      // treat as full-day (covers blank hours and the 00:00–00:00 sentinel).
+      const to = e.leave_to ?? e.leave_from;
+      if (today >= e.leave_from && today <= to) {
+        const start = timeToMins(e.gio_bat_dau);
+        const end   = timeToMins(e.gio_ket_thuc);
+        const hasWindow = start >= 0 && end > start;
+        if (!hasWindow) {
+          return { onLeave: true, driverName, reason: `Nghỉ cả ngày ${e.leave_from}${to !== e.leave_from ? `→${to}` : ""}` };
+        }
+        if (nowMins >= start && nowMins <= end) {
+          return { onLeave: true, driverName, reason: `Nghỉ ${e.gio_bat_dau}–${e.gio_ket_thuc}` };
+        }
       }
     }
   }
