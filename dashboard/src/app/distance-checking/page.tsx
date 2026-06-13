@@ -19,9 +19,22 @@ interface Row {
   lon2Raw: string;
 }
 
+// "self"/"cache" = answered without a Goong call; "api" = a billed request.
+type Source = "self" | "cache" | "api";
+
+// Trips longer than this (km) get flagged.
+const OVER_KM = 40;
+
+const SOURCE_META: Record<Source, { label: string; cls: string }> = {
+  self:  { label: "≡ trùng", cls: "bg-slate-100 text-slate-500" },
+  cache: { label: "📦 cache", cls: "bg-emerald-100 text-emerald-700" },
+  api:   { label: "🌐 API",   cls: "bg-blue-100 text-blue-700" },
+};
+
 interface Result extends Row {
   distance_km: number | null;
   duration_mins: number | null;
+  source: Source | null;
   error?: string;
 }
 
@@ -30,6 +43,7 @@ interface Result extends Row {
 interface ApiResult {
   distance_km: number | null;
   duration_mins: number | null;
+  source: Source | null;
   error?: string;
 }
 
@@ -62,10 +76,14 @@ function parseText(text: string): { rows: Row[]; errors: string[] } {
 }
 
 function toCSV(results: Result[]): string {
-  const header = "lat1,long1,lat2,long2,distance_km,duration_mins,error";
-  const lines = results.map((r) =>
-    [r.lat1Raw, r.lon1Raw, r.lat2Raw, r.lon2Raw, r.distance_km ?? "", r.duration_mins ?? "", csvCell(r.error ?? "")].join(",")
-  );
+  const header = "lat1,long1,lat2,long2,distance_km,duration_mins,source,over_40km,error";
+  const lines = results.map((r) => {
+    const over = r.distance_km != null && r.distance_km > OVER_KM ? "1" : "";
+    return [
+      r.lat1Raw, r.lon1Raw, r.lat2Raw, r.lon2Raw,
+      r.distance_km ?? "", r.duration_mins ?? "", r.source ?? "", over, csvCell(r.error ?? ""),
+    ].join(",");
+  });
   return "\uFEFF" + [header, ...lines].join("\n");
 }
 
@@ -142,6 +160,7 @@ export default function DistanceCheckingPage() {
             ...orig,
             distance_km: r.distance_km,
             duration_mins: r.duration_mins,
+            source: r.source ?? null,
             error: r.error,
           };
         });
@@ -169,6 +188,10 @@ export default function DistanceCheckingPage() {
 
   const successCount = results.filter((r) => r.distance_km != null).length;
   const failCount    = results.filter((r) => r.distance_km == null).length;
+  // "self" + "cache" both answered without a Goong call; "api" was billed.
+  const freeCount    = results.filter((r) => r.source === "cache" || r.source === "self").length;
+  const apiCount     = results.filter((r) => r.source === "api").length;
+  const overCount    = results.filter((r) => r.distance_km != null && r.distance_km > OVER_KM).length;
 
   return (
     <div className="min-h-screen bg-slate-50 p-6">
@@ -271,6 +294,9 @@ export default function DistanceCheckingPage() {
               <div className="flex gap-2 text-sm flex-wrap">
                 <span className="rounded-full bg-green-100 text-green-700 px-3 py-1 font-medium">✓ {successCount} thành công</span>
                 {failCount > 0 && <span className="rounded-full bg-red-100 text-red-700 px-3 py-1 font-medium">✗ {failCount} lỗi</span>}
+                <span className="rounded-full bg-emerald-100 text-emerald-700 px-3 py-1 font-medium" title="Lấy từ cache / cùng điểm — không gọi Goong API">📦 {freeCount} không gọi API</span>
+                <span className="rounded-full bg-blue-100 text-blue-700 px-3 py-1 font-medium" title="Gọi Goong API (tính phí)">🌐 {apiCount} gọi API</span>
+                {overCount > 0 && <span className="rounded-full bg-amber-100 text-amber-800 px-3 py-1 font-medium">⚠ {overCount} tuyến &gt;{OVER_KM}km</span>}
               </div>
               <Button variant="outline" size="sm" onClick={download}>⬇ Tải CSV</Button>
             </div>
@@ -286,26 +312,35 @@ export default function DistanceCheckingPage() {
                     <th className="px-3 py-2 text-right">Long 2</th>
                     <th className="px-3 py-2 text-right">Km</th>
                     <th className="px-3 py-2 text-right">Phút</th>
+                    <th className="px-3 py-2 text-center">Nguồn</th>
                     <th className="px-3 py-2 text-left">Ghi chú</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {results.map((r, i) => (
-                    <tr key={i} className={r.error ? "bg-red-50/40" : "hover:bg-slate-50/60"}>
+                  {results.map((r, i) => {
+                    const over = r.distance_km != null && r.distance_km > OVER_KM;
+                    return (
+                    <tr key={i} className={r.error ? "bg-red-50/40" : over ? "bg-amber-50" : "hover:bg-slate-50/60"}>
                       <td className="px-3 py-2 text-right text-slate-400">{r.pickup}</td>
                       <td className="px-3 py-2 text-right text-slate-400 font-mono text-[11px]">{r.lat1Raw}</td>
                       <td className="px-3 py-2 text-right text-slate-400 font-mono text-[11px]">{r.lon1Raw}</td>
                       <td className="px-3 py-2 text-right text-slate-400 font-mono text-[11px]">{r.lat2Raw}</td>
                       <td className="px-3 py-2 text-right text-slate-400 font-mono text-[11px]">{r.lon2Raw}</td>
                       <td className="px-3 py-2 text-right font-mono">
-                        {r.distance_km != null ? r.distance_km : <span className="text-red-400">—</span>}
+                        {r.distance_km != null
+                          ? <span className={over ? "text-amber-700 font-semibold" : ""}>{r.distance_km}{over && " ⚠"}</span>
+                          : <span className="text-red-400">—</span>}
                       </td>
                       <td className="px-3 py-2 text-right font-mono">
                         {r.duration_mins != null ? r.duration_mins : <span className="text-red-400">—</span>}
                       </td>
+                      <td className="px-3 py-2 text-center">
+                        {r.source && <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap ${SOURCE_META[r.source].cls}`}>{SOURCE_META[r.source].label}</span>}
+                      </td>
                       <td className="px-3 py-2 text-slate-400 text-[11px]">{r.error ?? ""}</td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

@@ -21,6 +21,13 @@ interface StoredDistance extends GoongResult {
   to: Pt;
 }
 
+// How a resolved distance was obtained — lets callers flag which rows actually
+// cost a Goong request. "self" (same point) and "cache" are both free.
+export type DistanceSource = "self" | "cache" | "api";
+export interface ResolvedDistance extends GoongResult {
+  source: DistanceSource;
+}
+
 function getRedis() {
   const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
@@ -93,7 +100,7 @@ async function setCachedDistances(entries: { key: string; value: StoredDistance 
 async function resolvePairs(
   pairs: { from: { lat: number; lon: number }; to: { lat: number; lon: number } }[],
   fetchMisses: (missPairs: { from: { lat: number; lon: number }; to: { lat: number; lon: number } }[]) => Promise<(GoongResult | null)[]>,
-): Promise<(GoongResult | null)[]> {
+): Promise<(ResolvedDistance | null)[]> {
   if (pairs.length === 0) return [];
 
   const keyOf = (p: typeof pairs[number]) => distKey(p.from.lat, p.from.lon, p.to.lat, p.to.lon);
@@ -107,18 +114,18 @@ async function resolvePairs(
     }
   }
 
-  const results: (GoongResult | null)[] = new Array(unique.length).fill(null);
+  const results: (ResolvedDistance | null)[] = new Array(unique.length).fill(null);
 
   const pending: number[] = [];
   for (let i = 0; i < unique.length; i++) {
-    if (samePoint(unique[i].from, unique[i].to)) results[i] = { distance_km: 0, eta_mins: 0 };
+    if (samePoint(unique[i].from, unique[i].to)) results[i] = { distance_km: 0, eta_mins: 0, source: "self" };
     else pending.push(i);
   }
 
   const cached = await getCachedDistances(pending.map((i) => keyOf(unique[i])));
   const misses: number[] = [];
   cached.forEach((c, j) => {
-    if (c) results[pending[j]] = c;
+    if (c) results[pending[j]] = { ...c, source: "cache" };
     else misses.push(pending[j]);
   });
 
@@ -127,7 +134,7 @@ async function resolvePairs(
     const toStore: { key: string; value: StoredDistance }[] = [];
     fetched.forEach((f, j) => {
       if (!f) return;
-      results[misses[j]] = f;
+      results[misses[j]] = { ...f, source: "api" };
       // Persist the distance keyed by the truncated coords, but store the exact
       // coordinates that produced it (as sent from CT / distance-checking).
       const u = unique[misses[j]];
@@ -144,7 +151,7 @@ export async function roadDistancesToPoint(
   origins: { lat: number; lon: number }[],
   dest: { lat: number; lon: number },
   apiKey?: string,
-): Promise<(GoongResult | null)[]> {
+): Promise<(ResolvedDistance | null)[]> {
   return resolvePairs(
     origins.map((o) => ({ from: o, to: dest })),
     (miss) => goongMatrixMultiOrigin(miss.map((m) => m.from), dest, apiKey),
@@ -156,7 +163,7 @@ export async function roadDistancesFromPoint(
   origin: { lat: number; lon: number },
   dests: { lat: number; lon: number }[],
   apiKey?: string,
-): Promise<(GoongResult | null)[]> {
+): Promise<(ResolvedDistance | null)[]> {
   return resolvePairs(
     dests.map((d) => ({ from: origin, to: d })),
     (miss) => goongMatrix(origin.lat, origin.lon, miss.map((m) => m.to), apiKey),

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { roadDistancesFromPoint } from "@/lib/distance-cache";
+import { roadDistancesFromPoint, type DistanceSource } from "@/lib/distance-cache";
 
 export const runtime = "edge";
 export const preferredRegion = "sin1";
@@ -16,6 +16,8 @@ export interface DistanceRow {
 export interface DistanceResult extends DistanceRow {
   distance_km: number | null;
   duration_mins: number | null;
+  // How the distance was obtained: "self"/"cache" = no Goong call, "api" = billed.
+  source: DistanceSource | null;
   error?: string;
 }
 
@@ -92,6 +94,7 @@ export async function POST(req: NextRequest) {
           ...rows[idx],
           distance_km: r?.distance_km ?? null,
           duration_mins: r?.eta_mins ?? null,
+          source: r?.source ?? null,
         };
       });
       return matrix.some((r) => r !== null);
