@@ -145,9 +145,8 @@ function computePickupWarnings(
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const job of assignedJobs) {
-    // driverId may be null: a status-4 job can carry no delivery_driver_id (Cartrack
-    // footgun) — that's an unassigned/orphaned job we now WANT to warn on, not skip.
     const driverId: string | null = job.delivery_driver_id;
+    if (!driverId) continue;
     // Guard: skip jobs that are no longer active (cancelled/failed/deleted)
     if (job.job_status_id !== 4) continue;
 
@@ -197,21 +196,16 @@ function computePickupWarnings(
 
     if (!reason) continue;
 
-    // Driver-recency guards only apply when there IS a driver. An unassigned
-    // (driverless) job can't be "busy elsewhere" or "just finished a stop", so
-    // it falls straight through to the warning.
-    if (driverId) {
-      // Skip if driver is actively working on another stop right now.
-      const inProgressIds = driverInProgressStopIds.get(driverId);
-      const busyElsewhere =
-        inProgressIds && [...inProgressIds].some((id) => id !== pickup.stop_id);
-      if (busyElsewhere) continue;
+    // Skip if driver is actively working on another stop right now.
+    const inProgressIds = driverInProgressStopIds.get(driverId);
+    const busyElsewhere =
+      inProgressIds && [...inProgressIds].some((id) => id !== pickup.stop_id);
+    if (busyElsewhere) continue;
 
-      // Skip if driver completed any stop within the last 30 min — they may
-      // still be in transit to this pickup after finishing their previous job.
-      const lastCompleted = driverLastCompletedMs.get(driverId) ?? 0;
-      if (lastCompleted && now - lastCompleted < THIRTY_MIN_MS) continue;
-    }
+    // Skip if driver completed any stop within the last 30 min — they may
+    // still be in transit to this pickup after finishing their previous job.
+    const lastCompleted = driverLastCompletedMs.get(driverId) ?? 0;
+    if (lastCompleted && now - lastCompleted < THIRTY_MIN_MS) continue;
 
     // Driver name straight off the job's embedded `driver` object — Cartrack returns
     // it fully populated on every assigned job (incl. offline / no-GPS drivers), so no
