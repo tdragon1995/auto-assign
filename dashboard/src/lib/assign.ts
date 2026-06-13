@@ -162,17 +162,7 @@ function computePickupWarnings(
     const stops = (job.stops ?? []) as any[];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pickup  = stops.find((s: any) => s.stop_type_id === 1);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const dropoff = stops.find((s: any) => s.stop_type_id === 2);
     if (!pickup) continue;
-
-    // Inter-branch transport routes (both ends are "BRA - …" branches) run on
-    // their own recurring schedule — their send_to_driver_at is a plan-template
-    // date from months ago, so the late-pickup alert is meaningless. Skip them.
-    if (
-      (pickup.customer_name ?? "").includes("BRA - ") &&
-      (dropoff?.customer_name ?? "").includes("BRA - ")
-    ) continue;
 
     if (pickup.activity_started_ts) continue;
     // Guard: skip if stop is already completed or rejected
