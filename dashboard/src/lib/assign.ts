@@ -1,5 +1,5 @@
 import type { Config, Driver, Job, LogEntry, LogLevel, Mapping, PickupWarning, TimelineRoute } from "./types";
-import { getDrivers, getUnassignedJobs, getDriverJobs, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, updateJobSendToDriverAt, unassignJob, optimizeDriverRoute, getFleetwebCookie, getJobsByStatusAndDate, JSONRPC_URL, PROXY_DRIVER_ID, type Env } from "./cartrack";
+import { getDrivers, getUnassignedJobs, getDriverJobs, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, updateJobSendToDriverAt, unassignJob, optimizeDriverRoute, getFleetwebCookie, getJobsByStatusAndDate, getJobsByDate, JSONRPC_URL, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL } from "./return-trips";
@@ -46,20 +46,6 @@ export function invalidateStartLocCache(): void {
 
 // ── Duplicate-check helpers ────────────────────────────────────────────────
 
-/**
- * Today's status-4 jobs (scheduled_delivery_ts filter — what's being DELIVERED
- * today, matching getJobsByStatusAndDate). Returns null on failure, NOT [] —
- * callers must be able to tell "no assigned jobs" from "fetch failed", because
- * reusing a silently-empty list in the follow-up steps would let return-trip
- * dedup create duplicate trips.
- */
-async function fetchAssignedJobsToday(vnDate: string, env: Env): Promise<Job[] | null> {
-  try {
-    return await getJobsByStatusAndDate(4, vnDate, env);
-  } catch {
-    return null;
-  }
-}
 
 // Returns Map<"pickup_id:dropoff_id", blocking_job_id> for assigned jobs today
 // where the pickup stop is not yet completed/rejected and window is not >1h away.
@@ -553,17 +539,15 @@ export async function autoAssignCycle(
     logs.push(makeLog(msg, level));
   };
 
-  // Shared with the follow-up steps in `finally` so they can reuse this cycle's
-  // fetches instead of re-downloading the same lists seconds later.
-  // - cycleStartS2: the status-2 list from cycle start. Safe to reuse because the
-  //   return-trip dedup checks the UNION of s2+s4 — a job this cycle assigned
-  //   moved between the lists but never left the union. Full cycles only (a
-  //   targeted manual assign narrows the list, which would starve the dedup).
-  // - assignedJobsToday: the status-4 list; null means the fetch FAILED, in which
-  //   case the follow-ups must self-fetch — trusting an empty list would let
-  //   return-trip dedup create duplicate trips.
+  // One Cartrack call per cycle: getJobsByDate fetches ALL of today's jobs and we
+  // partition into status 2/4/5 in memory (a trivial O(n) pass), instead of three
+  // separate status-filtered fetches. These three lists are shared with the
+  // follow-up steps in `finally`, so nothing is re-downloaded. null = the single
+  // fetch FAILED → the follow-ups self-fetch per status, because trusting a
+  // silently-empty list would let return-trip dedup create duplicate trips.
   let cycleStartS2: Job[] | null = null;
   let assignedJobsToday: Job[] | null = null;
+  let cycleS5: Job[] | null = null;
 
   try {
   // ── Release parked proxy jobs whose send_to_driver_at has passed ──────────
@@ -572,21 +556,31 @@ export async function autoAssignCycle(
   const leaveEntries = await loadLeaveEntries().catch(() => []);
   if (!onlyJobIds) await releaseDueProxyJobs(today, env, log);
 
-  // Fetch unassigned jobs by scheduled_delivery_ts = today.
-  // Using scheduled_delivery_ts (not create_ts) means multi-day parked jobs
-  // released from the proxy driver are found on their scheduled day regardless
-  // of when they were created.
-  let jobs: Job[];
+  // Fetch ALL of today's jobs in one call (scheduled_delivery_ts = today), then
+  // partition by status. scheduled_delivery_ts (not create_ts) means multi-day
+  // parked jobs released from the proxy driver are found on their scheduled day.
+  // Done AFTER releaseDueProxyJobs so jobs it just released show up as status 2.
+  let s2Jobs: Job[];
   try {
-    jobs = await getJobsByStatusAndDate(2, today, env);
+    const allToday = await getJobsByDate(today, env);
+    s2Jobs = []; const s4Jobs: Job[] = []; const s5Jobs: Job[] = [];
+    for (const j of allToday) {
+      if (j.job_status_id === 2) s2Jobs.push(j);
+      else if (j.job_status_id === 4) s4Jobs.push(j);
+      else if (j.job_status_id === 5) s5Jobs.push(j);
+    }
+    // s2Jobs is the FULL unassigned list — safe to share with the follow-up dedup
+    // even on a targeted assign, since the narrowing below only touches `jobs`.
+    cycleStartS2 = s2Jobs;
+    assignedJobsToday = s4Jobs;
+    cycleS5 = s5Jobs;
   } catch (e) {
     log(`Error fetching jobs: ${e}`, "ERROR");
     return logs;
   }
-  if (!onlyJobIds) cycleStartS2 = jobs;
 
   // Targeted manual assign: narrow to just the requested job(s).
-  if (onlyJobIds) jobs = jobs.filter((j) => onlyJobIds.has(j.job_id));
+  let jobs: Job[] = onlyJobIds ? s2Jobs.filter((j) => onlyJobIds.has(j.job_id)) : s2Jobs;
 
   // Jobs held back this cycle because a stop has a note (full cycle only).
   const heldJobs: HeldJob[] = [];
@@ -599,12 +593,11 @@ export async function autoAssignCycle(
 
   log(`Found ${jobs.length} unassigned job(s)`);
 
-  // ── Fetch assigned jobs once — reused for duplicate-check AND warnings ──────
-  // Fire it now but await it after the smart-driver fetch below, so the two
-  // independent reads overlap instead of running as two serial waves.
+  // Assigned jobs (status 4) already came from the single getJobsByDate partition
+  // above — reused here for duplicate-check + pickup warnings, and again in the
+  // follow-up steps, with no extra Cartrack call.
   const authSuffix = env === "uat" ? "_UAT" : "";
   const auth = process.env[`CARTRACK_AUTH${authSuffix}`] ?? "";
-  const assignedJobsPromise = fetchAssignedJobsToday(today, env);
   let rejectCookie: string | null = null;
 
   // ── Pre-fetch GPS + route data only if a current job needs smart-assign ──────
@@ -699,12 +692,8 @@ export async function autoAssignCycle(
     log(`Smart-assign ready: ${phase1Coords.size} candidate driver(s) (GPS or start_location)`);
   }
 
-  // Resolve the assigned-jobs fetch kicked off above (it ran in parallel with the
-  // smart-driver fetch). Reused for duplicate-check (this loop), pickup warnings,
-  // and — when it verifiably succeeded — the follow-up steps in `finally`.
-  // null = fetch failed: duplicate-check fails open (same as before), and the
-  // follow-ups self-fetch instead of trusting an empty list.
-  assignedJobsToday = await assignedJobsPromise;
+  // Duplicate-check map from the status-4 partition obtained above. Reused for
+  // pickup warnings and the follow-up steps too.
   const activeRouteMap = buildActiveRouteMap(assignedJobsToday ?? []);
 
   for (const job of jobs) {
@@ -1159,20 +1148,20 @@ export async function autoAssignCycle(
   }
   return logs;
   } finally {
-    // Both follow-up steps need today's status 2/4/5 job lists. Reuse this
-    // cycle's own fetches where they verifiably succeeded (see the declarations
-    // at the top of this function for why that's safe); only status 5 has no
-    // earlier fetch to reuse. Jobs that changed state mid-cycle (assigned 2→4,
-    // completed 4→5) stay visible: the dedup pot is the s2∪s4 union, and a
-    // just-assigned job's stops can't be "started" yet, so via-legs couldn't
-    // act on it this cycle anyway — the next cycle sees it fresh.
+    // Both follow-up steps need today's status 2/4/5 lists. They came from the
+    // single getJobsByDate partition above, so this normally re-fetches nothing.
+    // Each falls back to a per-status fetch only if that partition is null (the
+    // combined fetch threw before populating it). Jobs that changed state
+    // mid-cycle (assigned 2→4, completed 4→5) stay visible: the dedup pot is the
+    // s2∪s4 union, and a just-assigned job's stops can't be "started" yet, so
+    // via-legs couldn't act on it this cycle anyway — the next cycle sees it fresh.
     const followToday = vnDate();
     let shared: { s2: Job[]; s4: Job[]; s5: Job[] } | undefined;
     try {
       const [s2, s4, s5] = await Promise.all([
         cycleStartS2 ?? getJobsByStatusAndDate(2, followToday, env),
         assignedJobsToday ?? getJobsByStatusAndDate(4, followToday, env),
-        getJobsByStatusAndDate(5, followToday, env),
+        cycleS5 ?? getJobsByStatusAndDate(5, followToday, env),
       ]);
       shared = { s2, s4, s5 };
     } catch (e) {
