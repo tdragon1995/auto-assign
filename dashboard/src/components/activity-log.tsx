@@ -4,11 +4,10 @@ import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import type { LogEntry, LogLevel, PickupWarning } from "@/lib/types";
+import type { LogEntry, LogLevel } from "@/lib/types";
 
 interface ActivityLogProps {
   logs: LogEntry[];
-  warnings?: PickupWarning[];
 }
 
 const FILTERS = ["All", "OK", "ERROR", "WARN", "INFO"] as const;
@@ -27,14 +26,6 @@ const LEVEL_BG: Record<LogLevel, string> = {
   WARN: "bg-orange-50 border-orange-200",
   INFO: "bg-blue-50 border-blue-200",
 };
-
-/** Late duration: under 60 min as +N', otherwise +Xh / +Xh YY'. */
-function fmtLate(m: number): string {
-  if (m < 60) return `+${m}'`;
-  const h = Math.floor(m / 60);
-  const mm = m % 60;
-  return mm ? `+${h}h${mm}'` : `+${h}h`;
-}
 
 const JOB_ID_RE = /\bJob (\d+)\b/g;
 
@@ -124,7 +115,7 @@ function LogLine({ entry }: { entry: LogEntry }) {
   );
 }
 
-export function ActivityLog({ logs, warnings = [] }: ActivityLogProps) {
+export function ActivityLog({ logs }: ActivityLogProps) {
   const [filter, setFilter] = useState<Filter>("All");
 
   const filtered =
@@ -152,52 +143,6 @@ export function ActivityLog({ logs, warnings = [] }: ActivityLogProps) {
             </Button>
           ))}
         </div>
-        {warnings.length > 0 && (
-          <div className="mt-1.5 min-w-0">
-            <div className="flex items-center gap-1 mb-1 text-xs font-semibold text-amber-700">
-              <span className="leading-none">⚠</span>
-              <span>Lấy mẫu chậm</span>
-              <span className="rounded-full bg-amber-100 border border-amber-300 px-1.5 leading-none py-0.5 text-amber-800">
-                {warnings.length}
-              </span>
-            </div>
-            <div className="flex gap-2 overflow-x-auto min-w-0 w-full pb-1">
-              {warnings.map((w) => (
-                <div
-                  key={w.job_id}
-                  className="shrink-0 bg-amber-50 border border-amber-300 rounded-lg px-2.5 py-1.5 text-xs w-[190px] space-y-0.5"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <a
-                      href={`https://fleetweb-vn.cartrack.com/delivery/map?job=${w.job_id}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="font-mono font-semibold text-indigo-600 underline hover:text-indigo-800"
-                    >
-                      {w.job_id}
-                    </a>
-                    <span className="font-bold text-red-600 bg-red-50 border border-red-200 rounded px-1.5 py-0.5 leading-none whitespace-nowrap">
-                      {fmtLate(w.minutes_late ?? 0)}
-                    </span>
-                  </div>
-                  {w.pickup_customer_name && (
-                    <p
-                      className="text-slate-700 font-medium truncate leading-snug"
-                      title={w.pickup_customer_name}
-                    >
-                      {w.pickup_customer_name}
-                    </p>
-                  )}
-                  {w.driver_name && (
-                    <p className="text-slate-400 truncate leading-snug" title={w.driver_name}>
-                      {w.driver_name}
-                    </p>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </CardHeader>
       <CardContent className="flex-1 min-h-0">
         <ScrollArea className="h-full">

@@ -3,18 +3,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { StatsSidebar } from "./stats-sidebar";
+import { ServiceStatus } from "./stats-sidebar";
 import { ActivityLog } from "./activity-log";
 import { ScheduleJobPanel } from "./schedule-job-panel";
 import { SmartLogHistory } from "./smart-log-history";
 import { NoteReviewPanel, type HeldJob } from "./note-review-panel";
+import { DelayWarningsPanel } from "./delay-warnings-panel";
 import { JobAdminPanel } from "./job-admin-panel";
 import { FailedJobsPanel } from "./failed-jobs-panel";
 import { toast } from "sonner";
 import type { LogEntry, PickupWarning, FailedJob } from "@/lib/types";
 
 type Env = "prod" | "uat";
-type RightTab = "live" | "failed" | "history" | "admin";
+type RightTab = "live" | "failed" | "admin";
+type LogMode = "live" | "smart";
 
 export function Dashboard() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -29,6 +31,7 @@ export function Dashboard() {
   const [pscRouteCount, setPscRouteCount] = useState(0);
   const [env, setEnv] = useState<Env>("prod");
   const [rightTab, setRightTab] = useState<RightTab>("live");
+  const [logMode, setLogMode] = useState<LogMode>("live");
 
   // Single source of truth: one KV read returns switch state, live log, held
   // jobs, and pickup warnings — all updated by the cron cycle, zero extra calls.
@@ -195,52 +198,57 @@ export function Dashboard() {
 
   const isProd = env === "prod";
 
-  return (
-    <div className="flex flex-col h-screen">
+  const tabBtn = (active: boolean) =>
+    `px-3 py-1.5 text-xs font-semibold rounded transition-colors border flex items-center gap-1.5 whitespace-nowrap ${
+      active
+        ? "bg-slate-800 text-white border-slate-700"
+        : "text-slate-500 border-transparent hover:text-slate-800"
+    }`;
 
-      {/* Header */}
-      <header className="bg-slate-900 text-white px-4 py-3 flex items-center justify-between shrink-0">
-        <h1 className="text-lg font-semibold">Fleet Auto-Assign Dashboard</h1>
-        <div className="flex items-center gap-4">
+  return (
+    <div className="flex flex-col min-h-screen lg:h-screen">
+
+      {/* Header — wraps to multiple rows on narrow screens */}
+      <header className="bg-slate-900 text-white px-3 sm:px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-2 justify-between shrink-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <h1 className="text-base sm:text-lg font-semibold truncate">Fleet Auto-Assign</h1>
+          {/* Minimal Service: just the heartbeat */}
+          <ServiceStatus
+            mappingCount={mappingCount}
+            pscRouteCount={pscRouteCount}
+            lastChecked={lastChecked}
+          />
+        </div>
+
+        <div className="flex items-center gap-3 sm:gap-4 ml-auto">
           {/* Environment switch */}
-          <div className="flex items-center gap-2">
-            <span className={`text-sm font-medium ${isProd ? "text-red-400" : "text-slate-400"}`}>PROD</span>
-            <Switch
-              checked={env === "uat"}
-              onCheckedChange={handleEnvSwitch}
-            />
-            <span className={`text-sm font-medium ${!isProd ? "text-amber-400" : "text-slate-400"}`}>UAT</span>
+          <div className="flex items-center gap-1.5">
+            <span className={`text-xs sm:text-sm font-medium ${isProd ? "text-red-400" : "text-slate-400"}`}>PROD</span>
+            <Switch checked={env === "uat"} onCheckedChange={handleEnvSwitch} />
+            <span className={`text-xs sm:text-sm font-medium ${!isProd ? "text-amber-400" : "text-slate-400"}`}>UAT</span>
           </div>
 
           <div className="w-px h-6 bg-slate-600" />
 
           {/* Auto-Assign switch */}
           <div className="flex items-center gap-2">
-            <span className="text-sm text-slate-300">Auto-Assign</span>
+            <span className="text-xs sm:text-sm text-slate-300">Auto-Assign</span>
             <Switch checked={isRunning} onCheckedChange={toggleService} />
           </div>
 
-          <Button
-            variant="outline"
-            size="sm"
-            className="text-slate-900"
-            onClick={handleRefresh}
-          >
+          <Button variant="outline" size="sm" className="text-slate-900" onClick={handleRefresh}>
             Refresh
           </Button>
         </div>
       </header>
 
-      {/* Body */}
-      <div className="flex flex-1 min-h-0 p-3 gap-3">
-        {/* Left sidebar */}
-        <div className="flex flex-col gap-3 w-64 shrink-0">
-          <StatsSidebar
-            isRunning={isRunning}
-            mappingCount={mappingCount}
-            pscRouteCount={pscRouteCount}
-            lastChecked={lastChecked}
-          />
+      {/* Body — stacks on mobile, side-by-side from lg up */}
+      <div className="flex flex-col lg:flex-row flex-1 lg:min-h-0 p-2 sm:p-3 gap-3">
+        {/* Sidebar: the user's primary focus surfaces (delay + notes), then the
+            minimal fixed-schedule incidents card. Each focus card hides itself
+            when empty, so on a clean day this column is nearly bare. */}
+        <div className="flex flex-col gap-3 w-full lg:w-72 xl:w-80 shrink-0">
+          <DelayWarningsPanel warnings={warnings} />
           <NoteReviewPanel
             held={held}
             env={env}
@@ -256,28 +264,15 @@ export function Dashboard() {
           <ScheduleJobPanel env={env} />
         </div>
 
-        {/* Right: tabbed log panel */}
-        <div className="flex-1 min-w-0 flex flex-col gap-1">
+        {/* Right: tabbed panel. Fixed height on mobile so the inner ScrollArea
+            works; fills the column on desktop. */}
+        <div className="flex-1 min-w-0 flex flex-col gap-1.5">
           {/* Tab bar */}
-          <div className="flex items-center gap-1 shrink-0">
-            <button
-              onClick={() => setRightTab("live")}
-              className={`px-3 py-1 text-xs font-semibold rounded transition-colors border ${
-                rightTab === "live"
-                  ? "bg-slate-800 text-white border-slate-700"
-                  : "text-slate-400 border-transparent hover:text-white"
-              }`}
-            >
+          <div className="flex items-center gap-1 shrink-0 overflow-x-auto">
+            <button onClick={() => setRightTab("live")} className={tabBtn(rightTab === "live")}>
               Live Log
             </button>
-            <button
-              onClick={() => setRightTab("failed")}
-              className={`px-3 py-1 text-xs font-semibold rounded transition-colors border flex items-center gap-1.5 ${
-                rightTab === "failed"
-                  ? "bg-slate-800 text-white border-slate-700"
-                  : "text-slate-400 border-transparent hover:text-white"
-              }`}
-            >
+            <button onClick={() => setRightTab("failed")} className={tabBtn(rightTab === "failed")}>
               Cần xử lý
               {failed.length > 0 && (
                 <span className="rounded-full bg-red-600 text-white px-1.5 leading-none py-0.5 text-[10px] font-bold">
@@ -285,36 +280,40 @@ export function Dashboard() {
                 </span>
               )}
             </button>
-            <button
-              onClick={() => setRightTab("history")}
-              className={`px-3 py-1 text-xs font-semibold rounded transition-colors border ${
-                rightTab === "history"
-                  ? "bg-slate-800 text-white border-slate-700"
-                  : "text-slate-400 border-transparent hover:text-white"
-              }`}
-            >
-              Smart History
-            </button>
-            <button
-              onClick={() => setRightTab("admin")}
-              className={`px-3 py-1 text-xs font-semibold rounded transition-colors border ${
-                rightTab === "admin"
-                  ? "bg-slate-800 text-white border-slate-700"
-                  : "text-slate-400 border-transparent hover:text-white"
-              }`}
-            >
+            <button onClick={() => setRightTab("admin")} className={tabBtn(rightTab === "admin")}>
               Quản trị job
             </button>
           </div>
 
           {/* Tab content */}
-          <div className="flex-1 min-h-0">
+          <div className="flex-1 min-h-0 h-[65vh] lg:h-auto">
             {rightTab === "live" ? (
-              <ActivityLog logs={logs} warnings={warnings} />
+              <div className="flex flex-col h-full gap-1.5">
+                {/* Smart History is now a mode inside Live Log, not a top tab */}
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    onClick={() => setLogMode("live")}
+                    className={`px-2 py-0.5 text-[11px] font-semibold rounded-full transition-colors ${
+                      logMode === "live" ? "bg-slate-200 text-slate-800" : "text-slate-400 hover:text-slate-700"
+                    }`}
+                  >
+                    Hoạt động
+                  </button>
+                  <button
+                    onClick={() => setLogMode("smart")}
+                    className={`px-2 py-0.5 text-[11px] font-semibold rounded-full transition-colors ${
+                      logMode === "smart" ? "bg-slate-200 text-slate-800" : "text-slate-400 hover:text-slate-700"
+                    }`}
+                  >
+                    Smart History
+                  </button>
+                </div>
+                <div className="flex-1 min-h-0">
+                  {logMode === "live" ? <ActivityLog logs={logs} /> : <SmartLogHistory />}
+                </div>
+              </div>
             ) : rightTab === "failed" ? (
               <FailedJobsPanel failed={failed} />
-            ) : rightTab === "history" ? (
-              <SmartLogHistory />
             ) : (
               <JobAdminPanel env={env} />
             )}

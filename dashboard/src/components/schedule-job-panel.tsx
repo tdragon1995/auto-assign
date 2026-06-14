@@ -103,97 +103,90 @@ export function ScheduleJobPanel({ env }: Props) {
     : null;
 
   return (
-    <Card className="py-4">
+    <Card className={`py-3 ${hasErrors ? "border-red-300" : ""}`}>
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm flex items-center justify-between">
-          <span>📅 Lịch cố định</span>
-          {hasErrors && (
+        <CardTitle className="text-sm flex items-center justify-between gap-2">
+          <span className="text-muted-foreground font-medium">📅 Lịch cố định</span>
+          {/* Incidents-first: a single status pill. Red error count when something
+              failed; quiet "OK · time" otherwise. Everything else is behind expand. */}
+          {hasErrors ? (
             <span className="inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full bg-red-600 text-white text-xs font-bold">
-              {counts.error}
+              {counts.error} lỗi
             </span>
+          ) : record ? (
+            <span className="text-xs text-emerald-600 font-medium">✓ {counts.ok} · {lastRunTime}</span>
+          ) : (
+            <span className="text-xs text-muted-foreground">Chưa chạy</span>
           )}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-2">
-        {record ? (
-          <>
-            <div className="text-xs text-muted-foreground">
-              Chạy lần cuối: <span className="font-medium">{lastRunTime}</span>
-              {" · "}
-              <span className="uppercase">{record.trigger}</span>
-            </div>
-            <div className="flex gap-2 text-xs">
-              <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">
-                OK {counts.ok}
-              </span>
-              <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
-                Bỏ qua {counts.skipped}
-              </span>
-              <span
-                className={`px-1.5 py-0.5 rounded ${hasErrors ? "bg-red-100 text-red-700" : "bg-slate-100 text-slate-500"}`}
-              >
-                Lỗi {counts.error}
-              </span>
-            </div>
-            {expanded && record.results.length > 0 && (
-              <div className="max-h-64 overflow-y-auto border rounded text-xs">
-                {record.results.map((r) => (
-                  <div
-                    key={r.reference_number}
-                    className={`border-l-2 px-2 py-1 border-b last:border-b-0 ${STATUS_STYLES[r.status]}`}
-                  >
-                    <div className="font-medium text-[11px]">{r.message}</div>
-                    <div className="text-[10px] opacity-60 truncate">{r.reference_number}</div>
+        {/* Retry is the one action surfaced by default — only when there's an incident. */}
+        {hasErrors && (
+          <Button
+            size="sm"
+            className="h-7 w-full text-xs bg-red-600 hover:bg-red-700"
+            disabled={busy}
+            onClick={() => runNow("retry")}
+          >
+            Chạy lại {counts.error} lỗi
+          </Button>
+        )}
+
+        {expanded && (
+          <div className="space-y-2 pt-1 border-t">
+            {record ? (
+              <>
+                <div className="text-xs text-muted-foreground">
+                  Chạy lần cuối: <span className="font-medium">{lastRunTime}</span>
+                  {" · "}
+                  <span className="uppercase">{record.trigger}</span>
+                </div>
+                <div className="flex gap-2 text-xs">
+                  <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">OK {counts.ok}</span>
+                  <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">Bỏ qua {counts.skipped}</span>
+                  <span className={`px-1.5 py-0.5 rounded ${hasErrors ? "bg-red-100 text-red-700" : "bg-slate-100 text-slate-500"}`}>
+                    Lỗi {counts.error}
+                  </span>
+                </div>
+                {record.results.length > 0 && (
+                  <div className="max-h-64 overflow-y-auto border rounded text-xs">
+                    {record.results.map((r) => (
+                      <div
+                        key={r.reference_number}
+                        className={`border-l-2 px-2 py-1 border-b last:border-b-0 ${STATUS_STYLES[r.status]}`}
+                      >
+                        <div className="font-medium text-[11px]">{r.message}</div>
+                        <div className="text-[10px] opacity-60 truncate">{r.reference_number}</div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                )}
+              </>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Chưa có lần chạy nào. Cron tự động lúc 5:00 sáng.
+              </p>
             )}
-            <div className="flex flex-col gap-1 pt-1">
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 text-xs"
-                onClick={() => setExpanded((v) => !v)}
-              >
-                {expanded ? "Ẩn chi tiết" : "Xem chi tiết"}
-              </Button>
-              {hasErrors && (
-                <Button
-                  size="sm"
-                  className="h-7 text-xs bg-red-600 hover:bg-red-700"
-                  disabled={busy}
-                  onClick={() => runNow("retry")}
-                >
-                  Chạy lại {counts.error} lỗi
-                </Button>
-              )}
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 text-xs"
-                disabled={busy}
-                onClick={() => runNow()}
-              >
-                Chạy thủ công
-              </Button>
-            </div>
-          </>
-        ) : (
-          <>
-            <p className="text-xs text-muted-foreground">
-              Chưa có lần chạy nào. Cron tự động lúc 5:00 sáng.
-            </p>
             <Button
               variant="ghost"
               size="sm"
-              className="h-7 text-xs w-full"
+              className="h-7 w-full text-xs"
               disabled={busy}
               onClick={() => runNow()}
             >
               Chạy thủ công
             </Button>
-          </>
+          </div>
         )}
+
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="text-[11px] font-semibold text-slate-400 hover:text-slate-600"
+        >
+          {expanded ? "Ẩn" : "Chi tiết / chạy"}
+        </button>
       </CardContent>
     </Card>
   );
