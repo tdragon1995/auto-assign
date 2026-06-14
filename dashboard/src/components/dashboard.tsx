@@ -5,17 +5,16 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { ServiceStatus } from "./stats-sidebar";
 import { ActivityLog } from "./activity-log";
-import { ScheduleJobPanel } from "./schedule-job-panel";
+import { ScheduleListPanel } from "./schedule-list-panel";
 import { SmartLogHistory } from "./smart-log-history";
 import { NoteReviewPanel, type HeldJob } from "./note-review-panel";
-import { DelayWarningsPanel } from "./delay-warnings-panel";
 import { JobAdminPanel } from "./job-admin-panel";
-import { FailedJobsPanel } from "./failed-jobs-panel";
+import { FailedJobsPanel, type ScheduleErrorRow } from "./failed-jobs-panel";
 import { toast } from "sonner";
 import type { LogEntry, PickupWarning, FailedJob } from "@/lib/types";
 
 type Env = "prod" | "uat";
-type RightTab = "live" | "failed" | "admin";
+type RightTab = "live" | "failed" | "schedule" | "admin";
 type LogMode = "live" | "smart";
 
 export function Dashboard() {
@@ -32,6 +31,8 @@ export function Dashboard() {
   const [env, setEnv] = useState<Env>("prod");
   const [rightTab, setRightTab] = useState<RightTab>("live");
   const [logMode, setLogMode] = useState<LogMode>("live");
+  const [scheduleErrors, setScheduleErrors] = useState<ScheduleErrorRow[]>([]);
+  const [retryingSchedule, setRetryingSchedule] = useState(false);
 
   // Single source of truth: one KV read returns switch state, live log, held
   // jobs, and pickup warnings — all updated by the cron cycle, zero extra calls.
@@ -87,6 +88,40 @@ export function Dashboard() {
     }
   }, []);
 
+  // Fixed-schedule run errors → surfaced in the Cần xử lý tab. The schedule runs
+  // once a day, so this only needs loading on mount + manual refresh (not polled).
+  const loadScheduleErrors = useCallback(async () => {
+    try {
+      const res = await fetch("/api/schedule-job/log", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      const errs = (data.record?.results ?? []).filter(
+        (r: { status?: string }) => r.status === "ERROR",
+      ) as ScheduleErrorRow[];
+      setScheduleErrors(errs);
+    } catch {
+      /* leave last known */
+    }
+  }, []);
+
+  const retrySchedule = useCallback(async () => {
+    setRetryingSchedule(true);
+    try {
+      const res = await fetch(`/api/schedule-job?mode=retry&env=${env}`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) toast.error(`Lịch cố định: ${data.error ?? `HTTP ${res.status}`}`);
+      else if (data.counts) {
+        const { ok, error } = data.counts;
+        toast.success(`Lịch cố định: ${ok} tạo / ${error} lỗi còn lại`);
+      }
+      await loadScheduleErrors();
+    } catch (e) {
+      toast.error(`Lịch cố định lỗi: ${String(e)}`);
+    } finally {
+      setRetryingSchedule(false);
+    }
+  }, [env, loadScheduleErrors]);
+
   // Load config once, then poll status every 30s — but only while the tab is
   // visible. A backgrounded tab pauses (and resumes + refreshes on return), so
   // it stops firing pointless invocations when nobody's looking.
@@ -98,6 +133,7 @@ export function Dashboard() {
         setPscRouteCount(d.pscRouteCount ?? 0);
       })
       .catch(() => {});
+    loadScheduleErrors();
 
     let id: ReturnType<typeof setInterval> | null = null;
     const start = () => { if (!id) id = setInterval(syncStatus, 90_000); };
@@ -111,7 +147,7 @@ export function Dashboard() {
     start();
     document.addEventListener("visibilitychange", onVisibility);
     return () => { stop(); document.removeEventListener("visibilitychange", onVisibility); };
-  }, [syncStatus]);
+  }, [syncStatus, loadScheduleErrors]);
 
   // Turn the switch ON — arm the server-side engine until the next 22:00 VN.
   const arm = useCallback(async () => {
@@ -183,6 +219,7 @@ export function Dashboard() {
   // Refresh handler with toast
   const handleRefresh = useCallback(async () => {
     syncStatus();
+    loadScheduleErrors();
     try {
       const configRes = await fetch("/api/config");
       if (!configRes.ok) throw new Error(`Config returned ${configRes.status}`);
@@ -194,9 +231,10 @@ export function Dashboard() {
     } catch (err) {
       toast.error(`Refresh failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [syncStatus]);
+  }, [syncStatus, loadScheduleErrors]);
 
   const isProd = env === "prod";
+  const attentionCount = failed.length + warnings.length + scheduleErrors.length;
 
   const tabBtn = (active: boolean) =>
     `px-3 py-1.5 text-xs font-semibold rounded transition-colors border flex items-center gap-1.5 whitespace-nowrap ${
@@ -244,25 +282,25 @@ export function Dashboard() {
 
       {/* Body — stacks on mobile, side-by-side from lg up */}
       <div className="flex flex-col lg:flex-row flex-1 lg:min-h-0 p-2 sm:p-3 gap-3">
-        {/* Sidebar: the user's primary focus surfaces (delay + notes), then the
-            minimal fixed-schedule incidents card. Each focus card hides itself
-            when empty, so on a clean day this column is nearly bare. */}
-        <div className="flex flex-col gap-3 w-full lg:w-72 xl:w-80 shrink-0">
-          <DelayWarningsPanel warnings={warnings} />
-          <NoteReviewPanel
-            held={held}
-            env={env}
-            onRefresh={syncStatus}
-            onAssigned={(jobId) => {
-              dismissedHeldRef.current.set(jobId, Date.now() + HELD_DISMISS_MS);
-              setHeld((prev) => prev.filter((j) => j.job_id !== jobId));
-              // After the background-write window, re-check the server so a failed
-              // job (which the server puts back) reappears promptly.
-              setTimeout(() => syncStatus(), HELD_DISMISS_MS + 500);
-            }}
-          />
-          <ScheduleJobPanel env={env} />
-        </div>
+        {/* Sidebar: only the note-review tasks live here now (delay + schedule
+            moved into tabs). Rendered only when there's something to review, so a
+            clean day gives the main panel the full width. */}
+        {held.length > 0 && (
+          <div className="flex flex-col gap-3 w-full lg:w-72 xl:w-80 shrink-0">
+            <NoteReviewPanel
+              held={held}
+              env={env}
+              onRefresh={syncStatus}
+              onAssigned={(jobId) => {
+                dismissedHeldRef.current.set(jobId, Date.now() + HELD_DISMISS_MS);
+                setHeld((prev) => prev.filter((j) => j.job_id !== jobId));
+                // After the background-write window, re-check the server so a failed
+                // job (which the server puts back) reappears promptly.
+                setTimeout(() => syncStatus(), HELD_DISMISS_MS + 500);
+              }}
+            />
+          </div>
+        )}
 
         {/* Right: tabbed panel. Fixed height on mobile so the inner ScrollArea
             works; fills the column on desktop. */}
@@ -274,11 +312,14 @@ export function Dashboard() {
             </button>
             <button onClick={() => setRightTab("failed")} className={tabBtn(rightTab === "failed")}>
               Cần xử lý
-              {failed.length > 0 && (
+              {attentionCount > 0 && (
                 <span className="rounded-full bg-red-600 text-white px-1.5 leading-none py-0.5 text-[10px] font-bold">
-                  {failed.length}
+                  {attentionCount}
                 </span>
               )}
+            </button>
+            <button onClick={() => setRightTab("schedule")} className={tabBtn(rightTab === "schedule")}>
+              Lịch cố định
             </button>
             <button onClick={() => setRightTab("admin")} className={tabBtn(rightTab === "admin")}>
               Quản trị job
@@ -313,7 +354,15 @@ export function Dashboard() {
                 </div>
               </div>
             ) : rightTab === "failed" ? (
-              <FailedJobsPanel failed={failed} />
+              <FailedJobsPanel
+                failed={failed}
+                warnings={warnings}
+                scheduleErrors={scheduleErrors}
+                onRetrySchedule={retrySchedule}
+                retryingSchedule={retryingSchedule}
+              />
+            ) : rightTab === "schedule" ? (
+              <ScheduleListPanel env={env} />
             ) : (
               <JobAdminPanel env={env} />
             )}

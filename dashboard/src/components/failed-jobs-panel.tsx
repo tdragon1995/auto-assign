@@ -1,8 +1,22 @@
 "use client";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import type { FailedJob, FailedReason } from "@/lib/types";
+import { DIAG_LOCATIONS } from "@/lib/diag-locations";
+import type { FailedJob, FailedReason, PickupWarning } from "@/lib/types";
+
+export interface ScheduleErrorRow {
+  pickup_id: string;
+  dropoff_id: string;
+  delivery_window: string;
+  reference_number: string;
+  message: string;
+  job_id?: number;
+}
+
+const NAME_BY_ID = new Map(DIAG_LOCATIONS.map((l) => [l.customer_id, l.name]));
+const nameOf = (id: string) => NAME_BY_ID.get(id) ?? id;
 
 // Reason → label + tone. Tone drives the chip/border colour: red = blocking
 // (nothing the engine can do — needs a person), amber = config/ambiguity that a
@@ -28,6 +42,27 @@ const TONE_STYLES: Record<"red" | "amber", { chip: string; border: string }> = {
 
 function metaFor(reason: FailedReason) {
   return REASON_META[reason] ?? { label: reason, tone: "red" as const, order: 99 };
+}
+
+/** Late duration: under 60 min as +N', otherwise +Xh / +Xh YY'. */
+function fmtLate(m: number): string {
+  if (m < 60) return `+${m}'`;
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return mm ? `+${h}h${mm}'` : `+${h}h`;
+}
+
+function SectionHeader({ label, count, tone = "slate" }: { label: string; count: number; tone?: "slate" | "amber" | "red" }) {
+  const color =
+    tone === "amber" ? "text-amber-700" : tone === "red" ? "text-red-700" : "text-slate-500";
+  return (
+    <div className="flex items-center gap-1.5 pt-1">
+      <span className={`text-[11px] font-bold uppercase tracking-wide ${color}`}>{label}</span>
+      <span className="rounded-full bg-slate-100 border border-slate-200 px-1.5 leading-none py-0.5 text-[10px] text-slate-600">
+        {count}
+      </span>
+    </div>
+  );
 }
 
 function FailedRow({ job }: { job: FailedJob }) {
@@ -56,13 +91,26 @@ function FailedRow({ job }: { job: FailedJob }) {
 }
 
 /**
- * Jobs the engine couldn't auto-assign for a deterministic, recurring reason.
- * Fed by the dashboard status poll (a live snapshot, replaced each cycle), so a
- * resolved job drops off on its own. Shown here instead of re-printing the same
- * ERROR to the live log every 3 minutes.
+ * The dashboard's attention hub: jobs the engine couldn't auto-assign, plus late
+ * pickups ("Lấy mẫu chậm") and fixed-schedule (Lịch cố định) run errors — all the
+ * things a supervisor needs to act on, in one place.
  */
-export function FailedJobsPanel({ failed }: { failed: FailedJob[] }) {
-  // Group by reason in display-priority order; sort jobs within a group by id.
+export function FailedJobsPanel({
+  failed,
+  warnings,
+  scheduleErrors,
+  onRetrySchedule,
+  retryingSchedule,
+}: {
+  failed: FailedJob[];
+  warnings: PickupWarning[];
+  scheduleErrors: ScheduleErrorRow[];
+  onRetrySchedule: () => void;
+  retryingSchedule: boolean;
+}) {
+  const total = failed.length + warnings.length + scheduleErrors.length;
+
+  // Group assign failures by reason in display-priority order.
   const byReason = new Map<FailedReason, FailedJob[]>();
   for (const job of failed) {
     const list = byReason.get(job.reason);
@@ -78,35 +126,89 @@ export function FailedJobsPanel({ failed }: { failed: FailedJob[] }) {
       <CardHeader className="pb-2 shrink-0">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm">Cần xử lý</CardTitle>
-          <span className="text-xs text-muted-foreground">{failed.length} job</span>
+          <span className="text-xs text-muted-foreground">{total} mục</span>
         </div>
-        <p className="mt-0.5 text-xs text-muted-foreground">
-          Job không thể tự động giao — đã gom lại đây thay vì lặp lỗi ở Live Log. Tự biến mất khi xử lý xong.
-        </p>
       </CardHeader>
       <CardContent className="flex-1 min-h-0">
         <ScrollArea className="h-full">
           <div className="space-y-2 text-xs pr-3">
-            {failed.length === 0 && (
-              <p className="text-muted-foreground text-center py-8">
-                Không có job nào cần xử lý 🎉
-              </p>
+            {total === 0 && (
+              <p className="text-muted-foreground text-center py-8">Không có gì cần xử lý 🎉</p>
             )}
+
+            {/* ── Assign failures ─────────────────────────────────────────── */}
             {groups.map(([reason, jobs]) => (
               <div key={reason} className="space-y-1.5">
-                <div className="flex items-center gap-1.5 pt-1">
-                  <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                    {metaFor(reason).label}
-                  </span>
-                  <span className="rounded-full bg-slate-100 border border-slate-200 px-1.5 leading-none py-0.5 text-[10px] text-slate-600">
-                    {jobs.length}
-                  </span>
-                </div>
+                <SectionHeader label={metaFor(reason).label} count={jobs.length} />
                 {jobs.map((job) => (
                   <FailedRow key={job.job_id} job={job} />
                 ))}
               </div>
             ))}
+
+            {/* ── Late pickups (consolidated from "Lấy mẫu chậm") ──────────── */}
+            {warnings.length > 0 && (
+              <div className="space-y-1.5">
+                <SectionHeader label="Lấy mẫu chậm" count={warnings.length} tone="amber" />
+                {warnings.map((w) => (
+                  <div
+                    key={w.job_id}
+                    className="rounded border border-l-4 border-l-amber-500 bg-amber-50/60 p-2"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <a
+                        href={`https://fleetweb-vn.cartrack.com/delivery/map?job=${w.job_id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-mono font-semibold text-indigo-600 underline hover:text-indigo-800"
+                      >
+                        Job {w.job_id}
+                      </a>
+                      <span className="font-bold text-red-600 bg-red-50 border border-red-200 rounded px-1.5 py-0.5 leading-none whitespace-nowrap">
+                        {fmtLate(w.minutes_late ?? 0)}
+                      </span>
+                    </div>
+                    {w.pickup_customer_name && (
+                      <p className="mt-0.5 font-medium text-slate-800 break-words">{w.pickup_customer_name}</p>
+                    )}
+                    {w.driver_name && (
+                      <p className="mt-0.5 text-[11px] text-slate-500 break-words">{w.driver_name}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* ── Fixed-schedule run errors ───────────────────────────────── */}
+            {scheduleErrors.length > 0 && (
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  <SectionHeader label="Lịch cố định lỗi" count={scheduleErrors.length} tone="red" />
+                  <Button
+                    size="sm"
+                    className="h-6 text-[11px] px-2 bg-red-600 hover:bg-red-700"
+                    disabled={retryingSchedule}
+                    onClick={onRetrySchedule}
+                  >
+                    {retryingSchedule ? "Đang chạy…" : "Chạy lại lỗi"}
+                  </Button>
+                </div>
+                {scheduleErrors.map((e, i) => (
+                  <div
+                    key={`${e.reference_number}-${i}`}
+                    className="rounded border border-l-4 border-l-red-500 bg-white p-2"
+                  >
+                    <div className="font-semibold text-slate-800">
+                      {nameOf(e.pickup_id)} <span className="text-slate-400">→</span> {nameOf(e.dropoff_id)}
+                      {e.delivery_window && (
+                        <span className="ml-1.5 font-mono text-[11px] text-indigo-600">{e.delivery_window}</span>
+                      )}
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-red-700 break-words">{e.message}</p>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </ScrollArea>
       </CardContent>
