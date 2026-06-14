@@ -16,6 +16,16 @@ export const JOB_STATUS: Record<number, string> = {
   7: "Đã huỷ",
 };
 
+/** The mark "Giao ngay" stamps on a stop note to clear a held job past the note
+ *  gate. Plain UTF-8 — verified to round-trip through Cartrack's note field. Lives
+ *  here (dependency-free) so edge routes can import it without the assign.ts graph. */
+export const NOTE_APPROVED_MARK = "✅";
+
+/** True if any stop note carries the supervisor-approved mark. */
+export function isNoteApproved(job: { stops?: { note?: string | null }[] | null }): boolean {
+  return (job.stops ?? []).some((s) => s.note?.includes(NOTE_APPROVED_MARK));
+}
+
 /** True if this stop can still block re-booking (Created, En Route, Arrived). */
 export function isActiveStop(stopStatusId: number): boolean {
   return stopStatusId === 1 || stopStatusId === 2 || stopStatusId === 3;

@@ -34,6 +34,10 @@ export function Dashboard() {
   // the few new entries instead of re-downloading the same 100 every 90s. The
   // boundary second is requested inclusively, so dedupe by ts|level|msg.
   const lastLogTsRef = useRef<string | null>(null);
+  // Jobs approved via "Giao ngay" this session. Kept out of the held list even if
+  // an in-flight cron cycle re-writes them (it saw the job before the ✅ landed);
+  // the next cycle won't re-hold them, so dropping them permanently is correct.
+  const dismissedHeldRef = useRef<Set<number>>(new Set());
   const syncStatus = useCallback(async () => {
     try {
       const since = lastLogTsRef.current;
@@ -62,7 +66,10 @@ export function Dashboard() {
           });
         }
       }
-      if (Array.isArray(data.held)) setHeld(data.held);
+      if (Array.isArray(data.held)) {
+        const dismissed = dismissedHeldRef.current;
+        setHeld((data.held as HeldJob[]).filter((j) => !dismissed.has(j.job_id)));
+      }
       if (Array.isArray(data.warnings)) setWarnings(data.warnings);
     } catch {
       /* transient network error — keep last known state */
@@ -230,7 +237,10 @@ export function Dashboard() {
             held={held}
             env={env}
             onRefresh={syncStatus}
-            onAssigned={(jobId) => setHeld((prev) => prev.filter((j) => j.job_id !== jobId))}
+            onAssigned={(jobId) => {
+              dismissedHeldRef.current.add(jobId);
+              setHeld((prev) => prev.filter((j) => j.job_id !== jobId));
+            }}
           />
           <ScheduleJobPanel env={env} />
         </div>

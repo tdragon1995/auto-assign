@@ -16,7 +16,7 @@ import {
 } from "./time";
 import { haversineKm } from "./distance";
 import { roadDistancesToPoint } from "./distance-cache";
-import { isCompletedOrRejectedStop } from "./job-filters";
+import { isCompletedOrRejectedStop, isNoteApproved } from "./job-filters";
 import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, type RefStop, type RefLabel } from "./smart-rank";
 import { loadLeaveEntries, isDriverOnLeave, resolveSubstitute } from "./leave-config";
 
@@ -716,13 +716,17 @@ export async function autoAssignCycle(
       // Jobs with a delivery window bypass the note gate — the window parking path
       // handles them. The note is driver context, not a blocker for scheduled jobs.
       const hasWindow = !!(job.stops?.find((s) => s.stop_type_id === 1)?.delivery_windows?.[0]?.time_from);
+      // The supervisor-approved mark (stamped by "Giao ngay") also bypasses the
+      // gate: the note stays as driver context, but the job assigns this cycle.
+      const approved = isNoteApproved(job);
       if (!hasWindow) {
-        if (!onlyJobIds?.has(jobId)) {
+        if (!approved && !onlyJobIds?.has(jobId)) {
           log(`Job ${jobId} - SKIPPED (has note): "${getJobNoteText(job)}" | ${jobCustomerName ?? customerId}`);
           heldJobs.push({ job_id: jobId, customer: jobCustomerName ?? customerId ?? "—", note: getJobNoteText(job) });
           continue;
         }
-        log(`Job ${jobId} - ASSIGNING despite note (manual override): "${getJobNoteText(job)}" | ${jobCustomerName ?? customerId}`, "WARN");
+        const why = approved ? "approved mark" : "manual override";
+        log(`Job ${jobId} - ASSIGNING despite note (${why}): "${getJobNoteText(job)}" | ${jobCustomerName ?? customerId}`, "WARN");
       }
     }
 

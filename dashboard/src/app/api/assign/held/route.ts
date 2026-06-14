@@ -1,18 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getJobDetails, updateJobStops, updateJobScheduledDeliveryTs, type Env } from "@/lib/cartrack";
-import { autoAssignCycle } from "@/lib/assign";
-import { loadConfigFromSheets } from "@/lib/config";
-import {
-  getHeldJobs,
-  removeHeldJob,
-  acquireCycleLock,
-  releaseCycleLock,
-  pushSmartRun,
-  pushRunLog,
-} from "@/lib/smart-log-kv";
+import { NOTE_APPROVED_MARK } from "@/lib/job-filters";
+import { getHeldJobs, removeHeldJob, pushRunLog } from "@/lib/smart-log-kv";
+import { vnTimestamp } from "@/lib/time";
 
-// The "assign anyway" POST runs a real assign cycle, which can take a while.
-export const maxDuration = 60;
+// Both POST paths are quick Cartrack edits (stop notes / scheduled ts) — no
+// synchronous assign cycle, so run on the edge (no cold start) near Cartrack VN.
+export const runtime = "edge";
+export const preferredRegion = "sin1";
 
 /** GET — note-held jobs, read from Redis (populated by the cron cycle). */
 export async function GET() {
@@ -20,9 +15,10 @@ export async function GET() {
   return NextResponse.json({ held });
 }
 
-/** POST { jobId, scheduledAt? } — assign or schedule a held job despite its note.
+/** POST { jobId, scheduledAt? } — clear a held job's note gate.
  *  scheduledAt: "YYYY-MM-DD HH:MM:SS" VN time — parks to proxy driver queue.
- *  Omit scheduledAt to run the full assign cycle immediately. */
+ *  Omit scheduledAt ("Giao ngay") to stamp the approved mark on the note; the
+ *  next cron cycle then bypasses the gate and assigns it. */
 export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
   let body: { jobId?: number; scheduledAt?: string } = {};
@@ -51,9 +47,13 @@ export async function POST(req: NextRequest) {
     const toTotal = hh * 60 + mm + 30;
     const timeTo = `${String(Math.floor(toTotal / 60) % 24).padStart(2, "0")}:${String(toTotal % 60).padStart(2, "0")}:${String(ss).padStart(2, "0")}+07:00`;
 
-    // Step 1: convert job to Scheduled type + set scheduled_delivery_ts.
-    // Must succeed before Cartrack accepts delivery_windows on the stops.
-    const schedRes = await updateJobScheduledDeliveryTs(jobId, String(body.scheduledAt), env);
+    // Steps 1 & 2 run together — they're independent (the details read doesn't
+    // touch stops). updateJobStops still runs after, since Cartrack only accepts
+    // delivery_windows once the job is Scheduled (schedRes must be ok first).
+    const [schedRes, details] = await Promise.all([
+      updateJobScheduledDeliveryTs(jobId, String(body.scheduledAt), env),
+      getJobDetails(jobId, env),
+    ]);
     if (!schedRes.ok) {
       return NextResponse.json(
         { ok: false, error: `Lên lịch thất bại (sched ${schedRes.status})`, details: schedRes.body },
@@ -61,8 +61,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Step 2: add delivery_windows to the pickup stop.
-    const details = await getJobDetails(jobId, env);
     const rawStops = (details.data?.stops ?? []) as {
       stop_id?: number; stop_type_id?: number; customer_id?: string; customer_name?: string; note?: string;
     }[];
@@ -91,31 +89,58 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, scheduled: true });
   }
 
-  // Share the cycle lock so this can't run alongside a cron cycle. Returns 409 fast
-  // on collision; the client queues by retrying (keeps the server from idle-waiting).
-  const gotLock = await acquireCycleLock();
-  if (!gotLock) {
-    return NextResponse.json({ ok: false, busy: true, error: "Hệ thống đang bận, vui lòng thử lại sau giây lát." }, { status: 409 });
-  }
-
+  // ── "Giao ngay" path: stamp the approved mark on the note, leave unassigned ──
+  // No assign cycle here, so no cycle-lock contention. The next cron cycle sees the
+  // mark, bypasses the note gate (isNoteApproved), and assigns the job normally.
   try {
-    const config = await loadConfigFromSheets();
-    if (!config) {
-      return NextResponse.json({ ok: false, error: "Failed to load config" }, { status: 500 });
+    const details = await getJobDetails(jobId, env);
+    const rawStops = (details.data?.stops ?? []) as {
+      stop_id?: number; stop_type_id?: number; customer_id?: string; customer_name?: string; note?: string;
+    }[];
+    const eligibleStops = rawStops.filter((s) => s.stop_id && s.stop_type_id && s.customer_id);
+    if (eligibleStops.length === 0) {
+      return NextResponse.json({ ok: false, error: "Job không có điểm dừng hợp lệ" }, { status: 502 });
     }
 
-    const logs = await autoAssignCycle(config, env, false, new Set([jobId]));
-    await pushSmartRun(logs).catch(() => {});
-    await pushRunLog(logs).catch(() => {});
+    // Append the mark to every stop that carries a real (blocking) note, so it
+    // travels with the text the driver reads. "Call before delivery" never blocks,
+    // so it's left untouched.
+    const updatedStops = eligibleStops.map((s) => {
+      const note = s.note?.trim();
+      const blocking = note && note !== "Call before delivery";
+      const newNote =
+        blocking && !note.includes(NOTE_APPROVED_MARK) ? `${s.note} ${NOTE_APPROVED_MARK}` : s.note;
+      return {
+        stop_id: s.stop_id!,
+        stop_type_id: s.stop_type_id!,
+        customer_id: s.customer_id!,
+        ...(newNote ? { note: newNote } : {}),
+      };
+    });
 
-    const assigned = logs.some((l) => l.level === "OK" && l.msg.includes(`Job ${jobId}`));
-    if (assigned) await removeHeldJob(jobId).catch(() => {});
+    const stopsRes = await updateJobStops(jobId, updatedStops, env);
+    if (!stopsRes.ok) {
+      return NextResponse.json(
+        { ok: false, error: `Duyệt giao thất bại (stops ${stopsRes.status})`, details: stopsRes.body },
+        { status: 502 }
+      );
+    }
 
-    const errorLine = logs.find((l) => l.level === "ERROR" && l.msg.includes(`Job ${jobId}`));
-    return NextResponse.json({ ok: assigned, assigned, error: errorLine?.msg ?? null, logs });
+    await removeHeldJob(jobId).catch(() => {});
+
+    // Log the approval so the supervisor sees it in the activity log right away —
+    // the actual assignment (and its own log line) happens on the next cron cycle.
+    const customer =
+      eligibleStops.find((s) => s.stop_type_id === 1)?.customer_name ??
+      eligibleStops[0]?.customer_name ?? `Job ${jobId}`;
+    await pushRunLog([{
+      ts: vnTimestamp(),
+      level: "OK",
+      msg: `Job ${jobId} - Đã duyệt ghi chú → sẽ giao ở chu kỳ kế tiếp | ${customer}`,
+    }]).catch(() => {});
+
+    return NextResponse.json({ ok: true, approved: true });
   } catch (e) {
     return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });
-  } finally {
-    await releaseCycleLock().catch(() => {});
   }
 }
