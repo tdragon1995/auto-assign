@@ -128,6 +128,30 @@ export interface PickupWarning {
   window_time_to?: string;  // window_expiring: raw "HH:mm:ss+07:00"
 }
 
+// A job the last full cycle could not assign for a deterministic, per-job reason
+// that recurs every cycle (no driver on duty, no mapping, driver clash, …). Kept
+// as a live snapshot — replaced each cycle — so the dashboard "Cần xử lý" panel
+// shows the current set instead of the live log re-printing the same error every
+// 3 minutes. `detail` is the human-readable specifics; `ts` is when last seen.
+export type FailedReason =
+  | "NO_MAPPING"      // customer not configured in the sheet
+  | "NO_DRIVER"       // no driver / candidate on duty for this shift
+  | "CLASH"           // multiple fixed drivers on duty — ambiguous
+  | "SUB_CLASH"       // multiple substitutes cover the on-leave driver
+  | "ON_LEAVE"        // assigned driver on leave, no substitute covers now
+  | "INVALID_DRIVER"  // broken driver_id in the sheet (#REF!, …)
+  | "UNAVAILABLE"     // all ranked smart candidates on-break/offline
+  | "NO_GPS";         // pickup or all candidates missing coordinates
+
+export interface FailedJob {
+  job_id: number;
+  customer: string;
+  reason: FailedReason;
+  detail: string;
+  level: "ERROR" | "WARN";
+  ts: string;
+}
+
 export const DRIVER_STATUS_CONFIG: Record<
   number,
   { name: string; color: string }

@@ -9,6 +9,8 @@ export interface HeldJob {
   job_id: number;
   customer: string;
   note: string;
+  /** Present when a background approve/schedule failed and the job was put back. */
+  error?: string;
 }
 
 const NOTE_PREVIEW_LIMIT = 100;
@@ -177,7 +179,12 @@ export function NoteReviewPanel({
           };
 
           return (
-            <div key={job.job_id} className="space-y-1.5 text-xs border rounded p-2 bg-orange-50 border-orange-200">
+            <div
+              key={job.job_id}
+              className={`space-y-1.5 text-xs border rounded p-2 ${
+                job.error ? "bg-red-50 border-red-300" : "bg-orange-50 border-orange-200"
+              }`}
+            >
               {/* Header */}
               <div className="font-medium">
                 <a
@@ -191,6 +198,12 @@ export function NoteReviewPanel({
                 {" · "}
                 {job.customer}
               </div>
+
+              {job.error && (
+                <div className="rounded border border-red-300 bg-red-100/70 px-2 py-1 text-[11px] font-semibold text-red-800">
+                  ⚠ {job.error} — vui lòng thử lại
+                </div>
+              )}
 
               <HeldNote note={job.note} />
 

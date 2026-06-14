@@ -9,11 +9,12 @@ import { ScheduleJobPanel } from "./schedule-job-panel";
 import { SmartLogHistory } from "./smart-log-history";
 import { NoteReviewPanel, type HeldJob } from "./note-review-panel";
 import { JobAdminPanel } from "./job-admin-panel";
+import { FailedJobsPanel } from "./failed-jobs-panel";
 import { toast } from "sonner";
-import type { LogEntry, PickupWarning } from "@/lib/types";
+import type { LogEntry, PickupWarning, FailedJob } from "@/lib/types";
 
 type Env = "prod" | "uat";
-type RightTab = "live" | "history" | "admin";
+type RightTab = "live" | "failed" | "history" | "admin";
 
 export function Dashboard() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -23,6 +24,7 @@ export function Dashboard() {
   const [lastChecked, setLastChecked] = useState<string | null>(null);
   const [held, setHeld] = useState<HeldJob[]>([]);
   const [warnings, setWarnings] = useState<PickupWarning[]>([]);
+  const [failed, setFailed] = useState<FailedJob[]>([]);
   const [mappingCount, setMappingCount] = useState(0);
   const [pscRouteCount, setPscRouteCount] = useState(0);
   const [env, setEnv] = useState<Env>("prod");
@@ -34,10 +36,13 @@ export function Dashboard() {
   // the few new entries instead of re-downloading the same 100 every 90s. The
   // boundary second is requested inclusively, so dedupe by ts|level|msg.
   const lastLogTsRef = useRef<string | null>(null);
-  // Jobs approved via "Giao ngay" this session. Kept out of the held list even if
-  // an in-flight cron cycle re-writes them (it saw the job before the ✅ landed);
-  // the next cycle won't re-hold them, so dropping them permanently is correct.
-  const dismissedHeldRef = useRef<Set<number>>(new Set());
+  // Jobs just approved/scheduled via the panel, mapped to a dismissal expiry. We
+  // hide them only during the background-write window (~15s) — covering the
+  // immediate refresh and any cron cycle that re-writes the pre-mark job. After
+  // it expires we reconcile with the server, so a job whose background work FAILED
+  // (server puts it back, with an error) reappears instead of staying hidden.
+  const HELD_DISMISS_MS = 30_000;
+  const dismissedHeldRef = useRef<Map<number, number>>(new Map());
   const syncStatus = useCallback(async () => {
     try {
       const since = lastLogTsRef.current;
@@ -68,9 +73,12 @@ export function Dashboard() {
       }
       if (Array.isArray(data.held)) {
         const dismissed = dismissedHeldRef.current;
+        const now = Date.now();
+        for (const [id, exp] of dismissed) if (exp <= now) dismissed.delete(id);
         setHeld((data.held as HeldJob[]).filter((j) => !dismissed.has(j.job_id)));
       }
       if (Array.isArray(data.warnings)) setWarnings(data.warnings);
+      if (Array.isArray(data.failed)) setFailed(data.failed);
     } catch {
       /* transient network error — keep last known state */
     }
@@ -238,8 +246,11 @@ export function Dashboard() {
             env={env}
             onRefresh={syncStatus}
             onAssigned={(jobId) => {
-              dismissedHeldRef.current.add(jobId);
+              dismissedHeldRef.current.set(jobId, Date.now() + HELD_DISMISS_MS);
               setHeld((prev) => prev.filter((j) => j.job_id !== jobId));
+              // After the background-write window, re-check the server so a failed
+              // job (which the server puts back) reappears promptly.
+              setTimeout(() => syncStatus(), HELD_DISMISS_MS + 500);
             }}
           />
           <ScheduleJobPanel env={env} />
@@ -258,6 +269,21 @@ export function Dashboard() {
               }`}
             >
               Live Log
+            </button>
+            <button
+              onClick={() => setRightTab("failed")}
+              className={`px-3 py-1 text-xs font-semibold rounded transition-colors border flex items-center gap-1.5 ${
+                rightTab === "failed"
+                  ? "bg-slate-800 text-white border-slate-700"
+                  : "text-slate-400 border-transparent hover:text-white"
+              }`}
+            >
+              Cần xử lý
+              {failed.length > 0 && (
+                <span className="rounded-full bg-red-600 text-white px-1.5 leading-none py-0.5 text-[10px] font-bold">
+                  {failed.length}
+                </span>
+              )}
             </button>
             <button
               onClick={() => setRightTab("history")}
@@ -285,6 +311,8 @@ export function Dashboard() {
           <div className="flex-1 min-h-0">
             {rightTab === "live" ? (
               <ActivityLog logs={logs} warnings={warnings} />
+            ) : rightTab === "failed" ? (
+              <FailedJobsPanel failed={failed} />
             ) : rightTab === "history" ? (
               <SmartLogHistory />
             ) : (

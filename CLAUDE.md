@@ -124,6 +124,8 @@ These are the things most likely to burn a future agent working on this codebase
 
 5. **Duplicate detection exempts PSC tỉnh jobs by design.** The exempt label list lives in `DUPLICATE_EXEMPT_LABELS` at the top of `assign.ts`. The label string itself is `PSC_TINH_LABEL` exported from `psc-config.ts` — change it in one place.
 
+6. **Recurring per-job assign failures are dropped from the live log on purpose.** `NO DRIVER ON DUTY`, `NO MAPPING`, `CLASH`/`SUB CLASH`, on-leave-no-sub, `invalid driver_id`, and the smart `SMART skipped`/`on-break or unavailable` lines would re-print every cycle for the same stuck job, so `shouldStore` (via `LOG_DROP_PATTERNS` in `smart-log-kv.ts`) filters them out of the rolling run log. Instead each cycle writes a **snapshot** of these via `setFailedJobs` (key `assign:failed_jobs`), surfaced in the dashboard's **"Cần xử lý"** tab. If you add a new recurring failure reason, push it to `failedJobs` in `assign.ts` *and* add its string to `LOG_DROP_PATTERNS` — otherwise it will spam the live log again. One-off action errors (`SMART failed`, `Job failed`) are intentionally *not* dropped.
+
 See `docs/business-rules.md` for deeper detail and `docs/cartrack-api.md` for API reference.
 
 ## CI/CD

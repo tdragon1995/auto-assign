@@ -1,8 +1,20 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { getJobDetails, updateJobStops, updateJobScheduledDeliveryTs, type Env } from "@/lib/cartrack";
 import { NOTE_APPROVED_MARK } from "@/lib/job-filters";
-import { getHeldJobs, removeHeldJob, pushRunLog } from "@/lib/smart-log-kv";
+import { getHeldJobs, removeHeldJob, addHeldJob, pushRunLog } from "@/lib/smart-log-kv";
 import { vnTimestamp } from "@/lib/time";
+
+type RawStop = { stop_id?: number; stop_type_id?: number; customer_id?: string; customer_name?: string; note?: string };
+
+/** Pickup customer name + joined blocking notes — for putting a failed job back. */
+function heldFields(jobId: number, stops: RawStop[]): { customer: string; note: string } {
+  const customer = stops.find((s) => s.stop_type_id === 1)?.customer_name ?? `Job ${jobId}`;
+  const note = stops
+    .map((s) => s.note?.trim())
+    .filter((n) => n && n !== "Call before delivery")
+    .join(" | ");
+  return { customer, note };
+}
 
 // Cartrack writes are slow (~5-10s each) and we make two per action, so we never
 // block the click on them. POST validates, returns immediately, and finishes the
@@ -55,6 +67,12 @@ export async function POST(req: NextRequest) {
     const timeTo = `${String(Math.floor(toTotal / 60) % 24).padStart(2, "0")}:${String(toTotal % 60).padStart(2, "0")}:${String(ss).padStart(2, "0")}+07:00`;
 
     after(async () => {
+      let stops: RawStop[] = [];
+      const putBack = async (err: string) => {
+        const { customer, note } = heldFields(jobId, stops);
+        log(`Job ${jobId} - Lên lịch THẤT BẠI: ${err} | ${customer}`, "ERROR");
+        await addHeldJob({ job_id: jobId, customer, note, error: `Lên lịch lỗi: ${err}` }).catch(() => {});
+      };
       try {
         // Schedule-type update and details read are independent — run together.
         // updateJobStops runs after, since Cartrack only accepts delivery_windows
@@ -63,15 +81,10 @@ export async function POST(req: NextRequest) {
           updateJobScheduledDeliveryTs(jobId, scheduledAt, env),
           getJobDetails(jobId, env),
         ]);
-        if (!schedRes.ok) {
-          log(`Job ${jobId} - Lên lịch THẤT BẠI (sched ${schedRes.status})`, "ERROR");
-          return;
-        }
+        stops = (details.data?.stops ?? []) as RawStop[];
+        if (!schedRes.ok) return putBack(`sched ${schedRes.status}`);
 
-        const rawStops = (details.data?.stops ?? []) as {
-          stop_id?: number; stop_type_id?: number; customer_id?: string; customer_name?: string; note?: string;
-        }[];
-        const updatedStops = rawStops
+        const updatedStops = stops
           .filter((s) => s.stop_id && s.stop_type_id && s.customer_id)
           .map((s) => ({
             stop_id: s.stop_id!,
@@ -82,16 +95,13 @@ export async function POST(req: NextRequest) {
           }));
 
         const stopsRes = await updateJobStops(jobId, updatedStops, env);
-        if (!stopsRes.ok) {
-          log(`Job ${jobId} - Lên lịch THẤT BẠI (stops ${stopsRes.status})`, "ERROR");
-          return;
-        }
+        if (!stopsRes.ok) return putBack(`stops ${stopsRes.status}`);
 
         await removeHeldJob(jobId).catch(() => {});
-        const customer = rawStops.find((s) => s.stop_type_id === 1)?.customer_name ?? `Job ${jobId}`;
+        const { customer } = heldFields(jobId, stops);
         log(`Job ${jobId} - Đã lên lịch lúc ${timePart.slice(0, 5)} | ${customer}`);
       } catch (e) {
-        log(`Job ${jobId} - Lên lịch lỗi: ${String(e)}`, "ERROR");
+        await putBack(String(e));
       }
     });
 
@@ -100,16 +110,17 @@ export async function POST(req: NextRequest) {
 
   // ── "Giao ngay" path: stamp the approved mark in the background ───────────────
   after(async () => {
+    let stops: RawStop[] = [];
+    const putBack = async (err: string) => {
+      const { customer, note } = heldFields(jobId, stops);
+      log(`Job ${jobId} - Duyệt giao THẤT BẠI: ${err} | ${customer}`, "ERROR");
+      await addHeldJob({ job_id: jobId, customer, note, error: `Duyệt giao lỗi: ${err}` }).catch(() => {});
+    };
     try {
       const details = await getJobDetails(jobId, env);
-      const rawStops = (details.data?.stops ?? []) as {
-        stop_id?: number; stop_type_id?: number; customer_id?: string; customer_name?: string; note?: string;
-      }[];
-      const eligibleStops = rawStops.filter((s) => s.stop_id && s.stop_type_id && s.customer_id);
-      if (eligibleStops.length === 0) {
-        log(`Job ${jobId} - Duyệt giao THẤT BẠI: không có điểm dừng hợp lệ`, "ERROR");
-        return;
-      }
+      stops = (details.data?.stops ?? []) as RawStop[];
+      const eligibleStops = stops.filter((s) => s.stop_id && s.stop_type_id && s.customer_id);
+      if (eligibleStops.length === 0) return putBack("không có điểm dừng hợp lệ");
 
       // Append the mark to every stop that carries a real (blocking) note, so it
       // travels with the text the driver reads. "Call before delivery" never blocks.
@@ -127,18 +138,13 @@ export async function POST(req: NextRequest) {
       });
 
       const stopsRes = await updateJobStops(jobId, updatedStops, env);
-      if (!stopsRes.ok) {
-        log(`Job ${jobId} - Duyệt giao THẤT BẠI (stops ${stopsRes.status})`, "ERROR");
-        return;
-      }
+      if (!stopsRes.ok) return putBack(`stops ${stopsRes.status}`);
 
       await removeHeldJob(jobId).catch(() => {});
-      const customer =
-        eligibleStops.find((s) => s.stop_type_id === 1)?.customer_name ??
-        eligibleStops[0]?.customer_name ?? `Job ${jobId}`;
+      const { customer } = heldFields(jobId, stops);
       log(`Job ${jobId} - Đã duyệt ghi chú → sẽ giao ở chu kỳ kế tiếp | ${customer}`);
     } catch (e) {
-      log(`Job ${jobId} - Duyệt giao lỗi: ${String(e)}`, "ERROR");
+      await putBack(String(e));
     }
   });
 

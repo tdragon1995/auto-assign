@@ -1,10 +1,10 @@
-import type { Config, Driver, Job, LogEntry, LogLevel, Mapping, PickupWarning, TimelineRoute } from "./types";
+import type { Config, Driver, FailedJob, Job, LogEntry, LogLevel, Mapping, PickupWarning, TimelineRoute } from "./types";
 import { getDrivers, getUnassignedJobs, getDriverJobs, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, updateJobSendToDriverAt, unassignJob, optimizeDriverRoute, getFleetwebCookie, getJobsByStatusAndDate, getJobsByDate, JSONRPC_URL, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL } from "./return-trips";
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
-import { setHeldJobs, setPickupWarnings, type HeldJob } from "./smart-log-kv";
+import { setHeldJobs, setFailedJobs, setPickupWarnings, type HeldJob } from "./smart-log-kv";
 import { isValidDriverId } from "./config";
 import {
   vnDate,
@@ -585,9 +585,25 @@ export async function autoAssignCycle(
   // Jobs held back this cycle because a stop has a note (full cycle only).
   const heldJobs: HeldJob[] = [];
 
+  // Jobs this cycle couldn't assign for a deterministic, recurring reason. These
+  // used to re-print the same ERROR every cycle and bury the live log; now they
+  // ride a snapshot the dashboard "Cần xử lý" panel reads instead. The log() lines
+  // stay for the per-cycle return (smart history / debug) but are dropped from the
+  // rolling live log by shouldStore. One push per job — each fails at most once.
+  const failedJobs: FailedJob[] = [];
+  const fail = (
+    reason: FailedJob["reason"],
+    jobId: number,
+    customer: string,
+    detail: string,
+    level: "ERROR" | "WARN" = "ERROR",
+  ) => {
+    if (!onlyJobIds) failedJobs.push({ job_id: jobId, customer, reason, detail, level, ts: vnTimestamp() });
+  };
+
   if (jobs.length === 0) {
     log("No unassigned jobs");
-    if (!onlyJobIds) await setHeldJobs(heldJobs);
+    if (!onlyJobIds) await Promise.all([setHeldJobs(heldJobs), setFailedJobs(failedJobs)]);
     return logs;
   }
 
@@ -818,12 +834,16 @@ export async function autoAssignCycle(
           const lc1 = isDriverOnLeave(driverId, leaveEntries);
           if (lc1.onLeave) {
             const sub = resolveSubstitute(lc1.entry!, leaveEntries);
+            const who1 = jobCustomerName ?? customerId ?? "—";
+            const onLeaveName1 = lc1.driverName ?? driverId;
             if (sub.status === "clash") {
-              log(`Job ${jobId} - SUB CLASH: ${sub.subIds.length} substitutes cover for ${lc1.driverName ?? driverId} now | ${jobCustomerName ?? customerId}`, "WARN");
+              log(`Job ${jobId} - SUB CLASH: ${sub.subIds.length} substitutes cover for ${onLeaveName1} now | ${who1}`, "WARN");
+              fail("SUB_CLASH", jobId, who1, `${onLeaveName1} nghỉ — ${sub.subIds.length} người thay cùng trực, không rõ chọn ai`, "WARN");
               continue;
             }
             if (sub.status === "none") {
-              log(`Job ${jobId} - SMART(1) SKIP: ${lc1.driverName ?? driverId} on leave (${lc1.reason}), no substitute covers now | ${jobCustomerName ?? customerId}`, "WARN");
+              log(`Job ${jobId} - SMART(1) SKIP: ${onLeaveName1} on leave (${lc1.reason}), no substitute covers now | ${who1}`, "WARN");
+              fail("ON_LEAVE", jobId, who1, `${onLeaveName1} nghỉ (${lc1.reason}) — không có người thay đang trực`, "WARN");
               continue;
             }
             subFor = lc1.driverName ?? driverId;
@@ -853,7 +873,9 @@ export async function autoAssignCycle(
         // ── Multi-driver: haversine → Goong rank, assign top ───────────────
         const pickupStop = job.stops.find((s) => s.stop_type_id === 1);
         if (!pickupStop?.latitude || !pickupStop?.longitude) {
-          log(`Job ${jobId} - SMART skipped: pickup has no GPS | ${jobCustomerName ?? customerId}`, "ERROR");
+          const who = jobCustomerName ?? customerId ?? "—";
+          log(`Job ${jobId} - SMART skipped: pickup has no GPS | ${who}`, "ERROR");
+          fail("NO_GPS", jobId, who, "Điểm lấy mẫu không có toạ độ GPS — không thể xếp tài xế gần nhất");
           continue;
         }
 
@@ -865,7 +887,9 @@ export async function autoAssignCycle(
           return true;
         });
         if (candidates.length === 0) {
-          log(`Job ${jobId} - SMART skipped: 0/${smartMapping.smart_driver_id.length} configured drivers available (GPS or start_location) | ${jobCustomerName ?? customerId}`, "WARN");
+          const who = jobCustomerName ?? customerId ?? "—";
+          log(`Job ${jobId} - SMART skipped: 0/${smartMapping.smart_driver_id.length} configured drivers available (GPS or start_location) | ${who}`, "WARN");
+          fail("NO_DRIVER", jobId, who, `0/${smartMapping.smart_driver_id.length} tài xế cấu hình có toạ độ (GPS/điểm xuất phát)`, "WARN");
           continue;
         }
 
@@ -947,7 +971,10 @@ export async function autoAssignCycle(
           if (lc.onLeave) {
             const sub = resolveSubstitute(lc.entry!, leaveEntries);
             if (sub.status === "clash") {
-              log(`Job ${jobId} - SUB CLASH: ${sub.subIds.length} substitutes cover for ${lc.driverName ?? candidateName} now | ${pickupStop.customer_name ?? customerId}`, "WARN");
+              const who = pickupStop.customer_name ?? jobCustomerName ?? customerId ?? "—";
+              const onLeaveName = lc.driverName ?? candidateName;
+              log(`Job ${jobId} - SUB CLASH: ${sub.subIds.length} substitutes cover for ${onLeaveName} now | ${who}`, "WARN");
+              fail("SUB_CLASH", jobId, who, `${onLeaveName} nghỉ — ${sub.subIds.length} người thay cùng trực, không rõ chọn ai`, "WARN");
               subClash = true;
               break;
             }
@@ -992,7 +1019,9 @@ export async function autoAssignCycle(
         if (subClash) continue;
         if (!assigned) {
           const names = withGoong.map((x) => `${x.d.first_name} ${x.d.last_name}`.trim()).join(", ");
+          const who = pickupStop.customer_name ?? jobCustomerName ?? customerId ?? "—";
           log(`Job ${jobId} - SMART: all ${withGoong.length} candidate(s) on-break or unavailable (${names})`, "ERROR");
+          fail("UNAVAILABLE", jobId, who, `${withGoong.length} tài xế đều đang nghỉ giải lao/offline: ${names}`);
         }
         continue;
     }
@@ -1001,10 +1030,9 @@ export async function autoAssignCycle(
     const [drivers, status] = getDriversOnDuty(config, customerId, jobTime);
 
     if (status === "no_mapping") {
-      log(
-        `Job ${jobId} - NO MAPPING: ${jobCustomerName ?? customerId} not configured`,
-        "ERROR"
-      );
+      const who = jobCustomerName ?? customerId ?? "—";
+      log(`Job ${jobId} - NO MAPPING: ${who} not configured`, "ERROR");
+      fail("NO_MAPPING", jobId, who, "Khách hàng chưa được cấu hình trong Google Sheet");
       continue;
     }
 
@@ -1014,10 +1042,9 @@ export async function autoAssignCycle(
         .join(", ");
       const jt = vnHoursMinutes(jobTime);
       const hhmm = `${String(jt.hours).padStart(2, "0")}:${String(jt.minutes).padStart(2, "0")}`;
-      log(
-        `Job ${jobId} - NO DRIVER ON DUTY at ${hhmm} | ${jobCustomerName ?? customerId} | Shifts: ${shiftInfo}`,
-        "ERROR"
-      );
+      const who = jobCustomerName ?? customerId ?? "—";
+      log(`Job ${jobId} - NO DRIVER ON DUTY at ${hhmm} | ${who} | Shifts: ${shiftInfo}`, "ERROR");
+      fail("NO_DRIVER", jobId, who, `Không có tài xế trực lúc ${hhmm} · Ca: ${shiftInfo || "—"}`);
       continue;
     }
 
@@ -1027,10 +1054,9 @@ export async function autoAssignCycle(
         .join(", ");
       const jt = vnHoursMinutes(jobTime);
       const hhmm = `${String(jt.hours).padStart(2, "0")}:${String(jt.minutes).padStart(2, "0")}`;
-      log(
-        `Job ${jobId} - CLASH: ${drivers.length} drivers on duty at ${hhmm} | ${jobCustomerName ?? customerId} | ${driverList}`,
-        "WARN"
-      );
+      const who = jobCustomerName ?? customerId ?? "—";
+      log(`Job ${jobId} - CLASH: ${drivers.length} drivers on duty at ${hhmm} | ${who} | ${driverList}`, "WARN");
+      fail("CLASH", jobId, who, `${drivers.length} tài xế cùng trực lúc ${hhmm}: ${driverList}`, "WARN");
       continue;
     }
 
@@ -1043,12 +1069,16 @@ export async function autoAssignCycle(
     const lcFixed = isDriverOnLeave(driverId, leaveEntries);
     if (lcFixed.onLeave) {
       const sub = resolveSubstitute(lcFixed.entry!, leaveEntries);
+      const who = jobCustomerName ?? customerId ?? "—";
+      const onLeaveName = lcFixed.driverName ?? driverId;
       if (sub.status === "clash") {
-        log(`Job ${jobId} - SUB CLASH: ${sub.subIds.length} substitutes cover for ${lcFixed.driverName ?? driverId} now | ${jobCustomerName ?? customerId}`, "WARN");
+        log(`Job ${jobId} - SUB CLASH: ${sub.subIds.length} substitutes cover for ${onLeaveName} now | ${who}`, "WARN");
+        fail("SUB_CLASH", jobId, who, `${onLeaveName} nghỉ — ${sub.subIds.length} người thay cùng trực, không rõ chọn ai`, "WARN");
         continue;
       }
       if (sub.status === "none") {
-        log(`Job ${jobId} - SKIP: ${lcFixed.driverName ?? driverId} on leave (${lcFixed.reason}), no substitute covers now | ${jobCustomerName ?? customerId}`, "WARN");
+        log(`Job ${jobId} - SKIP: ${onLeaveName} on leave (${lcFixed.reason}), no substitute covers now | ${who}`, "WARN");
+        fail("ON_LEAVE", jobId, who, `${onLeaveName} nghỉ (${lcFixed.reason}) — không có người thay đang trực`, "WARN");
         continue;
       }
       subFor = lcFixed.driverName ?? driverId;
@@ -1059,7 +1089,9 @@ export async function autoAssignCycle(
     // (/jobs/assign/#REF → Cartrack HTML 404). Catch it here with a clear,
     // visible message instead of a cryptic JSON-parse crash.
     if (!isValidDriverId(driverId)) {
-      log(`Job ${jobId} - invalid driver_id "${driverId}" for ${jobCustomerName ?? customerId} — fix the Google Sheet`, "ERROR");
+      const who = jobCustomerName ?? customerId ?? "—";
+      log(`Job ${jobId} - invalid driver_id "${driverId}" for ${who} — fix the Google Sheet`, "ERROR");
+      fail("INVALID_DRIVER", jobId, who, `driver_id sai trong Sheet: "${driverId}" — cần sửa Google Sheet`);
       continue;
     }
 
@@ -1143,6 +1175,7 @@ export async function autoAssignCycle(
   if (!onlyJobIds) {
     await Promise.all([
       setHeldJobs(heldJobs),
+      setFailedJobs(failedJobs),
       setPickupWarnings(computePickupWarnings(assignedJobsToday ?? [], today)),
     ]);
   }

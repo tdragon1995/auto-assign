@@ -1,5 +1,5 @@
 import { Redis } from "@upstash/redis";
-import type { LogEntry, PickupWarning } from "./types";
+import type { LogEntry, PickupWarning, FailedJob } from "./types";
 
 const KV_KEY = "smart:runs";
 const MAX_RUNS = 240; // ~1 day at 3-min intervals × 12 business hours
@@ -22,6 +22,12 @@ const HELD_JOBS_KEY = "assign:held_jobs";
 
 // Pickup warnings computed from the last full cycle's assigned-jobs snapshot.
 const PICKUP_WARNINGS_KEY = "assign:pickup_warnings";
+
+// Jobs the last full cycle couldn't assign for a deterministic, recurring reason
+// (no driver on duty, no mapping, driver clash, …). Snapshot, replaced each
+// cycle; read by the dashboard "Cần xử lý" panel so the live log stops re-printing
+// the same error every 3 minutes.
+const FAILED_JOBS_KEY = "assign:failed_jobs";
 
 // Server-backed live log: flat list of recent entries (all levels), so the
 // dashboard ticker survives reloads and shows cycles that ran with no tab open.
@@ -211,6 +217,8 @@ export interface HeldJob {
   job_id: number;
   customer: string;
   note: string;
+  /** Set when a background approve/schedule failed and the job was put back. */
+  error?: string;
 }
 
 /** Replace the held-jobs list (called by a full cycle; pass [] to clear). */
@@ -230,6 +238,28 @@ export async function getHeldJobs(): Promise<HeldJob[]> {
   try { return JSON.parse(raw) as HeldJob[]; } catch { return []; }
 }
 
+// ── Unassignable jobs ("Cần xử lý" panel) ──────────────────────────────────
+
+/** Replace the failed-jobs snapshot (called by a full cycle; pass [] to clear).
+ *  24h TTL mirrors held jobs; the per-cycle replacement keeps it fresh, so a
+ *  resolved job drops off on the next cycle and the morning's first cycle clears
+ *  any leftovers from the day before. */
+export async function setFailedJobs(jobs: FailedJob[]): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  await redis.set(FAILED_JOBS_KEY, JSON.stringify(jobs), { ex: 86400 });
+}
+
+/** Current failed-jobs snapshot. */
+export async function getFailedJobs(): Promise<FailedJob[]> {
+  const redis = getRedis();
+  if (!redis) return [];
+  const raw = await redis.get<string | FailedJob[]>(FAILED_JOBS_KEY);
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  try { return JSON.parse(raw) as FailedJob[]; } catch { return []; }
+}
+
 /** Replace the pickup-warning list (called at end of each full cycle).
  *  TTL is 10 min — short enough that stale warnings self-clear if cycles stop
  *  (e.g. system disarmed), but long enough to survive a couple missed pings. */
@@ -244,6 +274,17 @@ export async function removeHeldJob(jobId: number): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
   const next = (await getHeldJobs()).filter((j) => j.job_id !== jobId);
+  await redis.set(HELD_JOBS_KEY, JSON.stringify(next), { ex: 86400 });
+}
+
+/** Add or update one job in the held list. Used when a background approve/schedule
+ *  failed: the job is put back into the review panel (carrying its error) instead
+ *  of vanishing. Upsert — replaces any existing entry for the same job_id. */
+export async function addHeldJob(job: HeldJob): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  const next = (await getHeldJobs()).filter((j) => j.job_id !== job.job_id);
+  next.push(job);
   await redis.set(HELD_JOBS_KEY, JSON.stringify(next), { ex: 86400 });
 }
 
@@ -276,7 +317,24 @@ export async function releaseCycleLock(): Promise<void> {
 // instead. (The WARN "assigning despite note" override line is still kept.)
 const INFO_KEEP_PATTERNS = ["RELEASED", "PARKED", "swapped"];
 
+// Deterministic per-job assign failures recur every cycle for the same job until
+// a human fixes them — left in the rolling log they bury everything else (see the
+// repeating "NO DRIVER ON DUTY" lines). The dashboard "Cần xử lý" panel shows the
+// current snapshot instead, so these are dropped from the live log at any level.
+// One-off action failures ("SMART failed", "Job failed", "… error") are NOT here
+// — those are genuine events worth a log line. Match the panel's reason strings.
+const LOG_DROP_PATTERNS = [
+  "NO DRIVER ON DUTY",
+  "NO MAPPING",
+  "CLASH",                    // covers "CLASH:" and "SUB CLASH"
+  "no substitute covers now", // on-leave, no sub
+  "invalid driver_id",
+  "on-break or unavailable",  // all smart candidates unavailable
+  "SMART skipped",            // pickup no GPS / 0 configured drivers available
+];
+
 function shouldStore(entry: LogEntry): boolean {
+  if (LOG_DROP_PATTERNS.some((p) => entry.msg.includes(p))) return false;
   if (entry.level !== "INFO") return true;
   return INFO_KEEP_PATTERNS.some((p) => entry.msg.includes(p));
 }
@@ -308,12 +366,13 @@ export interface StatusBundle {
   logs: LogEntry[];
   held: HeldJob[];
   warnings: PickupWarning[];
+  failed: FailedJob[];
 }
 
-/** One pipeline request to Upstash instead of 5 separate HTTP calls. */
+/** One pipeline request to Upstash instead of 6 separate HTTP calls. */
 export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
   const redis = getRedis();
-  if (!redis) return { state: null, lastChecked: null, logs: [], held: [], warnings: [] };
+  if (!redis) return { state: null, lastChecked: null, logs: [], held: [], warnings: [], failed: [] };
 
   const pipe = redis.pipeline();
   pipe.get(ARM_KEY);
@@ -321,7 +380,8 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
   pipe.lrange(RUN_LOG_KEY, 0, logLimit - 1);
   pipe.get(HELD_JOBS_KEY);
   pipe.get(PICKUP_WARNINGS_KEY);
-  const [rawState, rawHeartbeat, rawLogs, rawHeld, rawWarnings] = await pipe.exec();
+  pipe.get(FAILED_JOBS_KEY);
+  const [rawState, rawHeartbeat, rawLogs, rawHeld, rawWarnings, rawFailed] = await pipe.exec();
 
   const state = parseMaybe<ArmState>(rawState as string | ArmState | null);
   const validState = state && Date.now() < state.armedUntil ? state : null;
@@ -348,5 +408,13 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
     }
   }
 
-  return { state: validState, lastChecked, logs: logEntries, held, warnings };
+  let failed: FailedJob[] = [];
+  if (rawFailed) {
+    if (Array.isArray(rawFailed)) failed = rawFailed as FailedJob[];
+    else if (typeof rawFailed === "string") {
+      try { failed = JSON.parse(rawFailed); } catch { /* ignore */ }
+    }
+  }
+
+  return { state: validState, lastChecked, logs: logEntries, held, warnings, failed };
 }
