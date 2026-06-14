@@ -163,7 +163,7 @@ export function NoteReviewPanel({
               });
               const data = await res.json();
               if (data.ok) {
-                toast.success(`Đã lên lịch Job ${job.job_id} lúc ${timeLabel}`);
+                toast.success(`Đang lên lịch Job ${job.job_id} lúc ${timeLabel}…`);
                 onAssigned(job.job_id);
               } else {
                 toast.error(data.error ?? `Không lên lịch được Job ${job.job_id}`);

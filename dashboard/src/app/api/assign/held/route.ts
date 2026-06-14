@@ -1,13 +1,20 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { getJobDetails, updateJobStops, updateJobScheduledDeliveryTs, type Env } from "@/lib/cartrack";
 import { NOTE_APPROVED_MARK } from "@/lib/job-filters";
 import { getHeldJobs, removeHeldJob, pushRunLog } from "@/lib/smart-log-kv";
 import { vnTimestamp } from "@/lib/time";
 
-// Both POST paths are quick Cartrack edits (stop notes / scheduled ts) — no
-// synchronous assign cycle, so run on the edge (no cold start) near Cartrack VN.
-export const runtime = "edge";
+// Cartrack writes are slow (~5-10s each) and we make two per action, so we never
+// block the click on them. POST validates, returns immediately, and finishes the
+// Cartrack work in the background via after() — the result lands in the activity
+// log a few seconds later. nodejs runtime (not edge) so the deferred work has the
+// full maxDuration to complete; the instant response doesn't need edge speed.
+export const runtime = "nodejs";
 export const preferredRegion = "sin1";
+export const maxDuration = 60;
+
+const log = (msg: string, level: "OK" | "INFO" | "WARN" | "ERROR" = "OK") =>
+  pushRunLog([{ ts: vnTimestamp(), level, msg }]).catch(() => {});
 
 /** GET — note-held jobs, read from Redis (populated by the cron cycle). */
 export async function GET() {
@@ -16,9 +23,10 @@ export async function GET() {
 }
 
 /** POST { jobId, scheduledAt? } — clear a held job's note gate.
- *  scheduledAt: "YYYY-MM-DD HH:MM:SS" VN time — parks to proxy driver queue.
- *  Omit scheduledAt ("Giao ngay") to stamp the approved mark on the note; the
- *  next cron cycle then bypasses the gate and assigns it. */
+ *  scheduledAt ("Lên lịch"): set a delivery window so the engine parks it.
+ *  No scheduledAt ("Giao ngay"): stamp the approved mark so the next cron cycle
+ *  bypasses the note gate. Both return instantly; the slow Cartrack writes run in
+ *  the background and report success/failure to the activity log. */
 export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
   let body: { jobId?: number; scheduledAt?: string } = {};
@@ -32,12 +40,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "Missing jobId" }, { status: 400 });
   }
 
-  // ── Scheduled path: add delivery_window to pickup stop, leave unassigned ──────
-  // The engine picks it up next cycle: note gate bypasses (hasWindow), window
-  // parking parks it to the proxy queue at the right time.
+  // ── Scheduled path ("Lên lịch") ──────────────────────────────────────────────
   if (body.scheduledAt) {
-    // Extract "HH:MM:SS" from "YYYY-MM-DD HH:MM:SS"
-    const timePart = String(body.scheduledAt).match(/(\d{2}:\d{2}:\d{2})$/)?.[1];
+    const scheduledAt = String(body.scheduledAt);
+    // Extract "HH:MM:SS" from "YYYY-MM-DD HH:MM:SS" — validate before responding.
+    const timePart = scheduledAt.match(/(\d{2}:\d{2}:\d{2})$/)?.[1];
     if (!timePart) {
       return NextResponse.json({ ok: false, error: "Invalid scheduledAt format" }, { status: 400 });
     }
@@ -47,100 +54,93 @@ export async function POST(req: NextRequest) {
     const toTotal = hh * 60 + mm + 30;
     const timeTo = `${String(Math.floor(toTotal / 60) % 24).padStart(2, "0")}:${String(toTotal % 60).padStart(2, "0")}:${String(ss).padStart(2, "0")}+07:00`;
 
-    // Steps 1 & 2 run together — they're independent (the details read doesn't
-    // touch stops). updateJobStops still runs after, since Cartrack only accepts
-    // delivery_windows once the job is Scheduled (schedRes must be ok first).
-    const [schedRes, details] = await Promise.all([
-      updateJobScheduledDeliveryTs(jobId, String(body.scheduledAt), env),
-      getJobDetails(jobId, env),
-    ]);
-    if (!schedRes.ok) {
-      return NextResponse.json(
-        { ok: false, error: `Lên lịch thất bại (sched ${schedRes.status})`, details: schedRes.body },
-        { status: 502 }
-      );
-    }
+    after(async () => {
+      try {
+        // Schedule-type update and details read are independent — run together.
+        // updateJobStops runs after, since Cartrack only accepts delivery_windows
+        // once the job is Scheduled (schedRes must be ok first).
+        const [schedRes, details] = await Promise.all([
+          updateJobScheduledDeliveryTs(jobId, scheduledAt, env),
+          getJobDetails(jobId, env),
+        ]);
+        if (!schedRes.ok) {
+          log(`Job ${jobId} - Lên lịch THẤT BẠI (sched ${schedRes.status})`, "ERROR");
+          return;
+        }
 
-    const rawStops = (details.data?.stops ?? []) as {
-      stop_id?: number; stop_type_id?: number; customer_id?: string; customer_name?: string; note?: string;
-    }[];
-    const updatedStops = rawStops
-      .filter((s) => s.stop_id && s.stop_type_id && s.customer_id)
-      .map((s) => ({
-        stop_id: s.stop_id!,
-        stop_type_id: s.stop_type_id!,
-        customer_id: s.customer_id!,
-        ...(s.customer_name ? { customer_name: s.customer_name } : {}),
-        ...(s.note ? { note: s.note } : {}),
-        ...(s.stop_type_id === 1
-          ? { delivery_windows: [{ time_from: timeFrom, time_to: timeTo }] }
-          : {}),
-      }));
+        const rawStops = (details.data?.stops ?? []) as {
+          stop_id?: number; stop_type_id?: number; customer_id?: string; customer_name?: string; note?: string;
+        }[];
+        const updatedStops = rawStops
+          .filter((s) => s.stop_id && s.stop_type_id && s.customer_id)
+          .map((s) => ({
+            stop_id: s.stop_id!,
+            stop_type_id: s.stop_type_id!,
+            customer_id: s.customer_id!,
+            ...(s.note ? { note: s.note } : {}),
+            ...(s.stop_type_id === 1 ? { delivery_windows: [{ time_from: timeFrom, time_to: timeTo }] } : {}),
+          }));
 
-    const stopsRes = await updateJobStops(jobId, updatedStops, env);
-    if (!stopsRes.ok) {
-      return NextResponse.json(
-        { ok: false, error: `Lên lịch thất bại (stops ${stopsRes.status})`, details: stopsRes.body },
-        { status: 502 }
-      );
-    }
+        const stopsRes = await updateJobStops(jobId, updatedStops, env);
+        if (!stopsRes.ok) {
+          log(`Job ${jobId} - Lên lịch THẤT BẠI (stops ${stopsRes.status})`, "ERROR");
+          return;
+        }
 
-    await removeHeldJob(jobId).catch(() => {});
-    return NextResponse.json({ ok: true, scheduled: true });
-  }
-
-  // ── "Giao ngay" path: stamp the approved mark on the note, leave unassigned ──
-  // No assign cycle here, so no cycle-lock contention. The next cron cycle sees the
-  // mark, bypasses the note gate (isNoteApproved), and assigns the job normally.
-  try {
-    const details = await getJobDetails(jobId, env);
-    const rawStops = (details.data?.stops ?? []) as {
-      stop_id?: number; stop_type_id?: number; customer_id?: string; customer_name?: string; note?: string;
-    }[];
-    const eligibleStops = rawStops.filter((s) => s.stop_id && s.stop_type_id && s.customer_id);
-    if (eligibleStops.length === 0) {
-      return NextResponse.json({ ok: false, error: "Job không có điểm dừng hợp lệ" }, { status: 502 });
-    }
-
-    // Append the mark to every stop that carries a real (blocking) note, so it
-    // travels with the text the driver reads. "Call before delivery" never blocks,
-    // so it's left untouched.
-    const updatedStops = eligibleStops.map((s) => {
-      const note = s.note?.trim();
-      const blocking = note && note !== "Call before delivery";
-      const newNote =
-        blocking && !note.includes(NOTE_APPROVED_MARK) ? `${s.note} ${NOTE_APPROVED_MARK}` : s.note;
-      return {
-        stop_id: s.stop_id!,
-        stop_type_id: s.stop_type_id!,
-        customer_id: s.customer_id!,
-        ...(newNote ? { note: newNote } : {}),
-      };
+        await removeHeldJob(jobId).catch(() => {});
+        const customer = rawStops.find((s) => s.stop_type_id === 1)?.customer_name ?? `Job ${jobId}`;
+        log(`Job ${jobId} - Đã lên lịch lúc ${timePart.slice(0, 5)} | ${customer}`);
+      } catch (e) {
+        log(`Job ${jobId} - Lên lịch lỗi: ${String(e)}`, "ERROR");
+      }
     });
 
-    const stopsRes = await updateJobStops(jobId, updatedStops, env);
-    if (!stopsRes.ok) {
-      return NextResponse.json(
-        { ok: false, error: `Duyệt giao thất bại (stops ${stopsRes.status})`, details: stopsRes.body },
-        { status: 502 }
-      );
-    }
-
-    await removeHeldJob(jobId).catch(() => {});
-
-    // Log the approval so the supervisor sees it in the activity log right away —
-    // the actual assignment (and its own log line) happens on the next cron cycle.
-    const customer =
-      eligibleStops.find((s) => s.stop_type_id === 1)?.customer_name ??
-      eligibleStops[0]?.customer_name ?? `Job ${jobId}`;
-    await pushRunLog([{
-      ts: vnTimestamp(),
-      level: "OK",
-      msg: `Job ${jobId} - Đã duyệt ghi chú → sẽ giao ở chu kỳ kế tiếp | ${customer}`,
-    }]).catch(() => {});
-
-    return NextResponse.json({ ok: true, approved: true });
-  } catch (e) {
-    return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });
+    return NextResponse.json({ ok: true, scheduled: true, queued: true });
   }
+
+  // ── "Giao ngay" path: stamp the approved mark in the background ───────────────
+  after(async () => {
+    try {
+      const details = await getJobDetails(jobId, env);
+      const rawStops = (details.data?.stops ?? []) as {
+        stop_id?: number; stop_type_id?: number; customer_id?: string; customer_name?: string; note?: string;
+      }[];
+      const eligibleStops = rawStops.filter((s) => s.stop_id && s.stop_type_id && s.customer_id);
+      if (eligibleStops.length === 0) {
+        log(`Job ${jobId} - Duyệt giao THẤT BẠI: không có điểm dừng hợp lệ`, "ERROR");
+        return;
+      }
+
+      // Append the mark to every stop that carries a real (blocking) note, so it
+      // travels with the text the driver reads. "Call before delivery" never blocks.
+      const updatedStops = eligibleStops.map((s) => {
+        const note = s.note?.trim();
+        const blocking = note && note !== "Call before delivery";
+        const newNote =
+          blocking && !note.includes(NOTE_APPROVED_MARK) ? `${s.note} ${NOTE_APPROVED_MARK}` : s.note;
+        return {
+          stop_id: s.stop_id!,
+          stop_type_id: s.stop_type_id!,
+          customer_id: s.customer_id!,
+          ...(newNote ? { note: newNote } : {}),
+        };
+      });
+
+      const stopsRes = await updateJobStops(jobId, updatedStops, env);
+      if (!stopsRes.ok) {
+        log(`Job ${jobId} - Duyệt giao THẤT BẠI (stops ${stopsRes.status})`, "ERROR");
+        return;
+      }
+
+      await removeHeldJob(jobId).catch(() => {});
+      const customer =
+        eligibleStops.find((s) => s.stop_type_id === 1)?.customer_name ??
+        eligibleStops[0]?.customer_name ?? `Job ${jobId}`;
+      log(`Job ${jobId} - Đã duyệt ghi chú → sẽ giao ở chu kỳ kế tiếp | ${customer}`);
+    } catch (e) {
+      log(`Job ${jobId} - Duyệt giao lỗi: ${String(e)}`, "ERROR");
+    }
+  });
+
+  return NextResponse.json({ ok: true, approved: true, queued: true });
 }
