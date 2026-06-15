@@ -330,6 +330,7 @@ const LOG_DROP_PATTERNS = [
   "no substitute covers now", // on-leave, no sub
   "invalid driver_id",
   "on-break or unavailable",  // all smart candidates unavailable
+  "on-break or offline",      // single assigned driver unavailable (+ retry noise)
   "SMART skipped",            // pickup no GPS / 0 configured drivers available
 ];
 

@@ -12,16 +12,21 @@ type Env = "prod" | "uat";
 interface ScheduleRow {
   rowIndex: number;
   pickup_id: string;
+  pickup_name: string;
   dropoff_id: string;
+  dropoff_name: string;
   delivery_window: string;
   reference: string;
   sent_to_driver_before: number;
   days: boolean[]; // index 0=Sun .. 6=Sat
 }
 
-// customer_id → short name ("D001"). Falls back to the raw id when unknown.
+// customer_id → short name ("D001"), used only as a fallback when the sheet has
+// no name for a row.
 const NAME_BY_ID = new Map(DIAG_LOCATIONS.map((l) => [l.customer_id, l.name]));
-const nameOf = (id: string) => NAME_BY_ID.get(id) ?? id;
+// Prefer the sheet's own pickup/dropoff name column; fall back to the branch
+// list, then the raw id.
+const labelFor = (name: string, id: string) => name || NAME_BY_ID.get(id) || id;
 
 // Sheet days are Sun..Sat; show the week starting Monday for readability.
 const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0];
@@ -88,7 +93,7 @@ export function ScheduleListPanel({ env }: { env: Env }) {
       .filter((r) => {
         if (dayFilter.size > 0 && !WEEK_ORDER.some((i) => dayFilter.has(i) && r.days[i])) return false;
         if (!q) return true;
-        const hay = `${nameOf(r.pickup_id)} ${r.pickup_id} ${nameOf(r.dropoff_id)} ${r.dropoff_id}`.toLowerCase();
+        const hay = `${r.pickup_name} ${r.pickup_id} ${r.dropoff_name} ${r.dropoff_id}`.toLowerCase();
         return hay.includes(q);
       })
       .sort((a, b) => a.delivery_window.localeCompare(b.delivery_window));
@@ -160,9 +165,9 @@ export function ScheduleListPanel({ env }: { env: Env }) {
               const days = activeDays(r.days);
               return (
                 <div key={r.rowIndex} className="rounded border bg-white p-2 space-y-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-semibold text-slate-800">
-                      {nameOf(r.pickup_id)} <span className="text-slate-400">→</span> {nameOf(r.dropoff_id)}
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="min-w-0 font-semibold text-slate-800 break-words">
+                      {labelFor(r.pickup_name, r.pickup_id)} <span className="text-slate-400">→</span> {labelFor(r.dropoff_name, r.dropoff_id)}
                     </span>
                     <span className="shrink-0 rounded bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 font-mono font-semibold text-indigo-700">
                       {r.delivery_window}

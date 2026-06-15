@@ -21,7 +21,9 @@ const TIME_RE = /^([01]?\d|2[0-3]):([0-5]\d)$/;
 export interface ScheduleJobRow {
   rowIndex: number;
   pickup_id: string;
+  pickup_name: string;
   dropoff_id: string;
+  dropoff_name: string;
   delivery_window: string;
   reference: string;
   sent_to_driver_before: number;
@@ -31,7 +33,9 @@ export interface ScheduleJobRow {
 export interface ScheduleJobResult {
   rowIndex: number;
   pickup_id: string;
+  pickup_name: string;
   dropoff_id: string;
+  dropoff_name: string;
   delivery_window: string;
   reference_number: string;
   status: "OK" | "SKIPPED" | "ERROR";
@@ -56,7 +60,9 @@ export async function loadScheduleJobRows(): Promise<ScheduleJobRow[]> {
   return rows.map((r, i) => ({
     rowIndex: i + 2,
     pickup_id: (r.pickup_id ?? "").trim(),
+    pickup_name: (r.pickup ?? "").trim(),
     dropoff_id: (r.dropoff_id ?? "").trim(),
+    dropoff_name: (r.dropoff ?? "").trim(),
     delivery_window: (r.delivery_windows ?? "").trim(),
     reference: (r.reference ?? "").trim(),
     sent_to_driver_before: parseInt(r.sent_to_driver_before ?? "", 10) || 60,
@@ -184,7 +190,9 @@ export async function createScheduleJob(
   const base: Omit<ScheduleJobResult, "status" | "message"> = {
     rowIndex: row.rowIndex,
     pickup_id: row.pickup_id,
+    pickup_name: row.pickup_name,
     dropoff_id: row.dropoff_id,
+    dropoff_name: row.dropoff_name,
     delivery_window: row.delivery_window,
     reference_number: refNumber,
   };

@@ -8,7 +8,9 @@ import type { FailedJob, FailedReason, PickupWarning } from "@/lib/types";
 
 export interface ScheduleErrorRow {
   pickup_id: string;
+  pickup_name?: string;
   dropoff_id: string;
+  dropoff_name?: string;
   delivery_window: string;
   reference_number: string;
   message: string;
@@ -16,7 +18,8 @@ export interface ScheduleErrorRow {
 }
 
 const NAME_BY_ID = new Map(DIAG_LOCATIONS.map((l) => [l.customer_id, l.name]));
-const nameOf = (id: string) => NAME_BY_ID.get(id) ?? id;
+// Prefer the sheet's own name; fall back to the branch list, then the raw id.
+const labelFor = (name: string | undefined, id: string) => name || NAME_BY_ID.get(id) || id;
 
 // Reason → label + tone. Tone drives the chip/border colour: red = blocking
 // (nothing the engine can do — needs a person), amber = config/ambiguity that a
@@ -26,7 +29,7 @@ const REASON_META: Record<
   { label: string; tone: "red" | "amber"; order: number }
 > = {
   NO_DRIVER:      { label: "Không có tài xế trực", tone: "red",   order: 0 },
-  UNAVAILABLE:    { label: "Tài xế đều bận / offline", tone: "red", order: 1 },
+  UNAVAILABLE:    { label: "Tài xế bận / offline", tone: "red", order: 1 },
   ON_LEAVE:       { label: "Nghỉ, không người thay", tone: "amber", order: 2 },
   CLASH:          { label: "Trùng tài xế trực", tone: "amber", order: 3 },
   SUB_CLASH:      { label: "Trùng người thay", tone: "amber", order: 4 },
@@ -199,7 +202,7 @@ export function FailedJobsPanel({
                     className="rounded border border-l-4 border-l-red-500 bg-white p-2"
                   >
                     <div className="font-semibold text-slate-800">
-                      {nameOf(e.pickup_id)} <span className="text-slate-400">→</span> {nameOf(e.dropoff_id)}
+                      {labelFor(e.pickup_name, e.pickup_id)} <span className="text-slate-400">→</span> {labelFor(e.dropoff_name, e.dropoff_id)}
                       {e.delivery_window && (
                         <span className="ml-1.5 font-mono text-[11px] text-indigo-600">{e.delivery_window}</span>
                       )}

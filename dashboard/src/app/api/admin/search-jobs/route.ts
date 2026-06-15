@@ -9,8 +9,17 @@ const JOB_ID_RE = /\bJob (\d+)\b/g;
 
 export interface JobSearchHit {
   job_id: number;
-  label: string; // the matched activity line / customer, for context
+  label: string; // the customer name pulled out of the matched log line
   ts?: string;
+}
+
+/** Pull just the customer name out of a log line. Across event types the customer
+ *  is the trailing field: the last " | "-segment, and in the fixed-assign form
+ *  ("Job 123 | <driver> -> <customer>") the part after the "->"/"→". The driver
+ *  sits before it, so we deliberately take the tail rather than the matched field. */
+function extractCustomer(msg: string): string {
+  const lastPipe = msg.split(" | ").pop()?.trim() ?? msg;
+  return lastPipe.split(/\s*(?:->|→)\s*/).pop()?.trim() || lastPipe;
 }
 
 /**
@@ -41,13 +50,14 @@ export async function GET(req: NextRequest) {
   for (let i = logs.length - 1; i >= 0; i--) {
     const l = logs[i];
     if (!l.msg.toLowerCase().includes(q)) continue;
-    for (const m of l.msg.matchAll(JOB_ID_RE)) add(Number(m[1]), l.msg, l.ts);
+    const customer = extractCustomer(l.msg);
+    for (const m of l.msg.matchAll(JOB_ID_RE)) add(Number(m[1]), customer, l.ts);
   }
   for (const j of failed) {
-    if (j.customer.toLowerCase().includes(q)) add(j.job_id, `${j.customer} — ${j.detail}`, j.ts);
+    if (j.customer.toLowerCase().includes(q)) add(j.job_id, j.customer, j.ts);
   }
   for (const j of held) {
-    if (j.customer.toLowerCase().includes(q)) add(j.job_id, `${j.customer} (chờ duyệt ghi chú)`);
+    if (j.customer.toLowerCase().includes(q)) add(j.job_id, j.customer);
   }
 
   const results = [...found.values()].slice(0, 60);

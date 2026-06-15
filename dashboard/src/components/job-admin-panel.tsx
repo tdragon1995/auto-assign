@@ -245,9 +245,6 @@ export function JobAdminPanel({ env }: { env: Env }) {
             {searching ? "Đang tìm…" : "Tìm"}
           </Button>
         </div>
-        <p className="text-[11px] text-slate-400">
-          Tìm theo tên khách hàng dùng nhật ký hoạt động gần đây (không gọi Cartrack).
-        </p>
       </CardHeader>
 
       <CardContent className="flex-1 min-h-0">
