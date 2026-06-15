@@ -97,7 +97,7 @@ export async function POST(req: NextRequest) {
     void pushRunLog([{
       ts: vnTimestamp(),
       level: "OK",
-      msg: `[Sales] Tạo chuyến B2B: Job ${jobId} | Ref: ${refNumber} | Dropoff: ${closest.psc.customer_name}`,
+      msg: `[Sales] Tạo chuyến B2B: Job ${jobId}, Ref: ${refNumber} | ${closest.psc.customer_name}`,
     }]);
     return NextResponse.json({
       success: true,

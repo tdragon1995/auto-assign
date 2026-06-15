@@ -211,9 +211,9 @@ export async function detectAndCreateReturnTrips(
 
     try {
       const newJobId = await createReturnJob(outbound.delivery_driver_id, fromCustomerId, fromCustomerName, toCustomerId, toCustomerName, env);
-      log(`Return trip ${shortName(fromCustomerName)}→${shortName(toCustomerName)} #${newJobId} → driver (from outbound ${outbound.job_id})`, "OK");
+      log(`Return trip #${newJobId} : driver (from outbound ${outbound.job_id}) | ${fromCustomerName} → ${toCustomerName}`, "OK");
     } catch (e) {
-      log(`Return trip failed for outbound ${outbound.job_id}: ${e}`, "ERROR");
+      log(`Return trip failed for outbound ${outbound.job_id}: ${e} | ${fromCustomerName} → ${toCustomerName}`, "ERROR");
       inFlightReturns.delete(outbound.job_id);
       blockingReturnKeys.delete(returnKey); // allow retry next cycle
     }

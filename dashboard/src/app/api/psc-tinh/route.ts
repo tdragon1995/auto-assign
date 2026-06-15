@@ -180,7 +180,7 @@ export async function POST(req: NextRequest) {
     void pushRunLog([{
       ts: vnTimestamp(),
       level: "OK",
-      msg: `[PSC-tỉnh] Tạo chuyến: Job ${jobId} | ${psc_code} | ETA ${eta} | Ref: ${refNumber}`,
+      msg: `[PSC-tỉnh] Tạo chuyến: Job ${jobId}, ETA ${eta}, Ref: ${refNumber} | ${psc_code}`,
     }]);
     return NextResponse.json({
       success: true,

@@ -326,7 +326,8 @@ const INFO_KEEP_PATTERNS = ["RELEASED", "PARKED", "swapped"];
 const LOG_DROP_PATTERNS = [
   "NO DRIVER ON DUTY",
   "NO MAPPING",
-  "CLASH",                    // covers "CLASH:" and "SUB CLASH"
+  "CLASH",                    // driver clash ("CLASH: N drivers on duty")
+  "substitutes cover for",    // "Nhiều hơn 1 SUB" (renamed sub-clash)
   "no substitute covers now", // on-leave, no sub
   "invalid driver_id",
   "on-break or unavailable",  // all smart candidates unavailable

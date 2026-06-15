@@ -141,7 +141,7 @@ export function JobAdminPanel({ env }: { env: Env }) {
         setJob(null);
         fetchJob(id);
       } else {
-        const res = await fetch(`/api/admin/search-jobs?q=${encodeURIComponent(q)}`);
+        const res = await fetch(`/api/admin/search-jobs?q=${encodeURIComponent(q)}&env=${env}`);
         const data = await res.json();
         setResults(Array.isArray(data.results) ? data.results : []);
       }
@@ -151,9 +151,9 @@ export function JobAdminPanel({ env }: { env: Env }) {
     } finally {
       setSearching(false);
     }
-    // openHit intentionally omitted from deps — it's stable enough for this one-shot.
+    // fetchJob/clearPsc omitted from deps — stable enough for this one-shot.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query]);
+  }, [query, env]);
 
   const doComplete = useCallback(async () => {
     if (!job) return;
@@ -253,12 +253,7 @@ export function JobAdminPanel({ env }: { env: Env }) {
             {searchError && <p className="text-xs text-red-600">{searchError}</p>}
             {searched && !searching && results.length === 0 && !searchError && (
               <p className="text-sm text-slate-400 text-center py-6">
-                Không tìm thấy job nào khớp trong nhật ký gần đây.
-              </p>
-            )}
-            {!searched && (
-              <p className="text-sm text-slate-400 text-center py-6">
-                Nhập Job ID hoặc tên khách hàng rồi bấm Tìm.
+                Không tìm thấy job nào khớp.
               </p>
             )}
 
@@ -273,8 +268,10 @@ export function JobAdminPanel({ env }: { env: Env }) {
                     className="w-full text-left px-3 py-2 flex items-center justify-between gap-2 hover:bg-slate-50 rounded-lg"
                   >
                     <div className="min-w-0">
-                      <span className="font-mono text-sm font-semibold text-slate-800">#{hit.job_id}</span>
-                      <span className="ml-2 text-xs text-slate-500 break-words">{hit.label}</span>
+                      <div className="font-mono text-sm font-semibold text-slate-800">#{hit.job_id}</div>
+                      {hit.label && (
+                        <div className="text-xs text-slate-600 break-words leading-snug">{hit.label}</div>
+                      )}
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
                       {hit.statusId != null && (

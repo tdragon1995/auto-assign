@@ -53,6 +53,8 @@ export async function POST(req: NextRequest) {
     const pickup = stops.find((s: any) => s.stop_type_id === 1);
     const pickupCustomerName = pickup?.customer_name ?? null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const dropoffCustomerName = stops.find((s: any) => s.stop_type_id === 2)?.customer_name ?? "—";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const started = stops.some((s: any) => isStopStarted(s));
     if (started) {
       return NextResponse.json({ error: "Không thể huỷ: tài xế đã bắt đầu công việc." }, { status: 409 });
@@ -100,7 +102,7 @@ export async function POST(req: NextRequest) {
     void pushRunLog([{
       ts: vnTimestamp(),
       level: "OK",
-      msg: `[Sales] Huỷ job: Job ${job.job_id} | Ref: ${job.reference_number} | KH: ${pickupCustomerName ?? "—"} | Lý do: ${reject_reason}`,
+      msg: `[Sales] Huỷ job: Job ${job.job_id}, Ref: ${job.reference_number}, Lý do: ${reject_reason} | ${pickupCustomerName ?? "—"} → ${dropoffCustomerName}`,
     }]);
     return NextResponse.json({
       success: true,

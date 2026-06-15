@@ -9,26 +9,23 @@ const JOB_ID_RE = /\bJob (\d+)\b/g;
 
 export interface JobSearchHit {
   job_id: number;
-  label: string; // the customer name pulled out of the matched log line
+  label: string; // customer name pulled out of the matched log line
   ts?: string;
 }
 
-/** Pull just the customer name out of a log line. Across event types the customer
- *  is the trailing field: the last " | "-segment, and in the fixed-assign form
- *  ("Job 123 | <driver> -> <customer>") the part after the "->"/"→". The driver
- *  sits before it, so we deliberately take the tail rather than the matched field. */
+/** Pull the customer out of a log line. Every line follows the uniform convention
+ *  "<detail> | <pickup> → <dropoff>" (a single " | "), so the route is just the
+ *  trailing segment. See docs/log-templates.md. */
 function extractCustomer(msg: string): string {
-  const lastPipe = msg.split(" | ").pop()?.trim() ?? msg;
-  return lastPipe.split(/\s*(?:->|→)\s*/).pop()?.trim() || lastPipe;
+  return msg.split(" | ").pop()?.trim() ?? msg;
 }
 
 /**
  * GET /api/admin/search-jobs?q=<customer name or text>
  *
- * Searches the Redis activity log (plus the held/failed snapshots) — the log
- * lines already carry the customer name next to the Job ID, so this is a free
- * in-memory scan with no Cartrack call. Coverage is whatever has logged recently
- * (~today's activity, last 500 entries); it won't find old/never-logged jobs.
+ * Pure log scan — no Cartrack call. The activity log + held/failed snapshots
+ * carry the customer name next to the Job ID. Coverage is whatever logged recently
+ * (~today, last 500 entries).
  */
 export async function GET(req: NextRequest) {
   const q = (req.nextUrl.searchParams.get("q") ?? "").trim().toLowerCase();
@@ -40,7 +37,7 @@ export async function GET(req: NextRequest) {
     getHeldJobs(),
   ]);
 
-  // Dedupe by job_id, keeping the newest (most relevant) label.
+  // Dedupe by job_id, keeping the newest (most relevant) line.
   const found = new Map<number, JobSearchHit>();
   const add = (id: number, label: string, ts?: string) => {
     if (Number.isInteger(id) && id > 0 && !found.has(id)) found.set(id, { job_id: id, label, ts });

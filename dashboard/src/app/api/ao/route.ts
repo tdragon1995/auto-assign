@@ -267,7 +267,7 @@ export async function POST(req: NextRequest) {
     void pushRunLog([{
       ts: vnTimestamp(),
       level: "OK",
-      msg: `[AO] Tạo job lấy kết quả: Job ${jobId} | Vendor: ${vendor.name}`,
+      msg: `[AO] Tạo job lấy kết quả: Job ${jobId} | ${vendor.name}`,
     }]);
     return NextResponse.json({ success: true, job_id: jobId });
   } catch (e) {

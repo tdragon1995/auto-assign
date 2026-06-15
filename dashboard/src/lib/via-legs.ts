@@ -207,9 +207,9 @@ export async function detectAndCreateViaLegs(
         dropoffName,
         env
       );
-      log(`Via-leg ${shortName(cfg.viaName)}→${shortName(dropoffName)} #${newJobId} → driver (from outbound ${outbound.job_id})`, "OK");
+      log(`Via-leg #${newJobId} : driver (from outbound ${outbound.job_id}) | ${cfg.viaName} → ${dropoffName}`, "OK");
     } catch (e) {
-      log(`Via-leg failed for outbound ${outbound.job_id}: ${e}`, "ERROR");
+      log(`Via-leg failed for outbound ${outbound.job_id}: ${e} | ${cfg.viaName} → ${dropoffName}`, "ERROR");
       inFlightVia.delete(outbound.job_id);
       existingViaIndex.set(viaKey, priorVia); // allow retry next cycle
     }
