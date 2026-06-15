@@ -48,27 +48,43 @@ export async function appendNghiPhep(rows: (string | null)[][]): Promise<void> {
     requestBody: { values: rows },
   });
 
-  // Column B (driver_id) is a per-row xlookup formula in the sheet. A plain
-  // append writes a literal UUID into B, wiping the formula on the submitted
-  // row. Restore the formula (matching the sheet's existing style) on each
-  // appended row so every row stays formula-driven from the name in column C.
-  // If the row range can't be parsed we leave the literal — a safe fallback
-  // (the row still resolves), never a blank id.
+  // The sheet has several per-row FORMULA columns (driver_id, day, sub#_id,
+  // scheduled_trips, …). A plain append writes a literal into the ones the form
+  // fills (driver_id) and leaves the rest blank on the new row — wiping the
+  // formula layout. Re-fill every formula column on the appended row(s) by
+  // copy-paste-FORMULA from a template row: this adjusts the relative row refs
+  // automatically and is robust to which columns are formulas / how they're laid
+  // out. Value columns (the ones the form actually fills) aren't formulas in the
+  // template, so they're left exactly as written.
   const updatedRange = appendRes.data.updates?.updatedRange ?? "";
   const startRow = Number(updatedRange.match(/![A-Z]+(\d+)/)?.[1]);
   if (Number.isFinite(startRow)) {
-    await sheets.spreadsheets.values.batchUpdate({
+    const sheetId = Number(SHEET_GID.nghi_phep);
+    // Scan the first data rows for the formula layout (which column → a row that
+    // holds its formula). Avoids depending on any single template row being intact.
+    const tpl = await sheets.spreadsheets.values.get({
       spreadsheetId: SHEET_ID,
-      requestBody: {
-        valueInputOption: "USER_ENTERED",
-        data: rows.map((_, i) => {
-          const r = startRow + i;
-          return {
-            range: `${quotedName}!B${r}`,
-            values: [[`=iferror(xlookup($C${r},Driver!$A:$A,Driver!$B:$B),"")`]],
-          };
-        }),
-      },
+      range: `${quotedName}!2:31`,
+      valueRenderOption: "FORMULA",
     });
+    const tplRows = tpl.data.values ?? [];
+    const srcRowForCol = new Map<number, number>(); // colIndex → 1-based sheet row
+    const width = tplRows.reduce((w, r) => Math.max(w, r.length), 0);
+    for (let c = 0; c < width; c++) {
+      for (let i = 0; i < tplRows.length; i++) {
+        const v = tplRows[i]?.[c];
+        if (typeof v === "string" && v.startsWith("=")) { srcRowForCol.set(c, i + 2); break; }
+      }
+    }
+    if (srcRowForCol.size > 0) {
+      const requests = [...srcRowForCol.entries()].map(([col, srcRow]) => ({
+        copyPaste: {
+          source:      { sheetId, startRowIndex: srcRow - 1,   endRowIndex: srcRow,                     startColumnIndex: col, endColumnIndex: col + 1 },
+          destination: { sheetId, startRowIndex: startRow - 1, endRowIndex: startRow - 1 + rows.length, startColumnIndex: col, endColumnIndex: col + 1 },
+          pasteType: "PASTE_FORMULA",
+        },
+      }));
+      await sheets.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests } });
+    }
   }
 }
