@@ -40,11 +40,35 @@ export async function appendNghiPhep(rows: (string | null)[][]): Promise<void> {
   // Sheet names with spaces must be wrapped in single quotes in A1 notation
   const quotedName = `'${sheetName.replace(/'/g, "''")}'`;
 
-  await sheets.spreadsheets.values.append({
+  const appendRes = await sheets.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
     range: `${quotedName}!A1`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: rows },
   });
+
+  // Column B (driver_id) is a per-row xlookup formula in the sheet. A plain
+  // append writes a literal UUID into B, wiping the formula on the submitted
+  // row. Restore the formula (matching the sheet's existing style) on each
+  // appended row so every row stays formula-driven from the name in column C.
+  // If the row range can't be parsed we leave the literal — a safe fallback
+  // (the row still resolves), never a blank id.
+  const updatedRange = appendRes.data.updates?.updatedRange ?? "";
+  const startRow = Number(updatedRange.match(/![A-Z]+(\d+)/)?.[1]);
+  if (Number.isFinite(startRow)) {
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: SHEET_ID,
+      requestBody: {
+        valueInputOption: "USER_ENTERED",
+        data: rows.map((_, i) => {
+          const r = startRow + i;
+          return {
+            range: `${quotedName}!B${r}`,
+            values: [[`=iferror(xlookup($C${r},Driver!$A:$A,Driver!$B:$B),"")`]],
+          };
+        }),
+      },
+    });
+  }
 }
