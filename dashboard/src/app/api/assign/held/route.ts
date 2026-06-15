@@ -6,14 +6,19 @@ import { vnTimestamp } from "@/lib/time";
 
 type RawStop = { stop_id?: number; stop_type_id?: number; customer_id?: string; customer_name?: string; note?: string };
 
-/** Pickup customer name + joined blocking notes — for putting a failed job back. */
-function heldFields(jobId: number, stops: RawStop[]): { customer: string; note: string } {
-  const customer = stops.find((s) => s.stop_type_id === 1)?.customer_name ?? `Job ${jobId}`;
+/** Pickup customer name, the "<pickup> → <dropoff>" route (for the uniform log
+ *  suffix; stops are already fetched, so no extra Cartrack call), and the joined
+ *  blocking notes — for putting a failed job back. */
+function heldFields(jobId: number, stops: RawStop[]): { customer: string; route: string; note: string } {
+  const pickup = stops.find((s) => s.stop_type_id === 1)?.customer_name;
+  const dropoff = stops.find((s) => s.stop_type_id === 2)?.customer_name;
+  const customer = pickup ?? `Job ${jobId}`;
+  const route = `${pickup ?? "—"} → ${dropoff ?? "—"}`;
   const note = stops
     .map((s) => s.note?.trim())
     .filter((n) => n && n !== "Call before delivery")
     .join(" | ");
-  return { customer, note };
+  return { customer, route, note };
 }
 
 // Cartrack writes are slow (~5-10s each) and we make two per action, so we never
@@ -69,8 +74,8 @@ export async function POST(req: NextRequest) {
     after(async () => {
       let stops: RawStop[] = [];
       const putBack = async (err: string) => {
-        const { customer, note } = heldFields(jobId, stops);
-        log(`Job ${jobId} - Lên lịch THẤT BẠI: ${err} | ${customer}`, "ERROR");
+        const { customer, route, note } = heldFields(jobId, stops);
+        log(`Job ${jobId} - Lên lịch THẤT BẠI: ${err} | ${route}`, "ERROR");
         await addHeldJob({ job_id: jobId, customer, note, error: `Lên lịch lỗi: ${err}` }).catch(() => {});
       };
       try {
@@ -98,8 +103,8 @@ export async function POST(req: NextRequest) {
         if (!stopsRes.ok) return putBack(`stops ${stopsRes.status}`);
 
         await removeHeldJob(jobId).catch(() => {});
-        const { customer } = heldFields(jobId, stops);
-        log(`Job ${jobId} - Đã lên lịch lúc ${timePart.slice(0, 5)} | ${customer}`);
+        const { route } = heldFields(jobId, stops);
+        log(`Job ${jobId} - Đã lên lịch lúc ${timePart.slice(0, 5)} | ${route}`);
       } catch (e) {
         await putBack(String(e));
       }
@@ -112,8 +117,8 @@ export async function POST(req: NextRequest) {
   after(async () => {
     let stops: RawStop[] = [];
     const putBack = async (err: string) => {
-      const { customer, note } = heldFields(jobId, stops);
-      log(`Job ${jobId} - Duyệt giao THẤT BẠI: ${err} | ${customer}`, "ERROR");
+      const { customer, route, note } = heldFields(jobId, stops);
+      log(`Job ${jobId} - Duyệt giao THẤT BẠI: ${err} | ${route}`, "ERROR");
       await addHeldJob({ job_id: jobId, customer, note, error: `Duyệt giao lỗi: ${err}` }).catch(() => {});
     };
     try {
@@ -141,8 +146,8 @@ export async function POST(req: NextRequest) {
       if (!stopsRes.ok) return putBack(`stops ${stopsRes.status}`);
 
       await removeHeldJob(jobId).catch(() => {});
-      const { customer } = heldFields(jobId, stops);
-      log(`Job ${jobId} - Đã duyệt ghi chú → sẽ giao ở chu kỳ kế tiếp | ${customer}`);
+      const { route } = heldFields(jobId, stops);
+      log(`Job ${jobId} - Đã duyệt ghi chú, sẽ giao ở chu kỳ kế tiếp | ${route}`);
     } catch (e) {
       await putBack(String(e));
     }
