@@ -145,8 +145,9 @@ export type FailedReason =
 
 export interface FailedJob {
   job_id: number;
+  // Full route label "<pickup> → <dropoff>" (matches the log-line convention in
+  // api/admin/search-jobs). Falls back to the pickup customer when no route.
   customer: string;
-  route?: string;
   reason: FailedReason;
   detail: string;
   level: "ERROR" | "WARN";

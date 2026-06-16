@@ -600,7 +600,10 @@ export async function autoAssignCycle(
     detail: string,
     level: "ERROR" | "WARN" = "ERROR",
   ) => {
-    if (!onlyJobIds) failedJobs.push({ job_id: jobId, customer, route: jobRoute || undefined, reason, detail, level, ts: vnTimestamp() });
+    // Prefer the full "<pickup> → <dropoff>" route (set per job below) so the
+    // Cần xử lý panel + admin search match the log-line convention; fall back to
+    // the bare customer name only if the route wasn't set for this job.
+    if (!onlyJobIds) failedJobs.push({ job_id: jobId, customer: jobRoute || customer, reason, detail, level, ts: vnTimestamp() });
   };
 
   if (jobs.length === 0) {
