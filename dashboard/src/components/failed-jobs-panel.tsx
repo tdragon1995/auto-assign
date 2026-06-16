@@ -86,7 +86,7 @@ function FailedRow({ job }: { job: FailedJob }) {
           {meta.label}
         </span>
       </div>
-      <p className="mt-0.5 font-medium text-slate-800 break-words">{job.customer}</p>
+      <p className="mt-0.5 font-medium text-slate-800 break-words">{job.route || job.customer}</p>
       <p className="mt-0.5 text-[11px] text-slate-500 break-words">{job.detail}</p>
       <p className="mt-0.5 text-[10px] text-slate-400">Lần cuối: {job.ts.slice(11, 19)}</p>
     </div>

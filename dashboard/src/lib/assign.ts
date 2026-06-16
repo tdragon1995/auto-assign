@@ -592,6 +592,7 @@ export async function autoAssignCycle(
   // stay for the per-cycle return (smart history / debug) but are dropped from the
   // rolling live log by shouldStore. One push per job — each fails at most once.
   const failedJobs: FailedJob[] = [];
+  let jobRoute = "";
   const fail = (
     reason: FailedJob["reason"],
     jobId: number,
@@ -599,7 +600,7 @@ export async function autoAssignCycle(
     detail: string,
     level: "ERROR" | "WARN" = "ERROR",
   ) => {
-    if (!onlyJobIds) failedJobs.push({ job_id: jobId, customer, reason, detail, level, ts: vnTimestamp() });
+    if (!onlyJobIds) failedJobs.push({ job_id: jobId, customer, route: jobRoute || undefined, reason, detail, level, ts: vnTimestamp() });
   };
 
   if (jobs.length === 0) {
@@ -723,6 +724,7 @@ export async function autoAssignCycle(
     const route = `${jobCustomerName ?? customerId ?? "—"} → ${
       job.stops?.find((s) => s.stop_type_id === 2)?.customer_name ?? "—"
     }`;
+    jobRoute = route;
 
     if (jobHasNotes(job)) {
       // Jobs with a delivery window bypass the note gate — the window parking path

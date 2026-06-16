@@ -146,6 +146,7 @@ export type FailedReason =
 export interface FailedJob {
   job_id: number;
   customer: string;
+  route?: string;
   reason: FailedReason;
   detail: string;
   level: "ERROR" | "WARN";
