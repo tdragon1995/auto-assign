@@ -90,6 +90,14 @@ export function driversFromConfig(config: Config): ConfigDriver[] {
     }
     for (const sid of m.smart_driver_id) allIds.add(sid);
   }
+  for (const sid of allIds) {
+    if (nameById.has(sid)) continue;
+    const mapping = config.mappings.find(m => m.smart_driver_id.includes(sid));
+    if (mapping) {
+      const name = mapping.first_name_last_name.trim();
+      if (name) nameById.set(sid, name);
+    }
+  }
   return [...allIds]
     .map((driver_id) => ({ driver_id, name: nameById.get(driver_id) || driver_id }))
     .sort((a, b) => a.name.localeCompare(b.name));
