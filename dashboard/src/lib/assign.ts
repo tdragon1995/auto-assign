@@ -4,7 +4,7 @@ import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL } from "./return-trips";
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
-import { setHeldJobs, setFailedJobs, setPickupWarnings, type HeldJob } from "./smart-log-kv";
+import { setHeldJobs, setFailedJobs, setPickupWarnings, setPscActivePickups, type HeldJob, type PscDupHit } from "./smart-log-kv";
 import { isValidDriverId } from "./config";
 import {
   vnDate,
@@ -16,7 +16,7 @@ import {
 } from "./time";
 import { haversineKm } from "./distance";
 import { roadDistancesToPoint } from "./distance-cache";
-import { isCompletedOrRejectedStop, isNoteApproved } from "./job-filters";
+import { isActiveStop, isCompletedOrRejectedStop, isNoteApproved, pscPairKey } from "./job-filters";
 import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, type RefStop, type RefLabel } from "./smart-rank";
 import { loadLeaveEntries, isDriverOnLeave, resolveSubstitute } from "./leave-config";
 
@@ -28,6 +28,39 @@ const DUPLICATE_REJECT_REASON =
 // PSC tỉnh jobs are multi-leg provincial routes — the same pickup→dropoff pair
 // is expected to repeat across different legs and should never be blocked.
 const DUPLICATE_EXEMPT_LABELS = [PSC_TINH_LABEL, PSC_RETURN_LABEL];
+
+/**
+ * Build the PSC active-pickup dedup index from today's status-2/4 jobs. Each entry
+ * keys a `pickup|dropoff` customer pair (a job with an active pickup stop + a
+ * matching dropoff stop) to the blocking job, mirroring the exact predicate
+ * /api/psc-assign used to evaluate live: cancelled (7) / failed (3) jobs and
+ * via-legs are excluded, and only pickup stops that are still active (Created /
+ * En Route / Arrived) count. Writing this once per cycle lets the PSC request
+ * button skip two fleet-wide Cartrack fetches on every tap.
+ */
+function computeActivePickupPairs(jobs: Job[]): Record<string, PscDupHit> {
+  const pairs: Record<string, PscDupHit> = {};
+  for (const job of jobs) {
+    if (job.job_status_id === 7 || job.job_status_id === 3) continue;
+    if ((job.labels ?? []).includes(PSC_VIA_LABEL)) continue;
+    const stops = job.stops ?? [];
+    const activePickups = stops.filter(
+      (s) => s.stop_type_id === 1 && s.customer_id && s.stop_status_id != null && isActiveStop(s.stop_status_id),
+    );
+    if (activePickups.length === 0) continue;
+    const dropoffs = stops.filter((s) => s.stop_type_id === 2 && s.customer_id);
+    const hit: PscDupHit = { job_id: job.job_id, reference_number: job.reference_number ?? null };
+    for (const p of activePickups) {
+      for (const d of dropoffs) {
+        // First writer wins is fine — any one blocking job is enough to dedup, and
+        // the live check it replaces also returned the first match.
+        const key = pscPairKey(p.customer_id!, d.customer_id!);
+        if (!(key in pairs)) pairs[key] = hit;
+      }
+    }
+  }
+  return pairs;
+}
 
 // ── Start-location coords cache ─────────────────────────────────────────────
 // A driver's home base is static config; refetching it from Cartrack every
@@ -578,6 +611,11 @@ export async function autoAssignCycle(
     cycleStartS2 = s2Jobs;
     assignedJobsToday = s4Jobs;
     cycleS5 = s5Jobs;
+
+    // Refresh the PSC active-pickup dedup index (full cycle only). Fire-and-forget:
+    // it feeds /api/psc-assign's fast path and must not add latency to the cycle.
+    // Placed before any early return below so it stays fresh on quiet cycles too.
+    if (!onlyJobIds) void setPscActivePickups(computeActivePickupPairs([...s2Jobs, ...s4Jobs]));
   } catch (e) {
     log(`Error fetching jobs: ${e}`, "ERROR");
     return logs;

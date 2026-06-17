@@ -288,6 +288,68 @@ export async function addHeldJob(job: HeldJob): Promise<void> {
   await redis.set(HELD_JOBS_KEY, JSON.stringify(next), { ex: 86400 });
 }
 
+// ── PSC active-pickup dedup index (fast path for /api/psc-assign) ───────────
+// Per-cycle snapshot of every today-job whose pickup stop is still active, keyed
+// by `${pickup}|${dropoff}` → the blocking job's { job_id, reference_number }.
+// Lets the PSC "đề nghị giao mẫu" button answer from one Redis read instead of two
+// fleet-wide Cartrack job fetches (~hundreds of jobs each, every tap).
+//
+// Stored as one JSON blob — same shape, TTL discipline and read/write cost as the
+// sibling held-jobs / failed-jobs / pickup-warnings snapshots (one SET per cycle,
+// one GET per read), so it adds no new Redis access pattern. The key's mere
+// presence is the freshness proof: an empty `{}` means "a cycle ran, nothing
+// active", while an absent/expired key (engine disarmed) makes the reader fall
+// back to a live Cartrack check — so correctness never depends on the cycle running.
+const PSC_ACTIVE_PICKUPS_KEY = "psc:active_pickups";
+const PSC_INDEX_TTL_SEC = 600; // 10 min — mirrors the pickup-warnings snapshot; self-clears if cycles stop
+
+export interface PscDupHit {
+  job_id: number;
+  reference_number: string | null;
+}
+
+function parsePscIndex(raw: string | Record<string, PscDupHit> | null): Record<string, PscDupHit> | null {
+  if (raw == null) return null;
+  if (typeof raw === "object") return raw;
+  try { return JSON.parse(raw) as Record<string, PscDupHit>; } catch { return null; }
+}
+
+/** Replace the active-pickup index from a full cycle's job snapshot (one SET).
+ *  Pass the complete pair→hit map; an empty map still writes `{}` so the reader can
+ *  tell "cycle ran, nothing active" from "no cycle / expired". */
+export async function setPscActivePickups(pairs: Record<string, PscDupHit>): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  await redis.set(PSC_ACTIVE_PICKUPS_KEY, JSON.stringify(pairs), { ex: PSC_INDEX_TTL_SEC });
+}
+
+/** Fast-path duplicate lookup for one pickup→dropoff pair (one GET).
+ *  `fresh` = a cycle has populated the index (else the caller must do a live check);
+ *  `hit` = the blocking job when this pair is currently active, otherwise null. */
+export async function lookupPscActivePickup(
+  pairKey: string,
+): Promise<{ fresh: boolean; hit: PscDupHit | null }> {
+  const redis = getRedis();
+  if (!redis) return { fresh: false, hit: null };
+  const idx = parsePscIndex(await redis.get<string | Record<string, PscDupHit>>(PSC_ACTIVE_PICKUPS_KEY));
+  if (!idx) return { fresh: false, hit: null };
+  return { fresh: true, hit: idx[pairKey] ?? null };
+}
+
+/** Write-through: record a just-created PSC job so an immediate re-tap (before the
+ *  next cycle refreshes the index) is still blocked. Only updates an already-fresh
+ *  index — when the key is absent the reader is on the live-fetch path anyway, so
+ *  there's nothing to keep warm and we never resurrect a stale index. Read-modify-
+ *  write; a rare concurrent-create clobber self-heals on the next cycle. */
+export async function markPscActivePickup(pairKey: string, hit: PscDupHit): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  const idx = parsePscIndex(await redis.get<string | Record<string, PscDupHit>>(PSC_ACTIVE_PICKUPS_KEY));
+  if (!idx) return; // index not fresh → reader is using the live fallback; nothing to update
+  idx[pairKey] = hit;
+  await redis.set(PSC_ACTIVE_PICKUPS_KEY, JSON.stringify(idx), { ex: PSC_INDEX_TTL_SEC });
+}
+
 // ── Overlap lock — one cycle at a time, safe at any cron frequency ──────────
 
 /** Try to claim the cycle lock. Returns true if claimed (caller may run the
