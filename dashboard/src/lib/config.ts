@@ -58,8 +58,8 @@ export async function loadDriversFromSheet(): Promise<ConfigDriver[]> {
     const rows = await fetchSheetRows(SHEET_GID.drivers);
     const drivers: ConfigDriver[] = [];
     for (const row of rows) {
-      const driver_id = (row["driver_id"] ?? "").trim();
-      const name = (row["name"] ?? "").trim();
+      const driver_id = (row["delivery_driver_id"] ?? "").trim();
+      const name = (row["Driver"] ?? "").trim();
       if (driver_id) {
         drivers.push({ driver_id, name: name || driver_id });
       }
