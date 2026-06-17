@@ -190,7 +190,7 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4" onClick={onClose}>
       <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl p-5 space-y-4 max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start justify-between gap-2">
-          <p className="text-sm font-bold text-slate-800">Tài xế: {driverName(job)}</p>
+          <p className="text-sm font-bold text-slate-800">Giao Nhận Mẫu: {driverName(job)}</p>
           <p className="text-[10px] text-slate-400 text-right break-all max-w-[55%]">{job.reference_number}</p>
         </div>
         {job.stops.map((s, i) => (

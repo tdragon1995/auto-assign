@@ -342,7 +342,7 @@ export function JobAdminPanel({ env }: { env: Env }) {
                               <div className="space-y-1.5">
                                 {job.started && (
                                   <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
-                                    ⚠️ Tài xế đã bắt đầu — đổi điểm giao sẽ thay đổi lộ trình giữa chuyến.
+                                    ⚠️ Giao Nhận Mẫu đã bắt đầu — đổi điểm giao sẽ thay đổi lộ trình giữa chuyến.
                                   </p>
                                 )}
                                 <div className="relative">

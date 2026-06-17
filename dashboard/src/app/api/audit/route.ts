@@ -144,7 +144,7 @@ export async function POST(req: NextRequest) {
       );
       if (hasAuditToday) {
         return NextResponse.json(
-          { error: "Tài xế đã tạo audit hôm nay rồi. Mỗi ngày chỉ được tạo 1 lần." },
+          { error: "Giao Nhận Mẫu đã tạo audit hôm nay rồi. Mỗi ngày chỉ được tạo 1 lần." },
           { status: 409 }
         );
       }

@@ -121,6 +121,7 @@ export interface PickupWarning {
   job_id: number;
   reference_number: string | null;
   pickup_customer_name: string | null;
+  dropoff_customer_name: string | null;
   driver_id: string;
   driver_name: string | null;
   reason: "overdue" | "window_expiring";

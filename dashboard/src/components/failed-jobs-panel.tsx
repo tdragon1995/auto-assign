@@ -1,10 +1,11 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
-import type { FailedJob, FailedReason, PickupWarning } from "@/lib/types";
+import type { FailedJob, FailedReason, PickupWarning, Driver } from "@/lib/types";
 
 export interface ScheduleErrorRow {
   pickup_id: string;
@@ -29,7 +30,7 @@ const REASON_META: Record<
   { label: string; tone: "red" | "amber"; order: number }
 > = {
   NO_DRIVER:      { label: "Không có tài xế trực", tone: "red",   order: 0 },
-  UNAVAILABLE:    { label: "Tài xế bận / offline", tone: "red", order: 1 },
+  UNAVAILABLE:    { label: "Giao Nhận Mẫu bận / offline", tone: "red", order: 1 },
   ON_LEAVE:       { label: "Nghỉ, không người thay", tone: "amber", order: 2 },
   CLASH:          { label: "Trùng tài xế trực", tone: "amber", order: 3 },
   SUB_CLASH:      { label: "Trùng người thay", tone: "amber", order: 4 },
@@ -68,9 +69,35 @@ function SectionHeader({ label, count, tone = "slate" }: { label: string; count:
   );
 }
 
-function FailedRow({ job }: { job: FailedJob }) {
+function FailedRow({
+  job,
+  drivers,
+  onAssign,
+  assigning,
+}: {
+  job: FailedJob;
+  drivers: Driver[];
+  onAssign: (jobId: number, driverId: string) => Promise<void>;
+  assigning: boolean;
+}) {
   const meta = metaFor(job.reason);
   const tone = TONE_STYLES[meta.tone];
+  const [showDriverSelect, setShowDriverSelect] = useState(false);
+  const [selectedDriver, setSelectedDriver] = useState<string>("");
+  const [assignError, setAssignError] = useState<string>("");
+
+  const handleAssign = async () => {
+    if (!selectedDriver) return;
+    try {
+      setAssignError("");
+      await onAssign(job.job_id, selectedDriver);
+      setShowDriverSelect(false);
+      setSelectedDriver("");
+    } catch (err) {
+      setAssignError(err instanceof Error ? err.message : "Gán job thất bại");
+    }
+  };
+
   return (
     <div className={`rounded border border-l-4 bg-white p-2 ${tone.border}`}>
       <div className="flex items-center justify-between gap-2">
@@ -89,6 +116,65 @@ function FailedRow({ job }: { job: FailedJob }) {
       <p className="mt-0.5 font-medium text-slate-800 break-words">{job.customer}</p>
       <p className="mt-0.5 text-[11px] text-slate-500 break-words">{job.detail}</p>
       <p className="mt-0.5 text-[10px] text-slate-400">Lần cuối: {job.ts.slice(11, 19)}</p>
+
+      {job.reason === "NO_DRIVER" || job.reason === "CLASH" ? (
+        <div className="mt-2">
+          {!showDriverSelect ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-[10px] h-6 px-2"
+              onClick={() => setShowDriverSelect(true)}
+            >
+              Gán thủ công
+            </Button>
+          ) : (
+            <div className="space-y-1.5 mt-2">
+              <select
+                value={selectedDriver}
+                onChange={(e) => {
+                  setSelectedDriver(e.target.value);
+                  setAssignError("");
+                }}
+                className="w-full px-2 py-1 text-[10px] border border-slate-300 rounded"
+              >
+                <option value="">Chọn Giao Nhận Mẫu...</option>
+                {drivers.map((d) => (
+                  <option key={d.delivery_driver_id} value={d.delivery_driver_id}>
+                    {d.first_name} {d.last_name}
+                  </option>
+                ))}
+              </select>
+              <div className="flex gap-1">
+                <Button
+                  size="sm"
+                  className="flex-1 h-6 text-[10px] bg-blue-600 hover:bg-blue-700"
+                  disabled={!selectedDriver || assigning}
+                  onClick={handleAssign}
+                >
+                  {assigning ? "Đang gán..." : "Gán"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="flex-1 h-6 text-[10px]"
+                  disabled={assigning}
+                  onClick={() => {
+                    setShowDriverSelect(false);
+                    setSelectedDriver("");
+                    setAssignError("");
+                  }}
+                >
+                  Hủy
+                </Button>
+              </div>
+              {assignError && (
+                <p className="text-[10px] text-red-600">{assignError}</p>
+              )}
+            </div>
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -111,6 +197,41 @@ export function FailedJobsPanel({
   onRetrySchedule: () => void;
   retryingSchedule: boolean;
 }) {
+  const [drivers, setDrivers] = useState<Driver[]>([]);
+  const [driversLoading, setDriversLoading] = useState(true);
+  const [assigning, setAssigning] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/drivers");
+        const data = await res.json();
+        setDrivers(data.data ?? []);
+      } catch {
+        setDrivers([]);
+      } finally {
+        setDriversLoading(false);
+      }
+    })();
+  }, []);
+
+  const handleAssign = async (jobId: number, driverId: string) => {
+    setAssigning(true);
+    try {
+      const res = await fetch("/api/admin/assign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: jobId, driver_id: driverId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error ?? "Gán job thất bại");
+      }
+      // Job assigned successfully — refresh will pick up the change
+    } finally {
+      setAssigning(false);
+    }
+  };
   const total = failed.length + warnings.length + scheduleErrors.length;
 
   // Group assign failures by reason in display-priority order.
@@ -144,7 +265,13 @@ export function FailedJobsPanel({
               <div key={reason} className="space-y-1.5">
                 <SectionHeader label={metaFor(reason).label} count={jobs.length} />
                 {jobs.map((job) => (
-                  <FailedRow key={job.job_id} job={job} />
+                  <FailedRow
+                    key={job.job_id}
+                    job={job}
+                    drivers={drivers}
+                    onAssign={handleAssign}
+                    assigning={assigning}
+                  />
                 ))}
               </div>
             ))}
@@ -171,9 +298,9 @@ export function FailedJobsPanel({
                         {fmtLate(w.minutes_late ?? 0)}
                       </span>
                     </div>
-                    {w.pickup_customer_name && (
-                      <p className="mt-0.5 font-medium text-slate-800 break-words">{w.pickup_customer_name}</p>
-                    )}
+                    <p className="mt-0.5 font-medium text-slate-800 break-words">
+                      {w.pickup_customer_name ?? "—"} <span className="text-slate-400">→</span> {w.dropoff_customer_name ?? "—"}
+                    </p>
                     {w.driver_name && (
                       <p className="mt-0.5 text-[11px] text-slate-500 break-words">{w.driver_name}</p>
                     )}

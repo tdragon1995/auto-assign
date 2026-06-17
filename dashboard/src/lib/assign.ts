@@ -201,10 +201,13 @@ function computePickupWarnings(
       ? `${driver.first_name ?? ""} ${driver.last_name ?? ""}`.trim() || null
       : null;
 
+    const dropoff = stops.find((s: any) => s.stop_type_id === 2);
+
     warnings.push({
       job_id: job.job_id,
       reference_number: job.reference_number ?? null,
       pickup_customer_name: pickup.customer_name ?? null,
+      dropoff_customer_name: dropoff?.customer_name ?? null,
       driver_id: driverId,
       driver_name: driverName,
       reason,
@@ -878,7 +881,7 @@ export async function autoAssignCycle(
               // Cần xử lý instead of spamming the live log (dropped by shouldStore).
               const who2 = jobCustomerName ?? customerId ?? "—";
               log(`Job ${jobId} - SMART(1) assigned driver on-break or offline | ${route}`, "WARN");
-              fail("UNAVAILABLE", jobId, who2, "Tài xế (smart) được phân công đang nghỉ giải lao/offline");
+              fail("UNAVAILABLE", jobId, who2, "Giao Nhận Mẫu (smart) được phân công đang nghỉ giải lao/offline");
             } else {
               log(`Job ${jobId} - SMART(1) failed: ${friendlyError(body)} | ${route}`, "ERROR");
             }
@@ -1187,7 +1190,7 @@ export async function autoAssignCycle(
           // The single on-duty driver is on-break/offline → fails identically every
           // cycle. Surface in Cần xử lý, not as a repeating live-log ERROR.
           log(`Job ${jobId} - assigned driver on-break or offline | ${route}`, "WARN");
-          fail("UNAVAILABLE", jobId, pickupName, "Tài xế được phân công đang nghỉ giải lao/offline");
+          fail("UNAVAILABLE", jobId, pickupName, "Giao Nhận Mẫu được phân công đang nghỉ giải lao/offline");
         } else {
           log(`Job ${jobId} - failed: ${friendlyError(body)} | ${route}`, "ERROR");
         }
