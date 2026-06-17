@@ -456,6 +456,18 @@ export default function ChamCongPage() {
       if (!leaveDate) { setLeaveError("Vui lòng chọn ngày làm việc cuối cùng"); return; }
     }
 
+    // Build the Zalo template up front so the exact same text is shown to the
+    // driver (copy/share) AND relayed to the admin Zalo group.
+    let copyText = "";
+
+    if (leaveType === "nguyen_buoi") {
+      copyText = `⚠️ Thông Báo Nghỉ Nguyên Buổi, ${driverName} đã nộp yêu cầu nghỉ từ ${fmtDate(leaveFromDate)} (${vnWeekday(leaveFromDate)}) đến ${fmtDate(leaveToDate)} (${vnWeekday(leaveToDate)}). Nhờ đội điều phối hỗ trợ sắp xếp để không gián đoạn công việc!`;
+    } else if (leaveType === "nua_buoi") {
+      copyText = `⚠️ Thông Báo Nghỉ Nửa Buổi, ${driverName} đã nộp yêu cầu nghỉ từ ${leaveStartTime} đến ${leaveEndTime} ngày ${fmtDate(leaveDate)} (${vnWeekday(leaveDate)}). Nhờ đội điều phối hỗ trợ sắp xếp để không gián đoạn công việc!`;
+    } else {
+      copyText = `⚠️ Thông Báo Nghỉ Việc, ${driverName} đã nộp đơn chấm dứt hợp tác làm việc với Diag. Ngày cuối cùng làm việc là ${fmtDate(leaveDate)} (${vnWeekday(leaveDate)}). Nhờ đội điều phối hỗ trợ sắp xếp và hướng dẫn các thủ tục bàn giao!`;
+    }
+
     setLeaveStatus("loading");
 
     const payload = {
@@ -466,6 +478,7 @@ export default function ChamCongPage() {
       ngay_ket_thuc: leaveType === "nguyen_buoi" ? leaveToDate : undefined,
       gio_bat_dau:   leaveType === "nua_buoi"    ? leaveStartTime : undefined,
       gio_ket_thuc:  leaveType === "nua_buoi"    ? leaveEndTime   : undefined,
+      notify_message: copyText,
     };
 
     try {
@@ -480,16 +493,6 @@ export default function ChamCongPage() {
         setLeaveError(errData.error ?? "Đơn bị lỗi, vui lòng gửi lại hoặc chụp màn hình gửi vào nhóm Zalo công việc để được hỗ trợ!");
         setLeaveStatus("error");
         return;
-      }
-
-      let copyText = "";
-
-      if (leaveType === "nguyen_buoi") {
-        copyText = `⚠️ Thông Báo Nghỉ Nguyên Buổi, ${driverName} đã nộp yêu cầu nghỉ từ ${fmtDate(leaveFromDate)} (${vnWeekday(leaveFromDate)}) đến ${fmtDate(leaveToDate)} (${vnWeekday(leaveToDate)}). Nhờ đội điều phối hỗ trợ sắp xếp để không gián đoạn công việc!`;
-      } else if (leaveType === "nua_buoi") {
-        copyText = `⚠️ Thông Báo Nghỉ Nửa Buổi, ${driverName} đã nộp yêu cầu nghỉ từ ${leaveStartTime} đến ${leaveEndTime} ngày ${fmtDate(leaveDate)} (${vnWeekday(leaveDate)}). Nhờ đội điều phối hỗ trợ sắp xếp để không gián đoạn công việc!`;
-      } else {
-        copyText = `⚠️ Thông Báo Nghỉ Việc, ${driverName} đã nộp đơn chấm dứt hợp tác làm việc với Diag. Ngày cuối cùng làm việc là ${fmtDate(leaveDate)} (${vnWeekday(leaveDate)}). Nhờ đội điều phối hỗ trợ sắp xếp và hướng dẫn các thủ tục bàn giao!`;
       }
 
       setLeaveCopyText(copyText);

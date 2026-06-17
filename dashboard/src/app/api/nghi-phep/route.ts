@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { appendNghiPhep } from "@/lib/sheets-writer";
 import { vnTimestamp } from "@/lib/time";
+import { sendZaloMessage } from "@/lib/zalo";
 
 function datesBetween(from: string, to: string): string[] {
   const dates: string[] = [];
@@ -16,10 +17,25 @@ function datesBetween(from: string, to: string): string[] {
   return dates;
 }
 
+// Fire-and-forget notification to the admin Zalo group. The leave is already
+// saved to the sheet, so a Zalo failure must never fail the request. The text is
+// the same template the cham-cong page shows the driver to copy/share.
+async function notifyAdminGroup(text: string): Promise<void> {
+  if (!text) return;
+  const botToken = process.env.ZALO_ADMIN_BOT_TOKEN;
+  const chatId = process.env.ZALO_ADMIN_CHAT_ID;
+  if (!botToken || !chatId) return;
+  try {
+    await sendZaloMessage(botToken, chatId, text);
+  } catch (e) {
+    console.error("[nghi-phep] admin Zalo notify failed", e);
+  }
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { driver_id, driver_name, loai_nghi, ngay_bat_dau, ngay_ket_thuc, gio_bat_dau, gio_ket_thuc } = body;
+    const { driver_id, driver_name, loai_nghi, ngay_bat_dau, ngay_ket_thuc, gio_bat_dau, gio_ket_thuc, notify_message } = body;
 
     if (!driver_id || !driver_name || !loai_nghi || !ngay_bat_dau) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
@@ -59,6 +75,9 @@ export async function POST(req: NextRequest) {
     }
 
     await appendNghiPhep(rows);
+
+    // Relay the same template the driver sees to the admin Zalo group.
+    await notifyAdminGroup(typeof notify_message === "string" ? notify_message : "");
 
     return NextResponse.json({ success: true });
   } catch (e) {
