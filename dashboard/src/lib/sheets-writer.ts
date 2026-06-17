@@ -56,35 +56,55 @@ export async function appendNghiPhep(rows: (string | null)[][]): Promise<void> {
   // automatically and is robust to which columns are formulas / how they're laid
   // out. Value columns (the ones the form actually fills) aren't formulas in the
   // template, so they're left exactly as written.
-  const updatedRange = appendRes.data.updates?.updatedRange ?? "";
-  const startRow = Number(updatedRange.match(/![A-Z]+(\d+)/)?.[1]);
-  if (Number.isFinite(startRow)) {
-    const sheetId = Number(SHEET_GID.nghi_phep);
-    // Scan the first data rows for the formula layout (which column → a row that
-    // holds its formula). Avoids depending on any single template row being intact.
-    const tpl = await sheets.spreadsheets.values.get({
-      spreadsheetId: SHEET_ID,
-      range: `${quotedName}!2:31`,
-      valueRenderOption: "FORMULA",
-    });
-    const tplRows = tpl.data.values ?? [];
-    const srcRowForCol = new Map<number, number>(); // colIndex → 1-based sheet row
-    const width = tplRows.reduce((w, r) => Math.max(w, r.length), 0);
-    for (let c = 0; c < width; c++) {
-      for (let i = 0; i < tplRows.length; i++) {
-        const v = tplRows[i]?.[c];
-        if (typeof v === "string" && v.startsWith("=")) { srcRowForCol.set(c, i + 2); break; }
+  //
+  // This step is BEST-EFFORT. The append above already wrote a functional row:
+  // it carries the real driver_id UUID as a literal plus the leave dates, which
+  // is all the assign engine needs (loadLeaveEntries reads driver_id directly and
+  // drops only rows where it's blank). The formula columns are a supervisor-facing
+  // convenience. So if this fails — e.g. a protected-range change revokes the
+  // service account's edit access — DON'T throw: a 500 here would make the driver
+  // resubmit and duplicate a leave that was already recorded.
+  try {
+    const updatedRange = appendRes.data.updates?.updatedRange ?? "";
+    const startRow = Number(updatedRange.match(/![A-Z]+(\d+)/)?.[1]);
+    if (Number.isFinite(startRow)) {
+      const sheetId = Number(SHEET_GID.nghi_phep);
+      // Scan the first data rows for the formula layout (which column → a row that
+      // holds its formula). Avoids depending on any single template row being intact.
+      const tpl = await sheets.spreadsheets.values.get({
+        spreadsheetId: SHEET_ID,
+        range: `${quotedName}!2:31`,
+        valueRenderOption: "FORMULA",
+      });
+      const tplRows = tpl.data.values ?? [];
+      const srcRowForCol = new Map<number, number>(); // colIndex → 1-based sheet row
+      const width = tplRows.reduce((w, r) => Math.max(w, r.length), 0);
+      for (let c = 0; c < width; c++) {
+        for (let i = 0; i < tplRows.length; i++) {
+          const v = tplRows[i]?.[c];
+          if (typeof v === "string" && v.startsWith("=")) { srcRowForCol.set(c, i + 2); break; }
+        }
+      }
+      if (srcRowForCol.size > 0) {
+        const requests = [...srcRowForCol.entries()].map(([col, srcRow]) => ({
+          copyPaste: {
+            source:      { sheetId, startRowIndex: srcRow - 1,   endRowIndex: srcRow,                     startColumnIndex: col, endColumnIndex: col + 1 },
+            destination: { sheetId, startRowIndex: startRow - 1, endRowIndex: startRow - 1 + rows.length, startColumnIndex: col, endColumnIndex: col + 1 },
+            pasteType: "PASTE_FORMULA",
+          },
+        }));
+        await sheets.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests } });
       }
     }
-    if (srcRowForCol.size > 0) {
-      const requests = [...srcRowForCol.entries()].map(([col, srcRow]) => ({
-        copyPaste: {
-          source:      { sheetId, startRowIndex: srcRow - 1,   endRowIndex: srcRow,                     startColumnIndex: col, endColumnIndex: col + 1 },
-          destination: { sheetId, startRowIndex: startRow - 1, endRowIndex: startRow - 1 + rows.length, startColumnIndex: col, endColumnIndex: col + 1 },
-          pasteType: "PASTE_FORMULA",
-        },
-      }));
-      await sheets.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests } });
-    }
+  } catch (e) {
+    // Leave row WAS written and is honoured by the engine; only the formula
+    // columns are missing on it and need manual attention in the sheet.
+    console.error(
+      "[nghi-phep] formula-refill failed — leave row was saved, but its formula " +
+      "columns (driver_id formula, day, sub#_id, scheduled_trips, …) were not " +
+      "filled. Check that the service account still has edit access to the Leave " +
+      "Status sheet's protected ranges.",
+      e
+    );
   }
 }
