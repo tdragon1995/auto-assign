@@ -516,7 +516,8 @@ export default function ChamCongPage() {
     if (typeof navigator !== "undefined" && navigator.share) {
       try {
         await navigator.share({ text: leaveCopyText });
-      } catch { /* user cancelled — leave it, don't surprise-copy */ }
+        resetLeaveForm(); // shared → the one step is done, close the modal
+      } catch { /* user cancelled — keep the modal open, don't surprise-copy */ }
       return;
     }
     try {
@@ -729,8 +730,14 @@ export default function ChamCongPage() {
                 /* Success view — full-screen dimmed modal so the notify step
                    can't be missed. The driver must act on the button before the
                    leave is actually communicated to điều phối. */
-                <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 p-4">
-                  <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4 max-h-[92vh] overflow-y-auto">
+                <div
+                  onClick={resetLeaveForm}
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+                >
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4 max-h-[92vh] overflow-y-auto"
+                  >
                     <div className="rounded-lg px-4 py-3 bg-green-50 border border-green-200">
                       <p className="text-sm font-semibold text-green-700">{leaveSuccessTitle}</p>
                     </div>
@@ -740,7 +747,7 @@ export default function ChamCongPage() {
                       <p className="text-sm text-gray-800 leading-relaxed">{leaveCopyText}</p>
                     </div>
 
-                    {/* One prominent action: share to the điều phối group (copy fallback) */}
+                    {/* Single action: share to the điều phối group (copy fallback) */}
                     <button
                       onClick={handleNotify}
                       className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl py-4 text-base shadow-lg shadow-blue-600/30 transition-colors animate-pulse"
@@ -756,13 +763,6 @@ export default function ChamCongPage() {
                           <span>Thông báo đội điều phối để hoàn tất!</span>
                         </>
                       )}
-                    </button>
-
-                    <button
-                      onClick={resetLeaveForm}
-                      className="w-full border border-gray-300 rounded-xl py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
-                    >
-                      Đã gửi xong / Nộp thêm đơn khác
                     </button>
                   </div>
                 </div>
