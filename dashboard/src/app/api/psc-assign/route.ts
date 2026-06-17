@@ -112,9 +112,12 @@ export async function POST(req: NextRequest) {
     // so a normal request answers from one tiny read instead of two fleet-wide Cartrack
     // job fetches. Fall back to a live fetch only when the index isn't fresh (engine
     // disarmed / index aged out), so correctness never depends on the cycle running.
+    const tDup = Date.now();
     const pairKey = pscPairKey(pickup, dropoff);
     const { fresh, hit } = await lookupPscActivePickup(pairKey);
     const duplicate = fresh ? hit : await liveDuplicateCheck(pickup, dropoff, today, env);
+    const dupMs = Date.now() - tDup;
+    const dupSource = fresh ? "index" : "live";
 
     if (duplicate) {
       releaseLock(lockKey);
@@ -124,8 +127,9 @@ export async function POST(req: NextRequest) {
           message: `A job for this pickup already exists today (Job #${duplicate.job_id})`,
           job_id: duplicate.job_id,
           reference_number: duplicate.reference_number ?? null,
+          _timing: { source: dupSource, dup_ms: dupMs, create_ms: 0 },
         },
-        { status: 409 }
+        { status: 409, headers: { "Server-Timing": `dup;desc="${dupSource}";dur=${dupMs}` } }
       );
     }
 
@@ -186,11 +190,13 @@ export async function POST(req: NextRequest) {
       ],
     };
 
+    const tCreate = Date.now();
     const createRes = await fetch(`${BASE_URL}/jobs`, {
       method: "POST",
       headers: getHeaders(env),
       body: JSON.stringify(jobPayload),
     });
+    const createMs = Date.now() - tCreate;
 
     if (!createRes.ok) {
       releaseLock(lockKey);
@@ -206,11 +212,18 @@ export async function POST(req: NextRequest) {
     // blocked. Fire-and-forget — it must not delay the response.
     if (newJobId) void markPscActivePickup(pairKey, { job_id: newJobId, reference_number: refLabel });
 
-    return NextResponse.json({
-      success: true,
-      reference: refLabel,
-      job_id: newJobId,
-    });
+    // TEMP diagnostic: surface where the request time goes (dedup vs Cartrack create).
+    // `source` = "index" (fast Redis path) or "live" (fleet-wide fallback). Remove once
+    // the bottleneck is confirmed.
+    return NextResponse.json(
+      {
+        success: true,
+        reference: refLabel,
+        job_id: newJobId,
+        _timing: { source: dupSource, dup_ms: dupMs, create_ms: createMs },
+      },
+      { headers: { "Server-Timing": `dup;desc="${dupSource}";dur=${dupMs}, create;dur=${createMs}` } }
+    );
   } catch (e) {
     if (lockKey) releaseLock(lockKey);
     return NextResponse.json({ error: String(e) }, { status: 500 });
