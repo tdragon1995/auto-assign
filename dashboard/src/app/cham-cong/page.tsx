@@ -735,16 +735,6 @@ export default function ChamCongPage() {
                       <p className="text-sm font-semibold text-green-700">{leaveSuccessTitle}</p>
                     </div>
 
-                    {/* Required-step nudge */}
-                    <div className="rounded-lg px-4 py-3 bg-amber-50 border border-amber-300">
-                      <p className="text-sm font-semibold text-amber-800 flex items-center gap-1.5">
-                        <span>⚠️</span> Còn 1 bước nữa!
-                      </p>
-                      <p className="text-xs text-amber-700 mt-1">
-                        Đơn chỉ hoàn tất khi đội điều phối nhận được thông báo. Bấm nút bên dưới để gửi vào nhóm Zalo điều phối.
-                      </p>
-                    </div>
-
                     {/* Zalo message preview */}
                     <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
                       <p className="text-sm text-gray-800 leading-relaxed">{leaveCopyText}</p>
