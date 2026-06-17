@@ -48,6 +48,13 @@ export function Dashboard() {
   // (server puts it back, with an error) reappears instead of staying hidden.
   const HELD_DISMISS_MS = 30_000;
   const dismissedHeldRef = useRef<Map<number, number>>(new Map());
+  // Same optimistic-hide trick for manually-assigned failed jobs ("Gán thủ công"):
+  // hide on click, don't wait on the Cartrack assign. The failed snapshot is only
+  // rewritten each assign cycle (~3 min), so the window must outlast one cycle or a
+  // successful assign would flicker back from the stale snapshot. On error we
+  // re-emerge the row immediately (handleManualAssign), independent of this window.
+  const FAILED_DISMISS_MS = 4 * 60_000;
+  const dismissedFailedRef = useRef<Map<number, number>>(new Map());
   const syncStatus = useCallback(async () => {
     try {
       const since = lastLogTsRef.current;
@@ -83,7 +90,12 @@ export function Dashboard() {
         setHeld((data.held as HeldJob[]).filter((j) => !dismissed.has(j.job_id)));
       }
       if (Array.isArray(data.warnings)) setWarnings(data.warnings);
-      if (Array.isArray(data.failed)) setFailed(data.failed);
+      if (Array.isArray(data.failed)) {
+        const dismissed = dismissedFailedRef.current;
+        const now = Date.now();
+        for (const [id, exp] of dismissed) if (exp <= now) dismissed.delete(id);
+        setFailed((data.failed as FailedJob[]).filter((j) => !dismissed.has(j.job_id)));
+      }
     } catch {
       /* transient network error — keep last known state */
     }
@@ -104,6 +116,39 @@ export function Dashboard() {
       /* leave last known */
     }
   }, []);
+
+  // Manual assign from the Cần xử lý panel. Like "Giao ngay": hide the row at
+  // once and fire the Cartrack assign in the background — don't make the user wait
+  // on the round trip. If the assign errors, re-emerge the exact same row
+  // immediately (drop the dismissal + re-add the job object) and toast why.
+  const handleManualAssign = useCallback(
+    (job: FailedJob, driverId: string) => {
+      dismissedFailedRef.current.set(job.job_id, Date.now() + FAILED_DISMISS_MS);
+      setFailed((prev) => prev.filter((j) => j.job_id !== job.job_id));
+
+      (async () => {
+        try {
+          const res = await fetch("/api/admin/assign", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ job_id: job.job_id, driver_id: driverId, env }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+          toast.success(`Đã gán Job ${job.job_id}`);
+          // Reconcile after the cycle that clears the snapshot, so a success stays gone.
+          setTimeout(() => syncStatus(), FAILED_DISMISS_MS + 500);
+        } catch (err) {
+          dismissedFailedRef.current.delete(job.job_id);
+          setFailed((prev) =>
+            prev.some((j) => j.job_id === job.job_id) ? prev : [...prev, job],
+          );
+          toast.error(`Gán Job ${job.job_id} thất bại: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      })();
+    },
+    [env, syncStatus],
+  );
 
   const retrySchedule = useCallback(async () => {
     setRetryingSchedule(true);
@@ -362,6 +407,7 @@ export function Dashboard() {
                 warnings={warnings}
                 scheduleErrors={scheduleErrors}
                 drivers={drivers}
+                onAssign={handleManualAssign}
                 onRetrySchedule={retrySchedule}
                 retryingSchedule={retryingSchedule}
               />

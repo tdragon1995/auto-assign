@@ -73,29 +73,21 @@ function FailedRow({
   job,
   drivers,
   onAssign,
-  assigning,
 }: {
   job: FailedJob;
   drivers: ConfigDriver[];
-  onAssign: (jobId: number, driverId: string) => Promise<void>;
-  assigning: boolean;
+  onAssign: (job: FailedJob, driverId: string) => void;
 }) {
   const meta = metaFor(job.reason);
   const tone = TONE_STYLES[meta.tone];
   const [showDriverSelect, setShowDriverSelect] = useState(false);
   const [selectedDriver, setSelectedDriver] = useState<string>("");
-  const [assignError, setAssignError] = useState<string>("");
 
-  const handleAssign = async () => {
+  // Fire-and-forget: the parent optimistically removes this row and assigns in the
+  // background (re-emerging it on error), so there's nothing to await here.
+  const handleAssign = () => {
     if (!selectedDriver) return;
-    try {
-      setAssignError("");
-      await onAssign(job.job_id, selectedDriver);
-      setShowDriverSelect(false);
-      setSelectedDriver("");
-    } catch (err) {
-      setAssignError(err instanceof Error ? err.message : "Gán job thất bại");
-    }
+    onAssign(job, selectedDriver);
   };
 
   return (
@@ -134,10 +126,7 @@ function FailedRow({
           <div className="space-y-1.5 mt-2">
             <select
               value={selectedDriver}
-              onChange={(e) => {
-                setSelectedDriver(e.target.value);
-                setAssignError("");
-              }}
+              onChange={(e) => setSelectedDriver(e.target.value)}
               className="w-full px-2 py-1 text-[10px] border border-slate-300 rounded"
             >
               <option value="">Chọn Giao Nhận Mẫu...</option>
@@ -151,28 +140,23 @@ function FailedRow({
               <Button
                 size="sm"
                 className="flex-1 h-6 text-[10px] bg-blue-600 hover:bg-blue-700"
-                disabled={!selectedDriver || assigning}
+                disabled={!selectedDriver}
                 onClick={handleAssign}
               >
-                {assigning ? "Đang gán..." : "Gán"}
+                Gán
               </Button>
               <Button
                 size="sm"
                 variant="outline"
                 className="flex-1 h-6 text-[10px]"
-                disabled={assigning}
                 onClick={() => {
                   setShowDriverSelect(false);
                   setSelectedDriver("");
-                  setAssignError("");
                 }}
               >
                 Hủy
               </Button>
             </div>
-            {assignError && (
-              <p className="text-[10px] text-red-600">{assignError}</p>
-            )}
           </div>
         )}
       </div>
@@ -190,6 +174,7 @@ export function FailedJobsPanel({
   warnings,
   scheduleErrors,
   drivers,
+  onAssign,
   onRetrySchedule,
   retryingSchedule,
 }: {
@@ -197,28 +182,10 @@ export function FailedJobsPanel({
   warnings: PickupWarning[];
   scheduleErrors: ScheduleErrorRow[];
   drivers: ConfigDriver[];
+  onAssign: (job: FailedJob, driverId: string) => void;
   onRetrySchedule: () => void;
   retryingSchedule: boolean;
 }) {
-  const [assigning, setAssigning] = useState(false);
-
-  const handleAssign = async (jobId: number, driverId: string) => {
-    setAssigning(true);
-    try {
-      const res = await fetch("/api/admin/assign", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ job_id: jobId, driver_id: driverId }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error ?? "Gán job thất bại");
-      }
-      // Job assigned successfully — refresh will pick up the change
-    } finally {
-      setAssigning(false);
-    }
-  };
   const total = failed.length + warnings.length + scheduleErrors.length;
 
   // Group assign failures by reason in display-priority order.
@@ -256,8 +223,7 @@ export function FailedJobsPanel({
                     key={job.job_id}
                     job={job}
                     drivers={drivers}
-                    onAssign={handleAssign}
-                    assigning={assigning}
+                    onAssign={onAssign}
                   />
                 ))}
               </div>
