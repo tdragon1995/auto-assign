@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo, useRef } from "react";
-import { Copy, Check, Calendar, Clock, ClipboardCheck, FileText, NotepadText, Share2, CalendarDays, Search } from "lucide-react";
+import { Check, Calendar, Clock, ClipboardCheck, FileText, NotepadText, Share2, CalendarDays, Search } from "lucide-react";
 
 interface Driver {
   driver_id: string;
@@ -507,18 +507,23 @@ export default function ChamCongPage() {
     }
   }
 
-  async function handleCopy() {
+  // Single "notify" action behind the prominent button: open the native share
+  // sheet where it exists (mobile — lets the driver drop the message straight
+  // into the Zalo điều phối group), otherwise fall back to copying to clipboard
+  // (most desktops have no navigator.share). Must run from the button's own tap
+  // so the user-gesture is fresh — that's why it isn't auto-triggered on submit.
+  async function handleNotify() {
+    if (typeof navigator !== "undefined" && navigator.share) {
+      try {
+        await navigator.share({ text: leaveCopyText });
+      } catch { /* user cancelled — leave it, don't surprise-copy */ }
+      return;
+    }
     try {
       await navigator.clipboard.writeText(leaveCopyText);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch { /* ignore */ }
-  }
-
-  async function handleShare() {
-    try {
-      await navigator.share({ text: leaveCopyText });
-    } catch { /* user cancelled or unsupported */ }
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -727,35 +732,28 @@ export default function ChamCongPage() {
                     <p className="text-sm font-semibold text-green-700">{leaveSuccessTitle}</p>
                   </div>
 
-                  {/* Zalo copy box */}
+                  {/* Zalo message preview */}
                   <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
                     <p className="text-sm text-gray-800 leading-relaxed">{leaveCopyText}</p>
-                    <div className="flex items-center gap-2 mt-2.5">
-                      <button
-                        onClick={handleCopy}
-                        className="flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-800 transition-colors"
-                      >
-                        {copied ? (
-                          <Check size={14} className="text-green-600 shrink-0" />
-                        ) : (
-                          <Copy size={14} className="shrink-0" />
-                        )}
-                        <span>{copied ? "Đã copy!" : "Copy"}</span>
-                      </button>
-                      {typeof navigator !== "undefined" && !!navigator.share && (
-                        <>
-                          <span className="text-gray-300">|</span>
-                          <button
-                            onClick={handleShare}
-                            className="flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-800 transition-colors"
-                          >
-                            <Share2 size={14} className="shrink-0" />
-                            <span>Chia sẻ</span>
-                          </button>
-                        </>
-                      )}
-                    </div>
                   </div>
+
+                  {/* One prominent action: share to the điều phối group (copy fallback) */}
+                  <button
+                    onClick={handleNotify}
+                    className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl py-3 text-sm transition-colors"
+                  >
+                    {copied ? (
+                      <>
+                        <Check size={16} className="shrink-0" />
+                        <span>Đã copy! Dán vào nhóm Zalo điều phối</span>
+                      </>
+                    ) : (
+                      <>
+                        <Share2 size={16} className="shrink-0" />
+                        <span>Thông báo đội điều phối để hoàn tất!</span>
+                      </>
+                    )}
+                  </button>
 
                   <button
                     onClick={resetLeaveForm}
