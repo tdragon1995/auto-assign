@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo, useRef } from "react";
-import { Check, Calendar, Clock, ClipboardCheck, FileText, NotepadText, Share2, CalendarDays, Search } from "lucide-react";
+import { Check, Calendar, Clock, ClipboardCheck, FileText, NotepadText, Share2, CalendarDays, Search, ArrowRight } from "lucide-react";
 
 interface Driver {
   driver_id: string;
@@ -727,10 +727,15 @@ export default function ChamCongPage() {
                   onClick={resetLeaveForm}
                   className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-black/70 p-6"
                 >
+                  {/* Instruction so the button reads as a required action, not a banner */}
+                  <p className="text-white/80 text-sm font-medium text-center">
+                    👇 Bấm nút bên dưới để gửi cho đội điều phối
+                  </p>
+
                   {/* Single action: share to the điều phối group (copy fallback) */}
                   <button
                     onClick={(e) => { e.stopPropagation(); handleNotify(); }}
-                    className="w-full max-w-md flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl py-4 text-base shadow-lg shadow-blue-600/30 transition-colors"
+                    className="w-full max-w-md flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-bold rounded-xl py-4 text-base shadow-xl shadow-blue-600/40 ring-1 ring-white/25 transition-all"
                   >
                     {copied ? (
                       <>
@@ -741,6 +746,7 @@ export default function ChamCongPage() {
                       <>
                         <Share2 size={18} className="shrink-0" />
                         <span>Thông báo đội điều phối để hoàn tất!</span>
+                        <ArrowRight size={18} className="shrink-0" />
                       </>
                     )}
                   </button>
