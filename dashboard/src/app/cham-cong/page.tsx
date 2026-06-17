@@ -193,7 +193,6 @@ export default function ChamCongPage() {
   const [leaveStatus,       setLeaveStatus]       = useState<Status>("idle");
   const [leaveError,        setLeaveError]        = useState("");
   const [leaveCopyText,     setLeaveCopyText]     = useState("");
-  const [leaveSuccessTitle, setLeaveSuccessTitle] = useState("");
   const [copied, setCopied] = useState(false);
 
   // ── Lịch CN tab ───────────────────────────────────────────────────────────
@@ -439,7 +438,6 @@ export default function ChamCongPage() {
     setLeaveStatus("idle");
     setLeaveError("");
     setLeaveCopyText("");
-    setLeaveSuccessTitle("");
     setCopied(false);
   }
 
@@ -484,21 +482,16 @@ export default function ChamCongPage() {
         return;
       }
 
-      let title = "";
       let copyText = "";
 
       if (leaveType === "nguyen_buoi") {
-        title = "Nộp đơn nghỉ thành công!";
         copyText = `⚠️ Thông Báo Nghỉ Nguyên Buổi, ${driverName} đã nộp yêu cầu nghỉ từ ${fmtDate(leaveFromDate)} (${vnWeekday(leaveFromDate)}) đến ${fmtDate(leaveToDate)} (${vnWeekday(leaveToDate)}). Nhờ đội điều phối hỗ trợ sắp xếp để không gián đoạn công việc!`;
       } else if (leaveType === "nua_buoi") {
-        title = "Nộp đơn nghỉ thành công!";
         copyText = `⚠️ Thông Báo Nghỉ Nửa Buổi, ${driverName} đã nộp yêu cầu nghỉ từ ${leaveStartTime} đến ${leaveEndTime} ngày ${fmtDate(leaveDate)} (${vnWeekday(leaveDate)}). Nhờ đội điều phối hỗ trợ sắp xếp để không gián đoạn công việc!`;
       } else {
-        title = "Hoàn tất nộp đơn nghỉ việc, xin cám ơn bạn đã hợp tác trong thời gian qua!";
         copyText = `⚠️ Thông Báo Nghỉ Việc, ${driverName} đã nộp đơn chấm dứt hợp tác làm việc với Diag. Ngày cuối cùng làm việc là ${fmtDate(leaveDate)} (${vnWeekday(leaveDate)}). Nhờ đội điều phối hỗ trợ sắp xếp và hướng dẫn các thủ tục bàn giao!`;
       }
 
-      setLeaveSuccessTitle(title);
       setLeaveCopyText(copyText);
       setLeaveStatus("success");
     } catch (e) {
@@ -734,37 +727,23 @@ export default function ChamCongPage() {
                   onClick={resetLeaveForm}
                   className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
                 >
-                  <div
-                    onClick={(e) => e.stopPropagation()}
-                    className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4 max-h-[92vh] overflow-y-auto"
+                  {/* Single action only: share to the điều phối group (copy fallback) */}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleNotify(); }}
+                    className="w-full max-w-md flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl py-4 text-base shadow-lg shadow-blue-600/30 transition-colors"
                   >
-                    <div className="rounded-lg px-4 py-3 bg-green-50 border border-green-200">
-                      <p className="text-sm font-semibold text-green-700">{leaveSuccessTitle}</p>
-                    </div>
-
-                    {/* Zalo message preview */}
-                    <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
-                      <p className="text-sm text-gray-800 leading-relaxed">{leaveCopyText}</p>
-                    </div>
-
-                    {/* Single action: share to the điều phối group (copy fallback) */}
-                    <button
-                      onClick={handleNotify}
-                      className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl py-4 text-base shadow-lg shadow-blue-600/30 transition-colors animate-pulse"
-                    >
-                      {copied ? (
-                        <>
-                          <Check size={18} className="shrink-0" />
-                          <span>Đã copy! Dán vào nhóm Zalo điều phối</span>
-                        </>
-                      ) : (
-                        <>
-                          <Share2 size={18} className="shrink-0" />
-                          <span>Thông báo đội điều phối để hoàn tất!</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
+                    {copied ? (
+                      <>
+                        <Check size={18} className="shrink-0" />
+                        <span>Đã copy! Dán vào nhóm Zalo điều phối</span>
+                      </>
+                    ) : (
+                      <>
+                        <Share2 size={18} className="shrink-0" />
+                        <span>Thông báo đội điều phối để hoàn tất!</span>
+                      </>
+                    )}
+                  </button>
                 </div>
               ) : (
                 /* Leave form */
