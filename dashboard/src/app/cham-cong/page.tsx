@@ -725,9 +725,9 @@ export default function ChamCongPage() {
                    leave is actually communicated to điều phối. */
                 <div
                   onClick={resetLeaveForm}
-                  className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+                  className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-black/70 p-6"
                 >
-                  {/* Single action only: share to the điều phối group (copy fallback) */}
+                  {/* Single action: share to the điều phối group (copy fallback) */}
                   <button
                     onClick={(e) => { e.stopPropagation(); handleNotify(); }}
                     className="w-full max-w-md flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl py-4 text-base shadow-lg shadow-blue-600/30 transition-colors"
@@ -744,6 +744,11 @@ export default function ChamCongPage() {
                       </>
                     )}
                   </button>
+
+                  {/* Zalo message preview, on the dimmed backdrop */}
+                  <p className="w-full max-w-md text-sm text-white/90 leading-relaxed text-center">
+                    {leaveCopyText}
+                  </p>
                 </div>
               ) : (
                 /* Leave form */
