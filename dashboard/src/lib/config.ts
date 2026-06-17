@@ -60,10 +60,11 @@ export async function loadDriversFromSheet(): Promise<ConfigDriver[]> {
     for (const row of rows) {
       const driver_id = (row["driver_id"] ?? "").trim();
       const name = (row["name"] ?? "").trim();
-      if (driver_id && isValidDriverId(driver_id)) {
+      if (driver_id) {
         drivers.push({ driver_id, name: name || driver_id });
       }
     }
+    console.log(`Loaded ${drivers.length} drivers from sheet`);
     cachedDrivers = drivers.sort((a, b) => a.name.localeCompare(b.name));
     cachedDriversAt = Date.now();
     return cachedDrivers;
