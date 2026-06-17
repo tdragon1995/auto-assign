@@ -14,6 +14,15 @@ export interface Config {
   mappings: Mapping[];
 }
 
+// A driver derived from the config sheet (not a live Cartrack fetch): the union
+// of every fixed driver_id and smart_driver_id across mappings, with the name
+// from first_name_last_name where one is known. Used to populate the manual
+// "Gán thủ công" picker in the Cần xử lý panel without an /api/drivers call.
+export interface ConfigDriver {
+  driver_id: string;
+  name: string;
+}
+
 export interface Stop {
   stop_id?: number;
   stop_type_id?: number;

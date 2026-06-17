@@ -11,7 +11,7 @@ import { NoteReviewPanel, type HeldJob } from "./note-review-panel";
 import { JobAdminPanel } from "./job-admin-panel";
 import { FailedJobsPanel, type ScheduleErrorRow } from "./failed-jobs-panel";
 import { toast } from "sonner";
-import type { LogEntry, PickupWarning, FailedJob } from "@/lib/types";
+import type { LogEntry, PickupWarning, FailedJob, ConfigDriver } from "@/lib/types";
 
 type Env = "prod" | "uat";
 type RightTab = "live" | "failed" | "schedule" | "admin";
@@ -28,6 +28,7 @@ export function Dashboard() {
   const [failed, setFailed] = useState<FailedJob[]>([]);
   const [mappingCount, setMappingCount] = useState(0);
   const [pscRouteCount, setPscRouteCount] = useState(0);
+  const [drivers, setDrivers] = useState<ConfigDriver[]>([]);
   const [env, setEnv] = useState<Env>("prod");
   const [rightTab, setRightTab] = useState<RightTab>("live");
   const [logMode, setLogMode] = useState<LogMode>("live");
@@ -131,6 +132,7 @@ export function Dashboard() {
       .then((d) => {
         setMappingCount(d.mappingCount ?? 0);
         setPscRouteCount(d.pscRouteCount ?? 0);
+        setDrivers(d.drivers ?? []);
       })
       .catch(() => {});
     loadScheduleErrors();
@@ -227,6 +229,7 @@ export function Dashboard() {
       if (configData.status === "error") throw new Error(configData.error);
       setMappingCount(configData.mappingCount ?? 0);
       setPscRouteCount(configData.pscRouteCount ?? 0);
+      setDrivers(configData.drivers ?? []);
       toast.success(`Google Sheet reloaded: ${configData.mappingCount} mapping(s), ${configData.pscRouteCount} PSC route(s) fetched`);
     } catch (err) {
       toast.error(`Refresh failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -358,6 +361,7 @@ export function Dashboard() {
                 failed={failed}
                 warnings={warnings}
                 scheduleErrors={scheduleErrors}
+                drivers={drivers}
                 onRetrySchedule={retrySchedule}
                 retryingSchedule={retryingSchedule}
               />

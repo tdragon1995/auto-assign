@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
-import type { FailedJob, FailedReason, PickupWarning, Driver } from "@/lib/types";
+import type { FailedJob, FailedReason, PickupWarning, ConfigDriver } from "@/lib/types";
 
 export interface ScheduleErrorRow {
   pickup_id: string;
@@ -76,7 +76,7 @@ function FailedRow({
   assigning,
 }: {
   job: FailedJob;
-  drivers: Driver[];
+  drivers: ConfigDriver[];
   onAssign: (jobId: number, driverId: string) => Promise<void>;
   assigning: boolean;
 }) {
@@ -140,8 +140,8 @@ function FailedRow({
               >
                 <option value="">Chọn Giao Nhận Mẫu...</option>
                 {drivers.map((d) => (
-                  <option key={d.delivery_driver_id} value={d.delivery_driver_id}>
-                    {d.first_name} {d.last_name}
+                  <option key={d.driver_id} value={d.driver_id}>
+                    {d.name}
                   </option>
                 ))}
               </select>
@@ -188,32 +188,18 @@ export function FailedJobsPanel({
   failed,
   warnings,
   scheduleErrors,
+  drivers,
   onRetrySchedule,
   retryingSchedule,
 }: {
   failed: FailedJob[];
   warnings: PickupWarning[];
   scheduleErrors: ScheduleErrorRow[];
+  drivers: ConfigDriver[];
   onRetrySchedule: () => void;
   retryingSchedule: boolean;
 }) {
-  const [drivers, setDrivers] = useState<Driver[]>([]);
-  const [driversLoading, setDriversLoading] = useState(true);
   const [assigning, setAssigning] = useState(false);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch("/api/drivers");
-        const data = await res.json();
-        setDrivers(data.data ?? []);
-      } catch {
-        setDrivers([]);
-      } finally {
-        setDriversLoading(false);
-      }
-    })();
-  }, []);
 
   const handleAssign = async (jobId: number, driverId: string) => {
     setAssigning(true);
