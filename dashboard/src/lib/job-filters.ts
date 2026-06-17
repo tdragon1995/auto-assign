@@ -31,6 +31,14 @@ export function isActiveStop(stopStatusId: number): boolean {
   return stopStatusId === 1 || stopStatusId === 2 || stopStatusId === 3;
 }
 
+/** Canonical key for the PSC active-pickup dedup index: a `pickup|dropoff` customer
+ *  pair. Shared by the assign cycle (which writes the index) and /api/psc-assign
+ *  (which reads it), so the two never disagree on format. Dependency-free on purpose
+ *  — both the Node assign cycle and any edge route can import it. */
+export function pscPairKey(pickupCustomerId: string, dropoffCustomerId: string): string {
+  return `${pickupCustomerId}|${dropoffCustomerId}`;
+}
+
 /** True if this stop is terminal — no more work expected (Completed or Rejected). */
 export function isCompletedOrRejectedStop(stopStatusId: number): boolean {
   return stopStatusId === 4 || stopStatusId === 5;

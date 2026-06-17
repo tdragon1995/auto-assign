@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { vnDate, vnHoursMinutes } from "@/lib/time";
-import { isActiveStop } from "@/lib/job-filters";
+import { isActiveStop, pscPairKey } from "@/lib/job-filters";
 import { PSC_VIA_LABEL } from "@/lib/via-legs";
+import { lookupPscActivePickup, markPscActivePickup, type PscDupHit } from "@/lib/smart-log-kv";
+import type { Stop } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -43,6 +45,46 @@ async function fetchJobsToday(status: number, from: string, to: string, env: Env
   return data.data ?? [];
 }
 
+/**
+ * Live duplicate check — the fallback used only when the Redis fast-path index is
+ * stale/absent (assign engine disarmed). Fetches today's Assign-Later (2) and
+ * Assigned (4) jobs and scans for an active pickup at this location with a matching
+ * dropoff. Same predicate the assign cycle bakes into the index.
+ */
+async function liveDuplicateCheck(
+  pickup: string, dropoff: string, today: string, env: Env,
+): Promise<PscDupHit | null> {
+  const todayStart = `${today} 00:00:00`;
+  const todayEnd   = `${today} 23:59:59`;
+
+  // Only statuses 2 + 4 can block re-booking; fetch both in parallel.
+  const [unassignedJobs, assignedJobs] = await Promise.all([
+    fetchJobsToday(2, todayStart, todayEnd, env),
+    fetchJobsToday(4, todayStart, todayEnd, env),
+  ]);
+
+  // Block if a pickup stop is active (Created/En Route/Arrived) AND a dropoff matches.
+  // Allow re-booking once the pickup stop is Completed (4) or Rejected (5), or the
+  // job was cancelled (7) / failed (3). Via-legs are intentional double-coverage.
+  // (job/stop inferred from the any[] fetch results — no explicit annotation needed.)
+  const duplicate = [...unassignedJobs, ...assignedJobs].find((job) => {
+    if (job.job_status_id === 7 || job.job_status_id === 3) return false;
+    if ((job.labels ?? []).includes(PSC_VIA_LABEL)) return false;
+    const stops: Stop[] = job.stops ?? [];
+    const hasActivePickup = stops.some((s) =>
+      s.stop_type_id === 1 && s.customer_id === pickup && s.stop_status_id != null && isActiveStop(s.stop_status_id),
+    );
+    const hasMatchingDropoff = stops.some((s) =>
+      s.stop_type_id === 2 && s.customer_id === dropoff,
+    );
+    return hasActivePickup && hasMatchingDropoff;
+  });
+
+  return duplicate
+    ? { job_id: duplicate.job_id, reference_number: duplicate.reference_number ?? null }
+    : null;
+}
+
 export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
   let lockKey: string | null = null;
@@ -66,36 +108,13 @@ export async function POST(req: NextRequest) {
     }
 
     // --- Duplicate check ---
-    // Cartrack filters are GMT+7 — use VN date strings directly
-    const todayStart = `${today} 00:00:00`;
-    const todayEnd   = `${today} 23:59:59`;
-
-    // Fetch Assign Later (2) and Assigned (4) in parallel — only statuses that can block re-booking
-    const [unassignedJobs, assignedJobs] = await Promise.all([
-      fetchJobsToday(2, todayStart, todayEnd, env),
-      fetchJobsToday(4, todayStart, todayEnd, env),
-    ]);
-    const allJobs = [...unassignedJobs, ...assignedJobs];
-
-    // Block if pickup stop is active (Created/En Route/Arrived) AND job is not cancelled
-    // Allow re-booking once pickup stop is Completed (4) or Rejected (5), or job was cancelled
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const duplicate = allJobs.find((job: any) => {
-      if (job.job_status_id === 7 || job.job_status_id === 3) return false;
-      // Via-legs are intentional double-coverage — they don't block a location's own request.
-      if ((job.labels ?? []).includes(PSC_VIA_LABEL)) return false;
-      const stops = job.stops ?? [];
-      const hasActivePickup = stops.some((s: any) =>
-        s.stop_type_id === 1 &&
-        s.customer_id === pickup &&
-        isActiveStop(s.stop_status_id)
-      );
-      const hasMatchingDropoff = stops.some((s: any) =>
-        s.stop_type_id === 2 &&
-        s.customer_id === dropoff
-      );
-      return hasActivePickup && hasMatchingDropoff;
-    });
+    // Fast path: the assign cycle keeps a Redis index of active pickup→dropoff pairs,
+    // so a normal request answers from one tiny read instead of two fleet-wide Cartrack
+    // job fetches. Fall back to a live fetch only when the index isn't fresh (engine
+    // disarmed / index aged out), so correctness never depends on the cycle running.
+    const pairKey = pscPairKey(pickup, dropoff);
+    const { fresh, hit } = await lookupPscActivePickup(pairKey);
+    const duplicate = fresh ? hit : await liveDuplicateCheck(pickup, dropoff, today, env);
 
     if (duplicate) {
       releaseLock(lockKey);
@@ -180,11 +199,17 @@ export async function POST(req: NextRequest) {
     }
 
     const created = await createRes.json();
+    const newJobId = created.data?.job_id;
+
+    // Write-through: register the new job in the fast-path index immediately so a
+    // re-tap before the next cycle (which would otherwise not yet see this job) is
+    // blocked. Fire-and-forget — it must not delay the response.
+    if (newJobId) void markPscActivePickup(pairKey, { job_id: newJobId, reference_number: refLabel });
 
     return NextResponse.json({
       success: true,
       reference: refLabel,
-      job_id: created.data?.job_id,
+      job_id: newJobId,
     });
   } catch (e) {
     if (lockKey) releaseLock(lockKey);
