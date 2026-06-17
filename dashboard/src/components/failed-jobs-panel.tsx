@@ -117,64 +117,65 @@ function FailedRow({
       <p className="mt-0.5 text-[11px] text-slate-500 break-words">{job.detail}</p>
       <p className="mt-0.5 text-[10px] text-slate-400">Lần cuối: {job.ts.slice(11, 19)}</p>
 
-      {job.reason === "NO_DRIVER" || job.reason === "CLASH" ? (
-        <div className="mt-2">
-          {!showDriverSelect ? (
-            <Button
-              size="sm"
-              variant="outline"
-              className="text-[10px] h-6 px-2"
-              onClick={() => setShowDriverSelect(true)}
+      {/* Every failed-assign reason ends with the job unassigned, so all of them
+          allow a manual pick. (Manual assign is a direct Cartrack assign by
+          job_id + driver_id — independent of the sheet mapping.) */}
+      <div className="mt-2">
+        {!showDriverSelect ? (
+          <Button
+            size="sm"
+            variant="outline"
+            className="text-[10px] h-6 px-2"
+            onClick={() => setShowDriverSelect(true)}
+          >
+            Gán thủ công
+          </Button>
+        ) : (
+          <div className="space-y-1.5 mt-2">
+            <select
+              value={selectedDriver}
+              onChange={(e) => {
+                setSelectedDriver(e.target.value);
+                setAssignError("");
+              }}
+              className="w-full px-2 py-1 text-[10px] border border-slate-300 rounded"
             >
-              Gán thủ công
-            </Button>
-          ) : (
-            <div className="space-y-1.5 mt-2">
-              <select
-                value={selectedDriver}
-                onChange={(e) => {
-                  setSelectedDriver(e.target.value);
+              <option value="">Chọn Giao Nhận Mẫu...</option>
+              {drivers.map((d) => (
+                <option key={d.driver_id} value={d.driver_id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+            <div className="flex gap-1">
+              <Button
+                size="sm"
+                className="flex-1 h-6 text-[10px] bg-blue-600 hover:bg-blue-700"
+                disabled={!selectedDriver || assigning}
+                onClick={handleAssign}
+              >
+                {assigning ? "Đang gán..." : "Gán"}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="flex-1 h-6 text-[10px]"
+                disabled={assigning}
+                onClick={() => {
+                  setShowDriverSelect(false);
+                  setSelectedDriver("");
                   setAssignError("");
                 }}
-                className="w-full px-2 py-1 text-[10px] border border-slate-300 rounded"
               >
-                <option value="">Chọn Giao Nhận Mẫu...</option>
-                {drivers.map((d) => (
-                  <option key={d.driver_id} value={d.driver_id}>
-                    {d.name}
-                  </option>
-                ))}
-              </select>
-              <div className="flex gap-1">
-                <Button
-                  size="sm"
-                  className="flex-1 h-6 text-[10px] bg-blue-600 hover:bg-blue-700"
-                  disabled={!selectedDriver || assigning}
-                  onClick={handleAssign}
-                >
-                  {assigning ? "Đang gán..." : "Gán"}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="flex-1 h-6 text-[10px]"
-                  disabled={assigning}
-                  onClick={() => {
-                    setShowDriverSelect(false);
-                    setSelectedDriver("");
-                    setAssignError("");
-                  }}
-                >
-                  Hủy
-                </Button>
-              </div>
-              {assignError && (
-                <p className="text-[10px] text-red-600">{assignError}</p>
-              )}
+                Hủy
+              </Button>
             </div>
-          )}
-        </div>
-      ) : null}
+            {assignError && (
+              <p className="text-[10px] text-red-600">{assignError}</p>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
