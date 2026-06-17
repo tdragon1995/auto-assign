@@ -82,13 +82,24 @@ function FailedRow({
   const tone = TONE_STYLES[meta.tone];
   const [showDriverSelect, setShowDriverSelect] = useState(false);
   const [selectedDriver, setSelectedDriver] = useState<string>("");
+  const [searchInput, setSearchInput] = useState<string>("");
 
-  // Fire-and-forget: the parent optimistically removes this row and assigns in the
-  // background (re-emerging it on error), so there's nothing to await here.
+  const filteredDrivers = drivers.filter(d =>
+    d.name.toLowerCase().includes(searchInput.toLowerCase()) ||
+    d.driver_id.toLowerCase().includes(searchInput.toLowerCase())
+  );
+
+  const handleSelectDriver = (driverId: string) => {
+    setSelectedDriver(driverId);
+    setSearchInput("");
+  };
+
   const handleAssign = () => {
     if (!selectedDriver) return;
     onAssign(job, selectedDriver);
   };
+
+  const selectedDriverName = drivers.find(d => d.driver_id === selectedDriver)?.name;
 
   return (
     <div className={`rounded border border-l-4 bg-white p-2 ${tone.border}`}>
@@ -124,18 +135,47 @@ function FailedRow({
           </Button>
         ) : (
           <div className="space-y-1.5 mt-2">
-            <select
-              value={selectedDriver}
-              onChange={(e) => setSelectedDriver(e.target.value)}
-              className="w-full px-2 py-1 text-[10px] border border-slate-300 rounded"
-            >
-              <option value="">Chọn Giao Nhận Mẫu...</option>
-              {drivers.map((d) => (
-                <option key={d.driver_id} value={d.driver_id}>
-                  {d.name}
-                </option>
-              ))}
-            </select>
+            <div className="flex items-center gap-1">
+              <div className="relative flex-1">
+                <input
+                  type="text"
+                  placeholder="Tìm tài xế..."
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
+                  className="w-full px-2 py-1 text-[10px] border border-slate-300 rounded"
+                  autoFocus
+                />
+                {selectedDriver && (
+                  <button
+                    onClick={() => {
+                      setSelectedDriver("");
+                      setSearchInput("");
+                    }}
+                    className="absolute right-1 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            </div>
+            {selectedDriver && selectedDriverName && (
+              <div className="text-[10px] px-2 py-1 bg-blue-50 border border-blue-200 rounded text-slate-700">
+                Đã chọn: {selectedDriverName}
+              </div>
+            )}
+            {searchInput && filteredDrivers.length > 0 && (
+              <div className="border border-slate-300 rounded max-h-32 overflow-y-auto">
+                {filteredDrivers.map((d) => (
+                  <button
+                    key={d.driver_id}
+                    onClick={() => handleSelectDriver(d.driver_id)}
+                    className="block w-full text-left px-2 py-1 text-[10px] hover:bg-slate-100 border-b border-slate-200 last:border-b-0"
+                  >
+                    {d.name}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="flex gap-1">
               <Button
                 size="sm"
@@ -152,6 +192,7 @@ function FailedRow({
                 onClick={() => {
                   setShowDriverSelect(false);
                   setSelectedDriver("");
+                  setSearchInput("");
                 }}
               >
                 Hủy
