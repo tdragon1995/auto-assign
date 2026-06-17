@@ -10,9 +10,18 @@ let cachedAt = 0;
 // stale load (e.g. a transiently empty Sunday read) would persist for that instance's life.
 const CONFIG_TTL_MS = 5 * 60 * 1000;
 
+let cachedDrivers: ConfigDriver[] | null = null;
+let cachedDriversAt = 0;
+const DRIVERS_TTL_MS = 5 * 60 * 1000;
+
 export function invalidateConfigCache(): void {
   cachedConfig = null;
   cachedAt = 0;
+}
+
+export function invalidateDriversCache(): void {
+  cachedDrivers = null;
+  cachedDriversAt = 0;
 }
 
 export function parseTime(
@@ -41,6 +50,27 @@ const DRIVER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
  *  drop them at load time. */
 export function isValidDriverId(id: string): boolean {
   return DRIVER_ID_RE.test(id.trim());
+}
+
+export async function loadDriversFromSheet(): Promise<ConfigDriver[]> {
+  if (cachedDrivers && Date.now() - cachedDriversAt < DRIVERS_TTL_MS) return cachedDrivers;
+  try {
+    const rows = await fetchSheetRows(SHEET_GID.drivers);
+    const drivers: ConfigDriver[] = [];
+    for (const row of rows) {
+      const driver_id = (row["driver_id"] ?? "").trim();
+      const name = (row["name"] ?? "").trim();
+      if (driver_id && isValidDriverId(driver_id)) {
+        drivers.push({ driver_id, name: name || driver_id });
+      }
+    }
+    cachedDrivers = drivers.sort((a, b) => a.name.localeCompare(b.name));
+    cachedDriversAt = Date.now();
+    return cachedDrivers;
+  } catch (e) {
+    console.error("Error loading drivers from sheet:", e);
+    return cachedDrivers || [];
+  }
 }
 
 /** Deduplicated driver list from the config: the union of every valid fixed

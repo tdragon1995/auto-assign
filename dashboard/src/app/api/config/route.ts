@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { loadConfigFromSheets, invalidateConfigCache, driversFromConfig } from "@/lib/config";
+import { loadConfigFromSheets, invalidateConfigCache, loadDriversFromSheet, invalidateDriversCache } from "@/lib/config";
 import { loadPscRoutes, invalidatePscCache } from "@/lib/psc-config";
 import { invalidateStartLocCache } from "@/lib/assign";
 
@@ -7,11 +7,13 @@ export async function GET() {
   try {
     // Bust the caches so fresh sheet data (and start-location coords) is loaded
     invalidateConfigCache();
+    invalidateDriversCache();
     invalidatePscCache();
     invalidateStartLocCache();
 
-    const [config, pscRoutes] = await Promise.all([
+    const [config, drivers, pscRoutes] = await Promise.all([
       loadConfigFromSheets(),
+      loadDriversFromSheet(),
       loadPscRoutes().catch(() => []),
     ]);
 
@@ -25,9 +27,9 @@ export async function GET() {
     return NextResponse.json({
       mappingCount: config.mappings.length,
       pscRouteCount: pscRoutes.length,
-      // Derived from the config above — no extra fetch. Populates the manual
+      // Fetched from dedicated drivers sheet. Populates the manual
       // "Gán thủ công" driver picker in the Cần xử lý panel.
-      drivers: driversFromConfig(config),
+      drivers,
       status: "ok",
     });
   } catch (e) {
