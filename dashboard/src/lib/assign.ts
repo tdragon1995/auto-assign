@@ -602,8 +602,13 @@ export async function autoAssignCycle(
     const allToday = await getJobsByDate(today, env);
     s2Jobs = []; const s4Jobs: Job[] = []; const s5Jobs: Job[] = [];
     for (const j of allToday) {
-      if (j.job_status_id === 2) s2Jobs.push(j);
-      else if (j.job_status_id === 4) s4Jobs.push(j);
+      // A job with a driver is ASSIGNED regardless of status (footgun #1, reverse):
+      // a manual assignment can leave the list reporting status 2 while
+      // delivery_driver_id is already set. Treating it as unassigned would re-flag
+      // it (e.g. NO MAPPING) every cycle, so count it as assigned instead.
+      const assigned = !!j.delivery_driver_id;
+      if (j.job_status_id === 2 && !assigned) s2Jobs.push(j);
+      else if (j.job_status_id === 4 || (j.job_status_id === 2 && assigned)) s4Jobs.push(j);
       else if (j.job_status_id === 5) s5Jobs.push(j);
     }
     // s2Jobs is the FULL unassigned list — safe to share with the follow-up dedup

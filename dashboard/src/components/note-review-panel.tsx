@@ -79,11 +79,15 @@ export function NoteReviewPanel({
   env,
   onRefresh,
   onAssigned,
+  embedded = false,
 }: {
   held: HeldJob[];
   env: "prod" | "uat";
   onRefresh: () => void;
   onAssigned: (jobId: number) => void;
+  // When true, render as a bare section (no Card) so it can sit inside the
+  // unified "Cần xử lý" block alongside the unassignable + late sections.
+  embedded?: boolean;
 }) {
   const [busyId, setBusyId] = useState<number | null>(null);
   // Per-job schedule state: dayOffset 0/1/2, selected time label "HH:MM" or null
@@ -139,16 +143,7 @@ export function NoteReviewPanel({
 
   if (held.length === 0) return null;
 
-  return (
-    <Card className="py-4 border-orange-300">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm flex items-center gap-2">
-          📝 Chờ duyệt ghi chú
-          <span className="text-orange-600 font-semibold">{held.length}</span>
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-2">
-        {held.map((job) => {
+  const rows = held.map((job) => {
           const { dayOffset, timeLabel } = getSched(job.job_id);
           const isBusy = busyId === job.job_id;
           const slots = availableSlots(dayOffset);
@@ -258,8 +253,32 @@ export function NoteReviewPanel({
               </div>
             </div>
           );
-        })}
-      </CardContent>
+  });
+
+  // Section header + rows, shared by both render modes.
+  const section = (
+    <>
+      <div className="flex items-center gap-1.5 pt-1">
+        <span className="text-[11px] font-bold uppercase tracking-wide text-orange-700">📝 Tasks có ghi chú</span>
+        <span className="rounded-full bg-orange-100 border border-orange-200 px-1.5 leading-none py-0.5 text-[10px] text-orange-700">
+          {held.length}
+        </span>
+      </div>
+      {rows}
+    </>
+  );
+
+  if (embedded) return <div className="space-y-2">{section}</div>;
+
+  return (
+    <Card className="py-4 border-orange-300">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm flex items-center gap-2">
+          📝 Chờ duyệt ghi chú
+          <span className="text-orange-600 font-semibold">{held.length}</span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2">{rows}</CardContent>
     </Card>
   );
 }

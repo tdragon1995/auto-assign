@@ -7,14 +7,14 @@ import { ServiceStatus } from "./stats-sidebar";
 import { ActivityLog } from "./activity-log";
 import { ScheduleListPanel } from "./schedule-list-panel";
 import { SmartLogHistory } from "./smart-log-history";
-import { NoteReviewPanel, type HeldJob } from "./note-review-panel";
+import { type HeldJob } from "./note-review-panel";
 import { JobAdminPanel } from "./job-admin-panel";
 import { FailedJobsPanel, type ScheduleErrorRow } from "./failed-jobs-panel";
 import { toast } from "sonner";
 import type { LogEntry, PickupWarning, FailedJob, ConfigDriver } from "@/lib/types";
 
 type Env = "prod" | "uat";
-type RightTab = "live" | "failed" | "schedule" | "admin";
+type RightTab = "live" | "schedule" | "admin";
 type LogMode = "live" | "smart";
 
 export function Dashboard() {
@@ -282,7 +282,7 @@ export function Dashboard() {
   }, [syncStatus, loadScheduleErrors]);
 
   const isProd = env === "prod";
-  const attentionCount = failed.length + warnings.length + scheduleErrors.length;
+  const attentionCount = held.length + failed.length + warnings.length + scheduleErrors.length;
 
   const tabBtn = (active: boolean) =>
     `px-3 py-1.5 text-xs font-semibold rounded transition-colors border flex items-center gap-1.5 whitespace-nowrap ${
@@ -328,38 +328,14 @@ export function Dashboard() {
         </div>
       </header>
 
-      {/* Body — stacks on mobile, side-by-side from lg up */}
-      <div className="flex flex-col lg:flex-row flex-1 lg:min-h-0 p-2 sm:p-3 gap-3">
-        {/* Sidebar: only the note-review tasks live here now (delay + schedule
-            moved into tabs). Rendered only when there's something to review, so a
-            clean day gives the main panel the full width. */}
-        {held.length > 0 && (
-          <div className="flex flex-col gap-3 w-full lg:w-72 xl:w-80 shrink-0">
-            <NoteReviewPanel
-              held={held}
-              env={env}
-              onRefresh={syncStatus}
-              onAssigned={(jobId) => {
-                dismissedHeldRef.current.set(jobId, Date.now() + HELD_DISMISS_MS);
-                setHeld((prev) => prev.filter((j) => j.job_id !== jobId));
-                // After the background-write window, re-check the server so a failed
-                // job (which the server puts back) reappears promptly.
-                setTimeout(() => syncStatus(), HELD_DISMISS_MS + 500);
-              }}
-            />
-          </div>
-        )}
-
-        {/* Right: tabbed panel. Fixed height on mobile so the inner ScrollArea
-            works; fills the column on desktop. */}
+      {/* Body — single full-width column now (the sidebar is gone; note tasks
+          live inside the Cần xử lý block at the top of Live Log). */}
+      <div className="flex flex-col flex-1 lg:min-h-0 p-2 sm:p-3">
         <div className="flex-1 min-w-0 flex flex-col gap-1.5">
           {/* Tab bar */}
           <div className="flex items-center gap-1 shrink-0 overflow-x-auto">
             <button onClick={() => setRightTab("live")} className={tabBtn(rightTab === "live")}>
               Live Log
-            </button>
-            <button onClick={() => setRightTab("failed")} className={tabBtn(rightTab === "failed")}>
-              Cần xử lý
               {attentionCount > 0 && (
                 <span className="rounded-full bg-red-600 text-white px-1.5 leading-none py-0.5 text-[10px] font-bold">
                   {attentionCount}
@@ -375,10 +351,31 @@ export function Dashboard() {
           </div>
 
           {/* Tab content */}
-          <div className="flex-1 min-h-0 h-[65vh] lg:h-auto">
+          <div className="flex-1 min-h-0 h-[70vh] lg:h-auto">
             {rightTab === "live" ? (
               <div className="flex flex-col h-full gap-1.5">
-                {/* Smart History is now a mode inside Live Log, not a top tab */}
+                {/* Cần xử lý block — note tasks + unassignable + late, above the log */}
+                <FailedJobsPanel
+                  held={held}
+                  env={env}
+                  onNoteRefresh={syncStatus}
+                  onNoteAssigned={(jobId) => {
+                    dismissedHeldRef.current.set(jobId, Date.now() + HELD_DISMISS_MS);
+                    setHeld((prev) => prev.filter((j) => j.job_id !== jobId));
+                    // After the background-write window, re-check the server so a
+                    // failed job (which the server puts back) reappears promptly.
+                    setTimeout(() => syncStatus(), HELD_DISMISS_MS + 500);
+                  }}
+                  failed={failed}
+                  warnings={warnings}
+                  scheduleErrors={scheduleErrors}
+                  drivers={drivers}
+                  onAssign={handleManualAssign}
+                  onRetrySchedule={retrySchedule}
+                  retryingSchedule={retryingSchedule}
+                />
+
+                {/* Log mode toggle: Smart History is a mode inside Live Log */}
                 <div className="flex items-center gap-1 shrink-0">
                   <button
                     onClick={() => setLogMode("live")}
@@ -401,16 +398,6 @@ export function Dashboard() {
                   {logMode === "live" ? <ActivityLog logs={logs} /> : <SmartLogHistory />}
                 </div>
               </div>
-            ) : rightTab === "failed" ? (
-              <FailedJobsPanel
-                failed={failed}
-                warnings={warnings}
-                scheduleErrors={scheduleErrors}
-                drivers={drivers}
-                onAssign={handleManualAssign}
-                onRetrySchedule={retrySchedule}
-                retryingSchedule={retryingSchedule}
-              />
             ) : rightTab === "schedule" ? (
               <ScheduleListPanel env={env} />
             ) : (

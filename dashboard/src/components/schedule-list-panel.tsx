@@ -174,10 +174,7 @@ export function ScheduleListPanel({ env }: { env: Env }) {
                     </span>
                   </div>
                   <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-500">
-                    <span>
-                      <span className="font-semibold text-slate-400">Thứ:</span>{" "}
-                      {days.length ? days.map((i) => DAY_FULL[i]).join(" · ") : "—"}
-                    </span>
+                    <span>{days.length ? days.map((i) => DAY_FULL[i]).join(" · ") : "—"}</span>
                     <span>
                       <span className="font-semibold text-slate-400">Gửi:</span>{" "}
                       {sendTime} <span className="text-slate-400">(trước {r.sent_to_driver_before}′)</span>

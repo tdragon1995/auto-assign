@@ -3,8 +3,8 @@
 import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
+import { NoteReviewPanel, type HeldJob } from "./note-review-panel";
 import type { FailedJob, FailedReason, PickupWarning, ConfigDriver } from "@/lib/types";
 
 export interface ScheduleErrorRow {
@@ -211,6 +211,10 @@ function FailedRow({
  * things a supervisor needs to act on, in one place.
  */
 export function FailedJobsPanel({
+  held,
+  env,
+  onNoteRefresh,
+  onNoteAssigned,
   failed,
   warnings,
   scheduleErrors,
@@ -219,6 +223,10 @@ export function FailedJobsPanel({
   onRetrySchedule,
   retryingSchedule,
 }: {
+  held: HeldJob[];
+  env: "prod" | "uat";
+  onNoteRefresh: () => void;
+  onNoteAssigned: (jobId: number) => void;
   failed: FailedJob[];
   warnings: PickupWarning[];
   scheduleErrors: ScheduleErrorRow[];
@@ -227,7 +235,7 @@ export function FailedJobsPanel({
   onRetrySchedule: () => void;
   retryingSchedule: boolean;
 }) {
-  const total = failed.length + warnings.length + scheduleErrors.length;
+  const total = held.length + failed.length + warnings.length + scheduleErrors.length;
 
   // Group assign failures by reason in display-priority order.
   const byReason = new Map<FailedReason, FailedJob[]>();
@@ -240,22 +248,35 @@ export function FailedJobsPanel({
     .sort((a, b) => metaFor(a[0]).order - metaFor(b[0]).order)
     .map(([reason, jobs]) => [reason, jobs.sort((a, b) => a.job_id - b.job_id)] as const);
 
+  // Hide entirely when there's nothing to act on, so the Live Log's Activity Log
+  // gets the full height.
+  if (total === 0) return null;
+
   return (
-    <Card className="flex flex-col h-full py-4">
+    <Card className="flex flex-col py-3 border-orange-300 shrink-0">
       <CardHeader className="pb-2 shrink-0">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-sm">Cần xử lý</CardTitle>
+          <CardTitle className="text-sm">⚠️ Cần xử lý</CardTitle>
           <span className="text-xs text-muted-foreground">{total} mục</span>
         </div>
       </CardHeader>
-      <CardContent className="flex-1 min-h-0">
-        <ScrollArea className="h-full">
-          <div className="space-y-2 text-xs pr-3">
-            {total === 0 && (
-              <p className="text-muted-foreground text-center py-8">Không có gì cần xử lý 🎉</p>
+      <CardContent className="min-h-0">
+        {/* Capped height with its own scroll so a long list never pushes the
+            Activity Log below off-screen. Order: notes → other unassignable →
+            late pickups. */}
+        <div className="max-h-[40vh] overflow-y-auto space-y-2 text-xs pr-1">
+            {/* ── Tasks with note (part of "unassignable") ─────────────────── */}
+            {held.length > 0 && (
+              <NoteReviewPanel
+                held={held}
+                env={env}
+                onRefresh={onNoteRefresh}
+                onAssigned={onNoteAssigned}
+                embedded
+              />
             )}
 
-            {/* ── Assign failures ─────────────────────────────────────────── */}
+            {/* ── Other unassignable: assign failures ─────────────────────── */}
             {groups.map(([reason, jobs]) => (
               <div key={reason} className="space-y-1.5">
                 <SectionHeader label={metaFor(reason).label} count={jobs.length} />
@@ -270,7 +291,38 @@ export function FailedJobsPanel({
               </div>
             ))}
 
-            {/* ── Late pickups (consolidated from "Lấy mẫu chậm") ──────────── */}
+            {/* ── Other unassignable: fixed-schedule run errors ───────────── */}
+            {scheduleErrors.length > 0 && (
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  <SectionHeader label="Lịch cố định lỗi" count={scheduleErrors.length} tone="red" />
+                  <Button
+                    size="sm"
+                    className="h-6 text-[11px] px-2 bg-red-600 hover:bg-red-700"
+                    disabled={retryingSchedule}
+                    onClick={onRetrySchedule}
+                  >
+                    {retryingSchedule ? "Đang chạy…" : "Chạy lại lỗi"}
+                  </Button>
+                </div>
+                {scheduleErrors.map((e, i) => (
+                  <div
+                    key={`${e.reference_number}-${i}`}
+                    className="rounded border border-l-4 border-l-red-500 bg-white p-2"
+                  >
+                    <div className="font-semibold text-slate-800">
+                      {labelFor(e.pickup_name, e.pickup_id)} <span className="text-slate-400">→</span> {labelFor(e.dropoff_name, e.dropoff_id)}
+                      {e.delivery_window && (
+                        <span className="ml-1.5 font-mono text-[11px] text-indigo-600">{e.delivery_window}</span>
+                      )}
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-red-700 break-words">{e.message}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* ── Late pickups ("Lấy mẫu chậm") — last ─────────────────────── */}
             {warnings.length > 0 && (
               <div className="space-y-1.5">
                 <SectionHeader label="Lấy mẫu chậm" count={warnings.length} tone="amber" />
@@ -302,39 +354,7 @@ export function FailedJobsPanel({
                 ))}
               </div>
             )}
-
-            {/* ── Fixed-schedule run errors ───────────────────────────────── */}
-            {scheduleErrors.length > 0 && (
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between gap-2 pt-1">
-                  <SectionHeader label="Lịch cố định lỗi" count={scheduleErrors.length} tone="red" />
-                  <Button
-                    size="sm"
-                    className="h-6 text-[11px] px-2 bg-red-600 hover:bg-red-700"
-                    disabled={retryingSchedule}
-                    onClick={onRetrySchedule}
-                  >
-                    {retryingSchedule ? "Đang chạy…" : "Chạy lại lỗi"}
-                  </Button>
-                </div>
-                {scheduleErrors.map((e, i) => (
-                  <div
-                    key={`${e.reference_number}-${i}`}
-                    className="rounded border border-l-4 border-l-red-500 bg-white p-2"
-                  >
-                    <div className="font-semibold text-slate-800">
-                      {labelFor(e.pickup_name, e.pickup_id)} <span className="text-slate-400">→</span> {labelFor(e.dropoff_name, e.dropoff_id)}
-                      {e.delivery_window && (
-                        <span className="ml-1.5 font-mono text-[11px] text-indigo-600">{e.delivery_window}</span>
-                      )}
-                    </div>
-                    <p className="mt-0.5 text-[11px] text-red-700 break-words">{e.message}</p>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </ScrollArea>
+        </div>
       </CardContent>
     </Card>
   );

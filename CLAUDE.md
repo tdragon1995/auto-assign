@@ -114,7 +114,7 @@ All business logic uses `Asia/Ho_Chi_Minh` (UTC+7). Cartrack timestamps arrive w
 
 These are the things most likely to burn a future agent working on this codebase.
 
-1. **`job_status_id=4` does not mean a driver is assigned.** Cartrack can return a job with status `4 (Assigned)` while `delivery_driver_id` and `assigned_ts` are both `null`. Always check `delivery_driver_id` directly, not just status.
+1. **`job_status_id` and assignment can disagree — trust `delivery_driver_id`.** Cartrack can return status `4 (Assigned)` with `delivery_driver_id` null; it can also return status `2` with a `delivery_driver_id` already set (e.g. after a *manual* assignment the list lags at status 2). So a job is assigned iff `delivery_driver_id` is set, regardless of status — the cycle's status-2/4 partition checks this, otherwise a manually-assigned job gets re-flagged (NO MAPPING, etc.) every cycle.
 
 2. **`getUnassignedJobs` has no time filter.** It only filters by `job_status_id=2`; the assign cycle then drops old jobs locally by `create_ts`. This is correct for ad-hoc jobs but wrong for scheduled/planned jobs — use `scheduled_delivery_ts` filtering for those.
 
