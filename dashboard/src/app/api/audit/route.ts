@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { deleteJob, BASE_URL, getHeaders, isDriverUnavailableError, type Env } from "@/lib/cartrack";
 import { vnDate } from "@/lib/time";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
+import { acquireCreateLock, releaseCreateLock } from "@/lib/smart-log-kv";
 
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 
@@ -115,6 +116,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
+  let lockKey: string | null = null;
 
   try {
     const { driver_id, driver_first_name, driver_last_name, driver_full_name, location_customer_id } =
@@ -126,6 +128,17 @@ export async function POST(req: NextRequest) {
 
     const headers = getHeaders(env);
     const today = vnDate();
+
+    // Cross-instance guard: make the "1 audit per driver per day" check-then-create
+    // atomic across instances, so two concurrent requests can't both pass the check and
+    // create duplicates. Held to its TTL on success, released on every failure path.
+    lockKey = `audit:${driver_id}-${today}`;
+    if (!(await acquireCreateLock(lockKey))) {
+      return NextResponse.json(
+        { error: "duplicate", message: "Đang xử lý yêu cầu, vui lòng đợi." },
+        { status: 409 }
+      );
+    }
 
     // Duplicate check: block if driver already has an audit job today
     const checkRes = await fetch(
@@ -143,6 +156,7 @@ export async function POST(req: NextRequest) {
           j.job_status_id !== 3
       );
       if (hasAuditToday) {
+        void releaseCreateLock(lockKey);
         return NextResponse.json(
           { error: "Giao Nhận Mẫu đã tạo audit hôm nay rồi. Mỗi ngày chỉ được tạo 1 lần." },
           { status: 409 }
@@ -176,6 +190,7 @@ export async function POST(req: NextRequest) {
     });
 
     if (!createRes.ok) {
+      void releaseCreateLock(lockKey);
       const errBody = await createRes.json().catch(() => ({}));
       if (isDriverUnavailableError(errBody)) {
         return NextResponse.json(
@@ -192,12 +207,14 @@ export async function POST(req: NextRequest) {
     const created = await createRes.json();
     const jobId: number | undefined = created.data?.job_id;
     if (!jobId) {
+      void releaseCreateLock(lockKey);
       return NextResponse.json({ error: "Cartrack không trả về job_id" }, { status: 500 });
     }
 
     // Defensive: a 200 can still come back unassigned (status 4 ≠ driver set). Verify, else roll back.
     if (created.data?.delivery_driver_id !== driver_id) {
       await deleteJob(jobId, env);
+      void releaseCreateLock(lockKey);
       return NextResponse.json(
         { error: "Tạo audit chưa thành công, vui lòng thử lại. Liên hệ điều phối nếu vẫn gặp lỗi!" },
         { status: 500 }
@@ -206,6 +223,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success: true, job_id: jobId, reference_number: refNumber });
   } catch (e) {
+    if (lockKey) void releaseCreateLock(lockKey);
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
 }
