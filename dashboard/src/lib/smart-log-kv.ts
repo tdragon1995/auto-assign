@@ -350,6 +350,20 @@ export async function markPscActivePickup(pairKey: string, hit: PscDupHit): Prom
   await redis.set(PSC_ACTIVE_PICKUPS_KEY, JSON.stringify(idx), { ex: PSC_INDEX_TTL_SEC });
 }
 
+/** Drop a pair from the fast-path index — called when a PSC job is cancelled, so the
+ *  same pickup→dropoff can be re-requested immediately instead of being blocked by the
+ *  now-cancelled job until the next cycle rebuilds the index. Read-modify-write; the
+ *  cycle is the source of truth and re-adds the pair if another active job still
+ *  matches it. */
+export async function unmarkPscActivePickup(pairKey: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  const idx = parsePscIndex(await redis.get<string | Record<string, PscDupHit>>(PSC_ACTIVE_PICKUPS_KEY));
+  if (!idx || !(pairKey in idx)) return;
+  delete idx[pairKey];
+  await redis.set(PSC_ACTIVE_PICKUPS_KEY, JSON.stringify(idx), { ex: PSC_INDEX_TTL_SEC });
+}
+
 // ── Overlap lock — one cycle at a time, safe at any cron frequency ──────────
 
 /** Try to claim the cycle lock. Returns true if claimed (caller may run the
