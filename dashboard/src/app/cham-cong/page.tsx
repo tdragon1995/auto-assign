@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo, useRef } from "react";
-import { Check, Calendar, Clock, ClipboardCheck, FileText, NotepadText, Share2, CalendarDays, Search, ArrowLeft } from "lucide-react";
+import { Calendar, Clock, ClipboardCheck, FileText, NotepadText, CalendarDays, Search } from "lucide-react";
 
 interface Driver {
   driver_id: string;
@@ -192,8 +192,7 @@ export default function ChamCongPage() {
   const [leaveEndTime,      setLeaveEndTime]      = useState("");
   const [leaveStatus,       setLeaveStatus]       = useState<Status>("idle");
   const [leaveError,        setLeaveError]        = useState("");
-  const [leaveCopyText,     setLeaveCopyText]     = useState("");
-  const [copied, setCopied] = useState(false);
+  const [leaveSummary,      setLeaveSummary]      = useState("");
 
   // ── Lịch CN tab ───────────────────────────────────────────────────────────
   const [schedule,       setSchedule]       = useState<ScheduleData | null>(null);
@@ -437,8 +436,7 @@ export default function ChamCongPage() {
     setLeaveEndTime("");
     setLeaveStatus("idle");
     setLeaveError("");
-    setLeaveCopyText("");
-    setCopied(false);
+    setLeaveSummary("");
   }
 
   async function submitLeave() {
@@ -482,42 +480,23 @@ export default function ChamCongPage() {
         return;
       }
 
-      let copyText = "";
-
+      // Notification to điều phối is now handled by a bot trigger on submit, so
+      // the form only needs to confirm what was submitted.
+      let summary = "";
       if (leaveType === "nguyen_buoi") {
-        copyText = `⚠️ Thông Báo Nghỉ Nguyên Buổi, ${driverName} đã nộp yêu cầu nghỉ từ ${fmtDate(leaveFromDate)} (${vnWeekday(leaveFromDate)}) đến ${fmtDate(leaveToDate)} (${vnWeekday(leaveToDate)}). Nhờ đội điều phối hỗ trợ sắp xếp để không gián đoạn công việc!`;
+        summary = `Bạn đã nộp phép thành công: nghỉ nguyên buổi từ ${fmtDate(leaveFromDate)} (${vnWeekday(leaveFromDate)}) đến ${fmtDate(leaveToDate)} (${vnWeekday(leaveToDate)}).`;
       } else if (leaveType === "nua_buoi") {
-        copyText = `⚠️ Thông Báo Nghỉ Nửa Buổi, ${driverName} đã nộp yêu cầu nghỉ từ ${leaveStartTime} đến ${leaveEndTime} ngày ${fmtDate(leaveDate)} (${vnWeekday(leaveDate)}). Nhờ đội điều phối hỗ trợ sắp xếp để không gián đoạn công việc!`;
+        summary = `Bạn đã nộp phép thành công: nghỉ nửa buổi ngày ${fmtDate(leaveDate)} (${vnWeekday(leaveDate)}) từ ${leaveStartTime} đến ${leaveEndTime}.`;
       } else {
-        copyText = `⚠️ Thông Báo Nghỉ Việc, ${driverName} đã nộp đơn chấm dứt hợp tác làm việc với Diag. Ngày cuối cùng làm việc là ${fmtDate(leaveDate)} (${vnWeekday(leaveDate)}). Nhờ đội điều phối hỗ trợ sắp xếp và hướng dẫn các thủ tục bàn giao!`;
+        summary = `Bạn đã nộp đơn nghỉ việc thành công. Ngày làm việc cuối cùng: ${fmtDate(leaveDate)} (${vnWeekday(leaveDate)}).`;
       }
 
-      setLeaveCopyText(copyText);
+      setLeaveSummary(summary);
       setLeaveStatus("success");
     } catch (e) {
       setLeaveError(`Lỗi kết nối: ${String(e)}`);
       setLeaveStatus("error");
     }
-  }
-
-  // Single "notify" action behind the prominent button: open the native share
-  // sheet where it exists (mobile — lets the driver drop the message straight
-  // into the Zalo điều phối group), otherwise fall back to copying to clipboard
-  // (most desktops have no navigator.share). Must run from the button's own tap
-  // so the user-gesture is fresh — that's why it isn't auto-triggered on submit.
-  async function handleNotify() {
-    if (typeof navigator !== "undefined" && navigator.share) {
-      try {
-        await navigator.share({ text: leaveCopyText });
-        resetLeaveForm(); // shared → the one step is done, close the modal
-      } catch { /* user cancelled — keep the modal open, don't surprise-copy */ }
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(leaveCopyText);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch { /* ignore */ }
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -720,36 +699,19 @@ export default function ChamCongPage() {
           {tab === "nghi-phep" && (
             <>
               {leaveStatus === "success" ? (
-                /* Success view — full-screen dimmed modal so the notify step
-                   can't be missed. The driver must act on the button before the
-                   leave is actually communicated to điều phối. */
-                <div
-                  onClick={resetLeaveForm}
-                  className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-black/70 p-6"
-                >
-                  {/* Single action: share to the điều phối group (copy fallback) */}
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleNotify(); }}
-                    className="w-full max-w-md flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-bold rounded-xl py-4 text-base shadow-[inset_0_2px_2px_hsla(0,0%,0%,0.1)] transition-all"
-                  >
-                    {copied ? (
-                      <>
-                        <Check size={18} className="shrink-0" />
-                        <span>Đã copy! Dán vào nhóm Zalo điều phối</span>
-                      </>
-                    ) : (
-                      <>
-                        <Share2 size={18} className="shrink-0" />
-                        <span>Thông báo đội điều phối để hoàn tất!</span>
-                        <ArrowLeft size={18} className="shrink-0" />
-                      </>
-                    )}
-                  </button>
+                /* Minimal success view — the điều phối notification is sent by a
+                   bot trigger on submit, so this only confirms what was nộp. */
+                <div className="space-y-4">
+                  <div className="rounded-lg px-4 py-3 bg-green-50 border border-green-200">
+                    <p className="text-sm font-medium text-green-800 leading-relaxed">{leaveSummary}</p>
+                  </div>
 
-                  {/* Zalo message preview, on the dimmed backdrop */}
-                  <p className="w-full max-w-md text-sm text-white/90 leading-relaxed text-center">
-                    {leaveCopyText}
-                  </p>
+                  <button
+                    onClick={resetLeaveForm}
+                    className="w-full border border-gray-300 rounded-xl py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+                  >
+                    Nộp thêm đơn khác
+                  </button>
                 </div>
               ) : (
                 /* Leave form */
