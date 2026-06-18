@@ -330,8 +330,8 @@ export function Dashboard() {
 
       {/* Body — single full-width column now (the sidebar is gone; note tasks
           live inside the Cần xử lý block at the top of Live Log). */}
-      <div className="flex flex-col flex-1 lg:min-h-0 p-2 sm:p-3">
-        <div className="flex-1 min-w-0 flex flex-col gap-1.5">
+      <div className="flex flex-col lg:flex-1 lg:min-h-0 p-2 sm:p-3">
+        <div className="min-w-0 flex flex-col gap-1.5 lg:flex-1 lg:min-h-0">
           {/* Tab bar */}
           <div className="flex items-center gap-1 shrink-0 overflow-x-auto">
             <button onClick={() => setRightTab("live")} className={tabBtn(rightTab === "live")}>
@@ -350,10 +350,11 @@ export function Dashboard() {
             </button>
           </div>
 
-          {/* Tab content */}
-          <div className="flex-1 min-h-0 h-[70vh] lg:h-auto">
+          {/* Tab content. On mobile the page flows + scrolls (definite heights so
+              each panel's ScrollArea renders); on lg it's a fixed flex-fill. */}
+          <div className="lg:flex-1 lg:min-h-0">
             {rightTab === "live" ? (
-              <div className="flex flex-col h-full gap-1.5">
+              <div className="flex flex-col gap-1.5 lg:h-full">
                 {/* Cần xử lý block — note tasks + unassignable + late, above the log */}
                 <FailedJobsPanel
                   held={held}
@@ -394,14 +395,18 @@ export function Dashboard() {
                     Smart History
                   </button>
                 </div>
-                <div className="flex-1 min-h-0">
+                <div className="h-[58vh] lg:h-auto lg:flex-1 lg:min-h-0">
                   {logMode === "live" ? <ActivityLog logs={logs} /> : <SmartLogHistory />}
                 </div>
               </div>
             ) : rightTab === "schedule" ? (
-              <ScheduleListPanel env={env} />
+              <div className="h-[72vh] lg:h-full">
+                <ScheduleListPanel env={env} />
+              </div>
             ) : (
-              <JobAdminPanel env={env} />
+              <div className="h-[72vh] lg:h-full">
+                <JobAdminPanel env={env} />
+              </div>
             )}
           </div>
         </div>

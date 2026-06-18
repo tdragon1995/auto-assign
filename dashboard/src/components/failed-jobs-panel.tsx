@@ -253,18 +253,18 @@ export function FailedJobsPanel({
   if (total === 0) return null;
 
   return (
-    <Card className="flex flex-col py-3 border-orange-300 shrink-0">
-      <CardHeader className="pb-2 shrink-0">
+    <Card className="flex flex-col gap-2 py-2 border-orange-300 shrink-0">
+      <CardHeader className="px-3 pb-0">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm">⚠️ Cần xử lý</CardTitle>
           <span className="text-xs text-muted-foreground">{total} mục</span>
         </div>
       </CardHeader>
-      <CardContent className="min-h-0">
+      <CardContent className="px-3 min-h-0">
         {/* Capped height with its own scroll so a long list never pushes the
             Activity Log below off-screen. Order: notes → other unassignable →
             late pickups. */}
-        <div className="max-h-[40vh] overflow-y-auto space-y-2 text-xs pr-1">
+        <div className="max-h-[34vh] overflow-y-auto space-y-2 text-xs pr-1">
             {/* ── Tasks with note (part of "unassignable") ─────────────────── */}
             {held.length > 0 && (
               <NoteReviewPanel
