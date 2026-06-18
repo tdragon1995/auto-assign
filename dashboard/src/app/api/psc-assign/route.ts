@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { vnDate, vnHoursMinutes } from "@/lib/time";
-import { isActiveStop, pscPairKey } from "@/lib/job-filters";
+import { isActiveStop, isStopStarted, pscPairKey } from "@/lib/job-filters";
 import { PSC_VIA_LABEL } from "@/lib/via-legs";
-import { lookupPscActivePickup, markPscActivePickup, type PscDupHit } from "@/lib/smart-log-kv";
+import { lookupPscActivePickup, markPscActivePickup, unmarkPscActivePickup, type PscDupHit } from "@/lib/smart-log-kv";
 import type { Stop } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -226,6 +226,49 @@ export async function POST(req: NextRequest) {
     );
   } catch (e) {
     if (lockKey) releaseLock(lockKey);
+    return NextResponse.json({ error: String(e) }, { status: 500 });
+  }
+}
+
+// ── DELETE /api/psc-assign?job_id=123 — cancel a PSC trip (only if pickup not started) ──
+// Mirrors the PSC-tỉnh cancel: refuse once the driver has touched the pickup, otherwise
+// force-cancel and clear the dedup index so the same pickup→dropoff can be re-requested.
+export async function DELETE(req: NextRequest) {
+  const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
+  const jobId = req.nextUrl.searchParams.get("job_id");
+  if (!jobId) return NextResponse.json({ error: "Missing job_id" }, { status: 400 });
+
+  try {
+    const headers = getHeaders(env);
+
+    const jobRes = await fetch(`${BASE_URL}/jobs/${jobId}`, { headers, cache: "no-store" });
+    if (!jobRes.ok) return NextResponse.json({ error: "Job not found" }, { status: 404 });
+    const jobData = await jobRes.json();
+    const stops: Stop[] = jobData.data?.stops ?? [];
+    const pickup  = stops.find((s) => s.stop_type_id === 1);
+    const dropoff = stops.find((s) => s.stop_type_id === 2);
+
+    // Refuse once the driver has touched the pickup (en route / arrived / completed).
+    // isStopStarted also catches the case where status still reads 1 but an activity
+    // timestamp is set.
+    if (pickup && isStopStarted(pickup)) {
+      return NextResponse.json({ error: "Không thể huỷ: tài xế đã bắt đầu công việc." }, { status: 409 });
+    }
+
+    const res = await fetch(`${BASE_URL}/jobs/${jobId}?force=true`, { method: "DELETE", headers });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      return NextResponse.json({ error: "Failed to cancel job", details: err }, { status: res.status });
+    }
+
+    // Drop the pair from the fast-path index so the same pickup→dropoff can be
+    // re-requested immediately instead of colliding with the just-cancelled job.
+    if (pickup?.customer_id && dropoff?.customer_id) {
+      void unmarkPscActivePickup(pscPairKey(pickup.customer_id, dropoff.customer_id));
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
 }

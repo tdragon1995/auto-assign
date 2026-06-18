@@ -209,18 +209,40 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
   );
 }
 
-function JobCard({ job }: { job: Job }) {
+function JobCard({ job, code, onCancel }: {
+  job: Job;
+  code: string;
+  onCancel: (t: { job_id: number; reference: string }) => void;
+}) {
   const [sheetOpen, setSheetOpen] = useState(false);
   const isSingleStop = job.stops.length === 1;
 
+  // Cancellable while this location's pickup hasn't been started by the driver.
+  const pickup = job.stops.find((s) => s.stop_type_id === 1);
+  const cancellable =
+    !!pickup &&
+    pickup.customer_id === code &&
+    pickup.stop_status_id === 1 &&
+    !pickup.activity_started_ts &&
+    !pickup.activity_arrived_ts &&
+    !pickup.activity_completed_ts;
+
   return (
     <>
-      <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+      <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm space-y-2">
         <div className={`grid gap-2 ${isSingleStop ? "grid-cols-1" : "grid-cols-2"}`}>
           {job.stops.map((s) => (
             <StopTile key={s.stop_id} stop={s} onClick={() => setSheetOpen(true)} />
           ))}
         </div>
+        {cancellable && (
+          <button
+            onClick={() => onCancel({ job_id: job.job_id, reference: job.reference_number })}
+            className="w-full py-2 rounded-lg text-xs font-bold text-red-600 border border-red-200 hover:bg-red-50 active:bg-red-100 transition-colors"
+          >
+            Huỷ chuyến
+          </button>
+        )}
       </div>
       {sheetOpen && <JobSheet job={job} onClose={() => setSheetOpen(false)} />}
     </>
@@ -240,6 +262,11 @@ export default function QrPage() {
 
   const [assignStatus, setAssignStatus] = useState<Status>("idle");
   const [assignResult, setAssignResult] = useState<string>("");
+  const [lastCreated, setLastCreated] = useState<{ job_id: number; reference: string } | null>(null);
+
+  const [cancelTarget, setCancelTarget] = useState<{ job_id: number; reference: string } | null>(null);
+  const [cancelLoading, setCancelLoading] = useState(false);
+  const [cancelError, setCancelError] = useState("");
 
   const [tab, setTab] = useState<TabType | null>(null);
   const [date, setDate] = useState(todayVN());
@@ -319,6 +346,7 @@ export default function QrPage() {
       if (res.ok && data.success) {
         setAssignStatus("success");
         setAssignResult(`Job submitted → ${data.reference}`);
+        setLastCreated(data.job_id ? { job_id: data.job_id, reference: data.reference } : null);
       } else if (res.status === 409) {
         setAssignStatus("error");
         setAssignResult(
@@ -333,6 +361,35 @@ export default function QrPage() {
     } catch (e) {
       setAssignStatus("error");
       setAssignResult(String(e));
+    }
+  };
+
+  const handleCancel = async () => {
+    if (!cancelTarget) return;
+    setCancelLoading(true);
+    setCancelError("");
+    try {
+      const sep = envParam ? "&" : "?";
+      const res = await fetch(`/api/psc-assign${envParam}${sep}job_id=${cancelTarget.job_id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setCancelError(data.error ?? "Huỷ thất bại");
+        return;
+      }
+      // If we just cancelled the request we created, reset the create form.
+      if (lastCreated?.job_id === cancelTarget.job_id) {
+        setAssignStatus("idle");
+        setAssignResult("");
+        setLastCreated(null);
+      }
+      setCancelTarget(null);
+      // Refresh the open jobs tab so the cancelled trip drops off.
+      if (tab === "active") loadJobs(4);
+      else if (tab === "done") loadJobs(5);
+    } catch {
+      setCancelError("Không thể kết nối. Vui lòng thử lại.");
+    } finally {
+      setCancelLoading(false);
     }
   };
 
@@ -425,12 +482,22 @@ export default function QrPage() {
               {assignStatus === "loading" ? "Đang tạo..." : assignStatus === "success" ? "Đã tạo" : "Đề Nghị Giao Mẫu"}
             </button>
             {assignStatus === "success" && (
-              <button
-                onClick={() => { setAssignStatus("idle"); setAssignResult(""); }}
-                className="w-full py-3 rounded-xl font-semibold text-slate-600 text-sm border border-slate-200 hover:bg-slate-50 transition-all"
-              >
-                Tạo thêm
-              </button>
+              <div className="space-y-2">
+                {lastCreated && (
+                  <button
+                    onClick={() => { setCancelTarget(lastCreated); setCancelError(""); }}
+                    className="w-full py-3 rounded-xl font-semibold text-red-600 text-sm border border-red-200 hover:bg-red-50 transition-all"
+                  >
+                    Huỷ yêu cầu
+                  </button>
+                )}
+                <button
+                  onClick={() => { setAssignStatus("idle"); setAssignResult(""); setLastCreated(null); }}
+                  className="w-full py-3 rounded-xl font-semibold text-slate-600 text-sm border border-slate-200 hover:bg-slate-50 transition-all"
+                >
+                  Tạo thêm
+                </button>
+              </div>
             )}
           </div>
         )}
@@ -474,12 +541,51 @@ export default function QrPage() {
                 {search && (
                   <p className="text-[11px] text-slate-400 text-right">{displayJobs.length} kết quả</p>
                 )}
-                {displayJobs.map((j) => <JobCard key={j.job_id} job={j} />)}
+                {displayJobs.map((j) => (
+                  <JobCard
+                    key={j.job_id}
+                    job={j}
+                    code={code}
+                    onCancel={(t) => { setCancelTarget(t); setCancelError(""); }}
+                  />
+                ))}
               </div>
             )}
           </div>
         )}
       </div>
+
+      {/* Cancel confirm overlay */}
+      {cancelTarget && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4" onClick={() => { if (!cancelLoading) { setCancelTarget(null); setCancelError(""); } }}>
+          <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="space-y-1">
+              <p className="text-sm font-bold text-slate-800">Huỷ chuyến?</p>
+              <p className="text-xs text-slate-500 font-semibold break-all">{cancelTarget.reference}</p>
+              <p className="text-xs text-slate-500">Chỉ huỷ được khi tài xế chưa bắt đầu lấy mẫu. Hành động này không thể hoàn tác.</p>
+            </div>
+            {cancelError && (
+              <p className="text-xs text-red-600 font-medium">{cancelError}</p>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={() => { setCancelTarget(null); setCancelError(""); }}
+                disabled={cancelLoading}
+                className="py-2.5 rounded-xl text-sm font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40 transition-colors"
+              >
+                Quay lại
+              </button>
+              <button
+                onClick={handleCancel}
+                disabled={cancelLoading}
+                className="py-2.5 rounded-xl text-sm font-bold bg-red-600 hover:bg-red-700 text-white disabled:opacity-40 transition-colors"
+              >
+                {cancelLoading ? "Đang huỷ..." : "Xác nhận huỷ"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
