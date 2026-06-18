@@ -3,7 +3,7 @@ import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { vnDate, vnHoursMinutes } from "@/lib/time";
 import { isActiveStop, isStopStarted, pscPairKey } from "@/lib/job-filters";
 import { PSC_VIA_LABEL } from "@/lib/via-legs";
-import { lookupPscActivePickup, markPscActivePickup, unmarkPscActivePickup, type PscDupHit } from "@/lib/smart-log-kv";
+import { lookupPscActivePickup, markPscActivePickup, unmarkPscActivePickup, acquireCreateLock, releaseCreateLock, type PscDupHit } from "@/lib/smart-log-kv";
 import type { Stop } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -98,9 +98,22 @@ export async function POST(req: NextRequest) {
     }
 
     const today = vnDate();
-    lockKey = `${pickup}-${dropoff}-${today}`;
+    lockKey = `psc:${pickup}-${dropoff}-${today}`;
 
     if (!acquireLock(lockKey)) {
+      return NextResponse.json(
+        { error: "duplicate", message: "Yêu cầu cùng chi nhánh đang được tạo!" },
+        { status: 409 }
+      );
+    }
+
+    // Cross-instance guard: the in-memory lock above only covers this one serverless
+    // instance. This atomic Redis lock serializes concurrent requests for the same
+    // pickup→dropoff across ALL instances, closing the check-then-create race that let
+    // two near-simultaneous requests both pass dedup and create duplicate jobs. Held
+    // until expiry on success; released on failure / cancel.
+    if (!(await acquireCreateLock(lockKey))) {
+      releaseLock(lockKey);
       return NextResponse.json(
         { error: "duplicate", message: "Yêu cầu cùng chi nhánh đang được tạo!" },
         { status: 409 }
@@ -118,6 +131,7 @@ export async function POST(req: NextRequest) {
 
     if (duplicate) {
       releaseLock(lockKey);
+      void releaseCreateLock(lockKey);
       return NextResponse.json(
         {
           error: "duplicate",
@@ -194,6 +208,7 @@ export async function POST(req: NextRequest) {
 
     if (!createRes.ok) {
       releaseLock(lockKey);
+      void releaseCreateLock(lockKey); // creation failed → free the pair to retry
       const errBody = await createRes.json().catch(() => ({}));
       return NextResponse.json({ error: "Failed to create job", details: errBody }, { status: createRes.status });
     }
@@ -206,13 +221,20 @@ export async function POST(req: NextRequest) {
     // blocked. Fire-and-forget — it must not delay the response.
     if (newJobId) void markPscActivePickup(pairKey, { job_id: newJobId, reference_number: refLabel });
 
+    // Deliberately do NOT release the cross-instance create lock here: holding it to its
+    // TTL keeps blocking a duplicate request for this pair while the new job becomes
+    // visible to the dedup check. It self-expires, and the cancel handler releases it
+    // early so a cancelled trip can be re-requested at once.
     return NextResponse.json({
       success: true,
       reference: refLabel,
       job_id: newJobId,
     });
   } catch (e) {
-    if (lockKey) releaseLock(lockKey);
+    if (lockKey) {
+      releaseLock(lockKey);
+      void releaseCreateLock(lockKey);
+    }
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
 }
@@ -248,10 +270,12 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: "Failed to cancel job", details: err }, { status: res.status });
     }
 
-    // Drop the pair from the fast-path index so the same pickup→dropoff can be
-    // re-requested immediately instead of colliding with the just-cancelled job.
+    // Clear both dedup guards so the same pickup→dropoff can be re-requested at once
+    // instead of colliding with the just-cancelled job: drop the index pair and release
+    // the cross-instance create lock (which is otherwise held to its TTL after a create).
     if (pickup?.customer_id && dropoff?.customer_id) {
       void unmarkPscActivePickup(pscPairKey(pickup.customer_id, dropoff.customer_id));
+      void releaseCreateLock(`psc:${pickup.customer_id}-${dropoff.customer_id}-${vnDate()}`);
     }
 
     return NextResponse.json({ success: true });

@@ -364,6 +364,39 @@ export async function unmarkPscActivePickup(pairKey: string): Promise<void> {
   await redis.set(PSC_ACTIVE_PICKUPS_KEY, JSON.stringify(idx), { ex: PSC_INDEX_TTL_SEC });
 }
 
+// ── Creation lock — cross-instance guard against concurrent duplicate job creates ──
+// Shared by the job-creating endpoints (PSC request, chấm công, audit). The in-memory
+// locks in those routes only cover one serverless instance; two near-simultaneous
+// requests on different instances both clear a check-then-create dedup and create twins
+// (observed: consecutive job IDs). This atomic SET NX lock is shared across instances.
+// Callers namespace the key by domain (e.g. "psc:…", "chamcong:…", "audit:…"). The TTL
+// must outlast the slowest create (~12s observed) so the lock can't lapse mid-create;
+// it's held to expiry on success (a post-create dedup guard while the new job becomes
+// visible to the dedup query) and released on failure or cancel.
+const CREATE_LOCK_PREFIX = "create_lock:";
+const CREATE_LOCK_TTL_SEC = 60;
+
+/** Try to claim a creation lock. true = claimed (caller may create); false = another
+ *  request already holds it. No Redis ⇒ true (a route's in-memory lock, if any, still
+ *  applies as a single-instance fallback). */
+export async function acquireCreateLock(key: string): Promise<boolean> {
+  const redis = getRedis();
+  if (!redis) return true;
+  const res = await redis.set(CREATE_LOCK_PREFIX + key, new Date().toISOString(), {
+    nx: true,
+    ex: CREATE_LOCK_TTL_SEC,
+  });
+  return res === "OK";
+}
+
+/** Release a creation lock (best-effort) — on create failure, or when a job is cancelled
+ *  so the same identity can be re-requested without waiting out the TTL. */
+export async function releaseCreateLock(key: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  await redis.del(CREATE_LOCK_PREFIX + key);
+}
+
 // ── Overlap lock — one cycle at a time, safe at any cron frequency ──────────
 
 /** Try to claim the cycle lock. Returns true if claimed (caller may run the

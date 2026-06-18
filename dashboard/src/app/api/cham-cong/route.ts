@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { deleteJob, BASE_URL, getHeaders, isDriverUnavailableError, type Env } from "@/lib/cartrack";
 import { vnDate } from "@/lib/time";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
+import { acquireCreateLock, releaseCreateLock } from "@/lib/smart-log-kv";
 
 // ── GET /api/cham-cong — location list OR driver shift state ──────────────
 
@@ -69,12 +70,24 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
+  let lockKey: string | null = null;
 
   try {
     const { driver_id, psc_customer_id, type } = await req.json();
 
     if (!driver_id || !psc_customer_id || (type !== "check-in" && type !== "check-out")) {
       return NextResponse.json({ error: "Missing or invalid fields" }, { status: 400 });
+    }
+
+    // Cross-instance guard against a double-tap creating duplicate chấm-công jobs (the
+    // POST has no other dedup). Keyed per driver + type + day; held to its TTL on success,
+    // released on failure.
+    lockKey = `chamcong:${driver_id}-${type}-${vnDate()}`;
+    if (!(await acquireCreateLock(lockKey))) {
+      return NextResponse.json(
+        { error: "duplicate", message: "Đang xử lý chấm công, vui lòng đợi." },
+        { status: 409 }
+      );
     }
 
     const isCheckin = type === "check-in";
@@ -100,6 +113,7 @@ export async function POST(req: NextRequest) {
     });
 
     if (!createRes.ok) {
+      void releaseCreateLock(lockKey);
       const errBody = await createRes.json().catch(() => ({}));
       if (isDriverUnavailableError(errBody)) {
         return NextResponse.json(
@@ -112,11 +126,15 @@ export async function POST(req: NextRequest) {
 
     const created = await createRes.json();
     const jobId: number | undefined = created.data?.job_id;
-    if (!jobId) return NextResponse.json({ error: "No job_id returned from Cartrack" }, { status: 500 });
+    if (!jobId) {
+      void releaseCreateLock(lockKey);
+      return NextResponse.json({ error: "No job_id returned from Cartrack" }, { status: 500 });
+    }
 
     // Defensive: a 200 can still come back unassigned (status 4 ≠ driver set). Verify, else roll back.
     if (created.data?.delivery_driver_id !== driver_id) {
       await deleteJob(jobId, env);
+      void releaseCreateLock(lockKey);
       return NextResponse.json(
         { error: "Tạo chấm công chưa thành công, vui lòng thử lại. Liên hệ điều phối nếu vẫn gặp lỗi!" },
         { status: 500 }
@@ -125,6 +143,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success: true, job_id: jobId });
   } catch (e) {
+    if (lockKey) void releaseCreateLock(lockKey);
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
 }
