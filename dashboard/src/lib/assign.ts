@@ -29,6 +29,30 @@ const DUPLICATE_REJECT_REASON =
 // is expected to repeat across different legs and should never be blocked.
 const DUPLICATE_EXEMPT_LABELS = [PSC_TINH_LABEL, PSC_RETURN_LABEL];
 
+/** Compact "HH:MM" (Saigon) for a Cartrack timestamp, or null if absent/unparseable. */
+function hhmmVn(ts: string | null): string | null {
+  if (!ts) return null;
+  const d = parseVnTimestamp(ts);
+  if (Number.isNaN(d.getTime())) return null;
+  const { hours, minutes } = vnHoursMinutes(d);
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+/**
+ * Verb shown beside a reference stop's tiebreak time in the smart log, so the
+ * started-earliest tiebreak — and what the timestamp means per label — is
+ * visible. En Route → "started HH:MM" is the value that decides same-GPS-bin ties;
+ * the rest annotate where the tiebreakTs comes from (see selectReferenceStop).
+ */
+const TIEBREAK_VERB: Record<RefLabel, string> = {
+  "Arrived": "arrived",
+  "En Route": "started",
+  "Next Stop": "left",
+  "Available": "free",
+  "First Stop": "shift",
+  "Start Location": "shift",
+};
+
 /**
  * Build the PSC active-pickup dedup index from today's status-2/4 jobs. Each entry
  * keys a `pickup|dropoff` customer pair (a job with an active pickup stop + a
@@ -989,7 +1013,8 @@ export async function autoAssignCycle(
           const workload = info?.workload ?? 0;
           const tiebreakTs = ref?.tiebreakTs ?? null;
           const priority = ref ? ROUTE_STATE_PRIORITY[ref.label] : 0;
-          const labelTag = ref ? `[${ref.label}] ` : "";
+          const tbTime   = hhmmVn(tiebreakTs);
+          const labelTag = ref ? `[${ref.label}${tbTime ? ` · ${TIEBREAK_VERB[ref.label]} ${tbTime}` : ""}] ` : "";
           const jobsDone = info?.jobsDone ?? 0;
           const name = `${d.first_name} ${d.last_name}`.trim();
           if (!ref) return { d, sortDist: hkm, priority, label: null, gpsKm: hkm, workload, tiebreakTs, jobsDone, name, distLabel: `${hkm}km GPS (load ${workload})` };
