@@ -135,16 +135,48 @@ export function computeStopStats(stops: TimelineStop[]): DriverStopStats {
 }
 
 /**
+ * Band width (km) for the En-Route GPS tiebreak. Two en-route drivers whose
+ * live-GPS haversine to the pickup falls in different `floor(gpsKm / BAND)`
+ * bins are split by GPS; within the same bin we defer to the started-earliest
+ * (FIFO) tiebreak so ping jitter (~0.1 km) doesn't override fairness.
+ */
+export const GPS_TIEBREAK_BAND_KM = 1.2;
+
+/**
+ * En-Route-only GPS tiebreak, returned as a comparator delta (0 = defer to the
+ * next key). When two drivers are both en route to (effectively) the pickup,
+ * the road distance from their reference stop is ~0 for both and discards who
+ * is physically closer to arriving; live-GPS haversine recovers that signal.
+ *
+ * Banded (not a raw `> BAND` deadband) on purpose: a raw deadband is
+ * non-transitive and corrupts Array.sort once 3+ candidates straddle the
+ * threshold. Comparing `floor(gpsKm / BAND)` bins is a total order, hence
+ * transitive. Callers MUST apply this only AFTER the route-state-priority
+ * check has found equal priority: "En Route" uniquely owns priority 2, so an
+ * equal-priority group is homogeneously En Route and the banded order stays
+ * transitive within it. (If another label is ever given priority 2, revisit.)
+ */
+export function enRouteGpsBand(
+  a: { label: RefLabel | null; gpsKm: number },
+  b: { label: RefLabel | null; gpsKm: number }
+): number {
+  if (a.label !== "En Route" || b.label !== "En Route") return 0;
+  return Math.floor(a.gpsKm / GPS_TIEBREAK_BAND_KM) - Math.floor(b.gpsKm / GPS_TIEBREAK_BAND_KM);
+}
+
+/**
  * Tiebreaker comparator for ranked driver candidates.
- * Order: sortDist asc → routeStatePriority desc → tiebreakTs asc (null = highest priority)
- *      → jobsDone asc → name asc
+ * Order: sortDist asc → routeStatePriority desc → en-route GPS band asc
+ *      → tiebreakTs asc (null = highest priority) → jobsDone asc → name asc
  */
 export function rankingComparator(
-  a: { sortDist: number; priority: number; tiebreakTs: string | null; jobsDone: number; name: string },
-  b: { sortDist: number; priority: number; tiebreakTs: string | null; jobsDone: number; name: string }
+  a: { sortDist: number; priority: number; label: RefLabel | null; gpsKm: number; tiebreakTs: string | null; jobsDone: number; name: string },
+  b: { sortDist: number; priority: number; label: RefLabel | null; gpsKm: number; tiebreakTs: string | null; jobsDone: number; name: string }
 ): number {
   if (a.sortDist !== b.sortDist) return a.sortDist - b.sortDist;
   if (a.priority !== b.priority) return b.priority - a.priority;
+  const band = enRouteGpsBand(a, b);
+  if (band !== 0) return band;
   const aTs = a.tiebreakTs ?? "";
   const bTs = b.tiebreakTs ?? "";
   if (aTs !== bTs) return aTs.localeCompare(bTs);

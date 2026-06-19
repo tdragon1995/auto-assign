@@ -3,7 +3,7 @@ import { getDrivers, getJobsByStatusAndDate, getFleetwebCookie, getCustomerById,
 import { vnDate, vnDayWindow } from "@/lib/time";
 import { haversineKm } from "@/lib/distance";
 import { roadDistancesFromPoint } from "@/lib/distance-cache";
-import { selectReferenceStop, computeStopStats, ROUTE_STATE_PRIORITY, type RefLabel } from "@/lib/smart-rank";
+import { selectReferenceStop, computeStopStats, ROUTE_STATE_PRIORITY, enRouteGpsBand, type RefLabel } from "@/lib/smart-rank";
 import type { TimelineRoute } from "@/lib/types";
 
 const TOP_N        = 3;
@@ -299,13 +299,19 @@ export async function POST(req: NextRequest) {
           _tiebreakTs:         ref?.tiebreakTs ?? null,
         };
       })
-      // Re-rank: distance ASC → route-state priority DESC → per-label tiebreak ts ASC
-      //   → jobs_done ASC. tiebreak ts semantics live in selectReferenceStop.
+      // Re-rank: distance ASC → route-state priority DESC → en-route GPS band ASC
+      //   → per-label tiebreak ts ASC → jobs_done ASC. Mirrors rankingComparator;
+      //   tiebreak ts semantics live in selectReferenceStop.
       .sort((a, b) => {
         const aDist = a.detour_distance_km ?? a.detour_haversine_km ?? a.haversine_km;
         const bDist = b.detour_distance_km ?? b.detour_haversine_km ?? b.haversine_km;
         if (aDist !== bDist) return aDist - bDist;
         if (a._priority !== b._priority) return b._priority - a._priority;
+        const band = enRouteGpsBand(
+          { label: a.detour_label, gpsKm: a.haversine_km },
+          { label: b.detour_label, gpsKm: b.haversine_km }
+        );
+        if (band !== 0) return band;
         const aTs = a._tiebreakTs ?? "";
         const bTs = b._tiebreakTs ?? "";
         if (aTs !== bTs) return aTs.localeCompare(bTs);

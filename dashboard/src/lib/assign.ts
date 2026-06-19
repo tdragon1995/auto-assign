@@ -992,7 +992,7 @@ export async function autoAssignCycle(
           const labelTag = ref ? `[${ref.label}] ` : "";
           const jobsDone = info?.jobsDone ?? 0;
           const name = `${d.first_name} ${d.last_name}`.trim();
-          if (!ref) return { d, sortDist: hkm, priority, workload, tiebreakTs, jobsDone, name, distLabel: `${hkm}km GPS (load ${workload})` };
+          if (!ref) return { d, sortDist: hkm, priority, label: null, gpsKm: hkm, workload, tiebreakTs, jobsDone, name, distLabel: `${hkm}km GPS (load ${workload})` };
           const roads = refPts.map(() => flatRoads[ptCursor++]?.distance_km ?? null);
           const straights = refPts.map(
             (p) => Math.round(haversineKm(p.lat, p.lon, pickupPt.lat, pickupPt.lon) * 10) / 10
@@ -1007,7 +1007,7 @@ export async function autoAssignCycle(
           const distLabel = roadKm != null
             ? `${labelTag}${hkm}km GPS, ${minTag}${refName}→ ${roadKm}km road (load ${workload})`
             : `${labelTag}${hkm}km GPS, ${minTag}${refName}→ ${refHkm}km straight (load ${workload})`;
-          return { d, sortDist, priority, workload, tiebreakTs, jobsDone, name, distLabel };
+          return { d, sortDist, priority, label: ref.label, gpsKm: hkm, workload, tiebreakTs, jobsDone, name, distLabel };
         });
         withGoong.sort(rankingComparator);
 
