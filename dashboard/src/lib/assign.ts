@@ -787,6 +787,29 @@ export async function autoAssignCycle(
   // pickup warnings and the follow-up steps too.
   const activeRouteMap = buildActiveRouteMap(assignedJobsToday ?? []);
 
+  // Fold note-held jobs into the SAME map so an incoming twin can see them. They're
+  // invisible otherwise: buildActiveRouteMap indexes only assigned (status-4) jobs,
+  // and a held job `continue`s on the note gate below before it could register its
+  // own route — the double blind spot that let 34342828's twin (34342832) auto-
+  // assign. Held routes go in as NEGATIVE job ids: at the dedup check a positive hit
+  // is an assigned job (reject the twin), a negative hit is a held job whose intent
+  // is unconfirmed (e.g. "làm sau") → hold the twin instead. An existing assigned
+  // entry wins (we only fill gaps); once the held job is itself assigned or parks to
+  // a window, the route resolves through the normal positive path.
+  for (const hj of jobs) {
+    if (onlyJobIds?.has(hj.job_id)) continue;            // override-forced jobs aren't held
+    if (!jobHasNotes(hj) || isNoteApproved(hj)) continue;
+    if (hj.stops?.find((s) => s.stop_type_id === 1)?.delivery_windows?.[0]?.time_from) continue; // windowed → parked, not held
+    const pid = getCustomerIdFromJob(hj);
+    const did = hj.stops?.find((s) => s.stop_type_id === 2)?.customer_id ?? null;
+    if (!pid || !did) continue;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const labels: string[] = (hj as any).labels ?? [];
+    if (labels.some((l) => DUPLICATE_EXEMPT_LABELS.includes(l))) continue;
+    const key = `${pid}:${did}`;
+    if (!activeRouteMap.has(key)) activeRouteMap.set(key, -hj.job_id);  // negative = held → skip, not reject
+  }
+
   for (const job of jobs) {
     const jobId = job.job_id;
     const customerId = getCustomerIdFromJob(job);
@@ -831,7 +854,16 @@ export async function autoAssignCycle(
     const isDuplicateExempt = jobLabels.some((l) => DUPLICATE_EXEMPT_LABELS.includes(l));
     const routeKey = dropoffId && !isDuplicateExempt ? `${customerId}:${dropoffId}` : null;
     const blockingJobId = routeKey ? activeRouteMap.get(routeKey) : undefined;
-    if (blockingJobId != null && blockingJobId !== jobId) {
+    if (blockingJobId != null && Math.abs(blockingJobId) !== jobId) {
+      if (blockingJobId < 0) {
+        // Negative = a note-held twin awaiting review owns this route. Hold this job
+        // too (skip, don't reject) while that job's intent is unconfirmed. Self-
+        // resolving: once the held job is assigned it flips positive here and the
+        // reject path below applies; if it parks to a window it drops out of the map
+        // and this job proceeds.
+        log(`Job ${jobId} - SKIPPED: trùng tuyến với job ${-blockingJobId} đang chờ duyệt ghi chú | ${route}`, "WARN");
+        continue;
+      }
       const proxyDriverId = process.env.CARTRACK_REJECT_PROXY_DRIVER_ID ?? "";
       if (proxyDriverId) {
         const { status: assignStatus } = await assignJob(proxyDriverId, jobId, env);
