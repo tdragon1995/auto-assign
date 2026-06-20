@@ -116,7 +116,7 @@ These are the things most likely to burn a future agent working on this codebase
 
 1. **`job_status_id` and assignment can disagree — trust `delivery_driver_id`.** Cartrack can return status `4 (Assigned)` with `delivery_driver_id` null; it can also return status `2` with a `delivery_driver_id` already set (e.g. after a *manual* assignment the list lags at status 2). So a job is assigned iff `delivery_driver_id` is set, regardless of status — the cycle's status-2/4 partition checks this, otherwise a manually-assigned job gets re-flagged (NO MAPPING, etc.) every cycle.
 
-2. **`getUnassignedJobs` has no time filter.** It only filters by `job_status_id=2`; the assign cycle then drops old jobs locally by `create_ts`. This is correct for ad-hoc jobs but wrong for scheduled/planned jobs — use `scheduled_delivery_ts` filtering for those.
+2. **Fetch jobs by `scheduled_delivery_ts`, not `create_ts`.** The cycle fetches today's jobs with `getJobsByDate` (all statuses, one call) / `getJobsByStatusAndDate`, both filtered on `scheduled_delivery_ts` — so multi-day parked jobs released from the proxy driver surface on their scheduled day. A `create_ts` filter (the old `getUnassignedJobs` approach, now removed) is fine for ad-hoc jobs but silently drops scheduled/planned ones; don't reintroduce it.
 
 3. **`loadConfigFromSheets` has an in-memory cache.** It only re-fetches the sheet after `invalidateConfigCache()` is called (dashboard Refresh button). If the sheet fetch ever returns suspiciously few rows (network hiccup), the bad result gets cached and all subsequent cycles see an empty mapping — causing widespread NO MAPPING errors until the server restarts or Refresh is clicked.
 

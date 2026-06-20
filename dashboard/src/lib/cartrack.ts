@@ -1,5 +1,5 @@
 import type { Driver, Job } from "./types";
-import { vnDate, vnDayWindow } from "./time";
+import { vnDayWindow } from "./time";
 
 export type Env = "prod" | "uat";
 
@@ -36,28 +36,6 @@ export function isDriverUnavailableError(body: unknown): boolean {
   );
 }
 
-export async function getDriverJobs(
-  driverId: string,
-  dateVn: string,
-  env: Env = "prod"
-): Promise<Job[]> {
-  const params = new URLSearchParams({
-    "filter[job_status_id]": "4",
-    "filter[create_ts_from]": `${dateVn} 00:00:00`,
-    "filter[create_ts_to]": `${dateVn} 23:59:59`,
-    per_page: "200",
-  });
-
-  const res = await fetch(`${BASE_URL}/drivers/${driverId}/jobs?${params}`, {
-    headers: getHeaders(env),
-    cache: "no-store",
-  });
-
-  if (!res.ok) return [];
-  const data = await res.json();
-  return data.data ?? [];
-}
-
 /** Fetch all assigned jobs for a driver with no date filter.
  *  Used by releaseDueProxyJobs so multi-day parked jobs (created on a previous
  *  day) are still found and released when their send_to_driver_at arrives. */
@@ -78,30 +56,6 @@ export async function getAllAssignedDriverJobs(
   if (!res.ok) return [];
   const data = await res.json();
   return data.data ?? [];
-}
-
-export async function getUnassignedJobs(
-  page = 1,
-  perPage = 50,
-  env: Env = "prod",
-  dateVn?: string,
-): Promise<{ data: Job[] }> {
-  const today = dateVn ?? vnDate();
-  const params = new URLSearchParams({
-    "filter[job_status_id]": "2",
-    "filter[create_ts_from]": `${today} 00:00:00`,
-    "filter[create_ts_to]": `${today} 23:59:59`,
-    page: String(page),
-    per_page: String(perPage),
-  });
-
-  const res = await fetch(`${BASE_URL}/jobs?${params}`, {
-    headers: getHeaders(env),
-    cache: "no-store",
-  });
-
-  if (!res.ok) return { data: [] };
-  return res.json();
 }
 
 export async function getDrivers(env: Env = "prod"): Promise<Driver[]> {

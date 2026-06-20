@@ -69,9 +69,14 @@ export async function pushSmartRun(allLogs: LogEntry[]): Promise<void> {
     entries,
   };
 
-  await redis.lpush(KV_KEY, JSON.stringify(run));
-  await redis.ltrim(KV_KEY, 0, MAX_RUNS - 1);
-  await redis.expire(KV_KEY, 86400); // hard 24-hour TTL
+  // One pipelined round-trip instead of three serial ones; order is preserved,
+  // so push → trim → set-TTL keeps identical semantics (and stays atomic, so a
+  // crash can't leave the list without its 24h TTL).
+  const pipe = redis.pipeline();
+  pipe.lpush(KV_KEY, JSON.stringify(run));
+  pipe.ltrim(KV_KEY, 0, MAX_RUNS - 1);
+  pipe.expire(KV_KEY, 86400); // hard 24-hour TTL
+  await pipe.exec();
 }
 
 export interface LastRunEntry {
@@ -456,10 +461,14 @@ export async function pushRunLog(logs: LogEntry[]): Promise<void> {
   if (!redis) return;
   const kept = logs.filter(shouldStore);
   if (kept.length === 0) return;
-  // lpush in chronological order ⇒ newest entry ends up at the head.
-  await redis.lpush(RUN_LOG_KEY, ...kept.map((l) => JSON.stringify(l)));
-  await redis.ltrim(RUN_LOG_KEY, 0, MAX_LOG_ENTRIES - 1);
-  await redis.expire(RUN_LOG_KEY, 86400);
+  // lpush in chronological order ⇒ newest entry ends up at the head. One
+  // pipelined round-trip instead of three serial ones; order is preserved, so
+  // push → trim → set-TTL is unchanged (and atomic — no TTL-less window on crash).
+  const pipe = redis.pipeline();
+  pipe.lpush(RUN_LOG_KEY, ...kept.map((l) => JSON.stringify(l)));
+  pipe.ltrim(RUN_LOG_KEY, 0, MAX_LOG_ENTRIES - 1);
+  pipe.expire(RUN_LOG_KEY, 86400);
+  await pipe.exec();
 }
 
 /** Most recent N live-log entries in chronological order (oldest first). */
