@@ -29,13 +29,18 @@ const DUPLICATE_REJECT_REASON =
 // is expected to repeat across different legs and should never be blocked.
 const DUPLICATE_EXEMPT_LABELS = [PSC_TINH_LABEL, PSC_RETURN_LABEL];
 
-/** Compact "HH:MM" (Saigon) for a Cartrack timestamp, or null if absent/unparseable. */
+/**
+ * Compact "HH:MM" for a Cartrack timestamp. The value is already VN-local in
+ * both forms we see — REST has no offset ("2026-06-20 08:31:47"); the JSON-RPC
+ * timeline carries a "+07" suffix and fractional seconds
+ * ("2026-06-20 07:02:37.91659+07") — so we slice HH:MM straight out instead of
+ * Date-parsing. (parseVnTimestamp appends a second "+07:00" onto the timeline
+ * form → NaN, which is why this tag silently never rendered.)
+ */
 function hhmmVn(ts: string | null): string | null {
   if (!ts) return null;
-  const d = parseVnTimestamp(ts);
-  if (Number.isNaN(d.getTime())) return null;
-  const { hours, minutes } = vnHoursMinutes(d);
-  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+  const m = /[ T](\d{2}):(\d{2})/.exec(ts);
+  return m ? `${m[1]}:${m[2]}` : null;
 }
 
 /**
