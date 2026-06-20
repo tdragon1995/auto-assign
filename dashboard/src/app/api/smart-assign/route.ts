@@ -300,8 +300,9 @@ export async function POST(req: NextRequest) {
         };
       })
       // Re-rank: distance ASC → route-state priority DESC → en-route GPS band ASC
-      //   → per-label tiebreak ts ASC → jobs_done ASC. Mirrors rankingComparator;
-      //   tiebreak ts semantics live in selectReferenceStop.
+      //   → jobs_done ASC (workload equity) → per-label tiebreak ts ASC (count-tie →
+      //   longest-idle). Mirrors rankingComparator; tiebreak ts semantics live in
+      //   selectReferenceStop.
       .sort((a, b) => {
         const aDist = a.detour_distance_km ?? a.detour_haversine_km ?? a.haversine_km;
         const bDist = b.detour_distance_km ?? b.detour_haversine_km ?? b.haversine_km;
@@ -312,10 +313,10 @@ export async function POST(req: NextRequest) {
           { label: b.detour_label, gpsKm: b.haversine_km }
         );
         if (band !== 0) return band;
+        if ((a.jobs_done ?? 0) !== (b.jobs_done ?? 0)) return (a.jobs_done ?? 0) - (b.jobs_done ?? 0);
         const aTs = a._tiebreakTs ?? "";
         const bTs = b._tiebreakTs ?? "";
-        if (aTs !== bTs) return aTs.localeCompare(bTs);
-        return (a.jobs_done ?? 0) - (b.jobs_done ?? 0);
+        return aTs.localeCompare(bTs);
       })
       .slice(0, TOP_N)
       // Drop internal sort keys before returning to client

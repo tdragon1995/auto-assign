@@ -167,7 +167,12 @@ export function enRouteGpsBand(
 /**
  * Tiebreaker comparator for ranked driver candidates.
  * Order: sortDist asc → routeStatePriority desc → en-route GPS band asc
- *      → tiebreakTs asc (null = highest priority) → jobsDone asc → name asc
+ *      → jobsDone asc (workload equity: fewest completed goes next)
+ *      → tiebreakTs asc (count-tie → longest-idle/earliest-started goes next; null sorts first)
+ *      → name asc.
+ * Note: jobsDone outranks tiebreakTs on purpose — balance trips first, break
+ * count-ties by idle time. Keeping tiebreakTs as the secondary (not name) avoids
+ * a permanent alphabetical/driver-code bias on the frequent integer count-ties.
  */
 export function rankingComparator(
   a: { sortDist: number; priority: number; label: RefLabel | null; gpsKm: number; tiebreakTs: string | null; jobsDone: number; name: string },
@@ -177,9 +182,9 @@ export function rankingComparator(
   if (a.priority !== b.priority) return b.priority - a.priority;
   const band = enRouteGpsBand(a, b);
   if (band !== 0) return band;
+  if (a.jobsDone !== b.jobsDone) return a.jobsDone - b.jobsDone;
   const aTs = a.tiebreakTs ?? "";
   const bTs = b.tiebreakTs ?? "";
   if (aTs !== bTs) return aTs.localeCompare(bTs);
-  if (a.jobsDone !== b.jobsDone) return a.jobsDone - b.jobsDone;
   return a.name.localeCompare(b.name);
 }
