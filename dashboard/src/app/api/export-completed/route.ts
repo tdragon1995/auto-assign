@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getJobsByStatusAndDate, type Env } from "@/lib/cartrack";
-import { parseVnTimestamp } from "@/lib/time";
 import type { Job, Stop } from "@/lib/types";
 
 // Node runtime + a generous duration: a wide date range fetches day-by-day
@@ -15,28 +14,25 @@ const COMPLETED_STATUS = 5;
 // Cap the range so one request can't fan out into hundreds of Cartrack calls.
 const MAX_DAYS = 62;
 
-// One exported row per completed job. The first 12 fields map 1:1 to the
-// downstream Power Query "Export" sheet headers (see the route's response
-// `columns`); the rest are extras the query ignores plus the raw coordinates
-// the client's distance phase needs.
+// One exported row per completed job. Field names stay faithful to Cartrack.
+// distance_km / duration_mins are filled later by the client "Mileage
+// calculation" step (Goong); lat/lon are carried for that lookup, not exported.
 export interface CompletedRow {
-  ft_pt: string;                  // "FT/ PT"            — not derivable; blank
-  courier: string;                // "Courier"           — driver first + last
-  pickup_from: string;            // "Pickup From"       — stop[0].customer_name
-  customer: string;               // "Customer"          — stop[1].customer_name
-  order_no: number | "";          // "Order #"           — job_id
-  pickup_departure: string;       // "Pickup Departure"  — stop[0].activity_completed_ts
-  dropoff_arrival: string;        // "Dropoff Arrival"   — stop[1].activity_arrived_ts
-  started_time: string;           // "Started Time"      — stop[0].activity_arrived_ts
-  travel_time: number | "";       // "# Travel Time"     — actual mins (arrival − departure)
-  target: number | "";            // "# Target"          — Goong mins (filled client-side)
-  distance_target: number | "";   // "# Distance Target" — Goong km (filled client-side)
-  pass_fail: string;              // "Pass/ Fail"        — Pass when travel ≤ target (client)
-  // Extras (kept from the first spec — Power Query ignores unlisted columns).
-  device_description: string;
-  pickup_coords: string;          // "lat,long"
+  ft_pt: string;                       // FT/PT — driver first name starts F→FT, P→PT
+  driver_name: string;                 // driver.first_name + " " + driver.last_name
+  device_description: string;          // driver.device_description
+  reference_number: string;            // Order # = job.reference_number
+  pickup_customer_name: string;        // stop[0].customer_name (blank if single-stop)
+  pickup_activity_completed_ts: string;
+  pickup_activity_arrived_ts: string;
+  pickup_coords: string;               // "lat,long"
+  dropoff_customer_name: string;       // last stop's customer_name
+  dropoff_activity_completed_ts: string;
+  dropoff_activity_arrived_ts: string;
   dropoff_coords: string;
-  // Raw coordinates for the client's distance lookup (not emitted to CSV).
+  distance_km: number | "";            // Goong road distance, pickup→dropoff
+  duration_mins: number | "";          // Goong travel-time estimate
+  // Raw coordinates for the mileage lookup (not emitted to CSV).
   lat1: number | null;
   lon1: number | null;
   lat2: number | null;
@@ -61,44 +57,34 @@ function coordsStr(stop: Stop | undefined): string {
   return `${stop.latitude},${stop.longitude}`;
 }
 
-// Whole minutes between the pickup's departure and the dropoff's arrival. Both
-// are VN-local Cartrack timestamps; the +07:00 offset cancels in the diff.
-// Blank when either is missing or the result is negative (bad data).
-function travelMins(departure: string, arrival: string): number | "" {
-  if (!departure || !arrival) return "";
-  const d = parseVnTimestamp(departure).getTime();
-  const a = parseVnTimestamp(arrival).getTime();
-  if (Number.isNaN(d) || Number.isNaN(a)) return "";
-  const m = Math.round((a - d) / 60_000);
-  return m >= 0 ? m : "";
-}
-
 function mapJob(job: Job): CompletedRow {
   const dr = job.driver;
-  const courier = `${dr?.first_name ?? ""} ${dr?.last_name ?? ""}`.trim();
-  // Stops arrive ordered [pickup(type 1), dropoff(type 2)] for transport jobs;
-  // a job_type_id 3 (delivery) job has a single stop, so stop[1] is absent and
-  // its columns stay blank — per spec.
-  const pickup = job.stops?.[0];
-  const dropoff = job.stops?.[1];
-  const pickupDeparture = pickup?.activity_completed_ts ?? "";
-  const dropoffArrival = dropoff?.activity_arrived_ts ?? "";
+  const driverName = `${dr?.first_name ?? ""} ${dr?.last_name ?? ""}`.trim();
+  const fn = (dr?.first_name ?? "").trim().toUpperCase();
+  const ftPt = fn.startsWith("F") ? "FT" : fn.startsWith("P") ? "PT" : "";
+
+  // Transport jobs carry [pickup(type 1), dropoff(type 2)]. A job_type_id 3
+  // (delivery) job has a SINGLE stop — by rule that stop is the dropoff, so the
+  // pickup columns stay blank.
+  const stops = job.stops ?? [];
+  const pickup = stops.length >= 2 ? stops[0] : undefined;
+  const dropoff = stops.length >= 2 ? stops[1] : stops[0];
+
   return {
-    ft_pt: "",
-    courier,
-    pickup_from: pickup?.customer_name ?? "",
-    customer: dropoff?.customer_name ?? "",
-    order_no: job.job_id,
-    pickup_departure: pickupDeparture,
-    dropoff_arrival: dropoffArrival,
-    started_time: pickup?.activity_arrived_ts ?? "",
-    travel_time: travelMins(pickupDeparture, dropoffArrival),
-    target: "",
-    distance_target: "",
-    pass_fail: "",
+    ft_pt: ftPt,
+    driver_name: driverName,
     device_description: dr?.device_description ?? "",
+    reference_number: job.reference_number ?? "",
+    pickup_customer_name: pickup?.customer_name ?? "",
+    pickup_activity_completed_ts: pickup?.activity_completed_ts ?? "",
+    pickup_activity_arrived_ts: pickup?.activity_arrived_ts ?? "",
     pickup_coords: coordsStr(pickup),
+    dropoff_customer_name: dropoff?.customer_name ?? "",
+    dropoff_activity_completed_ts: dropoff?.activity_completed_ts ?? "",
+    dropoff_activity_arrived_ts: dropoff?.activity_arrived_ts ?? "",
     dropoff_coords: coordsStr(dropoff),
+    distance_km: "",
+    duration_mins: "",
     lat1: pickup?.latitude ?? null,
     lon1: pickup?.longitude ?? null,
     lat2: dropoff?.latitude ?? null,
@@ -146,11 +132,11 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Stable order: by pickup departure, then job_id.
+  // Stable order: by dropoff arrival (blanks last), then reference number.
   rows.sort(
     (a, b) =>
-      a.pickup_departure.localeCompare(b.pickup_departure) ||
-      (Number(a.order_no) || 0) - (Number(b.order_no) || 0)
+      (a.dropoff_activity_arrived_ts || "~").localeCompare(b.dropoff_activity_arrived_ts || "~") ||
+      a.reference_number.localeCompare(b.reference_number)
   );
 
   return NextResponse.json({ count: rows.length, days: days.length, rows, errors });

@@ -6,20 +6,19 @@ import { Button } from "@/components/ui/button";
 // Mirrors CompletedRow in /api/export-completed/route.ts.
 interface CompletedRow {
   ft_pt: string;
-  courier: string;
-  pickup_from: string;
-  customer: string;
-  order_no: number | "";
-  pickup_departure: string;
-  dropoff_arrival: string;
-  started_time: string;
-  travel_time: number | "";
-  target: number | "";
-  distance_target: number | "";
-  pass_fail: string;
+  driver_name: string;
   device_description: string;
+  reference_number: string;
+  pickup_customer_name: string;
+  pickup_activity_completed_ts: string;
+  pickup_activity_arrived_ts: string;
   pickup_coords: string;
+  dropoff_customer_name: string;
+  dropoff_activity_completed_ts: string;
+  dropoff_activity_arrived_ts: string;
   dropoff_coords: string;
+  distance_km: number | "";
+  duration_mins: number | "";
   lat1: number | null;
   lon1: number | null;
   lat2: number | null;
@@ -32,25 +31,24 @@ interface ApiDistance {
   duration_mins: number | null;
 }
 
-// CSV header ↔ row key, in order. The first 12 are the exact headers the
-// downstream Power Query "Export" sheet binds to; the rest are extras the query
-// ignores. The raw lat/lon fields are intentionally NOT exported.
+// CSV header ↔ row key, in order. Names stay faithful to Cartrack. The raw
+// lat/lon fields are intentionally NOT exported. distance_km / duration_mins are
+// the secondary "Mileage calculation" output — blank until that button is run.
 const COLUMNS: { key: keyof CompletedRow; label: string }[] = [
-  { key: "ft_pt", label: "FT/ PT" },
-  { key: "courier", label: "Courier" },
-  { key: "pickup_from", label: "Pickup From" },
-  { key: "customer", label: "Customer" },
-  { key: "order_no", label: "Order #" },
-  { key: "pickup_departure", label: "Pickup Departure" },
-  { key: "dropoff_arrival", label: "Dropoff Arrival" },
-  { key: "started_time", label: "Started Time" },
-  { key: "travel_time", label: "# Travel Time" },
-  { key: "target", label: "# Target" },
-  { key: "distance_target", label: "# Distance Target" },
-  { key: "pass_fail", label: "Pass/ Fail" },
+  { key: "ft_pt", label: "FT/PT" },
+  { key: "driver_name", label: "driver_name" },
   { key: "device_description", label: "device_description" },
-  { key: "pickup_coords", label: "Pickup Coords" },
-  { key: "dropoff_coords", label: "Dropoff Coords" },
+  { key: "reference_number", label: "reference_number" },
+  { key: "pickup_customer_name", label: "pickup_customer_name" },
+  { key: "pickup_activity_completed_ts", label: "pickup_activity_completed_ts" },
+  { key: "pickup_activity_arrived_ts", label: "pickup_activity_arrived_ts" },
+  { key: "pickup_coords", label: "pickup_coords" },
+  { key: "dropoff_customer_name", label: "dropoff_customer_name" },
+  { key: "dropoff_activity_completed_ts", label: "dropoff_activity_completed_ts" },
+  { key: "dropoff_activity_arrived_ts", label: "dropoff_activity_arrived_ts" },
+  { key: "dropoff_coords", label: "dropoff_coords" },
+  { key: "distance_km", label: "distance_km" },
+  { key: "duration_mins", label: "duration_mins" },
 ];
 
 // Quote a CSV cell if it contains a comma, quote, or newline (RFC 4180). The
@@ -74,6 +72,7 @@ function today(): string {
 }
 
 // True when the row is a real pickup→dropoff trip (both ends have coordinates).
+// Single-stop (delivery) jobs have no pickup, so they're skipped for mileage.
 function hasTrip(r: CompletedRow): boolean {
   return r.lat1 != null && r.lon1 != null && r.lat2 != null && r.lon2 != null;
 }
@@ -86,15 +85,15 @@ export default function ExportCompletedPage() {
   const [errors, setErrors] = useState<string[]>([]);
   const [runError, setRunError] = useState("");
 
-  // Distance phase (Goong) state.
-  const [distStatus, setDistStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
-  const [distProgress, setDistProgress] = useState(0);
-  const [distError, setDistError] = useState("");
+  // Mileage (Goong distance + duration) phase state.
+  const [mileageStatus, setMileageStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [mileageProgress, setMileageProgress] = useState(0);
+  const [mileageError, setMileageError] = useState("");
   const [quotaReached, setQuotaReached] = useState(false);
 
   const tripCount = useMemo(() => rows.filter(hasTrip).length, [rows]);
   const filledCount = useMemo(
-    () => rows.filter((r) => hasTrip(r) && r.distance_target !== "").length,
+    () => rows.filter((r) => hasTrip(r) && r.distance_km !== "").length,
     [rows]
   );
   const pendingCount = tripCount - filledCount;
@@ -104,7 +103,7 @@ export default function ExportCompletedPage() {
     setRows([]);
     setErrors([]);
     setRunError("");
-    setDistStatus("idle");
+    setMileageStatus("idle");
     setQuotaReached(false);
     try {
       const res = await fetch(`/api/export-completed?from=${from}&to=${to}`);
@@ -119,23 +118,22 @@ export default function ExportCompletedPage() {
     }
   };
 
-  // Fill # Distance Target (Goong km), # Target (Goong mins) and Pass/ Fail for
-  // every trip that doesn't have them yet, reusing the distance-checking endpoint
-  // (self/cache pairs are free; only fresh pairs spend Goong quota). Stops the
-  // moment Goong reports its daily limit — already-computed pairs are cached, so
-  // re-running tomorrow fills exactly the gaps.
-  const computeDistances = async () => {
-    setDistStatus("loading");
-    setDistProgress(0);
-    setDistError("");
+  // Mileage calculation: fill distance_km + duration_mins for every trip that
+  // doesn't have them yet, reusing the distance-checking endpoint (self/cache
+  // pairs are free; only fresh pairs spend Goong quota). Stops the moment Goong
+  // reports its daily limit — computed pairs are cached, so re-running tomorrow
+  // fills exactly the remaining gaps.
+  const calcMileage = async () => {
+    setMileageStatus("loading");
+    setMileageProgress(0);
+    setMileageError("");
     setQuotaReached(false);
 
-    // Only rows that are trips AND still missing a distance.
     const targets = rows
       .map((r, i) => ({ i, r }))
-      .filter(({ r }) => hasTrip(r) && r.distance_target === "");
+      .filter(({ r }) => hasTrip(r) && r.distance_km === "");
     if (targets.length === 0) {
-      setDistStatus("done");
+      setMileageStatus("done");
       return;
     }
 
@@ -147,7 +145,7 @@ export default function ExportCompletedPage() {
       for (let off = 0; off < targets.length; off += CHUNK) {
         const slice = targets.slice(off, off + CHUNK);
         const payload = slice.map(({ r }) => ({
-          pickup: String(r.order_no),
+          pickup: r.reference_number,
           dropoff: "",
           lat1: r.lat1 as number,
           lon1: r.lon1 as number,
@@ -160,26 +158,17 @@ export default function ExportCompletedPage() {
           body: JSON.stringify({ rows: payload }),
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error ?? "Lỗi tính khoảng cách");
+        if (!res.ok) throw new Error(data.error ?? "Lỗi tính mileage");
         (data.results as ApiDistance[]).forEach((d, j) => {
           const idx = slice[j].i;
-          const km = d.distance_km;
-          const mins = d.duration_mins;
-          const travel = next[idx].travel_time;
           next[idx] = {
             ...next[idx],
-            distance_target: km ?? "",
-            target: mins ?? "",
-            pass_fail:
-              typeof mins === "number" && typeof travel === "number"
-                ? travel <= mins
-                  ? "Pass"
-                  : "Fail"
-                : "",
+            distance_km: d.distance_km ?? "",
+            duration_mins: d.duration_mins ?? "",
           };
         });
         done += slice.length;
-        setDistProgress(done);
+        setMileageProgress(done);
         setRows([...next]);
         // Goong daily cap hit — stop now, leave the rest blank for tomorrow.
         if (data.quotaReached) {
@@ -188,10 +177,10 @@ export default function ExportCompletedPage() {
         }
       }
       setQuotaReached(hitQuota);
-      setDistStatus("done");
+      setMileageStatus("done");
     } catch (e) {
-      setDistError(String(e));
-      setDistStatus("error");
+      setMileageError(String(e));
+      setMileageStatus("error");
     }
   };
 
@@ -200,7 +189,7 @@ export default function ExportCompletedPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `Export_${from}_${to}.csv`;
+    a.download = `completed-jobs_${from}_${to}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -214,11 +203,11 @@ export default function ExportCompletedPage() {
             Lọc theo{" "}
             <code className="bg-slate-100 px-1 rounded text-xs">scheduled_delivery_ts</code> và{" "}
             <code className="bg-slate-100 px-1 rounded text-xs">job_status_id = 5</code> (Hoàn thành).
-            Cột khớp với sheet <code className="bg-slate-100 px-1 rounded text-xs">Export</code> của Power Query.
+            Bấm <strong>Mileage calculation</strong> để bổ sung khoảng cách + thời gian (Goong).
           </p>
         </div>
 
-        {/* Date range + load */}
+        {/* Date range + actions */}
         <div className="flex flex-wrap items-end gap-3 rounded-lg border bg-white p-4">
           <label className="flex flex-col gap-1 text-xs text-slate-500">
             Từ ngày
@@ -246,16 +235,16 @@ export default function ExportCompletedPage() {
           {rows.length > 0 && tripCount > 0 && (
             <Button
               variant="outline"
-              onClick={computeDistances}
-              disabled={distStatus === "loading" || pendingCount === 0}
+              onClick={calcMileage}
+              disabled={mileageStatus === "loading" || pendingCount === 0}
               className="h-10"
               title="Bổ sung khoảng cách + thời gian dự kiến (Goong). Tự dừng khi hết hạn mức ngày."
             >
-              {distStatus === "loading"
-                ? `Đang tính… ${distProgress}/${tripCount}`
+              {mileageStatus === "loading"
+                ? `Đang tính… ${mileageProgress}/${tripCount}`
                 : pendingCount === 0
-                ? "✓ Đã có khoảng cách"
-                : `📏 Tính khoảng cách + thời gian (${pendingCount})`}
+                ? "✓ Mileage đã đủ"
+                : `📏 Mileage calculation (${pendingCount})`}
             </Button>
           )}
           {rows.length > 0 && (
@@ -268,14 +257,14 @@ export default function ExportCompletedPage() {
         {status === "error" && (
           <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{runError}</div>
         )}
-        {distError && (
-          <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{distError}</div>
+        {mileageError && (
+          <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{mileageError}</div>
         )}
 
         {/* Goong quota notice */}
         {quotaReached && (
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-            ⚠ Đã chạm hạn mức Goong hôm nay. Còn <strong>{pendingCount}</strong> chuyến chưa có khoảng cách —
+            ⚠ Đã chạm hạn mức Goong hôm nay. Còn <strong>{pendingCount}</strong> chuyến chưa có mileage —
             các chuyến đã tính đã được lưu cache, chạy lại vào ngày mai để tính tiếp phần còn lại.
           </div>
         )}
@@ -300,10 +289,10 @@ export default function ExportCompletedPage() {
         {rows.length > 0 && (
           <div className="space-y-2">
             <p className="text-xs text-slate-500">
-              {rows.length} chuyến · {tripCount} có toạ độ · {filledCount} đã có khoảng cách — hiển thị tối đa 200 dòng đầu.
+              {rows.length} chuyến · {tripCount} có pickup+dropoff · {filledCount} đã có mileage — hiển thị tối đa 200 dòng đầu.
             </p>
             <div className="rounded-lg border bg-white overflow-x-auto">
-              <table className="w-full text-xs min-w-[1400px]">
+              <table className="w-full text-xs min-w-[1500px]">
                 <thead className="bg-slate-50 border-b text-slate-500 uppercase tracking-wide">
                   <tr>
                     {COLUMNS.map((c) => (
@@ -313,7 +302,7 @@ export default function ExportCompletedPage() {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {rows.slice(0, 200).map((r, i) => (
-                    <tr key={`${r.order_no}-${i}`} className={r.pass_fail === "Fail" ? "bg-red-50/40" : "hover:bg-slate-50/60"}>
+                    <tr key={`${r.reference_number}-${i}`} className="hover:bg-slate-50/60">
                       {COLUMNS.map((c) => (
                         <td key={c.key} className="px-3 py-2 whitespace-nowrap text-slate-600">
                           {String(r[c.key] ?? "")}
