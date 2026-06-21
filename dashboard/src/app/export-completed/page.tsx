@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import * as XLSX from "xlsx";
 import { Button } from "@/components/ui/button";
 
 // Mirrors CompletedRow in /api/export-completed/route.ts.
@@ -51,19 +52,18 @@ const COLUMNS: { key: keyof CompletedRow; label: string }[] = [
   { key: "duration_mins", label: "duration_mins" },
 ];
 
-// Quote a CSV cell if it contains a comma, quote, or newline (RFC 4180). The
-// coordinate cells are "lat,long" so they MUST be quoted to stay in one column.
-function csvCell(value: string): string {
-  return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
-}
-
-function toCSV(rows: CompletedRow[]): string {
-  const header = COLUMNS.map((c) => c.label).join(",");
-  const lines = rows.map((r) =>
-    COLUMNS.map((c) => csvCell(String(r[c.key] ?? ""))).join(",")
+// Build the worksheet rows as a header + array-of-arrays. Numbers (distance_km,
+// duration_mins) stay numeric; blanks become empty cells. Timestamp/coords stay
+// as the exact Cartrack text.
+function toAOA(rows: CompletedRow[]): (string | number)[][] {
+  const header = COLUMNS.map((c) => c.label);
+  const body = rows.map((r) =>
+    COLUMNS.map((c) => {
+      const v = r[c.key];
+      return v === "" || v == null ? "" : (v as string | number);
+    })
   );
-  // Leading BOM so Excel reads UTF-8 (Vietnamese names) correctly.
-  return "﻿" + [header, ...lines].join("\n");
+  return [header, ...body];
 }
 
 function today(): string {
@@ -184,14 +184,13 @@ export default function ExportCompletedPage() {
     }
   };
 
+  // Download a real .xlsx with a single sheet named "Export" — the sheet name the
+  // downstream Power Query binds to (Item="Export").
   const download = () => {
-    const blob = new Blob([toCSV(rows)], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `completed-jobs_${from}_${to}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    const ws = XLSX.utils.aoa_to_sheet(toAOA(rows));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Export");
+    XLSX.writeFile(wb, `completed-jobs_${from}_${to}.xlsx`);
   };
 
   return (
@@ -249,7 +248,7 @@ export default function ExportCompletedPage() {
           )}
           {rows.length > 0 && (
             <Button variant="outline" onClick={download} className="h-10">
-              ⬇ Tải CSV ({rows.length})
+              ⬇ Tải Excel ({rows.length})
             </Button>
           )}
         </div>
