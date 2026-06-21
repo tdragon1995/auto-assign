@@ -9,12 +9,13 @@ import { ScheduleListPanel } from "./schedule-list-panel";
 import { SmartLogHistory } from "./smart-log-history";
 import { type HeldJob } from "./note-review-panel";
 import { JobAdminPanel } from "./job-admin-panel";
+import { CompletedExportPanel } from "./completed-export-panel";
 import { FailedJobsPanel, type ScheduleErrorRow } from "./failed-jobs-panel";
 import { toast } from "sonner";
 import type { LogEntry, PickupWarning, FailedJob, ConfigDriver } from "@/lib/types";
 
 type Env = "prod" | "uat";
-type RightTab = "live" | "schedule" | "admin";
+type RightTab = "live" | "schedule" | "admin" | "distance";
 type LogMode = "live" | "smart";
 
 export function Dashboard() {
@@ -348,6 +349,9 @@ export function Dashboard() {
             <button onClick={() => setRightTab("admin")} className={tabBtn(rightTab === "admin")}>
               Quản trị job
             </button>
+            <button onClick={() => setRightTab("distance")} className={tabBtn(rightTab === "distance")}>
+              Distance checking
+            </button>
           </div>
 
           {/* Tab content. On mobile the page flows + scrolls (definite heights so
@@ -403,9 +407,13 @@ export function Dashboard() {
               <div className="h-[72vh] lg:h-full">
                 <ScheduleListPanel env={env} />
               </div>
-            ) : (
+            ) : rightTab === "admin" ? (
               <div className="h-[72vh] lg:h-full">
                 <JobAdminPanel env={env} />
+              </div>
+            ) : (
+              <div className="h-[72vh] lg:h-full overflow-y-auto">
+                <CompletedExportPanel env={env} />
               </div>
             )}
           </div>
