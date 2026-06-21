@@ -41,9 +41,20 @@ export interface Stop {
   delivery_windows?: { time_from?: string; time_to?: string }[];
 }
 
+// The driver block Cartrack embeds in each job of the `GET /jobs` list response
+// (verified against a 738-job prod dump). Only the fields the completed-jobs export
+// reads are typed here; the real object carries many more.
+export interface JobDriver {
+  delivery_driver_id?: string;
+  first_name?: string | null;
+  last_name?: string | null;
+  device_description?: string | null;
+}
+
 export interface Job {
   job_id: number;
   job_status_id?: number;
+  job_type_id?: number;
   create_ts?: string;
   scheduled_delivery_ts?: string | null;
   send_to_driver_at?: string | null;
@@ -51,6 +62,9 @@ export interface Job {
   labels?: string[];
   delivery_driver_id?: string | null;
   assigned_ts?: string | null;
+  // Embedded in `GET /jobs` list rows for assigned/completed jobs; null when the
+  // job is unassigned (e.g. parked on a plan/proxy driver).
+  driver?: JobDriver | null;
   stops: Stop[];
 }
 

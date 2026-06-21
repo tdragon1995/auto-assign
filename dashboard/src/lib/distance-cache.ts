@@ -1,5 +1,5 @@
 import { Redis } from "@upstash/redis";
-import { goongMatrix, goongMatrixMultiOrigin, type GoongResult } from "./distance";
+import { goongMatrix, goongMatrixMultiOrigin, type GoongResult, type QuotaSignal } from "./distance";
 
 /**
  * Redis-backed cache for road distances between fixed locations (customer/PSC
@@ -146,27 +146,31 @@ async function resolvePairs(
   return pairs.map((p) => results[indexByKey.get(keyOf(p))!]);
 }
 
-/** N origins → 1 destination (smart-assign ranking: candidates' ref stops → pickup). */
+/** N origins → 1 destination (smart-assign ranking: candidates' ref stops → pickup).
+ *  Optional `signal` lets a batch short-circuit once Goong's daily quota is hit. */
 export async function roadDistancesToPoint(
   origins: { lat: number; lon: number }[],
   dest: { lat: number; lon: number },
   apiKey?: string,
+  signal?: QuotaSignal,
 ): Promise<(ResolvedDistance | null)[]> {
   return resolvePairs(
     origins.map((o) => ({ from: o, to: dest })),
-    (miss) => goongMatrixMultiOrigin(miss.map((m) => m.from), dest, apiKey),
+    (miss) => goongMatrixMultiOrigin(miss.map((m) => m.from), dest, apiKey, signal),
   );
 }
 
-/** 1 origin → N destinations (distance-checking: one pickup → its dropoffs). */
+/** 1 origin → N destinations (distance-checking: one pickup → its dropoffs).
+ *  Optional `signal` lets a batch short-circuit once Goong's daily quota is hit. */
 export async function roadDistancesFromPoint(
   origin: { lat: number; lon: number },
   dests: { lat: number; lon: number }[],
   apiKey?: string,
+  signal?: QuotaSignal,
 ): Promise<(ResolvedDistance | null)[]> {
   return resolvePairs(
     dests.map((d) => ({ from: origin, to: d })),
-    (miss) => goongMatrix(origin.lat, origin.lon, miss.map((m) => m.to), apiKey),
+    (miss) => goongMatrix(origin.lat, origin.lon, miss.map((m) => m.to), apiKey, signal),
   );
 }
 

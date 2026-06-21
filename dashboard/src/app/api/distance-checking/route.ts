@@ -68,6 +68,10 @@ export async function POST(req: NextRequest) {
 
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
     const results: DistanceResult[] = new Array(rows.length);
+    // Shared across every chunk in this request: the first 429 flips this, and
+    // all later Goong calls short-circuit to cache-only. Reported so the caller
+    // knows to stop and resume tomorrow (computed pairs are already cached).
+    const quota = { quotaExceeded: false };
 
     // Flatten groups into chunks: one matrix call per pickup, split if it has
     // more than MAX_DEST_PER_CALL dropoffs.
@@ -86,7 +90,7 @@ export async function POST(req: NextRequest) {
     const runChunk = async (chunk: Chunk): Promise<boolean> => {
       const dests = chunk.indices.map((idx) => ({ lat: rows[idx].lat2, lon: rows[idx].lon2 }));
       const matrix = await roadDistancesFromPoint(
-        { lat: chunk.lat1, lon: chunk.lon1 }, dests, DISTANCE_API_KEY
+        { lat: chunk.lat1, lon: chunk.lon1 }, dests, DISTANCE_API_KEY, quota
       );
       chunk.indices.forEach((idx, j) => {
         const r = matrix[j];
@@ -114,7 +118,7 @@ export async function POST(req: NextRequest) {
       await runChunk(chunk);
     }
 
-    return NextResponse.json({ results });
+    return NextResponse.json({ results, quotaReached: quota.quotaExceeded });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
