@@ -605,6 +605,18 @@ export async function autoAssignCycle(
     logs.push(makeLog(msg, level));
   };
 
+  // ── G1: timing instrumentation. console.log streams to Vercel runtime logs
+  // immediately, so on a 60s kill the LAST "[timing]" line before the timeout
+  // error pinpoints the slow phase (the normal log()/run_log is lost on a kill).
+  const tStart = Date.now();
+  let tMark = tStart;
+  const phase = (name: string) => {
+    const now = Date.now();
+    console.log(`[timing] ${name}: +${now - tMark}ms (total ${now - tStart}ms)`);
+    tMark = now;
+  };
+  let goongMs = 0;
+
   // One Cartrack call per cycle: getJobsByDate fetches ALL of today's jobs and we
   // partition into status 2/4/5 in memory (a trivial O(n) pass), instead of three
   // separate status-filtered fetches. These three lists are shared with the
@@ -621,6 +633,7 @@ export async function autoAssignCycle(
   const today = vnDate();
   const leaveEntries = await loadLeaveEntries().catch(() => []);
   if (!onlyJobIds) await releaseDueProxyJobs(today, env, log);
+  phase("setup+proxy-release");
 
   // Fetch ALL of today's jobs in one call (scheduled_delivery_ts = today), then
   // partition by status. scheduled_delivery_ts (not create_ts) means multi-day
@@ -654,6 +667,7 @@ export async function autoAssignCycle(
     log(`Error fetching jobs: ${e}`, "ERROR");
     return logs;
   }
+  phase("fetch+partition");
 
   // Targeted manual assign: narrow to just the requested job(s).
   let jobs: Job[] = onlyJobIds ? s2Jobs.filter((j) => onlyJobIds.has(j.job_id)) : s2Jobs;
@@ -787,6 +801,7 @@ export async function autoAssignCycle(
 
     log(`Smart-assign ready: ${phase1Coords.size} candidate driver(s) (GPS or start_location)`);
   }
+  phase("smart-prep");
 
   // Duplicate-check map from the status-4 partition obtained above. Reused for
   // pickup warnings and the follow-up steps too.
@@ -1044,7 +1059,9 @@ export async function autoAssignCycle(
           if (ref && ref.altLat != null && ref.altLon != null) refPts.push({ lat: ref.altLat, lon: ref.altLon });
           return { d, hkm, info, ref, refPts };
         });
+        const _tGoong = Date.now();
         const flatRoads = await roadDistancesToPoint(prepped.flatMap((p) => p.refPts), pickupPt);
+        goongMs += Date.now() - _tGoong;
         let ptCursor = 0;
         const withGoong = prepped.map(({ d, hkm, info, ref, refPts }) => {
           const workload = info?.workload ?? 0;
@@ -1305,6 +1322,9 @@ export async function autoAssignCycle(
     }
   }
 
+  console.log(`[timing] loop detail: ${jobs.length} job(s), goong ${goongMs}ms`);
+  phase("assign-loop");
+
   if (!onlyJobIds) {
     await Promise.all([
       setHeldJobs(heldJobs),
@@ -1347,6 +1367,7 @@ export async function autoAssignCycle(
     } catch (e) {
       log(`Return-trip hook failed: ${e}`, "ERROR");
     }
+    phase("follow-ups");
   }
 }
 
