@@ -617,6 +617,7 @@ export async function autoAssignCycle(
   };
   let goongMs = 0;
   let altMs = 0, zaloMs = 0, optimizeMs = 0;
+  let _jobIdx = 0;
 
   // One Cartrack call per cycle: getJobsByDate fetches ALL of today's jobs and we
   // partition into status 2/4/5 in memory (a trivial O(n) pass), instead of three
@@ -833,6 +834,7 @@ export async function autoAssignCycle(
 
   for (const job of jobs) {
     const jobId = job.job_id;
+    console.log(`[loop] job ${++_jobIdx}/${jobs.length} jobId=${jobId} (t=${Date.now() - tStart}ms)`);
     const customerId = getCustomerIdFromJob(job);
     const jobCustomerName = getCustomerNameFromJob(job);
     // Uniform log suffix: every job line ends " | <pickup> → <dropoff>", so the
@@ -1370,11 +1372,13 @@ export async function autoAssignCycle(
     // Forward via-legs first (driver is en route toward the via PSC — more time-sensitive).
     // Pass the shared prefetch so neither step re-fetches the status 2/4/5 lists; falls
     // back to self-fetch when `shared` is undefined (prefetch above failed).
+    console.log(`[follow-ups] via-legs start (t=${Date.now() - tStart}ms)`);
     try {
       await detectAndCreateViaLegs(env, log, shared && { s4: shared.s4, s5: shared.s5 });
     } catch (e) {
       log(`Via-leg hook failed: ${e}`, "ERROR");
     }
+    console.log(`[follow-ups] return-trips start (t=${Date.now() - tStart}ms)`);
     try {
       await detectAndCreateReturnTrips(config, env, log, shared);
     } catch (e) {
