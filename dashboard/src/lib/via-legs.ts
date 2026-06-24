@@ -162,6 +162,7 @@ export async function detectAndCreateViaLegs(
   }
 
   // Outbound candidates: status-4 PSC outbounds matching a via-route, pickup completed.
+  const viaTasks: Array<() => Promise<void>> = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const outbound of s4 as any[]) {
     if (!(outbound.labels ?? []).includes(PSC_OUTBOUND_LABEL)) continue;
@@ -197,21 +198,28 @@ export async function detectAndCreateViaLegs(
     const originName: string = pickupStop.customer_name ?? pickupStop.name ?? pickupStop.customer_id;
     const dropoffName: string = dropoffStop.customer_name ?? dropoffStop.name ?? dropoffStop.customer_id;
 
-    try {
-      const newJobId = await createViaLeg(
-        driverId,
-        cfg.viaCustomerId,
-        cfg.viaName,
-        originName,
-        dropoffStop.customer_id,
-        dropoffName,
-        env
-      );
-      log(`Via-leg #${newJobId} : driver (from outbound ${outbound.job_id}) | ${cfg.viaName} → ${dropoffName}`, "OK");
-    } catch (e) {
-      log(`Via-leg failed for outbound ${outbound.job_id}: ${e} | ${cfg.viaName} → ${dropoffName}`, "ERROR");
-      inFlightVia.delete(outbound.job_id);
-      existingViaIndex.set(viaKey, priorVia); // allow retry next cycle
-    }
+    viaTasks.push(async () => {
+      try {
+        const newJobId = await createViaLeg(
+          driverId,
+          cfg.viaCustomerId,
+          cfg.viaName,
+          originName,
+          dropoffStop.customer_id,
+          dropoffName,
+          env
+        );
+        log(`Via-leg #${newJobId} : driver (from outbound ${outbound.job_id}) | ${cfg.viaName} → ${dropoffName}`, "OK");
+      } catch (e) {
+        log(`Via-leg failed for outbound ${outbound.job_id}: ${e} | ${cfg.viaName} → ${dropoffName}`, "ERROR");
+        inFlightVia.delete(outbound.job_id);
+        existingViaIndex.set(viaKey, priorVia); // allow retry next cycle
+      }
+    });
+  }
+
+  // Fire creations concurrently (bounded 5). Guards set synchronously above.
+  for (let i = 0; i < viaTasks.length; i += 5) {
+    await Promise.all(viaTasks.slice(i, i + 5).map((t) => t()));
   }
 }

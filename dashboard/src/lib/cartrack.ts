@@ -43,19 +43,36 @@ export async function getAllAssignedDriverJobs(
   driverId: string,
   env: Env = "prod"
 ): Promise<Job[]> {
-  const params = new URLSearchParams({
-    "filter[job_status_id]": "4",
-    per_page: "200",
-  });
-
-  const res = await fetch(`${BASE_URL}/drivers/${driverId}/jobs?${params}`, {
-    headers: getHeaders(env),
-    cache: "no-store",
-  });
-
-  if (!res.ok) return [];
-  const data = await res.json();
-  return data.data ?? [];
+  // Paginate to exhaustion — a heavy parked backlog can exceed one page, and a
+  // silent truncation would leave parked jobs unreleased. Mirrors getJobsByDate.
+  const PAGE_SIZE = 1000;
+  const MAX_PAGES = 5;
+  const all: Job[] = [];
+  const seen = new Set<number>();
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const params = new URLSearchParams({
+      "filter[job_status_id]": "4",
+      page: String(page),
+      limit: String(PAGE_SIZE),
+      per_page: String(PAGE_SIZE),
+    });
+    const res = await fetch(`${BASE_URL}/drivers/${driverId}/jobs?${params}`, {
+      headers: getHeaders(env),
+      cache: "no-store",
+    });
+    if (!res.ok) return all;
+    const data = await res.json();
+    const batch: Job[] = data.data ?? [];
+    let added = 0;
+    for (const j of batch) {
+      if (seen.has(j.job_id)) continue;
+      seen.add(j.job_id);
+      all.push(j);
+      added++;
+    }
+    if (batch.length < PAGE_SIZE || added === 0) break;
+  }
+  return all;
 }
 
 export async function getDrivers(env: Env = "prod"): Promise<Driver[]> {

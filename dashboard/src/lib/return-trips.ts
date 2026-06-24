@@ -160,6 +160,7 @@ export async function detectAndCreateReturnTrips(
     }
   }
 
+  const createTasks: Array<() => Promise<void>> = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const outbound of completedJobs as any[]) {
     const labels: string[] = outbound.labels ?? [];
@@ -209,13 +210,21 @@ export async function detectAndCreateReturnTrips(
     setTimeout(() => inFlightReturns.delete(outbound.job_id), IN_FLIGHT_TTL_MS);
     blockingReturnKeys.add(returnKey); // protect same driver in same cycle
 
-    try {
-      const newJobId = await createReturnJob(outbound.delivery_driver_id, fromCustomerId, fromCustomerName, toCustomerId, toCustomerName, env);
-      log(`Return trip #${newJobId} : driver (from outbound ${outbound.job_id}) | ${fromCustomerName} → ${toCustomerName}`, "OK");
-    } catch (e) {
-      log(`Return trip failed for outbound ${outbound.job_id}: ${e} | ${fromCustomerName} → ${toCustomerName}`, "ERROR");
-      inFlightReturns.delete(outbound.job_id);
-      blockingReturnKeys.delete(returnKey); // allow retry next cycle
-    }
+    createTasks.push(async () => {
+      try {
+        const newJobId = await createReturnJob(outbound.delivery_driver_id, fromCustomerId, fromCustomerName, toCustomerId, toCustomerName, env);
+        log(`Return trip #${newJobId} : driver (from outbound ${outbound.job_id}) | ${fromCustomerName} → ${toCustomerName}`, "OK");
+      } catch (e) {
+        log(`Return trip failed for outbound ${outbound.job_id}: ${e} | ${fromCustomerName} → ${toCustomerName}`, "ERROR");
+        inFlightReturns.delete(outbound.job_id);
+        blockingReturnKeys.delete(returnKey); // allow retry next cycle
+      }
+    });
+  }
+
+  // Fire the creations concurrently (bounded 5). Guards above were set
+  // synchronously during the scan, so dedup is fully resolved before any POST.
+  for (let i = 0; i < createTasks.length; i += 5) {
+    await Promise.all(createTasks.slice(i, i + 5).map((t) => t()));
   }
 }

@@ -579,16 +579,21 @@ async function releaseDueProxyJobs(dateVn: string, env: Env, log: (msg: string, 
   // filtering by create_ts = today would miss them.
   const proxyJobs = await getAllAssignedDriverJobs(PROXY_DRIVER_ID, env);
   const now = Date.now();
-  for (const job of proxyJobs) {
+  const due = proxyJobs.filter((job) => {
     const sendAt = parseSendToDriverAt(job.send_to_driver_at);
-    if (!sendAt || sendAt.getTime() > now) continue;
-    const { ok, status } = await unassignJob(job.job_id, env);
-    const relRoute = `${job.stops?.find((s) => s.stop_type_id === 1)?.customer_name ?? "—"} → ${job.stops?.find((s) => s.stop_type_id === 2)?.customer_name ?? "—"}`;
-    if (ok) {
-      log(`Job ${job.job_id} - RELEASED from proxy driver (was parked until ${job.send_to_driver_at}) | ${relRoute}`, "INFO");
-    } else {
-      log(`Job ${job.job_id} - Release failed (HTTP ${status}) | ${relRoute}`, "WARN");
-    }
+    return sendAt !== null && sendAt.getTime() <= now;
+  });
+  // Release concurrently (bounded 10) — each unassign is independent.
+  for (let i = 0; i < due.length; i += 10) {
+    await Promise.all(due.slice(i, i + 10).map(async (job) => {
+      const { ok, status } = await unassignJob(job.job_id, env);
+      const relRoute = `${job.stops?.find((s) => s.stop_type_id === 1)?.customer_name ?? "—"} → ${job.stops?.find((s) => s.stop_type_id === 2)?.customer_name ?? "—"}`;
+      if (ok) {
+        log(`Job ${job.job_id} - RELEASED from proxy driver (was parked until ${job.send_to_driver_at}) | ${relRoute}`, "INFO");
+      } else {
+        log(`Job ${job.job_id} - Release failed (HTTP ${status}) | ${relRoute}`, "WARN");
+      }
+    }));
   }
 }
 
