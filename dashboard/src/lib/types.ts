@@ -62,6 +62,9 @@ export interface Job {
   labels?: string[];
   delivery_driver_id?: string | null;
   assigned_ts?: string | null;
+  // Recurring-plan association (Cartrack route plans). computePickupWarnings uses it
+  // to skip plan-slot jobs; also carried on timeline-derived jobs.
+  last_assigned_plan_id?: number | null;
   // Embedded in `GET /jobs` list rows for assigned/completed jobs; null when the
   // job is unassigned (e.g. parked on a plan/proxy driver).
   driver?: JobDriver | null;

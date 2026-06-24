@@ -1,5 +1,5 @@
 import type { Config, Driver, FailedJob, Job, LogEntry, LogLevel, Mapping, PickupWarning, TimelineRoute } from "./types";
-import { getDrivers, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, updateJobSendToDriverAt, unassignJob, optimizeDriverRoute, getFleetwebCookie, getJobsByStatusAndDate, getJobsByDate, JSONRPC_URL, PROXY_DRIVER_ID, type Env } from "./cartrack";
+import { getDrivers, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, updateJobSendToDriverAt, unassignJob, optimizeDriverRoute, getFleetwebCookie, getJobsByStatusAndDate, getJobsByDate, getTimelineJobs, JSONRPC_URL, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL } from "./return-trips";
@@ -647,30 +647,53 @@ export async function autoAssignCycle(
   // partition by status. scheduled_delivery_ts (not create_ts) means multi-day
   // parked jobs released from the proxy driver are found on their scheduled day.
   // Done AFTER releaseDueProxyJobs so jobs it just released show up as status 2.
-  let s2Jobs: Job[];
+  let s2Jobs: Job[] = [];
   try {
-    const allToday = await getJobsByDate(today, env);
-    s2Jobs = []; const s4Jobs: Job[] = []; const s5Jobs: Job[] = [];
-    for (const j of allToday) {
-      // A job with a driver is ASSIGNED regardless of status (footgun #1, reverse):
-      // a manual assignment can leave the list reporting status 2 while
-      // delivery_driver_id is already set. Treating it as unassigned would re-flag
-      // it (e.g. NO MAPPING) every cycle, so count it as assigned instead.
-      const assigned = !!j.delivery_driver_id;
-      if (j.job_status_id === 2 && !assigned) s2Jobs.push(j);
-      else if (j.job_status_id === 4 || (j.job_status_id === 2 && assigned)) s4Jobs.push(j);
-      else if (j.job_status_id === 5) s5Jobs.push(j);
+    let done = false;
+    // ASSIGN_USE_TIMELINE=1: s2 (unassigned) from REST; s4+s5 from the route-timeline
+    // — one fast ~2.3s JSON-RPC call vs the variable 6-21s getJobsByDate. Falls back
+    // to getJobsByDate below if the timeline call fails (cookie/login/shape), so dedup
+    // and follow-ups never go blind. Default (unset) = the getJobsByDate path.
+    if (process.env.ASSIGN_USE_TIMELINE === "1") {
+      const [restS2, timelineJobs] = await Promise.all([
+        getJobsByStatusAndDate(2, today, env),
+        getTimelineJobs(today, env),
+      ]);
+      if (timelineJobs) {
+        const s4Jobs: Job[] = []; const s5Jobs: Job[] = [];
+        for (const j of timelineJobs) (j.job_status_id === 5 ? s5Jobs : s4Jobs).push(j);
+        // Footgun #1: a status-2 job with a driver set is really assigned → s4 pot
+        // (dedupe against timeline jobs so it isn't counted twice).
+        const tlIds = new Set(timelineJobs.map((j) => j.job_id));
+        for (const j of restS2) if (j.delivery_driver_id && !tlIds.has(j.job_id)) s4Jobs.push(j);
+        s2Jobs = restS2.filter((j) => !j.delivery_driver_id);
+        cycleStartS2 = s2Jobs;
+        assignedJobsToday = s4Jobs;
+        cycleS5 = s5Jobs;
+        done = true;
+      }
     }
-    // s2Jobs is the FULL unassigned list — safe to share with the follow-up dedup
-    // even on a targeted assign, since the narrowing below only touches `jobs`.
-    cycleStartS2 = s2Jobs;
-    assignedJobsToday = s4Jobs;
-    cycleS5 = s5Jobs;
+    if (!done) {
+      const allToday = await getJobsByDate(today, env);
+      s2Jobs = []; const s4Jobs: Job[] = []; const s5Jobs: Job[] = [];
+      for (const j of allToday) {
+        // A job with a driver is ASSIGNED regardless of status (footgun #1, reverse):
+        // a manual assignment can leave the list reporting status 2 while
+        // delivery_driver_id is already set. Treating it as unassigned would re-flag
+        // it (e.g. NO MAPPING) every cycle, so count it as assigned instead.
+        const assigned = !!j.delivery_driver_id;
+        if (j.job_status_id === 2 && !assigned) s2Jobs.push(j);
+        else if (j.job_status_id === 4 || (j.job_status_id === 2 && assigned)) s4Jobs.push(j);
+        else if (j.job_status_id === 5) s5Jobs.push(j);
+      }
+      cycleStartS2 = s2Jobs;
+      assignedJobsToday = s4Jobs;
+      cycleS5 = s5Jobs;
+    }
 
     // Refresh the PSC active-pickup dedup index (full cycle only). Fire-and-forget:
     // it feeds /api/psc-assign's fast path and must not add latency to the cycle.
-    // Placed before any early return below so it stays fresh on quiet cycles too.
-    if (!onlyJobIds) void setPscActivePickups(computeActivePickupPairs([...s2Jobs, ...s4Jobs]));
+    if (!onlyJobIds) void setPscActivePickups(computeActivePickupPairs([...(cycleStartS2 ?? []), ...(assignedJobsToday ?? [])]));
   } catch (e) {
     log(`Error fetching jobs: ${e}`, "ERROR");
     return logs;

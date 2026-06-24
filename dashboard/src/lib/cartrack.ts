@@ -1,4 +1,4 @@
-import type { Driver, Job } from "./types";
+import type { Driver, Job, Stop } from "./types";
 import { vnDayWindow } from "./time";
 
 export type Env = "prod" | "uat";
@@ -307,6 +307,89 @@ export async function getFleetwebCookie(): Promise<string | null> {
     _cachedCookie = setCookies.map((c) => c.split(";")[0]).join("; ");
     _cookieExpiry = Date.now() + COOKIE_TTL_MS;
     return _cachedCookie;
+  } catch {
+    return null;
+  }
+}
+
+/** Adapt delivery_timeline_route_list routes → Job[] (the s4+s5 source). The
+ *  timeline is per-driver, per-stop, camelCase; group stops by jobId and map to the
+ *  snake_case Job shape the cycle's consumers (dedup, follow-ups, pickup-warnings)
+ *  expect. Caveats: the timeline has no create_ts (we substitute scheduledDeliveryTs
+ *  for the return/via dedup index) and no embedded driver NAME (only the id). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function timelineRoutesToJobs(routes: any[]): Job[] {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const byJob = new Map<number, any[]>();
+  for (const r of routes) {
+    for (const s of (r?.orderedStops ?? [])) {
+      if (s?.jobId == null) continue;
+      const arr = byJob.get(s.jobId) ?? [];
+      arr.push(s);
+      byJob.set(s.jobId, arr);
+    }
+  }
+  const jobs: Job[] = [];
+  for (const [jobId, raw] of byJob) {
+    const first = raw[0];
+    const stops: Stop[] = raw
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .map((s: any): Stop => ({
+        stop_id: s.stopId,
+        stop_type_id: s.stopTypeId,
+        stop_status_id: s.stopStatusId,
+        customer_id: s.customerId,
+        customer_name: s.customerName,
+        name: s.customerName,
+        latitude: s.latitude ?? null,
+        longitude: s.longitude ?? null,
+        activity_started_ts: s.activityStartedTs ?? null,
+        activity_arrived_ts: s.activityArrivedTs ?? null,
+        activity_completed_ts: s.activityCompletedTs ?? null,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        delivery_windows: (s.deliveryWindows ?? []).map((w: any) => ({ time_from: w?.timeFrom, time_to: w?.timeTo })),
+      }))
+      .sort((a: Stop, b: Stop) => (a.stop_type_id ?? 0) - (b.stop_type_id ?? 0));
+    jobs.push({
+      job_id: jobId,
+      job_status_id: first.jobStatusId,
+      delivery_driver_id: first.deliveryDriverId ?? null,
+      reference_number: first.referenceNumber,
+      scheduled_delivery_ts: first.scheduledDeliveryTs ?? null,
+      create_ts: first.scheduledDeliveryTs ?? undefined, // timeline has no create_ts
+      send_to_driver_at: first.sendToDriverAt ?? null,
+      labels: first.jobLabels ?? [],
+      last_assigned_plan_id: first.lastAssignedPlanId ?? null,
+      stops,
+    });
+  }
+  return jobs;
+}
+
+/** Today's assigned+completed jobs via the route-timeline (JSON-RPC) instead of the
+ *  heavy/variable getJobsByDate. Returns Job[] on success, or null on any failure
+ *  (prod-only cookie, non-2xx, bad shape) so the caller can fall back to REST. */
+export async function getTimelineJobs(dateVn: string, env: Env = "prod"): Promise<Job[] | null> {
+  if (env !== "prod") return null; // fleetweb cookie is prod-only; UAT falls back to REST
+  const auth = process.env.CARTRACK_AUTH ?? "";
+  const cookie = await getFleetwebCookie();
+  if (!auth || !cookie) return null;
+  try {
+    const res = await fetch(JSONRPC_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: auth, Cookie: cookie },
+      body: JSON.stringify({
+        version: "2.0",
+        method: "delivery_timeline_route_list",
+        id: 1,
+        params: { data: { scheduleType: "scheduled", filter: vnDayWindow(dateVn) } },
+      }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const routes = data?.result?.routes;
+    if (!Array.isArray(routes)) return null;
+    return timelineRoutesToJobs(routes);
   } catch {
     return null;
   }
