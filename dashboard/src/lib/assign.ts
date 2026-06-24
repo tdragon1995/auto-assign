@@ -616,6 +616,7 @@ export async function autoAssignCycle(
     tMark = now;
   };
   let goongMs = 0;
+  let altMs = 0, zaloMs = 0, optimizeMs = 0;
 
   // One Cartrack call per cycle: getJobsByDate fetches ALL of today's jobs and we
   // partition into status 2/4/5 in memory (a trivial O(n) pass), instead of three
@@ -984,7 +985,9 @@ export async function autoAssignCycle(
             driverId = sub.subId;
           }
           if (smartMapping.alt_drop_off_id) {
+            const _tAlt = Date.now();
             const alt = await applyAltDropoff(jobId, smartMapping.alt_drop_off_id, job.stops ?? [], env, log);
+            altMs += Date.now() - _tAlt;
             if (!alt.ok) continue;
           }
           try {
@@ -1096,7 +1099,9 @@ export async function autoAssignCycle(
           .map((x, i) => `${i + 1}. ${x.d.first_name} ${x.d.last_name} (${x.distLabel})`)
           .join(" | ");
         if (smartMapping.alt_drop_off_id) {
+          const _tAlt = Date.now();
           const alt = await applyAltDropoff(jobId, smartMapping.alt_drop_off_id, job.stops ?? [], env, log);
+          altMs += Date.now() - _tAlt;
           if (!alt.ok) continue;
         }
         // Try candidates in ranked order; fall through to next if on-break/offline.
@@ -1242,7 +1247,9 @@ export async function autoAssignCycle(
     // post-assign block can read the new dropoff name + coords without a getJobDetails.
     let altResult: AltDropoffResult | null = null;
     if (mapping.alt_drop_off_id) {
+      const _tAlt = Date.now();
       altResult = await applyAltDropoff(jobId, mapping.alt_drop_off_id, job.stops ?? [], env, log);
+      altMs += Date.now() - _tAlt;
       if (!altResult.ok) continue;
     }
 
@@ -1289,11 +1296,13 @@ export async function autoAssignCycle(
             lines.push("Route: (missing coordinates)");
           }
 
+          const _tZalo = Date.now();
           const sent = await sendZaloMessage(
             bot_token,
             chat_id,
             lines.join("\n")
           );
+          zaloMs += Date.now() - _tZalo;
           if (sent) log("Zalo notification sent");
         }
 
@@ -1303,7 +1312,9 @@ export async function autoAssignCycle(
           .map((s) => s.trim())
           .filter(Boolean);
         if (pilotDrivers.includes(driverId)) {
+          const _tOpt = Date.now();
           const ok = await optimizeDriverRoute(driverId, vnDate());
+          optimizeMs += Date.now() - _tOpt;
           log(`Route optimise for ${driverId}: ${ok ? "triggered" : "skipped (no cookie or failed)"}`, ok ? "INFO" : "WARN");
         }
       } else {
@@ -1322,7 +1333,9 @@ export async function autoAssignCycle(
     }
   }
 
-  console.log(`[timing] loop detail: ${jobs.length} job(s), goong ${goongMs}ms`);
+  const _loopMs = Date.now() - tMark;
+  const _assignIsh = _loopMs - goongMs - altMs - zaloMs - optimizeMs;
+  console.log(`[timing] loop detail: ${jobs.length} job(s) in ${_loopMs}ms | goong ${goongMs} alt ${altMs} zalo ${zaloMs} optimize ${optimizeMs} assign~${_assignIsh}ms`);
   phase("assign-loop");
 
   if (!onlyJobIds) {
