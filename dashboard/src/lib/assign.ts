@@ -623,6 +623,7 @@ export async function autoAssignCycle(
   let goongMs = 0;
   let altMs = 0, zaloMs = 0, optimizeMs = 0;
   let _jobIdx = 0;
+  const driversToOptimize = new Set<string>();
 
   // One Cartrack call per cycle: getJobsByDate fetches ALL of today's jobs and we
   // partition into status 2/4/5 in memory (a trivial O(n) pass), instead of three
@@ -1314,17 +1315,14 @@ export async function autoAssignCycle(
           if (sent) log("Zalo notification sent");
         }
 
-        // Route optimisation — pilot drivers only
+        // Route optimisation — pilot drivers only. Defer + dedupe: collect the
+        // driver now; run optimize once per driver AFTER the loop (off the per-job
+        // critical path, one call per driver instead of one per assigned job).
         const pilotDrivers = (process.env.ROUTE_OPTIMIZE_PILOT ?? "")
           .split(",")
           .map((s) => s.trim())
           .filter(Boolean);
-        if (pilotDrivers.includes(driverId)) {
-          const _tOpt = Date.now();
-          const ok = await optimizeDriverRoute(driverId, vnDate());
-          optimizeMs += Date.now() - _tOpt;
-          log(`Route optimise for ${driverId}: ${ok ? "triggered" : "skipped (no cookie or failed)"}`, ok ? "INFO" : "WARN");
-        }
+        if (pilotDrivers.includes(driverId)) driversToOptimize.add(driverId);
       } else {
         const pickupName = job.stops?.find((s) => s.stop_type_id === 1)?.customer_name ?? jobCustomerName ?? "N/A";
         if (isDriverUnavailable(body)) {
@@ -1339,6 +1337,20 @@ export async function autoAssignCycle(
     } catch (e) {
       log(`Job ${jobId} - error: ${e} | ${route}`, "ERROR");
     }
+  }
+
+  // Deferred route-optimise: one bounded-parallel call per pilot driver assigned
+  // this cycle — off the per-job path and deduped (one call/driver, not per job).
+  if (driversToOptimize.size > 0) {
+    const _tOpt = Date.now();
+    const ids = [...driversToOptimize];
+    for (let i = 0; i < ids.length; i += 5) {
+      await Promise.all(ids.slice(i, i + 5).map(async (id) => {
+        const ok = await optimizeDriverRoute(id, vnDate());
+        log(`Route optimise for ${id}: ${ok ? "triggered" : "skipped (no cookie or failed)"}`, ok ? "INFO" : "WARN");
+      }));
+    }
+    optimizeMs += Date.now() - _tOpt;
   }
 
   const _loopMs = Date.now() - tMark;
