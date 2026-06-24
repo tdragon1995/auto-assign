@@ -13,12 +13,6 @@ type Prediction = {
 
 type ClientResult = { code: string; client_legal_name: string };
 
-type LastCreatedJob = {
-  reference_number: string;
-  pickup_customer_name: string;
-  dropoff_psc: string;
-};
-
 const CLIENT_OVERRIDES: Record<string, string> = {
   "21362": "PS315",
   "21361": "TM315",
@@ -85,6 +79,12 @@ function stripDiacritics(s: string): string {
 function titleCase(word: string): string {
   if (!word) return "";
   return word[0].toUpperCase() + word.slice(1).toLowerCase();
+}
+
+// A real Phòng Khám/Bác Sĩ name must contain at least one letter. A bare client
+// code (all digits) or any "full number" name is not usable for sample handover.
+function hasLetters(s: string): boolean {
+  return /\p{L}/u.test(s);
 }
 
 // Map a Goong compound.district name ("Quận 10", "Thành phố Thủ Đức",
@@ -254,74 +254,6 @@ export default function SalesPage() {
     }
   };
 
-  // Last created trip — persisted in sessionStorage so refresh survives
-  const SESSION_KEY = "sales_last_created_job";
-  const [lastCreatedJob, setLastCreatedJobState] = useState<LastCreatedJob | null>(null);
-  const [lastJobStatus, setLastJobStatus] = useState<number | null>(null);
-  const [lastJobStatusLoading, setLastJobStatusLoading] = useState(false);
-  const [lastJobCancelLoading, setLastJobCancelLoading] = useState(false);
-  const [lastJobCancelResult, setLastJobCancelResult] = useState<{ ok: boolean; msg: string } | null>(null);
-
-  const setLastCreatedJob = (job: LastCreatedJob | null) => {
-    setLastCreatedJobState(job);
-    try {
-      if (job) sessionStorage.setItem(SESSION_KEY, JSON.stringify(job));
-      else sessionStorage.removeItem(SESSION_KEY);
-    } catch { /* ignore */ }
-  };
-
-  // Restore from sessionStorage on mount
-  useEffect(() => {
-    try {
-      const saved = sessionStorage.getItem(SESSION_KEY);
-      if (saved) setLastCreatedJobState(JSON.parse(saved));
-    } catch { /* ignore */ }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const refreshLastJobStatus = (job?: LastCreatedJob | null) => {
-    const target = job ?? lastCreatedJob;
-    if (!target) return;
-    setLastJobStatusLoading(true);
-    fetch(`/api/sales/job-status?ref=${encodeURIComponent(target.reference_number)}`)
-      .then((r) => r.ok ? r.json() : null)
-      .then((d) => { if (d?.job_status_id != null) setLastJobStatus(d.job_status_id); })
-      .catch(() => {})
-      .finally(() => setLastJobStatusLoading(false));
-  };
-
-  // Fetch live status once when cancel tab is opened
-  useEffect(() => {
-    if (tab !== "reject" || !lastCreatedJob) return;
-    refreshLastJobStatus();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab]);
-
-  const rejectLastJob = async (overrideReason?: string) => {
-    if (!lastCreatedJob) return;
-    setLastJobCancelLoading(true);
-    setLastJobCancelResult(null);
-    try {
-      const res = await fetch("/api/sales/reject-job", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reference_number: lastCreatedJob.reference_number, reject_reason: overrideReason ?? rejectReason }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setLastJobCancelResult({ ok: false, msg: data.error ?? "Huỷ thất bại" });
-      } else {
-        setLastJobCancelResult({ ok: true, msg: "Đã huỷ thành công" });
-        setLastCreatedJob(null);
-        setLastJobStatus(null);
-      }
-    } catch (e) {
-      setLastJobCancelResult({ ok: false, msg: String(e) });
-    } finally {
-      setLastJobCancelLoading(false);
-    }
-  };
-
   // Customer form state
   const [maKh, setMaKh] = useState("");
   const [quanCu, setQuanCu] = useState("");
@@ -404,7 +336,10 @@ export default function SalesPage() {
     setClientSelected(true);
     setShowClientResults(false);
     setClientResults([]);
-    setShowClientNameModal(true); // confirm / override the client name
+    // Only force the confirm/override prompt when Labcenter has no real name on
+    // file (the legal name is just the numeric client code). A proper name is
+    // accepted as-is; the user can still edit it via the "Sửa" button.
+    if (!hasLetters(name)) setShowClientNameModal(true);
   };
 
   const clearClient = () => {
@@ -481,10 +416,6 @@ export default function SalesPage() {
 
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
-  const [newCustomer, setNewCustomer] = useState<{ customer_id: string; customer_name: string; lat: number; lon: number; ma_kh: string } | null>(null);
-  const [tripLoading, setTripLoading] = useState(false);
-  const [tripResult, setTripResult] = useState<{ ok: boolean; msg: string } | null>(null);
-  const [tripNote, setTripNote] = useState("");
   const [duplicates, setDuplicates] = useState<{ customer_id: string; customer_name: string; address_line_1?: string }[] | null>(null);
   // Snapshot of what was submitted, kept visible after submit for troubleshooting.
   const [lastSubmitted, setLastSubmitted] = useState<{
@@ -494,6 +425,9 @@ export default function SalesPage() {
 
   const maKhValid = /^\d{5,8}$/.test(maKh);
   const hasCoords = !Number.isNaN(parseFloat(lat)) && !Number.isNaN(parseFloat(lon));
+  // Customer name is mandatory and must not be a bare number — it has to carry a
+  // real Phòng Khám/Bác Sĩ name so drivers can hand over samples.
+  const nameValid = hasLetters(tenKh);
 
   const { customerName, checkPrefix } = useMemo(() => {
     const includeStreet = ["21362", "21361", "46651876"].includes(maKh);
@@ -510,7 +444,7 @@ export default function SalesPage() {
     maKhValid &&
     quanCu.trim() &&
     tenDuong.trim() &&
-    tenKh.trim() &&
+    nameValid &&
     phone.trim() &&
     hasCoords &&
     !loading;
@@ -553,18 +487,6 @@ export default function SalesPage() {
         }
       } else {
         setResult({ ok: true, msg: `Tạo địa điểm lấy mẫu thành công: ${data.customer?.customer_name ?? name}` });
-        const lat2 = parseFloat(lat);
-        const lon2 = parseFloat(lon);
-        if (data.customer?.customer_id && !Number.isNaN(lat2) && !Number.isNaN(lon2)) {
-          setNewCustomer({
-            customer_id: data.customer.customer_id,
-            customer_name: data.customer.customer_name ?? name,
-            lat: lat2,
-            lon: lon2,
-            ma_kh: maKh,
-          });
-          setTripResult(null);
-        }
         setDuplicates(null);
         setMaKh(""); setQuanCu(""); setTenDuong(""); setTenKh(""); setDiaChi(""); setLat(""); setLon(""); setPhone("");
         setClientSearch(""); setClientSelected(false); setClientResults([]);
@@ -590,39 +512,6 @@ export default function SalesPage() {
       return;
     }
     doSubmit(forceName);
-  };
-
-  const createTrip = async () => {
-    if (!newCustomer) return;
-    setTripLoading(true);
-    setTripResult(null);
-    try {
-      const res = await fetch("/api/sales/create-trip", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...newCustomer, note: tripNote.trim() || null }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setTripResult({ ok: false, msg: data.error ?? "Tạo chuyến thất bại" });
-      } else {
-        const dropoff = data.dropoff_psc ? ` → Giao tại ${data.dropoff_psc}` : "";
-        setTripResult({ ok: true, msg: `Tạo chuyến thành công${dropoff}` });
-        setLastCreatedJob({
-          reference_number: data.reference_number,
-          pickup_customer_name: newCustomer.customer_name,
-          dropoff_psc: data.dropoff_psc ?? "",
-        });
-        setLastJobStatus(2);
-        setLastJobCancelResult(null);
-        setNewCustomer(null);
-        setTripNote("");
-      }
-    } catch (e) {
-      setTripResult({ ok: false, msg: String(e) });
-    } finally {
-      setTripLoading(false);
-    }
   };
 
   return (
@@ -655,89 +544,8 @@ export default function SalesPage() {
         </div>
 
         {tab === "reject" && (
-          <div className="p-6 space-y-5 border-t border-slate-100">
-
-            {/* Last created job card */}
-            {lastCreatedJob ? (
-              <div className="space-y-3">
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Chuyến vừa tạo</p>
-                <div className="rounded-xl border border-slate-200 p-3.5 space-y-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <p className="font-mono text-xs text-slate-500 break-all">{lastCreatedJob.reference_number}</p>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      {lastJobStatusLoading ? (
-                        <span className="text-xs text-slate-400">...</span>
-                      ) : lastJobStatus != null ? (
-                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
-                          lastJobStatus === 4 ? "bg-blue-100 text-blue-700" :
-                          lastJobStatus === 5 ? "bg-emerald-100 text-emerald-700" :
-                          lastJobStatus === 7 ? "bg-slate-100 text-slate-500" :
-                          "bg-amber-100 text-amber-700"
-                        }`}>
-                          {lastJobStatus === 4 ? "Đã phân công" :
-                           lastJobStatus === 5 ? "Hoàn thành" :
-                           lastJobStatus === 7 ? "Đã huỷ" :
-                           "Chờ phân công"}
-                        </span>
-                      ) : null}
-                      <button
-                        onClick={() => refreshLastJobStatus()}
-                        disabled={lastJobStatusLoading}
-                        className="text-slate-400 hover:text-slate-600 disabled:opacity-40 transition-colors"
-                        aria-label="Làm mới trạng thái"
-                      >
-                        <svg className={`w-3.5 h-3.5 ${lastJobStatusLoading ? "animate-spin" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                  <div className="space-y-1 text-sm">
-                    <div className="flex gap-2">
-                      <span className="text-[10px] font-bold uppercase text-slate-400 pt-0.5 w-8 shrink-0">LẤY</span>
-                      <span className="text-slate-800 font-medium">{lastCreatedJob.pickup_customer_name}</span>
-                    </div>
-                    {lastCreatedJob.dropoff_psc && (
-                      <div className="flex gap-2">
-                        <span className="text-[10px] font-bold uppercase text-slate-400 pt-0.5 w-8 shrink-0">GIAO</span>
-                        <span className="text-slate-800 font-medium">{lastCreatedJob.dropoff_psc}</span>
-                      </div>
-                    )}
-                  </div>
-                  {!lastJobCancelResult?.ok && lastJobStatus !== 5 && lastJobStatus !== 7 && (
-                    <>
-                      <select
-                        value={rejectReason}
-                        onChange={(e) => setRejectReason(e.target.value)}
-                        className="w-full border rounded-xl px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-                      >
-                        {REJECT_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
-                      </select>
-                      <button
-                        onClick={() => rejectLastJob()}
-                        disabled={lastJobCancelLoading}
-                        className="w-full py-2.5 rounded-xl font-bold text-white text-sm bg-red-600 hover:bg-red-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-                      >
-                        {lastJobCancelLoading ? "Đang huỷ..." : "Huỷ chuyến này"}
-                      </button>
-                    </>
-                  )}
-                  {lastJobCancelResult && (
-                    <div className={`rounded-xl p-3 text-sm font-medium text-center ${
-                      lastJobCancelResult.ok
-                        ? "bg-emerald-50 border border-emerald-200 text-emerald-800"
-                        : "bg-red-50 border border-red-200 text-red-800"
-                    }`}>
-                      {lastJobCancelResult.msg}
-                    </div>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <p className="text-sm text-slate-400 text-center py-2">Chưa có chuyến nào được tạo trong phiên này</p>
-            )}
-
-            <div className="border-t border-slate-100 pt-5 space-y-4">
+          <div className="p-6 space-y-4 border-t border-slate-100">
+            <div className="space-y-4">
               <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Huỷ bằng Mã Giao Nhận</p>
               <input
                 value={refNumber}
@@ -844,13 +652,20 @@ export default function SalesPage() {
                 <button
                   type="button"
                   onClick={() => setShowClientNameModal(true)}
-                  className="w-full flex items-center justify-between gap-2 border rounded-xl px-3 py-3 bg-slate-50 text-left hover:bg-slate-100 transition-colors"
+                  className={`w-full flex items-center justify-between gap-2 border rounded-xl px-3 py-3 bg-slate-50 text-left hover:bg-slate-100 transition-colors ${
+                    nameValid ? "" : "border-red-300"
+                  }`}
                 >
                   <span className="text-base font-medium text-slate-800 break-words">
                     {tenKh || <span className="text-slate-400 font-normal">(chưa có tên — bấm để nhập)</span>}
                   </span>
                   <span className="text-xs font-semibold text-blue-600 shrink-0">Sửa</span>
                 </button>
+                {!nameValid && (
+                  <p className="text-xs text-red-600 mt-1">
+                    Điền đúng tên Phòng Khám/Bác Sĩ để thuận tiện giao nhận mẫu.
+                  </p>
+                )}
               </div>
             )}
 
@@ -971,32 +786,36 @@ export default function SalesPage() {
             </div>
             )}
 
-            {/* Client name confirm popup */}
+            {/* Client name confirm popup — mandatory: only the "Xác nhận"
+                button (enabled once a real name is entered) can dismiss it. */}
             {showClientNameModal && (
-              <div
-                className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-                onClick={() => setShowClientNameModal(false)}
-              >
-                <div
-                  className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-5 space-y-3"
-                  onClick={(e) => e.stopPropagation()}
-                >
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+                <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-5 space-y-3">
                   <h3 className="text-base font-bold text-slate-800">Xác nhận tên khách hàng</h3>
                   <p className="text-[11px] text-slate-400 leading-relaxed">
-                    Kiểm tra hoặc sửa lại tên hiển thị của khách hàng.
+                    Điền đúng tên Phòng Khám/Bác Sĩ để thuận tiện giao nhận mẫu.
                   </p>
                   <input
                     value={tenKh}
                     onChange={(e) => setTenKh(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter" && tenKh.trim()) setShowClientNameModal(false); }}
+                    onKeyDown={(e) => { if (e.key === "Enter" && nameValid) setShowClientNameModal(false); }}
                     autoFocus
-                    placeholder="Tên khách hàng"
-                    className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    placeholder="VD: PK Đa Khoa Sài Gòn"
+                    className={`w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 ${
+                      tenKh.trim() && !nameValid
+                        ? "border-red-300 focus:ring-red-400"
+                        : "focus:ring-slate-400"
+                    }`}
                   />
+                  {tenKh.trim() && !nameValid && (
+                    <p className="text-xs text-red-600">
+                      Tên không được chỉ gồm số — điền đúng tên Phòng Khám/Bác Sĩ.
+                    </p>
+                  )}
                   <button
                     type="button"
                     onClick={() => setShowClientNameModal(false)}
-                    disabled={!tenKh.trim()}
+                    disabled={!nameValid}
                     className="w-full py-3 rounded-xl font-bold text-white text-base bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
                   >
                     Xác nhận
@@ -1067,7 +886,7 @@ export default function SalesPage() {
               </div>
             )}
 
-            {!hasCoords && maKhValid && quanCu.trim() && tenDuong.trim() && tenKh.trim() && phone.trim() && (
+            {!hasCoords && maKhValid && quanCu.trim() && tenDuong.trim() && nameValid && phone.trim() && (
               <p className="text-xs text-amber-600 font-medium -mt-1">
                 ⚠ Chọn Địa Chỉ từ gợi ý để lấy toạ độ — bắt buộc để tạo địa điểm và yêu cầu giao nhận.
               </p>
@@ -1127,54 +946,6 @@ export default function SalesPage() {
                 >
                   {loading ? "Đang tạo..." : "Khách hàng có nhiều địa điểm trên cùng đường"}
                 </button>
-              </div>
-            )}
-
-            {newCustomer && (
-              <div className="space-y-3">
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-1.5">Ghi Chú Thêm</label>
-                  <textarea
-                    value={tripNote}
-                    onChange={(e) => setTripNote(e.target.value)}
-                    rows={2}
-                    placeholder="VD: gọi trước khi đến, tầng 3..."
-                    className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 resize-none"
-                  />
-                </div>
-                <button
-                  onClick={createTrip}
-                  disabled={tripLoading}
-                  className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-indigo-600 hover:bg-indigo-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-                >
-                  {tripLoading ? "Đang tạo chuyến..." : "Khách hàng có mẫu, tạo yêu cầu giao nhận"}
-                </button>
-              </div>
-            )}
-
-            {tripResult && (
-              <div className="space-y-2">
-                <div className={`rounded-xl p-3.5 text-sm font-medium text-center ${
-                  tripResult.ok
-                    ? "bg-emerald-50 border border-emerald-200 text-emerald-800"
-                    : "bg-red-50 border border-red-200 text-red-800"
-                }`}>
-                  {tripResult.msg}
-                </div>
-                {tripResult.ok && lastCreatedJob && !lastJobCancelResult?.ok && (
-                  <button
-                    onClick={() => rejectLastJob("Khách hàng chưa có mẫu")}
-                    disabled={lastJobCancelLoading}
-                    className="w-full py-2.5 rounded-xl font-semibold text-red-600 text-sm border border-red-200 bg-white hover:bg-red-50 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-                  >
-                    {lastJobCancelLoading ? "Đang huỷ..." : "Huỷ — Khách hàng chưa có mẫu"}
-                  </button>
-                )}
-                {lastJobCancelResult?.ok && (
-                  <div className="rounded-xl p-3 text-sm font-medium text-center bg-slate-50 border border-slate-200 text-slate-600">
-                    {lastJobCancelResult.msg}
-                  </div>
-                )}
               </div>
             )}
           </div>

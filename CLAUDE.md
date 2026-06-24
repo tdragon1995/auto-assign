@@ -83,9 +83,7 @@ LABCENTER_RECEPTIONIST_PASSWORD= # Password for receptionist account
 | `GET /api/location-jobs` | Fetch all jobs for a date+status (`?date=YYYY-MM-DD&status=4`), paginating to exhaustion |
 | `GET /api/customers` | Check for duplicate customer name in Cartrack; `POST` creates a new customer and syncs pick/drop location to Labcenter |
 | `POST /api/geo/resolve` | Geocode/reverse-geocode via Goong |
-| `POST /api/sales/create-trip` | Creates a B2B sample-transport job (`🛵 Vận chuyển mẫu B2B`) and assigns it |
 | `POST /api/sales/reject-job` | Rejects a sales job by reference number via JSON-RPC (guards against started jobs) |
-| `GET /api/sales/job-status` | Looks up a single job's `job_status_id` by `?ref=reference_number`; used by the cancel tab to show live status |
 | `GET /api/sales/search-trips` | Searches today's B2B trips by `?ma_kh=` (matches reference_number suffix); returns status 2+4 jobs only |
 
 ### Shared Libraries
