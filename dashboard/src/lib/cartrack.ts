@@ -315,22 +315,28 @@ export async function getFleetwebCookie(): Promise<string | null> {
 /** Adapt delivery_timeline_route_list routes → Job[] (the s4+s5 source). The
  *  timeline is per-driver, per-stop, camelCase; group stops by jobId and map to the
  *  snake_case Job shape the cycle's consumers (dedup, follow-ups, pickup-warnings)
- *  expect. Caveats: the timeline has no create_ts (we substitute scheduledDeliveryTs
- *  for the return/via dedup index) and no embedded driver NAME (only the id). */
+ *  expect. The driver name comes from the route-level `driverFullname`. Only caveat:
+ *  no create_ts (we substitute scheduledDeliveryTs for the return/via dedup index). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function timelineRoutesToJobs(routes: any[]): Job[] {
+  // Timeline stamps full datetimes as "YYYY-MM-DD HH:MM:SS.ffffff+07"; REST omits the
+  // fraction+offset on these fields and downstream code treats Cartrack times as VN-
+  // local. Slice to "YYYY-MM-DD HH:MM:SS" so parsing matches the REST path exactly.
+  const t19 = (s: unknown): string | null =>
+    typeof s === "string" && s.length >= 19 ? s.slice(0, 19) : null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const byJob = new Map<number, any[]>();
+  const byJob = new Map<number, { stops: any[]; driverName: string | null }>();
   for (const r of routes) {
+    const driverName: string | null = r?.driverFullname ?? null;
     for (const s of (r?.orderedStops ?? [])) {
       if (s?.jobId == null) continue;
-      const arr = byJob.get(s.jobId) ?? [];
-      arr.push(s);
-      byJob.set(s.jobId, arr);
+      const entry = byJob.get(s.jobId) ?? { stops: [], driverName };
+      entry.stops.push(s);
+      byJob.set(s.jobId, entry);
     }
   }
   const jobs: Job[] = [];
-  for (const [jobId, raw] of byJob) {
+  for (const [jobId, { stops: raw, driverName }] of byJob) {
     const first = raw[0];
     const stops: Stop[] = raw
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -343,23 +349,27 @@ function timelineRoutesToJobs(routes: any[]): Job[] {
         name: s.customerName,
         latitude: s.latitude ?? null,
         longitude: s.longitude ?? null,
-        activity_started_ts: s.activityStartedTs ?? null,
-        activity_arrived_ts: s.activityArrivedTs ?? null,
-        activity_completed_ts: s.activityCompletedTs ?? null,
+        activity_started_ts: t19(s.activityStartedTs),
+        activity_arrived_ts: t19(s.activityArrivedTs),
+        activity_completed_ts: t19(s.activityCompletedTs),
+        // window times are time-only ("HH:MM:SS+07"); buildActiveRouteMap reads HH:MM
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         delivery_windows: (s.deliveryWindows ?? []).map((w: any) => ({ time_from: w?.timeFrom, time_to: w?.timeTo })),
       }))
       .sort((a: Stop, b: Stop) => (a.stop_type_id ?? 0) - (b.stop_type_id ?? 0));
+    const driverId: string | null = first.deliveryDriverId ?? null;
     jobs.push({
       job_id: jobId,
       job_status_id: first.jobStatusId,
-      delivery_driver_id: first.deliveryDriverId ?? null,
+      delivery_driver_id: driverId,
       reference_number: first.referenceNumber,
-      scheduled_delivery_ts: first.scheduledDeliveryTs ?? null,
-      create_ts: first.scheduledDeliveryTs ?? undefined, // timeline has no create_ts
+      scheduled_delivery_ts: t19(first.scheduledDeliveryTs),
+      create_ts: t19(first.scheduledDeliveryTs) ?? undefined, // timeline has no create_ts
       send_to_driver_at: first.sendToDriverAt ?? null,
       labels: first.jobLabels ?? [],
       last_assigned_plan_id: first.lastAssignedPlanId ?? null,
+      // driverFullname is route-level — populate so pickup-warnings show the name.
+      driver: driverId ? { delivery_driver_id: driverId, first_name: driverName ?? "", last_name: "" } : null,
       stops,
     });
   }
