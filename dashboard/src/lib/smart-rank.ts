@@ -165,23 +165,50 @@ export function enRouteGpsBand(
 }
 
 /**
+ * Idle-time band width (minutes). Two candidates whose idle time (now − last
+ * activity) falls in the same `floor(idleMin / BAND)` bucket are treated as
+ * equally idle and defer to jobsDone; a candidate idle a clearly-longer band
+ * wins outright. This is the dial between longest-idle fairness (small band)
+ * and workload balancing (large band).
+ */
+export const IDLE_TIEBREAK_BAND_MIN = 30;
+
+/**
+ * Idle band for a candidate — higher = idle longer = ranks first. `tiebreakTs`
+ * is the per-label last-activity time (Available→completed, En Route→started, …),
+ * VN-local possibly with a "+07" offset, so we slice HH:MM (never Date-parse — it
+ * NaNs on the offset form; see assign.hhmmVn / [[cartrack_api]]). null/unparseable
+ * → maximally idle (preserves the prior "null sorts first" semantics).
+ */
+export function idleBand(tiebreakTs: string | null, nowMinutes: number): number {
+  if (!tiebreakTs) return Number.MAX_SAFE_INTEGER;
+  const m = /[ T](\d{2}):(\d{2})/.exec(tiebreakTs);
+  if (!m) return Number.MAX_SAFE_INTEGER;
+  const tsMin = parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+  const idleMin = Math.max(0, nowMinutes - tsMin);
+  return Math.floor(idleMin / IDLE_TIEBREAK_BAND_MIN);
+}
+
+/**
  * Tiebreaker comparator for ranked driver candidates.
  * Order: sortDist asc → routeStatePriority desc → en-route GPS band asc
- *      → jobsDone asc (workload equity: fewest completed goes next)
- *      → tiebreakTs asc (count-tie → longest-idle/earliest-started goes next; null sorts first)
- *      → name asc.
- * Note: jobsDone outranks tiebreakTs on purpose — balance trips first, break
- * count-ties by idle time. Keeping tiebreakTs as the secondary (not name) avoids
- * a permanent alphabetical/driver-code bias on the frequent integer count-ties.
+ *      → idle band desc (idle longer goes next; coarse so shift length doesn't bias it)
+ *      → jobsDone asc (within an idle band, balance workload: fewest completed first)
+ *      → tiebreakTs asc (finest idle; null sorts first) → name asc.
+ * Idle band is the PRIMARY fairness key (coarse) so it isn't confounded by shift
+ * length the way raw jobsDone is — a late-starter naturally has a lower count, so
+ * count-first would keep feeding them. jobsDone only balances drivers idle ~the
+ * same amount. idleBand is precomputed by the caller (it needs "now").
  */
 export function rankingComparator(
-  a: { sortDist: number; priority: number; label: RefLabel | null; gpsKm: number; tiebreakTs: string | null; jobsDone: number; name: string },
-  b: { sortDist: number; priority: number; label: RefLabel | null; gpsKm: number; tiebreakTs: string | null; jobsDone: number; name: string }
+  a: { sortDist: number; priority: number; label: RefLabel | null; gpsKm: number; idleBand: number; jobsDone: number; tiebreakTs: string | null; name: string },
+  b: { sortDist: number; priority: number; label: RefLabel | null; gpsKm: number; idleBand: number; jobsDone: number; tiebreakTs: string | null; name: string }
 ): number {
   if (a.sortDist !== b.sortDist) return a.sortDist - b.sortDist;
   if (a.priority !== b.priority) return b.priority - a.priority;
   const band = enRouteGpsBand(a, b);
   if (band !== 0) return band;
+  if (a.idleBand !== b.idleBand) return b.idleBand - a.idleBand; // higher = idle longer = first
   if (a.jobsDone !== b.jobsDone) return a.jobsDone - b.jobsDone;
   const aTs = a.tiebreakTs ?? "";
   const bTs = b.tiebreakTs ?? "";

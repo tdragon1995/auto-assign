@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDrivers, getJobsByStatusAndDate, getFleetwebCookie, getCustomerById, JSONRPC_URL, type Env } from "@/lib/cartrack";
-import { vnDate, vnDayWindow } from "@/lib/time";
+import { vnDate, vnDayWindow, vnMinutesSinceMidnight } from "@/lib/time";
 import { haversineKm } from "@/lib/distance";
 import { roadDistancesFromPoint } from "@/lib/distance-cache";
-import { selectReferenceStop, computeStopStats, ROUTE_STATE_PRIORITY, enRouteGpsBand, type RefLabel } from "@/lib/smart-rank";
+import { selectReferenceStop, computeStopStats, ROUTE_STATE_PRIORITY, enRouteGpsBand, idleBand, type RefLabel } from "@/lib/smart-rank";
 import type { TimelineRoute } from "@/lib/types";
 
 const TOP_N        = 3;
@@ -266,6 +266,7 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Assemble + re-rank by Goong detour, take top 3 ────────────────────────
+  const nowMin = vnMinutesSinceMidnight();
   const suggestions = intermediate.map((s) => {
     const rankedDrivers = s.drivers
       .map((d) => {
@@ -297,12 +298,12 @@ export async function POST(req: NextRequest) {
           detour_eta_mins:     detourRouting?.eta_mins    ?? null,
           _priority:           ref ? ROUTE_STATE_PRIORITY[ref.label] : 0,
           _tiebreakTs:         ref?.tiebreakTs ?? null,
+          _idleBand:           idleBand(ref?.tiebreakTs ?? null, nowMin),
         };
       })
       // Re-rank: distance ASC → route-state priority DESC → en-route GPS band ASC
-      //   → jobs_done ASC (workload equity) → per-label tiebreak ts ASC (count-tie →
-      //   longest-idle). Mirrors rankingComparator; tiebreak ts semantics live in
-      //   selectReferenceStop.
+      //   → idle band DESC (idle longer first) → jobs_done ASC (within band) → tiebreak
+      //   ts ASC. Mirrors rankingComparator; tiebreak ts semantics live in selectReferenceStop.
       .sort((a, b) => {
         const aDist = a.detour_distance_km ?? a.detour_haversine_km ?? a.haversine_km;
         const bDist = b.detour_distance_km ?? b.detour_haversine_km ?? b.haversine_km;
@@ -313,6 +314,7 @@ export async function POST(req: NextRequest) {
           { label: b.detour_label, gpsKm: b.haversine_km }
         );
         if (band !== 0) return band;
+        if (a._idleBand !== b._idleBand) return b._idleBand - a._idleBand;
         if ((a.jobs_done ?? 0) !== (b.jobs_done ?? 0)) return (a.jobs_done ?? 0) - (b.jobs_done ?? 0);
         const aTs = a._tiebreakTs ?? "";
         const bTs = b._tiebreakTs ?? "";
@@ -321,7 +323,7 @@ export async function POST(req: NextRequest) {
       .slice(0, TOP_N)
       // Drop internal sort keys before returning to client
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      .map(({ _priority, _tiebreakTs, ...rest }) => rest);
+      .map(({ _priority, _tiebreakTs, _idleBand, ...rest }) => rest);
 
     return { job_id: s.job_id, pickup: s.pickup, unscheduled: s.unscheduled, drivers: rankedDrivers };
   });
