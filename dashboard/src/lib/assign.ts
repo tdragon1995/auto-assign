@@ -675,10 +675,14 @@ export async function autoAssignCycle(
         assignedJobsToday = s4Jobs;
         cycleS5 = s5Jobs;
         partitionMs = Date.now() - _tPart;
-        log(`[fetch] timeline: fetch ${fetchMs}ms + partition ${partitionMs}ms (s2:${s2Jobs.length} s4:${s4Jobs.length} s5:${s5Jobs.length})`, "INFO");
+        const msg1 = `[fetch] timeline: fetch ${fetchMs}ms + partition ${partitionMs}ms (s2:${s2Jobs.length} s4:${s4Jobs.length} s5:${s5Jobs.length})`;
+        console.log(msg1);
+        log(msg1, "INFO");
         done = true;
       } else {
-        log(`[fetch] timeline failed (${fetchMs}ms), falling back to REST`, "WARN");
+        const msg2 = `[fetch] timeline failed (${fetchMs}ms), falling back to REST`;
+        console.log(msg2);
+        log(msg2, "WARN");
       }
     }
     if (!done) {
@@ -701,7 +705,9 @@ export async function autoAssignCycle(
       cycleStartS2 = s2Jobs;
       assignedJobsToday = s4Jobs;
       cycleS5 = s5Jobs;
-      log(`[fetch] REST: fetch ${fetchMs}ms + partition ${partitionMs}ms (s2:${s2Jobs.length} s4:${s4Jobs.length} s5:${s5Jobs.length})`, "INFO");
+      const msg3 = `[fetch] REST: fetch ${fetchMs}ms + partition ${partitionMs}ms (s2:${s2Jobs.length} s4:${s4Jobs.length} s5:${s5Jobs.length})`;
+      console.log(msg3);
+      log(msg3, "INFO");
     }
 
     // Refresh the PSC active-pickup dedup index (full cycle only). Fire-and-forget:
