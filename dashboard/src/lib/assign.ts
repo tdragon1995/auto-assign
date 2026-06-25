@@ -648,6 +648,7 @@ export async function autoAssignCycle(
   // parked jobs released from the proxy driver are found on their scheduled day.
   // Done AFTER releaseDueProxyJobs so jobs it just released show up as status 2.
   let s2Jobs: Job[] = [];
+  let fetchMs = 0, partitionMs = 0;
   try {
     let done = false;
     // ASSIGN_USE_TIMELINE=1: s2 (unassigned) from REST; s4+s5 from the route-timeline
@@ -655,11 +656,14 @@ export async function autoAssignCycle(
     // to getJobsByDate below if the timeline call fails (cookie/login/shape), so dedup
     // and follow-ups never go blind. Default (unset) = the getJobsByDate path.
     if (process.env.ASSIGN_USE_TIMELINE === "1") {
+      const _tFetch = Date.now();
       const [restS2, timelineJobs] = await Promise.all([
         getJobsByStatusAndDate(2, today, env),
         getTimelineJobs(today, env),
       ]);
+      fetchMs = Date.now() - _tFetch;
       if (timelineJobs) {
+        const _tPart = Date.now();
         const s4Jobs: Job[] = []; const s5Jobs: Job[] = [];
         for (const j of timelineJobs) (j.job_status_id === 5 ? s5Jobs : s4Jobs).push(j);
         // Footgun #1: a status-2 job with a driver set is really assigned → s4 pot
@@ -670,11 +674,18 @@ export async function autoAssignCycle(
         cycleStartS2 = s2Jobs;
         assignedJobsToday = s4Jobs;
         cycleS5 = s5Jobs;
+        partitionMs = Date.now() - _tPart;
+        log(`[fetch] timeline: fetch ${fetchMs}ms + partition ${partitionMs}ms (s2:${s2Jobs.length} s4:${s4Jobs.length} s5:${s5Jobs.length})`, "INFO");
         done = true;
+      } else {
+        log(`[fetch] timeline failed (${fetchMs}ms), falling back to REST`, "WARN");
       }
     }
     if (!done) {
+      const _tFetch = Date.now();
       const allToday = await getJobsByDate(today, env);
+      fetchMs = Date.now() - _tFetch;
+      const _tPart = Date.now();
       s2Jobs = []; const s4Jobs: Job[] = []; const s5Jobs: Job[] = [];
       for (const j of allToday) {
         // A job with a driver is ASSIGNED regardless of status (footgun #1, reverse):
@@ -686,9 +697,11 @@ export async function autoAssignCycle(
         else if (j.job_status_id === 4 || (j.job_status_id === 2 && assigned)) s4Jobs.push(j);
         else if (j.job_status_id === 5) s5Jobs.push(j);
       }
+      partitionMs = Date.now() - _tPart;
       cycleStartS2 = s2Jobs;
       assignedJobsToday = s4Jobs;
       cycleS5 = s5Jobs;
+      log(`[fetch] REST: fetch ${fetchMs}ms + partition ${partitionMs}ms (s2:${s2Jobs.length} s4:${s4Jobs.length} s5:${s5Jobs.length})`, "INFO");
     }
 
     // Refresh the PSC active-pickup dedup index (full cycle only). Fire-and-forget:
