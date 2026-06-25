@@ -639,7 +639,16 @@ export async function autoAssignCycle(
   // ── Release parked proxy jobs whose send_to_driver_at has passed ──────────
   // Skipped on a targeted manual assign — that's not a full cycle.
   const today = vnDate();
-  const leaveEntries = await loadLeaveEntries().catch(() => []);
+  const leaveEntries = await loadLeaveEntries().catch((e) => {
+    log(`⚠️  Leave sheet failed to load: ${String(e).slice(0, 80)}`, "WARN");
+    return [];
+  });
+  if (leaveEntries.length === 0) {
+    const hh = new Date().getHours();
+    if (hh >= 6 && hh < 22) {
+      log("⚠️  No leave entries loaded (empty array) — all drivers will be treated as available", "WARN");
+    }
+  }
   if (!onlyJobIds) await releaseDueProxyJobs(today, env, log);
   phase("setup+proxy-release");
 
@@ -675,14 +684,10 @@ export async function autoAssignCycle(
         assignedJobsToday = s4Jobs;
         cycleS5 = s5Jobs;
         partitionMs = Date.now() - _tPart;
-        const msg1 = `[fetch] timeline: fetch ${fetchMs}ms + partition ${partitionMs}ms (s2:${s2Jobs.length} s4:${s4Jobs.length} s5:${s5Jobs.length})`;
-        console.log(msg1);
-        log(msg1, "INFO");
+        console.log(`[fetch] timeline: fetch ${fetchMs}ms + partition ${partitionMs}ms (s2:${s2Jobs.length} s4:${s4Jobs.length} s5:${s5Jobs.length})`);
         done = true;
       } else {
-        const msg2 = `[fetch] timeline failed (${fetchMs}ms), falling back to REST`;
-        console.log(msg2);
-        log(msg2, "WARN");
+        console.log(`[fetch] timeline failed (${fetchMs}ms), falling back to REST`);
       }
     }
     if (!done) {
@@ -705,9 +710,7 @@ export async function autoAssignCycle(
       cycleStartS2 = s2Jobs;
       assignedJobsToday = s4Jobs;
       cycleS5 = s5Jobs;
-      const msg3 = `[fetch] REST: fetch ${fetchMs}ms + partition ${partitionMs}ms (s2:${s2Jobs.length} s4:${s4Jobs.length} s5:${s5Jobs.length})`;
-      console.log(msg3);
-      log(msg3, "INFO");
+      console.log(`[fetch] REST: fetch ${fetchMs}ms + partition ${partitionMs}ms (s2:${s2Jobs.length} s4:${s4Jobs.length} s5:${s5Jobs.length})`);
     }
 
     // Refresh the PSC active-pickup dedup index (full cycle only). Fire-and-forget:
