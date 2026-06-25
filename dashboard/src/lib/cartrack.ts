@@ -366,7 +366,9 @@ function timelineRoutesToJobs(routes: any[]): Job[] {
       scheduled_delivery_ts: t19(first.scheduledDeliveryTs),
       create_ts: t19(first.scheduledDeliveryTs) ?? undefined, // timeline has no create_ts
       send_to_driver_at: first.sendToDriverAt ?? null,
-      labels: first.jobLabels ?? [],
+      // Timeline returns jobLabels as objects with a .label field; REST returns strings.
+      // Extract the label strings so downstream checks (labels.includes()) work.
+      labels: (first.jobLabels ?? []).map((l: any) => (typeof l === 'string' ? l : l?.label)).filter(Boolean),
       last_assigned_plan_id: first.lastAssignedPlanId ?? null,
       // driverFullname is route-level — populate so pickup-warnings show the name.
       driver: driverId ? { delivery_driver_id: driverId, first_name: driverName ?? "", last_name: "" } : null,
