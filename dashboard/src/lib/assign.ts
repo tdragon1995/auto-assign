@@ -118,8 +118,16 @@ function buildActiveRouteMap(jobs: any[]): Map<string, number> {
   // Current VN time in minutes-since-midnight
   const nowMinutes = vnMinutesSinceMidnight();
 
+  // A job parked on the reject proxy is being rejected (by /sales cancel or by
+  // our own duplicate path) — it's on its way out, so it must not block, nor
+  // cause the rejection of, its twin. Otherwise an operator cancelling one of
+  // two duplicates briefly turns it into a status-4 "active route owner" and the
+  // cycle wrongly rejects the legitimate twin too.
+  const rejectProxyId = process.env.CARTRACK_REJECT_PROXY_DRIVER_ID ?? "";
+
   for (const job of jobs) {
     if (job.job_status_id === 7 || job.job_status_id === 3) continue;
+    if (rejectProxyId && job.delivery_driver_id === rejectProxyId) continue;
     // Via-legs are supplementary pickups (intentional double-coverage) — they must not
     // block a location's own request, so keep them out of the active-route map.
     if ((job.labels ?? []).includes(PSC_VIA_LABEL)) continue;
