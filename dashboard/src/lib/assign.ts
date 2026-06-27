@@ -734,19 +734,8 @@ export async function autoAssignCycle(
   // stay for the per-cycle return (smart history / debug) but are dropped from the
   // rolling live log by shouldStore. One push per job — each fails at most once.
   const failedJobs: FailedJob[] = [];
-  let jobRoute = "";
-  const fail = (
-    reason: FailedJob["reason"],
-    jobId: number,
-    customer: string,
-    detail: string,
-    level: "ERROR" | "WARN" = "ERROR",
-  ) => {
-    // Prefer the full "<pickup> → <dropoff>" route (set per job below) so the
-    // Cần xử lý panel + admin search match the log-line convention; fall back to
-    // the bare customer name only if the route wasn't set for this job.
-    if (!onlyJobIds) failedJobs.push({ job_id: jobId, customer: jobRoute || customer, reason, detail, level, ts: vnTimestamp() });
-  };
+  // `fail` is defined inside the per-job worker below so it closes over that job's
+  // `route` — no shared mutable state, safe when jobs run concurrently.
 
   if (jobs.length === 0) {
     log("No unassigned jobs");
@@ -883,7 +872,7 @@ export async function autoAssignCycle(
     if (!activeRouteMap.has(key)) activeRouteMap.set(key, -hj.job_id);  // negative = held → skip, not reject
   }
 
-  for (const job of jobs) {
+  const processJob = async (job: Job): Promise<void> => {
     const jobId = job.job_id;
     console.log(`[loop] job ${++_jobIdx}/${jobs.length} jobId=${jobId} (t=${Date.now() - tStart}ms)`);
     const customerId = getCustomerIdFromJob(job);
@@ -894,7 +883,20 @@ export async function autoAssignCycle(
     const route = `${jobCustomerName ?? customerId ?? "—"} → ${
       job.stops?.find((s) => s.stop_type_id === 2)?.customer_name ?? "—"
     }`;
-    jobRoute = route;
+    // Per-job failure recorder — closes over this job's `route` (no shared state).
+    const fail = (
+      reason: FailedJob["reason"],
+      jobIdArg: number,
+      customer: string,
+      detail: string,
+      level: "ERROR" | "WARN" = "ERROR",
+    ) => {
+      if (!onlyJobIds) failedJobs.push({ job_id: jobIdArg, customer: route || customer, reason, detail, level, ts: vnTimestamp() });
+    };
+    // Single-pass block: the body's many top-level `continue`s mean "skip this job"
+    // (continue → while(false) → exit). The nested candidate-retry `for` loop's own
+    // continue/break are unaffected — this avoids converting ~20 continue→return.
+    do {
 
     if (jobHasNotes(job)) {
       // Jobs with a delivery window bypass the note gate — the window parking path
@@ -1381,6 +1383,21 @@ export async function autoAssignCycle(
       }
     } catch (e) {
       log(`Job ${jobId} - error: ${e} | ${route}`, "ERROR");
+    }
+    } while (false);
+  };
+
+  // Run the per-job worker. ASSIGN_PARALLEL_LOOP=1 overlaps the ~6-9s assign calls
+  // in bounded chunks; dedup stays safe because each job claims its route
+  // synchronously (activeRouteMap.set) before its first await. Default = sequential.
+  const LOOP_CONCURRENCY = 5;
+  if (process.env.ASSIGN_PARALLEL_LOOP === "1") {
+    for (let i = 0; i < jobs.length; i += LOOP_CONCURRENCY) {
+      await Promise.all(jobs.slice(i, i + LOOP_CONCURRENCY).map(processJob));
+    }
+  } else {
+    for (const job of jobs) {
+      await processJob(job);
     }
   }
 
