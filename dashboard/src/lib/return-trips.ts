@@ -9,7 +9,7 @@ export const PSC_OUTBOUND_LABEL = "🛵 Vận chuyển mẫu PSC";
 const inFlightReturns = new Set<number>(); // keyed by outbound job_id
 const IN_FLIGHT_TTL_MS = 60_000;
 
-function isOnShift(mapping: Mapping, now: Date): boolean {
+export function isOnShift(mapping: Mapping, now: Date): boolean {
   const { shift_start, shift_end } = mapping;
   if (!shift_start || !shift_end) return true;
   const { hours, minutes } = vnHoursMinutes(now);

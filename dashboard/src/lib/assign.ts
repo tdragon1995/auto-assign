@@ -4,6 +4,7 @@ import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL } from "./return-trips";
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
+import { cleanupStaleTrips } from "./cleanup-trips";
 import { setHeldJobs, setFailedJobs, setPickupWarnings, setPscActivePickups, type HeldJob, type PscDupHit } from "./smart-log-kv";
 import { isValidDriverId } from "./config";
 import {
@@ -1463,6 +1464,14 @@ export async function autoAssignCycle(
       await detectAndCreateReturnTrips(config, env, log, shared);
     } catch (e) {
       log(`Return-trip hook failed: ${e}`, "ERROR");
+    }
+    // Cleanup runs last: it acts on via-legs/returns the steps above may have just
+    // created, and reuses the same prefetch. No-op unless CLEANUP_STALE_TRIPS=1.
+    console.log(`[follow-ups] cleanup start (t=${Date.now() - tStart}ms)`);
+    try {
+      await cleanupStaleTrips(config, env, log, shared);
+    } catch (e) {
+      log(`Cleanup hook failed: ${e}`, "ERROR");
     }
     phase("follow-ups");
   }
