@@ -1,20 +1,12 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-
-interface PscRoute {
-  psc_pickup: string;
-  dropoff_location: string;
-  pickup: string;
-  dropoff: string;
-  ref_number: string;
-  via_pickup?: string;
-  via_pickup_name?: string;
-  no_request?: boolean;
-}
+// PSC routes are a hard-coded constant ([[psc-routes-data]]); look up directly instead of
+// fetching /api/psc-routes — no function invocation, no network round-trip, instant render.
+import { PSC_ROUTES } from "@/lib/psc-routes-data";
 
 interface Stop {
   stop_id: number;
@@ -256,9 +248,8 @@ export default function QrPage() {
   const isStaging = searchParams.get("env") === "uat";
   const envParam = isStaging ? "?env=uat" : "";
 
-  const [route, setRoute] = useState<PscRoute | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [notFound, setNotFound] = useState(false);
+  const route = useMemo(() => PSC_ROUTES.find((r) => r.pickup === code) ?? null, [code]);
+  const notFound = !route;
 
   const [assignStatus, setAssignStatus] = useState<Status>("idle");
   const [assignResult, setAssignResult] = useState<string>("");
@@ -275,21 +266,10 @@ export default function QrPage() {
   const [jobsLoading, setJobsLoading] = useState(false);
   const [search, setSearch] = useState("");
 
-  // Fetch route config
+  // Locations that don't accept self-requests open straight to the "Đang giao" tab.
   useEffect(() => {
-    fetch("/api/psc-routes")
-      .then((r) => r.json())
-      .then((d) => {
-        const routes: PscRoute[] = d.data ?? [];
-        const match = routes.find((r) => r.pickup === code);
-        if (match) {
-          setRoute(match);
-          if (match.no_request) setTab("active");
-        } else setNotFound(true);
-        setLoading(false);
-      })
-      .catch(() => { setNotFound(true); setLoading(false); });
-  }, [code]);
+    if (route?.no_request) setTab("active");
+  }, [route]);
 
   const filterByLocation = useCallback(
     (jobs: Job[]) => jobs.filter((j) => (j.stops ?? []).some((s) => s.customer_id === code)),
@@ -392,14 +372,6 @@ export default function QrPage() {
       setCancelLoading(false);
     }
   };
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-background">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
-      </div>
-    );
-  }
 
   if (notFound) {
     return (

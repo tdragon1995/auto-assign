@@ -1,56 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-
-interface PscRoute {
-  psc_pickup: string;
-  dropoff_location: string;
-  pickup: string;
-  dropoff: string;
-  ref_number: string;
-}
+// PSC routes are a hard-coded constant ([[psc-routes-data]]); import directly instead of
+// fetching /api/psc-routes — no function invocation, no network round-trip, instant render.
+import { PSC_ROUTES } from "@/lib/psc-routes-data";
 
 export default function LocationsPage() {
-  const [routes, setRoutes] = useState<PscRoute[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    fetch("/api/psc-routes")
-      .then((r) => r.json())
-      .then((d) => {
-        setRoutes(d.data ?? []);
-        setLoading(false);
-      })
-      .catch((e) => {
-        setError(String(e));
-        setLoading(false);
-      });
-  }, []);
-
+  const routes = PSC_ROUTES;
   const baseUrl = typeof window !== "undefined" ? window.location.origin : "";
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <Card className="max-w-md">
-          <CardContent>
-            <p className="text-destructive">Error: {error}</p>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen bg-background p-4 sm:p-8">
