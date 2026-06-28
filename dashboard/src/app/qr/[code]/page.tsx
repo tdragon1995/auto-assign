@@ -273,6 +273,12 @@ export default function QrPage() {
   const [via3plError, setVia3plError] = useState("");
   const [batchInput, setBatchInput] = useState("");
 
+  const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+  const showToast = (msg: string, ok: boolean) => {
+    setToast({ msg, ok });
+    setTimeout(() => setToast(null), 3500);
+  };
+
   const [tab, setTab] = useState<TabType | null>(null);
   const [date, setDate] = useState(todayVN());
   const [activeJobs, setActiveJobs] = useState<Job[]>([]);
@@ -377,6 +383,7 @@ export default function QrPage() {
         setLastCreated(null);
       }
       setCancelTarget(null);
+      showToast("Đã huỷ chuyến thành công.", true);
       // Refresh the open jobs tab so the cancelled trip drops off.
       if (tab === "active") loadJobs(4);
       else if (tab === "done") loadJobs(5);
@@ -426,6 +433,7 @@ export default function QrPage() {
       }
       setVia3plTarget(null);
       setBatchInput("");
+      showToast("Đã gửi mẫu qua Grab/Be/XanhSM/Ahamove thành công.", true);
       // Refresh the open jobs tab so the completed trip reflows.
       if (tab === "active") loadJobs(4);
       else if (tab === "done") loadJobs(5);
@@ -628,6 +636,13 @@ export default function QrPage() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Success toast */}
+      {toast && (
+        <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-[60] px-4 py-2.5 rounded-xl shadow-lg text-sm font-semibold text-white transition-all ${toast.ok ? "bg-emerald-600" : "bg-red-600"}`}>
+          {toast.msg}
         </div>
       )}
 
