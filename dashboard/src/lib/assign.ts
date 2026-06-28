@@ -653,14 +653,16 @@ export async function autoAssignCycle(
     logs.push(makeLog(msg, level));
   };
 
-  // ── G1: timing instrumentation. console.log streams to Vercel runtime logs
-  // immediately, so on a 60s kill the LAST "[timing]" line before the timeout
-  // error pinpoints the slow phase (the normal log()/run_log is lost on a kill).
+  // ── G1: timing instrumentation. clog() streams to Vercel runtime logs immediately,
+  // so on a 60s kill the LAST "[timing]" line before the timeout error pinpoints the slow
+  // phase (the normal log()/run_log is lost on a kill). It prefixes each line with VN
+  // wall-clock time because Vercel's own log prefix is UTC (= VN−7h), which is confusing.
   const tStart = Date.now();
   let tMark = tStart;
+  const clog = (m: string) => console.log(`[VN ${vnTimestamp()}] ${m}`);
   const phase = (name: string) => {
     const now = Date.now();
-    console.log(`[timing] ${name}: +${now - tMark}ms (total ${now - tStart}ms)`);
+    clog(`[timing] ${name}: +${now - tMark}ms (total ${now - tStart}ms)`);
     tMark = now;
   };
   let goongMs = 0;
@@ -733,10 +735,10 @@ export async function autoAssignCycle(
         cycleS5 = s5Jobs;
         timelineRoutesForSmart = routes; // reuse in smart-prep (skip 2nd identical JSON-RPC)
         partitionMs = Date.now() - _tPart;
-        console.log(`[fetch] timeline: fetch ${fetchMs}ms + partition ${partitionMs}ms (s2:${s2Jobs.length} s4:${s4Jobs.length} s5:${s5Jobs.length})`);
+        clog(`[fetch] timeline: fetch ${fetchMs}ms + partition ${partitionMs}ms (s2:${s2Jobs.length} s4:${s4Jobs.length} s5:${s5Jobs.length})`);
         done = true;
       } else {
-        console.log(`[fetch] timeline failed (${fetchMs}ms), falling back to REST`);
+        clog(`[fetch] timeline failed (${fetchMs}ms), falling back to REST`);
       }
     }
     if (!done) {
@@ -759,7 +761,7 @@ export async function autoAssignCycle(
       cycleStartS2 = s2Jobs;
       assignedJobsToday = s4Jobs;
       cycleS5 = s5Jobs;
-      console.log(`[fetch] REST: fetch ${fetchMs}ms + partition ${partitionMs}ms (s2:${s2Jobs.length} s4:${s4Jobs.length} s5:${s5Jobs.length})`);
+      clog(`[fetch] REST: fetch ${fetchMs}ms + partition ${partitionMs}ms (s2:${s2Jobs.length} s4:${s4Jobs.length} s5:${s5Jobs.length})`);
     }
 
     // Refresh the PSC active-pickup dedup index (full cycle only). Fire-and-forget:
@@ -937,7 +939,7 @@ export async function autoAssignCycle(
 
   const processJob = async (job: Job): Promise<void> => {
     const jobId = job.job_id;
-    console.log(`[loop] job ${++_jobIdx}/${jobs.length} jobId=${jobId} (t=${Date.now() - tStart}ms)`);
+    clog(`[loop] job ${++_jobIdx}/${jobs.length} jobId=${jobId} (t=${Date.now() - tStart}ms)`);
     const customerId = getCustomerIdFromJob(job);
     const jobCustomerName = getCustomerNameFromJob(job);
     // Uniform log suffix: every job line ends " | <pickup> → <dropoff>", so the
@@ -1508,7 +1510,7 @@ export async function autoAssignCycle(
 
   const _loopMs = Date.now() - tMark;
   const _assignIsh = _loopMs - goongMs - altMs - zaloMs - optimizeMs;
-  console.log(`[timing] loop detail: ${jobs.length} job(s) in ${_loopMs}ms | goong ${goongMs} alt ${altMs} zalo ${zaloMs} optimize ${optimizeMs} assign~${_assignIsh}ms`);
+  clog(`[timing] loop detail: ${jobs.length} job(s) in ${_loopMs}ms | goong ${goongMs} alt ${altMs} zalo ${zaloMs} optimize ${optimizeMs} assign~${_assignIsh}ms`);
   phase("assign-loop");
 
   if (!onlyJobIds) {
@@ -1543,13 +1545,13 @@ export async function autoAssignCycle(
     // Forward via-legs first (driver is en route toward the via PSC — more time-sensitive).
     // Pass the shared prefetch so neither step re-fetches the status 2/4/5 lists; falls
     // back to self-fetch when `shared` is undefined (prefetch above failed).
-    console.log(`[follow-ups] via-legs start (t=${Date.now() - tStart}ms)`);
+    clog(`[follow-ups] via-legs start (t=${Date.now() - tStart}ms)`);
     try {
       await detectAndCreateViaLegs(env, log, shared && { s4: shared.s4, s5: shared.s5 });
     } catch (e) {
       log(`Via-leg hook failed: ${e}`, "ERROR");
     }
-    console.log(`[follow-ups] return-trips start (t=${Date.now() - tStart}ms)`);
+    clog(`[follow-ups] return-trips start (t=${Date.now() - tStart}ms)`);
     try {
       await detectAndCreateReturnTrips(config, env, log, shared);
     } catch (e) {
@@ -1557,7 +1559,7 @@ export async function autoAssignCycle(
     }
     // Cleanup runs last: it acts on via-legs/returns the steps above may have just
     // created, and reuses the same prefetch. No-op unless CLEANUP_STALE_TRIPS=1.
-    console.log(`[follow-ups] cleanup start (t=${Date.now() - tStart}ms)`);
+    clog(`[follow-ups] cleanup start (t=${Date.now() - tStart}ms)`);
     try {
       await cleanupStaleTrips(config, env, log, shared);
     } catch (e) {
