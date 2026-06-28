@@ -88,8 +88,11 @@ export async function cleanupStaleTrips(
   }
 
   // Index outbounds whose dropoff has been reached: "driver:dropoffCustomerId" → true.
-  // Scan s4 (in-progress, dropoff may be Arrived/Completed) ∪ s5 (completed).
+  // Scan s4 (in-progress, dropoff may be Arrived/Completed) ∪ s5 (completed). Also index
+  // each outbound by job_id → whether its dropoff is reached, so a via-leg can be matched to
+  // the SPECIFIC run it belongs to (via the parent job_id appended to its reference_number).
   const reachedDropoff = new Set<string>(); // "driverId:dropoffCustomerId"
+  const outboundDropoffReached = new Map<number, boolean>(); // outbound job_id → dropoff Arrived/Completed
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const ob of [...s4, ...s5] as any[]) {
     if (!(ob.labels ?? []).includes(PSC_OUTBOUND_LABEL)) continue;
@@ -97,9 +100,9 @@ export async function cleanupStaleTrips(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const dropoff = (ob.stops ?? []).find((s: any) => s.stop_type_id === 2);
     if (!dropoff?.customer_id) continue;
-    if (dropoff.stop_status_id === 3 || dropoff.stop_status_id === 4) {
-      reachedDropoff.add(`${ob.delivery_driver_id}:${dropoff.customer_id}`);
-    }
+    const reached = dropoff.stop_status_id === 3 || dropoff.stop_status_id === 4;
+    outboundDropoffReached.set(ob.job_id, reached);
+    if (reached) reachedDropoff.add(`${ob.delivery_driver_id}:${dropoff.customer_id}`);
   }
 
   // Candidates: untouched via-legs and return trips (created already-assigned, so
@@ -129,9 +132,18 @@ export async function cleanupStaleTrips(
     const route = `${pickup.customer_name ?? pickup.customer_id} → ${dropoff.customer_name ?? dropoff.customer_id}`;
 
     if (isVia) {
-      // Rule A: the via-leg's dropoff equals the outbound's dropoff. If that
-      // driver's outbound to this dropoff has been reached, the leg is orphaned.
-      if (!reachedDropoff.has(`${driverId}:${dropoff.customer_id}`)) continue;
+      // Rule A: a via-leg is orphaned only when the SPECIFIC run it belongs to has reached the
+      // dropoff (or that run is gone). The parent outbound's job_id is appended to the via-leg's
+      // reference ("…_HH:MM_<jobId>") — match on it so a hub dropoff (e.g. D001) reached by an
+      // *unrelated* run no longer triggers a wrongful cancel→recreate loop.
+      const m = /_(\d+)$/.exec(job.reference_number ?? "");
+      if (m) {
+        const parentReached = outboundDropoffReached.get(Number(m[1]));
+        if (parentReached === false) continue; // parent run still live → keep the leg
+        // parentReached === true (reached the lab) or undefined (run gone) → orphaned.
+      } else if (!reachedDropoff.has(`${driverId}:${dropoff.customer_id}`)) {
+        continue; // legacy via-leg with no parent id → fall back to the coarse check
+      }
       tasks.push({ jobId: job.job_id, reason: VIA_STALE_REASON, label: `Via-leg #${job.job_id} | ${route}` });
     } else {
       // Rule B: the return's dropoff (stop_type_id 2) is the PSC. Off shift there?

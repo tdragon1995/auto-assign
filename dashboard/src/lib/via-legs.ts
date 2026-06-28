@@ -35,12 +35,13 @@ async function createViaLeg(
   originName: string,
   dropoffCustomerId: string,
   dropoffName: string,
+  outboundJobId: number,
   env: Env
 ): Promise<number> {
   const payload = {
     job_type_id: 1,
     schedule_type_id: 1,
-    reference_number: `${shortName(viaName)}→${shortName(dropoffName)}_${hhmm()}`,
+    reference_number: `${shortName(viaName)}→${shortName(dropoffName)}_${hhmm()}_${outboundJobId}`,
     labels: [PSC_VIA_LABEL],
     delivery_driver_id: driverId, // assign at creation — single call (pinned to the outbound's driver)
     stops: [
@@ -179,6 +180,9 @@ export async function detectAndCreateViaLegs(
 
     // Fire only once the driver has completed the origin pickup (en route to the via PSC).
     if (pickupStop.stop_status_id !== 4) continue;
+    // ...but not if the driver has already reached the dropoff (lab) on this run — a swing-by
+    // is moot then, and creating one only feeds the create/cancel loop with cleanupStaleTrips.
+    if (dropoffStop.stop_status_id === 3 || dropoffStop.stop_status_id === 4) continue;
     const pickupDoneAt: string = (pickupStop.activity_completed_ts ?? "").slice(0, 19);
     if (!pickupDoneAt) continue;
 
@@ -207,6 +211,7 @@ export async function detectAndCreateViaLegs(
           originName,
           dropoffStop.customer_id,
           dropoffName,
+          outbound.job_id,
           env
         );
         log(`Via-leg #${newJobId} : driver (from outbound ${outbound.job_id}) | ${cfg.viaName} → ${dropoffName}`, "OK");
