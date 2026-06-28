@@ -1,5 +1,5 @@
 import type { Config, Driver, FailedJob, Job, LogEntry, LogLevel, Mapping, PickupWarning, TimelineRoute } from "./types";
-import { getDrivers, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, updateJobSendToDriverAt, unassignJob, optimizeDriverRoute, getFleetwebCookie, getJobsByStatusAndDate, getJobsByDate, getTimelineJobs, JSONRPC_URL, PROXY_DRIVER_ID, type Env } from "./cartrack";
+import { getDrivers, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, updateJobSendToDriverAt, unassignJob, optimizeDriverRoute, getFleetwebCookie, getJobsByStatusAndDate, getJobsByDate, getTimelineRoutes, timelineRoutesToJobs, JSONRPC_URL, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL } from "./return-trips";
@@ -312,6 +312,55 @@ async function rejectJobAsDuplicate(jobId: number, auth: string, cookie: string)
 
 type DriverRouteInfo = { ref: RefStop | null; label: RefLabel | null; workload: number; lastCompletedTs: string | null; jobsDone: number };
 
+// HCMC urban average-speed proxy for turning a straight-line haversine distance
+// into an estimated travel time (minutes). Used ONLY as the SMART_RANK_BY_DURATION
+// fallback when Goong returns no eta for a point, so the sort never mixes km with
+// mins. ~20 km/h ⇒ 3 min/km.
+const STRAIGHT_KM_TO_MIN = 3;
+
+// Pure reducer: timeline routes → per-driver smart-rank info. Shared by the cycle
+// (which, under ASSIGN_USE_TIMELINE, already fetched these routes for s4/s5) and by
+// fetchSmartRouteData's standalone fetch — so the route data is derived from the
+// SAME delivery_timeline_route_list payload instead of a second identical call.
+function timelineRoutesToDriverInfo(
+  routes: TimelineRoute[],
+  shiftStartByDriverId: Record<string, string | null>
+): Record<string, DriverRouteInfo> {
+  const result: Record<string, DriverRouteInfo> = {};
+  for (const route of routes) {
+    const driverId = route.routeId.replace(/^driver_/, "");
+    const stops = route.orderedStops ?? [];
+    const refStop = selectReferenceStop(stops, shiftStartByDriverId[driverId] ?? null);
+    const stats = computeStopStats(stops);
+    result[driverId] = {
+      ref: refStop,
+      label: refStop?.label ?? null,
+      workload: stops.length,
+      lastCompletedTs: stats.lastCompletedTs,
+      jobsDone: stats.done,
+    };
+  }
+  return result;
+}
+
+// Client-coordinate index harvested from the timeline payload. Each stop carries
+// customerId + latitude/longitude, so the routes we already fetch (Change 1) double
+// as a fixed-client GPS source — saving a getCustomerById HTTP call per client whose
+// location appears as a stop today (e.g. the hub PSCs that double as start-locations).
+function timelineRoutesToCustomerCoords(
+  routes: TimelineRoute[]
+): Map<string, { lat: number; lon: number; name: string | null }> {
+  const index = new Map<string, { lat: number; lon: number; name: string | null }>();
+  for (const route of routes) {
+    for (const s of route.orderedStops ?? []) {
+      if (!s.customerId || s.latitude == null || s.longitude == null) continue;
+      if (index.has(s.customerId)) continue;
+      index.set(s.customerId, { lat: s.latitude, lon: s.longitude, name: s.customerName ?? null });
+    }
+  }
+  return index;
+}
+
 async function fetchSmartRouteData(
   dateVn: string, auth: string, cookie: string,
   shiftStartByDriverId: Record<string, string | null>
@@ -328,22 +377,7 @@ async function fetchSmartRouteData(
     if (!res.ok) return {};
     const data = await res.json();
     const routes: TimelineRoute[] = data.result?.routes ?? [];
-
-    const result: Record<string, DriverRouteInfo> = {};
-    for (const route of routes) {
-      const driverId = route.routeId.replace(/^driver_/, "");
-      const stops = route.orderedStops ?? [];
-      const refStop = selectReferenceStop(stops, shiftStartByDriverId[driverId] ?? null);
-      const stats = computeStopStats(stops);
-      result[driverId] = {
-        ref: refStop,
-        label: refStop?.label ?? null,
-        workload: stops.length,
-        lastCompletedTs: stats.lastCompletedTs,
-        jobsDone: stats.done,
-      };
-    }
-    return result;
+    return timelineRoutesToDriverInfo(routes, shiftStartByDriverId);
   } catch {
     return {};
   }
@@ -643,6 +677,10 @@ export async function autoAssignCycle(
   let cycleStartS2: Job[] | null = null;
   let assignedJobsToday: Job[] | null = null;
   let cycleS5: Job[] | null = null;
+  // Timeline routes fetched in the fetch phase (ASSIGN_USE_TIMELINE) — stashed so
+  // smart-prep can derive its per-driver route data from the same payload instead
+  // of making a second identical delivery_timeline_route_list call.
+  let timelineRoutesForSmart: TimelineRoute[] | null = null;
 
   try {
   // ── Release parked proxy jobs whose send_to_driver_at has passed ──────────
@@ -675,11 +713,12 @@ export async function autoAssignCycle(
     // and follow-ups never go blind. Default (unset) = the getJobsByDate path.
     if (process.env.ASSIGN_USE_TIMELINE === "1") {
       const _tFetch = Date.now();
-      const [restS2, timelineJobs] = await Promise.all([
+      const [restS2, routes] = await Promise.all([
         getJobsByStatusAndDate(2, today, env),
-        getTimelineJobs(today, env),
+        getTimelineRoutes(today, env),
       ]);
       fetchMs = Date.now() - _tFetch;
+      const timelineJobs = routes ? timelineRoutesToJobs(routes) : null;
       if (timelineJobs) {
         const _tPart = Date.now();
         const s4Jobs: Job[] = []; const s5Jobs: Job[] = [];
@@ -692,6 +731,7 @@ export async function autoAssignCycle(
         cycleStartS2 = s2Jobs;
         assignedJobsToday = s4Jobs;
         cycleS5 = s5Jobs;
+        timelineRoutesForSmart = routes; // reuse in smart-prep (skip 2nd identical JSON-RPC)
         partitionMs = Date.now() - _tPart;
         console.log(`[fetch] timeline: fetch ${fetchMs}ms + partition ${partitionMs}ms (s2:${s2Jobs.length} s4:${s4Jobs.length} s5:${s5Jobs.length})`);
         done = true;
@@ -784,7 +824,17 @@ export async function autoAssignCycle(
     );
     const shiftStartByDriverId: Record<string, string | null> = {};
     for (const d of allGpsDrivers) shiftStartByDriverId[d.delivery_driver_id] = d.shift_time_start ?? null;
-    if (cookie && auth) {
+    // Client-coordinate index from the timeline (Change 2) — fixed-client GPS for
+    // every customer that appears as a stop today, harvested from the routes we
+    // already have. Consulted before getCustomerById below. Empty when timeline
+    // mode is off (no routes stashed), so that path stays unchanged.
+    let clientCoords = new Map<string, { lat: number; lon: number; name: string | null }>();
+    if (timelineRoutesForSmart) {
+      // Reuse the routes the fetch phase already pulled (ASSIGN_USE_TIMELINE on) — same
+      // delivery_timeline_route_list payload, so no second ~2.3s call this cycle.
+      smartRouteData = timelineRoutesToDriverInfo(timelineRoutesForSmart, shiftStartByDriverId);
+      clientCoords = timelineRoutesToCustomerCoords(timelineRoutesForSmart);
+    } else if (cookie && auth) {
       smartRouteData = await fetchSmartRouteData(vnDate(), auth, cookie, shiftStartByDriverId);
     }
 
@@ -802,6 +852,10 @@ export async function autoAssignCycle(
     const nowMs = Date.now();
     const startLocToFetch: string[] = [];
     for (const cid of startLocIdsNeeded) {
+      // Timeline-harvested coords first (free — already in memory), then the in-memory
+      // TTL cache, then a getCustomerById fetch for whatever's left.
+      const fromTimeline = clientCoords.get(cid);
+      if (fromTimeline) { startLocCoords.set(cid, fromTimeline); continue; }
       const hit = startLocCache.get(`${env}:${cid}`);
       if (hit && nowMs - hit.fetchedAt < START_LOC_TTL_MS) startLocCoords.set(cid, hit.coords);
       else startLocToFetch.push(cid);
@@ -1129,6 +1183,13 @@ export async function autoAssignCycle(
         const _tGoong = Date.now();
         const flatRoads = await roadDistancesToPoint(prepped.flatMap((p) => p.refPts), pickupPt);
         goongMs += Date.now() - _tGoong;
+        // Rank by travel TIME (Goong eta_mins) instead of road distance when
+        // SMART_RANK_BY_DURATION=1. Duration reflects HCMC traffic/road speed, so the
+        // driver who *arrives soonest* wins — not merely the one fewest km away. eta_mins
+        // is already returned + cached alongside distance_km, so this costs no extra Goong
+        // call. The comparator is unit-agnostic (it just compares sortDist); gpsKm stays
+        // in km for the en-route GPS tiebreak band.
+        const rankByDuration = process.env.SMART_RANK_BY_DURATION === "1";
         let ptCursor = 0;
         const nowMin = vnMinutesSinceMidnight();
         const withGoong = prepped.map(({ d, hkm, info, ref, refPts }) => {
@@ -1139,21 +1200,42 @@ export async function autoAssignCycle(
           const labelTag = ref ? `[${ref.label}${tbTime ? ` · ${TIEBREAK_VERB[ref.label]} ${tbTime}` : ""}] ` : "";
           const jobsDone = info?.jobsDone ?? 0;
           const name = `${d.first_name} ${d.last_name}`.trim();
-          if (!ref) return { d, sortDist: hkm, priority, label: null, gpsKm: hkm, idleBand: idleBand(tiebreakTs, nowMin), workload, tiebreakTs, jobsDone, name, distLabel: `${hkm}km GPS (load ${workload})` };
-          const roads = refPts.map(() => flatRoads[ptCursor++]?.distance_km ?? null);
+          if (!ref) {
+            // No route reference → only the live-GPS haversine is available. In duration
+            // mode convert it to estimated minutes so it ranks on the same scale.
+            const sortDist = rankByDuration ? Math.round(hkm * STRAIGHT_KM_TO_MIN) : hkm;
+            const distLabel = rankByDuration
+              ? `~${Math.round(hkm * STRAIGHT_KM_TO_MIN)}min GPS est (load ${workload})`
+              : `${hkm}km GPS (load ${workload})`;
+            return { d, sortDist, priority, label: null, gpsKm: hkm, idleBand: idleBand(tiebreakTs, nowMin), workload, tiebreakTs, jobsDone, name, distLabel };
+          }
+          const entries = refPts.map(() => flatRoads[ptCursor++] ?? null);
+          const roads = entries.map((e) => e?.distance_km ?? null);
+          const mins  = entries.map((e) => e?.eta_mins ?? null);
           const straights = refPts.map(
             (p) => Math.round(haversineKm(p.lat, p.lon, pickupPt.lat, pickupPt.lon) * 10) / 10
           );
-          const effPerPoint = refPts.map((_, i) => roads[i] ?? straights[i]);
+          // Per-point effective cost in the ranking unit (mins or km): Goong value first,
+          // haversine-derived fallback second. bestIdx = closest reference point.
+          const effPerPoint = refPts.map((_, i) =>
+            rankByDuration
+              ? (mins[i] ?? Math.round(straights[i] * STRAIGHT_KM_TO_MIN))
+              : (roads[i] ?? straights[i])
+          );
           const bestIdx = effPerPoint.reduce((bi, e, i) => (e < effPerPoint[bi] ? i : bi), 0);
           const roadKm = roads[bestIdx];
+          const roadMin = mins[bestIdx];
           const refHkm = straights[bestIdx];
           const sortDist = effPerPoint[bestIdx];
           const refName  = ref.customerName ? `@${ref.customerName} ` : "";
           const minTag   = refPts.length > 1 ? (bestIdx === 1 ? "via prev " : "via next ") : "";
-          const distLabel = roadKm != null
-            ? `${labelTag}${hkm}km GPS, ${minTag}${refName}→ ${roadKm}km road (load ${workload})`
-            : `${labelTag}${hkm}km GPS, ${minTag}${refName}→ ${refHkm}km straight (load ${workload})`;
+          const distLabel = rankByDuration
+            ? (roadMin != null
+                ? `${labelTag}${hkm}km GPS, ${minTag}${refName}→ ${roadMin}min road (${roadKm}km) (load ${workload})`
+                : `${labelTag}${hkm}km GPS, ${minTag}${refName}→ ~${Math.round(refHkm * STRAIGHT_KM_TO_MIN)}min est (${refHkm}km straight) (load ${workload})`)
+            : (roadKm != null
+                ? `${labelTag}${hkm}km GPS, ${minTag}${refName}→ ${roadKm}km road (load ${workload})`
+                : `${labelTag}${hkm}km GPS, ${minTag}${refName}→ ${refHkm}km straight (load ${workload})`);
           return { d, sortDist, priority, label: ref.label, gpsKm: hkm, idleBand: idleBand(tiebreakTs, nowMin), workload, tiebreakTs, jobsDone, name, distLabel };
         });
         withGoong.sort(rankingComparator);

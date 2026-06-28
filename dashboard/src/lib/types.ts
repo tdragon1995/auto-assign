@@ -99,6 +99,7 @@ export interface TimelineStop {
   jobId: number;
   stopTypeId: number;
   stopStatusId: number;
+  customerId: string;
   customerName: string;
   deliveryDriverId: string;
   referenceNumber: string;

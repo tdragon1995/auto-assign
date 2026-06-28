@@ -318,7 +318,7 @@ export async function getFleetwebCookie(): Promise<string | null> {
  *  expect. The driver name comes from the route-level `driverFullname`. Only caveat:
  *  no create_ts (we substitute scheduledDeliveryTs for the return/via dedup index). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function timelineRoutesToJobs(routes: any[]): Job[] {
+export function timelineRoutesToJobs(routes: any[]): Job[] {
   // Timeline stamps full datetimes as "YYYY-MM-DD HH:MM:SS.ffffff+07"; REST omits the
   // fraction+offset on these fields and downstream code treats Cartrack times as VN-
   // local. Slice to "YYYY-MM-DD HH:MM:SS" so parsing matches the REST path exactly.
@@ -378,10 +378,13 @@ function timelineRoutesToJobs(routes: any[]): Job[] {
   return jobs;
 }
 
-/** Today's assigned+completed jobs via the route-timeline (JSON-RPC) instead of the
- *  heavy/variable getJobsByDate. Returns Job[] on success, or null on any failure
- *  (prod-only cookie, non-2xx, bad shape) so the caller can fall back to REST. */
-export async function getTimelineJobs(dateVn: string, env: Env = "prod"): Promise<Job[] | null> {
+/** Raw delivery_timeline_route_list fetch — returns the routes array (one ~2.3s
+ *  JSON-RPC call) so a single cycle can derive BOTH the s4/s5 jobs
+ *  (timelineRoutesToJobs) and the per-driver smart-rank info from the SAME payload,
+ *  instead of calling this method twice. null on any failure (prod-only cookie,
+ *  non-2xx, bad shape) so callers can fall back to REST. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function getTimelineRoutes(dateVn: string, env: Env = "prod"): Promise<any[] | null> {
   if (env !== "prod") return null; // fleetweb cookie is prod-only; UAT falls back to REST
   const auth = process.env.CARTRACK_AUTH ?? "";
   const cookie = await getFleetwebCookie();
@@ -400,8 +403,60 @@ export async function getTimelineJobs(dateVn: string, env: Env = "prod"): Promis
     if (!res.ok) return null;
     const data = await res.json();
     const routes = data?.result?.routes;
-    if (!Array.isArray(routes)) return null;
-    return timelineRoutesToJobs(routes);
+    return Array.isArray(routes) ? routes : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Today's assigned+completed jobs via the route-timeline (JSON-RPC) instead of the
+ *  heavy/variable getJobsByDate. Returns Job[] on success, or null on any failure
+ *  (prod-only cookie, non-2xx, bad shape) so the caller can fall back to REST. */
+export async function getTimelineJobs(dateVn: string, env: Env = "prod"): Promise<Job[] | null> {
+  const routes = await getTimelineRoutes(dateVn, env);
+  return routes ? timelineRoutesToJobs(routes) : null;
+}
+
+/** Label-filtered stops for a day via delivery_get_stops_list (JSON-RPC). The label
+ *  filter runs server-side, so this returns only matching stops — far lighter than
+ *  getJobsByDate, which pulls every job for the day and is then filtered client-side.
+ *
+ *  Stops come back flat (one entry per stop), each carrying job_id, reference_number,
+ *  job_status_id, stop_type_id/status, customer_name, driver_name, address_line_1,
+ *  activity timestamps and delivery_windows — so the caller groups by job_id and has
+ *  every field the PSC-tỉnh orders view needs in a single call. assignment:"all"
+ *  includes unassigned (status 2) jobs, so freshly-created requests still surface.
+ *
+ *  prod-only (fleetweb cookie); returns null on any failure so callers can fall back to
+ *  REST. perPage 200 comfortably holds a day of PSC-tỉnh stops (≈24) — a label-filtered
+ *  day has never approached one page, so pagination is intentionally not followed. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function getStopsByLabels(dateVn: string, labels: string[], env: Env = "prod"): Promise<any[] | null> {
+  if (env !== "prod") return null; // fleetweb cookie is prod-only; UAT falls back to REST
+  const auth = process.env.CARTRACK_AUTH ?? "";
+  const cookie = await getFleetwebCookie();
+  if (!auth || !cookie) return null;
+  try {
+    const res = await fetch(JSONRPC_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: auth, Cookie: cookie },
+      body: JSON.stringify({
+        version: "2.0",
+        method: "delivery_get_stops_list",
+        id: 1,
+        params: {
+          data: {
+            filters: { scheduledDeliveryTs: vnDayWindow(dateVn), groupStops: true, assignment: "all", jobLabel: labels },
+            sort: {},
+            pagination: { page: 1, perPage: 200 },
+          },
+        },
+      }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const stops = data?.result?.stops;
+    return Array.isArray(stops) ? stops : null;
   } catch {
     return null;
   }
