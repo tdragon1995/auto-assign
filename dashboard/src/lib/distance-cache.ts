@@ -74,14 +74,19 @@ async function getCachedDistances(keys: string[]): Promise<(GoongResult | null)[
   }
 }
 
-/** Write-behind after a Goong fetch. Failed lookups (null) must never be cached. */
+/** Write-behind after a Goong fetch. Failed lookups (null) must never be cached.
+ *  Write-once (`nx`): a new pair is stored with the TTL, but an existing cell is
+ *  never overwritten — preserves the first-seen exact coords. Overwrites only ever
+ *  arose in the rare concurrent first-fill race (a cache hit already skips the
+ *  write), and the collapsed coords are the same physical point, so the distance
+ *  is unaffected. */
 async function setCachedDistances(entries: { key: string; value: StoredDistance }[]): Promise<void> {
   if (entries.length === 0) return;
   const redis = getRedis();
   if (!redis) return;
   try {
     const pipe = redis.pipeline();
-    for (const { key, value } of entries) pipe.set(key, JSON.stringify(value), { ex: TTL_SECONDS });
+    for (const { key, value } of entries) pipe.set(key, JSON.stringify(value), { ex: TTL_SECONDS, nx: true });
     await pipe.exec();
   } catch {
     /* cache write is best-effort */
