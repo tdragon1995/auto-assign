@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
+import { BASE_URL, getHeaders, completeJob, type Env } from "@/lib/cartrack";
 import { vnDate, vnHoursMinutes } from "@/lib/time";
 import { isActiveStop, isStopStarted, pscPairKey } from "@/lib/job-filters";
 import { PSC_VIA_LABEL } from "@/lib/via-legs";
@@ -273,6 +273,105 @@ export async function DELETE(req: NextRequest) {
     // Clear both dedup guards so the same pickup→dropoff can be re-requested at once
     // instead of colliding with the just-cancelled job: drop the index pair and release
     // the cross-instance create lock (which is otherwise held to its TTL after a create).
+    if (pickup?.customer_id && dropoff?.customer_id) {
+      void unmarkPscActivePickup(pscPairKey(pickup.customer_id, dropoff.customer_id));
+      void releaseCreateLock(`psc:${pickup.customer_id}-${dropoff.customer_id}-${vnDate()}`);
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (e) {
+    return NextResponse.json({ error: String(e) }, { status: 500 });
+  }
+}
+
+// ── PUT /api/psc-assign — hand off to a ride-hailing courier (Grab/Be/XanhSM/Ahamove) ──
+// Body: { job_id, batch_ids: string[] }. Assigns the ride-hailing proxy driver, attaches
+// each Batch ID as an item tracking_number, then force-completes the trip. Only valid
+// while the pickup hasn't been started. Clears the dedup guards on success so the same
+// pickup→dropoff can be re-requested immediately.
+
+const GRAB_DRIVER_ID = "6437bace-6578-11f1-9378-fa163ee8d8ac";
+const BATCH_ID_RE = /^B\d+$/;
+
+export async function PUT(req: NextRequest) {
+  const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
+
+  try {
+    const body = await req.json();
+    const jobId = Number(body?.job_id);
+    if (!Number.isInteger(jobId) || jobId <= 0) {
+      return NextResponse.json({ error: "Job ID không hợp lệ" }, { status: 400 });
+    }
+
+    const rawBatchIds: unknown = body?.batch_ids;
+    const batchIds = Array.isArray(rawBatchIds)
+      ? rawBatchIds.map((b) => String(b).trim()).filter(Boolean)
+      : [];
+    if (batchIds.length === 0) {
+      return NextResponse.json({ error: "Thiếu mã Batch" }, { status: 400 });
+    }
+    const invalid = batchIds.filter((b) => !BATCH_ID_RE.test(b));
+    if (invalid.length > 0) {
+      return NextResponse.json(
+        { error: `Mã Batch không hợp lệ (phải dạng B + số): ${invalid.join(", ")}` },
+        { status: 400 }
+      );
+    }
+
+    const headers = getHeaders(env);
+
+    // Guard: job must exist, not be terminal, and the pickup must not have started.
+    const jobRes = await fetch(`${BASE_URL}/jobs/${jobId}`, { headers, cache: "no-store" });
+    if (!jobRes.ok) return NextResponse.json({ error: "Job not found" }, { status: 404 });
+    const jobData = await jobRes.json();
+    const statusId: number | null = jobData.data?.job_status_id ?? null;
+    if (statusId === 5) {
+      return NextResponse.json({ error: "Chuyến đã hoàn thành rồi" }, { status: 409 });
+    }
+    if (statusId === 3 || statusId === 7) {
+      return NextResponse.json({ error: "Chuyến đã huỷ/thất bại" }, { status: 409 });
+    }
+    const stops: Stop[] = jobData.data?.stops ?? [];
+    const pickup  = stops.find((s) => s.stop_type_id === 1);
+    const dropoff = stops.find((s) => s.stop_type_id === 2);
+    if (pickup && isStopStarted(pickup)) {
+      return NextResponse.json({ error: "Không thể gửi: tài xế đã bắt đầu công việc." }, { status: 409 });
+    }
+
+    // Assign the proxy driver + attach Batch IDs as item tracking numbers (partial update).
+    const updateRes = await fetch(`${BASE_URL}/jobs/${jobId}`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({
+        delivery_driver_id: GRAB_DRIVER_ID,
+        items: batchIds.map((b) => ({
+          description: "🧪 Mẫu",
+          weight: 0,
+          item_type_id: 1,
+          quantity: 1,
+          tracking_number: b,
+        })),
+      }),
+    });
+    if (!updateRes.ok) {
+      const err = await updateRes.json().catch(() => ({}));
+      return NextResponse.json(
+        { error: "Gán tài xế / mã Batch thất bại", details: err },
+        { status: 502 }
+      );
+    }
+
+    // Force-complete the trip.
+    const completeRes = await completeJob(jobId, env);
+    if (!completeRes.ok) {
+      return NextResponse.json(
+        { error: "Hoàn thành chuyến thất bại", status: completeRes.status, details: completeRes.body },
+        { status: 502 }
+      );
+    }
+
+    // Pickup→dropoff is fulfilled — clear both dedup guards so a fresh batch can be
+    // re-requested at once instead of colliding with the just-completed job.
     if (pickup?.customer_id && dropoff?.customer_id) {
       void unmarkPscActivePickup(pscPairKey(pickup.customer_id, dropoff.customer_id));
       void releaseCreateLock(`psc:${pickup.customer_id}-${dropoff.customer_id}-${vnDate()}`);
