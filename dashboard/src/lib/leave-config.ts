@@ -197,6 +197,13 @@ export function isDriverOnLeave(
  * assignee) and any whose coverage window doesn't include now. A blank sub
  * window inherits the leave's own window (leave_from_hr–leave_to_hr); a full-day
  * leave with no hour window means the sub covers the whole day.
+ *
+ * The coverage window is half-open `(from, to]` — start exclusive, end inclusive —
+ * the same convention as the config-sheet shift check ({@link isDriverOnShift}).
+ * So back-to-back sub windows that share a boundary (e.g. Vấn …–15:00 then
+ * Khiết 15:00–…) don't both match at the boundary minute: the earlier window
+ * (whose `to` = the boundary) owns it, and the later one starts the minute after.
+ * That removes the shared-boundary false-CLASH without needing a 1-minute offset.
  */
 export function resolveSubstitute(
   entry: LeaveEntry,
@@ -219,7 +226,7 @@ export function resolveSubstitute(
       hasWindow = start >= 0 && end > start;
     }
     if (!hasWindow) return true; // leave is full-day (no hour window) → covers all day
-    return nowMins >= start && nowMins <= end;
+    return nowMins > start && nowMins <= end; // half-open: start exclusive, end inclusive
   });
 
   // De-dup by id so the same sub listed in two slots isn't a false clash.
