@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse, after } from "next/server";
-import { getJobDetails, updateJobStops, updateJobScheduledDeliveryTs, type Env } from "@/lib/cartrack";
+import { getJobDetails, updateJobStops, updateJobScheduledDeliveryTs, updateJobSendToDriverAt, assignJob, PROXY_DRIVER_ID, type Env } from "@/lib/cartrack";
 import { NOTE_APPROVED_MARK } from "@/lib/job-filters";
 import { getHeldJobs, removeHeldJob, addHeldJob, pushRunLog } from "@/lib/smart-log-kv";
-import { vnTimestamp } from "@/lib/time";
+import { vnTimestamp, parseVnTimestamp } from "@/lib/time";
 
 type RawStop = { stop_id?: number; stop_type_id?: number; customer_id?: string; customer_name?: string; note?: string };
 
@@ -70,6 +70,8 @@ export async function POST(req: NextRequest) {
     const [hh, mm, ss] = timePart.split(":").map(Number);
     const toTotal = hh * 60 + mm + 30;
     const timeTo = `${String(Math.floor(toTotal / 60) % 24).padStart(2, "0")}:${String(toTotal % 60).padStart(2, "0")}:${String(ss).padStart(2, "0")}+07:00`;
+    // Release 60 min before the appointment, matching the cycle's window-parking lead.
+    const sendAt = vnTimestamp(new Date(parseVnTimestamp(scheduledAt).getTime() - 60 * 60 * 1000));
 
     after(async () => {
       let stops: RawStop[] = [];
@@ -99,12 +101,25 @@ export async function POST(req: NextRequest) {
             ...(s.stop_type_id === 1 ? { delivery_windows: [{ time_from: timeFrom, time_to: timeTo }] } : {}),
           }));
 
-        const stopsRes = await updateJobStops(jobId, updatedStops, env);
+        // Park on the proxy driver now (with send_to_driver_at), instead of relying
+        // on a later cycle to park it via the window heuristic — that cycle never
+        // runs for +1/+2 day schedules because it fetches by scheduled_delivery_ts =
+        // today. releaseDueProxyJobs scans the proxy driver with NO date filter, so a
+        // multi-day parked job is found and released on its scheduled day. Window +
+        // scheduled_delivery_ts are still set above: the window bypasses the note gate
+        // on release, the date lets that day's cycle re-fetch the released job.
+        const [stopsRes, sendRes, parkRes] = await Promise.all([
+          updateJobStops(jobId, updatedStops, env),
+          updateJobSendToDriverAt(jobId, sendAt, env),
+          assignJob(PROXY_DRIVER_ID, jobId, env),
+        ]);
         if (!stopsRes.ok) return putBack(`stops ${stopsRes.status}`);
+        if (!sendRes.ok) return putBack(`send ${sendRes.status}`);
+        if (parkRes.status !== 200) return putBack(`park ${parkRes.status}`);
 
         await removeHeldJob(jobId).catch(() => {});
         const { route } = heldFields(jobId, stops);
-        log(`Job ${jobId} - Đã lên lịch lúc ${timePart.slice(0, 5)} | ${route}`);
+        log(`Job ${jobId} - Đã lên lịch lúc ${timePart.slice(0, 5)} · parked until ${sendAt} | ${route}`);
       } catch (e) {
         await putBack(String(e));
       }
