@@ -2,8 +2,9 @@ import type { Config, LogLevel, Job } from "./types";
 import { BASE_URL, getHeaders, getFleetwebCookie, JSONRPC_URL, getJobsByStatusAndDate, type Env } from "./cartrack";
 import { isStopStarted } from "./job-filters";
 import { vnDate } from "./time";
-import { PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL, isOnShift } from "./return-trips";
+import { PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL, isOnShift, subToCoveredDriver } from "./return-trips";
 import { PSC_VIA_LABEL } from "./via-legs";
+import type { LeaveEntry } from "./leave-config";
 
 // Reject reasons surfaced in Cartrack's rejection record.
 const VIA_STALE_REASON = "Tài xế đã tới điểm giao - bỏ qua chặng ghé (via)";
@@ -70,8 +71,13 @@ export async function cleanupStaleTrips(
   env: Env,
   log: (msg: string, level?: LogLevel) => void,
   prefetched?: { s2: Job[]; s4: Job[]; s5: Job[] },
+  // Today's leave entries — lets Rule B gate a substitute's return on the
+  // ON-LEAVE driver's shift, matching the creator. Omitted → no sub mapping.
+  leaveEntries: LeaveEntry[] = [],
 ): Promise<void> {
   if (process.env.CLEANUP_STALE_TRIPS !== "1") return;
+
+  const subCovers = subToCoveredDriver(config, leaveEntries); // subId → on-leave pool driver
 
   let s2: Job[];
   let s4: Job[];
@@ -147,11 +153,13 @@ export async function cleanupStaleTrips(
       tasks.push({ jobId: job.job_id, reason: VIA_STALE_REASON, label: `Via-leg #${job.job_id} | ${route}` });
     } else {
       // Rule B: the return's dropoff (stop_type_id 2) is the PSC. Off shift there?
+      // For a substitute, gate on the ON-LEAVE driver's shift (matches the creator).
       const pscCustomerId: string = dropoff.customer_id;
+      const shiftDriverId = subCovers.get(driverId) ?? driverId;
       const driverMappings = config.mappings.filter(
         (m) =>
           m.customer_id === pscCustomerId &&
-          (m.driver_id === driverId || m.smart_driver_id.includes(driverId))
+          (m.driver_id === shiftDriverId || m.smart_driver_id.includes(shiftDriverId))
       );
       // Same gate as the creator, inverted: a mapping exists and none is on shift.
       if (!(driverMappings.length > 0 && !driverMappings.some((m) => isOnShift(m, now)))) continue;

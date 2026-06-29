@@ -1,6 +1,7 @@
 import type { Config, Mapping, LogLevel, Job } from "./types";
 import { BASE_URL, getHeaders, getJobsByStatusAndDate, type Env } from "./cartrack";
 import { vnDate, vnHoursMinutes } from "./time";
+import { isDriverOnLeave, resolveSubstitute, type LeaveEntry } from "./leave-config";
 
 export const PSC_RETURN_LABEL = "🛵 Vận chuyển mẫu PSC (về)";
 export const PSC_OUTBOUND_LABEL = "🛵 Vận chuyển mẫu PSC";
@@ -93,6 +94,28 @@ async function createReturnJob(
   return jobId as number;
 }
 
+/**
+ * Map each substitute currently covering an on-leave smart-pool driver → the
+ * pool driver they cover. The sub holds that driver's outbounds today, so both
+ * the return-trip creator and the cleanup pass gate the sub's return on the
+ * ON-LEAVE driver's shift window (looked up via that driver's mappings) rather
+ * than the sub's own — a sub has no PSC mapping of their own to gate against.
+ */
+export function subToCoveredDriver(
+  config: Config,
+  leaveEntries: LeaveEntry[],
+): Map<string, string> {
+  const map = new Map<string, string>(); // subId → on-leave pool driver id
+  const poolIds = new Set(config.mappings.flatMap((m) => m.smart_driver_id));
+  for (const id of poolIds) {
+    const lc = isDriverOnLeave(id, leaveEntries);
+    if (!lc.onLeave) continue;
+    const sub = resolveSubstitute(lc.entry!);
+    if (sub.status === "ok") map.set(sub.subId, id);
+  }
+  return map;
+}
+
 export async function detectAndCreateReturnTrips(
   config: Config,
   env: Env,
@@ -100,9 +123,17 @@ export async function detectAndCreateReturnTrips(
   // Pre-fetched today's status-2/4/5 lists shared by the cycle. When omitted
   // (e.g. standalone call), fetch them here.
   prefetched?: { s2: Job[]; s4: Job[]; s5: Job[] },
+  // Today's leave entries — used to also cover substitutes (see below). Omitted
+  // standalone → no sub widening, just the raw pool.
+  leaveEntries: LeaveEntry[] = [],
 ): Promise<void> {
   // Only applies to drivers in any smart-assign pool (pilot gate)
   const allSmartDriverIds = new Set(config.mappings.flatMap((m) => m.smart_driver_id));
+  // ...plus any substitute currently covering an on-leave pool driver: the sub
+  // holds that driver's outbounds today, so they must get the return leg too —
+  // otherwise a covered route silently loses its return trip.
+  const subCovers = subToCoveredDriver(config, leaveEntries); // subId → on-leave pool driver
+  for (const subId of subCovers.keys()) allSmartDriverIds.add(subId);
 
   let completedJobs: Job[];
   let activeStatus2: Job[];
@@ -176,13 +207,14 @@ export async function detectAndCreateReturnTrips(
 
     if (!pickupStop?.customer_id || !dropoffStop?.customer_id) continue;
 
-    // Shift check: driver must be on shift right now for the PSC they just serviced
+    // Shift check: driver must be on shift right now for the PSC they just serviced.
+    // For a substitute, gate on the ON-LEAVE driver's shift window (the driver they cover).
     const pscCustomerId: string = pickupStop.customer_id;
+    const shiftDriverId = subCovers.get(outbound.delivery_driver_id) ?? outbound.delivery_driver_id;
     const driverMappings = config.mappings.filter(
       (m) =>
         m.customer_id === pscCustomerId &&
-        (m.driver_id === outbound.delivery_driver_id ||
-          m.smart_driver_id.includes(outbound.delivery_driver_id))
+        (m.driver_id === shiftDriverId || m.smart_driver_id.includes(shiftDriverId))
     );
     const now = new Date();
     if (driverMappings.length > 0 && !driverMappings.some((m) => isOnShift(m, now))) continue;

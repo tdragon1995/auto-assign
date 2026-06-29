@@ -1098,7 +1098,7 @@ export async function autoAssignCycle(
           let subFor: string | null = null;
           const lc1 = isDriverOnLeave(driverId, leaveEntries);
           if (lc1.onLeave) {
-            const sub = resolveSubstitute(lc1.entry!, leaveEntries);
+            const sub = resolveSubstitute(lc1.entry!);
             const who1 = jobCustomerName ?? customerId ?? "—";
             const onLeaveName1 = lc1.driverName ?? driverId;
             if (sub.status === "clash") {
@@ -1152,13 +1152,47 @@ export async function autoAssignCycle(
           continue;
         }
 
-        // On-leave drivers stay in the pool so they can still be the "picked"
-        // (nearest) candidate — the assign loop below swaps in their substitute.
-        const candidates = allGpsDrivers.filter((d) => {
-          if (!smartMapping.smart_driver_id.includes(d.delivery_driver_id)) return false;
-          if (!phase1Coords.has(d.delivery_driver_id)) return false;
-          return true;
-        });
+        // Build the candidate pool from the configured smart drivers. When a
+        // configured driver is on leave and exactly one substitute covers now,
+        // rank the SUBSTITUTE in their place — using the sub's own GPS/route
+        // data — so the nearest *actually-working* driver wins, not the absent
+        // one's stale location. The on-leave driver stays in the pool only when
+        // their sub can't be ranked (clash / no cover / sub has no coords); the
+        // assign loop below resolves those the legacy way (swap at assign time).
+        const driverById = new Map<string, Driver>(
+          allGpsDrivers.map((d): [string, Driver] => [d.delivery_driver_id, d])
+        );
+        const subForByDriverId = new Map<string, string>(); // ranked driver id → on-leave name they cover
+        const candidates: Driver[] = [];
+        const candidateIds = new Set<string>();
+        for (const cfgId of smartMapping.smart_driver_id) {
+          let cand = driverById.get(cfgId);
+          let subFor: string | null = null;
+          const lc = isDriverOnLeave(cfgId, leaveEntries);
+          if (lc.onLeave) {
+            const sub = resolveSubstitute(lc.entry!);
+            if (sub.status === "ok") {
+              const subDriver = driverById.get(sub.subId);
+              if (subDriver && phase1Coords.has(sub.subId)) {
+                cand = subDriver;                 // rank the substitute, not the absent driver
+                subFor = lc.driverName ?? cfgId;
+              }
+              // sub has no rankable coords → keep cfg driver; assign loop swaps at assign time
+            }
+            // clash / none → keep cfg driver; assign loop emits SUB_CLASH / skips
+          }
+          if (!cand) continue;                                // configured driver not in fleet list
+          if (!phase1Coords.has(cand.delivery_driver_id)) continue;
+          if (candidateIds.has(cand.delivery_driver_id)) {    // dedup (sub == another cfg driver, or two leaves → same sub)
+            if (subFor && !subForByDriverId.has(cand.delivery_driver_id)) {
+              subForByDriverId.set(cand.delivery_driver_id, subFor);
+            }
+            continue;
+          }
+          candidateIds.add(cand.delivery_driver_id);
+          candidates.push(cand);
+          if (subFor) subForByDriverId.set(cand.delivery_driver_id, subFor);
+        }
         if (candidates.length === 0) {
           const who = jobCustomerName ?? customerId ?? "—";
           log(`Job ${jobId} - SMART skipped: 0/${smartMapping.smart_driver_id.length} configured drivers available (GPS or start_location) | ${route}`, "WARN");
@@ -1270,27 +1304,31 @@ export async function autoAssignCycle(
           const candidate = withGoong[attempt];
           const candidateName = `${candidate.d.first_name} ${candidate.d.last_name}`.trim();
 
-          // If this (nearest) candidate is on leave, hand the job to their
-          // substitute instead of the next-nearest driver.
+          // A pre-swapped candidate already IS the substitute (ranked by their
+          // own location above) — carry that label straight through. Otherwise
+          // this may still be an on-leave driver whose sub couldn't be ranked
+          // (clash / no cover / sub lacks coords); resolve them the legacy way.
           let targetId = candidate.d.delivery_driver_id;
-          let subFor: string | null = null;
-          const lc = isDriverOnLeave(targetId, leaveEntries);
-          if (lc.onLeave) {
-            const sub = resolveSubstitute(lc.entry!, leaveEntries);
-            if (sub.status === "clash") {
-              const who = pickupStop.customer_name ?? jobCustomerName ?? customerId ?? "—";
-              const onLeaveName = lc.driverName ?? candidateName;
-              log(`Job ${jobId} - Nhiều hơn 1 SUB: ${sub.subIds.length} substitutes cover for ${onLeaveName} now | ${route}`, "WARN");
-              fail("SUB_CLASH", jobId, who, `${onLeaveName} nghỉ — ${sub.subIds.length} người thay cùng trực, không rõ chọn ai`, "WARN");
-              subClash = true;
-              break;
+          let subFor: string | null = subForByDriverId.get(targetId) ?? null;
+          if (!subFor) {
+            const lc = isDriverOnLeave(targetId, leaveEntries);
+            if (lc.onLeave) {
+              const sub = resolveSubstitute(lc.entry!);
+              if (sub.status === "clash") {
+                const who = pickupStop.customer_name ?? jobCustomerName ?? customerId ?? "—";
+                const onLeaveName = lc.driverName ?? candidateName;
+                log(`Job ${jobId} - Nhiều hơn 1 SUB: ${sub.subIds.length} substitutes cover for ${onLeaveName} now | ${route}`, "WARN");
+                fail("SUB_CLASH", jobId, who, `${onLeaveName} nghỉ — ${sub.subIds.length} người thay cùng trực, không rõ chọn ai`, "WARN");
+                subClash = true;
+                break;
+              }
+              if (sub.status === "none") {
+                log(`Job ${jobId} - SMART #${attempt + 1} ${candidateName}: on leave (${lc.reason}), no substitute — trying next best candidates | ${route}`, "INFO");
+                continue;
+              }
+              targetId = sub.subId;
+              subFor = lc.driverName ?? candidateName;
             }
-            if (sub.status === "none") {
-              log(`Job ${jobId} - SMART #${attempt + 1} ${candidateName}: on leave (${lc.reason}), no substitute — trying next best candidates | ${route}`, "INFO");
-              continue;
-            }
-            targetId = sub.subId;
-            subFor = lc.driverName ?? candidateName;
           }
 
           try {
@@ -1375,7 +1413,7 @@ export async function autoAssignCycle(
     let subFor: string | null = null;
     const lcFixed = isDriverOnLeave(driverId, leaveEntries);
     if (lcFixed.onLeave) {
-      const sub = resolveSubstitute(lcFixed.entry!, leaveEntries);
+      const sub = resolveSubstitute(lcFixed.entry!);
       const who = jobCustomerName ?? customerId ?? "—";
       const onLeaveName = lcFixed.driverName ?? driverId;
       if (sub.status === "clash") {
@@ -1552,6 +1590,10 @@ export async function autoAssignCycle(
       log(`Follow-up prefetch failed, each step will self-fetch: ${e}`, "WARN");
     }
 
+    // Shared by return-trips + cleanup to gate substitutes on the on-leave
+    // driver's shift. Cached (5-min TTL) — the cycle above already populated it.
+    const followLeave = await loadLeaveEntries().catch(() => []);
+
     // Forward via-legs first (driver is en route toward the via PSC — more time-sensitive).
     // Pass the shared prefetch so neither step re-fetches the status 2/4/5 lists; falls
     // back to self-fetch when `shared` is undefined (prefetch above failed).
@@ -1563,7 +1605,7 @@ export async function autoAssignCycle(
     }
     clog(`[follow-ups] return-trips start (t=${Date.now() - tStart}ms)`);
     try {
-      await detectAndCreateReturnTrips(config, env, log, shared);
+      await detectAndCreateReturnTrips(config, env, log, shared, followLeave);
     } catch (e) {
       log(`Return-trip hook failed: ${e}`, "ERROR");
     }
@@ -1571,7 +1613,7 @@ export async function autoAssignCycle(
     // created, and reuses the same prefetch. No-op unless CLEANUP_STALE_TRIPS=1.
     clog(`[follow-ups] cleanup start (t=${Date.now() - tStart}ms)`);
     try {
-      await cleanupStaleTrips(config, env, log, shared);
+      await cleanupStaleTrips(config, env, log, shared, followLeave);
     } catch (e) {
       log(`Cleanup hook failed: ${e}`, "ERROR");
     }

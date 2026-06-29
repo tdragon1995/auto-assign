@@ -188,16 +188,18 @@ export function isDriverOnLeave(
 /**
  * Resolve which substitute should cover an on-leave driver right now, mirroring
  * the fixed-path clash model: exactly one covering sub → assign; 2+ overlapping
- * → clash (flag, don't assign); none → no cover. The 3PL-express proxy and any
- * sub whose own row puts them on leave at this moment are dropped first (so a
- * proxy-only leave resolves to "none" — handled by a 3PL booking, not a driver).
- * Sub windows are HH:MM; a blank sub
- * window inherits the leave's own window (leave_from_hr–leave_to_hr), and a
- * full-day leave (no hour window) means the sub covers the whole day.
+ * → clash (flag, don't assign); none → no cover.
+ *
+ * Resolution is exactly one layer deep: driver on leave → use the named sub,
+ * full stop. We do NOT check whether the sub is themselves on leave, and we do
+ * NOT chain to the sub's own sub — the supervisor manages those cases on the
+ * sheet. The only subs dropped here are the 3PL-express proxy (never a real
+ * assignee) and any whose coverage window doesn't include now. A blank sub
+ * window inherits the leave's own window (leave_from_hr–leave_to_hr); a full-day
+ * leave with no hour window means the sub covers the whole day.
  */
 export function resolveSubstitute(
   entry: LeaveEntry,
-  entries: LeaveEntry[],
 ):
   | { status: "ok"; subId: string }
   | { status: "clash"; subIds: string[] }
@@ -207,7 +209,6 @@ export function resolveSubstitute(
   const covering = entry.subs.filter((s) => {
     if (!s.id) return false;
     if (s.id === PROXY_3PL_DRIVER_ID) return false; // 3PL-express proxy, never a real assignee
-    if (isDriverOnLeave(s.id, entries).onLeave) return false; // sub is themselves off
     let start = timeToMins(s.from);
     let end   = timeToMins(s.to);
     let hasWindow = start >= 0 && end > start;
