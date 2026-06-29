@@ -71,7 +71,13 @@ export async function POST(req: NextRequest) {
     const toTotal = hh * 60 + mm + 30;
     const timeTo = `${String(Math.floor(toTotal / 60) % 24).padStart(2, "0")}:${String(toTotal % 60).padStart(2, "0")}:${String(ss).padStart(2, "0")}+07:00`;
     // Release 60 min before the appointment, matching the cycle's window-parking lead.
-    const sendAt = vnTimestamp(new Date(parseVnTimestamp(scheduledAt).getTime() - 60 * 60 * 1000));
+    // Only park when the appointment is MORE than 60 min out — same guard as the
+    // cycle (assign.ts: diffMin > 60). A near-term schedule (<=60 min) must NOT be
+    // parked: send_to_driver_at would already be in the past, so it would bounce
+    // through the proxy for one cycle instead of being assigned straight to a driver.
+    const scheduledMs = parseVnTimestamp(scheduledAt).getTime();
+    const shouldPark = scheduledMs - Date.now() > 60 * 60 * 1000;
+    const sendAt = vnTimestamp(new Date(scheduledMs - 60 * 60 * 1000));
 
     after(async () => {
       let stops: RawStop[] = [];
@@ -108,18 +114,25 @@ export async function POST(req: NextRequest) {
         // multi-day parked job is found and released on its scheduled day. Window +
         // scheduled_delivery_ts are still set above: the window bypasses the note gate
         // on release, the date lets that day's cycle re-fetch the released job.
-        const [stopsRes, sendRes, parkRes] = await Promise.all([
-          updateJobStops(jobId, updatedStops, env),
-          updateJobSendToDriverAt(jobId, sendAt, env),
-          assignJob(PROXY_DRIVER_ID, jobId, env),
-        ]);
-        if (!stopsRes.ok) return putBack(`stops ${stopsRes.status}`);
-        if (!sendRes.ok) return putBack(`send ${sendRes.status}`);
-        if (parkRes.status !== 200) return putBack(`park ${parkRes.status}`);
+        // Near-term schedules (<=60 min) skip parking: the next cycle's window path
+        // sees diffMin <= 60 and assigns them straight to a driver.
+        if (shouldPark) {
+          const [stopsRes, sendRes, parkRes] = await Promise.all([
+            updateJobStops(jobId, updatedStops, env),
+            updateJobSendToDriverAt(jobId, sendAt, env),
+            assignJob(PROXY_DRIVER_ID, jobId, env),
+          ]);
+          if (!stopsRes.ok) return putBack(`stops ${stopsRes.status}`);
+          if (!sendRes.ok) return putBack(`send ${sendRes.status}`);
+          if (parkRes.status !== 200) return putBack(`park ${parkRes.status}`);
+        } else {
+          const stopsRes = await updateJobStops(jobId, updatedStops, env);
+          if (!stopsRes.ok) return putBack(`stops ${stopsRes.status}`);
+        }
 
         await removeHeldJob(jobId).catch(() => {});
         const { route } = heldFields(jobId, stops);
-        log(`Job ${jobId} - Đã lên lịch lúc ${timePart.slice(0, 5)} · parked until ${sendAt} | ${route}`);
+        log(`Job ${jobId} - Đã lên lịch lúc ${timePart.slice(0, 5)}${shouldPark ? ` · parked until ${sendAt}` : ""} | ${route}`);
       } catch (e) {
         await putBack(String(e));
       }
