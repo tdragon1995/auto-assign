@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, completeJob, type Env } from "@/lib/cartrack";
-import { vnDate, vnHoursMinutes } from "@/lib/time";
+import { vnDate, vnHoursMinutes, vnTimestamp } from "@/lib/time";
 import { isActiveStop, isStopStarted, pscPairKey } from "@/lib/job-filters";
 import { PSC_VIA_LABEL } from "@/lib/via-legs";
 import { lookupPscActivePickup, markPscActivePickup, unmarkPscActivePickup, acquireCreateLock, releaseCreateLock, type PscDupHit } from "@/lib/smart-log-kv";
@@ -88,6 +88,8 @@ async function liveDuplicateCheck(
 export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
   let lockKey: string | null = null;
+  const _t0 = Date.now();
+  const plog = (m: string) => console.log(`[VN ${vnTimestamp()}] [psc-assign] ${m}`);
 
   try {
     const body = await req.json();
@@ -125,9 +127,11 @@ export async function POST(req: NextRequest) {
     // so a normal request answers from one tiny read instead of two fleet-wide Cartrack
     // job fetches. Fall back to a live fetch only when the index isn't fresh (engine
     // disarmed / index aged out), so correctness never depends on the cycle running.
+    const _tDup = Date.now();
     const pairKey = pscPairKey(pickup, dropoff);
     const { fresh, hit } = await lookupPscActivePickup(pairKey);
     const duplicate = fresh ? hit : await liveDuplicateCheck(pickup, dropoff, today, env);
+    plog(`dup-check: ${Date.now() - _tDup}ms (${fresh ? "redis-fast" : "live-fetch"})`);
 
     if (duplicate) {
       releaseLock(lockKey);
@@ -200,6 +204,7 @@ export async function POST(req: NextRequest) {
       ],
     };
 
+    const _tCreate = Date.now();
     const createRes = await fetch(`${BASE_URL}/jobs`, {
       method: "POST",
       headers: getHeaders(env),
@@ -215,6 +220,7 @@ export async function POST(req: NextRequest) {
 
     const created = await createRes.json();
     const newJobId = created.data?.job_id;
+    plog(`job-create: ${Date.now() - _tCreate}ms | total: ${Date.now() - _t0}ms | job_id=${newJobId}`);
 
     // Write-through: register the new job in the fast-path index immediately so a
     // re-tap before the next cycle (which would otherwise not yet see this job) is

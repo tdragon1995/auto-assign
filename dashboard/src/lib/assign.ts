@@ -617,16 +617,19 @@ function parsePickupWindowTime(timeStr: string, dateVn: string): Date | null {
  * Release parked jobs from the proxy driver whose send_to_driver_at has passed.
  * Sets each job back to unassigned so the next assign cycle picks it up.
  */
-async function releaseDueProxyJobs(dateVn: string, env: Env, log: (msg: string, level?: LogLevel) => void): Promise<void> {
+async function releaseDueProxyJobs(dateVn: string, env: Env, log: (msg: string, level?: LogLevel) => void): Promise<{ listMs: number; releaseMs: number }> {
   // No date filter — multi-day parked jobs are created on a previous day so
   // filtering by create_ts = today would miss them.
+  const _t0 = Date.now();
   const proxyJobs = await getAllAssignedDriverJobs(PROXY_DRIVER_ID, env);
+  const listMs = Date.now() - _t0;
   const now = Date.now();
   const due = proxyJobs.filter((job) => {
     const sendAt = parseSendToDriverAt(job.send_to_driver_at);
     return sendAt !== null && sendAt.getTime() <= now;
   });
   // Release concurrently (bounded 10) — each unassign is independent.
+  const _t1 = Date.now();
   for (let i = 0; i < due.length; i += 10) {
     await Promise.all(due.slice(i, i + 10).map(async (job) => {
       const { ok, status } = await unassignJob(job.job_id, env);
@@ -638,6 +641,7 @@ async function releaseDueProxyJobs(dateVn: string, env: Env, log: (msg: string, 
       }
     }));
   }
+  return { listMs, releaseMs: Date.now() - _t1 };
 }
 
 export async function autoAssignCycle(
@@ -698,7 +702,13 @@ export async function autoAssignCycle(
       log("⚠️  No leave entries loaded (empty array) — all drivers will be treated as available", "WARN");
     }
   }
-  if (!onlyJobIds) await releaseDueProxyJobs(today, env, log);
+  const _tLeave = Date.now();
+  const _proxyTiming = onlyJobIds ? null : await releaseDueProxyJobs(today, env, log);
+  const _afterRelease = Date.now();
+  const _proxyStr = _proxyTiming
+    ? ` | proxy-list: ${_proxyTiming.listMs}ms + release: ${_proxyTiming.releaseMs}ms`
+    : " | proxy-release: skipped (targeted)";
+  clog(`[setup] leave-sheet: ${_tLeave - tStart}ms${_proxyStr}`);
   phase("setup+proxy-release");
 
   // Fetch ALL of today's jobs in one call (scheduled_delivery_ts = today), then
