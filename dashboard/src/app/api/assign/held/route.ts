@@ -2,7 +2,7 @@ import { NextRequest, NextResponse, after } from "next/server";
 import { getJobDetails, updateJobStops, updateJobScheduledDeliveryTs, updateJobSendToDriverAt, assignJob, PROXY_DRIVER_ID, type Env } from "@/lib/cartrack";
 import { NOTE_APPROVED_MARK } from "@/lib/job-filters";
 import { getHeldJobs, removeHeldJob, addHeldJob, pushRunLog } from "@/lib/smart-log-kv";
-import { vnTimestamp, parseVnTimestamp } from "@/lib/time";
+import { vnTimestamp, parseVnTimestamp, vnDate } from "@/lib/time";
 
 type RawStop = { stop_id?: number; stop_type_id?: number; customer_id?: string; customer_name?: string; note?: string };
 
@@ -71,12 +71,15 @@ export async function POST(req: NextRequest) {
     const toTotal = hh * 60 + mm + 30;
     const timeTo = `${String(Math.floor(toTotal / 60) % 24).padStart(2, "0")}:${String(toTotal % 60).padStart(2, "0")}:${String(ss).padStart(2, "0")}+07:00`;
     // Release 60 min before the appointment, matching the cycle's window-parking lead.
-    // Only park when the appointment is MORE than 60 min out — same guard as the
-    // cycle (assign.ts: diffMin > 60). A near-term schedule (<=60 min) must NOT be
-    // parked: send_to_driver_at would already be in the past, so it would bounce
-    // through the proxy for one cycle instead of being assigned straight to a driver.
+    // Future-day schedules (+1/+2) ALWAYS park and release 60 min before — the daily
+    // fetch is filtered to scheduled_delivery_ts = today, so an un-parked future-day
+    // job is invisible until its day; only the proxy (scanned with no date filter)
+    // reliably releases it on time. Same-day: park only when >60 min out, else assign
+    // directly — a near-term same-day park would put send_to_driver_at in the past and
+    // bounce through the proxy for one cycle instead of going straight to a driver.
     const scheduledMs = parseVnTimestamp(scheduledAt).getTime();
-    const shouldPark = scheduledMs - Date.now() > 60 * 60 * 1000;
+    const isFutureDay = scheduledAt.slice(0, 10) > vnDate();
+    const shouldPark = isFutureDay || scheduledMs - Date.now() > 60 * 60 * 1000;
     const sendAt = vnTimestamp(new Date(scheduledMs - 60 * 60 * 1000));
 
     after(async () => {
@@ -114,8 +117,8 @@ export async function POST(req: NextRequest) {
         // multi-day parked job is found and released on its scheduled day. Window +
         // scheduled_delivery_ts are still set above: the window bypasses the note gate
         // on release, the date lets that day's cycle re-fetch the released job.
-        // Near-term schedules (<=60 min) skip parking: the next cycle's window path
-        // sees diffMin <= 60 and assigns them straight to a driver.
+        // Near-term SAME-DAY schedules (<=60 min) skip parking: the next cycle's
+        // window path sees diffMin <= 60 and assigns them straight to a driver.
         if (shouldPark) {
           const [stopsRes, sendRes, parkRes] = await Promise.all([
             updateJobStops(jobId, updatedStops, env),
