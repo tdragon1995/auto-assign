@@ -2,7 +2,7 @@ import type { Config, Driver, FailedJob, Job, LogEntry, LogLevel, Mapping, Picku
 import { getDrivers, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, updateJobSendToDriverAt, unassignJob, optimizeDriverRoute, getFleetwebCookie, getJobsByStatusAndDate, getJobsByDate, getTimelineRoutes, timelineRoutesToJobs, JSONRPC_URL, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
-import { detectAndCreateReturnTrips, PSC_RETURN_LABEL } from "./return-trips";
+import { detectAndCreateReturnTrips, PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from "./return-trips";
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
 import { cleanupStaleTrips } from "./cleanup-trips";
 import { setHeldJobs, setFailedJobs, setPickupWarnings, setPscActivePickups, type HeldJob, type PscDupHit } from "./smart-log-kv";
@@ -214,6 +214,16 @@ function computePickupWarnings(
     // (PSC→3PL transport legs, recurring provincial pickups, etc.). The customer
     // late-pickup warning is only meaningful for ad-hoc (non-plan) jobs.
     if (job.last_assigned_plan_id != null || (Array.isArray(job.plans) && job.plans.length > 0)) continue;
+
+    // Skip engine-created PSC sample-transport legs (outbound / via / return):
+    // their timing is dictated by the multi-leg route, not a customer ASAP
+    // request, so the 30-min overdue clock doesn't apply.
+    const jobLabels: string[] = job.labels ?? [];
+    if (
+      jobLabels.includes(PSC_OUTBOUND_LABEL) ||
+      jobLabels.includes(PSC_VIA_LABEL) ||
+      jobLabels.includes(PSC_RETURN_LABEL)
+    ) continue;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const stops = (job.stops ?? []) as any[];
