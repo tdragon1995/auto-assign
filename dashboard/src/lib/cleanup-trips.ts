@@ -1,7 +1,7 @@
 import type { Config, LogLevel, Job } from "./types";
-import { BASE_URL, getHeaders, getFleetwebCookie, JSONRPC_URL, getJobsByStatusAndDate, type Env } from "./cartrack";
+import { BASE_URL, getHeaders, getFleetwebCookie, getStopsByLabels, JSONRPC_URL, getJobsByStatusAndDate, type Env } from "./cartrack";
 import { isStopStarted } from "./job-filters";
-import { vnDate } from "./time";
+import { vnDate, vnMinutesSinceMidnight, parseVnTimestamp } from "./time";
 import { PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL, isOnShift, subToCoveredDriver } from "./return-trips";
 import { PSC_VIA_LABEL } from "./via-legs";
 import type { LeaveEntry } from "./leave-config";
@@ -9,6 +9,25 @@ import type { LeaveEntry } from "./leave-config";
 // Reject reasons surfaced in Cartrack's rejection record.
 const VIA_STALE_REASON = "Tài xế đã tới điểm giao - bỏ qua chặng ghé (via)";
 const RETURN_STALE_REASON = "Hết ca - huỷ chuyến về chưa thực hiện";
+const ROLLOVER_REASON = "Job treo qua ngày - dọn tự động";
+const END_OF_DAY_REASON = "Cuối ngày - dọn chuyến về chưa hoàn thành";
+
+// Rule D window: the engine auto-disarms at 22:00 VN and cron pings every ~3 min,
+// so gating at 21:54 gives the sweep the day's LAST ~2 cycles (≈21:54 + ≈21:57):
+// one clean at the end of the run plus a single retry if the first reject hiccups.
+// In that window every live return trip is swept regardless of shift or started
+// state — EXCEPT ones with signs of life fresher than FRESH_ACTIVITY_MS (a driver
+// genuinely finishing a late return mid-ride; if they abandon it instead, the
+// next-morning rollover sweep catches it).
+const END_OF_DAY_FROM_MIN = 21 * 60 + 54;
+const FRESH_ACTIVITY_MS = 20 * 60 * 1000;
+
+type RejectTask = { jobId: number; reason: string; label: string };
+
+// VN date on which the yesterday-sweep last came back clean — skip re-sweeping
+// until the date changes. Not set while leftovers exist, so failed rejects retry
+// every cycle until yesterday's slate is actually clear.
+let sweptCleanOn: string | null = null;
 
 // Race guard across overlapping cycles, keyed by the job_id being rejected.
 const inFlightCleanup = new Set<number>();
@@ -21,6 +40,23 @@ function isUntouched(job: any): boolean {
   return stops.length > 0 && !stops.some((s) => isStopStarted(s));
 }
 
+/** True if the job shows signs of life within the last `windowMs`: driver
+ *  activity on any stop, or the job was only just created (the creator runs in
+ *  the same cycle — a fresh return the driver is about to ride must survive). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function hasFreshActivity(job: any, now: Date, windowMs: number): boolean {
+  const stamps: (string | null | undefined)[] = [job.create_ts];
+  for (const s of job.stops ?? []) {
+    stamps.push(s.activity_started_ts, s.activity_arrived_ts, s.activity_completed_ts);
+  }
+  for (const ts of stamps) {
+    if (!ts) continue;
+    const t = parseVnTimestamp(ts).getTime();
+    if (Number.isFinite(t) && now.getTime() - t < windowMs) return true;
+  }
+  return false;
+}
+
 /**
  * Reject a job the reversible way: assign to the proxy driver first (keeps the
  * rejection off the real driver's record), then JSON-RPC `delivery_reject_job`.
@@ -28,16 +64,19 @@ function isUntouched(job: any): boolean {
  */
 async function rejectJob(jobId: number, reason: string, env: Env, cookie: string): Promise<boolean> {
   const headers = getHeaders(env);
-  const proxyDriverId = process.env.CARTRACK_REJECT_PROXY_DRIVER_ID ?? "";
-  if (!proxyDriverId) return false;
 
-  const assignRes = await fetch(`${BASE_URL}/jobs/${jobId}`, {
-    method: "PUT",
-    headers,
-    body: JSON.stringify({ delivery_driver_id: proxyDriverId }),
-    cache: "no-store",
-  });
-  if (!assignRes.ok) return false;
+  // Best-effort proxy assign: keeps the rejection off the real driver's record.
+  // A started/hung job can refuse reassignment — proceed to the reject anyway
+  // (that's exactly what the manual admin removal does in fleetweb).
+  const proxyDriverId = process.env.CARTRACK_REJECT_PROXY_DRIVER_ID ?? "";
+  if (proxyDriverId) {
+    await fetch(`${BASE_URL}/jobs/${jobId}`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ delivery_driver_id: proxyDriverId }),
+      cache: "no-store",
+    }).catch(() => null);
+  }
 
   const rpcRes = await fetch(JSONRPC_URL, {
     method: "POST",
@@ -54,7 +93,59 @@ async function rejectJob(jobId: number, reason: string, env: Env, cookie: string
 }
 
 /**
- * Cleanup pass: reject (never delete) two classes of stale auto-created PSC jobs
+ * Rule C — rolled-over leftovers. A return/via job from YESTERDAY that is still
+ * live (status 2/4) is dead weight by definition: ops end at 22:00, nothing runs
+ * overnight, and the assign cycle only fetches today's date window so nothing
+ * else will ever touch it. This is the "driver accidentally pressed start, admin
+ * had to remove it manually the next morning" case — the started-guard rightly
+ * blocks same-day rejection (a started dropoff can be a real driver mid-ride),
+ * so the sweep picks it up next morning regardless of started state.
+ *
+ * One label-filtered JSON-RPC call per label (prod-only); skipped for the rest
+ * of the day once a sweep finds nothing to clean.
+ */
+async function collectRolloverTasks(env: Env): Promise<RejectTask[]> {
+  if (env !== "prod") return []; // getStopsByLabels is prod-only
+  const today = vnDate();
+  if (sweptCleanOn === today) return [];
+  const yesterday = vnDate(new Date(Date.now() - 24 * 3600e3));
+
+  // Two single-label calls — the multi-label filter semantics are unverified.
+  const [retStops, viaStops] = await Promise.all([
+    getStopsByLabels(yesterday, [PSC_RETURN_LABEL], env),
+    getStopsByLabels(yesterday, [PSC_VIA_LABEL], env),
+  ]);
+  if (!retStops || !viaStops) return []; // fetch failed — retry next cycle
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const byJob = new Map<number, any[]>();
+  for (const s of [...retStops, ...viaStops]) {
+    const arr = byJob.get(s.job_id);
+    if (arr) arr.push(s);
+    else byJob.set(s.job_id, [s]);
+  }
+
+  const tasks: RejectTask[] = [];
+  for (const [jobId, stops] of byJob) {
+    const statusId = stops[0]?.job_status_id;
+    if (statusId !== 2 && statusId !== 4) continue; // only live leftovers
+    if (inFlightCleanup.has(jobId)) continue;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pickup  = stops.find((s: any) => s.stop_type_id === 1);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const dropoff = stops.find((s: any) => s.stop_type_id === 2);
+    const route = `${pickup?.customer_name ?? "?"} → ${dropoff?.customer_name ?? "?"}`;
+    tasks.push({ jobId, reason: ROLLOVER_REASON, label: `Rollover #${jobId} (${yesterday}) | ${route}` });
+  }
+
+  // Clean slate → don't re-sweep until tomorrow. (Left unset while leftovers
+  // exist, so a failed reject is retried next cycle until yesterday is clear.)
+  if (tasks.length === 0) sweptCleanOn = today;
+  return tasks;
+}
+
+/**
+ * Cleanup pass: reject (never delete) three classes of stale auto-created PSC jobs
  * that otherwise sit on a driver and skew smart-assign workload counts.
  *
  *  A) Orphaned via-legs — an untouched via-leg whose outbound has already reached
@@ -62,6 +153,13 @@ async function rejectJob(jobId: number, reason: string, env: Env, cookie: string
  *     driver passed the via PSC without servicing it, so the leg is dead weight.
  *  B) Stale return trips — an untouched return trip for a driver who is now off
  *     shift for that PSC (same `isOnShift` gate the creator uses, inverted).
+ *  C) Rolled-over leftovers — yesterday's return/via jobs still live today,
+ *     including STARTED ones the same-day rules must not touch (see
+ *     collectRolloverTasks). Replaces the manual next-morning admin removal.
+ *  D) End-of-day return sweep — in the day's last ~2 cycles (from 21:54, engine
+ *     disarms 22:00) every live return is swept, started or not, so nothing
+ *     rolls overnight. Only jobs with fresh signs of life (recent activity or
+ *     just created) survive — and C catches those next morning if abandoned.
  *
  * Only fires when CLEANUP_STALE_TRIPS is set. Reuses the cycle's prefetched
  * status 2/4/5 lists (no extra fetches when called from the assign cycle).
@@ -111,11 +209,14 @@ export async function cleanupStaleTrips(
     if (reached) reachedDropoff.add(`${ob.delivery_driver_id}:${dropoff.customer_id}`);
   }
 
+  // Rule C first: yesterday's rolled-over leftovers (own fetch, disjoint from s2/s4).
+  const tasks: RejectTask[] = await collectRolloverTasks(env);
+
   // Candidates: untouched via-legs and return trips (created already-assigned, so
   // normally status 4; scan s2∪s4 to be safe). s5 jobs are done — never candidates.
   const now = new Date();
-  type RejectTask = { jobId: number; reason: string; label: string };
-  const tasks: RejectTask[] = [];
+  // Rule D window: the day's last cycles before the 22:00 disarm.
+  const endOfDay = vnMinutesSinceMidnight(now) >= END_OF_DAY_FROM_MIN;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const job of [...s2, ...s4] as any[]) {
@@ -125,7 +226,9 @@ export async function cleanupStaleTrips(
     if (!isVia && !isReturn) continue;
     if (job.job_status_id === 3 || job.job_status_id === 7) continue; // already cancelled/rejected
     if (!job.delivery_driver_id) continue;
-    if (!isUntouched(job)) continue;
+    // NOTE: the untouched guard is per-rule now — Rule D (end-of-day) sweeps
+    // started returns too, which Rules A/B must never touch.
+    const untouched = isUntouched(job);
     if (inFlightCleanup.has(job.job_id)) continue;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -138,6 +241,7 @@ export async function cleanupStaleTrips(
     const route = `${pickup.customer_name ?? pickup.customer_id} → ${dropoff.customer_name ?? dropoff.customer_id}`;
 
     if (isVia) {
+      if (!untouched) continue; // never touch a started via-leg
       // Rule A: a via-leg is orphaned only when the SPECIFIC run it belongs to has reached the
       // dropoff (or that run is gone). The parent outbound's job_id is appended to the via-leg's
       // reference ("…_HH:MM_<jobId>") — match on it so a hub dropoff (e.g. D001) reached by an
@@ -151,7 +255,15 @@ export async function cleanupStaleTrips(
         continue; // legacy via-leg with no parent id → fall back to the coarse check
       }
       tasks.push({ jobId: job.job_id, reason: VIA_STALE_REASON, label: `Via-leg #${job.job_id} | ${route}` });
+    } else if (endOfDay) {
+      // Rule D: end-of-day sweep — the day's last cycles. Every live return goes,
+      // started or not, on or off shift, so nothing rolls over to tomorrow. Only a
+      // return with FRESH driver activity survives (genuinely finishing a late
+      // ride); if that one gets abandoned, the morning rollover sweep takes it.
+      if (hasFreshActivity(job, now, FRESH_ACTIVITY_MS)) continue;
+      tasks.push({ jobId: job.job_id, reason: END_OF_DAY_REASON, label: `Return (EOD) #${job.job_id} | ${route}` });
     } else {
+      if (!untouched) continue; // started same-day return: could be mid-ride — Rule D/C handle it
       // Rule B: the return's dropoff (stop_type_id 2) is the PSC. Off shift there?
       // For a substitute, gate on the ON-LEAVE driver's shift (matches the creator).
       const pscCustomerId: string = dropoff.customer_id;
