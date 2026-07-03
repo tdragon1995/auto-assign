@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadTplEntries, PSC_TINH_LABEL } from "@/lib/psc-config";
-import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
+import { BASE_URL, getHeaders, getStopsByLabels, type Env } from "@/lib/cartrack";
 import { vnDate, vnTimestamp } from "@/lib/time";
 import { STOP_STATUS, JOB_STATUS } from "@/lib/job-filters";
 import { pushRunLog } from "@/lib/smart-log-kv";
@@ -9,6 +9,53 @@ export const runtime = "edge";
 export const preferredRegion = "sin1";
 
 const D001_UUID = "3927b076-3af9-11ed-b939-506b8dbc8dfb";
+
+/** Group flat delivery_get_stops_list stops by job_id, keep only this PSC's jobs
+ *  (reference prefix) that aren't failed/cancelled, and map to the orders view shape.
+ *  Address comes straight off the stop (address_line_1) — no TPL uuid→address lookup. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildOrdersFromStops(stops: any[], prefix: string) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const byJob = new Map<number, any[]>();
+  for (const s of stops) {
+    const arr = byJob.get(s.job_id);
+    if (arr) arr.push(s);
+    else byJob.set(s.job_id, [s]);
+  }
+
+  return [...byJob.values()]
+    .map((js) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pickup  = js.find((s: any) => s.stop_type_id === 1);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const dropoff = js.find((s: any) => s.stop_type_id === 2);
+      const ref = pickup?.reference_number ?? dropoff?.reference_number ?? "";
+      const jobStatusId = pickup?.job_status_id ?? dropoff?.job_status_id;
+      return { pickup, dropoff, ref, jobStatusId };
+    })
+    .filter((o) => o.ref.startsWith(prefix) && o.jobStatusId !== 3 && o.jobStatusId !== 7)
+    .sort((a, b) => a.ref.localeCompare(b.ref, "vi", { numeric: true }))
+    .map(({ pickup, dropoff, ref, jobStatusId }) => ({
+      job_id:    pickup?.job_id ?? dropoff?.job_id,
+      reference: ref,
+      job_status: JOB_STATUS[jobStatusId] ?? "Không rõ",
+      pickup_name:      pickup?.customer_name ?? null,
+      pickup_address:   pickup?.address_line_1 ?? null,
+      pickup_stop_id:   (pickup?.stop_id ?? null) as number | null,
+      pickup_status_id: (pickup?.stop_status_id ?? null) as number | null,
+      dropoff_status_id: dropoff?.stop_status_id ?? null,
+      dropoff_status:    STOP_STATUS[dropoff?.stop_status_id]?.label ?? "—",
+      dropoff_color:     STOP_STATUS[dropoff?.stop_status_id]?.color ?? "slate",
+      dropoff_update_ts: (
+        dropoff?.activity_completed_ts ??
+        dropoff?.activity_arrived_ts ??
+        dropoff?.activity_started_ts ??
+        null
+      )?.slice(0, 19) ?? null,
+      eta: pickup?.delivery_windows?.[0]?.time_from?.slice(0, 5) ?? null,
+      driver_name: pickup?.driver_name ?? dropoff?.driver_name ?? null,
+    }));
+}
 
 // ── GET /api/psc-tinh?psc=D021 — 3PL options ─────────────────────────────────
 // GET /api/psc-tinh?psc=D021&mode=orders — today's orders for this PSC
@@ -22,10 +69,27 @@ export async function GET(req: NextRequest) {
 
   // ── mode=orders: fetch today's jobs for this PSC ──────────────────────────
   if (mode === "orders") {
+    const today = vnDate();
+    const prefix = `BRA - ${psc} - Mẫu`;
+
+    // Fast path (prod): one label-filtered JSON-RPC call returns only PSC-tỉnh stops
+    // with every field this view needs (address, driver, ETA, status), instead of
+    // pulling the whole day's jobs over REST and filtering client-side. A throw
+    // (e.g. malformed CARTRACK_AUTH inside getFleetwebCookie) degrades to the REST
+    // fallback like any other fast-path failure instead of 500ing the view.
+    let labelStops: Awaited<ReturnType<typeof getStopsByLabels>> = null;
+    try {
+      labelStops = await getStopsByLabels(today, [PSC_TINH_LABEL], env);
+    } catch {
+      labelStops = null;
+    }
+    if (labelStops) {
+      return NextResponse.json({ orders: buildOrdersFromStops(labelStops, prefix) });
+    }
+
+    // Fallback (UAT / JSON-RPC unavailable): REST — fetch the day's jobs, filter by prefix.
     try {
       const headers = getHeaders(env);
-      const today = vnDate();
-      const prefix = `BRA - ${psc} - Mẫu`;
 
       const [jobsRes, tplEntries] = await Promise.all([
         fetch(
@@ -43,7 +107,7 @@ export async function GET(req: NextRequest) {
 
       const orders = jobs
         .filter((j) => (j.reference_number ?? "").startsWith(prefix) && j.job_status_id !== 3 && j.job_status_id !== 7)
-        .sort((a, b) => (a.reference_number ?? "").localeCompare(b.reference_number ?? ""))
+        .sort((a, b) => (a.reference_number ?? "").localeCompare(b.reference_number ?? "", "vi", { numeric: true }))
         .map((j) => {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const stops: any[] = j.stops ?? [];
@@ -107,22 +171,37 @@ export async function POST(req: NextRequest) {
 
     const headers = getHeaders(env);
 
-    // Count today's non-cancelled jobs from this PSC for reference_number
+    // Count today's non-cancelled jobs from this PSC for reference_number.
     const today = vnDate();
     const prefix = `BRA - ${psc_code} - Mẫu`;
 
-    const countRes = await fetch(
-      `${BASE_URL}/jobs?filter[scheduled_delivery_ts_from]=${today} 00:00:00&filter[scheduled_delivery_ts_to]=${today} 23:59:59&limit=1000`,
-      { headers, cache: "no-store" }
-    );
+    // Fast path (prod): count the exact rows the orders view shows — reusing
+    // buildOrdersFromStops keeps the reference counter and the visible order list
+    // in lockstep, so a job the view renders is never skipped by the numbering.
+    // A throw degrades to the REST fallback below.
+    let count: number | null = null;
+    try {
+      const labelStops = await getStopsByLabels(today, [PSC_TINH_LABEL], env);
+      if (labelStops) count = buildOrdersFromStops(labelStops, prefix).length;
+    } catch {
+      count = null;
+    }
 
-    let count = 0;
-    if (countRes.ok) {
-      const countData = await countRes.json();
-      const jobs: { reference_number?: string; job_status_id?: number }[] = countData.data ?? [];
-      count = jobs.filter(
-        (j) => j.job_status_id !== 7 && j.job_status_id !== 3 && (j.reference_number ?? "").startsWith(prefix)
-      ).length;
+    // Fallback (UAT / JSON-RPC unavailable): REST — fetch the day's jobs and count.
+    if (count === null) {
+      const countRes = await fetch(
+        `${BASE_URL}/jobs?filter[scheduled_delivery_ts_from]=${today} 00:00:00&filter[scheduled_delivery_ts_to]=${today} 23:59:59&limit=1000`,
+        { headers, cache: "no-store" }
+      );
+
+      count = 0;
+      if (countRes.ok) {
+        const countData = await countRes.json();
+        const jobs: { reference_number?: string; job_status_id?: number }[] = countData.data ?? [];
+        count = jobs.filter(
+          (j) => j.job_status_id !== 7 && j.job_status_id !== 3 && (j.reference_number ?? "").startsWith(prefix)
+        ).length;
+      }
     }
 
     const refNumber = `${prefix} ${count + 1}`;
