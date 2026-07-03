@@ -32,6 +32,8 @@ interface Job {
   job_status_id: number;
   scheduled_delivery_ts: string | null;
   driver?: { last_name?: string } | null;
+  // Batch IDs (Mã Batch) — only present on the ?job_id= detail payload.
+  item_tracking_numbers?: string[];
   stops: Stop[];
 }
 
@@ -73,7 +75,8 @@ function todayVN(): string {
 }
 
 function TodoItem({ todo }: { todo: Stop["todos"] extends (infer T)[] | undefined ? T : never }) {
-  const [expanded, setExpanded] = useState(false);
+  // Photos open pre-expanded — staff see the POD immediately; the 📸 toggle collapses.
+  const [expanded, setExpanded] = useState(true);
   if (!todo) return null;
 
   const emoji = TODO_EMOJI[todo.todo_type_id];
@@ -120,7 +123,7 @@ function TodoItem({ todo }: { todo: Stop["todos"] extends (infer T)[] | undefine
   );
 }
 
-// Compact stop tile — truncated name, status, timestamp, chevron hint
+// Compact stop tile — full name (wraps), status, timestamp, chevron hint
 function StopTile({ stop, onClick }: { stop: Stop; onClick: () => void }) {
   const s = STOP_STATUS[stop.stop_status_id] ?? { label: "?", color: "bg-slate-100 text-slate-600" };
   const ts = latestTs(stop);
@@ -135,7 +138,7 @@ function StopTile({ stop, onClick }: { stop: Stop; onClick: () => void }) {
         <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md ${s.color}`}>{s.label}</span>
       </div>
       <div className="flex items-center justify-between gap-1">
-        <p className="text-xs font-semibold text-slate-800 leading-tight truncate" title={stop.customer_name}>{stop.customer_name}</p>
+        <p className="text-xs font-semibold text-slate-800 leading-tight break-words">{stop.customer_name}</p>
         <span className="text-slate-300 text-xs flex-shrink-0">›</span>
       </div>
       {ts && <p className="text-[10px] text-slate-400">{fmtTs(ts)}</p>}
@@ -169,27 +172,55 @@ function StopDetail({ stop }: { stop: Stop }) {
       )}
       {todos.length > 0 && (
         <div className="space-y-1.5 pt-0.5">
-          {todos.map((t) => <TodoItem key={t.todo_type_id} todo={t} />)}
+          {todos.map((t, i) => <TodoItem key={`${t.todo_type_id}-${i}`} todo={t} />)}
         </div>
       )}
     </div>
   );
 }
 
-// Bottom sheet showing full job (both stops, driver, ref) — tap backdrop or Đóng to close
+// Bottom sheet showing full job (both stops, driver, ref) — tap backdrop or Đóng to close.
+// The list payload is slim, so the full detail (address, todos, POD photos) is fetched
+// per job when the sheet opens; the slim fields render immediately while it loads.
 function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
+  const [detail, setDetail] = useState<Job | null>(null);
+  const [detailLoading, setDetailLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    fetch(`/api/location-jobs?job_id=${job.job_id}`)
+      .then((r) => r.json())
+      .then((d) => { if (alive && d.job) setDetail(d.job); })
+      .catch(() => {})
+      .finally(() => { if (alive) setDetailLoading(false); });
+    return () => { alive = false; };
+  }, [job.job_id]);
+
+  const shown = detail ?? job;
+
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4" onClick={onClose}>
       <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl p-5 space-y-4 max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start justify-between gap-2">
-          <p className="text-sm font-bold text-slate-800">Giao Nhận Mẫu: {driverName(job)}</p>
-          <p className="text-[10px] text-slate-400 text-right break-all max-w-[55%]">{job.reference_number}</p>
+          <p className="text-sm font-bold text-slate-800">Giao Nhận Mẫu: {driverName(shown)}</p>
+          <p className="text-[10px] text-slate-400 text-right break-all max-w-[55%]">{shown.reference_number}</p>
         </div>
-        {job.stops.map((s, i) => (
+        {(shown.item_tracking_numbers ?? []).length > 0 && (
+          <div className="flex flex-wrap items-center gap-1">
+            <span className="text-[10px] font-semibold text-slate-400">Mã Batch</span>
+            {shown.item_tracking_numbers!.map((t) => (
+              <span key={t} className="text-[10px] font-mono font-semibold bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded-md break-all">{t}</span>
+            ))}
+          </div>
+        )}
+        {shown.stops.map((s, i) => (
           <div key={s.stop_id} className={i > 0 ? "pt-3 border-t border-slate-100" : ""}>
             <StopDetail stop={s} />
           </div>
         ))}
+        {detailLoading && !detail && (
+          <p className="text-[11px] text-slate-400 text-center">Đang tải chi tiết...</p>
+        )}
         <button
           onClick={onClose}
           className="w-full py-2.5 rounded-xl text-sm font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
@@ -299,7 +330,7 @@ export default function QrPage() {
   const loadJobs = useCallback(async (status: 4 | 5) => {
     setJobsLoading(true);
     try {
-      const res = await fetch(`/api/location-jobs?date=${date}&status=${status}`);
+      const res = await fetch(`/api/location-jobs?date=${date}&status=${status}&code=${encodeURIComponent(code)}`);
       const data = await res.json();
       const filtered = filterByLocation(data.jobs ?? []);
       // Sort by latest stop activity timestamp, most recent first
