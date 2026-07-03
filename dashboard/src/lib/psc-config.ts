@@ -27,14 +27,24 @@ export interface TplEntry {
   address: string;
 }
 
-/** No-op: PSC routes are hard-coded ([[psc-routes-data]]), so there's no cache to bust.
- *  Kept so the dashboard Refresh button (/api/config) keeps its import. */
-export function invalidatePscCache() {}
+// TPL entries change rarely; cache for 5 min so the provincial page's 3PL dropdown
+// and the orders fallback don't re-download the sheet CSV on every request.
+const TPL_CACHE_MS = 5 * 60 * 1000;
+let _tplCache: TplEntry[] | null = null;
+let _tplCacheAt = 0;
+
+/** Busts the TPL-entries cache (PSC routes are hard-coded — [[psc-routes-data]] — so
+ *  this is all there is to bust). Wired to the dashboard Refresh button via /api/config. */
+export function invalidatePscCache() {
+  _tplCache = null;
+  _tplCacheAt = 0;
+}
 
 export async function loadTplEntries(): Promise<TplEntry[]> {
-  const rows = await fetchSheetRows(SHEET_GID.tpl);
+  if (_tplCache && Date.now() - _tplCacheAt < TPL_CACHE_MS) return _tplCache;
 
-  return rows
+  const rows = await fetchSheetRows(SHEET_GID.tpl);
+  const entries = rows
     .filter((r) => r["psc-tinh"] && r["3pl_uuid"])
     .map((r) => ({
       psc_tinh: r["psc-tinh"] ?? "",
@@ -42,6 +52,14 @@ export async function loadTplEntries(): Promise<TplEntry[]> {
       tpl_uuid: r["3pl_uuid"] ?? "",
       address: r["address"] ?? "",
     }));
+
+  // Never cache an empty result — a transient bad sheet fetch would otherwise stick
+  // for 5 min (the same failure mode as the config-cache footgun in CLAUDE.md #3).
+  if (entries.length > 0) {
+    _tplCache = entries;
+    _tplCacheAt = Date.now();
+  }
+  return entries;
 }
 
 /**
