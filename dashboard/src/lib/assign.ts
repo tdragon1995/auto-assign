@@ -2,6 +2,7 @@ import type { Config, Driver, FailedJob, Job, LogEntry, LogLevel, Mapping, Picku
 import { getDrivers, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, updateJobSendToDriverAt, unassignJob, optimizeDriverRoute, getFleetwebCookie, getJobsByStatusAndDate, getJobsByDate, getTimelineRoutes, timelineRoutesToJobs, JSONRPC_URL, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
+import { DIAG_LOCATION_CUSTOMER_IDS } from "./psc-routes-data";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from "./return-trips";
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
 import { cleanupStaleTrips } from "./cleanup-trips";
@@ -230,6 +231,11 @@ function computePickupWarnings(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pickup  = stops.find((s: any) => s.stop_type_id === 1);
     if (!pickup) continue;
+
+    // A pickup AT a Diag branch is an internal transport (outbound/via/return
+    // leg, bag or consumable run — e.g. manually-created "Vận chuyển túi" jobs
+    // with no engine label), never a client sample request — don't warn on it.
+    if (pickup.customer_id && DIAG_LOCATION_CUSTOMER_IDS.has(pickup.customer_id)) continue;
 
     if (pickup.activity_started_ts) continue;
     // Guard: skip if stop is already completed or rejected
@@ -1541,7 +1547,7 @@ export async function autoAssignCycle(
   // Run the per-job worker. ASSIGN_PARALLEL_LOOP=1 overlaps the ~6-9s assign calls
   // in bounded chunks; dedup stays safe because each job claims its route
   // synchronously (activeRouteMap.set) before its first await. Default = sequential.
-  const LOOP_CONCURRENCY = 5;
+  const LOOP_CONCURRENCY = 10; // matches the proxy-release bound; 5 left peak cycles paying a second ~10s round for jobs 6-10
   if (process.env.ASSIGN_PARALLEL_LOOP === "1") {
     for (let i = 0; i < jobs.length; i += LOOP_CONCURRENCY) {
       await Promise.all(jobs.slice(i, i + LOOP_CONCURRENCY).map(processJob));
