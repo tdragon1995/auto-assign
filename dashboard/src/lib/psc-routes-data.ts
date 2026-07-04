@@ -94,3 +94,20 @@ export const PSC_ROUTES: PscRoute[] = [
   route("BRA - D050", "BRA - D001", D050, D001, 10.786807, 106.679405),
   route("BRA - D051", "BRA - D001", "4daa0bca-2d7b-11f1-9378-fa163ee8d8ac", D001, 10.80086399, 106.7345728),
 ];
+
+/**
+ * Every Diag location customer_id appearing in the PSC routes (pickup, dropoff,
+ * via, incl. 3PL handoff points). A job whose PICKUP stop is one of these is an
+ * internal branch→branch transport (outbound / via / return leg, bag or
+ * consumable run), never a client sample request — regardless of how the job
+ * was created or whether it carries an engine label.
+ */
+export const DIAG_LOCATION_CUSTOMER_IDS: ReadonlySet<string> = (() => {
+  const ids = new Set<string>();
+  for (const r of PSC_ROUTES) {
+    if (r.pickup) ids.add(r.pickup);
+    if (r.dropoff) ids.add(r.dropoff);
+    if (r.via_pickup) ids.add(r.via_pickup);
+  }
+  return ids;
+})();
