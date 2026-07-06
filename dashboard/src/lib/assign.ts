@@ -1495,8 +1495,19 @@ export async function autoAssignCycle(
         // Build route link
         const routeLink = buildGmapsRouteLink(pickupLat, pickupLon, dropoffLat, dropoffLon);
 
-        // Zalo notification
-        const { bot_token, chat_id } = mapping;
+        // Zalo notification. When a sub covers, notify the SUB on their own Zalo
+        // — not the on-leave driver. The sub's tokens come from any mapping row
+        // where they are the driver_id; if the sub has no token row, send nothing
+        // (better silent than pinging the driver who's off).
+        let bot_token = mapping.bot_token;
+        let chat_id = mapping.chat_id;
+        if (subFor) {
+          const subMapping = config.mappings.find(
+            (m) => m.driver_id === driverId && m.bot_token && m.chat_id
+          );
+          bot_token = subMapping?.bot_token ?? "";
+          chat_id = subMapping?.chat_id ?? "";
+        }
         if (bot_token && chat_id) {
           const lines = [
             `New job assigned: ${jobId}`,
