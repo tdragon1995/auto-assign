@@ -327,10 +327,13 @@ export default function QrPage() {
     [code]
   );
 
-  const loadJobs = useCallback(async (status: 4 | 5) => {
+  // `fresh` bypasses the server's shared 90s day-cache — used by Làm mới and by
+  // reloads after an action that changed the data (cancel, 3PL send), where a
+  // stale list would look like the action didn't work.
+  const loadJobs = useCallback(async (status: 4 | 5, fresh = false) => {
     setJobsLoading(true);
     try {
-      const res = await fetch(`/api/location-jobs?date=${date}&status=${status}&code=${encodeURIComponent(code)}`);
+      const res = await fetch(`/api/location-jobs?date=${date}&status=${status}&code=${encodeURIComponent(code)}${fresh ? "&fresh=1" : ""}`);
       const data = await res.json();
       const filtered = filterByLocation(data.jobs ?? []);
       // Sort by latest stop activity timestamp, most recent first
@@ -416,8 +419,8 @@ export default function QrPage() {
       setCancelTarget(null);
       showToast("Đã huỷ chuyến thành công.", true);
       // Refresh the open jobs tab so the cancelled trip drops off.
-      if (tab === "active") loadJobs(4);
-      else if (tab === "done") loadJobs(5);
+      if (tab === "active") loadJobs(4, true);
+      else if (tab === "done") loadJobs(5, true);
     } catch {
       setCancelError("Không thể kết nối. Vui lòng thử lại.");
     } finally {
@@ -466,8 +469,8 @@ export default function QrPage() {
       setBatchInput("");
       showToast("Đã gửi mẫu qua Grab/Be/XanhSM/Ahamove thành công.", true);
       // Refresh the open jobs tab so the completed trip reflows.
-      if (tab === "active") loadJobs(4);
-      else if (tab === "done") loadJobs(5);
+      if (tab === "active") loadJobs(4, true);
+      else if (tab === "done") loadJobs(5, true);
     } catch {
       setVia3plError("Không thể kết nối. Vui lòng thử lại.");
     } finally {
@@ -594,7 +597,7 @@ export default function QrPage() {
                 onChange={(e) => setDate(e.target.value)}
                 className="flex-1 border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
               />
-              <button onClick={() => tab === "active" ? loadJobs(4) : loadJobs(5)} className="text-xs text-blue-500 hover:underline whitespace-nowrap">Làm mới</button>
+              <button onClick={() => tab === "active" ? loadJobs(4, true) : loadJobs(5, true)} className="text-xs text-blue-500 hover:underline whitespace-nowrap">Làm mới</button>
             </div>
             <div className="relative">
               <input

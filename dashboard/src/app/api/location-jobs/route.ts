@@ -1,9 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
+import { Redis } from "@upstash/redis";
 import { BASE_URL, getHeaders, getTimelineJobs, getJobDetails, type Env } from "@/lib/cartrack";
 import type { Job, Stop } from "@/lib/types";
 
 export const runtime = "edge";
 export const preferredRegion = "sin1";
+
+// Shared day cache: the timeline fetch pulls the WHOLE network's day (~2 MB)
+// and each QR tap keeps only one location's rows — so a burst of taps used to
+// repeat the same download+parse per tap. Cache the slimmed all-locations list
+// once per date; every tap within the TTL filters it in-memory. `?fresh=1`
+// (the Làm mới button, post-cancel and post-3PL reloads) bypasses the read but
+// still rewrites the cache, so a manual refresh updates it for everyone.
+const CACHE_TTL_S = 90;
+
+function getRedis(): Redis | null {
+  const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) return null;
+  return new Redis({ url, token });
+}
 
 // GET /api/location-jobs?date=2026-04-11&status=4&code=<customer_uuid>
 //   Location-scoped list for the /qr page: only jobs touching `code`, slimmed to
@@ -46,6 +62,8 @@ function slimJob(j: Job) {
     stops: (j.stops ?? []).map(slimStop),
   };
 }
+
+type SlimJob = ReturnType<typeof slimJob>;
 
 // Job-sheet detail: slim fields plus address, todos and POD image URLs. The
 // images stay links (Cartrack serves them publicly) — nothing binary passes
@@ -106,20 +124,46 @@ export async function GET(req: NextRequest) {
 
   try {
     // Fast path (prod, code-scoped): one timeline JSON-RPC call covers assigned +
-    // completed jobs; filter to this location and slim before responding. Any
-    // failure (including a throw) falls back to REST rather than 500ing.
+    // completed jobs; filter to this location and slim before responding. The
+    // slimmed all-locations list is shared via Redis for CACHE_TTL_S so a burst
+    // of taps costs one Cartrack fetch. Any failure (including a throw) falls
+    // back to REST rather than 500ing.
     if (code) {
-      let timeline: Job[] | null = null;
-      try {
-        timeline = await getTimelineJobs(date, env);
-      } catch {
-        timeline = null;
+      const fresh = req.nextUrl.searchParams.get("fresh") === "1";
+      const cacheKey = `locjobs:v1:${env}:${date}`;
+      const redis = getRedis();
+
+      let slim: SlimJob[] | null = null;
+      if (redis && !fresh) {
+        try {
+          slim = await redis.get<SlimJob[]>(cacheKey);
+        } catch {
+          slim = null;
+        }
       }
-      if (timeline) {
+      if (!slim) {
+        let timeline: Job[] | null = null;
+        try {
+          timeline = await getTimelineJobs(date, env);
+        } catch {
+          timeline = null;
+        }
+        if (timeline) {
+          slim = timeline.map(slimJob);
+          // Best-effort write — an oversized or failed SET just means the next
+          // tap fetches again; never let caching break the response.
+          if (redis) {
+            try {
+              await redis.set(cacheKey, slim, { ex: CACHE_TTL_S });
+            } catch {}
+          }
+        }
+      }
+      if (slim) {
         const statusId = Number(status);
-        const jobs = timeline
-          .filter((j) => j.job_status_id === statusId && (j.stops ?? []).some((s) => s.customer_id === code))
-          .map(slimJob);
+        const jobs = slim.filter(
+          (j) => j.job_status_id === statusId && j.stops.some((s) => s.customer_id === code)
+        );
         return NextResponse.json({ jobs });
       }
     }
