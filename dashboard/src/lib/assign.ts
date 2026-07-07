@@ -1621,21 +1621,27 @@ export async function autoAssignCycle(
     // driver's shift. Cached (5-min TTL) — the cycle above already populated it.
     const followLeave = await loadLeaveEntries().catch(() => []);
 
-    // Forward via-legs first (driver is en route toward the via PSC — more time-sensitive).
+    // Via-legs and return trips are independent (different labels, different triggers,
+    // same read-only prefetch) — run them concurrently so follow-ups cost the slower
+    // of the two instead of their sum (each can hold ~13-15s Cartrack creation POSTs).
     // Pass the shared prefetch so neither step re-fetches the status 2/4/5 lists; falls
     // back to self-fetch when `shared` is undefined (prefetch above failed).
-    clog(`[follow-ups] via-legs start (t=${Date.now() - tStart}ms)`);
-    try {
-      await detectAndCreateViaLegs(env, log, shared && { s4: shared.s4, s5: shared.s5 });
-    } catch (e) {
-      log(`Via-leg hook failed: ${e}`, "ERROR");
-    }
-    clog(`[follow-ups] return-trips start (t=${Date.now() - tStart}ms)`);
-    try {
-      await detectAndCreateReturnTrips(config, env, log, shared, followLeave);
-    } catch (e) {
-      log(`Return-trip hook failed: ${e}`, "ERROR");
-    }
+    clog(`[follow-ups] via-legs + return-trips start (t=${Date.now() - tStart}ms)`);
+    const followStep = async (name: string, failMsg: string, fn: () => Promise<void>) => {
+      const t0 = Date.now();
+      try {
+        await fn();
+      } catch (e) {
+        log(`${failMsg}: ${e}`, "ERROR");
+      }
+      clog(`[follow-ups] ${name} done: ${Date.now() - t0}ms`);
+    };
+    await Promise.all([
+      followStep("via-legs", "Via-leg hook failed", () =>
+        detectAndCreateViaLegs(env, log, shared && { s4: shared.s4, s5: shared.s5 })),
+      followStep("return-trips", "Return-trip hook failed", () =>
+        detectAndCreateReturnTrips(config, env, log, shared, followLeave)),
+    ]);
     // Cleanup runs last: it acts on via-legs/returns the steps above may have just
     // created, and reuses the same prefetch. No-op unless CLEANUP_STALE_TRIPS=1.
     clog(`[follow-ups] cleanup start (t=${Date.now() - tStart}ms)`);
