@@ -12,6 +12,11 @@ const ARM_KEY = "assign:arm_state";
 // Per-cycle lock so two overlapping cron pings can't run a cycle at once.
 const CYCLE_LOCK_KEY = "assign:cycle_lock";
 
+// Gate for the periodic full REST sweep of the proxy driver's parked jobs
+// (timeline mode sources the per-cycle release from the timeline payload, which
+// only covers today — the sweep catches jobs stranded from a previous day).
+const PROXY_SWEEP_KEY = "assign:proxy_sweep_ts";
+
 // Liveness: timestamp of the last cron ping (armed or not), so the dashboard
 // can show "System last checked: HH:MM" even when nothing was logged.
 const HEARTBEAT_KEY = "assign:heartbeat_ts";
@@ -419,6 +424,16 @@ export async function releaseCycleLock(): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
   await redis.del(CYCLE_LOCK_KEY);
+}
+
+/** True at most once per `ttlSec` (NX set) — gates the full REST sweep of the
+ *  proxy driver's parked jobs. Without Redis, returns true so every cycle
+ *  sweeps via REST (the pre-timeline behavior — fail-safe, never fail-silent). */
+export async function shouldRunProxySweep(ttlSec = 1800): Promise<boolean> {
+  const redis = getRedis();
+  if (!redis) return true;
+  const res = await redis.set(PROXY_SWEEP_KEY, new Date().toISOString(), { nx: true, ex: ttlSec });
+  return res === "OK";
 }
 
 // ── Server-backed live log ─────────────────────────────────────────────────

@@ -6,7 +6,7 @@ import { DIAG_LOCATION_CUSTOMER_IDS } from "./psc-routes-data";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from "./return-trips";
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
 import { cleanupStaleTrips } from "./cleanup-trips";
-import { setHeldJobs, setFailedJobs, setPickupWarnings, setPscActivePickups, type HeldJob, type PscDupHit } from "./smart-log-kv";
+import { setHeldJobs, setFailedJobs, setPickupWarnings, setPscActivePickups, shouldRunProxySweep, type HeldJob, type PscDupHit } from "./smart-log-kv";
 import { isValidDriverId } from "./config";
 import {
   vnDate,
@@ -631,33 +631,45 @@ function parsePickupWindowTime(timeStr: string, dateVn: string): Date | null {
 
 /**
  * Release parked jobs from the proxy driver whose send_to_driver_at has passed.
- * Sets each job back to unassigned so the next assign cycle picks it up.
+ * Sets each job back to unassigned so the assign cycle picks it up.
+ *
+ * `proxyJobs` (optional) is a pre-sourced parked-job list — in timeline mode the
+ * cycle passes the proxy driver's jobs from the timeline payload it already
+ * fetched, skipping the per-cycle REST list. When omitted, fetches the full
+ * no-date-filter REST list (non-timeline path and the periodic stranded-job
+ * sweep — the date-windowed timeline can't see a job whose scheduled day has
+ * passed, e.g. a release missed during an outage).
  */
-async function releaseDueProxyJobs(dateVn: string, env: Env, log: (msg: string, level?: LogLevel) => void): Promise<{ listMs: number; releaseMs: number }> {
-  // No date filter — multi-day parked jobs are created on a previous day so
-  // filtering by create_ts = today would miss them.
+async function releaseDueProxyJobs(
+  dateVn: string,
+  env: Env,
+  log: (msg: string, level?: LogLevel) => void,
+  proxyJobs?: Job[],
+): Promise<{ listMs: number; releaseMs: number; releasedIds: number[] }> {
   const _t0 = Date.now();
-  const proxyJobs = await getAllAssignedDriverJobs(PROXY_DRIVER_ID, env);
+  const parked = proxyJobs ?? await getAllAssignedDriverJobs(PROXY_DRIVER_ID, env);
   const listMs = Date.now() - _t0;
   const now = Date.now();
-  const due = proxyJobs.filter((job) => {
+  const due = parked.filter((job) => {
     const sendAt = parseSendToDriverAt(job.send_to_driver_at);
     return sendAt !== null && sendAt.getTime() <= now;
   });
   // Release concurrently (bounded 10) — each unassign is independent.
   const _t1 = Date.now();
+  const releasedIds: number[] = [];
   for (let i = 0; i < due.length; i += 10) {
     await Promise.all(due.slice(i, i + 10).map(async (job) => {
       const { ok, status } = await unassignJob(job.job_id, env);
       const relRoute = `${job.stops?.find((s) => s.stop_type_id === 1)?.customer_name ?? "—"} → ${job.stops?.find((s) => s.stop_type_id === 2)?.customer_name ?? "—"}`;
       if (ok) {
+        releasedIds.push(job.job_id);
         log(`Job ${job.job_id} - RELEASED from proxy driver (was parked until ${job.send_to_driver_at}) | ${relRoute}`, "INFO");
       } else {
         log(`Job ${job.job_id} - Release failed (HTTP ${status}) | ${relRoute}`, "WARN");
       }
     }));
   }
-  return { listMs, releaseMs: Date.now() - _t1 };
+  return { listMs, releaseMs: Date.now() - _t1, releasedIds };
 }
 
 export async function autoAssignCycle(
@@ -718,12 +730,16 @@ export async function autoAssignCycle(
       log("⚠️  No leave entries loaded (empty array) — all drivers will be treated as available", "WARN");
     }
   }
+  // Timeline mode defers the proxy release to the fetch phase — the parked jobs
+  // ride the timeline payload the cycle fetches anyway, so no per-cycle REST
+  // list is needed. Non-timeline mode keeps release-before-fetch so released
+  // jobs surface as status 2 in the same getJobsByDate call.
+  const useTimeline = process.env.ASSIGN_USE_TIMELINE === "1";
   const _tLeave = Date.now();
-  const _proxyTiming = onlyJobIds ? null : await releaseDueProxyJobs(today, env, log);
-  const _afterRelease = Date.now();
+  const _proxyTiming = onlyJobIds || useTimeline ? null : await releaseDueProxyJobs(today, env, log);
   const _proxyStr = _proxyTiming
     ? ` | proxy-list: ${_proxyTiming.listMs}ms + release: ${_proxyTiming.releaseMs}ms`
-    : " | proxy-release: skipped (targeted)";
+    : onlyJobIds ? " | proxy-release: skipped (targeted)" : " | proxy-release: deferred (timeline)";
   clog(`[setup] leave-sheet: ${_tLeave - tStart}ms${_proxyStr}`);
   phase("setup+proxy-release");
 
@@ -739,7 +755,7 @@ export async function autoAssignCycle(
     // — one fast ~2.3s JSON-RPC call vs the variable 6-21s getJobsByDate. Falls back
     // to getJobsByDate below if the timeline call fails (cookie/login/shape), so dedup
     // and follow-ups never go blind. Default (unset) = the getJobsByDate path.
-    if (process.env.ASSIGN_USE_TIMELINE === "1") {
+    if (useTimeline) {
       const _tFetch = Date.now();
       const [restS2, routes] = await Promise.all([
         getJobsByStatusAndDate(2, today, env),
@@ -762,12 +778,41 @@ export async function autoAssignCycle(
         timelineRoutesForSmart = routes; // reuse in smart-prep (skip 2nd identical JSON-RPC)
         partitionMs = Date.now() - _tPart;
         clog(`[fetch] timeline: fetch ${fetchMs}ms + partition ${partitionMs}ms (s2:${s2Jobs.length} s4:${s4Jobs.length} s5:${s5Jobs.length})`);
+        // Proxy release, timeline-sourced: the proxy driver's parked jobs are
+        // already in the s4 partition (it's a driver on the timeline), so the
+        // old per-cycle REST list is skipped. Every ~30 min a full no-date REST
+        // sweep runs instead — the safety net for jobs stranded from a previous
+        // day, which today's timeline window can't show.
+        if (!onlyJobIds) {
+          const sweep = await shouldRunProxySweep();
+          const rel = await releaseDueProxyJobs(
+            today, env, log,
+            sweep ? undefined : s4Jobs.filter((j) => j.delivery_driver_id === PROXY_DRIVER_ID),
+          );
+          clog(`[fetch] proxy-release (${sweep ? "REST sweep" : "timeline"}): list ${rel.listMs}ms + release ${rel.releaseMs}ms (${rel.releasedIds.length} released)`);
+          if (rel.releasedIds.length > 0) {
+            // Parity with the release-before-fetch REST path: released jobs must
+            // assign THIS cycle and must leave the assigned pot. Re-fetch s2 for
+            // the full REST Job shape (notes, delivery windows — the note gate
+            // and window parking need fields the timeline shape lacks) and drop
+            // the released ids from s4.
+            const releasedSet = new Set(rel.releasedIds);
+            assignedJobsToday = s4Jobs.filter((j) => !releasedSet.has(j.job_id));
+            const freshS2 = await getJobsByStatusAndDate(2, today, env);
+            s2Jobs = freshS2.filter((j) => !j.delivery_driver_id);
+            cycleStartS2 = s2Jobs;
+          }
+        }
         done = true;
       } else {
         clog(`[fetch] timeline failed (${fetchMs}ms), falling back to REST`);
       }
     }
     if (!done) {
+      // Timeline mode deferred the proxy release; the timeline fetch failed, so
+      // run it the old way (full REST list) before fetching — released jobs then
+      // surface as status 2 in getJobsByDate below.
+      if (useTimeline && !onlyJobIds) await releaseDueProxyJobs(today, env, log);
       const _tFetch = Date.now();
       const allToday = await getJobsByDate(today, env);
       fetchMs = Date.now() - _tFetch;
