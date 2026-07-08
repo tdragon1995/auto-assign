@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, completeJob, type Env } from "@/lib/cartrack";
 import { vnDate, vnHoursMinutes, vnTimestamp } from "@/lib/time";
-import { isActiveStop, isStopStarted, pscPairKey } from "@/lib/job-filters";
+import { isActiveStop, isStopStarted, isCompletedOrRejectedStop, pscPairKey } from "@/lib/job-filters";
 import { PSC_VIA_LABEL } from "@/lib/via-legs";
 import { lookupPscActivePickup, markPscActivePickup, unmarkPscActivePickup, acquireCreateLock, releaseCreateLock, type PscDupHit } from "@/lib/smart-log-kv";
 import type { Stop } from "@/lib/types";
@@ -340,8 +340,9 @@ export async function PUT(req: NextRequest) {
     const stops: Stop[] = jobData.data?.stops ?? [];
     const pickup  = stops.find((s) => s.stop_type_id === 1);
     const dropoff = stops.find((s) => s.stop_type_id === 2);
-    if (pickup && isStopStarted(pickup)) {
-      return NextResponse.json({ error: "Không thể gửi: tài xế đã bắt đầu công việc." }, { status: 409 });
+    // Block only when pickup is fully completed or rejected — allow En Route (2) and Arrived (3).
+    if (pickup && isCompletedOrRejectedStop(pickup.stop_status_id ?? 0)) {
+      return NextResponse.json({ error: "Không thể gửi: tài xế đã hoàn thành lấy mẫu." }, { status: 409 });
     }
 
     // Assign the proxy driver + attach Batch IDs as item tracking numbers (partial update).

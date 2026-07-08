@@ -239,10 +239,9 @@ function JobCard({ job, code, onCancel, onSendVia3pl }: {
   onSendVia3pl: (t: { job_id: number; reference: string }) => void;
 }) {
   const [sheetOpen, setSheetOpen] = useState(false);
-  const isSingleStop = job.stops.length === 1;
+  const pickup = job.stops.find((s) => s.stop_type_id === 1);
 
   // Cancellable while this location's pickup hasn't been started by the driver.
-  const pickup = job.stops.find((s) => s.stop_type_id === 1);
   const cancellable =
     !!pickup &&
     pickup.customer_id === code &&
@@ -251,28 +250,39 @@ function JobCard({ job, code, onCancel, onSendVia3pl }: {
     !pickup.activity_arrived_ts &&
     !pickup.activity_completed_ts;
 
+  // 3PL handoff available while pickup is active (Chờ / Đang đến / Đã đến) but not yet completed/rejected.
+  const via3plEligible =
+    !!pickup &&
+    pickup.customer_id === code &&
+    (pickup.stop_status_id === 1 || pickup.stop_status_id === 2 || pickup.stop_status_id === 3) &&
+    !pickup.activity_completed_ts;
+
   return (
     <>
       <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm space-y-2">
-        <div className={`grid gap-2 ${isSingleStop ? "grid-cols-1" : "grid-cols-2"}`}>
+        <div className="grid gap-2 grid-cols-2">
           {job.stops.map((s) => (
             <StopTile key={s.stop_id} stop={s} onClick={() => setSheetOpen(true)} />
           ))}
         </div>
-        {cancellable && (
+        {(via3plEligible || cancellable) && (
           <div className="space-y-1.5">
-            <button
-              onClick={() => onSendVia3pl({ job_id: job.job_id, reference: job.reference_number })}
-              className="w-full py-2 rounded-lg text-xs font-bold text-white bg-teal-600 hover:bg-teal-700 active:bg-teal-800 transition-colors"
-            >
-              Gửi mẫu qua Grab/Be/XanhSM/Ahamove
-            </button>
-            <button
-              onClick={() => onCancel({ job_id: job.job_id, reference: job.reference_number })}
-              className="w-full py-2 rounded-lg text-xs font-bold text-red-600 border border-red-200 hover:bg-red-50 active:bg-red-100 transition-colors"
-            >
-              Huỷ chuyến
-            </button>
+            {via3plEligible && (
+              <button
+                onClick={() => onSendVia3pl({ job_id: job.job_id, reference: job.reference_number })}
+                className="w-full py-2 rounded-lg text-xs font-bold text-white bg-teal-600 hover:bg-teal-700 active:bg-teal-800 transition-colors"
+              >
+                Gửi mẫu qua Grab/Be/XanhSM/Ahamove
+              </button>
+            )}
+            {cancellable && (
+              <button
+                onClick={() => onCancel({ job_id: job.job_id, reference: job.reference_number })}
+                className="w-full py-2 rounded-lg text-xs font-bold text-red-600 border border-red-200 hover:bg-red-50 active:bg-red-100 transition-colors"
+              >
+                Huỷ chuyến
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -335,7 +345,7 @@ export default function QrPage() {
     try {
       const res = await fetch(`/api/location-jobs?date=${date}&status=${status}&code=${encodeURIComponent(code)}${fresh ? "&fresh=1" : ""}`);
       const data = await res.json();
-      const filtered = filterByLocation(data.jobs ?? []);
+      const filtered = filterByLocation(data.jobs ?? []).filter((j) => j.stops.length > 1);
       // Sort by latest stop activity timestamp, most recent first
       filtered.sort((a, b) => {
         const tsA = a.stops.map((s) => latestTs(s)).filter(Boolean).sort().at(-1) ?? "";
