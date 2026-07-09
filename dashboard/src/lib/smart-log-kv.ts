@@ -436,6 +436,18 @@ export async function shouldRunProxySweep(ttlSec = 1800): Promise<boolean> {
   return res === "OK";
 }
 
+/** True at most once per VN day (NX set keyed by the date) — gates the morning
+ *  rollover of yesterday's unfinished jobs into today's window. Without Redis,
+ *  returns true so every cycle retries (fail-safe like the proxy sweep, and
+ *  harmless: after the first pass yesterday's status-2 window is empty). */
+export async function shouldRunDailyRollover(dateVn: string, env = "prod"): Promise<boolean> {
+  const redis = getRedis();
+  if (!redis) return true;
+  // Keyed by env so a manual UAT cycle can't consume prod's daily slot.
+  const res = await redis.set(`assign:rollover_morning:${env}:${dateVn}`, new Date().toISOString(), { nx: true, ex: 172_800 });
+  return res === "OK";
+}
+
 // ── Server-backed live log ─────────────────────────────────────────────────
 
 // Only these INFO lines are worth keeping; every other INFO is per-cycle noise
@@ -444,7 +456,7 @@ export async function shouldRunProxySweep(ttlSec = 1800): Promise<boolean> {
 // always kept. Note-skip lines are intentionally NOT kept — they'd repeat every
 // cycle for the same held job; the dashboard note-review panel shows them
 // instead. (The WARN "assigning despite note" override line is still kept.)
-const INFO_KEEP_PATTERNS = ["RELEASED", "PARKED", "swapped", "[fetch]", "[timing]", "[loop]", "[follow-ups]"];
+const INFO_KEEP_PATTERNS = ["RELEASED", "PARKED", "ROLLED OVER", "swapped", "[fetch]", "[timing]", "[loop]", "[follow-ups]"];
 
 // Deterministic per-job assign failures recur every cycle for the same job until
 // a human fixes them — left in the rolling log they bury everything else (see the

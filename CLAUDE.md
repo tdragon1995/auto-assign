@@ -53,8 +53,8 @@ LABCENTER_RECEPTIONIST_PASSWORD= # Password for receptionist account
 
 3. **Assign cycle** (`src/lib/assign.ts → autoAssignCycle`):
    - Fetches unassigned jobs (status 2) from Cartrack REST API
-   - Filters to jobs created within `job_max_age_minutes` (default 60)
    - Skips jobs with stop notes
+   - Day-boundary rollover: cycles ≥ 21:50 bump today's still-unassigned ad-hoc client jobs to tomorrow's `scheduled_delivery_ts`; a once-per-day morning pass (Redis-gated) bumps yesterday's leftovers into today. Exclusions mirror the late-pickup warning (`isInternalOrPlanJob`): plan-released jobs, outbound/via/return legs, and Diag-location pickups die with their day
    - Runs duplicate-detection: if an active route with the same pickup→dropoff pair exists today, proxy-assigns then JSONRPC-rejects the duplicate
    - For each job, chooses path:
      - **Smart path** (`smart_driver_id` populated): ranks candidates by GPS/start-location proximity using haversine + optional Goong road distance; assigns closest driver

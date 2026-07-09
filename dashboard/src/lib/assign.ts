@@ -1,12 +1,12 @@
 import type { Config, Driver, FailedJob, Job, LogEntry, LogLevel, Mapping, PickupWarning, TimelineRoute } from "./types";
-import { getDrivers, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, updateJobSendToDriverAt, unassignJob, optimizeDriverRoute, getFleetwebCookie, getJobsByStatusAndDate, getJobsByDate, getTimelineRoutes, timelineRoutesToJobs, JSONRPC_URL, PROXY_DRIVER_ID, type Env } from "./cartrack";
+import { getDrivers, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, updateJobSendToDriverAt, updateJobScheduledDeliveryTs, unassignJob, optimizeDriverRoute, getFleetwebCookie, getJobsByStatusAndDate, getJobsByDate, getTimelineRoutes, timelineRoutesToJobs, JSONRPC_URL, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import { DIAG_LOCATION_CUSTOMER_IDS } from "./psc-routes-data";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from "./return-trips";
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
 import { cleanupStaleTrips } from "./cleanup-trips";
-import { setHeldJobs, setFailedJobs, setPickupWarnings, setPscActivePickups, shouldRunProxySweep, type HeldJob, type PscDupHit } from "./smart-log-kv";
+import { setHeldJobs, setFailedJobs, setPickupWarnings, setPscActivePickups, shouldRunProxySweep, shouldRunDailyRollover, type HeldJob, type PscDupHit } from "./smart-log-kv";
 import { isValidDriverId } from "./config";
 import {
   vnDate,
@@ -160,6 +160,35 @@ function buildActiveRouteMap(jobs: any[]): Map<string, number> {
 }
 
 
+/**
+ * True for jobs the engine treats as internal transport or plan-generated work
+ * rather than an ad-hoc client request:
+ *   - released from a recurring Cartrack route plan (last_assigned_plan_id /
+ *     plans — fixed daily slots: PSC→3PL transport legs, recurring provincial
+ *     pickups), whose scheduled_delivery_ts is a plan slot, not an ASAP request;
+ *   - carrying an engine leg label (outbound / via / return) — timing dictated
+ *     by the multi-leg route;
+ *   - picking up AT a Diag location — internal transport (bag or consumable
+ *     run, e.g. manually-created "Vận chuyển túi" jobs with no engine label)
+ *     and PSC tỉnh legs, never a client sample request.
+ * Shared by the late-pickup warning and the day-boundary rollover so the two
+ * exclusion lists can't drift apart.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function isInternalOrPlanJob(job: any): boolean {
+  if (job.last_assigned_plan_id != null || (Array.isArray(job.plans) && job.plans.length > 0)) return true;
+  const labels: string[] = job.labels ?? [];
+  if (
+    labels.includes(PSC_OUTBOUND_LABEL) ||
+    labels.includes(PSC_VIA_LABEL) ||
+    labels.includes(PSC_RETURN_LABEL)
+  ) return true;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pickup = ((job.stops ?? []) as any[]).find((s: any) => s.stop_type_id === 1);
+  return !!(pickup?.customer_id && DIAG_LOCATION_CUSTOMER_IDS.has(pickup.customer_id));
+}
+
+
 function computePickupWarnings(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   assignedJobs: any[],
@@ -208,34 +237,16 @@ function computePickupWarnings(
     // Guard: skip jobs that are no longer active (cancelled/failed/deleted)
     if (job.job_status_id !== 4) continue;
 
-    // Skip jobs released from a recurring Cartrack route plan: these carry a
-    // last_assigned_plan_id (and a populated `plans` array), and their
-    // scheduled_delivery_ts is a fixed daily plan slot (e.g. 05:00), not an ASAP
-    // request — so a "30+ min overdue" alert off that slot is meaningless noise
-    // (PSC→3PL transport legs, recurring provincial pickups, etc.). The customer
-    // late-pickup warning is only meaningful for ad-hoc (non-plan) jobs.
-    if (job.last_assigned_plan_id != null || (Array.isArray(job.plans) && job.plans.length > 0)) continue;
-
-    // Skip engine-created PSC sample-transport legs (outbound / via / return):
-    // their timing is dictated by the multi-leg route, not a customer ASAP
-    // request, so the 30-min overdue clock doesn't apply.
-    const jobLabels: string[] = job.labels ?? [];
-    if (
-      jobLabels.includes(PSC_OUTBOUND_LABEL) ||
-      jobLabels.includes(PSC_VIA_LABEL) ||
-      jobLabels.includes(PSC_RETURN_LABEL)
-    ) continue;
+    // Plan-released jobs, engine legs (outbound/via/return) and Diag-location
+    // pickups aren't customer ASAP requests, so the 30-min overdue clock
+    // doesn't apply — see isInternalOrPlanJob for the full rationale.
+    if (isInternalOrPlanJob(job)) continue;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const stops = (job.stops ?? []) as any[];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pickup  = stops.find((s: any) => s.stop_type_id === 1);
     if (!pickup) continue;
-
-    // A pickup AT a Diag branch is an internal transport (outbound/via/return
-    // leg, bag or consumable run — e.g. manually-created "Vận chuyển túi" jobs
-    // with no engine label), never a client sample request — don't warn on it.
-    if (pickup.customer_id && DIAG_LOCATION_CUSTOMER_IDS.has(pickup.customer_id)) continue;
 
     if (pickup.activity_started_ts) continue;
     // Guard: skip if stop is already completed or rejected
@@ -672,6 +683,62 @@ async function releaseDueProxyJobs(
   return { listMs, releaseMs: Date.now() - _t1, releasedIds };
 }
 
+// End-of-day rollover starts on cycles at/after 21:50 VN — late enough that
+// driver shifts are over, with ~3 cron pings left before the 22:00 disarm
+// (pings land every ~3 min).
+const ROLLOVER_FROM_MINUTES = 21 * 60 + 50;
+// The evening pass only bumps jobs that already had their assign attempts;
+// anything younger rides until a later evening cycle or the morning pass.
+const ROLLOVER_MIN_AGE_MS = 15 * 60 * 1000;
+
+/**
+ * Bump unfinished ad-hoc client jobs to `toDate` so the next day's cycles can
+ * see them. The cycle fetches by scheduled_delivery_ts = today, so a job left
+ * unassigned overnight would otherwise become invisible — never assigned,
+ * never surfaced in "Cần xử lý" (the snapshot only holds jobs the cycle saw).
+ * Runs at both edges of the day with the same rules:
+ *   - evening (every cycle ≥ 21:50): today's leftovers → tomorrow. Runs on the
+ *     fresh partition BEFORE the assign loop — by then these jobs have failed
+ *     every cycle since morning. Idempotent: a bumped job leaves today's fetch
+ *     window immediately, so later evening cycles don't see it again.
+ *   - morning (once per day, Redis-gated): yesterday's leftovers → today, for
+ *     jobs created after the last evening cycle (post-22:00 disarm).
+ * Exclusions follow the late-pickup-warning rule (isInternalOrPlanJob): plan
+ * slots and internal transport legs die with their day — plans and the engine
+ * recreate them fresh tomorrow, and cleanupStaleTrips buries the corpses.
+ * Windowed jobs stay put too: they belong to the window-parking path.
+ */
+async function rolloverUnfinishedJobs(
+  candidates: Job[],
+  toDate: string,
+  env: Env,
+  log: (msg: string, level?: LogLevel) => void,
+  minAgeMs = ROLLOVER_MIN_AGE_MS,
+): Promise<Set<number>> {
+  const now = Date.now();
+  const eligible = candidates.filter((j) => {
+    if (j.delivery_driver_id) return false;               // footgun #1: driver set = assigned
+    if (isInternalOrPlanJob(j)) return false;
+    if (j.stops?.find((s) => s.stop_type_id === 1)?.delivery_windows?.[0]?.time_from) return false;
+    // NaN age compares false → the job is kept for a later pass, never lost.
+    return now - parseVnTimestamp(j.scheduled_delivery_ts).getTime() >= minAgeMs;
+  });
+  const bumped = new Set<number>();
+  for (const job of eligible) {
+    const route = `${job.stops?.find((s) => s.stop_type_id === 1)?.customer_name ?? "—"} → ${
+      job.stops?.find((s) => s.stop_type_id === 2)?.customer_name ?? "—"
+    }`;
+    const { ok, status } = await updateJobScheduledDeliveryTs(job.job_id, `${toDate} 00:00:00`, env);
+    if (ok) {
+      bumped.add(job.job_id);
+      log(`Job ${job.job_id} - ROLLED OVER to ${toDate} (chưa xử lý xong trong ngày) | ${route}`, "INFO");
+    } else {
+      log(`Job ${job.job_id} - Rollover to ${toDate} failed (HTTP ${status}) | ${route}`, "WARN");
+    }
+  }
+  return bumped;
+}
+
 export async function autoAssignCycle(
   config: Config,
   env: Env = "prod",
@@ -742,6 +809,22 @@ export async function autoAssignCycle(
     : onlyJobIds ? " | proxy-release: skipped (targeted)" : " | proxy-release: deferred (timeline)";
   clog(`[setup] leave-sheet: ${_tLeave - tStart}ms${_proxyStr}`);
   phase("setup+proxy-release");
+
+  // ── Morning rollover: yesterday's unfinished client jobs → today ──────────
+  // Once per day (Redis NX gate; without Redis every cycle retries — harmless,
+  // after the first pass yesterday's window is empty). Runs BEFORE the fetch so
+  // bumped jobs surface as today's status 2 in this same cycle. Catches jobs
+  // created after the last evening cycle, which the 21:50 rollover never saw.
+  if (!onlyJobIds && (await shouldRunDailyRollover(today, env))) {
+    try {
+      const yesterday = vnDate(new Date(Date.now() - 86_400_000));
+      const leftovers = await getJobsByStatusAndDate(2, yesterday, env);
+      await rolloverUnfinishedJobs(leftovers, today, env, log, 0);
+    } catch (e) {
+      log(`Morning rollover failed: ${e}`, "WARN");
+    }
+    phase("morning-rollover");
+  }
 
   // Fetch ALL of today's jobs in one call (scheduled_delivery_ts = today), then
   // partition by status. scheduled_delivery_ts (not create_ts) means multi-day
@@ -843,6 +926,23 @@ export async function autoAssignCycle(
     return logs;
   }
   phase("fetch+partition");
+
+  // ── End-of-day rollover: today's unfinished client jobs → tomorrow ────────
+  // From 21:50 every remaining cycle sweeps whatever is STILL unassigned into
+  // tomorrow's window, where the 05:30 cycle assigns it. The 15-min age guard
+  // gives a late-created job its assign attempts first; anything it leaves
+  // behind is caught by the morning rollover above.
+  if (!onlyJobIds && vnMinutesSinceMidnight() >= ROLLOVER_FROM_MINUTES) {
+    const tomorrow = vnDate(new Date(Date.now() + 86_400_000));
+    const bumpedIds = await rolloverUnfinishedJobs(s2Jobs, tomorrow, env, log);
+    if (bumpedIds.size > 0) {
+      // Bumped jobs are tomorrow's now — drop them from this cycle's assign
+      // loop and from the follow-ups' status-2 pot.
+      s2Jobs = s2Jobs.filter((j) => !bumpedIds.has(j.job_id));
+      cycleStartS2 = s2Jobs;
+    }
+    phase("evening-rollover");
+  }
 
   // Targeted manual assign: narrow to just the requested job(s).
   let jobs: Job[] = onlyJobIds ? s2Jobs.filter((j) => onlyJobIds.has(j.job_id)) : s2Jobs;
