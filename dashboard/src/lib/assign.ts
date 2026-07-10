@@ -683,45 +683,33 @@ async function releaseDueProxyJobs(
   return { listMs, releaseMs: Date.now() - _t1, releasedIds };
 }
 
-// End-of-day rollover starts on cycles at/after 21:50 VN — late enough that
-// driver shifts are over, with ~3 cron pings left before the 22:00 disarm
-// (pings land every ~3 min).
-const ROLLOVER_FROM_MINUTES = 21 * 60 + 50;
-// The evening pass only bumps jobs that already had their assign attempts;
-// anything younger rides until a later evening cycle or the morning pass.
-const ROLLOVER_MIN_AGE_MS = 15 * 60 * 1000;
-
 /**
  * Bump unfinished ad-hoc client jobs to `toDate` so the next day's cycles can
  * see them. The cycle fetches by scheduled_delivery_ts = today, so a job left
  * unassigned overnight would otherwise become invisible — never assigned,
  * never surfaced in "Cần xử lý" (the snapshot only holds jobs the cycle saw).
- * Runs at both edges of the day with the same rules:
- *   - evening (every cycle ≥ 21:50): today's leftovers → tomorrow. Runs on the
- *     fresh partition BEFORE the assign loop — by then these jobs have failed
- *     every cycle since morning. Idempotent: a bumped job leaves today's fetch
- *     window immediately, so later evening cycles don't see it again.
- *   - morning (once per day, Redis-gated): yesterday's leftovers → today, for
- *     jobs created after the last evening cycle (post-22:00 disarm).
+ * Two callers, same rules:
+ *   - night ping (/api/assign/rollover, cron at 23:30 — after the 22:00
+ *     disarm, so the engine is done trying for the day): today's leftovers →
+ *     tomorrow, already in place before anyone plans the morning;
+ *   - morning pass (once per day, Redis-gated, before the cycle's fetch):
+ *     yesterday's leftovers → today — the net for jobs created after the
+ *     23:30 ping and for nights the ping never fired.
  * Exclusions follow the late-pickup-warning rule (isInternalOrPlanJob): plan
  * slots and internal transport legs die with their day — plans and the engine
  * recreate them fresh tomorrow, and cleanupStaleTrips buries the corpses.
  * Windowed jobs stay put too: they belong to the window-parking path.
  */
-async function rolloverUnfinishedJobs(
+export async function rolloverUnfinishedJobs(
   candidates: Job[],
   toDate: string,
   env: Env,
   log: (msg: string, level?: LogLevel) => void,
-  minAgeMs = ROLLOVER_MIN_AGE_MS,
 ): Promise<Set<number>> {
-  const now = Date.now();
   const eligible = candidates.filter((j) => {
     if (j.delivery_driver_id) return false;               // footgun #1: driver set = assigned
     if (isInternalOrPlanJob(j)) return false;
-    if (j.stops?.find((s) => s.stop_type_id === 1)?.delivery_windows?.[0]?.time_from) return false;
-    // NaN age compares false → the job is kept for a later pass, never lost.
-    return now - parseVnTimestamp(j.scheduled_delivery_ts).getTime() >= minAgeMs;
+    return !j.stops?.find((s) => s.stop_type_id === 1)?.delivery_windows?.[0]?.time_from;
   });
   const bumped = new Set<number>();
   for (const job of eligible) {
@@ -813,13 +801,13 @@ export async function autoAssignCycle(
   // ── Morning rollover: yesterday's unfinished client jobs → today ──────────
   // Once per day (Redis NX gate; without Redis every cycle retries — harmless,
   // after the first pass yesterday's window is empty). Runs BEFORE the fetch so
-  // bumped jobs surface as today's status 2 in this same cycle. Catches jobs
-  // created after the last evening cycle, which the 21:50 rollover never saw.
+  // bumped jobs surface as today's status 2 in this same cycle. The net for
+  // jobs created after the 23:30 night ping, and for nights it never fired.
   if (!onlyJobIds && (await shouldRunDailyRollover(today, env))) {
     try {
       const yesterday = vnDate(new Date(Date.now() - 86_400_000));
       const leftovers = await getJobsByStatusAndDate(2, yesterday, env);
-      await rolloverUnfinishedJobs(leftovers, today, env, log, 0);
+      await rolloverUnfinishedJobs(leftovers, today, env, log);
     } catch (e) {
       log(`Morning rollover failed: ${e}`, "WARN");
     }
@@ -926,23 +914,6 @@ export async function autoAssignCycle(
     return logs;
   }
   phase("fetch+partition");
-
-  // ── End-of-day rollover: today's unfinished client jobs → tomorrow ────────
-  // From 21:50 every remaining cycle sweeps whatever is STILL unassigned into
-  // tomorrow's window, where the 05:30 cycle assigns it. The 15-min age guard
-  // gives a late-created job its assign attempts first; anything it leaves
-  // behind is caught by the morning rollover above.
-  if (!onlyJobIds && vnMinutesSinceMidnight() >= ROLLOVER_FROM_MINUTES) {
-    const tomorrow = vnDate(new Date(Date.now() + 86_400_000));
-    const bumpedIds = await rolloverUnfinishedJobs(s2Jobs, tomorrow, env, log);
-    if (bumpedIds.size > 0) {
-      // Bumped jobs are tomorrow's now — drop them from this cycle's assign
-      // loop and from the follow-ups' status-2 pot.
-      s2Jobs = s2Jobs.filter((j) => !bumpedIds.has(j.job_id));
-      cycleStartS2 = s2Jobs;
-    }
-    phase("evening-rollover");
-  }
 
   // Targeted manual assign: narrow to just the requested job(s).
   let jobs: Job[] = onlyJobIds ? s2Jobs.filter((j) => onlyJobIds.has(j.job_id)) : s2Jobs;
