@@ -15,7 +15,7 @@ import { toast } from "sonner";
 import type { LogEntry, PickupWarning, FailedJob, ConfigDriver } from "@/lib/types";
 
 type Env = "prod" | "uat";
-type RightTab = "live" | "schedule" | "admin" | "distance";
+type RightTab = "attention" | "live" | "admin" | "schedule" | "distance";
 type LogMode = "live" | "smart";
 
 export function Dashboard() {
@@ -31,7 +31,7 @@ export function Dashboard() {
   const [pscRouteCount, setPscRouteCount] = useState(0);
   const [drivers, setDrivers] = useState<ConfigDriver[]>([]);
   const [env, setEnv] = useState<Env>("prod");
-  const [rightTab, setRightTab] = useState<RightTab>("live");
+  const [rightTab, setRightTab] = useState<RightTab>("attention");
   const [logMode, setLogMode] = useState<LogMode>("live");
   const [scheduleErrors, setScheduleErrors] = useState<ScheduleErrorRow[]>([]);
   const [retryingSchedule, setRetryingSchedule] = useState(false);
@@ -329,25 +329,28 @@ export function Dashboard() {
         </div>
       </header>
 
-      {/* Body — single full-width column now (the sidebar is gone; note tasks
-          live inside the Cần xử lý block at the top of Live Log). */}
+      {/* Body — single full-width column now (the sidebar is gone; Cần xử lý is
+          the landing tab, Live Log is just the log). */}
       <div className="flex flex-col lg:flex-1 lg:min-h-0 p-2 sm:p-3">
         <div className="min-w-0 flex flex-col gap-1.5 lg:flex-1 lg:min-h-0">
           {/* Tab bar */}
           <div className="flex items-center gap-1 shrink-0 overflow-x-auto">
-            <button onClick={() => setRightTab("live")} className={tabBtn(rightTab === "live")}>
-              Live Log
+            <button onClick={() => setRightTab("attention")} className={tabBtn(rightTab === "attention")}>
+              ⚠️ Cần xử lý
               {attentionCount > 0 && (
                 <span className="rounded-full bg-red-600 text-white px-1.5 leading-none py-0.5 text-[10px] font-bold">
                   {attentionCount}
                 </span>
               )}
             </button>
-            <button onClick={() => setRightTab("schedule")} className={tabBtn(rightTab === "schedule")}>
-              Lịch cố định
+            <button onClick={() => setRightTab("live")} className={tabBtn(rightTab === "live")}>
+              Live Log
             </button>
             <button onClick={() => setRightTab("admin")} className={tabBtn(rightTab === "admin")}>
               Quản trị job
+            </button>
+            <button onClick={() => setRightTab("schedule")} className={tabBtn(rightTab === "schedule")}>
+              Lịch cố định
             </button>
             <button onClick={() => setRightTab("distance")} className={tabBtn(rightTab === "distance")}>
               Distance checking
@@ -357,9 +360,9 @@ export function Dashboard() {
           {/* Tab content. On mobile the page flows + scrolls (definite heights so
               each panel's ScrollArea renders); on lg it's a fixed flex-fill. */}
           <div className="lg:flex-1 lg:min-h-0">
-            {rightTab === "live" ? (
-              <div className="flex flex-col gap-1.5 lg:h-full">
-                {/* Cần xử lý block — note tasks + unassignable + late, above the log */}
+            {rightTab === "attention" ? (
+              <div className="h-[72vh] lg:h-full">
+                {/* Cần xử lý tab — note tasks + unassignable + late + schedule errors */}
                 <FailedJobsPanel
                   held={held}
                   env={env}
@@ -379,7 +382,9 @@ export function Dashboard() {
                   onRetrySchedule={retrySchedule}
                   retryingSchedule={retryingSchedule}
                 />
-
+              </div>
+            ) : rightTab === "live" ? (
+              <div className="flex flex-col gap-1.5 lg:h-full">
                 {/* Log mode toggle: Smart History is a mode inside Live Log */}
                 <div className="flex items-center gap-1 shrink-0">
                   <button
@@ -399,7 +404,7 @@ export function Dashboard() {
                     Smart History
                   </button>
                 </div>
-                <div className="h-[58vh] lg:h-auto lg:flex-1 lg:min-h-0">
+                <div className="h-[72vh] lg:h-auto lg:flex-1 lg:min-h-0">
                   {logMode === "live" ? <ActivityLog logs={logs} /> : <SmartLogHistory />}
                 </div>
               </div>

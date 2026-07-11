@@ -176,7 +176,7 @@ export function NoteReviewPanel({
           return (
             <div
               key={job.job_id}
-              className={`space-y-1.5 text-xs border rounded p-2 ${
+              className={`space-y-1 text-xs border rounded px-2 py-1.5 ${
                 job.error ? "bg-red-50 border-red-300" : "bg-orange-50 border-orange-200"
               }`}
             >
@@ -202,7 +202,8 @@ export function NoteReviewPanel({
 
               <HeldNote note={job.note} />
 
-              {/* Schedule row: date chips + time dropdown */}
+              {/* Schedule + actions on one row: date chips + time dropdown, then
+                  the two buttons pushed right. Wraps gracefully when narrow. */}
               <div className="flex items-center gap-1 flex-wrap">
                 <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Hẹn</span>
                 {[0, 1, 2].map((offset) => (
@@ -222,53 +223,55 @@ export function NoteReviewPanel({
                 <select
                   value={timeLabel ?? ""}
                   onChange={(e) => patchSched(job.job_id, { timeLabel: e.target.value || null })}
-                  className="ml-auto rounded border border-slate-300 bg-white px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                  className="rounded border border-slate-300 bg-white px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-indigo-400"
                 >
                   <option value="">-- giờ --</option>
                   {slots.map((s) => (
                     <option key={s.label} value={s.label}>{s.label}</option>
                   ))}
                 </select>
-              </div>
-
-              {/* Action buttons */}
-              <div className="flex gap-1.5">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-6 text-xs px-2 flex-1 disabled:opacity-40"
-                  disabled={isBusy || !!timeLabel}
-                  onClick={() => assignAnyway(job)}
-                >
-                  {isBusy ? "Đang xử lý…" : "Giao ngay"}
-                </Button>
-                <Button
-                  size="sm"
-                  className="h-6 text-xs px-2 flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40"
-                  disabled={isBusy || !timeLabel}
-                  onClick={scheduleJob}
-                >
-                  {isBusy ? "Đang xử lý…" : "Lên lịch"}
-                </Button>
+                <div className="ml-auto flex gap-1">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-6 text-[11px] px-2 disabled:opacity-40"
+                    disabled={isBusy || !!timeLabel}
+                    onClick={() => assignAnyway(job)}
+                  >
+                    {isBusy ? "Đang xử lý…" : "Giao ngay"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="h-6 text-[11px] px-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40"
+                    disabled={isBusy || !timeLabel}
+                    onClick={scheduleJob}
+                  >
+                    {isBusy ? "Đang xử lý…" : "Lên lịch"}
+                  </Button>
+                </div>
               </div>
             </div>
           );
   });
 
-  // Section header + rows, shared by both render modes.
-  const section = (
-    <>
-      <div className="flex items-center gap-1.5 pt-1">
-        <span className="text-[11px] font-bold uppercase tracking-wide text-orange-700">📝 Tasks có ghi chú</span>
-        <span className="rounded-full bg-orange-100 border border-orange-200 px-1.5 leading-none py-0.5 text-[10px] text-orange-700">
-          {held.length}
-        </span>
-      </div>
-      {rows}
-    </>
+  const header = (
+    <div className="flex items-center gap-1.5 pt-1">
+      <span className="text-[11px] font-bold uppercase tracking-wide text-orange-700">📝 Tasks có ghi chú</span>
+      <span className="rounded-full bg-orange-100 border border-orange-200 px-1.5 leading-none py-0.5 text-[10px] text-orange-700">
+        {held.length}
+      </span>
+    </div>
   );
 
-  if (embedded) return <div className="space-y-2">{section}</div>;
+  // Embedded (Cần xử lý tab): rows pack into the same responsive grid as the
+  // other sections so more cards fit per screen.
+  if (embedded)
+    return (
+      <div className="space-y-1.5">
+        {header}
+        <div className="grid grid-cols-1 gap-1.5 md:grid-cols-2 xl:grid-cols-3">{rows}</div>
+      </div>
+    );
 
   return (
     <Card className="py-4 border-orange-300">

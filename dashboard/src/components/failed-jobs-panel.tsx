@@ -102,39 +102,48 @@ function FailedRow({
   const selectedDriverName = drivers.find(d => d.driver_id === selectedDriver)?.name;
 
   return (
-    <div className={`rounded border border-l-4 bg-white p-2 ${tone.border}`}>
-      <div className="flex items-center justify-between gap-2">
+    <div className={`rounded border border-l-4 bg-white px-2 py-1.5 ${tone.border}`}>
+      {/* Line 1: job link · route · reason chip */}
+      <div className="flex items-center gap-2 min-w-0">
         <a
           href={`https://fleetweb-vn.cartrack.com/delivery/map?job=${job.job_id}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="font-mono font-semibold text-indigo-600 underline hover:text-indigo-800"
+          className="shrink-0 font-mono font-semibold text-indigo-600 underline hover:text-indigo-800"
         >
           Job {job.job_id}
         </a>
+        {/* Mobile has no hover for the title tooltip, so wrap there; truncate from md up. */}
+        <span className="min-w-0 flex-1 break-words md:truncate font-medium text-slate-800" title={job.customer}>
+          {job.customer}
+        </span>
         <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-semibold leading-none ${tone.chip}`}>
           {meta.label}
         </span>
       </div>
-      <p className="mt-0.5 font-medium text-slate-800 break-words">{job.customer}</p>
-      <p className="mt-0.5 text-[11px] text-slate-500 break-words">{job.detail}</p>
-      <p className="mt-0.5 text-[10px] text-slate-400">Lần cuối: {job.ts.slice(11, 19)}</p>
-
-      {/* Every failed-assign reason ends with the job unassigned, so all of them
-          allow a manual pick. (Manual assign is a direct Cartrack assign by
-          job_id + driver_id — independent of the sheet mapping.) */}
-      <div className="mt-2">
-        {!showDriverSelect ? (
+      {/* Line 2: detail · last-seen · manual-assign trigger */}
+      <div className="mt-0.5 flex items-center gap-2 min-w-0">
+        <span className="min-w-0 flex-1 break-words md:truncate text-[11px] text-slate-500" title={job.detail}>
+          {job.detail}
+        </span>
+        <span className="shrink-0 text-[10px] text-slate-400">{job.ts.slice(11, 19)}</span>
+        {!showDriverSelect && (
           <Button
             size="sm"
             variant="outline"
-            className="text-[10px] h-6 px-2"
+            className="text-[10px] h-5 px-1.5 shrink-0"
             onClick={() => setShowDriverSelect(true)}
           >
             Gán thủ công
           </Button>
-        ) : (
-          <div className="space-y-1.5 mt-2">
+        )}
+      </div>
+
+      {/* Every failed-assign reason ends with the job unassigned, so all of them
+          allow a manual pick. (Manual assign is a direct Cartrack assign by
+          job_id + driver_id — independent of the sheet mapping.) */}
+      {showDriverSelect && (
+          <div className="space-y-1.5 mt-1.5">
             <div className="flex items-center gap-1">
               <div className="relative flex-1">
                 <input
@@ -200,7 +209,6 @@ function FailedRow({
             </div>
           </div>
         )}
-      </div>
     </div>
   );
 }
@@ -248,23 +256,35 @@ export function FailedJobsPanel({
     .sort((a, b) => metaFor(a[0]).order - metaFor(b[0]).order)
     .map(([reason, jobs]) => [reason, jobs.sort((a, b) => a.job_id - b.job_id)] as const);
 
-  // Hide entirely when there's nothing to act on, so the Live Log's Activity Log
-  // gets the full height.
-  if (total === 0) return null;
+  // Now the landing tab, so an empty list shows a friendly all-clear state
+  // instead of vanishing.
+  if (total === 0) {
+    return (
+      <Card className="flex h-full flex-col items-center justify-center gap-1 py-8">
+        <div className="text-3xl">✅</div>
+        <p className="text-sm font-medium text-slate-600">Không có mục nào cần xử lý</p>
+        <p className="text-xs text-slate-400">
+          Job không gán được, chờ duyệt ghi chú và lấy mẫu chậm sẽ hiện ở đây
+        </p>
+      </Card>
+    );
+  }
+
+  // Rows inside each section pack into a responsive grid so a full screen shows
+  // as many items as possible; section headers stay full-width above their grid.
+  const rowGrid = "grid grid-cols-1 gap-1.5 md:grid-cols-2 xl:grid-cols-3";
 
   return (
-    <Card className="flex flex-col gap-2 py-2 border-orange-300 shrink-0">
-      <CardHeader className="px-3 pb-0">
+    <Card className="flex h-full flex-col gap-2 py-2 border-orange-300">
+      <CardHeader className="px-3 pb-0 shrink-0">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm">⚠️ Cần xử lý</CardTitle>
           <span className="text-xs text-muted-foreground">{total} mục</span>
         </div>
       </CardHeader>
-      <CardContent className="px-3 min-h-0">
-        {/* Capped height with its own scroll so a long list never pushes the
-            Activity Log below off-screen. Order: notes → other unassignable →
-            late pickups. */}
-        <div className="max-h-[34vh] overflow-y-auto space-y-2 text-xs pr-1">
+      <CardContent className="px-3 flex-1 min-h-0">
+        {/* Full-height scroll. Order: notes → other unassignable → late pickups. */}
+        <div className="h-full overflow-y-auto space-y-2 text-xs pr-1">
             {/* ── Tasks with note (part of "unassignable") ─────────────────── */}
             {held.length > 0 && (
               <NoteReviewPanel
@@ -280,14 +300,16 @@ export function FailedJobsPanel({
             {groups.map(([reason, jobs]) => (
               <div key={reason} className="space-y-1.5">
                 <SectionHeader label={metaFor(reason).label} count={jobs.length} />
-                {jobs.map((job) => (
-                  <FailedRow
-                    key={job.job_id}
-                    job={job}
-                    drivers={drivers}
-                    onAssign={onAssign}
-                  />
-                ))}
+                <div className={rowGrid}>
+                  {jobs.map((job) => (
+                    <FailedRow
+                      key={job.job_id}
+                      job={job}
+                      drivers={drivers}
+                      onAssign={onAssign}
+                    />
+                  ))}
+                </div>
               </div>
             ))}
 
@@ -305,20 +327,22 @@ export function FailedJobsPanel({
                     {retryingSchedule ? "Đang chạy…" : "Chạy lại lỗi"}
                   </Button>
                 </div>
-                {scheduleErrors.map((e, i) => (
-                  <div
-                    key={`${e.reference_number}-${i}`}
-                    className="rounded border border-l-4 border-l-red-500 bg-white p-2"
-                  >
-                    <div className="font-semibold text-slate-800">
-                      {labelFor(e.pickup_name, e.pickup_id)} <span className="text-slate-400">→</span> {labelFor(e.dropoff_name, e.dropoff_id)}
-                      {e.delivery_window && (
-                        <span className="ml-1.5 font-mono text-[11px] text-indigo-600">{e.delivery_window}</span>
-                      )}
+                <div className={rowGrid}>
+                  {scheduleErrors.map((e, i) => (
+                    <div
+                      key={`${e.reference_number}-${i}`}
+                      className="rounded border border-l-4 border-l-red-500 bg-white px-2 py-1.5"
+                    >
+                      <div className="font-semibold text-slate-800 break-words md:truncate" title={`${labelFor(e.pickup_name, e.pickup_id)} → ${labelFor(e.dropoff_name, e.dropoff_id)}`}>
+                        {labelFor(e.pickup_name, e.pickup_id)} <span className="text-slate-400">→</span> {labelFor(e.dropoff_name, e.dropoff_id)}
+                        {e.delivery_window && (
+                          <span className="ml-1.5 font-mono text-[11px] text-indigo-600">{e.delivery_window}</span>
+                        )}
+                      </div>
+                      <p className="mt-0.5 text-[11px] text-red-700 break-words md:truncate" title={e.message}>{e.message}</p>
                     </div>
-                    <p className="mt-0.5 text-[11px] text-red-700 break-words">{e.message}</p>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
             )}
 
@@ -326,32 +350,37 @@ export function FailedJobsPanel({
             {warnings.length > 0 && (
               <div className="space-y-1.5">
                 <SectionHeader label="Lấy mẫu chậm" count={warnings.length} tone="amber" />
-                {warnings.map((w) => (
-                  <div
-                    key={w.job_id}
-                    className="rounded border border-l-4 border-l-amber-500 bg-amber-50/60 p-2"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <a
-                        href={`https://fleetweb-vn.cartrack.com/delivery/map?job=${w.job_id}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="font-mono font-semibold text-indigo-600 underline hover:text-indigo-800"
-                      >
-                        Job {w.job_id}
-                      </a>
-                      <span className="font-bold text-red-600 bg-red-50 border border-red-200 rounded px-1.5 py-0.5 leading-none whitespace-nowrap">
-                        {fmtLate(w.minutes_late ?? 0)}
-                      </span>
+                <div className={rowGrid}>
+                  {warnings.map((w) => (
+                    <div
+                      key={w.job_id}
+                      className="rounded border border-l-4 border-l-amber-500 bg-amber-50/60 px-2 py-1.5"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <a
+                          href={`https://fleetweb-vn.cartrack.com/delivery/map?job=${w.job_id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="shrink-0 font-mono font-semibold text-indigo-600 underline hover:text-indigo-800"
+                        >
+                          Job {w.job_id}
+                        </a>
+                        <span
+                          className="min-w-0 flex-1 break-words md:truncate font-medium text-slate-800"
+                          title={`${w.pickup_customer_name ?? "—"} → ${w.dropoff_customer_name ?? "—"}`}
+                        >
+                          {w.pickup_customer_name ?? "—"} <span className="text-slate-400">→</span> {w.dropoff_customer_name ?? "—"}
+                        </span>
+                        <span className="shrink-0 font-bold text-red-600 bg-red-50 border border-red-200 rounded px-1.5 py-0.5 leading-none whitespace-nowrap">
+                          {fmtLate(w.minutes_late ?? 0)}
+                        </span>
+                      </div>
+                      {w.driver_name && (
+                        <p className="mt-0.5 text-[11px] text-slate-500 break-words md:truncate" title={w.driver_name}>{w.driver_name}</p>
+                      )}
                     </div>
-                    <p className="mt-0.5 font-medium text-slate-800 break-words">
-                      {w.pickup_customer_name ?? "—"} <span className="text-slate-400">→</span> {w.dropoff_customer_name ?? "—"}
-                    </p>
-                    {w.driver_name && (
-                      <p className="mt-0.5 text-[11px] text-slate-500 break-words">{w.driver_name}</p>
-                    )}
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
             )}
         </div>
