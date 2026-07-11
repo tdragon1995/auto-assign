@@ -161,22 +161,32 @@ function buildActiveRouteMap(jobs: any[]): Map<string, number> {
 
 
 /**
+ * True if the job is released from a recurring Cartrack route plan. Such jobs
+ * carry a `last_assigned_plan_id` (and a populated `plans` array); their
+ * scheduled_delivery_ts is a fixed daily plan slot (e.g. 05:00 PSC→3PL legs,
+ * recurring provincial pickups), not an ad-hoc ASAP request. The plan
+ * regenerates a fresh copy each day, so a plan job must never be rolled to the
+ * next day — that would duplicate it.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function hasPlanAttached(job: any): boolean {
+  return job.last_assigned_plan_id != null || (Array.isArray(job.plans) && job.plans.length > 0);
+}
+
+/**
  * True for jobs the engine treats as internal transport or plan-generated work
  * rather than an ad-hoc client request:
- *   - released from a recurring Cartrack route plan (last_assigned_plan_id /
- *     plans — fixed daily slots: PSC→3PL transport legs, recurring provincial
- *     pickups), whose scheduled_delivery_ts is a plan slot, not an ASAP request;
+ *   - released from a recurring Cartrack route plan (see hasPlanAttached);
  *   - carrying an engine leg label (outbound / via / return) — timing dictated
  *     by the multi-leg route;
  *   - picking up AT a Diag location — internal transport (bag or consumable
  *     run, e.g. manually-created "Vận chuyển túi" jobs with no engine label)
  *     and PSC tỉnh legs, never a client sample request.
- * Shared by the late-pickup warning and the day-boundary rollover so the two
- * exclusion lists can't drift apart.
+ * Used by the late-pickup warning.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function isInternalOrPlanJob(job: any): boolean {
-  if (job.last_assigned_plan_id != null || (Array.isArray(job.plans) && job.plans.length > 0)) return true;
+  if (hasPlanAttached(job)) return true;
   const labels: string[] = job.labels ?? [];
   if (
     labels.includes(PSC_OUTBOUND_LABEL) ||
@@ -684,42 +694,59 @@ async function releaseDueProxyJobs(
 }
 
 /**
- * Bump unfinished ad-hoc client jobs to `toDate` so the next day's cycles can
- * see them. The cycle fetches by scheduled_delivery_ts = today, so a job left
- * unassigned overnight would otherwise become invisible — never assigned,
- * never surfaced in "Cần xử lý" (the snapshot only holds jobs the cycle saw).
- * Two callers, same rules:
- *   - night ping (/api/assign/rollover, cron at 23:30 — after the 22:00
- *     disarm, so the engine is done trying for the day): today's leftovers →
- *     tomorrow, already in place before anyone plans the morning;
- *   - morning pass (once per day, Redis-gated, before the cycle's fetch):
- *     yesterday's leftovers → today — the net for jobs created after the
- *     23:30 ping and for nights the ping never fired.
- * Exclusions follow the late-pickup-warning rule (isInternalOrPlanJob): plan
- * slots and internal transport legs die with their day — plans and the engine
- * recreate them fresh tomorrow, and cleanupStaleTrips buries the corpses.
- * Windowed jobs stay put too: they belong to the window-parking path.
+ * Reclaim yesterday's unfinished ad-hoc jobs into `toDate` (today) so the
+ * morning cycle assigns them. The cycle fetches by scheduled_delivery_ts =
+ * today, so a job left over from yesterday is otherwise invisible — never
+ * assigned, never surfaced in "Cần xử lý" (the snapshot only holds jobs the
+ * cycle saw).
+ *
+ * `candidates` is yesterday's status 2 (unassigned) + status 4 (assigned,
+ * possibly started) — the fetch already excludes completed (5) and cancelled
+ * (7), so everything here is genuinely unfinished. Eligibility is a single
+ * rule: NO plan attached (hasPlanAttached). Recurring plan slots regenerate
+ * themselves each day, so rolling one would duplicate it; everything else —
+ * including engine legs, started jobs, and jobs with a stale driver — rolls.
+ *
+ * For each eligible job:
+ *   - if a driver is still attached (status-4 stuck/started job), unassign it
+ *     first so it re-enters the pool. Cartrack keeps the stop activity
+ *     timestamps; if it refuses the unassign (e.g. a job genuinely in flight)
+ *     we log and skip rather than fail the pass;
+ *   - re-date scheduled_delivery_ts to today. The cycle's own fetch, which runs
+ *     right after this pass, then finds it as today's status-2 and assigns it.
+ * Runs before the fetch, so bumped jobs are picked up the same cycle.
  */
-export async function rolloverUnfinishedJobs(
+async function rolloverUnfinishedJobs(
   candidates: Job[],
   toDate: string,
   env: Env,
   log: (msg: string, level?: LogLevel) => void,
 ): Promise<Set<number>> {
   const eligible = candidates.filter((j) => {
-    if (j.delivery_driver_id) return false;               // footgun #1: driver set = assigned
-    if (isInternalOrPlanJob(j)) return false;
-    return !j.stops?.find((s) => s.stop_type_id === 1)?.delivery_windows?.[0]?.time_from;
+    if (hasPlanAttached(j)) return false;                 // plan slot → regenerates itself; never roll
+    // Belt-and-braces: skip a job whose every stop is already terminal (a
+    // fully-done job lagging at status 4). Nothing to reassign.
+    const stops = j.stops ?? [];
+    if (stops.length > 0 && stops.every((s) => isCompletedOrRejectedStop(s.stop_status_id ?? 0))) return false;
+    return true;
   });
   const bumped = new Set<number>();
   for (const job of eligible) {
     const route = `${job.stops?.find((s) => s.stop_type_id === 1)?.customer_name ?? "—"} → ${
       job.stops?.find((s) => s.stop_type_id === 2)?.customer_name ?? "—"
     }`;
+    // Pull the stale driver first so the job re-enters the unassigned pool.
+    if (job.delivery_driver_id) {
+      const { ok, status } = await unassignJob(job.job_id, env);
+      if (!ok) {
+        log(`Job ${job.job_id} - Rollover unassign failed (HTTP ${status}) | ${route}`, "WARN");
+        continue;
+      }
+    }
     const { ok, status } = await updateJobScheduledDeliveryTs(job.job_id, `${toDate} 00:00:00`, env);
     if (ok) {
       bumped.add(job.job_id);
-      log(`Job ${job.job_id} - ROLLED OVER to ${toDate} (chưa xử lý xong trong ngày) | ${route}`, "INFO");
+      log(`Job ${job.job_id} - ROLLED OVER to ${toDate} (chưa xử lý xong hôm qua) | ${route}`, "INFO");
     } else {
       log(`Job ${job.job_id} - Rollover to ${toDate} failed (HTTP ${status}) | ${route}`, "WARN");
     }
@@ -801,13 +828,18 @@ export async function autoAssignCycle(
   // ── Morning rollover: yesterday's unfinished client jobs → today ──────────
   // Once per day (Redis NX gate; without Redis every cycle retries — harmless,
   // after the first pass yesterday's window is empty). Runs BEFORE the fetch so
-  // bumped jobs surface as today's status 2 in this same cycle. The net for
-  // jobs created after the 23:30 night ping, and for nights it never fired.
+  // bumped jobs surface as today's status 2 in this same cycle. Pulls BOTH
+  // yesterday's unassigned (status 2) and its still-assigned-but-unfinished
+  // jobs (status 4 — stale/started jobs whose driver never delivered);
+  // rolloverUnfinishedJobs unassigns the latter and re-dates both to today.
   if (!onlyJobIds && (await shouldRunDailyRollover(today, env))) {
     try {
       const yesterday = vnDate(new Date(Date.now() - 86_400_000));
-      const leftovers = await getJobsByStatusAndDate(2, yesterday, env);
-      await rolloverUnfinishedJobs(leftovers, today, env, log);
+      const [ys2, ys4] = await Promise.all([
+        getJobsByStatusAndDate(2, yesterday, env),
+        getJobsByStatusAndDate(4, yesterday, env),
+      ]);
+      await rolloverUnfinishedJobs([...ys2, ...ys4], today, env, log);
     } catch (e) {
       log(`Morning rollover failed: ${e}`, "WARN");
     }

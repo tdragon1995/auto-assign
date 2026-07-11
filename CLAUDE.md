@@ -54,7 +54,7 @@ LABCENTER_RECEPTIONIST_PASSWORD= # Password for receptionist account
 3. **Assign cycle** (`src/lib/assign.ts → autoAssignCycle`):
    - Fetches unassigned jobs (status 2) from Cartrack REST API
    - Skips jobs with stop notes
-   - Day-boundary rollover: a 23:30 cron ping (`GET /api/assign/rollover` — bypasses the armed switch, time-floored at 22:00 against mis-scheduled daytime pings) bumps today's still-unassigned ad-hoc client jobs to tomorrow's `scheduled_delivery_ts`; a once-per-day morning pass (Redis-gated) nets jobs created after the ping. Exclusions mirror the late-pickup warning (`isInternalOrPlanJob`): plan-released jobs, outbound/via/return legs, and Diag-location pickups die with their day
+   - Day-boundary rollover: a once-per-day morning pass (Redis-gated, runs before the fetch on the first armed cycle) reclaims yesterday's unfinished ad-hoc jobs into today. It fetches yesterday's status 2 (unassigned) + status 4 (assigned-but-unfinished, incl. started), keeps only jobs with **no plan attached** (`hasPlanAttached` — plan slots regenerate daily, so rolling one would duplicate it), unassigns any stale driver, and re-dates `scheduled_delivery_ts` to today so the same cycle assigns them. `rolloverUnfinishedJobs` in `assign.ts`
    - Runs duplicate-detection: if an active route with the same pickup→dropoff pair exists today, proxy-assigns then JSONRPC-rejects the duplicate
    - For each job, chooses path:
      - **Smart path** (`smart_driver_id` populated): ranks candidates by GPS/start-location proximity using haversine + optional Goong road distance; assigns closest driver
