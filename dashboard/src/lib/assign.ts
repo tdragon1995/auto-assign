@@ -702,10 +702,14 @@ async function releaseDueProxyJobs(
  *
  * `candidates` is yesterday's status 2 (unassigned) + status 4 (assigned,
  * possibly started) — the fetch already excludes completed (5) and cancelled
- * (7), so everything here is genuinely unfinished. Eligibility is a single
- * rule: NO plan attached (hasPlanAttached). Recurring plan slots regenerate
- * themselves each day, so rolling one would duplicate it; everything else —
- * including engine legs, started jobs, and jobs with a stale driver — rolls.
+ * (7), so everything here is genuinely unfinished. Two eligibility rules:
+ *   1. NO plan attached (hasPlanAttached). Recurring plan slots regenerate
+ *      themselves each day, so rolling one would duplicate it.
+ *   2. Pickup NOT yet collected (pickup stop_status_id !== 4). Reassignment
+ *      resets stop activity, so a job whose sample is already picked up would
+ *      be re-collected — a wasted second pickup.
+ * Everything else — engine legs, en-route/arrived jobs, jobs with a stale
+ * driver — rolls.
  *
  * For each eligible job:
  *   - if a driver is still attached (status-4 stuck/started job), unassign it
@@ -724,9 +728,15 @@ async function rolloverUnfinishedJobs(
 ): Promise<Set<number>> {
   const eligible = candidates.filter((j) => {
     if (hasPlanAttached(j)) return false;                 // plan slot → regenerates itself; never roll
-    // Belt-and-braces: skip a job whose every stop is already terminal (a
-    // fully-done job lagging at status 4). Nothing to reassign.
     const stops = j.stops ?? [];
+    // Skip if the pickup sample is already collected. Re-assignment resets a
+    // stop's activity, so rolling a job whose pickup is Hoàn thành (status 4)
+    // would send the new driver to collect the same sample again. Pickup still
+    // Chờ lấy / Đang đến / Đã đến (1/2/3) = not yet taken → safe to roll.
+    const pickup = stops.find((s) => s.stop_type_id === 1);
+    if (pickup?.stop_status_id === 4) return false;
+    // Belt-and-braces: skip a job whose every stop is already terminal (a
+    // fully-done job lagging at status 4/5). Nothing to reassign.
     if (stops.length > 0 && stops.every((s) => isCompletedOrRejectedStop(s.stop_status_id ?? 0))) return false;
     return true;
   });
