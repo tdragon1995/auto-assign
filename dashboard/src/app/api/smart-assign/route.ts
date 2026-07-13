@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDrivers, getJobsByStatusAndDate, getFleetwebCookie, getCustomerById, JSONRPC_URL, type Env } from "@/lib/cartrack";
 import { vnDate, vnDayWindow, vnMinutesSinceMidnight } from "@/lib/time";
 import { haversineKm } from "@/lib/distance";
-import { roadDistancesFromPoint } from "@/lib/distance-cache";
+import { roadDistancesFromPoint, roadDistancesToPoint } from "@/lib/distance-cache";
 import { selectReferenceStop, computeStopStats, ROUTE_STATE_PRIORITY, enRouteGpsBand, idleBand, type RefLabel } from "@/lib/smart-rank";
 import type { TimelineRoute } from "@/lib/types";
 
@@ -83,10 +83,39 @@ async function fetchAllDriverRouteData(
   }
 }
 
+// ── Job list for the targeted-preview picker ───────────────────────────────
+
+export async function GET(req: NextRequest) {
+  const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
+  const today = vnDate();
+
+  const unassigned = await getJobsByStatusAndDate(2, today, env);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const jobs = ((unassigned ?? []) as any[])
+    .filter((j) => { const ts = j.scheduled_delivery_ts ?? null; return !ts || ts.startsWith(today); })
+    .sort((a, b) => (a.create_ts ?? "").localeCompare(b.create_ts ?? ""))
+    .map((j) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const stops = (j.stops ?? []) as any[];
+      const pickup  = stops.find((s) => s.stop_type_id === 1);
+      const dropoff = stops.find((s) => s.stop_type_id === 2) ?? stops.find((s) => s.stop_type_id === 3);
+      return {
+        job_id:      j.job_id,
+        pickup:      pickup?.customer_name  ?? pickup?.customer_id  ?? "—",
+        dropoff:     dropoff?.customer_name ?? dropoff?.customer_id ?? "—",
+        unscheduled: !j.scheduled_delivery_ts,
+      };
+    });
+
+  return NextResponse.json({ jobs });
+}
+
 // ── Main handler ───────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
+  const jobIdParam = req.nextUrl.searchParams.get("job_id");
+  const targetJobId = jobIdParam && /^\d+$/.test(jobIdParam) ? Number(jobIdParam) : null;
 
   const today = vnDate();
 
@@ -109,6 +138,23 @@ export async function POST(req: NextRequest) {
       ? fetchAllDriverRouteData(today, auth, cookie, shiftStartByDriverId)
       : Promise.resolve({} as Record<string, DriverRouteData>),
   ]);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let jobs = ((unassignedJobs ?? []) as any[])
+    .filter((j) => { const ts = j.scheduled_delivery_ts ?? null; return !ts || ts.startsWith(today); })
+    .sort((a, b) => (a.create_ts ?? "").localeCompare(b.create_ts ?? ""));
+
+  // Targeted mode: preview a single job instead of every unassigned job.
+  if (targetJobId != null) {
+    jobs = jobs.filter((j) => j.job_id === targetJobId);
+    if (jobs.length === 0) {
+      return NextResponse.json({
+        suggestions: [],
+        unmatched: [{ job_id: targetJobId, reason: "Not in today's unassigned jobs" }],
+        drivers_with_gps: drivers.length,
+      });
+    }
+  }
 
   // ── Fetch start_location coords for drivers who need them ──
   // Two reasons: (1) no GPS → Phase 1 fallback, (2) no route today → reference-stop fallback.
@@ -150,11 +196,6 @@ export async function POST(req: NextRequest) {
       },
     };
   }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const jobs = ((unassignedJobs ?? []) as any[])
-    .filter((j) => { const ts = j.scheduled_delivery_ts ?? null; return !ts || ts.startsWith(today); })
-    .sort((a, b) => (a.create_ts ?? "").localeCompare(b.create_ts ?? ""));
 
   // ── Phase 1: haversine pre-filter to top PRE_FILTER_N per job ─────────────
   const intermediate: {
@@ -242,7 +283,27 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  if (originToDrivers.size > 0 && intermediate.length > 0) {
+  if (originToDrivers.size > 0 && intermediate.length === 1) {
+    // Single job: all origins → the one pickup fits in ONE multi-origin request.
+    const s = intermediate[0];
+    const originKeys = [...originToDrivers.keys()];
+    const results = await roadDistancesToPoint(
+      originKeys.map((k) => originCoords.get(k)!),
+      { lat: s.pickup_lat, lon: s.pickup_lon }
+    );
+    originKeys.forEach((originKey, i) => {
+      const cand = results[i];
+      for (const driverId of originToDrivers.get(originKey)!) {
+        const mapKey = `${s.job_id}:${driverId}`;
+        const existing = detourRoutingMap.get(mapKey);
+        if (existing == null) {
+          detourRoutingMap.set(mapKey, cand);
+        } else if (cand != null && cand.distance_km < existing.distance_km) {
+          detourRoutingMap.set(mapKey, cand);
+        }
+      }
+    });
+  } else if (originToDrivers.size > 0 && intermediate.length > 0) {
     await Promise.all(
       [...originToDrivers.entries()].map(async ([originKey, driverIds]) => {
         const from    = originCoords.get(originKey)!;

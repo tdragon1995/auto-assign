@@ -33,6 +33,14 @@ interface Result {
   drivers_with_gps: number;
 }
 
+// One unassigned job in the search-result picker (from GET /api/smart-assign).
+interface JobHit {
+  job_id: number;
+  pickup: string;
+  dropoff: string;
+  unscheduled: boolean;
+}
+
 const STATUS_DOT: Record<number, { color: string; label: string }> = {
   1: { color: "bg-green-500",  label: "Online"      },
   2: { color: "bg-blue-500",   label: "On Route"    },
@@ -78,16 +86,28 @@ function DriverCell({ d }: { d: DriverSuggestion }) {
 }
 
 export default function SmartAssignPage() {
+  // ── Search / picker ─────────────────────────────────────────────────────
+  const [query, setQuery] = useState("");
+  const [hits, setHits] = useState<JobHit[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searched, setSearched] = useState(false);
+  const [searchError, setSearchError] = useState("");
+
+  // ── Preview run ─────────────────────────────────────────────────────────
   const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [result, setResult] = useState<Result | null>(null);
   const [error, setError]   = useState("");
+  // null while a "preview all" run is showing; a job_id for a targeted run
+  const [activeJobId, setActiveJobId] = useState<number | null>(null);
 
-  const run = async () => {
+  const runPreview = async (jobId?: number) => {
     setStatus("loading");
     setResult(null);
     setError("");
+    setActiveJobId(jobId ?? null);
     try {
-      const res = await fetch("/api/smart-assign", { method: "POST" });
+      const url = jobId != null ? `/api/smart-assign?job_id=${jobId}` : "/api/smart-assign";
+      const res = await fetch(url, { method: "POST" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Unknown error");
       setResult(data);
@@ -95,6 +115,45 @@ export default function SmartAssignPage() {
     } catch (e) {
       setError(String(e));
       setStatus("error");
+    }
+  };
+
+  // Same convention as Quản trị job: all digits → direct Job ID, otherwise
+  // search today's unassigned jobs by pickup/dropoff name.
+  const runSearch = async () => {
+    const q = query.trim();
+    if (/^\d+$/.test(q)) {
+      setHits([]);
+      setSearched(false);
+      setSearchError("");
+      runPreview(Number(q));
+      return;
+    }
+    setSearching(true);
+    setSearched(true);
+    setSearchError("");
+    setHits([]);
+    try {
+      const res = await fetch("/api/smart-assign");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Unknown error");
+      const all: JobHit[] = Array.isArray(data.jobs) ? data.jobs : [];
+      const lq = q.toLowerCase();
+      const filtered = lq
+        ? all.filter(
+            (j) =>
+              j.pickup.toLowerCase().includes(lq) ||
+              j.dropoff.toLowerCase().includes(lq) ||
+              String(j.job_id).includes(lq)
+          )
+        : all;
+      setHits(filtered);
+      // Single match → preview it right away.
+      if (filtered.length === 1) runPreview(filtered[0].job_id);
+    } catch (e) {
+      setSearchError(String(e));
+    } finally {
+      setSearching(false);
     }
   };
 
@@ -109,9 +168,71 @@ export default function SmartAssignPage() {
           </p>
         </div>
 
-        <Button onClick={run} disabled={status === "loading"} className="w-full h-12 text-base font-semibold">
-          {status === "loading" ? "Calculating..." : "🧭 Preview Suggestions"}
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") runSearch(); }}
+            placeholder="Job ID hoặc tên khách hàng (để trống = tất cả job chưa gán)…"
+            className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+          />
+          <Button onClick={runSearch} disabled={searching || status === "loading"}>
+            {searching ? "Đang tìm…" : "Tìm"}
+          </Button>
+        </div>
+
+        <Button
+          variant="outline"
+          onClick={() => { setHits([]); setSearched(false); runPreview(); }}
+          disabled={status === "loading" || searching}
+          className="w-full h-10 font-semibold"
+        >
+          {status === "loading" && activeJobId === null ? "Calculating..." : "🧭 Preview tất cả job chưa gán"}
         </Button>
+
+        {searchError && (
+          <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{searchError}</div>
+        )}
+
+        {searched && !searching && hits.length === 0 && !searchError && (
+          <p className="text-sm text-slate-400 text-center py-2">Không tìm thấy job chưa gán nào khớp.</p>
+        )}
+
+        {hits.length > 0 && (
+          <div className="space-y-1.5">
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+              {hits.length} job chưa gán — chọn 1 job để xem gợi ý tài xế
+            </p>
+            {hits.map((hit) => {
+              const isActive = activeJobId === hit.job_id;
+              return (
+                <button
+                  key={hit.job_id}
+                  type="button"
+                  onClick={() => runPreview(hit.job_id)}
+                  disabled={status === "loading"}
+                  className={`w-full text-left px-3 py-2 rounded-lg border bg-white flex items-center justify-between gap-2 hover:bg-slate-50 ${
+                    isActive ? "border-slate-400 ring-1 ring-slate-300" : "border-slate-200"
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <span className="font-mono text-xs text-slate-400">#{hit.job_id}</span>
+                    <p className="text-sm font-medium text-slate-800 leading-tight break-words">
+                      {hit.pickup} <span className="text-slate-400">→</span> {hit.dropoff}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {hit.unscheduled && (
+                      <span className="text-[10px] bg-amber-100 text-amber-700 rounded px-1 py-0.5 font-semibold">No schedule</span>
+                    )}
+                    <span className="text-slate-400 text-xs">{isActive && status === "loading" ? "…" : "▸"}</span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {status === "error" && (
           <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>
@@ -121,7 +242,7 @@ export default function SmartAssignPage() {
           <div className="space-y-4">
             <div className="flex gap-3 text-sm flex-wrap">
               <span className="rounded-full bg-blue-100 text-blue-700 px-3 py-1 font-medium">
-                🧭 {result.suggestions.length} jobs
+                🧭 {activeJobId != null ? `Job #${activeJobId}` : `${result.suggestions.length} jobs`}
               </span>
               {result.unmatched.length > 0 && (
                 <span className="rounded-full bg-red-100 text-red-700 px-3 py-1 font-medium">
