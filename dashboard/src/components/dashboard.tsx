@@ -11,8 +11,10 @@ import { type HeldJob } from "./note-review-panel";
 import { JobAdminPanel } from "./job-admin-panel";
 import { DistanceTab } from "./distance-tab";
 import { FailedJobsPanel, type ScheduleErrorRow } from "./failed-jobs-panel";
+import { LeaveStatusPanel } from "./leave-status-panel";
 import { toast } from "sonner";
 import type { LogEntry, PickupWarning, FailedJob, ConfigDriver } from "@/lib/types";
+import type { LeaveOnDate } from "@/lib/leave-config";
 
 type Env = "prod" | "uat";
 type RightTab = "attention" | "live" | "admin" | "schedule" | "distance";
@@ -35,6 +37,11 @@ export function Dashboard() {
   const [logMode, setLogMode] = useState<LogMode>("live");
   const [scheduleErrors, setScheduleErrors] = useState<ScheduleErrorRow[]>([]);
   const [retryingSchedule, setRetryingSchedule] = useState(false);
+  const [leave, setLeave] = useState<{ today: LeaveOnDate[]; tomorrow: LeaveOnDate[]; error: boolean }>({
+    today: [],
+    tomorrow: [],
+    error: false,
+  });
 
   // Single source of truth: one KV read returns switch state, live log, held
   // jobs, and pickup warnings — all updated by the cron cycle, zero extra calls.
@@ -118,6 +125,31 @@ export function Dashboard() {
     }
   }, []);
 
+  // Leave status (today + tomorrow) for the Cần xử lý tab. Backed by a 5-min
+  // sheet cache server-side, so loading on mount + manual refresh is enough —
+  // no need to poll it on the 90s status cadence.
+  // `fresh` (used by Refresh) busts the server-side 5-min sheet cache so a
+  // supervisor's edit shows at once. On failure we flag an error but keep the
+  // last-known lists — the panel shows an error line only when it has nothing,
+  // so a transient blip never renders as a false "nobody's on leave".
+  const loadLeaveStatus = useCallback(async (fresh = false) => {
+    try {
+      const res = await fetch(`/api/leave-status${fresh ? "?fresh=1" : ""}`, { cache: "no-store" });
+      if (!res.ok) {
+        setLeave((prev) => ({ ...prev, error: true }));
+        return;
+      }
+      const data = await res.json();
+      setLeave({
+        today: Array.isArray(data.today) ? data.today : [],
+        tomorrow: Array.isArray(data.tomorrow) ? data.tomorrow : [],
+        error: false,
+      });
+    } catch {
+      setLeave((prev) => ({ ...prev, error: true }));
+    }
+  }, []);
+
   // Manual assign from the Cần xử lý panel. Like "Giao ngay": hide the row at
   // once and fire the Cartrack assign in the background — don't make the user wait
   // on the round trip. If the assign errors, re-emerge the exact same row
@@ -182,20 +214,23 @@ export function Dashboard() {
       })
       .catch(() => {});
     loadScheduleErrors();
+    loadLeaveStatus();
 
     let id: ReturnType<typeof setInterval> | null = null;
     const start = () => { if (!id) id = setInterval(syncStatus, 90_000); };
     const stop = () => { if (id) { clearInterval(id); id = null; } };
     const onVisibility = () => {
       if (document.hidden) stop();
-      else { syncStatus(); start(); }
+      // Refetch leave on resume too: a tab left open past midnight would
+      // otherwise keep yesterday's roster under the "Hôm nay" header.
+      else { syncStatus(); loadLeaveStatus(); start(); }
     };
 
     syncStatus();
     start();
     document.addEventListener("visibilitychange", onVisibility);
     return () => { stop(); document.removeEventListener("visibilitychange", onVisibility); };
-  }, [syncStatus, loadScheduleErrors]);
+  }, [syncStatus, loadScheduleErrors, loadLeaveStatus]);
 
   // Turn the switch ON — arm the server-side engine until the next 22:00 VN.
   const arm = useCallback(async () => {
@@ -268,6 +303,7 @@ export function Dashboard() {
   const handleRefresh = useCallback(async () => {
     syncStatus();
     loadScheduleErrors();
+    loadLeaveStatus(true);
     try {
       const configRes = await fetch("/api/config");
       if (!configRes.ok) throw new Error(`Config returned ${configRes.status}`);
@@ -280,7 +316,7 @@ export function Dashboard() {
     } catch (err) {
       toast.error(`Refresh failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [syncStatus, loadScheduleErrors]);
+  }, [syncStatus, loadScheduleErrors, loadLeaveStatus]);
 
   const isProd = env === "prod";
   const attentionCount = held.length + failed.length + warnings.length + scheduleErrors.length;
@@ -361,27 +397,32 @@ export function Dashboard() {
               each panel's ScrollArea renders); on lg it's a fixed flex-fill. */}
           <div className="lg:flex-1 lg:min-h-0">
             {rightTab === "attention" ? (
-              <div className="h-[72vh] lg:h-full">
+              <div className="flex flex-col gap-1.5 h-[72vh] lg:h-full">
+                {/* Leave status (today + tomorrow) — read-only reference, above the actionable list */}
+                <LeaveStatusPanel today={leave.today} tomorrow={leave.tomorrow} error={leave.error} />
+
                 {/* Cần xử lý tab — note tasks + unassignable + late + schedule errors */}
-                <FailedJobsPanel
-                  held={held}
-                  env={env}
-                  onNoteRefresh={syncStatus}
-                  onNoteAssigned={(jobId) => {
-                    dismissedHeldRef.current.set(jobId, Date.now() + HELD_DISMISS_MS);
-                    setHeld((prev) => prev.filter((j) => j.job_id !== jobId));
-                    // After the background-write window, re-check the server so a
-                    // failed job (which the server puts back) reappears promptly.
-                    setTimeout(() => syncStatus(), HELD_DISMISS_MS + 500);
-                  }}
-                  failed={failed}
-                  warnings={warnings}
-                  scheduleErrors={scheduleErrors}
-                  drivers={drivers}
-                  onAssign={handleManualAssign}
-                  onRetrySchedule={retrySchedule}
-                  retryingSchedule={retryingSchedule}
-                />
+                <div className="flex-1 min-h-0">
+                  <FailedJobsPanel
+                    held={held}
+                    env={env}
+                    onNoteRefresh={syncStatus}
+                    onNoteAssigned={(jobId) => {
+                      dismissedHeldRef.current.set(jobId, Date.now() + HELD_DISMISS_MS);
+                      setHeld((prev) => prev.filter((j) => j.job_id !== jobId));
+                      // After the background-write window, re-check the server so a
+                      // failed job (which the server puts back) reappears promptly.
+                      setTimeout(() => syncStatus(), HELD_DISMISS_MS + 500);
+                    }}
+                    failed={failed}
+                    warnings={warnings}
+                    scheduleErrors={scheduleErrors}
+                    drivers={drivers}
+                    onAssign={handleManualAssign}
+                    onRetrySchedule={retrySchedule}
+                    retryingSchedule={retryingSchedule}
+                  />
+                </div>
               </div>
             ) : rightTab === "live" ? (
               <div className="flex flex-col gap-1.5 lg:h-full">

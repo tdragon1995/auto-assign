@@ -15,6 +15,19 @@ export function vnDate(d: Date = new Date()): string {
   return new Intl.DateTimeFormat("sv-SE", { timeZone: TZ }).format(d).slice(0, 10);
 }
 
+/**
+ * Shift a "YYYY-MM-DD" date string by N days (UTC-anchored, so no local-TZ
+ * drift can move the day). Returns the input unchanged if it isn't a parseable
+ * date, so callers can compare the result lexicographically without a
+ * try/catch — a malformed sheet cell can't crash the caller.
+ */
+export function addDays(date: string, days: number): string {
+  const d = new Date(date + "T00:00:00Z");
+  if (Number.isNaN(d.getTime())) return date;
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
 /** "YYYY-MM-DD HH:mm:ss" for the given Date (default: now) in Saigon time. */
 export function vnTimestamp(d: Date = new Date()): string {
   const parts = new Intl.DateTimeFormat("sv-SE", {

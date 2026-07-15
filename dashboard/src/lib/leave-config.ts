@@ -1,5 +1,5 @@
 import { sheetCsvUrl, SHEET_GID } from "./sheets";
-import { vnDate, vnMinutesSinceMidnight } from "./time";
+import { addDays, vnDate, vnMinutesSinceMidnight } from "./time";
 
 /** The 3PL-express (Grab) booking proxy. When a substitute slot resolves to
  *  this UUID it means the leave is covered by a 3PL-express booking, NOT a real
@@ -30,6 +30,13 @@ export interface LeaveEntry {
 
 let cache: { entries: LeaveEntry[]; fetchedAt: number } | null = null;
 const CACHE_TTL_MS = 5 * 60 * 1000;
+
+/** Drop the in-memory cache so the next load re-reads the sheet. Wired to the
+ *  dashboard Refresh path (via /api/leave-status?fresh=1) so a supervisor's
+ *  sheet edit is reflected immediately instead of after the 5-min TTL. */
+export function invalidateLeaveCache(): void {
+  cache = null;
+}
 
 function parseField(f: string | undefined): string {
   return (f ?? "").trim();
@@ -71,6 +78,103 @@ function timeToMins(t: string | null): number {
   if (!t) return -1;
   const [h, m] = t.split(":").map(Number);
   return h * 60 + m;
+}
+
+/** One leave entry as it applies to a specific calendar date, for display
+ *  (dashboard "Cần xử lý" leave-status panel) — not tied to the current clock
+ *  the way `isDriverOnLeave` is, so "on leave tomorrow" can be listed today. */
+export interface LeaveOnDate {
+  driver_id: string;
+  driver_name: string;
+  loai_nghi: string;
+  /** "HH:MM–HH:MM" for a half-day/windowed entry, null for a full day. */
+  timeLabel: string | null;
+  subs: SubEntry[];
+}
+
+/**
+ * Whether one leave entry covers `date`, and (for a partial day) the window
+ * label to show. This is the single source of truth for the per-type date
+ * rules; `leaveEntriesOnDate` builds on it. It deliberately matches the
+ * coverage decisions in {@link isDriverOnLeave} so the dashboard panel and the
+ * assign engine never disagree about who is off on a given day:
+ *
+ * - Half-day (`Nghỉ nửa buổi`) with a blank/invalid hour window → NOT covered
+ *   (the engine's half-day branch also ignores such a row entirely), so a
+ *   mistyped half-day never renders as a full-day absence.
+ * - Unlabeled manual row with a blank/invalid window → covered full-day, same
+ *   as the engine's else-branch.
+ *
+ * `timeLabel` is "HH:MM–HH:MM" for a windowed leave, or null for a full day.
+ * Note this is date-only coverage: the engine additionally gates a windowed
+ * leave on the *current* time; the panel shows the day's schedule regardless.
+ */
+function coverageOnDate(
+  e: LeaveEntry,
+  date: string,
+): { covers: boolean; timeLabel: string | null } {
+  const NONE = { covers: false, timeLabel: null };
+  const windowLabel = (): string | null => {
+    const start = timeToMins(e.gio_bat_dau);
+    const end = timeToMins(e.gio_ket_thuc);
+    return start >= 0 && end > start ? `${e.gio_bat_dau}–${e.gio_ket_thuc}` : null;
+  };
+
+  if (e.loai_nghi === "Nghỉ nguyên buổi") {
+    const to = e.leave_to ?? e.leave_from;
+    return date >= e.leave_from && date <= to ? { covers: true, timeLabel: null } : NONE;
+  }
+  if (e.loai_nghi === "Nghỉ nửa buổi") {
+    if (date !== e.leave_from) return NONE;
+    const label = windowLabel();
+    return label ? { covers: true, timeLabel: label } : NONE;
+  }
+  if (e.loai_nghi === "Nghỉ việc") {
+    // Engine skips resigned drivers from leave_from onward; the 7-day display
+    // cap is applied by the caller (leaveEntriesOnDate), not here.
+    return date >= e.leave_from ? { covers: true, timeLabel: null } : NONE;
+  }
+  // Unlabeled manual row: date range + optional window; blank window = full day.
+  const to = e.leave_to ?? e.leave_from;
+  if (date < e.leave_from || date > to) return NONE;
+  return { covers: true, timeLabel: windowLabel() };
+}
+
+/** All leave entries active on `date` (YYYY-MM-DD), for the dashboard panel. */
+export function leaveEntriesOnDate(date: string, entries: LeaveEntry[]): LeaveOnDate[] {
+  const raw: LeaveOnDate[] = [];
+  for (const e of entries) {
+    const cov = coverageOnDate(e, date);
+    if (!cov.covers) continue;
+    // Resigned drivers: the engine skips them forever, but the panel only lists
+    // them for a week after their last working day. leave_from is already
+    // last_working_day + 1 (see /api/nghi-phep), so the display window is
+    // [leave_from, leave_from + 6] — 7 days, then gone. addDays is throw-safe,
+    // so a malformed leave_from just fails this cutoff instead of 500-ing.
+    if (e.loai_nghi === "Nghỉ việc" && date > addDays(e.leave_from, 6)) continue;
+    raw.push({
+      driver_id: e.driver_id,
+      driver_name: e.driver_name,
+      loai_nghi: e.loai_nghi,
+      timeLabel: cov.timeLabel,
+      subs: e.subs,
+    });
+  }
+
+  // The sheet occasionally carries stale/re-typed duplicate rows for the same
+  // driver. Collapse only EXACT repeats — same driver, same window, same set of
+  // substitutes — so two genuinely different windows (e.g. a morning sub and an
+  // afternoon sub) or the same window with different cover both survive.
+  const seen = new Set<string>();
+  const out: LeaveOnDate[] = [];
+  for (const r of raw) {
+    const subKey = r.subs.map((s) => s.id).sort().join(",");
+    const key = `${r.driver_id}|${r.timeLabel ?? "full"}|${subKey}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+  }
+  return out;
 }
 
 export async function loadLeaveEntries(): Promise<LeaveEntry[]> {

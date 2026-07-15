@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 import { NoteReviewPanel, type HeldJob } from "./note-review-panel";
+import { SectionHeader } from "./section-header";
 import type { FailedJob, FailedReason, PickupWarning, ConfigDriver } from "@/lib/types";
 
 export interface ScheduleErrorRow {
@@ -54,19 +55,6 @@ function fmtLate(m: number): string {
   const h = Math.floor(m / 60);
   const mm = m % 60;
   return mm ? `+${h}h${mm}'` : `+${h}h`;
-}
-
-function SectionHeader({ label, count, tone = "slate" }: { label: string; count: number; tone?: "slate" | "amber" | "red" }) {
-  const color =
-    tone === "amber" ? "text-amber-700" : tone === "red" ? "text-red-700" : "text-slate-500";
-  return (
-    <div className="flex items-center gap-1.5 pt-1">
-      <span className={`text-[11px] font-bold uppercase tracking-wide ${color}`}>{label}</span>
-      <span className="rounded-full bg-slate-100 border border-slate-200 px-1.5 leading-none py-0.5 text-[10px] text-slate-600">
-        {count}
-      </span>
-    </div>
-  );
 }
 
 function FailedRow({
