@@ -87,6 +87,9 @@ export interface LeaveOnDate {
   driver_id: string;
   driver_name: string;
   loai_nghi: string;
+  /** leave_from of the underlying row (YYYY-MM-DD). For "Nghỉ việc" this is
+   *  the first day off (last working day + 1) — shown as date context. */
+  leave_from: string;
   /** "HH:MM–HH:MM" for a half-day/windowed entry, null for a full day. */
   timeLabel: string | null;
   subs: SubEntry[];
@@ -156,6 +159,7 @@ export function leaveEntriesOnDate(date: string, entries: LeaveEntry[]): LeaveOn
       driver_id: e.driver_id,
       driver_name: e.driver_name,
       loai_nghi: e.loai_nghi,
+      leave_from: e.leave_from,
       timeLabel: cov.timeLabel,
       subs: e.subs,
     });
