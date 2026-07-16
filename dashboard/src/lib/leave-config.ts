@@ -1,5 +1,5 @@
 import { sheetCsvUrl, SHEET_GID } from "./sheets";
-import { addDays, vnDate, vnMinutesSinceMidnight } from "./time";
+import { addDays, timeToMins, vnDate, vnMinutesSinceMidnight } from "./time";
 
 /** The 3PL-express (Grab) booking proxy. When a substitute slot resolves to
  *  this UUID it means the leave is covered by a 3PL-express booking, NOT a real
@@ -72,12 +72,6 @@ function parseCsv(text: string): string[][] {
   }
   if (cur !== "" || row.length > 0) { row.push(cur); rows.push(row); }
   return rows;
-}
-
-function timeToMins(t: string | null): number {
-  if (!t) return -1;
-  const [h, m] = t.split(":").map(Number);
-  return h * 60 + m;
 }
 
 /** One leave entry as it applies to a specific calendar date, for display

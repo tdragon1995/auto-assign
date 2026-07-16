@@ -399,7 +399,13 @@ export function Dashboard() {
             {rightTab === "attention" ? (
               <div className="flex flex-col gap-1.5 h-[72vh] lg:h-full">
                 {/* Leave status (today + tomorrow) — read-only reference, above the actionable list */}
-                <LeaveStatusPanel today={leave.today} tomorrow={leave.tomorrow} error={leave.error} />
+                <LeaveStatusPanel
+                  today={leave.today}
+                  tomorrow={leave.tomorrow}
+                  error={leave.error}
+                  drivers={drivers}
+                  onRefresh={() => loadLeaveStatus()}
+                />
 
                 {/* Cần xử lý tab — note tasks + unassignable + late + schedule errors */}
                 <div className="flex-1 min-h-0">

@@ -28,6 +28,14 @@ export function addDays(date: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+/** "HH:MM" → minutes since midnight; -1 for blank, NaN for garbage — both of
+ *  which fail any `>= 0` / range check, so invalid input reads as "no window". */
+export function timeToMins(t: string | null | undefined): number {
+  if (!t) return -1;
+  const [h, m] = t.split(":").map(Number);
+  return h * 60 + m;
+}
+
 /** "YYYY-MM-DD HH:mm:ss" for the given Date (default: now) in Saigon time. */
 export function vnTimestamp(d: Date = new Date()): string {
   const parts = new Intl.DateTimeFormat("sv-SE", {

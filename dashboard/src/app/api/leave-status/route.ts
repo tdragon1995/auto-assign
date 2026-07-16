@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadLeaveEntries, leaveEntriesOnDate, invalidateLeaveCache } from "@/lib/leave-config";
-import { addDays, vnDate } from "@/lib/time";
+import { updateLeaveSubs, type LeaveSubWrite } from "@/lib/sheets-writer";
+import { loadDriversFromSheet } from "@/lib/config";
+import { addDays, timeToMins, vnDate } from "@/lib/time";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -20,5 +22,71 @@ export async function GET(req: NextRequest) {
     });
   } catch (e) {
     return NextResponse.json({ today: [], tomorrow: [], error: String(e) }, { status: 500 });
+  }
+}
+
+/** POST — fill substitute(s) on a leave row that has none ("Chưa có người
+ *  thay" in the panel). Body:
+ *    { driver_id, leave_from, timeLabel, subs: [{ name, from, to }] }
+ *  1–3 subs; with 2+ every sub needs its own non-overlapping HH:MM window
+ *  (an open window covers the whole day, which would SUB CLASH the others).
+ *  Sub names must match the Driver tab exactly — that's what the sheet's
+ *  sub#_id xlookup resolves against; anything else is invisible to the engine. */
+export async function POST(req: NextRequest) {
+  const bad = (msg: string) => NextResponse.json({ ok: false, error: msg }, { status: 400 });
+  try {
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== "object") return bad("Body không hợp lệ");
+    const { driver_id, leave_from, timeLabel, subs } = body as {
+      driver_id?: string;
+      leave_from?: string;
+      timeLabel?: string | null;
+      subs?: { name?: string; from?: string | null; to?: string | null }[];
+    };
+    if (!driver_id || !leave_from) return bad("Thiếu driver_id / leave_from");
+    if (!Array.isArray(subs) || subs.length < 1 || subs.length > 3)
+      return bad("Cần 1–3 người thay");
+
+    // Validate names against the Driver tab (the xlookup source). A name not in
+    // that tab writes fine but resolves to a blank sub_id — the engine would
+    // silently ignore it, so reject up front.
+    const drivers = await loadDriversFromSheet();
+    const idByName = new Map(drivers.map((d) => [d.name, d.driver_id]));
+    const clean: LeaveSubWrite[] = [];
+    for (const s of subs) {
+      const name = (s.name ?? "").trim();
+      if (!name) return bad("Người thay chưa được chọn");
+      const subId = idByName.get(name);
+      if (!subId) return bad(`"${name}" không có trong tab Driver — chọn từ danh sách`);
+      if (subId === driver_id) return bad("Người thay trùng với tài xế đang nghỉ");
+      const from = (s.from ?? "").trim() || null;
+      const to = (s.to ?? "").trim() || null;
+      if ((from === null) !== (to === null)) return bad("Khung giờ thay phải đủ cả từ và đến");
+      if (from && to && !(timeToMins(from) >= 0 && timeToMins(to) > timeToMins(from)))
+        return bad(`Khung giờ không hợp lệ: ${from}–${to}`);
+      clean.push({ name, from, to });
+    }
+    if (clean.length > 1) {
+      // Multiple subs must carve up the day: all windowed, no overlaps.
+      // (Shared boundaries are fine — coverage windows are half-open (from, to].)
+      if (clean.some((s) => !s.from || !s.to))
+        return bad("Nhiều người thay thì mỗi người cần khung giờ riêng");
+      const sorted = [...clean].sort((a, b) => timeToMins(a.from) - timeToMins(b.from));
+      for (let i = 1; i < sorted.length; i++) {
+        if (timeToMins(sorted[i].from) < timeToMins(sorted[i - 1].to))
+          return bad(
+            `Khung giờ bị chồng: ${sorted[i - 1].from}–${sorted[i - 1].to} và ${sorted[i].from}–${sorted[i].to}`,
+          );
+      }
+    }
+
+    const result = await updateLeaveSubs(
+      { driver_id, leave_from, timeLabel: timeLabel ?? null },
+      clean,
+    );
+    invalidateLeaveCache();
+    return NextResponse.json({ ok: true, row: result.row, warning: result.warning ?? null });
+  } catch (e) {
+    return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });
   }
 }
