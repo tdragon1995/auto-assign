@@ -175,6 +175,58 @@ export function leaveEntriesOnDate(date: string, entries: LeaveEntry[]): LeaveOn
   return out;
 }
 
+/** Two coverage windows on a shared date conflict when: either side is a full
+ *  day (null → covers everything), or the windows actually overlap. A shared
+ *  boundary (08:00–12:00 vs 12:00–16:00) does NOT overlap — same half-open
+ *  convention as the coverage/substitute checks — so two adjacent half-days
+ *  are allowed. */
+function windowsConflict(a: string | null, b: string | null): boolean {
+  if (a === null || b === null) return true;
+  const [as, ae] = a.split("–");
+  const [bs, be] = b.split("–");
+  return timeToMins(as) < timeToMins(be) && timeToMins(bs) < timeToMins(ae);
+}
+
+/** The concrete dates a candidate submission covers, bounded. Resignation is
+ *  open-ended, so we probe only its start day and rely on the resignation-vs-
+ *  resignation short-circuit in findLeaveConflict for the rest. */
+function candidateDates(c: LeaveEntry): string[] {
+  if (c.loai_nghi === "Nghỉ việc") return [c.leave_from];
+  const to = c.leave_to ?? c.leave_from;
+  const out: string[] = [];
+  for (let d = c.leave_from, i = 0; d <= to && i < 366; d = addDays(d, 1), i++) out.push(d);
+  return out.length ? out : [c.leave_from];
+}
+
+/**
+ * First existing leave for the same driver that clashes with `candidate`, or
+ * null if the submission is genuinely new. Used by /api/nghi-phep to block
+ * duplicate/overlapping leave before it's written.
+ *
+ * Clash = same driver AND, on some shared date, both cover it with conflicting
+ * windows ({@link windowsConflict}). A resignation is treated specially: a
+ * driver resigns once, so any existing "Nghỉ việc" clashes with a new one
+ * regardless of dates (their date order can hide the overlap otherwise).
+ */
+export function findLeaveConflict(candidate: LeaveEntry, existing: LeaveEntry[]): LeaveEntry | null {
+  const same = existing.filter((e) => e.driver_id && e.driver_id === candidate.driver_id);
+  if (candidate.loai_nghi === "Nghỉ việc") {
+    const already = same.find((e) => e.loai_nghi === "Nghỉ việc");
+    if (already) return already;
+  }
+  const dates = candidateDates(candidate);
+  for (const e of same) {
+    for (const d of dates) {
+      const cCov = coverageOnDate(candidate, d);
+      if (!cCov.covers) continue;
+      const eCov = coverageOnDate(e, d);
+      if (!eCov.covers) continue;
+      if (windowsConflict(cCov.timeLabel, eCov.timeLabel)) return e;
+    }
+  }
+  return null;
+}
+
 export async function loadLeaveEntries(): Promise<LeaveEntry[]> {
   if (cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS) return cache.entries;
 

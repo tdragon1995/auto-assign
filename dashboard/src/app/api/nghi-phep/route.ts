@@ -2,6 +2,20 @@ import { NextRequest, NextResponse } from "next/server";
 import { appendNghiPhep } from "@/lib/sheets-writer";
 import { vnTimestamp } from "@/lib/time";
 import { sendZaloMessage } from "@/lib/zalo";
+import {
+  loadLeaveEntries,
+  invalidateLeaveCache,
+  findLeaveConflict,
+  type LeaveEntry,
+} from "@/lib/leave-config";
+
+/** Short human label for a clashing existing leave, for the reject message. */
+function describeLeave(e: LeaveEntry): string {
+  const dm = (s: string) => (s.length >= 10 ? `${s.slice(8, 10)}/${s.slice(5, 7)}` : s);
+  const to = e.leave_to && e.leave_to !== e.leave_from ? `–${dm(e.leave_to)}` : "";
+  const hrs = e.gio_bat_dau && e.gio_ket_thuc ? ` (${e.gio_bat_dau}–${e.gio_ket_thuc})` : "";
+  return `${e.loai_nghi || "Nghỉ"} ${dm(e.leave_from)}${to}${hrs}`;
+}
 
 function datesBetween(from: string, to: string): string[] {
   const dates: string[] = [];
@@ -53,14 +67,26 @@ export async function POST(req: NextRequest) {
 
     const ts = vnTimestamp();
     let rows: (string | null)[][];
+    // Candidate leave (same shape as a sheet row) used for the duplicate check.
+    let candidate: LeaveEntry;
 
     if (loai_nghi === "nguyen_buoi") {
       // One row per day in the range — all written in one atomic API call
       const days = datesBetween(ngay_bat_dau, ngay_ket_thuc ?? ngay_bat_dau);
       rows = days.map((day) => [ts, driver_id, driver_name, loaiNghiText, day, day, null, null]);
+      candidate = {
+        driver_id, driver_name, loai_nghi: loaiNghiText,
+        leave_from: ngay_bat_dau, leave_to: ngay_ket_thuc ?? ngay_bat_dau,
+        gio_bat_dau: null, gio_ket_thuc: null, subs: [],
+      };
     } else if (loai_nghi === "nua_buoi") {
       // leave_to = leave_from (same day)
       rows = [[ts, driver_id, driver_name, loaiNghiText, ngay_bat_dau, ngay_bat_dau, gio_bat_dau ?? null, gio_ket_thuc ?? null]];
+      candidate = {
+        driver_id, driver_name, loai_nghi: loaiNghiText,
+        leave_from: ngay_bat_dau, leave_to: ngay_bat_dau,
+        gio_bat_dau: gio_bat_dau ?? null, gio_ket_thuc: gio_ket_thuc ?? null, subs: [],
+      };
     } else {
       // nghi_viec — store leave_from as last_working_day + 1 so the engine
       // skips the driver starting from the day AFTER their last working day
@@ -72,9 +98,35 @@ export async function POST(req: NextRequest) {
         String(lastDay.getDate()).padStart(2, "0"),
       ].join("-");
       rows = [[ts, driver_id, driver_name, loaiNghiText, skipFrom, null, null, null]];
+      candidate = {
+        driver_id, driver_name, loai_nghi: loaiNghiText,
+        leave_from: skipFrom, leave_to: null,
+        gio_bat_dau: null, gio_ket_thuc: null, subs: [],
+      };
+    }
+
+    // Block duplicate/overlapping leave: read the sheet fresh (bust the 5-min
+    // cache so a leave submitted minutes ago is seen) and reject if this driver
+    // already has a clashing entry. The client's disabled-while-loading submit
+    // button handles the rapid double-click; this catches the re-submit-later
+    // case that was creating stale duplicate rows.
+    invalidateLeaveCache();
+    const existing = await loadLeaveEntries();
+    const clash = findLeaveConflict(candidate, existing);
+    if (clash) {
+      return NextResponse.json(
+        {
+          error: `Tài xế đã có lịch nghỉ trùng: ${describeLeave(clash)}. ` +
+            `Nếu cần chỉnh sửa, vui lòng liên hệ đội điều phối.`,
+        },
+        { status: 409 },
+      );
     }
 
     await appendNghiPhep(rows);
+    // The append changed the sheet — drop the cache we just refreshed so the
+    // next read (dashboard panel / next submission) sees this new row.
+    invalidateLeaveCache();
 
     // Relay the same template the driver sees to the admin Zalo group.
     await notifyAdminGroup(typeof notify_message === "string" ? notify_message : "");
