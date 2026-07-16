@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
+import { DELIVERY_BASE, getAdminToken } from "@/lib/labcenter";
 import { loadPscRoutes } from "@/lib/psc-config";
 import { haversineKm } from "@/lib/distance";
 
@@ -7,42 +8,31 @@ export const runtime = "edge";
 export const preferredRegion = "sin1";
 const COUNTRY_ID = 235;
 const DEFAULT_CONTACT_CODE = "84";
-const LABCENTER_URL = "https://api.labcenter.vn/spc-delivery/api/locations/update-pick-drop-location";
-const LABCENTER_LOGIN_URL = "https://api-bknd.labcenter.vn/api/v1/auth/login";
+const LABCENTER_URL = `${DELIVERY_BASE}/api/locations/update-pick-drop-location`;
 
-let labcenterTokenCache: { token: string; expiresAt: number } | null = null;
+// Two same-named locations closer together than this are the same place.
+const DUPLICATE_BLOCK_RADIUS_M = 100;
 
-async function getLabcenterToken(): Promise<string | null> {
-  const now = Date.now();
-  if (labcenterTokenCache && labcenterTokenCache.expiresAt > now + 60_000) {
-    return labcenterTokenCache.token;
-  }
-  const email = process.env.LABCENTER_EMAIL;
-  const password = process.env.LABCENTER_PASSWORD;
-  if (!email || !password) return null;
+type DuplicateMatch = {
+  customer_id: string;
+  customer_name: string;
+  address_line_1?: string;
+  latitude?: number | string | null;
+  longitude?: number | string | null;
+};
 
-  const res = await fetch(LABCENTER_LOGIN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password, "g-recaptcha-response": "randString" }),
-  });
-  if (!res.ok) return null;
-  const data = await res.json().catch(() => ({}));
-  const token: string | undefined = data?.token;
-  if (!token) return null;
-
-  let expiresAt = now + 60 * 60 * 1000;
-  try {
-    const payload = JSON.parse(atob(token.split(".")[1]));
-    if (payload?.exp) expiresAt = payload.exp * 1000;
-  } catch { /* keep default */ }
-
-  labcenterTokenCache = { token, expiresAt };
-  return token;
+// Metres from an existing customer to the new coordinates, or null when the
+// existing row has no usable coordinates (can't judge proximity — don't block).
+function matchDistanceM(m: DuplicateMatch, lat: number, lon: number): number | null {
+  const mLat = typeof m.latitude === "string" ? parseFloat(m.latitude) : m.latitude;
+  const mLon = typeof m.longitude === "string" ? parseFloat(m.longitude) : m.longitude;
+  if (mLat == null || mLon == null || Number.isNaN(mLat) || Number.isNaN(mLon)) return null;
+  if (mLat === 0 && mLon === 0) return null;
+  return haversineKm(lat, lon, mLat, mLon) * 1000;
 }
 
 async function registerLabcenterPickDrop(pickUuid: string, lat: number, lon: number): Promise<{ ok: boolean; drop_id?: string; error?: string }> {
-  const token = await getLabcenterToken();
+  const token = await getAdminToken();
   if (!token) return { ok: false, error: "Labcenter login failed (check LABCENTER_EMAIL/LABCENTER_PASSWORD)" };
 
   const routes = await loadPscRoutes();
@@ -141,26 +131,51 @@ export async function POST(req: NextRequest) {
 
     const headers = getHeaders(env);
 
-    // Duplicate guard — prefix match (skipped when force=true)
-    if (!force) {
-      const prefix = (check_prefix?.trim() ?? customer_name.trim()).toLowerCase();
-      const matches: { customer_id: string; customer_name: string; address_line_1?: string }[] = [];
-      let page = 1;
-      while (page <= 20) {
-        const res = await fetch(`${BASE_URL}/customers?page=${page}&limit=1000`, { headers, cache: "no-store" });
-        if (!res.ok) break;
-        const data = await res.json();
-        const rows: { customer_id: string; customer_name: string; address_line_1?: string }[] = data.data ?? [];
-        if (rows.length === 0) break;
-        for (const r of rows) {
-          if ((r.customer_name ?? "").trim().toLowerCase().startsWith(prefix)) matches.push(r);
-        }
-        if (rows.length < 1000) break;
-        page += 1;
+    // Duplicate guard — prefix match on the generated name.
+    //
+    // This scan runs even when force=true. `force` only waives the *name*
+    // warning (a real second branch on the same street); it must not waive the
+    // proximity rule below, or the block would be one click away from useless.
+    const prefix = (check_prefix?.trim() ?? customer_name.trim()).toLowerCase();
+    const matches: DuplicateMatch[] = [];
+    let page = 1;
+    while (page <= 20) {
+      const res = await fetch(`${BASE_URL}/customers?page=${page}&limit=1000`, { headers, cache: "no-store" });
+      if (!res.ok) break;
+      const data = await res.json();
+      const rows: DuplicateMatch[] = data.data ?? [];
+      if (rows.length === 0) break;
+      for (const r of rows) {
+        if ((r.customer_name ?? "").trim().toLowerCase().startsWith(prefix)) matches.push(r);
       }
-      if (matches.length > 0) {
-        return NextResponse.json({ error: "Khách hàng đã tồn tại", matches }, { status: 409 });
+      if (rows.length < 1000) break;
+      page += 1;
+    }
+
+    // Hard block — a name duplicate sitting within 100 m is the same physical
+    // place, not another branch. Unforceable. Only decidable when the new
+    // location has coordinates; the form requires them before it can submit.
+    if (latitude != null && longitude != null) {
+      const tooClose = matches
+        .map((m) => ({ match: m, distance_m: matchDistanceM(m, latitude, longitude) }))
+        .filter((x): x is { match: DuplicateMatch; distance_m: number } => x.distance_m != null)
+        .filter((x) => x.distance_m <= DUPLICATE_BLOCK_RADIUS_M)
+        .sort((a, b) => a.distance_m - b.distance_m);
+
+      if (tooClose.length > 0) {
+        return NextResponse.json(
+          {
+            error: `Địa điểm này cách địa điểm đã tồn tại dưới ${DUPLICATE_BLOCK_RADIUS_M}m — không thể tạo trùng.`,
+            blocked: true,
+            matches: tooClose.map((x) => ({ ...x.match, distance_m: Math.round(x.distance_m) })),
+          },
+          { status: 409 },
+        );
       }
+    }
+
+    if (!force && matches.length > 0) {
+      return NextResponse.json({ error: "Khách hàng đã tồn tại", matches }, { status: 409 });
     }
 
     const payload: Record<string, unknown> = {

@@ -187,6 +187,26 @@ export async function getCustomerById(
   return res.json();
 }
 
+// Partial update — verified: sending only `contact_number` leaves customer_name,
+// address and coordinates intact. Never widen this payload to include
+// `customer_name`; see the name-corruption note in docs/cartrack-api.md.
+export async function updateCustomerPhone(
+  customerId: string,
+  contactNumber: string,
+  env: Env = "prod"
+): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`${BASE_URL}/customers/${customerId}`, {
+    method: "PUT",
+    headers: getHeaders(env),
+    body: JSON.stringify({ contact_number: contactNumber }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    return { ok: false, error: `HTTP ${res.status}: ${text.slice(0, 200)}` };
+  }
+  return { ok: true };
+}
+
 export async function updateJobStops(
   jobId: number,
   stops: { stop_id: number; stop_type_id: number; customer_id: string; customer_name?: string; note?: string; country_id?: number; delivery_windows?: { time_from: string; time_to: string }[] }[],

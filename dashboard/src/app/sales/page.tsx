@@ -219,8 +219,132 @@ const REJECT_REASONS = [
   "Book dư",
 ];
 
+// Client lookup against Labcenter, shared by the "Khách hàng mới" and
+// "Cập nhật SĐT" tabs. The parent owns what a pick means; this only handles
+// the search box, the dropdown and the clear button. Remount it (via `key`)
+// to reset the query after a successful submit.
+// `onSelectCode` opts into a fallback: some clients have live locations in
+// spc-delivery but are missing from the spc-pos client list (e.g. 22303), so the
+// search can never find them. When it's set and a numeric query returns nothing,
+// offer to look the code up directly. Only the phone tab wants this — creating a
+// customer still requires a client that actually exists in the list.
+function ClientSearch({
+  display,
+  selected,
+  onSelect,
+  onClear,
+  onBlurUnselected,
+  onSelectCode,
+}: {
+  display: string;
+  selected: boolean;
+  onSelect: (r: ClientResult) => void;
+  onClear: () => void;
+  onBlurUnselected?: () => void;
+  onSelectCode?: (code: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<ClientResult[]>([]);
+  const [showResults, setShowResults] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (selected) return;
+    const q = query.trim();
+    if (q.length < 2) { setResults([]); return; }
+    const ac = new AbortController();
+    const t = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const res = await fetch(`/api/labcenter/client?q=${encodeURIComponent(q)}`, { signal: ac.signal });
+        const data = await res.json();
+        if (res.ok) setResults(data.results ?? []);
+      } catch {
+        // aborted or network — ignore
+      } finally {
+        setLoading(false);
+      }
+    }, 300);
+    return () => { clearTimeout(t); ac.abort(); };
+  }, [query, selected]);
+
+  const clear = () => {
+    setQuery("");
+    setResults([]);
+    onClear();
+  };
+
+  const codeQuery = query.trim();
+  const showCodeFallback =
+    !!onSelectCode && !loading && results.length === 0 && /^\d{4,8}$/.test(codeQuery);
+
+  return (
+    <div className="relative">
+      <div className="relative">
+        <FieldIcon paths={ICON_SEARCH} />
+        <input
+          value={selected ? display : query}
+          onChange={(e) => { setQuery(e.target.value); setShowResults(true); }}
+          onFocus={() => { if (!selected) setShowResults(true); }}
+          onBlur={() => {
+            setTimeout(() => setShowResults(false), 150);
+            if (!selected && query.trim()) onBlurUnselected?.();
+          }}
+          readOnly={selected}
+          placeholder="Search..."
+          className={`w-full border rounded-xl pl-9 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 ${selected ? "pr-8 cursor-default" : "pr-3"}`}
+        />
+        {selected && (
+          <button
+            type="button"
+            onMouseDown={(e) => { e.preventDefault(); clear(); }}
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+            aria-label="Xoá"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        )}
+      </div>
+      {showResults && !selected && (loading || results.length > 0 || showCodeFallback) && (
+        <ul className="absolute z-10 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-64 overflow-y-auto">
+          {loading && results.length === 0 && (
+            <li className="px-3 py-2 text-sm text-slate-400">Đang tìm...</li>
+          )}
+          {results.map((r) => (
+            <li
+              key={r.code}
+              onMouseDown={(e) => { e.preventDefault(); onSelect(r); setShowResults(false); }}
+              className="px-3 py-2 text-sm hover:bg-slate-50 cursor-pointer border-b last:border-b-0 border-slate-100"
+            >
+              <span className="font-mono text-xs text-slate-500 mr-2">{r.code}</span>
+              <span className="font-medium text-slate-800">{r.client_legal_name}</span>
+            </li>
+          ))}
+          {showCodeFallback && (
+            <li
+              onMouseDown={(e) => { e.preventDefault(); onSelectCode!(codeQuery); setShowResults(false); }}
+              className="px-3 py-2 hover:bg-slate-50 cursor-pointer"
+            >
+              <p className="text-sm font-medium text-slate-800">
+                Tra địa điểm theo mã KH <span className="font-mono">{codeQuery}</span>
+              </p>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                Không tìm thấy trong danh sách khách hàng — tìm trực tiếp theo mã.
+              </p>
+            </li>
+          )}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+type SalesLocation = { id: number; name: string; phone: string; address: string };
+
 export default function SalesPage() {
-  const [tab, setTab] = useState<"customer" | "reject">("customer");
+  const [tab, setTab] = useState<"customer" | "phone" | "reject">("customer");
 
   // Reject job state — manual reference entry (existing)
   const [refNumber, setRefNumber] = useState("");
@@ -251,6 +375,89 @@ export default function SalesPage() {
       setRejectResult({ ok: false, msg: String(e) });
     } finally {
       setRejectLoading(false);
+    }
+  };
+
+  // ── Cập nhật SĐT tab ──────────────────────────────────────────────────────
+  const [phClientSearch, setPhClientSearch] = useState("");
+  const [phClientSelected, setPhClientSelected] = useState(false);
+  const [phLocations, setPhLocations] = useState<SalesLocation[]>([]);
+  const [phLocationsLoading, setPhLocationsLoading] = useState(false);
+  const [phLocationId, setPhLocationId] = useState<number | null>(null);
+  const [phNewPhone, setPhNewPhone] = useState("");
+  const [phLoading, setPhLoading] = useState(false);
+  const [phResult, setPhResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  const phSelectedLocation = phLocations.find((l) => l.id === phLocationId) ?? null;
+  const phPhoneValid = phNewPhone.length >= 9 && phNewPhone.length <= 11;
+  // Nothing to do if the number already matches what's on file.
+  const phUnchanged =
+    !!phSelectedLocation && phSelectedLocation.phone.replace(/\D/g, "") === phNewPhone;
+
+  const phLoadLocations = async (code: string, label: string) => {
+    setPhClientSearch(label);
+    setPhClientSelected(true);
+    setPhLocationId(null);
+    setPhNewPhone("");
+    setPhResult(null);
+    setPhLocationsLoading(true);
+    setPhLocations([]);
+    try {
+      const res = await fetch(`/api/sales/locations?client_code=${encodeURIComponent(code)}`);
+      const data = await res.json();
+      if (res.ok) setPhLocations(data.locations ?? []);
+      else setPhResult({ ok: false, msg: data.error ?? "Không tải được danh sách địa điểm" });
+    } catch (e) {
+      setPhResult({ ok: false, msg: String(e) });
+    } finally {
+      setPhLocationsLoading(false);
+    }
+  };
+
+  const phSelectClient = (r: ClientResult) =>
+    phLoadLocations(r.code, `${r.code} — ${r.client_legal_name}`);
+
+  const phClearClient = () => {
+    setPhClientSearch("");
+    setPhClientSelected(false);
+    setPhLocations([]);
+    setPhLocationId(null);
+    setPhNewPhone("");
+    setPhResult(null);
+  };
+
+  const submitPhone = async () => {
+    if (phLocationId == null || !phPhoneValid || phLoading) return;
+    setPhLoading(true);
+    setPhResult(null);
+    try {
+      const res = await fetch("/api/sales/locations", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ location_id: phLocationId, phone: phNewPhone }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        // A partial failure leaves the two systems disagreeing — name which
+        // side landed so the user knows what a retry still has to fix.
+        const parts: string[] = [];
+        if (data.labcenter) parts.push(`Labcenter: ${data.labcenter.ok ? "đã cập nhật" : "thất bại"}`);
+        if (data.cartrack) parts.push(`Cartrack: ${data.cartrack.ok ? "đã cập nhật" : "thất bại"}`);
+        setPhResult({
+          ok: false,
+          msg: parts.length ? `${data.error} (${parts.join(" · ")})` : (data.error ?? "Cập nhật thất bại"),
+        });
+      } else {
+        setPhResult({ ok: true, msg: `Đã cập nhật SĐT thành ${data.phone} trên Cartrack và Labcenter.` });
+        // Reflect the new number locally so the row shows the updated value.
+        setPhLocations((prev) =>
+          prev.map((l) => (l.id === phLocationId ? { ...l, phone: data.phone } : l)),
+        );
+      }
+    } catch (e) {
+      setPhResult({ ok: false, msg: String(e) });
+    } finally {
+      setPhLoading(false);
     }
   };
 
@@ -302,31 +509,10 @@ export default function SalesPage() {
 
   // Client search (Thông Tin Khách Hàng)
   const [clientSearch, setClientSearch] = useState("");
-  const [clientResults, setClientResults] = useState<ClientResult[]>([]);
-  const [showClientResults, setShowClientResults] = useState(false);
-  const [clientSearchLoading, setClientSearchLoading] = useState(false);
   const [clientSelected, setClientSelected] = useState(false);
   const [clientBlurred, setClientBlurred] = useState(false);
-
-  useEffect(() => {
-    if (clientSelected) return;
-    const q = clientSearch.trim();
-    if (q.length < 2) { setClientResults([]); return; }
-    const ac = new AbortController();
-    const t = setTimeout(async () => {
-      setClientSearchLoading(true);
-      try {
-        const res = await fetch(`/api/labcenter/client?q=${encodeURIComponent(q)}`, { signal: ac.signal });
-        const data = await res.json();
-        if (res.ok) setClientResults(data.results ?? []);
-      } catch {
-        // aborted or network — ignore
-      } finally {
-        setClientSearchLoading(false);
-      }
-    }, 300);
-    return () => { clearTimeout(t); ac.abort(); };
-  }, [clientSearch, clientSelected]);
+  // Bumped on a successful submit to remount ClientSearch with an empty query.
+  const [clientSearchKey, setClientSearchKey] = useState(0);
 
   const selectClient = (r: ClientResult) => {
     const name = CLIENT_OVERRIDES[r.code] ?? r.client_legal_name;
@@ -334,8 +520,6 @@ export default function SalesPage() {
     setTenKh(name);
     setClientSearch(`${r.code} — ${r.client_legal_name}`);
     setClientSelected(true);
-    setShowClientResults(false);
-    setClientResults([]);
     // Only force the confirm/override prompt when Labcenter has no real name on
     // file (the legal name is just the numeric client code). A proper name is
     // accepted as-is; the user can still edit it via the "Sửa" button.
@@ -347,7 +531,6 @@ export default function SalesPage() {
     setTenKh("");
     setClientSearch("");
     setClientSelected(false);
-    setClientResults([]);
     setClientBlurred(false);
   };
 
@@ -416,7 +599,10 @@ export default function SalesPage() {
 
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
-  const [duplicates, setDuplicates] = useState<{ customer_id: string; customer_name: string; address_line_1?: string }[] | null>(null);
+  const [duplicates, setDuplicates] = useState<{ customer_id: string; customer_name: string; address_line_1?: string; distance_m?: number }[] | null>(null);
+  // A blocked duplicate sits within 100m of an existing location — same place.
+  // Unlike the plain warning, there is no force path out of it.
+  const [duplicateBlocked, setDuplicateBlocked] = useState(false);
   // Snapshot of what was submitted, kept visible after submit for troubleshooting.
   const [lastSubmitted, setLastSubmitted] = useState<{
     name: string; maKh: string; quanCu: string; tenDuong: string; abbr: string;
@@ -482,14 +668,17 @@ export default function SalesPage() {
       if (!res.ok) {
         if (res.status === 409 && data.matches?.length > 0) {
           setDuplicates(data.matches);
+          setDuplicateBlocked(!!data.blocked);
+          if (data.blocked) setResult({ ok: false, msg: data.error });
         } else {
           setResult({ ok: false, msg: data.error ?? "Lỗi không xác định" });
         }
       } else {
         setResult({ ok: true, msg: `Tạo địa điểm lấy mẫu thành công: ${data.customer?.customer_name ?? name}` });
         setDuplicates(null);
+        setDuplicateBlocked(false);
         setMaKh(""); setQuanCu(""); setTenDuong(""); setTenKh(""); setDiaChi(""); setLat(""); setLon(""); setPhone("");
-        setClientSearch(""); setClientSelected(false); setClientResults([]);
+        setClientSearch(""); setClientSelected(false); setClientSearchKey((k) => k + 1);
         setQuanSearch(""); setQuanSelected(false);
         setAddressPicked(false); setShowStreetModal(false); setShowClientNameModal(false);
       }
@@ -520,28 +709,139 @@ export default function SalesPage() {
         <div className="px-6 pt-5 pb-4">
           <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">Sales</p>
           <h1 className="text-xl font-bold text-slate-800 mt-0.5">
-            {tab === "customer" ? "Tạo địa điểm lấy mẫu cho khách hàng mới" : "Huỷ yêu cầu giao nhận"}
+            {tab === "customer"
+              ? "Tạo địa điểm lấy mẫu cho khách hàng mới"
+              : tab === "phone"
+              ? "Cập nhật số điện thoại liên hệ"
+              : "Huỷ yêu cầu giao nhận"}
           </h1>
         </div>
 
-        <div className="grid grid-cols-2 border-t border-slate-100">
+        <div className="grid grid-cols-3 border-t border-slate-100">
           <button
             onClick={() => setTab("customer")}
-            className={`py-2.5 text-sm font-semibold transition-colors ${
+            className={`py-2.5 text-xs font-semibold transition-colors ${
               tab === "customer" ? "bg-blue-600 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
             }`}
           >
             Khách hàng mới
           </button>
           <button
+            onClick={() => setTab("phone")}
+            className={`py-2.5 text-xs font-semibold transition-colors border-l border-slate-100 ${
+              tab === "phone" ? "bg-blue-600 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+            }`}
+          >
+            Cập nhật SĐT
+          </button>
+          <button
             onClick={() => setTab("reject")}
-            className={`py-2.5 text-sm font-semibold transition-colors border-l border-slate-100 ${
+            className={`py-2.5 text-xs font-semibold transition-colors border-l border-slate-100 ${
               tab === "reject" ? "bg-blue-600 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
             }`}
           >
-            Huỷ yêu cầu giao nhận
+            Huỷ giao nhận
           </button>
         </div>
+
+        {tab === "phone" && (
+          // min-height keeps the client-search dropdown from being clipped by
+          // the card's overflow-hidden while this tab is still just one field.
+          <div className="p-6 space-y-4 border-t border-slate-100 min-h-[340px]">
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">Thông Tin Khách Hàng</label>
+              <p className="text-[10.5px] text-slate-400 mb-1.5 leading-relaxed">
+                Điền Client Code hoặc tên khách hàng
+              </p>
+              <ClientSearch
+                display={phClientSearch}
+                selected={phClientSelected}
+                onSelect={phSelectClient}
+                onClear={phClearClient}
+                onSelectCode={(code) => phLoadLocations(code, `${code} — (tra theo mã)`)}
+              />
+            </div>
+
+            {phClientSelected && (
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">Chọn Địa Điểm</label>
+                {phLocationsLoading ? (
+                  <p className="text-sm text-slate-400 py-2">Đang tải địa điểm...</p>
+                ) : phLocations.length === 0 ? (
+                  <p className="text-sm text-slate-500 py-2">Khách hàng này chưa có địa điểm nào.</p>
+                ) : (
+                  <ul className="border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-72 overflow-y-auto">
+                    {phLocations.map((l) => (
+                      <li key={l.id}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPhLocationId(l.id);
+                            setPhNewPhone(l.phone.replace(/\D/g, ""));
+                            setPhResult(null);
+                          }}
+                          className={`w-full text-left px-3 py-2.5 transition-colors ${
+                            phLocationId === l.id ? "bg-blue-50" : "hover:bg-slate-50"
+                          }`}
+                        >
+                          <p className="text-sm font-medium text-slate-800 break-words">{l.name}</p>
+                          <p className="text-xs text-slate-500 mt-0.5">
+                            SĐT hiện tại: <span className="font-semibold text-slate-700">{l.phone || "(trống)"}</span>
+                          </p>
+                          {l.address && (
+                            <p className="text-[11px] text-slate-400 mt-0.5 break-words">{l.address}</p>
+                          )}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            {phSelectedLocation && (
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Số Điện Thoại Mới</label>
+                <div className="relative">
+                  <FieldIcon paths={ICON_PHONE} />
+                  <input
+                    value={phNewPhone}
+                    onChange={(e) => setPhNewPhone(e.target.value.replace(/\D/g, ""))}
+                    inputMode="tel"
+                    placeholder="VD: 0909123456"
+                    className="w-full border rounded-xl pl-9 pr-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+                  />
+                </div>
+                {phNewPhone && !phPhoneValid && (
+                  <p className="text-xs text-red-600 mt-1">Số điện thoại phải có 9–11 chữ số.</p>
+                )}
+                <p className="text-[10.5px] text-slate-400 mt-1.5 leading-relaxed">
+                  Cập nhật đồng thời trên Cartrack (tài xế nhìn thấy) và Labcenter (khách hàng nhìn thấy).
+                </p>
+              </div>
+            )}
+
+            {phSelectedLocation && (
+              <button
+                onClick={submitPhone}
+                disabled={!phPhoneValid || phUnchanged || phLoading}
+                className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+              >
+                {phLoading ? "Đang cập nhật..." : phUnchanged ? "Số điện thoại không thay đổi" : "Cập nhật số điện thoại"}
+              </button>
+            )}
+
+            {phResult && (
+              <div className={`rounded-xl p-3.5 text-sm font-medium text-center ${
+                phResult.ok
+                  ? "bg-emerald-50 border border-emerald-200 text-emerald-800"
+                  : "bg-red-50 border border-red-200 text-red-800"
+              }`}>
+                {phResult.msg}
+              </div>
+            )}
+          </div>
+        )}
 
         {tab === "reject" && (
           <div className="p-6 space-y-4 border-t border-slate-100">
@@ -591,53 +891,15 @@ export default function SalesPage() {
               <p className="text-[10.5px] text-slate-400 mb-1.5 leading-relaxed">
                 Điền Client Code hoặc tên khách hàng
               </p>
-              <div className="relative">
-                <div className="relative">
-                  <FieldIcon paths={ICON_SEARCH} />
-                  <input
-                    value={clientSearch}
-                    onChange={(e) => { setClientSearch(e.target.value); setShowClientResults(true); }}
-                    onFocus={() => { if (!clientSelected) setShowClientResults(true); }}
-                    onBlur={() => {
-                      setTimeout(() => setShowClientResults(false), 150);
-                      if (!clientSelected && clientSearch.trim()) setClientBlurred(true);
-                    }}
-                    readOnly={clientSelected}
-                    placeholder="Search..."
-                    className={`w-full border rounded-xl pl-9 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 ${clientSelected ? "pr-8 cursor-default" : "pr-3"}`}
-                  />
-                  {clientSelected && (
-                    <button
-                      type="button"
-                      onMouseDown={(e) => { e.preventDefault(); clearClient(); }}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-                      aria-label="Xoá"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
-                  )}
-                </div>
-                {showClientResults && !clientSelected && (clientSearchLoading || clientResults.length > 0) && (
-                  <ul className="absolute z-10 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-64 overflow-y-auto">
-                    {clientSearchLoading && clientResults.length === 0 && (
-                      <li className="px-3 py-2 text-sm text-slate-400">Đang tìm...</li>
-                    )}
-                    {clientResults.map((r) => (
-                      <li
-                        key={r.code}
-                        onMouseDown={(e) => { e.preventDefault(); selectClient(r); }}
-                        className="px-3 py-2 text-sm hover:bg-slate-50 cursor-pointer border-b last:border-b-0 border-slate-100"
-                      >
-                        <span className="font-mono text-xs text-slate-500 mr-2">{r.code}</span>
-                        <span className="font-medium text-slate-800">{r.client_legal_name}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-              {clientBlurred && !clientSelected && clientSearch.trim() && (
+              <ClientSearch
+                key={clientSearchKey}
+                display={clientSearch}
+                selected={clientSelected}
+                onSelect={selectClient}
+                onClear={clearClient}
+                onBlurUnselected={() => setClientBlurred(true)}
+              />
+              {clientBlurred && !clientSelected && (
                 <p className="text-xs text-red-600 mt-1">Vui lòng chọn khách hàng từ danh sách gợi ý.</p>
               )}
               {maKh && !maKhValid && (
@@ -925,28 +1187,57 @@ export default function SalesPage() {
             )}
 
             {duplicates && duplicates.length > 0 && (
-              <div className="rounded-xl bg-amber-50 border border-amber-200 p-3.5 space-y-3">
-                <p className="text-sm font-semibold text-amber-800">
-                  Tìm thấy {duplicates.length} khách hàng có thể trùng:
-                </p>
-                <ul className="space-y-2">
-                  {duplicates.map((d) => (
-                    <li key={d.customer_id} className="text-xs text-amber-700">
-                      <span className="font-mono break-all">{d.customer_name}</span>
-                      {d.address_line_1 && (
-                        <span className="block text-amber-600 mt-0.5">{d.address_line_1}</span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-                <button
-                  onClick={submitForce}
-                  disabled={loading}
-                  className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-amber-600 hover:bg-amber-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-                >
-                  {loading ? "Đang tạo..." : "Khách hàng có nhiều địa điểm trên cùng đường"}
-                </button>
-              </div>
+              duplicateBlocked ? (
+                // Within 100m of an existing location — no force button, because
+                // the server rejects the force path for this case too.
+                <div className="rounded-xl bg-red-50 border border-red-200 p-3.5 space-y-3">
+                  <p className="text-sm font-semibold text-red-800">
+                    Không thể tạo — đã có địa điểm ở ngay vị trí này:
+                  </p>
+                  <ul className="space-y-2">
+                    {duplicates.map((d) => (
+                      <li key={d.customer_id} className="text-xs text-red-700">
+                        <span className="font-mono break-all">{d.customer_name}</span>
+                        {d.distance_m != null && (
+                          <span className="block font-semibold text-red-800 mt-0.5">
+                            Cách {d.distance_m}m
+                          </span>
+                        )}
+                        {d.address_line_1 && (
+                          <span className="block text-red-600 mt-0.5">{d.address_line_1}</span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="text-[11px] text-red-600 leading-relaxed">
+                    Nếu đây thật sự là địa điểm khác, hãy kiểm tra lại toạ độ trên bản đồ.
+                    Để đổi số điện thoại của địa điểm đã có, dùng tab <span className="font-semibold">Cập nhật SĐT</span>.
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-xl bg-amber-50 border border-amber-200 p-3.5 space-y-3">
+                  <p className="text-sm font-semibold text-amber-800">
+                    Tìm thấy {duplicates.length} khách hàng có thể trùng:
+                  </p>
+                  <ul className="space-y-2">
+                    {duplicates.map((d) => (
+                      <li key={d.customer_id} className="text-xs text-amber-700">
+                        <span className="font-mono break-all">{d.customer_name}</span>
+                        {d.address_line_1 && (
+                          <span className="block text-amber-600 mt-0.5">{d.address_line_1}</span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                  <button
+                    onClick={submitForce}
+                    disabled={loading}
+                    className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-amber-600 hover:bg-amber-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                  >
+                    {loading ? "Đang tạo..." : "Khách hàng có nhiều địa điểm trên cùng đường"}
+                  </button>
+                </div>
+              )
             )}
           </div>
         )}
