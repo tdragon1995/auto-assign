@@ -1149,7 +1149,7 @@ export default function ChamCongPage() {
                     <label className="block text-xs font-medium text-gray-600 mb-1">Tài Khoản Đăng Nhập Cartrack</label>
                     <input
                       type="tel" inputMode="tel" autoComplete="off" value={nvPhone}
-                      onChange={(e) => setNvPhone(e.target.value)} placeholder="0949xxxxxx"
+                      onChange={(e) => setNvPhone(e.target.value)}
                       className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                       required
                     />
