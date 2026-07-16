@@ -115,6 +115,7 @@ export async function POST(req: NextRequest) {
       contact_number,
       force,
       check_prefix,
+      client_code,
     } = body as {
       customer_name: string;
       address_line_1?: string;
@@ -123,6 +124,7 @@ export async function POST(req: NextRequest) {
       contact_number?: string;
       force?: boolean;
       check_prefix?: string;
+      client_code?: string;
     };
 
     if (!customer_name) {
@@ -131,13 +133,23 @@ export async function POST(req: NextRequest) {
 
     const headers = getHeaders(env);
 
-    // Duplicate guard — prefix match on the generated name.
+    // Duplicate guard. One pass over the customer list feeds two checks:
     //
-    // This scan runs even when force=true. `force` only waives the *name*
-    // warning (a real second branch on the same street); it must not waive the
-    // proximity rule below, or the block would be one click away from useless.
+    //  • prefixMatches (maKh - quanCu - street) drives the name warning, which
+    //    force=true may waive — a real second branch on the same street.
+    //  • codeMatches (same client code, any district/street) drives the 100m
+    //    block below. Matching on the code rather than the full prefix is
+    //    deliberate: a survey of live data found 9 duplicate pairs sitting 0–58m
+    //    apart that a prefix match missed, because the district or street
+    //    abbreviation differed (e.g. "21555 - TDuc - 48" vs "21555 - TDuc -
+    //    HBinh", 0m apart). The code is what identifies the client.
+    //
+    // The scan runs even when force=true; force must not waive the 100m rule,
+    // or the block would be one click away from useless.
     const prefix = (check_prefix?.trim() ?? customer_name.trim()).toLowerCase();
+    const code = (client_code ?? customer_name.split(" - ")[0]).trim();
     const matches: DuplicateMatch[] = [];
+    const codeMatches: DuplicateMatch[] = [];
     let page = 1;
     while (page <= 20) {
       const res = await fetch(`${BASE_URL}/customers?page=${page}&limit=1000`, { headers, cache: "no-store" });
@@ -146,17 +158,20 @@ export async function POST(req: NextRequest) {
       const rows: DuplicateMatch[] = data.data ?? [];
       if (rows.length === 0) break;
       for (const r of rows) {
-        if ((r.customer_name ?? "").trim().toLowerCase().startsWith(prefix)) matches.push(r);
+        const name = (r.customer_name ?? "").trim();
+        if (name.toLowerCase().startsWith(prefix)) matches.push(r);
+        // Exact first-segment match — startsWith would let "2155" hit "21555".
+        if (code && name.split(" - ")[0].trim() === code) codeMatches.push(r);
       }
       if (rows.length < 1000) break;
       page += 1;
     }
 
-    // Hard block — a name duplicate sitting within 100 m is the same physical
-    // place, not another branch. Unforceable. Only decidable when the new
-    // location has coordinates; the form requires them before it can submit.
+    // Hard block — the same client already has a location within 100m, so this
+    // is the same physical place, not another branch. Unforceable. Only
+    // decidable with coordinates; the form requires them before it can submit.
     if (latitude != null && longitude != null) {
-      const tooClose = matches
+      const tooClose = codeMatches
         .map((m) => ({ match: m, distance_m: matchDistanceM(m, latitude, longitude) }))
         .filter((x): x is { match: DuplicateMatch; distance_m: number } => x.distance_m != null)
         .filter((x) => x.distance_m <= DUPLICATE_BLOCK_RADIUS_M)
@@ -165,7 +180,7 @@ export async function POST(req: NextRequest) {
       if (tooClose.length > 0) {
         return NextResponse.json(
           {
-            error: `Địa điểm này cách địa điểm đã tồn tại dưới ${DUPLICATE_BLOCK_RADIUS_M}m — không thể tạo trùng.`,
+            error: `Khách hàng này đã có địa điểm cách đây dưới ${DUPLICATE_BLOCK_RADIUS_M}m — không thể tạo trùng.`,
             blocked: true,
             matches: tooClose.map((x) => ({ ...x.match, distance_m: Math.round(x.distance_m) })),
           },

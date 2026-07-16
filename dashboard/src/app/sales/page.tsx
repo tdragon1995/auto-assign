@@ -651,6 +651,7 @@ export default function SalesPage() {
         address_line_1: diaChi.trim() || undefined,
         contact_number: phone.trim() || undefined,
         check_prefix: checkPrefix,
+        client_code: maKh,
         ...(forceName !== undefined ? { force: true } : {}),
       };
       const latNum = parseFloat(lat);
