@@ -1146,7 +1146,7 @@ export default function ChamCongPage() {
                     Đăng nhập bằng số điện thoại và mã PIN Cartrack của bạn để nhận việc.
                   </p>
                   <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">Số điện thoại</label>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Tài Khoản Đăng Nhập Cartrack</label>
                     <input
                       type="tel" inputMode="tel" autoComplete="off" value={nvPhone}
                       onChange={(e) => setNvPhone(e.target.value)} placeholder="0949xxxxxx"
@@ -1176,9 +1176,6 @@ export default function ChamCongPage() {
                     {nvLoginBusy ? <Loader2 size={16} className="animate-spin" /> : <LogIn size={16} />}
                     Đăng nhập
                   </button>
-                  <p className="text-xs text-gray-400 leading-relaxed">
-                    Lưu ý: đăng nhập tại đây có thể khiến bạn bị đăng xuất khỏi ứng dụng Cartrack trên điện thoại.
-                  </p>
                 </form>
               ) : (
                 /* Job list */
