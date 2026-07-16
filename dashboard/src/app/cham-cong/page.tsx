@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo, useRef } from "react";
-import { Calendar, Clock, ClipboardCheck, FileText, NotepadText, CalendarDays, Search } from "lucide-react";
+import { Calendar, Clock, ClipboardCheck, FileText, NotepadText, CalendarDays, Search, Truck, MapPin, CheckCircle2, LogOut, RefreshCw, AlertCircle, LogIn, Loader2 } from "lucide-react";
 
 interface Driver {
   driver_id: string;
@@ -12,6 +12,24 @@ interface Location {
   customer_id: string;
   name: string;
   address: string;
+}
+
+interface DriverJob {
+  job_id: number;
+  reference_number: string | null;
+  pickup_name: string | null;
+  dropoff_name: string | null;
+  pickup_status_id: number | null;
+  pickup_status_label: string | null;
+  current_driver_id: string | null;
+  current_driver_name: string | null;
+  is_mine: boolean;
+}
+
+interface NvSession {
+  // Display only. The authoritative driver_id lives in the HttpOnly session
+  // cookie set by /api/driver-auth; the client never sees or sends it.
+  driver_name: string;
 }
 
 interface ShiftState {
@@ -25,7 +43,7 @@ interface ShiftState {
 
 type ActionType = "check-in" | "check-out";
 type Status = "idle" | "loading" | "success" | "error";
-type Tab = "cham-cong" | "nghi-phep" | "lich-cn";
+type Tab = "cham-cong" | "nghi-phep" | "lich-cn" | "nhan-viec";
 type LeaveType = "" | "nguyen_buoi" | "nua_buoi" | "nghi_viec";
 
 interface ScheduleEntry {
@@ -85,6 +103,59 @@ const LS_DRIVER_ID   = "cc_driver_id";
 const LS_DRIVER_NAME = "cc_driver_name";
 const SHIFT_STATE_TTL_MS = 2 * 60 * 1000;
 const SS_DRIVERS_KEY = "cc_drivers_cache";
+const LS_NV_PHONE   = "cc_nv_phone";   // Nhận Việc: remembered phone (never the PIN)
+const LS_NV_SESSION = "cc_nv_session"; // Nhận Việc: authenticated {driver_id, driver_name}
+
+// Nhận Việc: badge colour by Cartrack pickup stop_status_id (1 Chờ lấy, 2 Đang đến, 3 Đã đến).
+function nvStatusClasses(id: number | null): string {
+  switch (id) {
+    case 2: return "bg-blue-100 text-blue-700";
+    case 3: return "bg-indigo-100 text-indigo-700";
+    default: return "bg-slate-100 text-slate-600";
+  }
+}
+
+function NvJobCard({ job, claiming, onClaim }: { job: DriverJob; claiming: boolean; onClaim: () => void }) {
+  return (
+    <div className="rounded-xl border border-gray-200 p-3.5 space-y-2.5">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <MapPin size={15} className="text-blue-600 shrink-0" />
+          <div className="text-sm font-medium text-gray-800 min-w-0 truncate">
+            {job.pickup_name ?? "—"}<span className="text-gray-400"> → </span>{job.dropoff_name ?? "—"}
+          </div>
+        </div>
+        <span className={`shrink-0 text-xs font-medium px-2 py-0.5 rounded-full ${nvStatusClasses(job.pickup_status_id)}`}>
+          {job.pickup_status_label ?? "—"}
+        </span>
+      </div>
+      {job.reference_number && <p className="text-xs text-gray-400">Mã: {job.reference_number}</p>}
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs text-gray-500">
+          {job.is_mine
+            ? "Đang thuộc về bạn"
+            : job.current_driver_name
+              ? `Đang giao: ${job.current_driver_name}`
+              : "Chưa phân công"}
+        </p>
+        {job.is_mine ? (
+          <span className="flex items-center gap-1 text-xs font-medium text-green-600">
+            <CheckCircle2 size={15} /> Của bạn
+          </span>
+        ) : (
+          <button
+            onClick={onClaim}
+            disabled={claiming}
+            className="flex items-center gap-1.5 bg-blue-600 text-white rounded-lg px-3 py-1.5 text-sm font-semibold hover:bg-blue-700 disabled:opacity-60 transition-colors"
+          >
+            {claiming ? <Loader2 size={15} className="animate-spin" /> : <Truck size={15} />}
+            Nhận việc
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 const TIME_SLOTS: string[] = (() => {
   const slots: string[] = [];
@@ -199,6 +270,22 @@ export default function ChamCongPage() {
   const [scheduleStatus, setScheduleStatus] = useState<Status>("idle");
   const [scheduleSearch, setScheduleSearch] = useState("");
 
+  // ── Nhận Việc tab ─────────────────────────────────────────────────────────
+  const [nvPhone,     setNvPhone]     = useState(() => typeof window !== "undefined" ? localStorage.getItem(LS_NV_PHONE) ?? "" : "");
+  const [nvPin,       setNvPin]       = useState("");
+  const [nvSession,   setNvSession]   = useState<NvSession | null>(() => {
+    if (typeof window === "undefined") return null;
+    try { const raw = localStorage.getItem(LS_NV_SESSION); return raw ? JSON.parse(raw) : null; } catch { return null; }
+  });
+  const [nvLoginBusy,  setNvLoginBusy]  = useState(false);
+  const [nvLoginError, setNvLoginError] = useState<string | null>(null);
+  const [nvJobs,       setNvJobs]       = useState<DriverJob[]>([]);
+  const [nvJobsLoading, setNvJobsLoading] = useState(false);
+  const [nvJobsError,  setNvJobsError]  = useState<string | null>(null);
+  const [nvRecognized, setNvRecognized] = useState(true);
+  const [nvClaiming,   setNvClaiming]   = useState<number | null>(null);
+  const [nvToast,      setNvToast]      = useState<string | null>(null);
+
   // ── Init ──────────────────────────────────────────────────────────────────
   useEffect(() => {
     const savedId = typeof window !== "undefined" ? localStorage.getItem(LS_DRIVER_ID) : null;
@@ -235,6 +322,17 @@ export default function ChamCongPage() {
     if (savedId) fetchShiftState(savedId);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Nhận Việc: logged in = a stored authenticated session. Identity comes from the
+  // phone+PIN login itself (bridged to the fleet driver_id) — no name-picker gate.
+  const nvLoggedIn = !!nvSession;
+  const nvDisplayName = nvSession ? nvSession.driver_name.replace(/^.*?(?:PT|DC)\d+\s+/i, "").trim() : "";
+
+  // Nhận Việc: (re)load jobs when the tab is opened while logged in.
+  useEffect(() => {
+    if (tab === "nhan-viec" && nvSession) nvLoadJobs();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, nvSession]);
 
   // ── Shift state ───────────────────────────────────────────────────────────
   async function fetchShiftState(id: string): Promise<ShiftState | null> {
@@ -328,6 +426,95 @@ export default function ChamCongPage() {
     shiftStateRef.current = null;
     localStorage.removeItem(LS_DRIVER_ID);
     localStorage.removeItem(LS_DRIVER_NAME);
+  }
+
+  // ── Nhận Việc ─────────────────────────────────────────────────────────────
+  // The session cookie expired (or was cleared) server-side → drop back to login.
+  function nvHandleExpired() {
+    setNvSession(null);
+    setNvJobs([]);
+    try { localStorage.removeItem(LS_NV_SESSION); } catch { /* ignore */ }
+    setNvLoginError("Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.");
+  }
+
+  async function nvLoadJobs() {
+    setNvJobsLoading(true);
+    setNvJobsError(null);
+    try {
+      // driver_id comes from the HttpOnly session cookie server-side.
+      const res = await fetch("/api/driver-jobs");
+      const data = await res.json();
+      if (res.status === 401 || data?.expired) { nvHandleExpired(); return; }
+      if (!res.ok || !data.ok) { setNvJobsError(data.error ?? "Không tải được danh sách."); return; }
+      setNvRecognized(data.recognized !== false);
+      setNvJobs(data.jobs ?? []);
+    } catch {
+      setNvJobsError("Không kết nối được máy chủ.");
+    } finally {
+      setNvJobsLoading(false);
+    }
+  }
+
+  async function nvLogin(e: React.FormEvent) {
+    e.preventDefault();
+    if (nvLoginBusy) return;
+    setNvLoginError(null);
+    setNvLoginBusy(true);
+    try {
+      const res = await fetch("/api/driver-auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: nvPhone.trim(), pin: nvPin.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) { setNvLoginError(data.error ?? "Đăng nhập thất bại."); setNvPin(""); return; }
+
+      // The auth cookie is set by the server response; we only keep the name for UI.
+      const session: NvSession = { driver_name: data.driver_name };
+      setNvSession(session);
+      setNvPin("");
+      try {
+        localStorage.setItem(LS_NV_SESSION, JSON.stringify(session));
+        localStorage.setItem(LS_NV_PHONE, nvPhone.trim());
+      } catch { /* ignore */ }
+      nvLoadJobs();
+    } catch {
+      setNvLoginError("Không kết nối được máy chủ. Vui lòng thử lại.");
+    } finally {
+      setNvLoginBusy(false);
+    }
+  }
+
+  function nvLogout() {
+    fetch("/api/driver-auth", { method: "DELETE" }).catch(() => {}); // clear the cookie
+    setNvSession(null);
+    setNvJobs([]);
+    setNvToast(null);
+    setNvJobsError(null);
+    try { localStorage.removeItem(LS_NV_SESSION); } catch { /* ignore */ }
+    // Keep the remembered phone so they don't retype it.
+  }
+
+  async function nvClaim(job: DriverJob) {
+    if (nvClaiming || !nvSession) return;
+    setNvClaiming(job.job_id);
+    setNvToast(null);
+    try {
+      const res = await fetch("/api/driver-jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: job.job_id }),
+      });
+      const data = await res.json();
+      if (res.status === 401 || data?.expired) { nvHandleExpired(); return; }
+      if (!res.ok || !data.ok) { setNvToast(data.error ?? "Nhận việc thất bại."); return; }
+      setNvToast("Đã nhận việc ✓");
+      await nvLoadJobs();
+    } catch {
+      setNvToast("Nhận việc thất bại.");
+    } finally {
+      setNvClaiming(null);
+    }
   }
 
   // ── Location dropdown ─────────────────────────────────────────────────────
@@ -571,12 +758,23 @@ export default function ChamCongPage() {
               </span>
             )}
           </button>
+          <button
+            onClick={() => setTab("nhan-viec")}
+            className={`flex-1 py-3 text-xs font-semibold transition-colors flex items-center justify-center gap-1 whitespace-nowrap ${
+              tab === "nhan-viec"
+                ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/40"
+                : "text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            <Truck size={14} />
+            Nhận Việc
+          </button>
         </div>
 
         <div className="p-6 space-y-5">
 
-          {/* ── Shared: Driver dropdown (hidden on the read-only schedule tab) ── */}
-          {tab !== "lich-cn" && (
+          {/* ── Shared: Driver dropdown (hidden on schedule + self-claim tabs) ── */}
+          {tab !== "lich-cn" && tab !== "nhan-viec" && (
           <div className="space-y-1 relative">
             <label className="text-sm font-medium text-gray-700">
               Nhân Viên Giao Nhận
@@ -934,6 +1132,98 @@ export default function ChamCongPage() {
                     </div>
                   )}
                 </>
+              )}
+            </>
+          )}
+
+          {/* ── Nhận Việc tab ───────────────────────────────────────────── */}
+          {tab === "nhan-viec" && (
+            <>
+              {!nvLoggedIn ? (
+                /* Login */
+                <form onSubmit={nvLogin} className="space-y-4">
+                  <p className="text-sm text-gray-500">
+                    Đăng nhập bằng số điện thoại và mã PIN Cartrack của bạn để nhận việc.
+                  </p>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Số điện thoại</label>
+                    <input
+                      type="tel" inputMode="tel" autoComplete="off" value={nvPhone}
+                      onChange={(e) => setNvPhone(e.target.value)} placeholder="0949xxxxxx"
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Mã PIN</label>
+                    <input
+                      type="password" inputMode="numeric" autoComplete="off" value={nvPin}
+                      onChange={(e) => setNvPin(e.target.value)} placeholder="••••••"
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm tracking-widest focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                    />
+                  </div>
+                  {nvLoginError && (
+                    <div className="flex items-start gap-2 text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">
+                      <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                      <span>{nvLoginError}</span>
+                    </div>
+                  )}
+                  <button
+                    type="submit" disabled={nvLoginBusy}
+                    className="w-full flex items-center justify-center gap-2 bg-blue-600 text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-blue-700 disabled:opacity-60 transition-colors"
+                  >
+                    {nvLoginBusy ? <Loader2 size={16} className="animate-spin" /> : <LogIn size={16} />}
+                    Đăng nhập
+                  </button>
+                  <p className="text-xs text-gray-400 leading-relaxed">
+                    Lưu ý: đăng nhập tại đây có thể khiến bạn bị đăng xuất khỏi ứng dụng Cartrack trên điện thoại.
+                  </p>
+                </form>
+              ) : (
+                /* Job list */
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-xs text-gray-500">Đã đăng nhập</p>
+                      <p className="text-sm font-semibold text-gray-800 truncate">{nvDisplayName}</p>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => nvLoadJobs()}
+                        disabled={nvJobsLoading}
+                        className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-50"
+                        title="Tải lại"
+                      >
+                        <RefreshCw size={16} className={nvJobsLoading ? "animate-spin" : ""} />
+                      </button>
+                      <button onClick={nvLogout} className="p-2 rounded-lg text-gray-500 hover:bg-gray-100" title="Đăng xuất">
+                        <LogOut size={16} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {nvToast && (
+                    <div className="rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-700 text-center">{nvToast}</div>
+                  )}
+
+                  {nvJobsLoading ? (
+                    <div className="flex items-center justify-center py-12 text-gray-400"><Loader2 size={22} className="animate-spin" /></div>
+                  ) : nvJobsError ? (
+                    <div className="flex items-start gap-2 text-sm text-red-600 bg-red-50 rounded-lg px-4 py-3">
+                      <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                      <span>{nvJobsError}</span>
+                    </div>
+                  ) : !nvRecognized ? (
+                    <p className="text-center text-sm text-gray-400 py-8">Bạn chưa được phân tuyến nào trong hệ thống.</p>
+                  ) : nvJobs.length === 0 ? (
+                    <p className="text-center text-sm text-gray-400 py-8">Hiện không có công việc nào cần nhận.</p>
+                  ) : (
+                    nvJobs.map((job) => (
+                      <NvJobCard key={job.job_id} job={job} claiming={nvClaiming === job.job_id} onClaim={() => nvClaim(job)} />
+                    ))
+                  )}
+                </div>
               )}
             </>
           )}
