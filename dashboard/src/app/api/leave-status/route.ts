@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadLeaveEntries, leaveEntriesOnDate, invalidateLeaveCache } from "@/lib/leave-config";
-import { updateLeaveSubs, type LeaveSubWrite } from "@/lib/sheets-writer";
+import { updateLeaveSubs, LeaveWriteError, type LeaveSubWrite } from "@/lib/sheets-writer";
 import { loadDriversFromSheet } from "@/lib/config";
 import { addDays, timeToMins, vnDate } from "@/lib/time";
 
@@ -87,6 +87,9 @@ export async function POST(req: NextRequest) {
     invalidateLeaveCache();
     return NextResponse.json({ ok: true, row: result.row, warning: result.warning ?? null });
   } catch (e) {
+    // Business rejections (row full, row not found, bad input) are the user's to
+    // fix → 400 with the message verbatim; anything else is a real 500.
+    if (e instanceof LeaveWriteError) return bad(e.message);
     return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });
   }
 }

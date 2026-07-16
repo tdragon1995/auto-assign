@@ -115,6 +115,16 @@ export async function appendNghiPhep(rows: (string | null)[][]): Promise<void> {
 
 // ── Fill substitutes on an existing leave row ────────────────────────────────
 
+/** A rejected sub-fill the *user* can fix (row full, row not found, bad
+ *  input) — the route maps this to 400 with the message shown verbatim, vs a
+ *  real 500 for an unexpected fault. */
+export class LeaveWriteError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LeaveWriteError";
+  }
+}
+
 export interface LeaveSubWrite {
   /** Sheet display name — MUST match Driver!A:A exactly, or the row's
    *  sub#_id xlookup resolves blank and the engine drops the sub. */
@@ -177,7 +187,7 @@ export async function updateLeaveSubs(
   match: LeaveRowMatch,
   subs: LeaveSubWrite[],
 ): Promise<{ row: number; warning?: string }> {
-  if (subs.length < 1 || subs.length > 3) throw new Error("1–3 người thay mỗi lần");
+  if (subs.length < 1 || subs.length > 3) throw new LeaveWriteError("1–3 người thay mỗi lần");
   const sheets = getSheetsClient();
   const sheetName = await getNghiPhepSheetName(sheets);
   const quotedName = `'${sheetName.replace(/'/g, "''")}'`;
@@ -187,7 +197,7 @@ export async function updateLeaveSubs(
     range: quotedName,
   });
   const all = res.data.values ?? [];
-  if (all.length < 2) throw new Error("Leave sheet trống");
+  if (all.length < 2) throw new LeaveWriteError("Leave sheet trống");
 
   // Header-keyed columns, first occurrence wins (mirrors loadLeaveEntries).
   const col: Record<string, number> = {};
@@ -196,7 +206,7 @@ export async function updateLeaveSubs(
     if (k && !(k in col)) col[k] = i;
   });
   for (const need of ["driver_id", "leave_from", "leave_from_hr", "leave_to_hr"]) {
-    if (!(need in col)) throw new Error(`Thiếu cột "${need}" trong Leave sheet`);
+    if (!(need in col)) throw new LeaveWriteError(`Thiếu cột "${need}" trong Leave sheet`);
   }
   // A sub slot is usable only if its 3 value columns exist on the sheet.
   const slots = [1, 2, 3].filter(
@@ -227,7 +237,7 @@ export async function updateLeaveSubs(
     break;
   }
   if (!rowNo) {
-    throw new Error(
+    throw new LeaveWriteError(
       foundButFull
         ? "Dòng nghỉ phép không còn đủ ô người thay trống"
         : "Không tìm thấy dòng nghỉ phép — sheet có thể vừa thay đổi, thử Refresh",
