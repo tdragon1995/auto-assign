@@ -1,5 +1,5 @@
 import type { Config, Driver, FailedJob, Job, LogEntry, LogLevel, Mapping, PickupWarning, TimelineRoute } from "./types";
-import { getDrivers, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, updateJobSendToDriverAt, updateJobScheduledDeliveryTs, unassignJob, optimizeDriverRoute, getFleetwebCookie, getJobsByStatusAndDate, getJobsByDate, getTimelineRoutes, timelineRoutesToJobs, JSONRPC_URL, PROXY_DRIVER_ID, type Env } from "./cartrack";
+import { getDrivers, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, updateJobSendToDriverAt, updateJobScheduledDeliveryTs, unassignJob, optimizeDriverRoute, getJobsByStatusAndDate, getJobsByDate, getTimelineRoutes, timelineRoutesToJobs, jsonRpc, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import { DIAG_LOCATION_CUSTOMER_IDS } from "./psc-routes-data";
@@ -326,23 +326,13 @@ function computePickupWarnings(
   return warnings;
 }
 
-async function rejectJobAsDuplicate(jobId: number, auth: string, cookie: string): Promise<boolean> {
-  try {
-    const res = await fetch(JSONRPC_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: auth, Cookie: cookie },
-      body: JSON.stringify({
-        version: "2.0",
-        method: "delivery_reject_job",
-        id: 1,
-        params: { data: { jobIds: [jobId], rejectReason: DUPLICATE_REJECT_REASON } },
-      }),
-    });
-    const data = await res.json().catch(() => ({}));
-    return res.ok && !data.error;
-  } catch {
-    return false;
-  }
+async function rejectJobAsDuplicate(jobId: number, env: Env): Promise<boolean> {
+  const out = await jsonRpc(
+    "delivery_reject_job",
+    { data: { jobIds: [jobId], rejectReason: DUPLICATE_REJECT_REASON } },
+    { env }
+  );
+  return out.ok;
 }
 
 // ── Smart-assign helpers ───────────────────────────────────────────────────
@@ -399,25 +389,16 @@ function timelineRoutesToCustomerCoords(
 }
 
 async function fetchSmartRouteData(
-  dateVn: string, auth: string, cookie: string,
+  dateVn: string, env: Env,
   shiftStartByDriverId: Record<string, string | null>
 ): Promise<Record<string, DriverRouteInfo>> {
-  try {
-    const res = await fetch(JSONRPC_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: auth, Cookie: cookie },
-      body: JSON.stringify({
-        version: "2.0", method: "delivery_timeline_route_list", id: 1,
-        params: { data: { scheduleType: "scheduled", filter: vnDayWindow(dateVn) }},
-      }),
-    });
-    if (!res.ok) return {};
-    const data = await res.json();
-    const routes: TimelineRoute[] = data.result?.routes ?? [];
-    return timelineRoutesToDriverInfo(routes, shiftStartByDriverId);
-  } catch {
-    return {};
-  }
+  const out = await jsonRpc<{ routes?: TimelineRoute[] }>(
+    "delivery_timeline_route_list",
+    { data: { scheduleType: "scheduled", filter: vnDayWindow(dateVn) } },
+    { env }
+  );
+  if (!out.ok) return {};
+  return timelineRoutesToDriverInfo(out.result?.routes ?? [], shiftStartByDriverId);
 }
 
 function makeLog(msg: string, level: LogLevel = "INFO"): LogEntry {
@@ -983,10 +964,6 @@ export async function autoAssignCycle(
   // Assigned jobs (status 4) already came from the single getJobsByDate partition
   // above — reused here for duplicate-check + pickup warnings, and again in the
   // follow-up steps, with no extra Cartrack call.
-  const authSuffix = env === "uat" ? "_UAT" : "";
-  const auth = process.env[`CARTRACK_AUTH${authSuffix}`] ?? "";
-  let rejectCookie: string | null = null;
-
   // ── Pre-fetch GPS + route data only if a current job needs smart-assign ──────
   const smartCustomerIds = new Set(
     config.mappings.filter((m) => m.smart_driver_id.length > 0).map((m) => m.customer_id)
@@ -1003,8 +980,7 @@ export async function autoAssignCycle(
   const phase1Coords = new Map<string, { lat: number; lon: number }>();
 
   if (hasSmartJobs) {
-    const auth   = process.env.CARTRACK_AUTH ?? "";
-    const [fetchedDrivers, cookie] = await Promise.all([getDrivers(env), getFleetwebCookie()]);
+    const fetchedDrivers = await getDrivers(env);
     allGpsDrivers = fetchedDrivers.filter((d) =>
       (d.latitude != null && d.longitude != null) || !!d.start_location_customer_id
     );
@@ -1020,8 +996,8 @@ export async function autoAssignCycle(
       // delivery_timeline_route_list payload, so no second ~2.3s call this cycle.
       smartRouteData = timelineRoutesToDriverInfo(timelineRoutesForSmart, shiftStartByDriverId);
       clientCoords = timelineRoutesToCustomerCoords(timelineRoutesForSmart);
-    } else if (cookie && auth) {
-      smartRouteData = await fetchSmartRouteData(vnDate(), auth, cookie, shiftStartByDriverId);
+    } else {
+      smartRouteData = await fetchSmartRouteData(vnDate(), env, shiftStartByDriverId);
     }
 
     // ── Fetch start_location coords for drivers who need them ──
@@ -1193,13 +1169,8 @@ export async function autoAssignCycle(
       if (proxyDriverId) {
         const { status: assignStatus } = await assignJob(proxyDriverId, jobId, env);
         if (assignStatus === 200) {
-          if (!rejectCookie) rejectCookie = await getFleetwebCookie();
-          if (rejectCookie) {
-            const ok = await rejectJobAsDuplicate(jobId, auth, rejectCookie);
-            log(`Job ${jobId} - DUPLICATE of Job ${blockingJobId}: assigned then rejected ${ok ? "OK" : "FAILED"} | ${route}`, ok ? "WARN" : "ERROR");
-          } else {
-            log(`Job ${jobId} - DUPLICATE of Job ${blockingJobId}: assigned but no cookie to reject | ${route}`, "WARN");
-          }
+          const ok = await rejectJobAsDuplicate(jobId, env);
+          log(`Job ${jobId} - DUPLICATE of Job ${blockingJobId}: assigned then rejected ${ok ? "OK" : "FAILED"} | ${route}`, ok ? "WARN" : "ERROR");
         } else {
           log(`Job ${jobId} - DUPLICATE of Job ${blockingJobId}: proxy assign failed, skipped | ${route}`, "WARN");
         }
@@ -1734,7 +1705,7 @@ export async function autoAssignCycle(
     const ids = [...driversToOptimize];
     for (let i = 0; i < ids.length; i += 5) {
       await Promise.all(ids.slice(i, i + 5).map(async (id) => {
-        const ok = await optimizeDriverRoute(id, vnDate());
+        const ok = await optimizeDriverRoute(id, vnDate(), env);
         log(`Route optimise for ${id}: ${ok ? "triggered" : "skipped (no cookie or failed)"}`, ok ? "INFO" : "WARN");
       }));
     }

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  JSONRPC_URL, getFleetwebCookie, getDrivers, getJobDetails, assignJobViaUpdate, type Env,
+  jsonRpc, getDrivers, getJobDetails, assignJobViaUpdate, type Env,
 } from "@/lib/cartrack";
 import { loadConfigFromSheets, isValidDriverId } from "@/lib/config";
 import { isCompletedOrRejectedStop, STOP_STATUS } from "@/lib/job-filters";
@@ -21,27 +21,15 @@ const DROPOFF = 2;
 const DELIVERY = 3;
 
 /** All timeline stops for `dateVn`, flattened across every driver route. JSON-RPC. */
-async function fetchTimelineStops(dateVn: string): Promise<TimelineStop[]> {
-  const auth = process.env.CARTRACK_AUTH ?? "";
-  const cookie = await getFleetwebCookie();
-  if (!cookie) throw new Error("fleetweb login failed (CARTRACK_WEB_PASS?)");
-
-  const res = await fetch(JSONRPC_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: auth, Cookie: cookie },
-    body: JSON.stringify({
-      version: "2.0",
-      method: "delivery_timeline_route_list",
-      id: 1,
-      params: { data: { scheduleType: "scheduled", filter: vnDayWindow(dateVn) } },
-    }),
-    cache: "no-store",
-  });
-  if (!res.ok) throw new Error(`timeline route list failed: ${res.status}`);
-  const data = await res.json();
-  const routes: TimelineRoute[] = data.result?.routes ?? [];
+async function fetchTimelineStops(dateVn: string, env: Env = "prod"): Promise<TimelineStop[]> {
+  const out = await jsonRpc<{ routes?: TimelineRoute[] }>(
+    "delivery_timeline_route_list",
+    { data: { scheduleType: "scheduled", filter: vnDayWindow(dateVn) } },
+    { env }
+  );
+  if (!out.ok) throw new Error(`timeline route list failed: ${out.error}`);
   const stops: TimelineStop[] = [];
-  for (const r of routes) for (const s of r.orderedStops ?? []) stops.push(s);
+  for (const r of out.result?.routes ?? []) for (const s of r.orderedStops ?? []) stops.push(s);
   return stops;
 }
 
@@ -78,7 +66,7 @@ export async function GET(req: NextRequest) {
     }
 
     const [stops, drivers] = await Promise.all([
-      fetchTimelineStops(vnDate()),
+      fetchTimelineStops(vnDate(), env),
       getDrivers(env), // for the current-assignee display name
     ]);
 

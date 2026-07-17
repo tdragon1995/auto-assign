@@ -1,5 +1,5 @@
 import type { Config, LogLevel, Job } from "./types";
-import { BASE_URL, getHeaders, getFleetwebCookie, getStopsByLabels, JSONRPC_URL, getJobsByStatusAndDate, type Env } from "./cartrack";
+import { BASE_URL, getHeaders, getFleetwebCookie, getStopsByLabels, jsonRpc, getJobsByStatusAndDate, type Env } from "./cartrack";
 import { isStopStarted } from "./job-filters";
 import { vnDate, vnMinutesSinceMidnight, parseVnTimestamp } from "./time";
 import { PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL, isOnShift, subToCoveredDriver } from "./return-trips";
@@ -62,7 +62,7 @@ function hasFreshActivity(job: any, now: Date, windowMs: number): boolean {
  * rejection off the real driver's record), then JSON-RPC `delivery_reject_job`.
  * Mirrors the duplicate-rejection and /api/sales/reject-job paths — never deleteJob.
  */
-async function rejectJob(jobId: number, reason: string, env: Env, cookie: string): Promise<boolean> {
+async function rejectJob(jobId: number, reason: string, env: Env): Promise<boolean> {
   const headers = getHeaders(env);
 
   // Best-effort proxy assign: keeps the rejection off the real driver's record.
@@ -78,18 +78,8 @@ async function rejectJob(jobId: number, reason: string, env: Env, cookie: string
     }).catch(() => null);
   }
 
-  const rpcRes = await fetch(JSONRPC_URL, {
-    method: "POST",
-    headers: { ...headers, Cookie: cookie },
-    body: JSON.stringify({
-      version: "2.0",
-      method: "delivery_reject_job",
-      id: 1,
-      params: { data: { jobIds: [jobId], rejectReason: reason } },
-    }),
-  });
-  const rpcData = await rpcRes.json().catch(() => ({}));
-  return rpcRes.ok && !rpcData.error;
+  const out = await jsonRpc("delivery_reject_job", { data: { jobIds: [jobId], rejectReason: reason } }, { env });
+  return out.ok;
 }
 
 /**
@@ -281,8 +271,9 @@ export async function cleanupStaleTrips(
 
   if (tasks.length === 0) return;
 
-  const cookie = await getFleetwebCookie();
-  if (!cookie) {
+  // Pre-flight the login (cached, so this is the same session rejectJob will use):
+  // no session means every rejection below would fail — say so once, not N times.
+  if (!(await getFleetwebCookie(env))) {
     log(`Cleanup: ${tasks.length} stale job(s) found but no fleetweb cookie to reject`, "WARN");
     return;
   }
@@ -298,7 +289,7 @@ export async function cleanupStaleTrips(
     await Promise.all(
       tasks.slice(i, i + 5).map(async (t) => {
         try {
-          const ok = await rejectJob(t.jobId, t.reason, env, cookie);
+          const ok = await rejectJob(t.jobId, t.reason, env);
           log(`Cleanup rejected ${t.label} — ${ok ? "OK" : "FAILED"}`, ok ? "WARN" : "ERROR");
           if (!ok) inFlightCleanup.delete(t.jobId); // allow retry next cycle
         } catch (e) {

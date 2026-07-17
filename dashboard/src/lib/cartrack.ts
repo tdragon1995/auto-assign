@@ -106,6 +106,18 @@ export async function getDrivers(env: Env = "prod"): Promise<Driver[]> {
 }
 
 export async function deleteJob(jobId: number, env: Env = "prod"): Promise<boolean> {
+  // With CREATE_JOB_RPC=1, try the fleetweb RPC first — measured ~2s vs ~4.7s
+  // REST (2026-07-17), and it deletes jobs created by either path. deletedJobIds
+  // echoes the ids actually removed; anything else (error, id absent) falls
+  // through to REST for the authoritative answer.
+  if (process.env.CREATE_JOB_RPC === "1") {
+    const out = await jsonRpc<{ deletedJobIds?: Record<string, number> }>(
+      "delivery_delete_job",
+      { data: { jobIds: [jobId] } },
+      { env }
+    );
+    if (out.ok && out.result?.deletedJobIds?.[jobId] !== undefined) return true;
+  }
   const res = await fetch(`${BASE_URL}/jobs/${jobId}?force=true`, {
     method: "DELETE",
     headers: getHeaders(env),
@@ -290,14 +302,22 @@ export async function unassignJob(
 export const JSONRPC_URL = "https://fleetweb-vn.cartrack.com/jsonrpc/index.php";
 const COOKIE_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
 
-let _cachedCookie: string | null = null;
-let _cookieExpiry = 0;
+// Cookie cache is per-env AND per-process: on Vercel each warm lambda logs in
+// once and reuses that session for every JSON-RPC call it makes.
+const _cookieCache: Partial<Record<Env, { cookie: string; expiry: number }>> = {};
 
-/** Login to fleetweb and return a session cookie string, or null on failure. */
-export async function getFleetwebCookie(): Promise<string | null> {
-  if (_cachedCookie && Date.now() < _cookieExpiry) return _cachedCookie;
-  const auth = process.env.CARTRACK_AUTH ?? "";
-  const password = process.env.CARTRACK_WEB_PASS ?? "";
+/** Login to fleetweb and return a session cookie string, or null on failure.
+ *  `force` skips the cache — used by jsonRpc() to re-login when Cartrack rejects
+ *  a session before our TTL expects it to. */
+export async function getFleetwebCookie(env: Env = "prod", force = false): Promise<string | null> {
+  const cached = _cookieCache[env];
+  if (!force && cached && Date.now() < cached.expiry) return cached.cookie;
+
+  const suffix = env === "uat" ? "_UAT" : "";
+  const auth = process.env[`CARTRACK_AUTH${suffix}`] ?? "";
+  const password = process.env[`CARTRACK_WEB_PASS${suffix}`] ?? "";
+  // No UAT password configured → null, NOT a prod cookie. Handing a prod session
+  // to a caller that asked for UAT would run writes (reject/optimise) against live.
   if (!auth || !password) return null;
 
   // Decode account name from Basic auth header (ACCOUNT:apipassword)
@@ -321,7 +341,7 @@ export async function getFleetwebCookie(): Promise<string | null> {
           otp: "",
           browserName: "",
           version: "3.9.1",
-          environment: "live",
+          environment: env === "uat" ? "uat" : "live",
           thirdParty: false,
         },
       }),
@@ -331,12 +351,335 @@ export async function getFleetwebCookie(): Promise<string | null> {
     // Extract all Set-Cookie values into a single cookie string
     const setCookies = res.headers.getSetCookie?.() ?? [];
     if (!setCookies.length) return null;
-    _cachedCookie = setCookies.map((c) => c.split(";")[0]).join("; ");
-    _cookieExpiry = Date.now() + COOKIE_TTL_MS;
-    return _cachedCookie;
+    const cookie = setCookies.map((c) => c.split(";")[0]).join("; ");
+    _cookieCache[env] = { cookie, expiry: Date.now() + COOKIE_TTL_MS };
+    return cookie;
   } catch {
     return null;
   }
+}
+
+export type RpcOutcome<T> =
+  | { ok: true; result: T }
+  | { ok: false; error: string; status: number | null };
+
+/** True when a response looks like "your session is gone", i.e. worth one
+ *  re-login + retry. Deliberately narrow: a false positive replays the call, and
+ *  some RPC methods (delivery_reject_job) mutate. HTTP 401/403 plus a small set
+ *  of message shapes only. */
+function isSessionExpired(status: number, errorText: string): boolean {
+  if (status === 401 || status === 403) return true;
+  return /\b(session|not logged in|login required|unauthenticated|unauthorized)\b/i.test(errorText);
+}
+
+function rpcErrorText(body: { error?: unknown }): string {
+  const err = body.error;
+  if (!err) return "";
+  if (typeof err === "string") return err;
+  const msg = (err as Record<string, unknown>).message;
+  return typeof msg === "string" ? msg : JSON.stringify(err);
+}
+
+/**
+ * Single entry point for every fleetweb JSON-RPC call: resolves the session
+ * cookie for `env`, posts the request, and on a session-expiry signal forces one
+ * re-login and retries once. Without the retry a session Cartrack drops early
+ * leaves this process failing every RPC call until the 12h TTL rolls over.
+ *
+ * Returns a discriminated outcome — callers that only care about success can
+ * check `.ok`; callers that surface the reason to a user (sales reject) read
+ * `.error`.
+ */
+export async function jsonRpc<T = unknown>(
+  method: string,
+  params: unknown,
+  opts: { env?: Env; id?: number } = {}
+): Promise<RpcOutcome<T>> {
+  const env = opts.env ?? "prod";
+  const suffix = env === "uat" ? "_UAT" : "";
+  const auth = process.env[`CARTRACK_AUTH${suffix}`] ?? "";
+  if (!auth) return { ok: false, error: `CARTRACK_AUTH${suffix} not set`, status: null };
+
+  const attempt = async (force: boolean): Promise<RpcOutcome<T> & { retryable?: boolean }> => {
+    const cookie = await getFleetwebCookie(env, force);
+    if (!cookie) return { ok: false, error: `fleetweb login failed (CARTRACK_WEB_PASS${suffix}?)`, status: null };
+    try {
+      const res = await fetch(JSONRPC_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: auth, Cookie: cookie },
+        body: JSON.stringify({ version: "2.0", method, id: opts.id ?? 1, params }),
+        cache: "no-store",
+      });
+      const body = await res.json().catch(() => ({}));
+      const errorText = rpcErrorText(body);
+      if (!res.ok || errorText) {
+        const error = errorText || `HTTP ${res.status}`;
+        return { ok: false, error, status: res.status, retryable: isSessionExpired(res.status, errorText) };
+      }
+      return { ok: true, result: body.result as T };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e), status: null };
+    }
+  };
+
+  const first = await attempt(false);
+  if (first.ok || !first.retryable) return first;
+  return attempt(true);
+}
+
+// ---------------------------------------------------------------------------
+// Job-creation fast path — fleetweb `delivery_create_job` (CREATE_JOB_RPC=1)
+// ---------------------------------------------------------------------------
+//
+// Measured on prod 2026-07-17: REST POST /jobs ≈ 11.3s, this RPC ≈ 0.8–1.9s.
+// It is the browser UI's own endpoint: camelCase fields, integer label ids,
+// strict `Y-m-d\TH:i:sP` timestamps, and it rejects shapes it doesn't know.
+// `restJobToRpc` therefore converts on a whitelist and anything unrecognised
+// routes to plain REST unchanged. A failed RPC create leaves no job behind
+// (verified), so the REST fallback after an RPC error cannot double-create.
+
+/** fleetweb label ids for this account — the RPC only accepts integers here.
+ *  Discovered by REST-creating a job with the string label and reading
+ *  `labels[].labelId` back via delivery_get_job_details. A label missing from
+ *  this map forces the REST path; never guess ids. */
+const RPC_LABEL_IDS: Record<string, number> = {
+  check_in: 728,
+  check_out: 727,
+  audit_weekly: 301,
+  "🛵 Vận chuyển mẫu PSC": 716,
+  "🛵 Vận chuyển mẫu tỉnh": 733,
+  "🛵 Vận chuyển mẫu PSC (về)": 739,
+  "🛵 Vận chuyển mẫu PSC (ghé)": 743,
+  "📦 Booking - Vật tư": 752,
+};
+
+/** "YYYY-MM-DD HH:mm:ss" (vnTimestamp) → the RPC's required "YYYY-MM-DDTHH:mm:ss+07:00".
+ *  Null for any other shape — the caller then stays on REST. */
+function toRpcTs(ts: unknown): string | null {
+  if (typeof ts !== "string") return null;
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(ts)) return ts.replace(" ", "T") + "+07:00";
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+07:00$/.test(ts)) return ts;
+  return null;
+}
+
+/** Convert a REST-shaped create payload to the RPC's shape, or say why not.
+ *  Whitelist-only on every level: an unknown field means this payload uses
+ *  something the RPC path hasn't been verified for, so it must go via REST
+ *  rather than be silently dropped. */
+function restJobToRpc(
+  payload: Record<string, unknown>
+): { data: Record<string, unknown> } | { blocked: string } {
+  const bail = (msg: string): never => {
+    throw new Error(msg);
+  };
+  const asRecord = (v: unknown, what: string): Record<string, unknown> =>
+    v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : bail(`${what} is not an object`);
+  const onlyKeys = (obj: Record<string, unknown>, allowed: Set<string>, what: string) => {
+    for (const k of Object.keys(obj)) if (!allowed.has(k)) bail(`unsupported ${what} field "${k}"`);
+  };
+
+  const TODO_KEYS = new Set(["todo_type_id", "description", "is_required", "stop_type_id"]);
+  const convTodos = (todos: unknown, what: string): Record<string, unknown>[] => {
+    if (!Array.isArray(todos)) bail(`${what} todos is not an array`);
+    return (todos as unknown[]).map((t) => {
+      const todo = asRecord(t, `${what} todo`);
+      onlyKeys(todo, TODO_KEYS, `${what} todo`);
+      const out: Record<string, unknown> = {
+        todoTypeId: todo.todo_type_id ?? bail(`${what} todo missing todo_type_id`),
+        description: String(todo.description ?? ""),
+        // RPC validation demands isRequired on every todo. REST stores absent
+        // is_required as TRUE (verified 2026-07-17 on the PSC shape), so the
+        // default must be true or drivers get optional checklists.
+        isRequired: todo.is_required !== false,
+      };
+      if (todo.stop_type_id != null) out.stopTypeId = todo.stop_type_id;
+      return out;
+    });
+  };
+
+  try {
+    onlyKeys(
+      payload,
+      new Set([
+        "job_type_id", "schedule_type_id", "reference_number", "labels",
+        "delivery_driver_id", "scheduled_delivery_ts", "send_to_driver_at",
+        "stops", "items",
+      ]),
+      "job"
+    );
+
+    const STOP_KEYS = new Set(["stop_type_id", "customer_id", "duration", "note", "delivery_windows", "todos"]);
+    if (!Array.isArray(payload.stops) || payload.stops.length === 0) bail("stops missing");
+    const stops = (payload.stops as unknown[]).map((s) => {
+      const stop = asRecord(s, "stop");
+      onlyKeys(stop, STOP_KEYS, "stop");
+      const out: Record<string, unknown> = {
+        stopTypeId: stop.stop_type_id ?? bail("stop missing stop_type_id"),
+        customerId: stop.customer_id ?? bail("stop missing customer_id"),
+      };
+      if (stop.duration != null) out.duration = stop.duration;
+      if (stop.note) out.note = stop.note;
+      if (stop.delivery_windows != null) {
+        if (!Array.isArray(stop.delivery_windows)) bail("delivery_windows is not an array");
+        out.deliveryWindows = (stop.delivery_windows as unknown[]).map((w) => {
+          const win = asRecord(w, "delivery window");
+          onlyKeys(win, new Set(["time_from", "time_to"]), "delivery window");
+          const okTime = (v: unknown) => typeof v === "string" && /^\d{2}:\d{2}:\d{2}\+07:00$/.test(v);
+          if (!okTime(win.time_from) || !okTime(win.time_to)) bail("delivery window time format");
+          return { timeFrom: win.time_from, timeTo: win.time_to };
+        });
+      }
+      if (stop.todos != null) out.todos = convTodos(stop.todos, "stop");
+      return out;
+    });
+
+    const data: Record<string, unknown> = {
+      jobTypeId: payload.job_type_id ?? bail("job_type_id missing"),
+      // REST coerces schedule_type_id to 2 on every create (verified on the
+      // chấm-công and PSC shapes, 2026-07-17) while the RPC stores what it's
+      // told — so parity means always sending 2, whatever the caller asked for.
+      // The RPC then requires scheduledDeliveryTs to be *present*; an explicit
+      // null passes that check and stamps create-time, same as REST.
+      scheduleTypeId: 2,
+      scheduledDeliveryTs:
+        payload.scheduled_delivery_ts != null
+          ? toRpcTs(payload.scheduled_delivery_ts) ?? bail("scheduled_delivery_ts format")
+          : null,
+      referenceNumber: payload.reference_number ?? bail("reference_number missing"),
+      stops,
+    };
+    if (payload.delivery_driver_id != null) data.deliveryDriverId = payload.delivery_driver_id;
+    if (payload.labels != null) {
+      if (!Array.isArray(payload.labels)) bail("labels is not an array");
+      data.labels = (payload.labels as unknown[]).map((l) =>
+        typeof l === "string" && RPC_LABEL_IDS[l] !== undefined ? RPC_LABEL_IDS[l] : bail(`label "${String(l)}" has no known id`)
+      );
+    }
+    if (payload.send_to_driver_at != null) {
+      data.sendToDriverAt = toRpcTs(payload.send_to_driver_at) ?? bail("send_to_driver_at format");
+    }
+    if (payload.items != null) {
+      if (!Array.isArray(payload.items)) bail("items is not an array");
+      const ITEM_KEYS = new Set(["description", "weight", "item_type_id", "quantity", "tracking_number", "todos"]);
+      data.items = (payload.items as unknown[]).map((i) => {
+        const item = asRecord(i, "item");
+        onlyKeys(item, ITEM_KEYS, "item");
+        const out: Record<string, unknown> = {
+          description: String(item.description ?? ""),
+          itemTypeId: item.item_type_id ?? 1,
+          quantity: item.quantity ?? 1,
+          weight: item.weight ?? 0,
+          trackingNumber: String(item.tracking_number ?? ""),
+        };
+        if (item.todos != null) out.todos = convTodos(item.todos, "item");
+        return out;
+      });
+    }
+    return { data };
+  } catch (e) {
+    return { blocked: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export type CreateJobResult = {
+  ok: boolean;
+  status: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  body: any;
+  via: "rpc" | "rest";
+};
+
+/** Driver statuses observed against REST enforcement (2026-07-17/18 probes):
+ *  2 (off-duty/idle) and 4 (available) — REST assigns to both;
+ *  5 = "Nghỉ ngơi" on-break — REST 422s;
+ *  is_active=false (deactivated; seen with status 3) — REST 422s, different message. */
+const DRIVER_STATUSES_ASSIGNABLE = new Set([2, 4]);
+const DRIVER_STATUS_ON_BREAK = 5;
+
+const make422 = (msg: string) => ({
+  data: null,
+  error: { code: 422, message: "The given data was invalid.", data: { delivery_driver_id: [msg] } },
+});
+
+/** Synthetic copies of the exact 422 bodies REST returns, so
+ *  isDriverUnavailableError() and call-site error handling behave identically
+ *  on the RPC path. */
+const DRIVER_UNAVAILABLE_BODY = make422("Driver does not exist or the current status does not support job assignment");
+const DRIVER_DEACTIVATED_BODY = make422("Driver is deactivated and cannot be assigned to a job");
+
+/**
+ * The fleetweb RPC has dispatcher-override semantics: it creates/assigns jobs
+ * onto on-break AND deactivated drivers where REST refuses with a 422
+ * (both verified live, 2026-07-17/18) — and the chấm-công "Nghỉ ngơi" gate
+ * depends on that refusal. So assigned-at-creation payloads are gated on an
+ * ALLOWLIST: only an active, status-4 driver takes the RPC path. Known-blocked
+ * states get their REST-parity 422 without a create; anything else — unknown
+ * status ids, driver absent from the list, list fetch failed — goes down the
+ * REST path, which enforces the policy server-side.
+ */
+async function rpcDriverStatusGate(
+  driverId: unknown,
+  env: Env
+): Promise<"ok" | "on_break" | "deactivated" | "unknown"> {
+  if (typeof driverId !== "string" || !driverId) return "ok"; // unassigned create — nothing to gate
+  try {
+    const drivers = await getDrivers(env);
+    const d = drivers.find((x) => x.delivery_driver_id === driverId);
+    if (!d) return "unknown";
+    if (!d.is_active) return "deactivated";
+    if (d.driver_status_id === DRIVER_STATUS_ON_BREAK) return "on_break";
+    return DRIVER_STATUSES_ASSIGNABLE.has(d.driver_status_id) ? "ok" : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * Create a job from a REST-shaped payload. With CREATE_JOB_RPC=1 eligible
+ * payloads go through the fleetweb RPC (~6x faster); ineligible payloads and
+ * any RPC failure fall back to the plain REST POST, so error bodies and
+ * `isDriverUnavailableError` handling behave exactly as before on that path.
+ * On success from either path `body.data.job_id` / `body.data.delivery_driver_id`
+ * are present in the same shape.
+ */
+export async function createJob(
+  payload: Record<string, unknown>,
+  env: Env = "prod"
+): Promise<CreateJobResult> {
+  if (process.env.CREATE_JOB_RPC === "1") {
+    const conv = restJobToRpc(payload);
+    if ("blocked" in conv) {
+      console.log(`[createJob] REST path: ${conv.blocked}`);
+    } else {
+      const gate = await rpcDriverStatusGate(payload.delivery_driver_id, env);
+      if (gate === "on_break") {
+        return { ok: false, status: 422, body: DRIVER_UNAVAILABLE_BODY, via: "rpc" };
+      }
+      if (gate === "deactivated") {
+        return { ok: false, status: 422, body: DRIVER_DEACTIVATED_BODY, via: "rpc" };
+      }
+      if (gate === "unknown") {
+        console.log("[createJob] REST path: driver status unverifiable");
+      } else {
+        const out = await jsonRpc<{ data?: { job_id?: number } }>(
+          "delivery_create_job",
+          { data: conv.data },
+          { env }
+        );
+        if (out.ok && out.result?.data?.job_id) {
+          return { ok: true, status: 200, body: out.result, via: "rpc" };
+        }
+        console.warn(`[createJob] RPC create failed (${out.ok ? "no job_id in result" : out.error}); using REST`);
+      }
+    }
+  }
+  const res = await fetch(`${BASE_URL}/jobs`, {
+    method: "POST",
+    headers: getHeaders(env),
+    body: JSON.stringify(payload),
+  });
+  const body = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, body, via: "rest" };
 }
 
 /** Adapt delivery_timeline_route_list routes → Job[] (the s4+s5 source). The
@@ -412,28 +755,15 @@ export function timelineRoutesToJobs(routes: any[]): Job[] {
  *  non-2xx, bad shape) so callers can fall back to REST. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function getTimelineRoutes(dateVn: string, env: Env = "prod"): Promise<any[] | null> {
-  if (env !== "prod") return null; // fleetweb cookie is prod-only; UAT falls back to REST
-  const auth = process.env.CARTRACK_AUTH ?? "";
-  const cookie = await getFleetwebCookie();
-  if (!auth || !cookie) return null;
-  try {
-    const res = await fetch(JSONRPC_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: auth, Cookie: cookie },
-      body: JSON.stringify({
-        version: "2.0",
-        method: "delivery_timeline_route_list",
-        id: 1,
-        params: { data: { scheduleType: "scheduled", filter: vnDayWindow(dateVn) } },
-      }),
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    const routes = data?.result?.routes;
-    return Array.isArray(routes) ? routes : null;
-  } catch {
-    return null;
-  }
+  if (env !== "prod") return null; // fleetweb login is prod-only in practice; UAT falls back to REST
+  const out = await jsonRpc<{ routes?: unknown }>(
+    "delivery_timeline_route_list",
+    { data: { scheduleType: "scheduled", filter: vnDayWindow(dateVn) } },
+    { env }
+  );
+  if (!out.ok) return null;
+  const routes = out.result?.routes;
+  return Array.isArray(routes) ? routes : null;
 }
 
 /** Today's assigned+completed jobs via the route-timeline (JSON-RPC) instead of the
@@ -459,34 +789,21 @@ export async function getTimelineJobs(dateVn: string, env: Env = "prod"): Promis
  *  day has never approached one page, so pagination is intentionally not followed. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function getStopsByLabels(dateVn: string, labels: string[], env: Env = "prod"): Promise<any[] | null> {
-  if (env !== "prod") return null; // fleetweb cookie is prod-only; UAT falls back to REST
-  const auth = process.env.CARTRACK_AUTH ?? "";
-  const cookie = await getFleetwebCookie();
-  if (!auth || !cookie) return null;
-  try {
-    const res = await fetch(JSONRPC_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: auth, Cookie: cookie },
-      body: JSON.stringify({
-        version: "2.0",
-        method: "delivery_get_stops_list",
-        id: 1,
-        params: {
-          data: {
-            filters: { scheduledDeliveryTs: vnDayWindow(dateVn), groupStops: true, assignment: "all", jobLabel: labels },
-            sort: {},
-            pagination: { page: 1, perPage: 200 },
-          },
-        },
-      }),
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    const stops = data?.result?.stops;
-    return Array.isArray(stops) ? stops : null;
-  } catch {
-    return null;
-  }
+  if (env !== "prod") return null; // fleetweb login is prod-only in practice; UAT falls back to REST
+  const out = await jsonRpc<{ stops?: unknown }>(
+    "delivery_get_stops_list",
+    {
+      data: {
+        filters: { scheduledDeliveryTs: vnDayWindow(dateVn), groupStops: true, assignment: "all", jobLabel: labels },
+        sort: {},
+        pagination: { page: 1, perPage: 200 },
+      },
+    },
+    { env }
+  );
+  if (!out.ok) return null;
+  const stops = out.result?.stops;
+  return Array.isArray(stops) ? stops : null;
 }
 
 /** Login then trigger route optimisation for a single driver (JSON-RPC).
@@ -494,41 +811,15 @@ export async function getStopsByLabels(dateVn: string, labels: string[], env: En
  *  Returns true if the API accepted the request. */
 export async function optimizeDriverRoute(
   driverId: string,
-  dateVn: string // YYYY-MM-DD in Vietnam time
+  dateVn: string, // YYYY-MM-DD in Vietnam time
+  env: Env = "prod"
 ): Promise<boolean> {
-  const auth = process.env.CARTRACK_AUTH ?? "";
-  if (!auth) return false;
-
-  const cookie = await getFleetwebCookie();
-  if (!cookie) return false;
-
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    Authorization: auth,
-    Cookie: cookie,
-  };
-
-  try {
-    const res = await fetch(JSONRPC_URL, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        version: "2.0",
-        method: "delivery_route_stops_optimize",
-        id: 1,
-        params: {
-          data: {
-            routeId: `driver_${driverId}`,
-            scheduleType: "scheduled",
-            filter: vnDayWindow(dateVn),
-          },
-        },
-      }),
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
+  const out = await jsonRpc(
+    "delivery_route_stops_optimize",
+    { data: { routeId: `driver_${driverId}`, scheduleType: "scheduled", filter: vnDayWindow(dateVn) } },
+    { env }
+  );
+  return out.ok;
 }
 
 export async function getJobDetails(

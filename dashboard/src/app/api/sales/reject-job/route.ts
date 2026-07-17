@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getFleetwebCookie, BASE_URL, JSONRPC_URL, getHeaders, type Env } from "@/lib/cartrack";
+import { BASE_URL, jsonRpc, getHeaders, type Env } from "@/lib/cartrack";
 import { isStopStarted } from "@/lib/job-filters";
 import { pushRunLog } from "@/lib/smart-log-kv";
 import { vnTimestamp } from "@/lib/time";
@@ -75,28 +75,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Không thể giao job cho proxy driver trước khi huỷ" }, { status: 500 });
     }
 
-    const cookie = await getFleetwebCookie();
-    if (!cookie) {
-      return NextResponse.json({ error: "Không thể đăng nhập Cartrack fleetweb" }, { status: 500 });
-    }
-
-    const rpcRes = await fetch(JSONRPC_URL, {
-      method: "POST",
-      headers: { ...headers, Cookie: cookie },
-      body: JSON.stringify({
-        version: "2.0",
-        method: "delivery_reject_job",
-        id: 10,
-        params: { data: { jobIds: [job.job_id], rejectReason: reject_reason } },
-      }),
-    });
-    const rpcData = await rpcRes.json().catch(() => ({}));
-    if (!rpcRes.ok || rpcData.error) {
-      const errorMsg = rpcData.error?.message ?? rpcData.error ?? "Cartrack API error";
-      return NextResponse.json({
-        error: `Từ chối thất bại: ${errorMsg}`,
-        details: rpcData
-      }, { status: 500 });
+    const out = await jsonRpc(
+      "delivery_reject_job",
+      { data: { jobIds: [job.job_id], rejectReason: reject_reason } },
+      { env, id: 10 }
+    );
+    if (!out.ok) {
+      return NextResponse.json({ error: `Từ chối thất bại: ${out.error}` }, { status: 500 });
     }
 
     void pushRunLog([{

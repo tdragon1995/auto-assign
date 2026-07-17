@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDrivers, getJobsByStatusAndDate, getFleetwebCookie, getCustomerById, JSONRPC_URL, type Env } from "@/lib/cartrack";
+import { getDrivers, getJobsByStatusAndDate, getCustomerById, jsonRpc, type Env } from "@/lib/cartrack";
 import { vnDate, vnDayWindow, vnMinutesSinceMidnight } from "@/lib/time";
 import { haversineKm } from "@/lib/distance";
 import { roadDistancesFromPoint, roadDistancesToPoint } from "@/lib/distance-cache";
@@ -30,29 +30,17 @@ const ACTIVE_STOP_STATUSES = new Set([1, 2, 3]);
 
 async function fetchAllDriverRouteData(
   dateVn: string,
-  auth: string,
-  cookie: string,
+  env: Env,
   shiftStartByDriverId: Record<string, string | null>
 ): Promise<Record<string, DriverRouteData>> {
   try {
-    const res = await fetch(JSONRPC_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: auth, Cookie: cookie },
-      body: JSON.stringify({
-        version: "2.0",
-        method: "delivery_timeline_route_list",
-        id: 1,
-        params: {
-          data: {
-            scheduleType: "scheduled",
-            filter: vnDayWindow(dateVn),
-          },
-        },
-      }),
-    });
-    if (!res.ok) return {};
-    const data = await res.json();
-    const routes: TimelineRoute[] = data.result?.routes ?? [];
+    const out = await jsonRpc<{ routes?: TimelineRoute[] }>(
+      "delivery_timeline_route_list",
+      { data: { scheduleType: "scheduled", filter: vnDayWindow(dateVn) } },
+      { env }
+    );
+    if (!out.ok) return {};
+    const routes: TimelineRoute[] = out.result?.routes ?? [];
 
     const result: Record<string, DriverRouteData> = {};
     for (const route of routes) {
@@ -119,9 +107,6 @@ export async function POST(req: NextRequest) {
 
   const today = vnDate();
 
-  const auth   = process.env.CARTRACK_AUTH ?? "";
-  const cookie = await getFleetwebCookie();
-
   const allDrivers = await getDrivers(env);
   const EXCLUDED_DRIVER_STATUSES = new Set([3, 4, 5]);
   // Include drivers without GPS if they have a start_location (used as Phase 1 fallback)
@@ -134,9 +119,7 @@ export async function POST(req: NextRequest) {
 
   const [unassignedJobs, routeData] = await Promise.all([
     getJobsByStatusAndDate(2, today, env),
-    cookie
-      ? fetchAllDriverRouteData(today, auth, cookie, shiftStartByDriverId)
-      : Promise.resolve({} as Record<string, DriverRouteData>),
+    fetchAllDriverRouteData(today, env, shiftStartByDriverId),
   ]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

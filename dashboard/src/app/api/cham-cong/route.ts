@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { deleteJob, getJobDetails, updateJobStops, getTimelineJobs, BASE_URL, getHeaders, isDriverUnavailableError, type Env } from "@/lib/cartrack";
+import { createJob, deleteJob, getJobDetails, updateJobStops, getTimelineJobs, BASE_URL, getHeaders, isDriverUnavailableError, type Env } from "@/lib/cartrack";
 import { vnDate } from "@/lib/time";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 import { isStopStarted } from "@/lib/job-filters";
@@ -266,15 +266,13 @@ export async function POST(req: NextRequest) {
       ],
     };
 
-    const createRes = await fetch(`${BASE_URL}/jobs`, {
-      method: "POST",
-      headers: getHeaders(env),
-      body: JSON.stringify(jobPayload),
-    });
+    const tCreate = Date.now();
+    const createRes = await createJob(jobPayload, env);
+    console.log(`[cham-cong] create via=${createRes.via} ok=${createRes.ok} ${Date.now() - tCreate}ms`);
 
     if (!createRes.ok) {
       void releaseCreateLock(lockKey);
-      const errBody = await createRes.json().catch(() => ({}));
+      const errBody = createRes.body;
       if (isDriverUnavailableError(errBody)) {
         return NextResponse.json(
           { error: 'Nhân viên đang ở trạng thái "Nghỉ ngơi": Cần cập nhật trạng thái và thử lại!' },
@@ -284,7 +282,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Failed to create job", details: errBody }, { status: createRes.status });
     }
 
-    const created = await createRes.json();
+    const created = createRes.body;
     const jobId: number | undefined = created.data?.job_id;
     if (!jobId) {
       void releaseCreateLock(lockKey);
