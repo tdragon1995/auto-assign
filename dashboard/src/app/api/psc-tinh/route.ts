@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadTplEntries, PSC_TINH_LABEL } from "@/lib/psc-config";
-import { BASE_URL, getHeaders, getStopsByLabels, type Env } from "@/lib/cartrack";
+import { BASE_URL, getHeaders, getStopsByLabels, createJob, type Env } from "@/lib/cartrack";
 import { vnDate, vnTimestamp } from "@/lib/time";
 import { STOP_STATUS, JOB_STATUS } from "@/lib/job-filters";
 import { pushRunLog } from "@/lib/smart-log-kv";
@@ -243,18 +243,13 @@ export async function POST(req: NextRequest) {
       ],
     };
 
-    const createRes = await fetch(`${BASE_URL}/jobs`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(jobPayload),
-    });
+    const createRes = await createJob(jobPayload, env);
 
     if (!createRes.ok) {
-      const errBody = await createRes.json().catch(() => ({}));
-      return NextResponse.json({ error: "Failed to create job", details: errBody }, { status: createRes.status });
+      return NextResponse.json({ error: "Failed to create job", details: createRes.body }, { status: createRes.status });
     }
 
-    const created = await createRes.json();
+    const created = createRes.body;
     const jobId = created.data?.job_id;
     void pushRunLog([{
       ts: vnTimestamp(),

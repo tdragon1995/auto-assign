@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { deleteJob, BASE_URL, getHeaders, isDriverUnavailableError, type Env } from "@/lib/cartrack";
+import { createJob, deleteJob, BASE_URL, getHeaders, isDriverUnavailableError, type Env } from "@/lib/cartrack";
 import { vnDate } from "@/lib/time";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 import { acquireCreateLock, releaseCreateLock } from "@/lib/smart-log-kv";
@@ -183,15 +183,11 @@ export async function POST(req: NextRequest) {
       ],
     };
 
-    const createRes = await fetch(`${BASE_URL}/jobs`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(jobPayload),
-    });
+    const createRes = await createJob(jobPayload, env);
 
     if (!createRes.ok) {
       void releaseCreateLock(lockKey);
-      const errBody = await createRes.json().catch(() => ({}));
+      const errBody = createRes.body;
       if (isDriverUnavailableError(errBody)) {
         return NextResponse.json(
           { error: 'Nhân viên đang ở trạng thái "Nghỉ ngơi": Cần cập nhật trạng thái và thử lại!' },
@@ -204,7 +200,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const created = await createRes.json();
+    const created = createRes.body;
     const jobId: number | undefined = created.data?.job_id;
     if (!jobId) {
       void releaseCreateLock(lockKey);

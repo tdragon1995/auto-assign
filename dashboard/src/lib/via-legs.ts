@@ -1,5 +1,5 @@
 import type { LogLevel, Job } from "./types";
-import { BASE_URL, getHeaders, getJobsByStatusAndDate, type Env } from "./cartrack";
+import { createJob, getJobsByStatusAndDate, type Env } from "./cartrack";
 import { vnDate, vnHoursMinutes, vnTimestamp } from "./time";
 import { loadPscRoutes } from "./psc-config";
 import { PSC_OUTBOUND_LABEL } from "./return-trips";
@@ -80,18 +80,13 @@ async function createViaLeg(
     ],
   };
 
-  const res = await fetch(`${BASE_URL}/jobs`, {
-    method: "POST",
-    headers: getHeaders(env),
-    body: JSON.stringify(payload),
-  });
+  const res = await createJob(payload, env);
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(`createViaLeg failed: ${res.status} ${JSON.stringify(err)}`);
+    throw new Error(`createViaLeg failed: ${res.status} ${JSON.stringify(res.body)}`);
   }
 
-  const json = await res.json();
+  const json = res.body;
   const jobId = json.data?.job_id;
   if (!jobId) throw new Error("createViaLeg: no job_id in response");
   if (json.data?.delivery_driver_id !== driverId) {

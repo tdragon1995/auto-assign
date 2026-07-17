@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { BASE_URL, getHeaders, completeJob, type Env } from "@/lib/cartrack";
+import { BASE_URL, getHeaders, completeJob, createJob, type Env } from "@/lib/cartrack";
 import { vnDate, vnHoursMinutes, vnTimestamp } from "@/lib/time";
 import { isActiveStop, isStopStarted, isCompletedOrRejectedStop, pscPairKey } from "@/lib/job-filters";
 import { PSC_VIA_LABEL } from "@/lib/via-legs";
@@ -205,22 +205,17 @@ export async function POST(req: NextRequest) {
     };
 
     const _tCreate = Date.now();
-    const createRes = await fetch(`${BASE_URL}/jobs`, {
-      method: "POST",
-      headers: getHeaders(env),
-      body: JSON.stringify(jobPayload),
-    });
+    const createRes = await createJob(jobPayload, env);
 
     if (!createRes.ok) {
       releaseLock(lockKey);
       void releaseCreateLock(lockKey); // creation failed → free the pair to retry
-      const errBody = await createRes.json().catch(() => ({}));
-      return NextResponse.json({ error: "Failed to create job", details: errBody }, { status: createRes.status });
+      return NextResponse.json({ error: "Failed to create job", details: createRes.body }, { status: createRes.status });
     }
 
-    const created = await createRes.json();
+    const created = createRes.body;
     const newJobId = created.data?.job_id;
-    plog(`job-create: ${Date.now() - _tCreate}ms | total: ${Date.now() - _t0}ms | job_id=${newJobId}`);
+    plog(`job-create: ${Date.now() - _tCreate}ms via=${createRes.via} | total: ${Date.now() - _t0}ms | job_id=${newJobId}`);
 
     // Write-through: register the new job in the fast-path index immediately so a
     // re-tap before the next cycle (which would otherwise not yet see this job) is

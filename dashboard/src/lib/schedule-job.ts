@@ -1,4 +1,4 @@
-import { BASE_URL, PROXY_DRIVER_ID, assignJob, getHeaders, type Env } from "./cartrack";
+import { BASE_URL, PROXY_DRIVER_ID, assignJob, createJob, getHeaders, type Env } from "./cartrack";
 import { SHEET_GID, fetchSheetRows } from "./sheets";
 import { vnDate, vnTimestamp } from "./time";
 
@@ -231,22 +231,17 @@ export async function createScheduleJob(
 
     const payload = buildJobPayload(row, refNumber, sendToDriverAt);
 
-    const res = await fetch(`${BASE_URL}/jobs`, {
-      method: "POST",
-      headers: getHeaders(env),
-      body: JSON.stringify(payload),
-    });
+    const res = await createJob(payload, env);
 
     if (!res.ok) {
-      const errBody = await res.json().catch(() => ({}));
       return {
         ...base,
         status: "ERROR",
-        message: `HTTP ${res.status} ${JSON.stringify(errBody).slice(0, 240)}`,
+        message: `HTTP ${res.status} ${JSON.stringify(res.body).slice(0, 240)}`,
       };
     }
 
-    const created = await res.json().catch(() => ({}));
+    const created = res.body ?? {};
     const jobId = created?.data?.job_id;
 
     if (!jobId) {

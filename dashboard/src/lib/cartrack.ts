@@ -451,6 +451,7 @@ const RPC_LABEL_IDS: Record<string, number> = {
   "🛵 Vận chuyển mẫu PSC (về)": 739,
   "🛵 Vận chuyển mẫu PSC (ghé)": 743,
   "📦 Booking - Vật tư": 752,
+  "📅 Lịch cố định": 740,
 };
 
 /** "YYYY-MM-DD HH:mm:ss" (vnTimestamp) → the RPC's required "YYYY-MM-DDTHH:mm:ss+07:00".
