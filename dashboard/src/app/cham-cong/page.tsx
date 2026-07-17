@@ -928,67 +928,6 @@ export default function ChamCongPage() {
                 )}
               </div>
 
-              {/* Đổi địa điểm — only while an untouched chấm-công task exists */}
-              {ongoing && (
-                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 space-y-2.5">
-                  <p className="text-sm text-amber-800">
-                    Đang có chấm công <span className="font-semibold">{ongoing.type === "check-in" ? "Vào ca" : "Ra ca"}</span> tại{" "}
-                    <span className="font-semibold">{ongoing.location_name ?? "—"}</span>, cần thay đổi địa điểm?
-                  </p>
-
-                  {!showSwitchList ? (
-                    <button
-                      onClick={() => setShowSwitchList(true)}
-                      disabled={switching}
-                      className="w-full flex items-center justify-center gap-1.5 bg-amber-600 hover:bg-amber-700 disabled:opacity-40 text-white font-semibold rounded-lg py-2.5 text-sm transition-colors"
-                    >
-                      {switching ? <Loader2 size={15} className="animate-spin" /> : <MapPin size={15} />}
-                      Đổi địa điểm
-                    </button>
-                  ) : (
-                    <div className="space-y-2">
-                      <div className="relative">
-                        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-                        <input
-                          type="text"
-                          autoFocus
-                          className="w-full border border-amber-300 rounded-lg pl-9 pr-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-                          placeholder="Tìm địa điểm mới..."
-                          value={switchSearch}
-                          onChange={(e) => setSwitchSearch(e.target.value)}
-                          disabled={switching}
-                        />
-                      </div>
-                      <ul className="bg-white border border-amber-200 rounded-lg max-h-44 overflow-y-auto divide-y divide-gray-100">
-                        {switchOptions.length === 0 ? (
-                          <li className="px-3 py-2 text-sm text-gray-400">Không tìm thấy địa điểm.</li>
-                        ) : (
-                          switchOptions.map((l) => (
-                            <li key={l.customer_id}>
-                              <button
-                                onClick={() => switchLocation(l)}
-                                disabled={switching}
-                                className="w-full text-left px-3 py-2 hover:bg-amber-50 disabled:opacity-50 transition-colors"
-                              >
-                                <div className="text-sm font-medium text-gray-800">{l.name}</div>
-                                {l.address && <div className="text-xs text-gray-400 truncate">{l.address}</div>}
-                              </button>
-                            </li>
-                          ))
-                        )}
-                      </ul>
-                      <button
-                        onClick={() => { setShowSwitchList(false); setSwitchSearch(""); }}
-                        disabled={switching}
-                        className="w-full text-xs font-medium text-amber-800 hover:underline disabled:opacity-50 py-1"
-                      >
-                        {switching ? "Đang đổi địa điểm..." : "Huỷ"}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-
               {/* Check-in / Check-out buttons — always available. A pending Vào Ca must
                   not hide Ra Ca: a driver who checked in, forgot to finish the task in
                   Cartrack, and returns at end of shift still needs to check out. The
@@ -1010,6 +949,64 @@ export default function ChamCongPage() {
                   {ccStatus === "loading" ? "Đang xử lý..." : "Ra Ca"}
                 </button>
               </div>
+
+              {/* Đổi địa điểm — a quiet text-link below the buttons, only while an
+                  untouched chấm-công task exists. Deliberately understated: this is a
+                  correction path for a mistake, not the primary action on this screen. */}
+              {ongoing && (
+                <div className="pt-0.5">
+                  {!showSwitchList ? (
+                    <button
+                      onClick={() => setShowSwitchList(true)}
+                      disabled={switching}
+                      className="w-full flex items-center justify-center gap-1 text-xs text-amber-700 hover:text-amber-800 disabled:opacity-50 py-1 transition-colors"
+                    >
+                      {switching ? <Loader2 size={11} className="animate-spin" /> : <MapPin size={11} />}
+                      Nhầm địa điểm {ongoing.type === "check-in" ? "vào ca" : "ra ca"} ({ongoing.location_name ?? "—"})? Đổi địa điểm
+                    </button>
+                  ) : (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 space-y-2">
+                      <div className="relative">
+                        <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                        <input
+                          type="text"
+                          autoFocus
+                          className="w-full border border-amber-300 rounded-lg pl-8 pr-3 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                          placeholder="Tìm địa điểm mới..."
+                          value={switchSearch}
+                          onChange={(e) => setSwitchSearch(e.target.value)}
+                          disabled={switching}
+                        />
+                      </div>
+                      <ul className="bg-white border border-amber-200 rounded-lg max-h-36 overflow-y-auto divide-y divide-gray-100">
+                        {switchOptions.length === 0 ? (
+                          <li className="px-2.5 py-1.5 text-xs text-gray-400">Không tìm thấy địa điểm.</li>
+                        ) : (
+                          switchOptions.map((l) => (
+                            <li key={l.customer_id}>
+                              <button
+                                onClick={() => switchLocation(l)}
+                                disabled={switching}
+                                className="w-full text-left px-2.5 py-1.5 hover:bg-amber-50 disabled:opacity-50 transition-colors"
+                              >
+                                <div className="text-xs font-medium text-gray-800">{l.name}</div>
+                                {l.address && <div className="text-[11px] text-gray-400 truncate">{l.address}</div>}
+                              </button>
+                            </li>
+                          ))
+                        )}
+                      </ul>
+                      <button
+                        onClick={() => { setShowSwitchList(false); setSwitchSearch(""); }}
+                        disabled={switching}
+                        className="w-full text-[11px] font-medium text-amber-800 hover:underline disabled:opacity-50 py-0.5"
+                      >
+                        {switching ? "Đang đổi địa điểm..." : "Huỷ"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Chấm công status message */}
               {ccMessage && (
