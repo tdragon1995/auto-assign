@@ -260,6 +260,9 @@ function JobCard({ job, code, onCancel, onSendVia3pl }: {
   return (
     <>
       <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm space-y-2">
+        {job.reference_number && (
+          <p className="text-[11px] font-semibold text-slate-500 break-all leading-tight">{job.reference_number}</p>
+        )}
         <div className="grid gap-2 grid-cols-2">
           {job.stops.map((s) => (
             <StopTile key={s.stop_id} stop={s} onClick={() => setSheetOpen(true)} />
