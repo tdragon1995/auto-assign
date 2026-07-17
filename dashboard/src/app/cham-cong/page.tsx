@@ -32,12 +32,20 @@ interface NvSession {
   driver_name: string;
 }
 
+interface OngoingChamCong {
+  job_id: number;
+  type: ActionType;
+  customer_id: string | null;
+  location_name: string | null;
+}
+
 interface ShiftState {
   checkInCount: number;
   completedCheckOuts: number;
   activeCheckOuts: number;
   pendingJobs: number;
   pendingJobNames: string[];
+  ongoing: OngoingChamCong | null;
   fetchedAt: number;
 }
 
@@ -253,6 +261,13 @@ export default function ChamCongPage() {
   const [pendingNames, setPendingNames] = useState<string[]>([]);
   const shiftStateRef  = useRef<ShiftState | null>(null);
   const [shiftFetching, setShiftFetching] = useState(false);
+  // Mirrored out of shiftStateRef because the "Đổi địa điểm" button has to re-render on it.
+  const [ongoing,        setOngoing]        = useState<OngoingChamCong | null>(null);
+  const [switching,      setSwitching]      = useState(false);
+  // The switch panel carries its own picker. It must not reuse the "Địa điểm" box above:
+  // that still holds the location just checked into, so the control would start dead.
+  const [showSwitchList, setShowSwitchList] = useState(false);
+  const [switchSearch,   setSwitchSearch]   = useState("");
 
   // ── Nộp Đơn Nghỉ tab ──────────────────────────────────────────────────────
   const [leaveType,         setLeaveType]         = useState<LeaveType>("");
@@ -343,11 +358,13 @@ export default function ChamCongPage() {
         const data = await res.json();
         const state: ShiftState = { ...data, fetchedAt: Date.now() };
         shiftStateRef.current = state;
+        setOngoing(state.ongoing ?? null);
         return state;
       }
       return null;
     } catch {
       shiftStateRef.current = null;
+      setOngoing(null);
       return null;
     } finally {
       setShiftFetching(false);
@@ -363,6 +380,7 @@ export default function ChamCongPage() {
       const data = await res.json();
       const state: ShiftState = { ...data, fetchedAt: Date.now() };
       shiftStateRef.current = state;
+      setOngoing(state.ongoing ?? null);
       return state;
     } catch {
       return null;
@@ -424,6 +442,7 @@ export default function ChamCongPage() {
     setDriverName("");
     setDriverSearch("");
     shiftStateRef.current = null;
+    setOngoing(null);
     localStorage.removeItem(LS_DRIVER_ID);
     localStorage.removeItem(LS_DRIVER_NAME);
   }
@@ -541,6 +560,51 @@ export default function ChamCongPage() {
     setLocationSearch("");
   }
 
+  // ── Đổi địa điểm ──────────────────────────────────────────────────────────
+  // Moves the open chấm-công task to the location picked from this panel's own list.
+  async function switchLocation(target: Location) {
+    if (!ongoing || switching) return;
+    setSwitching(true);
+    setCcMessage("");
+    setPendingNames([]);
+    try {
+      const res = await fetch("/api/cham-cong", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ driver_id: driverId, job_id: ongoing.job_id, psc_customer_id: target.customer_id }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setCcStatus("error");
+        setCcMessage(data.error ?? "Đổi địa điểm thất bại.");
+        // A rejection usually means the task moved on (started/finished) — resync so the
+        // panel reflects what Cartrack actually has.
+        shiftStateRef.current = null;
+        fetchShiftState(driverId);
+        return;
+      }
+      setCcStatus("success");
+      setCcMessage(`Đã đổi địa điểm chấm công ${ongoing.type === "check-in" ? "vào ca" : "ra ca"} sang ${data.location_name} (Job #${data.job_id}).`);
+      setShowSwitchList(false);
+      setSwitchSearch("");
+      shiftStateRef.current = null;
+      fetchShiftState(driverId);
+    } catch {
+      setCcStatus("error");
+      setCcMessage("Không thể kết nối. Vui lòng thử lại.");
+    } finally {
+      setSwitching(false);
+    }
+  }
+
+  // Locations offered by the switch panel — everything except where the task already is.
+  const switchOptions = useMemo(() => {
+    const pool = locations.filter((l) => l.customer_id !== ongoing?.customer_id);
+    const q = switchSearch.trim().toLowerCase();
+    if (!q) return pool;
+    return pool.filter((l) => l.name.toLowerCase().includes(q) || l.address.toLowerCase().includes(q));
+  }, [locations, ongoing, switchSearch]);
+
   // ── Chấm Công submit ──────────────────────────────────────────────────────
   async function submitChamCong(type: ActionType) {
     if (!driverId || !locationId) {
@@ -581,6 +645,9 @@ export default function ChamCongPage() {
       }
       shiftStateRef.current = null;
       fetchShiftState(driverId);
+      // The picked location was input to an action that's now done — leaving it filled
+      // would contradict the địa điểm the switch panel reports as authoritative.
+      clearLocation();
       setCcStatus("success");
       if (type === "check-in") {
         setCcMessage(`Đã tạo task vào ca (Job #${data.job_id}). Vui lòng mở app Cartrack và hoàn thành task để chấm công vào ca!`);
@@ -820,8 +887,11 @@ export default function ChamCongPage() {
           {/* ── Chấm Công tab ───────────────────────────────────────────── */}
           {tab === "cham-cong" && (
             <>
-              {/* Location dropdown */}
-              <div className="space-y-1 relative">
+              {/* Location dropdown — needed for whichever of Vào Ca / Ra Ca is still
+                  usable even while a task is pending (see those buttons below), so it
+                  must stay available. Only hidden while the switch panel has its own
+                  picker open, so there is never more than one địa điểm control on screen. */}
+              <div className={`space-y-1 relative ${showSwitchList ? "hidden" : ""}`}>
                 <label className="text-sm font-medium text-gray-700">Địa điểm</label>
                 <div className="relative">
                   <input
@@ -858,7 +928,72 @@ export default function ChamCongPage() {
                 )}
               </div>
 
-              {/* Check-in / Check-out buttons */}
+              {/* Đổi địa điểm — only while an untouched chấm-công task exists */}
+              {ongoing && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 space-y-2.5">
+                  <p className="text-sm text-amber-800">
+                    Đang có chấm công <span className="font-semibold">{ongoing.type === "check-in" ? "Vào ca" : "Ra ca"}</span> tại{" "}
+                    <span className="font-semibold">{ongoing.location_name ?? "—"}</span>, cần thay đổi địa điểm?
+                  </p>
+
+                  {!showSwitchList ? (
+                    <button
+                      onClick={() => setShowSwitchList(true)}
+                      disabled={switching}
+                      className="w-full flex items-center justify-center gap-1.5 bg-amber-600 hover:bg-amber-700 disabled:opacity-40 text-white font-semibold rounded-lg py-2.5 text-sm transition-colors"
+                    >
+                      {switching ? <Loader2 size={15} className="animate-spin" /> : <MapPin size={15} />}
+                      Đổi địa điểm
+                    </button>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="relative">
+                        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                        <input
+                          type="text"
+                          autoFocus
+                          className="w-full border border-amber-300 rounded-lg pl-9 pr-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                          placeholder="Tìm địa điểm mới..."
+                          value={switchSearch}
+                          onChange={(e) => setSwitchSearch(e.target.value)}
+                          disabled={switching}
+                        />
+                      </div>
+                      <ul className="bg-white border border-amber-200 rounded-lg max-h-44 overflow-y-auto divide-y divide-gray-100">
+                        {switchOptions.length === 0 ? (
+                          <li className="px-3 py-2 text-sm text-gray-400">Không tìm thấy địa điểm.</li>
+                        ) : (
+                          switchOptions.map((l) => (
+                            <li key={l.customer_id}>
+                              <button
+                                onClick={() => switchLocation(l)}
+                                disabled={switching}
+                                className="w-full text-left px-3 py-2 hover:bg-amber-50 disabled:opacity-50 transition-colors"
+                              >
+                                <div className="text-sm font-medium text-gray-800">{l.name}</div>
+                                {l.address && <div className="text-xs text-gray-400 truncate">{l.address}</div>}
+                              </button>
+                            </li>
+                          ))
+                        )}
+                      </ul>
+                      <button
+                        onClick={() => { setShowSwitchList(false); setSwitchSearch(""); }}
+                        disabled={switching}
+                        className="w-full text-xs font-medium text-amber-800 hover:underline disabled:opacity-50 py-1"
+                      >
+                        {switching ? "Đang đổi địa điểm..." : "Huỷ"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Check-in / Check-out buttons — always available. A pending Vào Ca must
+                  not hide Ra Ca: a driver who checked in, forgot to finish the task in
+                  Cartrack, and returns at end of shift still needs to check out. The
+                  shift-state guard in submitChamCong already blocks re-submitting the
+                  SAME type with a clear message; only that case is actually dead. */}
               <div className="grid grid-cols-2 gap-3 pt-1">
                 <button
                   disabled={ccStatus === "loading"}

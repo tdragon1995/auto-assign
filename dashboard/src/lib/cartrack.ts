@@ -207,15 +207,22 @@ export async function updateCustomerPhone(
   return { ok: true };
 }
 
+/** PUT a job's stops. Pass `jobTypeId` for any job whose stop count doesn't match the
+ *  default 2-stop pickup+dropoff shape: Cartrack validates the stops array against the
+ *  job type, and without job_type_id in the body it assumes the default and rejects a
+ *  valid payload with 422 "The number of stops for this job type is not valid".
+ *  Verified against prod: a 1-stop chấm-công job (job_type_id 3) only accepts the PUT
+ *  when job_type_id is included. 2-stop callers can safely omit it. */
 export async function updateJobStops(
   jobId: number,
   stops: { stop_id: number; stop_type_id: number; customer_id: string; customer_name?: string; note?: string; country_id?: number; delivery_windows?: { time_from: string; time_to: string }[] }[],
-  env: Env = "prod"
+  env: Env = "prod",
+  jobTypeId?: number
 ): Promise<{ ok: boolean; status: number; body: unknown }> {
   const res = await fetch(`${BASE_URL}/jobs/${jobId}`, {
     method: "PUT",
     headers: getHeaders(env),
-    body: JSON.stringify({ stops }),
+    body: JSON.stringify(jobTypeId == null ? { stops } : { job_type_id: jobTypeId, stops }),
   });
   const body = await res.json().catch(() => ({}));
   return { ok: res.ok, status: res.status, body };
