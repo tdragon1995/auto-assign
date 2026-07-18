@@ -774,6 +774,9 @@ export async function autoAssignCycle(
   let altMs = 0, zaloMs = 0, optimizeMs = 0;
   let _jobIdx = 0;
   const driversToOptimize = new Set<string>();
+  // Route-optimise batch, kicked off after the assign loop and settled at the
+  // end of follow-ups (see the finally) — null until the loop collects drivers.
+  let optimizePromise: Promise<void> | null = null;
 
   // One Cartrack call per cycle: getJobsByDate fetches ALL of today's jobs and we
   // partition into status 2/4/5 in memory (a trivial O(n) pass), instead of three
@@ -1714,22 +1717,28 @@ export async function autoAssignCycle(
   }
 
   // Deferred route-optimise: one bounded-parallel call per pilot driver assigned
-  // this cycle — off the per-job path and deduped (one call/driver, not per job).
+  // this cycle — deduped (one call/driver, not per job) and OVERLAPPED with the
+  // follow-ups: a single optimise call can run 4-8s Cartrack-side, and nothing
+  // downstream reads its result this cycle (follow-up legs are created after it
+  // either way), so the cycle no longer waits here. Settled at the end of the
+  // finally — a promise left dangling would be frozen with the lambda.
   if (driversToOptimize.size > 0) {
-    const _tOpt = Date.now();
     const ids = [...driversToOptimize];
-    for (let i = 0; i < ids.length; i += 5) {
-      await Promise.all(ids.slice(i, i + 5).map(async (id) => {
-        const ok = await optimizeDriverRoute(id, vnDate(), env);
-        log(`Route optimise for ${id}: ${ok ? "triggered" : "skipped (no cookie or failed)"}`, ok ? "INFO" : "WARN");
-      }));
-    }
-    optimizeMs += Date.now() - _tOpt;
+    optimizePromise = (async () => {
+      const _tOpt = Date.now();
+      for (let i = 0; i < ids.length; i += 5) {
+        await Promise.all(ids.slice(i, i + 5).map(async (id) => {
+          const ok = await optimizeDriverRoute(id, vnDate(), env);
+          log(`Route optimise for ${id}: ${ok ? "triggered" : "skipped (no cookie or failed)"}`, ok ? "INFO" : "WARN");
+        }));
+      }
+      optimizeMs += Date.now() - _tOpt;
+    })();
   }
 
   const _loopMs = Date.now() - tMark;
-  const _assignIsh = _loopMs - goongMs - altMs - zaloMs - optimizeMs;
-  clog(`[timing] loop detail: ${jobs.length} job(s) in ${_loopMs}ms | goong ${goongMs} alt ${altMs} zalo ${zaloMs} optimize ${optimizeMs} assign~${_assignIsh}ms`);
+  const _assignIsh = _loopMs - goongMs - altMs - zaloMs;
+  clog(`[timing] loop detail: ${jobs.length} job(s) in ${_loopMs}ms | goong ${goongMs} alt ${altMs} zalo ${zaloMs} assign~${_assignIsh}ms | optimize overlapped (${driversToOptimize.size} driver(s))`);
   phase("assign-loop");
 
   if (!onlyJobIds) {
@@ -1793,6 +1802,18 @@ export async function autoAssignCycle(
       await cleanupStaleTrips(config, env, log, shared, followLeave);
     } catch (e) {
       log(`Cleanup hook failed: ${e}`, "ERROR");
+    }
+    // Settle the overlapped route-optimise batch before the lambda returns.
+    // Usually resolved long ago (follow-ups ran meanwhile); the wait shows how
+    // much of the optimise time was NOT hidden behind follow-ups.
+    if (optimizePromise) {
+      const _tWait = Date.now();
+      try {
+        await optimizePromise;
+      } catch (e) {
+        log(`Route optimise batch failed: ${e}`, "WARN");
+      }
+      clog(`[timing] optimize: ${optimizeMs}ms total, ${Date.now() - _tWait}ms of it waited after follow-ups`);
     }
     phase("follow-ups");
   }
