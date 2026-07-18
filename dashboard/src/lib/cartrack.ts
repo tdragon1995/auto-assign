@@ -632,11 +632,15 @@ export type CreateJobResult = {
   via: "rpc" | "rest";
 };
 
-/** Driver statuses observed against REST enforcement (2026-07-17/18 probes):
- *  2 (off-duty/idle) and 4 (available) — REST assigns to both;
- *  5 = "Nghỉ ngơi" on-break — REST 422s;
- *  is_active=false (deactivated; seen with status 3) — REST 422s, different message. */
-const DRIVER_STATUSES_ASSIGNABLE = new Set([2, 4]);
+/** Driver statuses vs REST enforcement (probes 2026-07-17/18 + fleet histogram):
+ *  1 = driving/mid-route (31 active drivers at midday — REST assigns them 2nd/3rd
+ *  jobs all day), 2 = idle/off-duty, 3 = offline/not-yet-logged-in (44 active —
+ *  REST assigns their fixed jobs pre-login every morning), 4 = available.
+ *  REST refuses exactly two states: 5 "Nghỉ ngơi" on-break (422) and
+ *  is_active=false / deactivated (422, different message) — note status 3 alone
+ *  is NOT deactivation; the is_active flag is. Never-observed ids fall through
+ *  to REST for the authoritative verdict. */
+const DRIVER_STATUSES_ASSIGNABLE = new Set([1, 2, 3, 4]);
 const DRIVER_STATUS_ON_BREAK = 5;
 
 const make422 = (msg: string) => ({
