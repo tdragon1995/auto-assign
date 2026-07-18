@@ -661,7 +661,7 @@ async function releaseDueProxyJobs(
   const releasedIds: number[] = [];
   for (let i = 0; i < due.length; i += 10) {
     await Promise.all(due.slice(i, i + 10).map(async (job) => {
-      const { ok, status } = await unassignJob(job.job_id, env);
+      const { ok, status } = await unassignJob(job.job_id, env, PROXY_DRIVER_ID);
       const relRoute = `${job.stops?.find((s) => s.stop_type_id === 1)?.customer_name ?? "—"} → ${job.stops?.find((s) => s.stop_type_id === 2)?.customer_name ?? "—"}`;
       if (ok) {
         releasedIds.push(job.job_id);
@@ -728,7 +728,7 @@ async function rolloverUnfinishedJobs(
     }`;
     // Pull the stale driver first so the job re-enters the unassigned pool.
     if (job.delivery_driver_id) {
-      const { ok, status } = await unassignJob(job.job_id, env);
+      const { ok, status } = await unassignJob(job.job_id, env, job.delivery_driver_id);
       if (!ok) {
         log(`Job ${job.job_id} - Rollover unassign failed (HTTP ${status}) | ${route}`, "WARN");
         continue;

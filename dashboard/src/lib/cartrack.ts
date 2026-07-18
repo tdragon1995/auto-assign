@@ -289,8 +289,34 @@ export async function updateJobScheduledDeliveryTs(
 
 export async function unassignJob(
   jobId: number,
-  env: Env = "prod"
+  env: Env = "prod",
+  driverId?: string
 ): Promise<{ ok: boolean; status: number }> {
+  // With CREATE_JOB_RPC=1, prefer the fleetweb RPC (measured ~2.2s vs ~5.5s REST,
+  // 2026-07-18). Verified: the `filter` window is NOT sensitive (a job scheduled
+  // another day still unassigns) and the routeId is NOT validated against the
+  // job's current driver — the jobIds drive the operation — so a missing/imperfect
+  // driver hint can't unassign the wrong job. Confirm the id echoes back in
+  // unassignedJobs; anything else falls through to the authoritative REST PUT.
+  // Unlike delete, unassign has no driver-state concern (it removes, not adds).
+  if (process.env.CREATE_JOB_RPC === "1") {
+    const out = await jsonRpc<{ unassigned?: { unassignedJobs?: number[] } }>(
+      "delivery_route_slice_jobs_unassign",
+      {
+        data: {
+          routeId: `driver_${driverId ?? PROXY_DRIVER_ID}`,
+          jobIds: [jobId],
+          updateRecurringSetup: false,
+          scheduleType: "scheduled",
+          filter: vnDayWindow(),
+        },
+      },
+      { env }
+    );
+    if (out.ok && out.result?.unassigned?.unassignedJobs?.includes(jobId)) {
+      return { ok: true, status: 200 };
+    }
+  }
   const res = await fetch(`${BASE_URL}/jobs/${jobId}`, {
     method: "PUT",
     headers: getHeaders(env),
