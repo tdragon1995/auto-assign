@@ -1268,7 +1268,9 @@ export async function autoAssignCycle(
           try {
             // Assign via the update endpoint — it returns the driver, so the name comes
             // straight from Cartrack's response (no driver-list fetch needed).
-            const { status: apiStatus, body, driverName: ctName } = await assignJobViaUpdate(jobId, driverId, env);
+            const { status: apiStatus, body, driverName: ctName } = await assignJobViaUpdate(
+              jobId, driverId, env, allGpsDrivers.find((d) => d.delivery_driver_id === driverId)
+            );
             if (apiStatus === 200) {
               const driverName = ctName || (subFor ? driverId : smartMapping.first_name_last_name) || driverId;
               const who = subFor ? `${driverName} (sub for ${subFor})` : driverName;
@@ -1482,10 +1484,10 @@ export async function autoAssignCycle(
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             let apiStatus: number, body: any, ctName: string | null = null;
             if (subFor) {
-              const r = await assignJobViaUpdate(jobId, targetId, env);
+              const r = await assignJobViaUpdate(jobId, targetId, env, driverById.get(targetId));
               apiStatus = r.status; body = r.body; ctName = r.driverName;
             } else {
-              const r = await assignJob(targetId, jobId, env);
+              const r = await assignJob(targetId, jobId, env, driverById.get(targetId));
               apiStatus = r.status; body = r.body;
             }
             if (apiStatus === 200) {
@@ -1598,7 +1600,9 @@ export async function autoAssignCycle(
     try {
       // Assign via the update endpoint — returns the driver, so the name comes from
       // Cartrack's response (no driver-list fetch). Single driver, no on-break fallback.
-      const { status: apiStatus, body, driverName: ctName } = await assignJobViaUpdate(jobId, driverId, env);
+      const { status: apiStatus, body, driverName: ctName } = await assignJobViaUpdate(
+        jobId, driverId, env, allGpsDrivers.find((d) => d.delivery_driver_id === driverId)
+      );
 
       if (apiStatus === 200) {
         // Everything for the log + Zalo comes from data already in hand — no

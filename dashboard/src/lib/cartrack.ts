@@ -128,12 +128,18 @@ export async function deleteJob(jobId: number, env: Env = "prod"): Promise<boole
 export async function assignJob(
   driverId: string,
   jobId: number,
-  env: Env = "prod"
+  env: Env = "prod",
+  driverRec?: Driver
 ): Promise<{
   status: number;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   body: any;
 }> {
+  const viaRpc = await tryAssignViaRpc(jobId, driverId, env, driverRec);
+  if (viaRpc.kind === "assigned") {
+    return { status: 200, body: { data: { job_id: jobId, delivery_driver_id: driverId } } };
+  }
+  if (viaRpc.kind === "blocked") return { status: 422, body: viaRpc.body };
   const res = await fetch(`${BASE_URL}/jobs/assign/${driverId}`, {
     method: "PUT",
     headers: getHeaders(env),
@@ -153,13 +159,23 @@ export async function assignJob(
 export async function assignJobViaUpdate(
   jobId: number,
   driverId: string,
-  env: Env = "prod"
+  env: Env = "prod",
+  driverRec?: Driver
 ): Promise<{
   status: number;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   body: any;
   driverName: string | null;
 }> {
+  const viaRpc = await tryAssignViaRpc(jobId, driverId, env, driverRec);
+  if (viaRpc.kind === "assigned") {
+    return {
+      status: 200,
+      body: { data: { job_id: jobId, delivery_driver_id: driverId } },
+      driverName: viaRpc.driverName,
+    };
+  }
+  if (viaRpc.kind === "blocked") return { status: 422, body: viaRpc.body, driverName: null };
   const res = await fetch(`${BASE_URL}/jobs/${jobId}`, {
     method: "PUT",
     headers: getHeaders(env),
@@ -644,6 +660,12 @@ const DRIVER_DEACTIVATED_BODY = make422("Driver is deactivated and cannot be ass
  * status ids, driver absent from the list, list fetch failed — goes down the
  * REST path, which enforces the policy server-side.
  */
+function evalDriverAssignability(d: Driver): "ok" | "on_break" | "deactivated" | "unknown" {
+  if (!d.is_active) return "deactivated";
+  if (d.driver_status_id === DRIVER_STATUS_ON_BREAK) return "on_break";
+  return DRIVER_STATUSES_ASSIGNABLE.has(d.driver_status_id) ? "ok" : "unknown";
+}
+
 async function rpcDriverStatusGate(
   driverId: unknown,
   env: Env
@@ -653,12 +675,79 @@ async function rpcDriverStatusGate(
     const drivers = await getDrivers(env);
     const d = drivers.find((x) => x.delivery_driver_id === driverId);
     if (!d) return "unknown";
-    if (!d.is_active) return "deactivated";
-    if (d.driver_status_id === DRIVER_STATUS_ON_BREAK) return "on_break";
-    return DRIVER_STATUSES_ASSIGNABLE.has(d.driver_status_id) ? "ok" : "unknown";
+    return evalDriverAssignability(d);
   } catch {
     return "unknown";
   }
+}
+
+/** Proxy drivers are ours (parking, duplicate-reject staging) — human driver-state
+ *  rules don't apply, so the RPC assign path skips the status gate for them. */
+function isProxyDriver(driverId: string): boolean {
+  const rejectProxy = process.env.CARTRACK_REJECT_PROXY_DRIVER_ID ?? "";
+  return driverId === PROXY_DRIVER_ID || (!!rejectProxy && driverId === rejectProxy);
+}
+
+type RpcAssignOutcome =
+  | { kind: "assigned"; driverName: string | null }
+  | { kind: "blocked"; body: typeof DRIVER_UNAVAILABLE_BODY }
+  | { kind: "fallback" };
+
+/**
+ * RPC-first assign shared by assignJob / assignJobViaUpdate (CREATE_JOB_RPC=1).
+ * ~2.0s vs ~7.3s REST (measured 2026-07-18). Applies the same driver-state gate
+ * as createJob — the fleetweb RPC would otherwise assign onto on-break and
+ * deactivated drivers that REST refuses — returning the REST-identical 422
+ * bodies so isDriverUnavailable()/isDriverUnavailableError() keep working.
+ * `driverRec` lets the engine pass the Driver it already holds (its per-cycle
+ * getDrivers list), making the gate free; without it one drivers-list fetch
+ * (~1.8s) runs here. Residual race: the record can be seconds-to-minutes stale,
+ * so a driver flipping to break between fetch and assign slips through — REST
+ * caught that server-side; accepted as rare and driver-recoverable (reject).
+ * "fallback" means: let the caller run the authoritative REST path.
+ */
+async function tryAssignViaRpc(
+  jobId: number,
+  driverId: string,
+  env: Env,
+  driverRec?: Driver
+): Promise<RpcAssignOutcome> {
+  if (process.env.CREATE_JOB_RPC !== "1") return { kind: "fallback" };
+  let name: string | null = null;
+  if (!isProxyDriver(driverId)) {
+    let d = driverRec;
+    if (!d) {
+      try {
+        d = (await getDrivers(env)).find((x) => x.delivery_driver_id === driverId);
+      } catch {
+        /* treated as not-found below */
+      }
+    }
+    if (!d) return { kind: "fallback" };
+    const verdict = evalDriverAssignability(d);
+    if (verdict === "on_break") return { kind: "blocked", body: DRIVER_UNAVAILABLE_BODY };
+    if (verdict === "deactivated") return { kind: "blocked", body: DRIVER_DEACTIVATED_BODY };
+    if (verdict !== "ok") return { kind: "fallback" };
+    name = `${d.first_name ?? ""} ${d.last_name ?? ""}`.trim() || null;
+  }
+  const out = await jsonRpc<{ assignedJobIds?: number[] }>(
+    "delivery_route_slice_jobs_assign",
+    {
+      data: {
+        routeId: `driver_${driverId}`,
+        jobIds: [jobId],
+        updateRecurringSetup: false,
+        scheduleType: "scheduled",
+        filter: vnDayWindow(),
+      },
+    },
+    { env }
+  );
+  if (out.ok && out.result?.assignedJobIds?.includes(jobId)) {
+    return { kind: "assigned", driverName: name };
+  }
+  console.warn(`[assign] RPC assign failed (${out.ok ? "id not echoed" : out.error}); using REST`);
+  return { kind: "fallback" };
 }
 
 /**
