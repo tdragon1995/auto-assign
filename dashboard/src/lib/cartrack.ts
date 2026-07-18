@@ -956,6 +956,63 @@ export async function getJobDetails(
   return res.json();
 }
 
+/** "2026-07-18 18:18:19+07" / "…18:14:15.698021+07" → "2026-07-18 18:18:19" —
+ *  fleetweb reads suffix timestamps that REST never does; parseVnTimestamp would
+ *  mangle the suffix, so strip it to the REST shape. */
+function stripTzSuffix<T>(ts: T): T {
+  return (typeof ts === "string" ? ts.replace(/(\.\d+)?\+07(:00)?$/, "") : ts) as T;
+}
+
+/**
+ * Fast source for today's UNASSIGNED (status 2) jobs — the one list the route
+ * timeline can't provide (a driverless job is on nobody's route). Two RPCs:
+ * delivery_jobs_list_new for ids (~0.3s; only returns status 2/3, and its
+ * filter window keys on scheduled_delivery_ts — both verified 2026-07-18), then
+ * delivery_get_job_details for full records (~0.1s) — notes (✅ gate), delivery
+ * windows (hold gate), labels (dup exemption) and delivery_driver_id all read
+ * back byte-equal to REST apart from a "+07" timestamp suffix, normalised here.
+ * Replaces the ~5–10s REST status-2 list on every cycle.
+ *
+ * Returns null on ANY doubt — RPC error, unexpected shape — so the caller runs
+ * the authoritative REST list instead. A well-formed empty result is trusted as
+ * genuinely empty (it is a live response, not a cache).
+ */
+export async function getUnassignedJobsFast(dateVn: string, env: Env = "prod"): Promise<Job[] | null> {
+  const ln = await jsonRpc<{ jobs?: { jobId?: number; jobStatusId?: number }[] }>(
+    "delivery_jobs_list_new",
+    { data: { scheduleType: "scheduled", filter: vnDayWindow(dateVn) } },
+    { env }
+  );
+  if (!ln.ok || !Array.isArray(ln.result?.jobs)) return null;
+  const ids = ln.result.jobs.filter((j) => j.jobStatusId === 2 && j.jobId).map((j) => j.jobId as number);
+  if (ids.length === 0) return [];
+
+  const det = await jsonRpc<{ jobs?: Record<string, unknown>[] }>(
+    "delivery_get_job_details",
+    { data: { jobIds: ids } },
+    { env }
+  );
+  if (!det.ok || !Array.isArray(det.result?.jobs)) return null;
+
+  const out: Job[] = [];
+  for (const dj of det.result.jobs) {
+    const stops = dj.stop ?? dj.stops;
+    if (!dj.job_id || !Array.isArray(stops)) return null; // shape surprise → REST
+    out.push({
+      ...dj,
+      scheduled_delivery_ts: stripTzSuffix(dj.scheduled_delivery_ts),
+      send_to_driver_at: stripTzSuffix(dj.send_to_driver_at ?? dj.sendToDriverAt ?? null),
+      create_ts: stripTzSuffix(dj.create_ts),
+      labels: (Array.isArray(dj.labels) ? dj.labels : [])
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .map((l: any) => (typeof l === "string" ? l : l?.label))
+        .filter(Boolean),
+      stops,
+    } as unknown as Job);
+  }
+  return out;
+}
+
 export async function getJobsByStatusAndDate(
   statusId: number,
   dateVn: string, // "YYYY-MM-DD"

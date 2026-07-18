@@ -1,5 +1,5 @@
 import type { Config, Driver, FailedJob, Job, LogEntry, LogLevel, Mapping, PickupWarning, TimelineRoute } from "./types";
-import { getDrivers, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, updateJobSendToDriverAt, updateJobScheduledDeliveryTs, unassignJob, optimizeDriverRoute, getJobsByStatusAndDate, getJobsByDate, getTimelineRoutes, timelineRoutesToJobs, jsonRpc, PROXY_DRIVER_ID, type Env } from "./cartrack";
+import { getDrivers, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, updateJobSendToDriverAt, updateJobScheduledDeliveryTs, unassignJob, optimizeDriverRoute, getJobsByStatusAndDate, getUnassignedJobsFast, getJobsByDate, getTimelineRoutes, timelineRoutesToJobs, jsonRpc, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import { DIAG_LOCATION_CUSTOMER_IDS } from "./psc-routes-data";
@@ -850,9 +850,20 @@ export async function autoAssignCycle(
     // to getJobsByDate below if the timeline call fails (cookie/login/shape), so dedup
     // and follow-ups never go blind. Default (unset) = the getJobsByDate path.
     if (useTimeline) {
+      // s2 has no timeline (driverless jobs are on nobody's route). Fast path:
+      // list_new + get_job_details (~0.4s, CREATE_JOB_RPC=1); null → the ~5-10s
+      // REST status-2 list, which stays the authoritative fallback.
+      let s2Src = "rest";
+      const fetchS2 = async (): Promise<Job[]> => {
+        if (process.env.CREATE_JOB_RPC === "1") {
+          const fast = await getUnassignedJobsFast(today, env);
+          if (fast) { s2Src = "rpc"; return fast; }
+        }
+        return getJobsByStatusAndDate(2, today, env);
+      };
       const _tFetch = Date.now();
       const [restS2, routes] = await Promise.all([
-        getJobsByStatusAndDate(2, today, env),
+        fetchS2(),
         getTimelineRoutes(today, env),
       ]);
       fetchMs = Date.now() - _tFetch;
@@ -871,7 +882,7 @@ export async function autoAssignCycle(
         cycleS5 = s5Jobs;
         timelineRoutesForSmart = routes; // reuse in smart-prep (skip 2nd identical JSON-RPC)
         partitionMs = Date.now() - _tPart;
-        clog(`[fetch] timeline: fetch ${fetchMs}ms + partition ${partitionMs}ms (s2:${s2Jobs.length} s4:${s4Jobs.length} s5:${s5Jobs.length})`);
+        clog(`[fetch] timeline: fetch ${fetchMs}ms + partition ${partitionMs}ms (s2:${s2Jobs.length} s4:${s4Jobs.length} s5:${s5Jobs.length} s2-src=${s2Src})`);
         // Proxy release, timeline-sourced: the proxy driver's parked jobs are
         // already in the s4 partition (it's a driver on the timeline), so the
         // old per-cycle REST list is skipped. Every ~30 min a full no-date REST
@@ -892,7 +903,7 @@ export async function autoAssignCycle(
             // the released ids from s4.
             const releasedSet = new Set(rel.releasedIds);
             assignedJobsToday = s4Jobs.filter((j) => !releasedSet.has(j.job_id));
-            const freshS2 = await getJobsByStatusAndDate(2, today, env);
+            const freshS2 = await fetchS2();
             s2Jobs = freshS2.filter((j) => !j.delivery_driver_id);
             cycleStartS2 = s2Jobs;
           }
