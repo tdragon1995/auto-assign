@@ -676,13 +676,28 @@ async function rpcDriverStatusGate(
 ): Promise<"ok" | "on_break" | "deactivated" | "unknown"> {
   if (typeof driverId !== "string" || !driverId) return "ok"; // unassigned create — nothing to gate
   try {
-    const drivers = await getDrivers(env);
+    const drivers = await gateDrivers(env);
     const d = drivers.find((x) => x.delivery_driver_id === driverId);
     if (!d) return "unknown";
     return evalDriverAssignability(d);
   } catch {
     return "unknown";
   }
+}
+
+/** Drivers-list micro-cache for gate lookups that arrive WITHOUT a caller-provided
+ *  record (fixed-path engine assigns on smart-less cycles, Nhận Việc claims,
+ *  chấm-công creates). 60s TTL turns a burst of such assigns into ONE ~1.8s list
+ *  fetch instead of one per call — a 3-job fixed cycle was paying ~5.4s extra.
+ *  Slightly widens the accepted staleness race (≤60s vs per-call fresh); failed
+ *  or empty fetches are never cached. */
+const _gateDriversCache: Partial<Record<Env, { at: number; drivers: Driver[] }>> = {};
+async function gateDrivers(env: Env): Promise<Driver[]> {
+  const c = _gateDriversCache[env];
+  if (c && Date.now() - c.at < 60_000) return c.drivers;
+  const drivers = await getDrivers(env);
+  if (drivers.length) _gateDriversCache[env] = { at: Date.now(), drivers };
+  return drivers;
 }
 
 /** Proxy drivers are ours (parking, duplicate-reject staging) — human driver-state
@@ -722,7 +737,7 @@ async function tryAssignViaRpc(
     let d = driverRec;
     if (!d) {
       try {
-        d = (await getDrivers(env)).find((x) => x.delivery_driver_id === driverId);
+        d = (await gateDrivers(env)).find((x) => x.delivery_driver_id === driverId);
       } catch {
         /* treated as not-found below */
       }
