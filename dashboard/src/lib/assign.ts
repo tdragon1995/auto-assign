@@ -207,8 +207,10 @@ function computePickupWarnings(
   const now = Date.now();
   const THIRTY_MIN_MS  = 30 * 60 * 1000;
   const FIFTEEN_MIN_MS = 15 * 60 * 1000;
-  // Overdue grace for non-windowed (ASAP) pickups, measured from scheduled_delivery_ts.
-  const OVERDUE_MIN = 30;
+  // Overdue grace before a still-unstarted pickup is flagged late — measured from
+  // scheduled_delivery_ts for ASAP pickups, or from the window start (time_from)
+  // for windowed pickups.
+  const OVERDUE_MIN = 90;
   const OVERDUE_MS  = OVERDUE_MIN * 60 * 1000;
 
   // Build per-driver lookup tables from all assigned jobs:
@@ -284,8 +286,17 @@ function computePickupWarnings(
         extra = { minutes_late: Math.floor(elapsed / 60000) - OVERDUE_MIN };
       }
     } else {
-      // Case 2 (delivery window): stashed — not active yet
-      continue;
+      // Case 2 (delivery window): warn once the pickup is OVERDUE_MIN past the
+      // window START (time_from) and still hasn't started — mirrors the ASAP
+      // clock, which starts at the earliest expected pickup time.
+      const timeFrom: string | undefined = pickup.delivery_windows[0]?.time_from;
+      if (!timeFrom) continue;
+      const windowStart = parsePickupWindowTime(timeFrom, today);
+      if (!windowStart || isNaN(windowStart.getTime())) continue;
+      const elapsed = now - windowStart.getTime();
+      if (elapsed < OVERDUE_MS) continue;
+      reason = "overdue";
+      extra = { minutes_late: Math.floor(elapsed / 60000) - OVERDUE_MIN };
     }
 
     if (!reason) continue;

@@ -152,7 +152,7 @@ export interface PickupWarning {
   driver_id: string;
   driver_name: string | null;
   reason: "overdue" | "window_expiring";
-  minutes_late?: number;    // overdue: minutes past 30
+  minutes_late?: number;    // overdue: minutes past 90
   window_time_to?: string;  // window_expiring: raw "HH:mm:ss+07:00"
 }
 
