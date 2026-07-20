@@ -36,6 +36,36 @@ export function isDriverUnavailableError(body: unknown): boolean {
   );
 }
 
+/**
+ * Turn a Cartrack error body into a short, readable reason instead of dumping
+ * raw JSON into the log — the { error: { message, data: { field: [...] } } }
+ * shape isn't meant for a human reader. Shared by return-trips/via-legs; the
+ * main assign loop keeps its own copy (assign.ts, pre-dates this one).
+ */
+export function friendlyCreateError(body: unknown, max = 180): string {
+  if (isDriverUnavailableError(body)) return "driver on-break or offline";
+  let text: string;
+  if (body && typeof body === "object") {
+    const b = body as Record<string, unknown>;
+    const ct = b.error as Record<string, unknown> | undefined;
+    const ctData = ct?.data as Record<string, unknown> | undefined;
+    if (ctData && typeof ctData === "object") {
+      text = Object.entries(ctData)
+        .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join("; ") : String(v)}`)
+        .join(" | ");
+    } else if (typeof ct?.message === "string" && ct.message.trim()) {
+      text = ct.message.trim();
+    } else if (typeof b.message === "string" && b.message.trim()) {
+      text = b.message.trim();
+    } else {
+      text = JSON.stringify(body);
+    }
+  } else {
+    text = String(body);
+  }
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
 /** Fetch all assigned jobs for a driver with no date filter.
  *  Used by releaseDueProxyJobs so multi-day parked jobs (created on a previous
  *  day) are still found and released when their send_to_driver_at arrives. */

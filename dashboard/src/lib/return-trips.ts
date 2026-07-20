@@ -1,5 +1,5 @@
 import type { Config, Mapping, LogLevel, Job } from "./types";
-import { createJob, getJobsByStatusAndDate, type Env } from "./cartrack";
+import { createJob, friendlyCreateError, isDriverUnavailableError, getJobsByStatusAndDate, type Env } from "./cartrack";
 import { vnDate, vnHoursMinutes } from "./time";
 import { isDriverOnLeave, resolveSubstitute, type LeaveEntry } from "./leave-config";
 
@@ -30,6 +30,10 @@ function hhmm(): string {
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
 
+type CreateReturnOutcome =
+  | { ok: true; jobId: number }
+  | { ok: false; unavailable: boolean; message: string };
+
 async function createReturnJob(
   driverId: string,
   fromCustomerId: string,
@@ -37,7 +41,7 @@ async function createReturnJob(
   toCustomerId: string,
   toCustomerName: string,
   env: Env
-): Promise<number> {
+): Promise<CreateReturnOutcome> {
   const payload = {
     job_type_id: 1,
     schedule_type_id: 1,
@@ -77,7 +81,7 @@ async function createReturnJob(
   const res = await createJob(payload, env);
 
   if (!res.ok) {
-    throw new Error(`createReturnJob failed: ${res.status} ${JSON.stringify(res.body)}`);
+    return { ok: false, unavailable: isDriverUnavailableError(res.body), message: friendlyCreateError(res.body) };
   }
 
   const json = res.body;
@@ -86,7 +90,7 @@ async function createReturnJob(
   if (json.data?.delivery_driver_id !== driverId) {
     throw new Error(`createReturnJob: job ${jobId} created but not assigned to ${driverId}`);
   }
-  return jobId as number;
+  return { ok: true, jobId: jobId as number };
 }
 
 /**
@@ -239,8 +243,19 @@ export async function detectAndCreateReturnTrips(
 
     createTasks.push(async () => {
       try {
-        const newJobId = await createReturnJob(outbound.delivery_driver_id, fromCustomerId, fromCustomerName, toCustomerId, toCustomerName, env);
-        log(`Return trip #${newJobId} : driver (from outbound ${outbound.job_id}) | ${fromCustomerName} → ${toCustomerName}`, "OK");
+        const result = await createReturnJob(outbound.delivery_driver_id, fromCustomerId, fromCustomerName, toCustomerId, toCustomerName, env);
+        if (result.ok) {
+          log(`Return trip #${result.jobId} : driver (from outbound ${outbound.job_id}) | ${fromCustomerName} → ${toCustomerName}`, "OK");
+          return;
+        }
+        // On-break/offline is an expected end-of-shift state, not a bug — WARN,
+        // not ERROR, and a message a dispatcher can read without JSON.
+        log(
+          `Return trip ${result.unavailable ? "skipped" : "failed"} for outbound ${outbound.job_id}: ${result.message} | ${fromCustomerName} → ${toCustomerName}`,
+          result.unavailable ? "WARN" : "ERROR"
+        );
+        inFlightReturns.delete(outbound.job_id);
+        blockingReturnKeys.delete(returnKey); // allow retry next cycle
       } catch (e) {
         log(`Return trip failed for outbound ${outbound.job_id}: ${e} | ${fromCustomerName} → ${toCustomerName}`, "ERROR");
         inFlightReturns.delete(outbound.job_id);

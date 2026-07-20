@@ -1,5 +1,5 @@
 import type { LogLevel, Job } from "./types";
-import { createJob, getJobsByStatusAndDate, type Env } from "./cartrack";
+import { createJob, friendlyCreateError, isDriverUnavailableError, getJobsByStatusAndDate, type Env } from "./cartrack";
 import { vnDate, vnHoursMinutes, vnTimestamp } from "./time";
 import { loadPscRoutes } from "./psc-config";
 import { PSC_OUTBOUND_LABEL } from "./return-trips";
@@ -27,6 +27,10 @@ interface ViaConfig {
   viaName: string;
 }
 
+type CreateViaOutcome =
+  | { ok: true; jobId: number }
+  | { ok: false; unavailable: boolean; message: string };
+
 /** Create the pinned via-leg (via PSC → dropoff), already assigned to the driver. */
 async function createViaLeg(
   driverId: string,
@@ -37,7 +41,7 @@ async function createViaLeg(
   dropoffName: string,
   outboundJobId: number,
   env: Env
-): Promise<number> {
+): Promise<CreateViaOutcome> {
   const payload = {
     job_type_id: 1,
     schedule_type_id: 1,
@@ -83,7 +87,7 @@ async function createViaLeg(
   const res = await createJob(payload, env);
 
   if (!res.ok) {
-    throw new Error(`createViaLeg failed: ${res.status} ${JSON.stringify(res.body)}`);
+    return { ok: false, unavailable: isDriverUnavailableError(res.body), message: friendlyCreateError(res.body) };
   }
 
   const json = res.body;
@@ -92,7 +96,7 @@ async function createViaLeg(
   if (json.data?.delivery_driver_id !== driverId) {
     throw new Error(`createViaLeg: job ${jobId} created but not assigned to ${driverId}`);
   }
-  return jobId as number;
+  return { ok: true, jobId: jobId as number };
 }
 
 /**
@@ -199,7 +203,7 @@ export async function detectAndCreateViaLegs(
 
     viaTasks.push(async () => {
       try {
-        const newJobId = await createViaLeg(
+        const result = await createViaLeg(
           driverId,
           cfg.viaCustomerId,
           cfg.viaName,
@@ -209,7 +213,18 @@ export async function detectAndCreateViaLegs(
           outbound.job_id,
           env
         );
-        log(`Via-leg #${newJobId} : driver (from outbound ${outbound.job_id}) | ${cfg.viaName} → ${dropoffName}`, "OK");
+        if (result.ok) {
+          log(`Via-leg #${result.jobId} : driver (from outbound ${outbound.job_id}) | ${cfg.viaName} → ${dropoffName}`, "OK");
+          return;
+        }
+        // On-break/offline is an expected end-of-shift state, not a bug — WARN,
+        // not ERROR, and a message a dispatcher can read without JSON.
+        log(
+          `Via-leg ${result.unavailable ? "skipped" : "failed"} for outbound ${outbound.job_id}: ${result.message} | ${cfg.viaName} → ${dropoffName}`,
+          result.unavailable ? "WARN" : "ERROR"
+        );
+        inFlightVia.delete(outbound.job_id);
+        existingViaIndex.set(viaKey, priorVia); // allow retry next cycle
       } catch (e) {
         log(`Via-leg failed for outbound ${outbound.job_id}: ${e} | ${cfg.viaName} → ${dropoffName}`, "ERROR");
         inFlightVia.delete(outbound.job_id);
