@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { Palmtree } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { SectionHeader } from "./section-header";
@@ -248,19 +249,17 @@ function DriverCard({
   const resigned = g.loai_nghi === "Nghỉ việc";
   const uncovered = !resigned && g.rows.some((r) => r.subs.length === 0);
   const [editRow, setEditRow] = useState<number | null>(null);
-  const chipClass = resigned
-    ? "bg-red-100 text-red-700 border-red-200"
-    : "bg-amber-100 text-amber-700 border-amber-200";
-  const cardClass = uncovered ? "border-amber-300 bg-amber-50" : "border-slate-200 bg-white";
+  // Leading dot carries state: red = resigned, amber = uncovered, grey = covered.
+  const dotClass = resigned ? "bg-red-500" : uncovered ? "bg-amber-500" : "bg-slate-300";
+  const typeClass = resigned ? "text-red-700" : "text-amber-700";
   const { code, name } = splitDriverName(g.driver_name || g.driver_id);
   return (
-    <div className={`rounded border px-2 py-1 text-xs ${cardClass}`}>
+    <div className="px-2 py-1.5 text-xs hover:bg-slate-50">
       <div className="flex items-center gap-1.5 flex-wrap">
+        <span className={`size-1.5 shrink-0 rounded-full ${dotClass}`} />
         <span className="text-sm font-semibold text-slate-900">{name}</span>
         {code && <span className="font-mono text-[11px] text-slate-500">{code}</span>}
-        <span
-          className={`shrink-0 rounded-full border px-1.5 py-0 text-[11px] font-semibold leading-relaxed ${chipClass}`}
-        >
+        <span className={`shrink-0 text-[11px] font-semibold ${typeClass}`}>
           {typeLabel(g.loai_nghi)}
         </span>
         {resigned && <span className="text-[11px] text-slate-500">từ {ddmm(g.leave_from)}</span>}
@@ -331,7 +330,7 @@ function DaySection({
       {groups.length === 0 ? (
         <p className="text-xs text-slate-500">Không có ai nghỉ</p>
       ) : (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-1.5">
+        <div className="divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200">
           {groups.map((g) => (
             <DriverCard key={g.driver_id} g={g} driverNames={driverNames} onFill={onFill} />
           ))}
@@ -403,7 +402,10 @@ export function LeaveStatusPanel({
     return (
       <Card className="py-2 shrink-0 border-slate-200">
         <CardContent className="px-3">
-          <p className="text-xs text-red-600">🌴 Không tải được trạng thái nghỉ phép — thử Refresh.</p>
+          <p className="flex items-center gap-1.5 text-xs text-red-600">
+            <Palmtree className="size-3.5 shrink-0" strokeWidth={2} />
+            Không tải được trạng thái nghỉ phép — thử Làm mới.
+          </p>
         </CardContent>
       </Card>
     );
@@ -425,7 +427,10 @@ export function LeaveStatusPanel({
           onClick={() => setOpen((v) => !v)}
           className="flex w-full items-center gap-2 text-left"
         >
-          <span className="text-sm font-semibold">🌴 Nghỉ phép</span>
+          <span className="flex items-center gap-1.5 text-sm font-semibold">
+            <Palmtree className="size-4 text-emerald-600" strokeWidth={2} />
+            Nghỉ phép
+          </span>
           <span className="text-[11px] text-slate-500">
             Hôm nay {todayGroups.length} · Ngày mai {tomorrowGroups.length}
           </span>

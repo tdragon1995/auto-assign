@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { ServiceStatus } from "./stats-sidebar";
@@ -383,7 +384,8 @@ export function Dashboard() {
           {/* Tab bar */}
           <div className="flex items-center gap-1 shrink-0 overflow-x-auto">
             <button onClick={() => setRightTab("attention")} className={tabBtn(rightTab === "attention")}>
-              ⚠️ Cần xử lý
+              <AlertTriangle className="size-3.5" strokeWidth={2} />
+              Cần xử lý
               {attentionCount > 0 && (
                 <span className="rounded-full bg-red-600 text-white px-1.5 leading-none py-0.5 text-[11px] font-bold">
                   {attentionCount}

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import { StickyNote } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -47,12 +48,12 @@ function HeldNote({ note }: { note: string }) {
   const isLong = note.length > NOTE_PREVIEW_LIMIT;
   return (
     <div className="rounded border border-amber-300 bg-amber-100/70 px-2 py-1">
-      <span className="text-[10px] font-bold uppercase tracking-wide text-amber-700">Ghi chú</span>
+      <span className="text-[11px] font-semibold text-amber-700">Ghi chú</span>
       {!isLong || expanded ? (
         <p className="mt-0.5 break-words font-medium text-amber-950">
           {note}
           {isLong && (
-            <button type="button" onClick={() => setExpanded(false)} className="ml-1 font-semibold text-blue-600 hover:text-blue-800">
+            <button type="button" onClick={() => setExpanded(false)} className="ml-1 font-semibold text-indigo-600 hover:text-indigo-800">
               Thu gọn
             </button>
           )}
@@ -60,7 +61,7 @@ function HeldNote({ note }: { note: string }) {
       ) : (
         <div className="mt-0.5 flex items-baseline gap-1 font-medium text-amber-950">
           <span className="min-w-0 truncate">{note}</span>
-          <button type="button" onClick={() => setExpanded(true)} className="shrink-0 font-semibold text-blue-600 hover:text-blue-800">
+          <button type="button" onClick={() => setExpanded(true)} className="shrink-0 font-semibold text-indigo-600 hover:text-indigo-800">
             Xem thêm
           </button>
         </div>
@@ -205,7 +206,7 @@ export function NoteReviewPanel({
               {/* Schedule + actions on one row: date chips + time dropdown, then
                   the two buttons pushed right. Wraps gracefully when narrow. */}
               <div className="flex items-center gap-1 flex-wrap">
-                <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Hẹn</span>
+                <span className="text-[11px] font-semibold text-slate-600">Hẹn</span>
                 {[0, 1, 2].map((offset) => (
                   <button
                     key={offset}
@@ -256,28 +257,28 @@ export function NoteReviewPanel({
 
   const header = (
     <div className="flex items-center gap-1.5 pt-1">
-      <span className="text-[11px] font-bold uppercase tracking-wide text-orange-700">📝 Tasks có ghi chú</span>
-      <span className="rounded-full bg-orange-100 border border-orange-200 px-1.5 leading-none py-0.5 text-[10px] text-orange-700">
-        {held.length}
-      </span>
+      <StickyNote className="size-3.5 text-orange-600" strokeWidth={2} />
+      <span className="text-xs font-semibold text-orange-700">Tasks có ghi chú</span>
+      <span className="text-xs tabular-nums text-slate-400">{held.length}</span>
     </div>
   );
 
-  // Embedded (Cần xử lý tab): rows pack into the same responsive grid as the
-  // other sections so more cards fit per screen.
+  // Embedded (Cần xử lý tab): note tasks are interactive scheduling forms, so
+  // they stay as full-width stacked cards (not a grid) — one focus per row.
   if (embedded)
     return (
       <div className="space-y-1.5">
         {header}
-        <div className="grid grid-cols-1 gap-1.5 md:grid-cols-2 xl:grid-cols-3">{rows}</div>
+        <div className="space-y-1.5">{rows}</div>
       </div>
     );
 
   return (
     <Card className="py-4 border-orange-300">
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm flex items-center gap-2">
-          📝 Chờ duyệt ghi chú
+        <CardTitle className="text-sm flex items-center gap-1.5">
+          <StickyNote className="size-4 text-orange-600" strokeWidth={2} />
+          Chờ duyệt ghi chú
           <span className="text-orange-600 font-semibold">{held.length}</span>
         </CardTitle>
       </CardHeader>

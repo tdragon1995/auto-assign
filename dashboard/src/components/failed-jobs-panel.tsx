@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
@@ -23,9 +24,9 @@ const NAME_BY_ID = new Map(DIAG_LOCATIONS.map((l) => [l.customer_id, l.name]));
 // Prefer the sheet's own name; fall back to the branch list, then the raw id.
 const labelFor = (name: string | undefined, id: string) => name || NAME_BY_ID.get(id) || id;
 
-// Reason → label + tone. Tone drives the chip/border colour: red = blocking
-// (nothing the engine can do — needs a person), amber = config/ambiguity that a
-// supervisor resolves (Sheet edit, pick a driver). Order = display priority.
+// Reason → label + tone. Tone colours the section header (red = blocking,
+// nothing the engine can do — needs a person; amber = config/ambiguity a
+// supervisor resolves via Sheet edit or driver pick). Order = display priority.
 const REASON_META: Record<
   FailedReason,
   { label: string; tone: "red" | "amber"; order: number }
@@ -38,11 +39,6 @@ const REASON_META: Record<
   NO_MAPPING:     { label: "Chưa cấu hình (Sheet)", tone: "amber", order: 5 },
   INVALID_DRIVER: { label: "Sai driver_id (Sheet)", tone: "red", order: 6 },
   NO_GPS:         { label: "Thiếu toạ độ GPS", tone: "red", order: 7 },
-};
-
-const TONE_STYLES: Record<"red" | "amber", { chip: string; card: string }> = {
-  red:   { chip: "bg-red-100 text-red-700 border-red-300",     card: "border-red-200 bg-red-50/50" },
-  amber: { chip: "bg-amber-100 text-amber-800 border-amber-300", card: "border-amber-200 bg-amber-50/50" },
 };
 
 function metaFor(reason: FailedReason) {
@@ -66,8 +62,6 @@ function FailedRow({
   drivers: ConfigDriver[];
   onAssign: (job: FailedJob, driverId: string) => void;
 }) {
-  const meta = metaFor(job.reason);
-  const tone = TONE_STYLES[meta.tone];
   const [showDriverSelect, setShowDriverSelect] = useState(false);
   const [selectedDriver, setSelectedDriver] = useState<string>("");
   const [searchInput, setSearchInput] = useState<string>("");
@@ -90,8 +84,8 @@ function FailedRow({
   const selectedDriverName = drivers.find(d => d.driver_id === selectedDriver)?.name;
 
   return (
-    <div className={`rounded border px-2 py-1.5 ${tone.card}`}>
-      {/* Line 1: job link · route · reason chip */}
+    <div className="px-2 py-1.5 hover:bg-slate-50">
+      {/* Line 1: job link · route (reason lives in the section header) */}
       <div className="flex items-center gap-2 min-w-0">
         <a
           href={`https://fleetweb-vn.cartrack.com/delivery/map?job=${job.job_id}`}
@@ -104,9 +98,6 @@ function FailedRow({
         {/* Mobile has no hover for the title tooltip, so wrap there; truncate from md up. */}
         <span className="min-w-0 flex-1 break-words md:truncate text-sm font-medium text-slate-800" title={job.customer}>
           {job.customer}
-        </span>
-        <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[11px] font-semibold leading-none ${tone.chip}`}>
-          {meta.label}
         </span>
       </div>
       {/* Line 2: detail · last-seen · manual-assign trigger */}
@@ -248,8 +239,8 @@ export function FailedJobsPanel({
   // instead of vanishing.
   if (total === 0) {
     return (
-      <Card className="flex h-full flex-col items-center justify-center gap-1 py-8">
-        <div className="text-3xl">✅</div>
+      <Card className="flex h-full flex-col items-center justify-center gap-1.5 py-8">
+        <CheckCircle2 className="size-8 text-emerald-500" strokeWidth={1.75} />
         <p className="text-sm font-medium text-slate-600">Không có mục nào cần xử lý</p>
         <p className="text-xs text-slate-400">
           Job không gán được, chờ duyệt ghi chú và lấy mẫu chậm sẽ hiện ở đây
@@ -258,21 +249,24 @@ export function FailedJobsPanel({
     );
   }
 
-  // Rows inside each section pack into a responsive grid so a full screen shows
-  // as many items as possible; section headers stay full-width above their grid.
-  const rowGrid = "grid grid-cols-1 gap-1.5 md:grid-cols-2";
+  // Each section is a divided list (one bordered container, hairline rows) —
+  // the tone-coloured header carries severity, so rows stay quiet.
+  const listBox = "divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200";
 
   return (
-    <Card className="flex h-full flex-col gap-2 py-2 border-orange-300">
+    <Card className="flex h-full flex-col gap-2 py-2 border-slate-200">
       <CardHeader className="px-3 pb-0 shrink-0">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-sm">⚠️ Cần xử lý</CardTitle>
+          <CardTitle className="flex items-center gap-1.5 text-sm">
+            <AlertTriangle className="size-4 text-amber-500" strokeWidth={2} />
+            Cần xử lý
+          </CardTitle>
           <span className="text-xs text-muted-foreground">{total} mục</span>
         </div>
       </CardHeader>
       <CardContent className="px-3 flex-1 min-h-0">
         {/* Full-height scroll. Order: notes → other unassignable → late pickups. */}
-        <div className="h-full max-w-5xl overflow-y-auto space-y-2 text-xs pr-1">
+        <div className="h-full max-w-5xl overflow-y-auto space-y-3 text-xs pr-1">
             {/* ── Tasks with note (part of "unassignable") ─────────────────── */}
             {held.length > 0 && (
               <NoteReviewPanel
@@ -287,8 +281,8 @@ export function FailedJobsPanel({
             {/* ── Other unassignable: assign failures ─────────────────────── */}
             {groups.map(([reason, jobs]) => (
               <div key={reason} className="space-y-1.5">
-                <SectionHeader label={metaFor(reason).label} count={jobs.length} />
-                <div className={rowGrid}>
+                <SectionHeader label={metaFor(reason).label} count={jobs.length} tone={metaFor(reason).tone} />
+                <div className={listBox}>
                   {jobs.map((job) => (
                     <FailedRow
                       key={job.job_id}
@@ -315,11 +309,11 @@ export function FailedJobsPanel({
                     {retryingSchedule ? "Đang chạy…" : "Chạy lại lỗi"}
                   </Button>
                 </div>
-                <div className={rowGrid}>
+                <div className={listBox}>
                   {scheduleErrors.map((e, i) => (
                     <div
                       key={`${e.reference_number}-${i}`}
-                      className="rounded border border-red-200 bg-red-50/50 px-2 py-1.5"
+                      className="px-2 py-1.5 hover:bg-slate-50"
                     >
                       <div className="text-sm font-semibold text-slate-800 break-words md:truncate" title={`${labelFor(e.pickup_name, e.pickup_id)} → ${labelFor(e.dropoff_name, e.dropoff_id)}`}>
                         {labelFor(e.pickup_name, e.pickup_id)} <span className="text-slate-400">→</span> {labelFor(e.dropoff_name, e.dropoff_id)}
@@ -338,11 +332,11 @@ export function FailedJobsPanel({
             {warnings.length > 0 && (
               <div className="space-y-1.5">
                 <SectionHeader label="Lấy mẫu chậm" count={warnings.length} tone="amber" />
-                <div className={rowGrid}>
+                <div className={listBox}>
                   {warnings.map((w) => (
                     <div
                       key={w.job_id}
-                      className="rounded border border-amber-200 bg-amber-50/60 px-2 py-1.5"
+                      className="px-2 py-1.5 hover:bg-slate-50"
                     >
                       <div className="flex items-center gap-2 min-w-0">
                         <a

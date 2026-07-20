@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { StickyNote } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -68,7 +69,9 @@ function LogLine({ entry }: { entry: LogEntry }) {
   const collapsed = isLong && !expanded;
 
   const tag = isNote ? (
-    <span className="shrink-0 font-semibold text-purple-700">📝 NOTE </span>
+    <span className="shrink-0 inline-flex items-center gap-0.5 font-semibold text-purple-700">
+      <StickyNote className="size-3" strokeWidth={2} /> NOTE{" "}
+    </span>
   ) : (
     <span className={`shrink-0 font-semibold ${LEVEL_STYLES[entry.level]}`}>[{entry.level}] </span>
   );
