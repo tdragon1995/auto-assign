@@ -371,11 +371,11 @@ export default function ChamCongPage() {
     }
   }
 
-  async function getShiftState(): Promise<ShiftState | null> {
+  async function getShiftState(id: string = driverId): Promise<ShiftState | null> {
     const cached = shiftStateRef.current;
     if (cached && (Date.now() - cached.fetchedAt < SHIFT_STATE_TTL_MS || shiftFetching)) return cached;
     try {
-      const res = await fetch(`/api/cham-cong?driver_id=${driverId}`);
+      const res = await fetch(`/api/cham-cong?driver_id=${id}`);
       if (!res.ok) return null;
       const data = await res.json();
       const state: ShiftState = { ...data, fetchedAt: Date.now() };
@@ -435,6 +435,17 @@ export default function ChamCongPage() {
     localStorage.setItem(LS_DRIVER_NAME, d.driver_name);
     shiftStateRef.current = null;
     fetchShiftState(d.driver_id);
+  }
+
+  // Resolve free-typed text to a driver so a typed-but-not-clicked entry still counts:
+  // exact name match first, then a unique substring match. Ambiguous / no match → null.
+  function resolveDriverFromText(text: string): Driver | null {
+    const q = text.trim().toLowerCase();
+    if (!q) return null;
+    const exact = drivers.find((d) => d.driver_name.toLowerCase() === q);
+    if (exact) return exact;
+    const matches = drivers.filter((d) => d.driver_name.toLowerCase().includes(q));
+    return matches.length === 1 ? matches[0] : null;
   }
 
   function clearDriver() {
@@ -554,6 +565,21 @@ export default function ChamCongPage() {
     setShowLocationList(false);
   }
 
+  // Same idea as resolveDriverFromText: a typed-but-not-clicked location (e.g. "D001")
+  // still resolves. Exact name/code match first, then a unique name+address substring hit.
+  function resolveLocationFromText(text: string): Location | null {
+    const q = text.trim().toLowerCase();
+    if (!q) return null;
+    const exact = locations.find(
+      (l) => l.name.toLowerCase() === q || l.customer_id.toLowerCase() === q
+    );
+    if (exact) return exact;
+    const matches = locations.filter(
+      (l) => l.name.toLowerCase().includes(q) || l.address.toLowerCase().includes(q)
+    );
+    return matches.length === 1 ? matches[0] : null;
+  }
+
   function clearLocation() {
     setLocationId("");
     setLocationName("");
@@ -607,16 +633,48 @@ export default function ChamCongPage() {
 
   // ── Chấm Công submit ──────────────────────────────────────────────────────
   async function submitChamCong(type: ActionType) {
-    if (!driverId || !locationId) {
+    // Safety net: clicking a button blurs the input, but the button's onClick fires
+    // before the input's (debounced) blur-resolve runs — so a value the driver typed
+    // but never clicked in the list can still be unresolved here. Resolve it now, and
+    // thread the resolved values through directly (state updates aren't visible until
+    // the next render, so we can't read driverId/locationId back this tick).
+    let did = driverId;
+    let dname = driverName;
+    if (!did) {
+      const d = resolveDriverFromText(driverSearch);
+      if (d) { selectDriver(d); did = d.driver_id; dname = d.driver_name; }
+    }
+    let lid = locationId;
+    let lname = locationName;
+    if (!lid) {
+      const l = resolveLocationFromText(locationSearch);
+      if (l) { selectLocation(l); lid = l.customer_id; lname = l.name; }
+    }
+
+    if (!did || !lid) {
       setCcStatus("error");
-      setCcMessage("Vui lòng chọn tên và địa điểm");
+      if (!did && !lid) {
+        setCcMessage("Vui lòng chọn tên nhân viên và địa điểm từ danh sách gợi ý.");
+      } else if (!did) {
+        setCcMessage(
+          driverSearch.trim()
+            ? `Không tìm thấy nhân viên “${driverSearch.trim()}”. Vui lòng chọn tên từ danh sách gợi ý.`
+            : "Vui lòng chọn tên nhân viên từ danh sách gợi ý."
+        );
+      } else {
+        setCcMessage(
+          locationSearch.trim()
+            ? `Không tìm thấy địa điểm “${locationSearch.trim()}”. Vui lòng chọn địa điểm từ danh sách gợi ý.`
+            : "Vui lòng chọn địa điểm từ danh sách gợi ý."
+        );
+      }
       return;
     }
     setCcStatus("loading");
     setCcMessage("");
     setPendingNames([]);
 
-    const shift = await getShiftState();
+    const shift = await getShiftState(did);
     if (shift) {
       const hasOpenShift = shift.checkInCount > shift.completedCheckOuts;
       if (type === "check-in" && hasOpenShift) {
@@ -635,7 +693,7 @@ export default function ChamCongPage() {
       const res = await fetch("/api/cham-cong", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ driver_id: driverId, driver_name: driverName, psc_customer_id: locationId, psc_name: locationName, type }),
+        body: JSON.stringify({ driver_id: did, driver_name: dname, psc_customer_id: lid, psc_name: lname, type }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -644,7 +702,7 @@ export default function ChamCongPage() {
         return;
       }
       shiftStateRef.current = null;
-      fetchShiftState(driverId);
+      fetchShiftState(did);
       // The picked location was input to an action that's now done — leaving it filled
       // would contradict the địa điểm the switch panel reports as authoritative.
       clearLocation();
@@ -852,12 +910,20 @@ export default function ChamCongPage() {
             <div className="relative">
               <input
                 type="text"
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className={`w-full border rounded-lg px-3 py-2 pr-8 text-sm focus:outline-none focus:ring-2 ${
+                  !driverId && driverSearch.trim()
+                    ? "border-amber-400 focus:ring-amber-500"
+                    : "border-gray-300 focus:ring-blue-500"
+                }`}
                 placeholder={drivers.length ? "Chọn tên..." : "Đang tải..."}
                 value={driverSearch}
                 onChange={(e) => { setDriverSearch(e.target.value); setDriverId(""); setShowDriverList(true); }}
                 onFocus={() => setShowDriverList(true)}
-                onBlur={() => setTimeout(() => setShowDriverList(false), 150)}
+                onBlur={() => setTimeout(() => {
+                  setShowDriverList(false);
+                  // Commit a typed-but-not-clicked name if it resolves unambiguously.
+                  if (!driverId) { const d = resolveDriverFromText(driverSearch); if (d) selectDriver(d); }
+                }, 150)}
               />
               {driverSearch && (
                 <button
@@ -868,6 +934,9 @@ export default function ChamCongPage() {
                 </button>
               )}
             </div>
+            {!driverId && driverSearch.trim() && !showDriverList && (
+              <p className="text-xs text-amber-600">Chưa chọn tên. Vui lòng chọn từ danh sách gợi ý.</p>
+            )}
             {showDriverList && !driverId && filteredDrivers.length > 0 && (
               <ul className="absolute z-10 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-52 overflow-y-auto mt-1">
                 {filteredDrivers.map((d) => (
@@ -896,12 +965,20 @@ export default function ChamCongPage() {
                 <div className="relative">
                   <input
                     type="text"
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className={`w-full border rounded-lg px-3 py-2 pr-8 text-sm focus:outline-none focus:ring-2 ${
+                      !locationId && locationSearch.trim()
+                        ? "border-amber-400 focus:ring-amber-500"
+                        : "border-gray-300 focus:ring-blue-500"
+                    }`}
                     placeholder={locations.length ? "Tìm địa điểm..." : "Đang tải..."}
                     value={locationSearch}
                     onChange={(e) => { setLocationSearch(e.target.value); setLocationId(""); setShowLocationList(true); }}
                     onFocus={() => setShowLocationList(true)}
-                    onBlur={() => setTimeout(() => setShowLocationList(false), 150)}
+                    onBlur={() => setTimeout(() => {
+                      setShowLocationList(false);
+                      // Commit a typed-but-not-clicked location (e.g. "D001") if it resolves.
+                      if (!locationId) { const l = resolveLocationFromText(locationSearch); if (l) selectLocation(l); }
+                    }, 150)}
                   />
                   {locationSearch && (
                     <button
@@ -912,6 +989,9 @@ export default function ChamCongPage() {
                     </button>
                   )}
                 </div>
+                {!locationId && locationSearch.trim() && !showLocationList && (
+                  <p className="text-xs text-amber-600">Chưa chọn địa điểm. Vui lòng chọn từ danh sách gợi ý.</p>
+                )}
                 {showLocationList && !locationId && filteredLocations.length > 0 && (
                   <ul className="absolute z-10 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-52 overflow-y-auto mt-1">
                     {filteredLocations.map((l) => (
