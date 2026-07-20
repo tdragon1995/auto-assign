@@ -141,14 +141,22 @@ function coverageOnDate(
 export function leaveEntriesOnDate(date: string, entries: LeaveEntry[]): LeaveOnDate[] {
   const raw: LeaveOnDate[] = [];
   for (const e of entries) {
+    if (e.loai_nghi === "Nghỉ việc") {
+      // Resigned drivers: the engine skips them forever, but the panel only
+      // flags the transition — the day before the first day off (their last
+      // working day) through the day after — then they drop off. leave_from is
+      // already last_working_day + 1 (see /api/nghi-phep). addDays is throw-safe,
+      // so a malformed leave_from just fails this range instead of 500-ing.
+      if (date >= addDays(e.leave_from, -1) && date <= addDays(e.leave_from, 1)) {
+        raw.push({
+          driver_id: e.driver_id, driver_name: e.driver_name, loai_nghi: e.loai_nghi,
+          leave_from: e.leave_from, timeLabel: null, subs: e.subs,
+        });
+      }
+      continue;
+    }
     const cov = coverageOnDate(e, date);
     if (!cov.covers) continue;
-    // Resigned drivers: the engine skips them forever, but the panel only lists
-    // them for a week after their last working day. leave_from is already
-    // last_working_day + 1 (see /api/nghi-phep), so the display window is
-    // [leave_from, leave_from + 6] — 7 days, then gone. addDays is throw-safe,
-    // so a malformed leave_from just fails this cutoff instead of 500-ing.
-    if (e.loai_nghi === "Nghỉ việc" && date > addDays(e.leave_from, 6)) continue;
     raw.push({
       driver_id: e.driver_id,
       driver_name: e.driver_name,
@@ -159,20 +167,18 @@ export function leaveEntriesOnDate(date: string, entries: LeaveEntry[]): LeaveOn
     });
   }
 
-  // The sheet occasionally carries stale/re-typed duplicate rows for the same
-  // driver. Collapse only EXACT repeats — same driver, same window, same set of
-  // substitutes — so two genuinely different windows (e.g. a morning sub and an
-  // afternoon sub) or the same window with different cover both survive.
-  const seen = new Set<string>();
-  const out: LeaveOnDate[] = [];
+  // Collapse per driver + window: the sheet can carry a duplicate row for the
+  // same driver+window (e.g. one filled with a sub, one left blank), which would
+  // otherwise show the same slot twice — once covered, once "Chưa có người
+  // thay". Keep the most-covered row so the substitute wins; genuinely different
+  // windows (split-shift: morning vs afternoon) keep distinct keys and survive.
+  const byKey = new Map<string, LeaveOnDate>();
   for (const r of raw) {
-    const subKey = r.subs.map((s) => s.id).sort().join(",");
-    const key = `${r.driver_id}|${r.timeLabel ?? "full"}|${subKey}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(r);
+    const key = `${r.driver_id}|${r.timeLabel ?? "full"}`;
+    const kept = byKey.get(key);
+    if (!kept || r.subs.length > kept.subs.length) byKey.set(key, r);
   }
-  return out;
+  return [...byKey.values()];
 }
 
 /** Two coverage windows on a shared date conflict when: either side is a full

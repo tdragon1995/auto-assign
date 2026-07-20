@@ -398,15 +398,6 @@ export function Dashboard() {
           <div className="lg:flex-1 lg:min-h-0">
             {rightTab === "attention" ? (
               <div className="flex flex-col gap-1.5 h-[72vh] lg:h-full">
-                {/* Leave status (today + tomorrow) — read-only reference, above the actionable list */}
-                <LeaveStatusPanel
-                  today={leave.today}
-                  tomorrow={leave.tomorrow}
-                  error={leave.error}
-                  drivers={drivers}
-                  onRefresh={() => loadLeaveStatus()}
-                />
-
                 {/* Cần xử lý tab — note tasks + unassignable + late + schedule errors */}
                 <div className="flex-1 min-h-0">
                   <FailedJobsPanel
@@ -429,6 +420,16 @@ export function Dashboard() {
                     retryingSchedule={retryingSchedule}
                   />
                 </div>
+
+                {/* Leave status — reference, below the actionable list; collapsed
+                    to counts by default but flags uncovered drivers in amber. */}
+                <LeaveStatusPanel
+                  today={leave.today}
+                  tomorrow={leave.tomorrow}
+                  error={leave.error}
+                  drivers={drivers}
+                  onRefresh={() => loadLeaveStatus()}
+                />
               </div>
             ) : rightTab === "live" ? (
               <div className="flex flex-col gap-1.5 lg:h-full">

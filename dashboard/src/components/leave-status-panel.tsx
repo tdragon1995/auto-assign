@@ -315,16 +315,15 @@ function DriverCard({
 
 function DaySection({
   label,
-  drivers,
+  groups,
   driverNames,
   onFill,
 }: {
   label: string;
-  drivers: LeaveOnDate[];
+  groups: DriverGroup[];
   driverNames: Set<string>;
   onFill: FillSubsFn;
 }) {
-  const groups = groupByDriver(drivers);
   return (
     <div className="flex-1 min-w-[220px]">
       {/* Count = people off, not sheet rows */}
@@ -342,13 +341,21 @@ function DaySection({
   );
 }
 
+/** Uncovered = day-leave drivers (not resigned) with a window that has no
+ *  substitute — the actionable count surfaced in the collapsed header. */
+function uncoveredCount(groups: DriverGroup[]): number {
+  return groups.filter(
+    (g) => g.loai_nghi !== "Nghỉ việc" && g.rows.some((r) => r.subs.length === 0),
+  ).length;
+}
+
 /**
  * Leave-status summary for the "Cần xử lý" tab: who's off today and tomorrow,
  * with their coverage window and substitute (if any). Uncovered rows can be
  * filled in place (writes sub#_name/from/to back to the Leave sheet; the
- * sheet's xlookup resolves the id). Always visible so a supervisor can trust
- * an empty list means "checked" — and an explicit error line shows when the
- * fetch failed with nothing to show. Capped height with its own scroll.
+ * sheet's xlookup resolves the id). Collapsed by default into a counts header
+ * — expanded on demand — since it sits below the actionable list; the header
+ * still flags any uncovered driver in amber so it's never missed while closed.
  */
 export function LeaveStatusPanel({
   today,
@@ -363,8 +370,12 @@ export function LeaveStatusPanel({
   drivers: ConfigDriver[];
   onRefresh: () => void;
 }) {
+  const [open, setOpen] = useState(false);
   const noData = today.length === 0 && tomorrow.length === 0;
   const driverNames = new Set(drivers.map((d) => d.name));
+  const todayGroups = groupByDriver(today);
+  const tomorrowGroups = groupByDriver(tomorrow);
+  const totalUncovered = uncoveredCount(todayGroups) + uncoveredCount(tomorrowGroups);
 
   const fillSubs: FillSubsFn = async (identity, subs) => {
     try {
@@ -388,26 +399,50 @@ export function LeaveStatusPanel({
     }
   };
 
+  if (error && noData) {
+    return (
+      <Card className="py-2 shrink-0 border-slate-200">
+        <CardContent className="px-3">
+          <p className="text-xs text-red-600">🌴 Không tải được trạng thái nghỉ phép — thử Refresh.</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <Card className="py-2 shrink-0 border-slate-200">
-      <CardContent className="px-3 max-h-[38vh] overflow-y-auto">
+      <CardContent className="px-3">
         {/* Shared datalist for every sub picker in the panel */}
         <datalist id="leave-sub-names">
           {drivers.map((d) => (
             <option key={d.driver_id} value={d.name} />
           ))}
         </datalist>
-        {error && noData ? (
-          <p className="text-xs text-red-600">
-            🌴 Không tải được trạng thái nghỉ phép — thử Refresh.
-          </p>
-        ) : (
-          // Title sits inline with the day columns (wraps above them when
-          // narrow) so the panel doesn't spend a whole row on a heading.
-          <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-            <div className="shrink-0 pt-0.5 text-sm font-semibold">🌴 Nghỉ phép</div>
-            <DaySection label="Hôm nay" drivers={today} driverNames={driverNames} onFill={fillSubs} />
-            <DaySection label="Ngày mai" drivers={tomorrow} driverNames={driverNames} onFill={fillSubs} />
+
+        {/* Collapsed header: counts + uncovered flag, click to expand */}
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="flex w-full items-center gap-2 text-left"
+        >
+          <span className="text-sm font-semibold">🌴 Nghỉ phép</span>
+          <span className="text-[11px] text-slate-500">
+            Hôm nay {todayGroups.length} · Ngày mai {tomorrowGroups.length}
+          </span>
+          {totalUncovered > 0 && (
+            <span className="rounded-full bg-amber-100 text-amber-700 border border-amber-200 px-1.5 py-0 text-[10px] font-semibold leading-relaxed">
+              ⚠ {totalUncovered} chưa có người thay
+            </span>
+          )}
+          <span className="ml-auto text-slate-400 text-xs">{open ? "▾" : "▸"}</span>
+        </button>
+
+        {open && (
+          <div className="mt-2 max-h-[38vh] overflow-y-auto">
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+              <DaySection label="Hôm nay" groups={todayGroups} driverNames={driverNames} onFill={fillSubs} />
+              <DaySection label="Ngày mai" groups={tomorrowGroups} driverNames={driverNames} onFill={fillSubs} />
+            </div>
           </div>
         )}
       </CardContent>
