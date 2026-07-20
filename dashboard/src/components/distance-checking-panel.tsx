@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 interface Row {
@@ -349,7 +350,11 @@ export function DistanceCheckingPanel() {
                 {failCount > 0 && <span className="rounded-full bg-red-100 text-red-700 px-3 py-1 font-medium">✗ {failCount} lỗi</span>}
                 <span className="rounded-full bg-emerald-100 text-emerald-700 px-3 py-1 font-medium" title="Lấy từ cache / cùng điểm — không gọi Goong API">📦 {freeCount} không gọi API</span>
                 <span className="rounded-full bg-blue-100 text-blue-700 px-3 py-1 font-medium" title="Gọi Goong API (tính phí)">🌐 {apiCount} gọi API</span>
-                {overCount > 0 && <span className="rounded-full bg-amber-100 text-amber-800 px-3 py-1 font-medium">⚠ {overCount} tuyến &gt;{OVER_KM}km</span>}
+                {overCount > 0 && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-800 px-3 py-1 font-medium">
+                    <AlertTriangle className="size-3.5" strokeWidth={2} /> {overCount} tuyến &gt;{OVER_KM}km
+                  </span>
+                )}
               </div>
               <Button variant="outline" size="sm" onClick={download}>⬇ Tải CSV</Button>
             </div>
@@ -381,7 +386,7 @@ export function DistanceCheckingPanel() {
                       <td className="px-3 py-2 text-right text-slate-400 font-mono text-[11px]">{r.lon2Raw}</td>
                       <td className="px-3 py-2 text-right font-mono">
                         {r.distance_km != null
-                          ? <span className={over ? "text-amber-700 font-semibold" : ""}>{r.distance_km}{over && " ⚠"}</span>
+                          ? <span className={`inline-flex items-center gap-0.5 ${over ? "text-amber-700 font-semibold" : ""}`}>{r.distance_km}{over && <AlertTriangle className="size-3" strokeWidth={2} />}</span>
                           : <span className="text-red-400">—</span>}
                       </td>
                       <td className="px-3 py-2 text-right font-mono">

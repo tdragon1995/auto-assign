@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import * as XLSX from "xlsx";
+import { AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { Env } from "@/lib/cartrack";
 
@@ -269,9 +270,12 @@ export function CompletedExportPanel({ env = "prod" }: { env?: Env }) {
 
       {/* Goong quota notice */}
       {quotaReached && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-          ⚠ Đã chạm hạn mức Goong hôm nay. Còn <strong>{pendingCount}</strong> chuyến chưa có mileage —
-          các chuyến đã tính đã được lưu cache, chạy lại vào ngày mai để tính tiếp phần còn lại.
+        <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          <AlertTriangle className="size-4 shrink-0 mt-0.5" strokeWidth={2} />
+          <span>
+            Đã chạm hạn mức Goong hôm nay. Còn <strong>{pendingCount}</strong> chuyến chưa có mileage —
+            các chuyến đã tính đã được lưu cache, chạy lại vào ngày mai để tính tiếp phần còn lại.
+          </span>
         </div>
       )}
 

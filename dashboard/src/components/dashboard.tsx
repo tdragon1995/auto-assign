@@ -396,7 +396,7 @@ export function Dashboard() {
               Nhật ký
             </button>
             <button onClick={() => setRightTab("admin")} className={tabBtn(rightTab === "admin")}>
-              Quản trị job
+              Quản trị công việc
             </button>
             <button onClick={() => setRightTab("schedule")} className={tabBtn(rightTab === "schedule")}>
               Lịch cố định
@@ -462,7 +462,7 @@ export function Dashboard() {
                       logMode === "smart" ? "bg-slate-200 text-slate-800" : "text-slate-400 hover:text-slate-700"
                     }`}
                   >
-                    Lịch sử Smart
+                    Lịch sử thông minh
                   </button>
                 </div>
                 <div className="h-[72vh] lg:h-auto lg:flex-1 lg:min-h-0">

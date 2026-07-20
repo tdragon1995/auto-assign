@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { CheckCircle2, AlertTriangle, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { LogEntry, LogLevel } from "@/lib/types";
@@ -61,10 +62,22 @@ function RunCard({ run, index }: { run: SmartRunEntry; index: number }) {
         className="w-full flex items-center gap-3 px-3 py-2 text-xs font-mono hover:bg-muted/50 text-left"
       >
         <span className="text-muted-foreground shrink-0">{run.ts.slice(0, 19)}</span>
-        <span className="flex gap-2 shrink-0">
-          {run.ok > 0 && <span className="text-green-600 font-semibold">✓{run.ok}</span>}
-          {run.warn > 0 && <span className="text-orange-500 font-semibold">⚠{run.warn}</span>}
-          {run.error > 0 && <span className="text-red-600 font-semibold">✗{run.error}</span>}
+        <span className="flex items-center gap-2.5 shrink-0">
+          {run.ok > 0 && (
+            <span className="inline-flex items-center gap-0.5 text-green-600 font-semibold">
+              <CheckCircle2 className="size-3" strokeWidth={2} />{run.ok}
+            </span>
+          )}
+          {run.warn > 0 && (
+            <span className="inline-flex items-center gap-0.5 text-orange-500 font-semibold">
+              <AlertTriangle className="size-3" strokeWidth={2} />{run.warn}
+            </span>
+          )}
+          {run.error > 0 && (
+            <span className="inline-flex items-center gap-0.5 text-red-600 font-semibold">
+              <XCircle className="size-3" strokeWidth={2} />{run.error}
+            </span>
+          )}
           {!hasIssue && run.ok === 0 && <span className="text-muted-foreground">no smart jobs</span>}
         </span>
         <span className="ml-auto text-muted-foreground">{open ? "▲" : "▼"}</span>

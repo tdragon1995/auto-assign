@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { AlertTriangle } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -341,8 +342,9 @@ export function JobAdminPanel({ env }: { env: Env }) {
                               {/* Change dropoff */}
                               <div className="space-y-1.5">
                                 {job.started && (
-                                  <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
-                                    ⚠️ Giao Nhận Mẫu đã bắt đầu — đổi điểm giao sẽ thay đổi lộ trình giữa chuyến.
+                                  <p className="flex items-center gap-1.5 text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+                                    <AlertTriangle className="size-3.5 shrink-0" strokeWidth={2} />
+                                    Giao Nhận Mẫu đã bắt đầu — đổi điểm giao sẽ thay đổi lộ trình giữa chuyến.
                                   </p>
                                 )}
                                 <div className="relative">

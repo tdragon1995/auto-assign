@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import { StickyNote } from "lucide-react";
+import { AlertTriangle, StickyNote } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -196,8 +196,9 @@ export function NoteReviewPanel({
               </div>
 
               {job.error && (
-                <div className="rounded border border-red-300 bg-red-100/70 px-2 py-1 text-[11px] font-semibold text-red-800">
-                  ⚠ {job.error} — vui lòng thử lại
+                <div className="flex items-center gap-1.5 rounded border border-red-300 bg-red-100/70 px-2 py-1 text-[11px] font-semibold text-red-800">
+                  <AlertTriangle className="size-3.5 shrink-0" strokeWidth={2} />
+                  {job.error} — vui lòng thử lại
                 </div>
               )}
 

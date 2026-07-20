@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Palmtree } from "lucide-react";
+import { AlertTriangle, Palmtree } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { SectionHeader } from "./section-header";
@@ -435,8 +435,9 @@ export function LeaveStatusPanel({
             Hôm nay {todayGroups.length} · Ngày mai {tomorrowGroups.length}
           </span>
           {totalUncovered > 0 && (
-            <span className="rounded-full bg-amber-100 text-amber-700 border border-amber-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
-              ⚠ {totalUncovered} chưa có người thay
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-700 border border-amber-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
+              <AlertTriangle className="size-3" strokeWidth={2} />
+              {totalUncovered} chưa có người thay
             </span>
           )}
           <span className="ml-auto text-slate-400 text-xs">{open ? "▾" : "▸"}</span>
