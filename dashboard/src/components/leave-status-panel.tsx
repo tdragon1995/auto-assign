@@ -178,20 +178,20 @@ function SubEditor({
             placeholder="Tên người thay…"
             value={b.name}
             onChange={(e) => patch(i, { name: e.target.value })}
-            className="min-w-[140px] flex-1 rounded border border-slate-300 px-1.5 py-0.5 text-[11px]"
+            className="min-w-[140px] flex-1 rounded border border-slate-300 px-1.5 py-1 text-xs"
           />
           <input
             type="time"
             value={b.from}
             onChange={(e) => patch(i, { from: e.target.value })}
-            className="rounded border border-slate-300 px-1 py-0.5 text-[11px]"
+            className="rounded border border-slate-300 px-1 py-1 text-xs"
           />
-          <span className="text-slate-400 text-[10px]">→</span>
+          <span className="text-slate-400 text-[11px]">→</span>
           <input
             type="time"
             value={b.to}
             onChange={(e) => patch(i, { to: e.target.value })}
-            className="rounded border border-slate-300 px-1 py-0.5 text-[11px]"
+            className="rounded border border-slate-300 px-1 py-1 text-xs"
           />
           {blocks.length > 1 && (
             <button
@@ -207,17 +207,17 @@ function SubEditor({
       ))}
       <div className="flex items-center gap-1">
         {blocks.length < 3 && (
-          <Button size="sm" variant="outline" className="h-5 px-1.5 text-[10px]" onClick={addBlock} disabled={busy}>
+          <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={addBlock} disabled={busy}>
             + Chia ca
           </Button>
         )}
         <div className="ml-auto flex gap-1">
-          <Button size="sm" variant="outline" className="h-5 px-1.5 text-[10px]" onClick={onCancel} disabled={busy}>
+          <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={onCancel} disabled={busy}>
             Hủy
           </Button>
           <Button
             size="sm"
-            className="h-5 px-2 text-[10px] bg-indigo-600 hover:bg-indigo-700"
+            className="h-6 px-2 text-[11px] bg-indigo-600 hover:bg-indigo-700"
             onClick={save}
             disabled={busy}
           >
@@ -256,21 +256,21 @@ function DriverCard({
   return (
     <div className={`rounded border px-2 py-1 text-xs ${cardClass}`}>
       <div className="flex items-center gap-1.5 flex-wrap">
-        <span className="font-semibold text-slate-800">{name}</span>
-        {code && <span className="font-mono text-[9px] text-slate-400">{code}</span>}
+        <span className="text-sm font-semibold text-slate-900">{name}</span>
+        {code && <span className="font-mono text-[11px] text-slate-500">{code}</span>}
         <span
-          className={`shrink-0 rounded-full border px-1.5 py-0 text-[10px] font-semibold leading-relaxed ${chipClass}`}
+          className={`shrink-0 rounded-full border px-1.5 py-0 text-[11px] font-semibold leading-relaxed ${chipClass}`}
         >
           {typeLabel(g.loai_nghi)}
         </span>
-        {resigned && <span className="text-[10px] text-slate-400">từ {ddmm(g.leave_from)}</span>}
+        {resigned && <span className="text-[11px] text-slate-500">từ {ddmm(g.leave_from)}</span>}
       </div>
       {/* Coverage rows: window → sub (sub shown by name only; the full sheet
           label is in the title attr). Wraps on mobile — nothing truncates. */}
       {!resigned &&
         g.rows.map((r, i) => (
           <div key={i}>
-            <div className="mt-0.5 flex flex-wrap items-baseline gap-x-1.5 text-[10px]">
+            <div className="mt-0.5 flex flex-wrap items-baseline gap-x-1.5 text-xs">
               {r.timeLabel && <span className="font-mono text-slate-500">{r.timeLabel}</span>}
               {r.subs.length > 0 ? (
                 <span
@@ -286,7 +286,7 @@ function DriverCard({
                     <button
                       type="button"
                       onClick={() => setEditRow(i)}
-                      className="rounded border border-amber-400 bg-white px-1.5 text-[10px] font-semibold text-amber-700 hover:bg-amber-100"
+                      className="rounded border border-amber-400 bg-white px-1.5 py-0.5 text-[11px] font-semibold text-amber-700 hover:bg-amber-100"
                     >
                       + Thêm
                     </button>
@@ -329,9 +329,9 @@ function DaySection({
       {/* Count = people off, not sheet rows */}
       <SectionHeader label={label} count={groups.length} className="mb-1" />
       {groups.length === 0 ? (
-        <p className="text-[11px] text-slate-400">Không có ai nghỉ</p>
+        <p className="text-xs text-slate-500">Không có ai nghỉ</p>
       ) : (
-        <div className="flex flex-wrap gap-1">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-1.5">
           {groups.map((g) => (
             <DriverCard key={g.driver_id} g={g} driverNames={driverNames} onFill={onFill} />
           ))}
@@ -430,7 +430,7 @@ export function LeaveStatusPanel({
             Hôm nay {todayGroups.length} · Ngày mai {tomorrowGroups.length}
           </span>
           {totalUncovered > 0 && (
-            <span className="rounded-full bg-amber-100 text-amber-700 border border-amber-200 px-1.5 py-0 text-[10px] font-semibold leading-relaxed">
+            <span className="rounded-full bg-amber-100 text-amber-700 border border-amber-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
               ⚠ {totalUncovered} chưa có người thay
             </span>
           )}

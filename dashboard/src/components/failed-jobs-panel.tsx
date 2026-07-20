@@ -102,10 +102,10 @@ function FailedRow({
           Job {job.job_id}
         </a>
         {/* Mobile has no hover for the title tooltip, so wrap there; truncate from md up. */}
-        <span className="min-w-0 flex-1 break-words md:truncate font-medium text-slate-800" title={job.customer}>
+        <span className="min-w-0 flex-1 break-words md:truncate text-sm font-medium text-slate-800" title={job.customer}>
           {job.customer}
         </span>
-        <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-semibold leading-none ${tone.chip}`}>
+        <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[11px] font-semibold leading-none ${tone.chip}`}>
           {meta.label}
         </span>
       </div>
@@ -114,12 +114,12 @@ function FailedRow({
         <span className="min-w-0 flex-1 break-words md:truncate text-[11px] text-slate-500" title={job.detail}>
           {job.detail}
         </span>
-        <span className="shrink-0 text-[10px] text-slate-400">{job.ts.slice(11, 19)}</span>
+        <span className="shrink-0 text-[11px] text-slate-500">{job.ts.slice(11, 19)}</span>
         {!showDriverSelect && (
           <Button
             size="sm"
             variant="outline"
-            className="text-[10px] h-5 px-1.5 shrink-0"
+            className="text-[11px] h-6 px-2 shrink-0"
             onClick={() => setShowDriverSelect(true)}
           >
             Gán thủ công
@@ -139,7 +139,7 @@ function FailedRow({
                   placeholder="Tìm tài xế..."
                   value={searchInput}
                   onChange={(e) => setSearchInput(e.target.value)}
-                  className="w-full px-2 py-1 text-[10px] border border-slate-300 rounded"
+                  className="w-full px-2 py-1 text-xs border border-slate-300 rounded"
                   autoFocus
                 />
                 {selectedDriver && (
@@ -156,7 +156,7 @@ function FailedRow({
               </div>
             </div>
             {selectedDriver && selectedDriverName && (
-              <div className="text-[10px] px-2 py-1 bg-blue-50 border border-blue-200 rounded text-slate-700">
+              <div className="text-xs px-2 py-1 bg-blue-50 border border-blue-200 rounded text-slate-700">
                 Đã chọn: {selectedDriverName}
               </div>
             )}
@@ -166,7 +166,7 @@ function FailedRow({
                   <button
                     key={d.driver_id}
                     onClick={() => handleSelectDriver(d.driver_id)}
-                    className="block w-full text-left px-2 py-1 text-[10px] hover:bg-slate-100 border-b border-slate-200 last:border-b-0"
+                    className="block w-full text-left px-2 py-1.5 text-xs hover:bg-slate-100 border-b border-slate-200 last:border-b-0"
                   >
                     {d.name}
                   </button>
@@ -176,7 +176,7 @@ function FailedRow({
             <div className="flex gap-1">
               <Button
                 size="sm"
-                className="flex-1 h-6 text-[10px] bg-blue-600 hover:bg-blue-700"
+                className="flex-1 h-6 text-[11px] bg-blue-600 hover:bg-blue-700"
                 disabled={!selectedDriver}
                 onClick={handleAssign}
               >
@@ -185,7 +185,7 @@ function FailedRow({
               <Button
                 size="sm"
                 variant="outline"
-                className="flex-1 h-6 text-[10px]"
+                className="flex-1 h-6 text-[11px]"
                 onClick={() => {
                   setShowDriverSelect(false);
                   setSelectedDriver("");
@@ -321,7 +321,7 @@ export function FailedJobsPanel({
                       key={`${e.reference_number}-${i}`}
                       className="rounded border border-l-4 border-l-red-500 bg-white px-2 py-1.5"
                     >
-                      <div className="font-semibold text-slate-800 break-words md:truncate" title={`${labelFor(e.pickup_name, e.pickup_id)} → ${labelFor(e.dropoff_name, e.dropoff_id)}`}>
+                      <div className="text-sm font-semibold text-slate-800 break-words md:truncate" title={`${labelFor(e.pickup_name, e.pickup_id)} → ${labelFor(e.dropoff_name, e.dropoff_id)}`}>
                         {labelFor(e.pickup_name, e.pickup_id)} <span className="text-slate-400">→</span> {labelFor(e.dropoff_name, e.dropoff_id)}
                         {e.delivery_window && (
                           <span className="ml-1.5 font-mono text-[11px] text-indigo-600">{e.delivery_window}</span>
@@ -354,7 +354,7 @@ export function FailedJobsPanel({
                           Job {w.job_id}
                         </a>
                         <span
-                          className="min-w-0 flex-1 break-words md:truncate font-medium text-slate-800"
+                          className="min-w-0 flex-1 break-words md:truncate text-sm font-medium text-slate-800"
                           title={`${w.pickup_customer_name ?? "—"} → ${w.dropoff_customer_name ?? "—"}`}
                         >
                           {w.pickup_customer_name ?? "—"} <span className="text-slate-400">→</span> {w.dropoff_customer_name ?? "—"}
