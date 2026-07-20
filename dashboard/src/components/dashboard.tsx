@@ -344,23 +344,34 @@ export function Dashboard() {
         </div>
 
         <div className="flex items-center gap-3 sm:gap-4 ml-auto">
-          {/* Environment switch */}
-          <div className="flex items-center gap-1.5">
-            <span className={`text-xs sm:text-sm font-medium ${isProd ? "text-red-400" : "text-slate-400"}`}>PROD</span>
-            <Switch checked={env === "uat"} onCheckedChange={handleEnvSwitch} />
-            <span className={`text-xs sm:text-sm font-medium ${!isProd ? "text-amber-400" : "text-slate-400"}`}>UAT</span>
+          {/* Environment — segmented control so the active env is unmistakable */}
+          <div className="flex items-center rounded-md border border-slate-600 p-0.5 text-xs sm:text-sm font-semibold">
+            <button
+              type="button"
+              onClick={() => { if (!isProd) handleEnvSwitch(false); }}
+              className={`rounded px-2 py-0.5 transition-colors ${isProd ? "bg-red-500 text-white" : "text-slate-400 hover:text-slate-200"}`}
+            >
+              PROD
+            </button>
+            <button
+              type="button"
+              onClick={() => { if (isProd) handleEnvSwitch(true); }}
+              className={`rounded px-2 py-0.5 transition-colors ${!isProd ? "bg-amber-500 text-white" : "text-slate-400 hover:text-slate-200"}`}
+            >
+              UAT
+            </button>
           </div>
 
           <div className="w-px h-6 bg-slate-600" />
 
           {/* Auto-Assign switch */}
           <div className="flex items-center gap-2">
-            <span className="text-xs sm:text-sm text-slate-300">Auto-Assign</span>
+            <span className="text-xs sm:text-sm text-slate-300">Tự động</span>
             <Switch checked={isRunning} onCheckedChange={toggleService} />
           </div>
 
           <Button variant="outline" size="sm" className="text-slate-900" onClick={handleRefresh}>
-            Refresh
+            Làm mới
           </Button>
         </div>
       </header>
@@ -374,13 +385,13 @@ export function Dashboard() {
             <button onClick={() => setRightTab("attention")} className={tabBtn(rightTab === "attention")}>
               ⚠️ Cần xử lý
               {attentionCount > 0 && (
-                <span className="rounded-full bg-red-600 text-white px-1.5 leading-none py-0.5 text-[10px] font-bold">
+                <span className="rounded-full bg-red-600 text-white px-1.5 leading-none py-0.5 text-[11px] font-bold">
                   {attentionCount}
                 </span>
               )}
             </button>
             <button onClick={() => setRightTab("live")} className={tabBtn(rightTab === "live")}>
-              Live Log
+              Nhật ký
             </button>
             <button onClick={() => setRightTab("admin")} className={tabBtn(rightTab === "admin")}>
               Quản trị job
@@ -389,7 +400,7 @@ export function Dashboard() {
               Lịch cố định
             </button>
             <button onClick={() => setRightTab("distance")} className={tabBtn(rightTab === "distance")}>
-              Distance checking
+              Khoảng cách
             </button>
           </div>
 
@@ -449,7 +460,7 @@ export function Dashboard() {
                       logMode === "smart" ? "bg-slate-200 text-slate-800" : "text-slate-400 hover:text-slate-700"
                     }`}
                   >
-                    Smart History
+                    Lịch sử Smart
                   </button>
                 </div>
                 <div className="h-[72vh] lg:h-auto lg:flex-1 lg:min-h-0">

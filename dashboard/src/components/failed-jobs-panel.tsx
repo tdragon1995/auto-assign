@@ -40,9 +40,9 @@ const REASON_META: Record<
   NO_GPS:         { label: "Thiếu toạ độ GPS", tone: "red", order: 7 },
 };
 
-const TONE_STYLES: Record<"red" | "amber", { chip: string; border: string }> = {
-  red:   { chip: "bg-red-100 text-red-700 border-red-300",     border: "border-l-red-500" },
-  amber: { chip: "bg-amber-100 text-amber-800 border-amber-300", border: "border-l-amber-500" },
+const TONE_STYLES: Record<"red" | "amber", { chip: string; card: string }> = {
+  red:   { chip: "bg-red-100 text-red-700 border-red-300",     card: "border-red-200 bg-red-50/50" },
+  amber: { chip: "bg-amber-100 text-amber-800 border-amber-300", card: "border-amber-200 bg-amber-50/50" },
 };
 
 function metaFor(reason: FailedReason) {
@@ -90,7 +90,7 @@ function FailedRow({
   const selectedDriverName = drivers.find(d => d.driver_id === selectedDriver)?.name;
 
   return (
-    <div className={`rounded border border-l-4 bg-white px-2 py-1.5 ${tone.border}`}>
+    <div className={`rounded border px-2 py-1.5 ${tone.card}`}>
       {/* Line 1: job link · route · reason chip */}
       <div className="flex items-center gap-2 min-w-0">
         <a
@@ -156,7 +156,7 @@ function FailedRow({
               </div>
             </div>
             {selectedDriver && selectedDriverName && (
-              <div className="text-xs px-2 py-1 bg-blue-50 border border-blue-200 rounded text-slate-700">
+              <div className="text-xs px-2 py-1 bg-indigo-50 border border-indigo-200 rounded text-indigo-800">
                 Đã chọn: {selectedDriverName}
               </div>
             )}
@@ -176,7 +176,7 @@ function FailedRow({
             <div className="flex gap-1">
               <Button
                 size="sm"
-                className="flex-1 h-6 text-[11px] bg-blue-600 hover:bg-blue-700"
+                className="flex-1 h-6 text-[11px] bg-indigo-600 hover:bg-indigo-700"
                 disabled={!selectedDriver}
                 onClick={handleAssign}
               >
@@ -260,7 +260,7 @@ export function FailedJobsPanel({
 
   // Rows inside each section pack into a responsive grid so a full screen shows
   // as many items as possible; section headers stay full-width above their grid.
-  const rowGrid = "grid grid-cols-1 gap-1.5 md:grid-cols-2 xl:grid-cols-3";
+  const rowGrid = "grid grid-cols-1 gap-1.5 md:grid-cols-2";
 
   return (
     <Card className="flex h-full flex-col gap-2 py-2 border-orange-300">
@@ -272,7 +272,7 @@ export function FailedJobsPanel({
       </CardHeader>
       <CardContent className="px-3 flex-1 min-h-0">
         {/* Full-height scroll. Order: notes → other unassignable → late pickups. */}
-        <div className="h-full overflow-y-auto space-y-2 text-xs pr-1">
+        <div className="h-full max-w-5xl overflow-y-auto space-y-2 text-xs pr-1">
             {/* ── Tasks with note (part of "unassignable") ─────────────────── */}
             {held.length > 0 && (
               <NoteReviewPanel
@@ -319,7 +319,7 @@ export function FailedJobsPanel({
                   {scheduleErrors.map((e, i) => (
                     <div
                       key={`${e.reference_number}-${i}`}
-                      className="rounded border border-l-4 border-l-red-500 bg-white px-2 py-1.5"
+                      className="rounded border border-red-200 bg-red-50/50 px-2 py-1.5"
                     >
                       <div className="text-sm font-semibold text-slate-800 break-words md:truncate" title={`${labelFor(e.pickup_name, e.pickup_id)} → ${labelFor(e.dropoff_name, e.dropoff_id)}`}>
                         {labelFor(e.pickup_name, e.pickup_id)} <span className="text-slate-400">→</span> {labelFor(e.dropoff_name, e.dropoff_id)}
@@ -342,7 +342,7 @@ export function FailedJobsPanel({
                   {warnings.map((w) => (
                     <div
                       key={w.job_id}
-                      className="rounded border border-l-4 border-l-amber-500 bg-amber-50/60 px-2 py-1.5"
+                      className="rounded border border-amber-200 bg-amber-50/60 px-2 py-1.5"
                     >
                       <div className="flex items-center gap-2 min-w-0">
                         <a

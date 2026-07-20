@@ -33,7 +33,7 @@ export function ServiceStatus({ mappingCount, pscRouteCount, lastChecked }: Serv
       }`}
     >
       <span className={`w-2 h-2 rounded-full ${fresh ? "bg-green-400 animate-pulse" : "bg-red-400"}`} />
-      <span className="hidden sm:inline">Nhịp</span>
+      <span className="hidden sm:inline">Cập nhật</span>
       <span>{lastCheckedLabel ?? "—"}</span>
     </div>
   );

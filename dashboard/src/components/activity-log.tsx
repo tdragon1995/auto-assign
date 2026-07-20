@@ -77,7 +77,7 @@ function LogLine({ entry }: { entry: LogEntry }) {
     <div
       className={`p-1.5 rounded border ${
         isNote
-          ? "bg-purple-50 border-purple-300 border-l-4 border-l-purple-500"
+          ? "bg-purple-50 border-purple-300"
           : LEVEL_BG[entry.level]
       }`}
     >
@@ -91,7 +91,7 @@ function LogLine({ entry }: { entry: LogEntry }) {
             <button
               type="button"
               onClick={() => setExpanded((e) => !e)}
-              className="font-semibold text-blue-600 hover:text-blue-800 whitespace-nowrap"
+              className="font-semibold text-indigo-600 hover:text-indigo-800 whitespace-nowrap"
             >
               Xem thêm
             </button>
@@ -103,7 +103,7 @@ function LogLine({ entry }: { entry: LogEntry }) {
               <button
                 type="button"
                 onClick={() => setExpanded((e) => !e)}
-                className="ml-1 font-semibold text-blue-600 hover:text-blue-800"
+                className="ml-1 font-semibold text-indigo-600 hover:text-indigo-800"
               >
                 {" Thu gọn"}
               </button>
@@ -125,9 +125,9 @@ export function ActivityLog({ logs }: ActivityLogProps) {
     <Card className="flex flex-col h-full py-4">
       <CardHeader className="pb-2 shrink-0">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-sm">Activity Log</CardTitle>
+          <CardTitle className="text-sm">Nhật ký hoạt động</CardTitle>
           <span className="text-xs text-muted-foreground">
-            {logs.length} entries
+            {logs.length} dòng
           </span>
         </div>
         <div className="flex gap-1 mt-1">
@@ -149,7 +149,7 @@ export function ActivityLog({ logs }: ActivityLogProps) {
           <div className="space-y-1 font-mono text-xs pr-3">
             {filtered.length === 0 && (
               <p className="text-muted-foreground text-center py-8">
-                No log entries yet
+                Chưa có nhật ký
               </p>
             )}
             {[...filtered].reverse().map((entry, i) => (
