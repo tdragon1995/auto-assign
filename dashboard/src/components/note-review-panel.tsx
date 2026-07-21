@@ -219,7 +219,7 @@ export function NoteReviewPanel({
                         : "bg-slate-100 text-slate-600 hover:bg-slate-200"
                     }`}
                   >
-                    {offset === 0 ? "Hôm nay" : `+${offset}`}
+                    {offset === 0 ? "Hôm nay" : offset === 1 ? "Ngày Mai" : "Ngày Mốt"}
                   </button>
                 ))}
                 <select
