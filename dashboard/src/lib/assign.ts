@@ -294,7 +294,12 @@ function computePickupWarnings(
       const elapsed = now - anchor.getTime();
       if (elapsed >= OVERDUE_MS) {
         reason = "overdue";
-        extra = { minutes_late: Math.floor(elapsed / 60000) - OVERDUE_MIN };
+        // create_ts carries the job's origination time for the warning display;
+        // fall back to scheduled_delivery_ts (the anchor) when create_ts is absent.
+        extra = {
+          minutes_late: Math.floor(elapsed / 60000) - OVERDUE_MIN,
+          create_ts: job.create_ts ?? job.scheduled_delivery_ts ?? null,
+        };
       }
     } else {
       // Case 2 (delivery window): warn once the pickup is OVERDUE_MIN past the
@@ -307,7 +312,11 @@ function computePickupWarnings(
       const elapsed = now - windowStart.getTime();
       if (elapsed < OVERDUE_MS) continue;
       reason = "overdue";
-      extra = { minutes_late: Math.floor(elapsed / 60000) - OVERDUE_MIN };
+      extra = {
+        minutes_late: Math.floor(elapsed / 60000) - OVERDUE_MIN,
+        window_time_from: timeFrom,
+        window_time_to: pickup.delivery_windows[0]?.time_to,
+      };
     }
 
     if (!reason) continue;
@@ -388,14 +397,31 @@ async function alertLateJobs(
     const route =
       [w.pickup_customer_name, w.dropoff_customer_name].filter(Boolean).join(" → ") ||
       "N/A";
+    // Precise elapsed, promoted to the header so severity reads at a glance:
+    // "2h30" / "2h" (clock form, no "phút" suffix — texty in a scan-first alert).
     const h = Math.floor(elapsedMin / 60);
     const m = elapsedMin % 60;
+    const dur = `${h}h${m ? String(m).padStart(2, "0") : ""}`;
+    // Reference-time line so the supervisor sees WHAT the lateness is measured
+    // against: a delivery window ("Khung giờ") for windowed pickups, else the
+    // job's creation time ("Tạo lúc"). Window times are raw "HH:mm:ss+07:00" —
+    // slice HH:mm off the front (hhmmVn needs a date prefix these lack).
+    const win5 = (s?: string) => (s ? s.slice(0, 5) : null);
+    let refLine: string | null = null;
+    if (w.window_time_from) {
+      const to = win5(w.window_time_to);
+      refLine = `Khung giờ: ${win5(w.window_time_from)}${to ? `–${to}` : ""}`;
+    } else if (w.create_ts) {
+      const created = hhmmVn(w.create_ts);
+      if (created) refLine = `Tạo lúc: ${created}`;
+    }
     const text = [
-      "⚠️ Trễ lấy mẫu hơn 2 tiếng",
-      `Job ${w.job_id}${w.reference_number ? ` (${w.reference_number})` : ""}`,
+      `⚠️ Trễ lấy mẫu ~${dur}`,
+      `Job #${w.job_id}${w.reference_number ? ` (${w.reference_number})` : ""}`,
       `Tuyến: ${route}`,
-      `Tài xế: ${w.driver_name ?? w.driver_id}`,
-      `Đã trễ ~${h}h${m ? `${m}p` : ""} — chưa bắt đầu lấy mẫu.`,
+      `Tài xế: ${w.driver_name ?? "chưa rõ tên"}`,
+      ...(refLine ? [refLine] : []),
+      "Chưa bắt đầu lấy mẫu — vui lòng kiểm tra & xử lý.",
     ].join("\n");
 
     const sent = await sendZaloMessage(botToken, chatId, text);

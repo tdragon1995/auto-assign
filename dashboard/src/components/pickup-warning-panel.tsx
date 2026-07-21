@@ -3,6 +3,22 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { PickupWarning } from "@/lib/types";
 
+// Reference time the lateness is measured against: a delivery window for windowed
+// pickups, else the job's creation time. Window times are raw "HH:mm:ss+07:00"
+// (slice HH:mm); create_ts is a Cartrack ts ("2026-06-20 08:31:47" → HH:mm).
+function refTimeLabel(w: PickupWarning): string | null {
+  if (w.window_time_from) {
+    const from = w.window_time_from.slice(0, 5);
+    const to = w.window_time_to?.slice(0, 5);
+    return `Khung giờ ${from}${to ? `–${to}` : ""}`;
+  }
+  if (w.create_ts) {
+    const m = /[ T](\d{2}:\d{2})/.exec(w.create_ts);
+    if (m) return `Tạo lúc ${m[1]}`;
+  }
+  return null;
+}
+
 export function PickupWarningPanel({ warnings }: { warnings: PickupWarning[] }) {
   if (warnings.length === 0) return null;
 
@@ -35,6 +51,9 @@ export function PickupWarningPanel({ warnings }: { warnings: PickupWarning[] }) 
             )}
             {w.driver_name && (
               <p className="text-[11px] text-slate-400 truncate">{w.driver_name}</p>
+            )}
+            {refTimeLabel(w) && (
+              <p className="text-[11px] text-slate-400 truncate">{refTimeLabel(w)}</p>
             )}
           </div>
         ))}

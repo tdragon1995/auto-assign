@@ -153,7 +153,9 @@ export interface PickupWarning {
   driver_name: string | null;
   reason: "overdue" | "window_expiring";
   minutes_late?: number;    // overdue: minutes past 90
-  window_time_to?: string;  // window_expiring: raw "HH:mm:ss+07:00"
+  window_time_to?: string;  // windowed pickup: raw window end "HH:mm:ss+07:00"
+  window_time_from?: string; // windowed pickup: raw window start "HH:mm:ss+07:00"
+  create_ts?: string | null; // ASAP pickup (no window): job creation time, raw Cartrack ts
 }
 
 // A job the last full cycle could not assign for a deterministic, per-job reason
