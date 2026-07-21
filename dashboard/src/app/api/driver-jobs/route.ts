@@ -5,7 +5,8 @@ import {
 import { loadConfigFromSheets, isValidDriverId } from "@/lib/config";
 import { isCompletedOrRejectedStop, STOP_STATUS } from "@/lib/job-filters";
 import { verifySession, NV_COOKIE } from "@/lib/driver-session";
-import { vnDate, vnDayWindow } from "@/lib/time";
+import { appendNhanViecLog } from "@/lib/sheets-writer";
+import { vnDate, vnDayWindow, vnTimestamp } from "@/lib/time";
 import type { Job, Stop, TimelineRoute, TimelineStop } from "@/lib/types";
 
 // Jobs a driver may claim: mapped to their smart_driver_id, pickup still open.
@@ -169,12 +170,36 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Capture the previous assignee BEFORE reassigning (for the audit log).
+    const prevDriver = job.driver
+      ? `${job.driver.first_name ?? ""} ${job.driver.last_name ?? ""}`.trim()
+      : "";
+
     const { status, driverName } = await assignJobViaUpdate(jobId, driverId, env);
     if (status < 200 || status >= 300) {
       return NextResponse.json(
         { ok: false, error: `Nhận việc thất bại (Cartrack ${status}).` },
         { status: 502 }
       );
+    }
+
+    // Best-effort audit log to Google Sheets — never fail the claim if it errors.
+    try {
+      const dropoff = (job.stops ?? []).find((s) => s.stop_type_id === DROPOFF);
+      const statusId = pickup?.stop_status_id ?? null;
+      await appendNhanViecLog([
+        vnTimestamp(),
+        session.driver_name || driverName || "",
+        driverId,
+        jobId,
+        job.reference_number ?? "",
+        pickup?.customer_name ?? "",
+        dropoff?.customer_name ?? "",
+        prevDriver || (job.delivery_driver_id ?? ""),
+        statusId != null ? (STOP_STATUS[statusId]?.label ?? String(statusId)) : "",
+      ]);
+    } catch (e) {
+      console.error("[driver-jobs] audit log append failed:", e instanceof Error ? e.message : e);
     }
 
     return NextResponse.json({ ok: true, job_id: jobId, driver_name: driverName });

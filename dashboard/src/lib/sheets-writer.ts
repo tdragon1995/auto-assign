@@ -327,3 +327,47 @@ export async function updateLeaveSubs(
 
   return { row: rowNo, warning };
 }
+
+// ── Nhận Việc (driver self-claim) audit log ──────────────────────────────────
+
+const NV_LOG_SHEET = "Nhận Việc Log";
+const NV_LOG_HEADERS = [
+  "Thời gian", "Tài xế", "driver_id", "Job ID", "Mã đơn",
+  "Điểm lấy", "Điểm giao", "Tài xế trước đó", "Trạng thái lấy hàng",
+];
+let nvLogSheetReady = false;
+
+/** Ensure the log tab exists (create with a header row on first use). */
+async function ensureNvLogSheet(sheets: ReturnType<typeof google.sheets>): Promise<void> {
+  if (nvLogSheetReady) return;
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
+  const exists = meta.data.sheets?.some((s) => s.properties?.title === NV_LOG_SHEET);
+  if (!exists) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SHEET_ID,
+      requestBody: { requests: [{ addSheet: { properties: { title: NV_LOG_SHEET } } }] },
+    });
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `'${NV_LOG_SHEET}'!A1`,
+      valueInputOption: "RAW",
+      requestBody: { values: [NV_LOG_HEADERS] },
+    });
+  }
+  nvLogSheetReady = true;
+}
+
+/** Append one audit row for a successful driver self-claim. Order matches
+ *  NV_LOG_HEADERS. Caller should treat this as best-effort (don't fail the claim
+ *  if it throws). */
+export async function appendNhanViecLog(row: (string | number | null)[]): Promise<void> {
+  const sheets = getSheetsClient();
+  await ensureNvLogSheet(sheets);
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: SHEET_ID,
+    range: `'${NV_LOG_SHEET}'!A1`,
+    valueInputOption: "RAW",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: { values: [row] },
+  });
+}
