@@ -448,6 +448,21 @@ export async function shouldRunDailyRollover(dateVn: string, env = "prod"): Prom
   return res === "OK";
 }
 
+/** Atomically claim the right to send ONE late-pickup Zalo alert for this job.
+ *  Returns true only for the first cycle that sees the job cross the 2-hour mark;
+ *  every later cycle gets false, so a job that stays stuck doesn't re-ping the
+ *  supervisor group. 24h TTL is longer than any single delivery day, so the same
+ *  job_id never double-alerts even after the day-boundary rollover re-dates it.
+ *  Without Redis ⇒ false: no debounce store means we must not send at all (better
+ *  silent than spamming the group every 3-min cycle). Env-scoped so a UAT cycle
+ *  can't consume prod's slot — though alerts are prod-gated at the call site too. */
+export async function claimLateAlert(jobId: number, env = "prod", ttlSec = 86400): Promise<boolean> {
+  const redis = getRedis();
+  if (!redis) return false;
+  const res = await redis.set(`assign:late_alert:${env}:${jobId}`, new Date().toISOString(), { nx: true, ex: ttlSec });
+  return res === "OK";
+}
+
 // ── Server-backed live log ─────────────────────────────────────────────────
 
 // Only these INFO lines are worth keeping; every other INFO is per-cycle noise

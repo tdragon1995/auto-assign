@@ -6,7 +6,7 @@ import { DIAG_LOCATION_CUSTOMER_IDS } from "./psc-routes-data";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from "./return-trips";
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
 import { cleanupStaleTrips } from "./cleanup-trips";
-import { setHeldJobs, setFailedJobs, setPickupWarnings, setPscActivePickups, shouldRunProxySweep, shouldRunDailyRollover, type HeldJob, type PscDupHit } from "./smart-log-kv";
+import { setHeldJobs, setFailedJobs, setPickupWarnings, setPscActivePickups, shouldRunProxySweep, shouldRunDailyRollover, claimLateAlert, type HeldJob, type PscDupHit } from "./smart-log-kv";
 import { isValidDriverId } from "./config";
 import {
   vnDate,
@@ -30,6 +30,16 @@ const DUPLICATE_REJECT_REASON =
 // PSC tỉnh jobs are multi-leg provincial routes — the same pickup→dropoff pair
 // is expected to repeat across different legs and should never be blocked.
 const DUPLICATE_EXEMPT_LABELS = [PSC_TINH_LABEL, PSC_RETURN_LABEL];
+
+// Grace before a still-unstarted pickup is flagged overdue on the dashboard —
+// measured from scheduled_delivery_ts (ASAP) or the window start (windowed).
+// The dashboard "Cần xử lý" panel surfaces everything past this mark.
+const PICKUP_OVERDUE_MIN = 90;
+// Higher escalation mark: once a pickup is this many minutes past its expected
+// start and STILL unstarted, a one-time Zalo alert is pushed to the supervisor
+// group (see alertLateJobs). Kept well above PICKUP_OVERDUE_MIN so the push is a
+// real "this is badly stuck" signal, not a duplicate of the dashboard warning.
+const LATE_ALERT_MIN = 120;
 
 /**
  * Compact "HH:MM" for a Cartrack timestamp. The value is already VN-local in
@@ -209,8 +219,9 @@ function computePickupWarnings(
   const FIFTEEN_MIN_MS = 15 * 60 * 1000;
   // Overdue grace before a still-unstarted pickup is flagged late — measured from
   // scheduled_delivery_ts for ASAP pickups, or from the window start (time_from)
-  // for windowed pickups.
-  const OVERDUE_MIN = 90;
+  // for windowed pickups. Module const so alertLateJobs can reconstruct the true
+  // elapsed minutes from a warning's minutes_late (which is measured past this mark).
+  const OVERDUE_MIN = PICKUP_OVERDUE_MIN;
   const OVERDUE_MS  = OVERDUE_MIN * 60 * 1000;
 
   // Build per-driver lookup tables from all assigned jobs:
@@ -335,6 +346,64 @@ function computePickupWarnings(
   }
 
   return warnings;
+}
+
+/**
+ * Push a one-time Zalo alert to the supervisor group for any pickup that is now
+ * LATE_ALERT_MIN (2 hours) past its expected start and still hasn't been picked
+ * up. Piggybacks on the same admin group bot that receives leave submissions
+ * (ZALO_ADMIN_BOT_TOKEN / ZALO_ADMIN_CHAT_ID — see /api/nghi-phep).
+ *
+ * Reuses the already-computed overdue warnings, so every suppression there
+ * (driver busy elsewhere, just finished a nearby stop, internal/plan/Diag-location
+ * jobs excluded) applies to the alert too — we only escalate genuinely stuck
+ * customer pickups. A warning's minutes_late is measured PAST PICKUP_OVERDUE_MIN,
+ * so true elapsed = minutes_late + PICKUP_OVERDUE_MIN.
+ *
+ * "Once per job" is enforced by an NX Redis claim (claimLateAlert, 24h TTL): the
+ * first cycle to see a job cross the mark sends and claims; later cycles skip it,
+ * so a job that stays stuck never re-pings. Prod-only — a UAT cycle must never
+ * spam the real supervisor group.
+ */
+async function alertLateJobs(
+  warnings: PickupWarning[],
+  env: Env,
+  log: (msg: string, level?: LogLevel) => void,
+): Promise<void> {
+  if (env !== "prod") return;
+  const botToken = process.env.ZALO_ADMIN_BOT_TOKEN;
+  const chatId = process.env.ZALO_ADMIN_CHAT_ID;
+  if (!botToken || !chatId) return;
+
+  for (const w of warnings) {
+    if (w.reason !== "overdue") continue;
+    const elapsedMin = (w.minutes_late ?? 0) + PICKUP_OVERDUE_MIN;
+    if (elapsedMin < LATE_ALERT_MIN) continue;
+
+    // Claim before sending: guarantees a single ping even if two cycles overlap.
+    // A transient send failure forfeits this job's alert (it still shows on the
+    // dashboard) — acceptable to keep the "exactly once" guarantee simple.
+    if (!(await claimLateAlert(w.job_id, env))) continue;
+
+    const route =
+      [w.pickup_customer_name, w.dropoff_customer_name].filter(Boolean).join(" → ") ||
+      "N/A";
+    const h = Math.floor(elapsedMin / 60);
+    const m = elapsedMin % 60;
+    const text = [
+      "⚠️ Trễ lấy mẫu hơn 2 tiếng",
+      `Job ${w.job_id}${w.reference_number ? ` (${w.reference_number})` : ""}`,
+      `Tuyến: ${route}`,
+      `Tài xế: ${w.driver_name ?? w.driver_id}`,
+      `Đã trễ ~${h}h${m ? `${m}p` : ""} — chưa bắt đầu lấy mẫu.`,
+    ].join("\n");
+
+    const sent = await sendZaloMessage(botToken, chatId, text);
+    log(
+      `Late alert ${sent ? "sent" : "failed"} for job ${w.job_id} (~${elapsedMin} phút trễ)`,
+      sent ? "INFO" : "WARN",
+    );
+  }
 }
 
 async function rejectJobAsDuplicate(jobId: number, env: Env): Promise<boolean> {
@@ -1753,10 +1822,16 @@ export async function autoAssignCycle(
   phase("assign-loop");
 
   if (!onlyJobIds) {
+    const pickupWarnings = computePickupWarnings(assignedJobsToday ?? [], today);
     await Promise.all([
       setHeldJobs(heldJobs),
       setFailedJobs(failedJobs),
-      setPickupWarnings(computePickupWarnings(assignedJobsToday ?? [], today)),
+      setPickupWarnings(pickupWarnings),
+      // Piggyback a one-time supervisor Zalo alert on the same overdue set for the
+      // worst cases (2h+ unstarted pickups). Never throws the cycle: fire-and-log.
+      alertLateJobs(pickupWarnings, env, log).catch((e) =>
+        log(`Late-alert push failed: ${e}`, "WARN"),
+      ),
     ]);
   }
   return logs;
