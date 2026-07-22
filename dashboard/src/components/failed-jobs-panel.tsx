@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { AlertTriangle, CheckCircle2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Clock } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
@@ -53,19 +53,20 @@ function fmtLate(m: number): string {
   return mm ? `+${h}h${mm}'` : `+${h}h`;
 }
 
-/** Reference time the lateness is measured against: a delivery window for windowed
- *  pickups, else the job's creation time — so the supervisor sees WHAT the "+N'"
- *  is counted from. Window times are raw "HH:mm:ss+07:00" (slice HH:mm); create_ts
- *  is a Cartrack ts ("2026-06-20 08:31:47" → HH:mm). */
-function refTimeLabel(w: PickupWarning): string | null {
+/** Reference time the "+N'" delay is counted from: the delivery-window start (the
+ *  "arrive-at" time) for windowed pickups, else the job's creation time. `time` is
+ *  the compact HH:mm shown next to the delay badge; `full` is the labelled form for
+ *  the tooltip (carries the window's end time too). Window times are raw
+ *  "HH:mm:ss+07:00" (slice HH:mm); create_ts is a Cartrack ts → HH:mm. */
+function refTime(w: PickupWarning): { time: string; full: string } | null {
   if (w.window_time_from) {
     const from = w.window_time_from.slice(0, 5);
     const to = w.window_time_to?.slice(0, 5);
-    return `Khung giờ ${from}${to ? `–${to}` : ""}`;
+    return { time: from, full: `Khung giờ ${from}${to ? `–${to}` : ""}` };
   }
   if (w.create_ts) {
     const m = /[ T](\d{2}:\d{2})/.exec(w.create_ts);
-    if (m) return `Tạo lúc ${m[1]}`;
+    if (m) return { time: m[1], full: `Tạo lúc ${m[1]}` };
   }
   return null;
 }
@@ -351,7 +352,7 @@ export function FailedJobsPanel({
                 <SectionHeader label="Lấy mẫu chậm" count={warnings.length} tone="amber" />
                 <div className={listBox}>
                   {warnings.map((w) => {
-                    const ref = refTimeLabel(w);
+                    const ref = refTime(w);
                     return (
                     <div
                       key={w.job_id}
@@ -372,16 +373,22 @@ export function FailedJobsPanel({
                         >
                           {w.pickup_customer_name ?? "—"} <span className="text-slate-400">→</span> {w.dropoff_customer_name ?? "—"}
                         </span>
+                        {/* Anchor time + delay read as one unit: "since HH:MM, +N' late". */}
+                        {ref && (
+                          <span
+                            className="shrink-0 flex items-center gap-1 text-xs font-semibold tabular-nums text-slate-700 whitespace-nowrap"
+                            title={ref.full}
+                          >
+                            <Clock className="w-3.5 h-3.5 text-slate-400" aria-hidden />
+                            {ref.time}
+                          </span>
+                        )}
                         <span className="shrink-0 font-bold text-red-600 bg-red-50 border border-red-200 rounded px-1.5 py-0.5 leading-none whitespace-nowrap">
                           {fmtLate(w.minutes_late ?? 0)}
                         </span>
                       </div>
-                      {(ref || w.driver_name) && (
-                        <p className="mt-0.5 text-[11px] text-slate-500 break-words md:truncate" title={w.driver_name ?? undefined}>
-                          {ref && <span className="text-slate-400">{ref}</span>}
-                          {ref && w.driver_name && <span className="text-slate-400"> · </span>}
-                          {w.driver_name}
-                        </p>
+                      {w.driver_name && (
+                        <p className="mt-0.5 text-[11px] text-slate-500 break-words md:truncate" title={w.driver_name}>{w.driver_name}</p>
                       )}
                     </div>
                     );
