@@ -53,6 +53,23 @@ function fmtLate(m: number): string {
   return mm ? `+${h}h${mm}'` : `+${h}h`;
 }
 
+/** Reference time the lateness is measured against: a delivery window for windowed
+ *  pickups, else the job's creation time — so the supervisor sees WHAT the "+N'"
+ *  is counted from. Window times are raw "HH:mm:ss+07:00" (slice HH:mm); create_ts
+ *  is a Cartrack ts ("2026-06-20 08:31:47" → HH:mm). */
+function refTimeLabel(w: PickupWarning): string | null {
+  if (w.window_time_from) {
+    const from = w.window_time_from.slice(0, 5);
+    const to = w.window_time_to?.slice(0, 5);
+    return `Khung giờ ${from}${to ? `–${to}` : ""}`;
+  }
+  if (w.create_ts) {
+    const m = /[ T](\d{2}:\d{2})/.exec(w.create_ts);
+    if (m) return `Tạo lúc ${m[1]}`;
+  }
+  return null;
+}
+
 function FailedRow({
   job,
   drivers,
@@ -333,7 +350,9 @@ export function FailedJobsPanel({
               <div className="space-y-1.5">
                 <SectionHeader label="Lấy mẫu chậm" count={warnings.length} tone="amber" />
                 <div className={listBox}>
-                  {warnings.map((w) => (
+                  {warnings.map((w) => {
+                    const ref = refTimeLabel(w);
+                    return (
                     <div
                       key={w.job_id}
                       className="px-2 py-1.5 hover:bg-slate-50"
@@ -357,11 +376,16 @@ export function FailedJobsPanel({
                           {fmtLate(w.minutes_late ?? 0)}
                         </span>
                       </div>
-                      {w.driver_name && (
-                        <p className="mt-0.5 text-[11px] text-slate-500 break-words md:truncate" title={w.driver_name}>{w.driver_name}</p>
+                      {(ref || w.driver_name) && (
+                        <p className="mt-0.5 text-[11px] text-slate-500 break-words md:truncate" title={w.driver_name ?? undefined}>
+                          {ref && <span className="text-slate-400">{ref}</span>}
+                          {ref && w.driver_name && <span className="text-slate-400"> · </span>}
+                          {w.driver_name}
+                        </p>
                       )}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
