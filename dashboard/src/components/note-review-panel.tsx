@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, Clock, StickyNote } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -62,6 +62,56 @@ function HeldNote({ note }: { note: string }) {
   );
 }
 
+/** Reusable day-chip + time-input picker, driven by parent state. */
+function DayTimePicker({
+  dayOffset,
+  timeLabel,
+  timeIsPast,
+  onDay,
+  onTime,
+  warnId,
+  inputRef,
+}: {
+  dayOffset: number;
+  timeLabel: string | null;
+  timeIsPast: boolean;
+  onDay: (offset: number) => void;
+  onTime: (label: string | null) => void;
+  warnId: string;
+  inputRef?: React.Ref<HTMLInputElement>;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {[0, 1, 2].map((offset) => (
+        <button
+          key={offset}
+          type="button"
+          onClick={() => onDay(offset)}
+          className={`rounded-md px-2.5 py-1 text-xs font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 ${
+            dayOffset === offset
+              ? "bg-indigo-600 text-white"
+              : "bg-white text-slate-600 ring-1 ring-inset ring-slate-300 hover:bg-slate-100"
+          }`}
+        >
+          {DAY_LABELS[offset]}
+        </button>
+      ))}
+      <input
+        ref={inputRef}
+        type="time"
+        step={900}
+        aria-label="Giờ giao"
+        aria-invalid={timeIsPast || undefined}
+        aria-describedby={timeIsPast ? warnId : undefined}
+        min={dayOffset === 0 ? vnNowLabel() : undefined}
+        value={timeLabel ?? ""}
+        onChange={(e) => onTime(e.target.value || null)}
+        className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs tabular-nums focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-400/40 aria-invalid:border-red-400 aria-invalid:focus:ring-red-400/40"
+      />
+    </div>
+  );
+}
+
 /**
  * Lists note-held jobs. `held` is fed by the dashboard status poll (no polling
  * of its own). `onAssigned` removes the job immediately from the parent list;
@@ -86,8 +136,19 @@ export function NoteReviewPanel({
   // Which row has its scheduler open. Only one at a time — the queue is cleared
   // one job per focus, and a single open panel keeps the list scannable.
   const [openId, setOpenId] = useState<number | null>(null);
+  // Move focus to the revealed time input when a scheduler opens, so keyboard
+  // and screen-reader users land on the next action instead of nowhere.
+  const openTimeRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (openId != null) openTimeRef.current?.focus();
+  }, [openId]);
   // Per-job schedule state: dayOffset 0/1/2, selected time "HH:MM" or null.
   const [schedules, setSchedules] = useState<Record<number, { dayOffset: number; timeLabel: string | null }>>({});
+  // Bulk selection + shared scheduler for clearing several look-alike jobs at once.
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkSched, setBulkSched] = useState<{ dayOffset: number; timeLabel: string | null }>({ dayOffset: 0, timeLabel: null });
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const getSched = (jobId: number) => schedules[jobId] ?? { dayOffset: 0, timeLabel: null };
 
@@ -104,34 +165,82 @@ export function NoteReviewPanel({
     patchSched(jobId, { dayOffset: offset });
   };
 
-  const assignAnyway = useCallback(
-    async (job: HeldJob) => {
-      if (!window.confirm(`Duyệt giao Job ${job.job_id} dù có ghi chú?\nHệ thống sẽ tự giao ở chu kỳ kế tiếp.\n\n"${job.note}"`)) return;
-      setBusyId(job.job_id);
-      // Stamps the approved mark on the note (a quick Cartrack edit) — the next
-      // cron cycle does the assignment. No cycle lock, so no 409/retry queue.
-      try {
-        const res = await fetch(`/api/assign/held?env=${env}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ jobId: job.job_id }),
-        });
-        const data = await res.json();
-        if (data.ok || data.approved) {
-          toast.success(`Đã duyệt Job ${job.job_id} — sẽ giao ở chu kỳ kế tiếp`);
-          onAssigned(job.job_id);
-        } else {
-          toast.error(data.error ?? `Không duyệt được Job ${job.job_id}`);
+  // ── Bulk selection helpers ──────────────────────────────────────────────
+  const selectedIds = held.filter((j) => selected.has(j.job_id)).map((j) => j.job_id);
+  const selectedCount = selectedIds.length;
+  const allSelected = held.length > 0 && held.every((j) => selected.has(j.job_id));
+  const someSelected = selectedCount > 0 && !allSelected;
+
+  const toggleSelect = (jobId: number) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(jobId)) next.delete(jobId);
+      else next.add(jobId);
+      return next;
+    });
+
+  const toggleSelectAll = () =>
+    setSelected(allSelected ? new Set() : new Set(held.map((j) => j.job_id)));
+
+  const clearSelection = () => {
+    setSelected(new Set());
+    setBulkOpen(false);
+    setBulkSched({ dayOffset: 0, timeLabel: null });
+  };
+
+  const bulkTimeIsPast = bulkSched.dayOffset === 0 && !!bulkSched.timeLabel && bulkSched.timeLabel <= vnNowLabel();
+  const bulkCanSchedule = !!bulkSched.timeLabel && !bulkTimeIsPast;
+
+  const bulkDayOffset = (offset: number) => {
+    if (offset === 0 && bulkSched.timeLabel && bulkSched.timeLabel <= vnNowLabel()) {
+      setBulkSched({ dayOffset: 0, timeLabel: null });
+      return;
+    }
+    setBulkSched((s) => ({ ...s, dayOffset: offset }));
+  };
+
+  const runBulk = async (body: (id: number) => Record<string, unknown>, verb: string) => {
+    if (selectedCount === 0) return;
+    const ids = [...selectedIds];
+    setBulkBusy(true);
+    try {
+      const results = await Promise.allSettled(
+        ids.map((id) =>
+          fetch(`/api/assign/held?env=${env}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body(id)),
+          }).then((r) => r.json()),
+        ),
+      );
+      let ok = 0;
+      results.forEach((res, i) => {
+        if (res.status === "fulfilled" && (res.value?.ok || res.value?.approved)) {
+          ok++;
+          onAssigned(ids[i]);
         }
-      } catch {
-        toast.error(`Không duyệt được Job ${job.job_id}`);
-      } finally {
-        setBusyId(null);
-        onRefresh();
-      }
-    },
-    [env, onRefresh, onAssigned],
-  );
+      });
+      if (ok > 0) toast.success(`${verb} ${ok}/${ids.length} việc`);
+      if (ok < ids.length) toast.error(`${ids.length - ok} việc chưa xử lý được`);
+    } catch {
+      toast.error("Lỗi kết nối, vui lòng thử lại");
+    } finally {
+      setBulkBusy(false);
+      clearSelection();
+      onRefresh();
+    }
+  };
+
+  const bulkAssignNow = async () => {
+    if (!window.confirm(`Duyệt giao ${selectedCount} việc dù có ghi chú?\nHệ thống sẽ tự giao ở chu kỳ kế tiếp.`)) return;
+    await runBulk((id) => ({ jobId: id }), "Đã duyệt");
+  };
+
+  const bulkSchedule = async () => {
+    if (!bulkCanSchedule || !bulkSched.timeLabel) return;
+    const scheduledAt = `${vnDateOffset(bulkSched.dayOffset)} ${bulkSched.timeLabel}:00`;
+    await runBulk((id) => ({ jobId: id, scheduledAt }), `Đang lên lịch ${DAY_LABELS[bulkSched.dayOffset]} ${bulkSched.timeLabel} —`);
+  };
 
   if (held.length === 0) return null;
 
@@ -139,6 +248,7 @@ export function NoteReviewPanel({
     const { dayOffset, timeLabel } = getSched(job.job_id);
     const isBusy = busyId === job.job_id;
     const isOpen = openId === job.job_id;
+    const isSelected = selected.has(job.job_id);
     const timeIsPast = dayOffset === 0 && !!timeLabel && timeLabel <= vnNowLabel();
     const canSchedule = !!timeLabel && !timeIsPast;
 
@@ -168,27 +278,64 @@ export function NoteReviewPanel({
       }
     };
 
+    const assignAnyway = async () => {
+      if (!window.confirm(`Duyệt giao Job ${job.job_id} dù có ghi chú?\nHệ thống sẽ tự giao ở chu kỳ kế tiếp.\n\n"${job.note}"`)) return;
+      setBusyId(job.job_id);
+      try {
+        const res = await fetch(`/api/assign/held?env=${env}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jobId: job.job_id }),
+        });
+        const data = await res.json();
+        if (data.ok || data.approved) {
+          toast.success(`Đã duyệt Job ${job.job_id} — sẽ giao ở chu kỳ kế tiếp`);
+          onAssigned(job.job_id);
+        } else {
+          toast.error(data.error ?? `Không duyệt được Job ${job.job_id}`);
+        }
+      } catch {
+        toast.error(`Không duyệt được Job ${job.job_id}`);
+      } finally {
+        setBusyId(null);
+        onRefresh();
+      }
+    };
+
     return (
       <div
         key={job.job_id}
         className={`space-y-1.5 rounded-md border px-2.5 py-2 ${
-          job.error ? "border-red-300 bg-red-50" : "border-orange-200 bg-orange-50"
+          job.error
+            ? "border-red-300 bg-red-50"
+            : isSelected
+              ? "border-indigo-300 bg-indigo-50/40"
+              : "border-orange-200 bg-orange-50"
         }`}
       >
-        {/* Header — customer leads (it's what tells the rows apart); the Job
-            link is demoted to a quiet secondary line. */}
-        <div className="space-y-0.5">
-          <div className="text-sm font-semibold leading-snug text-slate-800 break-words">
-            {job.customer}
+        {/* Header — a select checkbox, then customer-led text (customer is what
+            tells the rows apart); the Job link is a quiet secondary line. */}
+        <div className="flex items-start gap-2">
+          <input
+            type="checkbox"
+            checked={isSelected}
+            onChange={() => toggleSelect(job.job_id)}
+            aria-label={`Chọn Job ${job.job_id}`}
+            className="mt-0.5 size-4 shrink-0 accent-indigo-600"
+          />
+          <div className="min-w-0 flex-1 space-y-0.5">
+            <div className="text-sm font-semibold leading-snug text-slate-800 break-words">
+              {job.customer}
+            </div>
+            <a
+              href={`https://fleetweb-vn.cartrack.com/delivery/map?job=${job.job_id}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-0.5 text-[11px] font-medium text-slate-500 hover:text-indigo-700 hover:underline"
+            >
+              Job {job.job_id} · mở bản đồ ↗
+            </a>
           </div>
-          <a
-            href={`https://fleetweb-vn.cartrack.com/delivery/map?job=${job.job_id}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-0.5 text-[11px] font-medium text-slate-500 hover:text-indigo-700 hover:underline"
-          >
-            Job {job.job_id} · mở bản đồ ↗
-          </a>
         </div>
 
         {job.error && (
@@ -204,13 +351,7 @@ export function NoteReviewPanel({
             "now vs later" decision is never a hidden button-disabled mode. */}
         {!isOpen ? (
           <div className="flex flex-wrap items-center gap-2 pt-0.5">
-            <Button
-              size="sm"
-              variant="outline"
-              className="text-xs"
-              disabled={isBusy}
-              onClick={() => assignAnyway(job)}
-            >
+            <Button size="sm" variant="outline" className="text-xs" disabled={isBusy} onClick={assignAnyway}>
               {isBusy ? "Đang xử lý…" : "Giao ngay"}
             </Button>
             <Button
@@ -239,33 +380,17 @@ export function NoteReviewPanel({
                 Hủy
               </button>
             </div>
-            <div className="flex flex-wrap items-center gap-1.5">
-              {[0, 1, 2].map((offset) => (
-                <button
-                  key={offset}
-                  type="button"
-                  onClick={() => handleDayOffset(job.job_id, offset)}
-                  className={`rounded-md px-2.5 py-1 text-xs font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 ${
-                    dayOffset === offset
-                      ? "bg-indigo-600 text-white"
-                      : "bg-white text-slate-600 ring-1 ring-inset ring-slate-300 hover:bg-slate-100"
-                  }`}
-                >
-                  {DAY_LABELS[offset]}
-                </button>
-              ))}
-              <input
-                type="time"
-                step={900}
-                aria-label="Giờ giao"
-                min={dayOffset === 0 ? vnNowLabel() : undefined}
-                value={timeLabel ?? ""}
-                onChange={(e) => patchSched(job.job_id, { timeLabel: e.target.value || null })}
-                className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs tabular-nums focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-400/40"
-              />
-            </div>
+            <DayTimePicker
+              dayOffset={dayOffset}
+              timeLabel={timeLabel}
+              timeIsPast={timeIsPast}
+              onDay={(offset) => handleDayOffset(job.job_id, offset)}
+              onTime={(label) => patchSched(job.job_id, { timeLabel: label })}
+              warnId={`time-warn-${job.job_id}`}
+              inputRef={openTimeRef}
+            />
             {timeIsPast && (
-              <p className="text-[11px] font-medium text-red-600">
+              <p id={`time-warn-${job.job_id}`} role="alert" className="text-[11px] font-medium text-red-600">
                 Giờ đã qua — chọn sau {vnNowLabel()} hoặc đổi sang ngày mai.
               </p>
             )}
@@ -289,6 +414,94 @@ export function NoteReviewPanel({
     );
   });
 
+  // Bulk toolbar — only meaningful with ≥2 jobs. A single select-all checkbox
+  // that grows into bulk actions once anything is picked.
+  const toolbar = held.length >= 2 && (
+    <div
+      className={`space-y-2 rounded-md border px-2.5 py-1.5 ${
+        selectedCount > 0 ? "border-indigo-300 bg-indigo-50" : "border-slate-200 bg-slate-50"
+      }`}
+    >
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <input
+          type="checkbox"
+          checked={allSelected}
+          ref={(el) => {
+            if (el) el.indeterminate = someSelected;
+          }}
+          onChange={toggleSelectAll}
+          aria-label="Chọn tất cả"
+          className="size-4 shrink-0 accent-indigo-600"
+        />
+        {selectedCount > 0 ? (
+          <>
+            <span className="font-semibold text-indigo-900">Đã chọn {selectedCount}</span>
+            <button
+              type="button"
+              onClick={clearSelection}
+              className="rounded px-1 text-[11px] font-medium text-slate-500 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+            >
+              Bỏ chọn
+            </button>
+            <div className="ml-auto flex gap-2">
+              <Button size="sm" variant="outline" className="text-xs" disabled={bulkBusy} onClick={bulkAssignNow}>
+                {bulkBusy ? "Đang xử lý…" : "Giao ngay"}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-xs"
+                disabled={bulkBusy}
+                aria-expanded={bulkOpen}
+                onClick={() => setBulkOpen((o) => !o)}
+              >
+                <Clock className="size-3.5" strokeWidth={2} />
+                Hẹn giờ
+              </Button>
+            </div>
+          </>
+        ) : (
+          <span className="text-slate-500">Chọn để xử lý nhiều việc cùng lúc</span>
+        )}
+      </div>
+
+      {selectedCount > 0 && bulkOpen && (
+        <div className="animate-in fade-in slide-in-from-top-1 duration-200 motion-reduce:animate-none space-y-2 border-t border-indigo-200 pt-2">
+          <span className="text-xs font-semibold text-slate-700">
+            Hẹn {selectedCount} việc lúc
+          </span>
+          <DayTimePicker
+            dayOffset={bulkSched.dayOffset}
+            timeLabel={bulkSched.timeLabel}
+            timeIsPast={bulkTimeIsPast}
+            onDay={bulkDayOffset}
+            onTime={(label) => setBulkSched((s) => ({ ...s, timeLabel: label }))}
+            warnId="bulk-time-warn"
+          />
+          {bulkTimeIsPast && (
+            <p id="bulk-time-warn" role="alert" className="text-[11px] font-medium text-red-600">
+              Giờ đã qua — chọn sau {vnNowLabel()} hoặc đổi sang ngày mai.
+            </p>
+          )}
+          <div className="flex justify-end">
+            <Button
+              size="sm"
+              className="bg-indigo-600 text-xs hover:bg-indigo-700"
+              disabled={bulkBusy || !bulkCanSchedule}
+              onClick={bulkSchedule}
+            >
+              {bulkBusy
+                ? "Đang xử lý…"
+                : bulkSched.timeLabel
+                  ? `Lên lịch ${selectedCount} việc · ${DAY_LABELS[bulkSched.dayOffset]} ${bulkSched.timeLabel}`
+                  : "Chọn giờ để lên lịch"}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
   const header = (
     <div className="flex items-center gap-1.5 pt-1">
       <StickyNote className="size-3.5 text-orange-600" strokeWidth={2} />
@@ -303,6 +516,7 @@ export function NoteReviewPanel({
     return (
       <div className="space-y-1.5">
         {header}
+        {toolbar}
         <div className="space-y-1.5">{rows}</div>
       </div>
     );
@@ -316,7 +530,10 @@ export function NoteReviewPanel({
           <span className="text-orange-600 font-semibold">{held.length}</span>
         </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-2">{rows}</CardContent>
+      <CardContent className="space-y-2">
+        {toolbar}
+        {rows}
+      </CardContent>
     </Card>
   );
 }

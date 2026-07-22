@@ -86,8 +86,10 @@ export async function POST(req: NextRequest) {
       let stops: RawStop[] = [];
       const putBack = async (err: string) => {
         const { customer, route, note } = heldFields(jobId, stops);
+        // The raw reason (e.g. "sched 422") stays in the activity log for
+        // debugging; the supervisor-facing banner gets plain language.
         log(`Job ${jobId} - Lên lịch THẤT BẠI: ${err} | ${route}`, "ERROR");
-        await addHeldJob({ job_id: jobId, customer, note, error: `Lên lịch lỗi: ${err}` }).catch(() => {});
+        await addHeldJob({ job_id: jobId, customer, note, error: `Không lên lịch được` }).catch(() => {});
       };
       try {
         // Schedule-type update and details read are independent — run together.
@@ -160,8 +162,9 @@ export async function POST(req: NextRequest) {
     let stops: RawStop[] = [];
     const putBack = async (err: string) => {
       const { customer, route, note } = heldFields(jobId, stops);
+      // Raw reason to the log; plain language to the supervisor's banner.
       log(`Job ${jobId} - Duyệt giao THẤT BẠI: ${err} | ${route}`, "ERROR");
-      await addHeldJob({ job_id: jobId, customer, note, error: `Duyệt giao lỗi: ${err}` }).catch(() => {});
+      await addHeldJob({ job_id: jobId, customer, note, error: `Không duyệt giao được` }).catch(() => {});
     };
     try {
       const details = await getJobDetails(jobId, env);
