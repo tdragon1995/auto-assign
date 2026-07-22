@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { AlertTriangle, CheckCircle2, Clock } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { CheckCircle2, Clock } from "lucide-react";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 import { NoteReviewPanel, type HeldJob } from "./note-review-panel";
@@ -273,15 +273,8 @@ export function FailedJobsPanel({
 
   return (
     <Card className="flex h-full flex-col gap-2 py-2 border-slate-200">
-      <CardHeader className="px-3 pb-0 shrink-0">
-        <div className="flex items-center justify-between">
-          <CardTitle className="flex items-center gap-1.5 text-sm">
-            <AlertTriangle className="size-4 text-amber-500" strokeWidth={2} />
-            Cần xử lý
-          </CardTitle>
-          <span className="text-xs text-muted-foreground">{total} mục</span>
-        </div>
-      </CardHeader>
+      {/* No card header: the "Cần xử lý" tab already names this panel and shows the
+          count, and each section below carries its own labelled header. */}
       <CardContent className="px-3 flex-1 min-h-0">
         {/* Full-height scroll. Order: notes → other unassignable → late pickups. */}
         <div className="h-full max-w-5xl overflow-y-auto space-y-3 text-xs pr-1">
