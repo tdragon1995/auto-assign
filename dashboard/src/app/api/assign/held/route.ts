@@ -128,6 +128,17 @@ export async function POST(req: NextRequest) {
           if (!stopsRes.ok) return putBack(`stops ${stopsRes.status}`);
           if (!sendRes.ok) return putBack(`send ${sendRes.status}`);
           if (parkRes.status !== 200) return putBack(`park ${parkRes.status}`);
+          // Parking on the proxy driver (and writing the pickup's from_day_offset:0
+          // window) makes Cartrack recompute scheduled_delivery_ts back to the park
+          // day (today), clobbering the future-day date set above. For a +1/+2 day
+          // schedule that strands the job: releaseDueProxyJobs un-parks it on its
+          // scheduled day (driven by send_to_driver_at), but the cycle then re-fetches
+          // by scheduled_delivery_ts = today and never sees a job still dated today's
+          // park day. Re-assert the date as the FINAL write so it sticks. (rollover
+          // sidesteps this by unassigning before re-dating; here the park is required,
+          // so we re-date after it instead.)
+          const reschedRes = await updateJobScheduledDeliveryTs(jobId, scheduledAt, env);
+          if (!reschedRes.ok) return putBack(`resched ${reschedRes.status}`);
         } else {
           const stopsRes = await updateJobStops(jobId, updatedStops, env);
           if (!stopsRes.ok) return putBack(`stops ${stopsRes.status}`);
