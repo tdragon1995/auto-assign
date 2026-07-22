@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import { AlertTriangle, StickyNote } from "lucide-react";
+import { AlertTriangle, Clock, StickyNote } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -16,19 +16,17 @@ export interface HeldJob {
 
 const NOTE_PREVIEW_LIMIT = 100;
 
-// 15-min time slots: 00:00 … 23:45
-const TIME_SLOTS: { h: number; m: number; label: string }[] = Array.from(
-  { length: 96 },
-  (_, i) => {
-    const h = Math.floor(i / 4);
-    const m = (i % 4) * 15;
-    return { h, m, label: `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}` };
-  }
-);
+const DAY_LABELS = ["Hôm nay", "Ngày mai", "Ngày mốt"] as const;
 
 function vnNow(): { h: number; m: number } {
   const d = new Date(Date.now() + 7 * 60 * 60 * 1000); // UTC+7
   return { h: d.getUTCHours(), m: d.getUTCMinutes() };
+}
+
+/** Current VN wall-clock as "HH:MM" — used as the min for a same-day time pick. */
+function vnNowLabel(): string {
+  const { h, m } = vnNow();
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
 function vnDateOffset(offset: number): string {
@@ -37,20 +35,14 @@ function vnDateOffset(offset: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-function availableSlots(dayOffset: number): typeof TIME_SLOTS {
-  if (dayOffset > 0) return TIME_SLOTS;
-  const { h, m } = vnNow();
-  return TIME_SLOTS.filter((s) => s.h > h || (s.h === h && s.m > m));
-}
-
 function HeldNote({ note }: { note: string }) {
   const [expanded, setExpanded] = useState(false);
   const isLong = note.length > NOTE_PREVIEW_LIMIT;
   return (
-    <div className="rounded border border-amber-300 bg-amber-100/70 px-2 py-1">
-      <span className="text-[11px] font-semibold text-amber-700">Ghi chú</span>
+    <div className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5">
+      <span className="text-[11px] font-semibold uppercase tracking-wide text-amber-800">Ghi chú</span>
       {!isLong || expanded ? (
-        <p className="mt-0.5 break-words font-medium text-amber-950">
+        <p className="mt-0.5 break-words text-[13px] leading-snug text-amber-950">
           {note}
           {isLong && (
             <button type="button" onClick={() => setExpanded(false)} className="ml-1 font-semibold text-indigo-600 hover:text-indigo-800">
@@ -59,7 +51,7 @@ function HeldNote({ note }: { note: string }) {
           )}
         </p>
       ) : (
-        <div className="mt-0.5 flex items-baseline gap-1 font-medium text-amber-950">
+        <div className="mt-0.5 flex items-baseline gap-1 text-[13px] leading-snug text-amber-950">
           <span className="min-w-0 truncate">{note}</span>
           <button type="button" onClick={() => setExpanded(true)} className="shrink-0 font-semibold text-indigo-600 hover:text-indigo-800">
             Xem thêm
@@ -91,7 +83,10 @@ export function NoteReviewPanel({
   embedded?: boolean;
 }) {
   const [busyId, setBusyId] = useState<number | null>(null);
-  // Per-job schedule state: dayOffset 0/1/2, selected time label "HH:MM" or null
+  // Which row has its scheduler open. Only one at a time — the queue is cleared
+  // one job per focus, and a single open panel keeps the list scannable.
+  const [openId, setOpenId] = useState<number | null>(null);
+  // Per-job schedule state: dayOffset 0/1/2, selected time "HH:MM" or null.
   const [schedules, setSchedules] = useState<Record<number, { dayOffset: number; timeLabel: string | null }>>({});
 
   const getSched = (jobId: number) => schedules[jobId] ?? { dayOffset: 0, timeLabel: null };
@@ -101,14 +96,10 @@ export function NoteReviewPanel({
 
   const handleDayOffset = (jobId: number, offset: number) => {
     const { timeLabel } = getSched(jobId);
-    // If switching back to today and the selected time is now in the past, clear it.
-    if (offset === 0 && timeLabel) {
-      const [hStr, mStr] = timeLabel.split(":");
-      const now = vnNow();
-      if (parseInt(hStr) < now.h || (parseInt(hStr) === now.h && parseInt(mStr) <= now.m)) {
-        patchSched(jobId, { dayOffset: 0, timeLabel: null });
-        return;
-      }
+    // Switching back to today with a now-past time selected: clear it.
+    if (offset === 0 && timeLabel && timeLabel <= vnNowLabel()) {
+      patchSched(jobId, { dayOffset: 0, timeLabel: null });
+      return;
     }
     patchSched(jobId, { dayOffset: offset });
   };
@@ -145,121 +136,163 @@ export function NoteReviewPanel({
   if (held.length === 0) return null;
 
   const rows = held.map((job) => {
-          const { dayOffset, timeLabel } = getSched(job.job_id);
-          const isBusy = busyId === job.job_id;
-          const slots = availableSlots(dayOffset);
+    const { dayOffset, timeLabel } = getSched(job.job_id);
+    const isBusy = busyId === job.job_id;
+    const isOpen = openId === job.job_id;
+    const timeIsPast = dayOffset === 0 && !!timeLabel && timeLabel <= vnNowLabel();
+    const canSchedule = !!timeLabel && !timeIsPast;
 
-          const scheduleJob = async () => {
-            if (!timeLabel) return;
-            const scheduledAt = `${vnDateOffset(dayOffset)} ${timeLabel}:00`;
-            setBusyId(job.job_id);
-            try {
-              const res = await fetch(`/api/assign/held?env=${env}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ jobId: job.job_id, scheduledAt }),
-              });
-              const data = await res.json();
-              if (data.ok) {
-                toast.success(`Đang lên lịch Job ${job.job_id} lúc ${timeLabel}…`);
-                onAssigned(job.job_id);
-              } else {
-                toast.error(data.error ?? `Không lên lịch được Job ${job.job_id}`);
-              }
-            } catch {
-              toast.error("Lỗi kết nối, vui lòng thử lại");
-            } finally {
-              setBusyId(null);
-              onRefresh();
-            }
-          };
+    const scheduleJob = async () => {
+      if (!canSchedule || !timeLabel) return;
+      const scheduledAt = `${vnDateOffset(dayOffset)} ${timeLabel}:00`;
+      setBusyId(job.job_id);
+      try {
+        const res = await fetch(`/api/assign/held?env=${env}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jobId: job.job_id, scheduledAt }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          toast.success(`Đang lên lịch Job ${job.job_id} — ${DAY_LABELS[dayOffset]} ${timeLabel}…`);
+          setOpenId(null);
+          onAssigned(job.job_id);
+        } else {
+          toast.error(data.error ?? `Không lên lịch được Job ${job.job_id}`);
+        }
+      } catch {
+        toast.error("Lỗi kết nối, vui lòng thử lại");
+      } finally {
+        setBusyId(null);
+        onRefresh();
+      }
+    };
 
-          return (
-            <div
-              key={job.job_id}
-              className={`space-y-1 text-xs border rounded px-2 py-1.5 ${
-                job.error ? "bg-red-50 border-red-300" : "bg-orange-50 border-orange-200"
-              }`}
+    return (
+      <div
+        key={job.job_id}
+        className={`space-y-1.5 rounded-md border px-2.5 py-2 ${
+          job.error ? "border-red-300 bg-red-50" : "border-orange-200 bg-orange-50"
+        }`}
+      >
+        {/* Header — customer leads (it's what tells the rows apart); the Job
+            link is demoted to a quiet secondary line. */}
+        <div className="space-y-0.5">
+          <div className="text-sm font-semibold leading-snug text-slate-800 break-words">
+            {job.customer}
+          </div>
+          <a
+            href={`https://fleetweb-vn.cartrack.com/delivery/map?job=${job.job_id}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-0.5 text-[11px] font-medium text-slate-500 hover:text-indigo-700 hover:underline"
+          >
+            Job {job.job_id} · mở bản đồ ↗
+          </a>
+        </div>
+
+        {job.error && (
+          <div className="flex items-center gap-1.5 rounded border border-red-300 bg-red-100/70 px-2 py-1 text-[11px] font-semibold text-red-800">
+            <AlertTriangle className="size-3.5 shrink-0" strokeWidth={2} />
+            {job.error} — vui lòng thử lại
+          </div>
+        )}
+
+        <HeldNote note={job.note} />
+
+        {/* Two explicit choices; scheduling is revealed only on demand so the
+            "now vs later" decision is never a hidden button-disabled mode. */}
+        {!isOpen ? (
+          <div className="flex flex-wrap items-center gap-2 pt-0.5">
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-xs"
+              disabled={isBusy}
+              onClick={() => assignAnyway(job)}
             >
-              {/* Header */}
-              <div className="font-medium">
-                <a
-                  href={`https://fleetweb-vn.cartrack.com/delivery/map?job=${job.job_id}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="underline text-indigo-600 hover:text-indigo-800"
-                >
-                  Job {job.job_id}
-                </a>
-                {" · "}
-                {job.customer}
-              </div>
-
-              {job.error && (
-                <div className="flex items-center gap-1.5 rounded border border-red-300 bg-red-100/70 px-2 py-1 text-[11px] font-semibold text-red-800">
-                  <AlertTriangle className="size-3.5 shrink-0" strokeWidth={2} />
-                  {job.error} — vui lòng thử lại
-                </div>
-              )}
-
-              <HeldNote note={job.note} />
-
-              {/* Schedule + actions on one row: date chips + time dropdown, then
-                  the two buttons pushed right. Wraps gracefully when narrow. */}
-              <div className="flex items-center gap-1 flex-wrap">
-                <span className="text-[11px] font-semibold text-slate-600">Hẹn</span>
-                {[0, 1, 2].map((offset) => (
-                  <button
-                    key={offset}
-                    type="button"
-                    onClick={() => handleDayOffset(job.job_id, offset)}
-                    className={`rounded px-1.5 py-0.5 text-[10px] font-semibold transition-colors ${
-                      dayOffset === offset
-                        ? "bg-indigo-600 text-white"
-                        : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                    }`}
-                  >
-                    {offset === 0 ? "Hôm nay" : offset === 1 ? "Ngày Mai" : "Ngày Mốt"}
-                  </button>
-                ))}
-                <select
-                  value={timeLabel ?? ""}
-                  onChange={(e) => patchSched(job.job_id, { timeLabel: e.target.value || null })}
-                  className="rounded border border-slate-300 bg-white px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-indigo-400"
-                >
-                  <option value="">-- giờ --</option>
-                  {slots.map((s) => (
-                    <option key={s.label} value={s.label}>{s.label}</option>
-                  ))}
-                </select>
-                <div className="ml-auto flex gap-1">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-6 text-[11px] px-2 disabled:opacity-40"
-                    disabled={isBusy || !!timeLabel}
-                    onClick={() => assignAnyway(job)}
-                  >
-                    {isBusy ? "Đang xử lý…" : "Giao ngay"}
-                  </Button>
-                  <Button
-                    size="sm"
-                    className="h-6 text-[11px] px-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40"
-                    disabled={isBusy || !timeLabel}
-                    onClick={scheduleJob}
-                  >
-                    {isBusy ? "Đang xử lý…" : "Lên lịch"}
-                  </Button>
-                </div>
-              </div>
+              {isBusy ? "Đang xử lý…" : "Giao ngay"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-xs"
+              disabled={isBusy}
+              onClick={() => {
+                if (!schedules[job.job_id]) patchSched(job.job_id, { dayOffset: 0, timeLabel: null });
+                setOpenId(job.job_id);
+              }}
+            >
+              <Clock className="size-3.5" strokeWidth={2} />
+              Hẹn giờ
+            </Button>
+          </div>
+        ) : (
+          <div className="animate-in fade-in slide-in-from-top-1 duration-200 motion-reduce:animate-none space-y-2 rounded-md border border-indigo-200 bg-indigo-50/50 px-2 py-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-slate-700">Hẹn giao lúc</span>
+              <button
+                type="button"
+                onClick={() => setOpenId(null)}
+                className="rounded px-1 text-xs font-medium text-slate-500 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+              >
+                Hủy
+              </button>
             </div>
-          );
+            <div className="flex flex-wrap items-center gap-1.5">
+              {[0, 1, 2].map((offset) => (
+                <button
+                  key={offset}
+                  type="button"
+                  onClick={() => handleDayOffset(job.job_id, offset)}
+                  className={`rounded-md px-2.5 py-1 text-xs font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 ${
+                    dayOffset === offset
+                      ? "bg-indigo-600 text-white"
+                      : "bg-white text-slate-600 ring-1 ring-inset ring-slate-300 hover:bg-slate-100"
+                  }`}
+                >
+                  {DAY_LABELS[offset]}
+                </button>
+              ))}
+              <input
+                type="time"
+                step={900}
+                aria-label="Giờ giao"
+                min={dayOffset === 0 ? vnNowLabel() : undefined}
+                value={timeLabel ?? ""}
+                onChange={(e) => patchSched(job.job_id, { timeLabel: e.target.value || null })}
+                className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs tabular-nums focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-400/40"
+              />
+            </div>
+            {timeIsPast && (
+              <p className="text-[11px] font-medium text-red-600">
+                Giờ đã qua — chọn sau {vnNowLabel()} hoặc đổi sang ngày mai.
+              </p>
+            )}
+            <div className="flex justify-end">
+              <Button
+                size="sm"
+                className="bg-indigo-600 text-xs hover:bg-indigo-700"
+                disabled={isBusy || !canSchedule}
+                onClick={scheduleJob}
+              >
+                {isBusy
+                  ? "Đang xử lý…"
+                  : timeLabel
+                    ? `Lên lịch ${DAY_LABELS[dayOffset]} ${timeLabel}`
+                    : "Chọn giờ để lên lịch"}
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
   });
 
   const header = (
     <div className="flex items-center gap-1.5 pt-1">
       <StickyNote className="size-3.5 text-orange-600" strokeWidth={2} />
-      <span className="text-xs font-semibold text-orange-700">Tasks có ghi chú</span>
+      <span className="text-xs font-semibold text-orange-700">Việc có ghi chú</span>
       <span className="text-xs tabular-nums text-slate-400">{held.length}</span>
     </div>
   );
