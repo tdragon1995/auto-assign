@@ -1120,15 +1120,51 @@ export async function autoAssignCycle(
       smartRouteData = await fetchSmartRouteData(vnDate(), env, shiftStartByDriverId);
     }
 
+    // ── Substitute start-location inheritance ──
+    // A driver covering an on-leave pool driver "takes after" that driver's start
+    // location: he's taking over that route, so smart-assign should rank him from
+    // its origin — not from his own base. Map sub → the covered driver's
+    // start_location so the reference-stop and coord fallbacks below treat the sub
+    // like that route's driver. The covered base OVERRIDES the sub's own base (see
+    // effStartLoc): a relief driver who also has a start_location of his own would
+    // otherwise keep ranking from it while covering, skewing the assignment.
+    // Caveat: this map is keyed by sub globally, so a driver who substitutes for one
+    // route while also being a regular member of a *different* pool would use the
+    // covered base in both. Assumed rare; make per-pool if that combination appears.
+    const subInheritedStartLoc = new Map<string, string>(); // subId → covered start_location_customer_id
+    {
+      const fetchedById = new Map<string, Driver>(
+        fetchedDrivers.map((d): [string, Driver] => [d.delivery_driver_id, d])
+      );
+      const poolIds = new Set(config.mappings.flatMap((m) => m.smart_driver_id));
+      for (const cfgId of poolIds) {
+        const lc = isDriverOnLeave(cfgId, leaveEntries);
+        if (!lc.onLeave) continue;
+        const sub = resolveSubstitute(lc.entry!);
+        if (sub.status !== "ok") continue;
+        const subDrv = fetchedById.get(sub.subId);
+        const covered = fetchedById.get(cfgId);
+        if (subDrv && covered?.start_location_customer_id) {
+          subInheritedStartLoc.set(sub.subId, covered.start_location_customer_id);
+        }
+      }
+    }
+    // Effective start_location for a driver: the covered route's base if he's a sub,
+    // else his own. Inherited (covered) base wins so a sub with his own start
+    // location still ranks from the route he's covering, not from home.
+    const effStartLoc = (d: Driver): string | null =>
+      subInheritedStartLoc.get(d.delivery_driver_id) ?? d.start_location_customer_id ?? null;
+
     // ── Fetch start_location coords for drivers who need them ──
     // Two reasons: (1) no GPS → Phase 1 fallback, (2) no route today → reference-stop fallback.
     const startLocIdsNeeded = new Set<string>();
     for (const d of allGpsDrivers) {
-      if (!d.start_location_customer_id) continue;
+      const sl = effStartLoc(d);
+      if (!sl) continue;
       const info = smartRouteData[d.delivery_driver_id];
       const noGps = d.latitude == null || d.longitude == null;
       const needsRefFallback = !info?.ref;
-      if (noGps || needsRefFallback) startLocIdsNeeded.add(d.start_location_customer_id);
+      if (noGps || needsRefFallback) startLocIdsNeeded.add(sl);
     }
     const startLocCoords = new Map<string, { lat: number; lon: number; name: string | null }>();
     const nowMs = Date.now();
@@ -1156,10 +1192,11 @@ export async function autoAssignCycle(
 
     // Reference-stop fallback: drivers with no usable ref (no route, or all stops windowed) → use start_location
     for (const d of allGpsDrivers) {
-      if (!d.start_location_customer_id) continue;
+      const sl = effStartLoc(d);
+      if (!sl) continue;
       const info = smartRouteData[d.delivery_driver_id];
       if (info?.ref) continue;
-      const coords = startLocCoords.get(d.start_location_customer_id);
+      const coords = startLocCoords.get(sl);
       if (!coords) continue;
       smartRouteData[d.delivery_driver_id] = {
         ref: {
@@ -1180,8 +1217,9 @@ export async function autoAssignCycle(
     for (const d of allGpsDrivers) {
       if (d.latitude != null && d.longitude != null) {
         phase1Coords.set(d.delivery_driver_id, { lat: d.latitude, lon: d.longitude });
-      } else if (d.start_location_customer_id) {
-        const coords = startLocCoords.get(d.start_location_customer_id);
+      } else {
+        const sl = effStartLoc(d);
+        const coords = sl ? startLocCoords.get(sl) : undefined;
         if (coords) phase1Coords.set(d.delivery_driver_id, { lat: coords.lat, lon: coords.lon });
       }
     }
