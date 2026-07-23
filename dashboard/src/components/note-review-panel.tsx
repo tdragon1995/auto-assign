@@ -23,10 +23,24 @@ function vnNow(): { h: number; m: number } {
   return { h: d.getUTCHours(), m: d.getUTCMinutes() };
 }
 
-/** Current VN wall-clock as "HH:MM" — used as the min for a same-day time pick. */
+/** Current VN wall-clock as "HH:MM" — the floor for a same-day time pick. */
 function vnNowLabel(): string {
   const { h, m } = vnNow();
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+// Schedule times are offered on a 30-minute grid.
+const SLOT_MINUTES = 30;
+const SLOT_STEP_SECONDS = SLOT_MINUTES * 60;
+
+/** Next clean 30-min mark strictly after now ("HH:MM"). Used as the same-day
+ *  min so a native time input bases its 30-min steps on :00 / :30, not on the
+ *  current odd minute. */
+function vnNextSlotLabel(): string {
+  const { h, m } = vnNow();
+  let total = Math.ceil((h * 60 + m + 1) / SLOT_MINUTES) * SLOT_MINUTES;
+  if (total > 23 * 60 + 30) total = 23 * 60 + 30; // clamp to 23:30, the last slot
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
 }
 
 function vnDateOffset(offset: number): string {
@@ -99,11 +113,11 @@ function DayTimePicker({
       <input
         ref={inputRef}
         type="time"
-        step={900}
+        step={SLOT_STEP_SECONDS}
         aria-label="Giờ giao"
         aria-invalid={timeIsPast || undefined}
         aria-describedby={timeIsPast ? warnId : undefined}
-        min={dayOffset === 0 ? vnNowLabel() : undefined}
+        min={dayOffset === 0 ? vnNextSlotLabel() : undefined}
         value={timeLabel ?? ""}
         onChange={(e) => onTime(e.target.value || null)}
         className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs tabular-nums focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-400/40 aria-invalid:border-red-400 aria-invalid:focus:ring-red-400/40"
