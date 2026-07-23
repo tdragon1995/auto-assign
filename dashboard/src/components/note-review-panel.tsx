@@ -29,18 +29,23 @@ function vnNowLabel(): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
-// Schedule times are offered on a 30-minute grid.
-const SLOT_MINUTES = 30;
-const SLOT_STEP_SECONDS = SLOT_MINUTES * 60;
+// Schedule times are offered on a 30-minute grid via an explicit dropdown. A
+// native <input type=time step=1800> ignores the step in its clock popup and
+// still lists every minute, so our own option list is the only way to actually
+// show 30-min slots. A native <select> also renders its menu at the OS level,
+// so it's never clipped by an overflow container.
+const TIME_SLOTS_30: string[] = Array.from({ length: 48 }, (_, i) => {
+  const h = Math.floor(i / 2);
+  const m = (i % 2) * 30;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+});
 
-/** Next clean 30-min mark strictly after now ("HH:MM"). Used as the same-day
- *  min so a native time input bases its 30-min steps on :00 / :30, not on the
- *  current odd minute. */
-function vnNextSlotLabel(): string {
-  const { h, m } = vnNow();
-  let total = Math.ceil((h * 60 + m + 1) / SLOT_MINUTES) * SLOT_MINUTES;
-  if (total > 23 * 60 + 30) total = 23 * 60 + 30; // clamp to 23:30, the last slot
-  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+/** 30-min slots for a day. Today drops past slots but keeps the current
+ *  selection visible even if it just went by. */
+function availableSlots(dayOffset: number, selected: string | null): string[] {
+  if (dayOffset > 0) return TIME_SLOTS_30;
+  const now = vnNowLabel();
+  return TIME_SLOTS_30.filter((s) => s > now || s === selected);
 }
 
 function vnDateOffset(offset: number): string {
@@ -92,7 +97,7 @@ function DayTimePicker({
   onDay: (offset: number) => void;
   onTime: (label: string | null) => void;
   warnId: string;
-  inputRef?: React.Ref<HTMLInputElement>;
+  inputRef?: React.Ref<HTMLSelectElement>;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-1.5">
@@ -110,18 +115,22 @@ function DayTimePicker({
           {DAY_LABELS[offset]}
         </button>
       ))}
-      <input
+      <select
         ref={inputRef}
-        type="time"
-        step={SLOT_STEP_SECONDS}
         aria-label="Giờ giao"
         aria-invalid={timeIsPast || undefined}
         aria-describedby={timeIsPast ? warnId : undefined}
-        min={dayOffset === 0 ? vnNextSlotLabel() : undefined}
         value={timeLabel ?? ""}
         onChange={(e) => onTime(e.target.value || null)}
         className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs tabular-nums focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-400/40 aria-invalid:border-red-400 aria-invalid:focus:ring-red-400/40"
-      />
+      >
+        <option value="">-- giờ --</option>
+        {availableSlots(dayOffset, timeLabel).map((s) => (
+          <option key={s} value={s}>
+            {s}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }
@@ -152,7 +161,7 @@ export function NoteReviewPanel({
   const [openId, setOpenId] = useState<number | null>(null);
   // Move focus to the revealed time input when a scheduler opens, so keyboard
   // and screen-reader users land on the next action instead of nowhere.
-  const openTimeRef = useRef<HTMLInputElement | null>(null);
+  const openTimeRef = useRef<HTMLSelectElement | null>(null);
   useEffect(() => {
     if (openId != null) openTimeRef.current?.focus();
   }, [openId]);
