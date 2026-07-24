@@ -52,6 +52,7 @@ interface LeaveRowView {
   timeLabel: string | null;
   subs: LeaveOnDate["subs"];
   leave_from: string;
+  duplicate: boolean;
 }
 
 /** One card per driver: same-driver entries (split-shift coverage) merge into
@@ -68,7 +69,7 @@ function groupByDriver(drivers: LeaveOnDate[]): DriverGroup[] {
   const map = new Map<string, DriverGroup>();
   for (const d of drivers) {
     const g = map.get(d.driver_id);
-    const row = { timeLabel: d.timeLabel, subs: d.subs, leave_from: d.leave_from };
+    const row = { timeLabel: d.timeLabel, subs: d.subs, leave_from: d.leave_from, duplicate: d.duplicate };
     if (!g) {
       map.set(d.driver_id, {
         driver_id: d.driver_id,
@@ -292,6 +293,15 @@ function DriverCard({
                   )}
                 </>
               )}
+              {r.duplicate && (
+                <span
+                  className="inline-flex items-center gap-1 rounded-full border border-orange-200 bg-orange-100 px-1.5 py-0 text-[11px] font-semibold text-orange-700"
+                  title="Sheet có nhiều dòng nghỉ trùng cho tài xế này cùng khung giờ — xoá bớt dòng thừa để tránh nhầm lẫn."
+                >
+                  <AlertTriangle className="size-3" strokeWidth={2} />
+                  Trùng dòng — dọn sheet
+                </span>
+              )}
             </div>
             {editRow === i && (
               <SubEditor
@@ -348,6 +358,12 @@ function uncoveredCount(groups: DriverGroup[]): number {
   ).length;
 }
 
+/** Drivers with at least one duplicated leave row — a sheet-cleanup prompt,
+ *  surfaced in the collapsed header so it's not missed while the panel is shut. */
+function duplicateCount(groups: DriverGroup[]): number {
+  return groups.filter((g) => g.rows.some((r) => r.duplicate)).length;
+}
+
 /**
  * Leave-status summary for the "Cần xử lý" tab: who's off today and tomorrow,
  * with their coverage window and substitute (if any). Uncovered rows can be
@@ -375,6 +391,7 @@ export function LeaveStatusPanel({
   const todayGroups = groupByDriver(today);
   const tomorrowGroups = groupByDriver(tomorrow);
   const totalUncovered = uncoveredCount(todayGroups) + uncoveredCount(tomorrowGroups);
+  const totalDuplicate = duplicateCount(todayGroups) + duplicateCount(tomorrowGroups);
 
   const fillSubs: FillSubsFn = async (identity, subs) => {
     try {
@@ -438,6 +455,12 @@ export function LeaveStatusPanel({
             <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-700 border border-amber-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
               <AlertTriangle className="size-3" strokeWidth={2} />
               {totalUncovered} chưa có người thay
+            </span>
+          )}
+          {totalDuplicate > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-orange-100 text-orange-700 border border-orange-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
+              <AlertTriangle className="size-3" strokeWidth={2} />
+              {totalDuplicate} trùng dòng
             </span>
           )}
           <span className="ml-auto text-slate-400 text-xs">{open ? "▾" : "▸"}</span>

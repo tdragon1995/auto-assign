@@ -87,6 +87,11 @@ export interface LeaveOnDate {
   /** "HH:MM–HH:MM" for a half-day/windowed entry, null for a full day. */
   timeLabel: string | null;
   subs: SubEntry[];
+  /** True when the sheet has MORE THAN ONE row for this driver+window on this
+   *  date — a data-entry mistake (usually one blank row + one the supervisor
+   *  filled the sub into). We collapse to the best-covered row so the engine
+   *  still works, but flag it so the panel can prompt a sheet cleanup. */
+  duplicate: boolean;
 }
 
 /**
@@ -150,7 +155,7 @@ export function leaveEntriesOnDate(date: string, entries: LeaveEntry[]): LeaveOn
       if (date >= addDays(e.leave_from, -1) && date <= addDays(e.leave_from, 1)) {
         raw.push({
           driver_id: e.driver_id, driver_name: e.driver_name, loai_nghi: e.loai_nghi,
-          leave_from: e.leave_from, timeLabel: null, subs: e.subs,
+          leave_from: e.leave_from, timeLabel: null, subs: e.subs, duplicate: false,
         });
       }
       continue;
@@ -164,6 +169,7 @@ export function leaveEntriesOnDate(date: string, entries: LeaveEntry[]): LeaveOn
       leave_from: e.leave_from,
       timeLabel: cov.timeLabel,
       subs: e.subs,
+      duplicate: false,
     });
   }
 
@@ -172,11 +178,20 @@ export function leaveEntriesOnDate(date: string, entries: LeaveEntry[]): LeaveOn
   // otherwise show the same slot twice — once covered, once "Chưa có người
   // thay". Keep the most-covered row so the substitute wins; genuinely different
   // windows (split-shift: morning vs afternoon) keep distinct keys and survive.
+  // Count how many raw rows land on each key: >1 means the sheet has a redundant
+  // duplicate the supervisor should delete — flag the kept row so the panel can
+  // say so (isDriverOnLeave applies the same "most subs wins" collapse, so the
+  // engine already assigns correctly; this is purely a data-hygiene prompt).
   const byKey = new Map<string, LeaveOnDate>();
+  const countByKey = new Map<string, number>();
   for (const r of raw) {
     const key = `${r.driver_id}|${r.timeLabel ?? "full"}`;
+    countByKey.set(key, (countByKey.get(key) ?? 0) + 1);
     const kept = byKey.get(key);
     if (!kept || r.subs.length > kept.subs.length) byKey.set(key, r);
+  }
+  for (const [key, entry] of byKey) {
+    if ((countByKey.get(key) ?? 0) > 1) entry.duplicate = true;
   }
   return [...byKey.values()];
 }
@@ -293,6 +308,60 @@ export async function loadLeaveEntries(): Promise<LeaveEntry[]> {
   }
 }
 
+/** Whether ONE entry puts the driver on leave right now (today + current clock),
+ *  or null if it doesn't apply. Split out of {@link isDriverOnLeave} so that
+ *  function can weigh several matching rows against each other instead of
+ *  being forced to take the first one it walks into. */
+function leaveMatchNow(
+  e: LeaveEntry,
+  today: string,
+  nowMins: number,
+): { onLeave: true; driverName?: string; reason: string; entry: LeaveEntry } | null {
+  const driverName = e.driver_name || undefined;
+
+  if (e.loai_nghi === "Nghỉ nguyên buổi") {
+    const to = e.leave_to ?? e.leave_from;
+    if (today >= e.leave_from && today <= to) {
+      return { onLeave: true, driverName, reason: `Nghỉ nguyên buổi ${e.leave_from}→${to}`, entry: e };
+    }
+    return null;
+  }
+  if (e.loai_nghi === "Nghỉ nửa buổi") {
+    if (today === e.leave_from) {
+      const start = timeToMins(e.gio_bat_dau);
+      const end   = timeToMins(e.gio_ket_thuc);
+      if (start >= 0 && end >= 0 && nowMins >= start && nowMins <= end) {
+        return { onLeave: true, driverName, reason: `Nghỉ nửa buổi ${e.gio_bat_dau}–${e.gio_ket_thuc}`, entry: e };
+      }
+    }
+    return null;
+  }
+  if (e.loai_nghi === "Nghỉ việc") {
+    if (today >= e.leave_from) {
+      return { onLeave: true, driverName, reason: `Nghỉ việc (từ ${e.leave_from})`, entry: e };
+    }
+    return null;
+  }
+  // Unlabeled / manually-typed leave (blank "Loại Nghỉ"): a date range with
+  // an optional daily time window. driver_id is resolved from the name by
+  // the sheet's xlookup() formula. On-leave today when within the date range;
+  // honour the [gio_bat_dau, gio_ket_thuc] window when one is given, else
+  // treat as full-day (covers blank hours and the 00:00–00:00 sentinel).
+  const to = e.leave_to ?? e.leave_from;
+  if (today >= e.leave_from && today <= to) {
+    const start = timeToMins(e.gio_bat_dau);
+    const end   = timeToMins(e.gio_ket_thuc);
+    const hasWindow = start >= 0 && end > start;
+    if (!hasWindow) {
+      return { onLeave: true, driverName, reason: `Nghỉ cả ngày ${e.leave_from}${to !== e.leave_from ? `→${to}` : ""}`, entry: e };
+    }
+    if (nowMins >= start && nowMins <= end) {
+      return { onLeave: true, driverName, reason: `Nghỉ ${e.gio_bat_dau}–${e.gio_ket_thuc}`, entry: e };
+    }
+  }
+  return null;
+}
+
 export function isDriverOnLeave(
   driverId: string,
   entries: LeaveEntry[],
@@ -300,49 +369,24 @@ export function isDriverOnLeave(
   const today = vnDate();
   const nowMins = vnMinutesSinceMidnight();
 
+  // The sheet routinely carries DUPLICATE rows for the same driver+day: one
+  // typed by the requester (e.g. "Nghỉ phép", substitute columns left blank)
+  // and one the supervisor fills the substitute into. Returning the first
+  // match would report "no substitute" whenever the blank duplicate happens to
+  // sort first — while the dashboard panel shows the sub, because
+  // leaveEntriesOnDate already collapses duplicates on "most subs wins". The
+  // engine and the panel must not disagree about who is covering, so apply the
+  // same preference here: among all rows that put this driver on leave right
+  // now, keep the best-covered one. Ties keep the earliest row (stable).
+  let best: ReturnType<typeof leaveMatchNow> = null;
   for (const e of entries) {
     if (e.driver_id !== driverId) continue;
-    const driverName = e.driver_name || undefined;
-
-    if (e.loai_nghi === "Nghỉ nguyên buổi") {
-      const to = e.leave_to ?? e.leave_from;
-      if (today >= e.leave_from && today <= to) {
-        return { onLeave: true, driverName, reason: `Nghỉ nguyên buổi ${e.leave_from}→${to}`, entry: e };
-      }
-    } else if (e.loai_nghi === "Nghỉ nửa buổi") {
-      if (today === e.leave_from) {
-        const start = timeToMins(e.gio_bat_dau);
-        const end   = timeToMins(e.gio_ket_thuc);
-        if (start >= 0 && end >= 0 && nowMins >= start && nowMins <= end) {
-          return { onLeave: true, driverName, reason: `Nghỉ nửa buổi ${e.gio_bat_dau}–${e.gio_ket_thuc}`, entry: e };
-        }
-      }
-    } else if (e.loai_nghi === "Nghỉ việc") {
-      if (today >= e.leave_from) {
-        return { onLeave: true, driverName, reason: `Nghỉ việc (từ ${e.leave_from})`, entry: e };
-      }
-    } else {
-      // Unlabeled / manually-typed leave (blank "Loại Nghỉ"): a date range with
-      // an optional daily time window. driver_id is resolved from the name by
-      // the sheet's xlookup() formula. On-leave today when within the date range;
-      // honour the [gio_bat_dau, gio_ket_thuc] window when one is given, else
-      // treat as full-day (covers blank hours and the 00:00–00:00 sentinel).
-      const to = e.leave_to ?? e.leave_from;
-      if (today >= e.leave_from && today <= to) {
-        const start = timeToMins(e.gio_bat_dau);
-        const end   = timeToMins(e.gio_ket_thuc);
-        const hasWindow = start >= 0 && end > start;
-        if (!hasWindow) {
-          return { onLeave: true, driverName, reason: `Nghỉ cả ngày ${e.leave_from}${to !== e.leave_from ? `→${to}` : ""}`, entry: e };
-        }
-        if (nowMins >= start && nowMins <= end) {
-          return { onLeave: true, driverName, reason: `Nghỉ ${e.gio_bat_dau}–${e.gio_ket_thuc}`, entry: e };
-        }
-      }
-    }
+    const m = leaveMatchNow(e, today, nowMins);
+    if (!m) continue;
+    if (!best || m.entry.subs.length > best.entry.subs.length) best = m;
   }
 
-  return { onLeave: false };
+  return best ?? { onLeave: false };
 }
 
 /**
