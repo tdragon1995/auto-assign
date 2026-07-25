@@ -190,7 +190,7 @@ function PscJobSheet({ order, onClose }: { order: Order; onClose: () => void }) 
 
       <div className="flex items-center gap-2.5 mt-3.5 p-3 bg-slate-100 rounded-2xl">
         <span aria-hidden className="w-9 h-9 flex-none rounded-full bg-blue-100 text-blue-700 font-extrabold text-sm flex items-center justify-center">
-          {initial(driverName)}
+          {driverName ? initial(driverName) : <Clock aria-hidden className="w-4 h-4" />}
         </span>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-bold text-slate-800">{driverName || "Chưa có tài xế"}</p>
