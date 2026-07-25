@@ -882,6 +882,7 @@ export function timelineRoutesToJobs(routes: any[]): Job[] {
         customer_id: s.customerId,
         customer_name: s.customerName,
         name: s.customerName,
+        address_line_1: s.addressLine1 ?? undefined,
         latitude: s.latitude ?? null,
         longitude: s.longitude ?? null,
         activity_started_ts: t19(s.activityStartedTs),
@@ -905,6 +906,12 @@ export function timelineRoutesToJobs(routes: any[]): Job[] {
       // Extract the label strings so downstream checks (labels.includes()) work.
       labels: (first.jobLabels ?? []).map((l: any) => (typeof l === 'string' ? l : l?.label)).filter(Boolean),
       last_assigned_plan_id: first.lastAssignedPlanId ?? null,
+      // Batch IDs ride along on the stops (verified prod 2026-07-25) — union them so
+      // the /qr list shows Mã Batch without a per-job detail fetch.
+      item_tracking_numbers: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ...new Set(raw.flatMap((s: any) => (s.itemTrackingNumbers ?? []) as string[])),
+      ],
       // driverFullname is route-level — populate so pickup-warnings show the name.
       driver: driverId ? { delivery_driver_id: driverId, first_name: driverName ?? "", last_name: "" } : null,
       stops,

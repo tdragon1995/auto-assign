@@ -68,6 +68,10 @@ export interface Job {
   // Embedded in `GET /jobs` list rows for assigned/completed jobs; null when the
   // job is unassigned (e.g. parked on a plan/proxy driver).
   driver?: JobDriver | null;
+  // Batch IDs (Mã Batch). Present on the REST detail payload as items[].tracking_number
+  // and on timeline stops as itemTrackingNumbers — so the /qr list can show them
+  // without a per-job detail fetch.
+  item_tracking_numbers?: string[];
   stops: Stop[];
 }
 

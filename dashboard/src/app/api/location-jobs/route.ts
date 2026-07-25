@@ -46,6 +46,9 @@ function slimStop(s: Stop) {
     stop_status_id: s.stop_status_id,
     customer_id: s.customer_id,
     customer_name: s.customer_name ?? s.name ?? "",
+    // Timeline carries the full address (verified prod 2026-07-25), so the job sheet
+    // renders addresses from the list payload instead of waiting on the detail fetch.
+    address_line_1: s.address_line_1 ?? null,
     activity_started_ts: s.activity_started_ts ?? null,
     activity_arrived_ts: s.activity_arrived_ts ?? null,
     activity_completed_ts: s.activity_completed_ts ?? null,
@@ -58,6 +61,10 @@ function slimJob(j: Job) {
     reference_number: j.reference_number,
     job_status_id: j.job_status_id,
     scheduled_delivery_ts: j.scheduled_delivery_ts ?? null,
+    // Plan-slot jobs regenerate daily and clutter the branch feed; the /qr page hides
+    // the non-completed ones, so the id has to survive the slimming.
+    last_assigned_plan_id: j.last_assigned_plan_id ?? null,
+    item_tracking_numbers: j.item_tracking_numbers ?? [],
     driver: { last_name: displayName(j.driver) },
     stops: (j.stops ?? []).map(slimStop),
   };
@@ -65,17 +72,34 @@ function slimJob(j: Job) {
 
 type SlimJob = ReturnType<typeof slimJob>;
 
+// `status=all` returns assigned + completed in one call — the /qr feed shows both
+// together, and two calls would mean two passes over the same cached day.
+const ALL_STATUSES = [4, 5];
+function matchesStatus(jobStatusId: number | undefined, status: string): boolean {
+  if (status === "all") return ALL_STATUSES.includes(jobStatusId ?? 0);
+  return jobStatusId === Number(status);
+}
+
 // Job-sheet detail: slim fields plus address, todos and POD image URLs. The
 // images stay links (Cartrack serves them publicly) — nothing binary passes
 // through this function.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function detailJob(j: any) {
+  // Cartrack stores the mobile without its leading zero and the country code apart
+  // ("84" + "931773106"); the page needs both a display form and a tel: form.
+  const rawPhone: string = (j.driver?.phone_number ?? "").toString().replace(/\D/g, "");
+  const phoneCode: string = (j.driver?.phone_code ?? "").toString().replace(/\D/g, "");
   return {
     job_id: j.job_id,
     reference_number: j.reference_number,
     job_status_id: j.job_status_id,
     scheduled_delivery_ts: j.scheduled_delivery_ts ?? null,
-    driver: { last_name: displayName(j.driver) },
+    last_assigned_plan_id: j.last_assigned_plan_id ?? null,
+    driver: {
+      last_name: displayName(j.driver),
+      phone_local: rawPhone ? `0${rawPhone}` : null,
+      phone_e164: rawPhone ? `+${phoneCode || "84"}${rawPhone}` : null,
+    },
     // Batch IDs (Mã Batch) attached by the via-3PL flow or scanned by the driver.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     item_tracking_numbers: (j.items ?? []).map((it: any) => it.tracking_number).filter(Boolean),
@@ -160,17 +184,18 @@ export async function GET(req: NextRequest) {
         }
       }
       if (slim) {
-        const statusId = Number(status);
         const jobs = slim.filter(
-          (j) => j.job_status_id === statusId && j.stops.some((s) => s.customer_id === code)
+          (j) => matchesStatus(j.job_status_id, status) && j.stops.some((s) => s.customer_id === code)
         );
         return NextResponse.json({ jobs });
       }
     }
 
     const headers = getHeaders(env);
+    // `status=all` has no single REST equivalent — drop the filter and narrow below.
+    const statusFilter = status === "all" ? "" : `&filter[job_status_id]=${status}`;
     const res = await fetch(
-      `${BASE_URL}/jobs?filter[scheduled_delivery_ts_from]=${date} 00:00:00&filter[scheduled_delivery_ts_to]=${date} 23:59:59&filter[job_status_id]=${status}&limit=1000`,
+      `${BASE_URL}/jobs?filter[scheduled_delivery_ts_from]=${date} 00:00:00&filter[scheduled_delivery_ts_to]=${date} 23:59:59${statusFilter}&limit=1000`,
       { headers, cache: "no-store" }
     );
     if (!res.ok) return NextResponse.json({ jobs: [] });
@@ -181,6 +206,7 @@ export async function GET(req: NextRequest) {
     // Code-scoped REST fallback: same filter + slim as the fast path.
     if (code) {
       const jobs = allJobs
+        .filter((j) => matchesStatus(j.job_status_id, status))
         .filter((j) => (j.stops ?? []).some((s: Stop) => s.customer_id === code))
         .map(slimJob);
       return NextResponse.json({ jobs });

@@ -14,8 +14,7 @@ export function generateStaticParams() {
 }
 
 export default function Page() {
-  // useSearchParams() in the client component requires a Suspense boundary
-  // when the route is statically rendered.
+  // Suspense boundary for the statically-rendered client component.
   return (
     <Suspense>
       <QrPage />
