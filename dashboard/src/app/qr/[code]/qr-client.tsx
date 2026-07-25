@@ -16,6 +16,7 @@ interface Stop {
   activity_started_ts?: string | null;
   activity_arrived_ts?: string | null;
   activity_completed_ts?: string | null;
+  delivery_windows?: { time_from?: string | null; time_to?: string | null }[];
   todos?: {
     todo_type_id: number;
     description?: string;
@@ -93,10 +94,27 @@ function placeLabel(name: string): string {
 
 // The 3PL handoff parks the job on a shared proxy driver account; its internal name
 // ("Proxy 3PL Express (Grab) Driver") means nothing to a branch, so name the service.
+const THREE_PL = "Grab/Be/XanhSM/Khác";
+
+function isThreePl(name?: string | null): boolean {
+  return /proxy|3pl/i.test((name ?? "").trim());
+}
+
 function driverLabel(name?: string | null): string {
   const raw = (name ?? "").trim();
   if (!raw) return "—";
-  return /proxy|3pl/i.test(raw) ? "Grab/Be/XanhSM/Khác" : raw;
+  return isThreePl(raw) ? THREE_PL : raw;
+}
+
+// Cartrack sends window bounds as time-only strings ("07:00:00+07"). Only client pickups
+// carry them — no Diag site has ever had one — so this shows up on inbound legs only.
+function windowLabel(stop?: Stop | null): string | null {
+  const w = (stop?.delivery_windows ?? [])[0];
+  if (!w) return null;
+  const hm = (t?: string | null) => (t ? t.slice(0, 5) : null);
+  const from = hm(w.time_from), to = hm(w.time_to);
+  if (from && to) return `${from}–${to}`;
+  return from ?? to ?? null;
 }
 
 // Diacritic-insensitive search so "duc" matches "Đức". NFD splits the accent off as a
@@ -109,7 +127,7 @@ function pickupOf(j: Job) { return j.stops.find((s) => s.stop_type_id === 1); }
 function dropoffOf(j: Job) { return j.stops.find((s) => s.stop_type_id !== 1); }
 
 // 0 waiting for dispatch · 1 driver heading to pickup · 2 sample collected, en route
-// to the lab · 3 handed over.
+// to the destination · 3 handed over.
 function stateOf(j: Job): 0 | 1 | 2 | 3 {
   const p = pickupOf(j), d = dropoffOf(j);
   if (d?.activity_completed_ts || j.job_status_id === 5) return 3;
@@ -117,12 +135,22 @@ function stateOf(j: Job): 0 | 1 | 2 | 3 {
   return 1;
 }
 
-const STATE_LABEL: Record<number, { text: string; cls: string }> = {
-  0: { text: "Chờ điều phối",       cls: "bg-amber-100 text-amber-700" },
-  1: { text: "Tài xế đang đến lấy", cls: "bg-blue-100 text-blue-700"   },
-  2: { text: "Đang giao đến lab",   cls: "bg-blue-100 text-blue-700"   },
-  3: { text: "Đã giao",             cls: "bg-green-100 text-green-700" },
+const STATE_STYLE: Record<number, string> = {
+  0: "bg-amber-100 text-amber-700",
+  1: "bg-blue-100 text-blue-700",
+  2: "bg-blue-100 text-blue-700",
+  3: "bg-green-100 text-green-700",
 };
+
+// "lab" only ever meant D001. Hub routes drop at D007/D009/D046 and inbound client legs
+// drop at the branch itself, so the destination is named rather than assumed.
+function stateText(state: 0 | 1 | 2 | 3, dest?: string): string {
+  const to = dest ? ` đến ${dest}` : "";
+  if (state === 0) return "Chờ điều phối";
+  if (state === 1) return "Tài xế đang đến lấy";
+  if (state === 2) return `Đang giao${to}`;
+  return "Đã giao";
+}
 
 function initial(name?: string | null): string {
   const parts = (name ?? "").trim().split(/\s+/).filter(Boolean);
@@ -241,15 +269,39 @@ function Timeline({ events }: { events: TlEvent[] }) {
 function buildEvents(
   job: Job, state: 0 | 1 | 2 | 3,
   p: Stop | undefined, d: Stop | undefined,
-  pTodos: NonNullable<Stop["todos"]>, dTodos: NonNullable<Stop["todos"]>,
+  pTodos: NonNullable<Stop["todos"]>, dTodos: NonNullable<Stop["todos"]>, threePl = false,
 ): TlEvent[] {
+  const destName = placeLabel(d?.customer_name ?? "");
   const addr = (s?: Stop | null) =>
     s?.address_line_1 ? <p className="text-xs text-slate-500 mt-0.5 leading-snug">{s.address_line_1}</p> : undefined;
+  const win = windowLabel(p);
 
   const ev: TlEvent[] = [{
     tone: "done", time: requestedAt(job), label: "Yêu cầu được tạo",
-    body: <p className="text-xs text-slate-500 mt-0.5">Từ {p?.customer_name}</p>,
+    body: (
+      <>
+        <p className="text-xs text-slate-500 mt-0.5">Từ {placeLabel(p?.customer_name ?? "")}</p>
+        {win && <p className="text-xs font-semibold text-amber-700 mt-0.5">Khung giờ hẹn lấy: {win}</p>}
+      </>
+    ),
   }];
+
+  // A 3PL handoff has no Diag driver and no delivery leg — Cartrack closes both stops at
+  // the same instant on submission. Walking the four-step journey would invent a pickup
+  // run and a drive to the destination that never happened, so it collapses to the fact.
+  if (threePl) {
+    ev.push({
+      tone: "done",
+      time: fmtTs(d?.activity_completed_ts ?? p?.activity_completed_ts),
+      label: `Đã gửi qua ${THREE_PL}`,
+      body: (
+        <p className="text-xs text-slate-500 mt-0.5">
+          Mẫu bàn giao cho đơn vị giao ngoài để chuyển đến {destName}.
+        </p>
+      ),
+    });
+    return ev;
+  }
 
   if (p?.activity_started_ts) ev.push({ tone: "done", time: fmtTs(p.activity_started_ts), label: "Tài xế bắt đầu đi lấy mẫu" });
   else ev.push({ tone: state === 0 ? "now" : "future", label: state === 0 ? "Đang chờ điều phối tài xế…" : "Tài xế đi lấy mẫu" });
@@ -260,14 +312,14 @@ function buildEvents(
   if (p?.activity_completed_ts) ev.push({ tone: "done", time: fmtTs(p.activity_completed_ts), label: "Lấy mẫu xong", body: pTodos.length ? <Photos todos={pTodos} /> : undefined });
   else ev.push({ tone: "future", label: "Lấy mẫu" });
 
-  if (d?.activity_started_ts) ev.push({ tone: "done", time: fmtTs(d.activity_started_ts), label: "Bắt đầu giao đến lab" });
-  else ev.push({ tone: "future", label: "Giao đến lab" });
+  if (d?.activity_started_ts) ev.push({ tone: "done", time: fmtTs(d.activity_started_ts), label: `Bắt đầu giao đến ${destName}` });
+  else ev.push({ tone: "future", label: `Giao đến ${destName}` });
 
-  if (d?.activity_arrived_ts) ev.push({ tone: "done", time: fmtTs(d.activity_arrived_ts), label: "Đến lab", body: addr(d) });
-  else if (state === 2) ev.push({ tone: "now", label: "Đang trên đường đến lab", body: addr(d) });
+  if (d?.activity_arrived_ts) ev.push({ tone: "done", time: fmtTs(d.activity_arrived_ts), label: `Đến ${destName}`, body: addr(d) });
+  else if (state === 2) ev.push({ tone: "now", label: `Đang trên đường đến ${destName}`, body: addr(d) });
 
   if (d?.activity_completed_ts) ev.push({ tone: "done", time: fmtTs(d.activity_completed_ts), label: "Bàn giao hoàn tất", body: dTodos.length ? <Photos todos={dTodos} /> : undefined });
-  else ev.push({ tone: "future", label: "Bàn giao tại lab" });
+  else ev.push({ tone: "future", label: `Bàn giao tại ${destName}` });
 
   return ev;
 }
@@ -292,9 +344,11 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
   const shown: Job = detail ? { ...detail, stops: detail.stops } : job;
   const p = pickupOf(shown), d = dropoffOf(shown);
   const state = stateOf(shown);
+  const destName = placeLabel(d?.customer_name ?? "");
   const batches = shown.item_tracking_numbers ?? [];
   const phone = detail?.driver?.phone_local;
   const phoneE164 = detail?.driver?.phone_e164;
+  const threePl = isThreePl(shown.driver?.last_name);
   const driver = driverLabel(shown.driver?.last_name);
 
   const pTodos = (p?.todos ?? []).filter((t) => TODO_EMOJI[t.todo_type_id]);
@@ -315,14 +369,14 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
           <p className="text-lg font-extrabold tracking-tight text-slate-800">
             {placeLabel(p?.customer_name ?? "")} <span className="text-slate-500">→</span> {placeLabel(d?.customer_name ?? "")}
           </p>
-          <span className={`text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${STATE_LABEL[state].cls}`}>
-            {STATE_LABEL[state].text}
+          <span className={`text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${STATE_STYLE[state]}`}>
+            {stateText(state, destName)}
           </span>
         </div>
 
         <div className="flex items-center gap-2.5 mt-3.5 p-3 bg-slate-100 rounded-2xl">
           <span aria-hidden className="w-9 h-9 flex-none rounded-full bg-blue-100 text-blue-700 font-extrabold text-sm flex items-center justify-center">
-            {initial(driver)}
+            {threePl ? "🛵" : initial(driver)}
           </span>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-bold text-slate-800">{shown.driver?.last_name ? driver : "Chưa có tài xế"}</p>
@@ -333,7 +387,7 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
                    className="text-xs font-extrabold text-[#0068ff] bg-blue-50 rounded-lg px-2 py-0.5">Zalo</a>
               </div>
             ) : (
-              <p className="text-[11px] text-slate-500">Tài xế Diag</p>
+              <p className="text-[11px] text-slate-500">{threePl ? "Đơn vị giao ngoài" : "Tài xế Diag"}</p>
             )}
           </div>
         </div>
@@ -347,7 +401,7 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
           </div>
         )}
 
-        <Timeline events={buildEvents(shown, state, p, d, pTodos, dTodos)} />
+        <Timeline events={buildEvents(shown, state, p, d, pTodos, dTodos, threePl)} />
 
         {detailLoading && !detail && (
           <p className="text-[11px] text-slate-500 text-center">Đang tải ảnh giao nhận và số điện thoại tài xế…</p>
@@ -374,7 +428,13 @@ function TripCard({ job, code, onOpen, onCancel, onSendVia3pl }: {
 }) {
   const state = stateOf(job);
   const p = pickupOf(job), d = dropoffOf(job);
+  const destName = placeLabel(d?.customer_name ?? "");
+  const threePl = isThreePl(job.driver?.last_name);
   const driver = driverLabel(job.driver?.last_name);
+  const win = windowLabel(p);
+  // Whose work this is: samples leaving this branch, or a client's samples coming in.
+  // Both directions sit in the same feed and used to look identical.
+  const outbound = p?.customer_id === code;
 
   // Cancellable only while this location's own pickup is untouched.
   const cancellable = !!p && p.customer_id === code && p.stop_status_id === 1 &&
@@ -390,22 +450,34 @@ function TripCard({ job, code, onOpen, onCancel, onSendVia3pl }: {
         <div className="flex items-start justify-between gap-2.5">
           <div className="min-w-0">
             <p className="text-base font-extrabold tracking-tight text-slate-800">
-              {placeLabel(p?.customer_name ?? "")} <span className="text-slate-500">→</span> {placeLabel(d?.customer_name ?? "")}
+              {placeLabel(p?.customer_name ?? "")} <span className="text-slate-500">→</span> {destName}
             </p>
-            <p className="text-[11px] font-semibold text-slate-500 mt-0.5">Yêu cầu lúc {requestedAt(job) ?? "—"}</p>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1">
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md ${outbound ? "bg-slate-200 text-slate-700" : "bg-violet-100 text-violet-700"}`}>
+                {outbound ? "↑ Gửi đi" : "↓ Nhận về"}
+              </span>
+              <span className="text-[11px] font-semibold text-slate-500">Yêu cầu lúc {requestedAt(job) ?? "—"}</span>
+              {win && <span className="text-[11px] font-semibold text-amber-700">Hẹn {win}</span>}
+            </div>
           </div>
-          <span className={`flex-none text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${STATE_LABEL[state].cls}`}>
-            {STATE_LABEL[state].text}
+          <span className={`flex-none text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${STATE_STYLE[state]}`}>
+            {threePl ? "Đã gửi qua đối tác" : stateText(state, destName)}
           </span>
         </div>
 
-        <Stepper job={job} state={state} />
+        {threePl ? (
+          <p className="mt-2.5 text-[13px] font-semibold text-teal-700">
+            🛵 Đã gửi qua {THREE_PL} lúc {fmtTs(d?.activity_completed_ts ?? p?.activity_completed_ts) ?? "—"}
+          </p>
+        ) : (
+          <Stepper job={job} state={state} />
+        )}
 
         {state === 0 ? (
           <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100 text-[13px] font-semibold text-amber-700">
             ⏳ Đang chờ điều phối tài xế
           </div>
-        ) : (
+        ) : !threePl && (
           <div className="flex items-center gap-2.5 mt-3 pt-3 border-t border-slate-100">
             <span aria-hidden className="w-8 h-8 flex-none rounded-full bg-blue-100 text-blue-700 font-extrabold text-xs flex items-center justify-center">
               {initial(driver)}
@@ -452,8 +524,8 @@ function PendingCard({ req, onCancel, onSendVia3pl }: {
           </p>
           <p className="text-[11px] font-semibold text-slate-500 mt-0.5">Yêu cầu lúc {req.created_ts}</p>
         </div>
-        <span className={`flex-none text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${STATE_LABEL[0].cls}`}>
-          {STATE_LABEL[0].text}
+        <span className={`flex-none text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${STATE_STYLE[0]}`}>
+          {stateText(0)}
         </span>
       </div>
       <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100 text-[13px] font-semibold text-amber-700">
@@ -548,6 +620,18 @@ export default function QrPage() {
   }, [date, code]);
 
   useEffect(() => { loadJobs(); }, [loadJobs]);
+
+  // The feed shows trips in motion, so a branch that leaves it open should see progress
+  // without tapping Làm mới. Only today can change, and only a visible tab is worth
+  // polling — a phone in a pocket shouldn't keep hitting the API. The server's own 90s
+  // day-cache absorbs this: most polls are served from Redis, not Cartrack.
+  useEffect(() => {
+    if (date !== todayVN()) return;
+    const tick = () => { if (document.visibilityState === "visible") loadJobs(); };
+    const id = setInterval(tick, 60_000);
+    document.addEventListener("visibilitychange", tick);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", tick); };
+  }, [date, loadJobs]);
 
   // A pending request that now appears on a driver's route has been dispatched —
   // the fetched job takes over and the local placeholder retires.
@@ -713,7 +797,7 @@ export default function QrPage() {
                   <span aria-hidden className="w-5 h-5 rounded-full border-[2.5px] border-white/35 border-t-white animate-spin" />
                   Đang gửi…
                 </>
-              ) : assignStatus === "success" ? "✓ Đã gửi yêu cầu" : "🛵 Đề Nghị Giao Mẫu"}
+              ) : assignStatus === "success" ? "✓ Đã gửi yêu cầu" : "📦 Đề Nghị Giao Mẫu"}
             </button>
             {assignStatus === "error" && (
               <p role="alert" className="mt-3 text-sm font-medium text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">{assignError}</p>
@@ -761,19 +845,34 @@ export default function QrPage() {
                 </p>
               ) : doneShown.map((j) => {
                 const p = pickupOf(j), d = dropoffOf(j);
+                const threePl = isThreePl(j.driver?.last_name);
+                const outbound = p?.customer_id === code;
                 return (
                   <button key={j.job_id} onClick={() => setSheetJob(j)}
-                    className="w-full flex items-center gap-2.5 px-4 py-3 border-t border-slate-100 text-left active:bg-slate-50">
-                    <span aria-hidden className="text-green-600 font-bold">✓</span>
-                    <span className="flex-1 min-w-0">
-                      <span className="block text-sm font-semibold text-slate-800">
-                        {placeLabel(p?.customer_name ?? "")} → {placeLabel(d?.customer_name ?? "")}
+                    className="w-full block px-4 py-3 border-t border-slate-100 text-left active:bg-slate-50">
+                    <span className="flex items-start gap-2.5">
+                      <span aria-hidden className="text-green-600 font-bold leading-5">✓</span>
+                      <span className="flex-1 min-w-0">
+                        <span className="block text-sm font-semibold text-slate-800">
+                          {placeLabel(p?.customer_name ?? "")} → {placeLabel(d?.customer_name ?? "")}
+                        </span>
+                        <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
+                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md ${outbound ? "bg-slate-200 text-slate-700" : "bg-violet-100 text-violet-700"}`}>
+                            {outbound ? "↑ Gửi đi" : "↓ Nhận về"}
+                          </span>
+                          <span className="text-[11px] text-slate-500">{driverLabel(j.driver?.last_name)}</span>
+                        </span>
                       </span>
-                      <span className="block text-[11px] text-slate-500">{driverLabel(j.driver?.last_name)}</span>
                     </span>
-                    <span className="text-xs font-semibold text-slate-500 tabular-nums whitespace-nowrap">
-                      {fmtTs(p?.activity_completed_ts) ?? "—"} → {fmtTs(d?.activity_completed_ts) ?? "—"}
-                    </span>
+                    {/* A finished trip's four timestamps are the useful part here — the old row
+                        showed a bare "15:23 → 15:33" pair with nothing saying what it meant. */}
+                    {threePl ? (
+                      <span className="block mt-2 text-[12px] font-semibold text-teal-700">
+                        Gửi qua {THREE_PL} · {fmtTs(d?.activity_completed_ts ?? p?.activity_completed_ts) ?? "—"}
+                      </span>
+                    ) : (
+                      <Stepper job={j} state={3} />
+                    )}
                   </button>
                 );
               })}

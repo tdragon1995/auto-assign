@@ -45,6 +45,12 @@ function displayName(driver: Job["driver"]): string | null {
   return raw ? raw.replace(DRIVER_CODE_PREFIX, "") : null;
 }
 
+// Deliberately NOT carrying address_line_1: this shape is what goes into the shared
+// day cache, and on 2026-07-25 (786 jobs / 1512 stops) the addresses alone were 111 KB
+// of a 738 KB blob. Upstash caps a value at 1 MB, and an oversized SET fails inside a
+// swallowed try/catch — which would silently turn every QR tap into its own 2.13 MB
+// Cartrack fetch. Addresses come from the per-job detail call, which is Redis-cached.
+// Windows are kept: 5 KB for the whole day, and only client pickups ever have one.
 function slimStop(s: Stop) {
   return {
     stop_id: s.stop_id,
@@ -52,12 +58,12 @@ function slimStop(s: Stop) {
     stop_status_id: s.stop_status_id,
     customer_id: s.customer_id,
     customer_name: s.customer_name ?? s.name ?? "",
-    // Timeline carries the full address (verified prod 2026-07-25), so the job sheet
-    // renders addresses from the list payload instead of waiting on the detail fetch.
-    address_line_1: s.address_line_1 ?? null,
     activity_started_ts: s.activity_started_ts ?? null,
     activity_arrived_ts: s.activity_arrived_ts ?? null,
     activity_completed_ts: s.activity_completed_ts ?? null,
+    delivery_windows: (s.delivery_windows ?? [])
+      .map((w) => ({ time_from: w.time_from ?? null, time_to: w.time_to ?? null }))
+      .filter((w) => w.time_from || w.time_to),
   };
 }
 
@@ -133,12 +139,30 @@ export async function GET(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
 
   // ── ?job_id=123: full detail for the job sheet ─────────────────────────────
+  // This call is the slow one — measured at several seconds against Cartrack, which is
+  // long enough that the sheet visibly waits for the POD photos and the driver's phone.
+  // A finished job never changes again, so cache those for a day; anything still moving
+  // gets a short TTL so timestamps stay current.
   const jobIdParam = req.nextUrl.searchParams.get("job_id");
   if (jobIdParam) {
+    const detailKey = `jobdetail:v1:${env}:${jobIdParam}`;
+    const redis = getRedis();
+    if (redis) {
+      try {
+        const hit = await redis.get<ReturnType<typeof detailJob>>(detailKey);
+        if (hit) return NextResponse.json({ job: hit, cached: true });
+      } catch {}
+    }
     try {
       const { data } = await getJobDetails(Number(jobIdParam), env);
       if (!data?.job_id) return NextResponse.json({ error: "Job not found" }, { status: 404 });
-      return NextResponse.json({ job: detailJob(data) });
+      const job = detailJob(data);
+      if (redis) {
+        // status 5 = completed/rejected — terminal, so it's safe to hold for a day.
+        const ttl = job.job_status_id === 5 ? 86_400 : 60;
+        try { await redis.set(detailKey, job, { ex: ttl }); } catch {}
+      }
+      return NextResponse.json({ job });
     } catch (e) {
       return NextResponse.json({ error: String(e) }, { status: 500 });
     }
