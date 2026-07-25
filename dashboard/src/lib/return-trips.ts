@@ -1,7 +1,8 @@
 import type { Config, Mapping, LogLevel, Job } from "./types";
 import { createJob, friendlyCreateError, isDriverUnavailableError, getJobsByStatusAndDate, type Env } from "./cartrack";
-import { vnDate, vnHoursMinutes } from "./time";
+import { vnDate, vnHoursMinutes, parseVnTimestamp } from "./time";
 import { isDriverOnLeave, resolveSubstitute, type LeaveEntry } from "./leave-config";
+import { loadCleanedReturns } from "./return-suppress";
 
 export const PSC_RETURN_LABEL = "🛵 Vận chuyển mẫu PSC (về)";
 export const PSC_OUTBOUND_LABEL = "🛵 Vận chuyển mẫu PSC";
@@ -173,6 +174,16 @@ export async function detectAndCreateReturnTrips(
     completedReturnIndex.set(key, arr);
   }
 
+  // Returns the cleanup pass already REJECTED today (status 3/7) are invisible to
+  // the status 2/4/5 lists above, but they were still "made" for their outbound.
+  // Fold them into the same index so a shift that re-opens later the same day
+  // doesn't resurrect a return we deliberately cancelled at the end of the shift.
+  for (const [key, createTs] of await loadCleanedReturns()) {
+    const arr = completedReturnIndex.get(key) ?? [];
+    arr.push(createTs);
+    completedReturnIndex.set(key, arr);
+  }
+
   // Build set of from:to:driver keys that already have an active return trip (status 2 or 4).
   // Per-driver so two drivers completing the same route each get their own return.
   const blockingReturnKeys = new Set<string>(); // "fromId:toId:driverId"
@@ -206,8 +217,8 @@ export async function detectAndCreateReturnTrips(
 
     if (!pickupStop?.customer_id || !dropoffStop?.customer_id) continue;
 
-    // Shift check: driver must be on shift right now for the PSC they just serviced.
-    // For a substitute, gate on the ON-LEAVE driver's shift window (the driver they cover).
+    // Shift check for the PSC the driver just serviced. For a substitute, gate on
+    // the ON-LEAVE driver's shift window (the driver they cover).
     const pscCustomerId: string = pickupStop.customer_id;
     const shiftDriverId = subCovers.get(outbound.delivery_driver_id) ?? outbound.delivery_driver_id;
     const driverMappings = config.mappings.filter(
@@ -216,7 +227,26 @@ export async function detectAndCreateReturnTrips(
         (m.driver_id === shiftDriverId || m.smart_driver_id.includes(shiftDriverId))
     );
     const now = new Date();
-    if (driverMappings.length > 0 && !driverMappings.some((m) => isOnShift(m, now))) continue;
+
+    // A return trip belongs to the shift the OUTBOUND was finished in. So we need
+    // ONE shift window that was open when the driver completed the outbound AND is
+    // still open now — not merely "some window is open now".
+    //
+    // Gating on `now` alone leaked returns hours later, because a completed outbound
+    // sits at status 5 for the rest of the day and re-triggers this scan every cycle.
+    // Two cases that produced, both now blocked:
+    //   • driver finishes an outbound AFTER his shift closed → no return, and none
+    //     appears when a later window opens the same day;
+    //   • driver finishes just before the window closes and the window shuts before
+    //     the next cycle → the return stays uncreated instead of surfacing later.
+    const doneTs: string | null = dropoffStop.activity_completed_ts ?? null;
+    const doneAt = doneTs ? parseVnTimestamp(doneTs) : null;
+    if (driverMappings.length > 0) {
+      const openNow = driverMappings.filter((m) => isOnShift(m, now));
+      if (openNow.length === 0) continue;
+      // No completion stamp → fall back to the "on shift now" gate alone.
+      if (doneAt && Number.isFinite(doneAt.getTime()) && !openNow.some((m) => isOnShift(m, doneAt))) continue;
+    }
 
     // Return trip is the inverse: from where the outbound ended, back to the PSC
     const fromCustomerId: string = dropoffStop.customer_id;
@@ -228,7 +258,7 @@ export async function detectAndCreateReturnTrips(
 
     // Skip if a completed return already exists that was created AFTER this outbound's dropoff finished.
     // "YYYY-MM-DD HH:MM:SS" string comparison works for same-day Cartrack timestamps.
-    const outboundDoneAt: string = (dropoffStop.activity_completed_ts ?? "").slice(0, 19);
+    const outboundDoneAt: string = (doneTs ?? "").slice(0, 19);
     if (outboundDoneAt) {
       const priorReturns = completedReturnIndex.get(returnKey) ?? [];
       if (priorReturns.some((ts) => ts.slice(0, 19) > outboundDoneAt)) continue;

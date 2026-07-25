@@ -5,6 +5,7 @@ import { vnDate, vnMinutesSinceMidnight, parseVnTimestamp } from "./time";
 import { PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL, isOnShift, subToCoveredDriver } from "./return-trips";
 import { PSC_VIA_LABEL } from "./via-legs";
 import type { LeaveEntry } from "./leave-config";
+import { recordCleanedReturns } from "./return-suppress";
 
 // Reject reasons surfaced in Cartrack's rejection record.
 const VIA_STALE_REASON = "Tài xế đã tới điểm giao - bỏ qua chặng ghé (via)";
@@ -22,7 +23,15 @@ const END_OF_DAY_REASON = "Cuối ngày - dọn chuyến về chưa hoàn thành
 const END_OF_DAY_FROM_MIN = 21 * 60 + 54;
 const FRESH_ACTIVITY_MS = 20 * 60 * 1000;
 
-type RejectTask = { jobId: number; reason: string; label: string };
+// `suppress` is set for TODAY's return trips (Rules B and D): once we cancel one,
+// the creator must not remake it for the same outbound when the shift re-opens
+// later the same day. Carries the return's own from:to:driver key + create_ts.
+type RejectTask = {
+  jobId: number;
+  reason: string;
+  label: string;
+  suppress?: { returnKey: string; createTs: string };
+};
 
 // VN date on which the yesterday-sweep last came back clean — skip re-sweeping
 // until the date changes. Not set while leftovers exist, so failed rejects retry
@@ -229,6 +238,10 @@ export async function cleanupStaleTrips(
 
     const driverId: string = job.delivery_driver_id;
     const route = `${pickup.customer_name ?? pickup.customer_id} → ${dropoff.customer_name ?? dropoff.customer_id}`;
+    // Same orientation the creator keys returns by: from (lab) : to (PSC) : driver.
+    const suppress = job.create_ts
+      ? { returnKey: `${pickup.customer_id}:${dropoff.customer_id}:${driverId}`, createTs: job.create_ts as string }
+      : undefined;
 
     if (isVia) {
       if (!untouched) continue; // never touch a started via-leg
@@ -251,7 +264,7 @@ export async function cleanupStaleTrips(
       // return with FRESH driver activity survives (genuinely finishing a late
       // ride); if that one gets abandoned, the morning rollover sweep takes it.
       if (hasFreshActivity(job, now, FRESH_ACTIVITY_MS)) continue;
-      tasks.push({ jobId: job.job_id, reason: END_OF_DAY_REASON, label: `Return (EOD) #${job.job_id} | ${route}` });
+      tasks.push({ jobId: job.job_id, reason: END_OF_DAY_REASON, label: `Return (EOD) #${job.job_id} | ${route}`, suppress });
     } else {
       if (!untouched) continue; // started same-day return: could be mid-ride — Rule D/C handle it
       // Rule B: the return's dropoff (stop_type_id 2) is the PSC. Off shift there?
@@ -265,7 +278,7 @@ export async function cleanupStaleTrips(
       );
       // Same gate as the creator, inverted: a mapping exists and none is on shift.
       if (!(driverMappings.length > 0 && !driverMappings.some((m) => isOnShift(m, now)))) continue;
-      tasks.push({ jobId: job.job_id, reason: RETURN_STALE_REASON, label: `Return #${job.job_id} | ${route}` });
+      tasks.push({ jobId: job.job_id, reason: RETURN_STALE_REASON, label: `Return #${job.job_id} | ${route}`, suppress });
     }
   }
 
@@ -284,6 +297,10 @@ export async function cleanupStaleTrips(
     setTimeout(() => inFlightCleanup.delete(t.jobId), IN_FLIGHT_TTL_MS);
   }
 
+  // Routes actually cancelled this pass — remembered so the creator doesn't remake
+  // them when the driver's shift re-opens later today.
+  const cleaned: Array<{ returnKey: string; createTs: string }> = [];
+
   // Bounded concurrency (5), same as the via/return detectors.
   for (let i = 0; i < tasks.length; i += 5) {
     await Promise.all(
@@ -291,7 +308,11 @@ export async function cleanupStaleTrips(
         try {
           const ok = await rejectJob(t.jobId, t.reason, env);
           log(`Cleanup rejected ${t.label} — ${ok ? "OK" : "FAILED"}`, ok ? "WARN" : "ERROR");
-          if (!ok) inFlightCleanup.delete(t.jobId); // allow retry next cycle
+          if (ok) {
+            if (t.suppress) cleaned.push(t.suppress);
+          } else {
+            inFlightCleanup.delete(t.jobId); // allow retry next cycle
+          }
         } catch (e) {
           log(`Cleanup failed for ${t.label}: ${e}`, "ERROR");
           inFlightCleanup.delete(t.jobId);
@@ -299,4 +320,9 @@ export async function cleanupStaleTrips(
       })
     );
   }
+
+  // Never let a bookkeeping failure break the cleanup pass.
+  await recordCleanedReturns(cleaned).catch((e) =>
+    log(`Cleanup: could not record cancelled returns (they may be recreated): ${e}`, "WARN"),
+  );
 }
