@@ -72,8 +72,31 @@ function requestedAt(job: Job): string | null {
   return m ? m[1] : fmtTs(job.scheduled_delivery_ts);
 }
 
-function shortCode(name: string): string {
-  return (name ?? "").replace(/^BRA\s*-\s*/i, "").trim();
+// Cartrack stores client rows as "{account code} - {old district} - {street abbrev} - {name}"
+// ("46647677 - BTan - 54 - BV QUỐC ÁNH"). Only the trailing name means anything to branch
+// staff, and the codes are what pushed real names off the edge of the row. Diag's own sites
+// use the shorter "BRA - D010". Anything that matches neither shape is left alone rather
+// than guessed at — a client name may legitimately contain " - ".
+function placeLabel(name: string): string {
+  const raw = (name ?? "").trim();
+  const parts = raw.split(" - ");
+  if (parts.length < 2) return raw;
+  if (/^BRA$/i.test(parts[0])) return parts.slice(1).join(" - ");
+  // The convention is exactly four segments, so four or more means a client row. Joining the
+  // tail rather than taking parts[3] keeps names that contain " - " themselves intact, and
+  // the leading code isn't always numeric ("SENDOUT2 - D10 - HHao - MEDIC").
+  if (parts.length >= 4) return parts.slice(3).join(" - ");
+  // Shorter rows still lead with the account code.
+  if (/^\d+$/.test(parts[0])) return parts.slice(1).join(" - ");
+  return raw;
+}
+
+// The 3PL handoff parks the job on a shared proxy driver account; its internal name
+// ("Proxy 3PL Express (Grab) Driver") means nothing to a branch, so name the service.
+function driverLabel(name?: string | null): string {
+  const raw = (name ?? "").trim();
+  if (!raw) return "—";
+  return /proxy|3pl/i.test(raw) ? "Grab/Be/XanhSM/Khác" : raw;
 }
 
 // Diacritic-insensitive search so "duc" matches "Đức". NFD splits the accent off as a
@@ -137,7 +160,7 @@ function Stepper({ job, state }: { job: Job; state: 0 | 1 | 2 | 3 }) {
               }`}
             />
             <span className={`mt-1.5 text-[10px] font-semibold leading-tight text-center ${
-              done ? "text-green-700" : current ? "text-blue-700" : "text-slate-400"
+              done ? "text-green-700" : current ? "text-blue-700" : "text-slate-500"
             }`}>
               {label}
             </span>
@@ -187,7 +210,7 @@ function Timeline({ events }: { events: TlEvent[] }) {
     <div className="mt-5">
       {events.map(({ tone, time, label, body }, i) => (
         <div key={`${label}-${i}`} className="flex">
-          <div className={`w-12 flex-none text-right pr-3 text-xs font-bold tabular-nums leading-tight ${tone === "future" ? "text-slate-400" : "text-slate-700"}`}>
+          <div className={`w-12 flex-none text-right pr-3 text-xs font-bold tabular-nums leading-tight ${tone === "future" ? "text-slate-500" : "text-slate-700"}`}>
             {time ?? ""}
           </div>
           <div className="w-6 flex-none flex flex-col items-center">
@@ -201,7 +224,7 @@ function Timeline({ events }: { events: TlEvent[] }) {
             )}
           </div>
           <div className={`flex-1 min-w-0 pl-3 ${i < events.length - 1 ? "pb-5" : "pb-1"}`}>
-            <p className={`text-sm font-bold leading-tight ${tone === "future" ? "text-slate-400 font-semibold" : tone === "now" ? "text-blue-700" : "text-slate-800"}`}>
+            <p className={`text-sm font-bold leading-tight ${tone === "future" ? "text-slate-500 font-semibold" : tone === "now" ? "text-blue-700" : "text-slate-800"}`}>
               {label}
             </p>
             {body}
@@ -272,7 +295,7 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
   const batches = shown.item_tracking_numbers ?? [];
   const phone = detail?.driver?.phone_local;
   const phoneE164 = detail?.driver?.phone_e164;
-  const driver = shown.driver?.last_name;
+  const driver = driverLabel(shown.driver?.last_name);
 
   const pTodos = (p?.todos ?? []).filter((t) => TODO_EMOJI[t.todo_type_id]);
   const dTodos = (d?.todos ?? []).filter((t) => TODO_EMOJI[t.todo_type_id]);
@@ -290,7 +313,7 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
 
         <div className="flex items-center justify-between gap-2.5">
           <p className="text-lg font-extrabold tracking-tight text-slate-800">
-            {shortCode(p?.customer_name ?? "")} <span className="text-slate-300">→</span> {shortCode(d?.customer_name ?? "")}
+            {placeLabel(p?.customer_name ?? "")} <span className="text-slate-500">→</span> {placeLabel(d?.customer_name ?? "")}
           </p>
           <span className={`text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${STATE_LABEL[state].cls}`}>
             {STATE_LABEL[state].text}
@@ -302,7 +325,7 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
             {initial(driver)}
           </span>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-bold text-slate-800 truncate">{driver || "Chưa có tài xế"}</p>
+            <p className="text-sm font-bold text-slate-800">{shown.driver?.last_name ? driver : "Chưa có tài xế"}</p>
             {phone ? (
               <div className="flex items-center gap-3 mt-0.5">
                 <a href={`tel:${phoneE164}`} className="text-sm font-bold text-green-700 active:opacity-70">📞 {phone}</a>
@@ -317,7 +340,7 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
 
         {batches.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5 mt-3">
-            <span className="text-[10px] font-bold text-slate-400 uppercase">Mã batch</span>
+            <span className="text-[10px] font-bold text-slate-500 uppercase">Mã batch</span>
             {batches.map((b) => (
               <span key={b} className="text-[11px] font-mono font-semibold bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded-md break-all">{b}</span>
             ))}
@@ -327,10 +350,10 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
         <Timeline events={buildEvents(shown, state, p, d, pTodos, dTodos)} />
 
         {detailLoading && !detail && (
-          <p className="text-[11px] text-slate-400 text-center">Đang tải ảnh giao nhận và số điện thoại tài xế…</p>
+          <p className="text-[11px] text-slate-500 text-center">Đang tải ảnh giao nhận và số điện thoại tài xế…</p>
         )}
 
-        <p className="text-[10px] text-slate-300 text-center break-all mt-1">{shown.reference_number}</p>
+        <p className="text-[10px] text-slate-500 text-center break-all mt-1">{shown.reference_number}</p>
 
         <button onClick={onClose} className="w-full mt-4 py-3 rounded-xl text-sm font-semibold border border-slate-200 text-slate-600 active:bg-slate-50">
           Đóng
@@ -351,7 +374,7 @@ function TripCard({ job, code, onOpen, onCancel, onSendVia3pl }: {
 }) {
   const state = stateOf(job);
   const p = pickupOf(job), d = dropoffOf(job);
-  const driver = job.driver?.last_name;
+  const driver = driverLabel(job.driver?.last_name);
 
   // Cancellable only while this location's own pickup is untouched.
   const cancellable = !!p && p.customer_id === code && p.stop_status_id === 1 &&
@@ -367,9 +390,9 @@ function TripCard({ job, code, onOpen, onCancel, onSendVia3pl }: {
         <div className="flex items-start justify-between gap-2.5">
           <div className="min-w-0">
             <p className="text-base font-extrabold tracking-tight text-slate-800">
-              {shortCode(p?.customer_name ?? "")} <span className="text-slate-300">→</span> {shortCode(d?.customer_name ?? "")}
+              {placeLabel(p?.customer_name ?? "")} <span className="text-slate-500">→</span> {placeLabel(d?.customer_name ?? "")}
             </p>
-            <p className="text-[11px] font-semibold text-slate-400 mt-0.5">Yêu cầu lúc {requestedAt(job) ?? "—"}</p>
+            <p className="text-[11px] font-semibold text-slate-500 mt-0.5">Yêu cầu lúc {requestedAt(job) ?? "—"}</p>
           </div>
           <span className={`flex-none text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${STATE_LABEL[state].cls}`}>
             {STATE_LABEL[state].text}
@@ -387,8 +410,8 @@ function TripCard({ job, code, onOpen, onCancel, onSendVia3pl }: {
             <span aria-hidden className="w-8 h-8 flex-none rounded-full bg-blue-100 text-blue-700 font-extrabold text-xs flex items-center justify-center">
               {initial(driver)}
             </span>
-            <span className="flex-1 min-w-0 text-sm font-bold text-slate-800 truncate">{driver || "—"}</span>
-            <span aria-hidden className="text-slate-300 text-lg leading-none">›</span>
+            <span className="flex-1 min-w-0 text-sm font-bold text-slate-800">{driver}</span>
+            <span aria-hidden className="text-slate-400 text-lg leading-none">›</span>
           </div>
         )}
       </button>
@@ -425,9 +448,9 @@ function PendingCard({ req, onCancel, onSendVia3pl }: {
       <div className="flex items-start justify-between gap-2.5">
         <div className="min-w-0">
           <p className="text-base font-extrabold tracking-tight text-slate-800">
-            {from} <span className="text-slate-300">→</span> {to}
+            {from} <span className="text-slate-500">→</span> {to}
           </p>
-          <p className="text-[11px] font-semibold text-slate-400 mt-0.5">Yêu cầu lúc {req.created_ts}</p>
+          <p className="text-[11px] font-semibold text-slate-500 mt-0.5">Yêu cầu lúc {req.created_ts}</p>
         </div>
         <span className={`flex-none text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${STATE_LABEL[0].cls}`}>
           {STATE_LABEL[0].text}
@@ -707,18 +730,18 @@ export default function QrPage() {
               onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl} />
           ))}
           {!loading && !pending.length && !active.length && (
-            <p className="text-center text-sm text-slate-400 py-7">
+            <p className="text-center text-sm text-slate-500 py-7">
               {isToday ? <>Chưa có chuyến nào đang chạy.{!route.no_request && <><br />Bấm nút phía trên để gọi tài xế.</>}</> : "Không có chuyến đang chạy."}
             </p>
           )}
-          {loading && <p className="text-center text-sm text-slate-400 py-7">Đang tải…</p>}
+          {loading && <p className="text-center text-sm text-slate-500 py-7">Đang tải…</p>}
         </div>
 
         <div className="bg-white rounded-2xl shadow-sm mt-3 overflow-hidden">
           <button onClick={() => setDoneOpen((v) => !v)} aria-expanded={doneOpen}
             className="w-full flex items-center justify-between px-4 py-3.5 text-[15px] font-bold text-slate-800">
             <span>✓ Xong {isToday ? "hôm nay" : ""} <span className="text-green-600">({done.length})</span></span>
-            <span aria-hidden className={`text-slate-400 transition-transform ${doneOpen ? "rotate-180" : ""}`}>⌄</span>
+            <span aria-hidden className={`text-slate-500 transition-transform ${doneOpen ? "rotate-180" : ""}`}>⌄</span>
           </button>
           {doneOpen && (
             <div className="border-t border-slate-100">
@@ -733,7 +756,7 @@ export default function QrPage() {
                 />
               </div>
               {doneShown.length === 0 ? (
-                <p className="text-center text-sm text-slate-400 py-5">
+                <p className="text-center text-sm text-slate-500 py-5">
                   {doneQuery ? `Không tìm thấy chuyến nào khớp “${doneQuery}”` : "Chưa có chuyến nào hoàn thành."}
                 </p>
               ) : doneShown.map((j) => {
@@ -743,10 +766,10 @@ export default function QrPage() {
                     className="w-full flex items-center gap-2.5 px-4 py-3 border-t border-slate-100 text-left active:bg-slate-50">
                     <span aria-hidden className="text-green-600 font-bold">✓</span>
                     <span className="flex-1 min-w-0">
-                      <span className="block text-sm font-semibold text-slate-800 truncate">
-                        {shortCode(p?.customer_name ?? "")} → {shortCode(d?.customer_name ?? "")}
+                      <span className="block text-sm font-semibold text-slate-800">
+                        {placeLabel(p?.customer_name ?? "")} → {placeLabel(d?.customer_name ?? "")}
                       </span>
-                      <span className="block text-[11px] text-slate-400 truncate">{j.driver?.last_name ?? "—"}</span>
+                      <span className="block text-[11px] text-slate-500">{driverLabel(j.driver?.last_name)}</span>
                     </span>
                     <span className="text-xs font-semibold text-slate-500 tabular-nums whitespace-nowrap">
                       {fmtTs(p?.activity_completed_ts) ?? "—"} → {fmtTs(d?.activity_completed_ts) ?? "—"}

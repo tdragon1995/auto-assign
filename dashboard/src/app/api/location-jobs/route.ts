@@ -34,9 +34,15 @@ function getRedis(): Redis | null {
 // timeline-derived jobs carry the route's driverFullname in first_name, prefixed
 // with that internal code ("F - C - DC100320 Lý Chánh Hùng"). Take whichever is
 // populated and strip the code prefix so the page can keep reading driver.last_name.
+//
+// The code is any two-letter series plus digits, not just DC — part-timers carry PT
+// ("P - P - PT101408 Đào Thanh Bình"), and an earlier DC-only pattern let those
+// through to the branch screens verbatim.
+const DRIVER_CODE_PREFIX = /^(?:[A-Z]{1,2}\s*-\s*)*[A-Z]{2}\d+\s+/;
+
 function displayName(driver: Job["driver"]): string | null {
   const raw = driver?.last_name?.trim() || driver?.first_name?.trim() || null;
-  return raw ? raw.replace(/^(?:[A-Z]{1,2}\s*-\s*){0,2}DC\w+\s+/, "") : null;
+  return raw ? raw.replace(DRIVER_CODE_PREFIX, "") : null;
 }
 
 function slimStop(s: Stop) {
