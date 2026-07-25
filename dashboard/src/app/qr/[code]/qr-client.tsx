@@ -9,6 +9,7 @@ import {
   RefreshCw, ArrowUp, ArrowDown, ArrowRight, Loader2, Search, Camera, PenLine, Link2, StickyNote,
 } from "lucide-react";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
+import { placeLabel } from "@/lib/place-label";
 
 interface Stop {
   stop_id: number;
@@ -77,25 +78,6 @@ function fmtTs(ts?: string | null): string | null {
 function requestedAt(job: Job): string | null {
   const m = /_(\d{2}:\d{2})/.exec(job.reference_number ?? "");
   return m ? m[1] : fmtTs(job.scheduled_delivery_ts);
-}
-
-// Cartrack stores client rows as "{account code} - {old district} - {street abbrev} - {name}"
-// ("46647677 - BTan - 54 - BV QUỐC ÁNH"). Only the trailing name means anything to branch
-// staff, and the codes are what pushed real names off the edge of the row. Diag's own sites
-// use the shorter "BRA - D010". Anything that matches neither shape is left alone rather
-// than guessed at — a client name may legitimately contain " - ".
-function placeLabel(name: string): string {
-  const raw = (name ?? "").trim();
-  const parts = raw.split(" - ");
-  if (parts.length < 2) return raw;
-  if (/^BRA$/i.test(parts[0])) return parts.slice(1).join(" - ");
-  // The convention is exactly four segments, so four or more means a client row. Joining the
-  // tail rather than taking parts[3] keeps names that contain " - " themselves intact, and
-  // the leading code isn't always numeric ("SENDOUT2 - D10 - HHao - MEDIC").
-  if (parts.length >= 4) return parts.slice(3).join(" - ");
-  // Shorter rows still lead with the account code.
-  if (/^\d+$/.test(parts[0])) return parts.slice(1).join(" - ");
-  return raw;
 }
 
 // The 3PL handoff parks the job on a shared proxy driver account; its internal name
@@ -589,7 +571,9 @@ export default function QrPage() {
   const [pending, setPending] = useState<PendingReq[]>([]);
 
   const [sheetJob, setSheetJob] = useState<Job | null>(null);
-  const [doneOpen, setDoneOpen] = useState(false);
+  // Open by default: the completed list is the branch's record of its own day, and
+  // collapsing it hid the thing most staff open this page to check.
+  const [doneOpen, setDoneOpen] = useState(true);
   const [doneQuery, setDoneQuery] = useState("");
   const [datePanel, setDatePanel] = useState(false);
 
@@ -834,6 +818,41 @@ export default function QrPage() {
           </div>
         )}
 
+        {/* Date + refresh sit above the feed: they scope everything below them, and at the
+            foot of a long completed list they were past the fold and read as unrelated. */}
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <button
+            onClick={() => setDatePanel((v) => !v)}
+            aria-expanded={datePanel}
+            className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-600 bg-white shadow-sm active:bg-slate-50"
+          >
+            <CalendarDays aria-hidden className="w-4 h-4" />
+            {isToday ? "Hôm nay" : date}
+            <ChevronDown aria-hidden className={`w-4 h-4 text-slate-500 transition-transform ${datePanel ? "rotate-180" : ""}`} />
+          </button>
+          <button
+            onClick={() => loadJobs(true)}
+            disabled={loading}
+            className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-semibold text-blue-700 bg-white shadow-sm active:bg-slate-50 disabled:opacity-50"
+          >
+            <RefreshCw aria-hidden className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+            Làm mới
+          </button>
+        </div>
+
+        {datePanel && (
+          <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
+            <input
+              type="date"
+              value={date}
+              max={todayVN()}
+              onChange={(e) => setDate(e.target.value)}
+              aria-label="Chọn ngày"
+              className="w-full border border-slate-200 rounded-xl px-3 py-3 text-base"
+            />
+          </div>
+        )}
+
         <div className="space-y-3">
           {pending.map((p) => (
             <PendingCard key={p.job_id} req={p} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl} />
@@ -914,26 +933,6 @@ export default function QrPage() {
           )}
         </div>
 
-        {datePanel && (
-          <div className="bg-white rounded-2xl shadow-sm p-4 mt-3">
-            <input
-              type="date"
-              value={date}
-              max={todayVN()}
-              onChange={(e) => setDate(e.target.value)}
-              aria-label="Chọn ngày"
-              className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-base"
-            />
-          </div>
-        )}
-        <div className="flex items-center justify-center gap-4 mt-1">
-          <button onClick={() => setDatePanel((v) => !v)} className="inline-flex items-center gap-1.5 py-3.5 text-sm font-semibold text-slate-500">
-            <CalendarDays aria-hidden className="w-4 h-4" />{isToday ? "Xem ngày khác" : date}
-          </button>
-          <button onClick={() => loadJobs(true)} className="inline-flex items-center gap-1.5 py-3.5 text-sm font-semibold text-blue-600">
-            <RefreshCw aria-hidden className="w-4 h-4" />Làm mới
-          </button>
-        </div>
       </div>
 
       {sheetJob && <JobSheet job={sheetJob} onClose={() => setSheetJob(null)} />}

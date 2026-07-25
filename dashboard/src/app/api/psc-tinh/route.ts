@@ -52,6 +52,10 @@ function buildOrdersFromStops(stops: any[], prefix: string) {
         dropoff?.activity_started_ts ??
         null
       )?.slice(0, 19) ?? null,
+      pickup_completed_ts: pickup?.activity_completed_ts?.slice(0, 19) ?? null,
+      dropoff_started_ts:  dropoff?.activity_started_ts?.slice(0, 19) ?? null,
+      dropoff_completed_ts: dropoff?.activity_completed_ts?.slice(0, 19) ?? null,
+      create_ts: (pickup?.create_ts ?? dropoff?.create_ts)?.slice(0, 19) ?? null,
       eta: pickup?.delivery_windows?.[0]?.time_from?.slice(0, 5) ?? null,
       driver_name: pickup?.driver_name ?? dropoff?.driver_name ?? null,
     }));

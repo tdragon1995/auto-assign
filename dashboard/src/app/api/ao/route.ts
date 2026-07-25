@@ -125,6 +125,11 @@ export async function GET(req: NextRequest) {
           pickup_stop_id:   pickup?.stop_id ?? null,
           pickup_status_id: pickup?.stop_status_id ?? null,
           dropoff_name:     dropoff?.customer_name ?? "—",
+          dropoff_status_id: dropoff?.stop_status_id ?? null,
+          pickup_completed_ts: pickup?.activity_completed_ts?.slice(0, 19) ?? null,
+          dropoff_started_ts:  dropoff?.activity_started_ts?.slice(0, 19) ?? null,
+          dropoff_completed_ts: dropoff?.activity_completed_ts?.slice(0, 19) ?? null,
+          create_ts: j.create_ts?.slice(0, 19) ?? null,
           dropoff_status:   STOP_STATUS[dropoff?.stop_status_id]?.label ?? "—",
           dropoff_color:    STOP_STATUS[dropoff?.stop_status_id]?.color ?? "slate",
           dropoff_update_ts: (

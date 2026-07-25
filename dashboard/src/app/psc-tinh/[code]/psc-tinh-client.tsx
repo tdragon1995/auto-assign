@@ -1,6 +1,9 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { RefreshCw, Loader2, CheckCircle2, AlertCircle, Check, ChevronDown, Clock, Package, ArrowRight } from "lucide-react";
+import { placeLabel } from "@/lib/place-label";
+import { TripSteps, TRIP_STATE_STYLE, tripStateText, tripStateFromStops, type TripState } from "@/components/trip-steps";
 import { useParams } from "next/navigation";
 
 interface TplOption {
@@ -21,6 +24,11 @@ interface Order {
   eta: string | null;
   pickup_name?: string;
   pickup_address?: string;
+  dropoff_status_id?: number | null;
+  pickup_completed_ts?: string | null;
+  dropoff_started_ts?: string | null;
+  dropoff_completed_ts?: string | null;
+  create_ts?: string | null;
 }
 
 const PSC_META: Record<string, { label: string; psc_code: string }> = {
@@ -30,13 +38,16 @@ const PSC_META: Record<string, { label: string; psc_code: string }> = {
   D036: { label: "BRA - D036 (Tân An)", psc_code: "D036" },
 };
 
-const COLOR_CLASS: Record<string, string> = {
-  slate:  "bg-slate-200 text-slate-700",
-  blue:   "bg-blue-100 text-blue-700",
-  indigo: "bg-indigo-100 text-indigo-700",
-  green:  "bg-green-100 text-green-700",
-  red:    "bg-red-100 text-red-700",
-};
+const hm = (ts?: string | null) => (ts ? ts.slice(11, 16) : null);
+
+function stateOf(o: Order): TripState {
+  return tripStateFromStops(o.pickup_status_id, o.dropoff_status_id);
+}
+
+// The first step falls back to the requested nhà-xe time when Cartrack gives no create_ts.
+function stepTimes(o: Order) {
+  return [hm(o.create_ts) ?? o.eta, hm(o.pickup_completed_ts), hm(o.dropoff_started_ts), hm(o.dropoff_completed_ts)];
+}
 
 function buildTimeSlots(): string[] {
   const vnParts = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Ho_Chi_Minh", hour: "numeric", minute: "numeric", hour12: false }).formatToParts(new Date());
@@ -56,7 +67,8 @@ export default function PscTinhPage() {
   const code = (params.code as string)?.toUpperCase();
   const meta = PSC_META[code];
 
-  const [tab, setTab] = useState<"request" | "status">("request");
+  // Completed trips open by default: it's the record staff come here to check.
+  const [doneOpen, setDoneOpen] = useState(true);
 
   const [options, setOptions] = useState<TplOption[]>([]);
   const [loadError, setLoadError] = useState("");
@@ -65,7 +77,6 @@ export default function PscTinhPage() {
   const [cancelTarget, setCancelTarget] = useState<Order | null>(null);
   const [cancelLoading, setCancelLoading] = useState(false);
   const [cancelError, setCancelError] = useState("");
-  const [highlightJobId, setHighlightJobId] = useState<number | null>(null);
 
   const [selectedUuid, setSelectedUuid] = useState("");
 
@@ -106,9 +117,8 @@ export default function PscTinhPage() {
 
   useEffect(() => { loadOptions(); }, [loadOptions]);
 
-  useEffect(() => {
-    if (tab === "status") loadOrders();
-  }, [tab, loadOrders]);
+  // One feed, so the list loads with the page instead of waiting for a tab switch.
+  useEffect(() => { loadOrders(); }, [loadOrders]);
 
   if (!meta) {
     return (
@@ -155,7 +165,6 @@ export default function PscTinhPage() {
         setResult({ ok: true, msg: `Tạo thành công! ${data.reference} (Job #${data.job_id})` });
         setEta("");
         if (options.length > 1) clearTpl();
-        setHighlightJobId(data.job_id ?? null);
       }
     } catch (e) {
       setResult({ ok: false, msg: String(e) });
@@ -184,46 +193,31 @@ export default function PscTinhPage() {
     }
   };
 
+  const active = orders.filter((o) => stateOf(o) !== 3);
+  const done = orders.filter((o) => stateOf(o) === 3);
   const canSubmit = selectedUuid && eta && !loading;
   const timeSlots = buildTimeSlots();
 
   return (
-    <div className="min-h-screen bg-slate-100 flex flex-col items-center p-4 gap-4">
-      <div className="w-full max-w-sm bg-white rounded-2xl shadow border overflow-hidden">
-        {/* Header */}
-        <div className="px-6 pt-5 pb-4">
-          <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">Vận chuyển mẫu tỉnh</p>
-          <h1 className="text-xl font-bold text-slate-800 mt-0.5">{meta.label}</h1>
-          <p className="text-sm text-slate-500">Điểm đến: D001 — Cao Thắng</p>
-        </div>
+    <div className="min-h-screen bg-slate-100 flex justify-center">
+      <div className="w-full max-w-[430px] px-4 pb-12">
 
-        {/* Tab switcher */}
-        <div className="grid grid-cols-2 border-t border-slate-100">
-          <button
-            onClick={() => setTab("request")}
-            className={`py-2.5 text-sm font-semibold transition-colors ${
-              tab === "request"
-                ? "bg-blue-600 text-white"
-                : "bg-white text-slate-500 hover:bg-slate-50"
-            }`}
-          >
-            Tạo yêu cầu
-          </button>
-          <button
-            onClick={() => setTab("status")}
-            className={`py-2.5 text-sm font-semibold transition-colors border-l border-slate-100 ${
-              tab === "status"
-                ? "bg-blue-600 text-white"
-                : "bg-white text-slate-500 hover:bg-slate-50"
-            }`}
-          >
-            Xem trạng thái
+        <header className="pt-5 pb-3.5 px-1">
+          <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">{meta.label}</h1>
+          <p className="text-sm text-slate-500 mt-0.5">Điểm đến: D001 — Cao Thắng</p>
+        </header>
+
+        <div className="flex items-center justify-end mb-3">
+          <button onClick={loadOrders} disabled={ordersLoading}
+            className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-semibold text-blue-700 bg-white shadow-sm active:bg-slate-50 disabled:opacity-50">
+            <RefreshCw aria-hidden className={`w-4 h-4 ${ordersLoading ? "animate-spin" : ""}`} />
+            Làm mới
           </button>
         </div>
 
-        {/* Request tab */}
-        {tab === "request" && (
-          <div className="p-6 space-y-5">
+        {/* Request form */}
+        <div className="bg-white rounded-2xl shadow-sm p-4 mb-5">
+          <div className="space-y-5">
             {loadError && (
               <div className="rounded-lg bg-red-50 border border-red-200 p-3 text-sm text-red-700">
                 {loadError}
@@ -237,7 +231,7 @@ export default function PscTinhPage() {
                 </label>
                 <div className="space-y-2">
                   {options.length === 0 ? (
-                    <p className="text-sm text-slate-400">Đang tải...</p>
+                    <p className="text-sm text-slate-500">Đang tải...</p>
                   ) : (
                     options.map((o) => (
                       <button
@@ -293,9 +287,11 @@ export default function PscTinhPage() {
             <button
               onClick={submit}
               disabled={!canSubmit}
-              className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+              className="w-full rounded-2xl py-4 text-white text-lg font-extrabold flex items-center justify-center gap-2.5 bg-blue-700 active:scale-[.97] transition disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              {loading ? "Đang tạo..." : "Gửi yêu cầu"}
+              {loading
+                ? <><Loader2 aria-hidden className="w-5 h-5 animate-spin" />Đang gửi…</>
+                : <><Package aria-hidden className="w-5 h-5" />Gửi yêu cầu</>}
             </button>
 
             {result && (
@@ -306,72 +302,97 @@ export default function PscTinhPage() {
                     : "bg-red-50 border border-red-200 text-red-800"
                 }`}
               >
-                {result.msg}
+                <span className="inline-flex items-center justify-center gap-1.5">
+                  {result.ok ? <CheckCircle2 aria-hidden className="w-4 h-4 shrink-0" /> : <AlertCircle aria-hidden className="w-4 h-4 shrink-0" />}
+                  {result.msg}
+                </span>
               </div>
             )}
           </div>
-        )}
+        </div>
 
-        {/* Status tab */}
-        {tab === "status" && (
-          <div className="p-5 space-y-3">
-            <div className="flex justify-end">
-              <button onClick={loadOrders} className="text-xs text-blue-500 hover:underline">Làm mới</button>
-            </div>
-            {ordersLoading ? (
-              <p className="text-xs text-slate-400 text-center py-4">Đang tải...</p>
-            ) : orders.length === 0 ? (
-              <p className="text-xs text-slate-400 text-center py-4">Chưa có yêu cầu nào hôm nay.</p>
-            ) : (
-              <div className="space-y-2">
-                {orders.map((o) => (
-                  <div
-                    key={o.job_id}
-                    className={`rounded-xl border px-3 py-2.5 space-y-1 transition-colors ${
-                      o.job_id === highlightJobId
-                        ? "border-blue-400 bg-blue-50 ring-2 ring-blue-300"
-                        : "border-slate-100 bg-slate-50"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold text-slate-800">{o.reference}</span>
-                      {o.eta && (
-                        <span className="text-xs text-slate-500">
-                          Thời gian tới nhà xe <span className="font-bold text-slate-800">{o.eta}</span>
-                        </span>
-                      )}
-                    </div>
-                    {o.pickup_address && (
-                      <p className="text-[11px] text-slate-500">{o.pickup_address}</p>
-                    )}
-                    <div className="flex items-center justify-between gap-1.5">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md ${COLOR_CLASS[o.dropoff_color]}`}>
-                          Giao D001: {o.dropoff_status}
-                        </span>
-                        {o.dropoff_update_ts && (
-                          <span className="text-[10px] text-slate-400">
-                            {o.dropoff_update_ts.slice(11, 16)}
-                          </span>
-                        )}
-                      </div>
-                      {o.pickup_status_id === 1 && (
-                        <div className="flex items-center gap-2 whitespace-nowrap">
-                          <button
-                            onClick={() => { setCancelTarget(o); setCancelError(""); }}
-                            className="text-xs font-bold px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white transition-colors"
-                          >
-                            Huỷ
-                          </button>
-                        </div>
-                      )}
+        {/* Live requests */}
+        <div className="space-y-3">
+          {active.map((o) => {
+            const state = stateOf(o);
+            const cancellable = o.pickup_status_id === 1;
+            return (
+              <div key={o.job_id} className="rounded-2xl bg-white shadow-sm border border-slate-100 p-4">
+                <div className="flex items-start justify-between gap-2.5">
+                  <div className="min-w-0">
+                    <p className="text-base font-extrabold tracking-tight text-slate-800">
+                      {placeLabel(o.pickup_name ?? "3PL")} <ArrowRight aria-hidden className="inline w-4 h-4 text-slate-500 mx-0.5 shrink-0" /> D001
+                    </p>
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1">
+                      <span className="text-[11px] font-semibold text-slate-500">{o.reference}</span>
+                      {o.eta && <span className="text-[11px] font-semibold text-amber-700">Tới nhà xe {o.eta}</span>}
                     </div>
                   </div>
-                ))}
+                  <span className={`flex-none text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${TRIP_STATE_STYLE[state]}`}>
+                    {tripStateText(state, "D001")}
+                  </span>
+                </div>
+
+                <TripSteps times={stepTimes(o)} state={state} />
+
+                {o.pickup_address && (
+                  <p className="text-[11px] text-slate-500 mt-2 leading-snug">{o.pickup_address}</p>
+                )}
+
+                {cancellable && (
+                  <button
+                    onClick={() => { setCancelTarget(o); setCancelError(""); }}
+                    className="w-full mt-3 py-2.5 rounded-xl text-xs font-bold text-red-600 border border-red-200 active:bg-red-50"
+                  >
+                    Huỷ yêu cầu
+                  </button>
+                )}
               </div>
-            )}
-          </div>
-        )}
+            );
+          })}
+          {ordersLoading && !orders.length && (
+            <p className="flex items-center justify-center gap-2 text-sm text-slate-500 py-7">
+              <Loader2 aria-hidden className="w-4 h-4 animate-spin" />Đang tải…
+            </p>
+          )}
+          {!ordersLoading && !active.length && (
+            <p className="flex items-center justify-center gap-2 text-sm text-slate-500 py-7">
+              <Clock aria-hidden className="w-4 h-4" />Chưa có yêu cầu nào đang chạy.
+            </p>
+          )}
+        </div>
+
+        {/* Completed today — open by default */}
+        <div className="bg-white rounded-2xl shadow-sm mt-3 overflow-hidden">
+          <button onClick={() => setDoneOpen((v) => !v)} aria-expanded={doneOpen}
+            className="w-full flex items-center justify-between px-4 py-3.5 text-[15px] font-bold text-slate-800">
+            <span className="flex items-center gap-2">
+              <Check aria-hidden className="w-4 h-4 text-green-600" />
+              Xong hôm nay <span className="text-green-600">({done.length})</span>
+            </span>
+            <ChevronDown aria-hidden className={`w-5 h-5 text-slate-500 transition-transform ${doneOpen ? "rotate-180" : ""}`} />
+          </button>
+          {doneOpen && (
+            <div className="border-t border-slate-100">
+              {done.length === 0 ? (
+                <p className="text-center text-sm text-slate-500 py-6">Chưa có chuyến nào hoàn thành.</p>
+              ) : done.map((o) => (
+                <div key={o.job_id} className="px-4 py-3 border-t border-slate-100 first:border-t-0">
+                  <span className="flex items-start gap-2.5">
+                    <Check aria-hidden className="w-4 h-4 text-green-600 shrink-0 mt-0.5" />
+                    <span className="flex-1 min-w-0">
+                      <span className="block text-sm font-semibold text-slate-800">
+                        {placeLabel(o.pickup_name ?? "3PL")} <ArrowRight aria-hidden className="inline w-3.5 h-3.5 text-slate-500 mx-0.5 shrink-0" /> D001
+                      </span>
+                      <span className="block text-[11px] text-slate-500 mt-0.5">{o.reference}</span>
+                    </span>
+                  </span>
+                  <TripSteps times={stepTimes(o)} state={3} />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Cancel confirm overlay */}
