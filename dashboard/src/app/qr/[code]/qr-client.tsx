@@ -4,6 +4,10 @@ import { useEffect, useMemo, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 // PSC routes are a hard-coded constant ([[psc-routes-data]]); look up directly instead of
 // fetching /api/psc-routes — no function invocation, no network round-trip, instant render.
+import {
+  Package, Check, ChevronDown, ChevronRight, Clock, Phone, Bike, CalendarDays,
+  RefreshCw, ArrowUp, ArrowDown, ArrowRight, Loader2, Search, Camera, PenLine, Link2, StickyNote,
+} from "lucide-react";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
 
 interface Stop {
@@ -48,7 +52,9 @@ interface PendingReq {
 
 type Status = "idle" | "loading" | "success" | "error";
 
-const TODO_EMOJI: Record<number, string> = { 1: "✍️", 2: "📸", 3: "🔗", 5: "📝" };
+// Which todo types the branch cares about, and the icon each gets. Doubles as the filter:
+// a type absent from here is not shown.
+const TODO_ICON: Record<number, typeof Camera> = { 1: PenLine, 2: Camera, 3: Link2, 5: StickyNote };
 
 const STEPS = ["Yêu cầu", "Lấy mẫu", "Đang giao", "Đã giao"] as const;
 
@@ -157,6 +163,25 @@ function initial(name?: string | null): string {
   return parts.length ? parts[parts.length - 1][0].toUpperCase() : "?";
 }
 
+// Whose work a trip is: samples leaving this branch, or a client's samples coming in.
+// Both directions share the feed and are otherwise indistinguishable at a glance.
+// Styles live in a lookup rather than an inline ternary so each pairing is one complete
+// unit — slate-700/slate-200 is 8.4:1, violet-700/violet-100 is 6.0:1.
+const DIRECTION_STYLE = {
+  out: "bg-slate-200 text-slate-700",
+  in: "bg-violet-100 text-violet-700",
+} as const;
+
+function DirectionTag({ outbound }: { outbound: boolean }) {
+  const Icon = outbound ? ArrowUp : ArrowDown;
+  return (
+    <span className={`inline-flex items-center gap-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded-md ${outbound ? DIRECTION_STYLE.out : DIRECTION_STYLE.in}`}>
+      <Icon aria-hidden className="w-3 h-3" />
+      {outbound ? "Gửi đi" : "Nhận về"}
+    </span>
+  );
+}
+
 /* ─────────────────────────── progress stepper ─────────────────────────── */
 
 function Stepper({ job, state }: { job: Job; state: 0 | 1 | 2 | 3 }) {
@@ -202,26 +227,30 @@ function Stepper({ job, state }: { job: Job; state: 0 | 1 | 2 | 3 }) {
 
 /* ─────────────────────────── detail sheet ─────────────────────────── */
 
-// Cartrack's todo descriptions already start with their own emoji ("📦 Chụp thấy rõ mẫu…"),
-// so only fall back to the type emoji when there's no description to show.
-const LEADING_EMOJI = /^\p{Extended_Pictographic}/u;
+// Cartrack's own todo descriptions lead with an emoji ("📦 Chụp thấy rõ mẫu…"). That's their
+// data, but rendering it would put colour back into a page that is otherwise line icons, so
+// the leading pictograph is stripped and the todo type supplies a matching icon instead.
+const LEADING_EMOJI = /^\p{Extended_Pictographic}️?\s*/u;
 
 function Photos({ todos }: { todos: NonNullable<Stop["todos"]> }) {
   const shots = todos.flatMap((t) => {
-    const text = t.description || t.note || "";
-    const caption = text && LEADING_EMOJI.test(text) ? text : `${TODO_EMOJI[t.todo_type_id] ?? "📸"} ${text}`.trim();
-    return (t.images ?? []).filter((i) => !i.is_deleted).map((img) => ({ img, caption }));
+    const Icon = TODO_ICON[t.todo_type_id] ?? Camera;
+    const caption = (t.description || t.note || "").replace(LEADING_EMOJI, "").trim();
+    return (t.images ?? []).filter((i) => !i.is_deleted).map((img) => ({ img, caption, Icon }));
   });
   if (!shots.length) return null;
   return (
     <div className="flex gap-2.5 mt-2.5 overflow-x-auto pb-1">
-      {shots.map(({ img, caption }) => (
+      {shots.map(({ img, caption, Icon }) => (
         <figure key={img.image_id} className="flex-none w-[88px]">
           <a href={img.image_url} target="_blank" rel="noopener noreferrer">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={img.image_url} alt={caption || "Ảnh giao nhận"} className="w-[88px] h-[88px] rounded-xl object-cover border border-slate-200" />
           </a>
-          <figcaption className="text-[10px] text-slate-500 mt-1 leading-tight">{caption}</figcaption>
+          <figcaption className="flex items-start gap-1 text-[10px] text-slate-500 mt-1 leading-tight">
+            <Icon aria-hidden className="w-3 h-3 shrink-0 mt-px" />
+            <span>{caption}</span>
+          </figcaption>
         </figure>
       ))}
     </div>
@@ -351,8 +380,8 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
   const threePl = isThreePl(shown.driver?.last_name);
   const driver = driverLabel(shown.driver?.last_name);
 
-  const pTodos = (p?.todos ?? []).filter((t) => TODO_EMOJI[t.todo_type_id]);
-  const dTodos = (d?.todos ?? []).filter((t) => TODO_EMOJI[t.todo_type_id]);
+  const pTodos = (p?.todos ?? []).filter((t) => TODO_ICON[t.todo_type_id]);
+  const dTodos = (d?.todos ?? []).filter((t) => TODO_ICON[t.todo_type_id]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/45" onClick={onClose}>
@@ -367,7 +396,7 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
 
         <div className="flex items-center justify-between gap-2.5">
           <p className="text-lg font-extrabold tracking-tight text-slate-800">
-            {placeLabel(p?.customer_name ?? "")} <span className="text-slate-500">→</span> {placeLabel(d?.customer_name ?? "")}
+            {placeLabel(p?.customer_name ?? "")} <ArrowRight aria-hidden className="inline w-4 h-4 text-slate-500 mx-0.5 shrink-0" /> {placeLabel(d?.customer_name ?? "")}
           </p>
           <span className={`text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${STATE_STYLE[state]}`}>
             {stateText(state, destName)}
@@ -376,13 +405,13 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
 
         <div className="flex items-center gap-2.5 mt-3.5 p-3 bg-slate-100 rounded-2xl">
           <span aria-hidden className="w-9 h-9 flex-none rounded-full bg-blue-100 text-blue-700 font-extrabold text-sm flex items-center justify-center">
-            {threePl ? "🛵" : initial(driver)}
+            {threePl ? <Bike aria-hidden className="w-4 h-4" /> : initial(driver)}
           </span>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-bold text-slate-800">{shown.driver?.last_name ? driver : "Chưa có tài xế"}</p>
             {phone ? (
               <div className="flex items-center gap-3 mt-0.5">
-                <a href={`tel:${phoneE164}`} className="text-sm font-bold text-green-700 active:opacity-70">📞 {phone}</a>
+                <a href={`tel:${phoneE164}`} className="inline-flex items-center gap-1.5 text-sm font-bold text-green-700 active:opacity-70"><Phone aria-hidden className="w-3.5 h-3.5" />{phone}</a>
                 <a href={`https://zalo.me/${phoneE164?.replace("+", "")}`} target="_blank" rel="noopener noreferrer"
                    className="text-xs font-extrabold text-[#0068ff] bg-blue-50 rounded-lg px-2 py-0.5">Zalo</a>
               </div>
@@ -450,12 +479,10 @@ function TripCard({ job, code, onOpen, onCancel, onSendVia3pl }: {
         <div className="flex items-start justify-between gap-2.5">
           <div className="min-w-0">
             <p className="text-base font-extrabold tracking-tight text-slate-800">
-              {placeLabel(p?.customer_name ?? "")} <span className="text-slate-500">→</span> {destName}
+              {placeLabel(p?.customer_name ?? "")} <ArrowRight aria-hidden className="inline w-4 h-4 text-slate-500 mx-0.5 shrink-0" /> {destName}
             </p>
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1">
-              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md ${outbound ? "bg-slate-200 text-slate-700" : "bg-violet-100 text-violet-700"}`}>
-                {outbound ? "↑ Gửi đi" : "↓ Nhận về"}
-              </span>
+              <DirectionTag outbound={outbound} />
               <span className="text-[11px] font-semibold text-slate-500">Yêu cầu lúc {requestedAt(job) ?? "—"}</span>
               {win && <span className="text-[11px] font-semibold text-amber-700">Hẹn {win}</span>}
             </div>
@@ -466,8 +493,8 @@ function TripCard({ job, code, onOpen, onCancel, onSendVia3pl }: {
         </div>
 
         {threePl ? (
-          <p className="mt-2.5 text-[13px] font-semibold text-teal-700">
-            🛵 Đã gửi qua {THREE_PL} lúc {fmtTs(d?.activity_completed_ts ?? p?.activity_completed_ts) ?? "—"}
+          <p className="flex items-center gap-1.5 mt-2.5 text-[13px] font-semibold text-teal-700">
+            <Bike aria-hidden className="w-4 h-4 shrink-0" />Đã gửi qua {THREE_PL} lúc {fmtTs(d?.activity_completed_ts ?? p?.activity_completed_ts) ?? "—"}
           </p>
         ) : (
           <Stepper job={job} state={state} />
@@ -475,7 +502,7 @@ function TripCard({ job, code, onOpen, onCancel, onSendVia3pl }: {
 
         {state === 0 ? (
           <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100 text-[13px] font-semibold text-amber-700">
-            ⏳ Đang chờ điều phối tài xế
+            <Clock aria-hidden className="w-4 h-4 shrink-0" />Đang chờ điều phối tài xế
           </div>
         ) : !threePl && (
           <div className="flex items-center gap-2.5 mt-3 pt-3 border-t border-slate-100">
@@ -483,7 +510,7 @@ function TripCard({ job, code, onOpen, onCancel, onSendVia3pl }: {
               {initial(driver)}
             </span>
             <span className="flex-1 min-w-0 text-sm font-bold text-slate-800">{driver}</span>
-            <span aria-hidden className="text-slate-400 text-lg leading-none">›</span>
+            <ChevronRight aria-hidden className="w-4 h-4 text-slate-400 shrink-0" />
           </div>
         )}
       </button>
@@ -520,7 +547,7 @@ function PendingCard({ req, onCancel, onSendVia3pl }: {
       <div className="flex items-start justify-between gap-2.5">
         <div className="min-w-0">
           <p className="text-base font-extrabold tracking-tight text-slate-800">
-            {from} <span className="text-slate-500">→</span> {to}
+            {from} <ArrowRight aria-hidden className="inline w-4 h-4 text-slate-500 mx-0.5 shrink-0" /> {to}
           </p>
           <p className="text-[11px] font-semibold text-slate-500 mt-0.5">Yêu cầu lúc {req.created_ts}</p>
         </div>
@@ -529,7 +556,7 @@ function PendingCard({ req, onCancel, onSendVia3pl }: {
         </span>
       </div>
       <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100 text-[13px] font-semibold text-amber-700">
-        ⏳ Đã gửi lúc {req.created_ts} — đang chờ điều phối tài xế
+        <Clock aria-hidden className="w-4 h-4 shrink-0" />Đã gửi lúc {req.created_ts} — đang chờ điều phối tài xế
       </div>
       <div className="space-y-1.5 mt-3">
         <button onClick={() => onSendVia3pl(target)}
@@ -669,7 +696,7 @@ export default function QrPage() {
             ...pending,
           ]);
         }
-        showToast("Đã gửi yêu cầu lấy mẫu ✓", true);
+        showToast("Đã gửi yêu cầu lấy mẫu", true);
         setTimeout(() => setAssignStatus("idle"), 3500);
         loadJobs(true);
       } else if (res.status === 409) {
@@ -794,10 +821,12 @@ export default function QrPage() {
             >
               {assignStatus === "loading" ? (
                 <>
-                  <span aria-hidden className="w-5 h-5 rounded-full border-[2.5px] border-white/35 border-t-white animate-spin" />
+                  <Loader2 aria-hidden className="w-5 h-5 animate-spin" />
                   Đang gửi…
                 </>
-              ) : assignStatus === "success" ? "✓ Đã gửi yêu cầu" : "📦 Đề Nghị Giao Mẫu"}
+              ) : assignStatus === "success"
+                ? <><Check aria-hidden className="w-5 h-5" />Đã gửi yêu cầu</>
+                : <><Package aria-hidden className="w-5 h-5" />Đề Nghị Giao Mẫu</>}
             </button>
             {assignStatus === "error" && (
               <p role="alert" className="mt-3 text-sm font-medium text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">{assignError}</p>
@@ -824,20 +853,23 @@ export default function QrPage() {
         <div className="bg-white rounded-2xl shadow-sm mt-3 overflow-hidden">
           <button onClick={() => setDoneOpen((v) => !v)} aria-expanded={doneOpen}
             className="w-full flex items-center justify-between px-4 py-3.5 text-[15px] font-bold text-slate-800">
-            <span>✓ Xong {isToday ? "hôm nay" : ""} <span className="text-green-600">({done.length})</span></span>
-            <span aria-hidden className={`text-slate-500 transition-transform ${doneOpen ? "rotate-180" : ""}`}>⌄</span>
+            <span className="flex items-center gap-2"><Check aria-hidden className="w-4 h-4 text-green-600" />Xong {isToday ? "hôm nay" : ""} <span className="text-green-600">({done.length})</span></span>
+            <ChevronDown aria-hidden className={`w-5 h-5 text-slate-500 transition-transform ${doneOpen ? "rotate-180" : ""}`} />
           </button>
           {doneOpen && (
             <div className="border-t border-slate-100">
               <div className="px-4 pt-3 pb-1">
+                <div className="relative">
+                  <Search aria-hidden className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
                 <input
                   type="search"
                   value={doneQuery}
                   onChange={(e) => setDoneQuery(e.target.value)}
                   placeholder="Tìm địa điểm, tài xế, mã batch…"
                   aria-label="Tìm trong chuyến đã xong"
-                  className="w-full bg-slate-100 rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-300"
+                  className="w-full bg-slate-100 rounded-xl pl-9 pr-3 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-300"
                 />
+                </div>
               </div>
               {doneShown.length === 0 ? (
                 <p className="text-center text-sm text-slate-500 py-5">
@@ -849,20 +881,22 @@ export default function QrPage() {
                 const outbound = p?.customer_id === code;
                 return (
                   <button key={j.job_id} onClick={() => setSheetJob(j)}
-                    className="w-full block px-4 py-3 border-t border-slate-100 text-left active:bg-slate-50">
+                    aria-label={`Xem chi tiết chuyến ${placeLabel(p?.customer_name ?? "")} đến ${placeLabel(d?.customer_name ?? "")}`}
+                    className="group w-full block px-4 py-3 border-t border-slate-100 text-left hover:bg-slate-50 active:bg-slate-100 transition-colors">
                     <span className="flex items-start gap-2.5">
-                      <span aria-hidden className="text-green-600 font-bold leading-5">✓</span>
+                      <Check aria-hidden className="w-4 h-4 text-green-600 shrink-0 mt-0.5" />
                       <span className="flex-1 min-w-0">
                         <span className="block text-sm font-semibold text-slate-800">
-                          {placeLabel(p?.customer_name ?? "")} → {placeLabel(d?.customer_name ?? "")}
+                          {placeLabel(p?.customer_name ?? "")} <ArrowRight aria-hidden className="inline w-3.5 h-3.5 text-slate-500 mx-0.5 shrink-0" /> {placeLabel(d?.customer_name ?? "")}
                         </span>
                         <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
-                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md ${outbound ? "bg-slate-200 text-slate-700" : "bg-violet-100 text-violet-700"}`}>
-                            {outbound ? "↑ Gửi đi" : "↓ Nhận về"}
-                          </span>
+                          <DirectionTag outbound={outbound} />
                           <span className="text-[11px] text-slate-500">{driverLabel(j.driver?.last_name)}</span>
                         </span>
                       </span>
+                      {/* These rows open the detail sheet, but read as static text without a
+                          chevron — the same affordance the active cards already carry. */}
+                      <ChevronRight aria-hidden className="w-4 h-4 text-slate-400 shrink-0 mt-0.5 group-hover:text-slate-600 transition-colors" />
                     </span>
                     {/* A finished trip's four timestamps are the useful part here — the old row
                         showed a bare "15:23 → 15:33" pair with nothing saying what it meant. */}
@@ -893,11 +927,11 @@ export default function QrPage() {
           </div>
         )}
         <div className="flex items-center justify-center gap-4 mt-1">
-          <button onClick={() => setDatePanel((v) => !v)} className="py-3.5 text-sm font-semibold text-slate-500">
-            🗓 {isToday ? "Xem ngày khác" : date}
+          <button onClick={() => setDatePanel((v) => !v)} className="inline-flex items-center gap-1.5 py-3.5 text-sm font-semibold text-slate-500">
+            <CalendarDays aria-hidden className="w-4 h-4" />{isToday ? "Xem ngày khác" : date}
           </button>
-          <button onClick={() => loadJobs(true)} className="py-3.5 text-sm font-semibold text-blue-600">
-            ↻ Làm mới
+          <button onClick={() => loadJobs(true)} className="inline-flex items-center gap-1.5 py-3.5 text-sm font-semibold text-blue-600">
+            <RefreshCw aria-hidden className="w-4 h-4" />Làm mới
           </button>
         </div>
       </div>
