@@ -4,6 +4,7 @@ import { BASE_URL, getHeaders, getStopsByLabels, createJob, type Env } from "@/l
 import { vnDate, vnTimestamp } from "@/lib/time";
 import { STOP_STATUS, JOB_STATUS } from "@/lib/job-filters";
 import { pushRunLog } from "@/lib/smart-log-kv";
+import { fetchJobDetail } from "@/lib/job-detail";
 
 export const runtime = "edge";
 export const preferredRegion = "sin1";
@@ -65,9 +66,22 @@ function buildOrdersFromStops(stops: any[], prefix: string) {
 // GET /api/psc-tinh?psc=D021&mode=orders — today's orders for this PSC
 
 export async function GET(req: NextRequest) {
+  const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
+
+  // ── ?job_id=123: full detail for the trip sheet (address, todos/photos, driver phone) ──
+  const jobIdParam = req.nextUrl.searchParams.get("job_id");
+  if (jobIdParam) {
+    try {
+      const result = await fetchJobDetail(Number(jobIdParam), env, "psctinh");
+      if (!result) return NextResponse.json({ error: "Job not found" }, { status: 404 });
+      return NextResponse.json(result.cached ? { job: result.job, cached: true } : { job: result.job });
+    } catch (e) {
+      return NextResponse.json({ error: String(e) }, { status: 500 });
+    }
+  }
+
   const psc  = req.nextUrl.searchParams.get("psc")?.trim().toUpperCase();
   const mode = req.nextUrl.searchParams.get("mode");
-  const env  = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
 
   if (!psc) return NextResponse.json({ error: "Missing psc param" }, { status: 400 });
 

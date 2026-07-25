@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Redis } from "@upstash/redis";
-import { BASE_URL, getHeaders, getTimelineJobs, getJobDetails, type Env } from "@/lib/cartrack";
+import { BASE_URL, getHeaders, getTimelineJobs, type Env } from "@/lib/cartrack";
+import { driverDisplayName, fetchJobDetail } from "@/lib/job-detail";
 import type { Job, Stop } from "@/lib/types";
 
 export const runtime = "edge";
@@ -29,21 +30,6 @@ function getRedis(): Redis | null {
 //   Full detail for one job (address, todos, POD image URLs) — fetched only when
 //   staff open the job sheet.
 // Without `code`, returns the legacy whole-day dump so cached bundles keep working.
-
-// REST embeds the human name in driver.last_name (first_name is an internal code);
-// timeline-derived jobs carry the route's driverFullname in first_name, prefixed
-// with that internal code ("F - C - DC100320 Lý Chánh Hùng"). Take whichever is
-// populated and strip the code prefix so the page can keep reading driver.last_name.
-//
-// The code is any two-letter series plus digits, not just DC — part-timers carry PT
-// ("P - P - PT101408 Đào Thanh Bình"), and an earlier DC-only pattern let those
-// through to the branch screens verbatim.
-const DRIVER_CODE_PREFIX = /^(?:[A-Z]{1,2}\s*-\s*)*[A-Z]{2}\d+\s+/;
-
-function displayName(driver: Job["driver"]): string | null {
-  const raw = driver?.last_name?.trim() || driver?.first_name?.trim() || null;
-  return raw ? raw.replace(DRIVER_CODE_PREFIX, "") : null;
-}
 
 // Deliberately NOT carrying address_line_1: this shape is what goes into the shared
 // day cache, and on 2026-07-25 (786 jobs / 1512 stops) the addresses alone were 111 KB
@@ -77,7 +63,7 @@ function slimJob(j: Job) {
     // the non-completed ones, so the id has to survive the slimming.
     last_assigned_plan_id: j.last_assigned_plan_id ?? null,
     item_tracking_numbers: j.item_tracking_numbers ?? [],
-    driver: { last_name: displayName(j.driver) },
+    driver: { last_name: driverDisplayName(j.driver) },
     stops: (j.stops ?? []).map(slimStop),
   };
 }
@@ -92,77 +78,16 @@ function matchesStatus(jobStatusId: number | undefined, status: string): boolean
   return jobStatusId === Number(status);
 }
 
-// Job-sheet detail: slim fields plus address, todos and POD image URLs. The
-// images stay links (Cartrack serves them publicly) — nothing binary passes
-// through this function.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function detailJob(j: any) {
-  // Cartrack stores the mobile without its leading zero and the country code apart
-  // ("84" + "931773106"); the page needs both a display form and a tel: form.
-  const rawPhone: string = (j.driver?.phone_number ?? "").toString().replace(/\D/g, "");
-  const phoneCode: string = (j.driver?.phone_code ?? "").toString().replace(/\D/g, "");
-  return {
-    job_id: j.job_id,
-    reference_number: j.reference_number,
-    job_status_id: j.job_status_id,
-    scheduled_delivery_ts: j.scheduled_delivery_ts ?? null,
-    last_assigned_plan_id: j.last_assigned_plan_id ?? null,
-    driver: {
-      last_name: displayName(j.driver),
-      phone_local: rawPhone ? `0${rawPhone}` : null,
-      phone_e164: rawPhone ? `+${phoneCode || "84"}${rawPhone}` : null,
-    },
-    // Batch IDs (Mã Batch) attached by the via-3PL flow or scanned by the driver.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    item_tracking_numbers: (j.items ?? []).map((it: any) => it.tracking_number).filter(Boolean),
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    stops: (j.stops ?? []).map((s: any) => ({
-      ...slimStop(s),
-      address_line_1: s.address_line_1 ?? null,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      todos: (s.todos ?? []).map((t: any) => ({
-        todo_type_id: t.todo_type_id,
-        description: t.description ?? null,
-        note: t.note ?? null,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        images: (t.images ?? []).map((img: any) => ({
-          image_id: img.image_id,
-          image_url: img.image_url,
-          is_deleted: img.is_deleted,
-        })),
-      })),
-    })),
-  };
-}
-
 export async function GET(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
 
   // ── ?job_id=123: full detail for the job sheet ─────────────────────────────
-  // This call is the slow one — measured at several seconds against Cartrack, which is
-  // long enough that the sheet visibly waits for the POD photos and the driver's phone.
-  // A finished job never changes again, so cache those for a day; anything still moving
-  // gets a short TTL so timestamps stay current.
   const jobIdParam = req.nextUrl.searchParams.get("job_id");
   if (jobIdParam) {
-    const detailKey = `jobdetail:v1:${env}:${jobIdParam}`;
-    const redis = getRedis();
-    if (redis) {
-      try {
-        const hit = await redis.get<ReturnType<typeof detailJob>>(detailKey);
-        if (hit) return NextResponse.json({ job: hit, cached: true });
-      } catch {}
-    }
     try {
-      const { data } = await getJobDetails(Number(jobIdParam), env);
-      if (!data?.job_id) return NextResponse.json({ error: "Job not found" }, { status: 404 });
-      const job = detailJob(data);
-      if (redis) {
-        // status 5 = completed/rejected — terminal, so it's safe to hold for a day.
-        const ttl = job.job_status_id === 5 ? 86_400 : 60;
-        try { await redis.set(detailKey, job, { ex: ttl }); } catch {}
-      }
-      return NextResponse.json({ job });
+      const result = await fetchJobDetail(Number(jobIdParam), env, "qr");
+      if (!result) return NextResponse.json({ error: "Job not found" }, { status: 404 });
+      return NextResponse.json(result.cached ? { job: result.job, cached: true } : { job: result.job });
     } catch (e) {
       return NextResponse.json({ error: String(e) }, { status: 500 });
     }

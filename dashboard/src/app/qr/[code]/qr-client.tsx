@@ -6,10 +6,12 @@ import { useParams } from "next/navigation";
 // fetching /api/psc-routes — no function invocation, no network round-trip, instant render.
 import {
   Package, Check, ChevronDown, ChevronRight, Clock, Phone, Bike, CalendarDays,
-  RefreshCw, ArrowUp, ArrowDown, ArrowRight, Loader2, Search, Camera, PenLine, Link2, StickyNote,
+  RefreshCw, ArrowUp, ArrowDown, ArrowRight, Loader2, Search,
 } from "lucide-react";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
 import { placeLabel } from "@/lib/place-label";
+import { Photos, Timeline, TODO_ICON, type TlEvent } from "@/components/trip-sheet";
+import { proxyKind, driverLabel, THREE_PL_LABEL } from "@/lib/proxy-drivers";
 
 interface Stop {
   stop_id: number;
@@ -53,10 +55,6 @@ interface PendingReq {
 
 type Status = "idle" | "loading" | "success" | "error";
 
-// Which todo types the branch cares about, and the icon each gets. Doubles as the filter:
-// a type absent from here is not shown.
-const TODO_ICON: Record<number, typeof Camera> = { 1: PenLine, 2: Camera, 3: Link2, 5: StickyNote };
-
 const STEPS = ["Yêu cầu", "Lấy mẫu", "Đang giao", "Đã giao"] as const;
 
 function todayVN(): string {
@@ -80,18 +78,20 @@ function requestedAt(job: Job): string | null {
   return m ? m[1] : fmtTs(job.scheduled_delivery_ts);
 }
 
-// The 3PL handoff parks the job on a shared proxy driver account; its internal name
-// ("Proxy 3PL Express (Grab) Driver") means nothing to a branch, so name the service.
-const THREE_PL = "Grab/Be/XanhSM/Khác";
-
+// Proxy accounts are classified in @/lib/proxy-drivers — an earlier /proxy|3pl/ regex
+// here matched the parking account too, so a job merely waiting for dispatch displayed
+// as "Đã gửi qua đối tác" (handed to Grab), which it had not been.
 function isThreePl(name?: string | null): boolean {
-  return /proxy|3pl/i.test((name ?? "").trim());
+  return proxyKind(name) === "3pl";
 }
 
-function driverLabel(name?: string | null): string {
-  const raw = (name ?? "").trim();
-  if (!raw) return "—";
-  return isThreePl(raw) ? THREE_PL : raw;
+function isParked(name?: string | null): boolean {
+  const k = proxyKind(name);
+  return k === "queue" || k === "reject";
+}
+
+function driverText(name?: string | null): string {
+  return driverLabel(name) ?? "—";
 }
 
 // Cartrack sends window bounds as time-only strings ("07:00:00+07"). Only client pickups
@@ -116,10 +116,15 @@ function dropoffOf(j: Job) { return j.stops.find((s) => s.stop_type_id !== 1); }
 
 // 0 waiting for dispatch · 1 driver heading to pickup · 2 sample collected, en route
 // to the destination · 3 handed over.
+//
+// A job parked on the queue proxy has no real driver yet, so it is waiting for dispatch
+// however Cartrack labels its status. This is what makes "Chờ điều phối" visible to every
+// device rather than only the phone that happened to create the request.
 function stateOf(j: Job): 0 | 1 | 2 | 3 {
   const p = pickupOf(j), d = dropoffOf(j);
   if (d?.activity_completed_ts || j.job_status_id === 5) return 3;
   if (p?.activity_completed_ts) return 2;
+  if (isParked(j.driver?.last_name) && !p?.activity_started_ts) return 0;
   return 1;
 }
 
@@ -208,71 +213,7 @@ function Stepper({ job, state }: { job: Job; state: 0 | 1 | 2 | 3 }) {
 }
 
 /* ─────────────────────────── detail sheet ─────────────────────────── */
-
-// Cartrack's own todo descriptions lead with an emoji ("📦 Chụp thấy rõ mẫu…"). That's their
-// data, but rendering it would put colour back into a page that is otherwise line icons, so
-// the leading pictograph is stripped and the todo type supplies a matching icon instead.
-const LEADING_EMOJI = /^\p{Extended_Pictographic}️?\s*/u;
-
-function Photos({ todos }: { todos: NonNullable<Stop["todos"]> }) {
-  const shots = todos.flatMap((t) => {
-    const Icon = TODO_ICON[t.todo_type_id] ?? Camera;
-    const caption = (t.description || t.note || "").replace(LEADING_EMOJI, "").trim();
-    return (t.images ?? []).filter((i) => !i.is_deleted).map((img) => ({ img, caption, Icon }));
-  });
-  if (!shots.length) return null;
-  return (
-    <div className="flex gap-2.5 mt-2.5 overflow-x-auto pb-1">
-      {shots.map(({ img, caption, Icon }) => (
-        <figure key={img.image_id} className="flex-none w-[88px]">
-          <a href={img.image_url} target="_blank" rel="noopener noreferrer">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={img.image_url} alt={caption || "Ảnh giao nhận"} className="w-[88px] h-[88px] rounded-xl object-cover border border-slate-200" />
-          </a>
-          <figcaption className="flex items-start gap-1 text-[10px] text-slate-500 mt-1 leading-tight">
-            <Icon aria-hidden className="w-3 h-3 shrink-0 mt-px" />
-            <span>{caption}</span>
-          </figcaption>
-        </figure>
-      ))}
-    </div>
-  );
-}
-
-type Tone = "done" | "now" | "future";
-interface TlEvent { tone: Tone; time?: string | null; label: string; body?: React.ReactNode }
-
-// The rail is drawn per event, so the trailing connector below the final event has to be
-// suppressed explicitly — `last:` would match every event's own line.
-function Timeline({ events }: { events: TlEvent[] }) {
-  return (
-    <div className="mt-5">
-      {events.map(({ tone, time, label, body }, i) => (
-        <div key={`${label}-${i}`} className="flex">
-          <div className={`w-12 flex-none text-right pr-3 text-xs font-bold tabular-nums leading-tight ${tone === "future" ? "text-slate-500" : "text-slate-700"}`}>
-            {time ?? ""}
-          </div>
-          <div className="w-6 flex-none flex flex-col items-center">
-            <span aria-hidden className={`w-3 h-3 rounded-full border-[3px] mt-0.5 z-10 ${
-              tone === "done" ? "bg-green-600 border-green-600"
-                : tone === "now" ? "bg-white border-blue-600 animate-pulse"
-                : "bg-white border-slate-200"
-            }`} />
-            {i < events.length - 1 && (
-              <span aria-hidden className={`w-[3px] flex-1 my-0.5 ${tone === "done" ? "bg-green-600" : "bg-slate-200"}`} />
-            )}
-          </div>
-          <div className={`flex-1 min-w-0 pl-3 ${i < events.length - 1 ? "pb-5" : "pb-1"}`}>
-            <p className={`text-sm font-bold leading-tight ${tone === "future" ? "text-slate-500 font-semibold" : tone === "now" ? "text-blue-700" : "text-slate-800"}`}>
-              {label}
-            </p>
-            {body}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
+// Photos and Timeline live in src/components/trip-sheet.tsx, shared with /psc-tinh.
 
 // Chain of custody, oldest first. Each leg contributes a completed event when it has a
 // timestamp, the live event when it's the stop in progress, and a greyed placeholder
@@ -304,7 +245,7 @@ function buildEvents(
     ev.push({
       tone: "done",
       time: fmtTs(d?.activity_completed_ts ?? p?.activity_completed_ts),
-      label: `Đã gửi qua ${THREE_PL}`,
+      label: `Đã gửi qua ${THREE_PL_LABEL}`,
       body: (
         <p className="text-xs text-slate-500 mt-0.5">
           Mẫu bàn giao cho đơn vị giao ngoài để chuyển đến {destName}.
@@ -357,10 +298,13 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
   const state = stateOf(shown);
   const destName = placeLabel(d?.customer_name ?? "");
   const batches = shown.item_tracking_numbers ?? [];
-  const phone = detail?.driver?.phone_local;
-  const phoneE164 = detail?.driver?.phone_e164;
   const threePl = isThreePl(shown.driver?.last_name);
-  const driver = driverLabel(shown.driver?.last_name);
+  const parked = isParked(shown.driver?.last_name);
+  // Proxy accounts carry a phone number that belongs to Diag's own parking/handoff
+  // account — a branch calling it reaches nobody, so it is never offered.
+  const phone = parked || threePl ? null : detail?.driver?.phone_local;
+  const phoneE164 = detail?.driver?.phone_e164;
+  const driver = driverText(shown.driver?.last_name);
 
   const pTodos = (p?.todos ?? []).filter((t) => TODO_ICON[t.todo_type_id]);
   const dTodos = (d?.todos ?? []).filter((t) => TODO_ICON[t.todo_type_id]);
@@ -387,10 +331,10 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
 
         <div className="flex items-center gap-2.5 mt-3.5 p-3 bg-slate-100 rounded-2xl">
           <span aria-hidden className="w-9 h-9 flex-none rounded-full bg-blue-100 text-blue-700 font-extrabold text-sm flex items-center justify-center">
-            {threePl ? <Bike aria-hidden className="w-4 h-4" /> : initial(driver)}
+            {threePl ? <Bike aria-hidden className="w-4 h-4" /> : parked ? <Clock aria-hidden className="w-4 h-4" /> : initial(driver)}
           </span>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-bold text-slate-800">{shown.driver?.last_name ? driver : "Chưa có tài xế"}</p>
+            <p className="text-sm font-bold text-slate-800">{parked ? "Chưa có tài xế" : driver}</p>
             {phone ? (
               <div className="flex items-center gap-3 mt-0.5">
                 <a href={`tel:${phoneE164}`} className="inline-flex items-center gap-1.5 text-sm font-bold text-green-700 active:opacity-70"><Phone aria-hidden className="w-3.5 h-3.5" />{phone}</a>
@@ -398,7 +342,9 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
                    className="text-xs font-extrabold text-[#0068ff] bg-blue-50 rounded-lg px-2 py-0.5">Zalo</a>
               </div>
             ) : (
-              <p className="text-[11px] text-slate-500">{threePl ? "Đơn vị giao ngoài" : "Tài xế Diag"}</p>
+              <p className="text-[11px] text-slate-500">
+                {threePl ? "Đơn vị giao ngoài" : parked ? "Đơn hàng đang chờ được phân công" : "Tài xế Diag"}
+              </p>
             )}
           </div>
         </div>
@@ -441,7 +387,7 @@ function TripCard({ job, code, onOpen, onCancel, onSendVia3pl }: {
   const p = pickupOf(job), d = dropoffOf(job);
   const destName = placeLabel(d?.customer_name ?? "");
   const threePl = isThreePl(job.driver?.last_name);
-  const driver = driverLabel(job.driver?.last_name);
+  const driver = driverText(job.driver?.last_name);
   const win = windowLabel(p);
   // Whose work this is: samples leaving this branch, or a client's samples coming in.
   // Both directions sit in the same feed and used to look identical.
@@ -466,7 +412,11 @@ function TripCard({ job, code, onOpen, onCancel, onSendVia3pl }: {
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1">
               <DirectionTag outbound={outbound} />
               <span className="text-[11px] font-semibold text-slate-500">Yêu cầu lúc {requestedAt(job) ?? "—"}</span>
-              {win && <span className="text-[11px] font-semibold text-amber-700">Hẹn {win}</span>}
+              {win && (
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700">
+                  <Clock aria-hidden className="w-3 h-3" />Hẹn {win}
+                </span>
+              )}
             </div>
           </div>
           <span className={`flex-none text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${STATE_STYLE[state]}`}>
@@ -476,7 +426,7 @@ function TripCard({ job, code, onOpen, onCancel, onSendVia3pl }: {
 
         {threePl ? (
           <p className="flex items-center gap-1.5 mt-2.5 text-[13px] font-semibold text-teal-700">
-            <Bike aria-hidden className="w-4 h-4 shrink-0" />Đã gửi qua {THREE_PL} lúc {fmtTs(d?.activity_completed_ts ?? p?.activity_completed_ts) ?? "—"}
+            <Bike aria-hidden className="w-4 h-4 shrink-0" />Đã gửi qua {THREE_PL_LABEL} lúc {fmtTs(d?.activity_completed_ts ?? p?.activity_completed_ts) ?? "—"}
           </p>
         ) : (
           <Stepper job={job} state={state} />
@@ -910,7 +860,12 @@ export default function QrPage() {
                         </span>
                         <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
                           <DirectionTag outbound={outbound} />
-                          <span className="text-[11px] text-slate-500">{driverLabel(j.driver?.last_name)}</span>
+                          <span className="text-[11px] text-slate-500">{driverText(j.driver?.last_name)}</span>
+                          {windowLabel(p) && (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700">
+                              <Clock aria-hidden className="w-3 h-3" />Hẹn {windowLabel(p)}
+                            </span>
+                          )}
                         </span>
                       </span>
                       {/* These rows open the detail sheet, but read as static text without a
@@ -921,7 +876,7 @@ export default function QrPage() {
                         showed a bare "15:23 → 15:33" pair with nothing saying what it meant. */}
                     {threePl ? (
                       <span className="block mt-2 text-[12px] font-semibold text-teal-700">
-                        Gửi qua {THREE_PL} · {fmtTs(d?.activity_completed_ts ?? p?.activity_completed_ts) ?? "—"}
+                        Gửi qua {THREE_PL_LABEL} · {fmtTs(d?.activity_completed_ts ?? p?.activity_completed_ts) ?? "—"}
                       </span>
                     ) : (
                       <Stepper job={j} state={3} />
