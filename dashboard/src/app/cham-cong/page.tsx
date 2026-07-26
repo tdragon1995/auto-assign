@@ -1030,18 +1030,22 @@ export default function ChamCongPage() {
                 </button>
               </div>
 
-              {/* Đổi địa điểm — a quiet text-link below the buttons, only while an
-                  untouched chấm-công task exists. Deliberately understated: this is a
-                  correction path for a mistake, not the primary action on this screen. */}
+              {/* Đổi địa điểm — below the buttons per feedback, but on a tinted amber
+                  chip (same bg-amber-50/border-amber-200 pattern as the other small
+                  notices in this file) rather than bare text. A bare-text version of
+                  this shipped first and drivers reported they couldn't find it after
+                  reopening the app — it was real and working, just visually gone
+                  against the page background below two large buttons. The chip keeps
+                  the same small scale but gives it a surface to be seen against. */}
               {ongoing && (
                 <div className="pt-0.5">
                   {!showSwitchList ? (
                     <button
                       onClick={() => setShowSwitchList(true)}
                       disabled={switching}
-                      className="w-full flex items-center justify-center gap-1 text-xs text-amber-700 hover:text-amber-800 disabled:opacity-50 py-1 transition-colors"
+                      className="w-full flex items-center justify-center gap-1.5 text-xs font-medium text-amber-800 bg-amber-50 border border-amber-200 rounded-lg py-2 hover:bg-amber-100 disabled:opacity-50 transition-colors"
                     >
-                      {switching ? <Loader2 size={11} className="animate-spin" /> : <MapPin size={11} />}
+                      {switching ? <Loader2 size={13} className="animate-spin" /> : <MapPin size={13} />}
                       Nhầm địa điểm {ongoing.type === "check-in" ? "vào ca" : "ra ca"} ({ongoing.location_name ?? "—"})? Đổi địa điểm
                     </button>
                   ) : (
