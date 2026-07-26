@@ -676,9 +676,10 @@ export default function QrPage() {
         loadJobs(true);
       } else if (res.status === 409) {
         setAssignStatus("error");
+        const hhmm = /(\d{2}:\d{2})$/.exec(data.reference_number ?? "")?.[1];
         setAssignError(
           data.job_id
-            ? "Đơn liền trước chưa nhận mẫu, vui lòng chờ thêm hoặc liên hệ đội điều phối. Xin cám ơn!"
+            ? `Đã có yêu cầu được tạo lúc ${hhmm ?? "trước đó"} vẫn chưa rời chi nhánh, vui lòng chờ thêm hoặc liên hệ đội điều phối. Xin cám ơn!`
             : (data.message ?? "Đang xử lý yêu cầu, vui lòng đợi.")
         );
       } else {

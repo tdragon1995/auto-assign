@@ -104,7 +104,7 @@ export async function POST(req: NextRequest) {
 
     if (!acquireLock(lockKey)) {
       return NextResponse.json(
-        { error: "duplicate", message: "Yêu cầu cùng chi nhánh đang được tạo!" },
+        { error: "duplicate", message: "Yêu cầu đang được xử lý, vui lòng đợi vài giây rồi thử lại." },
         { status: 409 }
       );
     }
@@ -117,7 +117,7 @@ export async function POST(req: NextRequest) {
     if (!(await acquireCreateLock(lockKey))) {
       releaseLock(lockKey);
       return NextResponse.json(
-        { error: "duplicate", message: "Yêu cầu cùng chi nhánh đang được tạo!" },
+        { error: "duplicate", message: "Yêu cầu đang được xử lý, vui lòng đợi vài giây rồi thử lại." },
         { status: 409 }
       );
     }
