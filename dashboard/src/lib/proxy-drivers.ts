@@ -4,7 +4,7 @@
  * that belong to nobody — and, worse, implies the wrong thing about the trip's state.
  *
  * The four accounts do different jobs, so they cannot share one label:
- *   queue   — parked, waiting for the engine to assign a real driver ("Chờ điều phối")
+ *   queue   — parked until its appointed pickup time ("Chờ tới giờ hẹn")
  *   3pl     — genuinely handed to Grab/Be/XanhSM ("Đã gửi qua đối tác")
  *   reject  — duplicate-rejection staging; should not reach a branch screen
  *   supply  — consumables runs

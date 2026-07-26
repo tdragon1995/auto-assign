@@ -118,22 +118,28 @@ function pickupOf(j: Job) { return j.stops.find((s) => s.stop_type_id === 1); }
 function dropoffOf(j: Job) { return j.stops.find((s) => s.stop_type_id !== 1); }
 
 // 0 waiting for dispatch · 1 driver heading to pickup · 2 sample collected, en route
-// to the destination · 3 handed over · 4 rejected by a driver.
+// to the destination · 3 handed over · 4 rejected by a driver · 5 parked until its
+// appointed time.
 //
-// Status 2 (unassigned) and 3 (rejected) arrive from the unrouted pool; a job parked on
-// the queue proxy is also waiting however Cartrack labels it. Between them that is what
-// makes "Chờ điều phối" visible to every device rather than only the phone that created
-// the request.
-type TripState = 0 | 1 | 2 | 3 | 4;
+// Status 2 (unassigned) and 3 (rejected) arrive from the unrouted pool. A job parked on
+// a proxy account is waiting too, but for a different reason and with a different answer
+// to "when?": nobody is looking for a driver yet because the pickup time hasn't come
+// round. Collapsing the two into "Chờ điều phối" made a scheduled trip look stuck.
+type TripState = 0 | 1 | 2 | 3 | 4 | 5;
 
 function stateOf(j: Job): TripState {
   const p = pickupOf(j), d = dropoffOf(j);
   if (j.job_status_id === 3) return 4;
   if (d?.activity_completed_ts || j.job_status_id === 5) return 3;
   if (p?.activity_completed_ts) return 2;
+  if (isParked(j.driver?.last_name) && !p?.activity_started_ts) return 5;
   if (j.job_status_id === 2) return 0;
-  if (isParked(j.driver?.last_name) && !p?.activity_started_ts) return 0;
   return 1;
+}
+
+/** True while a trip is still waiting to start — either state of waiting. */
+function isWaiting(state: TripState): boolean {
+  return state === 0 || state === 5;
 }
 
 const STATE_STYLE: Record<number, string> = {
@@ -142,6 +148,7 @@ const STATE_STYLE: Record<number, string> = {
   2: "bg-blue-100 text-blue-700",
   3: "bg-green-100 text-green-700",
   4: "bg-red-100 text-red-700",
+  5: "bg-amber-100 text-amber-700",
 };
 
 // "lab" only ever meant D001. Hub routes drop at D007/D009/D046 and inbound client legs
@@ -149,6 +156,7 @@ const STATE_STYLE: Record<number, string> = {
 function stateText(state: TripState, dest?: string): string {
   const to = dest ? ` đến ${dest}` : "";
   if (state === 0) return "Chờ điều phối";
+  if (state === 5) return "Chờ tới giờ hẹn";
   if (state === 1) return "Tài xế đang đến lấy";
   if (state === 2) return `Đang giao${to}`;
   if (state === 4) return "Đã từ chối";
@@ -163,9 +171,11 @@ function initial(name?: string | null): string {
 // Whose work a trip is: samples leaving this branch, or a client's samples coming in.
 // Both directions share the feed and are otherwise indistinguishable at a glance.
 // Styles live in a lookup rather than an inline ternary so each pairing is one complete
-// unit — slate-700/slate-200 is 8.4:1, violet-700/violet-100 is 6.0:1.
+// unit — sky-800/sky-100 is 6.6:1, violet-700/violet-100 is 6.0:1. Outbound is sky rather
+// than the state chips' blue-700/blue-100 so the two never read as the same badge; they
+// sit on the same row and mean entirely different things.
 const DIRECTION_STYLE = {
-  out: "bg-slate-200 text-slate-700",
+  out: "bg-sky-100 text-sky-800",
   in: "bg-violet-100 text-violet-700",
 } as const;
 
@@ -185,8 +195,8 @@ function Stepper({ job, state }: { job: Job; state: TripState }) {
   const p = pickupOf(job), d = dropoffOf(job);
   const times = [requestedAt(job), fmtTs(p?.activity_completed_ts), fmtTs(d?.activity_started_ts), fmtTs(d?.activity_completed_ts)];
   // Steps completed so far; the "current" step pulses.
-  const doneUpto = state === 0 ? 0 : state === 1 ? 0 : state === 2 ? 1 : 3;
-  const nowIdx = state === 3 ? -1 : state === 0 ? 0 : state === 1 ? 1 : 2;
+  const doneUpto = state === 2 ? 1 : state === 3 ? 3 : 0;
+  const nowIdx = state === 3 ? -1 : isWaiting(state) ? 0 : state === 1 ? 1 : 2;
 
   return (
     <div className="flex items-start mt-1 mb-1">
@@ -266,6 +276,7 @@ function buildEvents(
   }
 
   if (p?.activity_started_ts) ev.push({ tone: "done", time: fmtTs(p.activity_started_ts), label: "Tài xế bắt đầu đi lấy mẫu" });
+  else if (state === 5) ev.push({ tone: "now", label: "Chờ tới giờ hẹn lấy mẫu…" });
   else ev.push({ tone: state === 0 ? "now" : "future", label: state === 0 ? "Đang chờ điều phối tài xế…" : "Tài xế đi lấy mẫu" });
 
   if (p?.activity_arrived_ts) ev.push({ tone: "done", time: fmtTs(p.activity_arrived_ts), label: "Đến điểm lấy mẫu", body: addr(p) });
@@ -353,7 +364,7 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
               </div>
             ) : (
               <p className="text-[11px] text-slate-500">
-                {threePl ? "Đơn vị giao ngoài" : parked ? "Đơn hàng đang chờ được phân công" : "Tài xế Diag"}
+                {threePl ? "Đơn vị giao ngoài" : parked ? "Chuyến đã đặt lịch, chờ tới giờ hẹn" : "Tài xế Diag"}
               </p>
             )}
           </div>
@@ -456,9 +467,10 @@ function TripCard({ job, code, onOpen, onCancel, onSendVia3pl }: {
           <Stepper job={job} state={state} />
         )}
 
-        {state === 0 ? (
+        {isWaiting(state) ? (
           <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100 text-[13px] font-semibold text-amber-700">
-            <Clock aria-hidden className="w-4 h-4 shrink-0" />Đang chờ điều phối tài xế
+            <Clock aria-hidden className="w-4 h-4 shrink-0" />
+            {state === 5 ? "Đã đặt lịch, chờ tới giờ hẹn lấy mẫu" : "Đang chờ điều phối tài xế"}
           </div>
         ) : state === 4 ? null : !threePl && (
           <div className="flex items-center gap-2.5 mt-3 pt-3 border-t border-slate-100">
@@ -591,7 +603,12 @@ export default function QrPage() {
       const list: Job[] = (data.jobs ?? [])
         .filter((j: Job) => (j.stops ?? []).length > 1)
         // Plan slots regenerate daily; the unfinished ones are noise, not real trips.
-        .filter((j: Job) => j.last_assigned_plan_id == null || j.job_status_id === 5);
+        .filter((j: Job) => j.last_assigned_plan_id == null || j.job_status_id === 5)
+        // Rejections are a dispatch matter, not the branch's: a rejected trip is
+        // re-created or re-routed by the team, and surfacing it here only prompts
+        // calls about a trip the branch cannot act on. /psc-tinh still shows them —
+        // there the branch owns the 3PL handoff and does need to know.
+        .filter((j: Job) => j.job_status_id !== 3);
       list.sort((a, b) => {
         const t = (j: Job) => j.stops.map((s) => s.activity_completed_ts ?? s.activity_arrived_ts ?? s.activity_started_ts).filter(Boolean).sort().at(-1) ?? "";
         return t(b).localeCompare(t(a));

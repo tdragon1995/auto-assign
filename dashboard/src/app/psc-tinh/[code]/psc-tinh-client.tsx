@@ -49,16 +49,18 @@ const PSC_META: Record<string, { label: string; psc_code: string }> = {
 
 const hm = (ts?: string | null) => (ts ? ts.slice(11, 16) : null);
 
-// A job parked on the queue proxy has no real driver yet, so it is still waiting for
-// dispatch whatever status Cartrack reports. This makes "Chờ điều phối" visible to every
-// device instead of only the phone that created the request.
+// A job parked on the queue proxy has no real driver yet: it is holding until its
+// appointed pickup time, which is a different wait from "nobody has been assigned".
+// Either way this makes the wait visible to every device instead of only the phone
+// that created the request.
 function isParkedOrder(o: Order): boolean {
   const kind = proxyKind(o.driver_name);
   return (kind === "queue" || kind === "reject") && !o.pickup_completed_ts;
 }
 
 function stateOf(o: Order): TripState {
-  return tripStateFromStops(o.pickup_status_id, o.dropoff_status_id, !isParkedOrder(o), o.job_status_id);
+  const parked = isParkedOrder(o);
+  return tripStateFromStops(o.pickup_status_id, o.dropoff_status_id, !parked, o.job_status_id, parked);
 }
 
 // The first step falls back to the requested nhà-xe time when Cartrack gives no create_ts.
@@ -159,6 +161,7 @@ function PscJobSheet({ order, onClose }: { order: Order; onClose: () => void }) 
   ];
 
   if (p?.activity_started_ts) events.push({ tone: "done", time: hm(p.activity_started_ts), label: "Tài xế bắt đầu đi lấy mẫu" });
+  else if (state === 5) events.push({ tone: "now", label: "Chờ tới giờ hẹn lấy mẫu…" });
   else events.push({ tone: state === 0 ? "now" : "future", label: state === 0 ? "Đang chờ điều phối tài xế…" : "Tài xế đi lấy mẫu" });
 
   if (p?.activity_arrived_ts) events.push({ tone: "done", time: hm(p.activity_arrived_ts), label: "Đến điểm lấy mẫu", body: addr(p) });
@@ -207,7 +210,7 @@ function PscJobSheet({ order, onClose }: { order: Order; onClose: () => void }) 
             </div>
           ) : (
             <p className="text-[11px] text-slate-500">
-              {driverName ? "Tài xế Diag" : "Đơn hàng đang chờ được phân công"}
+              {driverName ? "Tài xế Diag" : state === 5 ? "Đơn đã đặt lịch, chờ tới giờ hẹn" : "Đơn hàng đang chờ được phân công"}
             </p>
           )}
         </div>
