@@ -34,12 +34,18 @@ function buildOrdersFromStops(stops: any[], prefix: string) {
       const jobStatusId = pickup?.job_status_id ?? dropoff?.job_status_id;
       return { pickup, dropoff, ref, jobStatusId };
     })
-    .filter((o) => o.ref.startsWith(prefix) && o.jobStatusId !== 3 && o.jobStatusId !== 7)
+    // Status 3 (rejected) is kept: a branch needs to see that a driver turned its
+    // request down, and why, not have it silently vanish. 7 (cancelled) stays hidden —
+    // the branch cancelled it themselves and already knows.
+    .filter((o) => o.ref.startsWith(prefix) && o.jobStatusId !== 7)
     .sort((a, b) => a.ref.localeCompare(b.ref, "vi", { numeric: true }))
     .map(({ pickup, dropoff, ref, jobStatusId }) => ({
       job_id:    pickup?.job_id ?? dropoff?.job_id,
       reference: ref,
       job_status: JOB_STATUS[jobStatusId] ?? "Không rõ",
+      job_status_id: jobStatusId ?? null,
+      rejected_ts: (pickup?.activity_rejected_ts ?? dropoff?.activity_rejected_ts)?.slice(0, 19) ?? null,
+      rejected_reason: pickup?.status_remarks ?? dropoff?.status_remarks ?? null,
       pickup_name:      pickup?.customer_name ?? null,
       pickup_address:   pickup?.address_line_1 ?? null,
       pickup_stop_id:   (pickup?.stop_id ?? null) as number | null,
@@ -124,7 +130,7 @@ export async function GET(req: NextRequest) {
       const jobs: any[] = data.data ?? [];
 
       const orders = jobs
-        .filter((j) => (j.reference_number ?? "").startsWith(prefix) && j.job_status_id !== 3 && j.job_status_id !== 7)
+        .filter((j) => (j.reference_number ?? "").startsWith(prefix) && j.job_status_id !== 7)
         .sort((a, b) => (a.reference_number ?? "").localeCompare(b.reference_number ?? "", "vi", { numeric: true }))
         .map((j) => {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -135,6 +141,9 @@ export async function GET(req: NextRequest) {
             job_id:    j.job_id,
             reference: j.reference_number,
             job_status: JOB_STATUS[j.job_status_id] ?? "Không rõ",
+            job_status_id: j.job_status_id ?? null,
+            rejected_ts: (pickup?.activity_rejected_ts ?? dropoff?.activity_rejected_ts)?.slice(0, 19) ?? null,
+            rejected_reason: pickup?.status_remarks ?? dropoff?.status_remarks ?? null,
             pickup_name:      pickup?.customer_name ?? null,
             pickup_address:   tplByUuid.get(pickup?.customer_id) ?? null,
             pickup_stop_id:   (pickup?.stop_id ?? null) as number | null,

@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import {
   RefreshCw, Loader2, CheckCircle2, AlertCircle, Check, ChevronDown, ChevronRight,
-  Clock, Package, ArrowRight, Phone,
+  Clock, Package, ArrowRight, Phone, XCircle,
 } from "lucide-react";
 import { placeLabel } from "@/lib/place-label";
 import { TripSteps, TRIP_STATE_STYLE, tripStateText, tripStateFromStops, type TripState } from "@/components/trip-steps";
@@ -35,6 +35,9 @@ interface Order {
   dropoff_completed_ts?: string | null;
   create_ts?: string | null;
   driver_name?: string | null;
+  job_status_id?: number | null;
+  rejected_ts?: string | null;
+  rejected_reason?: string | null;
 }
 
 const PSC_META: Record<string, { label: string; psc_code: string }> = {
@@ -55,7 +58,7 @@ function isParkedOrder(o: Order): boolean {
 }
 
 function stateOf(o: Order): TripState {
-  return tripStateFromStops(o.pickup_status_id, o.dropoff_status_id, !isParkedOrder(o));
+  return tripStateFromStops(o.pickup_status_id, o.dropoff_status_id, !isParkedOrder(o), o.job_status_id);
 }
 
 // The first step falls back to the requested nhà-xe time when Cartrack gives no create_ts.
@@ -486,7 +489,7 @@ export default function PscTinhPage() {
         <div className="space-y-3">
           {active.map((o) => {
             const state = stateOf(o);
-            const cancellable = o.pickup_status_id === 1;
+            const cancellable = state !== 4 && o.pickup_status_id === 1;
             return (
               <div key={o.job_id} className="rounded-2xl bg-white shadow-sm border border-slate-100 p-4">
                 <button
@@ -513,7 +516,21 @@ export default function PscTinhPage() {
                     </span>
                   </div>
 
-                  <TripSteps times={stepTimes(o)} state={state} />
+                  {state === 4 ? (
+                    // A rejected trip never progressed, so the four-step bar would be a
+                    // lie. The reason the driver gave is the only thing worth showing.
+                    <div className="mt-2.5 rounded-xl bg-red-50 border border-red-200 p-3">
+                      <p className="flex items-start gap-1.5 text-[13px] font-semibold text-red-700">
+                        <XCircle aria-hidden className="w-4 h-4 shrink-0 mt-px" />
+                        <span>
+                          Đã từ chối{hm(o.rejected_ts) ? ` lúc ${hm(o.rejected_ts)}` : ""}
+                          {o.rejected_reason ? ` — ${o.rejected_reason}` : ""}
+                        </span>
+                      </p>
+                    </div>
+                  ) : (
+                    <TripSteps times={stepTimes(o)} state={state} />
+                  )}
 
                   <div className="flex items-end justify-between gap-2 mt-2">
                     {o.pickup_address

@@ -946,6 +946,30 @@ export async function getTimelineJobs(dateVn: string, env: Env = "prod"): Promis
   return routes ? timelineRoutesToJobs(routes) : null;
 }
 
+/** Jobs that sit on no driver's route — Cartrack's "new jobs" pool (delivery_jobs_list_new,
+ *  the same call its map view uses). Returns BOTH unassigned (status 2) and rejected
+ *  (status 3) jobs, which is the whole point: getTimelineRoutes only ever contains
+ *  statuses 4 and 5, so neither state is reachable from it.
+ *
+ *  Note a sampling trap when verifying this: on a finished day everything unassigned has
+ *  since been assigned, so the response looks like it is rejected-only. Check a day that
+ *  is still running to see both.
+ *
+ *  Rejected jobs carry rejectedTs / rejectedReason / rejectedByName; unassigned ones have
+ *  those null. prod-only (fleetweb cookie); null on any failure so callers can degrade. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function getUnroutedJobs(dateVn: string, env: Env = "prod"): Promise<any[] | null> {
+  if (env !== "prod") return null;
+  const out = await jsonRpc<{ jobs?: unknown }>(
+    "delivery_jobs_list_new",
+    { data: { scheduleType: "scheduled", filter: vnDayWindow(dateVn) } },
+    { env }
+  );
+  if (!out.ok) return null;
+  const jobs = out.result?.jobs;
+  return Array.isArray(jobs) ? jobs : null;
+}
+
 /** Label-filtered stops for a day via delivery_get_stops_list (JSON-RPC). The label
  *  filter runs server-side, so this returns only matching stops — far lighter than
  *  getJobsByDate, which pulls every job for the day and is then filtered client-side.

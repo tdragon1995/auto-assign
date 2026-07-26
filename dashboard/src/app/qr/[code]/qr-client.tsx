@@ -6,7 +6,7 @@ import { useParams } from "next/navigation";
 // fetching /api/psc-routes — no function invocation, no network round-trip, instant render.
 import {
   Package, Check, ChevronDown, ChevronRight, Clock, Phone, Bike, CalendarDays,
-  RefreshCw, ArrowUp, ArrowDown, ArrowRight, Loader2, Search,
+  RefreshCw, ArrowUp, ArrowDown, ArrowRight, Loader2, Search, XCircle,
 } from "lucide-react";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
 import { placeLabel } from "@/lib/place-label";
@@ -41,6 +41,9 @@ interface Job {
   item_tracking_numbers?: string[];
   driver?: { last_name?: string | null; phone_local?: string | null; phone_e164?: string | null } | null;
   stops: Stop[];
+  // Set only on jobs from the unrouted pool (status 3).
+  rejected_ts?: string | null;
+  rejected_reason?: string | null;
 }
 
 // A request this device created that hasn't surfaced on a driver's route yet.
@@ -115,15 +118,20 @@ function pickupOf(j: Job) { return j.stops.find((s) => s.stop_type_id === 1); }
 function dropoffOf(j: Job) { return j.stops.find((s) => s.stop_type_id !== 1); }
 
 // 0 waiting for dispatch · 1 driver heading to pickup · 2 sample collected, en route
-// to the destination · 3 handed over.
+// to the destination · 3 handed over · 4 rejected by a driver.
 //
-// A job parked on the queue proxy has no real driver yet, so it is waiting for dispatch
-// however Cartrack labels its status. This is what makes "Chờ điều phối" visible to every
-// device rather than only the phone that happened to create the request.
-function stateOf(j: Job): 0 | 1 | 2 | 3 {
+// Status 2 (unassigned) and 3 (rejected) arrive from the unrouted pool; a job parked on
+// the queue proxy is also waiting however Cartrack labels it. Between them that is what
+// makes "Chờ điều phối" visible to every device rather than only the phone that created
+// the request.
+type TripState = 0 | 1 | 2 | 3 | 4;
+
+function stateOf(j: Job): TripState {
   const p = pickupOf(j), d = dropoffOf(j);
+  if (j.job_status_id === 3) return 4;
   if (d?.activity_completed_ts || j.job_status_id === 5) return 3;
   if (p?.activity_completed_ts) return 2;
+  if (j.job_status_id === 2) return 0;
   if (isParked(j.driver?.last_name) && !p?.activity_started_ts) return 0;
   return 1;
 }
@@ -133,15 +141,17 @@ const STATE_STYLE: Record<number, string> = {
   1: "bg-blue-100 text-blue-700",
   2: "bg-blue-100 text-blue-700",
   3: "bg-green-100 text-green-700",
+  4: "bg-red-100 text-red-700",
 };
 
 // "lab" only ever meant D001. Hub routes drop at D007/D009/D046 and inbound client legs
 // drop at the branch itself, so the destination is named rather than assumed.
-function stateText(state: 0 | 1 | 2 | 3, dest?: string): string {
+function stateText(state: TripState, dest?: string): string {
   const to = dest ? ` đến ${dest}` : "";
   if (state === 0) return "Chờ điều phối";
   if (state === 1) return "Tài xế đang đến lấy";
   if (state === 2) return `Đang giao${to}`;
+  if (state === 4) return "Đã từ chối";
   return "Đã giao";
 }
 
@@ -171,7 +181,7 @@ function DirectionTag({ outbound }: { outbound: boolean }) {
 
 /* ─────────────────────────── progress stepper ─────────────────────────── */
 
-function Stepper({ job, state }: { job: Job; state: 0 | 1 | 2 | 3 }) {
+function Stepper({ job, state }: { job: Job; state: TripState }) {
   const p = pickupOf(job), d = dropoffOf(job);
   const times = [requestedAt(job), fmtTs(p?.activity_completed_ts), fmtTs(d?.activity_started_ts), fmtTs(d?.activity_completed_ts)];
   // Steps completed so far; the "current" step pulses.
@@ -219,7 +229,7 @@ function Stepper({ job, state }: { job: Job; state: 0 | 1 | 2 | 3 }) {
 // timestamp, the live event when it's the stop in progress, and a greyed placeholder
 // otherwise — so the branch always sees the full shape of the trip.
 function buildEvents(
-  job: Job, state: 0 | 1 | 2 | 3,
+  job: Job, state: TripState,
   p: Stop | undefined, d: Stop | undefined,
   pTodos: NonNullable<Stop["todos"]>, dTodos: NonNullable<Stop["todos"]>, threePl = false,
 ): TlEvent[] {
@@ -393,11 +403,13 @@ function TripCard({ job, code, onOpen, onCancel, onSendVia3pl }: {
   // Both directions sit in the same feed and used to look identical.
   const outbound = p?.customer_id === code;
 
+  // A rejected trip is already closed — there is nothing left to cancel or hand off.
+  const rejected = state === 4;
   // Cancellable only while this location's own pickup is untouched.
-  const cancellable = !!p && p.customer_id === code && p.stop_status_id === 1 &&
+  const cancellable = !rejected && !!p && p.customer_id === code && p.stop_status_id === 1 &&
     !p.activity_started_ts && !p.activity_arrived_ts && !p.activity_completed_ts;
   // 3PL handoff stays open until the sample is actually collected.
-  const via3plEligible = !!p && p.customer_id === code && !p.activity_completed_ts && p.stop_status_id !== 5;
+  const via3plEligible = !rejected && !!p && p.customer_id === code && !p.activity_completed_ts && p.stop_status_id !== 5;
 
   const target = { job_id: job.job_id, reference: job.reference_number };
 
@@ -428,6 +440,18 @@ function TripCard({ job, code, onOpen, onCancel, onSendVia3pl }: {
           <p className="flex items-center gap-1.5 mt-2.5 text-[13px] font-semibold text-teal-700">
             <Bike aria-hidden className="w-4 h-4 shrink-0" />Đã gửi qua {THREE_PL_LABEL} lúc {fmtTs(d?.activity_completed_ts ?? p?.activity_completed_ts) ?? "—"}
           </p>
+        ) : state === 4 ? (
+          // A rejected trip never progressed, so the four-step bar would be a lie. The
+          // reason the driver gave is the only thing worth showing.
+          <div className="mt-2.5 rounded-xl bg-red-50 border border-red-200 p-3">
+            <p className="flex items-start gap-1.5 text-[13px] font-semibold text-red-700">
+              <XCircle aria-hidden className="w-4 h-4 shrink-0 mt-px" />
+              <span>
+                Đã từ chối{fmtTs(job.rejected_ts) ? ` lúc ${fmtTs(job.rejected_ts)}` : ""}
+                {job.rejected_reason ? ` — ${job.rejected_reason}` : ""}
+              </span>
+            </p>
+          </div>
         ) : (
           <Stepper job={job} state={state} />
         )}
@@ -436,7 +460,7 @@ function TripCard({ job, code, onOpen, onCancel, onSendVia3pl }: {
           <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100 text-[13px] font-semibold text-amber-700">
             <Clock aria-hidden className="w-4 h-4 shrink-0" />Đang chờ điều phối tài xế
           </div>
-        ) : !threePl && (
+        ) : state === 4 ? null : !threePl && (
           <div className="flex items-center gap-2.5 mt-3 pt-3 border-t border-slate-100">
             <span aria-hidden className="w-8 h-8 flex-none rounded-full bg-blue-100 text-blue-700 font-extrabold text-xs flex items-center justify-center">
               {initial(driver)}

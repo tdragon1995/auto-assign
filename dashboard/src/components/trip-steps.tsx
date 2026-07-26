@@ -10,7 +10,8 @@
  * transit · 3 handed over.
  */
 
-export type TripState = 0 | 1 | 2 | 3;
+/** 4 = rejected by a driver: a closed outcome, not a stage of the journey. */
+export type TripState = 0 | 1 | 2 | 3 | 4;
 
 export const TRIP_STEPS = ["Yêu cầu", "Lấy mẫu", "Đang giao", "Đã giao"] as const;
 
@@ -19,6 +20,7 @@ export const TRIP_STATE_STYLE: Record<TripState, string> = {
   1: "bg-blue-100 text-blue-700",
   2: "bg-blue-100 text-blue-700",
   3: "bg-green-100 text-green-700",
+  4: "bg-red-100 text-red-700",
 };
 
 /** Names the destination rather than assuming it — only D001 is the central lab. */
@@ -27,17 +29,22 @@ export function tripStateText(state: TripState, dest?: string): string {
   if (state === 0) return "Chờ điều phối";
   if (state === 1) return "Tài xế đang đến lấy";
   if (state === 2) return `Đang giao${to}`;
+  if (state === 4) return "Đã từ chối";
   return "Đã giao";
 }
 
-/** Cartrack stop_status_id: 1 chờ · 2 đang đến · 3 đã đến · 4 xong · 5 từ chối. */
+/** Cartrack stop_status_id: 1 chờ · 2 đang đến · 3 đã đến · 4 xong · 5 từ chối.
+ *  jobStatusId 3 (rejected) and 2 (unassigned) override the stop-derived reading. */
 export function tripStateFromStops(
   pickupStatusId?: number | null,
   dropoffStatusId?: number | null,
   hasDriver = true,
+  jobStatusId?: number | null,
 ): TripState {
+  if (jobStatusId === 3) return 4;
   if (dropoffStatusId === 4) return 3;
   if (pickupStatusId === 4) return 2;
+  if (jobStatusId === 2) return 0;
   return hasDriver ? 1 : 0;
 }
 

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Redis } from "@upstash/redis";
-import { BASE_URL, getHeaders, getTimelineJobs, type Env } from "@/lib/cartrack";
+import { BASE_URL, getHeaders, getTimelineJobs, getUnroutedJobs, type Env } from "@/lib/cartrack";
 import { driverDisplayName, fetchJobDetail } from "@/lib/job-detail";
 import type { Job, Stop } from "@/lib/types";
 
@@ -65,14 +65,55 @@ function slimJob(j: Job) {
     item_tracking_numbers: j.item_tracking_numbers ?? [],
     driver: { last_name: driverDisplayName(j.driver) },
     stops: (j.stops ?? []).map(slimStop),
+    // Only ever set on jobs from the unrouted pool.
+    rejected_ts: null as string | null,
+    rejected_reason: null as string | null,
   };
 }
 
 type SlimJob = ReturnType<typeof slimJob>;
 
-// `status=all` returns assigned + completed in one call — the /qr feed shows both
-// together, and two calls would mean two passes over the same cached day.
-const ALL_STATUSES = [4, 5];
+/** Map a delivery_jobs_list_new row (camelCase, no driver by definition) into the same
+ *  shape the feed already renders, so unassigned and rejected trips sit in the list
+ *  beside the routed ones instead of being invisible. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function slimUnroutedJob(j: any): SlimJob {
+  const t19 = (s: unknown): string | null =>
+    typeof s === "string" && s.length >= 19 ? s.slice(0, 19).replace("T", " ") : null;
+  return {
+    job_id: j.jobId,
+    reference_number: j.referenceNumber,
+    job_status_id: j.jobStatusId,
+    scheduled_delivery_ts: t19(j.scheduledTs),
+    last_assigned_plan_id: null,
+    item_tracking_numbers: [],
+    driver: { last_name: null },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    stops: (j.stops ?? []).map((s: any) => ({
+      stop_id: s.stopId,
+      stop_type_id: s.stopTypeId,
+      stop_status_id: s.stopStatusId,
+      customer_id: s.customerId,
+      customer_name: s.customerName ?? "",
+      activity_started_ts: null,
+      activity_arrived_ts: null,
+      activity_completed_ts: null,
+      delivery_windows: (s.deliveryWindows ?? [])
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .map((w: any) => ({ time_from: w?.timeFrom ?? null, time_to: w?.timeTo ?? null }))
+        .filter((w: { time_from: string | null; time_to: string | null }) => w.time_from || w.time_to),
+    })),
+    rejected_ts: t19(j.rejectedTs),
+    rejected_reason: j.rejectedReason ?? null,
+  };
+}
+
+// `status=all` returns everything the feed shows in one call: assigned + completed from
+// the route timeline, plus unassigned (2) and rejected (3) from the unrouted pool. The
+// timeline alone only ever contains 4 and 5, so without the second source a branch never
+// sees a request that hasn't been picked up or one a driver turned down.
+const ALL_STATUSES = [2, 3, 4, 5];
+const UNROUTED_STATUSES = [2, 3];
 function matchesStatus(jobStatusId: number | undefined, status: string): boolean {
   if (status === "all") return ALL_STATUSES.includes(jobStatusId ?? 0);
   return jobStatusId === Number(status);
@@ -109,7 +150,7 @@ export async function GET(req: NextRequest) {
     // back to REST rather than 500ing.
     if (code) {
       const fresh = req.nextUrl.searchParams.get("fresh") === "1";
-      const cacheKey = `locjobs:v1:${env}:${date}`;
+      const cacheKey = `locjobs:v2:${env}:${date}`;
       const redis = getRedis();
 
       let slim: SlimJob[] | null = null;
@@ -121,14 +162,24 @@ export async function GET(req: NextRequest) {
         }
       }
       if (!slim) {
+        // Two sources, fetched together: the route timeline (assigned + completed) and
+        // the unrouted pool (unassigned + rejected). Neither covers the other.
         let timeline: Job[] | null = null;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let unrouted: any[] | null = null;
         try {
-          timeline = await getTimelineJobs(date, env);
+          [timeline, unrouted] = await Promise.all([
+            getTimelineJobs(date, env).catch(() => null),
+            getUnroutedJobs(date, env).catch(() => null),
+          ]);
         } catch {
           timeline = null;
         }
         if (timeline) {
-          slim = timeline.map(slimJob);
+          slim = [
+            ...timeline.map(slimJob),
+            ...(unrouted ?? []).filter((j) => UNROUTED_STATUSES.includes(j?.jobStatusId)).map(slimUnroutedJob),
+          ];
           // Best-effort write — an oversized or failed SET just means the next
           // tap fetches again; never let caching break the response.
           if (redis) {
