@@ -39,6 +39,18 @@ interface OngoingChamCong {
   location_name: string | null;
 }
 
+type ChamCongState = "done" | "started" | "pending";
+
+interface ChamCongTask {
+  job_id: number;
+  type: ActionType;
+  customer_id: string | null;
+  location_name: string | null;
+  time: string | null;
+  state: ChamCongState;
+  switchable: boolean;
+}
+
 interface ShiftState {
   checkInCount: number;
   completedCheckOuts: number;
@@ -46,6 +58,7 @@ interface ShiftState {
   pendingJobs: number;
   pendingJobNames: string[];
   ongoing: OngoingChamCong | null;
+  tasks: ChamCongTask[];
   fetchedAt: number;
 }
 
@@ -110,9 +123,18 @@ function ShiftSection({ title, accent, rows }: { title: string; accent: "amber" 
 const LS_DRIVER_ID   = "cc_driver_id";
 const LS_DRIVER_NAME = "cc_driver_name";
 const SHIFT_STATE_TTL_MS = 2 * 60 * 1000;
+const HOLD_MS = 650; // press-and-hold duration to commit a location change
 const SS_DRIVERS_KEY = "cc_drivers_cache";
 const LS_NV_PHONE   = "cc_nv_phone";   // Nhận Việc: remembered phone (never the PIN)
 const LS_NV_SESSION = "cc_nv_session"; // Nhận Việc: authenticated {driver_id, driver_name}
+
+// Chấm-công task state → badge label + classes. "done" = finished in Cartrack,
+// "started" = opened/en-route (locked, real record), "pending" = created but untouched.
+const CC_STATE_BADGE: Record<ChamCongState, { label: string; cls: string }> = {
+  done:    { label: "Hoàn thành",      cls: "text-emerald-700 bg-emerald-50 border-emerald-200" },
+  started: { label: "Đang thực hiện",  cls: "text-blue-700 bg-blue-50 border-blue-200" },
+  pending: { label: "Chưa hoàn thành", cls: "text-amber-800 bg-amber-50 border-amber-200" },
+};
 
 // Nhận Việc: badge colour by Cartrack pickup stop_status_id (1 Chờ lấy, 2 Đang đến, 3 Đã đến).
 function nvStatusClasses(id: number | null): string {
@@ -261,13 +283,19 @@ export default function ChamCongPage() {
   const [pendingNames, setPendingNames] = useState<string[]>([]);
   const shiftStateRef  = useRef<ShiftState | null>(null);
   const [shiftFetching, setShiftFetching] = useState(false);
-  // Mirrored out of shiftStateRef because the "Đổi địa điểm" button has to re-render on it.
-  const [ongoing,        setOngoing]        = useState<OngoingChamCong | null>(null);
+  // Today's chấm-công tasks, mirrored out of shiftStateRef so the list re-renders on it.
+  const [tasks,          setTasks]          = useState<ChamCongTask[]>([]);
   const [switching,      setSwitching]      = useState(false);
-  // The switch panel carries its own picker. It must not reuse the "Địa điểm" box above:
-  // that still holds the location just checked into, so the control would start dead.
-  const [showSwitchList, setShowSwitchList] = useState(false);
+  // Which task's change-location picker is open (job_id), and its search text. The picker
+  // carries its own location box — it must not reuse the "Địa điểm" field above, which
+  // still holds the location just checked into and would start the control dead.
+  const [switchingJobId, setSwitchingJobId] = useState<number | null>(null);
   const [switchSearch,   setSwitchSearch]   = useState("");
+  // Hold-to-confirm on the change-location option: a stray tap must not move a task, so
+  // committing requires pressing and holding an option (HOLD_MS). holdKey is the
+  // customer_id currently being held, which drives the progress fill.
+  const [holdKey,        setHoldKey]        = useState<string | null>(null);
+  const holdTimer = useRef<number | null>(null);
 
   // ── Nộp Đơn Nghỉ tab ──────────────────────────────────────────────────────
   const [leaveType,         setLeaveType]         = useState<LeaveType>("");
@@ -338,6 +366,9 @@ export default function ChamCongPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Clear any in-flight hold timer on unmount so it can't fire a switch after teardown.
+  useEffect(() => () => { if (holdTimer.current) clearTimeout(holdTimer.current); }, []);
+
   // Nhận Việc: logged in = a stored authenticated session. Identity comes from the
   // phone+PIN login itself (bridged to the fleet driver_id) — no name-picker gate.
   const nvLoggedIn = !!nvSession;
@@ -358,13 +389,13 @@ export default function ChamCongPage() {
         const data = await res.json();
         const state: ShiftState = { ...data, fetchedAt: Date.now() };
         shiftStateRef.current = state;
-        setOngoing(state.ongoing ?? null);
+        setTasks(state.tasks ?? []);
         return state;
       }
       return null;
     } catch {
       shiftStateRef.current = null;
-      setOngoing(null);
+      setTasks([]);
       return null;
     } finally {
       setShiftFetching(false);
@@ -380,7 +411,7 @@ export default function ChamCongPage() {
       const data = await res.json();
       const state: ShiftState = { ...data, fetchedAt: Date.now() };
       shiftStateRef.current = state;
-      setOngoing(state.ongoing ?? null);
+      setTasks(state.tasks ?? []);
       return state;
     } catch {
       return null;
@@ -453,7 +484,8 @@ export default function ChamCongPage() {
     setDriverName("");
     setDriverSearch("");
     shiftStateRef.current = null;
-    setOngoing(null);
+    setTasks([]);
+    setSwitchingJobId(null);
     localStorage.removeItem(LS_DRIVER_ID);
     localStorage.removeItem(LS_DRIVER_NAME);
   }
@@ -587,9 +619,9 @@ export default function ChamCongPage() {
   }
 
   // ── Đổi địa điểm ──────────────────────────────────────────────────────────
-  // Moves the open chấm-công task to the location picked from this panel's own list.
-  async function switchLocation(target: Location) {
-    if (!ongoing || switching) return;
+  // Moves one task (identified by task) to the location picked from its own row picker.
+  async function switchLocation(task: ChamCongTask, target: Location) {
+    if (switching) return;
     setSwitching(true);
     setCcMessage("");
     setPendingNames([]);
@@ -597,21 +629,21 @@ export default function ChamCongPage() {
       const res = await fetch("/api/cham-cong", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ driver_id: driverId, job_id: ongoing.job_id, psc_customer_id: target.customer_id }),
+        body: JSON.stringify({ driver_id: driverId, job_id: task.job_id, psc_customer_id: target.customer_id }),
       });
       const data = await res.json();
       if (!res.ok) {
         setCcStatus("error");
         setCcMessage(data.error ?? "Đổi địa điểm thất bại.");
         // A rejection usually means the task moved on (started/finished) — resync so the
-        // panel reflects what Cartrack actually has.
+        // list reflects what Cartrack actually has.
         shiftStateRef.current = null;
         fetchShiftState(driverId);
         return;
       }
       setCcStatus("success");
-      setCcMessage(`Đã đổi địa điểm chấm công ${ongoing.type === "check-in" ? "vào ca" : "ra ca"} sang ${data.location_name} (Job #${data.job_id}).`);
-      setShowSwitchList(false);
+      setCcMessage(`Đã đổi địa điểm chấm công ${task.type === "check-in" ? "vào ca" : "ra ca"} sang ${data.location_name} (Job #${data.job_id}).`);
+      setSwitchingJobId(null);
       setSwitchSearch("");
       shiftStateRef.current = null;
       fetchShiftState(driverId);
@@ -623,13 +655,34 @@ export default function ChamCongPage() {
     }
   }
 
-  // Locations offered by the switch panel — everything except where the task already is.
+  // Press-and-hold to commit a location change (touch/mouse). Releasing early, or the
+  // pointer leaving the option, cancels — so a stray tap in the scrolling list can't move
+  // a task. Keyboard users commit with Enter/Space directly (already deliberate).
+  function startHold(task: ChamCongTask, loc: Location) {
+    if (switching) return;
+    setHoldKey(loc.customer_id);
+    holdTimer.current = window.setTimeout(() => {
+      holdTimer.current = null;
+      setHoldKey(null);
+      switchLocation(task, loc);
+    }, HOLD_MS);
+  }
+  function cancelHold() {
+    if (holdTimer.current) { clearTimeout(holdTimer.current); holdTimer.current = null; }
+    setHoldKey(null);
+  }
+
+  // Locations offered by the open row's picker — all except where that task already is.
+  const switchingTask = useMemo(
+    () => tasks.find((t) => t.job_id === switchingJobId) ?? null,
+    [tasks, switchingJobId]
+  );
   const switchOptions = useMemo(() => {
-    const pool = locations.filter((l) => l.customer_id !== ongoing?.customer_id);
+    const pool = locations.filter((l) => l.customer_id !== switchingTask?.customer_id);
     const q = switchSearch.trim().toLowerCase();
     if (!q) return pool;
     return pool.filter((l) => l.name.toLowerCase().includes(q) || l.address.toLowerCase().includes(q));
-  }, [locations, ongoing, switchSearch]);
+  }, [locations, switchingTask, switchSearch]);
 
   // ── Chấm Công submit ──────────────────────────────────────────────────────
   async function submitChamCong(type: ActionType) {
@@ -956,11 +1009,10 @@ export default function ChamCongPage() {
           {/* ── Chấm Công tab ───────────────────────────────────────────── */}
           {tab === "cham-cong" && (
             <>
-              {/* Location dropdown — needed for whichever of Vào Ca / Ra Ca is still
-                  usable even while a task is pending (see those buttons below), so it
-                  must stay available. Only hidden while the switch panel has its own
-                  picker open, so there is never more than one địa điểm control on screen. */}
-              <div className={`space-y-1 relative ${showSwitchList ? "hidden" : ""}`}>
+              {/* Location dropdown for creating a new Vào Ca / Ra Ca. The per-task
+                  change-location pickers live inline in the task list below and carry
+                  their own box, so this one never conflicts with them. */}
+              <div className="space-y-1 relative">
                 <label className="text-sm font-medium text-gray-700">Địa điểm</label>
                 <div className="relative">
                   <input
@@ -1017,76 +1069,130 @@ export default function ChamCongPage() {
                 <button
                   disabled={ccStatus === "loading"}
                   onClick={() => submitChamCong("check-in")}
-                  className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-semibold rounded-xl py-3 text-sm transition-colors"
+                  className="bg-green-700 hover:bg-green-800 disabled:opacity-50 text-white font-semibold rounded-xl py-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-green-600"
                 >
                   {ccStatus === "loading" ? "Đang xử lý..." : "Vào Ca"}
                 </button>
                 <button
                   disabled={ccStatus === "loading"}
                   onClick={() => submitChamCong("check-out")}
-                  className="bg-red-500 hover:bg-red-600 disabled:opacity-50 text-white font-semibold rounded-xl py-3 text-sm transition-colors"
+                  className="bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-semibold rounded-xl py-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-red-500"
                 >
                   {ccStatus === "loading" ? "Đang xử lý..." : "Ra Ca"}
                 </button>
               </div>
 
-              {/* Đổi địa điểm — below the buttons per feedback, but on a tinted amber
-                  chip (same bg-amber-50/border-amber-200 pattern as the other small
-                  notices in this file) rather than bare text. A bare-text version of
-                  this shipped first and drivers reported they couldn't find it after
-                  reopening the app — it was real and working, just visually gone
-                  against the page background below two large buttons. The chip keeps
-                  the same small scale but gives it a surface to be seen against. */}
-              {ongoing && (
-                <div className="pt-0.5">
-                  {!showSwitchList ? (
-                    <button
-                      onClick={() => setShowSwitchList(true)}
-                      disabled={switching}
-                      className="w-full flex items-center justify-center gap-1.5 text-xs font-medium text-amber-800 bg-amber-50 border border-amber-200 rounded-lg py-2 hover:bg-amber-100 disabled:opacity-50 transition-colors"
-                    >
-                      {switching ? <Loader2 size={13} className="animate-spin" /> : <MapPin size={13} />}
-                      Nhầm địa điểm {ongoing.type === "check-in" ? "vào ca" : "ra ca"} ({ongoing.location_name ?? "—"})? Đổi địa điểm
-                    </button>
+              {/* Today's chấm-công tasks — the full record of the day. Un-started tasks
+                  ("pending") carry an inline change-location control; "started"/"done"
+                  ones are locked (Cartrack won't move a real record, PATCH rejects it). */}
+              {driverId && (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-semibold text-gray-800">Chấm công hôm nay</h3>
+                    {shiftFetching && tasks.length > 0 && <Loader2 size={13} className="animate-spin text-gray-400" />}
+                  </div>
+
+                  {tasks.length === 0 ? (
+                    <p className="text-sm text-gray-400 py-1.5">
+                      {shiftFetching ? "Đang tải..." : "Chưa có chấm công nào hôm nay."}
+                    </p>
                   ) : (
-                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 space-y-2">
-                      <div className="relative">
-                        <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-                        <input
-                          type="text"
-                          autoFocus
-                          className="w-full border border-amber-300 rounded-lg pl-8 pr-3 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-                          placeholder="Tìm địa điểm mới..."
-                          value={switchSearch}
-                          onChange={(e) => setSwitchSearch(e.target.value)}
-                          disabled={switching}
-                        />
-                      </div>
-                      <ul className="bg-white border border-amber-200 rounded-lg max-h-36 overflow-y-auto divide-y divide-gray-100">
-                        {switchOptions.length === 0 ? (
-                          <li className="px-2.5 py-1.5 text-xs text-gray-400">Không tìm thấy địa điểm.</li>
-                        ) : (
-                          switchOptions.map((l) => (
-                            <li key={l.customer_id}>
-                              <button
-                                onClick={() => switchLocation(l)}
-                                disabled={switching}
-                                className="w-full text-left px-2.5 py-1.5 hover:bg-amber-50 disabled:opacity-50 transition-colors"
-                              >
-                                <div className="text-xs font-medium text-gray-800">{l.name}</div>
-                                {l.address && <div className="text-[11px] text-gray-400 truncate">{l.address}</div>}
-                              </button>
-                            </li>
-                          ))
-                        )}
-                      </ul>
-                      <button
-                        onClick={() => { setShowSwitchList(false); setSwitchSearch(""); }}
-                        disabled={switching}
-                        className="w-full text-[11px] font-medium text-amber-800 hover:underline disabled:opacity-50 py-0.5"
-                      >
-                        {switching ? "Đang đổi địa điểm..." : "Huỷ"}
-                      </button>
+                    <div className="rounded-xl border border-gray-200 divide-y divide-gray-100 overflow-hidden">
+                      {tasks.map((t) => {
+                        const badge = CC_STATE_BADGE[t.state];
+                        const isCheckin = t.type === "check-in";
+                        const open = switchingJobId === t.job_id;
+                        return (
+                          <div key={t.job_id} className="px-3 py-2.5">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-2 min-w-0">
+                                {isCheckin
+                                  ? <LogIn size={16} className="text-gray-500 shrink-0" />
+                                  : <LogOut size={16} className="text-gray-500 shrink-0" />}
+                                <div className="min-w-0">
+                                  <div className="text-sm font-semibold text-gray-800 truncate">
+                                    {isCheckin ? "Vào ca" : "Ra ca"}
+                                    <span className="font-normal text-gray-500"> · {t.location_name ?? "—"}</span>
+                                  </div>
+                                  {t.time && <div className="text-xs text-gray-500 tabular-nums">{t.time}</div>}
+                                </div>
+                              </div>
+                              <span className={`shrink-0 text-xs font-medium px-2 py-0.5 rounded-full border ${badge.cls}`}>
+                                {badge.label}
+                              </span>
+                            </div>
+
+                            {t.switchable && (
+                              open ? (
+                                <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 space-y-2">
+                                  <div className="relative">
+                                    <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                                    <input
+                                      type="text"
+                                      autoFocus
+                                      className="w-full border border-amber-300 rounded-lg pl-8 pr-3 py-2.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                      placeholder="Tìm địa điểm mới..."
+                                      value={switchSearch}
+                                      onChange={(e) => setSwitchSearch(e.target.value)}
+                                      disabled={switching}
+                                    />
+                                  </div>
+                                  {switchOptions.length > 0 && (
+                                    <p className="text-[11px] text-gray-500">Giữ để đổi địa điểm</p>
+                                  )}
+                                  <ul className="bg-white border border-amber-200 rounded-lg max-h-36 overflow-y-auto divide-y divide-gray-100">
+                                    {switchOptions.length === 0 ? (
+                                      <li className="px-2.5 py-1.5 text-xs text-gray-500">Không tìm thấy địa điểm.</li>
+                                    ) : (
+                                      switchOptions.map((l) => (
+                                        <li key={l.customer_id}>
+                                          <button
+                                            onPointerDown={() => startHold(t, l)}
+                                            onPointerUp={cancelHold}
+                                            onPointerLeave={cancelHold}
+                                            onPointerCancel={cancelHold}
+                                            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); switchLocation(t, l); } }}
+                                            disabled={switching}
+                                            className="relative w-full text-left px-2.5 py-2 overflow-hidden select-none hover:bg-amber-50 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-amber-500"
+                                          >
+                                            <span
+                                              aria-hidden
+                                              className="absolute inset-y-0 left-0 bg-amber-200 motion-reduce:transition-none"
+                                              style={{
+                                                width: holdKey === l.customer_id ? "100%" : "0%",
+                                                transition: holdKey === l.customer_id ? `width ${HOLD_MS}ms linear` : "width 120ms ease-out",
+                                              }}
+                                            />
+                                            <div className="relative">
+                                              <div className="text-xs font-medium text-gray-800">{l.name}</div>
+                                              {l.address && <div className="text-[11px] text-gray-500 truncate">{l.address}</div>}
+                                            </div>
+                                          </button>
+                                        </li>
+                                      ))
+                                    )}
+                                  </ul>
+                                  <button
+                                    onClick={() => { cancelHold(); setSwitchingJobId(null); setSwitchSearch(""); }}
+                                    disabled={switching}
+                                    className="w-full text-xs font-medium text-amber-800 rounded-lg py-2 hover:bg-amber-100 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+                                  >
+                                    {switching ? "Đang đổi địa điểm..." : "Huỷ"}
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => { setSwitchingJobId(t.job_id); setSwitchSearch(""); }}
+                                  disabled={switching}
+                                  className="mt-2 w-full flex items-center justify-center gap-1.5 text-xs font-medium text-amber-800 bg-amber-100 border border-amber-300 rounded-lg py-2.5 hover:bg-amber-200 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-amber-500"
+                                >
+                                  <MapPin size={13} /> Đổi địa điểm
+                                </button>
+                              )
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>

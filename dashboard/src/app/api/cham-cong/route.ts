@@ -14,6 +14,59 @@ interface OngoingChamCong {
   location_name: string | null;
 }
 
+type ChamCongState = "done" | "started" | "pending";
+
+interface ChamCongTask {
+  job_id: number;
+  type: "check-in" | "check-out";
+  customer_id: string | null;
+  location_name: string | null;
+  time: string | null; // HH:MM the driver tapped / finished
+  state: ChamCongState;
+  switchable: boolean; // pending (not started, not done) — the only editable state
+}
+
+/** "YYYY-MM-DD HH:MM:SS" or "…THH:MM…" → "HH:MM". Null for any other shape. */
+function hhmm(ts: unknown): string | null {
+  if (typeof ts !== "string" || ts.length < 16) return null;
+  return ts.slice(11, 16);
+}
+
+/** All of today's chấm-công tasks for the driver, oldest first, each tagged with its
+ *  state. `switchable` (not started, not done) mirrors the PATCH guard exactly — only
+ *  those rows may change location; a started/finished stop is a real record. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildChamCongTasks(chamCongJobs: any[]): ChamCongTask[] {
+  return chamCongJobs
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .map((j: any): ChamCongTask => {
+      const stop = (j.stops ?? [])[0] ?? {};
+      const customerId: string | null = stop.customer_id ?? null;
+      const done = j.job_status_id === 5;
+      const started = !done && isStopStarted(stop);
+      const state: ChamCongState = done ? "done" : started ? "started" : "pending";
+      const timeSrc = done
+        ? (stop.activity_completed_ts ?? j.create_ts)
+        : started
+          ? (stop.activity_started_ts ?? j.create_ts)
+          : (j.create_ts ?? j.scheduled_delivery_ts);
+      return {
+        job_id: Number(j.job_id),
+        type: labelNames(j.labels).includes("check_out") ? "check-out" : "check-in",
+        customer_id: customerId,
+        location_name:
+          DIAG_LOCATIONS.find((l) => l.customer_id === customerId)?.name ??
+          DIAG_LOCATIONS.find((l) => l.customer_name === stop.customer_name)?.name ??
+          stop.customer_name ??
+          null,
+        time: hhmm(timeSrc),
+        state,
+        switchable: state === "pending",
+      };
+    })
+    .sort((a, b) => a.job_id - b.job_id);
+}
+
 /** Stop labels arrive in two shapes: plain strings from REST (`["check_in"]`) but
  *  objects from JSON-RPC (`[{ labelId, label: "check_in" }]`). Normalise to strings. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -108,6 +161,7 @@ export async function GET(req: NextRequest) {
       );
 
       const ongoing = findSwitchableChamCong(chamCongJobs);
+      const tasks = buildChamCongTasks(chamCongJobs);
 
       const checkInCount       = chamCongJobs.filter((j) => labelNames(j.labels).includes("check_in")).length;
       const completedCheckOuts = chamCongJobs.filter((j) => labelNames(j.labels).includes("check_out") && j.job_status_id === 5).length;
@@ -129,7 +183,7 @@ export async function GET(req: NextRequest) {
         return pickup?.customer_name ?? dropoff?.customer_name ?? j.reference_number ?? `Job #${j.job_id}`;
       });
 
-      return NextResponse.json({ checkInCount, completedCheckOuts, activeCheckOuts, pendingJobs, pendingJobNames, ongoing });
+      return NextResponse.json({ checkInCount, completedCheckOuts, activeCheckOuts, pendingJobs, pendingJobNames, ongoing, tasks });
     } catch (e) {
       return NextResponse.json({ error: String(e) }, { status: 500 });
     }
