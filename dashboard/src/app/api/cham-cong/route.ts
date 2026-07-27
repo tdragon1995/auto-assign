@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createJob, deleteJob, getJobDetails, updateJobStops, getTimelineJobs, BASE_URL, getHeaders, isDriverUnavailableError, type Env } from "@/lib/cartrack";
+import { createJob, deleteJob, getJobDetails, updateJobStops, BASE_URL, getHeaders, isDriverUnavailableError, type Env } from "@/lib/cartrack";
+import { getDriverJobsToday } from "@/lib/driver-jobs-cache";
 import { vnDate } from "@/lib/time";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 import { isStopStarted } from "@/lib/job-filters";
@@ -91,12 +92,12 @@ function labelNames(labels: any): string[] {
  *  and scheduled on the spot), so the counts agree either way. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function loadDriverJobsToday(driverId: string, today: string, env: Env): Promise<any[]> {
-  try {
-    const jobs = await getTimelineJobs(today, env);
-    if (jobs) return jobs.filter((j) => j.delivery_driver_id === driverId);
-  } catch {
-    /* fall through to REST */
-  }
+  // Per-driver slice of one cached timeline fetch, rather than pulling the whole
+  // network's day on every load. `null` means the timeline itself was unavailable,
+  // so fall through to REST exactly as before; an empty array is a real answer
+  // ("no tasks today") and must not trigger the fallback.
+  const cached = await getDriverJobsToday(driverId, today, env);
+  if (cached) return cached;
 
   const res = await fetch(
     `${BASE_URL}/jobs?filter[driver_id]=${driverId}&filter[create_ts_from]=${today} 00:00:00&filter[create_ts_to]=${today} 23:59:59&limit=100`,
