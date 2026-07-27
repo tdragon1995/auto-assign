@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo, useRef } from "react";
-import { Calendar, Clock, ClipboardCheck, FileText, NotepadText, CalendarDays, Search, Truck, MapPin, CheckCircle2, LogOut, RefreshCw, AlertCircle, LogIn, Loader2 } from "lucide-react";
+import { Calendar, Clock, ClipboardCheck, FileText, NotepadText, CalendarDays, Search, Truck, MapPin, ArrowLeftRight, CheckCircle2, LogOut, RefreshCw, AlertCircle, LogIn, Loader2 } from "lucide-react";
 
 interface Driver {
   driver_id: string;
@@ -123,7 +123,6 @@ function ShiftSection({ title, accent, rows }: { title: string; accent: "amber" 
 const LS_DRIVER_ID   = "cc_driver_id";
 const LS_DRIVER_NAME = "cc_driver_name";
 const SHIFT_STATE_TTL_MS = 2 * 60 * 1000;
-const HOLD_MS = 650; // press-and-hold duration to commit a location change
 const SS_DRIVERS_KEY = "cc_drivers_cache";
 const LS_NV_PHONE   = "cc_nv_phone";   // Nhận Việc: remembered phone (never the PIN)
 const LS_NV_SESSION = "cc_nv_session"; // Nhận Việc: authenticated {driver_id, driver_name}
@@ -291,11 +290,6 @@ export default function ChamCongPage() {
   // still holds the location just checked into and would start the control dead.
   const [switchingJobId, setSwitchingJobId] = useState<number | null>(null);
   const [switchSearch,   setSwitchSearch]   = useState("");
-  // Hold-to-confirm on the change-location option: a stray tap must not move a task, so
-  // committing requires pressing and holding an option (HOLD_MS). holdKey is the
-  // customer_id currently being held, which drives the progress fill.
-  const [holdKey,        setHoldKey]        = useState<string | null>(null);
-  const holdTimer = useRef<number | null>(null);
 
   // ── Nộp Đơn Nghỉ tab ──────────────────────────────────────────────────────
   const [leaveType,         setLeaveType]         = useState<LeaveType>("");
@@ -365,9 +359,6 @@ export default function ChamCongPage() {
     if (savedId) fetchShiftState(savedId);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // Clear any in-flight hold timer on unmount so it can't fire a switch after teardown.
-  useEffect(() => () => { if (holdTimer.current) clearTimeout(holdTimer.current); }, []);
 
   // Nhận Việc: logged in = a stored authenticated session. Identity comes from the
   // phone+PIN login itself (bridged to the fleet driver_id) — no name-picker gate.
@@ -655,23 +646,6 @@ export default function ChamCongPage() {
     }
   }
 
-  // Press-and-hold to commit a location change (touch/mouse). Releasing early, or the
-  // pointer leaving the option, cancels — so a stray tap in the scrolling list can't move
-  // a task. Keyboard users commit with Enter/Space directly (already deliberate).
-  function startHold(task: ChamCongTask, loc: Location) {
-    if (switching) return;
-    setHoldKey(loc.customer_id);
-    holdTimer.current = window.setTimeout(() => {
-      holdTimer.current = null;
-      setHoldKey(null);
-      switchLocation(task, loc);
-    }, HOLD_MS);
-  }
-  function cancelHold() {
-    if (holdTimer.current) { clearTimeout(holdTimer.current); holdTimer.current = null; }
-    setHoldKey(null);
-  }
-
   // Locations offered by the open row's picker — all except where that task already is.
   const switchingTask = useMemo(
     () => tasks.find((t) => t.job_id === switchingJobId) ?? null,
@@ -754,6 +728,20 @@ export default function ChamCongPage() {
         setCcMessage(data.error ?? "Có lỗi xảy ra.");
         return;
       }
+      // Show the new task in "Chấm công hôm nay" immediately — don't wait for the
+      // background refetch (~2s), which otherwise leaves the list looking empty right
+      // after a successful create. fetchShiftState below reconciles with the server.
+      const vnNow = new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit", hour12: false,
+      }).format(new Date());
+      setTasks((prev) =>
+        prev.some((t) => t.job_id === data.job_id)
+          ? prev
+          : [
+              ...prev,
+              { job_id: data.job_id, type, customer_id: lid, location_name: lname, time: vnNow, state: "pending" as const, switchable: true },
+            ].sort((a, b) => a.job_id - b.job_id)
+      );
       shiftStateRef.current = null;
       fetchShiftState(did);
       // The picked location was input to an action that's now done — leaving it filled
@@ -1071,14 +1059,14 @@ export default function ChamCongPage() {
                   onClick={() => submitChamCong("check-in")}
                   className="bg-green-700 hover:bg-green-800 disabled:opacity-50 text-white font-semibold rounded-xl py-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-green-600"
                 >
-                  {ccStatus === "loading" ? "Đang xử lý..." : "Vào Ca"}
+                  {ccStatus === "loading" ? "Đang xử lý..." : "Tạo Task Vào Ca"}
                 </button>
                 <button
                   disabled={ccStatus === "loading"}
                   onClick={() => submitChamCong("check-out")}
                   className="bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-semibold rounded-xl py-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-red-500"
                 >
-                  {ccStatus === "loading" ? "Đang xử lý..." : "Ra Ca"}
+                  {ccStatus === "loading" ? "Đang xử lý..." : "Tạo Task Ra Ca"}
                 </button>
               </div>
 
@@ -1137,9 +1125,6 @@ export default function ChamCongPage() {
                                       disabled={switching}
                                     />
                                   </div>
-                                  {switchOptions.length > 0 && (
-                                    <p className="text-[11px] text-gray-500">Giữ để đổi địa điểm</p>
-                                  )}
                                   <ul className="bg-white border border-amber-200 rounded-lg max-h-36 overflow-y-auto divide-y divide-gray-100">
                                     {switchOptions.length === 0 ? (
                                       <li className="px-2.5 py-1.5 text-xs text-gray-500">Không tìm thấy địa điểm.</li>
@@ -1147,33 +1132,19 @@ export default function ChamCongPage() {
                                       switchOptions.map((l) => (
                                         <li key={l.customer_id}>
                                           <button
-                                            onPointerDown={() => startHold(t, l)}
-                                            onPointerUp={cancelHold}
-                                            onPointerLeave={cancelHold}
-                                            onPointerCancel={cancelHold}
-                                            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); switchLocation(t, l); } }}
+                                            onClick={() => switchLocation(t, l)}
                                             disabled={switching}
-                                            className="relative w-full text-left px-2.5 py-2 overflow-hidden select-none hover:bg-amber-50 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-amber-500"
+                                            className="w-full text-left px-2.5 py-2 hover:bg-amber-50 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-amber-500"
                                           >
-                                            <span
-                                              aria-hidden
-                                              className="absolute inset-y-0 left-0 bg-amber-200 motion-reduce:transition-none"
-                                              style={{
-                                                width: holdKey === l.customer_id ? "100%" : "0%",
-                                                transition: holdKey === l.customer_id ? `width ${HOLD_MS}ms linear` : "width 120ms ease-out",
-                                              }}
-                                            />
-                                            <div className="relative">
-                                              <div className="text-xs font-medium text-gray-800">{l.name}</div>
-                                              {l.address && <div className="text-[11px] text-gray-500 truncate">{l.address}</div>}
-                                            </div>
+                                            <div className="text-xs font-medium text-gray-800">{l.name}</div>
+                                            {l.address && <div className="text-[11px] text-gray-500 truncate">{l.address}</div>}
                                           </button>
                                         </li>
                                       ))
                                     )}
                                   </ul>
                                   <button
-                                    onClick={() => { cancelHold(); setSwitchingJobId(null); setSwitchSearch(""); }}
+                                    onClick={() => { setSwitchingJobId(null); setSwitchSearch(""); }}
                                     disabled={switching}
                                     className="w-full text-xs font-medium text-amber-800 rounded-lg py-2 hover:bg-amber-100 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
                                   >
@@ -1186,7 +1157,7 @@ export default function ChamCongPage() {
                                   disabled={switching}
                                   className="mt-2 w-full flex items-center justify-center gap-1.5 text-xs font-medium text-amber-800 bg-amber-100 border border-amber-300 rounded-lg py-2.5 hover:bg-amber-200 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-amber-500"
                                 >
-                                  <MapPin size={13} /> Đổi địa điểm
+                                  <ArrowLeftRight size={13} /><MapPin size={13} /> Đổi địa điểm
                                 </button>
                               )
                             )}
