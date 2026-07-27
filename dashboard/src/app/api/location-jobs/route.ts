@@ -7,13 +7,20 @@ import type { Job, Stop } from "@/lib/types";
 export const runtime = "edge";
 export const preferredRegion = "sin1";
 
-// Shared day cache: the timeline fetch pulls the WHOLE network's day (~2 MB)
-// and each QR tap keeps only one location's rows — so a burst of taps used to
-// repeat the same download+parse per tap. Cache the slimmed all-locations list
-// once per date; every tap within the TTL filters it in-memory. `?fresh=1`
-// (the Làm mới button, post-cancel and post-3PL reloads) bypasses the read but
-// still rewrites the cache, so a manual refresh updates it for everyone.
+// Shared day cache: the timeline fetch pulls the WHOLE network's day (~2 MB) and each
+// QR tap keeps only one location's rows — so a burst of taps used to repeat the same
+// download+parse per tap. One Cartrack fetch per date fills a Redis HASH with one field
+// PER LOCATION; a branch tap then reads only its own slice. It used to read the whole
+// network's day back out and filter it in-memory on every poll, and that unpacking was
+// the bulk of this route's CPU (~1.6k reads/day of an all-locations blob). `?fresh=1`
+// (the Làm mới button, post-cancel and post-3PL reloads) bypasses the read but still
+// rewrites the hash, so a manual refresh updates it for everyone.
 const CACHE_TTL_S = 90;
+
+// Marker field written alongside the per-location fields. Without it a HGET miss is
+// ambiguous — "this branch has no trips today" looks identical to "nothing cached yet",
+// and a quiet branch would re-fetch the whole network on every single poll.
+const BUILT_FIELD = "__built__";
 
 function getRedis(): Redis | null {
   const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
@@ -108,6 +115,36 @@ function slimUnroutedJob(j: any): SlimJob {
   };
 }
 
+/** Bucket jobs by every location their stops touch. A trip picking up at A and dropping
+ *  at B lands in BOTH buckets — either branch's feed should show it, which is exactly
+ *  what the old `stops.some(...)` filter did. Storing a job twice is deliberate: storage
+ *  is the resource with headroom to spare (867 KB of 256 MB), and the duplication is what
+ *  buys every read a small slice instead of the whole network's day. */
+function groupByLocation(all: SlimJob[]): Record<string, SlimJob[]> {
+  const byLoc: Record<string, SlimJob[]> = {};
+  for (const j of all) {
+    const seen = new Set<string>();
+    for (const s of j.stops) {
+      const id = s.customer_id;
+      // A job that both picks up AND drops off at one location appears once for it.
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      (byLoc[id] ??= []).push(j);
+    }
+  }
+  return byLoc;
+}
+
+/** A hash field that exists but holds no trips reads back as an empty list, not a miss —
+ *  the caller has already confirmed the day was built via {@link BUILT_FIELD}. */
+function parseSlice(raw: unknown): SlimJob[] {
+  if (raw == null) return [];
+  if (typeof raw === "string") {
+    try { return JSON.parse(raw) as SlimJob[]; } catch { return []; }
+  }
+  return raw as SlimJob[];
+}
+
 // `status=all` returns everything the feed shows in one call: assigned + completed from
 // the route timeline, plus unassigned (2) and rejected (3) from the unrouted pool. The
 // timeline alone only ever contains 4 and 5, so without the second source a branch never
@@ -144,24 +181,27 @@ export async function GET(req: NextRequest) {
 
   try {
     // Fast path (prod, code-scoped): one timeline JSON-RPC call covers assigned +
-    // completed jobs; filter to this location and slim before responding. The
-    // slimmed all-locations list is shared via Redis for CACHE_TTL_S so a burst
-    // of taps costs one Cartrack fetch. Any failure (including a throw) falls
-    // back to REST rather than 500ing.
+    // completed jobs; slim them and bucket by location before responding. The
+    // buckets are shared via Redis for CACHE_TTL_S, so a burst of taps costs one
+    // Cartrack fetch and each tap reads only its own branch. Any failure
+    // (including a throw) falls back to REST rather than 500ing.
     if (code) {
       const fresh = req.nextUrl.searchParams.get("fresh") === "1";
-      const cacheKey = `locjobs:v2:${env}:${date}`;
+      const cacheKey = `locjobs:v3:${env}:${date}`;
       const redis = getRedis();
 
-      let slim: SlimJob[] | null = null;
+      // One command, and it returns only this branch's trips plus the built-marker —
+      // where the old shape handed back every location's day to filter down to one.
+      let mine: SlimJob[] | null = null;
       if (redis && !fresh) {
         try {
-          slim = await redis.get<SlimJob[]>(cacheKey);
+          const hit = await redis.hmget<Record<string, unknown>>(cacheKey, BUILT_FIELD, code);
+          if (hit && hit[BUILT_FIELD] != null) mine = parseSlice(hit[code]);
         } catch {
-          slim = null;
+          mine = null;
         }
       }
-      if (!slim) {
+      if (!mine) {
         // Two sources, fetched together: the route timeline (assigned + completed) and
         // the unrouted pool (unassigned + rejected). Neither covers the other.
         let timeline: Job[] | null = null;
@@ -176,23 +216,33 @@ export async function GET(req: NextRequest) {
           timeline = null;
         }
         if (timeline) {
-          slim = [
+          const all = [
             ...timeline.map(slimJob),
             ...(unrouted ?? []).filter((j) => UNROUTED_STATUSES.includes(j?.jobStatusId)).map(slimUnroutedJob),
           ];
-          // Best-effort write — an oversized or failed SET just means the next
-          // tap fetches again; never let caching break the response.
+          const byLoc = groupByLocation(all);
+          mine = byLoc[code] ?? [];
+          // Best-effort write — a failed rebuild just means the next tap fetches
+          // again; never let caching break the response. DEL first so a location
+          // that had trips earlier and has none now doesn't keep a stale field,
+          // and as a transaction so a concurrent reader never sees a half-built
+          // hash (which it would read as a miss and re-fetch the whole network).
           if (redis) {
             try {
-              await redis.set(cacheKey, slim, { ex: CACHE_TTL_S });
+              const fields: Record<string, string> = { [BUILT_FIELD]: String(Date.now()) };
+              for (const [loc, jobs] of Object.entries(byLoc)) fields[loc] = JSON.stringify(jobs);
+              const tx = redis.multi();
+              tx.del(cacheKey);
+              tx.hset(cacheKey, fields);
+              tx.expire(cacheKey, CACHE_TTL_S);
+              await tx.exec();
             } catch {}
           }
         }
       }
-      if (slim) {
-        const jobs = slim.filter(
-          (j) => matchesStatus(j.job_status_id, status) && j.stops.some((s) => s.customer_id === code)
-        );
+      if (mine) {
+        // Location is already applied by the slice; only the status filter is left.
+        const jobs = mine.filter((j) => matchesStatus(j.job_status_id, status));
         return NextResponse.json({ jobs });
       }
     }
