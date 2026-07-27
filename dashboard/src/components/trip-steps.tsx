@@ -36,7 +36,7 @@ export function tripStateText(state: TripState, dest?: string): string {
   const to = dest ? ` đến ${dest}` : "";
   if (state === 0) return "Chờ điều phối";
   if (state === 5) return "Chờ tới giờ hẹn";
-  if (state === 1) return "Tài xế đang đến lấy";
+  if (state === 1) return "Giao Nhận Mẫu đang đến lấy";
   if (state === 2) return `Đang giao${to}`;
   if (state === 4) return "Đã từ chối";
   return "Đã giao";

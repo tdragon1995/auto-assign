@@ -311,7 +311,7 @@ export async function DELETE(req: NextRequest) {
     const stops: any[] = jobData.data?.stops ?? [];
     const pickup = stops.find((s) => s.stop_type_id === 1);
     if (pickup && pickup.stop_status_id !== 1) {
-      return NextResponse.json({ error: "Không thể huỷ: tài xế đã bắt đầu công việc." }, { status: 409 });
+      return NextResponse.json({ error: "Không thể huỷ: Giao Nhận Mẫu đã bắt đầu công việc." }, { status: 409 });
     }
 
     const res = await fetch(`${BASE_URL}/jobs/${jobId}?force=true`, { method: "DELETE", headers });

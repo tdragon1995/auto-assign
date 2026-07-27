@@ -157,7 +157,7 @@ function stateText(state: TripState, dest?: string): string {
   const to = dest ? ` đến ${dest}` : "";
   if (state === 0) return "Chờ điều phối";
   if (state === 5) return "Chờ tới giờ hẹn";
-  if (state === 1) return "Tài xế đang đến lấy";
+  if (state === 1) return "Giao Nhận Mẫu đang đến lấy";
   if (state === 2) return `Đang giao${to}`;
   if (state === 4) return "Đã từ chối";
   return "Đã giao";
@@ -275,9 +275,9 @@ function buildEvents(
     return ev;
   }
 
-  if (p?.activity_started_ts) ev.push({ tone: "done", time: fmtTs(p.activity_started_ts), label: "Tài xế bắt đầu đi lấy mẫu" });
+  if (p?.activity_started_ts) ev.push({ tone: "done", time: fmtTs(p.activity_started_ts), label: "Giao Nhận Mẫu bắt đầu đi lấy mẫu" });
   else if (state === 5) ev.push({ tone: "now", label: "Chờ tới giờ hẹn lấy mẫu…" });
-  else ev.push({ tone: state === 0 ? "now" : "future", label: state === 0 ? "Đang chờ điều phối tài xế…" : "Tài xế đi lấy mẫu" });
+  else ev.push({ tone: state === 0 ? "now" : "future", label: state === 0 ? "Đang chờ điều phối Giao Nhận Mẫu…" : "Giao Nhận Mẫu đi lấy mẫu" });
 
   if (p?.activity_arrived_ts) ev.push({ tone: "done", time: fmtTs(p.activity_arrived_ts), label: "Đến điểm lấy mẫu", body: addr(p) });
   else if (state === 1) ev.push({ tone: "now", label: "Đang đến điểm lấy mẫu", body: addr(p) });
@@ -355,7 +355,7 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
             {threePl ? <Bike aria-hidden className="w-4 h-4" /> : parked ? <Clock aria-hidden className="w-4 h-4" /> : initial(driver)}
           </span>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-bold text-slate-800">{parked ? "Chưa có tài xế" : driver}</p>
+            <p className="text-sm font-bold text-slate-800">{parked ? "Chưa có Giao Nhận Mẫu" : driver}</p>
             {phone ? (
               <div className="flex items-center gap-3 mt-0.5">
                 <a href={`tel:${phoneE164}`} className="inline-flex items-center gap-1.5 text-sm font-bold text-green-700 active:opacity-70"><Phone aria-hidden className="w-3.5 h-3.5" />{phone}</a>
@@ -364,7 +364,7 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
               </div>
             ) : (
               <p className="text-[11px] text-slate-500">
-                {threePl ? "Đơn vị giao ngoài" : parked ? "Chuyến đã đặt lịch, chờ tới giờ hẹn" : "Tài xế Diag"}
+                {threePl ? "Đơn vị giao ngoài" : parked ? "Chuyến đã đặt lịch, chờ tới giờ hẹn" : "Giao Nhận Mẫu Diag"}
               </p>
             )}
           </div>
@@ -382,7 +382,7 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
         <Timeline events={buildEvents(shown, state, p, d, pTodos, dTodos, threePl)} />
 
         {detailLoading && !detail && (
-          <p className="text-[11px] text-slate-500 text-center">Đang tải ảnh giao nhận và số điện thoại tài xế…</p>
+          <p className="text-[11px] text-slate-500 text-center">Đang tải ảnh giao nhận và số điện thoại Giao Nhận Mẫu…</p>
         )}
 
         <p className="text-[10px] text-slate-500 text-center break-all mt-1">{shown.reference_number}</p>
@@ -470,7 +470,7 @@ function TripCard({ job, code, onOpen, onCancel, onSendVia3pl }: {
         {isWaiting(state) ? (
           <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100 text-[13px] font-semibold text-amber-700">
             <Clock aria-hidden className="w-4 h-4 shrink-0" />
-            {state === 5 ? "Đã đặt lịch, chờ tới giờ hẹn lấy mẫu" : "Đang chờ điều phối tài xế"}
+            {state === 5 ? "Đã đặt lịch, chờ tới giờ hẹn lấy mẫu" : "Đang chờ điều phối Giao Nhận Mẫu"}
           </div>
         ) : state === 4 ? null : !threePl && (
           <div className="flex items-center gap-2.5 mt-3 pt-3 border-t border-slate-100">
@@ -524,7 +524,7 @@ function PendingCard({ req, onCancel, onSendVia3pl }: {
         </span>
       </div>
       <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100 text-[13px] font-semibold text-amber-700">
-        <Clock aria-hidden className="w-4 h-4 shrink-0" />Đã gửi lúc {req.created_ts} — đang chờ điều phối tài xế
+        <Clock aria-hidden className="w-4 h-4 shrink-0" />Đã gửi lúc {req.created_ts} — đang chờ điều phối Giao Nhận Mẫu
       </div>
       <div className="space-y-1.5 mt-3">
         <button onClick={() => onSendVia3pl(target)}
@@ -855,7 +855,7 @@ export default function QrPage() {
           ))}
           {!loading && !pending.length && !active.length && (
             <p className="text-center text-sm text-slate-500 py-7">
-              {isToday ? <>Chưa có chuyến nào đang chạy.{!route.no_request && <><br />Bấm nút phía trên để gọi tài xế.</>}</> : "Không có chuyến đang chạy."}
+              {isToday ? <>Chưa có chuyến nào đang chạy.{!route.no_request && <><br />Bấm nút phía trên để gọi Giao Nhận Mẫu.</>}</> : "Không có chuyến đang chạy."}
             </p>
           )}
           {loading && <p className="text-center text-sm text-slate-500 py-7">Đang tải…</p>}
@@ -876,7 +876,7 @@ export default function QrPage() {
                   type="search"
                   value={doneQuery}
                   onChange={(e) => setDoneQuery(e.target.value)}
-                  placeholder="Tìm địa điểm, tài xế, mã batch…"
+                  placeholder="Tìm địa điểm, Giao Nhận Mẫu, mã batch…"
                   aria-label="Tìm trong chuyến đã xong"
                   className="w-full bg-slate-100 rounded-xl pl-9 pr-3 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-300"
                 />
@@ -941,7 +941,7 @@ export default function QrPage() {
             <div className="space-y-1">
               <p className="text-base font-bold text-slate-800">Huỷ chuyến?</p>
               <p className="text-xs text-slate-500 font-semibold break-all">{cancelTarget.reference}</p>
-              <p className="text-xs text-slate-500">Chỉ huỷ được khi tài xế chưa bắt đầu lấy mẫu. Hành động này không thể hoàn tác.</p>
+              <p className="text-xs text-slate-500">Chỉ huỷ được khi Giao Nhận Mẫu chưa bắt đầu lấy mẫu. Hành động này không thể hoàn tác.</p>
             </div>
             {cancelError && <p role="alert" className="text-xs text-red-600 font-medium">{cancelError}</p>}
             <div className="grid grid-cols-2 gap-3">
@@ -963,7 +963,7 @@ export default function QrPage() {
             <div className="space-y-1">
               <p className="text-base font-bold text-slate-800">Gửi mẫu qua Grab/Be/XanhSM/Ahamove?</p>
               <p className="text-xs text-slate-500 font-semibold break-all">{via3plTarget.reference}</p>
-              <p className="text-xs text-slate-500">Chuyến sẽ được gán cho tài xế giao nhận và đánh dấu hoàn thành. Hành động này không thể hoàn tác.</p>
+              <p className="text-xs text-slate-500">Chuyến sẽ được gán cho Giao Nhận Mẫu và đánh dấu hoàn thành. Hành động này không thể hoàn tác.</p>
             </div>
             <div className="space-y-1.5">
               <label htmlFor="batch-input" className="block text-xs font-semibold text-slate-700">

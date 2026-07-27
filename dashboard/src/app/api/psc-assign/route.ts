@@ -262,7 +262,7 @@ export async function DELETE(req: NextRequest) {
     // isStopStarted also catches the case where status still reads 1 but an activity
     // timestamp is set.
     if (pickup && isStopStarted(pickup)) {
-      return NextResponse.json({ error: "Không thể huỷ: tài xế đã bắt đầu công việc." }, { status: 409 });
+      return NextResponse.json({ error: "Không thể huỷ: Giao Nhận Mẫu đã bắt đầu công việc." }, { status: 409 });
     }
 
     const res = await fetch(`${BASE_URL}/jobs/${jobId}?force=true`, { method: "DELETE", headers });

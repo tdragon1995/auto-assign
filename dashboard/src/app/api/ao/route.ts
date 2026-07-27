@@ -294,7 +294,7 @@ export async function DELETE(req: NextRequest) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pickup = (jobData.data?.stops ?? []).find((s: any) => s.stop_type_id === 1);
     if (pickup && pickup.stop_status_id !== 1) {
-      return NextResponse.json({ error: "Không thể huỷ: tài xế đã bắt đầu công việc." }, { status: 409 });
+      return NextResponse.json({ error: "Không thể huỷ: Giao Nhận Mẫu đã bắt đầu công việc." }, { status: 409 });
     }
 
     const res = await fetch(`${BASE_URL}/jobs/${jobId}?force=true`, { method: "DELETE", headers });

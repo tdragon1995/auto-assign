@@ -160,9 +160,9 @@ function PscJobSheet({ order, onClose }: { order: Order; onClose: () => void }) 
     },
   ];
 
-  if (p?.activity_started_ts) events.push({ tone: "done", time: hm(p.activity_started_ts), label: "Tài xế bắt đầu đi lấy mẫu" });
+  if (p?.activity_started_ts) events.push({ tone: "done", time: hm(p.activity_started_ts), label: "Giao Nhận Mẫu bắt đầu đi lấy mẫu" });
   else if (state === 5) events.push({ tone: "now", label: "Chờ tới giờ hẹn lấy mẫu…" });
-  else events.push({ tone: state === 0 ? "now" : "future", label: state === 0 ? "Đang chờ điều phối tài xế…" : "Tài xế đi lấy mẫu" });
+  else events.push({ tone: state === 0 ? "now" : "future", label: state === 0 ? "Đang chờ điều phối Giao Nhận Mẫu…" : "Giao Nhận Mẫu đi lấy mẫu" });
 
   if (p?.activity_arrived_ts) events.push({ tone: "done", time: hm(p.activity_arrived_ts), label: "Đến điểm lấy mẫu", body: addr(p) });
   else if (state === 1) events.push({ tone: "now", label: "Đang đến điểm lấy mẫu", body: addr(p) });
@@ -199,7 +199,7 @@ function PscJobSheet({ order, onClose }: { order: Order; onClose: () => void }) 
           {driverName ? initial(driverName) : <Clock aria-hidden className="w-4 h-4" />}
         </span>
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-bold text-slate-800">{driverName || "Chưa có tài xế"}</p>
+          <p className="text-sm font-bold text-slate-800">{driverName || "Chưa có Giao Nhận Mẫu"}</p>
           {phone ? (
             <div className="flex items-center gap-3 mt-0.5">
               <a href={`tel:${phoneE164}`} className="inline-flex items-center gap-1.5 text-sm font-bold text-green-700 active:opacity-70">
@@ -210,7 +210,7 @@ function PscJobSheet({ order, onClose }: { order: Order; onClose: () => void }) 
             </div>
           ) : (
             <p className="text-[11px] text-slate-500">
-              {driverName ? "Tài xế Diag" : state === 5 ? "Đơn đã đặt lịch, chờ tới giờ hẹn" : "Đơn hàng đang chờ được phân công"}
+              {driverName ? "Giao Nhận Mẫu Diag" : state === 5 ? "Đơn đã đặt lịch, chờ tới giờ hẹn" : "Đơn hàng đang chờ được phân công"}
             </p>
           )}
         </div>
@@ -219,7 +219,7 @@ function PscJobSheet({ order, onClose }: { order: Order; onClose: () => void }) 
       <Timeline events={events} />
 
       {detailLoading && !detail && (
-        <p className="text-[11px] text-slate-500 text-center mt-3">Đang tải ảnh giao nhận và số điện thoại tài xế…</p>
+        <p className="text-[11px] text-slate-500 text-center mt-3">Đang tải ảnh giao nhận và số điện thoại Giao Nhận Mẫu…</p>
       )}
     </SheetShell>
   );
