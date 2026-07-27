@@ -12,8 +12,8 @@ export const preferredRegion = "sin1";
  *  `?fresh=1` busts the 5-min sheet cache first (dashboard Refresh button). */
 export async function GET(req: NextRequest) {
   try {
-    if (new URL(req.url).searchParams.get("fresh")) invalidateLeaveCache();
-    const entries = await loadLeaveEntries();
+    const fresh = !!new URL(req.url).searchParams.get("fresh");
+    const entries = await loadLeaveEntries(fresh);
     const today = vnDate();
     const tomorrow = addDays(today, 1);
     return NextResponse.json({
