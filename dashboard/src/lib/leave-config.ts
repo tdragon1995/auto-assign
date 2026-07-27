@@ -1,4 +1,3 @@
-import { Redis } from "@upstash/redis";
 import { sheetCsvUrl, SHEET_GID } from "./sheets";
 import { addDays, timeToMins, vnDate, vnMinutesSinceMidnight } from "./time";
 
@@ -29,33 +28,14 @@ export interface LeaveEntry {
   subs: SubEntry[];         // substitutes covering this driver's leave (0–4)
 }
 
-// Two-tier cache. L1 is a per-instance in-memory copy (zero network on a warm
-// lambda — keeps the assign engine's hot path fast). L2 is a shared Redis copy
-// so a *cold* instance (every /api/leave-status tap lands on one) reads the
-// parsed roster back instead of re-fetching + re-parsing the 68 KB sheet over
-// TLS. Same 5-min freshness on both. The Redis blob is the slimmed LeaveEntry[],
-// so it's far smaller than the raw CSV (drops scheduled_trips/note).
 let cache: { entries: LeaveEntry[]; fetchedAt: number } | null = null;
 const CACHE_TTL_MS = 5 * 60 * 1000;
-const REDIS_KEY = "leave:v1:entries";
-const REDIS_TTL_S = 5 * 60;
 
-function getRedis(): Redis | null {
-  const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
-  if (!url || !token) return null;
-  return new Redis({ url, token });
-}
-
-/** Drop both cache tiers so the next load re-reads the sheet. Wired to the
+/** Drop the in-memory cache so the next load re-reads the sheet. Wired to the
  *  dashboard Refresh path (via /api/leave-status?fresh=1) so a supervisor's
- *  sheet edit is reflected immediately instead of after the 5-min TTL. Clears
- *  L1 synchronously; the Redis delete is best-effort (a following ?fresh=1 load
- *  overwrites the key anyway, so a missed delete never serves stale). */
+ *  sheet edit is reflected immediately instead of after the 5-min TTL. */
 export function invalidateLeaveCache(): void {
   cache = null;
-  const redis = getRedis();
-  if (redis) void redis.del(REDIS_KEY).catch(() => {});
 }
 
 function parseField(f: string | undefined): string {
@@ -268,25 +248,8 @@ export function findLeaveConflict(candidate: LeaveEntry, existing: LeaveEntry[])
   return null;
 }
 
-/** `force` (the ?fresh=1 / Refresh path) bypasses BOTH cache tiers and re-reads
- *  the sheet, then overwrites both — so a supervisor's edit shows at once on
- *  every instance, not just the one that handled the refresh. */
-export async function loadLeaveEntries(force = false): Promise<LeaveEntry[]> {
-  if (!force && cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS) return cache.entries;
-
-  // L2: shared Redis copy. Skipped on force; failures fall through to the fetch.
-  if (!force) {
-    const redis = getRedis();
-    if (redis) {
-      try {
-        const hit = await redis.get<LeaveEntry[]>(REDIS_KEY);
-        if (hit) {
-          cache = { entries: hit, fetchedAt: Date.now() };
-          return hit;
-        }
-      } catch { /* fall through to the sheet fetch */ }
-    }
-  }
+export async function loadLeaveEntries(): Promise<LeaveEntry[]> {
+  if (cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS) return cache.entries;
 
   try {
     const url = `${sheetCsvUrl(SHEET_GID.nghi_phep)}&_cb=${Date.now()}`;
@@ -338,15 +301,6 @@ export async function loadLeaveEntries(force = false): Promise<LeaveEntry[]> {
     }).filter((e) => e.driver_id && e.leave_from);
 
     cache = { entries, fetchedAt: Date.now() };
-    // Write-behind to L2 — but only a non-empty roster. A transient bad read
-    // that parses to zero entries must never be shared to every instance (it
-    // would read back as "nobody on leave"); leave that failure per-instance.
-    if (entries.length) {
-      const redis = getRedis();
-      if (redis) {
-        try { await redis.set(REDIS_KEY, entries, { ex: REDIS_TTL_S }); } catch { /* cache write is best-effort */ }
-      }
-    }
     return entries;
   } catch {
     // On fetch failure keep stale cache if available; otherwise return empty
