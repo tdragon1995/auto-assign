@@ -286,6 +286,25 @@ export async function updateJobStops(
   return { ok: res.ok, status: res.status, body };
 }
 
+// DO NOT route stop updates through the `delivery_update_job` JSON-RPC. It exists
+// (it's what the fleetweb UI posts), and it is a FULL REPLACE: every field absent
+// from the payload is cleared, not preserved.
+//
+// Measured on a throwaway 2-stop job, prod 2026-07-28, sending only
+// {stopId, stopTypeId, customerId} per stop:
+//   dropoff todos 3 -> 0        (destroyed)
+//   pickup  todos 2 -> 0        (destroyed — that stop wasn't even being changed)
+//   dropoff duration 10 -> 5    (reset to default)
+// The customer swap itself worked and address/coords/contact resolved correctly
+// from the new customer_id, so the call LOOKS successful: it returns no error and
+// the swap is visible. The todo loss is silent, and todos are the driver's
+// proof-of-delivery steps (photo, e-sign, note).
+//
+// The REST PUT above is a partial update — it preserves everything not sent — which
+// is why the alt-dropoff swap uses it. Matching the RPC would mean echoing back the
+// entire stop including todos with their stopTodoId, i.e. rewriting fields we never
+// intended to touch, to save well under a second on a once-per-job call.
+
 export async function updateJobSendToDriverAt(
   jobId: number,
   sendToDriverAt: string,

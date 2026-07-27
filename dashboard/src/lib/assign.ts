@@ -670,24 +670,49 @@ async function applyAltDropoff(
   let altLat: number | null | undefined;
   let altLon: number | null | undefined;
   try {
-    const customerData = await getCustomerById(altDropOffId, env);
-    if (customerData?.data) {
-      const c = customerData.data;
-      altCustomerName = c.customer_name || c.name || altCustomerName;
-      altLat = c.latitude;
-      altLon = c.longitude;
+    // An alt dropoff is a fixed network location — its name and coords are static
+    // config, but this used to refetch the identical customer record for every
+    // alt-mapped job on every cycle. Share the start-location cache: same data
+    // (customer coords + name), same 24h TTL, same Refresh-button invalidation.
+    const cacheKey = `${env}:${altDropOffId}`;
+    const cached = startLocCache.get(cacheKey);
+    if (cached && Date.now() - cached.fetchedAt < START_LOC_TTL_MS) {
+      altCustomerName = cached.coords.name || altCustomerName;
+      altLat = cached.coords.lat;
+      altLon = cached.coords.lon;
+    } else {
+      const customerData = await getCustomerById(altDropOffId, env);
+      if (customerData?.data) {
+        const c = customerData.data;
+        altCustomerName = c.customer_name || c.name || altCustomerName;
+        altLat = c.latitude;
+        altLon = c.longitude;
+        // Positive results only, matching the start-location rule: a transient
+        // hiccup must not pin this location as "no coords" for a day.
+        if (c.latitude != null && c.longitude != null) {
+          startLocCache.set(cacheKey, {
+            coords: { lat: c.latitude, lon: c.longitude, name: c.customer_name ?? null },
+            fetchedAt: Date.now(),
+          });
+        }
+      }
     }
 
-    const updatedStops = (jobStops ?? [])
-      .filter((s) => s.stop_id && s.stop_type_id && s.customer_id)
-      .map((s) => ({
-        stop_id: s.stop_id,
-        stop_type_id: s.stop_type_id,
-        customer_id: s.stop_type_id === 2 ? altDropOffId : s.customer_id,
-        ...(s.stop_type_id === 2 ? { customer_name: altCustomerName } : {}),
-      }));
+    const validStops = (jobStops ?? []).filter((s) => s.stop_id && s.stop_type_id && s.customer_id);
+    const updatedStops = validStops.map((s) => ({
+      stop_id: s.stop_id,
+      stop_type_id: s.stop_type_id,
+      customer_id: s.stop_type_id === 2 ? altDropOffId : s.customer_id,
+      ...(s.stop_type_id === 2 ? { customer_name: altCustomerName } : {}),
+    }));
 
-    if (updatedStops.length >= 2) {
+    // Nothing to swap when the dropoff is already the alt location (a job can be
+    // created pointing straight at it) — the PUT would rewrite identical stops.
+    // Name and coords are still returned above: the caller ranks drivers on them.
+    const dropoffs = validStops.filter((s) => s.stop_type_id === 2);
+    const alreadyAlt = dropoffs.length > 0 && dropoffs.every((s) => s.customer_id === altDropOffId);
+
+    if (updatedStops.length >= 2 && !alreadyAlt) {
       const putRes = await updateJobStops(jobId, updatedStops, env);
       if (putRes.ok) {
         log(`Job ${jobId} - dropoff swapped to ${altCustomerName}`, "INFO");
