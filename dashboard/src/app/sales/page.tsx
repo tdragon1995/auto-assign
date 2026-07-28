@@ -344,7 +344,7 @@ function ClientSearch({
 type SalesLocation = { id: number; name: string; phone: string; address: string };
 
 export default function SalesPage() {
-  const [tab, setTab] = useState<"customer" | "phone" | "address" | "reject">("customer");
+  const [tab, setTab] = useState<"customer" | "edit" | "reject">("customer");
 
   // Reject job state — manual reference entry (existing)
   const [refNumber, setRefNumber] = useState("");
@@ -378,208 +378,177 @@ export default function SalesPage() {
     }
   };
 
-  // ── Cập nhật SĐT tab ──────────────────────────────────────────────────────
-  const [phClientSearch, setPhClientSearch] = useState("");
-  const [phClientSelected, setPhClientSelected] = useState(false);
-  const [phLocations, setPhLocations] = useState<SalesLocation[]>([]);
-  const [phLocationsLoading, setPhLocationsLoading] = useState(false);
-  const [phLocationId, setPhLocationId] = useState<number | null>(null);
-  const [phNewPhone, setPhNewPhone] = useState("");
-  const [phLoading, setPhLoading] = useState(false);
-  const [phResult, setPhResult] = useState<{ ok: boolean; msg: string } | null>(null);
-
-  const phSelectedLocation = phLocations.find((l) => l.id === phLocationId) ?? null;
-  const phPhoneValid = phNewPhone.length >= 9 && phNewPhone.length <= 11;
-  // Nothing to do if the number already matches what's on file.
-  const phUnchanged =
-    !!phSelectedLocation && phSelectedLocation.phone.replace(/\D/g, "") === phNewPhone;
-
-  const phLoadLocations = async (code: string, label: string) => {
-    setPhClientSearch(label);
-    setPhClientSelected(true);
-    setPhLocationId(null);
-    setPhNewPhone("");
-    setPhResult(null);
-    setPhLocationsLoading(true);
-    setPhLocations([]);
-    try {
-      const res = await fetch(`/api/sales/locations?client_code=${encodeURIComponent(code)}`);
-      const data = await res.json();
-      if (res.ok) setPhLocations(data.locations ?? []);
-      else setPhResult({ ok: false, msg: data.error ?? "Không tải được danh sách địa điểm" });
-    } catch (e) {
-      setPhResult({ ok: false, msg: String(e) });
-    } finally {
-      setPhLocationsLoading(false);
-    }
-  };
-
-  const phSelectClient = (r: ClientResult) =>
-    phLoadLocations(r.code, `${r.code} — ${r.client_legal_name}`);
-
-  const phClearClient = () => {
-    setPhClientSearch("");
-    setPhClientSelected(false);
-    setPhLocations([]);
-    setPhLocationId(null);
-    setPhNewPhone("");
-    setPhResult(null);
-  };
-
-  const submitPhone = async () => {
-    if (phLocationId == null || !phPhoneValid || phLoading) return;
-    setPhLoading(true);
-    setPhResult(null);
-    try {
-      const res = await fetch("/api/sales/locations", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ location_id: phLocationId, phone: phNewPhone }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        // A partial failure leaves the two systems disagreeing — name which
-        // side landed so the user knows what a retry still has to fix.
-        const parts: string[] = [];
-        if (data.labcenter) parts.push(`Labcenter: ${data.labcenter.ok ? "đã cập nhật" : "thất bại"}`);
-        if (data.cartrack) parts.push(`Cartrack: ${data.cartrack.ok ? "đã cập nhật" : "thất bại"}`);
-        setPhResult({
-          ok: false,
-          msg: parts.length ? `${data.error} (${parts.join(" · ")})` : (data.error ?? "Cập nhật thất bại"),
-        });
-      } else {
-        setPhResult({ ok: true, msg: `Đã cập nhật SĐT thành ${data.phone} trên Cartrack và Labcenter.` });
-        // Reflect the new number locally so the row shows the updated value.
-        setPhLocations((prev) =>
-          prev.map((l) => (l.id === phLocationId ? { ...l, phone: data.phone } : l)),
-        );
-      }
-    } catch (e) {
-      setPhResult({ ok: false, msg: String(e) });
-    } finally {
-      setPhLoading(false);
-    }
-  };
-
-  // ── Cập nhật địa chỉ tab ──────────────────────────────────────────────────
-  const [adClientSearch, setAdClientSearch] = useState("");
-  const [adClientSelected, setAdClientSelected] = useState(false);
-  const [adLocations, setAdLocations] = useState<SalesLocation[]>([]);
-  const [adLocationsLoading, setAdLocationsLoading] = useState(false);
-  const [adLocationId, setAdLocationId] = useState<number | null>(null);
+  // ── Cập nhật SĐT & Địa Chỉ tab ────────────────────────────────────────────
+  // One flow: search a client, pick a location, then edit phone and/or address.
+  // Submit writes whichever changed via the two existing endpoints.
+  const [edClientSearch, setEdClientSearch] = useState("");
+  const [edClientSelected, setEdClientSelected] = useState(false);
+  const [edLocations, setEdLocations] = useState<SalesLocation[]>([]);
+  const [edLocationsLoading, setEdLocationsLoading] = useState(false);
+  const [edLocationId, setEdLocationId] = useState<number | null>(null);
+  const [edLocFilter, setEdLocFilter] = useState(""); // type-to-search over the list
+  const [edNewPhone, setEdNewPhone] = useState("");
   // The new address, picked from Goong. Coords only come from a real pick, so a
   // typed-but-unpicked string can't submit (no coordinates to send).
-  const [adAddress, setAdAddress] = useState("");
-  const [adLat, setAdLat] = useState<number | null>(null);
-  const [adLon, setAdLon] = useState<number | null>(null);
-  const [adPredictions, setAdPredictions] = useState<Prediction[]>([]);
-  const [adShowPredictions, setAdShowPredictions] = useState(false);
-  const [adPredLoading, setAdPredLoading] = useState(false);
-  const adSkipFetch = useRef(false);
-  const [adLoading, setAdLoading] = useState(false);
-  const [adResult, setAdResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [edAddress, setEdAddress] = useState("");
+  const [edLat, setEdLat] = useState<number | null>(null);
+  const [edLon, setEdLon] = useState<number | null>(null);
+  const [edPredictions, setEdPredictions] = useState<Prediction[]>([]);
+  const [edShowPredictions, setEdShowPredictions] = useState(false);
+  const [edPredLoading, setEdPredLoading] = useState(false);
+  const edSkipFetch = useRef(false);
+  const [edLoading, setEdLoading] = useState(false);
+  const [edResult, setEdResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
-  const adSelectedLocation = adLocations.find((l) => l.id === adLocationId) ?? null;
-  const adHasNewCoords = adLat != null && adLon != null;
+  const edSelectedLocation = edLocations.find((l) => l.id === edLocationId) ?? null;
+  const edPhoneValid = edNewPhone.length >= 9 && edNewPhone.length <= 11;
+  const edPhoneChanged =
+    edPhoneValid && !!edSelectedLocation && edSelectedLocation.phone.replace(/\D/g, "") !== edNewPhone;
+  const edHasNewCoords = edLat != null && edLon != null;
+  const edCanSubmit = !!edSelectedLocation && (edPhoneChanged || edHasNewCoords);
 
-  const adLoadLocations = async (code: string, label: string) => {
-    setAdClientSearch(label);
-    setAdClientSelected(true);
-    setAdLocationId(null);
-    setAdAddress(""); setAdLat(null); setAdLon(null);
-    setAdResult(null);
-    setAdLocationsLoading(true);
-    setAdLocations([]);
+  // Filter the location list by name / address / phone (diacritic-insensitive).
+  const edFilteredLocations = edLocFilter.trim()
+    ? edLocations.filter((l) => {
+        const q = stripDiacritics(edLocFilter).toLowerCase();
+        return (
+          stripDiacritics(l.name).toLowerCase().includes(q) ||
+          stripDiacritics(l.address ?? "").toLowerCase().includes(q) ||
+          (l.phone ?? "").includes(edLocFilter.trim())
+        );
+      })
+    : edLocations;
+
+  const edLoadLocations = async (code: string, label: string) => {
+    setEdClientSearch(label);
+    setEdClientSelected(true);
+    setEdLocationId(null);
+    setEdLocFilter("");
+    setEdNewPhone("");
+    setEdAddress(""); setEdLat(null); setEdLon(null);
+    setEdResult(null);
+    setEdLocationsLoading(true);
+    setEdLocations([]);
     try {
       const res = await fetch(`/api/sales/locations?client_code=${encodeURIComponent(code)}`);
       const data = await res.json();
-      if (res.ok) setAdLocations(data.locations ?? []);
-      else setAdResult({ ok: false, msg: data.error ?? "Không tải được danh sách địa điểm" });
+      if (res.ok) setEdLocations(data.locations ?? []);
+      else setEdResult({ ok: false, msg: data.error ?? "Không tải được danh sách địa điểm" });
     } catch (e) {
-      setAdResult({ ok: false, msg: String(e) });
+      setEdResult({ ok: false, msg: String(e) });
     } finally {
-      setAdLocationsLoading(false);
+      setEdLocationsLoading(false);
     }
   };
 
-  const adClearClient = () => {
-    setAdClientSearch(""); setAdClientSelected(false);
-    setAdLocations([]); setAdLocationId(null);
-    setAdAddress(""); setAdLat(null); setAdLon(null);
-    setAdResult(null);
+  const edSelectClient = (r: ClientResult) =>
+    edLoadLocations(r.code, `${r.code} — ${r.client_legal_name}`);
+
+  const edClearClient = () => {
+    setEdClientSearch(""); setEdClientSelected(false);
+    setEdLocations([]); setEdLocationId(null); setEdLocFilter("");
+    setEdNewPhone("");
+    setEdAddress(""); setEdLat(null); setEdLon(null);
+    setEdResult(null);
+  };
+
+  const edPickLocation = (l: SalesLocation) => {
+    setEdLocationId(l.id);
+    setEdNewPhone(l.phone.replace(/\D/g, ""));
+    setEdAddress(""); setEdLat(null); setEdLon(null);
+    setEdResult(null);
   };
 
   // Goong autocomplete for the new address (same proxy the new-customer tab uses).
   useEffect(() => {
-    if (adSkipFetch.current) { adSkipFetch.current = false; return; }
-    const q = adAddress.trim();
-    if (q.length < 3) { setAdPredictions([]); return; }
+    if (edSkipFetch.current) { edSkipFetch.current = false; return; }
+    const q = edAddress.trim();
+    if (q.length < 3) { setEdPredictions([]); return; }
     const ac = new AbortController();
     const t = setTimeout(async () => {
-      setAdPredLoading(true);
+      setEdPredLoading(true);
       try {
         const res = await fetch(`/api/geo/autocomplete?input=${encodeURIComponent(q)}`, { signal: ac.signal });
         const data = await res.json();
-        if (res.ok) setAdPredictions(data.predictions ?? []);
+        if (res.ok) setEdPredictions(data.predictions ?? []);
       } catch { /* aborted or network — ignore */ } finally {
-        setAdPredLoading(false);
+        setEdPredLoading(false);
       }
     }, 250);
     return () => { clearTimeout(t); ac.abort(); };
-  }, [adAddress]);
+  }, [edAddress]);
 
-  const adSelectPrediction = async (p: Prediction) => {
-    adSkipFetch.current = true;
-    setAdAddress(p.description);
-    setAdShowPredictions(false);
-    setAdPredictions([]);
-    setAdLat(null); setAdLon(null);
+  const edSelectPrediction = async (p: Prediction) => {
+    edSkipFetch.current = true;
+    setEdAddress(p.description);
+    setEdShowPredictions(false);
+    setEdPredictions([]);
+    setEdLat(null); setEdLon(null);
     try {
       const res = await fetch(`/api/geo/place?place_id=${encodeURIComponent(p.place_id)}`);
       const data = await res.json();
-      if (res.ok) { setAdLat(data.latitude); setAdLon(data.longitude); }
+      if (res.ok) { setEdLat(data.latitude); setEdLon(data.longitude); }
     } catch { /* user can re-pick */ }
   };
 
-  const submitAddress = async () => {
-    if (adLocationId == null || !adAddress.trim() || !adHasNewCoords || adLoading) return;
-    setAdLoading(true);
-    setAdResult(null);
+  // Submit whichever changed. Phone first, so the address endpoint's full-record
+  // Cartrack PUT reads the already-updated contact_number and preserves it.
+  const submitEdits = async () => {
+    if (!edCanSubmit || edLoading) return;
+    setEdLoading(true);
+    setEdResult(null);
+    const done: string[] = [];
+    let anyFail = false;
+
+    const partial = (data: { cartrack?: { ok: boolean }; labcenter?: { ok: boolean } }) => {
+      const parts: string[] = [];
+      if (data.cartrack) parts.push(`Cartrack: ${data.cartrack.ok ? "OK" : "lỗi"}`);
+      if (data.labcenter) parts.push(`Labcenter: ${data.labcenter.ok ? "OK" : "lỗi"}`);
+      return parts.length ? ` (${parts.join(" · ")})` : "";
+    };
+
     try {
-      const res = await fetch("/api/sales/address", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          location_id: adLocationId,
-          address_line_1: adAddress.trim(),
-          latitude: adLat,
-          longitude: adLon,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        // Partial failure — name which side landed so the user knows what a
-        // retry still has to fix, matching the phone tab.
-        const parts: string[] = [];
-        if (data.cartrack) parts.push(`Cartrack: ${data.cartrack.ok ? "đã cập nhật" : "thất bại"}`);
-        if (data.labcenter) parts.push(`Labcenter: ${data.labcenter.ok ? "đã cập nhật" : "thất bại"}`);
-        setAdResult({
-          ok: false,
-          msg: parts.length ? `${data.error} (${parts.join(" · ")})` : (data.error ?? "Cập nhật thất bại"),
+      if (edPhoneChanged) {
+        const res = await fetch("/api/sales/locations", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ location_id: edLocationId, phone: edNewPhone }),
         });
-      } else {
-        setAdResult({
-          ok: true,
-          msg: `Đã cập nhật địa chỉ & toạ độ trên Cartrack và Labcenter (${data.latitude}, ${data.longitude}).`,
-        });
-        setAdLocations((prev) =>
-          prev.map((l) => (l.id === adLocationId ? { ...l, address: data.address_line_1 } : l)),
-        );
+        const data = await res.json();
+        if (res.ok) {
+          done.push(`SĐT → ${data.phone}`);
+          setEdLocations((prev) => prev.map((l) => (l.id === edLocationId ? { ...l, phone: data.phone } : l)));
+        } else {
+          anyFail = true;
+          done.push(`SĐT thất bại: ${data.error ?? "lỗi"}${partial(data)}`);
+        }
       }
+
+      if (edHasNewCoords) {
+        const res = await fetch("/api/sales/address", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ location_id: edLocationId, address_line_1: edAddress.trim(), latitude: edLat, longitude: edLon }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          done.push(`Địa chỉ → ${data.address_line_1}`);
+          setEdLocations((prev) => prev.map((l) => (l.id === edLocationId ? { ...l, address: data.address_line_1 } : l)));
+          setEdAddress(""); setEdLat(null); setEdLon(null);
+        } else {
+          anyFail = true;
+          done.push(`Địa chỉ thất bại: ${data.error ?? "lỗi"}${partial(data)}`);
+        }
+      }
+
+      setEdResult({
+        ok: !anyFail,
+        msg: (anyFail ? "Có mục chưa cập nhật được. " : "Đã cập nhật trên Cartrack & Labcenter. ") + done.join(" · "),
+      });
     } catch (e) {
-      setAdResult({ ok: false, msg: String(e) });
+      setEdResult({ ok: false, msg: String(e) });
     } finally {
-      setAdLoading(false);
+      setEdLoading(false);
     }
   };
 
@@ -834,25 +803,22 @@ export default function SalesPage() {
           <h1 className="text-xl font-bold text-slate-800 mt-0.5">
             {tab === "customer"
               ? "Tạo địa điểm lấy mẫu cho khách hàng mới"
-              : tab === "phone"
-              ? "Cập nhật số điện thoại liên hệ"
-              : tab === "address"
-              ? "Cập nhật địa chỉ & toạ độ"
+              : tab === "edit"
+              ? "Cập Nhật SĐT & Địa Chỉ"
               : "Huỷ yêu cầu giao nhận"}
           </h1>
         </div>
 
-        <div className="grid grid-cols-4 border-t border-slate-100">
+        <div className="grid grid-cols-3 border-t border-slate-100">
           {([
             ["customer", "KH mới"],
-            ["phone", "SĐT"],
-            ["address", "Địa chỉ"],
+            ["edit", "Cập Nhật SĐT & Địa Chỉ"],
             ["reject", "Huỷ"],
           ] as const).map(([key, label], i) => (
             <button
               key={key}
               onClick={() => setTab(key)}
-              className={`py-2.5 text-xs font-semibold transition-colors ${i > 0 ? "border-l border-slate-100" : ""} ${
+              className={`py-2.5 px-1 text-xs font-semibold leading-tight transition-colors ${i > 0 ? "border-l border-slate-100" : ""} ${
                 tab === key ? "bg-blue-600 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
               }`}
             >
@@ -861,7 +827,7 @@ export default function SalesPage() {
           ))}
         </div>
 
-        {tab === "address" && (
+        {tab === "edit" && (
           <div className="p-6 space-y-4 border-t border-slate-100 min-h-[340px]">
             <div>
               <label className="block text-sm font-semibold text-slate-700 mb-1">Thông Tin Khách Hàng</label>
@@ -869,74 +835,110 @@ export default function SalesPage() {
                 Điền Client Code hoặc tên khách hàng
               </p>
               <ClientSearch
-                display={adClientSearch}
-                selected={adClientSelected}
-                onSelect={(r) => adLoadLocations(r.code, `${r.code} — ${r.client_legal_name}`)}
-                onClear={adClearClient}
-                onSelectCode={(code) => adLoadLocations(code, `${code} — (tra theo mã)`)}
+                display={edClientSearch}
+                selected={edClientSelected}
+                onSelect={edSelectClient}
+                onClear={edClearClient}
+                onSelectCode={(code) => edLoadLocations(code, `${code} — (tra theo mã)`)}
               />
             </div>
 
-            {adClientSelected && (
+            {edClientSelected && (
               <div>
                 <label className="block text-sm font-semibold text-slate-700 mb-1">Chọn Địa Điểm</label>
-                {adLocationsLoading ? (
+                {edLocationsLoading ? (
                   <p className="text-sm text-slate-400 py-2">Đang tải địa điểm...</p>
-                ) : adLocations.length === 0 ? (
+                ) : edLocations.length === 0 ? (
                   <p className="text-sm text-slate-500 py-2">Khách hàng này chưa có địa điểm nào.</p>
                 ) : (
-                  <ul className="border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-60 overflow-y-auto">
-                    {adLocations.map((l) => (
-                      <li key={l.id}>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setAdLocationId(l.id);
-                            setAdAddress(""); setAdLat(null); setAdLon(null);
-                            setAdResult(null);
-                          }}
-                          className={`w-full text-left px-3 py-2.5 transition-colors ${
-                            adLocationId === l.id ? "bg-blue-50" : "hover:bg-slate-50"
-                          }`}
-                        >
-                          <p className="text-sm font-medium text-slate-800 break-words">{l.name}</p>
-                          <p className="text-[11px] text-slate-400 mt-0.5 break-words">
-                            {l.address || "(chưa có địa chỉ)"}
-                          </p>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
+                  <>
+                    {/* Type-to-search filter — only worth showing once the list is long. */}
+                    {edLocations.length > 4 && (
+                      <div className="relative mb-1.5">
+                        <FieldIcon paths={ICON_SEARCH} />
+                        <input
+                          value={edLocFilter}
+                          onChange={(e) => setEdLocFilter(e.target.value)}
+                          placeholder={`Lọc trong ${edLocations.length} địa điểm (tên, địa chỉ, SĐT)...`}
+                          className="w-full border rounded-xl pl-9 pr-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+                        />
+                      </div>
+                    )}
+                    {edFilteredLocations.length === 0 ? (
+                      <p className="text-sm text-slate-500 py-2">Không có địa điểm khớp bộ lọc.</p>
+                    ) : (
+                      <ul className="border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-60 overflow-y-auto">
+                        {edFilteredLocations.map((l) => (
+                          <li key={l.id}>
+                            <button
+                              type="button"
+                              onClick={() => edPickLocation(l)}
+                              className={`w-full text-left px-3 py-2.5 transition-colors ${
+                                edLocationId === l.id ? "bg-blue-50" : "hover:bg-slate-50"
+                              }`}
+                            >
+                              <p className="text-sm font-medium text-slate-800 break-words">{l.name}</p>
+                              <p className="text-xs text-slate-500 mt-0.5">
+                                SĐT: <span className="font-semibold text-slate-700">{l.phone || "(trống)"}</span>
+                              </p>
+                              {l.address && (
+                                <p className="text-[11px] text-slate-400 mt-0.5 break-words">{l.address}</p>
+                              )}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </>
                 )}
               </div>
             )}
 
-            {adSelectedLocation && (
+            {edSelectedLocation && (
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Số Điện Thoại</label>
+                <div className="relative">
+                  <FieldIcon paths={ICON_PHONE} />
+                  <input
+                    value={edNewPhone}
+                    onChange={(e) => setEdNewPhone(e.target.value.replace(/\D/g, ""))}
+                    inputMode="tel"
+                    placeholder="VD: 0909123456"
+                    className="w-full border rounded-xl pl-9 pr-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+                  />
+                </div>
+                {edNewPhone && !edPhoneValid && (
+                  <p className="text-xs text-red-600 mt-1">Số điện thoại phải có 9–11 chữ số.</p>
+                )}
+              </div>
+            )}
+
+            {edSelectedLocation && (
               <div className="relative">
-                <label className="block text-sm font-semibold text-slate-700 mb-1">Địa Chỉ Mới</label>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">Địa Chỉ</label>
                 <p className="text-[10.5px] text-slate-400 mb-1.5 leading-relaxed">
-                  Chọn từ gợi ý để lấy toạ độ mới. Toạ độ quyết định điểm tài xế đến.
+                  Để đổi địa chỉ, chọn từ gợi ý để lấy toạ độ mới. Bỏ trống nếu chỉ đổi SĐT.
                 </p>
                 <div className="relative">
                   <FieldIcon paths={ICON_PIN} />
                   <input
-                    value={adAddress}
-                    onChange={(e) => { setAdAddress(e.target.value); setAdShowPredictions(true); }}
-                    onFocus={() => setAdShowPredictions(true)}
-                    onBlur={() => setTimeout(() => setAdShowPredictions(false), 150)}
-                    placeholder="Tìm địa chỉ mới..."
+                    value={edAddress}
+                    onChange={(e) => { setEdAddress(e.target.value); setEdShowPredictions(true); }}
+                    onFocus={() => setEdShowPredictions(true)}
+                    onBlur={() => setTimeout(() => setEdShowPredictions(false), 150)}
+                    placeholder={edSelectedLocation.address || "Tìm địa chỉ mới..."}
                     className="w-full border rounded-xl pl-9 pr-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
                   />
                 </div>
-                {adShowPredictions && (adPredLoading || adPredictions.length > 0) && (
+                {edShowPredictions && (edPredLoading || edPredictions.length > 0) && (
                   <ul className="absolute z-10 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-64 overflow-y-auto">
-                    {adPredLoading && adPredictions.length === 0 && (
+                    {edPredLoading && edPredictions.length === 0 && (
                       <li className="px-3 py-2 text-sm text-slate-400">Đang tìm...</li>
                     )}
-                    {adPredictions.map((p) => (
+                    {edPredictions.map((p) => (
                       <li
                         key={p.place_id}
-                        onMouseDown={(e) => { e.preventDefault(); adSelectPrediction(p); }}
+                        onMouseDown={(e) => { e.preventDefault(); edSelectPrediction(p); }}
                         className="px-3 py-2 text-sm hover:bg-slate-50 cursor-pointer border-b last:border-b-0 border-slate-100"
                       >
                         <div className="font-medium text-slate-800">
@@ -951,139 +953,31 @@ export default function SalesPage() {
                     ))}
                   </ul>
                 )}
-              </div>
-            )}
-
-            {adSelectedLocation && adHasNewCoords && (
-              <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 space-y-2 text-xs">
-                <div>
-                  <p className="text-slate-400">Địa chỉ hiện tại</p>
-                  <p className="font-medium text-slate-600 break-words">{adSelectedLocation.address || "(trống)"}</p>
-                </div>
-                <div>
-                  <p className="text-blue-500">Địa chỉ mới</p>
-                  <p className="font-semibold text-slate-800 break-words">{adAddress}</p>
-                  <p className="text-slate-500 mt-0.5">Toạ độ: {adLat}, {adLon}</p>
-                </div>
-              </div>
-            )}
-
-            {adSelectedLocation && (
-              <button
-                onClick={submitAddress}
-                disabled={!adHasNewCoords || adLoading}
-                className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-              >
-                {adLoading ? "Đang cập nhật..." : "Cập nhật địa chỉ & toạ độ"}
-              </button>
-            )}
-
-            {adResult && (
-              <div className={`rounded-xl p-3.5 text-sm font-medium text-center ${
-                adResult.ok
-                  ? "bg-emerald-50 border border-emerald-200 text-emerald-800"
-                  : "bg-red-50 border border-red-200 text-red-800"
-              }`}>
-                {adResult.msg}
-              </div>
-            )}
-          </div>
-        )}
-
-        {tab === "phone" && (
-          // min-height keeps the client-search dropdown from being clipped by
-          // the card's overflow-hidden while this tab is still just one field.
-          <div className="p-6 space-y-4 border-t border-slate-100 min-h-[340px]">
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1">Thông Tin Khách Hàng</label>
-              <p className="text-[10.5px] text-slate-400 mb-1.5 leading-relaxed">
-                Điền Client Code hoặc tên khách hàng
-              </p>
-              <ClientSearch
-                display={phClientSearch}
-                selected={phClientSelected}
-                onSelect={phSelectClient}
-                onClear={phClearClient}
-                onSelectCode={(code) => phLoadLocations(code, `${code} — (tra theo mã)`)}
-              />
-            </div>
-
-            {phClientSelected && (
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1">Chọn Địa Điểm</label>
-                {phLocationsLoading ? (
-                  <p className="text-sm text-slate-400 py-2">Đang tải địa điểm...</p>
-                ) : phLocations.length === 0 ? (
-                  <p className="text-sm text-slate-500 py-2">Khách hàng này chưa có địa điểm nào.</p>
-                ) : (
-                  <ul className="border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-72 overflow-y-auto">
-                    {phLocations.map((l) => (
-                      <li key={l.id}>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setPhLocationId(l.id);
-                            setPhNewPhone(l.phone.replace(/\D/g, ""));
-                            setPhResult(null);
-                          }}
-                          className={`w-full text-left px-3 py-2.5 transition-colors ${
-                            phLocationId === l.id ? "bg-blue-50" : "hover:bg-slate-50"
-                          }`}
-                        >
-                          <p className="text-sm font-medium text-slate-800 break-words">{l.name}</p>
-                          <p className="text-xs text-slate-500 mt-0.5">
-                            SĐT hiện tại: <span className="font-semibold text-slate-700">{l.phone || "(trống)"}</span>
-                          </p>
-                          {l.address && (
-                            <p className="text-[11px] text-slate-400 mt-0.5 break-words">{l.address}</p>
-                          )}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
+                {edHasNewCoords && (
+                  <p className="text-[11px] text-blue-600 mt-1 break-words">
+                    Địa chỉ mới: {edAddress} — toạ độ {edLat}, {edLon}
+                  </p>
                 )}
               </div>
             )}
 
-            {phSelectedLocation && (
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Số Điện Thoại Mới</label>
-                <div className="relative">
-                  <FieldIcon paths={ICON_PHONE} />
-                  <input
-                    value={phNewPhone}
-                    onChange={(e) => setPhNewPhone(e.target.value.replace(/\D/g, ""))}
-                    inputMode="tel"
-                    placeholder="VD: 0909123456"
-                    className="w-full border rounded-xl pl-9 pr-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
-                  />
-                </div>
-                {phNewPhone && !phPhoneValid && (
-                  <p className="text-xs text-red-600 mt-1">Số điện thoại phải có 9–11 chữ số.</p>
-                )}
-                <p className="text-[10.5px] text-slate-400 mt-1.5 leading-relaxed">
-                  Cập nhật đồng thời trên Cartrack (tài xế nhìn thấy) và Labcenter (khách hàng nhìn thấy).
-                </p>
-              </div>
-            )}
-
-            {phSelectedLocation && (
+            {edSelectedLocation && (
               <button
-                onClick={submitPhone}
-                disabled={!phPhoneValid || phUnchanged || phLoading}
+                onClick={submitEdits}
+                disabled={!edCanSubmit || edLoading}
                 className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
               >
-                {phLoading ? "Đang cập nhật..." : phUnchanged ? "Số điện thoại không thay đổi" : "Cập nhật số điện thoại"}
+                {edLoading ? "Đang cập nhật..." : !edCanSubmit ? "Chưa có thay đổi" : "Cập nhật"}
               </button>
             )}
 
-            {phResult && (
-              <div className={`rounded-xl p-3.5 text-sm font-medium text-center ${
-                phResult.ok
+            {edResult && (
+              <div className={`rounded-xl p-3.5 text-sm font-medium ${
+                edResult.ok
                   ? "bg-emerald-50 border border-emerald-200 text-emerald-800"
                   : "bg-red-50 border border-red-200 text-red-800"
               }`}>
-                {phResult.msg}
+                {edResult.msg}
               </div>
             )}
           </div>
@@ -1457,7 +1351,7 @@ export default function SalesPage() {
                   </ul>
                   <p className="text-[11px] text-red-600 leading-relaxed">
                     Nếu đây thật sự là địa điểm khác, hãy kiểm tra lại toạ độ trên bản đồ.
-                    Để đổi số điện thoại của địa điểm đã có, dùng tab <span className="font-semibold">Cập nhật SĐT</span>.
+                    Để đổi số điện thoại của địa điểm đã có, dùng tab <span className="font-semibold">Cập Nhật SĐT & Địa Chỉ</span>.
                   </p>
                 </div>
               ) : (
