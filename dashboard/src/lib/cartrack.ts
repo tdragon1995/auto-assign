@@ -265,6 +265,63 @@ export async function updateCustomerPhone(
   return { ok: true };
 }
 
+// Update a customer's address + coordinates.
+//
+// Unlike contact_number, `address_line_1` is IGNORED by a partial PUT — the API
+// returns 200 and silently keeps the old value (verified against prod). It only
+// takes when the FULL record is echoed back. So this reads the current record
+// and re-PUTs every field with just the address/coords swapped. customer_name is
+// preserved from the read, never derived, so the name-corruption footgun cannot
+// fire. is_address_locked does NOT block this — the flag can't be set via the API
+// and the full PUT writes through regardless (verified prod 2026-07-xx).
+export async function updateCustomerAddress(
+  customerId: string,
+  addr: { address_line_1: string; latitude: number; longitude: number; postal_code?: string },
+  env: Env = "prod"
+): Promise<{ ok: boolean; error?: string }> {
+  const current = await getCustomerById(customerId, env);
+  if (!current?.data) return { ok: false, error: "Không đọc được địa điểm hiện tại từ Cartrack" };
+  const c = current.data;
+
+  const payload = {
+    customer_name: c.customer_name,
+    email: c.email,
+    contact_code: c.contact_code,
+    contact_number: c.contact_number,
+    address_line_1: addr.address_line_1,
+    address_line_2: c.address_line_2,
+    postal_code: addr.postal_code ?? c.postal_code,
+    country_id: c.country_id,
+    latitude: addr.latitude,
+    longitude: addr.longitude,
+    client_reference: c.client_reference,
+  };
+
+  const res = await fetch(`${BASE_URL}/customers/${customerId}`, {
+    method: "PUT",
+    headers: getHeaders(env),
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    return { ok: false, error: `HTTP ${res.status}: ${text.slice(0, 200)}` };
+  }
+
+  // The API can 200 without applying the address (the exact partial-PUT trap),
+  // so confirm by reading back rather than trusting the status.
+  const after = await getCustomerById(customerId, env);
+  const a = after?.data;
+  if (!a) return { ok: true }; // write returned ok; couldn't re-read to confirm
+  const landed =
+    (a.address_line_1 ?? "") === addr.address_line_1 &&
+    Number(a.latitude) === addr.latitude &&
+    Number(a.longitude) === addr.longitude;
+  if (!landed) {
+    return { ok: false, error: "Cartrack nhận yêu cầu nhưng không cập nhật (200 nhưng dữ liệu không đổi)" };
+  }
+  return { ok: true };
+}
+
 /** PUT a job's stops. Pass `jobTypeId` for any job whose stop count doesn't match the
  *  default 2-stop pickup+dropoff shape: Cartrack validates the stops array against the
  *  job type, and without job_type_id in the body it assumes the default and rejects a

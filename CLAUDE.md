@@ -84,6 +84,7 @@ LABCENTER_RECEPTIONIST_PASSWORD= # Password for receptionist account
 | `GET /api/customers` | Check for duplicate customer name in Cartrack; `POST` creates a new customer and syncs pick/drop location to Labcenter |
 | `POST /api/geo/resolve` | Geocode/reverse-geocode via Goong |
 | `GET /api/sales/locations` | Lists a client's Labcenter locations (`?client_code=`); `PUT` updates the contact phone in **both** Cartrack (`contact_number`) and Labcenter (`phone`), joined via the location's `cartrack_vn` integration link |
+| `PUT /api/sales/address` | Updates a location's address + GPS in **both** Cartrack and Labcenter. Cartrack needs a full-record PUT (`address_line_1` is ignored by a partial PUT); Labcenter takes a direct address PUT. Both use read-back guards (the APIs 200 on writes they discard). Body must be proper UTF-8 — a Windows `curl` with inline Vietnamese mangles it and the write no-ops |
 | `POST /api/sales/reject-job` | Rejects a sales job by reference number via JSON-RPC (guards against started jobs) |
 | `GET /api/sales/search-trips` | Searches today's B2B trips by `?ma_kh=` (matches reference_number suffix); returns status 2+4 jobs only |
 
@@ -92,7 +93,7 @@ LABCENTER_RECEPTIONIST_PASSWORD= # Password for receptionist account
 | Module | Exports |
 |---|---|
 | `src/lib/cartrack.ts` | `BASE_URL`, `JSONRPC_URL`, `getHeaders`, all Cartrack REST/JSONRPC wrappers |
-| `src/lib/labcenter.ts` | `getAdminToken` / `getReceptionistToken` (cached JWT logins — admin for `spc-delivery`, receptionist for `spc-pos`), `listLocationsByClientCode`, `getCartrackCustomerId`, `updateLocationPhone` |
+| `src/lib/labcenter.ts` | `getAdminToken` / `getReceptionistToken` (cached JWT logins — admin for `spc-delivery`, receptionist for `spc-pos`), `listLocationsByClientCode`, `getCartrackCustomerId`, `updateLocationPhone`, `updateLocationAddress` |
 | `src/lib/distance.ts` | `haversineKm`, `goongDistanceKm` (1→1), `goongMatrix` (1→N batch), `goongMatrixMultiOrigin` (N→1, one request — undocumented-but-verified Goong behavior, shape-checked with null-fill fallback) |
 | `src/lib/distance-cache.ts` | `roadDistancesToPoint` (N→1), `roadDistancesFromPoint` (1→N) — resolve pairs cheapest-first: self-pair = 0 km free, then 40-day Redis cache (`dist:v1:` keys **truncated to 5 dp** — read, don't round, mirrors Excel `TRUNC`; value `{distance_km, eta_mins, from, to}` keeps the exact coords), then ONE matrix call for misses (write-behind; nulls never cached). Each result carries `source: "self"\|"cache"\|"api"`. `exportCachedDistances()` dumps all pairs (read-only SCAN+MGET) for download |
 | `src/lib/job-filters.ts` | `JOB_STATUS`, `STOP_STATUS` maps; `isActiveStop`, `isCompletedOrRejectedStop`, `isStopStarted` |

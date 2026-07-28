@@ -344,7 +344,7 @@ function ClientSearch({
 type SalesLocation = { id: number; name: string; phone: string; address: string };
 
 export default function SalesPage() {
-  const [tab, setTab] = useState<"customer" | "phone" | "reject">("customer");
+  const [tab, setTab] = useState<"customer" | "phone" | "address" | "reject">("customer");
 
   // Reject job state — manual reference entry (existing)
   const [refNumber, setRefNumber] = useState("");
@@ -458,6 +458,128 @@ export default function SalesPage() {
       setPhResult({ ok: false, msg: String(e) });
     } finally {
       setPhLoading(false);
+    }
+  };
+
+  // ── Cập nhật địa chỉ tab ──────────────────────────────────────────────────
+  const [adClientSearch, setAdClientSearch] = useState("");
+  const [adClientSelected, setAdClientSelected] = useState(false);
+  const [adLocations, setAdLocations] = useState<SalesLocation[]>([]);
+  const [adLocationsLoading, setAdLocationsLoading] = useState(false);
+  const [adLocationId, setAdLocationId] = useState<number | null>(null);
+  // The new address, picked from Goong. Coords only come from a real pick, so a
+  // typed-but-unpicked string can't submit (no coordinates to send).
+  const [adAddress, setAdAddress] = useState("");
+  const [adLat, setAdLat] = useState<number | null>(null);
+  const [adLon, setAdLon] = useState<number | null>(null);
+  const [adPredictions, setAdPredictions] = useState<Prediction[]>([]);
+  const [adShowPredictions, setAdShowPredictions] = useState(false);
+  const [adPredLoading, setAdPredLoading] = useState(false);
+  const adSkipFetch = useRef(false);
+  const [adLoading, setAdLoading] = useState(false);
+  const [adResult, setAdResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  const adSelectedLocation = adLocations.find((l) => l.id === adLocationId) ?? null;
+  const adHasNewCoords = adLat != null && adLon != null;
+
+  const adLoadLocations = async (code: string, label: string) => {
+    setAdClientSearch(label);
+    setAdClientSelected(true);
+    setAdLocationId(null);
+    setAdAddress(""); setAdLat(null); setAdLon(null);
+    setAdResult(null);
+    setAdLocationsLoading(true);
+    setAdLocations([]);
+    try {
+      const res = await fetch(`/api/sales/locations?client_code=${encodeURIComponent(code)}`);
+      const data = await res.json();
+      if (res.ok) setAdLocations(data.locations ?? []);
+      else setAdResult({ ok: false, msg: data.error ?? "Không tải được danh sách địa điểm" });
+    } catch (e) {
+      setAdResult({ ok: false, msg: String(e) });
+    } finally {
+      setAdLocationsLoading(false);
+    }
+  };
+
+  const adClearClient = () => {
+    setAdClientSearch(""); setAdClientSelected(false);
+    setAdLocations([]); setAdLocationId(null);
+    setAdAddress(""); setAdLat(null); setAdLon(null);
+    setAdResult(null);
+  };
+
+  // Goong autocomplete for the new address (same proxy the new-customer tab uses).
+  useEffect(() => {
+    if (adSkipFetch.current) { adSkipFetch.current = false; return; }
+    const q = adAddress.trim();
+    if (q.length < 3) { setAdPredictions([]); return; }
+    const ac = new AbortController();
+    const t = setTimeout(async () => {
+      setAdPredLoading(true);
+      try {
+        const res = await fetch(`/api/geo/autocomplete?input=${encodeURIComponent(q)}`, { signal: ac.signal });
+        const data = await res.json();
+        if (res.ok) setAdPredictions(data.predictions ?? []);
+      } catch { /* aborted or network — ignore */ } finally {
+        setAdPredLoading(false);
+      }
+    }, 250);
+    return () => { clearTimeout(t); ac.abort(); };
+  }, [adAddress]);
+
+  const adSelectPrediction = async (p: Prediction) => {
+    adSkipFetch.current = true;
+    setAdAddress(p.description);
+    setAdShowPredictions(false);
+    setAdPredictions([]);
+    setAdLat(null); setAdLon(null);
+    try {
+      const res = await fetch(`/api/geo/place?place_id=${encodeURIComponent(p.place_id)}`);
+      const data = await res.json();
+      if (res.ok) { setAdLat(data.latitude); setAdLon(data.longitude); }
+    } catch { /* user can re-pick */ }
+  };
+
+  const submitAddress = async () => {
+    if (adLocationId == null || !adAddress.trim() || !adHasNewCoords || adLoading) return;
+    setAdLoading(true);
+    setAdResult(null);
+    try {
+      const res = await fetch("/api/sales/address", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          location_id: adLocationId,
+          address_line_1: adAddress.trim(),
+          latitude: adLat,
+          longitude: adLon,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        // Partial failure — name which side landed so the user knows what a
+        // retry still has to fix, matching the phone tab.
+        const parts: string[] = [];
+        if (data.cartrack) parts.push(`Cartrack: ${data.cartrack.ok ? "đã cập nhật" : "thất bại"}`);
+        if (data.labcenter) parts.push(`Labcenter: ${data.labcenter.ok ? "đã cập nhật" : "thất bại"}`);
+        setAdResult({
+          ok: false,
+          msg: parts.length ? `${data.error} (${parts.join(" · ")})` : (data.error ?? "Cập nhật thất bại"),
+        });
+      } else {
+        setAdResult({
+          ok: true,
+          msg: `Đã cập nhật địa chỉ & toạ độ trên Cartrack và Labcenter (${data.latitude}, ${data.longitude}).`,
+        });
+        setAdLocations((prev) =>
+          prev.map((l) => (l.id === adLocationId ? { ...l, address: data.address_line_1 } : l)),
+        );
+      }
+    } catch (e) {
+      setAdResult({ ok: false, msg: String(e) });
+    } finally {
+      setAdLoading(false);
     }
   };
 
@@ -714,36 +836,159 @@ export default function SalesPage() {
               ? "Tạo địa điểm lấy mẫu cho khách hàng mới"
               : tab === "phone"
               ? "Cập nhật số điện thoại liên hệ"
+              : tab === "address"
+              ? "Cập nhật địa chỉ & toạ độ"
               : "Huỷ yêu cầu giao nhận"}
           </h1>
         </div>
 
-        <div className="grid grid-cols-3 border-t border-slate-100">
-          <button
-            onClick={() => setTab("customer")}
-            className={`py-2.5 text-xs font-semibold transition-colors ${
-              tab === "customer" ? "bg-blue-600 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
-            }`}
-          >
-            Khách hàng mới
-          </button>
-          <button
-            onClick={() => setTab("phone")}
-            className={`py-2.5 text-xs font-semibold transition-colors border-l border-slate-100 ${
-              tab === "phone" ? "bg-blue-600 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
-            }`}
-          >
-            Cập nhật SĐT
-          </button>
-          <button
-            onClick={() => setTab("reject")}
-            className={`py-2.5 text-xs font-semibold transition-colors border-l border-slate-100 ${
-              tab === "reject" ? "bg-blue-600 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
-            }`}
-          >
-            Huỷ giao nhận
-          </button>
+        <div className="grid grid-cols-4 border-t border-slate-100">
+          {([
+            ["customer", "KH mới"],
+            ["phone", "SĐT"],
+            ["address", "Địa chỉ"],
+            ["reject", "Huỷ"],
+          ] as const).map(([key, label], i) => (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              className={`py-2.5 text-xs font-semibold transition-colors ${i > 0 ? "border-l border-slate-100" : ""} ${
+                tab === key ? "bg-blue-600 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
         </div>
+
+        {tab === "address" && (
+          <div className="p-6 space-y-4 border-t border-slate-100 min-h-[340px]">
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">Thông Tin Khách Hàng</label>
+              <p className="text-[10.5px] text-slate-400 mb-1.5 leading-relaxed">
+                Điền Client Code hoặc tên khách hàng
+              </p>
+              <ClientSearch
+                display={adClientSearch}
+                selected={adClientSelected}
+                onSelect={(r) => adLoadLocations(r.code, `${r.code} — ${r.client_legal_name}`)}
+                onClear={adClearClient}
+                onSelectCode={(code) => adLoadLocations(code, `${code} — (tra theo mã)`)}
+              />
+            </div>
+
+            {adClientSelected && (
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">Chọn Địa Điểm</label>
+                {adLocationsLoading ? (
+                  <p className="text-sm text-slate-400 py-2">Đang tải địa điểm...</p>
+                ) : adLocations.length === 0 ? (
+                  <p className="text-sm text-slate-500 py-2">Khách hàng này chưa có địa điểm nào.</p>
+                ) : (
+                  <ul className="border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-60 overflow-y-auto">
+                    {adLocations.map((l) => (
+                      <li key={l.id}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAdLocationId(l.id);
+                            setAdAddress(""); setAdLat(null); setAdLon(null);
+                            setAdResult(null);
+                          }}
+                          className={`w-full text-left px-3 py-2.5 transition-colors ${
+                            adLocationId === l.id ? "bg-blue-50" : "hover:bg-slate-50"
+                          }`}
+                        >
+                          <p className="text-sm font-medium text-slate-800 break-words">{l.name}</p>
+                          <p className="text-[11px] text-slate-400 mt-0.5 break-words">
+                            {l.address || "(chưa có địa chỉ)"}
+                          </p>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            {adSelectedLocation && (
+              <div className="relative">
+                <label className="block text-sm font-semibold text-slate-700 mb-1">Địa Chỉ Mới</label>
+                <p className="text-[10.5px] text-slate-400 mb-1.5 leading-relaxed">
+                  Chọn từ gợi ý để lấy toạ độ mới. Toạ độ quyết định điểm tài xế đến.
+                </p>
+                <div className="relative">
+                  <FieldIcon paths={ICON_PIN} />
+                  <input
+                    value={adAddress}
+                    onChange={(e) => { setAdAddress(e.target.value); setAdShowPredictions(true); }}
+                    onFocus={() => setAdShowPredictions(true)}
+                    onBlur={() => setTimeout(() => setAdShowPredictions(false), 150)}
+                    placeholder="Tìm địa chỉ mới..."
+                    className="w-full border rounded-xl pl-9 pr-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+                  />
+                </div>
+                {adShowPredictions && (adPredLoading || adPredictions.length > 0) && (
+                  <ul className="absolute z-10 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-64 overflow-y-auto">
+                    {adPredLoading && adPredictions.length === 0 && (
+                      <li className="px-3 py-2 text-sm text-slate-400">Đang tìm...</li>
+                    )}
+                    {adPredictions.map((p) => (
+                      <li
+                        key={p.place_id}
+                        onMouseDown={(e) => { e.preventDefault(); adSelectPrediction(p); }}
+                        className="px-3 py-2 text-sm hover:bg-slate-50 cursor-pointer border-b last:border-b-0 border-slate-100"
+                      >
+                        <div className="font-medium text-slate-800">
+                          {p.structured_formatting?.main_text ?? p.description}
+                        </div>
+                        {p.structured_formatting?.secondary_text && (
+                          <div className="text-xs text-slate-500 truncate">
+                            {p.structured_formatting.secondary_text}
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            {adSelectedLocation && adHasNewCoords && (
+              <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 space-y-2 text-xs">
+                <div>
+                  <p className="text-slate-400">Địa chỉ hiện tại</p>
+                  <p className="font-medium text-slate-600 break-words">{adSelectedLocation.address || "(trống)"}</p>
+                </div>
+                <div>
+                  <p className="text-blue-500">Địa chỉ mới</p>
+                  <p className="font-semibold text-slate-800 break-words">{adAddress}</p>
+                  <p className="text-slate-500 mt-0.5">Toạ độ: {adLat}, {adLon}</p>
+                </div>
+              </div>
+            )}
+
+            {adSelectedLocation && (
+              <button
+                onClick={submitAddress}
+                disabled={!adHasNewCoords || adLoading}
+                className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+              >
+                {adLoading ? "Đang cập nhật..." : "Cập nhật địa chỉ & toạ độ"}
+              </button>
+            )}
+
+            {adResult && (
+              <div className={`rounded-xl p-3.5 text-sm font-medium text-center ${
+                adResult.ok
+                  ? "bg-emerald-50 border border-emerald-200 text-emerald-800"
+                  : "bg-red-50 border border-red-200 text-red-800"
+              }`}>
+                {adResult.msg}
+              </div>
+            )}
+          </div>
+        )}
 
         {tab === "phone" && (
           // min-height keeps the client-search dropdown from being clipped by

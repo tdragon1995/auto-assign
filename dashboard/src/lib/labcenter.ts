@@ -123,3 +123,35 @@ export async function updateLocationPhone(
   }
   return { ok: true };
 }
+
+// PUT /api/locations/{id} — update address + coordinates directly. Verified on
+// external (client) locations including linked ones; Vietnamese text round-trips
+// so long as the body is proper UTF-8 (fetch + JSON.stringify — a Windows `curl`
+// with inline UTF-8 mangles it and the API no-ops with a 200, which is what
+// earlier made this look read-only). Read-back confirms rather than trusting 200.
+export async function updateLocationAddress(
+  locationId: number,
+  addr: { address: string; latitude: number; longitude: number },
+  token: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`${DELIVERY_BASE}/api/locations/${locationId}`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ address: addr.address, latitude: addr.latitude, longitude: addr.longitude }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    return { ok: false, error: `HTTP ${res.status}: ${text.slice(0, 200)}` };
+  }
+  const check = await fetch(`${DELIVERY_BASE}/api/locations/${locationId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  if (check.ok) {
+    const d = (await check.json().catch(() => ({})))?.data;
+    if (d && d.address !== addr.address) {
+      return { ok: false, error: "Labcenter nhận yêu cầu nhưng không cập nhật địa chỉ" };
+    }
+  }
+  return { ok: true };
+}
