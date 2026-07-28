@@ -18,7 +18,7 @@ import {
 } from "./time";
 import { haversineKm } from "./distance";
 import { roadDistancesToPoint } from "./distance-cache";
-import { isActiveStop, isCompletedOrRejectedStop, isNoteApproved, pscPairKey } from "./job-filters";
+import { isActiveStop, isChamCong, isCompletedOrRejectedStop, isNoteApproved, pscPairKey } from "./job-filters";
 import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, idleBand, type RefStop, type RefLabel } from "./smart-rank";
 import { loadLeaveEntries, isDriverOnLeave, resolveSubstitute } from "./leave-config";
 
@@ -462,7 +462,12 @@ function timelineRoutesToDriverInfo(
   const result: Record<string, DriverRouteInfo> = {};
   for (const route of routes) {
     const driverId = route.routeId.replace(/^driver_/, "");
-    const stops = route.orderedStops ?? [];
+    // Chấm công (check-in/out) stops are attendance records, not delivery work:
+    // counting them anchors the driver to the PSC they clocked in at, adds to
+    // their load, and makes someone who just clocked in look freshly-active
+    // (killing their idle-fairness claim). Drop them before ranking — a driver
+    // left with no stops falls through to the start_location reference below.
+    const stops = (route.orderedStops ?? []).filter((s) => !isChamCong(s));
     const refStop = selectReferenceStop(stops, shiftStartByDriverId[driverId] ?? null);
     const stats = computeStopStats(stops);
     result[driverId] = {
@@ -754,6 +759,17 @@ function parseSendToDriverAt(ts: string | null | undefined): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
+/** A job's pickup delivery window as a display string: "HH:mm–HH:mm", or "HH:mm"
+ *  when only a start is set. undefined when the job has no window (ASAP). Window
+ *  times are raw "HH:mm:ss+07:00" — slice, never Date-parse (the offset NaNs). */
+function fmtPickupWindow(job: Job): string | undefined {
+  const w = job.stops?.find((s) => s.stop_type_id === 1)?.delivery_windows?.[0];
+  if (!w?.time_from) return undefined;
+  const from = w.time_from.slice(0, 5);
+  const to = w.time_to?.slice(0, 5);
+  return to ? `${from}–${to}` : from;
+}
+
 /** Parse pickup delivery_window time_from ("H:i:sP") to a full Date for dateVn. */
 function parsePickupWindowTime(timeStr: string, dateVn: string): Date | null {
   const m = timeStr.match(/^(\d{1,2}):(\d{2}):\d{2}([+-]\d{2}:?\d{2})$/);
@@ -840,6 +856,11 @@ async function rolloverUnfinishedJobs(
 ): Promise<Set<number>> {
   const eligible = candidates.filter((j) => {
     if (hasPlanAttached(j)) return false;                 // plan slot → regenerates itself; never roll
+    // A chấm công (check-in/out) task is yesterday's attendance record, not work
+    // to carry over. It has no pickup stop, so it clears the guards below and
+    // would roll: unassigned from the driver it belongs to, re-dated to today,
+    // then skipped forever by the cycle ("No pickup stop found"). Leave it be.
+    if (isChamCong(j)) return false;
     const stops = j.stops ?? [];
     // Skip if the pickup sample is already collected. Re-assignment resets a
     // stop's activity, so rolling a job whose pickup is Hoàn thành (status 4)
@@ -1291,6 +1312,11 @@ export async function autoAssignCycle(
     const route = `${jobCustomerName ?? customerId ?? "—"} → ${
       job.stops?.find((s) => s.stop_type_id === 2)?.customer_name ?? "—"
     }`;
+    // Pickup delivery window ("HH:mm–HH:mm"), when the job has one. A job only
+    // reaches an assign failure with its window already due (>60 min away parks
+    // instead), so this is the appointment the supervisor is now late for —
+    // shown on the "Cần xử lý" row so they can triage by time, not job id.
+    const failWindow = fmtPickupWindow(job);
     // Per-job failure recorder — closes over this job's `route` (no shared state).
     const fail = (
       reason: FailedJob["reason"],
@@ -1299,7 +1325,7 @@ export async function autoAssignCycle(
       detail: string,
       level: "ERROR" | "WARN" = "ERROR",
     ) => {
-      if (!onlyJobIds) failedJobs.push({ job_id: jobIdArg, customer: route || customer, reason, detail, level, ts: vnTimestamp() });
+      if (!onlyJobIds) failedJobs.push({ job_id: jobIdArg, customer: route || customer, reason, detail, level, ts: vnTimestamp(), delivery_window: failWindow });
     };
     // Single-pass block: the body's many top-level `continue`s mean "skip this job"
     // (continue → while(false) → exit). The nested candidate-retry `for` loop's own

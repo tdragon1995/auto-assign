@@ -26,6 +26,38 @@ export function isNoteApproved(job: { stops?: { note?: string | null }[] | null 
   return (job.stops ?? []).some((s) => s.note?.includes(NOTE_APPROVED_MARK));
 }
 
+/** Reference-number prefix and labels of a chấm công (attendance) task — the
+ *  single-stop check-in / check-out job /api/cham-cong creates, pre-assigned to
+ *  the driver who tapped it. Defined here so every consumer matches the same
+ *  strings; changing them means changing the POST payload in /api/cham-cong too. */
+export const CHAM_CONG_PREFIX = "Chấm Công -";
+export const CHAM_CONG_LABELS = ["check_in", "check_out"];
+
+/**
+ * True if this job (or timeline stop) is a chấm công task rather than real
+ * delivery work. Either signal is enough: labels arrive as plain strings from
+ * REST but as `{ labelId, label }` objects from JSON-RPC (both normalised here),
+ * and the reference-number prefix covers payloads that carry no labels at all.
+ */
+export function isChamCong(job: {
+  reference_number?: string | null;
+  referenceNumber?: string | null;
+  labels?: unknown;
+  jobLabels?: unknown;
+}): boolean {
+  const ref = job.reference_number ?? job.referenceNumber;
+  if (typeof ref === "string" && ref.startsWith(CHAM_CONG_PREFIX)) return true;
+  const raw = Array.isArray(job.labels)
+    ? job.labels
+    : Array.isArray(job.jobLabels)
+      ? job.jobLabels
+      : [];
+  return raw.some((l) => {
+    const name = typeof l === "string" ? l : (l as { label?: unknown } | null)?.label;
+    return typeof name === "string" && CHAM_CONG_LABELS.includes(name);
+  });
+}
+
 /** True if this stop can still block re-booking (Created, En Route, Arrived). */
 export function isActiveStop(stopStatusId: number): boolean {
   return stopStatusId === 1 || stopStatusId === 2 || stopStatusId === 3;

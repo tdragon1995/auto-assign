@@ -3,10 +3,8 @@ import { createJob, deleteJob, getJobDetails, updateJobStops, BASE_URL, getHeade
 import { getDriverJobsToday } from "@/lib/driver-jobs-cache";
 import { vnDate } from "@/lib/time";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
-import { isStopStarted } from "@/lib/job-filters";
+import { isStopStarted, CHAM_CONG_PREFIX } from "@/lib/job-filters";
 import { acquireCreateLock, releaseCreateLock } from "@/lib/smart-log-kv";
-
-const CHAM_CONG_PREFIX = "Chấm Công -";
 
 interface OngoingChamCong {
   job_id: number;
@@ -309,7 +307,7 @@ export async function POST(req: NextRequest) {
     const jobPayload = {
       job_type_id: 3,
       schedule_type_id: 1,
-      reference_number: `Chấm Công - ${isCheckin ? "Vào" : "Ra"}`,
+      reference_number: `${CHAM_CONG_PREFIX} ${isCheckin ? "Vào" : "Ra"}`,
       labels: [isCheckin ? "check_in" : "check_out"],
       delivery_driver_id: driver_id, // assign at creation — single call (Cartrack returns job_status_id 4)
       stops: [

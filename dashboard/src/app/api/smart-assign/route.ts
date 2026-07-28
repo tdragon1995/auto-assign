@@ -4,6 +4,7 @@ import { vnDate, vnDayWindow, vnMinutesSinceMidnight } from "@/lib/time";
 import { haversineKm } from "@/lib/distance";
 import { roadDistancesFromPoint, roadDistancesToPoint } from "@/lib/distance-cache";
 import { selectReferenceStop, computeStopStats, ROUTE_STATE_PRIORITY, enRouteGpsBand, idleBand, type RefLabel } from "@/lib/smart-rank";
+import { isChamCong } from "@/lib/job-filters";
 import type { TimelineRoute } from "@/lib/types";
 
 const TOP_N        = 3;
@@ -45,7 +46,11 @@ async function fetchAllDriverRouteData(
     const result: Record<string, DriverRouteData> = {};
     for (const route of routes) {
       const driverId = route.routeId.replace(/^driver_/, "");
-      const stops = route.orderedStops ?? [];
+      // Chấm công (check-in/out) stops are attendance records, not delivery work —
+      // dropped before ranking so the preview matches the cycle (see assign.ts
+      // timelineRoutesToDriverInfo). Also keeps the job counts shown to the
+      // supervisor to real trips.
+      const stops = (route.orderedStops ?? []).filter((s) => !isChamCong(s));
 
       // Job stats
       const jobStatuses = new Map<number, Set<number>>();

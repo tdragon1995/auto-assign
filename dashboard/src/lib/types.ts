@@ -186,6 +186,10 @@ export interface FailedJob {
   detail: string;
   level: "ERROR" | "WARN";
   ts: string;
+  // Pickup delivery window as "HH:mm–HH:mm" (or just "HH:mm" when the job carries
+  // only a start), when the job has one. The supervisor picking a driver by hand
+  // needs the appointment time to judge urgency; absent for ASAP jobs.
+  delivery_window?: string;
 }
 
 export const DRIVER_STATUS_CONFIG: Record<

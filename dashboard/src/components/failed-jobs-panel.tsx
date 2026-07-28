@@ -117,6 +117,18 @@ function FailedRow({
         <span className="min-w-0 flex-1 break-words md:truncate text-sm font-medium text-slate-800" title={job.customer}>
           {job.customer}
         </span>
+        {/* Appointment time (pickup delivery window) when the job has one — a job
+            only fails with its window already due, so this is what the manual pick
+            is racing. ASAP jobs have none and show nothing. */}
+        {job.delivery_window && (
+          <span
+            className="shrink-0 flex items-center gap-1 text-xs font-semibold tabular-nums text-slate-700 whitespace-nowrap"
+            title={`Khung giờ ${job.delivery_window}`}
+          >
+            <Clock className="w-3.5 h-3.5 text-slate-400" aria-hidden />
+            {job.delivery_window}
+          </span>
+        )}
       </div>
       {/* Line 2: detail · last-seen · manual-assign trigger */}
       <div className="mt-0.5 flex items-center gap-2 min-w-0">
