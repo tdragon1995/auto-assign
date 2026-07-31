@@ -6,8 +6,10 @@ name: KiotViet daily revenue report
 # post the report twice. If you ever move it back to vercel.json, delete this file.
 #
 # Requires one repository secret:
-#   CRON_SECRET — must match the CRON_SECRET env var in Vercel. Leave the Vercel
-#   var unset and the endpoint is public; set both and only this workflow can fire it.
+#   ZALO_REPORT_SECRET — any random string, set to the SAME value as the
+#   ZALO_REPORT_SECRET env var in Vercel. Deliberately not CRON_SECRET: that one also
+#   guards /api/assign/cron and is presented by the external cron-job.org ping, so
+#   re-keying it would silently stop the assign engine.
 
 on:
   schedule:
@@ -33,7 +35,7 @@ jobs:
         env:
           # Empty on a scheduled run, which is what we want: schedules send for real.
           DRY_RUN: ${{ inputs.dry_run }}
-          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          REPORT_SECRET: ${{ secrets.ZALO_REPORT_SECRET }}
         run: |
           set -euo pipefail
 
@@ -44,7 +46,7 @@ jobs:
           fi
 
           code=$(curl -sS --max-time 60 -o response.json -w '%{http_code}' \
-            -H "Authorization: Bearer ${CRON_SECRET:-}" \
+            -H "Authorization: Bearer ${REPORT_SECRET:-}" \
             "$url")
 
           echo "HTTP $code"

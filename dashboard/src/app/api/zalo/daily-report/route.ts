@@ -7,18 +7,24 @@ export const runtime = "nodejs";
 export const maxDuration = 30;
 
 // ── GET /api/zalo/daily-report ───────────────────────────────────────────────
-// Scheduled push of the day's revenue so far. Vercel Cron fires this at 09:00 UTC
-// = 16:00 Asia/Ho_Chi_Minh (see vercel.json — Vercel schedules are always UTC).
+// Scheduled push of the day's revenue so far, fired at 09:00 UTC = 16:00
+// Asia/Ho_Chi_Minh by .github/workflows/kiotviet-daily-report.yml.
 // Goes to the same chats allowed to ask on demand.
 
-/** Same shape as /api/assign/cron: open when CRON_SECRET is unset, so a manual
- *  browser hit still works for testing. */
+/** ZALO_REPORT_SECRET is preferred over CRON_SECRET so this endpoint can be re-keyed
+ *  on its own. CRON_SECRET also guards /api/assign/cron, and the external cron-job.org
+ *  ping presents it on every call — changing that value stops the assign engine dead,
+ *  with no error anywhere except jobs quietly not being assigned. Falls back to
+ *  CRON_SECRET so existing deployments keep working, and stays open if neither is set. */
 function authorized(req: NextRequest): boolean {
-  const secret = process.env.CRON_SECRET;
+  const secret = (process.env.ZALO_REPORT_SECRET || process.env.CRON_SECRET || "").trim();
   if (!secret) return true;
-  const auth = req.headers.get("authorization");
-  const header = req.headers.get("x-cron-secret");
-  return auth === `Bearer ${secret}` || header === secret;
+  return (
+    req.headers.get("authorization") === `Bearer ${secret}` ||
+    req.headers.get("x-cron-secret") === secret ||
+    // Query param too, so the dry run can be opened straight in a browser.
+    req.nextUrl.searchParams.get("key") === secret
+  );
 }
 
 export async function GET(req: NextRequest) {
