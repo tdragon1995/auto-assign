@@ -25,10 +25,34 @@ interface ZaloUpdate {
   };
 }
 
+// Zalo's bot settings screen has its own "Secret Token" field, which it sends as a
+// request header — but the header name isn't documented, so accept the handful of
+// plausible spellings alongside our own. The `?key=` query param is the mechanism we
+// can actually guarantee, so it stays the primary one; these are belt-and-braces for
+// whichever header Zalo turns out to use.
+const SECRET_HEADERS = [
+  "x-zalo-secret",
+  "x-bot-api-secret-token",
+  "x-zalo-bot-api-secret-token",
+  "secret-token",
+  "secret_token",
+];
+
+/** The secret presented by the caller, from the query string or any known header. */
+function presentedSecret(req: NextRequest): string | null {
+  const fromQuery = req.nextUrl.searchParams.get("key");
+  if (fromQuery) return fromQuery;
+  for (const h of SECRET_HEADERS) {
+    const v = req.headers.get(h);
+    if (v) return v;
+  }
+  return null;
+}
+
 export async function POST(req: NextRequest) {
   // Gate 1 — shared secret. Fail closed if it isn't configured at all.
   const expected = process.env.ZALO_KIOT_WEBHOOK_SECRET;
-  const provided = req.nextUrl.searchParams.get("key") ?? req.headers.get("x-zalo-secret");
+  const provided = presentedSecret(req);
   if (!expected || provided !== expected) {
     return NextResponse.json({ ok: false }, { status: 401 });
   }
@@ -67,7 +91,14 @@ export async function POST(req: NextRequest) {
   }
   if (!allowed.includes(chatId)) {
     console.warn("[zalo-webhook] rejected chat", chatId);
-    await sendZaloMessage(token, chatId, "⛔ Nhóm này không có quyền xem doanh thu.");
+    // Include the chat's own id: it isn't sensitive (the chat already "is" that id)
+    // and it's the only practical way to discover the id of a NEW group you want to
+    // allow, since an allowlisted-but-wrong-group otherwise just gets a flat refusal.
+    await sendZaloMessage(
+      token,
+      chatId,
+      `⛔ Nhóm này không có quyền xem doanh thu.\nChat ID: ${chatId}\n\nThêm id này vào ZALO_KIOT_ALLOWED_CHATS nếu muốn cấp quyền.`
+    );
     return NextResponse.json({ ok: true });
   }
 

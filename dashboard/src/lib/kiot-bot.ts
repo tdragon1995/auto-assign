@@ -19,12 +19,24 @@ export function botToken(): string {
 }
 
 /** Chats allowed to see revenue — both the on-demand replies and the daily push.
- *  Defaults to the admin group, which is already trusted with operational notices. */
+ *
+ *  The admin group is inherited ONLY when the admin bot is also inherited. Once the
+ *  revenue bot has its own identity it is a different account, quite possibly not a
+ *  member of the admin group, so silently targeting that group would be wrong. With
+ *  no allowlist the webhook replies with the chat's own id, which is how you collect
+ *  the right ids for the new bot's groups. */
 export function allowedChats(): string[] {
-  return envOr("ZALO_KIOT_ALLOWED_CHATS", "ZALO_ADMIN_CHAT_ID")
+  const explicit = envOr("ZALO_KIOT_ALLOWED_CHATS");
+  const source = explicit || (botHasOwnIdentity() ? "" : envOr("ZALO_ADMIN_CHAT_ID"));
+  return source
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+/** True when the revenue bot runs under its own token rather than the admin bot's. */
+export function botHasOwnIdentity(): boolean {
+  return Boolean(envOr("ZALO_KIOT_BOT_TOKEN"));
 }
 
 // Command parsing + reply text for the Zalo revenue bot. Kept out of the route
