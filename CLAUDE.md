@@ -146,7 +146,11 @@ The **GitHub→Vercel integration auto-deploys `master` to production** within ~
 
 Production URL: **https://diag-logistics.vercel.app** (also aliased as `https://auto-assign-opal.vercel.app`).
 
-There are no active GitHub Actions workflows.
+One GitHub Actions workflow is active: `.github/workflows/kiotviet-daily-report.yml`
+fires `GET /api/zalo/daily-report` at 09:00 UTC (16:00 VN) to post the KiotViet
+revenue report to Zalo. It lives in Actions rather than `vercel.json` for the
+manual `workflow_dispatch` run button and the run logs; keep it in exactly one
+place or the report goes out twice.
 
 ## Google Sheet
 

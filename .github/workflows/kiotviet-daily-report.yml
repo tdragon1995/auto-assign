@@ -1,0 +1,72 @@
+name: KiotViet daily revenue report
+
+# Posts the day's revenue + order count to Zalo at 16:00 Asia/Ho_Chi_Minh.
+#
+# This replaces the Vercel Cron entry for the same endpoint — running both would
+# post the report twice. If you ever move it back to vercel.json, delete this file.
+#
+# Requires one repository secret:
+#   CRON_SECRET — must match the CRON_SECRET env var in Vercel. Leave the Vercel
+#   var unset and the endpoint is public; set both and only this workflow can fire it.
+
+on:
+  schedule:
+    # GitHub cron is ALWAYS UTC: 09:00 UTC = 16:00 VN (UTC+7). Convert before editing.
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Preview the message without sending it to Zalo"
+        type: boolean
+        default: true
+
+# A slow run must never overlap the next one and double-post.
+concurrency:
+  group: kiotviet-daily-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger the report
+        env:
+          # Empty on a scheduled run, which is what we want: schedules send for real.
+          DRY_RUN: ${{ inputs.dry_run }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+
+          url="https://diag-logistics.vercel.app/api/zalo/daily-report"
+          if [ "${DRY_RUN:-false}" = "true" ]; then
+            url="$url?dry=1"
+            echo "DRY RUN — no Zalo message will be sent."
+          fi
+
+          code=$(curl -sS --max-time 60 -o response.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${CRON_SECRET:-}" \
+            "$url")
+
+          echo "HTTP $code"
+          jq . response.json || cat response.json
+
+          if [ "$code" != "200" ]; then
+            echo "::error::endpoint returned HTTP $code"
+            exit 1
+          fi
+
+          if [ "$(jq -r '.ok' response.json)" != "true" ]; then
+            echo "::error::endpoint reported a failure"
+            exit 1
+          fi
+
+          # The failure that matters is the quiet one: a 200 that reached nobody
+          # because the allowlist is empty or every send was rejected.
+          if [ "${DRY_RUN:-false}" != "true" ]; then
+            sent=$(jq -r '.sent // 0' response.json)
+            if [ "$sent" -lt 1 ]; then
+              echo "::error::report was delivered to 0 chats — check ZALO_KIOT_ALLOWED_CHATS"
+              exit 1
+            fi
+            echo "Delivered to $sent chat(s)."
+          fi

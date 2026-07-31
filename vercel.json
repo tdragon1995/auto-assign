@@ -3,10 +3,6 @@
     {
       "path": "/api/schedule-job",
       "schedule": "0 22 * * *"
-    },
-    {
-      "path": "/api/zalo/daily-report",
-      "schedule": "0 9 * * *"
     }
   ]
 }
