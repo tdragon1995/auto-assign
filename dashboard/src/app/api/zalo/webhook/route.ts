@@ -8,6 +8,7 @@ import {
   allowedChats,
   isChatAllowed,
   botHasOwnIdentity,
+  PARSE_MODE,
 } from "@/lib/kiot-bot";
 import { KiotAuthError } from "@/lib/kiotviet";
 
@@ -132,7 +133,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  await sendZaloMessage(token, chatId, reply);
+  await sendZaloMessage(token, chatId, reply, PARSE_MODE);
   return NextResponse.json({ ok: true });
 }
 

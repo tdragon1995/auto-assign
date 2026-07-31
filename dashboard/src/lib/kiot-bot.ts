@@ -159,38 +159,94 @@ export function parseCommand(raw: string, today: string = vnDate()): Command {
   return { kind: "ignore" };
 }
 
+/** Messages are sent with this parse_mode; sendZaloMessage falls back to plain text
+ *  if Zalo ever rejects it, so formatting can never cost us the report itself. */
+export const PARSE_MODE = "markdown" as const;
+
+/** Shared body for both the on-demand reply and the scheduled push.
+ *
+ *  Bold carries the headline and the two numbers someone actually scans for; the
+ *  average stays plain so the emphasis still means something. Nothing interpolated
+ *  here can contain markdown control characters — the values are formatted numbers
+ *  and a date — so there is no user input to escape. */
+function statsLines(
+  headline: string,
+  stats: { orders: number; revenue: number },
+  delta: string | null
+): string {
+  const lines = [
+    `📊 **${headline}**`,
+    `🧾 Số đơn: **${stats.orders.toLocaleString("vi-VN")}**`,
+    `💰 Doanh thu: **${formatVnd(stats.revenue)}**`,
+  ];
+  if (stats.orders > 0) {
+    lines.push(`📈 Trung bình/đơn: ${formatVnd(Math.round(stats.revenue / stats.orders))}`);
+  }
+  if (delta) lines.push(delta);
+  return lines.join("\n");
+}
+
+/** The day-over-day revenue line.
+ *
+ *  Colour is carried by Zalo's {green}/{red} markdown tags, but the arrow and the
+ *  explicit +/- sign carry it too: colour alone is invisible to a colour-blind
+ *  reader and disappears entirely if the tags ever stop rendering, and a delta
+ *  whose direction is ambiguous is worse than no delta at all. */
+function deltaLine(current: number, previous: number, label: string): string | null {
+  if (previous <= 0) {
+    // No baseline: a percentage against zero is either infinity or meaningless.
+    return current > 0 ? `📊 So với ${label}: — (${label} chưa có doanh thu)` : null;
+  }
+
+  const pct = ((current - previous) / previous) * 100;
+  if (Math.abs(pct) < 0.05) return `➖ So với ${label}: không đổi`;
+
+  // Against a very small baseline a percentage explodes into noise — "+29.457,1%"
+  // is accurate and unreadable. Past 10x, a multiplier is the honest summary.
+  const magnitude =
+    pct >= 1000
+      ? `gấp ${(current / previous).toLocaleString("vi-VN", { maximumFractionDigits: 0 })} lần`
+      : `${pct > 0 ? "+" : "-"}${Math.abs(pct).toLocaleString("vi-VN", { maximumFractionDigits: 1 })}%`;
+
+  return pct > 0
+    ? `📈 So với ${label}: {green}▲ ${magnitude}{/green}`
+    : `📉 So với ${label}: {red}▼ ${magnitude}{/red}`;
+}
+
+/** Current VN wall clock as "HH:MM". */
+function vnClock(): string {
+  const { hours, minutes } = vnHoursMinutes();
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+/** Build a report for `date`, compared against the day before.
+ *
+ *  When the date is today the comparison is capped at the current clock time on BOTH
+ *  days. Otherwise a query at 09:00 would hold a few hours of trading up against
+ *  yesterday's finished total and report a ~-97% crash every morning. */
+async function buildReport(date: string, headline: string): Promise<string> {
+  const isToday = date === vnDate();
+  const untilClock = isToday ? vnClock() : undefined;
+
+  const [stats, prev] = await Promise.all([
+    getSalesStats(date, untilClock),
+    getSalesStats(addDays(date, -1), untilClock),
+  ]);
+
+  const label = isToday ? "cùng giờ hôm qua" : "hôm trước";
+  return statsLines(headline, stats, deltaLine(stats.revenue, prev.revenue, label));
+}
+
 /** The scheduled afternoon push. Explicitly stamped "tính đến HH:MM" because the
  *  trading day is still open at 16:00 — an unqualified "Doanh thu hôm nay" would
  *  be read as the day's final total and make every afternoon look like a bad one. */
 export async function buildDailyPushReply(): Promise<string> {
   const today = vnDate();
-  const stats = await getSalesStats(today);
-  const { hours, minutes } = vnHoursMinutes();
-  const clock = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
-
-  const lines = [
-    `📊 Doanh thu ${formatVnDate(today)} (tính đến ${clock})`,
-    `🧾 Số đơn: ${stats.orders.toLocaleString("vi-VN")}`,
-    `💰 Doanh thu: ${formatVnd(stats.revenue)}`,
-  ];
-  if (stats.orders > 0) {
-    lines.push(`📈 Trung bình/đơn: ${formatVnd(Math.round(stats.revenue / stats.orders))}`);
-  }
-  return lines.join("\n");
+  return buildReport(today, `Doanh thu ${formatVnDate(today)} (tính đến ${vnClock()})`);
 }
 
 /** The message body for a stats request. */
 export async function buildStatsReply(date: string): Promise<string> {
-  const stats = await getSalesStats(date);
   const label = date === vnDate() ? "hôm nay" : formatVnDate(date);
-
-  const lines = [
-    `📊 Doanh thu ${label}`,
-    `🧾 Số đơn: ${stats.orders.toLocaleString("vi-VN")}`,
-    `💰 Doanh thu: ${formatVnd(stats.revenue)}`,
-  ];
-  if (stats.orders > 0) {
-    lines.push(`📈 Trung bình/đơn: ${formatVnd(Math.round(stats.revenue / stats.orders))}`);
-  }
-  return lines.join("\n");
+  return buildReport(date, `Doanh thu ${label}`);
 }

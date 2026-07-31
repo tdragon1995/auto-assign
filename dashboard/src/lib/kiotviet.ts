@@ -87,7 +87,11 @@ async function getPublicToken(): Promise<string | null> {
 
 /** Sales stats via the official Public API. Paginates the invoice list and
  *  aggregates client-side — the Public API has no dashboard-summary endpoint. */
-async function statsFromPublicApi(token: string, date: string): Promise<SalesStats> {
+async function statsFromPublicApi(
+  token: string,
+  date: string,
+  untilClock?: string
+): Promise<SalesStats> {
   const headers = {
     Retailer: RETAILER,
     Authorization: `Bearer ${token}`,
@@ -105,7 +109,7 @@ async function statsFromPublicApi(token: string, date: string): Promise<SalesSta
     const qs = new URLSearchParams({
       branchIds: String(BRANCH_ID),
       fromPurchaseDate: `${date} 00:00:00`,
-      toPurchaseDate: `${date} 23:59:59`,
+      toPurchaseDate: `${date} ${untilClock ?? "23:59"}:59`,
       pageSize: String(pageSize),
       currentItem: String(currentItem),
     });
@@ -136,11 +140,20 @@ async function statsFromPublicApi(token: string, date: string): Promise<SalesSta
 
 /** Sales stats via the internal dashboard endpoint the KiotViet web UI itself calls.
  *  One request, server-side aggregates already computed. Requires a session JWT. */
-async function statsFromSession(token: string, date: string): Promise<SalesStats> {
-  const next = addDays(date, 1);
+async function statsFromSession(
+  token: string,
+  date: string,
+  untilClock?: string
+): Promise<SalesStats> {
+  // An upper bound of the same clock time on both days is what makes a day-over-day
+  // comparison honest while today is still trading: full-yesterday vs part-today
+  // would read as a collapse every single morning.
+  const upper = untilClock
+    ? `${date}T${untilClock}:59`
+    : `${addDays(date, 1)}T00:00:00`;
   const filter =
     `(BranchId eq ${BRANCH_ID} and (Status eq 1 or Status eq 3) and ` +
-    `(PurchaseDate ge datetime'${date}T00:00:00' and PurchaseDate lt datetime'${next}T00:00:00'))`;
+    `(PurchaseDate ge datetime'${date}T00:00:00' and PurchaseDate lt datetime'${upper}'))`;
 
   const res = await fetch(
     `${INTERNAL_API_URL}/api/invoices/dashboard?${new URLSearchParams({ $filter: filter })}`,
@@ -179,13 +192,18 @@ async function statsFromSession(token: string, date: string): Promise<SalesStats
  *  verbatim so a dead token is visible in chat rather than silently returning 0đ. */
 export class KiotAuthError extends Error {}
 
-/** Revenue + order count for a VN date (defaults to today). */
-export async function getSalesStats(date: string = vnDate()): Promise<SalesStats> {
+/** Revenue + order count for a VN date (defaults to today).
+ *  `untilClock` ("HH:MM") caps the window, so today-so-far can be compared against
+ *  yesterday-to-the-same-minute rather than against yesterday's finished total. */
+export async function getSalesStats(
+  date: string = vnDate(),
+  untilClock?: string
+): Promise<SalesStats> {
   const publicToken = await getPublicToken();
-  if (publicToken) return statsFromPublicApi(publicToken, date);
+  if (publicToken) return statsFromPublicApi(publicToken, date, untilClock);
 
   const sessionToken = process.env.KIOTVIET_SESSION_TOKEN;
-  if (sessionToken) return statsFromSession(sessionToken, date);
+  if (sessionToken) return statsFromSession(sessionToken, date, untilClock);
 
   throw new KiotAuthError(
     "Chưa cấu hình KiotViet: cần KIOTVIET_CLIENT_ID/SECRET hoặc KIOTVIET_SESSION_TOKEN."

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sendZaloMessage } from "@/lib/zalo";
-import { buildDailyPushReply, botToken, allowedChats } from "@/lib/kiot-bot";
+import { buildDailyPushReply, botToken, allowedChats, PARSE_MODE } from "@/lib/kiot-bot";
 import { KiotAuthError } from "@/lib/kiotviet";
 
 export const runtime = "nodejs";
@@ -47,7 +47,7 @@ export async function GET(req: NextRequest) {
 
   // One slow/failed chat must not stop the rest from getting the report.
   const results = await Promise.all(
-    chats.map(async (chat) => ({ chat, sent: await sendZaloMessage(token, chat, text) }))
+    chats.map(async (chat) => ({ chat, sent: await sendZaloMessage(token, chat, text, PARSE_MODE) }))
   );
 
   return NextResponse.json({
