@@ -138,13 +138,21 @@ export function parseCommand(raw: string, today: string = vnDate()): Command {
   if (isToday(t)) return { kind: "stats", date: today };
 
   // A bare date counts only when the message carries no other *words*. Punctuation,
-  // emoji and whitespace are fine ("29/07/2026?"), but any remaining letters mean
-  // it's a sentence that happens to contain a date — "giao lúc 14/07 nhé" — and the
-  // bot must stay out of it. Note this also excludes an @mention, so in a group the
-  // reliable form is the explicit "doanh thu <date>".
-  const onlyDate = extractDate(t, today);
+  // emoji and whitespace are fine ("29/07/2026?"), but leftover letters mean it's a
+  // sentence that merely contains a date — "giao lúc 14/07 nhé" — and the bot stays
+  // out of it.
+  //
+  // A leading @mention is stripped first: addressing the bot in a group prepends its
+  // display name, whose letters would otherwise disqualify an otherwise-bare date.
+  // Only a LEADING mention and only up to the first digit is removed, so a mention
+  // buried in real conversation ("@an hẹn 14/07 nhé") still keeps its words and is
+  // still ignored.
+  const mentionless = t.replace(/^@[^\d]*/, "").trim();
+  const onlyDate = extractDate(mentionless, today);
   if (onlyDate) {
-    const withoutDate = t.replace(/\b\d{4}-\d{2}-\d{2}\b/, " ").replace(/\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{4})?\b/, " ");
+    const withoutDate = mentionless
+      .replace(/\b\d{4}-\d{2}-\d{2}\b/, " ")
+      .replace(/\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{4})?\b/, " ");
     if (!/[a-z]/.test(withoutDate)) return { kind: "stats", date: onlyDate };
   }
 
