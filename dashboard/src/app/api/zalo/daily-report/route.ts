@@ -45,6 +45,14 @@ export async function GET(req: NextRequest) {
     console.error("[daily-report] stats failed", e);
   }
 
+  // ?dry=1 exercises everything except the send — KiotViet fetch, formatting, and
+  // which chats would receive it. Testing the real endpoint means posting a genuine
+  // revenue report into a live group, which is a poor way to find out you had the
+  // wrong chat id.
+  if (req.nextUrl.searchParams.get("dry") === "1") {
+    return NextResponse.json({ ok: true, dryRun: true, wouldSendTo: chats, message: text });
+  }
+
   // One slow/failed chat must not stop the rest from getting the report.
   const results = await Promise.all(
     chats.map(async (chat) => ({ chat, sent: await sendZaloMessage(token, chat, text, PARSE_MODE) }))
