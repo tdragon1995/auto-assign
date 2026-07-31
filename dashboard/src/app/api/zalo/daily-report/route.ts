@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createHash } from "node:crypto";
 import { sendZaloMessage } from "@/lib/zalo";
 import { buildDailyPushReply, botToken, allowedChats, PARSE_MODE } from "@/lib/kiot-bot";
 import { KiotAuthError } from "@/lib/kiotviet";
@@ -27,7 +28,36 @@ function authorized(req: NextRequest): boolean {
   );
 }
 
+/** First 8 hex chars of sha256(value) — enough for a human to eyeball-compare two
+ *  copies of a secret without either endpoint ever revealing the value itself. A
+ *  32-bit prefix cannot be inverted back to a high-entropy secret. */
+function fingerprint(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 8);
+}
+
+/** GET ?probe=1 — deliberately UNAUTHENTICATED. It exists to answer one question:
+ *  "does what Vercel has match what GitHub Actions is sending", when the answer is
+ *  currently just a 401 with no way to tell WHY. Reveals only booleans and hash
+ *  fingerprints, never a secret value, so it is safe with no gate at all — same
+ *  spirit as the .env.example instructing you to compare against the workflow's own
+ *  fingerprint step. */
+function probe(): NextResponse {
+  const report = (process.env.ZALO_REPORT_SECRET ?? "").trim();
+  const cron = (process.env.CRON_SECRET ?? "").trim();
+  const active = report || cron;
+  return NextResponse.json({
+    reportSecretConfigured: Boolean(report),
+    cronSecretConfigured: Boolean(cron),
+    activeSource: report ? "ZALO_REPORT_SECRET" : cron ? "CRON_SECRET (fallback)" : "none — endpoint is open",
+    activeFingerprint: active ? fingerprint(active) : null,
+  });
+}
+
 export async function GET(req: NextRequest) {
+  if (req.nextUrl.searchParams.get("probe") === "1") {
+    return probe();
+  }
+
   if (!authorized(req)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }

@@ -39,6 +39,16 @@ jobs:
         run: |
           set -euo pipefail
 
+          # First 8 hex chars of sha256(secret) — compare this against activeFingerprint
+          # from https://diag-logistics.vercel.app/api/zalo/daily-report?probe=1 to tell
+          # a Vercel/GitHub value MISMATCH apart from "Vercel just hasn't redeployed yet".
+          if [ -n "${REPORT_SECRET:-}" ]; then
+            fp=$(printf '%s' "$REPORT_SECRET" | sha256sum | cut -c1-8)
+            echo "This run's secret fingerprint: $fp"
+          else
+            echo "REPORT_SECRET is empty — the ZALO_REPORT_SECRET repository secret is not set."
+          fi
+
           url="https://diag-logistics.vercel.app/api/zalo/daily-report"
           if [ "${DRY_RUN:-false}" = "true" ]; then
             url="$url?dry=1"
