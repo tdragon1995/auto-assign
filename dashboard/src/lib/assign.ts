@@ -18,7 +18,7 @@ import {
 } from "./time";
 import { haversineKm } from "./distance";
 import { roadDistancesToPoint } from "./distance-cache";
-import { isActiveStop, isChamCong, isCompletedOrRejectedStop, isNoteApproved, pscPairKey } from "./job-filters";
+import { isBlockingPickupStop, isChamCong, isCompletedOrRejectedStop, isNoteApproved, pscPairKey } from "./job-filters";
 import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, idleBand, type RefStop, type RefLabel } from "./smart-rank";
 import { loadLeaveEntries, isDriverOnLeave, resolveSubstitute } from "./leave-config";
 
@@ -76,8 +76,9 @@ const TIEBREAK_VERB: Record<RefLabel, string> = {
  * matching dropoff stop) to the blocking job, mirroring the exact predicate
  * /api/psc-assign used to evaluate live: cancelled (7) / failed (3) jobs and
  * via-legs are excluded, and only pickup stops that are still active (Created /
- * En Route / Arrived) count. Writing this once per cycle lets the PSC request
- * button skip two fleet-wide Cartrack fetches on every tap.
+ * En Route / Arrived, and carrying no completion timestamp) count. Writing this
+ * once per cycle lets the PSC request button skip two fleet-wide Cartrack fetches
+ * on every tap.
  */
 function computeActivePickupPairs(jobs: Job[]): Record<string, PscDupHit> {
   const pairs: Record<string, PscDupHit> = {};
@@ -86,7 +87,7 @@ function computeActivePickupPairs(jobs: Job[]): Record<string, PscDupHit> {
     if ((job.labels ?? []).includes(PSC_VIA_LABEL)) continue;
     const stops = job.stops ?? [];
     const activePickups = stops.filter(
-      (s) => s.stop_type_id === 1 && s.customer_id && s.stop_status_id != null && isActiveStop(s.stop_status_id),
+      (s) => s.stop_type_id === 1 && s.customer_id && isBlockingPickupStop(s),
     );
     if (activePickups.length === 0) continue;
     const dropoffs = stops.filter((s) => s.stop_type_id === 2 && s.customer_id);
@@ -452,7 +453,7 @@ type DriverRouteInfo = { ref: RefStop | null; label: RefLabel | null; workload: 
 const STRAIGHT_KM_TO_MIN = 3;
 
 // Pure reducer: timeline routes → per-driver smart-rank info. Shared by the cycle
-// (which, under ASSIGN_USE_TIMELINE, already fetched these routes for s4/s5) and by
+// (which already fetched these routes for s4/s5) and by
 // fetchSmartRouteData's standalone fetch — so the route data is derived from the
 // SAME delivery_timeline_route_list payload instead of a second identical call.
 function timelineRoutesToDriverInfo(
@@ -503,13 +504,8 @@ async function fetchSmartRouteData(
   dateVn: string, env: Env,
   shiftStartByDriverId: Record<string, string | null>
 ): Promise<Record<string, DriverRouteInfo>> {
-  const out = await jsonRpc<{ routes?: TimelineRoute[] }>(
-    "delivery_timeline_route_list",
-    { data: { scheduleType: "scheduled", filter: vnDayWindow(dateVn) } },
-    { env }
-  );
-  if (!out.ok) return {};
-  return timelineRoutesToDriverInfo(out.result?.routes ?? [], shiftStartByDriverId);
+  const routes = await getTimelineRoutes(dateVn, env);
+  return routes ? timelineRoutesToDriverInfo(routes, shiftStartByDriverId) : {};
 }
 
 function makeLog(msg: string, level: LogLevel = "INFO"): LogEntry {
@@ -939,7 +935,7 @@ export async function autoAssignCycle(
   let cycleStartS2: Job[] | null = null;
   let assignedJobsToday: Job[] | null = null;
   let cycleS5: Job[] | null = null;
-  // Timeline routes fetched in the fetch phase (ASSIGN_USE_TIMELINE) — stashed so
+  // Timeline routes fetched in the fetch phase — stashed so
   // smart-prep can derive its per-driver route data from the same payload instead
   // of making a second identical delivery_timeline_route_list call.
   let timelineRoutesForSmart: TimelineRoute[] | null = null;
@@ -958,16 +954,15 @@ export async function autoAssignCycle(
       log("⚠️  No leave entries loaded (empty array) — all drivers will be treated as available", "WARN");
     }
   }
-  // Timeline mode defers the proxy release to the fetch phase — the parked jobs
-  // ride the timeline payload the cycle fetches anyway, so no per-cycle REST
-  // list is needed. Non-timeline mode keeps release-before-fetch so released
-  // jobs surface as status 2 in the same getJobsByDate call.
-  const useTimeline = process.env.ASSIGN_USE_TIMELINE === "1";
+  // The proxy release is deferred to the fetch phase — the parked jobs ride the
+  // timeline payload the cycle fetches anyway, so no per-cycle REST list is
+  // needed. Should the timeline call fail, the REST fallback in the fetch phase
+  // runs release-before-fetch instead, so released jobs still surface as status 2
+  // in the same getJobsByDate call.
   const _tLeave = Date.now();
-  const _proxyTiming = onlyJobIds || useTimeline ? null : await releaseDueProxyJobs(today, env, log);
-  const _proxyStr = _proxyTiming
-    ? ` | proxy-list: ${_proxyTiming.listMs}ms + release: ${_proxyTiming.releaseMs}ms`
-    : onlyJobIds ? " | proxy-release: skipped (targeted)" : " | proxy-release: deferred (timeline)";
+  const _proxyStr = onlyJobIds
+    ? " | proxy-release: skipped (targeted)"
+    : " | proxy-release: deferred (timeline)";
   clog(`[setup] leave-sheet: ${_tLeave - tStart}ms${_proxyStr}`);
   phase("setup+proxy-release");
 
@@ -1000,79 +995,76 @@ export async function autoAssignCycle(
   let fetchMs = 0, partitionMs = 0;
   try {
     let done = false;
-    // ASSIGN_USE_TIMELINE=1: s2 (unassigned) from REST; s4+s5 from the route-timeline
-    // — one fast ~2.3s JSON-RPC call vs the variable 6-21s getJobsByDate. Falls back
-    // to getJobsByDate below if the timeline call fails (cookie/login/shape), so dedup
-    // and follow-ups never go blind. Default (unset) = the getJobsByDate path.
-    if (useTimeline) {
-      // s2 has no timeline (driverless jobs are on nobody's route). Fast path:
-      // list_new + get_job_details (~0.4s, CREATE_JOB_RPC=1); null → the ~5-10s
-      // REST status-2 list, which stays the authoritative fallback.
-      let s2Src = "rest";
-      const fetchS2 = async (): Promise<Job[]> => {
-        if (process.env.CREATE_JOB_RPC === "1") {
-          const fast = await getUnassignedJobsFast(today, env);
-          if (fast) { s2Src = "rpc"; return fast; }
+    // s2 (unassigned) from REST; s4+s5 from the route-timeline — one fast ~2.3s
+    // JSON-RPC call vs the variable 6-21s getJobsByDate. Falls back to
+    // getJobsByDate below if the timeline call fails (cookie/login/shape), so
+    // dedup and follow-ups never go blind.
+    //
+    // s2 has no timeline (driverless jobs are on nobody's route). Fast path:
+    // list_new + get_job_details (~0.4s); null → the ~5-10s REST status-2 list,
+    // which stays the authoritative fallback.
+    let s2Src = "rest";
+    const fetchS2 = async (): Promise<Job[]> => {
+      const fast = await getUnassignedJobsFast(today, env);
+      if (fast) { s2Src = "rpc"; return fast; }
+      return getJobsByStatusAndDate(2, today, env);
+    };
+    const _tFetch = Date.now();
+    const [restS2, routes] = await Promise.all([
+      fetchS2(),
+      getTimelineRoutes(today, env),
+    ]);
+    fetchMs = Date.now() - _tFetch;
+    const timelineJobs = routes ? timelineRoutesToJobs(routes) : null;
+    if (timelineJobs) {
+      const _tPart = Date.now();
+      const s4Jobs: Job[] = []; const s5Jobs: Job[] = [];
+      for (const j of timelineJobs) (j.job_status_id === 5 ? s5Jobs : s4Jobs).push(j);
+      // Footgun #1: a status-2 job with a driver set is really assigned → s4 pot
+      // (dedupe against timeline jobs so it isn't counted twice).
+      const tlIds = new Set(timelineJobs.map((j) => j.job_id));
+      for (const j of restS2) if (j.delivery_driver_id && !tlIds.has(j.job_id)) s4Jobs.push(j);
+      s2Jobs = restS2.filter((j) => !j.delivery_driver_id);
+      cycleStartS2 = s2Jobs;
+      assignedJobsToday = s4Jobs;
+      cycleS5 = s5Jobs;
+      timelineRoutesForSmart = routes; // reuse in smart-prep (skip 2nd identical JSON-RPC)
+      partitionMs = Date.now() - _tPart;
+      clog(`[fetch] timeline: fetch ${fetchMs}ms + partition ${partitionMs}ms (s2:${s2Jobs.length} s4:${s4Jobs.length} s5:${s5Jobs.length} s2-src=${s2Src})`);
+      // Proxy release, timeline-sourced: the proxy driver's parked jobs are
+      // already in the s4 partition (it's a driver on the timeline), so the
+      // old per-cycle REST list is skipped. Every ~30 min a full no-date REST
+      // sweep runs instead — the safety net for jobs stranded from a previous
+      // day, which today's timeline window can't show.
+      if (!onlyJobIds) {
+        const sweep = await shouldRunProxySweep();
+        const rel = await releaseDueProxyJobs(
+          today, env, log,
+          sweep ? undefined : s4Jobs.filter((j) => j.delivery_driver_id === PROXY_DRIVER_ID),
+        );
+        clog(`[fetch] proxy-release (${sweep ? "REST sweep" : "timeline"}): list ${rel.listMs}ms + release ${rel.releaseMs}ms (${rel.releasedIds.length} released)`);
+        if (rel.releasedIds.length > 0) {
+          // Parity with the release-before-fetch REST path: released jobs must
+          // assign THIS cycle and must leave the assigned pot. Re-fetch s2 for
+          // the full REST Job shape (notes, delivery windows — the note gate
+          // and window parking need fields the timeline shape lacks) and drop
+          // the released ids from s4.
+          const releasedSet = new Set(rel.releasedIds);
+          assignedJobsToday = s4Jobs.filter((j) => !releasedSet.has(j.job_id));
+          const freshS2 = await fetchS2();
+          s2Jobs = freshS2.filter((j) => !j.delivery_driver_id);
+          cycleStartS2 = s2Jobs;
         }
-        return getJobsByStatusAndDate(2, today, env);
-      };
-      const _tFetch = Date.now();
-      const [restS2, routes] = await Promise.all([
-        fetchS2(),
-        getTimelineRoutes(today, env),
-      ]);
-      fetchMs = Date.now() - _tFetch;
-      const timelineJobs = routes ? timelineRoutesToJobs(routes) : null;
-      if (timelineJobs) {
-        const _tPart = Date.now();
-        const s4Jobs: Job[] = []; const s5Jobs: Job[] = [];
-        for (const j of timelineJobs) (j.job_status_id === 5 ? s5Jobs : s4Jobs).push(j);
-        // Footgun #1: a status-2 job with a driver set is really assigned → s4 pot
-        // (dedupe against timeline jobs so it isn't counted twice).
-        const tlIds = new Set(timelineJobs.map((j) => j.job_id));
-        for (const j of restS2) if (j.delivery_driver_id && !tlIds.has(j.job_id)) s4Jobs.push(j);
-        s2Jobs = restS2.filter((j) => !j.delivery_driver_id);
-        cycleStartS2 = s2Jobs;
-        assignedJobsToday = s4Jobs;
-        cycleS5 = s5Jobs;
-        timelineRoutesForSmart = routes; // reuse in smart-prep (skip 2nd identical JSON-RPC)
-        partitionMs = Date.now() - _tPart;
-        clog(`[fetch] timeline: fetch ${fetchMs}ms + partition ${partitionMs}ms (s2:${s2Jobs.length} s4:${s4Jobs.length} s5:${s5Jobs.length} s2-src=${s2Src})`);
-        // Proxy release, timeline-sourced: the proxy driver's parked jobs are
-        // already in the s4 partition (it's a driver on the timeline), so the
-        // old per-cycle REST list is skipped. Every ~30 min a full no-date REST
-        // sweep runs instead — the safety net for jobs stranded from a previous
-        // day, which today's timeline window can't show.
-        if (!onlyJobIds) {
-          const sweep = await shouldRunProxySweep();
-          const rel = await releaseDueProxyJobs(
-            today, env, log,
-            sweep ? undefined : s4Jobs.filter((j) => j.delivery_driver_id === PROXY_DRIVER_ID),
-          );
-          clog(`[fetch] proxy-release (${sweep ? "REST sweep" : "timeline"}): list ${rel.listMs}ms + release ${rel.releaseMs}ms (${rel.releasedIds.length} released)`);
-          if (rel.releasedIds.length > 0) {
-            // Parity with the release-before-fetch REST path: released jobs must
-            // assign THIS cycle and must leave the assigned pot. Re-fetch s2 for
-            // the full REST Job shape (notes, delivery windows — the note gate
-            // and window parking need fields the timeline shape lacks) and drop
-            // the released ids from s4.
-            const releasedSet = new Set(rel.releasedIds);
-            assignedJobsToday = s4Jobs.filter((j) => !releasedSet.has(j.job_id));
-            const freshS2 = await fetchS2();
-            s2Jobs = freshS2.filter((j) => !j.delivery_driver_id);
-            cycleStartS2 = s2Jobs;
-          }
-        }
-        done = true;
-      } else {
-        clog(`[fetch] timeline failed (${fetchMs}ms), falling back to REST`);
       }
+      done = true;
+    } else {
+      clog(`[fetch] timeline failed (${fetchMs}ms), falling back to REST`);
     }
     if (!done) {
-      // Timeline mode deferred the proxy release; the timeline fetch failed, so
+      // The setup phase deferred the proxy release; the timeline fetch failed, so
       // run it the old way (full REST list) before fetching — released jobs then
       // surface as status 2 in getJobsByDate below.
-      if (useTimeline && !onlyJobIds) await releaseDueProxyJobs(today, env, log);
+      if (!onlyJobIds) await releaseDueProxyJobs(today, env, log);
       const _tFetch = Date.now();
       const allToday = await getJobsByDate(today, env);
       fetchMs = Date.now() - _tFetch;
@@ -1154,11 +1146,11 @@ export async function autoAssignCycle(
     for (const d of allGpsDrivers) shiftStartByDriverId[d.delivery_driver_id] = d.shift_time_start ?? null;
     // Client-coordinate index from the timeline (Change 2) — fixed-client GPS for
     // every customer that appears as a stop today, harvested from the routes we
-    // already have. Consulted before getCustomerById below. Empty when timeline
-    // mode is off (no routes stashed), so that path stays unchanged.
+    // already have. Consulted before getCustomerById below. Empty when the timeline
+    // fetch failed (no routes stashed), so that path stays unchanged.
     let clientCoords = new Map<string, { lat: number; lon: number; name: string | null }>();
     if (timelineRoutesForSmart) {
-      // Reuse the routes the fetch phase already pulled (ASSIGN_USE_TIMELINE on) — same
+      // Reuse the routes the fetch phase already pulled — same
       // delivery_timeline_route_list payload, so no second ~2.3s call this cycle.
       smartRouteData = timelineRoutesToDriverInfo(timelineRoutesForSmart, shiftStartByDriverId);
       clientCoords = timelineRoutesToCustomerCoords(timelineRoutesForSmart);

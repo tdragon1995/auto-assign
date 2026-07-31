@@ -1,4 +1,4 @@
-import type { Driver, Job, Stop } from "./types";
+import type { Driver, Job, Stop, TimelineRoute } from "./types";
 import { vnDayWindow } from "./time";
 
 export type Env = "prod" | "uat";
@@ -136,18 +136,16 @@ export async function getDrivers(env: Env = "prod"): Promise<Driver[]> {
 }
 
 export async function deleteJob(jobId: number, env: Env = "prod"): Promise<boolean> {
-  // With CREATE_JOB_RPC=1, try the fleetweb RPC first — measured ~2s vs ~4.7s
-  // REST (2026-07-17), and it deletes jobs created by either path. deletedJobIds
-  // echoes the ids actually removed; anything else (error, id absent) falls
-  // through to REST for the authoritative answer.
-  if (process.env.CREATE_JOB_RPC === "1") {
-    const out = await jsonRpc<{ deletedJobIds?: Record<string, number> }>(
-      "delivery_delete_job",
-      { data: { jobIds: [jobId] } },
-      { env }
-    );
-    if (out.ok && out.result?.deletedJobIds?.[jobId] !== undefined) return true;
-  }
+  // Try the fleetweb RPC first — measured ~2s vs ~4.7s REST (2026-07-17), and it
+  // deletes jobs created by either path. deletedJobIds echoes the ids actually
+  // removed; anything else (error, id absent) falls through to REST for the
+  // authoritative answer.
+  const out = await jsonRpc<{ deletedJobIds?: Record<string, number> }>(
+    "delivery_delete_job",
+    { data: { jobIds: [jobId] } },
+    { env }
+  );
+  if (out.ok && out.result?.deletedJobIds?.[jobId] !== undefined) return true;
   const res = await fetch(`${BASE_URL}/jobs/${jobId}?force=true`, {
     method: "DELETE",
     headers: getHeaders(env),
@@ -414,30 +412,28 @@ export async function unassignJob(
   env: Env = "prod",
   driverId?: string
 ): Promise<{ ok: boolean; status: number }> {
-  // With CREATE_JOB_RPC=1, prefer the fleetweb RPC (measured ~2.2s vs ~5.5s REST,
-  // 2026-07-18). Verified: the `filter` window is NOT sensitive (a job scheduled
-  // another day still unassigns) and the routeId is NOT validated against the
-  // job's current driver — the jobIds drive the operation — so a missing/imperfect
-  // driver hint can't unassign the wrong job. Confirm the id echoes back in
-  // unassignedJobs; anything else falls through to the authoritative REST PUT.
+  // Prefer the fleetweb RPC (measured ~2.2s vs ~5.5s REST, 2026-07-18). Verified:
+  // the `filter` window is NOT sensitive (a job scheduled another day still
+  // unassigns) and the routeId is NOT validated against the job's current driver
+  // — the jobIds drive the operation — so a missing/imperfect driver hint can't
+  // unassign the wrong job. Confirm the id echoes back in unassignedJobs; anything
+  // else falls through to the authoritative REST PUT.
   // Unlike delete, unassign has no driver-state concern (it removes, not adds).
-  if (process.env.CREATE_JOB_RPC === "1") {
-    const out = await jsonRpc<{ unassigned?: { unassignedJobs?: number[] } }>(
-      "delivery_route_slice_jobs_unassign",
-      {
-        data: {
-          routeId: `driver_${driverId ?? PROXY_DRIVER_ID}`,
-          jobIds: [jobId],
-          updateRecurringSetup: false,
-          scheduleType: "scheduled",
-          filter: vnDayWindow(),
-        },
+  const out = await jsonRpc<{ unassigned?: { unassignedJobs?: number[] } }>(
+    "delivery_route_slice_jobs_unassign",
+    {
+      data: {
+        routeId: `driver_${driverId ?? PROXY_DRIVER_ID}`,
+        jobIds: [jobId],
+        updateRecurringSetup: false,
+        scheduleType: "scheduled",
+        filter: vnDayWindow(),
       },
-      { env }
-    );
-    if (out.ok && out.result?.unassigned?.unassignedJobs?.includes(jobId)) {
-      return { ok: true, status: 200 };
-    }
+    },
+    { env }
+  );
+  if (out.ok && out.result?.unassigned?.unassignedJobs?.includes(jobId)) {
+    return { ok: true, status: 200 };
   }
   const res = await fetch(`${BASE_URL}/jobs/${jobId}`, {
     method: "PUT",
@@ -576,7 +572,7 @@ export async function jsonRpc<T = unknown>(
 }
 
 // ---------------------------------------------------------------------------
-// Job-creation fast path — fleetweb `delivery_create_job` (CREATE_JOB_RPC=1)
+// Job-creation fast path — fleetweb `delivery_create_job`
 // ---------------------------------------------------------------------------
 //
 // Measured on prod 2026-07-17: REST POST /jobs ≈ 11.3s, this RPC ≈ 0.8–1.9s.
@@ -819,7 +815,7 @@ type RpcAssignOutcome =
   | { kind: "fallback" };
 
 /**
- * RPC-first assign shared by assignJob / assignJobViaUpdate (CREATE_JOB_RPC=1).
+ * RPC-first assign shared by assignJob / assignJobViaUpdate.
  * ~2.0s vs ~7.3s REST (measured 2026-07-18). Applies the same driver-state gate
  * as createJob — the fleetweb RPC would otherwise assign onto on-break and
  * deactivated drivers that REST refuses — returning the REST-identical 422
@@ -837,7 +833,6 @@ async function tryAssignViaRpc(
   env: Env,
   driverRec?: Driver
 ): Promise<RpcAssignOutcome> {
-  if (process.env.CREATE_JOB_RPC !== "1") return { kind: "fallback" };
   let name: string | null = null;
   if (!isProxyDriver(driverId)) {
     let d = driverRec;
@@ -876,42 +871,40 @@ async function tryAssignViaRpc(
 }
 
 /**
- * Create a job from a REST-shaped payload. With CREATE_JOB_RPC=1 eligible
- * payloads go through the fleetweb RPC (~6x faster); ineligible payloads and
- * any RPC failure fall back to the plain REST POST, so error bodies and
- * `isDriverUnavailableError` handling behave exactly as before on that path.
- * On success from either path `body.data.job_id` / `body.data.delivery_driver_id`
- * are present in the same shape.
+ * Create a job from a REST-shaped payload. Eligible payloads go through the
+ * fleetweb RPC (~6x faster); ineligible payloads and any RPC failure fall back
+ * to the plain REST POST, so error bodies and `isDriverUnavailableError`
+ * handling behave exactly as before on that path. On success from either path
+ * `body.data.job_id` / `body.data.delivery_driver_id` are present in the same
+ * shape.
  */
 export async function createJob(
   payload: Record<string, unknown>,
   env: Env = "prod"
 ): Promise<CreateJobResult> {
-  if (process.env.CREATE_JOB_RPC === "1") {
-    const conv = restJobToRpc(payload);
-    if ("blocked" in conv) {
-      console.log(`[createJob] REST path: ${conv.blocked}`);
+  const conv = restJobToRpc(payload);
+  if ("blocked" in conv) {
+    console.log(`[createJob] REST path: ${conv.blocked}`);
+  } else {
+    const gate = await rpcDriverStatusGate(payload.delivery_driver_id, env);
+    if (gate === "on_break") {
+      return { ok: false, status: 422, body: DRIVER_UNAVAILABLE_BODY, via: "rpc" };
+    }
+    if (gate === "deactivated") {
+      return { ok: false, status: 422, body: DRIVER_DEACTIVATED_BODY, via: "rpc" };
+    }
+    if (gate === "unknown") {
+      console.log("[createJob] REST path: driver status unverifiable");
     } else {
-      const gate = await rpcDriverStatusGate(payload.delivery_driver_id, env);
-      if (gate === "on_break") {
-        return { ok: false, status: 422, body: DRIVER_UNAVAILABLE_BODY, via: "rpc" };
+      const out = await jsonRpc<{ data?: { job_id?: number } }>(
+        "delivery_create_job",
+        { data: conv.data },
+        { env }
+      );
+      if (out.ok && out.result?.data?.job_id) {
+        return { ok: true, status: 200, body: out.result, via: "rpc" };
       }
-      if (gate === "deactivated") {
-        return { ok: false, status: 422, body: DRIVER_DEACTIVATED_BODY, via: "rpc" };
-      }
-      if (gate === "unknown") {
-        console.log("[createJob] REST path: driver status unverifiable");
-      } else {
-        const out = await jsonRpc<{ data?: { job_id?: number } }>(
-          "delivery_create_job",
-          { data: conv.data },
-          { env }
-        );
-        if (out.ok && out.result?.data?.job_id) {
-          return { ok: true, status: 200, body: out.result, via: "rpc" };
-        }
-        console.warn(`[createJob] RPC create failed (${out.ok ? "no job_id in result" : out.error}); using REST`);
-      }
+      console.warn(`[createJob] RPC create failed (${out.ok ? "no job_id in result" : out.error}); using REST`);
     }
   }
   const res = await fetch(`${BASE_URL}/jobs`, {
@@ -1000,9 +993,15 @@ export function timelineRoutesToJobs(routes: any[]): Job[] {
  *  JSON-RPC call) so a single cycle can derive BOTH the s4/s5 jobs
  *  (timelineRoutesToJobs) and the per-driver smart-rank info from the SAME payload,
  *  instead of calling this method twice. null on any failure (prod-only cookie,
- *  non-2xx, bad shape) so callers can fall back to REST. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function getTimelineRoutes(dateVn: string, env: Env = "prod"): Promise<any[] | null> {
+ *  non-2xx, bad shape) so callers can fall back to REST.
+ *
+ *  THE single entry point for delivery_timeline_route_list — the assign cycle, the
+ *  smart-assign preview, the Nhận Việc claim list and the branch/driver feeds all
+ *  come through here. Anyone tempted to hand-roll the JSON-RPC envelope again: don't.
+ *  Four copies of it drifted apart once already, and the request shape (scheduleType,
+ *  the VN day window) has to stay identical or the callers disagree about what a
+ *  "day" is. */
+export async function getTimelineRoutes(dateVn: string, env: Env = "prod"): Promise<TimelineRoute[] | null> {
   if (env !== "prod") return null; // fleetweb login is prod-only in practice; UAT falls back to REST
   const out = await jsonRpc<{ routes?: unknown }>(
     "delivery_timeline_route_list",
@@ -1011,7 +1010,7 @@ export async function getTimelineRoutes(dateVn: string, env: Env = "prod"): Prom
   );
   if (!out.ok) return null;
   const routes = out.result?.routes;
-  return Array.isArray(routes) ? routes : null;
+  return Array.isArray(routes) ? (routes as TimelineRoute[]) : null;
 }
 
 /** Today's assigned+completed jobs via the route-timeline (JSON-RPC) instead of the

@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDrivers, getJobsByStatusAndDate, getCustomerById, jsonRpc, type Env } from "@/lib/cartrack";
-import { vnDate, vnDayWindow, vnMinutesSinceMidnight } from "@/lib/time";
+import { getDrivers, getJobsByStatusAndDate, getCustomerById, getTimelineRoutes, type Env } from "@/lib/cartrack";
+import { vnDate, vnMinutesSinceMidnight } from "@/lib/time";
 import { haversineKm } from "@/lib/distance";
 import { roadDistancesFromPoint, roadDistancesToPoint } from "@/lib/distance-cache";
 import { selectReferenceStop, computeStopStats, ROUTE_STATE_PRIORITY, enRouteGpsBand, idleBand, type RefLabel } from "@/lib/smart-rank";
 import { isChamCong } from "@/lib/job-filters";
-import type { TimelineRoute } from "@/lib/types";
 
 const TOP_N        = 3;
 const PRE_FILTER_N = 10;
@@ -35,13 +34,8 @@ async function fetchAllDriverRouteData(
   shiftStartByDriverId: Record<string, string | null>
 ): Promise<Record<string, DriverRouteData>> {
   try {
-    const out = await jsonRpc<{ routes?: TimelineRoute[] }>(
-      "delivery_timeline_route_list",
-      { data: { scheduleType: "scheduled", filter: vnDayWindow(dateVn) } },
-      { env }
-    );
-    if (!out.ok) return {};
-    const routes: TimelineRoute[] = out.result?.routes ?? [];
+    const routes = await getTimelineRoutes(dateVn, env);
+    if (!routes) return {};
 
     const result: Record<string, DriverRouteData> = {};
     for (const route of routes) {

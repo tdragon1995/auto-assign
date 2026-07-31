@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, completeJob, createJob, type Env } from "@/lib/cartrack";
 import { vnDate, vnHoursMinutes, vnTimestamp } from "@/lib/time";
-import { isActiveStop, isStopStarted, isCompletedOrRejectedStop, pscPairKey } from "@/lib/job-filters";
+import { isBlockingPickupStop, isStopStarted, isCompletedOrRejectedStop, pscPairKey } from "@/lib/job-filters";
 import { PSC_VIA_LABEL } from "@/lib/via-legs";
 import { lookupPscActivePickup, markPscActivePickup, unmarkPscActivePickup, acquireCreateLock, releaseCreateLock, type PscDupHit } from "@/lib/smart-log-kv";
 import type { Stop } from "@/lib/types";
@@ -64,7 +64,8 @@ async function liveDuplicateCheck(
   ]);
 
   // Block if a pickup stop is active (Created/En Route/Arrived) AND a dropoff matches.
-  // Allow re-booking once the pickup stop is Completed (4) or Rejected (5), or the
+  // Allow re-booking once the pickup stop is Completed (4) or Rejected (5) — or carries
+  // a completion timestamp while the status still lags, see isBlockingPickupStop — or the
   // job was cancelled (7) / failed (3). Via-legs are intentional double-coverage.
   // (job/stop inferred from the any[] fetch results — no explicit annotation needed.)
   const duplicate = [...unassignedJobs, ...assignedJobs].find((job) => {
@@ -72,7 +73,7 @@ async function liveDuplicateCheck(
     if ((job.labels ?? []).includes(PSC_VIA_LABEL)) return false;
     const stops: Stop[] = job.stops ?? [];
     const hasActivePickup = stops.some((s) =>
-      s.stop_type_id === 1 && s.customer_id === pickup && s.stop_status_id != null && isActiveStop(s.stop_status_id),
+      s.stop_type_id === 1 && s.customer_id === pickup && isBlockingPickupStop(s),
     );
     const hasMatchingDropoff = stops.some((s) =>
       s.stop_type_id === 2 && s.customer_id === dropoff,

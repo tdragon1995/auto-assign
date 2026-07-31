@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  jsonRpc, getDrivers, getJobDetails, assignJobViaUpdate, type Env,
+  getTimelineRoutes, getDrivers, getJobDetails, assignJobViaUpdate, type Env,
 } from "@/lib/cartrack";
 import { loadConfigFromSheets, isValidDriverId } from "@/lib/config";
 import { isCompletedOrRejectedStop, STOP_STATUS } from "@/lib/job-filters";
 import { verifySession, NV_COOKIE } from "@/lib/driver-session";
 import { appendNhanViecLog } from "@/lib/sheets-writer";
-import { vnDate, vnDayWindow, vnTimestamp } from "@/lib/time";
-import type { Job, Stop, TimelineRoute, TimelineStop } from "@/lib/types";
+import { vnDate, vnTimestamp } from "@/lib/time";
+import type { Job, Stop, TimelineStop } from "@/lib/types";
 
 // Jobs a driver may claim: mapped to their smart_driver_id, pickup still open.
 // "Open pickup" = pickup stop status is NOT 4 (Hoàn thành) or 5 (Từ chối).
@@ -23,14 +23,10 @@ const DELIVERY = 3;
 
 /** All timeline stops for `dateVn`, flattened across every driver route. JSON-RPC. */
 async function fetchTimelineStops(dateVn: string, env: Env = "prod"): Promise<TimelineStop[]> {
-  const out = await jsonRpc<{ routes?: TimelineRoute[] }>(
-    "delivery_timeline_route_list",
-    { data: { scheduleType: "scheduled", filter: vnDayWindow(dateVn) } },
-    { env }
-  );
-  if (!out.ok) throw new Error(`timeline route list failed: ${out.error}`);
+  const routes = await getTimelineRoutes(dateVn, env);
+  if (!routes) throw new Error("timeline route list failed");
   const stops: TimelineStop[] = [];
-  for (const r of out.result?.routes ?? []) for (const s of r.orderedStops ?? []) stops.push(s);
+  for (const r of routes) for (const s of r.orderedStops ?? []) stops.push(s);
   return stops;
 }
 

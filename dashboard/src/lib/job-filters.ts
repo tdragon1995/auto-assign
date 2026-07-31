@@ -63,6 +63,25 @@ export function isActiveStop(stopStatusId: number): boolean {
   return stopStatusId === 1 || stopStatusId === 2 || stopStatusId === 3;
 }
 
+/**
+ * True if a pickup stop can still block re-booking its pickup→dropoff pair.
+ *
+ * `stop_status_id` alone is not enough. Cartrack lags the status behind the activity
+ * timestamps — the same lag `isStopStarted` guards against, in the other direction: a
+ * stop the driver has already completed can still read 1–3. The dedup guards read that
+ * as "the batch is still sitting at the branch" and refused the branch's next request
+ * with "vẫn chưa rời chi nhánh", about samples that had already been collected.
+ *
+ * A completion timestamp is the sample having left, whatever the status says.
+ */
+export function isBlockingPickupStop(stop: {
+  stop_status_id?: number | null;
+  activity_completed_ts?: string | null;
+}): boolean {
+  if (stop.activity_completed_ts) return false;
+  return stop.stop_status_id != null && isActiveStop(stop.stop_status_id);
+}
+
 /** Canonical key for the PSC active-pickup dedup index: a `pickup|dropoff` customer
  *  pair. Shared by the assign cycle (which writes the index) and /api/psc-assign
  *  (which reads it), so the two never disagree on format. Dependency-free on purpose

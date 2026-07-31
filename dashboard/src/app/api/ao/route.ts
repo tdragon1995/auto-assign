@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, createJob, type Env } from "@/lib/cartrack";
 import { vnDate, vnHoursMinutes, vnTimestamp } from "@/lib/time";
-import { isActiveStop, JOB_STATUS, STOP_STATUS } from "@/lib/job-filters";
+import { isBlockingPickupStop, JOB_STATUS, STOP_STATUS } from "@/lib/job-filters";
 import { pushRunLog } from "@/lib/smart-log-kv";
 
 export const runtime = "nodejs";
@@ -186,7 +186,7 @@ export async function POST(req: NextRequest) {
       if (job.job_status_id === 7 || job.job_status_id === 3) return false;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const stops: any[] = job.stops ?? [];
-      const hasActivePickup    = stops.some((s: any) => s.stop_type_id === 1 && s.customer_id === vendor_uuid && isActiveStop(s.stop_status_id));
+      const hasActivePickup    = stops.some((s: any) => s.stop_type_id === 1 && s.customer_id === vendor_uuid && isBlockingPickupStop(s));
       const hasMatchingDropoff = stops.some((s: any) => s.stop_type_id === 2 && s.customer_id === vendor.dropoff_uuid);
       return hasActivePickup && hasMatchingDropoff;
     });
