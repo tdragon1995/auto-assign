@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sendZaloMessage } from "@/lib/zalo";
-import { HELP, parseCommand, buildStatsReply, botToken, allowedChats } from "@/lib/kiot-bot";
+import {
+  HELP,
+  parseCommand,
+  buildStatsReply,
+  botToken,
+  allowedChats,
+  isChatAllowed,
+  botHasOwnIdentity,
+} from "@/lib/kiot-bot";
 import { KiotAuthError } from "@/lib/kiotviet";
 
 // ── POST /api/zalo/webhook?key=<secret> ──────────────────────────────────────
@@ -89,7 +97,7 @@ export async function POST(req: NextRequest) {
     );
     return NextResponse.json({ ok: true });
   }
-  if (!allowed.includes(chatId)) {
+  if (!isChatAllowed(chatId)) {
     console.warn("[zalo-webhook] rejected chat", chatId);
     // Include the chat's own id: it isn't sensitive (the chat already "is" that id)
     // and it's the only practical way to discover the id of a NEW group you want to
@@ -129,6 +137,31 @@ export async function POST(req: NextRequest) {
 }
 
 // Health check — confirms the route is deployed without exposing anything.
-export async function GET() {
-  return NextResponse.json({ ok: true, service: "zalo-kiotviet-bot" });
+// With ?key=<secret>&debug=1 it also reports what the server actually sees, which is
+// the only practical way to tell "env var never took effect" apart from "env var is
+// set but doesn't match the chat id" — the two look identical from inside Zalo.
+// Secret-gated, and it prints no tokens: only whether each is present.
+export async function GET(req: NextRequest) {
+  if (req.nextUrl.searchParams.get("debug") !== "1") {
+    return NextResponse.json({ ok: true, service: "zalo-kiotviet-bot" });
+  }
+
+  const expected = process.env.ZALO_KIOT_WEBHOOK_SECRET;
+  const provided = presentedSecret(req);
+  if (!expected || provided !== expected) {
+    return NextResponse.json({ ok: false }, { status: 401 });
+  }
+
+  return NextResponse.json({
+    ok: true,
+    bot: {
+      ownIdentity: botHasOwnIdentity(),
+      tokenConfigured: Boolean(botToken()),
+    },
+    allowedChats: allowedChats(), // chat ids, not secrets — the whole point is to compare them
+    kiotviet: {
+      publicApi: Boolean(process.env.KIOTVIET_CLIENT_ID && process.env.KIOTVIET_CLIENT_SECRET),
+      sessionToken: Boolean(process.env.KIOTVIET_SESSION_TOKEN),
+    },
+  });
 }

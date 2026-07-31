@@ -30,8 +30,26 @@ export function allowedChats(): string[] {
   const source = explicit || (botHasOwnIdentity() ? "" : envOr("ZALO_ADMIN_CHAT_ID"));
   return source
     .split(",")
-    .map((s) => s.trim())
+    .map((s) => normalizeChatId(s))
     .filter(Boolean);
+}
+
+/** Chat ids get pasted through dashboards and chat apps, which is where an exact
+ *  string compare goes wrong: a value saved as "zgr-abc" (with quotes) or with a
+ *  stray zero-width character silently never matches, and the only symptom is a
+ *  permanently refused group. Strip the decoration before comparing. */
+export function normalizeChatId(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, "") // quotes pasted along with the value
+    .replace(/[^ -~]/g, "") // zero-width/BOM/NBSP from copy-paste
+    .trim()
+    .toLowerCase();
+}
+
+/** Whether a chat may see revenue. Empty allowlist = nothing allowed (fail closed). */
+export function isChatAllowed(chatId: string): boolean {
+  return allowedChats().includes(normalizeChatId(chatId));
 }
 
 /** True when the revenue bot runs under its own token rather than the admin bot's. */
