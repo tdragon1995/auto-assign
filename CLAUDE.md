@@ -146,11 +146,13 @@ The **GitHub→Vercel integration auto-deploys `master` to production** within ~
 
 Production URL: **https://diag-logistics.vercel.app** (also aliased as `https://auto-assign-opal.vercel.app`).
 
-One GitHub Actions workflow is active: `.github/workflows/kiotviet-daily-report.yml`
-fires `GET /api/zalo/daily-report` at 09:00 UTC (16:00 VN) to post the KiotViet
-revenue report to Zalo. It lives in Actions rather than `vercel.json` for the
-manual `workflow_dispatch` run button and the run logs; keep it in exactly one
-place or the report goes out twice.
+One GitHub Actions workflow exists: `.github/workflows/kiotviet-daily-report.yml`,
+`workflow_dispatch`-only (manual run + `dry_run` toggle, no `schedule:`). The actual
+16:00 Asia/Ho_Chi_Minh trigger is a **cron-job.org** ping at `GET
+/api/zalo/daily-report` — same mechanism as the `/api/assign/cron` engine, chosen
+because GitHub's own `schedule:` trigger is best-effort and was observed firing
+~85 minutes late. Keep the schedule in exactly one place (cron-job.org) or the
+report goes out twice; do not re-add `schedule:` to the workflow file.
 
 ## Google Sheet
 

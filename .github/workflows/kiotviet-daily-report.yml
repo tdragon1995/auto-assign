@@ -1,20 +1,22 @@
 name: KiotViet daily revenue report
 
-# Posts the day's revenue + order count to Zalo at 16:00 Asia/Ho_Chi_Minh.
+# Manual / testing entry point ONLY — the actual 16:00 Asia/Ho_Chi_Minh trigger is a
+# cron-job.org ping (same pattern as the existing /api/assign/cron engine), because
+# GitHub's own `schedule:` trigger is best-effort and was observed running ~85 minutes
+# late on a quiet repo. There is deliberately NO `schedule:` in this file — adding one
+# back would fire the report a second time alongside the cron-job.org ping.
 #
-# This replaces the Vercel Cron entry for the same endpoint — running both would
-# post the report twice. If you ever move it back to vercel.json, delete this file.
+# Use "Run workflow" with dry_run checked to preview a change without waiting for the
+# real trigger, or unchecked to send for real on demand.
 #
 # Requires one repository secret:
 #   ZALO_REPORT_SECRET — any random string, set to the SAME value as the
-#   ZALO_REPORT_SECRET env var in Vercel. Deliberately not CRON_SECRET: that one also
-#   guards /api/assign/cron and is presented by the external cron-job.org ping, so
-#   re-keying it would silently stop the assign engine.
+#   ZALO_REPORT_SECRET env var in Vercel (and given to cron-job.org as the
+#   Authorization header — see its job config for the exact value). Deliberately not
+#   CRON_SECRET: that one also guards /api/assign/cron and is presented by ITS OWN
+#   cron-job.org ping, so re-keying it would silently stop the assign engine.
 
 on:
-  schedule:
-    # GitHub cron is ALWAYS UTC: 09:00 UTC = 16:00 VN (UTC+7). Convert before editing.
-    - cron: "0 9 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -33,7 +35,6 @@ jobs:
     steps:
       - name: Trigger the report
         env:
-          # Empty on a scheduled run, which is what we want: schedules send for real.
           DRY_RUN: ${{ inputs.dry_run }}
           REPORT_SECRET: ${{ secrets.ZALO_REPORT_SECRET }}
         run: |
