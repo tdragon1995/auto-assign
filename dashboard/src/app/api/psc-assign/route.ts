@@ -3,7 +3,8 @@ import { BASE_URL, getHeaders, completeJob, createJob, type Env } from "@/lib/ca
 import { vnDate, vnHoursMinutes, vnTimestamp } from "@/lib/time";
 import { isBlockingPickupStop, isStopStarted, isCompletedOrRejectedStop, pscPairKey } from "@/lib/job-filters";
 import { PSC_VIA_LABEL } from "@/lib/via-legs";
-import { lookupPscActivePickup, markPscActivePickup, unmarkPscActivePickup, acquireCreateLock, releaseCreateLock, type PscDupHit } from "@/lib/smart-log-kv";
+import { acquireCreateLock, releaseCreateLock, type PscDupHit } from "@/lib/smart-log-kv";
+import { blockedPair, invalidateSnapshot } from "@/lib/day-snapshot";
 import type { Stop } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -46,10 +47,11 @@ async function fetchJobsToday(status: number, from: string, to: string, env: Env
 }
 
 /**
- * Live duplicate check — the fallback used only when the Redis fast-path index is
- * stale/absent (assign engine disarmed). Fetches today's Assign-Later (2) and
+ * Live duplicate check — the fallback used only when the day snapshot is unavailable
+ * (Redis down, or Cartrack's timeline failing). Fetches today's Assign-Later (2) and
  * Assigned (4) jobs and scans for an active pickup at this location with a matching
- * dropoff. Same predicate the assign cycle bakes into the index.
+ * dropoff. Same predicate the snapshot bakes into its pair index, so the two paths
+ * can't reach different verdicts about the same day.
  */
 async function liveDuplicateCheck(
   pickup: string, dropoff: string, today: string, env: Env,
@@ -84,6 +86,33 @@ async function liveDuplicateCheck(
   return duplicate
     ? { job_id: duplicate.job_id, reference_number: duplicate.reference_number ?? null }
     : null;
+}
+
+/**
+ * Re-read one job live and re-test the blocking predicate. Returns false when the job
+ * no longer blocks — its pickup has been collected, it was cancelled, or the pair no
+ * longer matches — in which case the branch is free to send its next batch.
+ *
+ * A fetch failure returns true (keep blocking): a request we cannot verify is safer
+ * refused than allowed, since the cost of a wrong "no" is a phone call and the cost of
+ * a wrong "yes" is a duplicate trip.
+ */
+async function stillBlocking(hit: PscDupHit, pickup: string, dropoff: string, env: Env): Promise<boolean> {
+  try {
+    const res = await fetch(`${BASE_URL}/jobs/${hit.job_id}`, { headers: getHeaders(env), cache: "no-store" });
+    if (!res.ok) return true;
+    const job = (await res.json())?.data;
+    if (!job) return true;
+    if (job.job_status_id === 7 || job.job_status_id === 3) return false;
+    const stops: Stop[] = job.stops ?? [];
+    const blockingPickup = stops.some(
+      (s) => s.stop_type_id === 1 && s.customer_id === pickup && isBlockingPickupStop(s),
+    );
+    const matchingDropoff = stops.some((s) => s.stop_type_id === 2 && s.customer_id === dropoff);
+    return blockingPickup && matchingDropoff;
+  } catch {
+    return true;
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -124,15 +153,21 @@ export async function POST(req: NextRequest) {
     }
 
     // --- Duplicate check ---
-    // Fast path: the assign cycle keeps a Redis index of active pickup→dropoff pairs,
-    // so a normal request answers from one tiny read instead of two fleet-wide Cartrack
-    // job fetches. Fall back to a live fetch only when the index isn't fresh (engine
-    // disarmed / index aged out), so correctness never depends on the cycle running.
+    // Reads the same day snapshot the branch's own feed renders, so the two can't
+    // disagree about whether a trip has left. Falls back to a live fetch when the day
+    // is unavailable, so correctness never depends on the cache.
     const _tDup = Date.now();
     const pairKey = pscPairKey(pickup, dropoff);
-    const { fresh, hit } = await lookupPscActivePickup(pairKey);
-    const duplicate = fresh ? hit : await liveDuplicateCheck(pickup, dropoff, today, env);
-    plog(`dup-check: ${Date.now() - _tDup}ms (${fresh ? "redis-fast" : "live-fetch"})`);
+    const lookup = await blockedPair(today, env, pairKey);
+    const candidate = lookup ? lookup.hit : await liveDuplicateCheck(pickup, dropoff, today, env);
+    plog(`dup-check: ${Date.now() - _tDup}ms (${lookup ? `snapshot age=${lookup.ageMs}ms` : "live-fetch"})`);
+
+    // Never refuse a branch on a cached reading. A snapshot up to MAX_AGE_MS old can
+    // still name a trip whose pickup completed in the meantime — that is exactly how
+    // D006 was told to wait for samples already on their way to D001. Confirming costs
+    // one job fetch and only happens on the rare path where we are about to say no.
+    const duplicate = candidate && (await stillBlocking(candidate, pickup, dropoff, env)) ? candidate : null;
+    if (candidate && !duplicate) plog(`dup-check: stale block on job ${candidate.job_id} — pickup already done, allowing`);
 
     if (duplicate) {
       releaseLock(lockKey);
@@ -218,15 +253,17 @@ export async function POST(req: NextRequest) {
     const newJobId = created.data?.job_id;
     plog(`job-create: ${Date.now() - _tCreate}ms via=${createRes.via} | total: ${Date.now() - _t0}ms | job_id=${newJobId}`);
 
-    // Write-through: register the new job in the fast-path index immediately so a
-    // re-tap before the next cycle (which would otherwise not yet see this job) is
-    // blocked. Fire-and-forget — it must not delay the response.
-    if (newJobId) void markPscActivePickup(pairKey, { job_id: newJobId, reference_number: refLabel });
+    // The day we just changed is stale by definition, so drop its freshness stamp and
+    // the next read rebuilds — this branch's own feed reload, or the next request for
+    // this pair, sees the new job immediately.
+    if (newJobId) void invalidateSnapshot(today, env);
 
-    // Deliberately do NOT release the cross-instance create lock here: holding it to its
-    // TTL keeps blocking a duplicate request for this pair while the new job becomes
-    // visible to the dedup check. It self-expires, and the cancel handler releases it
-    // early so a cancelled trip can be re-requested at once.
+    // Still deliberately NOT releasing the cross-instance create lock. Invalidating the
+    // snapshot makes the day rebuild on the next read, but a rebuild only helps once
+    // Cartrack itself lists the new job — and it does not index one instantly. In that
+    // gap a second request would rebuild, still not see this job, and create a twin.
+    // The lock covers exactly that window; it self-expires, and the cancel/3PL handlers
+    // release it early so a cleared trip can be re-requested at once.
     return NextResponse.json({
       success: true,
       reference: refLabel,
@@ -273,10 +310,10 @@ export async function DELETE(req: NextRequest) {
     }
 
     // Clear both dedup guards so the same pickup→dropoff can be re-requested at once
-    // instead of colliding with the just-cancelled job: drop the index pair and release
-    // the cross-instance create lock (which is otherwise held to its TTL after a create).
+    // instead of colliding with the just-cancelled job: rebuild the day on next read
+    // and release the cross-instance create lock.
+    void invalidateSnapshot(vnDate(), env);
     if (pickup?.customer_id && dropoff?.customer_id) {
-      void unmarkPscActivePickup(pscPairKey(pickup.customer_id, dropoff.customer_id));
       void releaseCreateLock(`psc:${pickup.customer_id}-${dropoff.customer_id}-${vnDate()}`);
     }
 
@@ -375,8 +412,8 @@ export async function PUT(req: NextRequest) {
 
     // Pickup→dropoff is fulfilled — clear both dedup guards so a fresh batch can be
     // re-requested at once instead of colliding with the just-completed job.
+    void invalidateSnapshot(vnDate(), env);
     if (pickup?.customer_id && dropoff?.customer_id) {
-      void unmarkPscActivePickup(pscPairKey(pickup.customer_id, dropoff.customer_id));
       void releaseCreateLock(`psc:${pickup.customer_id}-${dropoff.customer_id}-${vnDate()}`);
     }
 

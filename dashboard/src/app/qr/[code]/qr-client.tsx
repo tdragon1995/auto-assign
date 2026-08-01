@@ -623,16 +623,18 @@ export default function QrPage() {
 
   useEffect(() => { loadJobs(); }, [loadJobs]);
 
-  // The feed shows trips in motion, so a branch that leaves it open should see progress
-  // without tapping Làm mới. Only today can change, and only a visible tab is worth
-  // polling — a phone in a pocket shouldn't keep hitting the API. The server's own 90s
-  // day-cache absorbs this: most polls are served from Redis, not Cartrack.
+  // Refresh when the branch comes BACK to the feed, not on a timer. A 60s interval meant
+  // every open tab re-fetched the day forever whether or not anyone was looking, and 42
+  // branches doing that is what set the floor on how often the whole network's day had to
+  // be rebuilt. Tying it to attention instead means the rebuild rate follows real usage.
+  // Freshness doesn't suffer: the day snapshot rebuilds if it's older than 30s, so
+  // looking at the feed shows a state at most half a minute old — where the old interval
+  // could serve a 90s-old cache. Làm mới and the post-action reloads still force a rebuild.
   useEffect(() => {
     if (date !== todayVN()) return;
-    const tick = () => { if (document.visibilityState === "visible") loadJobs(); };
-    const id = setInterval(tick, 60_000);
-    document.addEventListener("visibilitychange", tick);
-    return () => { clearInterval(id); document.removeEventListener("visibilitychange", tick); };
+    const onVisible = () => { if (document.visibilityState === "visible") loadJobs(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
   }, [date, loadJobs]);
 
   // A pending request that now appears on a driver's route has been dispatched —

@@ -6,19 +6,18 @@ import { DIAG_LOCATION_CUSTOMER_IDS } from "./psc-routes-data";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from "./return-trips";
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
 import { cleanupStaleTrips } from "./cleanup-trips";
-import { setHeldJobs, setFailedJobs, setPickupWarnings, setPscActivePickups, shouldRunProxySweep, shouldRunDailyRollover, claimLateAlert, type HeldJob, type PscDupHit } from "./smart-log-kv";
+import { setHeldJobs, setFailedJobs, setPickupWarnings, shouldRunProxySweep, shouldRunDailyRollover, claimLateAlert, type HeldJob } from "./smart-log-kv";
 import { isValidDriverId } from "./config";
 import {
   vnDate,
   vnTimestamp,
   vnHoursMinutes,
   vnMinutesSinceMidnight,
-  vnDayWindow,
   parseVnTimestamp,
 } from "./time";
 import { haversineKm } from "./distance";
 import { roadDistancesToPoint } from "./distance-cache";
-import { isBlockingPickupStop, isChamCong, isCompletedOrRejectedStop, isNoteApproved, pscPairKey } from "./job-filters";
+import { isChamCong, isCompletedOrRejectedStop, isNoteApproved } from "./job-filters";
 import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, idleBand, type RefStop, type RefLabel } from "./smart-rank";
 import { loadLeaveEntries, isDriverOnLeave, resolveSubstitute } from "./leave-config";
 
@@ -69,40 +68,6 @@ const TIEBREAK_VERB: Record<RefLabel, string> = {
   "First Stop": "shift",
   "Start Location": "shift",
 };
-
-/**
- * Build the PSC active-pickup dedup index from today's status-2/4 jobs. Each entry
- * keys a `pickup|dropoff` customer pair (a job with an active pickup stop + a
- * matching dropoff stop) to the blocking job, mirroring the exact predicate
- * /api/psc-assign used to evaluate live: cancelled (7) / failed (3) jobs and
- * via-legs are excluded, and only pickup stops that are still active (Created /
- * En Route / Arrived, and carrying no completion timestamp) count. Writing this
- * once per cycle lets the PSC request button skip two fleet-wide Cartrack fetches
- * on every tap.
- */
-function computeActivePickupPairs(jobs: Job[]): Record<string, PscDupHit> {
-  const pairs: Record<string, PscDupHit> = {};
-  for (const job of jobs) {
-    if (job.job_status_id === 7 || job.job_status_id === 3) continue;
-    if ((job.labels ?? []).includes(PSC_VIA_LABEL)) continue;
-    const stops = job.stops ?? [];
-    const activePickups = stops.filter(
-      (s) => s.stop_type_id === 1 && s.customer_id && isBlockingPickupStop(s),
-    );
-    if (activePickups.length === 0) continue;
-    const dropoffs = stops.filter((s) => s.stop_type_id === 2 && s.customer_id);
-    const hit: PscDupHit = { job_id: job.job_id, reference_number: job.reference_number ?? null };
-    for (const p of activePickups) {
-      for (const d of dropoffs) {
-        // First writer wins is fine — any one blocking job is enough to dedup, and
-        // the live check it replaces also returned the first match.
-        const key = pscPairKey(p.customer_id!, d.customer_id!);
-        if (!(key in pairs)) pairs[key] = hit;
-      }
-    }
-  }
-  return pairs;
-}
 
 // ── Start-location coords cache ─────────────────────────────────────────────
 // A driver's home base is static config; refetching it from Cartrack every
@@ -1087,9 +1052,10 @@ export async function autoAssignCycle(
       clog(`[fetch] REST: fetch ${fetchMs}ms + partition ${partitionMs}ms (s2:${s2Jobs.length} s4:${s4Jobs.length} s5:${s5Jobs.length})`);
     }
 
-    // Refresh the PSC active-pickup dedup index (full cycle only). Fire-and-forget:
-    // it feeds /api/psc-assign's fast path and must not add latency to the cycle.
-    if (!onlyJobIds) void setPscActivePickups(computeActivePickupPairs([...(cycleStartS2 ?? []), ...(assignedJobsToday ?? [])]));
+    // The PSC dedup index used to be written here, once per cycle. It now lives in the
+    // day snapshot (@/lib/day-snapshot), rebuilt by whoever reads it — which is the
+    // point: a pair index only the engine could refresh went stale between cycles and
+    // refused branches over trips that had already left.
   } catch (e) {
     log(`Error fetching jobs: ${e}`, "ERROR");
     return logs;

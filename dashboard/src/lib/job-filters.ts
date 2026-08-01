@@ -58,6 +58,13 @@ export function isChamCong(job: {
   });
 }
 
+/** Label marking a via-leg — a deliberate second pickup at the same place on the same
+ *  run, so it must never count as a duplicate of the trip it accompanies. Declared here
+ *  rather than in via-legs.ts (which re-exports it) because the duplicate guard and the
+ *  day snapshot both need it on the edge runtime, and via-legs pulls in the assign
+ *  graph. Changing the string means changing it in Cartrack too — it is a real label. */
+export const PSC_VIA_LABEL = "🛵 Vận chuyển mẫu PSC (ghé)";
+
 /** True if this stop can still block re-booking (Created, En Route, Arrived). */
 export function isActiveStop(stopStatusId: number): boolean {
   return stopStatusId === 1 || stopStatusId === 2 || stopStatusId === 3;
