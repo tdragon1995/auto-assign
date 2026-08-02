@@ -44,7 +44,12 @@ import type { Job, Stop } from "./types";
  *  refusal — the D006 bug cannot come back through this number. Làm mới, cancels and
  *  3PL handoffs all pass fresh=1 and rebuild regardless. What is left is only how old
  *  the branch's screen may look when nobody has touched anything, and 90s of that is
- *  what the feed showed for months before any of this. */
+ *  what the feed showed for months before any of this.
+ *
+ *  COUPLED to CREATE_LOCK_TTL_SEC in smart-log-kv: that lock is what stops a second
+ *  request creating a twin while a just-created job is still invisible to the dedup
+ *  query, and this value is part of how long "still invisible" lasts. Raising this
+ *  without raising the lock reopens that gap. */
 export const MAX_AGE_MS = 90_000;
 
 /** Hash lifetime. Long enough that a quiet stretch doesn't force a cold rebuild,
