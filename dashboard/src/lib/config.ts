@@ -1,6 +1,35 @@
+import { Redis } from "@upstash/redis";
 import type { Config, ConfigDriver, Mapping } from "./types";
 import { fetchSheetRows, SHEET_GID } from "./sheets";
 import { vnDate, vnIsSunday } from "./time";
+
+function getRedis(): Redis | null {
+  const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) return null;
+  return new Redis({ url, token });
+}
+
+// Shared invalidation stamp — what makes Refresh reach every instance instead of only the
+// one that served it. In-memory caches are per-instance by nature, so the button could
+// never clear the others; they kept their copy until they were recycled. Each load now
+// compares a few bytes against the stamp its copy was built under and re-reads the sheet
+// only when they differ. One tiny GET in place of a ~100 KB CSV download.
+const GEN_KEY = "config:gen";
+let cachedGen: string | null = null;
+
+/** Current stamp, or null when Redis is unconfigured or unreachable. Null means "no reason
+ *  to invalidate", deliberately: a Redis blip that made every instance re-download the
+ *  sheet at the same moment is a worse failure than briefly missing a Refresh. */
+async function readGen(): Promise<string | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  try {
+    return (await redis.get<string>(GEN_KEY)) ?? null;
+  } catch {
+    return null;
+  }
+}
 
 
 let cachedConfig: Config | null = null;
@@ -15,20 +44,25 @@ let cachedConfig: Config | null = null;
 // Sunday would assign every job from the wrong sheet, silently and all day. Comparing a
 // date string costs nothing and closes that.
 //
-// Known limit of caching in memory: Refresh only clears the ONE instance that serves that
-// request. Other warm instances keep their copy until they are recycled. That was true at
-// 5 minutes too, just bounded; without a TTL an edit may not reach every instance until
-// traffic rolls them over. If mapping edits ever need to land network-wide immediately,
-// the fix is a shared version stamp in Redis, not a shorter timer.
+// Cross-instance invalidation is handled by GEN_KEY above, not by a timer.
 let cachedDay = "";
 
 let cachedDrivers: ConfigDriver[] | null = null;
 let cachedDriversAt = 0;
 const DRIVERS_TTL_MS = 5 * 60 * 1000;
 
-export function invalidateConfigCache(): void {
+/** Clears this instance AND bumps the shared stamp, so every other warm instance drops its
+ *  copy on its next load. Best-effort on the Redis write: a failure degrades to the old
+ *  behaviour (this instance only), never to an error. */
+export async function invalidateConfigCache(): Promise<void> {
   cachedConfig = null;
   cachedDay = "";
+  cachedGen = null;
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    await redis.set(GEN_KEY, String(Date.now()));
+  } catch { /* best-effort */ }
 }
 
 export function invalidateDriversCache(): void {
@@ -109,7 +143,11 @@ export function driversFromConfig(config: Config): ConfigDriver[] {
 
 export async function loadConfigFromSheets(): Promise<Config | null> {
   const today = vnDate(new Date());
-  if (cachedConfig && cachedDay === today) return cachedConfig;
+  // Read once and reuse for the write below, so a hit costs exactly one Redis GET.
+  const gen = await readGen();
+  if (cachedConfig && cachedDay === today && (gen === null || gen === cachedGen)) {
+    return cachedConfig;
+  }
   try {
     const rows = vnIsSunday()
       ? await fetchSheetRows(SHEET_GID.sunday)
@@ -151,6 +189,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
 
     cachedConfig = { mappings };
     cachedDay = today;
+    cachedGen = gen;
     return cachedConfig;
   } catch (e) {
     console.error("Error loading config from sheets:", e);

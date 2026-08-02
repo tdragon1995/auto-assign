@@ -5,8 +5,10 @@ import { invalidateStartLocCache } from "@/lib/assign";
 
 export async function GET() {
   try {
-    // Bust the caches so fresh sheet data (and start-location coords) is loaded
-    invalidateConfigCache();
+    // Bust the caches so fresh sheet data (and start-location coords) is loaded.
+    // The config one is awaited because it also bumps the shared stamp that tells every
+    // OTHER serverless instance to drop its copy — the whole point of pressing Refresh.
+    await invalidateConfigCache();
     invalidateDriversCache();
     invalidatePscCache();
     invalidateStartLocCache();
