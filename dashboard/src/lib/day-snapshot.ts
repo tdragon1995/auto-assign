@@ -27,11 +27,23 @@ import type { Job, Stop } from "./types";
  * then HMGET the ids it names.
  */
 
-/** How stale a snapshot may be before a read rebuilds it. The branch feed no longer
- *  polls on a timer, so this fires on real actions (opening the feed, Làm mới,
- *  submitting a request) rather than on the clock — which is what keeps the rebuild
- *  rate tied to usage instead of to the number of tabs left open. */
-export const MAX_AGE_MS = 30_000;
+/** How stale a snapshot may be before a read rebuilds it.
+ *
+ *  This has to sit ABOVE the real gap between requests or the cache does nothing.
+ *  Measured in production over 12h: 516 feed requests, i.e. one every ~84 seconds.
+ *  At the original 30s it was stale on arrival almost every time — 682 JSON-RPC calls
+ *  to Cartrack for 516 requests, roughly two rebuilds every three visits, each one
+ *  re-fetching the whole network's day and rewriting ~467 KB to Redis. Two requests
+ *  have to land inside one window for anything to be shared, and at 84s apart they
+ *  never did.
+ *
+ *  Freshness is not what this protects. psc-assign re-checks the live job before it
+ *  refuses anyone (`stillBlocking`), so a stale snapshot can no longer cause a wrong
+ *  refusal — the D006 bug cannot come back through this number. Làm mới, cancels and
+ *  3PL handoffs all pass fresh=1 and rebuild regardless. What is left is only how old
+ *  the branch's screen may look when nobody has touched anything, and 90s of that is
+ *  what the feed showed for months before any of this. */
+export const MAX_AGE_MS = 90_000;
 
 /** Hash lifetime. Long enough that a quiet stretch doesn't force a cold rebuild,
  *  short enough that a stale day self-clears. Freshness is decided by __built__,

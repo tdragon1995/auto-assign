@@ -8,7 +8,14 @@ let cachedAt = 0;
 // Re-fetch after this long so a sheet edit (and the Sat→Sun mapping switch) self-heals
 // without a redeploy. Each serverless instance caches independently, so without a TTL a
 // stale load (e.g. a transiently empty Sunday read) would persist for that instance's life.
-const CONFIG_TTL_MS = 5 * 60 * 1000;
+//
+// Must stay ABOVE the assign cron's interval or the cache never gets used. At 5 minutes
+// against a ~6-minute cron it expired between every cycle: 108 sheet downloads for 124
+// cycles over 12h, a near-total miss rate. 15 minutes means roughly one download per
+// three cycles. The cost is that a mapping edit can take up to 15 minutes to reach a
+// given instance on its own — the dashboard's Refresh button (invalidateConfigCache)
+// is still the way to apply one immediately.
+const CONFIG_TTL_MS = 15 * 60 * 1000;
 
 let cachedDrivers: ConfigDriver[] | null = null;
 let cachedDriversAt = 0;

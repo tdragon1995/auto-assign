@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 // PSC routes are a hard-coded constant ([[psc-routes-data]]); look up directly instead of
 // fetching /api/psc-routes — no function invocation, no network round-trip, instant render.
@@ -59,6 +59,16 @@ interface PendingReq {
 type Status = "idle" | "loading" | "success" | "error";
 
 const STEPS = ["Yêu cầu", "Lấy mẫu", "Đang giao", "Đã giao"] as const;
+
+// Shortest gap between two automatic feed refreshes. Mirrors MAX_AGE_MS in
+// lib/day-snapshot — a request inside that window gets the snapshot already on screen,
+// so it costs an invocation and changes nothing. Hard-coded rather than imported because
+// day-snapshot pulls in the Redis client, which has no business in a phone's bundle.
+// Raising it there means raising it here.
+// Applies to the visibility refresh ONLY: Làm mới and the post-action reloads pass
+// fresh=1 and must always go through, because the branch is asking about a change it
+// just made and a stale answer would read as the action having failed.
+const MIN_REFRESH_MS = 90_000;
 
 function todayVN(): string {
   return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Ho_Chi_Minh" }).format(new Date()).slice(0, 10);
@@ -554,6 +564,12 @@ export default function QrPage() {
   const [date, setDate] = useState(todayVN());
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(false);
+  // Whether the feed has been fetched at all. Distinct from `loading`, and load-bearing:
+  // the page no longer fetches on mount, so without this an unread feed would render
+  // "Chưa có chuyến nào đang chạy" — telling a branch no driver is coming when we simply
+  // have not looked. That is the sentence most likely to make them request a second
+  // pickup for a trip already on its way.
+  const [loaded, setLoaded] = useState(false);
   const [pending, setPending] = useState<PendingReq[]>([]);
 
   const [sheetJob, setSheetJob] = useState<Job | null>(null);
@@ -595,7 +611,12 @@ export default function QrPage() {
     try { localStorage.setItem(pendingKey, JSON.stringify(next)); } catch {}
   }, [pendingKey]);
 
+  // When the feed last reached the server, so a refresh can be skipped while the answer
+  // is guaranteed unchanged. A ref, not state: reading it must not re-render the feed.
+  const lastLoadRef = useRef(0);
+
   const loadJobs = useCallback(async (fresh = false) => {
+    lastLoadRef.current = Date.now();
     setLoading(true);
     try {
       const res = await fetch(`/api/location-jobs?date=${date}&status=all&code=${encodeURIComponent(code)}${fresh ? "&fresh=1" : ""}`);
@@ -618,10 +639,22 @@ export default function QrPage() {
       setJobs([]);
     } finally {
       setLoading(false);
+      setLoaded(true);
     }
   }, [date, code]);
 
-  useEffect(() => { loadJobs(); }, [loadJobs]);
+  // No fetch on mount. Opening /qr is not by itself a request to read the day — most
+  // visits are a branch scanning the QR to CALL a pickup, and every one of those was
+  // paying a full snapshot read for a list nobody looked at. Submitting reloads the feed
+  // anyway, so it fills in exactly when it starts to matter.
+  // Changing the DATE is explicit intent and still loads, which is why this effect stays
+  // rather than being deleted: loadJobs is keyed on [date, code], so it re-runs only when
+  // the branch picks a different day.
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    if (!mountedRef.current) { mountedRef.current = true; return; }
+    loadJobs();
+  }, [loadJobs]);
 
   // Refresh when the branch comes BACK to the feed, not on a timer. A 60s interval meant
   // every open tab re-fetched the day forever whether or not anyone was looking, and 42
@@ -630,9 +663,22 @@ export default function QrPage() {
   // Freshness doesn't suffer: the day snapshot rebuilds if it's older than 30s, so
   // looking at the feed shows a state at most half a minute old — where the old interval
   // could serve a 90s-old cache. Làm mới and the post-action reloads still force a rebuild.
+  //
+  // The 30s floor is what keeps this cheaper than the timer it replaced, and it is not
+  // optional. Branch staff work from a phone and flip constantly between Zalo and the
+  // feed, so returning to the tab is a FAR more frequent event than a 60s tick — the
+  // more so because a backgrounded tab's timers are throttled or frozen outright, which
+  // made the old poll near-free while nobody was looking. Some Android browsers also
+  // fire this when the soft keyboard opens over the request form. Unthrottled, that is
+  // a request per app-switch. Below 30s the snapshot has not rebuilt, so the answer is
+  // byte-for-byte the one already on screen: skipping costs the branch nothing.
   useEffect(() => {
     if (date !== todayVN()) return;
-    const onVisible = () => { if (document.visibilityState === "visible") loadJobs(); };
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastLoadRef.current < MIN_REFRESH_MS) return;
+      loadJobs();
+    };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [date, loadJobs]);
@@ -855,7 +901,15 @@ export default function QrPage() {
             <TripCard key={j.job_id} job={j} code={code} onOpen={() => setSheetJob(j)}
               onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl} />
           ))}
-          {!loading && !pending.length && !active.length && (
+          {!loaded && !loading && (
+            <button
+              onClick={() => loadJobs()}
+              className="w-full py-7 rounded-2xl bg-white shadow-sm text-sm font-semibold text-blue-700 active:bg-slate-50"
+            >
+              Xem danh sách chuyến
+            </button>
+          )}
+          {loaded && !loading && !pending.length && !active.length && (
             <p className="text-center text-sm text-slate-500 py-7">
               {isToday ? <>Chưa có chuyến nào đang chạy.{!route.no_request && <><br />Bấm nút phía trên để gọi Giao Nhận Mẫu.</>}</> : "Không có chuyến đang chạy."}
             </p>
@@ -864,9 +918,11 @@ export default function QrPage() {
         </div>
 
         <div className="bg-white rounded-2xl shadow-sm mt-3 overflow-hidden">
-          <button onClick={() => setDoneOpen((v) => !v)} aria-expanded={doneOpen}
+          <button onClick={() => { setDoneOpen((v) => !v); if (!loaded) loadJobs(); }} aria-expanded={doneOpen}
             className="w-full flex items-center justify-between px-4 py-3.5 text-[15px] font-bold text-slate-800">
-            <span className="flex items-center gap-2"><Check aria-hidden className="w-4 h-4 text-green-600" />Xong {isToday ? "hôm nay" : ""} <span className="text-green-600">({done.length})</span></span>
+            {/* The count is omitted until the feed has been read — "(0)" before we have
+                looked reads as "nothing was delivered today", which is a different claim. */}
+            <span className="flex items-center gap-2"><Check aria-hidden className="w-4 h-4 text-green-600" />Xong {isToday ? "hôm nay" : ""} {loaded && <span className="text-green-600">({done.length})</span>}</span>
             <ChevronDown aria-hidden className={`w-5 h-5 text-slate-500 transition-transform ${doneOpen ? "rotate-180" : ""}`} />
           </button>
           {doneOpen && (
@@ -885,9 +941,18 @@ export default function QrPage() {
                 </div>
               </div>
               {doneShown.length === 0 ? (
-                <p className="text-center text-sm text-slate-500 py-5">
-                  {doneQuery ? `Không tìm thấy chuyến nào khớp “${doneQuery}”` : "Chưa có chuyến nào hoàn thành."}
-                </p>
+                // This panel starts expanded, so it is on screen before the feed has been
+                // read. "Chưa có chuyến nào hoàn thành" would then be asserting something
+                // we have not checked; offer to look instead.
+                !loaded && !loading && !doneQuery ? (
+                  <button onClick={() => loadJobs()} className="w-full py-5 text-center text-sm font-semibold text-blue-700 active:bg-slate-50">
+                    Xem chuyến đã xong
+                  </button>
+                ) : (
+                  <p className="text-center text-sm text-slate-500 py-5">
+                    {doneQuery ? `Không tìm thấy chuyến nào khớp “${doneQuery}”` : "Chưa có chuyến nào hoàn thành."}
+                  </p>
+                )
               ) : doneShown.map((j) => {
                 const p = pickupOf(j), d = dropoffOf(j);
                 const threePl = isThreePl(j.driver?.last_name);
