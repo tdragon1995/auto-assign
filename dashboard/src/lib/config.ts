@@ -34,10 +34,17 @@ async function readGen(): Promise<string | null> {
 
 let cachedConfig: Config | null = null;
 // The VN date the cached config was built for. NOT a TTL — the cache is held until
-// something invalidates it, because a clock-based one was pure waste here: at 5 minutes
-// behind a ~6-minute cron it expired between every single cycle, 108 sheet downloads for
-// 124 cycles over 12h. A sheet edit is applied by the dashboard's Refresh button
-// (invalidateConfigCache), which is a deliberate act, not something to poll for.
+// something invalidates it, because a clock-based one was near-useless here: 108 sheet
+// downloads for 124 cron cycles over 12h, an 87% miss rate on a 5-minute TTL.
+//
+// Note WHY a 5-minute TTL missed against a 3-minute cron, since the arithmetic looks like
+// it should have hit: the cache is per serverless INSTANCE. Requests spread across several
+// instances, so any one instance sees the cron far less often than every 3 minutes and its
+// timer has usually lapsed by the time it is called again. No TTL is short enough to fix
+// that and long enough to be worth having — the problem was never the duration, it was
+// that each instance was alone. GEN_KEY below is the actual fix. A sheet edit is applied
+// by the dashboard's Refresh button (invalidateConfigCache), a deliberate act rather than
+// something to poll for.
 //
 // The date is still checked because the mapping SOURCE changes with the day: vnIsSunday()
 // picks a different tab, so an instance that cached Saturday's mapping and survived into
