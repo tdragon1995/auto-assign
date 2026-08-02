@@ -23,7 +23,28 @@ function dateKey(s: string): number {
   return Number(y) * 10000 + Number(mo) * 100 + Number(d);
 }
 
-export async function GET() {
+// Held until the day turns or ?fresh=1 asks, not on a timer — the same discipline as the
+// mapping config. This sheet is edited weekly and was being downloaded on EVERY chấm-công
+// page open, which is the most extreme version of paying repeatedly for something that
+// does not change. Per-instance and in-memory: a warm instance answers with no network at
+// all. Ops editing the schedule mid-day should hit ?fresh=1 (the page's reload path).
+let cached: { day: string; body: ScheduleResponse } | null = null;
+
+interface ScheduleResponse {
+  morning: ScheduleEntry[];
+  afternoon: ScheduleEntry[];
+  dateLabel: string;
+}
+
+function vnToday(): string {
+  return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Ho_Chi_Minh" }).format(new Date()).slice(0, 10);
+}
+
+export async function GET(req: Request) {
+  const fresh = new URL(req.url).searchParams.get("fresh") === "1";
+  const today = vnToday();
+  if (!fresh && cached && cached.day === today) return NextResponse.json(cached.body);
+
   try {
     const rows = await fetchSheetRowsByName(SHEET_NAME);
 
@@ -66,8 +87,13 @@ export async function GET() {
       else afternoon.push(entry);
     }
 
-    return NextResponse.json({ morning, afternoon, dateLabel });
+    const body: ScheduleResponse = { morning, afternoon, dateLabel };
+    cached = { day: today, body };
+    return NextResponse.json(body);
   } catch (e) {
+    // Serve a good earlier copy rather than an error screen — the schedule is display-only
+    // and yesterday's answer beats none while the sheet is briefly unreachable.
+    if (cached) return NextResponse.json(cached.body);
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
 }

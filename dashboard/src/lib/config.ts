@@ -1,21 +1,26 @@
 import type { Config, ConfigDriver, Mapping } from "./types";
 import { fetchSheetRows, SHEET_GID } from "./sheets";
-import { vnIsSunday } from "./time";
+import { vnDate, vnIsSunday } from "./time";
 
 
 let cachedConfig: Config | null = null;
-let cachedAt = 0;
-// Re-fetch after this long so a sheet edit (and the Sat→Sun mapping switch) self-heals
-// without a redeploy. Each serverless instance caches independently, so without a TTL a
-// stale load (e.g. a transiently empty Sunday read) would persist for that instance's life.
+// The VN date the cached config was built for. NOT a TTL — the cache is held until
+// something invalidates it, because a clock-based one was pure waste here: at 5 minutes
+// behind a ~6-minute cron it expired between every single cycle, 108 sheet downloads for
+// 124 cycles over 12h. A sheet edit is applied by the dashboard's Refresh button
+// (invalidateConfigCache), which is a deliberate act, not something to poll for.
 //
-// Must stay ABOVE the assign cron's interval or the cache never gets used. At 5 minutes
-// against a ~6-minute cron it expired between every cycle: 108 sheet downloads for 124
-// cycles over 12h, a near-total miss rate. 15 minutes means roughly one download per
-// three cycles. The cost is that a mapping edit can take up to 15 minutes to reach a
-// given instance on its own — the dashboard's Refresh button (invalidateConfigCache)
-// is still the way to apply one immediately.
-const CONFIG_TTL_MS = 15 * 60 * 1000;
+// The date is still checked because the mapping SOURCE changes with the day: vnIsSunday()
+// picks a different tab, so an instance that cached Saturday's mapping and survived into
+// Sunday would assign every job from the wrong sheet, silently and all day. Comparing a
+// date string costs nothing and closes that.
+//
+// Known limit of caching in memory: Refresh only clears the ONE instance that serves that
+// request. Other warm instances keep their copy until they are recycled. That was true at
+// 5 minutes too, just bounded; without a TTL an edit may not reach every instance until
+// traffic rolls them over. If mapping edits ever need to land network-wide immediately,
+// the fix is a shared version stamp in Redis, not a shorter timer.
+let cachedDay = "";
 
 let cachedDrivers: ConfigDriver[] | null = null;
 let cachedDriversAt = 0;
@@ -23,7 +28,7 @@ const DRIVERS_TTL_MS = 5 * 60 * 1000;
 
 export function invalidateConfigCache(): void {
   cachedConfig = null;
-  cachedAt = 0;
+  cachedDay = "";
 }
 
 export function invalidateDriversCache(): void {
@@ -103,7 +108,8 @@ export function driversFromConfig(config: Config): ConfigDriver[] {
 }
 
 export async function loadConfigFromSheets(): Promise<Config | null> {
-  if (cachedConfig && Date.now() - cachedAt < CONFIG_TTL_MS) return cachedConfig;
+  const today = vnDate(new Date());
+  if (cachedConfig && cachedDay === today) return cachedConfig;
   try {
     const rows = vnIsSunday()
       ? await fetchSheetRows(SHEET_GID.sunday)
@@ -144,7 +150,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     }
 
     cachedConfig = { mappings };
-    cachedAt = Date.now();
+    cachedDay = today;
     return cachedConfig;
   } catch (e) {
     console.error("Error loading config from sheets:", e);

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createJob, deleteJob, getJobDetails, updateJobStops, BASE_URL, getHeaders, isDriverUnavailableError, type Env } from "@/lib/cartrack";
-import { getDriverJobsToday } from "@/lib/driver-jobs-cache";
+import { driverJobs } from "@/lib/day-snapshot";
 import { vnDate } from "@/lib/time";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 import { isStopStarted, CHAM_CONG_PREFIX } from "@/lib/job-filters";
@@ -90,11 +90,11 @@ function labelNames(labels: any): string[] {
  *  and scheduled on the spot), so the counts agree either way. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function loadDriverJobsToday(driverId: string, today: string, env: Env): Promise<any[]> {
-  // Per-driver slice of one cached timeline fetch, rather than pulling the whole
-  // network's day on every load. `null` means the timeline itself was unavailable,
-  // so fall through to REST exactly as before; an empty array is a real answer
-  // ("no tasks today") and must not trigger the fallback.
-  const cached = await getDriverJobsToday(driverId, today, env);
+  // Per-driver slice of the SHARED day snapshot — the same fetch the branch feed and the
+  // duplicate guard read, rather than a second cache of the same day maintained separately.
+  // `null` means the day itself was unavailable, so fall through to REST exactly as before;
+  // an empty array is a real answer ("no tasks today") and must not trigger the fallback.
+  const cached = await driverJobs(today, env, driverId);
   if (cached) return cached;
 
   const res = await fetch(

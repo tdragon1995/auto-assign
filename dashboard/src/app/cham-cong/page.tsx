@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useMemo, useRef } from "react";
 import { Calendar, Clock, ClipboardCheck, FileText, NotepadText, CalendarDays, Search, Truck, MapPin, ArrowLeftRight, CheckCircle2, LogOut, RefreshCw, AlertCircle, LogIn, Loader2 } from "lucide-react";
+import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 
 interface Driver {
   driver_id: string;
@@ -264,7 +265,11 @@ export default function ChamCongPage() {
   // ── Shared ────────────────────────────────────────────────────────────────
   const [tab, setTab] = useState<Tab>("cham-cong");
   const [drivers, setDrivers] = useState<Driver[]>([]);
-  const [locations, setLocations] = useState<Location[]>([]);
+  // Seeded from the compiled-in constant rather than fetched. GET /api/cham-cong with no
+  // driver_id did nothing but JSON-serialise DIAG_LOCATIONS — a serverless invocation, on
+  // every page open, to hand back a list that already ships in the bundle. The API branch
+  // stays for any other caller; this screen just stops asking.
+  const [locations] = useState<Location[]>(DIAG_LOCATIONS);
   const [initialLoading, setInitialLoading] = useState(true);
 
   const [driverId,       setDriverId]      = useState(() => typeof window !== "undefined" ? localStorage.getItem(LS_DRIVER_ID)   ?? "" : "");
@@ -330,9 +335,8 @@ export default function ChamCongPage() {
     setScheduleStatus("loading");
     Promise.all([
       fetchDriversCached(),
-      fetch("/api/cham-cong").then((r) => r.json()),
       fetch("/api/sunday-schedule").then((r) => r.json()),
-    ]).then(([driversData, chamCongData, scheduleData]) => {
+    ]).then(([driversData, scheduleData]) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sorted = ((driversData as any).data ?? [])
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -345,7 +349,6 @@ export default function ChamCongPage() {
         .filter((d: Driver) => d.driver_id && d.driver_name && d.driver_name.startsWith("P - "))
         .sort((a: Driver, b: Driver) => a.driver_name.localeCompare(b.driver_name, "vi"));
       setDrivers(sorted);
-      setLocations(chamCongData.pscs ?? []);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sd = scheduleData as any;
       if (!sd.error) {

@@ -8,9 +8,11 @@ import type { Job, Stop } from "./types";
  * One fetch of the day, many projections.
  *
  * Before this, four consumers each pulled and parsed the SAME ~1.4 MB Cartrack day:
- * /api/location-jobs kept its own per-location cache, driver-jobs-cache kept its own
- * per-driver cache, and /api/smart-assign + /api/driver-jobs fetched uncached on every
- * request. Separately, the assign cycle wrote a blocked-pickup index that only it could
+ * /api/location-jobs kept its own per-location cache, a driver-jobs-cache module kept its
+ * own per-driver cache (now deleted — chấm-công reads the byDriver projection here), and
+ * /api/smart-assign + /api/driver-jobs fetched uncached on every request. Those last two
+ * are still uncached and still the remaining duplicate fetches of this same day.
+ * Separately, the assign cycle wrote a blocked-pickup index that only it could
  * refresh — so a branch could be refused over a trip whose samples had already been
  * collected, because the index sat frozen between cycles while the branch's own feed
  * showed the truth. Two readers, two clocks, one contradiction on screen.
@@ -80,6 +82,11 @@ export interface SnapJob {
   reference_number: string | null;
   job_status_id: number | undefined;
   scheduled_delivery_ts: string | null;
+  /** Chấm-công's fallback timestamp for when a driver tapped check-in/out, used when the
+   *  stop carries no activity_* time yet. Note the timeline has no real create_ts — it
+   *  substitutes scheduledDeliveryTs — which is exact here, because a chấm-công job is
+   *  created and scheduled in the same instant. */
+  create_ts: string | null;
   last_assigned_plan_id: number | null;
   labels: string[];
   item_tracking_numbers: string[];
@@ -128,6 +135,7 @@ export function slimJob(j: Job, driverName: string | null): SnapJob {
     reference_number: j.reference_number ?? null,
     job_status_id: j.job_status_id,
     scheduled_delivery_ts: j.scheduled_delivery_ts ?? null,
+    create_ts: j.create_ts ?? null,
     last_assigned_plan_id: j.last_assigned_plan_id ?? null,
     labels: (j.labels ?? []).filter((l): l is string => typeof l === "string"),
     item_tracking_numbers: j.item_tracking_numbers ?? [],
@@ -152,6 +160,7 @@ function slimUnrouted(j: any): SnapJob {
     reference_number: j.referenceNumber ?? null,
     job_status_id: j.jobStatusId,
     scheduled_delivery_ts: t19(j.scheduledTs),
+    create_ts: t19(j.createTs) ?? t19(j.scheduledTs),
     last_assigned_plan_id: null,
     labels: (j.jobLabels ?? [])
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
