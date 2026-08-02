@@ -43,14 +43,19 @@ import type { Job, Stop } from "./types";
  *  refuses anyone (`stillBlocking`), so a stale snapshot can no longer cause a wrong
  *  refusal — the D006 bug cannot come back through this number. Làm mới, cancels and
  *  3PL handoffs all pass fresh=1 and rebuild regardless. What is left is only how old
- *  the branch's screen may look when nobody has touched anything, and 90s of that is
- *  what the feed showed for months before any of this.
+ *  the branch's screen may look when nobody has touched anything.
+ *
+ *  60s is a deliberate midpoint: still comfortably under the observed request gap, so
+ *  most reads rebuild, but it halves how stale a screen can be versus 90s. Nothing warms
+ *  this in the background — the assign cycle fetches its own routes and never touches
+ *  the snapshot, by design (no assignment decision may read a cache), so the rebuild
+ *  rate follows display traffic alone.
  *
  *  COUPLED to CREATE_LOCK_TTL_SEC in smart-log-kv: that lock is what stops a second
  *  request creating a twin while a just-created job is still invisible to the dedup
  *  query, and this value is part of how long "still invisible" lasts. Raising this
  *  without raising the lock reopens that gap. */
-export const MAX_AGE_MS = 90_000;
+export const MAX_AGE_MS = 60_000;
 
 /** Hash lifetime. Long enough that a quiet stretch doesn't force a cold rebuild,
  *  short enough that a stale day self-clears. Freshness is decided by __built__,

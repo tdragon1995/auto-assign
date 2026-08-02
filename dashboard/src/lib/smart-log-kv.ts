@@ -386,12 +386,12 @@ export async function unmarkPscActivePickup(pairKey: string): Promise<void> {
 const CREATE_LOCK_PREFIX = "create_lock:";
 // DERIVED, not chosen freely: this must outlast the whole period in which a just-created
 // job is invisible to the dedup query — Cartrack's indexing delay PLUS how stale the day
-// snapshot may be (MAX_AGE_MS in day-snapshot, currently 90s). Raise MAX_AGE_MS and this
+// snapshot may be (MAX_AGE_MS in day-snapshot, currently 60s). Raise MAX_AGE_MS and this
 // must rise with it, or a second request lands after the lock lapses but while the dedup
 // query is still reading a snapshot built before the job was indexed, and creates a twin.
 // The branch's own post-submit feed reload is the likeliest builder of that blind
-// snapshot, so this is a live path, not a corner case. 150s = 90s window + 60s margin.
-const CREATE_LOCK_TTL_SEC = 150;
+// snapshot, so this is a live path, not a corner case. 120s = 60s window + 60s margin.
+const CREATE_LOCK_TTL_SEC = 120;
 
 /** Try to claim a creation lock. true = claimed (caller may create); false = another
  *  request already holds it. No Redis ⇒ true (a route's in-memory lock, if any, still

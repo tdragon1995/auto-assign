@@ -137,8 +137,8 @@ export async function POST(req: NextRequest) {
         // Covers both reasons this lock can be held: a request genuinely in flight right
         // now, and one created up to CREATE_LOCK_TTL_SEC ago whose job Cartrack has not
         // finished indexing. "Đợi vài giây" was only ever true for the first, and the lock
-        // now runs to 150s — a branch told to wait a few seconds for two and a half
-        // minutes rings the office. Point them at the feed, where the trip is real.
+        // now runs to 120s — a branch told to wait a few seconds for two minutes rings
+        // the office. Point them at the feed, where the trip is real.
         { error: "duplicate", message: "Yêu cầu cho tuyến này vừa được ghi nhận. Vui lòng kiểm tra danh sách chuyến bên dưới trước khi gửi lại." },
         { status: 409 }
       );
@@ -155,8 +155,8 @@ export async function POST(req: NextRequest) {
         // Covers both reasons this lock can be held: a request genuinely in flight right
         // now, and one created up to CREATE_LOCK_TTL_SEC ago whose job Cartrack has not
         // finished indexing. "Đợi vài giây" was only ever true for the first, and the lock
-        // now runs to 150s — a branch told to wait a few seconds for two and a half
-        // minutes rings the office. Point them at the feed, where the trip is real.
+        // now runs to 120s — a branch told to wait a few seconds for two minutes rings
+        // the office. Point them at the feed, where the trip is real.
         { error: "duplicate", message: "Yêu cầu cho tuyến này vừa được ghi nhận. Vui lòng kiểm tra danh sách chuyến bên dưới trước khi gửi lại." },
         { status: 409 }
       );

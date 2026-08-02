@@ -68,7 +68,7 @@ const STEPS = ["Yêu cầu", "Lấy mẫu", "Đang giao", "Đã giao"] as const;
 // Applies to the visibility refresh ONLY: Làm mới and the post-action reloads pass
 // fresh=1 and must always go through, because the branch is asking about a change it
 // just made and a stale answer would read as the action having failed.
-const MIN_REFRESH_MS = 90_000;
+const MIN_REFRESH_MS = 60_000;
 
 function todayVN(): string {
   return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Ho_Chi_Minh" }).format(new Date()).slice(0, 10);
