@@ -64,6 +64,13 @@ export function Dashboard() {
   // re-emerge the row immediately (handleManualAssign), independent of this window.
   const FAILED_DISMISS_MS = 4 * 60_000;
   const dismissedFailedRef = useRef<Map<number, number>>(new Map());
+
+  // Mirrors REDIS_TTL_S in lib/leave-config: below this the leave endpoint answers from
+  // its own Redis copy, so an automatic reload cannot return anything new. Raising it
+  // there means raising it here.
+  const LEAVE_CACHE_MS = 5 * 60_000;
+  const lastLeaveAtRef = useRef(0);
+  const lastLeaveDayRef = useRef("");
   const syncStatus = useCallback(async () => {
     try {
       const since = lastLogTsRef.current;
@@ -134,6 +141,16 @@ export function Dashboard() {
   // last-known lists — the panel shows an error line only when it has nothing,
   // so a transient blip never renders as a false "nobody's on leave".
   const loadLeaveStatus = useCallback(async (fresh = false) => {
+    // Skip an automatic reload the server could only answer from cache. This fires on
+    // every visibility resume, and loadLeaveEntries holds a 5-minute Redis copy — so
+    // inside that window the response is identical by construction, and 255 calls in 12h
+    // bought 30s of CPU re-parsing an unchanged value. Two things still always go through:
+    // `fresh` (the Refresh button, which busts the server cache), and a change of VN date,
+    // so a tab left open past midnight still drops yesterday's roster from "Hôm nay".
+    const today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Ho_Chi_Minh" }).format(new Date()).slice(0, 10);
+    if (!fresh && today === lastLeaveDayRef.current && Date.now() - lastLeaveAtRef.current < LEAVE_CACHE_MS) return;
+    lastLeaveAtRef.current = Date.now();
+    lastLeaveDayRef.current = today;
     try {
       const res = await fetch(`/api/leave-status${fresh ? "?fresh=1" : ""}`, { cache: "no-store" });
       if (!res.ok) {
