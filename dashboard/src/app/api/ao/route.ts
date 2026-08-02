@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, createJob, type Env } from "@/lib/cartrack";
 import { vnDate, vnHoursMinutes, vnTimestamp } from "@/lib/time";
 import { isBlockingPickupStop, JOB_STATUS, STOP_STATUS } from "@/lib/job-filters";
-import { pushRunLog } from "@/lib/smart-log-kv";
+import { pushRunLog, acquireCreateLock, releaseCreateLock } from "@/lib/smart-log-kv";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -65,6 +65,8 @@ const VENDOR_BY_UUID = new Map(VENDORS.map((v) => [v.uuid, v]));
 
 // In-memory dedup lock: prevents race condition when two tabs submit within seconds.
 // Lock expires after 15s — enough to cover Cartrack job creation + indexing delay.
+// NOTE this covers ONE serverless instance only; acquireCreateLock in POST is what makes
+// it hold across instances, which is where the observed twin jobs came from.
 const creationLock = new Map<string, number>();
 const LOCK_TTL_MS = 15_000;
 
@@ -166,11 +168,26 @@ export async function POST(req: NextRequest) {
     }
 
     const today = vnDate();
-    lockKey = `ao-${vendor_uuid}-${today}`;
+    // Domain-namespaced, matching the convention in smart-log-kv ("psc:…", "chamcong:…").
+    lockKey = `ao:${vendor_uuid}-${today}`;
 
     if (!acquireLock(lockKey)) {
       return NextResponse.json(
         { error: "duplicate", message: "Yêu cầu cùng nhà cung cấp đang được tạo!" },
+        { status: 409 }
+      );
+    }
+
+    // Cross-instance guard. The map above lives in one serverless instance, so two tabs
+    // landing on different instances both cleared it and both created — the twin jobs with
+    // consecutive ids seen on the PSC path before it got this. Held to expiry on success,
+    // because Cartrack does not index a new job instantly and a second request in that gap
+    // would pass the duplicate check below and create another. DELETE releases it early so
+    // a cancelled order can be re-requested at once.
+    if (!(await acquireCreateLock(lockKey))) {
+      releaseLock(lockKey);
+      return NextResponse.json(
+        { error: "duplicate", message: "Yêu cầu cho nhà cung cấp này vừa được ghi nhận. Vui lòng kiểm tra danh sách bên dưới trước khi gửi lại." },
         { status: 409 }
       );
     }
@@ -193,6 +210,7 @@ export async function POST(req: NextRequest) {
 
     if (duplicate) {
       releaseLock(lockKey);
+      void releaseCreateLock(lockKey);
       return NextResponse.json(
         {
           error: "duplicate",
@@ -259,6 +277,7 @@ export async function POST(req: NextRequest) {
 
     if (!createRes.ok) {
       releaseLock(lockKey);
+      void releaseCreateLock(lockKey); // creation failed → free the vendor to retry
       return NextResponse.json({ error: "Failed to create job", details: createRes.body }, { status: createRes.status });
     }
 
@@ -271,7 +290,10 @@ export async function POST(req: NextRequest) {
     }]);
     return NextResponse.json({ success: true, job_id: jobId });
   } catch (e) {
-    if (lockKey) releaseLock(lockKey);
+    if (lockKey) {
+      releaseLock(lockKey);
+      void releaseCreateLock(lockKey);
+    }
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
 }
@@ -302,6 +324,14 @@ export async function DELETE(req: NextRequest) {
       const err = await res.json().catch(() => ({}));
       return NextResponse.json({ error: "Failed to cancel job", details: err }, { status: res.status });
     }
+    // Free the vendor immediately instead of making the branch wait out the create lock's
+    // TTL — the job it was guarding no longer exists, so there is nothing to duplicate.
+    // Awaited so the release actually lands before the handler returns; fired and forgotten
+    // it can be cut short, and the branch is then refused a re-request it just earned.
+    if (pickup?.customer_id) {
+      await releaseCreateLock(`ao:${pickup.customer_id}-${vnDate()}`).catch(() => {});
+    }
+
     void pushRunLog([{
       ts: vnTimestamp(),
       level: "OK",

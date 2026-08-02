@@ -3,7 +3,7 @@ import { loadTplEntries, PSC_TINH_LABEL } from "@/lib/psc-config";
 import { BASE_URL, getHeaders, getStopsByLabels, createJob, type Env } from "@/lib/cartrack";
 import { vnDate, vnTimestamp } from "@/lib/time";
 import { STOP_STATUS, JOB_STATUS } from "@/lib/job-filters";
-import { pushRunLog } from "@/lib/smart-log-kv";
+import { pushRunLog, acquireCreateLock, releaseCreateLock } from "@/lib/smart-log-kv";
 import { fetchJobDetail } from "@/lib/job-detail";
 
 export const runtime = "edge";
@@ -188,6 +188,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
+  let lockKey: string | null = null;
 
   try {
     const { psc_code, tpl_uuid, eta, note } = await req.json();
@@ -201,6 +202,25 @@ export async function POST(req: NextRequest) {
     // Count today's non-cancelled jobs from this PSC for reference_number.
     const today = vnDate();
     const prefix = `BRA - ${psc_code} - Mẫu`;
+
+    // Serialise count-then-create per PSC. The reference number below is derived from a
+    // LIVE count, so two submissions racing here don't just create twin jobs — they both
+    // read the same count and both claim "Mẫu 3", corrupting the numbering the branch and
+    // the 3PL use to talk about an order. The counter is per psc_code, so that is what the
+    // key locks on.
+    //
+    // Unlike the PSC request path this is a mutex, NOT a dedup guard: a branch sending
+    // several batches a day is normal here — the numbering exists precisely for that — so
+    // the lock is released on every exit path rather than held to its TTL. The TTL only
+    // bounds how long a crashed instance can wedge the counter.
+    lockKey = `psctinh:${psc_code}-${today}`;
+    if (!(await acquireCreateLock(lockKey))) {
+      lockKey = null; // someone else holds it; the finally must not release theirs
+      return NextResponse.json(
+        { error: "duplicate", message: "Một chuyến cho PSC này đang được tạo. Vui lòng đợi vài giây rồi thử lại." },
+        { status: 409 }
+      );
+    }
 
     // Fast path (prod): count the exact rows the orders view shows — reusing
     // buildOrdersFromStops keeps the reference counter and the visible order list
@@ -290,6 +310,13 @@ export async function POST(req: NextRequest) {
     });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
+  } finally {
+    // Every exit path, success included — see the mutex note above. AWAITED, not fired and
+    // forgotten: this route is on the edge runtime, which can tear down as soon as the
+    // response is returned, and a DEL that never lands leaves the PSC's counter wedged for
+    // the lock's full TTL — two minutes of refusing an order that is perfectly legitimate.
+    // One Redis round-trip is worth paying to be sure the mutex actually opens again.
+    if (lockKey) await releaseCreateLock(lockKey).catch(() => {});
   }
 }
 
