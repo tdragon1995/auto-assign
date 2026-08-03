@@ -332,11 +332,12 @@ export default function ChamCongPage() {
   useEffect(() => {
     const savedId = typeof window !== "undefined" ? localStorage.getItem(LS_DRIVER_ID) : null;
 
-    setScheduleStatus("loading");
-    Promise.all([
-      fetchDriversCached(),
-      fetch("/api/sunday-schedule").then((r) => r.json()),
-    ]).then(([driversData, scheduleData]) => {
+    // The Sunday roster is NOT fetched here — it lives behind the Lịch CN tab and loads
+    // when that tab is opened. It used to ride along on every clock-in, so every driver
+    // downloaded a rota most of them never look at, on a page they open to press one
+    // button. The route's cache is per serverless instance, so a share of those went out
+    // to Google Sheets for real.
+    fetchDriversCached().then((driversData) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sorted = ((driversData as any).data ?? [])
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -349,14 +350,6 @@ export default function ChamCongPage() {
         .filter((d: Driver) => d.driver_id && d.driver_name && d.driver_name.startsWith("P - "))
         .sort((a: Driver, b: Driver) => a.driver_name.localeCompare(b.driver_name, "vi"));
       setDrivers(sorted);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const sd = scheduleData as any;
-      if (!sd.error) {
-        setSchedule({ morning: sd.morning ?? [], afternoon: sd.afternoon ?? [], dateLabel: sd.dateLabel ?? "" });
-        setScheduleStatus("success");
-      } else {
-        setScheduleStatus("error");
-      }
     }).finally(() => setInitialLoading(false));
 
     if (savedId) fetchShiftState(savedId);
@@ -367,6 +360,24 @@ export default function ChamCongPage() {
   // phone+PIN login itself (bridged to the fleet driver_id) — no name-picker gate.
   const nvLoggedIn = !!nvSession;
   const nvDisplayName = nvSession ? nvSession.driver_name.replace(/^.*?(?:PT|DC)\d+\s+/i, "").trim() : "";
+
+  // Sunday roster: load when its tab is first opened, mirroring nhan-viec below. Once per
+  // page life is enough — ops edits the sheet weekly, not while a driver is looking at it,
+  // and the route holds a day-keyed cache behind this anyway.
+  const scheduleLoadedRef = useRef(false);
+  useEffect(() => {
+    if (tab !== "lich-cn" || scheduleLoadedRef.current) return;
+    scheduleLoadedRef.current = true;
+    setScheduleStatus("loading");
+    fetch("/api/sunday-schedule")
+      .then((r) => r.json())
+      .then((sd) => {
+        if (sd.error) { setScheduleStatus("error"); return; }
+        setSchedule({ morning: sd.morning ?? [], afternoon: sd.afternoon ?? [], dateLabel: sd.dateLabel ?? "" });
+        setScheduleStatus("success");
+      })
+      .catch(() => setScheduleStatus("error"));
+  }, [tab]);
 
   // Nhận Việc: (re)load jobs when the tab is opened while logged in.
   useEffect(() => {
