@@ -70,6 +70,12 @@ const STEPS = ["Yêu cầu", "Lấy mẫu", "Đang giao", "Đã giao"] as const;
 // just made and a stale answer would read as the action having failed.
 const MIN_REFRESH_MS = 60_000;
 
+// Shortest gap between two Làm mới taps that both reach Cartrack. Well under the 60s
+// window above, because a tap IS a real request for the latest — it just should not
+// re-fetch an answer that is only seconds old. Long enough to absorb impatient
+// double-taps on a page where a genuine refresh takes ~5 seconds to come back.
+const MANUAL_REFRESH_MIN_MS = 10_000;
+
 function todayVN(): string {
   return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Ho_Chi_Minh" }).format(new Date()).slice(0, 10);
 }
@@ -643,6 +649,31 @@ export default function QrPage() {
     }
   }, [date, code]);
 
+  /**
+   * Làm mới, with a floor. A tap inside MANUAL_REFRESH_MIN_MS of the last load shows what
+   * is already on screen instead of re-interrogating Cartrack for the whole network's day.
+   *
+   * Measured in production 2026-08-03: one branch caused FOUR full rebuilds in 34 seconds,
+   * the second arriving 5 seconds after the first finished — asking Cartrack to redo
+   * everything to produce the answer already being displayed. That shape (a forced rebuild
+   * 4-6s behind one that just completed) was ~25% of all traffic on this route, and each
+   * one costs about 5 seconds of Cartrack round-trip.
+   *
+   * This is deliberately ONLY on the button. The reloads after booking, cancelling and
+   * handing to a 3PL still force an unconditional rebuild, because Cartrack does not
+   * always list a brand-new job instantly — those are exactly the moments a slightly
+   * stale answer would hide the trip the branch just created, and send a second driver.
+   * The two cases look identical in the server logs; they are only separable here, which
+   * is why the floor lives in the client rather than in the API.
+   */
+  const manualRefresh = useCallback(() => {
+    if (Date.now() - lastLoadRef.current < MANUAL_REFRESH_MIN_MS) {
+      showToast("Danh sách đã là mới nhất", true);
+      return;
+    }
+    loadJobs(true);
+  }, [loadJobs]);
+
   // No fetch on mount. Opening /qr is not by itself a request to read the day — most
   // visits are a branch scanning the QR to CALL a pickup, and every one of those was
   // paying a full snapshot read for a list nobody looked at. Submitting reloads the feed
@@ -871,7 +902,7 @@ export default function QrPage() {
             <ChevronDown aria-hidden className={`w-4 h-4 text-slate-500 transition-transform ${datePanel ? "rotate-180" : ""}`} />
           </button>
           <button
-            onClick={() => loadJobs(true)}
+            onClick={manualRefresh}
             disabled={loading}
             className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-semibold text-blue-700 bg-white shadow-sm active:bg-slate-50 disabled:opacity-50"
           >

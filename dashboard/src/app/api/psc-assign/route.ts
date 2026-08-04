@@ -266,7 +266,11 @@ export async function POST(req: NextRequest) {
     // The day we just changed is stale by definition, so drop its freshness stamp and
     // the next read rebuilds — this branch's own feed reload, or the next request for
     // this pair, sees the new job immediately.
-    if (newJobId) void invalidateSnapshot(today, env);
+    // AWAITED, not fired and forgotten. This is the note that tells every later reader the
+    // cached day is out of date, and it is ~10ms. Dropped, the branch's own reload can be
+    // served the pre-booking day — their new trip simply missing from the list — which
+    // reads as "the booking failed" and gets a second driver sent for the same samples.
+    if (newJobId) await invalidateSnapshot(today, env).catch(() => {});
 
     // Still deliberately NOT releasing the cross-instance create lock. Invalidating the
     // snapshot makes the day rebuild on the next read, but a rebuild only helps once
@@ -321,8 +325,9 @@ export async function DELETE(req: NextRequest) {
 
     // Clear both dedup guards so the same pickup→dropoff can be re-requested at once
     // instead of colliding with the just-cancelled job: rebuild the day on next read
-    // and release the cross-instance create lock.
-    void invalidateSnapshot(vnDate(), env);
+    // and release the cross-instance create lock. Awaited for the same reason as the
+    // create path — a lost note leaves the cancelled trip on the branch's screen.
+    await invalidateSnapshot(vnDate(), env).catch(() => {});
     if (pickup?.customer_id && dropoff?.customer_id) {
       void releaseCreateLock(`psc:${pickup.customer_id}-${dropoff.customer_id}-${vnDate()}`);
     }
@@ -421,8 +426,9 @@ export async function PUT(req: NextRequest) {
     }
 
     // Pickup→dropoff is fulfilled — clear both dedup guards so a fresh batch can be
-    // re-requested at once instead of colliding with the just-completed job.
-    void invalidateSnapshot(vnDate(), env);
+    // re-requested at once instead of colliding with the just-completed job. Awaited:
+    // a lost note leaves the handed-off trip looking un-handed-off to the branch.
+    await invalidateSnapshot(vnDate(), env).catch(() => {});
     if (pickup?.customer_id && dropoff?.customer_id) {
       void releaseCreateLock(`psc:${pickup.customer_id}-${dropoff.customer_id}-${vnDate()}`);
     }
