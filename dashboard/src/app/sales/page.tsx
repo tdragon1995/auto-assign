@@ -113,6 +113,19 @@ function abbrStreet(raw: string): string {
   return initials + titleCase(words[words.length - 1]);
 }
 
+// How many consonants an abbreviation opens with before its first vowel — a stand-in
+// for "unreadable". Short initial runs (e.g. "SVHanh", "CThang") read fine; a run of 5+
+// (e.g. "NTMKhai" from "Nguyễn Thị Minh Khai") is initials-mashed-into-a-word gibberish.
+function consonantsBeforeFirstVowel(s: string): number {
+  let count = 0;
+  for (const ch of s) {
+    if (!/[a-z]/i.test(ch)) continue;
+    if (/[aeiou]/i.test(ch)) break;
+    count++;
+  }
+  return count;
+}
+
 // Strip a leading house number + "Đường/Phố/Số" prefixes to leave a bare street.
 // "341 Sư Vạn Hạnh" → "Sư Vạn Hạnh"; "414-416 Cao Thắng" → "Cao Thắng";
 // "Đường số 6" → "6"; numbered streets ("3/2", "6") survive.
@@ -557,6 +570,9 @@ export default function SalesPage() {
   const [quanCu, setQuanCu] = useState("");
   const [tenDuong, setTenDuong] = useState("");
   const [showStreetModal, setShowStreetModal] = useState(false);
+  // Unreadable (5+ leading consonants) abbreviations mean the auto-derived street is
+  // probably wrong, so the popup can't be dismissed until the user actually retypes it.
+  const [streetEdited, setStreetEdited] = useState(false);
   const [addressPicked, setAddressPicked] = useState(false);
   const [showClientNameModal, setShowClientNameModal] = useState(false);
   const [tenKh, setTenKh] = useState("");
@@ -662,6 +678,7 @@ export default function SalesPage() {
     setAddressPicked(true); // reveal Quận Cũ + Tên Đường
     const street = streetFromPrediction(p);
     setTenDuong(street);
+    setStreetEdited(false);
     setShowStreetModal(true); // confirm the derived street
     // Quận Cũ: prefer Goong's compound.district; refresh on every pick.
     const goongOpt = optionFromDistrict(p.compound?.district);
@@ -705,6 +722,10 @@ export default function SalesPage() {
   // Customer name is mandatory and must not be a bare number — it has to carry a
   // real Phòng Khám/Bác Sĩ name so drivers can hand over samples.
   const nameValid = hasLetters(tenKh);
+  // 5+ consonants before the abbreviation's first vowel reads as gibberish (initials
+  // mashed into a word) — block the confirm popup until the user retypes it by hand.
+  const streetAbbrTooLong = consonantsBeforeFirstVowel(abbrStreet(tenDuong)) >= 5;
+  const streetConfirmBlocked = !tenDuong.trim() || (streetAbbrTooLong && !streetEdited);
 
   const { customerName, checkPrefix } = useMemo(() => {
     const includeStreet = ["21362", "21361", "46651876"].includes(maKh);
@@ -1228,11 +1249,13 @@ export default function SalesPage() {
               </div>
             )}
 
-            {/* Street confirm popup */}
+            {/* Street confirm popup — mandatory (no backdrop dismiss, "Xác nhận"
+                disabled) whenever the abbreviation opens with 5+ consonants before
+                its first vowel and hasn't been retyped; too likely to be wrong. */}
             {showStreetModal && (
               <div
                 className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-                onClick={() => setShowStreetModal(false)}
+                onClick={() => { if (!streetConfirmBlocked) setShowStreetModal(false); }}
               >
                 <div
                   className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-5 space-y-3"
@@ -1245,21 +1268,22 @@ export default function SalesPage() {
                   </p>
                   <input
                     value={tenDuong}
-                    onChange={(e) => setTenDuong(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter" && tenDuong.trim()) setShowStreetModal(false); }}
+                    onChange={(e) => { setTenDuong(e.target.value); setStreetEdited(true); }}
+                    onKeyDown={(e) => { if (e.key === "Enter" && !streetConfirmBlocked) setShowStreetModal(false); }}
                     autoFocus
                     placeholder="VD: Sư Vạn Hạnh"
                     className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
                   />
                   {tenDuong.trim() && (
-                    <p className="text-xs text-slate-500">
-                      Viết tắt: <span className="font-semibold text-slate-700">{abbrStreet(tenDuong)}</span>
+                    <p className={`text-xs ${streetAbbrTooLong && !streetEdited ? "text-red-600" : "text-slate-500"}`}>
+                      Viết tắt: <span className="font-semibold">{abbrStreet(tenDuong)}</span>
+                      {streetAbbrTooLong && !streetEdited && " — viết tắt khó đọc, vui lòng nhập lại tên đường cho đúng"}
                     </p>
                   )}
                   <button
                     type="button"
                     onClick={() => setShowStreetModal(false)}
-                    disabled={!tenDuong.trim()}
+                    disabled={streetConfirmBlocked}
                     className="w-full py-3 rounded-xl font-bold text-white text-base bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
                   >
                     Xác nhận
