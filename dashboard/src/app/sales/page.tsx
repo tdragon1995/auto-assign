@@ -150,9 +150,17 @@ function cleanStreet(raw: string): string {
 // The "<house number> <street>" line is the term that begins with a house number —
 // admin terms (Phường/Quận/Thành phố) and POI/building names never start with a digit.
 // Streets with no house number (types: street) fall back to main_text.
+const ADMIN_TERM_PREFIX = /^(phường|xã|thị trấn|quận|huyện|thị xã|thành phố|tỉnh)\b/iu;
+
 function streetFromPrediction(p: Prediction): string {
   const terms = (p.terms ?? []).map((t) => t.value.trim()).filter(Boolean);
   let candidate = terms.find((v) => /^\d\S*\s+\S/u.test(v)) ?? "";
+  if (!candidate && terms.length > 1 && !ADMIN_TERM_PREFIX.test(terms[1])) {
+    // A POI/business prediction ("Phòng giao dịch 241 Lê Hồng Phong FUTA Express") leads
+    // with the business name — which may itself embed a house number — so main_text would
+    // just repeat that whole name. The bare street is the term right after it instead.
+    candidate = terms[1];
+  }
   if (!candidate) {
     candidate = (p.structured_formatting?.main_text ?? p.description.split(",")[0] ?? "").trim();
   }
