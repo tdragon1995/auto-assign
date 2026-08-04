@@ -1283,9 +1283,8 @@ export default function SalesPage() {
                     className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
                   />
                   {tenDuong.trim() && (
-                    <p className={`text-xs ${streetAbbrTooLong && !streetEdited ? "text-red-600" : "text-slate-500"}`}>
-                      Viết tắt: <span className="font-semibold">{abbrStreet(tenDuong)}</span>
-                      {streetAbbrTooLong && !streetEdited && " — viết tắt khó đọc, vui lòng nhập lại tên đường cho đúng"}
+                    <p className="text-xs text-slate-500">
+                      Viết tắt: <span className="font-semibold text-slate-700">{abbrStreet(tenDuong)}</span>
                     </p>
                   )}
                   <button
