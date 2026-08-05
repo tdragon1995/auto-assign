@@ -57,6 +57,24 @@ import type { Job, Stop } from "./types";
  *  without raising the lock reopens that gap. */
 export const MAX_AGE_MS = 60_000;
 
+/** How stale the BRANCH FEED may be. Deliberately looser than MAX_AGE_MS, because
+ *  freshness is worth different amounts to different readers and one global number was
+ *  charging the cheapest reader the strictest price.
+ *
+ *  Measured 2026-08-03: 406 feed requests in 12h forced ~302 full rebuilds of the whole
+ *  network's day — 74% — because any request arriving more than 60s after the last one
+ *  rebuilt everything just to render one branch's dozen rows. At 5 minutes that falls to
+ *  roughly a third, and booking traffic (which keeps its 60s window) refreshes the day
+ *  often enough that feeds mostly read a picture someone else already paid for.
+ *
+ *  Safe here and NOT safe for the duplicate guard, for an asymmetric reason: the guard
+ *  re-checks the live job before refusing anyone, which catches a stale picture that
+ *  wrongly says "blocked" — but nothing catches a stale picture that is simply MISSING a
+ *  job, because then there is no suspect to confirm and a twin trip gets created. The
+ *  feed has no such failure: the worst case is a branch seeing a trip's progress a few
+ *  minutes late, and Làm mới still forces a live read. */
+export const FEED_MAX_AGE_MS = 300_000;
+
 /** Hash lifetime. Long enough that a quiet stretch doesn't force a cold rebuild,
  *  short enough that a stale day self-clears. Freshness is decided by __built__,
  *  not by this. */
@@ -310,6 +328,10 @@ export interface ReadOpts {
    *  assignment decision may be made from a cached day. A job created twenty seconds
    *  ago missing from the snapshot is exactly how a duplicate gets assigned. */
   fresh?: boolean;
+  /** How stale this particular reader will accept, overriding MAX_AGE_MS. Lets the branch
+   *  feed ride on a picture the duplicate guard already refreshed instead of forcing its
+   *  own rebuild. Ignored when `fresh` is set. */
+  maxAgeMs?: number;
 }
 
 type Slice = { jobs: SnapJob[]; builtAt: number | null; source: "cache" | "build" };
@@ -351,7 +373,7 @@ async function slice(
   if (!opts.fresh) {
     try {
       const hit = await readSlice(redis, env, date, indexField, indexKey);
-      if (hit && hit.builtAt && Date.now() - hit.builtAt < MAX_AGE_MS) return hit;
+      if (hit && hit.builtAt && Date.now() - hit.builtAt < (opts.maxAgeMs ?? MAX_AGE_MS)) return hit;
       const built = await rebuild(redis, date, env);
       if (built) return fromSnap(built);
       // Someone else is rebuilding — serve what we already read rather than queue.
@@ -379,7 +401,12 @@ export async function invalidateSnapshot(date: string, env: Env): Promise<void> 
 export async function locationJobs(
   date: string, env: Env, customerId: string, opts: ReadOpts = {},
 ): Promise<SnapJob[] | null> {
-  const s = await slice(date, env, IDX_LOC, customerId, (snap) => snap.byLocation[customerId] ?? [], opts);
+  // Defaults to the looser feed tolerance — this is the branch's status display, the one
+  // reader for which a few minutes late costs nothing. A caller wanting the strict window
+  // can still pass maxAgeMs, and `fresh` overrides both.
+  const s = await slice(date, env, IDX_LOC, customerId,
+    (snap) => snap.byLocation[customerId] ?? [],
+    { maxAgeMs: FEED_MAX_AGE_MS, ...opts });
   return s?.jobs ?? null;
 }
 
