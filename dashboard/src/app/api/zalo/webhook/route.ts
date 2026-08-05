@@ -79,6 +79,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   }
 
+  // Logged unconditionally: an @mention in a group is the one path that has repeatedly
+  // broken in practice, and Zalo's own docs don't specify whether the mention shows up
+  // as literal text, is stripped before delivery, or arrives under a different
+  // event_name. This is the fastest way to find out, and it's cheap enough to leave in
+  // permanently rather than re-add it next time this breaks again.
+  console.log(
+    "[zalo-webhook] update",
+    JSON.stringify({
+      event_name: update.event_name,
+      text: update.message?.text,
+      chatId: update.message?.chat?.id,
+    })
+  );
+
   // Ignore non-text events (images, stickers, joins) — nothing to answer.
   if (update.event_name && update.event_name !== "message.text.received") {
     return NextResponse.json({ ok: true });
