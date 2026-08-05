@@ -59,10 +59,39 @@ function presentedSecret(req: NextRequest): string | null {
 }
 
 export async function POST(req: NextRequest) {
+  // Logged BEFORE any gate, deliberately. The previous version logged after the
+  // secret check, so a request Zalo *was* sending but that failed the check produced
+  // no output at all — indistinguishable from Zalo never calling us, and it sent this
+  // investigation down the wrong path for a while. Never let the auth gate be the
+  // thing that hides evidence of the request.
+  const provided = presentedSecret(req);
+  console.log(
+    "[zalo-webhook] inbound",
+    JSON.stringify({
+      hasKeyParam: req.nextUrl.searchParams.has("key"),
+      secretSource: provided
+        ? req.nextUrl.searchParams.get("key")
+          ? "query"
+          : "header"
+        : "none",
+      // Which of the candidate header spellings Zalo actually uses, if any.
+      secretHeaders: SECRET_HEADERS.filter((h) => req.headers.get(h)),
+      contentType: req.headers.get("content-type"),
+      userAgent: req.headers.get("user-agent"),
+    })
+  );
+
   // Gate 1 — shared secret. Fail closed if it isn't configured at all.
   const expected = process.env.ZALO_KIOT_WEBHOOK_SECRET;
-  const provided = presentedSecret(req);
   if (!expected || provided !== expected) {
+    console.warn(
+      "[zalo-webhook] REJECTED 401",
+      JSON.stringify({
+        expectedConfigured: Boolean(expected),
+        presented: provided ? `${provided.slice(0, 6)}…(${provided.length} chars)` : null,
+        expectedPrefix: expected ? `${expected.slice(0, 6)}…(${expected.length} chars)` : null,
+      })
+    );
     return NextResponse.json({ ok: false }, { status: 401 });
   }
 
