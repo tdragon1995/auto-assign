@@ -168,6 +168,21 @@ export function Dashboard() {
     }
   }, []);
 
+  // The one Cartrack assign call behind every "Gán thủ công" picker. Throws with
+  // the server's message so each caller can put its own row back.
+  const postManualAssign = useCallback(
+    async (jobId: number, driverId: string) => {
+      const res = await fetch("/api/admin/assign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: jobId, driver_id: driverId, env }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+    },
+    [env],
+  );
+
   // Manual assign from the Cần xử lý panel. Like "Giao ngay": hide the row at
   // once and fire the Cartrack assign in the background — don't make the user wait
   // on the round trip. If the assign errors, re-emerge the exact same row
@@ -179,13 +194,7 @@ export function Dashboard() {
 
       (async () => {
         try {
-          const res = await fetch("/api/admin/assign", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ job_id: job.job_id, driver_id: driverId, env }),
-          });
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+          await postManualAssign(job.job_id, driverId);
           toast.success(`Đã gán Job ${job.job_id}`);
           // Reconcile after the cycle that clears the snapshot, so a success stays gone.
           setTimeout(() => syncStatus(), FAILED_DISMISS_MS + 500);
@@ -198,7 +207,35 @@ export function Dashboard() {
         }
       })();
     },
-    [env, syncStatus],
+    [postManualAssign, syncStatus],
+  );
+
+  // Same picker, same contract, for a job held on its note: name the driver and
+  // assign now, instead of handing the job back to the engine ("Giao ngay") or
+  // parking it ("Hẹn giờ"). The dismissal uses the 4-minute window, NOT
+  // HELD_DISMISS_MS — an approval mark is visible to the server within seconds,
+  // but a direct assign only leaves the held snapshot when the next cycle
+  // rebuilds it (~3 min), so a shorter hide would flicker the row back.
+  const handleHeldManualAssign = useCallback(
+    (job: HeldJob, driverId: string) => {
+      dismissedHeldRef.current.set(job.job_id, Date.now() + FAILED_DISMISS_MS);
+      setHeld((prev) => prev.filter((j) => j.job_id !== job.job_id));
+
+      (async () => {
+        try {
+          await postManualAssign(job.job_id, driverId);
+          toast.success(`Đã gán Job ${job.job_id}`);
+          setTimeout(() => syncStatus(), FAILED_DISMISS_MS + 500);
+        } catch (err) {
+          dismissedHeldRef.current.delete(job.job_id);
+          setHeld((prev) =>
+            prev.some((j) => j.job_id === job.job_id) ? prev : [...prev, job],
+          );
+          toast.error(`Gán Job ${job.job_id} thất bại: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      })();
+    },
+    [postManualAssign, syncStatus],
   );
 
   const retrySchedule = useCallback(async () => {
@@ -441,6 +478,7 @@ export function Dashboard() {
                       // failed job (which the server puts back) reappears promptly.
                       setTimeout(() => syncStatus(), HELD_DISMISS_MS + 500);
                     }}
+                    onNoteManualAssign={handleHeldManualAssign}
                     failed={failed}
                     warnings={warnings}
                     scheduleErrors={scheduleErrors}

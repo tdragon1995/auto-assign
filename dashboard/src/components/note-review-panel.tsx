@@ -1,10 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Clock, StickyNote } from "lucide-react";
+import { AlertTriangle, Clock, StickyNote, UserRoundCog } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
+import { DriverPicker } from "./driver-picker";
+import type { ConfigDriver } from "@/lib/types";
 
 export interface HeldJob {
   job_id: number;
@@ -138,19 +140,25 @@ function DayTimePicker({
 /**
  * Lists note-held jobs. `held` is fed by the dashboard status poll (no polling
  * of its own). `onAssigned` removes the job immediately from the parent list;
- * `onRefresh` then confirms server state.
+ * `onRefresh` then confirms server state. `onManualAssign` is the third way out
+ * of the queue — a direct Cartrack assign to a chosen driver, owned by the
+ * parent (it needs its own optimistic-hide window).
  */
 export function NoteReviewPanel({
   held,
   env,
   onRefresh,
   onAssigned,
+  drivers,
+  onManualAssign,
   embedded = false,
 }: {
   held: HeldJob[];
   env: "prod" | "uat";
   onRefresh: () => void;
   onAssigned: (jobId: number) => void;
+  drivers: ConfigDriver[];
+  onManualAssign: (job: HeldJob, driverId: string) => void;
   // When true, render as a bare section (no Card) so it can sit inside the
   // unified "Cần xử lý" block alongside the unassignable + late sections.
   embedded?: boolean;
@@ -159,6 +167,10 @@ export function NoteReviewPanel({
   // Which row has its scheduler open. Only one at a time — the queue is cleared
   // one job per focus, and a single open panel keeps the list scannable.
   const [openId, setOpenId] = useState<number | null>(null);
+  // Which row has its driver picker open. Same one-at-a-time rule, and mutually
+  // exclusive with the scheduler above: "hẹn giờ" and "chọn tài xế" are two
+  // different answers to the same job, so only one form is ever on screen.
+  const [pickId, setPickId] = useState<number | null>(null);
   // Move focus to the revealed time input when a scheduler opens, so keyboard
   // and screen-reader users land on the next action instead of nowhere.
   const openTimeRef = useRef<HTMLSelectElement | null>(null);
@@ -271,6 +283,7 @@ export function NoteReviewPanel({
     const { dayOffset, timeLabel } = getSched(job.job_id);
     const isBusy = busyId === job.job_id;
     const isOpen = openId === job.job_id;
+    const isPicking = pickId === job.job_id;
     const isSelected = selected.has(job.job_id);
     const timeIsPast = dayOffset === 0 && !!timeLabel && timeLabel <= vnNowLabel();
     const canSchedule = !!timeLabel && !timeIsPast;
@@ -370,9 +383,10 @@ export function NoteReviewPanel({
 
         <HeldNote note={job.note} />
 
-        {/* Two explicit choices; scheduling is revealed only on demand so the
-            "now vs later" decision is never a hidden button-disabled mode. */}
-        {!isOpen ? (
+        {/* Three explicit choices; the scheduler and the driver picker are
+            revealed only on demand, so "now vs later vs this driver" is never a
+            hidden button-disabled mode. */}
+        {!isOpen && !isPicking ? (
           <div className="flex flex-wrap items-center gap-2 pt-0.5">
             <Button size="sm" variant="outline" className="text-xs" disabled={isBusy} onClick={assignAnyway}>
               {isBusy ? "Đang xử lý…" : "Giao ngay"}
@@ -384,12 +398,40 @@ export function NoteReviewPanel({
               disabled={isBusy}
               onClick={() => {
                 if (!schedules[job.job_id]) patchSched(job.job_id, { dayOffset: 0, timeLabel: null });
+                setPickId(null);
                 setOpenId(job.job_id);
               }}
             >
               <Clock className="size-3.5" strokeWidth={2} />
               Hẹn giờ
             </Button>
+            {/* Skips the engine entirely: "Giao ngay" hands the job back for the
+                next cycle to route, this names the driver here and now. */}
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-xs"
+              disabled={isBusy}
+              onClick={() => {
+                setOpenId(null);
+                setPickId(job.job_id);
+              }}
+            >
+              <UserRoundCog className="size-3.5" strokeWidth={2} />
+              Chọn tài xế
+            </Button>
+          </div>
+        ) : isPicking ? (
+          <div className="animate-in fade-in slide-in-from-top-1 duration-200 motion-reduce:animate-none space-y-1 rounded-md border border-indigo-200 bg-indigo-50/50 px-2 py-2">
+            <span className="text-xs font-semibold text-slate-700">Giao thẳng cho tài xế</span>
+            <DriverPicker
+              drivers={drivers}
+              onConfirm={(driverId) => {
+                setPickId(null);
+                onManualAssign(job, driverId);
+              }}
+              onCancel={() => setPickId(null)}
+            />
           </div>
         ) : (
           <div className="animate-in fade-in slide-in-from-top-1 duration-200 motion-reduce:animate-none space-y-2 rounded-md border border-indigo-200 bg-indigo-50/50 px-2 py-2">
