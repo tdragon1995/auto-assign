@@ -21,7 +21,7 @@ import { isChamCong, isCompletedOrRejectedStop, isNoteApproved } from "./job-fil
 import { placeLabel } from "./place-label";
 import { stripDriverCode } from "./job-detail";
 import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, idleBand, type RefStop, type RefLabel } from "./smart-rank";
-import { loadLeaveEntries, isDriverOnLeave, resolveSubstitute } from "./leave-config";
+import { loadLeaveEntries, isDriverOnLeave, resolveSubstitute, type LeaveEntry } from "./leave-config";
 
 
 const DUPLICATE_REJECT_REASON =
@@ -586,6 +586,76 @@ export function getDriversOnDuty(
   return [onDuty, "clash"];
 }
 
+
+/**
+ * The driver a note-held job would go to if the note weren't holding it —
+ * shown on the "Cần xử lý" row so a supervisor can approve without first
+ * working out who it lands on.
+ *
+ * FIXED-PATH ONLY, and deliberately so. A fixed job's driver is a roster
+ * lookup: the same answer now and at assign time, so it can be stated as fact.
+ * A smart job's driver is ranked live against driver positions in the cycle
+ * that assigns it, so any name shown here could be wrong minutes later — and a
+ * name on screen reads as a promise. Smart jobs return null and the row shows
+ * nothing. This also keeps the preview free: config and leave entries are
+ * already in memory, so there is no Cartrack call and no Goong request.
+ *
+ * Returns null for every uncertain case (no mapping, nobody on duty, clash,
+ * sub clash, no sub, broken driver_id) — those are the states where the job
+ * would FAIL rather than assign, and they already surface with their own
+ * reason once the note is cleared.
+ *
+ * Returns the driver ID, not a display name: the mapping sheet's
+ * `first_name_last_name` column is empty on every row today (verified 2026-08-07,
+ * 0 of 1238), so resolving names here would print raw UUIDs. The dashboard already
+ * holds the Driver tab list and resolves the name there. `name` is only set when
+ * the engine genuinely knows one — a substitute, whose name the leave row carries.
+ *
+ * Mirrors the fixed path in the assign loop — if that changes, change this.
+ */
+function previewFixedDriver(
+  config: Config,
+  job: Job,
+  customerId: string | null,
+  leaveEntries: LeaveEntry[],
+): { driverId: string; name: string | null; subFor: string | null } | null {
+  if (!customerId) return null;
+
+  // Held jobs are windowless by construction (a job with a pickup window bypasses
+  // the note gate entirely), so the loop's window branch can't apply here and
+  // jobTime reduces to the scheduled/create timestamp.
+  let jobTime = parseVnTimestamp(job.scheduled_delivery_ts || job.create_ts);
+  if (isNaN(jobTime.getTime())) jobTime = new Date();
+
+  // An on-shift smart mapping wins the job before the fixed path is reached.
+  const smart = config.mappings.some(
+    (m) => m.customer_id === customerId && m.smart_driver_id.length > 0 && isDriverOnShift(m, jobTime),
+  );
+  if (smart) return null;
+
+  const [drivers, status] = getDriversOnDuty(config, customerId, jobTime);
+  if (status !== "happy") return null;
+
+  const mapping = drivers[0];
+  let driverId = mapping.driver_id;
+  if (!driverId) return null;
+  let name: string | null = mapping.first_name_last_name?.trim() || null;
+  let subFor: string | null = null;
+
+  const lc = isDriverOnLeave(driverId, leaveEntries);
+  if (lc.onLeave) {
+    const sub = resolveSubstitute(lc.entry!);
+    if (sub.status !== "ok") return null;
+    subFor = lc.driverName ?? null;
+    driverId = sub.subId;
+    // The leave row names its substitutes, and that string comes from the Driver
+    // tab (the sheet resolves sub ids by name lookup), so it's a real name.
+    name = lc.entry!.subs.find((s) => s.id === sub.subId)?.name?.trim() || null;
+  }
+
+  if (!isValidDriverId(driverId)) return null;
+  return { driverId, name, subFor };
+}
 
 export function jobHasNotes(job: Job): boolean {
   for (const stop of job.stops ?? []) {
@@ -1319,7 +1389,20 @@ export async function autoAssignCycle(
       if (!hasWindow) {
         if (!approved && !onlyJobIds?.has(jobId)) {
           log(`Job ${jobId} - SKIPPED (has note): "${getJobNoteText(job)}" | ${route}`);
-          heldJobs.push({ job_id: jobId, customer: jobCustomerName ?? customerId ?? "—", note: getJobNoteText(job) });
+          // Who it would go to, for fixed-path jobs only — see previewFixedDriver.
+          const preview = previewFixedDriver(config, job, customerId, leaveEntries);
+          heldJobs.push({
+            job_id: jobId,
+            customer: jobCustomerName ?? customerId ?? "—",
+            note: getJobNoteText(job),
+            ...(preview
+              ? {
+                  driver_id: preview.driverId,
+                  ...(preview.name ? { driver_name: preview.name } : {}),
+                  ...(preview.subFor ? { sub_for: preview.subFor } : {}),
+                }
+              : {}),
+          });
           continue;
         }
         const why = approved ? "approved mark" : "manual override";

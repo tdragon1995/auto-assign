@@ -229,6 +229,15 @@ export interface HeldJob {
   note: string;
   /** Set when a background approve/schedule failed and the job was put back. */
   error?: string;
+  /** Who the job would go to once the note is cleared. Fixed-path jobs only —
+   *  absent for smart jobs, whose driver isn't decided until assign time. The
+   *  dashboard resolves this to a name against the Driver tab. */
+  driver_id?: string;
+  /** Display name, only when the engine knows one (a substitute, named by the
+   *  leave row). The mapping sheet carries no names, so this is usually absent. */
+  driver_name?: string;
+  /** The on-leave driver being covered for, when the pick is a substitute. */
+  sub_for?: string;
 }
 
 /** Replace the held-jobs list (called by a full cycle; pass [] to clear). */

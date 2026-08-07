@@ -14,6 +14,15 @@ export interface HeldJob {
   note: string;
   /** Present when a background approve/schedule failed and the job was put back. */
   error?: string;
+  /** Who "Giao ngay" would hand the job to. Set only for fixed-path jobs, where
+   *  the driver is a roster lookup and therefore the same answer at assign time.
+   *  Smart jobs leave it unset — their driver is ranked live, so a name shown
+   *  now could be wrong by the next cycle. Resolved to a name against `drivers`. */
+  driver_id?: string;
+  /** Name when the engine already knows one (a substitute); usually absent. */
+  driver_name?: string;
+  /** The on-leave driver being covered for, when the pick is a substitute. */
+  sub_for?: string;
 }
 
 const NOTE_PREVIEW_LIMIT = 100;
@@ -285,6 +294,12 @@ export function NoteReviewPanel({
     const isOpen = openId === job.job_id;
     const isPicking = pickId === job.job_id;
     const isSelected = selected.has(job.job_id);
+    // Driver tab first (the mapping sheet carries no names), then anything the
+    // engine already named. Neither → render no line at all.
+    const previewName =
+      (job.driver_id && drivers.find((d) => d.driver_id === job.driver_id)?.name) ||
+      job.driver_name ||
+      null;
     const timeIsPast = dayOffset === 0 && !!timeLabel && timeLabel <= vnNowLabel();
     const canSchedule = !!timeLabel && !timeIsPast;
 
@@ -382,6 +397,19 @@ export function NoteReviewPanel({
         )}
 
         <HeldNote note={job.note} />
+
+        {/* Who "Giao ngay" lands on. Only fixed-path jobs carry a driver (the
+            engine omits it for smart jobs, whose driver isn't chosen until assign
+            time), so the line is simply absent rather than hedged when unknown.
+            Name comes from the Driver tab; if the id resolves to nothing we show
+            nothing rather than a UUID. */}
+        {previewName && (
+          <p className="text-[11px] text-slate-600">
+            Giao ngay <span className="text-slate-400">→</span>{" "}
+            <span className="font-semibold text-slate-900">{previewName}</span>
+            {job.sub_for && <span className="text-slate-600"> (thay {job.sub_for})</span>}
+          </p>
+        )}
 
         {/* Three explicit choices; the scheduler and the driver picker are
             revealed only on demand, so "now vs later vs this driver" is never a
