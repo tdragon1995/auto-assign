@@ -487,6 +487,19 @@ function isDriverUnavailable(body: unknown): boolean {
   );
 }
 
+/** True when Cartrack's 422 means the driver account itself is deactivated.
+ *  Unlike on-break/offline this never clears on its own — the driver has left or
+ *  been disabled in Cartrack, so the job needs a human (new mapping / new driver).
+ *  Deterministic per job → belongs in "Cần xử lý", not the rolling live log. */
+function isDriverDeactivated(body: unknown): boolean {
+  if (!body || typeof body !== "object") return false;
+  const ct = (body as Record<string, unknown>).error as Record<string, unknown> | undefined;
+  const msgs = (ct?.data as Record<string, unknown> | undefined)?.delivery_driver_id;
+  return Array.isArray(msgs) && msgs.some(
+    (m: unknown) => typeof m === "string" && m.includes("deactivated")
+  );
+}
+
 
 /**
  * Turn a Cartrack error response body into a short, readable reason instead of
@@ -1448,6 +1461,10 @@ export async function autoAssignCycle(
               const who2 = jobCustomerName ?? customerId ?? "—";
               log(`Job ${jobId} - SMART(1) assigned driver on-break or offline | ${route}`, "WARN");
               fail("UNAVAILABLE", jobId, who2, "Giao Nhận Mẫu (smart) được phân công đang nghỉ giải lao/offline");
+            } else if (isDriverDeactivated(body)) {
+              const who2 = jobCustomerName ?? customerId ?? "—";
+              log(`Job ${jobId} - SMART(1) assigned driver is deactivated | ${route}`, "WARN");
+              fail("DEACTIVATED", jobId, who2, "Tài khoản Giao Nhận Mẫu (smart) duy nhất đã bị khoá trong Cartrack — cần cập nhật Sheet");
             } else {
               log(`Job ${jobId} - SMART(1) failed: ${friendlyError(body)} | ${route}`, "ERROR");
             }
@@ -1614,6 +1631,10 @@ export async function autoAssignCycle(
         // Try candidates in ranked order; fall through to next if on-break/offline.
         let assigned = false;
         let subClash = false;
+        // Candidates rejected because their Cartrack account is deactivated. Kept
+        // separate from on-break/offline so the "Cần xử lý" row names the real fix
+        // (update the sheet) instead of telling the supervisor to wait it out.
+        const deactivated: string[] = [];
         for (let attempt = 0; attempt < withGoong.length; attempt++) {
           const candidate = withGoong[attempt];
           const candidateName = `${candidate.d.first_name} ${candidate.d.last_name}`.trim();
@@ -1666,6 +1687,13 @@ export async function autoAssignCycle(
             } else if (isDriverUnavailable(body)) {
               const who = subFor ? `sub ${ctName || targetId}` : candidateName;
               log(`Job ${jobId} - SMART #${attempt + 1} ${who}: on-break or offline, trying next best candidates | ${route}`, "WARN");
+            } else if (isDriverDeactivated(body)) {
+              // Permanent, but only for THIS candidate — the next-best driver may
+              // still be live, so fall through like the on-break case rather than
+              // breaking out and failing the whole job.
+              const who = subFor ? `sub ${ctName || targetId}` : candidateName;
+              deactivated.push(who);
+              log(`Job ${jobId} - SMART #${attempt + 1} ${who}: deactivated account, trying next best candidates | ${route}`, "WARN");
             } else {
               log(`Job ${jobId} - SMART failed: ${friendlyError(body)} | ${route}`, "ERROR");
               break;
@@ -1679,8 +1707,15 @@ export async function autoAssignCycle(
         if (!assigned) {
           const names = withGoong.map((x) => `${x.d.first_name} ${x.d.last_name}`.trim()).join(", ");
           const who = pickupStop.customer_name ?? jobCustomerName ?? customerId ?? "—";
-          log(`Job ${jobId} - SMART: all ${withGoong.length} candidate(s) on-break or unavailable (${names}) | ${route}`, "ERROR");
-          fail("UNAVAILABLE", jobId, who, `${withGoong.length} tài xế đều đang nghỉ giải lao/offline: ${names}`);
+          if (deactivated.length) {
+            // At least one candidate is a dead account — that's the actionable half
+            // of the failure, so lead with it rather than the on-break label.
+            log(`Job ${jobId} - SMART: no candidate assignable, ${deactivated.length} deactivated (${deactivated.join(", ")}) | ${route}`, "ERROR");
+            fail("DEACTIVATED", jobId, who, `Tài khoản đã bị khoá trong Cartrack: ${deactivated.join(", ")} — cần cập nhật Sheet`);
+          } else {
+            log(`Job ${jobId} - SMART: all ${withGoong.length} candidate(s) on-break or unavailable (${names}) | ${route}`, "ERROR");
+            fail("UNAVAILABLE", jobId, who, `${withGoong.length} tài xế đều đang nghỉ giải lao/offline: ${names}`);
+          }
         }
         continue;
     }
@@ -1845,6 +1880,11 @@ export async function autoAssignCycle(
           // cycle. Surface in Cần xử lý, not as a repeating live-log ERROR.
           log(`Job ${jobId} - assigned driver on-break or offline | ${route}`, "WARN");
           fail("UNAVAILABLE", jobId, pickupName, "Giao Nhận Mẫu được phân công đang nghỉ giải lao/offline");
+        } else if (isDriverDeactivated(body)) {
+          // Account disabled in Cartrack → fails identically every cycle until the
+          // sheet points at a live driver. Cần xử lý, not a repeating live-log ERROR.
+          log(`Job ${jobId} - assigned driver is deactivated | ${route}`, "WARN");
+          fail("DEACTIVATED", jobId, pickupName, "Tài khoản tài xế được phân công đã bị khoá trong Cartrack — cần cập nhật Sheet");
         } else {
           log(`Job ${jobId} - failed: ${friendlyError(body)} | ${route}`, "ERROR");
         }

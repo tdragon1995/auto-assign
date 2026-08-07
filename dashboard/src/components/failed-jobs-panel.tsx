@@ -38,7 +38,8 @@ const REASON_META: Record<
   SUB_CLASH:      { label: "Trùng người thay", tone: "amber", order: 4 },
   NO_MAPPING:     { label: "Chưa cấu hình (Sheet)", tone: "amber", order: 5 },
   INVALID_DRIVER: { label: "Sai driver_id (Sheet)", tone: "red", order: 6 },
-  NO_GPS:         { label: "Thiếu toạ độ GPS", tone: "red", order: 7 },
+  DEACTIVATED:    { label: "Tài khoản tài xế đã bị khoá", tone: "red", order: 7 },
+  NO_GPS:         { label: "Thiếu toạ độ GPS", tone: "red", order: 8 },
 };
 
 function metaFor(reason: FailedReason) {

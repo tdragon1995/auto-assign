@@ -175,6 +175,7 @@ export type FailedReason =
   | "ON_LEAVE"        // assigned driver on leave, no substitute covers now
   | "INVALID_DRIVER"  // broken driver_id in the sheet (#REF!, …)
   | "UNAVAILABLE"     // all ranked smart candidates on-break/offline
+  | "DEACTIVATED"     // driver account deactivated in Cartrack (left the company)
   | "NO_GPS";         // pickup or all candidates missing coordinates
 
 export interface FailedJob {

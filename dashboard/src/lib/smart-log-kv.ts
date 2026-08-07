@@ -496,6 +496,9 @@ const LOG_DROP_PATTERNS = [
   "on-break or unavailable",  // all smart candidates unavailable
   "on-break or offline",      // single assigned driver unavailable (+ retry noise)
   "SMART skipped",            // pickup no GPS / 0 configured drivers available
+  "is deactivated",           // assigned driver's Cartrack account disabled
+  "deactivated account",      // same, per-candidate retry line in the smart loop
+  "deactivated (",            // "no candidate assignable, N deactivated (…)"
 ];
 
 function shouldStore(entry: LogEntry): boolean {
