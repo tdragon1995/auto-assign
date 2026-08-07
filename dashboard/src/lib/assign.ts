@@ -18,6 +18,8 @@ import {
 import { haversineKm } from "./distance";
 import { roadDistancesToPoint } from "./distance-cache";
 import { isChamCong, isCompletedOrRejectedStop, isNoteApproved } from "./job-filters";
+import { placeLabel } from "./place-label";
+import { stripDriverCode } from "./job-detail";
 import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, idleBand, type RefStop, type RefLabel } from "./smart-rank";
 import { loadLeaveEntries, isDriverOnLeave, resolveSubstitute } from "./leave-config";
 
@@ -360,34 +362,38 @@ async function alertLateJobs(
     // dashboard) — acceptable to keep the "exactly once" guarantee simple.
     if (!(await claimLateAlert(w.job_id, env))) continue;
 
-    const route =
-      [w.pickup_customer_name, w.dropoff_customer_name].filter(Boolean).join(" → ") ||
-      "N/A";
+    // Only the pickup matters here — the alert is about a sample that hasn't been
+    // collected, so the dropoff is noise. placeLabel drops the account/district
+    // codes Cartrack prefixes onto client rows ("21362 - CChi - QL22 - PS315 QL22"
+    // → "PS315 QL22"), which is the part staff actually recognise.
+    const place = w.pickup_customer_name ? placeLabel(w.pickup_customer_name) : "N/A";
     // Precise elapsed, promoted to the header so severity reads at a glance:
     // "2h30" / "2h" (clock form, no "phút" suffix — texty in a scan-first alert).
     const h = Math.floor(elapsedMin / 60);
     const m = elapsedMin % 60;
     const dur = `${h}h${m ? String(m).padStart(2, "0") : ""}`;
-    // Reference-time line so the supervisor sees WHAT the lateness is measured
-    // against: a delivery window ("Khung giờ") for windowed pickups, else the
-    // job's creation time ("Tạo lúc"). Window times are raw "HH:mm:ss+07:00" —
-    // slice HH:mm off the front (hhmmVn needs a date prefix these lack).
+    // Reference time rides in the header parenthetical rather than its own line, so
+    // the supervisor sees the lateness AND what it's measured against in one glance:
+    // a delivery window ("khung giờ") for windowed pickups, else the job's creation
+    // time ("tạo lúc"). Window times are raw "HH:mm:ss+07:00" — slice HH:mm off the
+    // front (hhmmVn needs a date prefix these lack).
     const win5 = (s?: string) => (s ? s.slice(0, 5) : null);
-    let refLine: string | null = null;
+    let ref: string | null = null;
     if (w.window_time_from) {
       const to = win5(w.window_time_to);
-      refLine = `Khung giờ: ${win5(w.window_time_from)}${to ? `–${to}` : ""}`;
+      ref = `khung giờ ${win5(w.window_time_from)}${to ? `–${to}` : ""}`;
     } else if (w.create_ts) {
       const created = hhmmVn(w.create_ts);
-      if (created) refLine = `Tạo lúc: ${created}`;
+      if (created) ref = `tạo lúc ${created}`;
     }
+    // The job id goes out as the fleetweb deep link only — same URL the dashboard
+    // job chips use. Zalo auto-links a bare URL, so no parse_mode is needed, and
+    // the supervisor taps straight through instead of copying the id into a search.
     const text = [
-      `⚠️ Trễ lấy mẫu ~${dur}`,
-      `Job #${w.job_id}${w.reference_number ? ` (${w.reference_number})` : ""}`,
-      `Tuyến: ${route}`,
-      `Tài xế: ${w.driver_name ?? "chưa rõ tên"}`,
-      ...(refLine ? [refLine] : []),
-      "Chưa bắt đầu lấy mẫu — vui lòng kiểm tra & xử lý.",
+      `⚠️ Trễ lấy mẫu ~${dur}${ref ? ` (${ref})` : ""}`,
+      place,
+      `Tài xế ${w.driver_name ? stripDriverCode(w.driver_name) : "chưa rõ tên"}`,
+      `https://fleetweb-vn.cartrack.com/delivery/map?job=${w.job_id}`,
     ].join("\n");
 
     const sent = await sendZaloMessage(botToken, chatId, text);

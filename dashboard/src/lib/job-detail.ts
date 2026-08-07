@@ -15,9 +15,16 @@ import type { Job } from "@/lib/types";
 // DC — part-timers carry PT ("P - P - PT101408 Đào Thanh Bình").
 const DRIVER_CODE_PREFIX = /^(?:[A-Z]{1,2}\s*-\s*)*[A-Z]{2}\d+\s+/;
 
+/** Strip the payroll-code prefix off an already-assembled driver name, for callers
+ *  holding a string rather than the driver object ("F - P - DC101691 Phan Thanh
+ *  Nghĩa" → "Phan Thanh Nghĩa"). A name with no code prefix passes through. */
+export function stripDriverCode(name: string): string {
+  return name.trim().replace(DRIVER_CODE_PREFIX, "");
+}
+
 export function driverDisplayName(driver: Job["driver"]): string | null {
   const raw = driver?.last_name?.trim() || driver?.first_name?.trim() || null;
-  return raw ? raw.replace(DRIVER_CODE_PREFIX, "") : null;
+  return raw ? stripDriverCode(raw) : null;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
