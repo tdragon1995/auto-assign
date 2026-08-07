@@ -105,19 +105,35 @@ export function isValidDriverId(id: string): boolean {
   return DRIVER_ID_RE.test(id.trim());
 }
 
+/** The Driver tab keeps every driver Cartrack returns, active or not, with the
+ *  account flag in `is_active`. A blank (or missing column) counts as active —
+ *  the flag is written by the Apps Script fetcher, so if that ever stops running
+ *  we want a full picker, not an empty one. Only an explicit false excludes. */
+function isDeactivatedRow(row: Record<string, string>): boolean {
+  const v = (row["is_active"] ?? "").trim().toLowerCase();
+  return v === "false" || v === "0" || v === "no";
+}
+
 export async function loadDriversFromSheet(): Promise<ConfigDriver[]> {
   if (cachedDrivers && Date.now() - cachedDriversAt < DRIVERS_TTL_MS) return cachedDrivers;
   try {
     const rows = await fetchSheetRows(SHEET_GID.drivers);
     const drivers: ConfigDriver[] = [];
+    let skipped = 0;
     for (const row of rows) {
       const driver_id = (row["delivery_driver_id"] ?? "").trim();
       const name = (row["Driver"] ?? "").trim();
-      if (driver_id) {
-        drivers.push({ driver_id, name: name || driver_id });
+      if (!driver_id) continue;
+      // A deactivated account can never take a job — Cartrack 422s the assign
+      // ("Driver is deactivated…"). Leaving them in the picker only offers a
+      // guaranteed failure, so they're dropped at load time.
+      if (isDeactivatedRow(row)) {
+        skipped++;
+        continue;
       }
+      drivers.push({ driver_id, name: name || driver_id });
     }
-    console.log(`Loaded ${drivers.length} drivers from sheet`);
+    console.log(`Loaded ${drivers.length} active drivers from sheet (${skipped} deactivated skipped)`);
     cachedDrivers = drivers.sort((a, b) => a.name.localeCompare(b.name));
     cachedDriversAt = Date.now();
     return cachedDrivers;
