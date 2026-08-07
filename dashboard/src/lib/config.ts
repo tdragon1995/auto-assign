@@ -127,27 +127,6 @@ export async function loadDriversFromSheet(): Promise<ConfigDriver[]> {
   }
 }
 
-/** Deduplicated driver list from the config: the union of every valid fixed
- *  driver_id and smart_driver_id across all mappings. Names come from a fixed
- *  row's first_name_last_name; a smart-only driver with no fixed row anywhere
- *  falls back to its UUID. Sorted by display name. No network — derived from the
- *  already-loaded (cached) config, so the manual-assign picker costs nothing. */
-export function driversFromConfig(config: Config): ConfigDriver[] {
-  const nameById = new Map<string, string>();
-  const allIds = new Set<string>();
-  for (const m of config.mappings) {
-    if (m.driver_id && isValidDriverId(m.driver_id)) {
-      allIds.add(m.driver_id);
-      const name = m.first_name_last_name.trim();
-      if (name && !nameById.has(m.driver_id)) nameById.set(m.driver_id, name);
-    }
-    for (const sid of m.smart_driver_id) allIds.add(sid);
-  }
-  return [...allIds]
-    .map((driver_id) => ({ driver_id, name: nameById.get(driver_id) || driver_id }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-}
-
 export async function loadConfigFromSheets(): Promise<Config | null> {
   const today = vnDate(new Date());
   // Read once and reuse for the write below, so a hit costs exactly one Redis GET.
