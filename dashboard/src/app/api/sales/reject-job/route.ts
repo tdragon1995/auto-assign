@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { BASE_URL, jsonRpc, getHeaders, type Env } from "@/lib/cartrack";
+import { BASE_URL, jsonRpc, getHeaders, assignJob, type Env } from "@/lib/cartrack";
 import { isStopStarted } from "@/lib/job-filters";
 import { pushRunLog } from "@/lib/smart-log-kv";
 import { vnTimestamp } from "@/lib/time";
@@ -30,7 +30,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Không tìm được job" }, { status: 404 });
     }
     const findData = await findRes.json();
-    const jobs: { job_id: number; reference_number: string; job_status_id: number }[] = findData.data ?? [];
+    // The list response already carries the full `stops` array (verified on prod:
+    // stop_status_id, activity_*_ts and customer_name are all present). A second
+    // GET /jobs/{id} for the detail costs ~4.5s of Cartrack latency and returns
+    // nothing new — and this route's whole budget is the edge runtime's 25s.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const jobs: any[] = findData.data ?? [];
     const job = jobs.find((j) => (j.reference_number ?? "").trim() === reference_number.trim());
     if (!job) {
       return NextResponse.json({ error: "Không tìm thấy reference_number" }, { status: 404 });
@@ -40,16 +45,8 @@ export async function POST(req: NextRequest) {
     }
 
     // Only allow reject if no stop has progressed beyond status 1 (Chờ lấy)
-    const fullRes = await fetch(`${BASE_URL}/jobs/${job.job_id}`, {
-      headers,
-      cache: "no-store",
-    });
-    if (!fullRes.ok) {
-      return NextResponse.json({ error: "Không lấy được chi tiết job" }, { status: 500 });
-    }
-    const fullData = await fullRes.json();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const stops: any[] = fullData.data?.stops ?? [];
+    const stops: any[] = job.stops ?? [];
     const pickup = stops.find((s: any) => s.stop_type_id === 1);
     const pickupCustomerName = pickup?.customer_name ?? null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -65,13 +62,13 @@ export async function POST(req: NextRequest) {
     if (!proxyDriverId) {
       return NextResponse.json({ error: "CARTRACK_REJECT_PROXY_DRIVER_ID not configured" }, { status: 500 });
     }
-    const assignRes = await fetch(`${BASE_URL}/jobs/${job.job_id}`, {
-      method: "PUT",
-      headers,
-      body: JSON.stringify({ delivery_driver_id: proxyDriverId }),
-      cache: "no-store",
-    });
-    if (!assignRes.ok) {
+    // assignJob, not a hand-rolled REST PUT: it tries the fleetweb RPC first
+    // (~2.0s vs ~7.3s REST, measured 2026-07-18) and falls back to REST on its own.
+    // isProxyDriver() exempts the reject proxy from the driver-state gate, so the
+    // RPC path costs no extra drivers fetch. This is the same call the duplicate
+    // rejection in assign.ts already makes.
+    const { status: assignStatus } = await assignJob(proxyDriverId, job.job_id, env);
+    if (assignStatus !== 200) {
       return NextResponse.json({ error: "Không thể giao job cho proxy driver trước khi huỷ" }, { status: 500 });
     }
 
@@ -84,11 +81,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Từ chối thất bại: ${out.error}` }, { status: 500 });
     }
 
-    void pushRunLog([{
+    // AWAITED, not fired and forgotten: on the edge runtime an unawaited promise
+    // dies with the invocation, so a cancel that lands right at the timeout gets
+    // rejected on Cartrack with no trace in the run log — exactly what happened to
+    // job 34411772 on 2026-08-10.
+    await pushRunLog([{
       ts: vnTimestamp(),
       level: "OK",
       msg: `[Sales] Huỷ job: Job ${job.job_id}, Ref: ${job.reference_number}, Lý do: ${reject_reason} | ${pickupCustomerName ?? "—"} → ${dropoffCustomerName}`,
-    }]);
+    }]).catch(() => {});
     return NextResponse.json({
       success: true,
       job_id: job.job_id,

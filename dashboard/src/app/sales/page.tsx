@@ -384,8 +384,25 @@ export default function SalesPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reference_number: ref, reject_reason: rejectReason }),
       });
-      const data = await res.json();
-      if (!res.ok) {
+      // Never call res.json() blind here. When the request outlives the edge
+      // runtime's limit, Vercel answers with an HTML error page and Safari turns
+      // that into a raw "SyntaxError: The string did not match the expected
+      // pattern." — which reads as "cancel failed" even though the cancel had
+      // already landed on Cartrack. Parse defensively and say what we actually know.
+      const raw = await res.text();
+      let data: { error?: string; reference_number?: string; pickup_customer_name?: string | null } = {};
+      let parsed = true;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        parsed = false;
+      }
+      if (!parsed) {
+        setRejectResult({
+          ok: false,
+          msg: "Quá thời gian chờ. Yêu cầu huỷ có thể ĐÃ được ghi nhận — kiểm tra lại trạng thái chuyến trước khi bấm huỷ lần nữa.",
+        });
+      } else if (!res.ok) {
         setRejectResult({ ok: false, msg: data.error ?? "Huỷ thất bại" });
       } else {
         const who = data.pickup_customer_name ? `, ${data.pickup_customer_name}` : "";
