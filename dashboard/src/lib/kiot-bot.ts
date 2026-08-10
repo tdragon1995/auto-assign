@@ -213,6 +213,30 @@ function deltaLine(current: number, previous: number, label: string): string | n
     : `📉 So với ${label}: {red}▼ ${magnitude}{/red}`;
 }
 
+const VN_WEEKDAYS = [
+  "Chủ Nhật",
+  "Thứ Hai",
+  "Thứ Ba",
+  "Thứ Tư",
+  "Thứ Năm",
+  "Thứ Sáu",
+  "Thứ Bảy",
+] as const;
+
+/** Day of week for a VN date string, 0 = Sunday. Parsed as UTC midnight so the
+ *  host machine's timezone can't shift it onto the wrong day. */
+function dayOfWeek(date: string): number {
+  return new Date(`${date}T00:00:00Z`).getUTCDay();
+}
+
+/** The previous *trading* day. The pharmacy is closed Sunday, so Monday compares
+ *  back to Saturday — comparing against a closed Sunday means a zero baseline, and
+ *  deltaLine would suppress the line entirely every Monday. */
+function previousBusinessDay(date: string): string {
+  const prev = addDays(date, -1);
+  return dayOfWeek(prev) === 0 ? addDays(prev, -1) : prev;
+}
+
 /** Current VN wall clock as "HH:MM". */
 function vnClock(): string {
   const { hours, minutes } = vnHoursMinutes();
@@ -227,13 +251,22 @@ function vnClock(): string {
 async function buildReport(date: string, headline: string): Promise<string> {
   const isToday = date === vnDate();
   const untilClock = isToday ? vnClock() : undefined;
+  const prevDate = previousBusinessDay(date);
 
   const [stats, prev] = await Promise.all([
     getSalesStats(date, untilClock),
-    getSalesStats(addDays(date, -1), untilClock),
+    getSalesStats(prevDate, untilClock),
   ]);
 
-  const label = isToday ? "cùng giờ hôm qua" : "hôm trước";
+  // Name the day explicitly whenever it isn't literally yesterday, so a Monday
+  // report reads "so với cùng giờ Thứ Bảy 01/08" and nobody has to guess what the
+  // percentage is measured against.
+  const base =
+    prevDate === addDays(date, -1)
+      ? "hôm qua"
+      : `${VN_WEEKDAYS[dayOfWeek(prevDate)]} ${formatVnDate(prevDate).slice(0, 5)}`;
+  const label = isToday ? `cùng giờ ${base}` : base;
+
   return statsLines(headline, stats, deltaLine(stats.revenue, prev.revenue, label));
 }
 
