@@ -371,48 +371,93 @@ export default function SalesPage() {
   const [refNumber, setRefNumber] = useState("");
   const [rejectReason, setRejectReason] = useState(REJECT_REASONS[0]);
   const [rejectLoading, setRejectLoading] = useState(false);
+  const [rejectRetrying, setRejectRetrying] = useState(false);
   const [rejectResult, setRejectResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  // "unknown" = the reply never arrived or wasn't JSON. It is NOT a failure: when
+  // the request outlives the edge runtime's limit, Vercel returns an HTML error
+  // page while the rejection has already landed on Cartrack (Safari renders that
+  // as a raw "SyntaxError: The string did not match the expected pattern.").
+  // So never call res.json() blind, and never render the exception.
+  type RejectOutcome =
+    | { kind: "ok"; reference?: string; who?: string | null }
+    | { kind: "already_cancelled" }
+    | { kind: "failed"; msg: string }
+    | { kind: "unknown" };
+
+  const attemptReject = async (ref: string): Promise<RejectOutcome> => {
+    let res: Response;
+    try {
+      res = await fetch("/api/sales/reject-job", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reference_number: ref, reject_reason: rejectReason }),
+      });
+    } catch {
+      return { kind: "unknown" }; // dropped connection — same ambiguity as a timeout
+    }
+    let data: {
+      error?: string;
+      code?: string;
+      reference_number?: string;
+      pickup_customer_name?: string | null;
+    };
+    try {
+      data = JSON.parse(await res.text());
+    } catch {
+      return { kind: "unknown" };
+    }
+    if (res.ok) return { kind: "ok", reference: data.reference_number, who: data.pickup_customer_name };
+    // Keyed on `code`, never on the message text — a 409 is also how the route
+    // refuses a job the driver has already started, which must stay a failure.
+    if (data.code === "already_cancelled") return { kind: "already_cancelled" };
+    return { kind: "failed", msg: data.error ?? "Huỷ thất bại" };
+  };
 
   const rejectJob = async () => {
     const ref = refNumber.trim();
     if (!ref) return;
     setRejectLoading(true);
+    setRejectRetrying(false);
     setRejectResult(null);
     try {
-      const res = await fetch("/api/sales/reject-job", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reference_number: ref, reject_reason: rejectReason }),
-      });
-      // Never call res.json() blind here. When the request outlives the edge
-      // runtime's limit, Vercel answers with an HTML error page and Safari turns
-      // that into a raw "SyntaxError: The string did not match the expected
-      // pattern." — which reads as "cancel failed" even though the cancel had
-      // already landed on Cartrack. Parse defensively and say what we actually know.
-      const raw = await res.text();
-      let data: { error?: string; reference_number?: string; pickup_customer_name?: string | null } = {};
-      let parsed = true;
-      try {
-        data = JSON.parse(raw);
-      } catch {
-        parsed = false;
+      let out = await attemptReject(ref);
+
+      // Retry on an unknown outcome rather than dumping the ambiguity on a sales
+      // user who has no trip-status view to go and check. Safe by construction:
+      // the route refuses a job that is already status 3/7, so a retry can never
+      // cancel twice. The pause lets a first attempt that is still running finish,
+      // so the two don't race on the same job.
+      if (out.kind === "unknown") {
+        setRejectRetrying(true);
+        await new Promise((r) => setTimeout(r, 3000));
+        out = await attemptReject(ref);
+        // Only meaningful AFTER our own attempt came back unknown: the trip being
+        // already cancelled means that attempt did land. On a first try the same
+        // response means somebody else cancelled it, which is worth saying out loud.
+        if (out.kind === "already_cancelled") out = { kind: "ok" };
       }
-      if (!parsed) {
+
+      if (out.kind === "ok") {
+        const who = out.who ? `, ${out.who}` : "";
+        setRejectResult({ ok: true, msg: `Đã huỷ thành công ${out.reference ?? ref}${who}` });
+        setRefNumber("");
+      } else if (out.kind === "already_cancelled") {
+        setRejectResult({ ok: false, msg: "Job đã bị huỷ/từ chối trước đó" });
+      } else if (out.kind === "failed") {
+        setRejectResult({ ok: false, msg: out.msg });
+      } else {
+        // Twice with no answer. Stop and escalate — a third try cannot tell them
+        // anything the second didn't, and dispatch is the only party who can see
+        // whether the trip actually died.
         setRejectResult({
           ok: false,
-          msg: "Quá thời gian chờ. Yêu cầu huỷ có thể ĐÃ được ghi nhận — kiểm tra lại trạng thái chuyến trước khi bấm huỷ lần nữa.",
+          msg: "Chưa hoàn thành hủy chuyến, vui lòng liên hệ điều phối!",
         });
-      } else if (!res.ok) {
-        setRejectResult({ ok: false, msg: data.error ?? "Huỷ thất bại" });
-      } else {
-        const who = data.pickup_customer_name ? `, ${data.pickup_customer_name}` : "";
-        setRejectResult({ ok: true, msg: `Đã huỷ thành công ${data.reference_number ?? ref}${who}` });
-        setRefNumber("");
       }
-    } catch (e) {
-      setRejectResult({ ok: false, msg: String(e) });
     } finally {
       setRejectLoading(false);
+      setRejectRetrying(false);
     }
   };
 
@@ -1055,7 +1100,7 @@ export default function SalesPage() {
                 disabled={!refNumber.trim() || rejectLoading}
                 className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-red-600 hover:bg-red-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
               >
-                {rejectLoading ? "Đang huỷ..." : "Huỷ yêu cầu giao nhận"}
+                {rejectRetrying ? "Đang thử lại..." : rejectLoading ? "Đang huỷ..." : "Huỷ yêu cầu giao nhận"}
               </button>
               {rejectResult && (
                 <div className={`rounded-xl p-3.5 text-sm font-medium text-center ${

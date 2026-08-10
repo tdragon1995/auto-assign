@@ -40,8 +40,14 @@ export async function POST(req: NextRequest) {
     if (!job) {
       return NextResponse.json({ error: "Không tìm thấy reference_number" }, { status: 404 });
     }
+    // `code` is what the client retries on. Both refusals below are 409, but only
+    // one means "the trip is already cancelled" — string-matching the Vietnamese
+    // to tell them apart would turn a copy edit into a silent bug.
     if (job.job_status_id === 3 || job.job_status_id === 7) {
-      return NextResponse.json({ error: "Job đã bị huỷ/từ chối trước đó" }, { status: 409 });
+      return NextResponse.json(
+        { error: "Job đã bị huỷ/từ chối trước đó", code: "already_cancelled" },
+        { status: 409 }
+      );
     }
 
     // Only allow reject if no stop has progressed beyond status 1 (Chờ lấy)
@@ -54,7 +60,10 @@ export async function POST(req: NextRequest) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const started = stops.some((s: any) => isStopStarted(s));
     if (started) {
-      return NextResponse.json({ error: "Không thể huỷ: tài xế đã bắt đầu công việc." }, { status: 409 });
+      return NextResponse.json(
+        { error: "Không thể huỷ: tài xế đã bắt đầu công việc.", code: "started" },
+        { status: 409 }
+      );
     }
 
     // Always assign to proxy driver first, then reject via JSON-RPC
