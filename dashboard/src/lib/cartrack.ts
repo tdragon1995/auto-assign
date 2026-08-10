@@ -450,12 +450,23 @@ const COOKIE_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
 // once and reuses that session for every JSON-RPC call it makes.
 const _cookieCache: Partial<Record<Env, { cookie: string; expiry: number }>> = {};
 
+/** Back-off after Cartrack refuses the credentials. ct_login counts failed attempts
+ *  and locks the account (the refusal body carries `attempts_remaining`), while the
+ *  assign cycle logs in several times an hour — so a wrong password must not be
+ *  retried on every call, or a config mistake becomes a locked production account. */
+const LOGIN_BLOCK_MS = 10 * 60 * 1000;
+const _loginBlock: Partial<Record<Env, number>> = {};
+
 /** Login to fleetweb and return a session cookie string, or null on failure.
  *  `force` skips the cache — used by jsonRpc() to re-login when Cartrack rejects
  *  a session before our TTL expects it to. */
 export async function getFleetwebCookie(env: Env = "prod", force = false): Promise<string | null> {
   const cached = _cookieCache[env];
   if (!force && cached && Date.now() < cached.expiry) return cached.cookie;
+
+  // Honoured even under `force`: force exists to replace an expired SESSION, and
+  // re-logging in cannot fix credentials Cartrack has already rejected.
+  if (Date.now() < (_loginBlock[env] ?? 0)) return null;
 
   const suffix = env === "uat" ? "_UAT" : "";
   const auth = process.env[`CARTRACK_AUTH${suffix}`] ?? "";
@@ -491,6 +502,30 @@ export async function getFleetwebCookie(env: Env = "prod", force = false): Promi
       }),
     });
     if (!res.ok) return null;
+
+    // A refused login still answers HTTP 200 WITH Set-Cookie headers — the verdict
+    // lives in the body. Both shapes verified against prod 2026-08-10:
+    //   ok:       result.status === "SUCCEEDED"
+    //   refused:  result.status === "WRONG_CREDENTIALS", plus attempts_remaining
+    // Without this check a wrong password caches an unauthenticated session for the
+    // full 12h TTL, and every JSON-RPC call (reject, optimise, timeline) fails on it.
+    // Strict where there is evidence, permissive where there isn't: an unreadable body
+    // or a missing status falls through to the old behaviour, so an unexpected shape
+    // can never take JSON-RPC down across the board.
+    const body = (await res.json().catch(() => null)) as
+      | { result?: { status?: string; attempts_remaining?: number } }
+      | null;
+    const loginStatus = body?.result?.status;
+    if (loginStatus && loginStatus !== "SUCCEEDED") {
+      const left = body?.result?.attempts_remaining;
+      console.error(
+        `[fleetweb] ct_login refused for ${env}: ${loginStatus}` +
+          (left != null ? ` — ${left} attempts left before lockout` : "") +
+          `. Check CARTRACK_WEB_PASS${suffix}.`
+      );
+      _loginBlock[env] = Date.now() + LOGIN_BLOCK_MS;
+      return null;
+    }
 
     // Extract all Set-Cookie values into a single cookie string
     const setCookies = res.headers.getSetCookie?.() ?? [];

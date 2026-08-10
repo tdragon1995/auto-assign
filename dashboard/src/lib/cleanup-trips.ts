@@ -1,5 +1,5 @@
 import type { Config, LogLevel, Job } from "./types";
-import { BASE_URL, getHeaders, getFleetwebCookie, getStopsByLabels, jsonRpc, getJobsByStatusAndDate, type Env } from "./cartrack";
+import { assignJob, getFleetwebCookie, getStopsByLabels, jsonRpc, getJobsByStatusAndDate, type Env } from "./cartrack";
 import { isStopStarted } from "./job-filters";
 import { vnDate, vnMinutesSinceMidnight, parseVnTimestamp } from "./time";
 import { PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL, isOnShift, subToCoveredDriver } from "./return-trips";
@@ -72,19 +72,16 @@ function hasFreshActivity(job: any, now: Date, windowMs: number): boolean {
  * Mirrors the duplicate-rejection and /api/sales/reject-job paths — never deleteJob.
  */
 async function rejectJob(jobId: number, reason: string, env: Env): Promise<boolean> {
-  const headers = getHeaders(env);
-
   // Best-effort proxy assign: keeps the rejection off the real driver's record.
   // A started/hung job can refuse reassignment — proceed to the reject anyway
   // (that's exactly what the manual admin removal does in fleetweb).
+  // Via assignJob, which tries the RPC first (~2.0s vs ~7.3s REST) and falls back
+  // to REST itself; isProxyDriver() exempts this driver from the driver-state gate,
+  // so the fast path costs no extra drivers fetch. The sweep rejects in a loop, so
+  // the saving multiplies across a cleanup pass.
   const proxyDriverId = process.env.CARTRACK_REJECT_PROXY_DRIVER_ID ?? "";
   if (proxyDriverId) {
-    await fetch(`${BASE_URL}/jobs/${jobId}`, {
-      method: "PUT",
-      headers,
-      body: JSON.stringify({ delivery_driver_id: proxyDriverId }),
-      cache: "no-store",
-    }).catch(() => null);
+    await assignJob(proxyDriverId, jobId, env).catch(() => null);
   }
 
   const out = await jsonRpc("delivery_reject_job", { data: { jobIds: [jobId], rejectReason: reason } }, { env });
