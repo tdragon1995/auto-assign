@@ -113,6 +113,15 @@ function run(args) {
       return 1;
     }
 
+    // Clears a timeout, leaving the value. 1 if a timeout was removed, 0 if the
+    // key is gone or already had none — same contract as real Redis.
+    case "PERSIST": {
+      const rec = alive(a[0]);
+      if (!rec || rec.expiresAt === null) return 0;
+      rec.expiresAt = null;
+      return 1;
+    }
+
     case "TTL": {
       const rec = alive(a[0]);
       if (!rec) return -2;
