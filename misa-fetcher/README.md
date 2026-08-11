@@ -40,14 +40,26 @@ approved leave but still rostered (see below).
 Pattern`** tab as a weekly recurring pattern, expanded to daily rows at run time
 and merged with the MISA data:
 
-| driver | employee_code | mon | tue | wed | thu | fri | sat | sun | active | note |
-|---|---|---|---|---|---|---|---|---|---|---|
-| `P - P - PT101279 Đỗ Anh Quốc` | PT101279 | 06:00-15:00 | | 06:00-15:00 | … | | | | TRUE | |
+| driver | employee_code | active_from | active_to | mon | tue | wed | thu | fri | sat | sun | note |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `P - P - PT101279 Đỗ Anh Quốc` | PT101279 | | | 06:00-15:00 | | 06:00-15:00 | … | | | | |
 
 `driver` must match the Driver tab label exactly. A blank day cell (or `OFF`)
 means not working. Anyone already in MISA is skipped, so a person in both
 sources is never rostered twice. If the tab is missing the run continues with a
 warning.
+
+**The pattern is effective-dated.** To change someone's hours, add a new row
+rather than editing the old one:
+
+- `active_from` — first day the pattern applies. Blank = always.
+- `active_to` — last day it applies. Blank = still current.
+
+So a person can hold several rows and the one in force on a given day wins
+(latest `active_from` that has started and not ended). This keeps the history,
+lets a change be entered before it takes effect, and represents a joiner or
+leaver as a date rather than an anomaly. Outside every dated range a person
+produces no rows at all, rather than showing as "off".
 
 ## Leave/roster gaps
 

@@ -120,12 +120,30 @@ function parseWindow(cell) {
   return { start: pad(m[1], m[2]), end: pad(m[3], m[4]) };
 }
 
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+function parseDateCell(v) {
+  const s = (v || "").trim();
+  if (ISO_DATE.test(s)) return s;
+  // Sheets may hand back d/m/yyyy depending on the cell's locale formatting.
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) return `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  return null;
+}
+
 /**
  * Weekly recurring patterns for staff with no MISA shift data (part-timers who
- * have no AMIS access). One row per person, one column per weekday holding
- * "HH:MM-HH:MM" or blank/OFF.
+ * have no AMIS access). One column per weekday holding "HH:MM-HH:MM" or
+ * blank/OFF.
  *
- * Returns [] when the tab does not exist yet, so the pipeline still runs.
+ * Effective-dated, so a person can have several rows: `active_from` is the day
+ * the pattern takes effect and `active_to` the last day it applies (blank =
+ * still current). Changing someone's hours means adding a row, not editing the
+ * old one — which keeps the history and lets a change be entered ahead of time.
+ * A blank `active_from` means "always", so a single-row-per-person sheet works
+ * unchanged.
+ *
+ * Returns null when the tab does not exist yet, so the pipeline still runs.
  */
 export async function loadPtPatterns() {
   let rows;
@@ -139,12 +157,37 @@ export async function loadPtPatterns() {
     const label = (r["driver"] || r["Driver"] || "").trim();
     const code = (r["employee_code"] || "").trim();
     if (!label && !code) continue;
-    if (isFalsey(r["active"])) continue;
+    if (isFalsey(r["active"])) continue; // optional legacy kill-switch column
     const days = DAY_COLS.map((c) => parseWindow(r[c]));
-    if (days.every((d) => d === null)) continue; // nobody works a blank week
-    out.push({ label, employee_code: code, days, note: (r["note"] || "").trim() });
+    out.push({
+      label,
+      employee_code: code,
+      days,
+      active_from: parseDateCell(r["active_from"]),
+      active_to: parseDateCell(r["active_to"]),
+      note: (r["note"] || "").trim(),
+    });
   }
   return out;
+}
+
+/** The pattern in force for `date`: latest active_from that has started and has
+ *  not been superseded or ended. Null when the person isn't rostered that day. */
+function patternOn(versions, date) {
+  let best = null;
+  for (const v of versions) {
+    if (v.active_from && date < v.active_from) continue; // not started yet
+    if (v.active_to && date > v.active_to) continue; // already ended
+    if (!best) {
+      best = v;
+      continue;
+    }
+    // Later start wins; a dated row beats an undated "always" row.
+    const a = v.active_from ?? "";
+    const b = best.active_from ?? "";
+    if (a >= b) best = v;
+  }
+  return best;
 }
 
 /**
@@ -154,18 +197,29 @@ export async function loadPtPatterns() {
  * sources is not rostered twice.
  */
 export function expandPtPatterns(patterns, range, skipCodes = new Set()) {
+  // Group a person's pattern versions together.
+  const byPerson = new Map();
+  for (const p of patterns) {
+    const key = p.employee_code || p.label;
+    if (!byPerson.has(key)) byPerson.set(key, []);
+    byPerson.get(key).push(p);
+  }
+
   const records = [];
   const start = new Date(range.monthStart + "T00:00:00Z");
   const end = new Date(range.monthEnd + "T00:00:00Z");
 
-  for (const p of patterns) {
-    if (p.employee_code && skipCodes.has(p.employee_code)) continue;
+  for (const [key, versions] of byPerson) {
+    if (skipCodes.has(key)) continue;
+    const label = versions[0].label;
     for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
       const date = d.toISOString().slice(0, 10);
+      const p = patternOn(versions, date);
+      if (!p) continue; // before they started, or after they left — no row at all
       const win = p.days[d.getUTCDay()];
       records.push({
-        employee_code: p.employee_code || p.label,
-        full_name: p.label,
+        employee_code: p.employee_code || label,
+        full_name: label,
         shift_date: date,
         slot: 1,
         day_type: win ? "working" : "off",

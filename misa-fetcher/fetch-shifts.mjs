@@ -107,7 +107,7 @@ async function runOnce() {
     if (patterns === null) {
       console.warn(
         `[run] ⚠ "${PT_PATTERN_SHEET}" tab not found — part-time roster skipped. ` +
-          `Create it with headers: driver, employee_code, mon, tue, wed, thu, fri, sat, sun, active, note`,
+          `Create it with headers: driver, employee_code, active_from, active_to, mon, tue, wed, thu, fri, sat, sun, note`,
       );
     } else {
       ptRecords = expandPtPatterns(patterns, range, misaCodes);

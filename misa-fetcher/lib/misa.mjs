@@ -264,7 +264,21 @@ export async function fetchAllShifts(page, range) {
 const ATTENDANCE_COLUMNS =
   "AttendanceID,EmployeeID,EmployeeCode,FullName,JobPositionID,JobPositionName,OrganizationUnitID,OrganizationUnitName,JobTitleID,RequestDate,DictionaryKey,FromDate,ToDate,LeaveDay,NumberOfHourLeave,AttendanceTypeID,AttendanceTypeName,AttendanceTypeName_EN,Reason,ApprovalName,Status,SubstituteName,RelationShipNames,Description,SalaryRate,DataSourceID,ApprovalToID,Step,NextStep,IsProcess,ProcessApprovalOldID,StepOld,NextStepOld,IsApplyProcessNew,UpdateWorkingProcess,SubstituteID,NoteAttendanceDay,RelationShipIDs,TotalLeaved,NumRemain,NumLeave,ThisMonth,NextMonth,AttendanceData,JobTitleName,ProcessApprovalOldValue,IsApply,EmployeeAttendance,EmployeeAttendanceIDs,EmployeeAttendanceCodes,EmployeeAttendanceNames,ShowEmployeeAttendance,WorkLocationName,TimeZone,SyncID,ProcessDetail";
 
-function attendancePayload(year, pageIndex) {
+/**
+ * Attendance `Status` is a lifecycle marker, not an approval flag — every value
+ * carries approved leave (IsApply=true, workflow at step 6, balance deducted):
+ *
+ *   1  upcoming — starts after today. THIS is where future leave lives.
+ *   2  current  — everything up to today. Alone, it can never see a future day.
+ *   3  closed   — older records, largely superseded by 2.
+ *   4  genuinely mid-approval (one stale record from March at time of writing).
+ *
+ * We fetch 1 + 2: today's leave plus everything already booked ahead, so cover
+ * can be arranged in advance rather than discovered on the morning.
+ */
+const ATTENDANCE_STATUSES = [1, 2];
+
+function attendancePayload(year, pageIndex, status) {
   // Server-side filter: FromDate > Jan 1 of the current year. Per-month narrowing
   // happens client-side when leave rows are joined onto shift dates.
   const filter = Buffer.from(
@@ -278,7 +292,7 @@ function attendancePayload(year, pageIndex) {
     QuickSearch: null,
     CustomParam: {
       OrganizationUnitID: null,
-      Status: 2, // matches the MISA "attendance-watch" view the ops team uses
+      Status: status,
       SaveUserOption: {
         AttendanceWatchFilter: [
           {
@@ -300,26 +314,38 @@ function attendancePayload(year, pageIndex) {
   };
 }
 
-export async function fetchAllAttendance(page, year) {
+export async function fetchAllAttendance(page, year, statuses = ATTENDANCE_STATUSES) {
   const all = [];
-  for (let pageIndex = 1; ; pageIndex++) {
-    const resp = await pageFetch(page, URLS.attendance, {
-      method: "POST",
-      body: attendancePayload(year, pageIndex),
-    });
-    if (resp.status !== 200 || !resp.data?.Success) {
-      throw new Error(
-        `attendance fetch page ${pageIndex} failed (HTTP ${resp.status}): ${resp.data?.UserMessage || resp.text?.slice(0, 200)}`,
-      );
+  const seen = new Set(); // a record can surface under more than one status view
+
+  for (const status of statuses) {
+    let kept = 0;
+    for (let pageIndex = 1; ; pageIndex++) {
+      const resp = await pageFetch(page, URLS.attendance, {
+        method: "POST",
+        body: attendancePayload(year, pageIndex, status),
+      });
+      if (resp.status !== 200 || !resp.data?.Success) {
+        throw new Error(
+          `attendance fetch status ${status} page ${pageIndex} failed (HTTP ${resp.status}): ${resp.data?.UserMessage || resp.text?.slice(0, 200)}`,
+        );
+      }
+      // This endpoint returns Data as the array directly (unlike the shift API).
+      const rows = Array.isArray(resp.data.Data)
+        ? resp.data.Data
+        : resp.data.Data?.PageData || [];
+
+      for (const r of rows) {
+        const id = r.AttendanceID ?? `${r.EmployeeCode}|${r.FromDate}|${r.ToDate}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        all.push(r);
+        kept++;
+      }
+      if (rows.length < ATTENDANCE_PAGE_SIZE) break;
+      await page.waitForTimeout(300);
     }
-    // This endpoint returns Data as the array directly (unlike the shift API).
-    const rows = Array.isArray(resp.data.Data)
-      ? resp.data.Data
-      : resp.data.Data?.PageData || [];
-    log(`attendance page ${pageIndex}: ${rows.length} leave records`);
-    all.push(...rows);
-    if (rows.length < ATTENDANCE_PAGE_SIZE) break;
-    await page.waitForTimeout(300);
+    log(`attendance status ${status}: ${kept} new leave record(s)`);
   }
   return all;
 }
