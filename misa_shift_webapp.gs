@@ -228,6 +228,26 @@ function writeGridSheet_(values, backgrounds, monthLabel, frozenRows, frozenCols
   Logger.log('[shift-webapp] grid ' + rows + 'x' + cols + ' → "' + GRID_SHEET_NAME + '"');
 }
 
+/**
+ * Diagnostic — run this from the editor (Run ▶ with checkToken selected) and
+ * read the Execution log. Editor runs use the CURRENT code, not the deployed
+ * version, so this tells you whether the script property is readable
+ * independently of whether the deployment is up to date.
+ *
+ *   "property: NOT SET"  → add SHARED_TOKEN in Project Settings → Script Properties
+ *   "property: set …"    → the property is fine; the DEPLOYMENT is stale,
+ *                          so redeploy with Version = New version
+ */
+function checkToken() {
+  var p = PropertiesService.getScriptProperties().getProperty('SHARED_TOKEN');
+  var eff = getSharedToken_();
+  Logger.log('property: ' + (p ? 'set, length ' + p.length + ', starts "' + p.substring(0, 6) + '"' : 'NOT SET'));
+  Logger.log('effective token starts: "' + eff.substring(0, 6) + '"');
+  Logger.log(eff === 'PASTE_TOKEN_HERE'
+    ? '=> still the placeholder — writes will be rejected'
+    : '=> a real token is in use');
+}
+
 /** Editor smoke test — writes 3 dummy rows so you can verify before deploying. */
 function testWriteSample() {
   writeShiftSheet_([
