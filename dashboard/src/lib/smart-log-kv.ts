@@ -307,104 +307,93 @@ export async function addHeldJob(job: HeldJob): Promise<void> {
   await redis.set(HELD_JOBS_KEY, JSON.stringify(next), { ex: 86400 });
 }
 
-// ── PSC active-pickup dedup index (fast path for /api/psc-assign) ───────────
-// Per-cycle snapshot of every today-job whose pickup stop is still active, keyed
-// by `${pickup}|${dropoff}` → the blocking job's { job_id, reference_number }.
-// Lets the PSC "đề nghị giao mẫu" button answer from one Redis read instead of two
-// fleet-wide Cartrack job fetches (~hundreds of jobs each, every tap).
+// ── PSC active-pair overlay (write-through, for /api/psc-assign) ────────────
 //
-// Stored as one JSON blob — same shape, TTL discipline and read/write cost as the
-// sibling held-jobs / failed-jobs / pickup-warnings snapshots (one SET per cycle,
-// one GET per read), so it adds no new Redis access pattern. The key's mere
-// presence is the freshness proof: an empty `{}` means "a cycle ran, nothing
-// active", while an absent/expired key (engine disarmed) makes the reader fall
-// back to a live Cartrack check — so correctness never depends on the cycle running.
-const PSC_ACTIVE_PICKUPS_KEY = "psc:active_pickups";
-const PSC_INDEX_TTL_SEC = 600; // 10 min — mirrors the pickup-warnings snapshot; self-clears if cycles stop
+// WHY THIS EXISTS. The duplicate guard answers "is this pickup→dropoff already covered
+// today?" from the day snapshot. That snapshot is published by the assign cycle every
+// ~3 minutes, which makes the guard cheap (a read instead of a ~3s fleet-wide rebuild)
+// but leaves a window: a trip booked 30 seconds ago is not in it yet. The guard's
+// dangerous failure is a MISSING job — there is no suspect for stillBlocking to confirm,
+// so a twin trip gets created and two drivers collect the same samples.
+//
+// This closes that window for every trip the APP creates: psc-assign records the pair the
+// instant it books one, and the guard reads this alongside the snapshot. A job created by
+// hand in Cartrack is still invisible until the next publish — that gap exists today too
+// and only a live fetch could close it.
+//
+// ONE KEY PER PAIR, deliberately. The previous design (a single JSON blob rewritten
+// read-modify-write) had a race its own comment acknowledged — "a rare concurrent-create
+// clobber self-heals on the next cycle" — which was survivable only while the assign cycle
+// rewrote the blob wholesale every cycle. Nothing rewrites it now, so a lost update would
+// never heal. Independent keys have no such race and get their own expiry.
+//
+// STALE ENTRIES ARE SAFE, by design rather than by luck: psc-assign re-reads the live job
+// (stillBlocking) before refusing anyone. An entry left behind after its pickup completed
+// therefore costs one job fetch, not a wrong refusal — and psc-assign drops it when that
+// happens. What must never happen is the opposite, a MISSING entry, which is exactly what
+// this prevents.
+const PSC_PAIR_PREFIX = "psc_pair:v1:";
+// 6h: comfortably longer than a sample run, short enough that anything missed by the
+// explicit unmarks (cancel, 3PL handoff) clears itself well within the day. Date-scoped
+// keys mean yesterday's pairs can never block today regardless.
+const PSC_PAIR_TTL_SEC = 6 * 60 * 60;
 
 export interface PscDupHit {
   job_id: number;
   reference_number: string | null;
 }
 
-function parsePscIndex(raw: string | Record<string, PscDupHit> | null): Record<string, PscDupHit> | null {
-  if (raw == null) return null;
-  if (typeof raw === "object") return raw;
-  try { return JSON.parse(raw) as Record<string, PscDupHit>; } catch { return null; }
-}
+const pscPairRedisKey = (dateVn: string, pairKey: string) => `${PSC_PAIR_PREFIX}${dateVn}:${pairKey}`;
 
-/** Replace the active-pickup index from a full cycle's job snapshot (one SET).
- *  Pass the complete pair→hit map; an empty map still writes `{}` so the reader can
- *  tell "cycle ran, nothing active" from "no cycle / expired". */
-export async function setPscActivePickups(pairs: Record<string, PscDupHit>): Promise<void> {
+/** Record a just-booked pickup→dropoff so the guard sees it before the next publish. */
+export async function markPscPair(dateVn: string, pairKey: string, hit: PscDupHit): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
-  await redis.set(PSC_ACTIVE_PICKUPS_KEY, JSON.stringify(pairs), { ex: PSC_INDEX_TTL_SEC });
+  try {
+    await redis.set(pscPairRedisKey(dateVn, pairKey), JSON.stringify(hit), { ex: PSC_PAIR_TTL_SEC });
+  } catch { /* best-effort: the snapshot still covers this pair once it publishes */ }
 }
 
-/** Fast-path duplicate lookup for one pickup→dropoff pair (one GET).
- *  `fresh` = a cycle has populated the index (else the caller must do a live check);
- *  `hit` = the blocking job when this pair is currently active, otherwise null. */
-export async function lookupPscActivePickup(
-  pairKey: string,
-): Promise<{ fresh: boolean; hit: PscDupHit | null }> {
-  const redis = getRedis();
-  if (!redis) return { fresh: false, hit: null };
-  const idx = parsePscIndex(await redis.get<string | Record<string, PscDupHit>>(PSC_ACTIVE_PICKUPS_KEY));
-  if (!idx) return { fresh: false, hit: null };
-  return { fresh: true, hit: idx[pairKey] ?? null };
-}
-
-/** Write-through: record a just-created PSC job so an immediate re-tap (before the
- *  next cycle refreshes the index) is still blocked. Only updates an already-fresh
- *  index — when the key is absent the reader is on the live-fetch path anyway, so
- *  there's nothing to keep warm and we never resurrect a stale index. Read-modify-
- *  write; a rare concurrent-create clobber self-heals on the next cycle. */
-export async function markPscActivePickup(pairKey: string, hit: PscDupHit): Promise<void> {
+/** Drop a pair — the trip was cancelled, handed to a 3PL, or its pickup is already done.
+ *  Without this the branch is made to wait for a live re-check on every later booking. */
+export async function unmarkPscPair(dateVn: string, pairKey: string): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
-  const idx = parsePscIndex(await redis.get<string | Record<string, PscDupHit>>(PSC_ACTIVE_PICKUPS_KEY));
-  if (!idx) return; // index not fresh → reader is using the live fallback; nothing to update
-  idx[pairKey] = hit;
-  await redis.set(PSC_ACTIVE_PICKUPS_KEY, JSON.stringify(idx), { ex: PSC_INDEX_TTL_SEC });
+  try { await redis.del(pscPairRedisKey(dateVn, pairKey)); } catch { /* best-effort */ }
 }
 
-/** Drop a pair from the fast-path index — called when a PSC job is cancelled, so the
- *  same pickup→dropoff can be re-requested immediately instead of being blocked by the
- *  now-cancelled job until the next cycle rebuilds the index. Read-modify-write; the
- *  cycle is the source of truth and re-adds the pair if another active job still
- *  matches it. */
-export async function unmarkPscActivePickup(pairKey: string): Promise<void> {
+/** The job this pair was last booked for, or null. One GET. */
+export async function lookupPscPair(dateVn: string, pairKey: string): Promise<PscDupHit | null> {
   const redis = getRedis();
-  if (!redis) return;
-  const idx = parsePscIndex(await redis.get<string | Record<string, PscDupHit>>(PSC_ACTIVE_PICKUPS_KEY));
-  if (!idx || !(pairKey in idx)) return;
-  delete idx[pairKey];
-  await redis.set(PSC_ACTIVE_PICKUPS_KEY, JSON.stringify(idx), { ex: PSC_INDEX_TTL_SEC });
+  if (!redis) return null;
+  try {
+    const raw = await redis.get<string | PscDupHit>(pscPairRedisKey(dateVn, pairKey));
+    if (!raw) return null;
+    const hit = typeof raw === "string" ? (JSON.parse(raw) as PscDupHit) : raw;
+    return hit?.job_id ? hit : null;
+  } catch {
+    return null; // unreadable overlay must never block a booking; the snapshot still applies
+  }
 }
 
-// ── Creation lock — cross-instance guard against concurrent duplicate job creates ──
-// Shared by the job-creating endpoints (PSC request, chấm công, audit). The in-memory
-// locks in those routes only cover one serverless instance; two near-simultaneous
-// requests on different instances both clear a check-then-create dedup and create twins
-// (observed: consecutive job IDs). This atomic SET NX lock is shared across instances.
-// Callers namespace the key by domain (e.g. "psc:…", "chamcong:…", "audit:…"). The TTL
-// must outlast the slowest create (~12s observed) so the lock can't lapse mid-create;
-// it's held to expiry on success (a post-create dedup guard while the new job becomes
-// visible to the dedup query) and released on failure or cancel.
+// ── Cross-instance create lock ──────────────────────────────────────────────
 const CREATE_LOCK_PREFIX = "create_lock:";
-// DERIVED, not chosen freely: this must outlast the whole period in which a just-created
-// job is invisible to the dedup query — Cartrack's indexing delay PLUS how stale the day
-// snapshot may be (MAX_AGE_MS in day-snapshot, currently 60s). Raise MAX_AGE_MS and this
-// must rise with it, or a second request lands after the lock lapses but while the dedup
-// query is still reading a snapshot built before the job was indexed, and creates a twin.
-// The branch's own post-submit feed reload is the likeliest builder of that blind
-// snapshot, so this is a live path, not a corner case. 120s = 60s window + 60s margin.
+
+/** 120s, now CONSERVATIVE rather than derived — the derivation it used to carry is gone.
+ *
+ *  It was sized as "Cartrack's indexing delay PLUS how stale the day snapshot may be",
+ *  because the snapshot was the only thing that could tell the guard a job existed, and a
+ *  brand-new job was invisible to it for that whole window. The pair overlay above now
+ *  records a booking the instant it is made, so that window has collapsed to the moment
+ *  between two racing requests — microseconds, not minutes.
+ *
+ *  Left at 120s deliberately anyway. It is the last line of defence if the overlay write
+ *  fails (it is best-effort), and shortening it only helps a branch whose pickup was
+ *  collected within two minutes of booking — rare, and already handled: stillBlocking sees
+ *  the completed pickup and lets them straight through. Change it for a reason, not for
+ *  tidiness. */
 const CREATE_LOCK_TTL_SEC = 120;
 
-/** Try to claim a creation lock. true = claimed (caller may create); false = another
- *  request already holds it. No Redis ⇒ true (a route's in-memory lock, if any, still
- *  applies as a single-instance fallback). */
 export async function acquireCreateLock(key: string): Promise<boolean> {
   const redis = getRedis();
   if (!redis) return true;

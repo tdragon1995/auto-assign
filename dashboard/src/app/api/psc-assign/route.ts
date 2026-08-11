@@ -4,8 +4,8 @@ import { driverDisplayName } from "@/lib/job-detail";
 import { vnDate, vnHoursMinutes, vnTimestamp } from "@/lib/time";
 import { isBlockingPickupStop, isStopStarted, isCompletedOrRejectedStop, pscPairKey } from "@/lib/job-filters";
 import { PSC_VIA_LABEL } from "@/lib/via-legs";
-import { acquireCreateLock, releaseCreateLock, type PscDupHit } from "@/lib/smart-log-kv";
-import { blockedPair, invalidateSnapshot, slimJob } from "@/lib/day-snapshot";
+import { acquireCreateLock, releaseCreateLock, markPscPair, unmarkPscPair, lookupPscPair, type PscDupHit } from "@/lib/smart-log-kv";
+import { blockedPair, slimJob } from "@/lib/day-snapshot";
 import type { Stop } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -169,16 +169,30 @@ export async function POST(req: NextRequest) {
     // is unavailable, so correctness never depends on the cache.
     const _tDup = Date.now();
     const pairKey = pscPairKey(pickup, dropoff);
-    const lookup = await blockedPair(today, env, pairKey);
-    const candidate = lookup ? lookup.hit : await liveDuplicateCheck(pickup, dropoff, today, env);
-    plog(`dup-check: ${Date.now() - _tDup}ms (${lookup ? `snapshot age=${lookup.ageMs}ms` : "live-fetch"})`);
+    // Two sources, one round of latency. The snapshot is the day as the assign cycle last
+    // published it — cheap, but up to GUARD_MAX_AGE_MS behind. The overlay is every pair
+    // THIS APP has booked, written the instant it was booked, which is precisely what the
+    // snapshot cannot yet know about. Reading both is what makes the cheap snapshot safe:
+    // a booking from 30 seconds ago is missing from one and present in the other.
+    const [overlayHit, lookup] = await Promise.all([
+      lookupPscPair(today, pairKey),
+      blockedPair(today, env, pairKey),
+    ]);
+    const candidate = overlayHit ?? (lookup ? lookup.hit : await liveDuplicateCheck(pickup, dropoff, today, env));
+    plog(`dup-check: ${Date.now() - _tDup}ms (${overlayHit ? "overlay" : lookup ? `snapshot age=${lookup.ageMs}ms` : "live-fetch"})`);
 
-    // Never refuse a branch on a cached reading. A snapshot up to MAX_AGE_MS old can
-    // still name a trip whose pickup completed in the meantime — that is exactly how
-    // D006 was told to wait for samples already on their way to D001. Confirming costs
-    // one job fetch and only happens on the rare path where we are about to say no.
+    // Never refuse a branch on a cached reading. A snapshot up to GUARD_MAX_AGE_MS old —
+    // or an overlay entry whose trip has since been collected — can still name a job that
+    // no longer blocks anything. That is exactly how D006 was told to wait for samples
+    // already on their way to D001. Confirming costs one job fetch and only happens on the
+    // rare path where we are about to say no.
     const duplicate = candidate && (await stillBlocking(candidate, pickup, dropoff, env)) ? candidate : null;
-    if (candidate && !duplicate) plog(`dup-check: stale block on job ${candidate.job_id} — pickup already done, allowing`);
+    if (candidate && !duplicate) {
+      plog(`dup-check: stale block on job ${candidate.job_id} — pickup already done, allowing`);
+      // Self-heal: drop the overlay entry that just cost a live fetch, so the NEXT booking
+      // for this pair doesn't pay for the same discovery again.
+      await unmarkPscPair(today, pairKey).catch(() => {});
+    }
 
     if (duplicate) {
       releaseLock(lockKey);
@@ -271,7 +285,13 @@ export async function POST(req: NextRequest) {
     // cached day is out of date, and it is ~10ms. Dropped, the branch's own reload can be
     // served the pre-booking day — their new trip simply missing from the list — which
     // reads as "the booking failed" and gets a second driver sent for the same samples.
-    if (newJobId) await invalidateSnapshot(today, env, "guard").catch(() => {});
+    // Record the pair so the guard sees this trip immediately, without anyone rebuilding
+    // the day. This replaces the old invalidateSnapshot call: that made the NEXT reader --
+    // any of 40-odd branches -- pay a ~3s fleet-wide rebuild because one branch booked a
+    // trip they cannot see. Awaited: dropping it reopens exactly the window it closes.
+    if (newJobId) {
+      await markPscPair(today, pairKey, { job_id: newJobId, reference_number: refLabel }).catch(() => {});
+    }
 
     // Still deliberately NOT releasing the cross-instance create lock. Invalidating the
     // snapshot makes the day rebuild on the next read, but a rebuild only helps once
@@ -328,8 +348,9 @@ export async function DELETE(req: NextRequest) {
     // instead of colliding with the just-cancelled job: rebuild the day on next read
     // and release the cross-instance create lock. Awaited for the same reason as the
     // create path — a lost note leaves the cancelled trip on the branch's screen.
-    await invalidateSnapshot(vnDate(), env, "guard").catch(() => {});
     if (pickup?.customer_id && dropoff?.customer_id) {
+      // Free the pair on both guards, or the branch is refused over a trip that is gone.
+      await unmarkPscPair(vnDate(), pscPairKey(pickup.customer_id, dropoff.customer_id)).catch(() => {});
       void releaseCreateLock(`psc:${pickup.customer_id}-${dropoff.customer_id}-${vnDate()}`);
     }
 
@@ -432,8 +453,9 @@ export async function PUT(req: NextRequest) {
     // Pickup→dropoff is fulfilled — clear both dedup guards so a fresh batch can be
     // re-requested at once instead of colliding with the just-completed job. Awaited:
     // a lost note leaves the handed-off trip looking un-handed-off to the branch.
-    await invalidateSnapshot(vnDate(), env, "guard").catch(() => {});
     if (pickup?.customer_id && dropoff?.customer_id) {
+      // Free the pair on both guards, or the branch is refused over a trip that is gone.
+      await unmarkPscPair(vnDate(), pscPairKey(pickup.customer_id, dropoff.customer_id)).catch(() => {});
       void releaseCreateLock(`psc:${pickup.customer_id}-${dropoff.customer_id}-${vnDate()}`);
     }
 

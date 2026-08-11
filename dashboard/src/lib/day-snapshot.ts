@@ -29,32 +29,17 @@ import type { Job, Stop } from "./types";
  * then HMGET the ids it names.
  */
 
-/** How stale a snapshot may be before a read rebuilds it.
+/** Default staleness tolerance — used by chấm-công's per-driver read. The branch feed and
+ *  the duplicate guard override it below.
  *
- *  This has to sit ABOVE the real gap between requests or the cache does nothing.
- *  Measured in production over 12h: 516 feed requests, i.e. one every ~84 seconds.
- *  At the original 30s it was stale on arrival almost every time — 682 JSON-RPC calls
- *  to Cartrack for 516 requests, roughly two rebuilds every three visits, each one
- *  re-fetching the whole network's day and rewriting ~467 KB to Redis. Two requests
- *  have to land inside one window for anything to be shared, and at 84s apart they
- *  never did.
+ *  History worth keeping, because the number looks arbitrary and is not: at the original
+ *  30s the cache did nothing. Production ran ~516 feed requests in 12h, one every ~84
+ *  seconds, so a 30s window was stale on arrival almost every time — 682 JSON-RPC calls to
+ *  Cartrack for 516 requests. Two requests have to land inside one window for anything to
+ *  be shared, and at 84s apart they never did.
  *
- *  Freshness is not what this protects. psc-assign re-checks the live job before it
- *  refuses anyone (`stillBlocking`), so a stale snapshot can no longer cause a wrong
- *  refusal — the D006 bug cannot come back through this number. Làm mới, cancels and
- *  3PL handoffs all pass fresh=1 and rebuild regardless. What is left is only how old
- *  the branch's screen may look when nobody has touched anything.
- *
- *  60s is a deliberate midpoint: still comfortably under the observed request gap, so
- *  most reads rebuild, but it halves how stale a screen can be versus 90s. Nothing warms
- *  this in the background — the assign cycle fetches its own routes and never touches
- *  the snapshot, by design (no assignment decision may read a cache), so the rebuild
- *  rate follows display traffic alone.
- *
- *  COUPLED to CREATE_LOCK_TTL_SEC in smart-log-kv: that lock is what stops a second
- *  request creating a twin while a just-created job is still invisible to the dedup
- *  query, and this value is part of how long "still invisible" lasts. Raising this
- *  without raising the lock reopens that gap. */
+ *  The assign cycle now publishes the day every ~3 minutes (publishSnapshot), so a reader
+ *  inside its tolerance is usually served without anyone fetching anything. */
 export const MAX_AGE_MS = 60_000;
 
 /** How stale the BRANCH FEED may be. Deliberately looser than MAX_AGE_MS, because
@@ -67,13 +52,37 @@ export const MAX_AGE_MS = 60_000;
  *  roughly a third, and booking traffic (which keeps its 60s window) refreshes the day
  *  often enough that feeds mostly read a picture someone else already paid for.
  *
- *  Safe here and NOT safe for the duplicate guard, for an asymmetric reason: the guard
- *  re-checks the live job before refusing anyone, which catches a stale picture that
- *  wrongly says "blocked" — but nothing catches a stale picture that is simply MISSING a
- *  job, because then there is no suspect to confirm and a twin trip gets created. The
- *  feed has no such failure: the worst case is a branch seeing a trip's progress a few
- *  minutes late, and Làm mới still forces a live read. */
+ *  The feed's worst case is mild and bounded: a branch sees another party's progress a few
+ *  minutes late. Its own actions are never late — booking, cancelling and handing to a 3PL
+ *  all update the list from that action's own response, so the one thing a branch is
+ *  actually watching for is immediate. (There is no Làm mới button any more; it forced a
+ *  full rebuild of the network's day on every tap.)
+ *
+ *  Sits above the ~180s publish cadence on purpose, so a feed read lands on a day the
+ *  assign cycle already paid for rather than triggering a rebuild of its own. */
 export const FEED_MAX_AGE_MS = 300_000;
+
+/** How stale the DUPLICATE GUARD will accept. Sized to the assign cycle's ~180s cadence
+ *  plus slack for jitter, because the cycle is what publishes the day — at anything below
+ *  ~200s the guard would miss most publishes and rebuild anyway, which is the ~3s-per-
+ *  booking cost this exists to remove (measured 2.4-3.5s against D030, 2026-08-11).
+ *
+ *  This used to be MAX_AGE_MS (60s) and the guard rebuilt on nearly every booking. Reading
+ *  a published day is only safe because of two things that are NOT obvious:
+ *
+ *  1. Everything the APP books is recorded in the write-through pair overlay
+ *     (markPscPair in smart-log-kv) the instant it is created, and psc-assign consults
+ *     that alongside this. So the window this opens is not "any new trip" — it is only
+ *     trips created OUTSIDE the app, i.e. by hand in Cartrack.
+ *  2. The cycle's own follow-up creations cannot collide. Via-legs are excluded from the
+ *     pair index by label, and a return trip is the INVERSE of a booking — return-trips.ts
+ *     builds it "from where the outbound ended, back to the PSC" — while pscPairKey is
+ *     directional. A booking asks D006|D001; a return trip is D001|D006.
+ *
+ *  Note the guard already tolerated 60s of staleness, so this widens an existing window
+ *  rather than opening a new one. A cron that stalls simply pushes the age past this and
+ *  the guard rebuilds live, which is the correct failure direction. */
+export const GUARD_MAX_AGE_MS = 240_000;
 
 /** Hash lifetime. Long enough that a quiet stretch doesn't force a cold rebuild,
  *  short enough that a stale day self-clears. Freshness is decided by __built__,
@@ -84,28 +93,17 @@ const HASH_TTL_S = 900;
  *  don't all parse the day at once. The loser serves what's already cached. */
 const LOCK_TTL_S = 20;
 
-/** Freshness stamp trusted by EVERY reader, including the duplicate guard. Written only
- *  by an on-demand rebuild — i.e. by a reader that fetched the day itself, at the moment
- *  it needed it. */
+/** Freshness stamp: when the day this hash holds was FETCHED (not written).
+ *
+ *  There was briefly a second stamp here, so the duplicate guard could be kept off days
+ *  published by the assign cycle while the branch feed rode them. That distinction is gone
+ *  because the guard no longer needs it: every trip the app books is recorded in the
+ *  write-through pair overlay (markPscPair) the moment it is created, so a published day
+ *  being a few minutes behind can no longer hide one. What differs between readers now is
+ *  only how much staleness each will accept — MAX_AGE_MS, FEED_MAX_AGE_MS,
+ *  GUARD_MAX_AGE_MS — which is a number, not a second copy of the truth.
+ */
 const BUILT = "__built__";
-
-/** Freshness stamp trusted by the DISPLAY readers only (branch feed, chấm-công).
- *  Written by on-demand rebuilds AND by the assign cycle's publish.
- *
- *  Two stamps, not one, because the cycle can only publish the day as it looked when it
- *  FETCHED — and it goes on to create jobs after that: via-legs and return trips, made
- *  during the same run. A published snapshot is therefore knowably incomplete, and the
- *  one reader that must never see an incomplete day is the duplicate guard, whose failure
- *  mode is a missing job (no suspect to confirm → a twin trip gets created). The feed's
- *  worst case is a leg appearing a couple of minutes late.
- *
- *  Today those follow-up jobs can't actually collide with a branch booking — pscPairKey
- *  is directional and return trips run base→PSC, the reverse of a booking, while via-legs
- *  are excluded from the pair index by label. That is an argument for safety, not a
- *  guarantee of it: it holds because of how two other modules happen to behave, and
- *  nothing would fail loudly if either changed. Splitting the stamp means the guard never
- *  depends on that reasoning being true. */
-const BUILT_FEED = "__built_feed__";
 
 const IDX_LOC = "x:loc";
 const IDX_DRV = "x:drv";
@@ -317,14 +315,9 @@ export function assembleSnapshot(
   return { jobs, byLocation, byDriver, pairs: buildPairs(all), builtAt };
 }
 
-/** `stamps: "all"` marks the day fresh for every reader; `"feed"` marks it fresh only for
- *  the display readers and leaves the guard's stamp absent, so the guard rebuilds. */
-async function write(
-  redis: Redis, env: Env, date: string, snap: Snapshot, stamps: "all" | "feed" = "all",
-): Promise<void> {
+async function write(redis: Redis, env: Env, date: string, snap: Snapshot): Promise<void> {
   const fields: Record<string, string> = {
-    [BUILT_FEED]: String(snap.builtAt),
-    ...(stamps === "all" ? { [BUILT]: String(snap.builtAt) } : {}),
+    [BUILT]: String(snap.builtAt),
     [IDX_LOC]: JSON.stringify(snap.byLocation),
     [IDX_DRV]: JSON.stringify(snap.byDriver),
     [IDX_PAIRS]: JSON.stringify(snap.pairs),
@@ -379,10 +372,9 @@ type Slice = { jobs: SnapJob[]; builtAt: number | null; source: "cache" | "build
  *  then one HMGET brings back only those jobs. */
 async function readSlice(
   redis: Redis, env: Env, date: string, indexField: string, indexKey: string,
-  stampField: string,
 ): Promise<Slice | null> {
-  const head = await redis.hmget<Record<string, unknown>>(key(env, date), stampField, indexField);
-  const builtAt = Number(head?.[stampField] ?? 0);
+  const head = await redis.hmget<Record<string, unknown>>(key(env, date), BUILT, indexField);
+  const builtAt = Number(head?.[BUILT] ?? 0);
   if (!builtAt) return null;
   const index = parse<Record<string, number[]>>(head?.[indexField], {});
   const ids = index[indexKey] ?? [];
@@ -396,11 +388,9 @@ async function readSlice(
   return { jobs, builtAt, source: "cache" };
 }
 
-/** Display reads pass BUILT_FEED so they can ride on a cycle-published day; anything
- *  feeding a decision reads BUILT and therefore only ever sees a reader-built one. */
 async function slice(
   date: string, env: Env, indexField: string, indexKey: string,
-  pick: (s: Snapshot) => number[], opts: ReadOpts, stampField: string = BUILT,
+  pick: (s: Snapshot) => number[], opts: ReadOpts,
 ): Promise<Slice | null> {
   const redis = getRedis();
   const fromSnap = (s: Snapshot): Slice => ({
@@ -414,7 +404,7 @@ async function slice(
   }
   if (!opts.fresh) {
     try {
-      const hit = await readSlice(redis, env, date, indexField, indexKey, stampField);
+      const hit = await readSlice(redis, env, date, indexField, indexKey);
       if (hit && hit.builtAt && Date.now() - hit.builtAt < (opts.maxAgeMs ?? MAX_AGE_MS)) return hit;
       const built = await rebuild(redis, date, env);
       if (built) return fromSnap(built);
@@ -428,30 +418,18 @@ async function slice(
   return direct ? fromSnap(direct) : null;
 }
 
-/** Drop a freshness stamp so the next read rebuilds. Called after creating or cancelling
- *  a job: the change is ours, we know the day is stale, and waiting out the tolerance
- *  would let a just-created trip stay invisible. One HDEL — the job data stays put and is
- *  simply superseded by the rebuild.
+/** Drop the freshness stamp so the next read rebuilds. Called after a change we made
+ *  ourselves, where waiting out the tolerance would show a stale day.
  *
- *  `scope` decides WHO is made to pay for that rebuild, and the choice is not cosmetic:
- *
- *  - `"guard"` — clears only the duplicate guard's stamp. For callers whose UI updates
- *    itself from the action's own response (psc-assign: the branch's list is patched
- *    client-side). The guard must still see the new job, but no display reader should
- *    rebuild the whole network's day on account of one branch's booking.
- *  - `"all"` — also clears the display stamp, for callers that still re-read a list after
- *    acting (chấm-công). Without it the driver reloads and their brand-new check-in is
- *    missing, which reads as the tap having failed.
- *
- *  Default is `"all"`: a caller that forgets to think about this gets the conservative
- *  behaviour, which costs CPU rather than correctness. */
-export async function invalidateSnapshot(
-  date: string, env: Env, scope: "all" | "guard" = "all",
-): Promise<void> {
+ *  psc-assign no longer calls this. Its bookings are covered by the write-through pair
+ *  overlay for the guard, and by the client patching its own list from the action's
+ *  response for the feed — so forcing 41 other branches to rebuild the network's day over
+ *  one branch's trip bought nothing. Chấm-công still calls it, because it genuinely
+ *  re-reads its list after acting. */
+export async function invalidateSnapshot(date: string, env: Env): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
-  const fields = scope === "all" ? [BUILT, BUILT_FEED] : [BUILT];
-  try { await redis.hdel(key(env, date), ...fields); } catch { /* best-effort */ }
+  try { await redis.hdel(key(env, date), BUILT); } catch { /* best-effort */ }
 }
 
 /** Publish a day the ASSIGN CYCLE already fetched, for the display readers only.
@@ -477,9 +455,9 @@ export async function publishSnapshot(
   const redis = getRedis();
   if (!redis) return "skipped";
   try {
-    const existing = Number(await redis.hget(key(env, date), BUILT_FEED));
+    const existing = Number(await redis.hget(key(env, date), BUILT));
     if (existing && existing >= fetchedAt) return "superseded";
-    await write(redis, env, date, assembleSnapshot(timeline, unrouted, fetchedAt), "feed");
+    await write(redis, env, date, assembleSnapshot(timeline, unrouted, fetchedAt));
     return "written";
   } catch {
     return "skipped"; // publishing is an optimisation; never fail a cycle over it
@@ -496,7 +474,7 @@ export async function locationJobs(
   // can still pass maxAgeMs, and `fresh` overrides both.
   const s = await slice(date, env, IDX_LOC, customerId,
     (snap) => snap.byLocation[customerId] ?? [],
-    { maxAgeMs: FEED_MAX_AGE_MS, ...opts }, BUILT_FEED);
+    { maxAgeMs: FEED_MAX_AGE_MS, ...opts });
   return s?.jobs ?? null;
 }
 
@@ -506,7 +484,7 @@ export async function driverJobs(
   date: string, env: Env, driverId: string, opts: ReadOpts = {},
 ): Promise<SnapJob[] | null> {
   const s = await slice(date, env, IDX_DRV, driverId,
-    (snap) => snap.byDriver[driverId] ?? [], opts, BUILT_FEED);
+    (snap) => snap.byDriver[driverId] ?? [], opts);
   return s?.jobs ?? null;
 }
 
@@ -520,9 +498,12 @@ export async function blockedPair(
   const redis = getRedis();
   if (redis && !opts.fresh) {
     try {
+      // BUILT, so a day the assign cycle published counts. See GUARD_MAX_AGE_MS for
+      // why that is safe — in short, the app's own bookings are covered by the pair
+      // overlay, and the cycle's follow-up trips run in the opposite direction.
       const head = await redis.hmget<Record<string, unknown>>(key(env, date), BUILT, IDX_PAIRS);
       const builtAt = Number(head?.[BUILT] ?? 0);
-      if (builtAt && Date.now() - builtAt < MAX_AGE_MS) {
+      if (builtAt && Date.now() - builtAt < (opts.maxAgeMs ?? GUARD_MAX_AGE_MS)) {
         const pairs = parse<Record<string, PairHit>>(head?.[IDX_PAIRS], {});
         return { hit: pairs[pairKey] ?? null, ageMs: Date.now() - builtAt };
       }
