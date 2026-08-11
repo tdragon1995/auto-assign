@@ -162,11 +162,25 @@ async function runOnce() {
     // drop those blanks — otherwise the same person appears twice.
     const ptCodes = new Set(ptRecords.map((r) => r.employee_code));
     const allRecords = [
-      ...records.filter(
-        (r) => !(ptCodes.has(r.employee_code) && !rosteredInMisa.has(r.employee_code)),
-      ),
+      ...records.filter((r) => {
+        // Superseded by a pattern row — would otherwise appear twice.
+        if (ptCodes.has(r.employee_code) && !rosteredInMisa.has(r.employee_code)) return false;
+        // No shift anywhere AND not an active driver: a former or non-driving
+        // employee MISA still lists. They can never take a job, so a blank row
+        // for them is noise that buries the people who genuinely need a shift.
+        if (!rosteredInMisa.has(r.employee_code) && !byCode.has(r.employee_code)) return false;
+        return true;
+      }),
       ...ptRecords,
     ];
+    const droppedInactive = new Set(
+      records
+        .filter((r) => !rosteredInMisa.has(r.employee_code) && !byCode.has(r.employee_code))
+        .map((r) => r.employee_code),
+    );
+    if (droppedInactive.size) {
+      console.log(`[run] hid ${droppedInactive.size} inactive person/people with no shift`);
+    }
 
     // Anyone left with no working day anywhere needs a pattern entered — flag
     // them, or a blank row just looks like someone who never works.
@@ -218,19 +232,22 @@ async function runOnce() {
       console.warn(`[run] ⚠ could not read Nghỉ phép for the grid overlay: ${e.message}`);
     }
     const grid = buildGrid(allRecords, range, sheetLeave);
-    const ptSheetRows = ptRecords.map((r) => [
-      r.employee_code,
-      r.full_name,
-      r.shift_date,
-      r.day_type === "off" ? "OFF" : r.start_time || "",
-      r.day_type === "working" ? r.end_time || "" : "",
-      "",
-      "",
-      "",
-    ]);
-    const allSheetRows = [...sheetRows, ...ptSheetRows].sort((a, b) =>
-      a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[2] < b[2] ? -1 : a[2] > b[2] ? 1 : 0,
-    );
+
+    // Both outputs derive from the same filtered records, so the flat tab and
+    // the grid can never disagree about who is on the roster. (parseShifts also
+    // returns sheetRows, but those predate the filtering above.)
+    const allSheetRows = allRecords
+      .map((r) => [
+        r.employee_code,
+        r.full_name,
+        r.shift_date,
+        r.day_type === "holiday" ? r.holiday_name || "" : r.day_type === "off" ? "OFF" : r.start_time || "",
+        r.day_type === "working" ? r.end_time || "" : "",
+        r.leave_start || "",
+        r.leave_end || "",
+        r.leave_gap ? "1" : "",
+      ])
+      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[2] < b[2] ? -1 : a[2] > b[2] ? 1 : 0));
 
     fs.mkdirSync(OUT_DIR, { recursive: true });
     const dump = path.join(OUT_DIR, `misa-shifts-${range.monthStart.slice(0, 7)}.json`);
@@ -252,7 +269,7 @@ async function runOnce() {
       ),
     );
     console.log(
-      `[run] grid: ${grid.values.length - 1} people × ${grid.values[0].length - 4} days | debug dump → ${dump}`,
+      `[run] grid: ${grid.values.length - grid.frozenRows} people × ${grid.values[0].length - 4} days | debug dump → ${dump}`,
     );
 
     if (DRY_RUN) {

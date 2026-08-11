@@ -24,11 +24,22 @@
  * The whole tab is cleared and rewritten each call (same as the old module).
  */
 
-// Must match SHEET_WEBAPP_TOKEN (misa-fetcher/.env locally, GitHub secret in CI).
-// Deliberately a placeholder here — the real value is not kept in version
-// control. The deployed Apps Script holds it; if you re-paste this file you must
-// set it again, or every write is rejected with "invalid token".
+// The shared token lives in Script Properties, NOT in this file — so the real
+// value is never in version control and re-pasting this file cannot wipe it.
+//
+// Set it once: Project Settings (⚙) → Script Properties → Add script property
+//   Property: SHARED_TOKEN
+//   Value:    the same value as SHEET_WEBAPP_TOKEN (misa-fetcher/.env, GitHub secret)
+//
+// The constant below is only a fallback for a project where the property has
+// not been set; leaving it as the placeholder means every write is rejected
+// with "invalid token", which is the intended failure.
 const SHARED_TOKEN = 'PASTE_TOKEN_HERE';
+
+function getSharedToken_() {
+  var fromProps = PropertiesService.getScriptProperties().getProperty('SHARED_TOKEN');
+  return fromProps || SHARED_TOKEN;
+}
 const SHIFT_SHEET_NAME = 'Driver Shift';   // flat: one row per person per day
 const GRID_SHEET_NAME  = 'Lịch Ca';        // consolidated: one row per person, one column per day
 
@@ -51,7 +62,7 @@ function doPost(e) {
   try {
     const body = JSON.parse(e.postData.contents || '{}');
 
-    if (!body.token || body.token !== SHARED_TOKEN) {
+    if (!body.token || body.token !== getSharedToken_()) {
       return out({ ok: false, error: 'invalid token' });
     }
 
