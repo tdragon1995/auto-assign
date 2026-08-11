@@ -4,11 +4,11 @@ import { goongMatrix, goongMatrixMultiOrigin, type GoongResult, type QuotaSignal
 /**
  * Redis-backed cache for road distances between fixed locations (customer/PSC
  * coordinates — never live GPS, which only feeds the free haversine pre-rank).
- * Road distances between fixed points change only with the road network, so a
- * long TTL is safe; a cache loss just costs one Goong re-fetch.
+ * Road distances between fixed points change only with the road network, so
+ * entries are stored WITHOUT a TTL — they persist until explicitly deleted.
+ * The pair set is bounded by the number of fixed locations, and re-fetching an
+ * expired pair costs a Goong request for a distance that had not changed.
  */
-
-const TTL_SECONDS = 40 * 24 * 60 * 60; // 40 days
 
 type Pt = { lat: number; lon: number };
 
@@ -75,7 +75,7 @@ async function getCachedDistances(keys: string[]): Promise<(GoongResult | null)[
 }
 
 /** Write-behind after a Goong fetch. Failed lookups (null) must never be cached.
- *  Write-once (`nx`): a new pair is stored with the TTL, but an existing cell is
+ *  Write-once (`nx`): a new pair is stored with no expiry, but an existing cell is
  *  never overwritten — preserves the first-seen exact coords. Overwrites only ever
  *  arose in the rare concurrent first-fill race (a cache hit already skips the
  *  write), and the collapsed coords are the same physical point, so the distance
@@ -86,7 +86,7 @@ async function setCachedDistances(entries: { key: string; value: StoredDistance 
   if (!redis) return;
   try {
     const pipe = redis.pipeline();
-    for (const { key, value } of entries) pipe.set(key, JSON.stringify(value), { ex: TTL_SECONDS, nx: true });
+    for (const { key, value } of entries) pipe.set(key, JSON.stringify(value), { nx: true });
     await pipe.exec();
   } catch {
     /* cache write is best-effort */
@@ -163,6 +163,39 @@ export async function roadDistancesToPoint(
     origins.map((o) => ({ from: o, to: dest })),
     (miss) => goongMatrixMultiOrigin(miss.map((m) => m.from), dest, apiKey, signal),
   );
+}
+
+/** Arbitrary point→point pairs (route legs: stop A→B, B→C, … along a driver's run).
+ *
+ *  Unlike the 1→N / N→1 helpers, consecutive legs share no common origin or
+ *  destination, so they cannot be one matrix call. Misses are grouped by origin and
+ *  issued as one 1→N call per distinct origin — on a driver's route that is one call
+ *  per leg on a cold cache, then nothing, since a leg between two fixed customer
+ *  locations is the exact thing this cache was built to hold.
+ *
+ *  Live GPS must NOT be passed here: one-off coordinates would write keys that can
+ *  never be hit again. Callers anchor on fixed stop coordinates instead. */
+export async function roadDistancesForPairs(
+  pairs: { from: { lat: number; lon: number }; to: { lat: number; lon: number } }[],
+  apiKey?: string,
+  signal?: QuotaSignal,
+): Promise<(ResolvedDistance | null)[]> {
+  return resolvePairs(pairs, async (miss) => {
+    const out: (GoongResult | null)[] = new Array(miss.length).fill(null);
+    const byOrigin = new Map<string, number[]>();
+    for (let i = 0; i < miss.length; i++) {
+      const k = `${miss[i].from.lat},${miss[i].from.lon}`;
+      const list = byOrigin.get(k);
+      if (list) list.push(i);
+      else byOrigin.set(k, [i]);
+    }
+    for (const idxs of byOrigin.values()) {
+      const origin = miss[idxs[0]].from;
+      const res = await goongMatrix(origin.lat, origin.lon, idxs.map((i) => miss[i].to), apiKey, signal);
+      idxs.forEach((i, j) => { out[i] = res[j] ?? null; });
+    }
+    return out;
+  });
 }
 
 /** 1 origin → N destinations (distance-checking: one pickup → its dropoffs).
