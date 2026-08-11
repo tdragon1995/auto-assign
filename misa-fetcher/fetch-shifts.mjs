@@ -57,9 +57,28 @@ async function runOnce() {
     throw new Error("MISA_USERNAME / MISA_PASSWORD / MISA_TOTP_SECRET must be set");
   }
 
-  const monthArg = process.argv.slice(2).find((a) => a.startsWith("--month="));
-  const range = monthRange(new Date(), monthArg ? monthArg.split("=")[1] : null);
-  console.log(`[run] month range ${range.fromDate} → ${range.toDate} (VN)`);
+  const argv = process.argv.slice(2);
+  const monthArg = argv.find((a) => a.startsWith("--month="));
+  const monthsArg = argv.find((a) => a.startsWith("--months="));
+  const offsetArg = argv.find((a) => a.startsWith("--start-offset="));
+
+  // Default span: last month and this one. Starting a month back keeps the
+  // month just ended on the sheet while it is still being reviewed, instead of
+  // it vanishing at midnight on the 1st.
+  const span = monthsArg ? Number(monthsArg.split("=")[1]) : 2;
+  const startOffset = offsetArg ? Number(offsetArg.split("=")[1]) : -1;
+  const startMonth =
+    monthArg?.split("=")[1] ??
+    (() => {
+      const now = new Date();
+      const d = new Date(now.getFullYear(), now.getMonth() + startOffset, 1);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    })();
+
+  const range = monthRange(new Date(), startMonth, span);
+  console.log(
+    `[run] range ${range.monthStart} → ${range.monthEnd} (${range.months} month(s), VN)`,
+  );
 
   const { browser, context, page } = await createSession({
     headless: !args.has("--headed"),
@@ -70,7 +89,18 @@ async function runOnce() {
     await ensureLoggedIn(page, context, creds, range, STATE_PATH);
 
     const shiftData = await fetchAllShifts(page, range);
-    const attendance = await fetchAllAttendance(page, range.year);
+    // The attendance endpoint filters by year, so a span crossing Dec→Jan needs
+    // one pass per year. Records are deduped on AttendanceID.
+    const attendance = [];
+    const seenAtt = new Set();
+    for (const yr of range.years) {
+      for (const a of await fetchAllAttendance(page, yr)) {
+        const id = a.AttendanceID ?? JSON.stringify([a.EmployeeCode, a.FromDate, a.ToDate]);
+        if (seenAtt.has(id)) continue;
+        seenAtt.add(id);
+        attendance.push(a);
+      }
+    }
     const leaveMap = buildLeaveMap(attendance);
     const { sheetRows, records, gaps } = parseShifts(shiftData, leaveMap, attendance);
 
@@ -99,7 +129,14 @@ async function runOnce() {
     // a person in both sources is never rostered twice.
     const drivers = await loadDrivers();
     const byCode = driversByEmployeeCode(drivers);
-    const misaCodes = new Set(records.map((r) => r.employee_code));
+    // Being in MISA is not the same as having a roster there: 30 of 88 people
+    // have an AMIS account but no shift plan, so they arrive as a month of
+    // blank days. Only someone who actually works a day in MISA is "covered" —
+    // anyone else must still be fillable from the part-time tab, or they could
+    // never be rostered at all.
+    const rosteredInMisa = new Set(
+      records.filter((r) => r.day_type === "working").map((r) => r.employee_code),
+    );
     // Stamp the canonical Driver-tab label on every record. It is what the
     // Nghỉ phép sheet keys leave by, so leave can only be matched through it —
     // MISA supplies a bare name, which never matches.
@@ -116,12 +153,40 @@ async function runOnce() {
           `Create it with headers: driver, employee_code, active_from, active_to, mon, tue, wed, thu, fri, sat, sun, note`,
       );
     } else {
-      ptRecords = expandPtPatterns(patterns, range, misaCodes);
+      ptRecords = expandPtPatterns(patterns, range, rosteredInMisa);
       const ptPeople = new Set(ptRecords.map((r) => r.employee_code));
       console.log(`[run] part-time: ${patterns.length} pattern(s) → ${ptPeople.size} people, ${ptRecords.length} day rows`);
     }
 
-    const allRecords = [...records, ...ptRecords];
+    // Where the pattern tab now supplies someone who had only blank MISA days,
+    // drop those blanks — otherwise the same person appears twice.
+    const ptCodes = new Set(ptRecords.map((r) => r.employee_code));
+    const allRecords = [
+      ...records.filter(
+        (r) => !(ptCodes.has(r.employee_code) && !rosteredInMisa.has(r.employee_code)),
+      ),
+      ...ptRecords,
+    ];
+
+    // Anyone left with no working day anywhere needs a pattern entered — flag
+    // them, or a blank row just looks like someone who never works.
+    const noRoster = new Map();
+    for (const r of allRecords) {
+      if (r.day_type === "working") noRoster.delete(r.employee_code);
+      else if (!noRoster.has(r.employee_code) && !rosteredInMisa.has(r.employee_code) && !ptCodes.has(r.employee_code)) {
+        noRoster.set(r.employee_code, r.full_name);
+      }
+    }
+    for (const r of allRecords) {
+      if (noRoster.has(r.employee_code)) r.source = "CHƯA CÓ CA";
+    }
+    if (noRoster.size) {
+      console.warn(
+        `[run] ⚠ ${noRoster.size} người chưa có ca (no shift in MISA and no pattern row) — ` +
+          `add them to "${PT_PATTERN_SHEET}": ` +
+          [...noRoster.entries()].map(([c, n]) => `${c} ${n}`).join("; "),
+      );
+    }
 
     // ── Leave → Nghỉ phép (the engine's source of truth) ────────────────
     const { submissions, unmatched } = buildLeaveSubmissions(attendance, byCode, range);

@@ -93,7 +93,10 @@ export async function pushSheet(sheetRows) {
 export async function pushGrid(grid, range) {
   const data = await callWebApp({
     action: "grid",
-    month: range.monthStart.slice(0, 7),
+    month:
+      range.monthStart.slice(0, 7) === range.monthEnd.slice(0, 7)
+        ? range.monthStart.slice(0, 7)
+        : `${range.monthStart.slice(0, 7)} → ${range.monthEnd.slice(0, 7)}`,
     values: grid.values,
     backgrounds: grid.backgrounds,
     frozenRows: grid.frozenRows,

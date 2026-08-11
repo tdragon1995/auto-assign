@@ -162,10 +162,17 @@ function writeGridSheet_(values, backgrounds, monthLabel, frozenRows, frozenCols
     sheet.getRange(1, 1, rows, cols).setBackgrounds(backgrounds);
   }
 
-  // Header: wrapped (day number over weekday), centred, bold.
-  const header = sheet.getRange(1, 1, 1, cols);
-  header.setFontWeight('bold').setHorizontalAlignment('center').setWrap(true);
-  sheet.setRowHeight(1, 34);
+  // The caller decides how many header rows there are (currently two: date,
+  // then weekday). Freezing and formatting both follow that count so the two
+  // stay in step.
+  const headerRows = frozenRows || 1;
+  sheet.getRange(1, 1, headerRows, cols)
+    .setFontWeight('bold')
+    .setHorizontalAlignment('center')
+    .setWrap(false);
+  for (var hr = 1; hr <= headerRows; hr++) sheet.setRowHeight(hr, 20);
+  // Identity headers read better left-aligned than centred over a name column.
+  sheet.getRange(1, 1, headerRows, 3).setHorizontalAlignment('left');
 
   // Day cells: small and centred so a whole month fits on screen. The three
   // identity columns stay left-aligned and readable.
@@ -173,7 +180,7 @@ function writeGridSheet_(values, backgrounds, monthLabel, frozenRows, frozenCols
     // 56px fits the widest cell ("12:30-21:30") at 8pt without clipping; wrap is
     // off so a long value never doubles a row's height.
     sheet.getRange(1, 4, rows, cols - 3).setHorizontalAlignment('center').setFontSize(8);
-    sheet.getRange(2, 4, rows - 1, cols - 3).setWrap(false);
+    sheet.getRange(headerRows + 1, 4, rows - headerRows, cols - 3).setWrap(false);
     for (let c = 4; c <= cols; c++) sheet.setColumnWidth(c, 56);
   }
   sheet.getRange(1, 1, rows, 1).setFontSize(9);

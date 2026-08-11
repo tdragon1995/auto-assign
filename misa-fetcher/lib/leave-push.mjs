@@ -20,6 +20,12 @@ function log(msg) {
   console.log(`[leave] ${msg}`);
 }
 
+/** Today in VN. The entrypoint pins process.env.TZ, so the local getters are VN. */
+function todayVn() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 /**
  * MISA attendance rows → one submission per charged leave day.
  *
@@ -28,9 +34,13 @@ function log(msg) {
  * keeps the sheet in step with what MISA actually deducted, which is what makes
  * the leave/roster gaps visible instead of papering over them.
  */
-export function buildLeaveSubmissions(attendanceRows, driversByCode, range) {
+export function buildLeaveSubmissions(attendanceRows, driversByCode, range, minDate = todayVn()) {
   const subs = [];
   const unmatched = new Map();
+  // The sheet spans past months so the roster stays reviewable, but leave that
+  // has already happened cannot be acted on — writing it would only add noise
+  // to a tab the assign engine reads every cycle.
+  const floor = minDate > range.monthStart ? minDate : range.monthStart;
 
   for (const att of attendanceRows) {
     const code = (att.EmployeeCode || "").trim();
@@ -56,7 +66,7 @@ export function buildLeaveSubmissions(attendanceRows, driversByCode, range) {
       const num = parseFloat(d.NumberOfDay);
       if (!(num > 0)) continue;
       const date = (d.Date || "").slice(0, 10);
-      if (!date || date < range.monthStart || date > range.monthEnd) continue;
+      if (!date || date < floor || date > range.monthEnd) continue;
 
       const halfDay = num < 1;
       subs.push({

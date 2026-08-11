@@ -11,6 +11,7 @@ const VN_DOW = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"];
 
 const COLORS = {
   header: "#d9d9d9",
+  monthBreak: "#b7b7b7", // first column of a new month, so the seam is obvious
   weekend: "#efefef",
   working: null, // default white
   off: "#f3f3f3",
@@ -31,12 +32,15 @@ function displayName(rec) {
   return raw.replace(/^[A-Za-z]+\s*-\s*[A-Za-z]+\s*-\s*\S+\s+/, "").trim() || raw;
 }
 
-/** "06:00" → "6", "12:30" → "12:30" — drop the noise, keep the information. */
+/**
+ * "06:00" → "6:00", "12:30" → "12:30". Only the leading zero goes; minutes are
+ * always shown so an on-the-hour shift and a half-hour one read the same way
+ * ("6:00-19:00" beside "8:30-17:30", not "6-19" beside "8:30-17:30").
+ */
 function compactTime(t) {
   if (!t) return "";
   const [h, m] = t.split(":");
-  const hh = String(Number(h));
-  return m === "00" ? hh : `${hh}:${m}`;
+  return `${Number(h)}:${m}`;
 }
 
 function shiftLabel(rec) {
@@ -51,7 +55,12 @@ function daysInRange(range) {
   const out = [];
   const end = new Date(range.monthEnd + "T00:00:00Z");
   for (let d = new Date(range.monthStart + "T00:00:00Z"); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
-    out.push({ date: d.toISOString().slice(0, 10), dow: d.getUTCDay(), day: d.getUTCDate() });
+    out.push({
+      date: d.toISOString().slice(0, 10),
+      dow: d.getUTCDay(),
+      day: d.getUTCDate(),
+      month: d.getUTCMonth() + 1,
+    });
   }
   return out;
 }
@@ -90,17 +99,32 @@ export function buildGrid(records, range, sheetLeave = new Map()) {
     if (!prev || (r.slot ?? 1) < (prev.slot ?? 1)) p.byDate.set(r.shift_date, r);
   }
 
-  const header = ["Nhân viên", "Mã NV", "Nguồn"];
-  const headerBg = [COLORS.header, COLORS.header, COLORS.header];
-  for (const d of days) {
-    header.push(`${d.day}\n${VN_DOW[d.dow]}`);
-    headerBg.push(d.dow === 0 ? COLORS.weekend : COLORS.header);
-  }
-  header.push("Ngày công");
-  headerBg.push(COLORS.header);
+  // Two header rows — date on top, weekday beneath — rather than both wrapped
+  // into one cell, so each reads cleanly and either can be scanned on its own.
+  const dateRow = ["Nhân viên", "Mã NV", "Nguồn"];
+  const dowRow = ["", "", ""];
+  const dateBg = [COLORS.header, COLORS.header, COLORS.header];
+  const dowBg = [COLORS.header, COLORS.header, COLORS.header];
 
-  const values = [header];
-  const backgrounds = [headerBg];
+  // Day numbers repeat across a multi-month span, so the date carries the month
+  // too ("1/9"), and the first column of each new month is tinted to make the
+  // boundary visible at a glance.
+  const multiMonth = new Set(days.map((d) => d.month)).size > 1;
+  days.forEach((d, i) => {
+    dateRow.push(multiMonth ? `${d.day}/${d.month}` : String(d.day));
+    dowRow.push(VN_DOW[d.dow]);
+    const isMonthStart = multiMonth && i > 0 && days[i - 1].month !== d.month;
+    const bg = isMonthStart ? COLORS.monthBreak : d.dow === 0 ? COLORS.weekend : COLORS.header;
+    dateBg.push(bg);
+    dowBg.push(bg);
+  });
+  dateRow.push("Ngày công");
+  dowRow.push("");
+  dateBg.push(COLORS.header);
+  dowBg.push(COLORS.header);
+
+  const values = [dateRow, dowRow];
+  const backgrounds = [dateBg, dowBg];
 
   const sorted = [...people.values()].sort((a, b) =>
     (a.name || "").localeCompare(b.name || "", "vi"),
@@ -152,8 +176,9 @@ export function buildGrid(records, range, sheetLeave = new Map()) {
     backgrounds.push(bg);
   }
 
-  // 4, not 3: the sheet-side legend spans columns B–D, and Sheets refuses a
-  // merge that straddles the frozen/non-frozen boundary. Freezing through D
-  // keeps it inside, and pinning one day column costs nothing.
-  return { values, backgrounds, frozenRows: 1, frozenCols: 4 };
+  // Freeze the two header rows and the three identity columns. Requires the
+  // web app build where the legend is no longer a merged range — a merge across
+  // the frozen/non-frozen column boundary is rejected by Sheets, which is what
+  // previously forced the freeze out to column D.
+  return { values, backgrounds, frozenRows: 2, frozenCols: 3 };
 }

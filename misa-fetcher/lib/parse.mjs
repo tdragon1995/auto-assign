@@ -6,10 +6,13 @@
  */
 
 /**
- * First/last instant of a VN month, as the UTC ISO strings MISA expects.
- * Defaults to the current month; pass "YYYY-MM" to target a specific one.
+ * First/last instant of a span of VN months, as the UTC ISO strings MISA
+ * expects. Defaults to the current month; pass "YYYY-MM" to start elsewhere and
+ * `months` to cover more than one (2 = this month and next, so next month's
+ * roster and booked-ahead leave are visible while there is still time to
+ * arrange cover).
  */
-export function monthRange(now = new Date(), month = null) {
+export function monthRange(now = new Date(), month = null, months = 1) {
   let y, m;
   if (month) {
     const [ys, ms] = month.split("-").map(Number);
@@ -20,15 +23,29 @@ export function monthRange(now = new Date(), month = null) {
     y = now.getFullYear();
     m = now.getMonth();
   }
+  const span = Math.max(1, Number(months) || 1);
+
   // VN midnight = 17:00 previous day UTC
   const first = new Date(Date.UTC(y, m, 1, -7, 0, 0, 0));
-  const last = new Date(Date.UTC(y, m + 1, 0, 16, 59, 59, 999));
+  const last = new Date(Date.UTC(y, m + span, 0, 16, 59, 59, 999));
+  const lastLocal = new Date(y, m + span, 0);
+
+  // Every calendar year the span touches — the attendance endpoint filters by
+  // year, so a Dec→Jan span has to query both.
+  const years = [];
+  for (let i = 0; i < span; i++) {
+    const yr = new Date(y, m + i, 1).getFullYear();
+    if (!years.includes(yr)) years.push(yr);
+  }
+
   return {
     fromDate: first.toISOString(),
     toDate: last.toISOString(),
     year: y,
+    years,
+    months: span,
     monthStart: `${y}-${String(m + 1).padStart(2, "0")}-01`,
-    monthEnd: isoDay(new Date(y, m + 1, 0)),
+    monthEnd: isoDay(lastLocal),
   };
 }
 
