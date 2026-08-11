@@ -459,6 +459,29 @@ const LOGIN_BLOCK_MS = 10 * 60 * 1000;
 const _loginBlock: Partial<Record<Env, number>> = {};
 
 /**
+ * The login currently running, if one is. Concurrent callers await it instead of each
+ * starting their own handshake.
+ *
+ * This matters because nothing in this codebase calls JSON-RPC one at a time. buildSnapshot
+ * fires two RPCs at once, return-trips three, the optimise batch five, and the assign loop
+ * and proxy release up to ten. They all share one cookie, so when Cartrack drops a session
+ * they ALL get the expiry signal in the same instant and jsonRpc retries every one of them
+ * with `force`. Without this, that is ten simultaneous logins against an account Cartrack
+ * counts attempts on — the same lockout risk the back-off above exists to prevent.
+ *
+ * It also removes a delete/write race on the shared copy: `force` drops the shared cookie
+ * before re-logging in, so ten forced callers meant ten DELETEs interleaving with ten
+ * writes, and a cookie one caller had just stored could be deleted by another arriving
+ * late. Only the first caller now runs that sequence.
+ *
+ * Joining an in-flight login is always safe regardless of `force`, because a login always
+ * mints a NEW session — a forced caller cannot be handed back the dead cookie it was
+ * retrying. What a forced caller must not do is take the SHARED cookie, and it doesn't:
+ * that lookup happens before this point and is skipped when force is set.
+ */
+const _loginInFlight: Partial<Record<Env, Promise<string | null>>> = {};
+
+/**
  * Second tier for both caches above, shared across instances.
  *
  * WHY: the per-process cache only helps a lambda that is already warm. A cold one has an
@@ -547,12 +570,9 @@ export async function getFleetwebCookie(env: Env = "prod", force = false): Promi
   const cached = _cookieCache[env];
   if (!force && cached && Date.now() < cached.expiry) return cached.cookie;
 
-  // `force` means Cartrack just rejected the session we were holding. Evict the shared
-  // copy BEFORE anything can adopt it, or every other instance inherits the dead cookie.
-  if (force) await dropSharedCookie(env);
-
   // Local cache missed. Ask the shared one before paying for a handshake — this is the
   // whole point of the second tier, and it is where a cold instance saves ~280ms of CPU.
+  // Read even under `force`, because the BLOCK still applies; only the cookie is ignored.
   const shared = await readShared(env);
   if (shared.blockedUntil > Date.now()) {
     // Another instance has already been refused by Cartrack. Adopt the back-off instead of
@@ -568,6 +588,24 @@ export async function getFleetwebCookie(env: Env = "prod", force = false): Promi
   // Honoured even under `force`: force exists to replace an expired SESSION, and
   // re-logging in cannot fix credentials Cartrack has already rejected.
   if (Date.now() < (_loginBlock[env] ?? 0)) return null;
+
+  // A handshake is now unavoidable — unless one is already running, in which case wait for
+  // it. Everything below this line happens ONCE no matter how many callers arrive together,
+  // which is what makes the ten-way force retry from the assign loop cost one login.
+  const running = _loginInFlight[env];
+  if (running) return running;
+  const attempt = performLogin(env, force).finally(() => { delete _loginInFlight[env]; });
+  _loginInFlight[env] = attempt;
+  return attempt;
+}
+
+/** The handshake itself. Only ever called through the in-flight guard above, so the shared
+ *  eviction, the login and the shared write happen exactly once per burst. */
+async function performLogin(env: Env, force: boolean): Promise<string | null> {
+  // `force` means Cartrack just rejected the session we were holding. Evict the shared copy
+  // BEFORE anything can adopt it, or every other instance inherits the dead cookie. Inside
+  // the guard, so this DELETE cannot race the write at the end of a sibling's login.
+  if (force) await dropSharedCookie(env);
 
   const suffix = env === "uat" ? "_UAT" : "";
   const auth = process.env[`CARTRACK_AUTH${suffix}`] ?? "";

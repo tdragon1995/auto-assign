@@ -11,11 +11,16 @@
  * own module scope — a genuinely empty _cookieCache, which is precisely what a cold lambda
  * has. Instance B must therefore find the cookie in Redis and skip the handshake.
  *
+ * The second half covers concurrency, which is the case that actually bit: nothing here
+ * calls JSON-RPC singly, and callers sharing one dead session all retry with `force` at
+ * once. Ten simultaneous logins against an account Cartrack counts attempts on is the
+ * lockout risk the back-off exists to prevent.
+ *
  *   node scripts/redis-stub.mjs &
  *   npx tsx scripts/fleetweb-cookie.test.mts
  *
- * Performs exactly ONE real ct_login against production — the same call the app makes
- * routinely. Redis is the local stub, never the production database.
+ * Performs a handful of real ct_login calls against production — the same call the app
+ * makes routinely. Redis is the local stub, never the production database.
  */
 
 import { readFileSync } from "node:fs";
@@ -78,6 +83,37 @@ const modC = await freshCartrack("C");
 await modC.getFleetwebCookie("prod");            // warm C from the shared cache
 const forced = await modC.getFleetwebCookie("prod", true); // force = Cartrack rejected it
 check("force re-logs in rather than re-reading the dead session", !!forced, forced ? "new cookie issued" : "null");
+
+// ── Concurrent callers must produce ONE handshake, not one each ───────────────
+// Nothing here calls JSON-RPC singly: buildSnapshot fires two at once, return-trips three,
+// the optimise batch five, the assign loop and proxy release ten. They share one cookie, so
+// when Cartrack drops a session they all get the expiry signal together and jsonRpc retries
+// every one with `force`. Ten logins in one burst against an account Cartrack counts
+// attempts on is the lockout risk the back-off exists to prevent.
+//
+// Logins are counted by intercepting the console line performLogin emits, which is the only
+// way to see the handshake from outside the module.
+let logins = 0;
+const realLog = console.log;
+console.log = (...args: unknown[]) => {
+  if (typeof args[0] === "string" && args[0].includes("ct_login performed")) logins++;
+  realLog(...args);
+};
+
+const modD = await freshCartrack("D");
+logins = 0;
+const cold = await Promise.all(Array.from({ length: 10 }, () => modD.getFleetwebCookie("prod")));
+check("10 cold parallel callers → 1 handshake", logins <= 1, `${logins} login(s)`);
+check("all 10 got the same session", new Set(cold).size === 1 && !!cold[0], `${new Set(cold).size} distinct`);
+
+// The force path is the one that actually bursts: every caller retrying a dead session.
+logins = 0;
+const forcedBurst = await Promise.all(Array.from({ length: 10 }, () => modD.getFleetwebCookie("prod", true)));
+check("10 parallel FORCE retries → 1 handshake", logins === 1, `${logins} login(s)`);
+check("all 10 forced callers share one new session", new Set(forcedBurst).size === 1 && !!forcedBurst[0],
+  `${new Set(forcedBurst).size} distinct`);
+check("the forced session replaced the old one", forcedBurst[0] !== cold[0]);
+console.log = realLog;
 
 if (a.out) {
   const saved = a.cpu - b.cpu;
