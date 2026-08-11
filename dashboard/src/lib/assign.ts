@@ -968,10 +968,38 @@ export async function autoAssignCycle(
   const tStart = Date.now();
   let tMark = tStart;
   const clog = (m: string) => console.log(`[VN ${vnTimestamp()}] ${m}`);
+
+  // CPU alongside wall clock, because they answer different questions and only one of
+  // them is billed. Vercel Fluid charges ACTIVE CPU — time spent executing — so a phase
+  // that waits 3 seconds on Cartrack costs almost nothing, while a 200ms JSON.parse costs
+  // real quota. Measured 2026-08-11: a ~5s day rebuild billed ~157ms. Reading wall time to
+  // decide what to optimise therefore points at the wrong phase almost every time; this
+  // cycle's biggest wall-clock phases are its cheapest.
+  //
+  // CAVEAT, so the numbers are not over-read: process.cpuUsage() is process-wide, not
+  // per-request. On Fluid one instance can serve other invocations concurrently, so a
+  // phase may be charged for work that is not its own. That noise is not correlated with
+  // any particular phase, so the ranking across many cycles is trustworthy even though a
+  // single cycle's line is not. Compare the cycle total against Vercel's Active CPU for
+  // /api/assign/cron to see how much of the meter this actually explains.
+  const hasCpu = typeof process !== "undefined" && typeof process.cpuUsage === "function";
+  const cpuStart = hasCpu ? process.cpuUsage() : null;
+  let cpuMark = cpuStart;
+  const cpuMsSince = (from: NodeJS.CpuUsage | null): number | null => {
+    if (!hasCpu || !from) return null;
+    const c = process.cpuUsage();
+    return Math.round((c.user - from.user + (c.system - from.system)) / 1000);
+  };
+
   const phase = (name: string) => {
     const now = Date.now();
-    clog(`[timing] ${name}: +${now - tMark}ms (total ${now - tStart}ms)`);
+    const cpu = cpuMsSince(cpuMark);
+    const cpuTotal = cpuMsSince(cpuStart);
+    const cpuTag = cpu == null ? "" : ` / ${cpu}ms cpu`;
+    const cpuTotalTag = cpuTotal == null ? "" : ` / ${cpuTotal}ms cpu`;
+    clog(`[timing] ${name}: +${now - tMark}ms wall${cpuTag} (total ${now - tStart}ms wall${cpuTotalTag})`);
     tMark = now;
+    if (hasCpu) cpuMark = process.cpuUsage();
   };
   let goongMs = 0;
   let altMs = 0, zaloMs = 0, optimizeMs = 0;
@@ -1104,8 +1132,14 @@ export async function autoAssignCycle(
       // day — and when the s2 fast path fell back to REST, which yields no pool.
       if (!onlyJobIds && unroutedPool) {
         const _tPub = Date.now();
+        const _cPub = hasCpu ? process.cpuUsage() : null;
         const res = await publishSnapshot(today, env, timelineJobs, unroutedPool, fetchedAt);
-        clog(`[fetch] snapshot publish: ${res} in ${Date.now() - _tPub}ms (age at write ${Date.now() - fetchedAt}ms)`);
+        // CPU broken out separately from the enclosing phase: this is the cost the cycle
+        // took ON so that /api/location-jobs would not have to, and it is the one number
+        // that says whether that trade was worth making. Estimated at ~110ms when it was
+        // written — measure before believing that.
+        const _pubCpu = cpuMsSince(_cPub);
+        clog(`[fetch] snapshot publish: ${res} in ${Date.now() - _tPub}ms wall${_pubCpu == null ? "" : ` / ${_pubCpu}ms cpu`} (age at write ${Date.now() - fetchedAt}ms)`);
       }
       // Proxy release, timeline-sourced: the proxy driver's parked jobs are
       // already in the s4 partition (it's a driver on the timeline), so the
@@ -2126,6 +2160,12 @@ export async function autoAssignCycle(
       clog(`[timing] optimize: ${optimizeMs}ms total, ${Date.now() - _tWait}ms of it waited after follow-ups`);
     }
     phase("follow-ups");
+    // One line to reconcile against Vercel's Active CPU for /api/assign/cron: divide that
+    // figure by the invocation count for the same window and compare. If they disagree
+    // badly, the meter is being driven by something OUTSIDE this function — module init,
+    // the route wrapper, JSON.parse inside the fetch helpers — and the phase breakdown
+    // above is a distraction rather than an answer.
+    clog(`[timing] CYCLE TOTAL: ${Date.now() - tStart}ms wall / ${cpuMsSince(cpuStart) ?? "?"}ms cpu`);
   }
 }
 

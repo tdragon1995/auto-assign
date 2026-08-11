@@ -1,3 +1,4 @@
+import { Redis } from "@upstash/redis";
 import type { Driver, Job, Stop, TimelineRoute } from "./types";
 import { vnDayWindow } from "./time";
 
@@ -457,12 +458,112 @@ const _cookieCache: Partial<Record<Env, { cookie: string; expiry: number }>> = {
 const LOGIN_BLOCK_MS = 10 * 60 * 1000;
 const _loginBlock: Partial<Record<Env, number>> = {};
 
+/**
+ * Second tier for both caches above, shared across instances.
+ *
+ * WHY: the per-process cache only helps a lambda that is already warm. A cold one has an
+ * empty object and pays a fresh ct_login — a TLS + auth handshake measured 2026-08-11 at
+ * ~280ms of ACTIVE CPU, against ~40-90ms for ALL the parsing and index-building a steady
+ * cycle does. That single line plausibly accounts for most of /api/assign/cron's ~305ms
+ * per invocation. Redis turns it into a ~2-5ms GET for every instance after the first.
+ *
+ * The login BLOCK is shared for a sharper reason than cost. Cartrack counts failed
+ * attempts and locks the account. A per-process back-off means a wrong password is
+ * retried once per cold instance — exactly the "config mistake becomes a locked
+ * production account" this back-off exists to prevent, just spread across instances where
+ * it is invisible. Sharing it makes the back-off actually global.
+ *
+ * Best-effort throughout: no Redis, or Redis down, degrades to the per-process behaviour
+ * that shipped before this. A cache that cannot be read must never be able to stop a
+ * login that would otherwise succeed.
+ */
+const SHARED_COOKIE_KEY = (env: Env) => `fleetweb:cookie:v1:${env}`;
+const SHARED_BLOCK_KEY = (env: Env) => `fleetweb:login_block:v1:${env}`;
+
+function getCookieRedis(): Redis | null {
+  const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) return null;
+  return new Redis({ url, token });
+}
+
+type CookieRecord = { cookie: string; expiry: number };
+
+/** One round-trip for both keys — this runs on the path that already missed the local
+ *  cache, so it must not cost two. */
+async function readShared(env: Env): Promise<{ record: CookieRecord | null; blockedUntil: number }> {
+  const redis = getCookieRedis();
+  if (!redis) return { record: null, blockedUntil: 0 };
+  try {
+    const [rawCookie, rawBlock] = await redis.mget<[CookieRecord | string | null, number | string | null]>(
+      SHARED_COOKIE_KEY(env), SHARED_BLOCK_KEY(env),
+    );
+    let record: CookieRecord | null = null;
+    if (rawCookie) {
+      const parsed = typeof rawCookie === "string"
+        ? (JSON.parse(rawCookie) as CookieRecord)
+        : rawCookie;
+      // Trust the stored expiry over the key's TTL: adopting a shared cookie must not
+      // reset a 12h clock that is nearly spent, or the local copy outlives the session.
+      if (parsed?.cookie && Date.now() < parsed.expiry) record = parsed;
+    }
+    return { record, blockedUntil: Number(rawBlock ?? 0) };
+  } catch {
+    return { record: null, blockedUntil: 0 };
+  }
+}
+
+async function writeSharedCookie(env: Env, record: CookieRecord): Promise<void> {
+  const redis = getCookieRedis();
+  if (!redis) return;
+  const ttlSec = Math.ceil((record.expiry - Date.now()) / 1000);
+  if (ttlSec <= 0) return;
+  try {
+    await redis.set(SHARED_COOKIE_KEY(env), JSON.stringify(record), { ex: ttlSec });
+  } catch { /* best-effort */ }
+}
+
+/** Drop the shared session. Called when Cartrack rejects one mid-flight (`force`):
+ *  without this, the dead cookie sits in Redis and every OTHER instance adopts it —
+ *  turning one expired session into a fleet-wide JSON-RPC outage until the TTL runs out. */
+async function dropSharedCookie(env: Env): Promise<void> {
+  const redis = getCookieRedis();
+  if (!redis) return;
+  try { await redis.del(SHARED_COOKIE_KEY(env)); } catch { /* best-effort */ }
+}
+
+async function writeSharedBlock(env: Env, until: number): Promise<void> {
+  const redis = getCookieRedis();
+  if (!redis) return;
+  try {
+    await redis.set(SHARED_BLOCK_KEY(env), String(until), { ex: Math.ceil(LOGIN_BLOCK_MS / 1000) });
+  } catch { /* best-effort */ }
+}
+
 /** Login to fleetweb and return a session cookie string, or null on failure.
  *  `force` skips the cache — used by jsonRpc() to re-login when Cartrack rejects
  *  a session before our TTL expects it to. */
 export async function getFleetwebCookie(env: Env = "prod", force = false): Promise<string | null> {
   const cached = _cookieCache[env];
   if (!force && cached && Date.now() < cached.expiry) return cached.cookie;
+
+  // `force` means Cartrack just rejected the session we were holding. Evict the shared
+  // copy BEFORE anything can adopt it, or every other instance inherits the dead cookie.
+  if (force) await dropSharedCookie(env);
+
+  // Local cache missed. Ask the shared one before paying for a handshake — this is the
+  // whole point of the second tier, and it is where a cold instance saves ~280ms of CPU.
+  const shared = await readShared(env);
+  if (shared.blockedUntil > Date.now()) {
+    // Another instance has already been refused by Cartrack. Adopt the back-off instead of
+    // spending one of the account's remaining attempts rediscovering it.
+    _loginBlock[env] = shared.blockedUntil;
+    return null;
+  }
+  if (!force && shared.record) {
+    _cookieCache[env] = shared.record; // carry the ORIGINAL expiry, not a fresh 12h
+    return shared.record.cookie;
+  }
 
   // Honoured even under `force`: force exists to replace an expired SESSION, and
   // re-logging in cannot fix credentials Cartrack has already rejected.
@@ -523,7 +624,11 @@ export async function getFleetwebCookie(env: Env = "prod", force = false): Promi
           (left != null ? ` — ${left} attempts left before lockout` : "") +
           `. Check CARTRACK_WEB_PASS${suffix}.`
       );
-      _loginBlock[env] = Date.now() + LOGIN_BLOCK_MS;
+      const until = Date.now() + LOGIN_BLOCK_MS;
+      _loginBlock[env] = until;
+      // Share it: the account has a finite number of attempts, and a per-process back-off
+      // spends one more of them per cold instance.
+      await writeSharedBlock(env, until);
       return null;
     }
 
@@ -531,7 +636,19 @@ export async function getFleetwebCookie(env: Env = "prod", force = false): Promi
     const setCookies = res.headers.getSetCookie?.() ?? [];
     if (!setCookies.length) return null;
     const cookie = setCookies.map((c) => c.split(";")[0]).join("; ");
-    _cookieCache[env] = { cookie, expiry: Date.now() + COOKIE_TTL_MS };
+    const record: CookieRecord = { cookie, expiry: Date.now() + COOKIE_TTL_MS };
+    _cookieCache[env] = record;
+    // Awaited, not fire-and-forget: this runs on edge routes too, where the runtime can
+    // tear down as soon as the response is sent. A dropped write means the next cold
+    // instance pays the handshake again, which is the entire cost this is here to avoid.
+    await writeSharedCookie(env, record);
+    // Logged because this line is expensive and invisible. ct_login is a TLS + auth
+    // handshake: measured 2026-08-11 at ~280ms of ACTIVE CPU, against ~40-90ms for ALL the
+    // parsing and index-building a steady assign cycle does. With the shared cache above
+    // this should now be RARE — roughly once per 12h TTL rather than once per cold
+    // instance. If these keep appearing at ~1:1 with /api/assign/cron invocations, the
+    // shared cache is not working and the cron is back to spending its CPU on logging in.
+    console.log(`[fleetweb] ct_login performed for ${env} — shared cache miss (cached ${COOKIE_TTL_MS / 3_600_000}h)`);
     return cookie;
   } catch {
     return null;

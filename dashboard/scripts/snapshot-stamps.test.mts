@@ -26,8 +26,8 @@ delete process.env.CARTRACK_WEB_PASS;
 delete process.env.CARTRACK_WEB_PASS_UAT;
 
 const { publishSnapshot, locationJobs, blockedPair, invalidateSnapshot } =
-  await import("../src/lib/day-snapshot.ts");
-const { pscPairKey } = await import("../src/lib/job-filters.ts");
+  await import("../src/lib/day-snapshot");
+const { pscPairKey } = await import("../src/lib/job-filters");
 
 const DATE = "2026-08-11";
 const PICKUP = "cust-psc-d006";
