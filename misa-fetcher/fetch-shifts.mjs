@@ -100,7 +100,13 @@ async function runOnce() {
     const drivers = await loadDrivers();
     const byCode = driversByEmployeeCode(drivers);
     const misaCodes = new Set(records.map((r) => r.employee_code));
-    for (const r of records) r.source = "MISA";
+    // Stamp the canonical Driver-tab label on every record. It is what the
+    // Nghỉ phép sheet keys leave by, so leave can only be matched through it —
+    // MISA supplies a bare name, which never matches.
+    for (const r of records) {
+      r.source = "MISA";
+      r.label = byCode.get(r.employee_code)?.label || r.full_name;
+    }
 
     const patterns = await loadPtPatterns();
     let ptRecords = [];

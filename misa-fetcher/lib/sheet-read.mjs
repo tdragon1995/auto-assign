@@ -152,6 +152,16 @@ export async function loadPtPatterns() {
   } catch {
     return null; // tab missing — caller warns
   }
+
+  // gviz answers an unknown sheet name with the FIRST sheet rather than an
+  // error, so a missing tab arrives looking like perfectly good data — in this
+  // spreadsheet, the customer→driver mapping, whose `Driver` column parses as a
+  // person and puts 1,300 customers on the roster. Verify the shape before
+  // trusting it: a real pattern tab has weekday columns.
+  if (rows.length && !DAY_COLS.some((c) => c in rows[0])) {
+    return null; // some other sheet — treat as missing
+  }
+
   const out = [];
   for (const r of rows) {
     const label = (r["driver"] || r["Driver"] || "").trim();
@@ -159,6 +169,10 @@ export async function loadPtPatterns() {
     if (!label && !code) continue;
     if (isFalsey(r["active"])) continue; // optional legacy kill-switch column
     const days = DAY_COLS.map((c) => parseWindow(r[c]));
+    // A row with no working day at all says nothing — it would otherwise expand
+    // into a full month of "off" rows and put a person on the roster as
+    // permanently not-working, which reads very differently from absent.
+    if (days.every((d) => d === null)) continue;
     out.push({
       label,
       employee_code: code,
@@ -220,6 +234,8 @@ export function expandPtPatterns(patterns, range, skipCodes = new Set()) {
       records.push({
         employee_code: p.employee_code || label,
         full_name: label,
+        label, // canonical Driver-tab label, for leave matching
+
         shift_date: date,
         slot: 1,
         day_type: win ? "working" : "off",

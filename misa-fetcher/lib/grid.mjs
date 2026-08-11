@@ -20,6 +20,17 @@ const COLORS = {
   name: "#ffffff",
 };
 
+/**
+ * Driver labels carry a routing prefix and the employee code
+ * ("P - P - PT101734 Nguyễn Hữu Lợi"). The grid already has a Mã NV column, so
+ * the prefix is repetition that pushes the actual name out of view. MISA rows
+ * arrive as a bare name, so stripping this makes both sources read alike.
+ */
+function displayName(rec) {
+  const raw = rec.full_name || rec.label || "";
+  return raw.replace(/^[A-Za-z]+\s*-\s*[A-Za-z]+\s*-\s*\S+\s+/, "").trim() || raw;
+}
+
 /** "06:00" → "6", "12:30" → "12:30" — drop the noise, keep the information. */
 function compactTime(t) {
   if (!t) return "";
@@ -63,9 +74,18 @@ export function buildGrid(records, range, sheetLeave = new Map()) {
   for (const r of records) {
     const key = r.employee_code || r.full_name;
     if (!people.has(key)) {
-      people.set(key, { code: r.employee_code, name: r.full_name, source: r.source || "MISA", byDate: new Map() });
+      people.set(key, {
+        code: r.employee_code,
+        name: displayName(r),
+        // The Nghỉ phép tab keys leave by the full Driver label, so matching
+        // must use that — never the display name, which differs per source.
+        label: r.label || r.full_name,
+        source: r.source || "MISA",
+        byDate: new Map(),
+      });
     }
     const p = people.get(key);
+    if (!p.label && r.label) p.label = r.label;
     const prev = p.byDate.get(r.shift_date);
     if (!prev || (r.slot ?? 1) < (prev.slot ?? 1)) p.byDate.set(r.shift_date, r);
   }
@@ -93,7 +113,7 @@ export function buildGrid(records, range, sheetLeave = new Map()) {
 
     for (const d of days) {
       const rec = p.byDate.get(d.date);
-      const sheetLv = sheetLeave.get(`${p.name}|${d.date}`);
+      const sheetLv = sheetLeave.get(`${p.label}|${d.date}`);
 
       if (!rec) {
         row.push("");
