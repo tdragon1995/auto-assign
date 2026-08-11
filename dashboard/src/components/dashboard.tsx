@@ -371,6 +371,25 @@ export function Dashboard() {
     } catch (err) {
       toast.error(`Refresh failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+
+    // Shift/leave sync from MISA. It can't run in this app — the login needs a
+    // real browser — so this only dispatches the GitHub Actions run that does,
+    // and the sheet updates a couple of minutes later. Reported separately from
+    // the cache reload above because it completes long after this click.
+    try {
+      const res = await fetch("/api/misa-sync", { method: "POST" });
+      const data = await res.json();
+      if (data.status === "dispatched") {
+        toast.success("Đang đồng bộ ca làm việc từ MISA — bảng cập nhật sau ~2 phút");
+      } else if (data.status === "already_running") {
+        toast.success("Đồng bộ MISA đang chạy…");
+      } else if (data.status === "error") {
+        toast.error(`Đồng bộ MISA thất bại: ${data.error}`);
+      }
+      // status "disabled" (no GitHub token configured) stays silent.
+    } catch (err) {
+      toast.error(`Đồng bộ MISA thất bại: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }, [syncStatus, loadScheduleErrors, loadLeaveStatus]);
 
   const isProd = env === "prod";

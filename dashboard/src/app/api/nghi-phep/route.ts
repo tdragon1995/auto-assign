@@ -49,7 +49,7 @@ async function notifyAdminGroup(text: string): Promise<void> {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { driver_id, driver_name, loai_nghi, ngay_bat_dau, ngay_ket_thuc, gio_bat_dau, gio_ket_thuc, notify_message } = body;
+    const { driver_id, driver_name, loai_nghi, ngay_bat_dau, ngay_ket_thuc, gio_bat_dau, gio_ket_thuc, notify_message, note } = body;
 
     if (!driver_id || !driver_name || !loai_nghi || !ngay_bat_dau) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
@@ -66,6 +66,22 @@ export async function POST(req: NextRequest) {
     }
 
     const ts = vnTimestamp();
+
+    // Optional provenance marker written to the sheet's `note` column (N), used
+    // by the MISA shift sync to mark rows it created automatically so a
+    // supervisor can tell them from hand-typed ones. Rows stay 8 wide when no
+    // note is given, exactly as before. The columns in between (I `day`,
+    // K `sub1_id`) are formulas that appendNghiPhep re-fills after the append,
+    // so writing blanks through them is safe.
+    const NOTE_COL_INDEX = 13; // A=0 … N=13
+    const withNote = (row: (string | null)[]): (string | null)[] => {
+      if (typeof note !== "string" || !note.trim()) return row;
+      const padded = [...row];
+      while (padded.length < NOTE_COL_INDEX) padded.push(null);
+      padded[NOTE_COL_INDEX] = note.trim();
+      return padded;
+    };
+
     let rows: (string | null)[][];
     // Candidate leave (same shape as a sheet row) used for the duplicate check.
     let candidate: LeaveEntry;
@@ -73,7 +89,7 @@ export async function POST(req: NextRequest) {
     if (loai_nghi === "nguyen_buoi") {
       // One row per day in the range — all written in one atomic API call
       const days = datesBetween(ngay_bat_dau, ngay_ket_thuc ?? ngay_bat_dau);
-      rows = days.map((day) => [ts, driver_id, driver_name, loaiNghiText, day, day, null, null]);
+      rows = days.map((day) => withNote([ts, driver_id, driver_name, loaiNghiText, day, day, null, null]));
       candidate = {
         driver_id, driver_name, loai_nghi: loaiNghiText,
         leave_from: ngay_bat_dau, leave_to: ngay_ket_thuc ?? ngay_bat_dau,
@@ -81,7 +97,7 @@ export async function POST(req: NextRequest) {
       };
     } else if (loai_nghi === "nua_buoi") {
       // leave_to = leave_from (same day)
-      rows = [[ts, driver_id, driver_name, loaiNghiText, ngay_bat_dau, ngay_bat_dau, gio_bat_dau ?? null, gio_ket_thuc ?? null]];
+      rows = [withNote([ts, driver_id, driver_name, loaiNghiText, ngay_bat_dau, ngay_bat_dau, gio_bat_dau ?? null, gio_ket_thuc ?? null])];
       candidate = {
         driver_id, driver_name, loai_nghi: loaiNghiText,
         leave_from: ngay_bat_dau, leave_to: ngay_bat_dau,
@@ -97,7 +113,7 @@ export async function POST(req: NextRequest) {
         String(lastDay.getMonth() + 1).padStart(2, "0"),
         String(lastDay.getDate()).padStart(2, "0"),
       ].join("-");
-      rows = [[ts, driver_id, driver_name, loaiNghiText, skipFrom, null, null, null]];
+      rows = [withNote([ts, driver_id, driver_name, loaiNghiText, skipFrom, null, null, null])];
       candidate = {
         driver_id, driver_name, loai_nghi: loaiNghiText,
         leave_from: skipFrom, leave_to: null,

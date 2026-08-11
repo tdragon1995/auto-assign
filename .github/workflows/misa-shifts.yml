@@ -1,0 +1,73 @@
+name: MISA Driver Shifts
+
+# On demand only — no `schedule:`. The dashboard's "Làm mới" button dispatches
+# this run via POST /api/misa-sync, so shifts refresh when a supervisor asks for
+# them rather than on a timer. Also runnable by hand from the Actions tab.
+on:
+  workflow_dispatch:
+    inputs:
+      month:
+        description: "Target month as YYYY-MM (blank = current month, VN time)"
+        required: false
+        type: string
+
+concurrency:
+  group: misa-shifts
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: misa-fetcher
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install --no-fund --no-audit
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      # Reuse the MISA session between runs when still valid (fewer logins /
+      # "new device" notifications). A stale state is harmless — the script
+      # probes it and falls back to a fresh login automatically.
+      - name: Restore session state
+        uses: actions/cache/restore@v4
+        with:
+          path: misa-fetcher/.state
+          key: misa-session-${{ github.run_id }}
+          restore-keys: misa-session-
+
+      - name: Fetch shifts and push to sinks
+        run: node fetch-shifts.mjs ${{ inputs.month && format('--month={0}', inputs.month) || '' }}
+        env:
+          MISA_USERNAME: ${{ secrets.MISA_USERNAME }}
+          MISA_PASSWORD: ${{ secrets.MISA_PASSWORD }}
+          MISA_TOTP_SECRET: ${{ secrets.MISA_TOTP_SECRET }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SHEET_WEBAPP_URL: ${{ secrets.SHEET_WEBAPP_URL }}
+          SHEET_WEBAPP_TOKEN: ${{ secrets.SHEET_WEBAPP_TOKEN }}
+
+      - name: Save session state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: misa-fetcher/.state
+          key: misa-session-${{ github.run_id }}
+
+      - name: Upload debug dump
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: misa-shifts-dump
+          path: misa-fetcher/out/
+          retention-days: 7
+          if-no-files-found: ignore

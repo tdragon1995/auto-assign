@@ -15,3 +15,8 @@ _run_dashboard.py
 # Claude Code machine-local files (never deploy these)
 .claude/settings.local.json
 .claude/worktrees/
+
+# misa-fetcher machine-local state (secrets live in .env, ignored above)
+node_modules/
+misa-fetcher/.state/
+misa-fetcher/out/

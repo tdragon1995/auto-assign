@@ -1,0 +1,15 @@
+{
+  "name": "misa-fetcher",
+  "private": true,
+  "type": "module",
+  "description": "Fetches driver shift + leave data from MISA AMIS via headless-browser login; writes to Supabase and the Driver Shift Google Sheet.",
+  "scripts": {
+    "fetch": "node fetch-shifts.mjs",
+    "dry-run": "node fetch-shifts.mjs --dry-run"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "otplib": "^12.0.1",
+    "playwright": "^1.49.0"
+  }
+}
