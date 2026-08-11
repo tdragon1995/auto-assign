@@ -6,7 +6,7 @@ import { useParams } from "next/navigation";
 // fetching /api/psc-routes — no function invocation, no network round-trip, instant render.
 import {
   Package, Check, ChevronDown, ChevronRight, Clock, Phone, Bike, CalendarDays,
-  RefreshCw, ArrowUp, ArrowDown, ArrowRight, Loader2, Search, XCircle,
+  ArrowUp, ArrowDown, ArrowRight, Loader2, Search, XCircle,
 } from "lucide-react";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
 import { placeLabel } from "@/lib/place-label";
@@ -65,16 +65,10 @@ const STEPS = ["Yêu cầu", "Lấy mẫu", "Đang giao", "Đã giao"] as const;
 // so it costs an invocation and changes nothing. Hard-coded rather than imported because
 // day-snapshot pulls in the Redis client, which has no business in a phone's bundle.
 // Raising it there means raising it here.
-// Applies to the visibility refresh ONLY: Làm mới and the post-action reloads pass
-// fresh=1 and must always go through, because the branch is asking about a change it
-// just made and a stale answer would read as the action having failed.
+// Applies to the visibility refresh. Nothing on this page forces a rebuild any more —
+// actions update the list from their own response instead — so this is now the only
+// throttle that matters, and it guards an invocation rather than a day rebuild.
 const MIN_REFRESH_MS = 60_000;
-
-// Shortest gap between two Làm mới taps that both reach Cartrack. Well under the 60s
-// window above, because a tap IS a real request for the latest — it just should not
-// re-fetch an answer that is only seconds old. Long enough to absorb impatient
-// double-taps on a page where a genuine refresh takes ~5 seconds to come back.
-const MANUAL_REFRESH_MIN_MS = 10_000;
 
 function todayVN(): string {
   return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Ho_Chi_Minh" }).format(new Date()).slice(0, 10);
@@ -621,11 +615,16 @@ export default function QrPage() {
   // is guaranteed unchanged. A ref, not state: reading it must not re-render the feed.
   const lastLoadRef = useRef(0);
 
-  const loadJobs = useCallback(async (fresh = false) => {
+  // Never asks for fresh=1. Every read this page makes is happy with the day the assign
+  // cycle publishes each time it runs — and the moments that genuinely need to reflect a
+  // change (booking, cancelling, handing to a 3PL) are now served from that action's own
+  // response, which is both faster and more truthful than re-reading a Cartrack listing
+  // that may not have indexed the change yet.
+  const loadJobs = useCallback(async () => {
     lastLoadRef.current = Date.now();
     setLoading(true);
     try {
-      const res = await fetch(`/api/location-jobs?date=${date}&status=all&code=${encodeURIComponent(code)}${fresh ? "&fresh=1" : ""}`);
+      const res = await fetch(`/api/location-jobs?date=${date}&status=all&code=${encodeURIComponent(code)}`);
       const data = await res.json();
       const list: Job[] = (data.jobs ?? [])
         .filter((j: Job) => (j.stops ?? []).length > 1)
@@ -648,31 +647,6 @@ export default function QrPage() {
       setLoaded(true);
     }
   }, [date, code]);
-
-  /**
-   * Làm mới, with a floor. A tap inside MANUAL_REFRESH_MIN_MS of the last load shows what
-   * is already on screen instead of re-interrogating Cartrack for the whole network's day.
-   *
-   * Measured in production 2026-08-03: one branch caused FOUR full rebuilds in 34 seconds,
-   * the second arriving 5 seconds after the first finished — asking Cartrack to redo
-   * everything to produce the answer already being displayed. That shape (a forced rebuild
-   * 4-6s behind one that just completed) was ~25% of all traffic on this route, and each
-   * one costs about 5 seconds of Cartrack round-trip.
-   *
-   * This is deliberately ONLY on the button. The reloads after booking, cancelling and
-   * handing to a 3PL still force an unconditional rebuild, because Cartrack does not
-   * always list a brand-new job instantly — those are exactly the moments a slightly
-   * stale answer would hide the trip the branch just created, and send a second driver.
-   * The two cases look identical in the server logs; they are only separable here, which
-   * is why the floor lives in the client rather than in the API.
-   */
-  const manualRefresh = useCallback(() => {
-    if (Date.now() - lastLoadRef.current < MANUAL_REFRESH_MIN_MS) {
-      showToast("Danh sách đã là mới nhất", true);
-      return;
-    }
-    loadJobs(true);
-  }, [loadJobs]);
 
   // No fetch on mount. Opening /qr is not by itself a request to read the day — most
   // visits are a branch scanning the QR to CALL a pickup, and every one of those was
@@ -752,7 +726,11 @@ export default function QrPage() {
         }
         showToast("Đã gửi yêu cầu lấy mẫu", true);
         setTimeout(() => setAssignStatus("idle"), 3500);
-        loadJobs(true);
+        // No reload. The response already carries job_id and reference, and the pending
+        // placeholder above renders the new trip immediately — re-reading the whole
+        // network's day would only fetch back what we just put on screen, and Cartrack
+        // often has not indexed the job yet anyway, so it could come back WITHOUT it.
+        // The placeholder retires itself once the job appears on a driver's route.
       } else if (res.status === 409) {
         setAssignStatus("error");
         const hhmm = /(\d{2}:\d{2})$/.exec(data.reference_number ?? "")?.[1];
@@ -782,10 +760,14 @@ export default function QrPage() {
         setCancelError(data.error ?? "Huỷ thất bại");
         return;
       }
-      persistPending(pending.filter((p) => p.job_id !== cancelTarget.job_id));
+      const cancelledId = cancelTarget.job_id;
+      persistPending(pending.filter((p) => p.job_id !== cancelledId));
+      // Drop it locally instead of reloading. A cancelled job (status 7) is not one of the
+      // statuses this feed shows, so removing it here produces exactly the list a reload
+      // would have returned — for the cost of a state update rather than a day rebuild.
+      setJobs((js) => js.filter((j) => j.job_id !== cancelledId));
       setCancelTarget(null);
       showToast("Đã huỷ chuyến thành công.", true);
-      loadJobs(true);
     } catch {
       setCancelError("Không thể kết nối. Vui lòng thử lại.");
     } finally {
@@ -819,16 +801,24 @@ export default function QrPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ job_id: via3plTarget.job_id, batch_ids: batchIds }),
       });
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
         setVia3plError(data.error ?? "Gửi thất bại");
         return;
       }
-      persistPending(pending.filter((p) => p.job_id !== via3plTarget.job_id));
+      const handedId = via3plTarget.job_id;
+      persistPending(pending.filter((p) => p.job_id !== handedId));
+      // The response carries the trip as it now stands — 3PL driver attached, completed,
+      // with the real completion time the "Đã gửi qua…" line prints. Patch it in rather
+      // than rebuilding the day to learn about one job. If the server's read-back failed
+      // (`job` null) leave the row alone; the next feed load corrects it, and claiming the
+      // handoff failed would be worse than showing it a few minutes late.
+      if (data.job) {
+        setJobs((js) => js.map((j) => (j.job_id === handedId ? { ...j, ...data.job } : j)));
+      }
       setVia3plTarget(null);
       setBatchInput("");
       showToast("Đã gửi mẫu qua Grab/Be/XanhSM/Ahamove thành công.", true);
-      loadJobs(true);
     } catch {
       setVia3plError("Không thể kết nối. Vui lòng thử lại.");
     } finally {
@@ -889,9 +879,17 @@ export default function QrPage() {
           </div>
         )}
 
-        {/* Date + refresh sit above the feed: they scope everything below them, and at the
-            foot of a long completed list they were past the fold and read as unrelated. */}
-        <div className="flex items-center justify-between gap-2 mb-3">
+        {/* The date scopes everything below it, so it sits above the feed rather than at the
+            foot of a long completed list where it read as unrelated.
+
+            There is no Làm mới button. It was the single most expensive control in the app:
+            every tap forced a full rebuild of the whole network's day — and once the assign
+            cycle began publishing that day every ~3 minutes, nearly all of those taps were
+            re-fetching something already current. The feed reloads on its own when the
+            branch returns to the tab, and every action they take (booking, cancelling,
+            handing to a 3PL) reloads it immediately — which is when they actually want to
+            see a change. */}
+        <div className="flex items-center gap-2 mb-3">
           <button
             onClick={() => setDatePanel((v) => !v)}
             aria-expanded={datePanel}
@@ -900,14 +898,6 @@ export default function QrPage() {
             <CalendarDays aria-hidden className="w-4 h-4" />
             {isToday ? "Hôm nay" : date}
             <ChevronDown aria-hidden className={`w-4 h-4 text-slate-500 transition-transform ${datePanel ? "rotate-180" : ""}`} />
-          </button>
-          <button
-            onClick={manualRefresh}
-            disabled={loading}
-            className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-semibold text-blue-700 bg-white shadow-sm active:bg-slate-50 disabled:opacity-50"
-          >
-            <RefreshCw aria-hidden className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-            Làm mới
           </button>
         </div>
 

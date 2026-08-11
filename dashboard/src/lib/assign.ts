@@ -1,5 +1,6 @@
 import type { Config, Driver, FailedJob, Job, LogEntry, LogLevel, Mapping, PickupWarning, TimelineRoute } from "./types";
 import { getDrivers, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, updateJobSendToDriverAt, updateJobScheduledDeliveryTs, unassignJob, optimizeDriverRoute, getJobsByStatusAndDate, getUnassignedJobsFast, getJobsByDate, getTimelineRoutes, timelineRoutesToJobs, jsonRpc, PROXY_DRIVER_ID, type Env } from "./cartrack";
+import { publishSnapshot } from "./day-snapshot";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import { DIAG_LOCATION_CUSTOMER_IDS } from "./psc-routes-data";
@@ -1058,9 +1059,15 @@ export async function autoAssignCycle(
     // list_new + get_job_details (~0.4s); null → the ~5-10s REST status-2 list,
     // which stays the authoritative fallback.
     let s2Src = "rest";
+    // Raw delivery_jobs_list_new rows (statuses 2 AND 3) from the fast path, kept so the
+    // day snapshot can be published from what this cycle already fetched. Null when the
+    // fast path fell back to REST — that response has no unrouted pool, so no publish.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let unroutedPool: any[] | null = null;
     const fetchS2 = async (): Promise<Job[]> => {
       const fast = await getUnassignedJobsFast(today, env);
-      if (fast) { s2Src = "rpc"; return fast; }
+      if (fast) { s2Src = "rpc"; unroutedPool = fast.pool; return fast.jobs; }
+      unroutedPool = null;
       return getJobsByStatusAndDate(2, today, env);
     };
     const _tFetch = Date.now();
@@ -1069,6 +1076,8 @@ export async function autoAssignCycle(
       getTimelineRoutes(today, env),
     ]);
     fetchMs = Date.now() - _tFetch;
+    // Stamp the publish with when the payloads landed, not when we get around to writing.
+    const fetchedAt = Date.now();
     const timelineJobs = routes ? timelineRoutesToJobs(routes) : null;
     if (timelineJobs) {
       const _tPart = Date.now();
@@ -1085,6 +1094,19 @@ export async function autoAssignCycle(
       timelineRoutesForSmart = routes; // reuse in smart-prep (skip 2nd identical JSON-RPC)
       partitionMs = Date.now() - _tPart;
       clog(`[fetch] timeline: fetch ${fetchMs}ms + partition ${partitionMs}ms (s2:${s2Jobs.length} s4:${s4Jobs.length} s5:${s5Jobs.length} s2-src=${s2Src})`);
+
+      // Publish the day for the branch feed. Both halves are already in hand — this is
+      // the same delivery_timeline_route_list + delivery_jobs_list_new the feed would
+      // otherwise fetch for itself, and used to be thrown away here. Costs one Redis
+      // write; saves a ~5s full rebuild on the phone side. Display readers only: the
+      // duplicate guard keeps its own live read (see BUILT vs BUILT_FEED in
+      // day-snapshot). Skipped on a targeted manual assign — not a full picture of the
+      // day — and when the s2 fast path fell back to REST, which yields no pool.
+      if (!onlyJobIds && unroutedPool) {
+        const _tPub = Date.now();
+        const res = await publishSnapshot(today, env, timelineJobs, unroutedPool, fetchedAt);
+        clog(`[fetch] snapshot publish: ${res} in ${Date.now() - _tPub}ms (age at write ${Date.now() - fetchedAt}ms)`);
+      }
       // Proxy release, timeline-sourced: the proxy driver's parked jobs are
       // already in the s4 partition (it's a driver on the timeline), so the
       // old per-cycle REST list is skipped. Every ~30 min a full no-date REST

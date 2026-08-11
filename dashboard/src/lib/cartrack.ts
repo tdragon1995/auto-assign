@@ -1162,16 +1162,24 @@ function stripTzSuffix<T>(ts: T): T {
  * Returns null on ANY doubt — RPC error, unexpected shape — so the caller runs
  * the authoritative REST list instead. A well-formed empty result is trusted as
  * genuinely empty (it is a live response, not a cache).
+ *
+ * `pool` hands back the raw delivery_jobs_list_new rows this call already paid for —
+ * the same payload getUnroutedJobs fetches, statuses 2 AND 3. `jobs` narrows to status 2
+ * because that is all the assign cycle acts on; the day snapshot needs the rejected ones
+ * too, and would otherwise repeat this identical RPC seconds later to get them.
  */
-export async function getUnassignedJobsFast(dateVn: string, env: Env = "prod"): Promise<Job[] | null> {
-  const ln = await jsonRpc<{ jobs?: { jobId?: number; jobStatusId?: number }[] }>(
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function getUnassignedJobsFast(dateVn: string, env: Env = "prod"): Promise<{ jobs: Job[]; pool: any[] } | null> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ln = await jsonRpc<{ jobs?: any[] }>(
     "delivery_jobs_list_new",
     { data: { scheduleType: "scheduled", filter: vnDayWindow(dateVn) } },
     { env }
   );
   if (!ln.ok || !Array.isArray(ln.result?.jobs)) return null;
-  const ids = ln.result.jobs.filter((j) => j.jobStatusId === 2 && j.jobId).map((j) => j.jobId as number);
-  if (ids.length === 0) return [];
+  const pool = ln.result.jobs;
+  const ids = pool.filter((j) => j.jobStatusId === 2 && j.jobId).map((j) => j.jobId as number);
+  if (ids.length === 0) return { jobs: [], pool };
 
   const det = await jsonRpc<{ jobs?: Record<string, unknown>[] }>(
     "delivery_get_job_details",
@@ -1196,7 +1204,7 @@ export async function getUnassignedJobsFast(dateVn: string, env: Env = "prod"): 
       stops,
     } as unknown as Job);
   }
-  return out;
+  return { jobs: out, pool };
 }
 
 export async function getJobsByStatusAndDate(

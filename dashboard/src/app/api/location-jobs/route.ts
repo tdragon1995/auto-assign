@@ -18,7 +18,15 @@ export const preferredRegion = "sin1";
 //
 // The day itself — fetch, parse, cache, projections — lives in @/lib/day-snapshot,
 // shared with the duplicate guard so the feed and the guard can never disagree about
-// the same trip. `?fresh=1` (Làm mới, post-cancel and post-3PL reloads) rebuilds.
+// the same trip.
+//
+// `?fresh=1` still forces a rebuild, but NOTHING SENDS IT any more. The /qr page used to
+// on every Làm mới tap and after every booking, cancel and 3PL handoff — 41% of this
+// route's traffic, all of it rebuilding the whole network's day. Làm mới is gone, and the
+// actions now update the branch's list from their own response. Think hard before
+// reintroducing a caller: a rebuild costs ~5s of Cartrack round-trips to answer a question
+// about one branch's dozen rows, and a just-created job frequently is not in the rebuilt
+// answer anyway, because Cartrack has not indexed it yet.
 
 // `status=all` returns everything the feed shows: assigned + completed from the route
 // timeline, plus unassigned (2) and rejected (3) from the unrouted pool. The timeline

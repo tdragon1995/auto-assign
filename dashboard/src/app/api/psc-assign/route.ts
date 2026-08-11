@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { BASE_URL, getHeaders, completeJob, createJob, type Env } from "@/lib/cartrack";
+import { BASE_URL, getHeaders, completeJob, createJob, getJobDetails, type Env } from "@/lib/cartrack";
+import { driverDisplayName } from "@/lib/job-detail";
 import { vnDate, vnHoursMinutes, vnTimestamp } from "@/lib/time";
 import { isBlockingPickupStop, isStopStarted, isCompletedOrRejectedStop, pscPairKey } from "@/lib/job-filters";
 import { PSC_VIA_LABEL } from "@/lib/via-legs";
 import { acquireCreateLock, releaseCreateLock, type PscDupHit } from "@/lib/smart-log-kv";
-import { blockedPair, invalidateSnapshot } from "@/lib/day-snapshot";
+import { blockedPair, invalidateSnapshot, slimJob } from "@/lib/day-snapshot";
 import type { Stop } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -270,7 +271,7 @@ export async function POST(req: NextRequest) {
     // cached day is out of date, and it is ~10ms. Dropped, the branch's own reload can be
     // served the pre-booking day — their new trip simply missing from the list — which
     // reads as "the booking failed" and gets a second driver sent for the same samples.
-    if (newJobId) await invalidateSnapshot(today, env).catch(() => {});
+    if (newJobId) await invalidateSnapshot(today, env, "guard").catch(() => {});
 
     // Still deliberately NOT releasing the cross-instance create lock. Invalidating the
     // snapshot makes the day rebuild on the next read, but a rebuild only helps once
@@ -327,12 +328,15 @@ export async function DELETE(req: NextRequest) {
     // instead of colliding with the just-cancelled job: rebuild the day on next read
     // and release the cross-instance create lock. Awaited for the same reason as the
     // create path — a lost note leaves the cancelled trip on the branch's screen.
-    await invalidateSnapshot(vnDate(), env).catch(() => {});
+    await invalidateSnapshot(vnDate(), env, "guard").catch(() => {});
     if (pickup?.customer_id && dropoff?.customer_id) {
       void releaseCreateLock(`psc:${pickup.customer_id}-${dropoff.customer_id}-${vnDate()}`);
     }
 
-    return NextResponse.json({ success: true });
+    // job_id echoed back so the branch's list can drop this trip locally. A cancelled job
+    // leaves the feed entirely (status 7 is not in ALL_STATUSES), so removing it client-
+    // side produces exactly what a reload would have — without the reload.
+    return NextResponse.json({ success: true, job_id: Number(jobId) });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
@@ -428,12 +432,22 @@ export async function PUT(req: NextRequest) {
     // Pickup→dropoff is fulfilled — clear both dedup guards so a fresh batch can be
     // re-requested at once instead of colliding with the just-completed job. Awaited:
     // a lost note leaves the handed-off trip looking un-handed-off to the branch.
-    await invalidateSnapshot(vnDate(), env).catch(() => {});
+    await invalidateSnapshot(vnDate(), env, "guard").catch(() => {});
     if (pickup?.customer_id && dropoff?.customer_id) {
       void releaseCreateLock(`psc:${pickup.customer_id}-${dropoff.customer_id}-${vnDate()}`);
     }
 
-    return NextResponse.json({ success: true });
+    // Hand back the trip as it now stands, so the branch's list can be updated from this
+    // response instead of re-reading the whole network's day to learn about one job. One
+    // job fetch (~100ms) in place of a ~5s rebuild, and it carries the real
+    // activity_completed_ts that the "Đã gửi qua…" line prints — which the client would
+    // otherwise have to invent. Best-effort: if the read-back fails the client keeps what
+    // it has and the next feed load corrects it. A handoff that succeeded is never
+    // reported as failed over a cosmetic re-read.
+    const after = await getJobDetails(jobId, env).catch(() => null);
+    const job = after?.data ? slimJob(after.data, driverDisplayName(after.data.driver)) : null;
+
+    return NextResponse.json({ success: true, job_id: jobId, job });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }

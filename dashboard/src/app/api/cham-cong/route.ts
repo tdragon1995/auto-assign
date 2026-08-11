@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createJob, deleteJob, getJobDetails, updateJobStops, BASE_URL, getHeaders, isDriverUnavailableError, type Env } from "@/lib/cartrack";
-import { driverJobs } from "@/lib/day-snapshot";
+import { driverJobs, invalidateSnapshot } from "@/lib/day-snapshot";
 import { vnDate } from "@/lib/time";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 import { isStopStarted, CHAM_CONG_PREFIX } from "@/lib/job-filters";
@@ -273,6 +273,10 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
+    // The stop moved, so the snapshot's location index now files this job under the wrong
+    // PSC — and the driver's list would keep showing the location they just corrected.
+    await invalidateSnapshot(vnDate(), env).catch(() => {});
+
     return NextResponse.json({ success: true, job_id: jobId, location_name: psc.name });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
@@ -351,6 +355,13 @@ export async function POST(req: NextRequest) {
         { status: 500 }
       );
     }
+
+    // The driver's list is rendered from the day snapshot, so mark it stale — their very
+    // next action is reloading that list to see the check-in they just made. Previously
+    // the day was usually stale anyway and the reload rebuilt by accident; now the assign
+    // cycle republishes it every ~3 minutes, so without this the tap can look like it
+    // failed and get repeated. Awaited (~10ms) — a dropped invalidation is the bug.
+    await invalidateSnapshot(vnDate(), env).catch(() => {});
 
     return NextResponse.json({ success: true, job_id: jobId });
   } catch (e) {

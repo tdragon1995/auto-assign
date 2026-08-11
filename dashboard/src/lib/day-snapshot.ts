@@ -84,7 +84,29 @@ const HASH_TTL_S = 900;
  *  don't all parse the day at once. The loser serves what's already cached. */
 const LOCK_TTL_S = 20;
 
+/** Freshness stamp trusted by EVERY reader, including the duplicate guard. Written only
+ *  by an on-demand rebuild — i.e. by a reader that fetched the day itself, at the moment
+ *  it needed it. */
 const BUILT = "__built__";
+
+/** Freshness stamp trusted by the DISPLAY readers only (branch feed, chấm-công).
+ *  Written by on-demand rebuilds AND by the assign cycle's publish.
+ *
+ *  Two stamps, not one, because the cycle can only publish the day as it looked when it
+ *  FETCHED — and it goes on to create jobs after that: via-legs and return trips, made
+ *  during the same run. A published snapshot is therefore knowably incomplete, and the
+ *  one reader that must never see an incomplete day is the duplicate guard, whose failure
+ *  mode is a missing job (no suspect to confirm → a twin trip gets created). The feed's
+ *  worst case is a leg appearing a couple of minutes late.
+ *
+ *  Today those follow-up jobs can't actually collide with a branch booking — pscPairKey
+ *  is directional and return trips run base→PSC, the reverse of a booking, while via-legs
+ *  are excluded from the pair index by label. That is an argument for safety, not a
+ *  guarantee of it: it holds because of how two other modules happen to behave, and
+ *  nothing would fail loudly if either changed. Splitting the stamp means the guard never
+ *  depends on that reasoning being true. */
+const BUILT_FEED = "__built_feed__";
+
 const IDX_LOC = "x:loc";
 const IDX_DRV = "x:drv";
 const IDX_PAIRS = "x:pairs";
@@ -254,7 +276,19 @@ export async function buildSnapshot(date: string, env: Env): Promise<Snapshot | 
     getUnroutedJobs(date, env).catch(() => null),
   ]);
   if (!timeline) return null;
+  return assembleSnapshot(timeline, unrouted, Date.now());
+}
 
+/** The parse half of buildSnapshot, split out so a caller that ALREADY holds both
+ *  payloads can assemble a snapshot without re-fetching them. `builtAt` is passed in
+ *  rather than read from the clock: the assign cycle assembles ~10-30s after its fetch,
+ *  and stamping the write time would claim a freshness the data does not have. */
+export function assembleSnapshot(
+  timeline: Job[],
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  unrouted: any[] | null,
+  builtAt: number,
+): Snapshot {
   const all: SnapJob[] = [
     // driverDisplayName, not a hand-rolled fallback: REST puts the human name in
     // last_name while a timeline-derived job carries it in first_name behind an internal
@@ -280,12 +314,17 @@ export async function buildSnapshot(date: string, env: Env): Promise<Snapshot | 
     if (j.delivery_driver_id) (byDriver[j.delivery_driver_id] ??= []).push(j.job_id);
   }
 
-  return { jobs, byLocation, byDriver, pairs: buildPairs(all), builtAt: Date.now() };
+  return { jobs, byLocation, byDriver, pairs: buildPairs(all), builtAt };
 }
 
-async function write(redis: Redis, env: Env, date: string, snap: Snapshot): Promise<void> {
+/** `stamps: "all"` marks the day fresh for every reader; `"feed"` marks it fresh only for
+ *  the display readers and leaves the guard's stamp absent, so the guard rebuilds. */
+async function write(
+  redis: Redis, env: Env, date: string, snap: Snapshot, stamps: "all" | "feed" = "all",
+): Promise<void> {
   const fields: Record<string, string> = {
-    [BUILT]: String(snap.builtAt),
+    [BUILT_FEED]: String(snap.builtAt),
+    ...(stamps === "all" ? { [BUILT]: String(snap.builtAt) } : {}),
     [IDX_LOC]: JSON.stringify(snap.byLocation),
     [IDX_DRV]: JSON.stringify(snap.byDriver),
     [IDX_PAIRS]: JSON.stringify(snap.pairs),
@@ -340,9 +379,10 @@ type Slice = { jobs: SnapJob[]; builtAt: number | null; source: "cache" | "build
  *  then one HMGET brings back only those jobs. */
 async function readSlice(
   redis: Redis, env: Env, date: string, indexField: string, indexKey: string,
+  stampField: string,
 ): Promise<Slice | null> {
-  const head = await redis.hmget<Record<string, unknown>>(key(env, date), BUILT, indexField);
-  const builtAt = Number(head?.[BUILT] ?? 0);
+  const head = await redis.hmget<Record<string, unknown>>(key(env, date), stampField, indexField);
+  const builtAt = Number(head?.[stampField] ?? 0);
   if (!builtAt) return null;
   const index = parse<Record<string, number[]>>(head?.[indexField], {});
   const ids = index[indexKey] ?? [];
@@ -356,9 +396,11 @@ async function readSlice(
   return { jobs, builtAt, source: "cache" };
 }
 
+/** Display reads pass BUILT_FEED so they can ride on a cycle-published day; anything
+ *  feeding a decision reads BUILT and therefore only ever sees a reader-built one. */
 async function slice(
   date: string, env: Env, indexField: string, indexKey: string,
-  pick: (s: Snapshot) => number[], opts: ReadOpts,
+  pick: (s: Snapshot) => number[], opts: ReadOpts, stampField: string = BUILT,
 ): Promise<Slice | null> {
   const redis = getRedis();
   const fromSnap = (s: Snapshot): Slice => ({
@@ -372,7 +414,7 @@ async function slice(
   }
   if (!opts.fresh) {
     try {
-      const hit = await readSlice(redis, env, date, indexField, indexKey);
+      const hit = await readSlice(redis, env, date, indexField, indexKey, stampField);
       if (hit && hit.builtAt && Date.now() - hit.builtAt < (opts.maxAgeMs ?? MAX_AGE_MS)) return hit;
       const built = await rebuild(redis, date, env);
       if (built) return fromSnap(built);
@@ -386,14 +428,62 @@ async function slice(
   return direct ? fromSnap(direct) : null;
 }
 
-/** Drop the freshness stamp so the next read rebuilds. Called after creating or
- *  cancelling a job: the change is ours, we know the day is stale, and waiting out
- *  MAX_AGE_MS would let a just-created trip stay invisible to the duplicate guard.
- *  One HDEL — the job data stays put and is simply superseded by the rebuild. */
-export async function invalidateSnapshot(date: string, env: Env): Promise<void> {
+/** Drop a freshness stamp so the next read rebuilds. Called after creating or cancelling
+ *  a job: the change is ours, we know the day is stale, and waiting out the tolerance
+ *  would let a just-created trip stay invisible. One HDEL — the job data stays put and is
+ *  simply superseded by the rebuild.
+ *
+ *  `scope` decides WHO is made to pay for that rebuild, and the choice is not cosmetic:
+ *
+ *  - `"guard"` — clears only the duplicate guard's stamp. For callers whose UI updates
+ *    itself from the action's own response (psc-assign: the branch's list is patched
+ *    client-side). The guard must still see the new job, but no display reader should
+ *    rebuild the whole network's day on account of one branch's booking.
+ *  - `"all"` — also clears the display stamp, for callers that still re-read a list after
+ *    acting (chấm-công). Without it the driver reloads and their brand-new check-in is
+ *    missing, which reads as the tap having failed.
+ *
+ *  Default is `"all"`: a caller that forgets to think about this gets the conservative
+ *  behaviour, which costs CPU rather than correctness. */
+export async function invalidateSnapshot(
+  date: string, env: Env, scope: "all" | "guard" = "all",
+): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
-  try { await redis.hdel(key(env, date), BUILT); } catch { /* best-effort */ }
+  const fields = scope === "all" ? [BUILT, BUILT_FEED] : [BUILT];
+  try { await redis.hdel(key(env, date), ...fields); } catch { /* best-effort */ }
+}
+
+/** Publish a day the ASSIGN CYCLE already fetched, for the display readers only.
+ *
+ *  The cycle pulls delivery_timeline_route_list + delivery_jobs_list_new every ~3 minutes
+ *  and used to discard both. Those are precisely the two payloads buildSnapshot fetches,
+ *  so handing them over costs no Cartrack call — just the parse and one Redis write. The
+ *  feed tolerates FEED_MAX_AGE_MS (300s) against a 180s cycle, so a branch opening its
+ *  list now almost always reads a day the cron already paid for.
+ *
+ *  `fetchedAt` must be when the payloads were FETCHED, not now: the cycle assembles well
+ *  after its fetch, and an honest stamp is what keeps the age arithmetic meaningful for
+ *  every reader downstream.
+ *
+ *  Skips the write if a reader has published something newer. Without that check a cycle
+ *  that started before an on-demand rebuild would overwrite it with older data and, worse,
+ *  strip the BUILT stamp that rebuild had just earned — making the guard pay for another. */
+export async function publishSnapshot(
+  date: string, env: Env, timeline: Job[],
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  unrouted: any[] | null, fetchedAt: number,
+): Promise<"written" | "superseded" | "skipped"> {
+  const redis = getRedis();
+  if (!redis) return "skipped";
+  try {
+    const existing = Number(await redis.hget(key(env, date), BUILT_FEED));
+    if (existing && existing >= fetchedAt) return "superseded";
+    await write(redis, env, date, assembleSnapshot(timeline, unrouted, fetchedAt), "feed");
+    return "written";
+  } catch {
+    return "skipped"; // publishing is an optimisation; never fail a cycle over it
+  }
 }
 
 /** Every job touching this location today (either stop). null = the day is unavailable
@@ -406,15 +496,17 @@ export async function locationJobs(
   // can still pass maxAgeMs, and `fresh` overrides both.
   const s = await slice(date, env, IDX_LOC, customerId,
     (snap) => snap.byLocation[customerId] ?? [],
-    { maxAgeMs: FEED_MAX_AGE_MS, ...opts });
+    { maxAgeMs: FEED_MAX_AGE_MS, ...opts }, BUILT_FEED);
   return s?.jobs ?? null;
 }
 
-/** Every job assigned to this driver today. */
+/** Every job assigned to this driver today. Display-only (chấm-công's list of a driver's
+ *  check-in/out jobs), so it reads the feed stamp too. */
 export async function driverJobs(
   date: string, env: Env, driverId: string, opts: ReadOpts = {},
 ): Promise<SnapJob[] | null> {
-  const s = await slice(date, env, IDX_DRV, driverId, (snap) => snap.byDriver[driverId] ?? [], opts);
+  const s = await slice(date, env, IDX_DRV, driverId,
+    (snap) => snap.byDriver[driverId] ?? [], opts, BUILT_FEED);
   return s?.jobs ?? null;
 }
 
