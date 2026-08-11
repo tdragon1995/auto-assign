@@ -126,7 +126,7 @@ export async function POST(req: NextRequest) {
     // already has a clashing entry. The client's disabled-while-loading submit
     // button handles the rapid double-click; this catches the re-submit-later
     // case that was creating stale duplicate rows.
-    invalidateLeaveCache();
+    await invalidateLeaveCache();
     const existing = await loadLeaveEntries();
     const clash = findLeaveConflict(candidate, existing);
     if (clash) {
@@ -142,7 +142,7 @@ export async function POST(req: NextRequest) {
     await appendNghiPhep(rows);
     // The append changed the sheet — drop the cache we just refreshed so the
     // next read (dashboard panel / next submission) sees this new row.
-    invalidateLeaveCache();
+    await invalidateLeaveCache();
 
     // Relay the same template the driver sees to the admin Zalo group.
     await notifyAdminGroup(typeof notify_message === "string" ? notify_message : "");

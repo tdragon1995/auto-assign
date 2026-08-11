@@ -38,7 +38,31 @@ export interface LeaveEntry {
 let cache: { entries: LeaveEntry[]; fetchedAt: number } | null = null;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const REDIS_KEY = "leave:v1:entries";
-const REDIS_TTL_S = 5 * 60;
+
+/**
+ * 4 hours, up from 5 minutes — a BACKSTOP, not the freshness mechanism.
+ *
+ * This TTL never controlled how fresh leave is. It controlled how often the Leave Status
+ * sheet was DOWNLOADED, and that download is the entire cost of this module. Measured
+ * 2026-08-11: the sheet is 91.7 KB / 454 entries and fetching it costs ~150ms of Active
+ * CPU (TLS to Google plus transfer); parsing it is below measurement resolution. At 5
+ * minutes the key expired ~204 times across a working day — ~30s/day of CPU re-downloading
+ * a year of leave records to answer a question whose response is 2.7 KB and whose data
+ * changes a few times a day. At 4 hours it is ~4 downloads/day.
+ *
+ * Freshness comes from invalidation, not the clock, and both real paths are covered:
+ *   - Leave is normally filed days ahead through the app, which calls
+ *     invalidateLeaveCache (now awaited) and is visible at once.
+ *   - A manual row goes in with the admin pressing Refresh, which is ?fresh=1 and bypasses
+ *     both tiers outright.
+ *   - CACHE_TTL_MS (per-process, still 5 min) bounds how long ANOTHER instance serves its
+ *     own copy after someone else invalidates, so this value does not slow propagation.
+ *
+ * The TTL therefore only matters if an invalidation is lost AND nobody refreshes. It is
+ * finite rather than absent for exactly that case, and 4 hours keeps such a lapse inside
+ * the working day it happened in.
+ */
+const REDIS_TTL_S = 4 * 60 * 60;
 
 function getRedis(): Redis | null {
   const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
@@ -47,15 +71,23 @@ function getRedis(): Redis | null {
   return new Redis({ url, token });
 }
 
-/** Drop both cache tiers so the next load re-reads the sheet. Wired to the
- *  dashboard Refresh path (via /api/leave-status?fresh=1) so a supervisor's
- *  sheet edit is reflected immediately instead of after the 5-min TTL. Clears
- *  L1 synchronously; the Redis delete is best-effort (a following ?fresh=1 load
- *  overwrites the key anyway, so a missed delete never serves stale). */
-export function invalidateLeaveCache(): void {
+/** Drop both cache tiers so the next load re-reads the sheet. Called after every write
+ *  through the app (/api/nghi-phep, /api/leave-status POST), and by the dashboard Refresh
+ *  path via ?fresh=1.
+ *
+ *  AWAITED, where it used to be `void redis.del(...)`. That was defensible while the TTL
+ *  was 5 minutes — the old comment argued a missed delete "never serves stale" because a
+ *  following ?fresh=1 load overwrites the key. Both halves of that are shaky: nothing
+ *  guarantees a ?fresh=1 follows, and a serverless instance can be torn down the moment it
+ *  returns its response, so a fire-and-forget DELETE may never reach Redis at all. With the
+ *  TTL now measured in hours rather than minutes, a lost delete is the difference between
+ *  leave appearing at once and leave appearing after lunch — so it is worth the ~10ms to
+ *  know it landed. */
+export async function invalidateLeaveCache(): Promise<void> {
   cache = null;
   const redis = getRedis();
-  if (redis) void redis.del(REDIS_KEY).catch(() => {});
+  if (!redis) return;
+  try { await redis.del(REDIS_KEY); } catch { /* best-effort; the TTL is the backstop */ }
 }
 
 function parseField(f: string | undefined): string {

@@ -84,7 +84,7 @@ export async function POST(req: NextRequest) {
       { driver_id, leave_from, timeLabel: timeLabel ?? null },
       clean,
     );
-    invalidateLeaveCache();
+    await invalidateLeaveCache();
     return NextResponse.json({ ok: true, row: result.row, warning: result.warning ?? null });
   } catch (e) {
     // Business rejections (row full, row not found, bad input) are the user's to
