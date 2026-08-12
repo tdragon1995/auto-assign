@@ -724,6 +724,10 @@ function rpcErrorText(body: { error?: unknown }): string {
  * check `.ok`; callers that surface the reason to a user (sales reject) read
  * `.error`.
  */
+/** RPC methods that must never be replayed: running one twice leaves two of something.
+ *  Keep this list honest — anything that creates a record belongs here. */
+const NON_IDEMPOTENT_RPC = new Set(["delivery_create_job"]);
+
 export async function jsonRpc<T = unknown>(
   method: string,
   params: unknown,
@@ -758,6 +762,15 @@ export async function jsonRpc<T = unknown>(
 
   const first = await attempt(false);
   if (first.ok || !first.retryable) return first;
+  // Retrying is only safe for methods that can be repeated without consequence. A session
+  // can expire AFTER Cartrack has acted but before we read the response, so re-running a
+  // creating call makes a second job — a duplicate no dedup layer can catch, because it
+  // comes from one request. Reads and idempotent updates retry as before; creates report
+  // the failure and let the caller decide.
+  if (NON_IDEMPOTENT_RPC.has(method)) {
+    console.error(`[jsonRpc] ${method} hit a session error; NOT retrying — it may already have taken effect.`);
+    return first;
+  }
   return attempt(true);
 }
 
@@ -1086,15 +1099,35 @@ export async function createJob(
     if (gate === "unknown") {
       console.log("[createJob] REST path: driver status unverifiable");
     } else {
-      const out = await jsonRpc<{ data?: { job_id?: number } }>(
+      const out = await jsonRpc<{ data?: { job_id?: number; jobId?: number } }>(
         "delivery_create_job",
         { data: conv.data },
         { env }
       );
-      if (out.ok && out.result?.data?.job_id) {
-        return { ok: true, status: 200, body: out.result, via: "rpc" };
+      // Cartrack answers this RPC in camelCase (`jobId`); the REST detail endpoint uses
+      // snake_case (`job_id`). A release on 2026-08-12 made that difference matter: reading
+      // only `job_id` turned every successful RPC create into an apparent failure, and the
+      // REST fallback below then created the SAME job a second time — ~7s apart, identical
+      // reference. 16 duplicate trips in one morning before it was caught. Accept both, and
+      // hand callers the snake_case shape they already read.
+      if (out.ok) {
+        const rpcJobId = out.result?.data?.job_id ?? out.result?.data?.jobId;
+        if (rpcJobId) {
+          const data = { ...(out.result?.data ?? {}), job_id: rpcJobId };
+          return { ok: true, status: 200, body: { ...out.result, data }, via: "rpc" };
+        }
+        // THE FALLBACK IS NOT IDEMPOTENT, so it must only run when the RPC provably did
+        // nothing. A transport-level failure is safe: Cartrack rejected the request and
+        // created no job — verified by probe on 2026-08-12, where two rejected payloads
+        // produced zero jobs. But a SUCCESSFUL call whose id we cannot read means a job
+        // almost certainly exists, and posting again guarantees a twin. Fail loudly.
+        console.error(
+          `[createJob] RPC reported success but no job id in ${JSON.stringify(out.result).slice(0, 200)} — ` +
+          `NOT falling back to REST, because the job may already exist. Check the response shape.`,
+        );
+        return { ok: false, status: 502, body: { error: { message: "RPC create returned an unrecognised shape" } }, via: "rpc" };
       }
-      console.warn(`[createJob] RPC create failed (${out.ok ? "no job_id in result" : out.error}); using REST`);
+      console.warn(`[createJob] RPC create failed (${out.error}); using REST`);
     }
   }
   const res = await fetch(`${BASE_URL}/jobs`, {
