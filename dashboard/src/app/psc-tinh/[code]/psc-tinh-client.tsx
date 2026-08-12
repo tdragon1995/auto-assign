@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
-  RefreshCw, Loader2, CheckCircle2, AlertCircle, Check, ChevronDown, ChevronRight,
+  Loader2, CheckCircle2, AlertCircle, Check, ChevronDown, ChevronRight,
   Clock, Package, ArrowRight, Phone, XCircle,
 } from "lucide-react";
 import { placeLabel } from "@/lib/place-label";
@@ -251,6 +251,14 @@ export default function PscTinhPage() {
   const [loadError, setLoadError] = useState("");
   const [orders, setOrders] = useState<Order[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
+  // Orders this device has just created, shown until Cartrack lists them for real.
+  //
+  // Without this the branch submitted, read "Tạo thành công!", saw the list below unchanged
+  // and tapped again — which is how D036 got two identical "Mẫu 1" trips 56 seconds apart
+  // on 2026-08-12. Reloading instead of a placeholder does NOT fix that: the orders list is
+  // built from a label query Cartrack had not indexed yet, so a refresh a few seconds after
+  // submitting legitimately comes back without the new trip.
+  const [pending, setPending] = useState<Order[]>([]);
   const [cancelTarget, setCancelTarget] = useState<Order | null>(null);
   const [cancelLoading, setCancelLoading] = useState(false);
   const [cancelError, setCancelError] = useState("");
@@ -262,8 +270,14 @@ export default function PscTinhPage() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
+  // When the list last reached the server, so returning to the tab twice in a few seconds
+  // doesn't re-query Cartrack for an answer that cannot have changed. A ref, not state:
+  // reading it must not re-render the list.
+  const lastLoadRef = useRef(0);
+
   const loadOrders = useCallback(async () => {
     if (!code) return;
+    lastLoadRef.current = Date.now();
     setOrdersLoading(true);
     try {
       const res = await fetch(`/api/psc-tinh?psc=${code}&mode=orders`);
@@ -296,6 +310,25 @@ export default function PscTinhPage() {
 
   // One feed, so the list loads with the page instead of waiting for a tab switch.
   useEffect(() => { loadOrders(); }, [loadOrders]);
+
+  // Refresh when the branch comes BACK to the page, not on a button and not on a timer.
+  // Branch staff work from a phone and flip between Zalo and this page constantly, so
+  // returning to the tab is the moment they actually want to see progress.
+  //
+  // Safe to reload now in a way the old Làm mới button was NOT: a just-submitted trip is
+  // held in `pending`, independent of `orders`. So if this fires before Cartrack has
+  // indexed the new job, the reload comes back without it and the placeholder simply stays
+  // — where the button used to replace the whole list and make the branch's own request
+  // vanish, which is what got the same order sent twice.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastLoadRef.current < 60_000) return;
+      loadOrders();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [loadOrders]);
 
   if (!meta) {
     return (
@@ -340,6 +373,29 @@ export default function PscTinhPage() {
         setResult({ ok: false, msg: data.error ?? "Lỗi không xác định" });
       } else {
         setResult({ ok: true, msg: `Tạo thành công! ${data.reference} (Job #${data.job_id})` });
+        // Put the trip on screen immediately. Everything here is known from the request and
+        // the response — no second call, and nothing that depends on Cartrack having
+        // indexed the job yet. job_status_id 2 with no driver renders it as "Chờ điều phối",
+        // exactly as the real row will once it arrives.
+        if (data.job_id) {
+          setPending((prev) => [{
+            job_id: data.job_id,
+            reference: data.reference,
+            job_status: "Chờ phân công",
+            job_status_id: 2,
+            pickup_stop_id: null,
+            pickup_status_id: 1,
+            dropoff_status_id: 1,
+            dropoff_status: "Chờ lấy",
+            dropoff_color: "slate",
+            dropoff_update_ts: null,
+            eta,
+            pickup_name: selectedOption?.tpl_name ?? "",
+            pickup_address: selectedOption?.address ?? "",
+            create_ts: null,
+            driver_name: null,
+          }, ...prev]);
+        }
         setEta("");
         if (options.length > 1) clearTpl();
       }
@@ -370,7 +426,11 @@ export default function PscTinhPage() {
     }
   };
 
-  const active = orders.filter((o) => stateOf(o) !== 3);
+  // A placeholder retires the moment Cartrack lists the real job — matched on job_id, which
+  // the create response gave us, so the row is never shown twice.
+  const known = new Set(orders.map((o) => o.job_id));
+  const stillPending = pending.filter((p) => !known.has(p.job_id));
+  const active = [...stillPending, ...orders.filter((o) => stateOf(o) !== 3)];
   const done = orders.filter((o) => stateOf(o) === 3);
   const canSubmit = selectedUuid && eta && !loading;
   const timeSlots = buildTimeSlots();
@@ -384,13 +444,12 @@ export default function PscTinhPage() {
           <p className="text-sm text-slate-500 mt-0.5">Điểm đến: D001 — Cao Thắng</p>
         </header>
 
-        <div className="flex items-center justify-end mb-3">
-          <button onClick={loadOrders} disabled={ordersLoading}
-            className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-semibold text-blue-700 bg-white shadow-sm active:bg-slate-50 disabled:opacity-50">
-            <RefreshCw aria-hidden className={`w-4 h-4 ${ordersLoading ? "animate-spin" : ""}`} />
-            Làm mới
-          </button>
-        </div>
+        {/* No Làm mới button. It re-ran a label query against Cartrack that does not include
+            a just-created job for the first minute or so, which meant tapping it right after
+            submitting made the branch's own trip DISAPPEAR from the list — the surest way to
+            get the same order sent twice. What the branch actually needs is their submission
+            visible, and that now happens instantly from the create response. Cancelling still
+            reloads, because the change is a removal and the list must reflect it. */}
 
         {/* Request form */}
         <div className="bg-white rounded-2xl shadow-sm p-4 mb-5">
