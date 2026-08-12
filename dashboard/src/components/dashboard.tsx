@@ -15,6 +15,7 @@ import { FailedJobsPanel, type ScheduleErrorRow } from "./failed-jobs-panel";
 import { LeaveStatusPanel } from "./leave-status-panel";
 import { toast } from "sonner";
 import type { LogEntry, PickupWarning, FailedJob, ConfigDriver } from "@/lib/types";
+import type { DeploymentBeat } from "@/lib/smart-log-kv";
 import type { LeaveOnDate } from "@/lib/leave-config";
 
 type Env = "prod" | "uat";
@@ -27,6 +28,7 @@ export function Dashboard() {
   const [armUntil, setArmUntil] = useState<number | null>(null);
   const [armedBy, setArmedBy] = useState<string>("");
   const [lastChecked, setLastChecked] = useState<string | null>(null);
+  const [deployments, setDeployments] = useState<DeploymentBeat[]>([]);
   const [held, setHeld] = useState<HeldJob[]>([]);
   const [warnings, setWarnings] = useState<PickupWarning[]>([]);
   const [failed, setFailed] = useState<FailedJob[]>([]);
@@ -81,6 +83,7 @@ export function Dashboard() {
       setArmUntil(data.state?.armedUntil ?? null);
       setArmedBy(data.state?.armedBy ?? "");
       setLastChecked(data.lastChecked ?? null);
+      setDeployments(Array.isArray(data.deployments) ? data.deployments : []);
       if (Array.isArray(data.logs)) {
         const incoming = data.logs as LogEntry[];
         if (!since) {
@@ -414,6 +417,7 @@ export function Dashboard() {
             mappingCount={mappingCount}
             pscRouteCount={pscRouteCount}
             lastChecked={lastChecked}
+            deployments={deployments}
           />
         </div>
 

@@ -21,6 +21,22 @@ const PROXY_SWEEP_KEY = "assign:proxy_sweep_ts";
 // can show "System last checked: HH:MM" even when nothing was logged.
 const HEARTBEAT_KEY = "assign:heartbeat_ts";
 
+// Per-deployment liveness. HEARTBEAT_KEY answers "did ANY ping arrive?", which
+// stays green as long as one deployment is alive — that is fine with a single
+// Vercel project and actively misleading with two, where a dead second account
+// costs half the cycles while the dashboard still reads healthy. This hash
+// answers "did EACH one ping?", keyed by DEPLOY_ID. One tiny field per
+// deployment, so it carries no TTL; readers treat a field untouched for 24h as
+// a deployment that was removed rather than one that is stale.
+const DEPLOY_HEARTBEAT_KEY = "assign:heartbeat:deployments";
+
+/** Stable per-project identity. Set DEPLOY_ID explicitly (e.g. "A" / "B").
+ *  VERCEL_PROJECT_PRODUCTION_URL is the fallback because it survives redeploys,
+ *  unlike VERCEL_URL which changes every build and would litter the hash with a
+ *  new dead field on every push. */
+const DEPLOY_ID =
+  process.env.DEPLOY_ID || process.env.VERCEL_PROJECT_PRODUCTION_URL || "default";
+
 // Jobs the last full cycle held back because a stop has a note. Refreshed each
 // armed cycle; read by the dashboard's note-review panel (no Cartrack poll).
 const HELD_JOBS_KEY = "assign:held_jobs";
@@ -159,11 +175,17 @@ export async function clearArmState(): Promise<void> {
 
 // ── Liveness heartbeat ─────────────────────────────────────────────────────
 
-/** Record that the cron just pinged (called on every authorized ping). */
+/** Record that the cron just pinged (called on every authorized ping). Stamps
+ *  the shared "someone is alive" key and this deployment's own field in one
+ *  round trip, so the added visibility costs no extra latency on the ping. */
 export async function setCronHeartbeat(): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
-  await redis.set(HEARTBEAT_KEY, new Date().toISOString(), { ex: 86400 });
+  const now = new Date().toISOString();
+  const pipe = redis.pipeline();
+  pipe.set(HEARTBEAT_KEY, now, { ex: 86400 });
+  pipe.hset(DEPLOY_HEARTBEAT_KEY, { [DEPLOY_ID]: now });
+  await pipe.exec();
 }
 
 /** ISO timestamp of the last cron ping, or null. */
@@ -172,6 +194,31 @@ export async function getCronHeartbeat(): Promise<string | null> {
   if (!redis) return null;
   const raw = await redis.get<string>(HEARTBEAT_KEY);
   return raw ?? null;
+}
+
+export interface DeploymentBeat {
+  id: string;
+  ts: string;
+  /** False once this deployment has missed roughly two cron pings. */
+  fresh: boolean;
+}
+
+// Same 6-minute window the header pill has always used for "stale".
+const DEPLOY_STALE_MS = 6 * 60 * 1000;
+// Past this, treat the deployment as removed rather than broken — otherwise a
+// project you deliberately deleted would red the dashboard forever.
+const DEPLOY_RETIRED_MS = 24 * 60 * 60 * 1000;
+
+/** Parse the deployment hash into a freshness-tagged list, oldest problems
+ *  visible to the caller. Unparseable or retired fields are dropped. */
+function parseDeploymentBeats(raw: unknown): DeploymentBeat[] {
+  if (!raw || typeof raw !== "object") return [];
+  const now = Date.now();
+  return Object.entries(raw as Record<string, string>)
+    .map(([id, ts]) => ({ id, ts, age: now - new Date(ts).getTime() }))
+    .filter((d) => Number.isFinite(d.age) && d.age < DEPLOY_RETIRED_MS)
+    .map(({ id, ts, age }) => ({ id, ts, fresh: age < DEPLOY_STALE_MS }))
+    .sort((a, b) => a.id.localeCompare(b.id));
 }
 
 // ── Disarm record + business-hours alert debounce ───────────────────────────
@@ -584,6 +631,10 @@ export async function getRunLog(limit = 300): Promise<LogEntry[]> {
 export interface StatusBundle {
   state: ArmState | null;
   lastChecked: string | null;
+  /** One entry per deployment that has pinged in the last 24h. Single-account
+   *  setups get exactly one; the dashboard only surfaces this when there are
+   *  two or more. */
+  deployments: DeploymentBeat[];
   logs: LogEntry[];
   held: HeldJob[];
   warnings: PickupWarning[];
@@ -593,7 +644,7 @@ export interface StatusBundle {
 /** One pipeline request to Upstash instead of 6 separate HTTP calls. */
 export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
   const redis = getRedis();
-  if (!redis) return { state: null, lastChecked: null, logs: [], held: [], warnings: [], failed: [] };
+  if (!redis) return { state: null, lastChecked: null, deployments: [], logs: [], held: [], warnings: [], failed: [] };
 
   const pipe = redis.pipeline();
   pipe.get(ARM_KEY);
@@ -602,7 +653,8 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
   pipe.get(HELD_JOBS_KEY);
   pipe.get(PICKUP_WARNINGS_KEY);
   pipe.get(FAILED_JOBS_KEY);
-  const [rawState, rawHeartbeat, rawLogs, rawHeld, rawWarnings, rawFailed] = await pipe.exec();
+  pipe.hgetall(DEPLOY_HEARTBEAT_KEY);
+  const [rawState, rawHeartbeat, rawLogs, rawHeld, rawWarnings, rawFailed, rawDeployments] = await pipe.exec();
 
   const state = parseMaybe<ArmState>(rawState as string | ArmState | null);
   const validState = state && Date.now() < state.armedUntil ? state : null;
@@ -637,5 +689,13 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
     }
   }
 
-  return { state: validState, lastChecked, logs: logEntries, held, warnings, failed };
+  return {
+    state: validState,
+    lastChecked,
+    deployments: parseDeploymentBeats(rawDeployments),
+    logs: logEntries,
+    held,
+    warnings,
+    failed,
+  };
 }
