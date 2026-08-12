@@ -12,6 +12,7 @@ import { isStopStarted } from "./job-filters";
 import { vnDate, vnMinutesSinceMidnight, parseVnTimestamp } from "./time";
 import { PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL, isOnShift, subToCoveredDriver } from "./return-trips";
 import { PSC_VIA_LABEL } from "./via-legs";
+import { claimTripAction, releaseTripClaim } from "./smart-log-kv";
 import type { LeaveEntry } from "./leave-config";
 import { recordCleanedReturns } from "./return-suppress";
 
@@ -52,6 +53,7 @@ type CleanupTask = {
 let sweptCleanOn: string | null = null;
 
 // Race guard across overlapping cycles, keyed by the job_id being rejected.
+// L1 only — claimTripAction (Redis NX, same 60s) is the cross-instance half.
 const inFlightCleanup = new Set<number>();
 const IN_FLIGHT_TTL_MS = 60_000;
 
@@ -328,20 +330,27 @@ export async function cleanupStaleTrips(
     return;
   }
 
-  // Claim all guards synchronously before any POST so overlapping cycles don't double-delete.
+  // Claim all guards before any POST so overlapping cycles don't double-delete.
+  // claimTripAction extends the guard across instances and deployments; a job
+  // already claimed elsewhere drops out of this pass rather than being deleted
+  // twice, and comes back next cycle if it still qualifies.
+  const claimed: CleanupTask[] = [];
   for (const t of tasks) {
+    if (!(await claimTripAction("cleanup", t.jobId, env))) continue;
     inFlightCleanup.add(t.jobId);
     setTimeout(() => inFlightCleanup.delete(t.jobId), IN_FLIGHT_TTL_MS);
+    claimed.push(t);
   }
+  if (claimed.length === 0) return;
 
   // Routes actually cancelled this pass — remembered so the creator doesn't remake
   // them when the driver's shift re-opens later today.
   const cleaned: Array<{ returnKey: string; createTs: string }> = [];
 
   // Bounded concurrency (5), same as the via/return detectors.
-  for (let i = 0; i < tasks.length; i += 5) {
+  for (let i = 0; i < claimed.length; i += 5) {
     await Promise.all(
-      tasks.slice(i, i + 5).map(async (t) => {
+      claimed.slice(i, i + 5).map(async (t) => {
         try {
           const outcome = await removeTrip(t.jobId, t.date, t.reason, env);
           const verb =
@@ -351,10 +360,12 @@ export async function cleanupStaleTrips(
             if (t.suppress) cleaned.push(t.suppress);
           } else {
             inFlightCleanup.delete(t.jobId); // allow retry next cycle
+            await releaseTripClaim("cleanup", t.jobId, env);
           }
         } catch (e) {
           log(`Cleanup failed for ${t.label}: ${e}`, "ERROR");
           inFlightCleanup.delete(t.jobId);
+          await releaseTripClaim("cleanup", t.jobId, env);
         }
       })
     );

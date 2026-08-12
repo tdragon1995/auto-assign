@@ -468,6 +468,57 @@ export async function claimLateAlert(jobId: number, env = "prod", ttlSec = 86400
   return res === "OK";
 }
 
+// ── Trip-action claims — the cross-instance half of the in-flight guards ────
+
+const tripClaimKey = (kind: string, env: string, jobId: number) =>
+  `assign:trip_claim:${kind}:${env}:${jobId}`;
+
+/** Atomically claim the right to create (return / via) or reject (cleanup) ONE
+ *  trip for `jobId`. Covers the window between "we POSTed" and "Cartrack's job
+ *  list shows it" — during that lag the list-derived dedup in return-trips.ts,
+ *  via-legs.ts and cleanup-trips.ts is blind, and their in-memory Sets only
+ *  guard a single lambda. This guards every instance, and every deployment
+ *  sharing this Redis, which is what makes trip creation safe to run from more
+ *  than one Vercel project at once.
+ *
+ *  Without Redis ⇒ true (fail-OPEN — the opposite of claimLateAlert). The
+ *  in-memory Set is still in place at every call site, so this degrades to
+ *  exactly the old single-instance behavior. Fail-closed would silently stop
+ *  creating return trips fleet-wide on a Redis blip, which is far worse than a
+ *  rare duplicate a dispatcher can cancel in one click. */
+export async function claimTripAction(
+  kind: "return" | "via" | "cleanup",
+  jobId: number,
+  env = "prod",
+  ttlSec = 60
+): Promise<boolean> {
+  const redis = getRedis();
+  if (!redis) return true;
+  try {
+    const res = await redis.set(tripClaimKey(kind, env, jobId), new Date().toISOString(), { nx: true, ex: ttlSec });
+    return res === "OK";
+  } catch {
+    return true; // unreachable Redis — same fail-open reasoning as above
+  }
+}
+
+/** Drop a claim after the action failed, so the next cycle retries instead of
+ *  waiting out the TTL. Best-effort: a lost delete just means the retry waits
+ *  up to `ttlSec`. */
+export async function releaseTripClaim(
+  kind: "return" | "via" | "cleanup",
+  jobId: number,
+  env = "prod"
+): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    await redis.del(tripClaimKey(kind, env, jobId));
+  } catch {
+    /* TTL is the backstop */
+  }
+}
+
 // ── Server-backed live log ─────────────────────────────────────────────────
 
 // Only these INFO lines are worth keeping; every other INFO is per-cycle noise

@@ -3,11 +3,14 @@ import { createJob, friendlyCreateError, isDriverUnavailableError, getJobsByStat
 import { vnDate, vnHoursMinutes, parseVnTimestamp } from "./time";
 import { isDriverOnLeave, resolveSubstitute, type LeaveEntry } from "./leave-config";
 import { loadCleanedReturns } from "./return-suppress";
+import { claimTripAction, releaseTripClaim } from "./smart-log-kv";
 
 export const PSC_RETURN_LABEL = "🛵 Vận chuyển mẫu PSC (về)";
 export const PSC_OUTBOUND_LABEL = "🛵 Vận chuyển mẫu PSC";
 
-// Race-condition guard across overlapping 30s cycles
+// Race-condition guard across overlapping 30s cycles. L1 only — it guards this
+// lambda. The cross-instance half is claimTripAction (Redis NX, same 60s), which
+// is what lets the engine run from more than one deployment at a time.
 const inFlightReturns = new Set<number>(); // keyed by outbound job_id
 const IN_FLIGHT_TTL_MS = 60_000;
 
@@ -266,6 +269,9 @@ export async function detectAndCreateReturnTrips(
 
     if (blockingReturnKeys.has(returnKey)) continue;
     if (inFlightReturns.has(outbound.job_id)) continue;
+    // Every check above is derived from Cartrack's job list, which lags a create
+    // by a few seconds. Claim across instances before committing to the POST.
+    if (!(await claimTripAction("return", outbound.job_id, env))) continue;
 
     inFlightReturns.add(outbound.job_id);
     setTimeout(() => inFlightReturns.delete(outbound.job_id), IN_FLIGHT_TTL_MS);
@@ -286,10 +292,12 @@ export async function detectAndCreateReturnTrips(
         );
         inFlightReturns.delete(outbound.job_id);
         blockingReturnKeys.delete(returnKey); // allow retry next cycle
+        await releaseTripClaim("return", outbound.job_id, env);
       } catch (e) {
         log(`Return trip failed for outbound ${outbound.job_id}: ${e} | ${fromCustomerName} → ${toCustomerName}`, "ERROR");
         inFlightReturns.delete(outbound.job_id);
         blockingReturnKeys.delete(returnKey); // allow retry next cycle
+        await releaseTripClaim("return", outbound.job_id, env);
       }
     });
   }

@@ -11,8 +11,10 @@ import { PSC_OUTBOUND_LABEL } from "./return-trips";
 // re-exported here so existing importers are unaffected.
 export { PSC_VIA_LABEL } from "./job-filters";
 import { PSC_VIA_LABEL } from "./job-filters";
+import { claimTripAction, releaseTripClaim } from "./smart-log-kv";
 
 // Race guard across overlapping cycles, keyed by the triggering outbound job_id.
+// L1 only — claimTripAction (Redis NX, same 60s) is the cross-instance half.
 const inFlightVia = new Set<number>();
 const IN_FLIGHT_TTL_MS = 60_000;
 
@@ -195,6 +197,9 @@ export async function detectAndCreateViaLegs(
     const priorVia = existingViaIndex.get(viaKey) ?? [];
     if (priorVia.some((ts) => ts.slice(0, 19) > pickupDoneAt)) continue;
     if (inFlightVia.has(outbound.job_id)) continue;
+    // existingViaIndex comes from Cartrack's job list, which lags a create by a
+    // few seconds. Claim across instances before committing to the POST.
+    if (!(await claimTripAction("via", outbound.job_id, env))) continue;
 
     inFlightVia.add(outbound.job_id);
     setTimeout(() => inFlightVia.delete(outbound.job_id), IN_FLIGHT_TTL_MS);
@@ -228,10 +233,12 @@ export async function detectAndCreateViaLegs(
         );
         inFlightVia.delete(outbound.job_id);
         existingViaIndex.set(viaKey, priorVia); // allow retry next cycle
+        await releaseTripClaim("via", outbound.job_id, env);
       } catch (e) {
         log(`Via-leg failed for outbound ${outbound.job_id}: ${e} | ${cfg.viaName} → ${dropoffName}`, "ERROR");
         inFlightVia.delete(outbound.job_id);
         existingViaIndex.set(viaKey, priorVia); // allow retry next cycle
+        await releaseTripClaim("via", outbound.job_id, env);
       }
     });
   }
