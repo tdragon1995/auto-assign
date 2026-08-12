@@ -728,6 +728,29 @@ function rpcErrorText(body: { error?: unknown }): string {
  *  Keep this list honest — anything that creates a record belongs here. */
 const NON_IDEMPOTENT_RPC = new Set(["delivery_create_job"]);
 
+/**
+ * Add snake_case aliases for every camelCase key, so an RPC result can be read by code
+ * written against the REST shape.
+ *
+ * The two APIs disagree about casing — REST answers `job_id` / `delivery_driver_id`, the
+ * fleetweb RPC answers `jobId` / `deliveryDriverId` — and callers of createJob read the
+ * REST names. On 2026-08-12 a Cartrack release made that difference load-bearing and it
+ * cost a morning of duplicate trips, then a broken chấm-công check-in when the first fix
+ * translated only the single field in front of me.
+ *
+ * Aliases rather than a rename: the original keys stay, so nothing reading the RPC shape
+ * breaks either. Top level only — that is the depth callers actually read, and rewriting
+ * nested stop/item arrays would risk changing payloads that get sent back to Cartrack.
+ */
+function rpcDataToRestShape(data: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...data };
+  for (const [k, v] of Object.entries(data)) {
+    const snake = k.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+    if (snake !== k && !(snake in out)) out[snake] = v;
+  }
+  return out;
+}
+
 export async function jsonRpc<T = unknown>(
   method: string,
   params: unknown,
@@ -1113,7 +1136,12 @@ export async function createJob(
       if (out.ok) {
         const rpcJobId = out.result?.data?.job_id ?? out.result?.data?.jobId;
         if (rpcJobId) {
-          const data = { ...(out.result?.data ?? {}), job_id: rpcJobId };
+          // Alias EVERY camelCase key, not just job_id. Callers read this object as if it
+          // came from REST — cham-cong checks data.delivery_driver_id and DELETES the job
+          // it just made when that is missing, which is how a check-in came back as
+          // "Tạo chấm công chưa thành công" after the first version of this fix normalised
+          // job_id alone. Fixing one field at a time is how the next caller breaks quietly.
+          const data = { ...rpcDataToRestShape(out.result?.data ?? {}), job_id: rpcJobId };
           return { ok: true, status: 200, body: { ...out.result, data }, via: "rpc" };
         }
         // THE FALLBACK IS NOT IDEMPOTENT, so it must only run when the RPC provably did
