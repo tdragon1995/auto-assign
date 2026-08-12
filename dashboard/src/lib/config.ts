@@ -31,6 +31,25 @@ async function readGen(): Promise<string | null> {
   }
 }
 
+// L2 — the parsed mapping, shared by every instance and every deployment on this Redis.
+// GEN_KEY stops an instance serving a STALE copy; it does nothing for a COLD one, which
+// still re-downloads and re-parses ~100 KB of CSV before it can assign anything. Running
+// the engine from two Vercel projects makes cold starts more frequent, so that download
+// is the cost this closes. Mirrors the two-tier cache leave-config.ts already has.
+//
+// Keyed by gen AND date — both in the key, not compared after the read:
+//   gen  — a Refresh moves every instance to a NEW key, so the old blob is orphaned
+//          rather than overwritten. There is no window where the stamp reads "new" but
+//          the payload is still the old one.
+//   date — vnIsSunday() selects a different tab, so a Saturday blob served on Sunday
+//          would assign every job from the wrong sheet, silently, all day.
+//
+// The TTL only reaps orphans (each Refresh strands the previous key). It is never the
+// freshness mechanism — that is the gen stamp, deliberately, after a clock-based cache
+// was measured at an 87% miss rate.
+const L2_TTL_S = 48 * 60 * 60;
+const l2Key = (gen: string, date: string) => `config:v1:${gen}:${date}`;
+
 
 let cachedConfig: Config | null = null;
 // The VN date the cached config was built for. NOT a TTL — the cache is held until
@@ -150,6 +169,27 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
   if (cachedConfig && cachedDay === today && (gen === null || gen === cachedGen)) {
     return cachedConfig;
   }
+
+  // L2 before the sheet: a cold instance pays one small Redis GET instead of the CSV
+  // download plus parse. Skipped when gen is null (Redis absent, or a blip) — with no
+  // stamp there is no safe key to read under, so fall through to the sheet.
+  if (gen !== null) {
+    const redis = getRedis();
+    if (redis) {
+      try {
+        const hit = await redis.get<Mapping[]>(l2Key(gen, today));
+        // Same zero-length suspicion as the sheet path below: never adopt an empty
+        // mapping, whatever it came from.
+        if (Array.isArray(hit) && hit.length > 0) {
+          cachedConfig = { mappings: hit };
+          cachedDay = today;
+          cachedGen = gen;
+          return cachedConfig;
+        }
+      } catch { /* fall through to the sheet fetch */ }
+    }
+  }
+
   try {
     const rows = vnIsSunday()
       ? await fetchSheetRows(SHEET_GID.sunday)
@@ -192,6 +232,18 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     cachedConfig = { mappings };
     cachedDay = today;
     cachedGen = gen;
+
+    // Write-behind, strictly AFTER the zero-mappings guard above. That ordering is the
+    // whole safety story: a bad or partial parse cached here would poison every instance
+    // on both deployments, where today it only poisons the one that fetched it.
+    if (gen !== null) {
+      const redis = getRedis();
+      if (redis) {
+        try {
+          await redis.set(l2Key(gen, today), mappings, { ex: L2_TTL_S });
+        } catch { /* best-effort; the sheet is always the fallback */ }
+      }
+    }
     return cachedConfig;
   } catch (e) {
     console.error("Error loading config from sheets:", e);
