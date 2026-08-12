@@ -196,6 +196,34 @@ Rejects a job after proxy-assignment (duplicate handling).
 }
 ```
 
+### `delivery_timeline_delete_jobs`
+
+Deletes jobs outright — the request the fleetweb map/timeline screen fires when an
+admin removes a job from a driver's day. Used by the stale-trip cleanup
+(`deleteJobsFromTimeline` in `cartrack.ts`), which prefers deleting a dead
+auto-created via-leg/return over rejecting it: a rejected job still shows in the
+job list and branch feeds, a deleted one leaves nothing behind.
+
+Needs no proxy-assign first — it removes an *assigned* job directly. `filter` must
+be the day window the job actually sits on (yesterday's leftovers are not on
+today's timeline). `updateRecurringSetup: false` deletes only these occurrences,
+leaving any recurring setup alone.
+
+```json
+{
+  "method": "delivery_timeline_delete_jobs",
+  "params": { "data": {
+    "jobIds": [12345],
+    "scheduleType": "scheduled",
+    "filter": { "from": "YYYY-MM-DDT00:00:00+07:00", "to": "YYYY-MM-DDT23:59:59+07:00" },
+    "updateRecurringSetup": false
+  }}
+}
+```
+
+Cleanup falls back to `delivery_reject_job` when a delete is refused (a started or
+hung job can be) — better a rejection record than a live stale trip.
+
 ## Status enums
 
 ### Job status

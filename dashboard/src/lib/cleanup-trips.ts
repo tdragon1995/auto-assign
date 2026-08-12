@@ -1,5 +1,13 @@
 import type { Config, LogLevel, Job } from "./types";
-import { assignJob, getFleetwebCookie, getStopsByLabels, jsonRpc, getJobsByStatusAndDate, type Env } from "./cartrack";
+import {
+  assignJob,
+  deleteJobsFromTimeline,
+  getFleetwebCookie,
+  getStopsByLabels,
+  jsonRpc,
+  getJobsByStatusAndDate,
+  type Env,
+} from "./cartrack";
 import { isStopStarted } from "./job-filters";
 import { vnDate, vnMinutesSinceMidnight, parseVnTimestamp } from "./time";
 import { PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL, isOnShift, subToCoveredDriver } from "./return-trips";
@@ -7,7 +15,9 @@ import { PSC_VIA_LABEL } from "./via-legs";
 import type { LeaveEntry } from "./leave-config";
 import { recordCleanedReturns } from "./return-suppress";
 
-// Reject reasons surfaced in Cartrack's rejection record.
+// Reasons for removing a trip. Deleted trips keep no record, so these now read
+// as the log's explanation — and still fill Cartrack's rejection record on the
+// fallback path below.
 const VIA_STALE_REASON = "Tài xế đã tới điểm giao - bỏ qua chặng ghé (via)";
 const RETURN_STALE_REASON = "Hết ca - huỷ chuyến về chưa thực hiện";
 const ROLLOVER_REASON = "Job treo qua ngày - dọn tự động";
@@ -26,8 +36,11 @@ const FRESH_ACTIVITY_MS = 20 * 60 * 1000;
 // `suppress` is set for TODAY's return trips (Rules B and D): once we cancel one,
 // the creator must not remake it for the same outbound when the shift re-opens
 // later the same day. Carries the return's own from:to:driver key + create_ts.
-type RejectTask = {
+// `date` is the VN day the job sits on — the timeline delete needs that day's
+// window, and Rule C's leftovers are on YESTERDAY's timeline, not today's.
+type CleanupTask = {
   jobId: number;
+  date: string;
   reason: string;
   label: string;
   suppress?: { returnKey: string; createTs: string };
@@ -67,9 +80,32 @@ function hasFreshActivity(job: any, now: Date, windowMs: number): boolean {
 }
 
 /**
+ * Remove a stale auto-created trip. Deleting is the primary path: these legs were
+ * never real work, and a *rejected* one still sits in Cartrack's job list and in
+ * the branch feeds as noise ops has to read past. Deleting leaves the driver's
+ * day as if the leg had never been created.
+ *
+ * `delivery_timeline_delete_jobs` is the fleetweb map/timeline screen's own call,
+ * so it removes an assigned job without the proxy-driver dance the reject needs.
+ * If the delete is refused (a started or hung job can be), fall back to the old
+ * reversible reject — better a rejection record than a live stale trip skewing
+ * workload counts and re-triggering the sweep every cycle.
+ */
+async function removeTrip(
+  jobId: number,
+  date: string,
+  reason: string,
+  env: Env
+): Promise<"deleted" | "rejected" | null> {
+  if (await deleteJobsFromTimeline([jobId], date, env).catch(() => false)) return "deleted";
+  return (await rejectJob(jobId, reason, env)) ? "rejected" : null;
+}
+
+/**
  * Reject a job the reversible way: assign to the proxy driver first (keeps the
  * rejection off the real driver's record), then JSON-RPC `delivery_reject_job`.
- * Mirrors the duplicate-rejection and /api/sales/reject-job paths — never deleteJob.
+ * Mirrors the duplicate-rejection and /api/sales/reject-job paths. Only the
+ * fallback for `removeTrip` now — deleting is preferred.
  */
 async function rejectJob(jobId: number, reason: string, env: Env): Promise<boolean> {
   // Best-effort proxy assign: keeps the rejection off the real driver's record.
@@ -100,7 +136,7 @@ async function rejectJob(jobId: number, reason: string, env: Env): Promise<boole
  * One label-filtered JSON-RPC call per label (prod-only); skipped for the rest
  * of the day once a sweep finds nothing to clean.
  */
-async function collectRolloverTasks(env: Env): Promise<RejectTask[]> {
+async function collectRolloverTasks(env: Env): Promise<CleanupTask[]> {
   if (env !== "prod") return []; // getStopsByLabels is prod-only
   const today = vnDate();
   if (sweptCleanOn === today) return [];
@@ -121,7 +157,7 @@ async function collectRolloverTasks(env: Env): Promise<RejectTask[]> {
     else byJob.set(s.job_id, [s]);
   }
 
-  const tasks: RejectTask[] = [];
+  const tasks: CleanupTask[] = [];
   for (const [jobId, stops] of byJob) {
     const statusId = stops[0]?.job_status_id;
     if (statusId !== 2 && statusId !== 4) continue; // only live leftovers
@@ -131,7 +167,7 @@ async function collectRolloverTasks(env: Env): Promise<RejectTask[]> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const dropoff = stops.find((s: any) => s.stop_type_id === 2);
     const route = `${pickup?.customer_name ?? "?"} → ${dropoff?.customer_name ?? "?"}`;
-    tasks.push({ jobId, reason: ROLLOVER_REASON, label: `Rollover #${jobId} (${yesterday}) | ${route}` });
+    tasks.push({ jobId, date: yesterday, reason: ROLLOVER_REASON, label: `Rollover #${jobId} (${yesterday}) | ${route}` });
   }
 
   // Clean slate → don't re-sweep until tomorrow. (Left unset while leftovers
@@ -141,8 +177,9 @@ async function collectRolloverTasks(env: Env): Promise<RejectTask[]> {
 }
 
 /**
- * Cleanup pass: reject (never delete) three classes of stale auto-created PSC jobs
- * that otherwise sit on a driver and skew smart-assign workload counts.
+ * Cleanup pass: delete three classes of stale auto-created PSC jobs that otherwise
+ * sit on a driver and skew smart-assign workload counts. (Rejection is only the
+ * fallback when a delete is refused — see `removeTrip`.)
  *
  *  A) Orphaned via-legs — an untouched via-leg whose outbound has already reached
  *     its dropoff (outbound dropoff stop_status_id 3 Arrived or 4 Completed): the
@@ -172,6 +209,7 @@ export async function cleanupStaleTrips(
   if (process.env.CLEANUP_STALE_TRIPS !== "1") return;
 
   const subCovers = subToCoveredDriver(config, leaveEntries); // subId → on-leave pool driver
+  const today = vnDate();
 
   let s2: Job[];
   let s4: Job[];
@@ -179,7 +217,6 @@ export async function cleanupStaleTrips(
   if (prefetched) {
     ({ s2, s4, s5 } = prefetched);
   } else {
-    const today = vnDate();
     [s2, s4, s5] = await Promise.all([
       getJobsByStatusAndDate(2, today, env),
       getJobsByStatusAndDate(4, today, env),
@@ -206,7 +243,7 @@ export async function cleanupStaleTrips(
   }
 
   // Rule C first: yesterday's rolled-over leftovers (own fetch, disjoint from s2/s4).
-  const tasks: RejectTask[] = await collectRolloverTasks(env);
+  const tasks: CleanupTask[] = await collectRolloverTasks(env);
 
   // Candidates: untouched via-legs and return trips (created already-assigned, so
   // normally status 4; scan s2∪s4 to be safe). s5 jobs are done — never candidates.
@@ -235,6 +272,9 @@ export async function cleanupStaleTrips(
 
     const driverId: string = job.delivery_driver_id;
     const route = `${pickup.customer_name ?? pickup.customer_id} → ${dropoff.customer_name ?? dropoff.customer_id}`;
+    // The timeline delete needs the day the job actually sits on. s2/s4 are today's
+    // window, but read the job's own scheduled date when it has one.
+    const date = (job.scheduled_delivery_ts as string | undefined)?.slice(0, 10) || today;
     // Same orientation the creator keys returns by: from (lab) : to (PSC) : driver.
     const suppress = job.create_ts
       ? { returnKey: `${pickup.customer_id}:${dropoff.customer_id}:${driverId}`, createTs: job.create_ts as string }
@@ -254,14 +294,14 @@ export async function cleanupStaleTrips(
       } else if (!reachedDropoff.has(`${driverId}:${dropoff.customer_id}`)) {
         continue; // legacy via-leg with no parent id → fall back to the coarse check
       }
-      tasks.push({ jobId: job.job_id, reason: VIA_STALE_REASON, label: `Via-leg #${job.job_id} | ${route}` });
+      tasks.push({ jobId: job.job_id, date, reason: VIA_STALE_REASON, label: `Via-leg #${job.job_id} | ${route}` });
     } else if (endOfDay) {
       // Rule D: end-of-day sweep — the day's last cycles. Every live return goes,
       // started or not, on or off shift, so nothing rolls over to tomorrow. Only a
       // return with FRESH driver activity survives (genuinely finishing a late
       // ride); if that one gets abandoned, the morning rollover sweep takes it.
       if (hasFreshActivity(job, now, FRESH_ACTIVITY_MS)) continue;
-      tasks.push({ jobId: job.job_id, reason: END_OF_DAY_REASON, label: `Return (EOD) #${job.job_id} | ${route}`, suppress });
+      tasks.push({ jobId: job.job_id, date, reason: END_OF_DAY_REASON, label: `Return (EOD) #${job.job_id} | ${route}`, suppress });
     } else {
       if (!untouched) continue; // started same-day return: could be mid-ride — Rule D/C handle it
       // Rule B: the return's dropoff (stop_type_id 2) is the PSC. Off shift there?
@@ -275,20 +315,20 @@ export async function cleanupStaleTrips(
       );
       // Same gate as the creator, inverted: a mapping exists and none is on shift.
       if (!(driverMappings.length > 0 && !driverMappings.some((m) => isOnShift(m, now)))) continue;
-      tasks.push({ jobId: job.job_id, reason: RETURN_STALE_REASON, label: `Return #${job.job_id} | ${route}`, suppress });
+      tasks.push({ jobId: job.job_id, date, reason: RETURN_STALE_REASON, label: `Return #${job.job_id} | ${route}`, suppress });
     }
   }
 
   if (tasks.length === 0) return;
 
-  // Pre-flight the login (cached, so this is the same session rejectJob will use):
-  // no session means every rejection below would fail — say so once, not N times.
+  // Pre-flight the login (cached, so this is the same session removeTrip will use):
+  // no session means every delete below would fail — say so once, not N times.
   if (!(await getFleetwebCookie(env))) {
-    log(`Cleanup: ${tasks.length} stale job(s) found but no fleetweb cookie to reject`, "WARN");
+    log(`Cleanup: ${tasks.length} stale job(s) found but no fleetweb cookie to delete them`, "WARN");
     return;
   }
 
-  // Claim all guards synchronously before any POST so overlapping cycles don't double-reject.
+  // Claim all guards synchronously before any POST so overlapping cycles don't double-delete.
   for (const t of tasks) {
     inFlightCleanup.add(t.jobId);
     setTimeout(() => inFlightCleanup.delete(t.jobId), IN_FLIGHT_TTL_MS);
@@ -303,9 +343,11 @@ export async function cleanupStaleTrips(
     await Promise.all(
       tasks.slice(i, i + 5).map(async (t) => {
         try {
-          const ok = await rejectJob(t.jobId, t.reason, env);
-          log(`Cleanup rejected ${t.label} — ${ok ? "OK" : "FAILED"}`, ok ? "WARN" : "ERROR");
-          if (ok) {
+          const outcome = await removeTrip(t.jobId, t.date, t.reason, env);
+          const verb =
+            outcome === "deleted" ? "deleted" : outcome === "rejected" ? "rejected (delete refused)" : "FAILED";
+          log(`Cleanup ${verb} ${t.label}`, outcome ? "WARN" : "ERROR");
+          if (outcome) {
             if (t.suppress) cleaned.push(t.suppress);
           } else {
             inFlightCleanup.delete(t.jobId); // allow retry next cycle

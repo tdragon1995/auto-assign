@@ -154,6 +154,43 @@ export async function deleteJob(jobId: number, env: Env = "prod"): Promise<boole
   return res.ok;
 }
 
+/**
+ * Delete jobs the way the fleetweb timeline/map screen does — the request the
+ * browser fires when an admin removes a job from a driver's day. Unlike
+ * `deleteJob` it takes the day window the jobs live in, so callers must pass the
+ * job's own VN date (yesterday's rollover leftovers are NOT on today's timeline).
+ *
+ * `updateRecurringSetup: false` deletes only these occurrences — a recurring
+ * setup behind them is left alone. We only ever aim this at ad-hoc auto-created
+ * trips, but sending it explicitly keeps that true if one ever carries a plan.
+ *
+ * Returns true only when the RPC succeeded; an echo map (if the response carries
+ * one) must list the id, so a 200 that quietly dropped the job reads as failure.
+ */
+export async function deleteJobsFromTimeline(
+  jobIds: number[],
+  date: string,
+  env: Env = "prod"
+): Promise<boolean> {
+  if (jobIds.length === 0) return true;
+  const out = await jsonRpc<{ deletedJobIds?: Record<string, unknown> }>(
+    "delivery_timeline_delete_jobs",
+    {
+      data: {
+        jobIds,
+        scheduleType: "scheduled",
+        filter: vnDayWindow(date),
+        updateRecurringSetup: false,
+      },
+    },
+    { env }
+  );
+  if (!out.ok) return false;
+  const echo = out.result?.deletedJobIds;
+  if (echo && typeof echo === "object") return jobIds.every((id) => echo[id] !== undefined);
+  return true;
+}
+
 export async function assignJob(
   driverId: string,
   jobId: number,
