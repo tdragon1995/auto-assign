@@ -765,6 +765,15 @@ function rpcErrorText(body: { error?: unknown }): string {
  *  Keep this list honest — anything that creates a record belongs here. */
 const NON_IDEMPOTENT_RPC = new Set(["delivery_create_job"]);
 
+/** Keys where lowercasing the capitals does NOT produce the REST name. Cartrack treats a
+ *  trailing digit as its own word (`addressLine1` is `address_line_1`), where the rule
+ *  below spells `address_line1` — close enough to look right and still read as undefined.
+ *  Listed rather than guessed by regex: `phoneE164` is not `phone_e_164`. */
+const SNAKE_EXCEPTIONS: Record<string, string> = {
+  addressLine1: "address_line_1",
+  addressLine2: "address_line_2",
+};
+
 /**
  * Add snake_case aliases for every camelCase key, so an RPC result can be read by code
  * written against the REST shape.
@@ -782,7 +791,7 @@ const NON_IDEMPOTENT_RPC = new Set(["delivery_create_job"]);
 function rpcDataToRestShape(data: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...data };
   for (const [k, v] of Object.entries(data)) {
-    const snake = k.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+    const snake = SNAKE_EXCEPTIONS[k] ?? k.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
     if (snake !== k && !(snake in out)) out[snake] = v;
   }
   return out;
@@ -1343,6 +1352,10 @@ export async function getUnroutedJobs(dateVn: string, env: Env = "prod"): Promis
  *  every field the PSC-tỉnh orders view needs in a single call. assignment:"all"
  *  includes unassigned (status 2) jobs, so freshly-created requests still surface.
  *
+ *  Those snake_case names are OURS: the RPC answers camelCase and has since the
+ *  2026-08-12 Cartrack release (see rpcDataToRestShape), so every stop is translated
+ *  on the way out and callers keep reading the REST spelling.
+ *
  *  prod-only (fleetweb cookie); returns null on any failure so callers can fall back to
  *  REST. perPage 200 comfortably holds a day of PSC-tỉnh stops (≈24) — a label-filtered
  *  day has never approached one page, so pagination is intentionally not followed. */
@@ -1362,7 +1375,26 @@ export async function getStopsByLabels(dateVn: string, labels: string[], env: En
   );
   if (!out.ok) return null;
   const stops = out.result?.stops;
-  return Array.isArray(stops) ? stops : null;
+  if (!Array.isArray(stops)) return null;
+  const mapped = stops.map((s) => stopToRestShape(s as Record<string, unknown>));
+
+  // A day of stops where not one carries a job_id is not an empty day — it is a shape
+  // this function no longer understands, which is exactly how the 2026-08-12 rename
+  // played out: every caller read the renamed payload as "nothing scheduled" and said
+  // so. Report the failure instead, so callers fall back to REST rather than to silence.
+  if (mapped.length && !mapped.some((s) => s.job_id != null)) return null;
+  return mapped;
+}
+
+/** One delivery_get_stops_list stop in the REST spelling its callers read. Delivery
+ *  windows are translated too — rpcDataToRestShape aliases the top level only, and the
+ *  appointment time every PSC-tỉnh row shows sits one level down inside them. */
+function stopToRestShape(stop: Record<string, unknown>): Record<string, unknown> {
+  const out = rpcDataToRestShape(stop);
+  if (Array.isArray(out.delivery_windows)) {
+    out.delivery_windows = out.delivery_windows.map((w) => rpcDataToRestShape(w as Record<string, unknown>));
+  }
+  return out;
 }
 
 /** Login then trigger route optimisation for a single driver (JSON-RPC).
