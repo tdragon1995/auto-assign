@@ -1386,9 +1386,10 @@ export async function getStopsByLabels(dateVn: string, labels: string[], env: En
   return mapped;
 }
 
-/** One delivery_get_stops_list stop in the REST spelling its callers read. Delivery
- *  windows are translated too — rpcDataToRestShape aliases the top level only, and the
- *  appointment time every PSC-tỉnh row shows sits one level down inside them. */
+/** One RPC stop (delivery_get_stops_list, delivery_get_job_details) in the REST spelling
+ *  its callers read. Delivery windows are translated too — rpcDataToRestShape aliases the
+ *  top level only, and both the PSC-tỉnh appointment time and the cycle's hold gate read
+ *  the time inside them. */
 function stopToRestShape(stop: Record<string, unknown>): Record<string, unknown> {
   const out = rpcDataToRestShape(stop);
   if (Array.isArray(out.delivery_windows)) {
@@ -1441,7 +1442,8 @@ function stripTzSuffix<T>(ts: T): T {
  * filter window keys on scheduled_delivery_ts — both verified 2026-07-18), then
  * delivery_get_job_details for full records (~0.1s) — notes (✅ gate), delivery
  * windows (hold gate), labels (dup exemption) and delivery_driver_id all read
- * back byte-equal to REST apart from a "+07" timestamp suffix, normalised here.
+ * back byte-equal to REST apart from a "+07" timestamp suffix and the camelCase
+ * names of the 2026-08-12 release, both normalised here.
  * Replaces the ~5–10s REST status-2 list on every cycle.
  *
  * Returns null on ANY doubt — RPC error, unexpected shape — so the caller runs
@@ -1474,19 +1476,27 @@ export async function getUnassignedJobsFast(dateVn: string, env: Env = "prod"): 
   if (!det.ok || !Array.isArray(det.result?.jobs)) return null;
 
   const out: Job[] = [];
-  for (const dj of det.result.jobs) {
-    const stops = dj.stop ?? dj.stops;
-    if (!dj.job_id || !Array.isArray(stops)) return null; // shape surprise → REST
+  for (const raw of det.result.jobs) {
+    // The same 2026-08-12 rename that emptied the PSC-tỉnh view reaches this call too, and
+    // the cycle reads REST names off these records: customer_id drives the mapping lookup
+    // and the duplicate pair, stop notes drive the ✅ gate, windows drive hold-parking.
+    // Stops need their own pass — they are nested, where rpcDataToRestShape stops at the
+    // top level. Checked field-for-field against GET /jobs/{id} on a live status-2 job
+    // (2026-08-13): customer UUIDs, stop types/statuses, notes, windows and coordinates
+    // all come back identical.
+    const dj = rpcDataToRestShape(raw);
+    const rawStops = dj.stop ?? dj.stops;
+    if (!dj.job_id || !Array.isArray(rawStops)) return null; // shape surprise → REST
     out.push({
       ...dj,
       scheduled_delivery_ts: stripTzSuffix(dj.scheduled_delivery_ts),
-      send_to_driver_at: stripTzSuffix(dj.send_to_driver_at ?? dj.sendToDriverAt ?? null),
+      send_to_driver_at: stripTzSuffix(dj.send_to_driver_at ?? null),
       create_ts: stripTzSuffix(dj.create_ts),
       labels: (Array.isArray(dj.labels) ? dj.labels : [])
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .map((l: any) => (typeof l === "string" ? l : l?.label))
         .filter(Boolean),
-      stops,
+      stops: rawStops.map((s) => stopToRestShape(s as Record<string, unknown>)),
     } as unknown as Job);
   }
   return { jobs: out, pool };
