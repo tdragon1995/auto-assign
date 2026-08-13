@@ -19,15 +19,18 @@ const PROXY_SWEEP_KEY = "assign:proxy_sweep_ts";
 
 // Liveness: timestamp of the last cron ping (armed or not), so the dashboard
 // can show "System last checked: HH:MM" even when nothing was logged.
-const HEARTBEAT_KEY = "assign:heartbeat_ts";
-
-// Per-deployment liveness. HEARTBEAT_KEY answers "did ANY ping arrive?", which
-// stays green as long as one deployment is alive — that is fine with a single
-// Vercel project and actively misleading with two, where a dead second account
-// costs half the cycles while the dashboard still reads healthy. This hash
-// answers "did EACH one ping?", keyed by DEPLOY_ID. One tiny field per
-// deployment, so it carries no TTL; readers treat a field untouched for 24h as
-// a deployment that was removed rather than one that is stale.
+// Liveness, one field per deployment, keyed by DEPLOY_ID.
+//
+// This replaced a single `assign:heartbeat_ts` string. That key answered "did ANY
+// ping arrive?", which stays green as long as one deployment is alive — fine with
+// a single Vercel project, actively misleading with two, where a dead second
+// account costs half the cycles while the dashboard still reads healthy. The hash
+// answers "did EACH one ping?", and the newest field answers the old question too,
+// so the separate key was a second write buying nothing (~20k commands/month at
+// two accounts). The retired key carried a 24h TTL and expires on its own.
+//
+// One tiny field per deployment, so no TTL here; readers treat a field untouched
+// for 24h as a deployment that was removed rather than one that is stale.
 const DEPLOY_HEARTBEAT_KEY = "assign:heartbeat:deployments";
 
 /** Stable per-project identity. Set DEPLOY_ID explicitly (e.g. "A" / "B").
@@ -175,25 +178,32 @@ export async function clearArmState(): Promise<void> {
 
 // ── Liveness heartbeat ─────────────────────────────────────────────────────
 
-/** Record that the cron just pinged (called on every authorized ping). Stamps
- *  the shared "someone is alive" key and this deployment's own field in one
- *  round trip, so the added visibility costs no extra latency on the ping. */
+/** Record that the cron just pinged (called on every authorized ping).
+ *
+ *  ONE write. The old shared `assign:heartbeat_ts` key is gone: with a field per
+ *  deployment, "has anything pinged?" is just the newest field, so keeping a
+ *  separate key meant paying two writes for one fact. On ~680 pings/day across
+ *  two accounts that second write was ~20k Redis commands a month for nothing. */
 export async function setCronHeartbeat(): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
-  const now = new Date().toISOString();
-  const pipe = redis.pipeline();
-  pipe.set(HEARTBEAT_KEY, now, { ex: 86400 });
-  pipe.hset(DEPLOY_HEARTBEAT_KEY, { [DEPLOY_ID]: now });
-  await pipe.exec();
+  await redis.hset(DEPLOY_HEARTBEAT_KEY, { [DEPLOY_ID]: new Date().toISOString() });
 }
 
-/** ISO timestamp of the last cron ping, or null. */
+/** The newest stamp across deployments. ISO-8601 sorts lexicographically, so a
+ *  string compare is a chronological one. */
+function newestBeat(beats: DeploymentBeat[]): string | null {
+  let newest: string | null = null;
+  for (const b of beats) if (!newest || b.ts > newest) newest = b.ts;
+  return newest;
+}
+
+/** ISO timestamp of the last cron ping from ANY deployment, or null. */
 export async function getCronHeartbeat(): Promise<string | null> {
   const redis = getRedis();
   if (!redis) return null;
-  const raw = await redis.get<string>(HEARTBEAT_KEY);
-  return raw ?? null;
+  const raw = await redis.hgetall(DEPLOY_HEARTBEAT_KEY).catch(() => null);
+  return newestBeat(parseDeploymentBeats(raw));
 }
 
 export interface DeploymentBeat {
@@ -648,18 +658,20 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
 
   const pipe = redis.pipeline();
   pipe.get(ARM_KEY);
-  pipe.get(HEARTBEAT_KEY);
   pipe.lrange(RUN_LOG_KEY, 0, logLimit - 1);
   pipe.get(HELD_JOBS_KEY);
   pipe.get(PICKUP_WARNINGS_KEY);
   pipe.get(FAILED_JOBS_KEY);
   pipe.hgetall(DEPLOY_HEARTBEAT_KEY);
-  const [rawState, rawHeartbeat, rawLogs, rawHeld, rawWarnings, rawFailed, rawDeployments] = await pipe.exec();
+  const [rawState, rawLogs, rawHeld, rawWarnings, rawFailed, rawDeployments] = await pipe.exec();
 
   const state = parseMaybe<ArmState>(rawState as string | ArmState | null);
   const validState = state && Date.now() < state.armedUntil ? state : null;
 
-  const lastChecked = typeof rawHeartbeat === "string" ? rawHeartbeat : null;
+  // Derived from the per-deployment hash rather than its own key — one less
+  // command per poll, and the two can no longer disagree.
+  const deployments = parseDeploymentBeats(rawDeployments);
+  const lastChecked = newestBeat(deployments);
 
   const logEntries = ((rawLogs as (string | LogEntry)[]) ?? [])
     .map((r) => (typeof r === "string" ? JSON.parse(r) : r) as LogEntry)
@@ -692,7 +704,7 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
   return {
     state: validState,
     lastChecked,
-    deployments: parseDeploymentBeats(rawDeployments),
+    deployments,
     logs: logEntries,
     held,
     warnings,
