@@ -93,6 +93,51 @@ interface SubBlock {
   to: string;
 }
 
+/** 30-minute grid, 05:00–22:00 — the same slots the driver's leave form offers
+ *  (cham-cong TIME_SLOTS), so a substitute window lines up with the leave window
+ *  it covers instead of landing on an arbitrary minute. */
+const TIME_SLOTS: string[] = (() => {
+  const slots: string[] = [];
+  for (let h = 5; h <= 22; h++) {
+    for (let m = 0; m < 60; m += 30) {
+      if (h === 22 && m > 0) break;
+      slots.push(`${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`);
+    }
+  }
+  return slots;
+})();
+
+/** Half-hour picker. Leave windows are typed into the sheet by hand and aren't
+ *  always on the half hour, so a prefilled off-grid value (from "+ Chia ca")
+ *  is kept as an extra option — otherwise the select would render blank while
+ *  still holding that time, and the supervisor couldn't see what they'd save. */
+function TimeSelect({
+  value,
+  onChange,
+  label,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  label: string;
+}) {
+  const options = value && !TIME_SLOTS.includes(value) ? [...TIME_SLOTS, value].sort() : TIME_SLOTS;
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      aria-label={label}
+      className="rounded border border-slate-300 bg-white px-1 py-1 text-xs"
+    >
+      <option value="">--:--</option>
+      {options.map((t) => (
+        <option key={t} value={t}>
+          {t}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 export type FillSubsFn = (
   identity: { driver_id: string; leave_from: string; timeLabel: string | null },
   subs: { name: string; from: string | null; to: string | null }[],
@@ -182,19 +227,9 @@ function SubEditor({
             onChange={(e) => patch(i, { name: e.target.value })}
             className="min-w-[140px] flex-1 rounded border border-slate-300 px-1.5 py-1 text-xs"
           />
-          <input
-            type="time"
-            value={b.from}
-            onChange={(e) => patch(i, { from: e.target.value })}
-            className="rounded border border-slate-300 px-1 py-1 text-xs"
-          />
+          <TimeSelect label="Từ giờ" value={b.from} onChange={(v) => patch(i, { from: v })} />
           <span className="text-slate-400 text-[11px]">→</span>
-          <input
-            type="time"
-            value={b.to}
-            onChange={(e) => patch(i, { to: e.target.value })}
-            className="rounded border border-slate-300 px-1 py-1 text-xs"
-          />
+          <TimeSelect label="Đến giờ" value={b.to} onChange={(v) => patch(i, { to: v })} />
           {blocks.length > 1 && (
             <button
               type="button"
