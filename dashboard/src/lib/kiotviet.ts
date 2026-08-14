@@ -85,13 +85,36 @@ async function getPublicToken(): Promise<string | null> {
   return json.access_token;
 }
 
+/** A half-open [from, to) window plus the label the resulting stats carry. */
+interface Range {
+  from: string;  // "YYYY-MM-DDTHH:MM:SS"
+  to: string;
+  label: string; // the date (or month) the caller asked about
+}
+
+/** One VN day. `untilClock` ("HH:MM") caps it, so today-so-far can be compared
+ *  against an earlier day cut at the same minute rather than its finished total. */
+function dayRange(date: string, untilClock?: string): Range {
+  return {
+    from: `${date}T00:00:00`,
+    to: untilClock ? `${date}T${untilClock}:59` : `${addDays(date, 1)}T00:00:00`,
+    label: date,
+  };
+}
+
+/** Month-to-date: the 1st through the same cut-off `dayRange` would use, so the
+ *  running total includes today's trading rather than stopping at midnight. */
+function monthToDateRange(date: string, untilClock?: string): Range {
+  return {
+    from: `${date.slice(0, 7)}-01T00:00:00`,
+    to: dayRange(date, untilClock).to,
+    label: date.slice(0, 7),
+  };
+}
+
 /** Sales stats via the official Public API. Paginates the invoice list and
  *  aggregates client-side — the Public API has no dashboard-summary endpoint. */
-async function statsFromPublicApi(
-  token: string,
-  date: string,
-  untilClock?: string
-): Promise<SalesStats> {
+async function statsFromPublicApi(token: string, range: Range): Promise<SalesStats> {
   const headers = {
     Retailer: RETAILER,
     Authorization: `Bearer ${token}`,
@@ -103,13 +126,13 @@ async function statsFromPublicApi(
   let currentItem = 0;
   const pageSize = 100;
 
-  // Bounded loop: 50 pages × 100 = 5000 invoices/day is far past this branch's volume,
-  // and stops a malformed `total` from spinning the request forever.
+  // Bounded loop: 50 pages × 100 = 5000 invoices is far past this branch's volume even
+  // for a whole month, and stops a malformed `total` from spinning the request forever.
   for (let page = 0; page < 50; page++) {
     const qs = new URLSearchParams({
       branchIds: String(BRANCH_ID),
-      fromPurchaseDate: `${date} 00:00:00`,
-      toPurchaseDate: `${date} ${untilClock ?? "23:59"}:59`,
+      fromPurchaseDate: range.from.replace("T", " "),
+      toPurchaseDate: range.to.replace("T", " "),
       pageSize: String(pageSize),
       currentItem: String(currentItem),
     });
@@ -135,25 +158,15 @@ async function statsFromPublicApi(
     if (rows.length < pageSize || currentItem >= (json.total ?? 0)) break;
   }
 
-  return { date, revenue, orders, source: "public" };
+  return { date: range.label, revenue, orders, source: "public" };
 }
 
 /** Sales stats via the internal dashboard endpoint the KiotViet web UI itself calls.
  *  One request, server-side aggregates already computed. Requires a session JWT. */
-async function statsFromSession(
-  token: string,
-  date: string,
-  untilClock?: string
-): Promise<SalesStats> {
-  // An upper bound of the same clock time on both days is what makes a day-over-day
-  // comparison honest while today is still trading: full-yesterday vs part-today
-  // would read as a collapse every single morning.
-  const upper = untilClock
-    ? `${date}T${untilClock}:59`
-    : `${addDays(date, 1)}T00:00:00`;
+async function statsFromSession(token: string, range: Range): Promise<SalesStats> {
   const filter =
     `(BranchId eq ${BRANCH_ID} and (Status eq 1 or Status eq 3) and ` +
-    `(PurchaseDate ge datetime'${date}T00:00:00' and PurchaseDate lt datetime'${upper}'))`;
+    `(PurchaseDate ge datetime'${range.from}' and PurchaseDate lt datetime'${range.to}'))`;
 
   const res = await fetch(
     `${INTERNAL_API_URL}/api/invoices/dashboard?${new URLSearchParams({ $filter: filter })}`,
@@ -181,7 +194,7 @@ async function statsFromSession(
 
   const json = (await res.json()) as { Total1Value?: number; Total?: number };
   return {
-    date,
+    date: range.label,
     revenue: json.Total1Value ?? 0,
     orders: json.Total ?? 0,
     source: "session",
@@ -199,11 +212,25 @@ export async function getSalesStats(
   date: string = vnDate(),
   untilClock?: string
 ): Promise<SalesStats> {
+  return statsForRange(dayRange(date, untilClock));
+}
+
+/** Running total for the month containing `date`, from the 1st up to the same
+ *  cut-off as the daily figure. One request on the session path — the month is just
+ *  a wider window on the same endpoint, not N day-queries summed. */
+export async function getMonthToDateStats(
+  date: string = vnDate(),
+  untilClock?: string
+): Promise<SalesStats> {
+  return statsForRange(monthToDateRange(date, untilClock));
+}
+
+async function statsForRange(range: Range): Promise<SalesStats> {
   const publicToken = await getPublicToken();
-  if (publicToken) return statsFromPublicApi(publicToken, date, untilClock);
+  if (publicToken) return statsFromPublicApi(publicToken, range);
 
   const sessionToken = process.env.KIOTVIET_SESSION_TOKEN;
-  if (sessionToken) return statsFromSession(sessionToken, date, untilClock);
+  if (sessionToken) return statsFromSession(sessionToken, range);
 
   throw new KiotAuthError(
     "Chưa cấu hình KiotViet: cần KIOTVIET_CLIENT_ID/SECRET hoặc KIOTVIET_SESSION_TOKEN."

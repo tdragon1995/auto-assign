@@ -1,4 +1,4 @@
-import { getSalesStats, formatVnd, formatVnDate } from "./kiotviet";
+import { getSalesStats, getMonthToDateStats, formatVnd, formatVnDate } from "./kiotviet";
 import { vnDate, addDays, vnHoursMinutes } from "./time";
 
 // ── Shared config readers ────────────────────────────────────────────────────
@@ -172,7 +172,8 @@ export const PARSE_MODE = "markdown" as const;
 function statsLines(
   headline: string,
   stats: { orders: number; revenue: number },
-  delta: string | null
+  delta: string | null,
+  month: { orders: number; revenue: number } | null
 ): string {
   const lines = [
     `📊 **${headline}**`,
@@ -183,6 +184,13 @@ function statsLines(
     lines.push(`📈 Trung bình/đơn: ${formatVnd(Math.round(stats.revenue / stats.orders))}`);
   }
   if (delta) lines.push(delta);
+  // Running month total, so a quiet day is readable against the month's progress
+  // rather than in isolation. Cut at the same clock time as the daily figure.
+  if (month) {
+    lines.push(
+      `🗓 Luỹ kế tháng: **${formatVnd(month.revenue)}** (${month.orders.toLocaleString("vi-VN")} đơn)`
+    );
+  }
   return lines.join("\n");
 }
 
@@ -253,9 +261,10 @@ async function buildReport(date: string, headline: string): Promise<string> {
   const untilClock = isToday ? vnClock() : undefined;
   const prevDate = previousBusinessDay(date);
 
-  const [stats, prev] = await Promise.all([
+  const [stats, prev, month] = await Promise.all([
     getSalesStats(date, untilClock),
     getSalesStats(prevDate, untilClock),
+    getMonthToDateStats(date, untilClock),
   ]);
 
   // Name the day explicitly whenever it isn't literally yesterday, so a Monday
@@ -267,7 +276,7 @@ async function buildReport(date: string, headline: string): Promise<string> {
       : `${VN_WEEKDAYS[dayOfWeek(prevDate)]} ${formatVnDate(prevDate).slice(0, 5)}`;
   const label = isToday ? `cùng giờ ${base}` : base;
 
-  return statsLines(headline, stats, deltaLine(stats.revenue, prev.revenue, label));
+  return statsLines(headline, stats, deltaLine(stats.revenue, prev.revenue, label), month);
 }
 
 /** The scheduled afternoon push. Explicitly stamped "tính đến HH:MM" because the
