@@ -498,6 +498,9 @@ export async function shouldRunProxySweep(ttlSec = 1800): Promise<boolean> {
   return res === "OK";
 }
 
+/** Keyed by env so a manual UAT cycle can't consume prod's daily slot. */
+const rolloverKey = (env: string, dateVn: string) => `assign:rollover_morning:${env}:${dateVn}`;
+
 /** True at most once per VN day (NX set keyed by the date) — gates the morning
  *  rollover of yesterday's unfinished jobs into today's window. Without Redis,
  *  returns true so every cycle retries (fail-safe like the proxy sweep, and
@@ -505,9 +508,24 @@ export async function shouldRunProxySweep(ttlSec = 1800): Promise<boolean> {
 export async function shouldRunDailyRollover(dateVn: string, env = "prod"): Promise<boolean> {
   const redis = getRedis();
   if (!redis) return true;
-  // Keyed by env so a manual UAT cycle can't consume prod's daily slot.
-  const res = await redis.set(`assign:rollover_morning:${env}:${dateVn}`, new Date().toISOString(), { nx: true, ex: 172_800 });
+  const res = await redis.set(rolloverKey(env, dateVn), new Date().toISOString(), { nx: true, ex: 172_800 });
   return res === "OK";
+}
+
+/** Hand the day's rollover slot back after a failed attempt, so a later cycle
+ *  retries instead of leaving yesterday's leftovers stranded until tomorrow.
+ *
+ *  Claiming the slot before the work and releasing it on failure mirrors the TAT
+ *  seal (`archiveSealedDays`). The difference: this SHORTENS the gate to
+ *  `retrySec` rather than deleting it. A plain delete would retry on the very
+ *  next 3-minute cycle, and the thing that fails here is a Cartrack list call
+ *  that is already unwell (measured 2026-08-16: ~1 call in 3 returning HTTP 500)
+ *  — hammering it every 3 minutes all morning would add two slow list fetches to
+ *  every cycle. Ten minutes is still ~6 more attempts before the morning peak.  */
+export async function deferDailyRollover(dateVn: string, env = "prod", retrySec = 600): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  await redis.set(rolloverKey(env, dateVn), new Date().toISOString(), { ex: retrySec }).catch(() => {});
 }
 
 /** Atomically claim the right to send ONE late-pickup Zalo alert for this job.

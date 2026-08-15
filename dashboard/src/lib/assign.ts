@@ -7,7 +7,7 @@ import { DIAG_LOCATION_CUSTOMER_IDS } from "./psc-routes-data";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from "./return-trips";
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
 import { cleanupStaleTrips } from "./cleanup-trips";
-import { setHeldJobs, setFailedJobs, setPickupWarnings, shouldRunProxySweep, shouldRunDailyRollover, claimLateAlert, type HeldJob } from "./smart-log-kv";
+import { setHeldJobs, setFailedJobs, setPickupWarnings, shouldRunProxySweep, shouldRunDailyRollover, deferDailyRollover, claimLateAlert, type HeldJob } from "./smart-log-kv";
 import { isValidDriverId } from "./config";
 import {
   vnDate,
@@ -873,6 +873,34 @@ async function releaseDueProxyJobs(
 }
 
 /**
+ * `getJobsByStatusAndDate` with a short retry, for the once-a-day callers that
+ * cannot simply try again next cycle.
+ *
+ * Cartrack's `/rest/delivery/jobs` list is intermittently unwell — sampled at
+ * 3-second spacing on 2026-08-16 it returned HTTP 500 on roughly one call in
+ * three. A 500 throws, and the morning rollover holds the day's only slot when
+ * it does, so one hiccup used to cost every one of yesterday's leftovers a whole
+ * day. Failures come back fast (no pagination, no body), so retrying is cheap.
+ */
+async function getJobsByStatusAndDateRetrying(
+  statusId: number,
+  dateVn: string,
+  env: Env,
+  attempts = 3,
+): Promise<Job[]> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await getJobsByStatusAndDate(statusId, dateVn, env);
+    } catch (e) {
+      lastErr = e;
+      if (i < attempts - 1) await new Promise((r) => setTimeout(r, 600 * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
+/**
  * Reclaim yesterday's unfinished ad-hoc jobs into `toDate` (today) so the
  * morning cycle assigns them. The cycle fetches by scheduled_delivery_ts =
  * today, so a job left over from yesterday is otherwise invisible — never
@@ -1057,15 +1085,35 @@ export async function autoAssignCycle(
   // jobs (status 4 — stale/started jobs whose driver never delivered);
   // rolloverUnfinishedJobs unassigns the latter and re-dates both to today.
   if (!onlyJobIds && (await shouldRunDailyRollover(today, env))) {
+    const yesterday = vnDate(new Date(Date.now() - 86_400_000));
+    let complete = true;
+    // Sequential, one retry wrapper each — NOT Promise.all. The two lists are
+    // independent sets of candidates, so a failure of one must not throw away
+    // the other's; partial progress is safe because a rolled job is re-dated to
+    // today and therefore gone from yesterday's window on the retry.
+    const candidates: Job[] = [];
+    for (const status of [2, 4]) {
+      try {
+        candidates.push(...(await getJobsByStatusAndDateRetrying(status, yesterday, env)));
+      } catch (e) {
+        complete = false;
+        log(`Morning rollover: yesterday's status-${status} list failed — ${String(e).slice(0, 100)}`, "WARN");
+      }
+    }
     try {
-      const yesterday = vnDate(new Date(Date.now() - 86_400_000));
-      const [ys2, ys4] = await Promise.all([
-        getJobsByStatusAndDate(2, yesterday, env),
-        getJobsByStatusAndDate(4, yesterday, env),
-      ]);
-      await rolloverUnfinishedJobs([...ys2, ...ys4], today, env, log);
+      await rolloverUnfinishedJobs(candidates, today, env, log);
     } catch (e) {
+      complete = false;
       log(`Morning rollover failed: ${e}`, "WARN");
+    }
+    // Give the day's slot back if any part of it fell over. Without this the
+    // gate stays consumed and yesterday's leftovers are stranded on yesterday's
+    // date until tomorrow — invisible to every later cycle, which fetches only
+    // jobs scheduled today. (Job 34417904, 2026-08-16: created 22:49 the night
+    // before, never rolled, found by hand the next morning.)
+    if (!complete) {
+      await deferDailyRollover(today, env);
+      log("Morning rollover incomplete — retrying in ~10 minutes", "WARN");
     }
     phase("morning-rollover");
   }
