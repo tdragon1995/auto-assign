@@ -42,6 +42,17 @@ const PICKUP_OVERDUE_MIN = 90;
 // group (see alertLateJobs). Kept well above PICKUP_OVERDUE_MIN so the push is a
 // real "this is badly stuck" signal, not a duplicate of the dashboard warning.
 const LATE_ALERT_MIN = 120;
+// No lateness accrues before the working day starts. Jobs booked overnight (and
+// yesterday's leftovers, which rolloverUnfinishedJobs re-dates to 00:00:00) would
+// otherwise arrive at dawn already hours past the mark and alert on a driver who
+// has not started work yet — a warning nobody can act on, which trains staff to
+// ignore the panel. Both clocks (ASAP anchor and window start) are floored here,
+// so the earliest a pickup can be flagged is 07:00 + PICKUP_OVERDUE_MIN (08:30),
+// and the earliest Zalo escalation is 07:00 + LATE_ALERT_MIN (09:00).
+const PICKUP_CLOCK_START = "07:00:00";
+// The same moment as it is shown to staff, on the dashboard badge and in the Zalo
+// alert, whenever a job's clock was floored to it.
+const CLOCK_START_HHMM = PICKUP_CLOCK_START.slice(0, 5);
 
 /**
  * Compact "HH:MM" for a Cartrack timestamp. The value is already VN-local in
@@ -188,10 +199,14 @@ function computePickupWarnings(
   const FIFTEEN_MIN_MS = 15 * 60 * 1000;
   // Overdue grace before a still-unstarted pickup is flagged late — measured from
   // scheduled_delivery_ts for ASAP pickups, or from the window start (time_from)
-  // for windowed pickups. Module const so alertLateJobs can reconstruct the true
+  // for windowed pickups, either one floored at PICKUP_CLOCK_START. Module const
+  // so alertLateJobs can reconstruct the true
   // elapsed minutes from a warning's minutes_late (which is measured past this mark).
   const OVERDUE_MIN = PICKUP_OVERDUE_MIN;
   const OVERDUE_MS  = OVERDUE_MIN * 60 * 1000;
+  // Floor for both clocks — see PICKUP_CLOCK_START. Anything anchored earlier
+  // (overnight bookings, rolled-over jobs stamped 00:00:00) starts counting here.
+  const clockStartMs = parseVnTimestamp(`${today} ${PICKUP_CLOCK_START}`).getTime();
 
   // Build per-driver lookup tables from all assigned jobs:
   //   inProgressStopIds — stops currently started but not completed
@@ -260,7 +275,7 @@ function computePickupWarnings(
       // filter, ≈ create time for ASAP jobs) and is stable across reassignment.
       const anchor = parseVnTimestamp(job.scheduled_delivery_ts);
       if (isNaN(anchor.getTime())) continue;
-      const elapsed = now - anchor.getTime();
+      const elapsed = now - Math.max(anchor.getTime(), clockStartMs);
       if (elapsed >= OVERDUE_MS) {
         reason = "overdue";
         // create_ts carries the job's origination time for the warning display;
@@ -268,6 +283,7 @@ function computePickupWarnings(
         extra = {
           minutes_late: Math.floor(elapsed / 60000) - OVERDUE_MIN,
           create_ts: job.create_ts ?? job.scheduled_delivery_ts ?? null,
+          ...(anchor.getTime() < clockStartMs ? { clock_from: CLOCK_START_HHMM } : {}),
         };
       }
     } else {
@@ -278,13 +294,14 @@ function computePickupWarnings(
       if (!timeFrom) continue;
       const windowStart = parsePickupWindowTime(timeFrom, today);
       if (!windowStart || isNaN(windowStart.getTime())) continue;
-      const elapsed = now - windowStart.getTime();
+      const elapsed = now - Math.max(windowStart.getTime(), clockStartMs);
       if (elapsed < OVERDUE_MS) continue;
       reason = "overdue";
       extra = {
         minutes_late: Math.floor(elapsed / 60000) - OVERDUE_MIN,
         window_time_from: timeFrom,
         window_time_to: pickup.delivery_windows[0]?.time_to,
+        ...(windowStart.getTime() < clockStartMs ? { clock_from: CLOCK_START_HHMM } : {}),
       };
     }
 
@@ -380,7 +397,11 @@ async function alertLateJobs(
     // front (hhmmVn needs a date prefix these lack).
     const win5 = (s?: string) => (s ? s.slice(0, 5) : null);
     let ref: string | null = null;
-    if (w.window_time_from) {
+    if (w.clock_from) {
+      // Clock was floored to the start of the working day — say so, rather than
+      // naming a window or creation time the elapsed figure is NOT measured from.
+      ref = `tính từ ${w.clock_from}`;
+    } else if (w.window_time_from) {
       const to = win5(w.window_time_to);
       ref = `khung giờ ${win5(w.window_time_from)}${to ? `–${to}` : ""}`;
     } else if (w.create_ts) {

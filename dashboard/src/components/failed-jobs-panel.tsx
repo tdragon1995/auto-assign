@@ -55,12 +55,17 @@ function fmtLate(m: number): string {
   return mm ? `+${h}h${mm}'` : `+${h}h`;
 }
 
-/** Reference time the "+N'" delay is counted from: the delivery-window start (the
- *  "arrive-at" time) for windowed pickups, else the job's creation time. `time` is
+/** Reference time the "+N'" delay is counted from: the start of the working day
+ *  for pickups whose own anchor fell before it (clock_from), else the
+ *  delivery-window start (the "arrive-at" time) for windowed pickups, else the
+ *  job's creation time. `time` is
  *  the compact HH:mm shown next to the delay badge; `full` is the labelled form for
  *  the tooltip (carries the window's end time too). Window times are raw
  *  "HH:mm:ss+07:00" (slice HH:mm); create_ts is a Cartrack ts → HH:mm. */
 function refTime(w: PickupWarning): { time: string; full: string } | null {
+  // A floored clock wins: the delay is counted from the start of the working day,
+  // not from a window or creation time that fell before it.
+  if (w.clock_from) return { time: w.clock_from, full: `Tính từ ${w.clock_from}` };
   if (w.window_time_from) {
     const from = w.window_time_from.slice(0, 5);
     const to = w.window_time_to?.slice(0, 5);

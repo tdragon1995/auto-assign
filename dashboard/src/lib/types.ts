@@ -160,6 +160,11 @@ export interface PickupWarning {
   window_time_to?: string;  // windowed pickup: raw window end "HH:mm:ss+07:00"
   window_time_from?: string; // windowed pickup: raw window start "HH:mm:ss+07:00"
   create_ts?: string | null; // ASAP pickup (no window): job creation time, raw Cartrack ts
+  // Set ("HH:mm") only when the job's own anchor fell before the working day
+  // started and the clock was floored there instead — overnight bookings and
+  // rolled-over jobs. Displays take precedence over create_ts / the window so the
+  // delay shown is measured against the time it was actually counted from.
+  clock_from?: string;
 }
 
 // A job the last full cycle could not assign for a deterministic, per-job reason
