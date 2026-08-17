@@ -98,6 +98,21 @@ export interface TimelineDeliveryWindow {
   timeTo: string;
 }
 
+/**
+ * One stop as delivery_timeline_route_list returns it.
+ *
+ * This interface used to list only the fields its first caller happened to read,
+ * which made it look authoritative while being incomplete — and the omission was
+ * nearly costly: the morning rollover skips plan-attached jobs (rolling one
+ * duplicates it, because the plan regenerates its own copy daily), and because
+ * `lastAssignedPlanId` was missing here it looked as though the timeline could
+ * not tell a plan job from an ad-hoc one. It can. Field presence below was
+ * counted over 2196 live stops across two days (prod, 2026-08-17) rather than
+ * sampled, so "optional" means genuinely sometimes-absent.
+ *
+ * Keys always present but observed only ever null in that census are typed
+ * nullable rather than optional.
+ */
 export interface TimelineStop {
   stopId: number;
   jobId: number;
@@ -107,6 +122,7 @@ export interface TimelineStop {
   customerName: string;
   deliveryDriverId: string;
   referenceNumber: string;
+  orderId: string;
   sendToDriverAt: string | null;
   allowedToStartAt: string | null;
   scheduledDeliveryTs: string | null;
@@ -115,13 +131,48 @@ export interface TimelineStop {
   deliveryDate: string;
   jobStatusId: number;
   deliveryWindows: TimelineDeliveryWindow[];
-  jobLabels: string[];
-  etaInSeconds: number;
+  // RPC returns label OBJECTS here; the REST job shape returns plain strings.
+  // Anything reading this must normalise both — see timelineRoutesToJobs and
+  // isChamCong, which do.
+  jobLabels: Array<{ labelId?: number; userId?: number; label?: string } | string>;
+  // Present on 94% of stops — a static per-leg estimate, NOT a live ETA.
+  etaInSeconds?: number;
   latitude: number;
   longitude: number;
+  addressLine1: string | null;
+  addressLine2: string | null;
+  postalCode: string | null;
+  countryId: number | null;
+  subuserId: string | null;
+  clientReference: string | null;
+  expectedDurationInMinutes: number | null;
+  itemTrackingNumbers: string[];
+  itemsWeightInKg: number | null;
+  itemsVolumeInCubicCm: number | null;
+  requiredCapabilities: unknown[];
+  isCourierJob: boolean;
+  isForceCompleted: boolean;
   activityCompletedTs: string | null;
   activityArrivedTs: string | null;
   activityStartedTs: string | null;
+  activityRejectedTs: string | null;
+  rejectedByName: string | null;
+  // ── Plan fields. `lastAssignedPlanId` is the one the rollover's plan check
+  //    reads; all four are present on 100% of stops. ────────────────────────
+  planId: number | null;
+  lastAssignedPlanId: number | null;
+  planName: string | null;
+  planOrdering: number | null;
+  plannedOffsetSeconds: number | null;
+  recurrence: {
+    dtstart: string | null;
+    freq: string | null;
+    until: string | null;
+    daysOfWeek?: string[] | null;
+    interval?: number | null;
+  } | null;
+  routeName: string | null;
+  routeNameCreateTs: string | null;
 }
 
 export interface TimelineRoute {

@@ -922,6 +922,89 @@ async function getJobsByStatusAndDateRetrying(
 }
 
 /**
+ * Yesterday's rollover candidates — JSON-RPC first, REST as the fallback.
+ *
+ * WHY THE ORDER IS THIS WAY ROUND. The REST job-list is the thing that keeps
+ * costing us the morning pass: sampled on 2026-08-16 and again on 2026-08-17 it
+ * returned HTTP 500 on roughly one call in three, with Cartrack's own body
+ * ("Application error encountered - Please contact our customer support"). On
+ * 2026-08-17 both lists failed at 05:30 and the pass only survived because it
+ * defers and retries. The JSON-RPC sources the cycle already leans on for
+ * today's jobs have not shown that failure, and they are far cheaper: for
+ * 2026-08-16 the timeline returned 78 status-4 jobs where REST returned 220.
+ *
+ * PARITY IS THE WHOLE POINT, so it was measured rather than assumed. Both
+ * sources were run through `rolloverUnfinishedJobs`' eligibility rules for
+ * 2026-08-16: identical eligible sets, no job missed, none added. The 220 vs 78
+ * gap is entirely plan-attached jobs, which both paths discard anyway.
+ *
+ * The one rule that could have made this unsafe is the plan check — the timeline
+ * type doesn't declare `lastAssignedPlanId`, and had it been absent every
+ * recurring plan slot would have looked ad-hoc and been rolled, duplicating it.
+ * It IS on the wire (verified prod 2026-08-17: 74 plan jobs, 74 flags preserved,
+ * 0 lost), and `timelineRoutesToJobs` maps it. The other three rules read stop
+ * types/statuses, labels and reference_number, all of which the timeline carries
+ * — `isChamCong` already normalises the REST and RPC label shapes.
+ *
+ * Either source falling back is independent, and a fallback is NOT a failure:
+ * `complete` only goes false when BOTH transports are exhausted for a status,
+ * because only then is the candidate list actually short. `getTimelineRoutes`
+ * returns null for env !== "prod", so UAT simply always takes the REST path.
+ */
+async function fetchRolloverCandidates(
+  yesterday: string,
+  env: Env,
+  log: (msg: string, level?: LogLevel) => void,
+): Promise<{ candidates: Job[]; complete: boolean; source: string }> {
+  const candidates: Job[] = [];
+  const source: string[] = [];
+  let complete = true;
+
+  // ── status 2: unassigned ──────────────────────────────────────────────────
+  let s2: Job[] | null = null;
+  try {
+    const fast = await getUnassignedJobsFast(yesterday, env);
+    if (fast) { s2 = fast.jobs; source.push("s2:rpc"); }
+  } catch { /* fall through to REST — it is the authoritative list */ }
+  if (!s2) {
+    try {
+      s2 = await getJobsByStatusAndDateRetrying(2, yesterday, env);
+      source.push("s2:rest");
+    } catch (e) {
+      complete = false;
+      source.push("s2:FAILED");
+      log(`Morning rollover: yesterday's status-2 list failed — ${String(e).slice(0, 100)}`, "WARN");
+    }
+  }
+  if (s2) candidates.push(...s2);
+
+  // ── status 4: assigned but unfinished ─────────────────────────────────────
+  let s4: Job[] | null = null;
+  try {
+    const routes = await getTimelineRoutes(yesterday, env);
+    if (routes) {
+      // The timeline is the whole day — finished (5) and cancelled work included.
+      // Narrow to 4 so this matches what the REST status-4 filter returned.
+      s4 = timelineRoutesToJobs(routes).filter((j) => j.job_status_id === 4);
+      source.push("s4:rpc");
+    }
+  } catch { /* fall through to REST */ }
+  if (!s4) {
+    try {
+      s4 = await getJobsByStatusAndDateRetrying(4, yesterday, env);
+      source.push("s4:rest");
+    } catch (e) {
+      complete = false;
+      source.push("s4:FAILED");
+      log(`Morning rollover: yesterday's status-4 list failed — ${String(e).slice(0, 100)}`, "WARN");
+    }
+  }
+  if (s4) candidates.push(...s4);
+
+  return { candidates, complete, source: source.join(" + ") };
+}
+
+/**
  * Reclaim yesterday's unfinished ad-hoc jobs into `toDate` (today) so the
  * morning cycle assigns them. The cycle fetches by scheduled_delivery_ts =
  * today, so a job left over from yesterday is otherwise invisible — never
@@ -1107,20 +1190,10 @@ export async function autoAssignCycle(
   // rolloverUnfinishedJobs unassigns the latter and re-dates both to today.
   if (!onlyJobIds && (await shouldRunDailyRollover(today, env))) {
     const yesterday = vnDate(new Date(Date.now() - 86_400_000));
-    let complete = true;
-    // Sequential, one retry wrapper each — NOT Promise.all. The two lists are
-    // independent sets of candidates, so a failure of one must not throw away
-    // the other's; partial progress is safe because a rolled job is re-dated to
-    // today and therefore gone from yesterday's window on the retry.
-    const candidates: Job[] = [];
-    for (const status of [2, 4]) {
-      try {
-        candidates.push(...(await getJobsByStatusAndDateRetrying(status, yesterday, env)));
-      } catch (e) {
-        complete = false;
-        log(`Morning rollover: yesterday's status-${status} list failed — ${String(e).slice(0, 100)}`, "WARN");
-      }
-    }
+    const fetched = await fetchRolloverCandidates(yesterday, env, log);
+    const candidates = fetched.candidates;
+    let complete = fetched.complete;
+    clog(`[rollover] candidates via ${fetched.source}: ${candidates.length}`);
     try {
       await rolloverUnfinishedJobs(candidates, today, env, log);
     } catch (e) {
