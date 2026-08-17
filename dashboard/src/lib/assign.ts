@@ -189,9 +189,16 @@ function isInternalOrPlanJob(job: any): boolean {
 }
 
 
+/**
+ * `dayJobs` must carry BOTH today's open (status 4) and COMPLETED (status 5) jobs.
+ * Only the open ones can produce a warning — the loop below skips anything that
+ * isn't status 4 — but the completed ones are what make the "driver just finished
+ * a stop" suppression work at all, so leaving them out silently breaks it. See the
+ * lookup-table comment below for how that failed in the field.
+ */
 function computePickupWarnings(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  assignedJobs: any[],
+  dayJobs: any[],
   today: string,
 ): PickupWarning[] {
   const now = Date.now();
@@ -208,25 +215,43 @@ function computePickupWarnings(
   // (overnight bookings, rolled-over jobs stamped 00:00:00) starts counting here.
   const clockStartMs = parseVnTimestamp(`${today} ${PICKUP_CLOCK_START}`).getTime();
 
-  // Build per-driver lookup tables from all assigned jobs:
+  // Build per-driver lookup tables from every job on the driver's day:
   //   inProgressStopIds — stops currently started but not completed
   //   lastCompletedMs   — epoch ms of the most recent completed stop
+  //
+  // COMPLETED (status 5) jobs must be in `dayJobs` for lastCompletedMs to mean
+  // anything. Cartrack moves a job to status 5 the moment its last stop closes, so
+  // a driver who works one job at a time to completion — the normal pattern — has
+  // every finished stop sitting on a status-5 job. Fed only the open list, this map
+  // came out EMPTY for such a driver and the 30-min "still in transit" suppression
+  // below never applied to them.
+  //
+  // Field case (job 34419233, 2026-08-17): the driver closed a stop at 13:52:25 and
+  // the late alert went out at ~13:53:50. Until 13:52:25 he was mid-job, so the
+  // busy-elsewhere suppression held it; the instant that job flipped to status 5 it
+  // left the list entirely, taking BOTH suppressions with it, and the next cycle
+  // escalated — at the exact moment he became free to drive to the pickup.
   const driverInProgressStopIds = new Map<string, Set<number>>();
   const driverLastCompletedMs   = new Map<string, number>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  for (const job of assignedJobs) {
+  for (const job of dayJobs) {
     const driverId: string | null = job.delivery_driver_id;
     if (!driverId) continue;
+    // A finished job has nothing in progress, whatever its stops look like. Only
+    // OPEN jobs feed inProgressStopIds — a force-completed job can carry a stop with
+    // a start and no completion, and treating that as "driver is busy right now"
+    // would mute every late warning for that driver for the rest of the day.
+    const isOpen = job.job_status_id === 4;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     for (const s of (job.stops ?? []) as any[]) {
-      if (s.activity_started_ts && !s.activity_completed_ts) {
+      if (isOpen && s.activity_started_ts && !s.activity_completed_ts) {
         if (!driverInProgressStopIds.has(driverId)) {
           driverInProgressStopIds.set(driverId, new Set());
         }
         driverInProgressStopIds.get(driverId)!.add(s.stop_id);
       }
       if (s.activity_completed_ts) {
-        const t = parseSendToDriverAt(s.activity_completed_ts);
+        const t = parseVnActivityTs(s.activity_completed_ts);
         if (t) {
           const prev = driverLastCompletedMs.get(driverId) ?? 0;
           if (t.getTime() > prev) driverLastCompletedMs.set(driverId, t.getTime());
@@ -238,10 +263,12 @@ function computePickupWarnings(
   const warnings: PickupWarning[] = [];
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  for (const job of assignedJobs) {
+  for (const job of dayJobs) {
     const driverId: string | null = job.delivery_driver_id;
     if (!driverId) continue;
-    // Guard: skip jobs that are no longer active (cancelled/failed/deleted)
+    // Guard: only OPEN jobs can be late. Also what keeps the completed (status 5)
+    // jobs added for the lookup tables above out of the warnings themselves, and
+    // skips anything no longer active (cancelled/failed/deleted).
     if (job.job_status_id !== 4) continue;
 
     // Plan-released jobs, engine legs (outbound/via/return) and Diag-location
@@ -315,6 +342,7 @@ function computePickupWarnings(
 
     // Skip if driver completed any stop within the last 30 min — they may
     // still be in transit to this pickup after finishing their previous job.
+    // Depends on `dayJobs` including status-5 jobs; see the lookup build above.
     const lastCompleted = driverLastCompletedMs.get(driverId) ?? 0;
     if (lastCompleted && now - lastCompleted < THIRTY_MIN_MS) continue;
 
@@ -823,11 +851,33 @@ export function buildGmapsRouteLink(
   );
 }
 
-/** Parse "YYYY-MM-DD HH:MM:SS+07" or "YYYY-MM-DD HH:MM:SS+07:00" to Date. */
+/** Parse "YYYY-MM-DD HH:MM:SS+07" or "YYYY-MM-DD HH:MM:SS+07:00" to Date.
+ *  ONLY for fields that actually carry the offset — send_to_driver_at does. The
+ *  activity_* fields do NOT; use parseVnActivityTs for those. */
 function parseSendToDriverAt(ts: string | null | undefined): Date | null {
   if (!ts) return null;
   const normalized = ts.trim().replace(" ", "T").replace(/\+(\d{2})$/, "+$1:00");
   const d = new Date(normalized);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * A stop's activity_* timestamp as a Date, anchored to +07.
+ *
+ * These arrive with NO timezone offset — "2026-08-17 13:52:25" from REST, and the same
+ * from the timeline shape (timelineRoutesToJobs slices the ".ffffff+07" off). A bare
+ * "YYYY-MM-DDTHH:MM:SS" is parsed as LOCAL time per spec, which on Vercel means UTC:
+ * every completion landed 7 hours in the FUTURE, so "was this within the last 30 min?"
+ * compared against a negative age and answered yes forever. Locally (a VN-time machine)
+ * it looked fine, which is why it survived — do not "simplify" this back to `new Date()`.
+ *
+ * Tolerates an offset if Cartrack ever starts sending one on these fields.
+ */
+function parseVnActivityTs(ts: string | null | undefined): Date | null {
+  if (!ts) return null;
+  const s = ts.trim().replace(" ", "T");
+  const hasZone = /(?:Z|[+-]\d{2}(?::?\d{2})?)$/.test(s);
+  const d = new Date(hasZone ? s.replace(/([+-]\d{2})$/, "$1:00") : `${s}+07:00`);
   return isNaN(d.getTime()) ? null : d;
 }
 
@@ -2222,7 +2272,14 @@ export async function autoAssignCycle(
   phase("assign-loop");
 
   if (!onlyJobIds) {
-    const pickupWarnings = computePickupWarnings(assignedJobsToday ?? [], today);
+    // Open AND completed jobs: the completed ones can't be late (the status-4 guard
+    // inside drops them), but they carry the "driver just finished a stop" evidence
+    // the 30-min suppression needs. Both lists were already fetched by this cycle —
+    // no extra Cartrack call.
+    const pickupWarnings = computePickupWarnings(
+      [...(assignedJobsToday ?? []), ...(cycleS5 ?? [])],
+      today,
+    );
     await Promise.all([
       setHeldJobs(heldJobs),
       setFailedJobs(failedJobs),
