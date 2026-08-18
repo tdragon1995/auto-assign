@@ -9,7 +9,7 @@ import { blockedPair, slimJob } from "@/lib/day-snapshot";
 import type { Stop } from "@/lib/types";
 import { assignJob, getLiveDrivers, getDrivers } from "@/lib/cartrack";
 import { loadConfigFromSheets } from "@/lib/config";
-import { loadLeaveEntries } from "@/lib/leave-config";
+import { loadLeaveEntries, isDriverOnLeave } from "@/lib/leave-config";
 import { resolveFixedDriver } from "@/lib/fixed-driver";
 import { driversAtPscPickup, type NearbyCandidate } from "@/lib/nearby-driver";
 import { getArmState, pushRunLog } from "@/lib/smart-log-kv";
@@ -374,7 +374,13 @@ export async function POST(req: NextRequest) {
             }));
           }
 
-          const nearby = driversAtPscPickup(live, pickup);
+          // Standing at the branch is not the same as working today. A driver on leave
+          // who has dropped in for something of their own is 8m from the door and must
+          // not be handed a trip — the roster path honours the leave sheet, so this one
+          // has to as well, or leave means nothing whenever somebody is nearby.
+          const nearby = driversAtPscPickup(live, pickup).filter(
+            (n) => !isDriverOnLeave(n.driverId, leaveEntries).onLeave,
+          );
           type Attempt = { driverId: string; label: string; how: string };
           const queue: Attempt[] = nearby.slice(0, 3).map((n) => ({
             driverId: n.driverId,
