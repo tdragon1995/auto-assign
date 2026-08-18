@@ -1,8 +1,23 @@
 import { Redis } from "@upstash/redis";
+import { vnDate } from "./time";
 import type { LogEntry, PickupWarning, FailedJob } from "./types";
 
-const KV_KEY = "smart:runs";
-const MAX_RUNS = 240; // ~1 day at 3-min intervals × 12 business hours
+/**
+ * COMMAND BUDGET — read this before adding a Redis call to a per-cycle path.
+ *
+ * Upstash bills per COMMAND, and counts every command inside a pipeline or MULTI
+ * separately. Pipelining cuts round-trips and latency; it does not cut the bill.
+ * At ~660 armed cycles a day, one extra command per cycle is ~20k commands a
+ * month, and the free tier stops accepting writes at 500k.
+ *
+ * Measured 2026-08-18: 20.3k commands/day, on pace for ~609k that month. The
+ * shape of the waste was gates — a once-a-day question asked 660 times, because
+ * "claim if absent" is a WRITE whether or not it claims anything. Hence the
+ * daily-claim helpers below, and hence held/failed/warnings living in one hash
+ * instead of three keys.
+ *
+ * Multiply by 660 and by 30 before you add anything here.
+ */
 
 const LAST_ASSIGN_KEY = "assign:last_run_ts";
 
@@ -11,11 +26,6 @@ const ARM_KEY = "assign:arm_state";
 
 // Per-cycle lock so two overlapping cron pings can't run a cycle at once.
 const CYCLE_LOCK_KEY = "assign:cycle_lock";
-
-// Gate for the periodic full REST sweep of the proxy driver's parked jobs
-// (timeline mode sources the per-cycle release from the timeline payload, which
-// only covers today — the sweep catches jobs stranded from a previous day).
-const PROXY_SWEEP_KEY = "assign:proxy_sweep_ts";
 
 // Liveness: timestamp of the last cron ping (armed or not), so the dashboard
 // can show "System last checked: HH:MM" even when nothing was logged.
@@ -40,67 +50,54 @@ const DEPLOY_HEARTBEAT_KEY = "assign:heartbeat:deployments";
 const DEPLOY_ID =
   process.env.DEPLOY_ID || process.env.VERCEL_PROJECT_PRODUCTION_URL || "default";
 
-// Jobs the last full cycle held back because a stop has a note. Refreshed each
-// armed cycle; read by the dashboard's note-review panel (no Cartrack poll).
-const HELD_JOBS_KEY = "assign:held_jobs";
-
-// Pickup warnings computed from the last full cycle's assigned-jobs snapshot.
-const PICKUP_WARNINGS_KEY = "assign:pickup_warnings";
-
-// Jobs the last full cycle couldn't assign for a deterministic, recurring reason
-// (no driver on duty, no mapping, driver clash, …). Snapshot, replaced each
-// cycle; read by the dashboard "Cần xử lý" panel so the live log stops re-printing
-// the same error every 3 minutes.
-const FAILED_JOBS_KEY = "assign:failed_jobs";
+// ── Per-cycle dashboard snapshot: held + failed + pickup warnings ───────────
+//
+// ONE hash, not three keys. All three are whole-value snapshots the cycle replaces
+// together, so they were three SETs buying what one HSET buys: an HSET writing
+// three named fields is ONE command. The cycle writes this twice (an early exit
+// after "no unassigned jobs", and the full end-of-cycle pass), so this took the
+// per-cycle cost from 5 commands to 2, and the dashboard poll from 6 to 4.
+//
+//   held      — jobs held back because a stop has a note (note-review panel)
+//   failed    — jobs unassignable for a deterministic, recurring reason (no driver
+//               on duty, no mapping, clash…). Read by the "Cần xử lý" panel so the
+//               live log stops re-printing the same error every 3 minutes.
+//   warnings  — pickup warnings from the last full cycle's assigned-jobs snapshot
+//
+// WARNINGS CARRY THEIR OWN TIMESTAMP because they used to carry their own 10-minute
+// TTL, whose job was to self-clear stale warnings if cycles stopped (e.g. the engine
+// was disarmed). One key means one expiry, so that guarantee moved from Redis to the
+// reader: `warnings_ts` is written alongside, and getStatusBundle drops warnings
+// older than WARNINGS_MAX_AGE_MS. Held and failed never needed this — they are
+// replaced every cycle and cleared by the morning's first pass.
+const CYCLE_SNAPSHOT_KEY = "assign:cycle_snapshot";
+const F_HELD = "held";
+const F_FAILED = "failed";
+const F_WARNINGS = "warnings";
+const F_WARNINGS_TS = "warnings_ts";
+const WARNINGS_MAX_AGE_MS = 600_000; // 10 min — what the old PICKUP_WARNINGS TTL enforced
 
 // Server-backed live log: flat list of recent entries (all levels), so the
 // dashboard ticker survives reloads and shows cycles that ran with no tab open.
 const RUN_LOG_KEY = "assign:run_log";
-const MAX_LOG_ENTRIES = 500;
+
+// Kept by the once-a-day trim. Higher than the old per-cycle cap of 500 because
+// the trim is no longer per-cycle: the list is allowed to run a day long (~3k
+// entries, ~500 KB) and is cut back each morning. That costs nothing to read —
+// every reader takes the newest 100 off the head — and gives the dashboard MORE
+// history than the old hard cap did, for two fewer commands per cycle.
+const DAILY_LOG_KEEP = 1000;
+
+// 48h, refreshed once a day. NOT 24h: a once-a-day refresh of a 24h TTL expires at
+// the very moment the next refresh is due, so one late or skipped cycle would wipe
+// the log outright. Doubling it leaves a full day of slack.
+const DAILY_TTL_S = 172_800;
 
 function getRedis() {
   const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
   if (!url || !token) return null;
   return new Redis({ url, token });
-}
-
-export interface SmartRunEntry {
-  ts: string;
-  ok: number;
-  warn: number;
-  error: number;
-  entries: LogEntry[];
-}
-
-function isSmartLog(entry: LogEntry): boolean {
-  return entry.msg.includes("SMART") || entry.msg.includes("Smart-assign");
-}
-
-/** Persist smart-assign log entries from a completed assign cycle. */
-export async function pushSmartRun(allLogs: LogEntry[]): Promise<void> {
-  const redis = getRedis();
-  if (!redis) return;
-
-  const entries = allLogs.filter(isSmartLog);
-  if (entries.length === 0) return;
-
-  const run: SmartRunEntry = {
-    ts:    entries[0].ts,
-    ok:    entries.filter((e) => e.level === "OK").length,
-    warn:  entries.filter((e) => e.level === "WARN").length,
-    error: entries.filter((e) => e.level === "ERROR").length,
-    entries,
-  };
-
-  // One pipelined round-trip instead of three serial ones; order is preserved,
-  // so push → trim → set-TTL keeps identical semantics (and stays atomic, so a
-  // crash can't leave the list without its 24h TTL).
-  const pipe = redis.pipeline();
-  pipe.lpush(KV_KEY, JSON.stringify(run));
-  pipe.ltrim(KV_KEY, 0, MAX_RUNS - 1);
-  pipe.expire(KV_KEY, 86400); // hard 24-hour TTL
-  await pipe.exec();
 }
 
 export interface LastRunEntry {
@@ -124,15 +121,6 @@ export async function getLastRunEntry(): Promise<LastRunEntry | null> {
   if (!raw) return null;
   if (typeof raw === "object") return raw;
   try { return JSON.parse(raw) as LastRunEntry; } catch { return null; }
-}
-
-/** Read the most recent N runs (default 100). */
-export async function getSmartRuns(limit = 100): Promise<SmartRunEntry[]> {
-  const redis = getRedis();
-  if (!redis) return [];
-
-  const raw = await redis.lrange<string>(KV_KEY, 0, limit - 1);
-  return raw.map((r) => (typeof r === "string" ? JSON.parse(r) : r) as SmartRunEntry);
 }
 
 // ── Server-side ON/OFF switch ("armed" state) ──────────────────────────────
@@ -297,52 +285,57 @@ export interface HeldJob {
   sub_for?: string;
 }
 
-/** Replace the held-jobs list (called by a full cycle; pass [] to clear). */
-export async function setHeldJobs(jobs: HeldJob[]): Promise<void> {
+/** Parse a snapshot field that may come back as a JSON string or already-decoded. */
+function parseList<T>(raw: unknown): T[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw as T[];
+  if (typeof raw === "string") {
+    try { return JSON.parse(raw) as T[]; } catch { return []; }
+  }
+  return [];
+}
+
+export interface CycleSnapshot {
+  held?: HeldJob[];
+  failed?: FailedJob[];
+  warnings?: PickupWarning[];
+}
+
+/** Replace part or all of the per-cycle snapshot in ONE command.
+ *
+ *  Pass only what this call site actually computed: the early "no unassigned jobs"
+ *  exit knows held+failed but not warnings, and must not blank warnings it never
+ *  looked at. Omitted fields are left untouched.
+ *
+ *  No EXPIRE here — that would put the per-cycle command back. The key is rewritten
+ *  every cycle and never deleted, so its TTL is refreshed once a day by
+ *  runDailyMaintenance(). */
+export async function setCycleSnapshot(snap: CycleSnapshot): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
-  await redis.set(HELD_JOBS_KEY, JSON.stringify(jobs), { ex: 86400 });
+  const fields: Record<string, string> = {};
+  if (snap.held)     fields[F_HELD]   = JSON.stringify(snap.held);
+  if (snap.failed)   fields[F_FAILED] = JSON.stringify(snap.failed);
+  if (snap.warnings) {
+    fields[F_WARNINGS]    = JSON.stringify(snap.warnings);
+    fields[F_WARNINGS_TS] = String(Date.now());
+  }
+  if (Object.keys(fields).length === 0) return;
+  await redis.hset(CYCLE_SNAPSHOT_KEY, fields);
 }
 
 /** Current held-jobs list. */
 export async function getHeldJobs(): Promise<HeldJob[]> {
   const redis = getRedis();
   if (!redis) return [];
-  const raw = await redis.get<string | HeldJob[]>(HELD_JOBS_KEY);
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw;
-  try { return JSON.parse(raw) as HeldJob[]; } catch { return []; }
+  return parseList<HeldJob>(await redis.hget(CYCLE_SNAPSHOT_KEY, F_HELD));
 }
 
-// ── Unassignable jobs ("Cần xử lý" panel) ──────────────────────────────────
-
-/** Replace the failed-jobs snapshot (called by a full cycle; pass [] to clear).
- *  24h TTL mirrors held jobs; the per-cycle replacement keeps it fresh, so a
- *  resolved job drops off on the next cycle and the morning's first cycle clears
- *  any leftovers from the day before. */
-export async function setFailedJobs(jobs: FailedJob[]): Promise<void> {
-  const redis = getRedis();
-  if (!redis) return;
-  await redis.set(FAILED_JOBS_KEY, JSON.stringify(jobs), { ex: 86400 });
-}
-
-/** Current failed-jobs snapshot. */
+/** Current failed-jobs snapshot ("Cần xử lý" panel). */
 export async function getFailedJobs(): Promise<FailedJob[]> {
   const redis = getRedis();
   if (!redis) return [];
-  const raw = await redis.get<string | FailedJob[]>(FAILED_JOBS_KEY);
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw;
-  try { return JSON.parse(raw) as FailedJob[]; } catch { return []; }
-}
-
-/** Replace the pickup-warning list (called at end of each full cycle).
- *  TTL is 10 min — short enough that stale warnings self-clear if cycles stop
- *  (e.g. system disarmed), but long enough to survive a couple missed pings. */
-export async function setPickupWarnings(warnings: PickupWarning[]): Promise<void> {
-  const redis = getRedis();
-  if (!redis) return;
-  await redis.set(PICKUP_WARNINGS_KEY, JSON.stringify(warnings), { ex: 600 });
+  return parseList<FailedJob>(await redis.hget(CYCLE_SNAPSHOT_KEY, F_FAILED));
 }
 
 /** Drop one job from the held list (after it's been assigned anyway). */
@@ -350,7 +343,7 @@ export async function removeHeldJob(jobId: number): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
   const next = (await getHeldJobs()).filter((j) => j.job_id !== jobId);
-  await redis.set(HELD_JOBS_KEY, JSON.stringify(next), { ex: 86400 });
+  await redis.hset(CYCLE_SNAPSHOT_KEY, { [F_HELD]: JSON.stringify(next) });
 }
 
 /** Add or update one job in the held list. Used when a background approve/schedule
@@ -361,7 +354,7 @@ export async function addHeldJob(job: HeldJob): Promise<void> {
   if (!redis) return;
   const next = (await getHeldJobs()).filter((j) => j.job_id !== job.job_id);
   next.push(job);
-  await redis.set(HELD_JOBS_KEY, JSON.stringify(next), { ex: 86400 });
+  await redis.hset(CYCLE_SNAPSHOT_KEY, { [F_HELD]: JSON.stringify(next) });
 }
 
 // ── PSC active-pair overlay (write-through, for /api/psc-assign) ────────────
@@ -535,24 +528,61 @@ export async function releaseCycleLock(): Promise<void> {
   await redis.del(CYCLE_LOCK_KEY);
 }
 
-/** True at most once per `ttlSec` (NX set) — gates the full REST sweep of the
- *  proxy driver's parked jobs. Without Redis, returns true so every cycle
- *  sweeps via REST (the pre-timeline behavior — fail-safe, never fail-silent). */
-export async function shouldRunProxySweep(ttlSec = 1800): Promise<boolean> {
+/** Once-a-day housekeeping: trim the run log and refresh the TTLs that are no
+ *  longer refreshed per-cycle.
+ *
+ *  Both chores exist because their per-cycle versions were pure overhead — an LTRIM
+ *  of a 500-entry list every 3 minutes, and an EXPIRE re-set on a key whose lifetime
+ *  is measured in days.
+ *
+ *  NO CLAIM OF ITS OWN, deliberately. An earlier draft gated this with its own
+ *  `SET NX` and thereby gave back half of what it saved: a claim is a write, so
+ *  asking "am I first today?" once per cycle costs 660 writes a day — the exact
+ *  pattern this whole pass exists to remove. The caller already holds that answer
+ *  (claimMorningPass), so it is passed in rather than re-purchased.
+ *
+ *  Runs at the START of the morning cycle, before the day's entries are pushed. That
+ *  ordering is intentional and harmless: the trim cuts yesterday's tail, and today's
+ *  entries accumulate on top of a freshly cut list.
+ *
+ *  Best-effort throughout: this is hygiene. A failed pass leaves a slightly longer
+ *  list and a TTL that is still 48h from its last refresh, and tomorrow's first
+ *  cycle tries again. */
+export async function runDailyMaintenance(): Promise<void> {
   const redis = getRedis();
-  if (!redis) return true;
-  const res = await redis.set(PROXY_SWEEP_KEY, new Date().toISOString(), { nx: true, ex: ttlSec });
-  return res === "OK";
+  if (!redis) return;
+  try {
+    await redis.ltrim(RUN_LOG_KEY, 0, DAILY_LOG_KEEP - 1);
+    await redis.expire(RUN_LOG_KEY, DAILY_TTL_S);
+    await redis.expire(CYCLE_SNAPSHOT_KEY, DAILY_TTL_S);
+  } catch (e) {
+    console.error("[daily-maint] failed:", e instanceof Error ? e.message : e);
+  }
 }
 
 /** Keyed by env so a manual UAT cycle can't consume prod's daily slot. */
 const rolloverKey = (env: string, dateVn: string) => `assign:rollover_morning:${env}:${dateVn}`;
 
-/** True at most once per VN day (NX set keyed by the date) — gates the morning
- *  rollover of yesterday's unfinished jobs into today's window. Without Redis,
- *  returns true so every cycle retries (fail-safe like the proxy sweep, and
- *  harmless: after the first pass yesterday's status-2 window is empty). */
-export async function shouldRunDailyRollover(dateVn: string, env = "prod"): Promise<boolean> {
+/** True for the FIRST armed cycle of the VN day, false for every cycle after it.
+ *
+ *  ONE claim, TWO morning chores — the rollover of yesterday's unfinished jobs into
+ *  today's window, and the full no-date REST sweep of the proxy driver's parked jobs.
+ *  They used to hold separate gates, which was two ways of writing down one fact
+ *  ("nobody has done the morning pass yet"). The sweep's own gate cost ~660 writes a
+ *  day to succeed 48 times, because a claim is a WRITE whether or not it claims
+ *  anything.
+ *
+ *  Once a day is the right cadence for the sweep, not a budget compromise: jobs parked
+ *  for TODAY sit on the proxy driver's today-timeline and are released by any ordinary
+ *  cycle when they come due (and by the REST fallback when the timeline call fails).
+ *  The only thing the no-date sweep finds that nothing else can is a job whose release
+ *  time has passed but whose scheduled date is NOT today — stranded from an earlier
+ *  day. Those are no more urgent at 14:30 than at 05:30.
+ *
+ *  Without Redis, returns true every cycle: the rollover is harmless to repeat (after
+ *  the first pass yesterday's status-2 window is empty) and the sweep degrades to its
+ *  pre-timeline every-cycle behaviour. Fail-safe, never fail-silent. */
+export async function claimMorningPass(dateVn: string, env = "prod"): Promise<boolean> {
   const redis = getRedis();
   if (!redis) return true;
   const res = await redis.set(rolloverKey(env, dateVn), new Date().toISOString(), { nx: true, ex: 172_800 });
@@ -569,7 +599,7 @@ export async function shouldRunDailyRollover(dateVn: string, env = "prod"): Prom
  *  that is already unwell (measured 2026-08-16: ~1 call in 3 returning HTTP 500)
  *  — hammering it every 3 minutes all morning would add two slow list fetches to
  *  every cycle. Ten minutes is still ~6 more attempts before the morning peak.  */
-export async function deferDailyRollover(dateVn: string, env = "prod", retrySec = 600): Promise<void> {
+export async function deferMorningPass(dateVn: string, env = "prod", retrySec = 600): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
   await redis.set(rolloverKey(env, dateVn), new Date().toISOString(), { ex: retrySec }).catch(() => {});
@@ -678,20 +708,21 @@ function shouldStore(entry: LogEntry): boolean {
   return INFO_KEEP_PATTERNS.some((p) => entry.msg.includes(p));
 }
 
-/** Append a cycle's important log entries to the rolling live-log list (24h TTL). */
+/** Append a cycle's important log entries to the rolling live-log list.
+ *
+ *  ONE command. The trim and the TTL refresh that used to ride along on every
+ *  cycle now happen once a day in runDailyMaintenance() — an LTRIM every 3 minutes
+ *  was tidying a shelf nobody had disturbed, and re-setting a 24h expiry 660 times
+ *  a day is 660 commands to express a fact that changes once. Between trims the
+ *  list runs a day long instead of capped at 500; readers take the newest 100 off
+ *  the head, so that costs them nothing. */
 export async function pushRunLog(logs: LogEntry[]): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
   const kept = logs.filter(shouldStore);
   if (kept.length === 0) return;
-  // lpush in chronological order ⇒ newest entry ends up at the head. One
-  // pipelined round-trip instead of three serial ones; order is preserved, so
-  // push → trim → set-TTL is unchanged (and atomic — no TTL-less window on crash).
-  const pipe = redis.pipeline();
-  pipe.lpush(RUN_LOG_KEY, ...kept.map((l) => JSON.stringify(l)));
-  pipe.ltrim(RUN_LOG_KEY, 0, MAX_LOG_ENTRIES - 1);
-  pipe.expire(RUN_LOG_KEY, 86400);
-  await pipe.exec();
+  // lpush in chronological order ⇒ newest entry ends up at the head.
+  await redis.lpush(RUN_LOG_KEY, ...kept.map((l) => JSON.stringify(l)));
 }
 
 /** Most recent N live-log entries in chronological order (oldest first). */
@@ -716,7 +747,9 @@ export interface StatusBundle {
   failed: FailedJob[];
 }
 
-/** One pipeline request to Upstash instead of 6 separate HTTP calls. */
+/** One pipeline request to Upstash — and, since held/failed/warnings moved into a
+ *  single hash, FOUR commands per poll instead of six. The dashboard polls every
+ *  90s per open tab, so each command removed here is ~24k a month. */
 export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
   const redis = getRedis();
   if (!redis) return { state: null, lastChecked: null, deployments: [], logs: [], held: [], warnings: [], failed: [] };
@@ -724,11 +757,9 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
   const pipe = redis.pipeline();
   pipe.get(ARM_KEY);
   pipe.lrange(RUN_LOG_KEY, 0, logLimit - 1);
-  pipe.get(HELD_JOBS_KEY);
-  pipe.get(PICKUP_WARNINGS_KEY);
-  pipe.get(FAILED_JOBS_KEY);
+  pipe.hgetall(CYCLE_SNAPSHOT_KEY);
   pipe.hgetall(DEPLOY_HEARTBEAT_KEY);
-  const [rawState, rawLogs, rawHeld, rawWarnings, rawFailed, rawDeployments] = await pipe.exec();
+  const [rawState, rawLogs, rawSnapshot, rawDeployments] = await pipe.exec();
 
   const state = parseMaybe<ArmState>(rawState as string | ArmState | null);
   const validState = state && Date.now() < state.armedUntil ? state : null;
@@ -742,29 +773,17 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
     .map((r) => (typeof r === "string" ? JSON.parse(r) : r) as LogEntry)
     .reverse();
 
-  let held: HeldJob[] = [];
-  if (rawHeld) {
-    if (Array.isArray(rawHeld)) held = rawHeld as HeldJob[];
-    else if (typeof rawHeld === "string") {
-      try { held = JSON.parse(rawHeld); } catch { /* ignore */ }
-    }
-  }
+  const snap = (rawSnapshot ?? {}) as Record<string, unknown>;
+  const held = parseList<HeldJob>(snap[F_HELD]);
+  const failed = parseList<FailedJob>(snap[F_FAILED]);
 
-  let warnings: PickupWarning[] = [];
-  if (rawWarnings) {
-    if (Array.isArray(rawWarnings)) warnings = rawWarnings as PickupWarning[];
-    else if (typeof rawWarnings === "string") {
-      try { warnings = JSON.parse(rawWarnings); } catch { /* ignore */ }
-    }
-  }
-
-  let failed: FailedJob[] = [];
-  if (rawFailed) {
-    if (Array.isArray(rawFailed)) failed = rawFailed as FailedJob[];
-    else if (typeof rawFailed === "string") {
-      try { failed = JSON.parse(rawFailed); } catch { /* ignore */ }
-    }
-  }
+  // Warnings expire in the READER now, not in Redis. The old 10-minute TTL existed
+  // so a disarmed engine's warnings stopped being shown as current; merging keys
+  // meant that guarantee had to move here rather than be quietly dropped.
+  const warningsAt = Number(snap[F_WARNINGS_TS] ?? 0);
+  const warnings = warningsAt && Date.now() - warningsAt < WARNINGS_MAX_AGE_MS
+    ? parseList<PickupWarning>(snap[F_WARNINGS])
+    : [];
 
   return {
     state: validState,

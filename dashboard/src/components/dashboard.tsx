@@ -7,7 +7,6 @@ import { Switch } from "@/components/ui/switch";
 import { ServiceStatus } from "./stats-sidebar";
 import { ActivityLog } from "./activity-log";
 import { ScheduleListPanel } from "./schedule-list-panel";
-import { SmartLogHistory } from "./smart-log-history";
 import { type HeldJob } from "./note-review-panel";
 import { JobAdminPanel } from "./job-admin-panel";
 import { DistanceTab } from "./distance-tab";
@@ -20,7 +19,6 @@ import type { LeaveOnDate } from "@/lib/leave-config";
 
 type Env = "prod" | "uat";
 type RightTab = "attention" | "live" | "admin" | "schedule" | "distance";
-type LogMode = "live" | "smart";
 
 export function Dashboard() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -37,7 +35,6 @@ export function Dashboard() {
   const [drivers, setDrivers] = useState<ConfigDriver[]>([]);
   const [env, setEnv] = useState<Env>("prod");
   const [rightTab, setRightTab] = useState<RightTab>("attention");
-  const [logMode, setLogMode] = useState<LogMode>("live");
   const [scheduleErrors, setScheduleErrors] = useState<ScheduleErrorRow[]>([]);
   const [retryingSchedule, setRetryingSchedule] = useState(false);
   const [leave, setLeave] = useState<{ today: LeaveOnDate[]; tomorrow: LeaveOnDate[]; error: boolean }>({
@@ -523,29 +520,8 @@ export function Dashboard() {
                 />
               </div>
             ) : rightTab === "live" ? (
-              <div className="flex flex-col gap-1.5 lg:h-full">
-                {/* Log mode toggle: Smart History is a mode inside Live Log */}
-                <div className="flex items-center gap-1 shrink-0">
-                  <button
-                    onClick={() => setLogMode("live")}
-                    className={`px-2 py-0.5 text-[11px] font-semibold rounded-full transition-colors ${
-                      logMode === "live" ? "bg-slate-200 text-slate-800" : "text-slate-400 hover:text-slate-700"
-                    }`}
-                  >
-                    Hoạt động
-                  </button>
-                  <button
-                    onClick={() => setLogMode("smart")}
-                    className={`px-2 py-0.5 text-[11px] font-semibold rounded-full transition-colors ${
-                      logMode === "smart" ? "bg-slate-200 text-slate-800" : "text-slate-400 hover:text-slate-700"
-                    }`}
-                  >
-                    Lịch sử thông minh
-                  </button>
-                </div>
-                <div className="h-[72vh] lg:h-auto lg:flex-1 lg:min-h-0">
-                  {logMode === "live" ? <ActivityLog logs={logs} /> : <SmartLogHistory />}
-                </div>
+              <div className="h-[72vh] lg:h-full">
+                <ActivityLog logs={logs} />
               </div>
             ) : rightTab === "schedule" ? (
               <div className="h-[72vh] lg:h-full">

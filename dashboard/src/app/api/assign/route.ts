@@ -3,7 +3,7 @@ import { loadConfigFromSheets } from "@/lib/config";
 import { autoAssignCycle } from "@/lib/assign";
 import type { Env } from "@/lib/cartrack";
 import { vnTimestamp } from "@/lib/time";
-import { pushSmartRun, touchLastRun, getLastRunEntry } from "@/lib/smart-log-kv";
+import { touchLastRun, getLastRunEntry } from "@/lib/smart-log-kv";
 
 export async function GET() {
   const entry = await getLastRunEntry();
@@ -25,11 +25,6 @@ export async function POST(req: NextRequest) {
     }
 
     const logs = await autoAssignCycle(config, env, skipSmart);
-    try {
-      await pushSmartRun(logs);
-    } catch (e) {
-      logs.push({ ts: vnTimestamp(), level: "WARN", msg: `Smart-log KV write failed: ${e}` });
-    }
     return NextResponse.json({ logs });
   } catch (e) {
     return NextResponse.json(

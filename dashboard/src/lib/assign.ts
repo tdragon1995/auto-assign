@@ -7,7 +7,7 @@ import { DIAG_LOCATION_CUSTOMER_IDS } from "./psc-routes-data";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from "./return-trips";
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
 import { cleanupStaleTrips } from "./cleanup-trips";
-import { setHeldJobs, setFailedJobs, setPickupWarnings, shouldRunProxySweep, shouldRunDailyRollover, deferDailyRollover, claimLateAlert, type HeldJob } from "./smart-log-kv";
+import { setCycleSnapshot, claimMorningPass, deferMorningPass, runDailyMaintenance, claimLateAlert, type HeldJob } from "./smart-log-kv";
 import { isValidDriverId } from "./config";
 import {
   vnDate,
@@ -1166,7 +1166,16 @@ export async function autoAssignCycle(
   // yesterday's unassigned (status 2) and its still-assigned-but-unfinished
   // jobs (status 4 — stale/started jobs whose driver never delivered);
   // rolloverUnfinishedJobs unassigns the latter and re-dates both to today.
-  if (!onlyJobIds && (await shouldRunDailyRollover(today, env))) {
+  // Claimed ONCE here and reused by the proxy sweep further down — both are "the
+  // first armed cycle of the day does this", and a second gate would just be a
+  // second write asking the same question. A targeted manual assign never claims it.
+  const isMorningPass = !onlyJobIds && (await claimMorningPass(today, env));
+
+  if (isMorningPass) {
+    // Rides the claim above rather than buying its own: trims the run log and
+    // refreshes the TTLs that are no longer touched per-cycle. Never throws.
+    await runDailyMaintenance();
+
     const yesterday = vnDate(new Date(Date.now() - 86_400_000));
     const fetched = await fetchRolloverCandidates(yesterday, env, log);
     const candidates = fetched.candidates;
@@ -1184,7 +1193,7 @@ export async function autoAssignCycle(
     // jobs scheduled today. (Job 34417904, 2026-08-16: created 22:49 the night
     // before, never rolled, found by hand the next morning.)
     if (!complete) {
-      await deferDailyRollover(today, env);
+      await deferMorningPass(today, env);
       log("Morning rollover incomplete — retrying in ~10 minutes", "WARN");
     }
     phase("morning-rollover");
@@ -1263,11 +1272,14 @@ export async function autoAssignCycle(
       }
       // Proxy release, timeline-sourced: the proxy driver's parked jobs are
       // already in the s4 partition (it's a driver on the timeline), so the
-      // old per-cycle REST list is skipped. Every ~30 min a full no-date REST
-      // sweep runs instead — the safety net for jobs stranded from a previous
-      // day, which today's timeline window can't show.
+      // old per-cycle REST list is skipped. ONCE A DAY, on the first armed cycle,
+      // a full no-date REST sweep runs instead — the safety net for jobs stranded
+      // from a previous day, which today's timeline window can't show. (Was every
+      // ~30 min; a job stranded since yesterday is no more urgent at 14:30 than at
+      // 05:30, and same-day parked jobs never needed the sweep — they are on
+      // today's timeline, and on the REST fallback when the timeline call fails.)
       if (!onlyJobIds) {
-        const sweep = await shouldRunProxySweep();
+        const sweep = isMorningPass;
         const rel = await releaseDueProxyJobs(
           today, env, log,
           sweep ? undefined : s4Jobs.filter((j) => j.delivery_driver_id === PROXY_DRIVER_ID),
@@ -1344,7 +1356,9 @@ export async function autoAssignCycle(
 
   if (jobs.length === 0) {
     log("No unassigned jobs");
-    if (!onlyJobIds) await Promise.all([setHeldJobs(heldJobs), setFailedJobs(failedJobs)]);
+    // Warnings deliberately omitted — this early exit never computed them, and
+    // passing an empty list would blank warnings the last full cycle found.
+    if (!onlyJobIds) await setCycleSnapshot({ held: heldJobs, failed: failedJobs });
     return logs;
   }
 
@@ -2209,9 +2223,7 @@ export async function autoAssignCycle(
       today,
     );
     await Promise.all([
-      setHeldJobs(heldJobs),
-      setFailedJobs(failedJobs),
-      setPickupWarnings(pickupWarnings),
+      setCycleSnapshot({ held: heldJobs, failed: failedJobs, warnings: pickupWarnings }),
       // Piggyback a one-time supervisor Zalo alert on the same overdue set for the
       // worst cases (2h+ unstarted pickups). Never throws the cycle: fire-and-log.
       alertLateJobs(pickupWarnings, env, log).catch((e) =>
