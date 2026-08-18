@@ -23,6 +23,7 @@ import { placeLabel } from "./place-label";
 import { stripDriverCode } from "./job-detail";
 import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, idleBand, type RefStop, type RefLabel } from "./smart-rank";
 import { loadLeaveEntries, isDriverOnLeave, resolveSubstitute, type LeaveEntry } from "./leave-config";
+import { isDriverOnShift, getDriversOnDuty, resolveFixedDriver } from "./fixed-driver";
 
 
 const DUPLICATE_REJECT_REASON =
@@ -592,49 +593,6 @@ function friendlyError(body: unknown, max = 180): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
-function timeToMinutes(t: { hours: number; minutes: number }): number {
-  return t.hours * 60 + t.minutes;
-}
-
-export function isDriverOnShift(
-  mapping: Mapping,
-  jobTime: Date
-): boolean {
-  const { shift_start, shift_end } = mapping;
-  if (!shift_start || !shift_end) return true; // no shift = always on
-
-  const { hours, minutes } = vnHoursMinutes(jobTime);
-  const jobMinutes = hours * 60 + minutes;
-  const startMin = timeToMinutes(shift_start);
-  const endMin = timeToMinutes(shift_end);
-
-  // Overnight shift (e.g. 22:00 - 06:00)
-  // shift_start is exclusive: outgoing driver owns the boundary minute
-  if (startMin > endMin) {
-    return jobMinutes > startMin || jobMinutes <= endMin;
-  }
-  return jobMinutes > startMin && jobMinutes <= endMin;
-}
-
-export function getDriversOnDuty(
-  config: Config,
-  customerId: string,
-  jobTime: Date
-): [Mapping[], "no_mapping" | "no_driver" | "happy" | "clash"] {
-  const customerMappings = config.mappings.filter(
-    (m) => m.customer_id === customerId
-  );
-
-  if (customerMappings.length === 0) return [[], "no_mapping"];
-
-  const onDuty = customerMappings.filter((m) =>
-    isDriverOnShift(m, jobTime)
-  );
-
-  if (onDuty.length === 0) return [customerMappings, "no_driver"];
-  if (onDuty.length === 1) return [onDuty, "happy"];
-  return [onDuty, "clash"];
-}
 
 
 /**
@@ -669,42 +627,12 @@ function previewFixedDriver(
   customerId: string | null,
   leaveEntries: LeaveEntry[],
 ): { driverId: string; name: string | null; subFor: string | null } | null {
-  if (!customerId) return null;
-
   // Held jobs are windowless by construction (a job with a pickup window bypasses
   // the note gate entirely), so the loop's window branch can't apply here and
   // jobTime reduces to the scheduled/create timestamp.
   let jobTime = parseVnTimestamp(job.scheduled_delivery_ts || job.create_ts);
   if (isNaN(jobTime.getTime())) jobTime = new Date();
-
-  // An on-shift smart mapping wins the job before the fixed path is reached.
-  const smart = config.mappings.some(
-    (m) => m.customer_id === customerId && m.smart_driver_id.length > 0 && isDriverOnShift(m, jobTime),
-  );
-  if (smart) return null;
-
-  const [drivers, status] = getDriversOnDuty(config, customerId, jobTime);
-  if (status !== "happy") return null;
-
-  const mapping = drivers[0];
-  let driverId = mapping.driver_id;
-  if (!driverId) return null;
-  let name: string | null = mapping.first_name_last_name?.trim() || null;
-  let subFor: string | null = null;
-
-  const lc = isDriverOnLeave(driverId, leaveEntries);
-  if (lc.onLeave) {
-    const sub = resolveSubstitute(lc.entry!);
-    if (sub.status !== "ok") return null;
-    subFor = lc.driverName ?? null;
-    driverId = sub.subId;
-    // The leave row names its substitutes, and that string comes from the Driver
-    // tab (the sheet resolves sub ids by name lookup), so it's a real name.
-    name = lc.entry!.subs.find((s) => s.id === sub.subId)?.name?.trim() || null;
-  }
-
-  if (!isValidDriverId(driverId)) return null;
-  return { driverId, name, subFor };
+  return resolveFixedDriver(config, customerId, jobTime, leaveEntries);
 }
 
 export function jobHasNotes(job: Job): boolean {

@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { BASE_URL, getHeaders, completeJob, createJob, getJobDetails, type Env } from "@/lib/cartrack";
 import { driverDisplayName } from "@/lib/job-detail";
 import { vnDate, vnHoursMinutes, vnTimestamp } from "@/lib/time";
@@ -7,9 +7,18 @@ import { PSC_VIA_LABEL } from "@/lib/via-legs";
 import { acquireCreateLock, releaseCreateLock, markPscPair, unmarkPscPair, lookupPscPair, type PscDupHit } from "@/lib/smart-log-kv";
 import { blockedPair, slimJob } from "@/lib/day-snapshot";
 import type { Stop } from "@/lib/types";
+import { assignJob } from "@/lib/cartrack";
+import { loadConfigFromSheets } from "@/lib/config";
+import { loadLeaveEntries } from "@/lib/leave-config";
+import { resolveFixedDriver } from "@/lib/fixed-driver";
+import { getArmState, pushRunLog } from "@/lib/smart-log-kv";
+import type { LogEntry } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
+// The instant assign below runs in after(), i.e. against THIS function's budget.
+// Without a declared ceiling a slow Cartrack assign can be cut off mid-write.
+export const maxDuration = 60;
 
 // In-memory dedup lock: prevents race condition when two tabs submit within seconds of each other.
 // Key = `${pickup}-${dropoff}-${today}`, value = timestamp when lock was set.
@@ -299,6 +308,61 @@ export async function POST(req: NextRequest) {
     // gap a second request would rebuild, still not see this job, and create a twin.
     // The lock covers exactly that window; it self-expires, and the cancel/3PL handlers
     // release it early so a cleared trip can be re-requested at once.
+    // ── Hand the trip to its driver now, not at the next engine cycle ─────────
+    // Runs AFTER the branch's response is sent, so nothing here can slow a booking
+    // down or fail one. That is the whole reason the driver is not baked into the
+    // create above: Cartrack rejects a create it dislikes outright (verified on prod
+    // — 422, no job at all), so a driver it refuses would become a failed booking on
+    // the branch's phone. Assigning afterwards can only leave the trip unassigned,
+    // which is exactly today's behaviour.
+    //
+    // A fixed-roster pickup resolves to its driver from config alone, and the cycle
+    // reads jobTime from the create timestamp — so this is the same driver the cycle
+    // would pick minutes later. Only the moment moves, never the outcome.
+    //
+    // Every uncertain case deliberately does nothing and lets the engine handle it:
+    // an on-shift smart pool (ranked live against driver positions, which config
+    // cannot answer), nobody or two drivers on duty, leave with no substitute, a
+    // leave sheet that failed to load, the engine disarmed, or a driver Cartrack
+    // refuses. Silence here is a working state, not a dropped trip.
+    if (newJobId) {
+      const jobId: number = newJobId;
+      after(async () => {
+        const rlog = (msg: string, level: LogEntry["level"] = "OK") =>
+          pushRunLog([{ ts: vnTimestamp(), level, msg }]).catch(() => {});
+        try {
+          // Disarmed means a supervisor switched the engine off on purpose. Assigning
+          // anyway would be the one thing that switch is supposed to prevent.
+          if (!(await getArmState())) return;
+
+          const [config, leaveEntries] = await Promise.all([
+            loadConfigFromSheets(),
+            // A leave sheet we could not read is NOT an empty leave sheet. Guessing
+            // here sends a trip to someone who is on leave; waiting for the cycle
+            // costs a couple of minutes.
+            loadLeaveEntries().catch(() => null),
+          ]);
+          if (!config || !leaveEntries) return;
+
+          const who = resolveFixedDriver(config, pickup, new Date(), leaveEntries);
+          if (!who) return;
+
+          const res = await assignJob(who.driverId, jobId, env);
+          const label = who.name ?? who.driverId;
+          const sub = who.subFor ? ` (trực thay ${who.subFor})` : "";
+          if (res.status === 200) {
+            rlog(`Job ${jobId} - Giao ngay cho ${label}${sub} | ${refLabel}`);
+          } else {
+            // Whatever Cartrack's reason, the handling is the same: the trip stays
+            // unassigned and the next cycle deals with it, exactly as today.
+            rlog(`Job ${jobId} - Giao ngay thất bại (${res.status}), chờ chu kỳ | ${refLabel}`, "ERROR");
+          }
+        } catch (e) {
+          rlog(`Job ${jobId} - Giao ngay lỗi: ${String(e).slice(0, 120)}, chờ chu kỳ | ${refLabel}`, "ERROR");
+        }
+      });
+    }
+
     return NextResponse.json({
       success: true,
       reference: refLabel,
