@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, completeJob, createJob, getJobDetails, getLiveDrivers, type Env } from "@/lib/cartrack";
-import { driverDisplayName } from "@/lib/job-detail";
+import { driverDisplayName, stripDriverCode } from "@/lib/job-detail";
 import { vnDate, vnHoursMinutes, vnTimestamp } from "@/lib/time";
 import { isBlockingPickupStop, isStopStarted, isCompletedOrRejectedStop, pscPairKey } from "@/lib/job-filters";
 import { PSC_VIA_LABEL } from "@/lib/via-legs";
@@ -399,7 +399,7 @@ export async function POST(req: NextRequest) {
       // The branch's card reads this directly. Their screen shows a trip made seconds
       // ago from their own device, which the published day will not carry for minutes,
       // so the response is the only place this name can come from in time.
-      driver_name: assignTo?.name ?? null,
+      driver_name: assignTo?.name ? stripDriverCode(assignTo.name) : null,
     });
   } catch (e) {
     if (lockKey) {

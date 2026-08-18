@@ -528,10 +528,11 @@ function TripCard({ job, code, onOpen, onCancel, onSendVia3pl, onChangeDriver }:
   );
 }
 
-function PendingCard({ req, onCancel, onSendVia3pl }: {
+function PendingCard({ req, onCancel, onSendVia3pl, onChangeDriver }: {
   req: PendingReq;
   onCancel: (t: { job_id: number; reference: string }) => void;
   onSendVia3pl: (t: { job_id: number; reference: string }) => void;
+  onChangeDriver: (t: { job_id: number; reference: string }) => void;
 }) {
   const target = { job_id: req.job_id, reference: req.reference };
   const [from, to] = req.reference.split("_")[0].split("→");
@@ -544,8 +545,10 @@ function PendingCard({ req, onCancel, onSendVia3pl }: {
           </p>
           <p className="text-[11px] font-semibold text-slate-500 mt-0.5">Yêu cầu lúc {req.created_ts}</p>
         </div>
-        <span className={`flex-none text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${STATE_STYLE[0]}`}>
-          {stateText(0)}
+        {/* A trip created with its driver already on it has been dispatched — saying
+            "chờ điều phối" next to that driver's name contradicts itself. */}
+        <span className={`flex-none text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${STATE_STYLE[req.driver_name ? 1 : 0]}`}>
+          {stateText(req.driver_name ? 1 : 0)}
         </span>
       </div>
       {req.driver_name ? (
@@ -561,6 +564,10 @@ function PendingCard({ req, onCancel, onSendVia3pl }: {
         </div>
       )}
       <div className="space-y-1.5 mt-3">
+        <button onClick={() => onChangeDriver(target)}
+          className="w-full py-2.5 rounded-xl text-xs font-bold text-blue-700 border border-blue-200 active:bg-blue-50">
+          Gửi cho Giao Nhận Mẫu gần tôi
+        </button>
         <button onClick={() => onSendVia3pl(target)}
           className="w-full py-2.5 rounded-xl text-xs font-bold text-white bg-teal-600 active:bg-teal-800">
           Gửi mẫu qua Grab/Be/XanhSM/Ahamove
@@ -846,7 +853,12 @@ export default function QrPage() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { setChangeError(data.error ?? "Đổi thất bại"); return; }
       setChangeTarget(null);
-      showToast("Đã chuyển chuyến cho " + (data.driver_name ?? name) + ".", true);
+      // A just-booked trip is on screen from this device, not from the feed, so the feed
+      // reload below cannot correct it. Patch it here or the branch sees the old name.
+      const jobId = changeTarget.job_id;
+      const newName = data.driver_name ?? name;
+      setPending((ps) => ps.map((x) => (x.job_id === jobId ? { ...x, driver_name: newName } : x)));
+      showToast("Đã chuyển chuyến cho " + newName + ".", true);
       // The feed is the authority on who holds a trip. Reload rather than patch the row
       // locally: this name is the one the branch will go and physically hand a box to.
       loadJobs();
@@ -992,7 +1004,8 @@ export default function QrPage() {
 
         <div className="space-y-3">
           {pending.map((p) => (
-            <PendingCard key={p.job_id} req={p} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl} />
+            <PendingCard key={p.job_id} req={p} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }}
+              onSendVia3pl={openVia3pl} onChangeDriver={openChangeDriver} />
           ))}
           {active.map((j) => (
             <TripCard key={j.job_id} job={j} code={code} onOpen={() => setSheetJob(j)}
