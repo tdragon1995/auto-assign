@@ -1,23 +1,21 @@
-import { NextRequest, NextResponse, after } from "next/server";
-import { BASE_URL, getHeaders, completeJob, createJob, getJobDetails, type Env } from "@/lib/cartrack";
+import { NextRequest, NextResponse } from "next/server";
+import { BASE_URL, getHeaders, completeJob, createJob, getJobDetails, getLiveDrivers, type Env } from "@/lib/cartrack";
 import { driverDisplayName } from "@/lib/job-detail";
 import { vnDate, vnHoursMinutes, vnTimestamp } from "@/lib/time";
 import { isBlockingPickupStop, isStopStarted, isCompletedOrRejectedStop, pscPairKey } from "@/lib/job-filters";
 import { PSC_VIA_LABEL } from "@/lib/via-legs";
-import { acquireCreateLock, releaseCreateLock, markPscPair, unmarkPscPair, lookupPscPair, setInstantAssign, getInstantAssign, type PscDupHit } from "@/lib/smart-log-kv";
+import { acquireCreateLock, releaseCreateLock, markPscPair, unmarkPscPair, lookupPscPair, type PscDupHit } from "@/lib/smart-log-kv";
 import { blockedPair, jobIsDone, slimJob } from "@/lib/day-snapshot";
 import type { Stop } from "@/lib/types";
-import { assignJob } from "@/lib/cartrack";
 import { loadConfigFromSheets } from "@/lib/config";
 import { loadLeaveEntries } from "@/lib/leave-config";
 import { resolveFixedDriver } from "@/lib/fixed-driver";
 import { getArmState, pushRunLog } from "@/lib/smart-log-kv";
-import type { LogEntry } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
-// The instant assign below runs in after(), i.e. against THIS function's budget.
-// Without a declared ceiling a slow Cartrack assign can be cut off mid-write.
+// Creating a trip with its driver is two Cartrack calls in the worst case (a refusal,
+// then a driverless retry), so give it room rather than have one cut off mid-write.
 export const maxDuration = 60;
 
 // In-memory dedup lock: prevents race condition when two tabs submit within seconds of each other.
@@ -125,19 +123,6 @@ async function stillBlocking(hit: PscDupHit, pickup: string, dropoff: string, en
   }
 }
 
-/** GET ?job_id= — who the trip just booked was handed to, if anyone yet.
- *  One small Redis read, no Cartrack call: the branch already knows the job id, and
- *  the assignment that happened seconds ago left its note there. Answers null while
- *  the background assign is still running, or when nothing was assigned at all. */
-export async function GET(req: NextRequest) {
-  const jobId = Number(req.nextUrl.searchParams.get("job_id"));
-  if (!Number.isInteger(jobId) || jobId <= 0) {
-    return NextResponse.json({ error: "Thiếu mã chuyến" }, { status: 400 });
-  }
-  const who = await getInstantAssign(jobId);
-  return NextResponse.json({ job_id: jobId, driver_name: who?.driver_name ?? null });
-}
-
 export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
   let lockKey: string | null = null;
@@ -189,6 +174,21 @@ export async function POST(req: NextRequest) {
     // Reads the same day snapshot the branch's own feed renders, so the two can't
     // disagree about whether a trip has left. Falls back to a live fetch when the day
     // is unavailable, so correctness never depends on the cache.
+    // Everything the driver decision needs, started HERE so it overlaps the duplicate
+    // check instead of queueing behind it. By the time the pair is cleared these have
+    // landed, and putting the driver on the trip costs the booking nothing.
+    //
+    // Disarmed is respected: if a supervisor has switched the engine off, a booking must
+    // not quietly assign itself anyway — that switch exists precisely to stop that.
+    const driverPrep = Promise.all([
+      getArmState().catch(() => null),
+      loadConfigFromSheets().catch(() => null),
+      // An unreadable leave sheet is NOT an empty one. Book the trip driverless and let
+      // the engine sort it out rather than send someone who is off today.
+      loadLeaveEntries().catch(() => null),
+      getLiveDrivers(env).catch(() => null),
+    ]);
+
     const _tDup = Date.now();
     const pairKey = pscPairKey(pickup, dropoff);
     // Two sources, one round of latency. The snapshot is the day as the assign cycle last
@@ -266,6 +266,27 @@ export async function POST(req: NextRequest) {
     const mm = String(minutes).padStart(2, "0");
     const refLabel = `${psc_pickup.replace(/^BRA\s*-\s*/i, "")}→${dropoff_location.replace(/^BRA\s*-\s*/i, "")}_${hh}:${mm}`;
 
+    // ── Who this trip is for, decided before it is created ────────────────────────
+    // The roster answer is pure config — mapping row, shift window, leave, substitute —
+    // and the cycle reads a job's time from its creation stamp, so this is the same
+    // driver the engine would reach minutes later. Deciding it here means one write
+    // instead of two, no window where the trip belongs to nobody, and a name to hand
+    // straight back to the branch.
+    //
+    // The driver is only attached if a live list still shows that account. That list
+    // holds active accounts only, which rules out the failure that actually hurts: a
+    // trip sitting on a deactivated account, looking healthy, that nobody can open.
+    // Break state is deliberately NOT consulted — a driver on break still gets the trip
+    // and picks it up when they return, and the branch can move it with "Gửi cho Giao
+    // Nhận Mẫu gần tôi" if they cannot wait.
+    const [arm, config, leaveEntries, live] = await driverPrep;
+    let assignTo: { driverId: string; name: string | null } | null = null;
+    if (arm && config && leaveEntries) {
+      const who = resolveFixedDriver(config, pickup, new Date(), leaveEntries);
+      const known = who && live ? live.some((d) => d.deliveryDriverId === who.driverId) : false;
+      if (who && known) assignTo = { driverId: who.driverId, name: who.name };
+    }
+
     // Via-route (e.g. D007/D004 stopping by D046): remind the driver to also grab the via PSC's
     // inbound box at this pickup, to hand over informally when passing through the via PSC.
     const pickupTodos = [
@@ -284,6 +305,7 @@ export async function POST(req: NextRequest) {
       schedule_type_id: 1,
       reference_number: refLabel,
       labels: ["🛵 Vận chuyển mẫu PSC"],
+      ...(assignTo ? { delivery_driver_id: assignTo.driverId } : {}),
       stops: [
         {
           stop_type_id: 1,
@@ -317,7 +339,18 @@ export async function POST(req: NextRequest) {
     };
 
     const _tCreate = Date.now();
-    const createRes = await createJob(jobPayload, env);
+    let createRes = await createJob(jobPayload, env, assignTo ? "ok" : undefined);
+
+    // A driver Cartrack will not accept must cost the branch a trip, not a booking. If
+    // the create was refused while carrying a driver, make the same trip without one and
+    // let the engine place it — which is exactly what used to happen anyway.
+    if (!createRes.ok && assignTo) {
+      plog(`create refused with driver (${createRes.status}) — retrying unassigned`);
+      const { delivery_driver_id: _dropped, ...driverless } = jobPayload as Record<string, unknown>;
+      void _dropped;
+      assignTo = null;
+      createRes = await createJob(driverless, env);
+    }
 
     if (!createRes.ok) {
       releaseLock(lockKey);
@@ -340,6 +373,15 @@ export async function POST(req: NextRequest) {
     // the day. This replaces the old invalidateSnapshot call: that made the NEXT reader --
     // any of 40-odd branches -- pay a ~3s fleet-wide rebuild because one branch booked a
     // trip they cannot see. Awaited: dropping it reopens exactly the window it closes.
+    if (newJobId && assignTo) {
+      // The supervisor's log should show who it went to at the moment it was made.
+      pushRunLog([{
+        ts: vnTimestamp(),
+        level: "OK",
+        msg: `Job ${newJobId} - Giao ngay cho ${assignTo.name ?? assignTo.driverId} | ${refLabel}`,
+      }]).catch(() => {});
+    }
+
     if (newJobId) {
       await markPscPair(today, pairKey, { job_id: newJobId, reference_number: refLabel }).catch(() => {});
     }
@@ -350,69 +392,14 @@ export async function POST(req: NextRequest) {
     // gap a second request would rebuild, still not see this job, and create a twin.
     // The lock covers exactly that window; it self-expires, and the cancel/3PL handlers
     // release it early so a cleared trip can be re-requested at once.
-    // ── Hand the trip to its driver now, not at the next engine cycle ─────────
-    // Runs AFTER the branch's response is sent, so nothing here can slow a booking
-    // down or fail one. That is the whole reason the driver is not baked into the
-    // create above: Cartrack rejects a create it dislikes outright (verified on prod
-    // — 422, no job at all), so a driver it refuses would become a failed booking on
-    // the branch's phone. Assigning afterwards can only leave the trip unassigned,
-    // which is exactly today's behaviour.
-    //
-    // A fixed-roster pickup resolves to its driver from config alone, and the cycle
-    // reads jobTime from the create timestamp — so this is the same driver the cycle
-    // would pick minutes later. Only the moment moves, never the outcome.
-    //
-    // Every uncertain case deliberately does nothing and lets the engine handle it:
-    // an on-shift smart pool (ranked live against driver positions, which config
-    // cannot answer), nobody or two drivers on duty, leave with no substitute, a
-    // leave sheet that failed to load, the engine disarmed, or a driver Cartrack
-    // refuses. Silence here is a working state, not a dropped trip.
-    if (newJobId) {
-      const jobId: number = newJobId;
-      after(async () => {
-        const rlog = (msg: string, level: LogEntry["level"] = "OK") =>
-          pushRunLog([{ ts: vnTimestamp(), level, msg }]).catch(() => {});
-        try {
-          // Disarmed means a supervisor switched the engine off on purpose. Assigning
-          // anyway would be the one thing that switch is supposed to prevent.
-          if (!(await getArmState())) return;
-
-          const [config, leaveEntries] = await Promise.all([
-            loadConfigFromSheets(),
-            // A leave sheet we could not read is NOT an empty leave sheet. Guessing
-            // here sends a trip to someone who is on leave; waiting for the cycle
-            // costs a couple of minutes.
-            loadLeaveEntries().catch(() => null),
-          ]);
-          if (!config || !leaveEntries) return;
-
-          const who = resolveFixedDriver(config, pickup, new Date(), leaveEntries);
-          if (!who) return;
-
-          const res = await assignJob(who.driverId, jobId, env);
-          const label = who.name ?? who.driverId;
-          const sub = who.subFor ? ` (trực thay ${who.subFor})` : "";
-          if (res.status === 200) {
-            rlog(`Job ${jobId} - Giao ngay cho ${label}${sub} | ${refLabel}`);
-            // Tell the branch who is coming. Their screen is showing a trip they made
-            // seconds ago from their own device; without this they watch "chờ điều phối"
-            // for minutes while a driver is already on the way.
-            await setInstantAssign(jobId, { driver_id: who.driverId, driver_name: label });
-          } else {
-            // Whatever Cartrack's reason, the handling is the same: the trip stays
-            // unassigned and the next cycle deals with it, exactly as today.
-            rlog(`Job ${jobId} - Giao ngay thất bại (${res.status}), chờ chu kỳ | ${refLabel}`, "ERROR");
-          }
-        } catch (e) {
-          rlog(`Job ${jobId} - Giao ngay lỗi: ${String(e).slice(0, 120)}, chờ chu kỳ | ${refLabel}`, "ERROR");
-        }
-      });
-    }
-
     return NextResponse.json({
       success: true,
       reference: refLabel,
       job_id: newJobId,
+      // The branch's card reads this directly. Their screen shows a trip made seconds
+      // ago from their own device, which the published day will not carry for minutes,
+      // so the response is the only place this name can come from in time.
+      driver_name: assignTo?.name ?? null,
     });
   } catch (e) {
     if (lockKey) {

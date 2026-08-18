@@ -1196,13 +1196,19 @@ async function tryAssignViaRpc(
  */
 export async function createJob(
   payload: Record<string, unknown>,
-  env: Env = "prod"
+  env: Env = "prod",
+  /** Caller-supplied verdict on the driver in this payload, skipping the gate's own
+   *  fleet download. Pass "ok" only when you have just seen that driver in a live list
+   *  — that list contains active accounts only, which is the half of the gate that
+   *  matters here: an assignment onto a deactivated account is invisible and nobody
+   *  comes. Omit it and the gate does its own (slow) lookup, as before. */
+  driverState?: "ok",
 ): Promise<CreateJobResult> {
   const conv = restJobToRpc(payload);
   if ("blocked" in conv) {
     console.log(`[createJob] REST path: ${conv.blocked}`);
   } else {
-    const gate = await rpcDriverStatusGate(payload.delivery_driver_id, env);
+    const gate = driverState ?? (await rpcDriverStatusGate(payload.delivery_driver_id, env));
     if (gate === "on_break") {
       return { ok: false, status: 422, body: DRIVER_UNAVAILABLE_BODY, via: "rpc" };
     }

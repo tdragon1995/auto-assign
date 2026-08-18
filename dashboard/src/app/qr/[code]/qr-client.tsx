@@ -54,9 +54,9 @@ interface PendingReq {
   reference: string;
   created_ts: string; // "HH:mm"
   date: string;       // YYYY-MM-DD it was created on
-  /** Filled in seconds after booking, once the trip has been handed to a driver. The
-   *  published day will not carry this trip for minutes yet, so without this the branch
-   *  stares at "chờ điều phối" while a driver is already riding to them. */
+  /** Comes back on the booking response — the trip is created with its driver already
+   *  attached. The published day will not carry this trip for minutes, so the response is
+   *  the only place the name can arrive from in time to be worth showing. */
   driver_name?: string;
 }
 
@@ -753,12 +753,11 @@ export default function QrPage() {
         setAssignStatus("success");
         if (data.job_id) {
           persistPending([
-            { job_id: data.job_id, reference: data.reference, created_ts: nowHm(), date: todayVN() },
+            // driver_name rides in on the booking response — the trip was created with its
+            // driver already on it, so there is nothing to wait for and nothing to poll.
+            { job_id: data.job_id, reference: data.reference, created_ts: nowHm(), date: todayVN(), driver_name: data.driver_name ?? undefined },
             ...pending,
           ]);
-          // The driver lands on this trip a few seconds from now. Ask, so the branch sees
-          // a name instead of "waiting for dispatch" while somebody is already riding over.
-          watchForDriver(data.job_id);
         }
         showToast("Đã gửi yêu cầu lấy mẫu", true);
         setTimeout(() => setAssignStatus("idle"), 3500);
@@ -815,27 +814,6 @@ export default function QrPage() {
     setVia3plTarget(t);
     setVia3plError("");
     setBatchInput("");
-  };
-
-  /** The trip was just created; the driver lands on it a few seconds later. Ask twice,
-   *  then stop — this is a courtesy update, and the feed corrects everything anyway once
-   *  the day rebuilds. Deliberately not a poll loop: 40-odd branches quietly retrying
-   *  forever is how a free Redis tier gets spent. */
-  const watchForDriver = (jobId: number) => {
-    let tries = 0;
-    const ask = async () => {
-      tries++;
-      try {
-        const res = await fetch(`/api/psc-assign?job_id=${jobId}`, { cache: "no-store" });
-        const data = await res.json().catch(() => ({}));
-        if (data?.driver_name) {
-          setPending((ps) => ps.map((p) => (p.job_id === jobId ? { ...p, driver_name: data.driver_name } : p)));
-          return;
-        }
-      } catch { /* a courtesy update that failed is not worth telling anyone about */ }
-      if (tries < 2) setTimeout(ask, 6000);
-    };
-    setTimeout(ask, 4000);
   };
 
   const openChangeDriver = async (t: { job_id: number; reference: string }) => {
