@@ -54,6 +54,10 @@ interface PendingReq {
   reference: string;
   created_ts: string; // "HH:mm"
   date: string;       // YYYY-MM-DD it was created on
+  /** Filled in seconds after booking, once the trip has been handed to a driver. The
+   *  published day will not carry this trip for minutes yet, so without this the branch
+   *  stares at "chờ điều phối" while a driver is already riding to them. */
+  driver_name?: string;
 }
 
 type Status = "idle" | "loading" | "success" | "error";
@@ -544,9 +548,18 @@ function PendingCard({ req, onCancel, onSendVia3pl }: {
           {stateText(0)}
         </span>
       </div>
-      <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100 text-[13px] font-semibold text-amber-700">
+      {req.driver_name ? (
+        <div className="flex items-center gap-2.5 mt-3 pt-3 border-t border-slate-100">
+          <span aria-hidden className="w-8 h-8 flex-none rounded-full bg-blue-100 text-blue-700 font-extrabold text-xs flex items-center justify-center">
+            {initial(driverText(req.driver_name))}
+          </span>
+          <span className="flex-1 min-w-0 text-sm font-bold text-slate-800 truncate">{driverText(req.driver_name)}</span>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100 text-[13px] font-semibold text-amber-700">
         <Clock aria-hidden className="w-4 h-4 shrink-0" />Đã gửi lúc {req.created_ts} — đang chờ điều phối Giao Nhận Mẫu
-      </div>
+        </div>
+      )}
       <div className="space-y-1.5 mt-3">
         <button onClick={() => onSendVia3pl(target)}
           className="w-full py-2.5 rounded-xl text-xs font-bold text-white bg-teal-600 active:bg-teal-800">
@@ -743,6 +756,9 @@ export default function QrPage() {
             { job_id: data.job_id, reference: data.reference, created_ts: nowHm(), date: todayVN() },
             ...pending,
           ]);
+          // The driver lands on this trip a few seconds from now. Ask, so the branch sees
+          // a name instead of "waiting for dispatch" while somebody is already riding over.
+          watchForDriver(data.job_id);
         }
         showToast("Đã gửi yêu cầu lấy mẫu", true);
         setTimeout(() => setAssignStatus("idle"), 3500);
@@ -799,6 +815,27 @@ export default function QrPage() {
     setVia3plTarget(t);
     setVia3plError("");
     setBatchInput("");
+  };
+
+  /** The trip was just created; the driver lands on it a few seconds later. Ask twice,
+   *  then stop — this is a courtesy update, and the feed corrects everything anyway once
+   *  the day rebuilds. Deliberately not a poll loop: 40-odd branches quietly retrying
+   *  forever is how a free Redis tier gets spent. */
+  const watchForDriver = (jobId: number) => {
+    let tries = 0;
+    const ask = async () => {
+      tries++;
+      try {
+        const res = await fetch(`/api/psc-assign?job_id=${jobId}`, { cache: "no-store" });
+        const data = await res.json().catch(() => ({}));
+        if (data?.driver_name) {
+          setPending((ps) => ps.map((p) => (p.job_id === jobId ? { ...p, driver_name: data.driver_name } : p)));
+          return;
+        }
+      } catch { /* a courtesy update that failed is not worth telling anyone about */ }
+      if (tries < 2) setTimeout(ask, 6000);
+    };
+    setTimeout(ask, 4000);
   };
 
   const openChangeDriver = async (t: { job_id: number; reference: string }) => {

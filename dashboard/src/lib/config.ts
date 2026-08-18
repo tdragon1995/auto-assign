@@ -212,7 +212,12 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
         customer_id,
         driver_id,
         smart_driver_id,
-        first_name_last_name: row["first_name_last_name"] ?? "",
+        // The sheet's name column is headed "Driver" — the same header the Driver tab
+        // uses. Reading "first_name_last_name" found nothing on all 1390 rows, which is
+        // why anything printing this name fell back to a raw UUID (the instant-assign
+        // log line, the held-job preview). Old key kept as a fallback so a renamed
+        // column degrades instead of blanking.
+        first_name_last_name: row["Driver"] ?? row["first_name_last_name"] ?? "",
         shift_start: parseTime(row["shift_start"]),
         shift_end: parseTime(row["shift_end"]),
         bot_token: row["bot_token"] ?? "",

@@ -398,16 +398,63 @@ const PSC_PAIR_TTL_SEC = 6 * 60 * 60;
 export interface PscDupHit {
   job_id: number;
   reference_number: string | null;
+  /** When this pair was booked, epoch ms. Lets a reader ask the one question that
+   *  decides whether a live Cartrack re-check is needed: has the published day been
+   *  rebuilt SINCE this trip was made? If it has, the day already judged this pair and
+   *  no fetch is required. Absent on entries written before this field existed, which
+   *  read as "unknown" and fall back to the live check. */
+  at?: number;
 }
 
 const pscPairRedisKey = (dateVn: string, pairKey: string) => `${PSC_PAIR_PREFIX}${dateVn}:${pairKey}`;
 
 /** Record a just-booked pickup→dropoff so the guard sees it before the next publish. */
+/**
+ * Who a just-booked trip went to, for the branch that booked it.
+ *
+ * The branch's own screen shows a trip it made seconds ago from its device, not from
+ * the published day — the day is rebuilt on a cycle and will not carry that trip for
+ * minutes. So an assignment made seconds after booking was invisible to the one person
+ * who most needed to see it, and the feature read as "no driver was assigned".
+ *
+ * A note here costs one small write and one read, against the alternative of the branch
+ * polling Cartrack for a job it already knows the id of. Short-lived on purpose: it
+ * answers "who just got this", and once the day carries the trip the feed is the truth.
+ */
+const INSTANT_ASSIGN_TTL_SEC = 15 * 60;
+const instantAssignKey = (jobId: number) => `psc:assigned:${jobId}`;
+
+export async function setInstantAssign(
+  jobId: number, who: { driver_id: string; driver_name: string },
+): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    await redis.set(instantAssignKey(jobId), JSON.stringify(who), { ex: INSTANT_ASSIGN_TTL_SEC });
+  } catch { /* best-effort: the feed still shows the driver once the day rebuilds */ }
+}
+
+export async function getInstantAssign(
+  jobId: number,
+): Promise<{ driver_id: string; driver_name: string } | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get<string | { driver_id: string; driver_name: string }>(instantAssignKey(jobId));
+    if (!raw) return null;
+    const who = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return who?.driver_id ? who : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function markPscPair(dateVn: string, pairKey: string, hit: PscDupHit): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
   try {
-    await redis.set(pscPairRedisKey(dateVn, pairKey), JSON.stringify(hit), { ex: PSC_PAIR_TTL_SEC });
+    const stamped: PscDupHit = { ...hit, at: hit.at ?? Date.now() };
+    await redis.set(pscPairRedisKey(dateVn, pairKey), JSON.stringify(stamped), { ex: PSC_PAIR_TTL_SEC });
   } catch { /* best-effort: the snapshot still covers this pair once it publishes */ }
 }
 

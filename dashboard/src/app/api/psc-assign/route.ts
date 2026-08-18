@@ -4,7 +4,7 @@ import { driverDisplayName } from "@/lib/job-detail";
 import { vnDate, vnHoursMinutes, vnTimestamp } from "@/lib/time";
 import { isBlockingPickupStop, isStopStarted, isCompletedOrRejectedStop, pscPairKey } from "@/lib/job-filters";
 import { PSC_VIA_LABEL } from "@/lib/via-legs";
-import { acquireCreateLock, releaseCreateLock, markPscPair, unmarkPscPair, lookupPscPair, type PscDupHit } from "@/lib/smart-log-kv";
+import { acquireCreateLock, releaseCreateLock, markPscPair, unmarkPscPair, lookupPscPair, setInstantAssign, getInstantAssign, type PscDupHit } from "@/lib/smart-log-kv";
 import { blockedPair, slimJob } from "@/lib/day-snapshot";
 import type { Stop } from "@/lib/types";
 import { assignJob } from "@/lib/cartrack";
@@ -125,6 +125,19 @@ async function stillBlocking(hit: PscDupHit, pickup: string, dropoff: string, en
   }
 }
 
+/** GET ?job_id= — who the trip just booked was handed to, if anyone yet.
+ *  One small Redis read, no Cartrack call: the branch already knows the job id, and
+ *  the assignment that happened seconds ago left its note there. Answers null while
+ *  the background assign is still running, or when nothing was assigned at all. */
+export async function GET(req: NextRequest) {
+  const jobId = Number(req.nextUrl.searchParams.get("job_id"));
+  if (!Number.isInteger(jobId) || jobId <= 0) {
+    return NextResponse.json({ error: "Thiếu mã chuyến" }, { status: 400 });
+  }
+  const who = await getInstantAssign(jobId);
+  return NextResponse.json({ job_id: jobId, driver_name: who?.driver_name ?? null });
+}
+
 export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
   let lockKey: string | null = null;
@@ -187,8 +200,32 @@ export async function POST(req: NextRequest) {
       lookupPscPair(today, pairKey),
       blockedPair(today, env, pairKey),
     ]);
-    const candidate = overlayHit ?? (lookup ? lookup.hit : await liveDuplicateCheck(pickup, dropoff, today, env));
-    plog(`dup-check: ${Date.now() - _tDup}ms (${overlayHit ? "overlay" : lookup ? `snapshot age=${lookup.ageMs}ms` : "live-fetch"})`);
+    // The overlay names any pair THIS APP booked today, which is what makes the cheap
+    // snapshot safe. But it keeps naming that trip long after the samples have gone, and
+    // every later booking for the same route then paid a live job fetch to rediscover
+    // that. On 2026-08-18 that fetch was costing 4-12s of a branch's submit — measured
+    // across a morning of real bookings, it was the entire wait, with the trip creation
+    // itself only ~250ms.
+    //
+    // The published day can answer it for free. Its blocking-pair index is built from
+    // the same predicate the live re-check applies, so if the day was rebuilt AFTER this
+    // pair was booked and does not list it, the day has already looked at that trip and
+    // found it no longer blocking. Trusting it needs the "after" to be real: a snapshot
+    // older than the booking simply has not seen it, and treating that as clearance is
+    // how two drivers get sent for one box.
+    const snapBuiltAt = lookup?.ageMs != null ? Date.now() - lookup.ageMs : null;
+    const daySawIt = overlayHit?.at != null && snapBuiltAt != null && snapBuiltAt > overlayHit.at;
+    const clearedByDay = daySawIt && !lookup?.hit;
+
+    const candidate = clearedByDay
+      ? null
+      : overlayHit ?? (lookup ? lookup.hit : await liveDuplicateCheck(pickup, dropoff, today, env));
+    plog(`dup-check: ${Date.now() - _tDup}ms (${clearedByDay ? "cleared-by-day" : overlayHit ? "overlay" : lookup ? `snapshot age=${lookup.ageMs}ms` : "live-fetch"})`);
+    if (clearedByDay) {
+      // Same self-heal as the stale-block path below: drop the entry the day has
+      // already superseded, so this pair stops being asked about at all.
+      void unmarkPscPair(today, pairKey).catch(() => {});
+    }
 
     // Never refuse a branch on a cached reading. A snapshot up to GUARD_MAX_AGE_MS old —
     // or an overlay entry whose trip has since been collected — can still name a job that
@@ -352,6 +389,10 @@ export async function POST(req: NextRequest) {
           const sub = who.subFor ? ` (trực thay ${who.subFor})` : "";
           if (res.status === 200) {
             rlog(`Job ${jobId} - Giao ngay cho ${label}${sub} | ${refLabel}`);
+            // Tell the branch who is coming. Their screen is showing a trip they made
+            // seconds ago from their own device; without this they watch "chờ điều phối"
+            // for minutes while a driver is already on the way.
+            await setInstantAssign(jobId, { driver_id: who.driverId, driver_name: label });
           } else {
             // Whatever Cartrack's reason, the handling is the same: the trip stays
             // unassigned and the next cycle deals with it, exactly as today.
