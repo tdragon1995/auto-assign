@@ -407,12 +407,13 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
 
 /* ─────────────────────────── feed cards ─────────────────────────── */
 
-function TripCard({ job, code, onOpen, onCancel, onSendVia3pl }: {
+function TripCard({ job, code, onOpen, onCancel, onSendVia3pl, onChangeDriver }: {
   job: Job;
   code: string;
   onOpen: () => void;
   onCancel: (t: { job_id: number; reference: string }) => void;
   onSendVia3pl: (t: { job_id: number; reference: string }) => void;
+  onChangeDriver: (t: { job_id: number; reference: string }) => void;
 }) {
   const state = stateOf(job);
   const p = pickupOf(job), d = dropoffOf(job);
@@ -431,6 +432,10 @@ function TripCard({ job, code, onOpen, onCancel, onSendVia3pl }: {
     !p.activity_started_ts && !p.activity_arrived_ts && !p.activity_completed_ts;
   // 3PL handoff stays open until the sample is actually collected.
   const via3plEligible = !rejected && !!p && p.customer_id === code && !p.activity_completed_ts && p.stop_status_id !== 5;
+  // Changing hands stays open exactly as long as the 3PL handoff does — right up until
+  // the samples are collected. That window is the point: a branch usually discovers the
+  // assigned driver is not coming AFTER the trip has already been dispatched to them.
+  const changeDriverEligible = via3plEligible;
 
   const target = { job_id: job.job_id, reference: job.reference_number };
 
@@ -493,8 +498,14 @@ function TripCard({ job, code, onOpen, onCancel, onSendVia3pl }: {
         )}
       </button>
 
-      {(via3plEligible || cancellable) && (
+      {(via3plEligible || cancellable || changeDriverEligible) && (
         <div className="space-y-1.5 mt-3">
+          {changeDriverEligible && (
+            <button onClick={() => onChangeDriver(target)}
+              className="w-full py-2.5 rounded-xl text-xs font-bold text-blue-700 border border-blue-200 active:bg-blue-50">
+              Đổi Giao Nhận Mẫu đang ở đây
+            </button>
+          )}
           {via3plEligible && (
             <button onClick={() => onSendVia3pl(target)}
               className="w-full py-2.5 rounded-xl text-xs font-bold text-white bg-teal-600 active:bg-teal-800">
@@ -587,6 +598,15 @@ export default function QrPage() {
   const [via3plLoading, setVia3plLoading] = useState(false);
   const [via3plError, setVia3plError] = useState("");
   const [batchInput, setBatchInput] = useState("");
+
+  // Change-driver: the branch's escape hatch for the trips configuration cannot describe.
+  // The list is fetched fresh every time it opens — who is standing at the door is the one
+  // thing that must never come from a cache.
+  const [changeTarget, setChangeTarget] = useState<{ job_id: number; reference: string } | null>(null);
+  const [changeList, setChangeList] = useState<{ driverId: string; name: string; metres: number }[]>([]);
+  const [changeLoading, setChangeLoading] = useState(false);
+  const [changeBusyId, setChangeBusyId] = useState("");
+  const [changeError, setChangeError] = useState("");
 
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
   const showToast = (msg: string, ok: boolean) => {
@@ -781,6 +801,47 @@ export default function QrPage() {
     setBatchInput("");
   };
 
+  const openChangeDriver = async (t: { job_id: number; reference: string }) => {
+    setChangeTarget(t);
+    setChangeList([]);
+    setChangeError("");
+    setChangeLoading(true);
+    try {
+      const res = await fetch("/api/psc-assign/reassign?job_id=" + t.job_id, { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setChangeError(data.error ?? "Không tải được danh sách"); return; }
+      setChangeList(data.drivers ?? []);
+    } catch {
+      setChangeError("Không thể kết nối. Vui lòng thử lại.");
+    } finally {
+      setChangeLoading(false);
+    }
+  };
+
+  const handleChangeDriver = async (driverId: string, name: string) => {
+    if (!changeTarget) return;
+    setChangeBusyId(driverId);
+    setChangeError("");
+    try {
+      const res = await fetch("/api/psc-assign/reassign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: changeTarget.job_id, driver_id: driverId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setChangeError(data.error ?? "Đổi thất bại"); return; }
+      setChangeTarget(null);
+      showToast("Đã chuyển chuyến cho " + (data.driver_name ?? name) + ".", true);
+      // The feed is the authority on who holds a trip. Reload rather than patch the row
+      // locally: this name is the one the branch will go and physically hand a box to.
+      loadJobs();
+    } catch {
+      setChangeError("Không thể kết nối. Vui lòng thử lại.");
+    } finally {
+      setChangeBusyId("");
+    }
+  };
+
   const handleSendVia3pl = async () => {
     if (!via3plTarget) return;
     const batchIds = batchInput.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
@@ -920,7 +981,8 @@ export default function QrPage() {
           ))}
           {active.map((j) => (
             <TripCard key={j.job_id} job={j} code={code} onOpen={() => setSheetJob(j)}
-              onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl} />
+              onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl}
+              onChangeDriver={openChangeDriver} />
           ))}
           {!loaded && !loading && (
             <button
@@ -1070,6 +1132,48 @@ export default function QrPage() {
                 {via3plLoading ? "Đang gửi…" : "Xác nhận gửi"}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {changeTarget && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/45 p-4"
+          onClick={() => { if (!changeBusyId) setChangeTarget(null); }}>
+          <div role="dialog" aria-modal="true" className="w-full max-w-sm bg-white rounded-2xl p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="space-y-1">
+              <p className="text-base font-bold text-slate-800">Đổi Giao Nhận Mẫu</p>
+              <p className="text-xs text-slate-500 font-semibold break-all">{changeTarget.reference}</p>
+              <p className="text-xs text-slate-500">Những người đang ở trong bán kính 100m quanh chi nhánh.</p>
+            </div>
+
+            {changeLoading ? (
+              <p className="py-6 text-center text-sm font-semibold text-slate-500">Đang tìm…</p>
+            ) : changeList.length === 0 ? (
+              <p className="py-6 text-center text-sm font-semibold text-slate-500">
+                Hiện không có Giao Nhận Mẫu nào ở gần chi nhánh.
+              </p>
+            ) : (
+              <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                {changeList.map((d) => (
+                  <button key={d.driverId} onClick={() => handleChangeDriver(d.driverId, d.name)}
+                    disabled={!!changeBusyId}
+                    className="w-full flex items-center gap-2.5 p-3 rounded-xl border border-slate-200 text-left active:bg-slate-50 disabled:opacity-40">
+                    <span aria-hidden className="w-8 h-8 flex-none rounded-full bg-blue-100 text-blue-700 font-extrabold text-xs flex items-center justify-center">
+                      {initial(driverText(d.name))}
+                    </span>
+                    <span className="flex-1 min-w-0">
+                      <span className="block text-sm font-bold text-slate-800 truncate">{driverText(d.name)}</span>
+                      <span className="block text-[11px] font-semibold text-slate-500">Cách {d.metres}m</span>
+                    </span>
+                    {changeBusyId === d.driverId && <span className="text-[11px] font-bold text-blue-700">Đang đổi…</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {changeError && <p role="alert" className="text-xs text-red-600 font-medium">{changeError}</p>}
+            <button onClick={() => setChangeTarget(null)} disabled={!!changeBusyId}
+              className="w-full py-3 rounded-xl text-sm font-semibold border border-slate-200 text-slate-600 disabled:opacity-40">Quay lại</button>
           </div>
         </div>
       )}
