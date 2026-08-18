@@ -492,6 +492,42 @@ export async function driverJobs(
  *  `stale` reports the snapshot's age so a caller about to REFUSE a user can decide to
  *  confirm against live data first — a refusal issued from a cached reading is how a
  *  branch gets told to wait for a trip that already left. */
+/**
+ * Is this specific trip past the point where it could block a re-booking?
+ *
+ * Reads one job out of the stored day. Deliberately does NOT care how old that day is,
+ * and that is the entire point: a collected pickup never becomes uncollected, a
+ * cancelled job never uncancels. So a picture from four minutes ago showing the samples
+ * already gone is exactly as conclusive as one from four seconds ago, and asking
+ * Cartrack the same question live — which was costing a branch four seconds on every
+ * booking of a route that had already run today — tells us nothing more.
+ *
+ * The reverse does NOT hold and is not claimed here: "still blocking a while ago" is no
+ * evidence about now, so that answers false and the caller keeps its live check.
+ *
+ *   true  — done: cancelled, failed, or its pickup is completed/rejected. Safe to allow.
+ *   false — the stored day still shows it blocking. Caller must verify live.
+ *   null  — this day has never seen the trip (booked since it was built, or no day at
+ *           all). Caller must verify live.
+ */
+export async function jobIsDone(date: string, env: Env, jobId: number): Promise<boolean | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  try {
+    const row = await redis.hmget<Record<string, unknown>>(key(env, date), jobField(jobId));
+    const j = parse<SnapJob | null>(row?.[jobField(jobId)], null);
+    if (!j) return null;
+    if (j.job_status_id === 7 || j.job_status_id === 3) return true;
+    const pickups = j.stops.filter((st) => st.stop_type_id === 1);
+    if (!pickups.length) return null;
+    // Same predicate the pair index is built from, so the two can never disagree about
+    // the same trip.
+    return !pickups.some((st) => isBlockingPickupStop(st));
+  } catch {
+    return null;
+  }
+}
+
 export async function blockedPair(
   date: string, env: Env, pairKey: string, opts: ReadOpts = {},
 ): Promise<{ hit: PairHit | null; ageMs: number | null } | null> {

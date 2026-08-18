@@ -5,7 +5,7 @@ import { vnDate, vnHoursMinutes, vnTimestamp } from "@/lib/time";
 import { isBlockingPickupStop, isStopStarted, isCompletedOrRejectedStop, pscPairKey } from "@/lib/job-filters";
 import { PSC_VIA_LABEL } from "@/lib/via-legs";
 import { acquireCreateLock, releaseCreateLock, markPscPair, unmarkPscPair, lookupPscPair, setInstantAssign, getInstantAssign, type PscDupHit } from "@/lib/smart-log-kv";
-import { blockedPair, slimJob } from "@/lib/day-snapshot";
+import { blockedPair, jobIsDone, slimJob } from "@/lib/day-snapshot";
 import type { Stop } from "@/lib/types";
 import { assignJob } from "@/lib/cartrack";
 import { loadConfigFromSheets } from "@/lib/config";
@@ -213,9 +213,14 @@ export async function POST(req: NextRequest) {
     // found it no longer blocking. Trusting it needs the "after" to be real: a snapshot
     // older than the booking simply has not seen it, and treating that as clearance is
     // how two drivers get sent for one box.
-    const snapBuiltAt = lookup?.ageMs != null ? Date.now() - lookup.ageMs : null;
-    const daySawIt = overlayHit?.at != null && snapBuiltAt != null && snapBuiltAt > overlayHit.at;
-    const clearedByDay = daySawIt && !lookup?.hit;
+    // Ask the stored day about the exact trip the overlay names. A collected pickup
+    // never uncollects, so an old picture showing the samples gone is as good as a new
+    // one — no freshness arithmetic required, which is where the first attempt at this
+    // went wrong: it demanded a day rebuilt AFTER the booking, and almost nothing
+    // qualified. Only the "still blocking" answer is time-sensitive, and that one still
+    // falls through to the live check below.
+    const clearedByDay =
+      overlayHit != null && (await jobIsDone(today, env, overlayHit.job_id)) === true;
 
     const candidate = clearedByDay
       ? null
