@@ -507,7 +507,7 @@ function TripCard({ job, code, onOpen, onCancel, onSendVia3pl, onChangeDriver }:
           {changeDriverEligible && (
             <button onClick={() => onChangeDriver(target)}
               className="w-full py-2.5 rounded-xl text-xs font-bold text-blue-700 border border-blue-200 active:bg-blue-50">
-              Đổi Giao Nhận Mẫu đang ở đây
+              Gửi cho Giao Nhận Mẫu gần tôi
             </button>
           )}
           {via3plEligible && (
