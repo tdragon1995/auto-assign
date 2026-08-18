@@ -7,10 +7,11 @@ import { PSC_VIA_LABEL } from "@/lib/via-legs";
 import { acquireCreateLock, releaseCreateLock, markPscPair, unmarkPscPair, lookupPscPair, type PscDupHit } from "@/lib/smart-log-kv";
 import { blockedPair, slimJob } from "@/lib/day-snapshot";
 import type { Stop } from "@/lib/types";
-import { assignJob } from "@/lib/cartrack";
+import { assignJob, getLiveDrivers, getDrivers } from "@/lib/cartrack";
 import { loadConfigFromSheets } from "@/lib/config";
 import { loadLeaveEntries } from "@/lib/leave-config";
 import { resolveFixedDriver } from "@/lib/fixed-driver";
+import { driversAtPscPickup, type NearbyCandidate } from "@/lib/nearby-driver";
 import { getArmState, pushRunLog } from "@/lib/smart-log-kv";
 import type { LogEntry } from "@/lib/types";
 
@@ -308,7 +309,9 @@ export async function POST(req: NextRequest) {
     // gap a second request would rebuild, still not see this job, and create a twin.
     // The lock covers exactly that window; it self-expires, and the cancel/3PL handlers
     // release it early so a cleared trip can be re-requested at once.
-    // ── Hand the trip to its driver now, not at the next engine cycle ─────────
+    // ── Hand the trip to a driver now, not at the next engine cycle ───────────
+    // Preference order: a driver physically at the branch (within
+    // 100m, straight line, recent position), then the rostered driver.
     // Runs AFTER the branch's response is sent, so nothing here can slow a booking
     // down or fail one. That is the whole reason the driver is not baked into the
     // create above: Cartrack rejects a create it dislikes outright (verified on prod
@@ -344,19 +347,66 @@ export async function POST(req: NextRequest) {
           ]);
           if (!config || !leaveEntries) return;
 
-          const who = resolveFixedDriver(config, pickup, new Date(), leaveEntries);
-          if (!who) return;
+          // ── Who gets it: whoever is standing at the branch, else the roster ──
+          // A driver already at the pickup can carry these samples out on the trip
+          // they are on. That beats the rostered driver, who may be halfway across
+          // the city, so proximity is tried FIRST and the roster is the fallback.
+          //
+          // Nearest first, then the next — because a refusal is not a verdict on the
+          // branch, it is a verdict on one driver, and the second-nearest is standing
+          // in the same room. Nobody asks Cartrack WHY it refused; the attempt is the
+          // question and the next candidate is the answer.
+          const roster = resolveFixedDriver(config, pickup, new Date(), leaveEntries);
 
-          const res = await assignJob(who.driverId, jobId, env);
-          const label = who.name ?? who.driverId;
-          const sub = who.subFor ? ` (trực thay ${who.subFor})` : "";
-          if (res.status === 200) {
-            rlog(`Job ${jobId} - Giao ngay cho ${label}${sub} | ${refLabel}`);
-          } else {
-            // Whatever Cartrack's reason, the handling is the same: the trip stays
-            // unassigned and the next cycle deals with it, exactly as today.
-            rlog(`Job ${jobId} - Giao ngay thất bại (${res.status}), chờ chu kỳ | ${refLabel}`, "ERROR");
+          // Live positions come from the fleetweb list (active accounts only, ~190ms).
+          // Its failure is not fatal: fall back to the REST list, and if that fails
+          // too, proximity is simply skipped and the roster answer stands.
+          let live: NearbyCandidate[] = (await getLiveDrivers(env)) ?? [];
+          if (live.length === 0) {
+            live = (await getDrivers(env).catch(() => [])).map((d) => ({
+              deliveryDriverId: d.delivery_driver_id,
+              firstName: d.first_name,
+              lastName: d.last_name,
+              latitude: d.latitude,
+              longitude: d.longitude,
+              isLoggedIn: d.is_online,
+              lastOnlineTs: d.last_login_ts ?? null,
+            }));
           }
+
+          const nearby = driversAtPscPickup(live, pickup);
+          type Attempt = { driverId: string; label: string; how: string };
+          const queue: Attempt[] = nearby.slice(0, 3).map((n) => ({
+            driverId: n.driverId,
+            label: n.name,
+            how: `đang ở tại điểm lấy (${n.metres}m)`,
+          }));
+          // The rostered driver goes last, and only if proximity did not already
+          // name them — otherwise a refusal would be retried against the same person.
+          if (roster && !queue.some((q) => q.driverId === roster.driverId)) {
+            queue.push({
+              driverId: roster.driverId,
+              label: roster.name ?? roster.driverId,
+              how: roster.subFor ? `theo ca (trực thay ${roster.subFor})` : "theo ca",
+            });
+          }
+          if (queue.length === 0) return;
+
+          let lastStatus = 0;
+          for (const cand of queue) {
+            const res = await assignJob(cand.driverId, jobId, env);
+            lastStatus = res.status;
+            if (res.status === 200) {
+              rlog(`Job ${jobId} - Giao ngay cho ${cand.label} — ${cand.how} | ${refLabel}`);
+              return;
+            }
+          }
+          // Everyone refused. The trip stays unassigned and the next cycle handles it,
+          // which is exactly where it would have been without any of this.
+          rlog(
+            `Job ${jobId} - Giao ngay thất bại (${queue.length} tài xế, mã ${lastStatus}), chờ chu kỳ | ${refLabel}`,
+            "ERROR",
+          );
         } catch (e) {
           rlog(`Job ${jobId} - Giao ngay lỗi: ${String(e).slice(0, 120)}, chờ chu kỳ | ${refLabel}`, "ERROR");
         }

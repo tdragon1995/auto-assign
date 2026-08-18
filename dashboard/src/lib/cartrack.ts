@@ -106,6 +106,50 @@ export async function getAllAssignedDriverJobs(
   return all;
 }
 
+/** One row of the fleetweb driver list — the same feed the delivery map draws from. */
+export type LiveDriver = {
+  deliveryDriverId: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  isLoggedIn?: boolean | null;
+  lastOnlineTs?: string | null;
+  onBreakSinceTs?: string | null;
+  shiftTimeStart?: string | null;
+  shiftTimeEnd?: string | null;
+};
+
+/**
+ * Active drivers with live positions, from the list the fleetweb map itself uses.
+ *
+ * Two things it does better than the REST driver list. It carries ONLY live
+ * accounts — 162 rows against REST's 327, the difference being 165 deactivated
+ * accounts we download and discard (measured 2026-08-18) — and it answers in
+ * ~190ms against REST's ~3s.
+ *
+ * The date-range stats block the browser sends is deliberately omitted: it adds
+ * job counters nothing here reads, and it is the whole cost — the same call with
+ * it took 2.5-5s, without it 188ms, for identical driver rows.
+ *
+ * A deactivated driver is ABSENT rather than flagged, so "not in this list" must
+ * never be read as "deactivated" — it is only ever "ask REST".
+ *
+ * Returns null on any failure (login, transport, unfamiliar shape) so callers can
+ * fall back to the REST list rather than act on an empty fleet.
+ */
+export async function getLiveDrivers(env: Env = "prod"): Promise<LiveDriver[] | null> {
+  const out = await jsonRpc<{ drivers?: unknown }>("delivery_drivers_list", { data: {} }, { env });
+  if (!out.ok) return null;
+  const rows = out.result?.drivers;
+  if (!Array.isArray(rows)) return null;
+  // A shape check rather than a cast: an empty array is a legitimate answer, but a
+  // list of rows without driver ids is a changed API, and silently returning it
+  // would read as "nobody is anywhere near this branch".
+  if (rows.length > 0 && typeof (rows[0] as LiveDriver)?.deliveryDriverId !== "string") return null;
+  return rows as LiveDriver[];
+}
+
 export async function getDrivers(env: Env = "prod"): Promise<Driver[]> {
   const params = new URLSearchParams({ page: "1", limit: "1000" });
 
