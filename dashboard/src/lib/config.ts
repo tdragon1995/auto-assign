@@ -48,7 +48,12 @@ async function readGen(): Promise<string | null> {
 // freshness mechanism — that is the gen stamp, deliberately, after a clock-based cache
 // was measured at an 87% miss rate.
 const L2_TTL_S = 48 * 60 * 60;
-const l2Key = (gen: string, date: string) => `config:v1:${gen}:${date}`;
+//   version — the `v2` below is NOT decoration. This blob is PARSED config, so a change to
+//          how it is parsed (a renamed column, a new field) leaves every server reading a
+//          blob built by the old code until someone presses Refresh. That is exactly how
+//          the "Driver" column fix shipped and did nothing: correct code, stale parse.
+//          Bump this whenever the parsing changes, and the deploy invalidates itself.
+const l2Key = (gen: string, date: string) => `config:v2:${gen}:${date}`;
 
 
 let cachedConfig: Config | null = null;
