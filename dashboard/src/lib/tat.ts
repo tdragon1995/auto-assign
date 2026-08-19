@@ -70,6 +70,12 @@ export interface TatLeg {
   tat_basis: "arrived" | "completed" | null;
   distance_km: number | null;
   target_mins: number | null;
+  /** Goong's own travel-time estimate for this leg. REFERENCE ONLY — it never
+   *  grades anything. Kept beside target_mins so a late leg can be read as either
+   *  "the driver was slow" or "this route is slow", which a flat per-km rule
+   *  cannot distinguish on its own. Comes free: Goong returns duration in the same
+   *  response as distance, and the cache has stored both all along. */
+  eta_mins: number | null;
   on_time: boolean | null;
   long_gap: boolean;
 }
@@ -230,6 +236,7 @@ export function legsForRoute(route: TimelineRoute, tripDate: string): TatLeg[] {
       tat_basis: basis,
       distance_km: null,
       target_mins: null,
+      eta_mins: null,
       on_time: null,
       long_gap: false,
     });
@@ -268,6 +275,8 @@ export async function attachDistances(legs: TatLeg[]): Promise<void> {
     if (km == null) return;
     leg.distance_km = Math.round(km * 100) / 100;
     leg.target_mins = targetMinsFor(leg.distance_km);
+    const eta = results[i]?.eta_mins;
+    leg.eta_mins = typeof eta === "number" && Number.isFinite(eta) ? Math.round(eta) : null;
     if (leg.tat_mins == null || leg.target_mins == null) return;
 
     leg.long_gap = leg.tat_mins - leg.target_mins > LONG_GAP_OVER_TARGET_MINS;

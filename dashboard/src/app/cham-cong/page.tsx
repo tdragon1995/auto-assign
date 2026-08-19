@@ -102,8 +102,11 @@ interface TatLegCardData {
   distance_km: number | null;
   tat_mins: number | null;
   target_mins: number | null;
-  on_time: boolean | null;
+  /** Goong's travel-time estimate. Shown beside the target as a road-aware
+   *  reference; it never decides đúng giờ / trễ. */
+  eta_mins: number | null;
   long_gap: boolean;
+  on_time: boolean | null;
   estimated: boolean;
 }
 
@@ -371,13 +374,33 @@ function TatLegRow({ leg }: { leg: TatLegCardData }) {
           <span className="font-semibold text-gray-700">
             {leg.estimated && <span className="text-gray-400 font-normal">≈ </span>}
             {fmtMins(leg.tat_mins)}
-            {leg.target_mins != null && (
-              <span className="font-normal text-gray-400"> / mục tiêu {leg.target_mins} phút</span>
-            )}
           </span>
         )}
         {leg.tat_mins == null && <span className="text-gray-400">Chưa đủ dữ liệu</span>}
       </div>
+
+      {/* The two references, side by side. "Mục tiêu" is the flat rule the driver
+          is actually graded on and can check in their head; "Goong" is what a
+          routing service thinks this particular road takes. Showing both is what
+          separates a slow driver from a slow route — the flat rule alone cannot
+          tell those apart, and that ambiguity is where a late leg turns into an
+          argument. Goong is deliberately styled as a note, not a verdict. */}
+      {(leg.target_mins != null || leg.eta_mins != null) && (
+        <div className="flex items-center gap-2 flex-wrap">
+          {leg.target_mins != null && (
+            <span className="inline-flex items-baseline gap-1 text-[11px] rounded-md bg-gray-100 px-2 py-1">
+              <span className="text-gray-500">Mục tiêu</span>
+              <span className="font-semibold text-gray-700">{leg.target_mins} phút</span>
+            </span>
+          )}
+          {leg.eta_mins != null && (
+            <span className="inline-flex items-baseline gap-1 text-[11px] rounded-md bg-blue-50 px-2 py-1">
+              <span className="text-blue-500">Goong</span>
+              <span className="font-semibold text-blue-700">{leg.eta_mins} phút</span>
+            </span>
+          )}
+        </div>
+      )}
 
       {leg.long_gap && (
         <p className="text-[11px] text-gray-400">
@@ -2151,6 +2174,10 @@ export default function ChamCongPage() {
                         </p>
                         <p className="text-[11px] text-gray-500">
                           Thời gian được tính từ lúc bạn xong điểm này đến lúc tới điểm kế tiếp.
+                        </p>
+                        <p className="text-[11px] text-gray-500">
+                          <span className="font-semibold text-blue-600">Goong</span> là thời gian ước tính
+                          của bản đồ cho đúng đoạn đường đó — chỉ để tham khảo, không dùng để chấm đúng giờ.
                         </p>
                         {tatReport.updated_at && (
                           <p className="text-[11px] text-gray-400">
