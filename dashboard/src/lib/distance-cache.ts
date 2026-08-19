@@ -182,39 +182,73 @@ export async function roadDistancesForPairs(
 ): Promise<(ResolvedDistance | null)[]> {
   return resolvePairs(pairs, async (miss) => {
     const out: (GoongResult | null)[] = new Array(miss.length).fill(null);
-    const byOrigin = new Map<string, number[]>();
+    const key = (p: { lat: number; lon: number }) => `${p.lat},${p.lon}`;
+
+    /**
+     * BATCH ON WHICHEVER END REPEATS.
+     *
+     * Grouping only by origin looks right and is badly wrong for this shape of
+     * data. A driver's legs chain A→B, B→C, C→lab, so consecutive legs share no
+     * origin — a clinic is the start of exactly one leg that day. Grouping by
+     * origin therefore produced one request per leg: measured on a real day, one
+     * call carrying 66 destinations and then dozens carrying exactly one. Roughly
+     * 250 pairs became roughly 250 requests, and five backfill passes over 50 days
+     * turned that into tens of thousands — which is what exhausted the quota.
+     *
+     * The destination end is where the repetition actually lives: most legs end at
+     * the lab. Grouping those into a single many-origins→one-destination call
+     * collapses the bulk of a day into a handful of requests. Whatever is left
+     * over — genuinely one-off destinations — falls back to grouping by origin.
+     *
+     * Same answers either way; far fewer requests, which is the only thing either
+     * provider's quota counts.
+     */
+    const byDest = new Map<string, number[]>();
     for (let i = 0; i < miss.length; i++) {
-      const k = `${miss[i].from.lat},${miss[i].from.lon}`;
-      const list = byOrigin.get(k);
-      if (list) list.push(i);
-      else byOrigin.set(k, [i]);
+      const k = key(miss[i].to);
+      const list = byDest.get(k);
+      if (list) list.push(i); else byDest.set(k, [i]);
     }
 
-    // Bounded concurrency, not one-at-a-time.
-    //
-    // A cold day touches ~190 distinct origins, and serially that is ~190 round
-    // trips of a few hundred ms each — which is what pushed the archive past its
-    // 60-second limit and, before the write was made safe, cost whole days of
-    // data. Same number of requests, so the Goong bill is identical; they simply
-    // stop queueing behind each other.
-    //
-    // Capped rather than unbounded: firing 190 simultaneous requests invites rate
-    // limiting, and a 429 here is worse than a slow answer — nulls are never
-    // cached, so a throttled pair is re-asked on every future pass.
-    const groups = [...byOrigin.values()];
+    type Call = { kind: "toDest"; idxs: number[] } | { kind: "fromOrigin"; idxs: number[] };
+    const calls: Call[] = [];
+    const leftovers: number[] = [];
+    for (const idxs of byDest.values()) {
+      // A shared destination is only worth a dedicated call when it actually
+      // batches something; a lone pair is cheaper folded in with its origin-mates.
+      if (idxs.length > 1) calls.push({ kind: "toDest", idxs });
+      else leftovers.push(idxs[0]);
+    }
+
+    const byOrigin = new Map<string, number[]>();
+    for (const i of leftovers) {
+      const k = key(miss[i].from);
+      const list = byOrigin.get(k);
+      if (list) list.push(i); else byOrigin.set(k, [i]);
+    }
+    for (const idxs of byOrigin.values()) calls.push({ kind: "fromOrigin", idxs });
+
+    // Bounded concurrency, not one-at-a-time. Serially, a cold day's requests were
+    // hundreds of round trips end to end, which is what pushed the archive past its
+    // 60-second limit. Capped rather than unbounded because a 429 is worse than a
+    // slow answer: nulls are never cached, so a throttled pair is re-asked forever.
     const CONCURRENCY = 6;
     let next = 0;
     await Promise.all(
-      Array.from({ length: Math.min(CONCURRENCY, groups.length) }, async () => {
+      Array.from({ length: Math.min(CONCURRENCY, calls.length) }, async () => {
         for (;;) {
           const idx = next++;
-          if (idx >= groups.length) return;
-          // Honour a quota that ran out mid-flight rather than firing the rest.
-          if (signal?.quotaExceeded) return;
-          const idxs = groups[idx];
-          const origin = miss[idxs[0]].from;
-          const res = await roadMatrixOneToMany(origin.lat, origin.lon, idxs.map((i) => miss[i].to), apiKey, signal);
-          idxs.forEach((i, j) => { out[i] = res[j] ?? null; });
+          if (idx >= calls.length) return;
+          const call = calls[idx];
+          if (call.kind === "toDest") {
+            const dest = miss[call.idxs[0]].to;
+            const res = await roadMatrixManyToOne(call.idxs.map((i) => miss[i].from), dest, apiKey, signal);
+            call.idxs.forEach((i, j) => { out[i] = res[j] ?? null; });
+          } else {
+            const origin = miss[call.idxs[0]].from;
+            const res = await roadMatrixOneToMany(origin.lat, origin.lon, call.idxs.map((i) => miss[i].to), apiKey, signal);
+            call.idxs.forEach((i, j) => { out[i] = res[j] ?? null; });
+          }
         }
       }),
     );
