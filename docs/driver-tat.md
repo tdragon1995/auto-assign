@@ -42,6 +42,40 @@ archiver falls back to the next stop's **completion** stamp and records which wa
 in `tat_basis`. The UI marks those with `≈` and a one-line explanation, so an inferred
 leg can always be told from a measured one.
 
+### Fair start — the clock cannot begin before the work existed
+
+```
+fair start = max(departure from the last stop, when the next job became available)
+tat_mins   = arrival − fair start
+idle_mins  = fair start − departure     (the excluded time, stored)
+```
+
+If the next job was only created an hour after the driver finished the last one, that
+hour was never theirs to spend better. Because waits are graded rather than excused,
+charging it made the report run **backwards** — the quieter the day, the worse the
+driver scored.
+
+Availability is the **latest** of the destination stop's `sendToDriverAt`,
+`allowedToStartAt`, `scheduledDeliveryTs` and delivery-window opening: those conditions
+are conjunctive, so a job pushed at 09:00 but not startable until 10:00 was not rideable
+at 09:00. Across a **merged** visit the rule inverts to the **earliest** — the driver
+rode there once, and the first job that existed is what let them go.
+
+Availability that post-dates the **arrival** is ignored entirely rather than clamped.
+The driver was already standing there, so it says nothing about when they could have set
+off, and honouring it would zero the leg — planned jobs routinely carry a slot time later
+than the run that served them, so that would hand out free passes on ordinary rides. The
+cost of that choice is a handful of "arrived before the window opened" legs that keep
+reading as waits.
+
+Nothing is lost: `departed_ts` and `arrived_ts` both stay on the row, and
+`tat_mins + idle_mins` reconstructs the raw elapsed time.
+
+Measured over five days (4,393 legs): 19% of legs got a deduction, median 37 minutes;
+on-time rose 63% → 73% and flagged waits fell 438 → 144. Delivery windows are only 4% of
+stops but carry signal nothing else does — on the flagged waits that had one, the window
+alone cleared 11 that no other stamp explained.
+
 ## The target
 
 ```
@@ -61,12 +95,18 @@ time, because a report is a record of what the driver was measured against on th
 ### Long gaps
 
 A leg spanning a lunch break or a long wait at a clinic is real elapsed time but not a
-slow ride. Legs running more than `LONG_GAP_OVER_TARGET_MINS` (45) past target are
-flagged `long_gap`, shown as "Chờ / nghỉ", and **excluded from the on-time percentage
-and the average** — they still appear in the list and in the leg count.
+slow ride. Legs running more than `LONG_GAP_OVER_TARGET_MINS` (45) past benchmark are
+flagged `long_gap` and shown as "Chờ / nghỉ".
 
-Without this, one lunch break lands as "trễ 130 phút" and every driver learns on day one
-that the report does not describe their work, which costs more than the metric is worth.
+The flag **labels, it does not excuse**: these legs are graded like any other and count
+in the on-time percentage. They are excluded only from the **average**, where one lunch
+break would move the number more than a driver's riding does. Excluding them from grading
+too — which is what this used to do — hid roughly 11% of every day, so the percentage
+described only the part of the day that was already fine.
+
+Grading them is defensible only because the fair-start rule runs first: by the time a leg
+reaches this threshold, time before the job existed has already been taken out, so what
+remains is time the driver could actually have used.
 
 ## Distances
 

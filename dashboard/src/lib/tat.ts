@@ -18,6 +18,15 @@
  *   Time on the road. Loading, queueing and paperwork at either end sit outside
  *   it, because they are neither the driver's choice nor their pace.
  *
+ * ...EXCEPT THAT IT CANNOT START BEFORE THE WORK EXISTED.
+ *   If the next job was only created an hour after the driver finished the last
+ *   one, that hour is not theirs to have spent better. Measured over three days:
+ *   of 256 legs flagged as waits, 172 were the job simply not existing yet, at a
+ *   median 91 minutes charged to the driver each. Left alone the effect runs
+ *   backwards — the quieter the day, the worse the driver scores — so the clock
+ *   starts at the LATER of leaving the last stop and the job becoming available.
+ *   See availabilityOf().
+ *
  * THE TARGET — max(1, ceil(km)) * 4 minutes, i.e. an effective 15 km/h.
  *   Sounds slow read as a speed; it is not, once HCMC traffic, lights, parking
  *   and the walk into a clinic are inside the same number. The ceil is on whole
@@ -61,6 +70,11 @@ export const MINS_PER_KM = 4;
  * (They were previously excluded from grading, which kept a lunch break from
  * reading as "trễ 130 phút" but also hid roughly 11% of every day from the
  * on-time figure entirely.)
+ *
+ * Measured against the FAIR clock, so a leg only reaches this threshold on time
+ * the driver could actually have used. Time before the next job existed has
+ * already been taken out by then — which is what makes grading waits defensible
+ * rather than merely strict.
  */
 export const LONG_GAP_OVER_TARGET_MINS = 45;
 
@@ -88,8 +102,18 @@ export interface TatLeg {
   to_lng: number | null;
   arrived_ts: string | null;
 
+  /** The GRADED clock: fair start → arrival. Raw elapsed time is not lost —
+   *  departed_ts and arrived_ts are both on the row, so tat_mins + idle_mins
+   *  reconstructs it. */
   tat_mins: number | null;
   tat_basis: "arrived" | "completed" | null;
+  /** When the destination job became available, if that moved this leg's start.
+   *  Null means nothing was deducted — either the job already existed when the
+   *  driver left, or its availability post-dated their arrival. Stored so a
+   *  disputed verdict can be explained rather than asserted. */
+  available_at: string | null;
+  /** Minutes excluded because the job did not exist yet. Zero on most legs. */
+  idle_mins: number;
   distance_km: number | null;
   target_mins: number | null;
   /** Goong's own travel-time estimate for this leg. REFERENCE ONLY — it never
@@ -115,14 +139,62 @@ function toIso(ts: string | null | undefined): string | null {
   return `${ts.slice(0, 10)}T${ts.slice(11, 19)}+07:00`;
 }
 
-function minutesBetween(fromIso: string | null, toIsoTs: string | null): number | null {
-  if (!fromIso || !toIsoTs) return null;
-  const ms = Date.parse(toIsoTs) - Date.parse(fromIso);
-  if (!Number.isFinite(ms)) return null;
-  // Negative means the stamps are out of order — a driver catching up on taps
-  // after the fact. Not a measurement, so it is dropped rather than clamped.
-  if (ms < 0) return null;
+/** Whole minutes from an instant to a timestamp. A negative span means the stamps
+ *  are out of order — a driver catching up on taps after the fact — which is not a
+ *  measurement, so it is dropped rather than clamped to zero. */
+function minsFrom(startMs: number, endIso: string | null): number | null {
+  if (!endIso || !Number.isFinite(startMs)) return null;
+  const ms = Date.parse(endIso) - startMs;
+  if (!Number.isFinite(ms) || ms < 0) return null;
   return Math.round(ms / 60_000);
+}
+
+/**
+ * Delivery windows arrive TIME-ONLY ("11:00:00+07"), so they mean nothing as an
+ * instant until a date is attached. The stop's own deliveryDate is authoritative;
+ * the trip date stands in for a stop that carries none.
+ *
+ * The EARLIEST window opening wins when a stop has several. A driver serving the
+ * afternoon window of a job that also had a morning one could have set off in the
+ * morning, so the later window would deduct time they did have available.
+ */
+function windowOpensAt(s: TimelineStop, tripDate: string): string | null {
+  const windows = Array.isArray(s.deliveryWindows) ? s.deliveryWindows : [];
+  let earliest: string | null = null;
+  for (const w of windows) {
+    const m = typeof w?.timeFrom === "string" ? /^(\d{2}):(\d{2})(?::(\d{2}))?/.exec(w.timeFrom) : null;
+    if (!m) continue;
+    const date = typeof s.deliveryDate === "string" && /^\d{4}-\d{2}-\d{2}/.test(s.deliveryDate)
+      ? s.deliveryDate.slice(0, 10)
+      : tripDate;
+    const iso = `${date}T${m[1]}:${m[2]}:${m[3] ?? "00"}+07:00`;
+    if (!earliest || Date.parse(iso) < Date.parse(earliest)) earliest = iso;
+  }
+  return earliest;
+}
+
+/**
+ * The earliest moment the driver could have set off toward this stop, as epoch ms.
+ *
+ * The LATEST of every condition that had to be met, because they are conjunctive:
+ * a job pushed to the driver at 09:00 but not startable until 11:00 was not
+ * rideable at 09:00. Coverage across 4,304 stops — scheduledDeliveryTs 100%,
+ * sendToDriverAt 18%, allowedToStartAt 8%, delivery windows 4% — so the scheduled
+ * stamp does the bulk of the work and the others sharpen it where present.
+ *
+ * Windows are low-volume but high-precision: on the 25 flagged waits that had one,
+ * the window alone cleared 11 that no other stamp explained.
+ */
+function availabilityOf(s: TimelineStop, tripDate: string): number | null {
+  const stamps = [
+    toIso(s.sendToDriverAt),
+    toIso(s.allowedToStartAt),
+    toIso(s.scheduledDeliveryTs),
+    windowOpensAt(s, tripDate),
+  ]
+    .map((iso) => (iso ? Date.parse(iso) : NaN))
+    .filter((ms) => Number.isFinite(ms));
+  return stamps.length > 0 ? Math.max(...stamps) : null;
 }
 
 /** Minutes a leg of this length is allowed. Null distance → no target, and the
@@ -165,10 +237,21 @@ const driverIdOf = (route: TimelineRoute): string | null => {
  * ride across the city).
  */
 /** A stop as read off the timeline, once it is known to have been completed. */
-interface StopEntry { stop: TimelineStop; completed: string; arrived: string | null }
+interface StopEntry {
+  stop: TimelineStop;
+  completed: string;
+  arrived: string | null;
+  /** Epoch ms, or null when the stop carries no availability stamp at all. */
+  available: number | null;
+}
 
 /** One VISIT: the driver being at a place once, however many jobs they worked there. */
-interface Visit { stop: TimelineStop; arrived: string | null; departed: string }
+interface Visit {
+  stop: TimelineStop;
+  arrived: string | null;
+  departed: string;
+  available: number | null;
+}
 
 /** Identity of a place. customer_id is the real answer; coordinates are the fallback
  *  for a stop that carries none, truncated to ~1 m so GPS jitter at one address does
@@ -212,9 +295,16 @@ function mergeConsecutiveStops(ordered: StopEntry[]): Visit[] {
         prev.departed = e.completed;
         prev.stop = e.stop; // carry the last job's ids, matching the departure stamp
       }
+      // EARLIEST availability wins across a merged visit, the opposite of the rule
+      // within a single stop. The driver rode there once, and the first job that
+      // existed is what let them go — a later sibling job cannot retroactively
+      // make that journey unavailable.
+      if (e.available != null && (prev.available == null || e.available < prev.available)) {
+        prev.available = e.available;
+      }
       continue;
     }
-    visits.push({ stop: e.stop, arrived: e.arrived, departed: e.completed });
+    visits.push({ stop: e.stop, arrived: e.arrived, departed: e.completed, available: e.available });
   }
   return visits;
 }
@@ -228,8 +318,13 @@ export function legsForRoute(route: TimelineRoute, tripDate: string): TatLeg[] {
 
   const ordered = (route.orderedStops ?? [])
     .filter((s) => !isChamCong(s as unknown as { referenceNumber?: string | null; jobLabels?: unknown }))
-    .map((s) => ({ stop: s, completed: toIso(s.activityCompletedTs), arrived: toIso(s.activityArrivedTs) }))
-    .filter((e): e is { stop: TimelineStop; completed: string; arrived: string | null } => e.completed !== null)
+    .map((s) => ({
+      stop: s,
+      completed: toIso(s.activityCompletedTs),
+      arrived: toIso(s.activityArrivedTs),
+      available: availabilityOf(s, tripDate),
+    }))
+    .filter((e): e is StopEntry => e.completed !== null)
     .sort((a, b) => Date.parse(a.completed) - Date.parse(b.completed));
 
   const visits = mergeConsecutiveStops(ordered);
@@ -242,8 +337,26 @@ export function legsForRoute(route: TimelineRoute, tripDate: string): TatLeg[] {
     // Prefer the next visit's arrival; fall back to its departure when the driver
     // never tapped "da den". tat_basis records which was used, so an inferred leg
     // (which includes time spent at the destination) can be told apart later.
-    const byArrival = minutesBetween(from.departed, to.arrived);
-    const byCompletion = byArrival == null ? minutesBetween(from.departed, to.departed) : null;
+    const reachedIso = to.arrived ?? to.departed;
+    const departedMs = Date.parse(from.departed);
+    const reachedMs = Date.parse(reachedIso);
+
+    // FAIR START. The clock begins when the driver left the last stop, or when the
+    // next job became theirs to ride toward — whichever is later.
+    //
+    // Availability that post-dates the ARRIVAL is discarded rather than clamped.
+    // The driver was already standing there, so it says nothing about when they
+    // could have set off; honouring it would zero the leg and hand a free pass to
+    // every planned job whose slot time sits after the run that served it. That
+    // leaves a handful of "arrived before the window opened" legs still reading as
+    // waits, which is the conservative error to make — the flag explains them, and
+    // no driver is credited for a ride the data cannot vouch for.
+    const avail = to.available;
+    const startMs = avail != null && avail > departedMs && avail < reachedMs ? avail : departedMs;
+    const deducts = startMs !== departedMs;
+
+    const byArrival = minsFrom(startMs, to.arrived);
+    const byCompletion = byArrival == null ? minsFrom(startMs, to.departed) : null;
     const tatMins = byArrival ?? byCompletion;
     const basis: TatLeg["tat_basis"] = byArrival != null ? "arrived" : byCompletion != null ? "completed" : null;
 
@@ -274,6 +387,8 @@ export function legsForRoute(route: TimelineRoute, tripDate: string): TatLeg[] {
 
       tat_mins: tatMins,
       tat_basis: basis,
+      available_at: deducts ? new Date(startMs).toISOString() : null,
+      idle_mins: deducts ? Math.round((startMs - departedMs) / 60_000) : 0,
       distance_km: null,
       target_mins: null,
       eta_mins: null,

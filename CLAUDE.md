@@ -138,7 +138,15 @@ These are the things most likely to burn a future agent working on this codebase
    three clinics before the lab run rides three legs, and the job-shaped view would
    invent trips starting where they had already left. `distance_km` / `target_mins` are
    frozen onto each row at archive time, so retuning `MINS_PER_KM` never rewrites
-   history. See `docs/driver-tat.md`.
+   history.
+
+   **`tat_mins` is the FAIR clock, not raw elapsed.** It starts at the later of leaving
+   the last stop and the next job becoming available, so time before the job existed is
+   not charged to the driver — `idle_mins` records what was taken off, and
+   `tat_mins + idle_mins` is the raw span. Without it the report ran backwards: two
+   thirds of all flagged waits were simply "the job did not exist yet", and the quieter
+   the day the worse a driver scored. Changing the rule requires re-archiving, because
+   the clock is frozen onto the row like the distance. See `docs/driver-tat.md`.
 
 8. **TAT archiving rides the assign cron — do NOT add a schedule for it.** `/api/assign/cron`
    calls `archiveSealedDays()` in `after()`, *before* the arm check so it still fires on

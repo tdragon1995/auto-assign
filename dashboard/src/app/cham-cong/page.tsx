@@ -109,6 +109,11 @@ interface TatLegCardData {
   long_gap: boolean;
   on_time: boolean | null;
   estimated: boolean;
+  /** Minutes not charged because the next job did not exist yet, and the time it
+   *  appeared. Both, or the shorter number looks like a mistake against the
+   *  departure and arrival stamps sitting right beside it. */
+  idle_mins: number;
+  available_at: string | null;
 }
 
 interface TatDay {
@@ -415,6 +420,17 @@ function TatLegRow({ leg }: { leg: TatLegCardData }) {
             </span>
           )}
         </div>
+      )}
+
+      {/* The deduction, spelled out. A driver reading "08:00 → 11:30" above and
+          "25 phut" beside it will assume the report is broken unless the row also
+          says where the clock actually started and why. Stated as something taken
+          off rather than as a correction: the waiting was never their doing. */}
+      {leg.idle_mins > 0 && (
+        <p className="text-[11px] text-sky-700">
+          Chưa có việc mới nên chưa tính giờ{leg.available_at ? ` — tính từ ${leg.available_at}` : ""}.
+          Đã trừ {fmtMins(leg.idle_mins)} chờ việc.
+        </p>
       )}
 
       {leg.long_gap && (

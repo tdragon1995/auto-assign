@@ -62,6 +62,14 @@ interface LegCard {
   on_time: boolean | null;
   long_gap: boolean;
   estimated: boolean;
+  /** Minutes taken off the clock because the next job did not exist yet. Shown
+   *  on the leg so the driver sees the allowance rather than just a shorter
+   *  number they have no way to account for. */
+  idle_mins: number;
+  /** HH:mm the next job became available, when that moved the leg's start. The
+   *  deduction is meaningless without it: "25 minutes" under a 08:00 → 11:30 row
+   *  reads as a bug until the row also says the work appeared at 11:05. */
+  available_at: string | null;
 }
 
 const timeFmt = new Intl.DateTimeFormat("en-GB", {
@@ -106,6 +114,10 @@ function toCard(l: TatLeg): LegCard {
     benchmark_mins: l.benchmark_mins ?? l.target_mins ?? null,
     on_time: l.on_time,
     long_gap: l.long_gap,
+    // Rows archived before the fair-start rule shipped carry no value; they had
+    // nothing deducted, so zero is the truth for them and not merely a default.
+    idle_mins: Number(l.idle_mins) || 0,
+    available_at: hhmm(l.available_at ?? null),
     // The driver never tapped "đã đến", so the arrival stamp is really the
     // completion stamp and the minutes include time spent at the destination.
     estimated: l.tat_basis === "completed",
