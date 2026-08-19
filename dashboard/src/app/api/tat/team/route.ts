@@ -93,9 +93,13 @@ export async function GET(req: NextRequest) {
       const s = summarize(days);
       return {
         driver_id,
-        // Strip the internal staff code the fleet prefixes onto names
-        // ("F - C - DC100320 Lý Chánh Hùng") so the table reads as people.
-        driver_name: (name ?? "").replace(/^.*?(?:PT|DC)\d+\s+/i, "").trim() || name || driver_id.slice(0, 8),
+        // The FULL record name, staff code and all. It used to be trimmed here,
+        // which quietly defeated the table's own formatting: with the code already
+        // gone there was nothing left to show beside the name, and the two rows a
+        // driver with both a part-time and a full-time account produces were
+        // indistinguishable. Trimming happens once, on the way to the screen, so
+        // the CSV can still carry the code that attendance and leave are keyed on.
+        driver_name: name || driver_id.slice(0, 8),
         days_worked: days.length,
         ...s,
       };

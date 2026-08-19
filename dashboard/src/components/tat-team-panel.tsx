@@ -217,8 +217,13 @@ export function TatTeamPanel() {
 
       {data && (
         <p className="text-[11px] text-slate-400 px-3 py-2 border-t border-slate-200 shrink-0">
-          Mục tiêu mỗi chặng = số km làm tròn lên × {data.mins_per_km} phút. Chặng chờ/nghỉ dài
-          không tính vào tỉ lệ đúng giờ. Xếp hạng theo tỉ lệ đúng giờ, rồi theo số chặng.
+          {/* This line said waits were excluded from the on-time rate. They have been
+              graded like any other leg since the fair-start clock landed, so it was
+              describing a rule that no longer exists — the worst kind of stale text,
+              because a supervisor would have read it and believed it. */}
+          Mục tiêu mỗi chặng = số km làm tròn lên × {data.mins_per_km} phút, hoặc thời gian
+          bản đồ ước tính nếu cao hơn. Chặng đi từ D001 ra chi nhánh vẫn tính km nhưng không
+          chấm giờ. Xếp hạng theo tỉ lệ đúng giờ, rồi theo số chặng.
         </p>
       )}
     </div>
