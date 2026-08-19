@@ -289,5 +289,35 @@ check("the 1.8 km case loosens from 8 to 14", benchmarkMinsFor(targetMinsFor(1.8
     legs[0]?.tat_mins === 90 && legs[0]?.idle_mins === 0, `${legs[0]?.tat_mins} / ${legs[0]?.idle_mins}`);
 }
 
+// ── 15. The lab → branch run is not measured ────────────────────────────────
+// Repositioning, not delivery: no samples aboard, no deadline, and how long it
+// takes is a routing decision. ~15% of all legs. The RETURN run is the whole
+// point of the fleet and stays measured, so the exclusion is one-directional.
+{
+  const legs = legsForRoute(route([
+    stop({ id: 1, cust: "D001", name: "BRA - D001", lat: 10.77, lng: 106.66, arrived: "07:00:00", completed: "07:20:00" }),
+    stop({ id: 2, cust: "D014", name: "BRA - D014", lat: 10.98, lng: 106.65, arrived: "08:10:00", completed: "08:30:00" }),
+    stop({ id: 3, cust: "D001", name: "BRA - D001", lat: 10.77, lng: 106.66, arrived: "09:40:00", completed: "10:00:00" }),
+  ]), DATE);
+
+  check("lab → branch is dropped, branch → lab is kept", legs.length === 1, `got ${legs.length}`);
+  check("the surviving leg is the sample run home",
+    legs[0]?.from_customer_id === "D014" && legs[0]?.to_customer_id === "D001",
+    `${legs[0]?.from_customer_id} → ${legs[0]?.to_customer_id}`);
+  check("seq still starts at 1 after a drop", legs[0]?.seq === 1, String(legs[0]?.seq));
+}
+
+// A clinic sits between the lab and the branch: nothing is dropped, because the
+// lab's next stop is a customer, not a branch.
+{
+  const legs = legsForRoute(route([
+    stop({ id: 1, cust: "D001", name: "BRA - D001", lat: 10.77, lng: 106.66, arrived: "07:00:00", completed: "07:20:00" }),
+    stop({ id: 2, cust: "CL", name: "42460373 - D2 - LDCua - Victoria", lat: 10.80, lng: 106.70, arrived: "07:50:00", completed: "08:00:00" }),
+    stop({ id: 3, cust: "D014", name: "BRA - D014", lat: 10.98, lng: 106.65, arrived: "08:50:00", completed: "09:00:00" }),
+  ]), DATE);
+
+  check("lab → client → branch keeps both legs", legs.length === 2, `got ${legs.length}`);
+}
+
 console.log(failures === 0 ? "\nAll TAT leg checks passed." : `\n${failures} check(s) FAILED.`);
 process.exitCode = failures === 0 ? 0 : 1;

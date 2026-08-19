@@ -309,6 +309,27 @@ function mergeConsecutiveStops(ordered: StopEntry[]): Visit[] {
   return visits;
 }
 
+/** The central lab, and any branch, as they are named in Cartrack's customer
+ *  records ("BRA - D001", "BRA - D014"). */
+const CENTRAL_LAB_NAME = "BRA - D001";
+const BRANCH_NAME = /^BRA\s*-\s*D\d+$/;
+
+/**
+ * The outbound run from the lab to a branch is not measured.
+ *
+ * It carries no samples and no deadline — the driver is repositioning, usually
+ * on the way to the next collection, and how long it takes is a routing decision
+ * rather than a performance one. Measured over August it is 2,457 legs, ~15% of
+ * everything, all of it graded against a target that describes nothing anyone is
+ * managing.
+ *
+ * ONE DIRECTION ONLY. Branch → lab is the sample run: it is the whole point of
+ * the fleet, it is time-critical, and it stays measured.
+ */
+function isUnmeasuredOutbound(fromName: string | null, toName: string | null): boolean {
+  return fromName === CENTRAL_LAB_NAME && toName !== CENTRAL_LAB_NAME && BRANCH_NAME.test(toName ?? "");
+}
+
 export function legsForRoute(route: TimelineRoute, tripDate: string): TatLeg[] {
   const driverId = driverIdOf(route);
   if (!driverId) return [];
@@ -333,6 +354,12 @@ export function legsForRoute(route: TimelineRoute, tripDate: string): TatLeg[] {
   for (let i = 0; i < visits.length - 1; i++) {
     const from = visits[i];
     const to = visits[i + 1];
+
+    // Dropped before any measuring happens, so it never reaches the row count,
+    // the on-time percentage or the driver's screen. Skipping a pair leaves the
+    // legs either side of it untouched — they are consecutive visits, not a chain
+    // that needs relinking.
+    if (isUnmeasuredOutbound(from.stop.customerName ?? null, to.stop.customerName ?? null)) continue;
 
     // Prefer the next visit's arrival; fall back to its departure when the driver
     // never tapped "da den". tat_basis records which was used, so an inferred leg

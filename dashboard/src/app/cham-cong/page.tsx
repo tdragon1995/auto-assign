@@ -3,6 +3,7 @@
 import { useEffect, useState, useMemo, useRef } from "react";
 import { Calendar, Clock, ClipboardCheck, FileText, NotepadText, CalendarDays, Search, Truck, MapPin, ArrowLeftRight, CheckCircle2, LogOut, RefreshCw, AlertCircle, LogIn, Loader2, Gauge, ChevronRight } from "lucide-react";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
+import { driverDisplayName, placeName } from "@/lib/display-names";
 
 interface Driver {
   driver_id: string;
@@ -325,11 +326,6 @@ function TatHeadline({ summary, title }: { summary: TatSummary; title: string })
           <div className="h-2.5 rounded-full bg-gray-100 overflow-hidden">
             <div className={`h-full rounded-full ${tone} transition-all`} style={{ width: `${pct ?? 0}%` }} />
           </div>
-          {summary.long_gaps > 0 && (
-            <p className="text-[11px] text-amber-700 pt-0.5">
-              Trong đó {summary.long_gaps} chặng có thời gian chờ/nghỉ dài (đánh dấu màu cam).
-            </p>
-          )}
         </div>
       ) : (
         <div className="px-4 pb-4">
@@ -354,27 +350,29 @@ function TatLegRow({ leg }: { leg: TatLegCardData }) {
   const bench = leg.benchmark_mins ?? leg.target_mins;
   const over = late && leg.tat_mins != null && bench != null ? leg.tat_mins - bench : null;
   const chipText = good ? "Đúng giờ" : late ? `Trễ ${over} phút` : "—";
+  const startShown = leg.idle_mins > 0 && leg.available_at ? leg.available_at : leg.left_at;
 
   // A wait is graded like any other leg, but it must not LOOK like an ordinary
   // slow ride: the reason it ran long is completely different, and a supervisor
   // reading a month needs to separate "rode slowly" from "stood still for an
-  // hour" at a glance. Amber edge plus its own badge, not a different verdict.
+  // hour" at a glance. The red edge and its own badge carry that on their own —
+  // the sentence that used to spell it out is gone.
   return (
     <div className={`rounded-xl border p-3 space-y-2 ${
-      leg.long_gap ? "border-gray-200 border-l-4 border-l-amber-400 bg-amber-50/40" : "border-gray-200"
+      leg.long_gap ? "border-gray-200 border-l-4 border-l-red-500 bg-red-50/40" : "border-gray-200"
     }`}>
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-start gap-1.5 min-w-0">
           <MapPin size={14} className="text-blue-600 shrink-0 mt-0.5" />
           <p className="text-sm font-medium text-gray-800 min-w-0">
-            {leg.from ?? "—"}
+            {placeName(leg.from) || "—"}
             <span className="text-gray-400"> → </span>
-            {leg.to ?? "—"}
+            {placeName(leg.to) || "—"}
           </p>
         </div>
         <div className="shrink-0 flex items-center gap-1.5">
           {leg.long_gap && (
-            <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">
+            <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700">
               Chờ / nghỉ
             </span>
           )}
@@ -383,10 +381,14 @@ function TatLegRow({ leg }: { leg: TatLegCardData }) {
       </div>
 
       <div className="flex items-center gap-x-3 gap-y-1 text-xs text-gray-500 flex-wrap">
-        {leg.left_at && leg.arrived_at && (
+        {/* When the clock started late because the next job did not exist yet, the
+            COUNTED start is shown, not the departure. The note that used to explain
+            the gap is gone, and "08:00 → 11:30" beside "25 phút" without it reads
+            as a broken report. Showing 11:05 → 11:30 needs no explanation. */}
+        {startShown && leg.arrived_at && (
           <span className="inline-flex items-center gap-1">
             <Clock size={12} className="text-gray-400" />
-            {leg.left_at} → {leg.arrived_at}
+            {startShown} → {leg.arrived_at}
           </span>
         )}
         {leg.distance_km != null && <span>{leg.distance_km} km</span>}
@@ -399,45 +401,18 @@ function TatLegRow({ leg }: { leg: TatLegCardData }) {
         {leg.tat_mins == null && <span className="text-gray-400">Chưa đủ dữ liệu</span>}
       </div>
 
-      {/* The two references, side by side. "Mục tiêu" is the flat rule the driver
-          is actually graded on and can check in their head; "Goong" is what a
-          routing service thinks this particular road takes. Showing both is what
-          separates a slow driver from a slow route — the flat rule alone cannot
-          tell those apart, and that ambiguity is where a late leg turns into an
-          argument. Goong is deliberately styled as a note, not a verdict. */}
+      {/* The target alone. How it was arrived at — the flat per-km rule vs the
+          map's estimate for that road — used to be printed beside it; it is the
+          kind of detail that answers a question nobody on a phone was asking. */}
       {bench != null && (
         <div className="flex items-center gap-2 flex-wrap">
           <span className="inline-flex items-baseline gap-1 text-[11px] rounded-md bg-gray-100 px-2 py-1">
             <span className="text-gray-500">Mục tiêu</span>
             <span className="font-semibold text-gray-700">{bench} phút</span>
           </span>
-          {/* The two inputs behind that number, so the benchmark is never a figure
-              the driver has to take on trust. Shown only when they differ — when
-              they agree, repeating it twice is noise. */}
-          {leg.target_mins != null && leg.eta_mins != null && leg.target_mins !== leg.eta_mins && (
-            <span className="text-[11px] text-gray-400">
-              (4 × km: {leg.target_mins} · Goong: {leg.eta_mins} — lấy số cao hơn)
-            </span>
-          )}
         </div>
       )}
 
-      {/* The deduction, spelled out. A driver reading "08:00 → 11:30" above and
-          "25 phut" beside it will assume the report is broken unless the row also
-          says where the clock actually started and why. Stated as something taken
-          off rather than as a correction: the waiting was never their doing. */}
-      {leg.idle_mins > 0 && (
-        <p className="text-[11px] text-sky-700">
-          Chưa có việc mới nên chưa tính giờ{leg.available_at ? ` — tính từ ${leg.available_at}` : ""}.
-          Đã trừ {fmtMins(leg.idle_mins)} chờ việc.
-        </p>
-      )}
-
-      {leg.long_gap && (
-        <p className="text-[11px] text-amber-700">
-          Chặng này lâu hơn mục tiêu rất nhiều — thường là giờ nghỉ trưa hoặc chờ lấy mẫu tại điểm.
-        </p>
-      )}
       {leg.estimated && !leg.long_gap && (
         <p className="text-[11px] text-gray-400">
           ≈ Chưa bấm &quot;đã đến&quot;, nên tính theo giờ hoàn thành (có thể lâu hơn thực tế).
@@ -593,7 +568,20 @@ function fmtDate(dateStr: string): string {
   return `Ngày ${d} tháng ${mo}, ${y}`;
 }
 
-function DateField({ value, min, onChange }: { value: string; min: string; onChange: (v: string) => void }) {
+/** A tappable date row that opens the native picker.
+ *
+ *  A bare `<input type="date">` is what this replaces: on a phone it renders as a
+ *  cramped native control that is hard to hit and shows an empty "dd/mm/yyyy"
+ *  rather than the chosen day. Here the input is stretched invisibly across the
+ *  whole row, so the tap target is the entire field and what the driver reads is
+ *  the formatted date underneath.
+ *
+ *  min and max are both optional — one screen looks forward, another only ever
+ *  backward. */
+function DateField(
+  { value, min, max, onChange }:
+  { value: string; min?: string; max?: string; onChange: (v: string) => void },
+) {
   const ref = useRef<HTMLInputElement>(null);
 
   function open() {
@@ -615,8 +603,14 @@ function DateField({ value, min, onChange }: { value: string; min: string; onCha
         ref={ref}
         type="date"
         min={min}
+        max={max}
         value={value}
-        onChange={(e) => { if (!e.target.value || e.target.value >= min) onChange(e.target.value); }}
+        onChange={(e) => {
+          const v = e.target.value;
+          // A typed-in date bypasses min/max on some mobile keyboards, so the
+          // bounds are re-checked here rather than trusted to the control.
+          if (!v || ((!min || v >= min) && (!max || v <= max))) onChange(v);
+        }}
         className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
         tabIndex={-1}
       />
@@ -734,7 +728,7 @@ export default function ChamCongPage() {
   // Nhận Việc: logged in = a stored authenticated session. Identity comes from the
   // phone+PIN login itself (bridged to the fleet driver_id) — no name-picker gate.
   const nvLoggedIn = !!nvSession;
-  const nvDisplayName = nvSession ? nvSession.driver_name.replace(/^.*?(?:PT|DC)\d+\s+/i, "").trim() : "";
+  const nvDisplayName = driverDisplayName(nvSession?.driver_name);
 
   // Sunday roster: load when its tab is first opened, mirroring nhan-viec below. Once per
   // page life is enough — ops edits the sheet weekly, not while a driver is looking at it,
@@ -2154,12 +2148,10 @@ export default function ChamCongPage() {
                           <Calendar size={13} className="text-gray-400" />
                           Xem một ngày bất kỳ
                         </label>
-                        <input
-                          type="date"
+                        <DateField
                           max={tatReport.today.date}
                           value={tatOpenDay ?? ""}
-                          onChange={(e) => { if (e.target.value) tatToggleDay(e.target.value); }}
-                          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          onChange={(v) => { if (v) tatToggleDay(v); }}
                         />
                         {tatOpenDay && (
                           <div className="space-y-2 pt-1">
@@ -2205,16 +2197,6 @@ export default function ChamCongPage() {
                         </p>
                         <p className="text-[11px] text-gray-500">
                           Thời gian được tính từ lúc bạn xong điểm này đến lúc tới điểm kế tiếp.
-                        </p>
-                        <p className="text-[11px] text-gray-500">
-                          Mục tiêu lấy <span className="font-semibold">số cao hơn</span> giữa cách tính
-                          trên và thời gian bản đồ (Goong) ước tính cho đúng đoạn đường đó. Đường nào
-                          thực tế đi lâu hơn thì mục tiêu tự động nới ra.
-                        </p>
-                        <p className="text-[11px] text-gray-500">
-                          Chặng <span className="font-semibold text-amber-700">chờ/nghỉ</span> (viền cam)
-                          là chặng lâu hơn mục tiêu trên 45 phút — vẫn được tính đúng/trễ như mọi chặng
-                          khác, chỉ đánh dấu để biết lý do.
                         </p>
                         {tatReport.updated_at && (
                           <p className="text-[11px] text-gray-400">

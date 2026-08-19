@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Loader2, AlertCircle, Download, ChevronLeft, ChevronRight } from "lucide-react";
+import { driverDisplayName, staffCode } from "@/lib/display-names";
 
 interface DriverRow {
   driver_id: string;
@@ -89,6 +90,9 @@ export function TatTeamPanel() {
     const head = ["Tài xế", "Số ngày", "Số chặng", "Đúng giờ", "Được chấm", "Tỉ lệ đúng giờ (%)",
                   "TB mỗi chặng (phút)", "Tổng thời gian chạy (phút)", "Tổng km", "Chờ/nghỉ"];
     const rows = data.drivers.map((d) => [
+      // FULL name here, staff code and all, unlike the table on screen. This file
+      // gets matched against attendance and leave in a spreadsheet, and the code
+      // is what those are keyed on — two drivers share a display name today.
       d.driver_name, d.days_worked, d.trips_total, d.trips_on_time, d.trips_graded,
       d.on_time_pct ?? "", d.avg_tat_mins ?? "", d.total_tat_mins, d.total_km, d.long_gaps,
     ]);
@@ -186,7 +190,13 @@ export function TatTeamPanel() {
                 <tr key={d.driver_id} className="hover:bg-slate-50">
                   <td className="px-3 py-2">
                     <span className="text-slate-400 text-xs mr-1.5">{i + 1}</span>
-                    <span className="font-medium text-slate-800">{d.driver_name}</span>
+                    <span className="font-medium text-slate-800">{driverDisplayName(d.driver_name)}</span>
+                    {/* The staff code stays: about a dozen drivers hold both a
+                        part-time and a full-time account under one personal name,
+                        and without it those are two identical rows. */}
+                    {staffCode(d.driver_name) && (
+                      <span className="text-slate-400 text-[10px] ml-1.5">{staffCode(d.driver_name)}</span>
+                    )}
                   </td>
                   <td className="text-right px-2 py-2 text-slate-600">{d.days_worked}</td>
                   <td className="text-right px-2 py-2 text-slate-700 font-medium">{d.trips_total}</td>
