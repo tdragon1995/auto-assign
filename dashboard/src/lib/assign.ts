@@ -1,5 +1,5 @@
 import type { Config, Driver, FailedJob, Job, LogEntry, LogLevel, Mapping, PickupWarning, TimelineRoute } from "./types";
-import { getDrivers, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, updateJobSendToDriverAt, updateJobScheduledDeliveryTs, unassignJob, optimizeDriverRoute, getJobsByStatusAndDate, getUnassignedJobsFast, getJobsByDate, getTimelineRoutes, timelineRoutesToJobs, jsonRpc, PROXY_DRIVER_ID, type Env } from "./cartrack";
+import { getDrivers, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, updateJobSendToDriverAt, updateJobScheduledDeliveryTs, unassignJob, optimizeDriverRoute, getJobsByStatusAndDate, getUnassignedJobsFast, getJobsByDate, getTimelineRoutes, timelineRoutesToJobs, getJobDetails, jsonRpc, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { publishSnapshot } from "./day-snapshot";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
@@ -54,6 +54,11 @@ const PICKUP_CLOCK_START = "07:00:00";
 // The same moment as it is shown to staff, on the dashboard badge and in the Zalo
 // alert, whenever a job's clock was floored to it.
 const CLOCK_START_HHMM = PICKUP_CLOCK_START.slice(0, 5);
+// How far a booking may post-date its own pickup window before that window is
+// judged to belong to another day. Booking a little way into a live window is
+// ordinary (a client calls at 08:20 for an 08:00–09:05 slot); booking an hour
+// and a half after it opened is not — see dropStaleWindowWarnings.
+const STALE_WINDOW_MIN = 90;
 
 /**
  * Compact "HH:MM" for a Cartrack timestamp. The value is already VN-local in
@@ -370,6 +375,78 @@ function computePickupWarnings(
   }
 
   return warnings;
+}
+
+/** True when the job was booked at least STALE_WINDOW_MIN after its own pickup
+ *  window opened — i.e. the window cannot mean today. Exported for
+ *  scripts/stale-window.test.mts; anything unparseable answers false (keep). */
+export function isStaleWindow(
+  windowTimeFrom: string,
+  today: string,
+  createTs: string | null | undefined,
+): boolean {
+  if (!createTs) return false;
+  const windowStart = parsePickupWindowTime(windowTimeFrom, today);
+  if (!windowStart || isNaN(windowStart.getTime())) return false;
+  const createdMs = parseVnTimestamp(createTs).getTime();
+  if (isNaN(createdMs)) return false;
+  return createdMs - windowStart.getTime() >= STALE_WINDOW_MIN * 60_000;
+}
+
+/**
+ * Drop late warnings whose pickup window had already passed when the job was
+ * BOOKED — those windows belong to another day, not to today's clock.
+ *
+ * Cartrack stores a delivery window as a bare time ("08:00:00+07:00") plus a day
+ * offset from the job's scheduled date, so a job dated today with an 08:00 window
+ * reads as "due at 08:00 this morning" no matter when it was actually booked.
+ * A booking taken at 19:48 for an 08:00–09:05 slot is therefore born ~12 hours
+ * overdue: it clears PICKUP_OVERDUE_MIN and LATE_ALERT_MIN on the very first
+ * cycle that sees it, and the supervisor gets a "trễ ~11h54" ping seconds after
+ * the client booked. Field case: job 34421121, booked 18/08 19:48, alerted the
+ * same evening; the overnight rollover then re-dated it to the 19th and it was
+ * collected in its real window. The alert was pure noise.
+ *
+ * The authoritative signal is create_ts, which we deliberately do NOT read off
+ * the job in hand: on the timeline path create_ts is a stand-in for
+ * scheduledDeliveryTs (midnight), kept that way because the via-leg and return
+ * dedup indexes are built on it. So we ask Cartrack for the real one.
+ *
+ * Gated to warnings that have already crossed LATE_ALERT_MIN — the only ones
+ * that can cost a Zalo push, and the band a mis-dated window lands in
+ * immediately. Genuine warnings below that mark never pay for a fetch. Anything
+ * that fails to resolve is KEPT: a missed suppression is a noisy alert, a wrong
+ * one is a pickup nobody is told about.
+ */
+async function dropStaleWindowWarnings(
+  warnings: PickupWarning[],
+  today: string,
+  env: Env,
+): Promise<PickupWarning[]> {
+  const suspects = warnings.filter(
+    (w) => w.window_time_from && (w.minutes_late ?? 0) + PICKUP_OVERDUE_MIN >= LATE_ALERT_MIN,
+  );
+  if (suspects.length === 0) return warnings;
+
+  const stale = new Set<number>();
+  await Promise.all(
+    suspects.map(async (w) => {
+      try {
+        const { data } = await getJobDetails(w.job_id, env);
+        if (isStaleWindow(w.window_time_from!, today, data?.create_ts)) stale.add(w.job_id);
+      } catch {
+        /* keep the warning — see the fail-safe note above */
+      }
+    }),
+  );
+
+  if (stale.size === 0) return warnings;
+  // Console only: this repeats every cycle for the same job all day, which is
+  // exactly the shape the stored run log filters out (see LOG_DROP_PATTERNS).
+  console.log(
+    `[warnings] ${stale.size} stale-window warning(s) suppressed (booked after the window opened): ${[...stale].join(", ")}`,
+  );
+  return warnings.filter((w) => !stale.has(w.job_id));
 }
 
 /**
@@ -2218,9 +2295,10 @@ export async function autoAssignCycle(
     // inside drops them), but they carry the "driver just finished a stop" evidence
     // the 30-min suppression needs. Both lists were already fetched by this cycle —
     // no extra Cartrack call.
-    const pickupWarnings = computePickupWarnings(
-      [...(assignedJobsToday ?? []), ...(cycleS5 ?? [])],
+    const pickupWarnings = await dropStaleWindowWarnings(
+      computePickupWarnings([...(assignedJobsToday ?? []), ...(cycleS5 ?? [])], today),
       today,
+      env,
     );
     await Promise.all([
       setCycleSnapshot({ held: heldJobs, failed: failedJobs, warnings: pickupWarnings }),

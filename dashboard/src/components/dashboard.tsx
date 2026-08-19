@@ -238,6 +238,42 @@ export function Dashboard() {
     [postManualAssign, syncStatus],
   );
 
+  // "Hẹn giờ" on an unconfigured-customer row. Same endpoint and same parking
+  // machinery as the note-held scheduler: /api/assign/held validates, answers at
+  // once, and does the slow Cartrack writes in the background. Optimistically
+  // hide for FAILED_DISMISS_MS — the row only really leaves the snapshot once the
+  // next cycle rebuilds it, and a parked job is no longer unassigned so it will
+  // not come back. On a rejected request, re-emerge the exact row and say why.
+  const handleScheduleFailed = useCallback(
+    (job: FailedJob, scheduledAt: string, label: string) => {
+      dismissedFailedRef.current.set(job.job_id, Date.now() + FAILED_DISMISS_MS);
+      setFailed((prev) => prev.filter((j) => j.job_id !== job.job_id));
+
+      (async () => {
+        try {
+          const res = await fetch(`/api/assign/held?env=${env}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ jobId: job.job_id, scheduledAt }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+          toast.success(`Đang lên lịch Job ${job.job_id} — ${label}…`);
+          setTimeout(() => syncStatus(), FAILED_DISMISS_MS + 500);
+        } catch (err) {
+          dismissedFailedRef.current.delete(job.job_id);
+          setFailed((prev) =>
+            prev.some((j) => j.job_id === job.job_id) ? prev : [...prev, job],
+          );
+          toast.error(
+            `Không lên lịch được Job ${job.job_id}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      })();
+    },
+    [env, syncStatus],
+  );
+
   const retrySchedule = useCallback(async () => {
     setRetryingSchedule(true);
     try {
@@ -504,6 +540,7 @@ export function Dashboard() {
                     scheduleErrors={scheduleErrors}
                     drivers={drivers}
                     onAssign={handleManualAssign}
+                    onScheduleFailed={handleScheduleFailed}
                     onRetrySchedule={retrySchedule}
                     retryingSchedule={retryingSchedule}
                   />

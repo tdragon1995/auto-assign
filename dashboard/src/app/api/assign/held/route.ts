@@ -89,6 +89,12 @@ export async function POST(req: NextRequest) {
         // The raw reason (e.g. "sched 422") stays in the activity log for
         // debugging; the supervisor-facing banner gets plain language.
         log(`Job ${jobId} - Lên lịch THẤT BẠI: ${err} | ${route}`, "ERROR");
+        // Only note-held jobs belong in the note-review queue. The scheduler is
+        // also reachable from the "Chưa cấu hình (Sheet)" rows, whose jobs carry
+        // no note — putting one there would render a note task with an empty
+        // note. It needs no putting back anyway: a failed park leaves the job
+        // unassigned, so the next cycle re-flags it in "Cần xử lý" by itself.
+        if (!note) return;
         await addHeldJob({ job_id: jobId, customer, note, error: `Không lên lịch được` }).catch(() => {});
       };
       try {

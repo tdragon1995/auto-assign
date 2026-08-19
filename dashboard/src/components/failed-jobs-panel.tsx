@@ -6,6 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 import { DriverPicker } from "./driver-picker";
+import { DayTimePicker, DAY_LABELS, vnNowLabel, scheduledAtFor, isTimePast } from "./day-time-picker";
 import { NoteReviewPanel, type HeldJob } from "./note-review-panel";
 import { SectionHeader } from "./section-header";
 import type { FailedJob, FailedReason, PickupWarning, ConfigDriver } from "@/lib/types";
@@ -82,12 +83,39 @@ function FailedRow({
   job,
   drivers,
   onAssign,
+  onSchedule,
 }: {
   job: FailedJob;
   drivers: ConfigDriver[];
   onAssign: (job: FailedJob, driverId: string) => void;
+  onSchedule: (job: FailedJob, scheduledAt: string, label: string) => void;
 }) {
   const [showDriverSelect, setShowDriverSelect] = useState(false);
+  const [showSchedule, setShowSchedule] = useState(false);
+  const [dayOffset, setDayOffset] = useState(0);
+  const [timeLabel, setTimeLabel] = useState<string | null>(null);
+
+  // Only unconfigured customers get the scheduler. Every other reason is a
+  // roster problem the supervisor fixes by naming a driver; NO_MAPPING is the one
+  // where the right answer is often "not now" — the client isn't in the sheet
+  // yet, so park the job on its real pickup time instead of forcing it out to
+  // whoever is free. Parking drops it off the unassigned list, so it stops
+  // re-flagging every cycle, and it comes back an hour before it is due.
+  const canSchedule = job.reason === "NO_MAPPING";
+  const timeIsPast = isTimePast(dayOffset, timeLabel);
+  const scheduleReady = !!timeLabel && !timeIsPast;
+
+  const pickDay = (offset: number) => {
+    // Switching back to today invalidates a slot that has already gone by.
+    if (offset === 0 && timeLabel && timeLabel <= vnNowLabel()) setTimeLabel(null);
+    setDayOffset(offset);
+  };
+
+  const closeSchedule = () => {
+    setShowSchedule(false);
+    setTimeLabel(null);
+    setDayOffset(0);
+  };
 
   return (
     <div className="px-2 py-1.5 hover:bg-slate-50">
@@ -124,15 +152,34 @@ function FailedRow({
           {job.detail}
         </span>
         <span className="shrink-0 text-[11px] text-slate-500">{job.ts.slice(11, 19)}</span>
-        {!showDriverSelect && (
-          <Button
-            size="sm"
-            variant="outline"
-            className="text-[11px] h-6 px-2 shrink-0"
-            onClick={() => setShowDriverSelect(true)}
-          >
-            Gán thủ công
-          </Button>
+        {!showDriverSelect && !showSchedule && (
+          <>
+            {canSchedule && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-[11px] h-6 px-2 shrink-0"
+                onClick={() => {
+                  setShowDriverSelect(false);
+                  setShowSchedule(true);
+                }}
+              >
+                <Clock className="size-3 shrink-0" strokeWidth={2} aria-hidden />
+                Hẹn giờ
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-[11px] h-6 px-2 shrink-0"
+              onClick={() => {
+                setShowSchedule(false);
+                setShowDriverSelect(true);
+              }}
+            >
+              Gán thủ công
+            </Button>
+          </>
         )}
       </div>
 
@@ -145,6 +192,51 @@ function FailedRow({
           onConfirm={(driverId) => onAssign(job, driverId)}
           onCancel={() => setShowDriverSelect(false)}
         />
+      )}
+
+      {/* Same machinery as the note-held "Hẹn giờ": a delivery window plus a
+          release an hour before it, so the job parks and comes back when it is
+          actually due. */}
+      {showSchedule && (
+        <div className="mt-1 animate-in fade-in slide-in-from-top-1 duration-200 motion-reduce:animate-none space-y-2 rounded-md border border-indigo-200 bg-indigo-50/50 px-2 py-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-700">Hẹn lấy mẫu lúc</span>
+            <button
+              type="button"
+              onClick={closeSchedule}
+              className="rounded px-1 text-xs font-medium text-slate-500 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+            >
+              Hủy
+            </button>
+          </div>
+          <DayTimePicker
+            dayOffset={dayOffset}
+            timeLabel={timeLabel}
+            timeIsPast={timeIsPast}
+            onDay={pickDay}
+            onTime={setTimeLabel}
+            warnId={`failed-time-warn-${job.job_id}`}
+          />
+          {timeIsPast && (
+            <p id={`failed-time-warn-${job.job_id}`} role="alert" className="text-[11px] font-medium text-red-600">
+              Giờ đã qua — chọn sau {vnNowLabel()} hoặc đổi sang ngày mai.
+            </p>
+          )}
+          <div className="flex justify-end">
+            <Button
+              size="sm"
+              className="bg-indigo-600 text-xs hover:bg-indigo-700"
+              disabled={!scheduleReady}
+              onClick={() => {
+                if (!timeLabel || !scheduleReady) return;
+                closeSchedule();
+                onSchedule(job, scheduledAtFor(dayOffset, timeLabel), `${DAY_LABELS[dayOffset]} ${timeLabel}`);
+              }}
+            >
+              {timeLabel ? `Lên lịch ${DAY_LABELS[dayOffset]} ${timeLabel}` : "Chọn giờ để lên lịch"}
+            </Button>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -166,6 +258,7 @@ export function FailedJobsPanel({
   scheduleErrors,
   drivers,
   onAssign,
+  onScheduleFailed,
   onRetrySchedule,
   retryingSchedule,
 }: {
@@ -179,6 +272,7 @@ export function FailedJobsPanel({
   scheduleErrors: ScheduleErrorRow[];
   drivers: ConfigDriver[];
   onAssign: (job: FailedJob, driverId: string) => void;
+  onScheduleFailed: (job: FailedJob, scheduledAt: string, label: string) => void;
   onRetrySchedule: () => void;
   retryingSchedule: boolean;
 }) {
@@ -244,6 +338,7 @@ export function FailedJobsPanel({
                       job={job}
                       drivers={drivers}
                       onAssign={onAssign}
+                      onSchedule={onScheduleFailed}
                     />
                   ))}
                 </div>
