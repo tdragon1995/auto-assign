@@ -308,7 +308,12 @@ export async function attachDistances(legs: TatLeg[]): Promise<DistanceStats> {
   // that is already refusing. The first 429 now short-circuits the rest straight to
   // the fallback. The fallback is deliberately NOT given this signal: one provider's
   // quota must never silence the other.
+  // One signal PER PROVIDER, per day. Separate because either provider going quiet
+  // must not silence the other — that is the entire point of having a fallback —
+  // but each still needs its own brake, or a rate-limited provider is re-asked for
+  // every remaining pair and the day is lost to 429s.
   const signal: QuotaSignal = { quotaExceeded: false };
+  const fallbackSignal: QuotaSignal = { quotaExceeded: false };
   const results = await roadDistancesForPairs(
     measurable.map((l) => ({
       from: { lat: l.from_lat!, lon: l.from_lng! },
@@ -316,6 +321,7 @@ export async function attachDistances(legs: TatLeg[]): Promise<DistanceStats> {
     })),
     undefined,
     signal,
+    fallbackSignal,
   );
 
   measurable.forEach((leg, i) => {

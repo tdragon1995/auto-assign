@@ -50,6 +50,31 @@ export interface QuotaSignal {
  * returning one row per origin, this fails soft to all-null and callers fall
  * back to haversine — worst case is today's behavior, never breakage.
  */
+
+/**
+ * A 429 means "not right now", not "never" — so wait and ask again.
+ *
+ * Both providers were being treated as if a refusal were a permanent property of
+ * the pair: the null was returned, the leg was written unpriced, and because
+ * failures are deliberately never cached the same pair was re-asked on the next
+ * pass and refused again. A whole 50-day backfill was lost to that twice in one
+ * afternoon — once against Goong, then again against the fallback brought in to
+ * cover it.
+ *
+ * Bounded deliberately. Two retries at 600ms and 1800ms cover the burst that a
+ * per-second or per-minute limit produces, without risking the archive's 60s
+ * ceiling. If it is still refusing after that, the limit is not a burst and the
+ * caller should stop asking — which is what the quota signal is for.
+ */
+export async function fetchRetrying(url: string, attempts = 3): Promise<Response> {
+  let res = await fetch(url);
+  for (let i = 1; i < attempts && res.status === 429; i++) {
+    await new Promise((r) => setTimeout(r, 600 * 3 ** (i - 1)));
+    res = await fetch(url);
+  }
+  return res;
+}
+
 export async function goongMatrixMultiOrigin(
   origins: { lat: number; lon: number }[],
   dest: { lat: number; lon: number },
@@ -65,10 +90,10 @@ export async function goongMatrixMultiOrigin(
   const url = `${GOONG_API}?origins=${encodeURIComponent(originStr)}&destinations=${dest.lat},${dest.lon}&vehicle=bike&api_key=${apiKey}`;
 
   try {
-    const res = await fetch(url);
+    const res = await fetchRetrying(url);
     if (!res.ok) {
-      // 429 = Goong rate/daily-quota limit. Flag it so the rest of the batch
-      // short-circuits rather than hammering a capped key.
+      // Still refusing after backoff: not a burst, so stop the rest of the batch
+      // rather than hammering a capped key.
       if (res.status === 429 && signal) signal.quotaExceeded = true;
       return origins.map(() => null);
     }
@@ -105,9 +130,9 @@ export async function goongMatrix(
   const url = `${GOONG_API}?origins=${originLat},${originLon}&destinations=${encodeURIComponent(destStr)}&vehicle=bike&api_key=${apiKey}`;
 
   try {
-    const res = await fetch(url);
+    const res = await fetchRetrying(url);
     if (!res.ok) {
-      // 429 = Goong rate/daily-quota limit — flag so the batch short-circuits.
+      // Still refusing after backoff — treat as exhausted, not as a burst.
       if (res.status === 429 && signal) signal.quotaExceeded = true;
       // Logged because this used to fail in total silence: a refusal returned null
       // with no status anywhere, so ~13,000 unpriced legs looked like missing data
@@ -153,15 +178,22 @@ const hasGaps = (rs: (GoongResult | null)[]) => rs.some((r) => r === null);
 export async function roadMatrixOneToMany(
   originLat: number, originLon: number, destinations: { lat: number; lon: number }[],
   apiKey?: string, signal?: QuotaSignal,
+  /** SEPARATE signal for the fallback. Sharing one would let either provider's
+   *  exhaustion silence the other, which defeats the point of having two — but
+   *  giving the fallback none at all meant a rate-limited VietMap kept being
+   *  hammered for every remaining pair. It needs its own. */
+  fallbackSignal?: QuotaSignal,
 ): Promise<(GoongResult | null)[]> {
   const primary = await goongMatrix(originLat, originLon, destinations, apiKey, signal);
   if (!hasGaps(primary)) return primary;
+  if (fallbackSignal?.quotaExceeded) return primary;
 
   // Ask only for the gaps — a partial answer from Goong is still cheaper than a
   // full second request, and keeps the two providers' coverage disjoint.
   const gapIdx = primary.map((r, i) => (r === null ? i : -1)).filter((i) => i >= 0);
   const backup = await vietmapMatrixOneToMany(
     originLat, originLon, gapIdx.map((i) => ({ lat: destinations[i].lat, lon: destinations[i].lon })),
+    undefined, fallbackSignal,
   );
   const filled = [...primary];
   gapIdx.forEach((i, k) => { if (backup[k]) filled[i] = backup[k]; });
@@ -173,14 +205,16 @@ export async function roadMatrixOneToMany(
 /** N origins → 1 destination, with VietMap covering Goong's misses. */
 export async function roadMatrixManyToOne(
   origins: { lat: number; lon: number }[], dest: { lat: number; lon: number },
-  apiKey?: string, signal?: QuotaSignal,
+  apiKey?: string, signal?: QuotaSignal, fallbackSignal?: QuotaSignal,
 ): Promise<(GoongResult | null)[]> {
   const primary = await goongMatrixMultiOrigin(origins, dest, apiKey, signal);
   if (!hasGaps(primary)) return primary;
+  if (fallbackSignal?.quotaExceeded) return primary;
 
   const gapIdx = primary.map((r, i) => (r === null ? i : -1)).filter((i) => i >= 0);
   const backup = await vietmapMatrixManyToOne(
     gapIdx.map((i) => ({ lat: origins[i].lat, lon: origins[i].lon })), { lat: dest.lat, lon: dest.lon },
+    undefined, fallbackSignal,
   );
   const filled = [...primary];
   gapIdx.forEach((i, k) => { if (backup[k]) filled[i] = backup[k]; });

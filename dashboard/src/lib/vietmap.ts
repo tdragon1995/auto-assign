@@ -23,6 +23,7 @@
  * visible — a leg priced by either is far better than one with no price at all —
  * but it is why the fallback is a fallback and not a load-balanced pair.
  */
+import { fetchRetrying } from "./distance";
 import type { GoongResult, QuotaSignal } from "./distance";
 
 const VIETMAP_MATRIX = "https://maps.vietmap.vn/api/matrix/v4";
@@ -63,9 +64,12 @@ export async function vietmapMatrix(
               `&vehicle=${VEHICLE}&sources=${srcIdx}&destinations=${dstIdx}`;
 
   try {
-    const res = await fetch(url);
+    const res = await fetchRetrying(url);
     if (!res.ok) {
       console.warn(`[vietmap] matrix HTTP ${res.status} for ${origins.length}x${destinations.length}`);
+      // Still refusing after backoff, so this is a standing limit rather than a
+      // burst. Flag it so the rest of the run stops asking — the fallback getting
+      // hammered was how a rate limit turned into a whole lost backfill.
       if (res.status === 429 && signal) signal.quotaExceeded = true;
       return empty();
     }

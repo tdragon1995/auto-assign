@@ -179,6 +179,7 @@ export async function roadDistancesForPairs(
   pairs: { from: { lat: number; lon: number }; to: { lat: number; lon: number } }[],
   apiKey?: string,
   signal?: QuotaSignal,
+  fallbackSignal?: QuotaSignal,
 ): Promise<(ResolvedDistance | null)[]> {
   return resolvePairs(pairs, async (miss) => {
     const out: (GoongResult | null)[] = new Array(miss.length).fill(null);
@@ -230,9 +231,13 @@ export async function roadDistancesForPairs(
 
     // Bounded concurrency, not one-at-a-time. Serially, a cold day's requests were
     // hundreds of round trips end to end, which is what pushed the archive past its
-    // 60-second limit. Capped rather than unbounded because a 429 is worse than a
-    // slow answer: nulls are never cached, so a throttled pair is re-asked forever.
-    const CONCURRENCY = 6;
+    // 60-second limit.
+    //
+    // Lowered from 6 to 3 after 6 rate-limited BOTH providers during a 50-day
+    // backfill. A 429 is far worse here than a slow answer: failures are never
+    // cached, so every throttled pair is re-asked on every future pass and the work
+    // is simply lost. Speed is worth nothing if the answers do not stick.
+    const CONCURRENCY = 3;
     let next = 0;
     await Promise.all(
       Array.from({ length: Math.min(CONCURRENCY, calls.length) }, async () => {
@@ -242,11 +247,11 @@ export async function roadDistancesForPairs(
           const call = calls[idx];
           if (call.kind === "toDest") {
             const dest = miss[call.idxs[0]].to;
-            const res = await roadMatrixManyToOne(call.idxs.map((i) => miss[i].from), dest, apiKey, signal);
+            const res = await roadMatrixManyToOne(call.idxs.map((i) => miss[i].from), dest, apiKey, signal, fallbackSignal);
             call.idxs.forEach((i, j) => { out[i] = res[j] ?? null; });
           } else {
             const origin = miss[call.idxs[0]].from;
-            const res = await roadMatrixOneToMany(origin.lat, origin.lon, call.idxs.map((i) => miss[i].to), apiKey, signal);
+            const res = await roadMatrixOneToMany(origin.lat, origin.lon, call.idxs.map((i) => miss[i].to), apiKey, signal, fallbackSignal);
             call.idxs.forEach((i, j) => { out[i] = res[j] ?? null; });
           }
         }
