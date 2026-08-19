@@ -12,6 +12,18 @@
 -- columns would do precisely that, and the split would be invisible in the UI —
 -- it would just look like two drivers each doing half the work.
 --
+-- ── COLUMN ORDER IS LOAD-BEARING HERE ────────────────────────────────────────
+-- driver_name is APPENDED LAST, which looks untidy beside driver_id but is the
+-- only shape that works. CREATE OR REPLACE VIEW may only add columns to the END
+-- of an existing view; it cannot insert one in the middle or reorder. Putting
+-- driver_name second — the natural place — makes Postgres read the change as
+-- "rename column 2 from trip_date to driver_name" and refuse:
+--
+--     ERROR: 42P16: cannot change name of view column "trip_date" to "driver_name"
+--
+-- Every existing column below therefore keeps its exact original position. The
+-- app selects by name, not position, so nothing downstream cares.
+--
 -- Safe to re-run; replaces the view in place and touches no data.
 -- =============================================================================
 
@@ -19,7 +31,6 @@ create or replace view public.v_tat_daily
 with (security_invoker = on) as
 select
   driver_id,
-  max(driver_name)                               as driver_name,
   trip_date,
   count(*)                                       as trips_total,
   count(*) filter (where tat_mins is not null)   as trips_measured,
@@ -31,6 +42,8 @@ select
   -- driving does.
   round(avg(tat_mins) filter (where not long_gap))::int  as avg_tat_mins,
   coalesce(sum(tat_mins) filter (where not long_gap), 0) as total_tat_mins,
-  round(coalesce(sum(distance_km), 0)::numeric, 1)       as total_km
+  round(coalesce(sum(distance_km), 0)::numeric, 1)       as total_km,
+  -- ── new column, appended last on purpose (see note above) ──
+  max(driver_name)                               as driver_name
 from public.tat_legs
 group by driver_id, trip_date;
