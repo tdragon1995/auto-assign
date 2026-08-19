@@ -6,7 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { SectionHeader } from "./section-header";
 import { toast } from "sonner";
-import type { LeaveOnDate } from "@/lib/leave-config";
+import type { LeaveOnDate, InvalidLeaveRow } from "@/lib/leave-config";
 import type { ConfigDriver } from "@/lib/types";
 
 const TYPE_LABEL: Record<string, string> = {
@@ -522,30 +522,31 @@ function UncoveredRowItem({
 }
 
 /**
- * TODAY's leave with nobody covering it, as a section of the "Cần xử lý" list —
- * same shape as the assign-failure sections beside it, with the substitute
- * editor on the row.
+ * Leave with nobody covering it, as a section of the "Cần xử lý" list — same
+ * shape as the assign-failure sections beside it, with the substitute editor on
+ * the row.
  *
- * Today only, because this list is what needs doing now: an uncovered leave
- * today is a job the engine will refuse to assign today. TOMORROW's belongs to
- * the leave panel below, which is the dedicated place for leave and already
- * lists both days with the same one-field fix.
+ * Rendered once per day, both inside that list: today's is work the engine will
+ * refuse to assign today, tomorrow's is the same problem while it is still free
+ * to fix. `label` names the day, since the rows themselves carry no date.
  *
- * Renders nothing when today is fully covered.
+ * Renders nothing when its day is fully covered, so a covered day costs no space.
  */
 export function UncoveredLeaveSection({
-  today,
+  entries,
+  label,
   drivers,
   onRefresh,
 }: {
-  today: LeaveOnDate[];
+  entries: LeaveOnDate[];
+  label: string;
   drivers: ConfigDriver[];
   onRefresh: () => void;
 }) {
   // Per-instance: the substitute editor also renders inside the panel below, and
   // two <datalist>s cannot share an id.
   const listId = useId();
-  const items = uncoveredWindows(groupByDriver(today));
+  const items = uncoveredWindows(groupByDriver(entries));
   const fillSubs = makeFillSubs(onRefresh);
   const driverNames = new Set(drivers.map((d) => d.name));
   if (items.length === 0) return null;
@@ -553,7 +554,7 @@ export function UncoveredLeaveSection({
   return (
     <div className="space-y-1.5">
       <SubNamesDatalist id={listId} drivers={drivers} />
-      <SectionHeader label="Nghỉ chưa có người thay" count={items.length} tone="amber" />
+      <SectionHeader label={label} count={items.length} tone="amber" />
       <div className="divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200">
         {items.map((item) => (
           <UncoveredRowItem
@@ -569,11 +570,10 @@ export function UncoveredLeaveSection({
   );
 }
 
-/** Count of today's uncovered leave windows — the badge the "Cần xử lý" tab adds
- *  to its own total, so the tab count matches what the list actually shows.
- *  Today only, matching UncoveredLeaveSection. */
-export function uncoveredLeaveCount(today: LeaveOnDate[]): number {
-  return uncoveredWindows(groupByDriver(today)).length;
+/** Uncovered leave windows across the days the "Cần xử lý" list shows, so the
+ *  tab badge counts exactly what the list renders. */
+export function uncoveredLeaveCount(...days: LeaveOnDate[][]): number {
+  return days.reduce((n, d) => n + uncoveredWindows(groupByDriver(d)).length, 0);
 }
 
 /**
@@ -587,12 +587,16 @@ export function uncoveredLeaveCount(today: LeaveOnDate[]): number {
 export function LeaveStatusPanel({
   today,
   tomorrow,
+  invalid = [],
   error = false,
   drivers,
   onRefresh,
 }: {
   today: LeaveOnDate[];
   tomorrow: LeaveOnDate[];
+  /** Rows the loader had to discard for want of a driver_id — a sheet repair,
+   *  not leave the engine knows about. */
+  invalid?: InvalidLeaveRow[];
   error?: boolean;
   drivers: ConfigDriver[];
   onRefresh: () => void;
@@ -645,6 +649,12 @@ export function LeaveStatusPanel({
               {totalUncovered} chưa có người thay
             </span>
           )}
+          {invalid.length > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-red-100 text-red-700 border border-red-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
+              <AlertTriangle className="size-3" strokeWidth={2} />
+              {invalid.length} thiếu driver_id
+            </span>
+          )}
           {totalDuplicate > 0 && (
             <span className="inline-flex items-center gap-1 rounded-full bg-orange-100 text-orange-700 border border-orange-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
               <AlertTriangle className="size-3" strokeWidth={2} />
@@ -656,6 +666,35 @@ export function LeaveStatusPanel({
 
         {open && (
           <div className="mt-2 max-h-[38vh] overflow-y-auto">
+            {invalid.length > 0 && (
+              <div className="mb-2 rounded-md border border-red-300 bg-red-50 px-2 py-1.5">
+                <div className="flex items-center gap-1.5 text-[11px] font-semibold text-red-800">
+                  <AlertTriangle className="size-3.5 shrink-0" strokeWidth={2} />
+                  Dòng nghỉ thiếu driver_id — hệ thống KHÔNG thấy, cần sửa sheet
+                </div>
+                <p className="mt-0.5 text-[11px] leading-snug text-red-900/80">
+                  Cột driver_id trống nên dòng bị bỏ qua hoàn toàn: không hiện ở trên, và engine
+                  vẫn giao việc cho tài xế này trong khung giờ đó. Sửa tên trong cột{" "}
+                  <span className="font-mono">driver</span> cho khớp tab Driver để xlookup ra id.
+                </p>
+                <ul className="mt-1 space-y-0.5">
+                  {invalid.map((r, i) => {
+                    const { code, name } = splitDriverName(r.driver_name);
+                    return (
+                      <li key={`${r.driver_name}-${r.leave_from}-${r.timeLabel ?? "full"}-${i}`} className="flex flex-wrap items-baseline gap-x-1.5 text-xs">
+                        <span className="font-semibold text-slate-900">{name}</span>
+                        {code && <span className="font-mono text-[11px] text-slate-500">{code}</span>}
+                        <span className="text-[11px] text-slate-600">{ddmm(r.leave_from)}</span>
+                        {r.timeLabel && <span className="font-mono text-[11px] text-slate-500">{r.timeLabel}</span>}
+                        {!r.hasSub && (
+                          <span className="text-[11px] font-semibold text-red-700">chưa có người thay</span>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
             <div className="flex flex-wrap gap-x-4 gap-y-1.5">
               <DaySection label="Hôm nay" groups={todayGroups} driverNames={driverNames} onFill={fillSubs} />
               <DaySection label="Ngày mai" groups={tomorrowGroups} driverNames={driverNames} onFill={fillSubs} />

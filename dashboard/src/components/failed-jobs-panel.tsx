@@ -264,6 +264,7 @@ export function FailedJobsPanel({
   onRetrySchedule,
   retryingSchedule,
   leaveToday,
+  leaveTomorrow,
   onLeaveRefresh,
 }: {
   held: HeldJob[];
@@ -280,12 +281,13 @@ export function FailedJobsPanel({
   onRetrySchedule: () => void;
   retryingSchedule: boolean;
   leaveToday: LeaveOnDate[];
+  leaveTomorrow: LeaveOnDate[];
   onLeaveRefresh: () => void;
 }) {
   // Today's uncovered leave counts toward the tab's total: it is a section of
   // this list now, so an otherwise-clear day with an unfilled substitute must
   // not render the "nothing to do" state.
-  const uncoveredLeave = uncoveredLeaveCount(leaveToday);
+  const uncoveredLeave = uncoveredLeaveCount(leaveToday, leaveTomorrow);
   const total = held.length + failed.length + warnings.length + scheduleErrors.length + uncoveredLeave;
 
   // Group assign failures by reason in display-priority order.
@@ -337,9 +339,16 @@ export function FailedJobsPanel({
               />
             )}
 
-            {/* ── Today's leave with nobody covering it ───────────────────── */}
+            {/* ── Leave with nobody covering it, today then tomorrow ──────── */}
             <UncoveredLeaveSection
-              today={leaveToday}
+              entries={leaveToday}
+              label="Nghỉ chưa có người thay"
+              drivers={drivers}
+              onRefresh={onLeaveRefresh}
+            />
+            <UncoveredLeaveSection
+              entries={leaveTomorrow}
+              label="Nghỉ ngày mai chưa có người thay"
               drivers={drivers}
               onRefresh={onLeaveRefresh}
             />

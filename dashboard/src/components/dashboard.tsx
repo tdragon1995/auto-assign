@@ -15,7 +15,7 @@ import { LeaveStatusPanel, uncoveredLeaveCount } from "./leave-status-panel";
 import { toast } from "sonner";
 import type { LogEntry, PickupWarning, FailedJob, ConfigDriver } from "@/lib/types";
 import type { DeploymentBeat } from "@/lib/smart-log-kv";
-import type { LeaveOnDate } from "@/lib/leave-config";
+import type { LeaveOnDate, InvalidLeaveRow } from "@/lib/leave-config";
 
 type Env = "prod" | "uat";
 type RightTab = "attention" | "live" | "admin" | "schedule" | "distance";
@@ -37,9 +37,15 @@ export function Dashboard() {
   const [rightTab, setRightTab] = useState<RightTab>("attention");
   const [scheduleErrors, setScheduleErrors] = useState<ScheduleErrorRow[]>([]);
   const [retryingSchedule, setRetryingSchedule] = useState(false);
-  const [leave, setLeave] = useState<{ today: LeaveOnDate[]; tomorrow: LeaveOnDate[]; error: boolean }>({
+  const [leave, setLeave] = useState<{
+    today: LeaveOnDate[];
+    tomorrow: LeaveOnDate[];
+    invalid: InvalidLeaveRow[];
+    error: boolean;
+  }>({
     today: [],
     tomorrow: [],
+    invalid: [],
     error: false,
   });
 
@@ -161,6 +167,7 @@ export function Dashboard() {
       setLeave({
         today: Array.isArray(data.today) ? data.today : [],
         tomorrow: Array.isArray(data.tomorrow) ? data.tomorrow : [],
+        invalid: Array.isArray(data.invalid) ? data.invalid : [],
         error: false,
       });
     } catch {
@@ -433,7 +440,7 @@ export function Dashboard() {
   // and the list it counts are two different computations of the same number.
   const attentionCount =
     held.length + failed.length + warnings.length + scheduleErrors.length +
-    uncoveredLeaveCount(leave.today);
+    uncoveredLeaveCount(leave.today, leave.tomorrow);
 
   const tabBtn = (active: boolean) =>
     `px-3 py-1.5 text-xs font-semibold rounded transition-colors border flex items-center gap-1.5 whitespace-nowrap ${
@@ -546,6 +553,7 @@ export function Dashboard() {
                     onAssign={handleManualAssign}
                     onScheduleFailed={handleScheduleFailed}
                     leaveToday={leave.today}
+                    leaveTomorrow={leave.tomorrow}
                     onLeaveRefresh={() => loadLeaveStatus()}
                     onRetrySchedule={retrySchedule}
                     retryingSchedule={retryingSchedule}
@@ -557,6 +565,7 @@ export function Dashboard() {
                 <LeaveStatusPanel
                   today={leave.today}
                   tomorrow={leave.tomorrow}
+                  invalid={leave.invalid}
                   error={leave.error}
                   drivers={drivers}
                   onRefresh={() => loadLeaveStatus()}

@@ -35,7 +35,7 @@ export interface LeaveEntry {
 // parsed roster back instead of re-fetching + re-parsing the 68 KB sheet over
 // TLS. Same 5-min freshness on both. The Redis blob is the slimmed LeaveEntry[],
 // so it's far smaller than the raw CSV (drops scheduled_trips/note).
-let cache: { entries: LeaveEntry[]; fetchedAt: number } | null = null;
+let cache: { entries: LeaveEntry[]; invalid: InvalidLeaveRow[]; fetchedAt: number } | null = null;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const REDIS_KEY = "leave:v1:entries";
 
@@ -195,6 +195,41 @@ function coverageOnDate(
 }
 
 /** All leave entries active on `date` (YYYY-MM-DD), for the dashboard panel. */
+/**
+ * A leave row the loader had to THROW AWAY: the sheet's `driver_id` is an
+ * xlookup on the driver name, and when it resolves to nothing the row cannot be
+ * tied to a driver, so it reaches neither the panel nor the engine.
+ *
+ * That silence is the problem. A blank id makes real leave invisible — the
+ * dashboard shows the driver as covered (or absent entirely) and the engine goes
+ * on assigning them. Field case 2026-08-19: Huỳnh Nhật Tân was off 15:00–19:00
+ * with no substitute and nothing anywhere said so, because that one cell was
+ * empty while his morning row resolved fine.
+ *
+ * These are surfaced for a human to repair IN THE SHEET. They are deliberately
+ * NOT recovered by name and fed to the engine: that would change who the engine
+ * believes is working, mid-day, off the back of a cell that is already wrong.
+ */
+export interface InvalidLeaveRow {
+  driver_name: string;
+  loai_nghi: string;
+  leave_from: string;
+  leave_to: string | null;
+  /** "HH:MM–HH:MM" when the row carries a usable window, else null. */
+  timeLabel: string | null;
+  /** Whether the row names a substitute — an uncovered dropped row is worse. */
+  hasSub: boolean;
+}
+
+/** Dropped rows whose date range covers `date`. Same range rule as an unlabeled
+ *  row in coverageOnDate; we cannot do better without the id these rows lack. */
+export function invalidLeaveRowsOnDate(date: string, rows: InvalidLeaveRow[]): InvalidLeaveRow[] {
+  return rows.filter((r) => {
+    const to = r.leave_to || r.leave_from;
+    return !!r.leave_from && r.leave_from <= date && date <= to;
+  });
+}
+
 export function leaveEntriesOnDate(date: string, entries: LeaveEntry[]): LeaveOnDate[] {
   const raw: LeaveOnDate[] = [];
   for (const e of entries) {
@@ -304,17 +339,35 @@ export function findLeaveConflict(candidate: LeaveEntry, existing: LeaveEntry[])
  *  the sheet, then overwrites both — so a supervisor's edit shows at once on
  *  every instance, not just the one that handled the refresh. */
 export async function loadLeaveEntries(force = false): Promise<LeaveEntry[]> {
-  if (!force && cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS) return cache.entries;
+  return (await loadLeaveSheet(force)).entries;
+}
+
+/** The rows loadLeaveEntries had to discard — see {@link InvalidLeaveRow}.
+ *  Shares the cached parse, so asking for it costs nothing extra. */
+export async function loadInvalidLeaveRows(force = false): Promise<InvalidLeaveRow[]> {
+  return (await loadLeaveSheet(force)).invalid;
+}
+
+async function loadLeaveSheet(
+  force = false,
+): Promise<{ entries: LeaveEntry[]; invalid: InvalidLeaveRow[] }> {
+  if (!force && cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS) {
+    return { entries: cache.entries, invalid: cache.invalid };
+  }
 
   // L2: shared Redis copy. Skipped on force; failures fall through to the fetch.
   if (!force) {
     const redis = getRedis();
     if (redis) {
       try {
-        const hit = await redis.get<LeaveEntry[]>(REDIS_KEY);
+        // Values written before the invalid-row split are a bare array; read
+        // them as "entries, nothing discarded" rather than throwing the cache
+        // away on the deploy that changes the shape.
+        const hit = await redis.get<LeaveEntry[] | { entries: LeaveEntry[]; invalid: InvalidLeaveRow[] }>(REDIS_KEY);
         if (hit) {
-          cache = { entries: hit, fetchedAt: Date.now() };
-          return hit;
+          const shaped = Array.isArray(hit) ? { entries: hit, invalid: [] } : hit;
+          cache = { ...shaped, invalid: shaped.invalid ?? [], fetchedAt: Date.now() };
+          return { entries: cache.entries, invalid: cache.invalid };
         }
       } catch { /* fall through to the sheet fetch */ }
     }
@@ -327,8 +380,8 @@ export async function loadLeaveEntries(force = false): Promise<LeaveEntry[]> {
 
     const rows = parseCsv(await res.text());
     if (rows.length < 2) {
-      cache = { entries: [], fetchedAt: Date.now() };
-      return [];
+      cache = { entries: [], invalid: [], fetchedAt: Date.now() };
+      return { entries: [], invalid: [] };
     }
 
     // Header-keyed access — robust to column re-ordering/additions (the sub
@@ -351,7 +404,7 @@ export async function loadLeaveEntries(force = false): Promise<LeaveEntry[]> {
       };
     };
 
-    const entries: LeaveEntry[] = rows.slice(1).map((f) => {
+    const parsed: LeaveEntry[] = rows.slice(1).map((f) => {
       const subs: SubEntry[] = [];
       for (let n = 1; n <= 4; n++) { const s = buildSub(f, n); if (s) subs.push(s); }
       return {
@@ -367,22 +420,44 @@ export async function loadLeaveEntries(force = false): Promise<LeaveEntry[]> {
       // NOTE: do NOT require loai_nghi here. Many rows are typed straight into
       // the sheet with a date + time window but a blank "Loại Nghỉ" cell; those
       // are still real leave and must reach isDriverOnLeave (see its else-branch).
-    }).filter((e) => e.driver_id && e.leave_from);
+    });
 
-    cache = { entries, fetchedAt: Date.now() };
+    const entries = parsed.filter((e) => e.driver_id && e.leave_from);
+
+    // Rows that look like real leave — a named driver and a start date — but
+    // carry no resolved driver_id. They stay OUT of `entries` (unchanged
+    // behaviour for the engine) and are reported for a sheet repair instead of
+    // vanishing without trace. A row with neither a name nor a date is just an
+    // empty sheet row and is not worth reporting.
+    const invalid: InvalidLeaveRow[] = parsed
+      .filter((e) => !e.driver_id && e.leave_from && e.driver_name)
+      .map((e) => {
+        const start = timeToMins(e.gio_bat_dau);
+        const end = timeToMins(e.gio_ket_thuc);
+        return {
+          driver_name: e.driver_name,
+          loai_nghi: e.loai_nghi,
+          leave_from: e.leave_from,
+          leave_to: e.leave_to,
+          timeLabel: start >= 0 && end > start ? `${e.gio_bat_dau}–${e.gio_ket_thuc}` : null,
+          hasSub: e.subs.length > 0,
+        };
+      });
+
+    cache = { entries, invalid, fetchedAt: Date.now() };
     // Write-behind to L2 — but only a non-empty roster. A transient bad read
     // that parses to zero entries must never be shared to every instance (it
     // would read back as "nobody on leave"); leave that failure per-instance.
     if (entries.length) {
       const redis = getRedis();
       if (redis) {
-        try { await redis.set(REDIS_KEY, entries, { ex: REDIS_TTL_S }); } catch { /* cache write is best-effort */ }
+        try { await redis.set(REDIS_KEY, { entries, invalid }, { ex: REDIS_TTL_S }); } catch { /* cache write is best-effort */ }
       }
     }
-    return entries;
+    return { entries, invalid };
   } catch {
     // On fetch failure keep stale cache if available; otherwise return empty
-    return cache?.entries ?? [];
+    return { entries: cache?.entries ?? [], invalid: cache?.invalid ?? [] };
   }
 }
 

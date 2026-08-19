@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { loadLeaveEntries, leaveEntriesOnDate, invalidateLeaveCache } from "@/lib/leave-config";
+import {
+  loadLeaveEntries,
+  loadInvalidLeaveRows,
+  leaveEntriesOnDate,
+  invalidLeaveRowsOnDate,
+  invalidateLeaveCache,
+} from "@/lib/leave-config";
 import { updateLeaveSubs, LeaveWriteError, type LeaveSubWrite } from "@/lib/sheets-writer";
 import { loadDriversFromSheet } from "@/lib/config";
 import { addDays, timeToMins, vnDate } from "@/lib/time";
@@ -14,14 +20,23 @@ export async function GET(req: NextRequest) {
   try {
     const fresh = !!new URL(req.url).searchParams.get("fresh");
     const entries = await loadLeaveEntries(fresh);
+    // Shares the same cached parse as the call above — no second sheet read.
+    const dropped = await loadInvalidLeaveRows();
     const today = vnDate();
     const tomorrow = addDays(today, 1);
     return NextResponse.json({
       today: leaveEntriesOnDate(today, entries),
       tomorrow: leaveEntriesOnDate(tomorrow, entries),
+      // Rows the loader could not attach to a driver, so the panel can ask for a
+      // sheet repair. They are NOT leave the engine knows about — see
+      // InvalidLeaveRow.
+      invalid: [
+        ...invalidLeaveRowsOnDate(today, dropped),
+        ...invalidLeaveRowsOnDate(tomorrow, dropped),
+      ],
     });
   } catch (e) {
-    return NextResponse.json({ today: [], tomorrow: [], error: String(e) }, { status: 500 });
+    return NextResponse.json({ today: [], tomorrow: [], invalid: [], error: String(e) }, { status: 500 });
   }
 }
 
