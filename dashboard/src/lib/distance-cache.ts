@@ -1,5 +1,5 @@
 import { Redis } from "@upstash/redis";
-import { roadMatrixOneToMany, roadMatrixManyToOne, type GoongResult, type QuotaSignal } from "./distance";
+import { roadMatrixOneToMany, roadMatrixManyToOne, type GoongResult, type QuotaSignal, type FallbackState } from "./distance";
 
 /**
  * Redis-backed cache for road distances between fixed locations (customer/PSC
@@ -179,7 +179,7 @@ export async function roadDistancesForPairs(
   pairs: { from: { lat: number; lon: number }; to: { lat: number; lon: number } }[],
   apiKey?: string,
   signal?: QuotaSignal,
-  fallbackSignal?: QuotaSignal,
+  fallback?: FallbackState,
 ): Promise<(ResolvedDistance | null)[]> {
   return resolvePairs(pairs, async (miss) => {
     const out: (GoongResult | null)[] = new Array(miss.length).fill(null);
@@ -247,11 +247,11 @@ export async function roadDistancesForPairs(
           const call = calls[idx];
           if (call.kind === "toDest") {
             const dest = miss[call.idxs[0]].to;
-            const res = await roadMatrixManyToOne(call.idxs.map((i) => miss[i].from), dest, apiKey, signal, fallbackSignal);
+            const res = await roadMatrixManyToOne(call.idxs.map((i) => miss[i].from), dest, apiKey, signal, fallback);
             call.idxs.forEach((i, j) => { out[i] = res[j] ?? null; });
           } else {
             const origin = miss[call.idxs[0]].from;
-            const res = await roadMatrixOneToMany(origin.lat, origin.lon, call.idxs.map((i) => miss[i].to), apiKey, signal, fallbackSignal);
+            const res = await roadMatrixOneToMany(origin.lat, origin.lon, call.idxs.map((i) => miss[i].to), apiKey, signal, fallback);
             call.idxs.forEach((i, j) => { out[i] = res[j] ?? null; });
           }
         }

@@ -24,7 +24,7 @@
  *   kilometres so a driver can check the target in their head: 7 km → 28 minutes.
  */
 import { roadDistancesForPairs } from "./distance-cache";
-import type { QuotaSignal } from "./distance";
+import { newFallbackState, type QuotaSignal } from "./distance";
 import { isChamCong } from "./job-filters";
 import type { TimelineRoute, TimelineStop } from "./types";
 
@@ -317,7 +317,7 @@ export async function attachDistances(legs: TatLeg[]): Promise<DistanceStats> {
   // but each still needs its own brake, or a rate-limited provider is re-asked for
   // every remaining pair and the day is lost to 429s.
   const signal: QuotaSignal = { quotaExceeded: false };
-  const fallbackSignal: QuotaSignal = { quotaExceeded: false };
+  const fallback = newFallbackState();
   const results = await roadDistancesForPairs(
     measurable.map((l) => ({
       from: { lat: l.from_lat!, lon: l.from_lng! },
@@ -325,7 +325,7 @@ export async function attachDistances(legs: TatLeg[]): Promise<DistanceStats> {
     })),
     undefined,
     signal,
-    fallbackSignal,
+    fallback,
   );
 
   measurable.forEach((leg, i) => {

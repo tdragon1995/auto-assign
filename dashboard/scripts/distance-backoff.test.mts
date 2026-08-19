@@ -42,7 +42,7 @@ globalThis.fetch = (async (u: string | URL | Request) => {
   return new Response(okGoong(n), { status: 200 });
 }) as typeof fetch;
 
-const { goongMatrix, roadMatrixOneToMany } = await import("../src/lib/distance");
+const { goongMatrix, roadMatrixOneToMany, newFallbackState } = await import("../src/lib/distance");
 
 // ── A transient 429 is retried, not discarded ───────────────────────────────
 goongHits = 0; goongFailFirst = 1;
@@ -60,22 +60,22 @@ check("the fallback answered instead", covered[0]?.distance_km === 2 && vietmapH
 
 // ── The two providers brake independently ───────────────────────────────────
 const goongSignal = { quotaExceeded: false };
-const fallbackSignal = { quotaExceeded: false };
+const fallback = newFallbackState();
 goongHits = 0; vietmapHits = 0; goongFailFirst = 99;
 
-await roadMatrixOneToMany(10.77, 106.66, [{ lat: 10.78, lon: 106.68 }], undefined, goongSignal, fallbackSignal);
+await roadMatrixOneToMany(10.77, 106.66, [{ lat: 10.78, lon: 106.68 }], undefined, goongSignal, fallback);
 check("a standing 429 trips the PRIMARY's signal", goongSignal.quotaExceeded === true);
-check("but leaves the fallback's untouched", fallbackSignal.quotaExceeded === false);
+check("but leaves the fallbacks' untouched", fallback.vietmap.quotaExceeded === false && fallback.goong2.quotaExceeded === false);
 
 const goongBefore = goongHits;
-await roadMatrixOneToMany(10.77, 106.66, [{ lat: 10.79, lon: 106.69 }], undefined, goongSignal, fallbackSignal);
+await roadMatrixOneToMany(10.77, 106.66, [{ lat: 10.79, lon: 106.69 }], undefined, goongSignal, fallback);
 check("once tripped, the primary is not called again", goongHits === goongBefore, `${goongBefore} → ${goongHits}`);
 check("while the fallback keeps answering", vietmapHits === 2, `vietmapHits=${vietmapHits}`);
 
 // A tripped fallback must stop being asked too — the bug that lost the last run.
-fallbackSignal.quotaExceeded = true;
+fallback.vietmap.quotaExceeded = true; fallback.goong2.quotaExceeded = true;
 const vmBefore = vietmapHits;
-const abandoned = await roadMatrixOneToMany(10.77, 106.66, [{ lat: 10.80, lon: 106.70 }], undefined, goongSignal, fallbackSignal);
+const abandoned = await roadMatrixOneToMany(10.77, 106.66, [{ lat: 10.80, lon: 106.70 }], undefined, goongSignal, fallback);
 check("a tripped fallback is not hammered either", vietmapHits === vmBefore, `${vmBefore} → ${vietmapHits}`);
 check("and the pair is honestly left unresolved", abandoned[0] === null);
 
