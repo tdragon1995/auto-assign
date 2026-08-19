@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo, useRef } from "react";
-import { Calendar, Clock, ClipboardCheck, FileText, NotepadText, CalendarDays, Search, Truck, MapPin, ArrowLeftRight, CheckCircle2, LogOut, RefreshCw, AlertCircle, LogIn, Loader2 } from "lucide-react";
+import { Calendar, Clock, ClipboardCheck, FileText, NotepadText, CalendarDays, Search, Truck, MapPin, ArrowLeftRight, CheckCircle2, LogOut, RefreshCw, AlertCircle, LogIn, Loader2, Gauge } from "lucide-react";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 
 interface Driver {
@@ -65,8 +65,64 @@ interface ShiftState {
 
 type ActionType = "check-in" | "check-out";
 type Status = "idle" | "loading" | "success" | "error";
-type Tab = "cham-cong" | "nghi-phep" | "lich-cn" | "nhan-viec";
+type Tab = "cham-cong" | "nghi-phep" | "lich-cn" | "nhan-viec" | "hieu-suat";
 type LeaveType = "" | "nguyen_buoi" | "nua_buoi" | "nghi_viec";
+
+// ── Hiệu Suất (driver TAT report) ───────────────────────────────────────────
+// Mirrors the /api/tat/me response. Every number arrives pre-computed and every
+// clock pre-formatted to VN time: this screen is read by drivers on a phone and
+// must not be re-deriving timezones or averages of its own.
+//
+// The unit is a LEG ("chặng") — the ride between two consecutive stops — not a
+// job. See src/lib/tat.ts for why.
+
+type TatSpan = "today" | "week" | "month";
+
+interface TatSummary {
+  trips_total: number;
+  trips_measured: number;
+  trips_graded: number;
+  trips_on_time: number;
+  long_gaps: number;
+  on_time_pct: number | null;
+  avg_tat_mins: number | null;
+  total_tat_mins: number;
+  total_km: number;
+}
+
+interface TatLegCardData {
+  seq: number;
+  from: string | null;
+  to: string | null;
+  left_at: string | null;
+  arrived_at: string | null;
+  distance_km: number | null;
+  tat_mins: number | null;
+  target_mins: number | null;
+  on_time: boolean | null;
+  long_gap: boolean;
+  estimated: boolean;
+}
+
+interface TatDay {
+  date: string;
+  legs: number;
+  avg_tat_mins: number | null;
+  on_time_pct: number | null;
+}
+
+interface TatReport {
+  ok: boolean;
+  driver_name: string;
+  mins_per_km: number;
+  updated_at: string | null;
+  refreshing: boolean;
+  degraded?: string;
+  today: { date: string; summary: TatSummary; legs: TatLegCardData[] };
+  week: { from: string; to: string; summary: TatSummary; days: TatDay[] };
+  prev_week: { from: string; to: string; summary: TatSummary };
+  month: { from: string; to: string; summary: TatSummary };
+}
 
 interface ScheduleEntry {
   stt: string;
@@ -184,6 +240,189 @@ function NvJobCard({ job, claiming, onClaim }: { job: DriverJob; claiming: boole
         )}
       </div>
     </div>
+  );
+}
+
+// ── Hiệu Suất presentation ──────────────────────────────────────────────────
+//
+// The audience is a driver on a phone who does not read dashboards. Three rules
+// shape everything below:
+//   1. One number leads. Everything else is support, at half the size.
+//   2. No jargon on screen — no "TAT", no percentages without the fraction they
+//      came from ("8/10 chuyến" beside "80%"), no bare minute counts without
+//      what they were measured against.
+//   3. Amber, never red. This screen is read by the person being measured; a
+//      slow trip is information, not an accusation.
+
+/** "95 phút" → "1 giờ 35 phút". Minutes alone stop being legible somewhere past
+ *  an hour, and a driver's daily total is always past it. */
+function fmtMins(mins: number | null | undefined): string {
+  if (mins == null || !Number.isFinite(mins)) return "—";
+  if (mins < 60) return `${mins} phút`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m === 0 ? `${h} giờ` : `${h} giờ ${m} phút`;
+}
+
+function TatStat({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="rounded-xl border border-gray-200 px-3 py-2.5 text-center">
+      <p className="text-lg font-bold text-gray-800 leading-tight">{value}</p>
+      <p className="text-[11px] text-gray-500 mt-0.5">{label}</p>
+      {sub && <p className="text-[11px] text-gray-400">{sub}</p>}
+    </div>
+  );
+}
+
+/** The headline block. On-time share is shown as a bar rather than a ring: a bar
+ *  reads correctly at a glance on a small screen and, unlike a ring, still makes
+ *  sense when there is nothing to grade yet. */
+function TatHeadline({ summary, title }: { summary: TatSummary; title: string }) {
+  const pct = summary.on_time_pct;
+  const graded = summary.trips_graded > 0;
+  const tone = pct == null ? "bg-gray-300" : pct >= 80 ? "bg-green-500" : pct >= 50 ? "bg-amber-500" : "bg-amber-600";
+
+  return (
+    <div className="rounded-2xl border border-gray-200 overflow-hidden">
+      <div className="px-4 pt-4 pb-3">
+        <p className="text-xs text-gray-500">{title}</p>
+        <p className="text-3xl font-bold text-gray-900 leading-tight mt-0.5">
+          {summary.trips_total}
+          <span className="text-base font-semibold text-gray-500 ml-1.5">chặng đường</span>
+        </p>
+      </div>
+
+      {graded ? (
+        <div className="px-4 pb-4 space-y-1.5">
+          <div className="flex items-baseline justify-between">
+            <span className="text-xs text-gray-500">Đúng giờ</span>
+            <span className="text-sm font-bold text-gray-800">
+              {summary.trips_on_time}/{summary.trips_graded}
+              <span className="text-gray-400 font-medium ml-1.5">{pct}%</span>
+            </span>
+          </div>
+          <div className="h-2.5 rounded-full bg-gray-100 overflow-hidden">
+            <div className={`h-full rounded-full ${tone} transition-all`} style={{ width: `${pct ?? 0}%` }} />
+          </div>
+          {summary.long_gaps > 0 && (
+            <p className="text-[11px] text-gray-400 pt-0.5">
+              {summary.long_gaps} chặng có thời gian chờ/nghỉ dài — không tính vào tỉ lệ đúng giờ.
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="px-4 pb-4">
+          <p className="text-xs text-gray-400">Chưa có chặng nào tính được thời gian.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One leg. The comparison is spelled out in full — "34 phút / mục tiêu 32 phút"
+ *  — because a lone number tells a driver nothing about whether it was good, and
+ *  that is the entire question they opened this screen to answer. */
+function TatLegRow({ leg }: { leg: TatLegCardData }) {
+  const late = leg.on_time === false;
+  const good = leg.on_time === true;
+  const chip = good
+    ? "bg-green-100 text-green-700"
+    : late
+      ? "bg-amber-100 text-amber-800"
+      : "bg-slate-100 text-slate-500";
+  const over = late && leg.tat_mins != null && leg.target_mins != null ? leg.tat_mins - leg.target_mins : null;
+  const chipText = good ? "Đúng giờ" : late ? `Trễ ${over} phút` : leg.long_gap ? "Chờ / nghỉ" : "—";
+
+  return (
+    <div className="rounded-xl border border-gray-200 p-3 space-y-2">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-start gap-1.5 min-w-0">
+          <MapPin size={14} className="text-blue-600 shrink-0 mt-0.5" />
+          <p className="text-sm font-medium text-gray-800 min-w-0">
+            {leg.from ?? "—"}
+            <span className="text-gray-400"> → </span>
+            {leg.to ?? "—"}
+          </p>
+        </div>
+        <span className={`shrink-0 text-xs font-semibold px-2 py-0.5 rounded-full ${chip}`}>{chipText}</span>
+      </div>
+
+      <div className="flex items-center gap-x-3 gap-y-1 text-xs text-gray-500 flex-wrap">
+        {leg.left_at && leg.arrived_at && (
+          <span className="inline-flex items-center gap-1">
+            <Clock size={12} className="text-gray-400" />
+            {leg.left_at} → {leg.arrived_at}
+          </span>
+        )}
+        {leg.distance_km != null && <span>{leg.distance_km} km</span>}
+        {leg.tat_mins != null && (
+          <span className="font-semibold text-gray-700">
+            {leg.estimated && <span className="text-gray-400 font-normal">≈ </span>}
+            {fmtMins(leg.tat_mins)}
+            {leg.target_mins != null && (
+              <span className="font-normal text-gray-400"> / mục tiêu {leg.target_mins} phút</span>
+            )}
+          </span>
+        )}
+        {leg.tat_mins == null && <span className="text-gray-400">Chưa đủ dữ liệu</span>}
+      </div>
+
+      {leg.long_gap && (
+        <p className="text-[11px] text-gray-400">
+          Chặng này lâu hơn mục tiêu rất nhiều — thường là giờ nghỉ hoặc chờ tại điểm, nên không tính đúng/trễ.
+        </p>
+      )}
+      {leg.estimated && !leg.long_gap && (
+        <p className="text-[11px] text-gray-400">
+          ≈ Chưa bấm &quot;đã đến&quot;, nên tính theo giờ hoàn thành (có thể lâu hơn thực tế).
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** One day in the week list. The leg count leads, because that is the number a
+ *  driver recognises as their own day; the on-time share follows it. */
+function TatDayRow({ day }: { day: TatDay }) {
+  const pct = day.on_time_pct;
+  const tone = pct == null ? "text-gray-400" : pct >= 80 ? "text-green-600" : "text-amber-600";
+  return (
+    <li className="flex items-center justify-between gap-3 px-3 py-2.5">
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-gray-800">{vnWeekday(day.date)}</p>
+        <p className="text-[11px] text-gray-400">{fmtDate(day.date)}</p>
+      </div>
+      <div className="flex items-center gap-4 shrink-0">
+        <div className="text-right">
+          <p className="text-sm font-semibold text-gray-700">{day.legs}</p>
+          <p className="text-[11px] text-gray-400">chặng</p>
+        </div>
+        <div className="text-right w-14">
+          <p className="text-sm font-semibold text-gray-700">{day.avg_tat_mins ?? "—"}</p>
+          <p className="text-[11px] text-gray-400">phút TB</p>
+        </div>
+        <div className="text-right w-14">
+          <p className={`text-sm font-semibold ${tone}`}>{pct == null ? "—" : `${pct}%`}</p>
+          <p className="text-[11px] text-gray-400">đúng giờ</p>
+        </div>
+      </div>
+    </li>
+  );
+}
+
+/** Week-on-week, written as a sentence rather than an arrow and a delta. "Nhanh
+ *  hơn tuần trước 3 phút mỗi chuyến" needs no explanation; "▼ 3" does. */
+function TatTrend({ current, previous }: { current: TatSummary; previous: TatSummary }) {
+  if (current.avg_tat_mins == null || previous.avg_tat_mins == null) return null;
+  const diff = current.avg_tat_mins - previous.avg_tat_mins;
+  if (diff === 0) {
+    return <p className="text-xs text-gray-500 text-center">Tốc độ trung bình bằng tuần trước.</p>;
+  }
+  const faster = diff < 0;
+  return (
+    <p className={`text-xs text-center font-medium ${faster ? "text-green-600" : "text-amber-600"}`}>
+      {faster ? "Nhanh hơn" : "Chậm hơn"} tuần trước {Math.abs(diff)} phút mỗi chặng.
+    </p>
   );
 }
 
@@ -328,6 +567,14 @@ export default function ChamCongPage() {
   const [nvClaiming,   setNvClaiming]   = useState<number | null>(null);
   const [nvToast,      setNvToast]      = useState<string | null>(null);
 
+  // ── Hiệu Suất tab ─────────────────────────────────────────────────────────
+  // Shares the Nhận Việc session: both read data scoped to one authenticated
+  // driver, so logging in once covers both.
+  const [tatSpan,    setTatSpan]    = useState<TatSpan>("today");
+  const [tatReport,  setTatReport]  = useState<TatReport | null>(null);
+  const [tatLoading, setTatLoading] = useState(false);
+  const [tatError,   setTatError]   = useState<string | null>(null);
+
   // ── Init ──────────────────────────────────────────────────────────────────
   useEffect(() => {
     const savedId = typeof window !== "undefined" ? localStorage.getItem(LS_DRIVER_ID) : null;
@@ -382,6 +629,14 @@ export default function ChamCongPage() {
   // Nhận Việc: (re)load jobs when the tab is opened while logged in.
   useEffect(() => {
     if (tab === "nhan-viec" && nvSession) nvLoadJobs();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, nvSession]);
+
+  // Hiệu Suất: same pattern. Loads on open rather than on mount — most visits to
+  // this page are a driver clocking in, and they should not pay for a report
+  // they did not ask for.
+  useEffect(() => {
+    if (tab === "hieu-suat" && nvSession) tatLoad();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, nvSession]);
 
@@ -558,8 +813,43 @@ export default function ChamCongPage() {
     setNvJobs([]);
     setNvToast(null);
     setNvJobsError(null);
+    setTatReport(null); // shares the same session — must not survive a logout
     try { localStorage.removeItem(LS_NV_SESSION); } catch { /* ignore */ }
     // Keep the remembered phone so they don't retype it.
+  }
+
+  // ── Hiệu Suất ─────────────────────────────────────────────────────────────
+
+  /**
+   * Load the driver's report. The server answers from its archive immediately and
+   * refreshes behind the response when today's rows have aged out, reporting that
+   * as `refreshing`. One delayed re-fetch picks the fresher day up, so a driver
+   * who opens the tab right after finishing a leg sees it appear without having
+   * to know to pull down — and without every open paying for a Cartrack fetch.
+   */
+  async function tatLoad(allowFollowUp = true) {
+    setTatLoading(true);
+    setTatError(null);
+    try {
+      const res = await fetch("/api/tat/me");
+      const data = await res.json();
+      if (res.status === 401) {
+        // Cookie expired while the name lingered in localStorage — drop the stale
+        // session so the tab shows the login form rather than an empty report.
+        setNvSession(null);
+        try { localStorage.removeItem(LS_NV_SESSION); } catch { /* ignore */ }
+        return;
+      }
+      if (!res.ok || !data.ok) { setTatError(data.error ?? "Không tải được báo cáo."); return; }
+      setTatReport(data as TatReport);
+      if (data.refreshing && allowFollowUp) {
+        window.setTimeout(() => { tatLoad(false); }, 12_000);
+      }
+    } catch {
+      setTatError("Không kết nối được máy chủ.");
+    } finally {
+      setTatLoading(false);
+    }
   }
 
   async function nvClaim(job: DriverJob) {
@@ -895,11 +1185,14 @@ export default function ChamCongPage() {
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200 w-full max-w-md overflow-hidden">
 
-        {/* Tab bar */}
+        {/* Tab bar. Icon ABOVE label, not beside it: at five tabs the side-by-side
+            row needed 373px inside a 343px card on a 375px phone, so the last tab
+            was clipped by the card's overflow-hidden. Stacking drops each tab's
+            width to its label alone, which fits with room to spare. */}
         <div className="flex border-b border-gray-200">
           <button
             onClick={() => setTab("cham-cong")}
-            className={`flex-1 py-3 text-xs font-semibold transition-colors flex items-center justify-center gap-1 whitespace-nowrap ${
+            className={`flex-1 py-2.5 text-[11px] font-semibold transition-colors flex flex-col items-center justify-center gap-0.5 whitespace-nowrap ${
               tab === "cham-cong"
                 ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/40"
                 : "text-gray-500 hover:text-gray-700"
@@ -910,7 +1203,7 @@ export default function ChamCongPage() {
           </button>
           <button
             onClick={() => setTab("nghi-phep")}
-            className={`flex-1 py-3 text-xs font-semibold transition-colors flex items-center justify-center gap-1 whitespace-nowrap ${
+            className={`flex-1 py-2.5 text-[11px] font-semibold transition-colors flex flex-col items-center justify-center gap-0.5 whitespace-nowrap ${
               tab === "nghi-phep"
                 ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/40"
                 : "text-gray-500 hover:text-gray-700"
@@ -924,7 +1217,7 @@ export default function ChamCongPage() {
               setTab("lich-cn");
               if (driverCleanName) setScheduleSearch(driverCleanName);
             }}
-            className={`flex-1 py-3 text-xs font-semibold transition-colors flex items-center justify-center gap-1 whitespace-nowrap relative ${
+            className={`flex-1 py-2.5 text-[11px] font-semibold transition-colors flex flex-col items-center justify-center gap-0.5 whitespace-nowrap relative ${
               tab === "lich-cn"
                 ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/40"
                 : "text-gray-500 hover:text-gray-700"
@@ -933,14 +1226,14 @@ export default function ChamCongPage() {
             <CalendarDays size={14} />
             Lịch CN
             {driverShiftCount > 0 && tab !== "lich-cn" && (
-              <span className="absolute top-1.5 right-2 min-w-[16px] h-4 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center px-1 leading-none">
+              <span className="absolute top-1 right-1 min-w-[16px] h-4 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center px-1 leading-none">
                 {driverShiftCount}
               </span>
             )}
           </button>
           <button
             onClick={() => setTab("nhan-viec")}
-            className={`flex-1 py-3 text-xs font-semibold transition-colors flex items-center justify-center gap-1 whitespace-nowrap ${
+            className={`flex-1 py-2.5 text-[11px] font-semibold transition-colors flex flex-col items-center justify-center gap-0.5 whitespace-nowrap ${
               tab === "nhan-viec"
                 ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/40"
                 : "text-gray-500 hover:text-gray-700"
@@ -949,12 +1242,25 @@ export default function ChamCongPage() {
             <Truck size={14} />
             Nhận Việc
           </button>
+          <button
+            onClick={() => setTab("hieu-suat")}
+            className={`flex-1 py-2.5 text-[11px] font-semibold transition-colors flex flex-col items-center justify-center gap-0.5 whitespace-nowrap ${
+              tab === "hieu-suat"
+                ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/40"
+                : "text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            <Gauge size={14} />
+            Hiệu Suất
+          </button>
         </div>
 
         <div className="p-6 space-y-5">
 
-          {/* ── Shared: Driver dropdown (hidden on schedule + self-claim tabs) ── */}
-          {tab !== "lich-cn" && tab !== "nhan-viec" && (
+          {/* ── Shared: Driver dropdown (hidden wherever identity is not a picker:
+                 the schedule tab needs none, and the self-claim + performance tabs
+                 take their driver from the authenticated session instead) ── */}
+          {tab !== "lich-cn" && tab !== "nhan-viec" && tab !== "hieu-suat" && (
           <div className="space-y-1 relative">
             <label className="text-sm font-medium text-gray-700">
               Nhân Viên Giao Nhận
@@ -1526,6 +1832,165 @@ export default function ChamCongPage() {
                     nvJobs.map((job) => (
                       <NvJobCard key={job.job_id} job={job} claiming={nvClaiming === job.job_id} onClaim={() => nvClaim(job)} />
                     ))
+                  )}
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ── Hiệu Suất tab ───────────────────────────────────────────── */}
+          {tab === "hieu-suat" && (
+            <>
+              {!nvLoggedIn ? (
+                <div className="space-y-3">
+                  <p className="text-sm text-gray-500">
+                    Đăng nhập ở tab <span className="font-semibold text-gray-700">Nhận Việc</span> để xem
+                    báo cáo của bạn. Mỗi người chỉ xem được số liệu của chính mình.
+                  </p>
+                  <button
+                    onClick={() => setTab("nhan-viec")}
+                    className="w-full flex items-center justify-center gap-2 bg-blue-600 text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-blue-700 transition-colors"
+                  >
+                    <LogIn size={16} />
+                    Tới trang đăng nhập
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-xs text-gray-500">Báo cáo của</p>
+                      <p className="text-sm font-semibold text-gray-800 truncate">{nvDisplayName}</p>
+                    </div>
+                    <button
+                      onClick={() => tatLoad()}
+                      disabled={tatLoading}
+                      className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-50"
+                      title="Tải lại"
+                    >
+                      <RefreshCw size={16} className={tatLoading ? "animate-spin" : ""} />
+                    </button>
+                  </div>
+
+                  {/* Span switcher */}
+                  <div className="flex gap-1 bg-gray-100 rounded-xl p-1">
+                    {([
+                      ["today", "Hôm nay"],
+                      ["week", "Tuần này"],
+                      ["month", "Tháng này"],
+                    ] as [TatSpan, string][]).map(([key, label]) => (
+                      <button
+                        key={key}
+                        onClick={() => setTatSpan(key)}
+                        className={`flex-1 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                          tatSpan === key ? "bg-white text-blue-600 shadow-sm" : "text-gray-500 hover:text-gray-700"
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {tatLoading && !tatReport ? (
+                    <div className="flex items-center justify-center py-12 text-gray-400">
+                      <Loader2 size={22} className="animate-spin" />
+                    </div>
+                  ) : tatError ? (
+                    <div className="flex items-start gap-2 text-sm text-red-600 bg-red-50 rounded-lg px-4 py-3">
+                      <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                      <span>{tatError}</span>
+                    </div>
+                  ) : !tatReport ? null : (
+                    <>
+                      {tatReport.degraded && (
+                        <div className="flex items-start gap-2 text-sm text-amber-800 bg-amber-50 rounded-lg px-4 py-3">
+                          <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                          <span>{tatReport.degraded}</span>
+                        </div>
+                      )}
+
+                      {tatSpan === "today" && (
+                        <>
+                          <TatHeadline summary={tatReport.today.summary} title="Hôm nay bạn đã chạy" />
+                          <div className="grid grid-cols-3 gap-2">
+                            <TatStat label="Tổng quãng đường" value={`${tatReport.today.summary.total_km} km`} />
+                            <TatStat label="Thời gian chạy" value={fmtMins(tatReport.today.summary.total_tat_mins)} />
+                            <TatStat label="TB mỗi chặng" value={fmtMins(tatReport.today.summary.avg_tat_mins)} />
+                          </div>
+
+                          {tatReport.today.legs.length === 0 ? (
+                            <p className="text-center text-sm text-gray-400 py-8">
+                              Hôm nay chưa có chặng nào được ghi nhận.
+                            </p>
+                          ) : (
+                            <div className="space-y-2">
+                              {tatReport.today.legs.map((leg) => (
+                                <TatLegRow key={leg.seq} leg={leg} />
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      )}
+
+                      {tatSpan === "week" && (
+                        <>
+                          <TatHeadline summary={tatReport.week.summary} title="Tuần này bạn đã chạy" />
+                          <div className="grid grid-cols-3 gap-2">
+                            <TatStat label="Tổng quãng đường" value={`${tatReport.week.summary.total_km} km`} />
+                            <TatStat label="Thời gian chạy" value={fmtMins(tatReport.week.summary.total_tat_mins)} />
+                            <TatStat label="TB mỗi chặng" value={fmtMins(tatReport.week.summary.avg_tat_mins)} />
+                          </div>
+                          <TatTrend current={tatReport.week.summary} previous={tatReport.prev_week.summary} />
+
+                          {tatReport.week.days.length === 0 ? (
+                            <p className="text-center text-sm text-gray-400 py-8">Tuần này chưa có số liệu.</p>
+                          ) : (
+                            <div className="rounded-xl border border-gray-200 overflow-hidden">
+                              <ul className="divide-y divide-gray-100">
+                                {tatReport.week.days.map((d) => (
+                                  <TatDayRow key={d.date} day={d} />
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                        </>
+                      )}
+
+                      {tatSpan === "month" && (
+                        <>
+                          <TatHeadline summary={tatReport.month.summary} title="Tháng này bạn đã chạy" />
+                          <div className="grid grid-cols-3 gap-2">
+                            <TatStat label="Tổng quãng đường" value={`${tatReport.month.summary.total_km} km`} />
+                            <TatStat label="Thời gian chạy" value={fmtMins(tatReport.month.summary.total_tat_mins)} />
+                            <TatStat label="TB mỗi chặng" value={fmtMins(tatReport.month.summary.avg_tat_mins)} />
+                          </div>
+                          <p className="text-xs text-gray-400 text-center">
+                            Từ {fmtDate(tatReport.month.from)} đến {fmtDate(tatReport.month.to)}
+                          </p>
+                        </>
+                      )}
+
+                      {/* The rule, stated once, in the driver's own units. A target
+                          nobody can reproduce in their head is a target nobody trusts. */}
+                      <div className="rounded-xl bg-gray-50 border border-gray-200 px-3 py-2.5 space-y-1">
+                        <p className="text-[11px] text-gray-600">
+                          <span className="font-semibold">Cách tính mục tiêu:</span> mỗi km được tính{" "}
+                          {tatReport.mins_per_km} phút, làm tròn lên. Ví dụ 7,2 km → 8 km → {8 * tatReport.mins_per_km} phút.
+                        </p>
+                        <p className="text-[11px] text-gray-500">
+                          Thời gian được tính từ lúc bạn xong điểm này đến lúc tới điểm kế tiếp.
+                        </p>
+                        {tatReport.updated_at && (
+                          <p className="text-[11px] text-gray-400">
+                            Cập nhật lúc{" "}
+                            {new Intl.DateTimeFormat("en-GB", {
+                              timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit", hour12: false,
+                            }).format(new Date(tatReport.updated_at))}
+                            {tatReport.refreshing && " · đang cập nhật..."}
+                          </p>
+                        )}
+                      </div>
+                    </>
                   )}
                 </div>
               )}

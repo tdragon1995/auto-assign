@@ -8,6 +8,7 @@ import {
 } from "@/lib/smart-log-kv";
 import { autoArmIfDue } from "@/lib/auto-arm";
 import { maybeAlertDisarmed } from "@/lib/disarm-alert";
+import { archiveSealedDays } from "@/lib/tat-archive";
 
 // The cycle (Cartrack + Goong calls) can take a while; give it headroom.
 export const maxDuration = 60;
@@ -30,6 +31,20 @@ export async function GET(req: NextRequest) {
   // Liveness: record every authorized ping so the dashboard can show the system
   // is alive even when nothing gets logged.
   await setCronHeartbeat().catch(() => {});
+
+  // Driver TAT: seal yesterday into Supabase. Registered HERE — before the arm
+  // check — on purpose, so it still runs on the overnight pings that return
+  // "disarmed" a line below. Those pings do almost nothing, which makes them the
+  // cheapest moment of the day to spend on a day-fetch, and by then the day being
+  // sealed is genuinely finished.
+  //
+  // Redis-gated to once per day per date (archiveSealedDays), so this is a no-op
+  // on all but one ping. In after(), and internally non-throwing, so a reporting
+  // failure can never delay or break an assign cycle.
+  after(async () => {
+    const res = await archiveSealedDays().catch(() => null);
+    if (res) console.log("[cron] TAT seal:", JSON.stringify(res));
+  });
 
   // 1) Switch off? Inside 05:30–22:00 the engine should be running, so self-heal
   //    by auto-arming. A fresh *manual* disarm also emails an alert (who/when).

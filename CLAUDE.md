@@ -87,6 +87,8 @@ LABCENTER_RECEPTIONIST_PASSWORD= # Password for receptionist account
 | `PUT /api/sales/address` | Updates a location's address + GPS in **both** Cartrack and Labcenter. Cartrack needs a full-record PUT (`address_line_1` is ignored by a partial PUT); Labcenter takes a direct address PUT. Both use read-back guards (the APIs 200 on writes they discard). Body must be proper UTF-8 — a Windows `curl` with inline Vietnamese mangles it and the write no-ops |
 | `POST /api/sales/reject-job` | Rejects a sales job by reference number via JSON-RPC (guards against started jobs) |
 | `GET /api/sales/search-trips` | Searches today's B2B trips by `?ma_kh=` (matches reference_number suffix); returns status 2+4 jobs only |
+| `GET /api/tat/archive` | Manual/backfill archive of route **legs** into Supabase `tat_legs`; `?date=`, `?days=N`, `CRON_SECRET` auth. Idempotent (replaces the day). Routine archiving needs no cron — see footgun 8 |
+| `GET /api/tat/me` | The signed-in driver's TAT report (today + week + month). Driver id from the `nv_session` cookie only |
 
 ### Shared Libraries
 
@@ -99,6 +101,9 @@ LABCENTER_RECEPTIONIST_PASSWORD= # Password for receptionist account
 | `src/lib/job-filters.ts` | `JOB_STATUS`, `STOP_STATUS` maps; `isActiveStop`, `isCompletedOrRejectedStop`, `isStopStarted` |
 | `src/lib/smart-rank.ts` | `RefStop`, `RefLabel`, `GPS_FRESH_MS`, `selectReferenceStop`, `computeStopStats`, `rankingComparator` |
 | `src/lib/time.ts` | `vnDate`, `vnTimestamp`, `vnHoursMinutes`, `vnMinutesSinceMidnight`, `vnDayWindow`, `parseVnTimestamp` |
+| `src/lib/tat.ts` | Driver TAT: `legsForRoute` / `buildDayLegs` cut a day into **legs** (rides between consecutive stops, in the order actually worked), `MINS_PER_KM`, `targetMinsFor`, `summarize`. See `docs/driver-tat.md` |
+| `src/lib/tat-archive.ts` | `archiveDay` — fetch, price and **replace** one day in Supabase `tat_legs` |
+| `src/lib/supabase-rest.ts` | `sbSelect` / `sbInsert` / `sbUpsert` / `sbDelete` — PostgREST over `fetch`, service-role, SERVER ONLY. No SDK dependency by design |
 
 ### Key Types (`src/lib/types.ts`)
 
@@ -127,7 +132,25 @@ These are the things most likely to burn a future agent working on this codebase
 
 6. **Recurring per-job assign failures are dropped from the live log on purpose.** `NO DRIVER ON DUTY`, `NO MAPPING`, `CLASH`/`SUB CLASH`, on-leave-no-sub, `invalid driver_id`, and the smart `SMART skipped`/`on-break or unavailable` lines would re-print every cycle for the same stuck job, so `shouldStore` (via `LOG_DROP_PATTERNS` in `smart-log-kv.ts`) filters them out of the rolling run log. Instead each cycle writes a **snapshot** of these via `setFailedJobs` (key `assign:failed_jobs`), surfaced in the dashboard's **"Cần xử lý"** tab. If you add a new recurring failure reason, push it to `failedJobs` in `assign.ts` *and* add its string to `LOG_DROP_PATTERNS` — otherwise it will spam the live log again. One-off action errors (`SMART failed`, `Job failed`) are intentionally *not* dropped.
 
-See `docs/business-rules.md` for deeper detail and `docs/cartrack-api.md` for API reference.
+7. **Driver TAT measures LEGS, not jobs.** A leg is the ride between two consecutive
+   stops on a driver's route, cut from the order they *actually* worked (stops sorted by
+   completion time). A job's pickup→dropoff pair is NOT a leg — a driver collecting at
+   three clinics before the lab run rides three legs, and the job-shaped view would
+   invent trips starting where they had already left. `distance_km` / `target_mins` are
+   frozen onto each row at archive time, so retuning `MINS_PER_KM` never rewrites
+   history. See `docs/driver-tat.md`.
+
+8. **TAT archiving rides the assign cron — do NOT add a schedule for it.** `/api/assign/cron`
+   calls `archiveSealedDays()` in `after()`, *before* the arm check so it still fires on
+   the overnight "disarmed" pings (the cheapest moment of the day, and the day is
+   genuinely finished by then). A Redis seal key makes it a no-op on every other ping;
+   it walks back 3 days oldest-first, one day per ping, releasing the seal on failure so
+   the next ping retries. Today is NOT its job — `/api/tat/me` refreshes today on demand.
+   Adding a cron-job.org entry for `/api/tat/archive` would just duplicate day-fetches.
+   Gate logic is covered by `scripts/tat-seal.test.mts`.
+
+See `docs/business-rules.md` for deeper detail, `docs/cartrack-api.md` for API reference,
+and `docs/driver-tat.md` for the TAT module.
 
 ## CI/CD
 
@@ -157,3 +180,42 @@ report goes out twice; do not re-add `schedule:` to the workflow file.
 ## Google Sheet
 
 Sheet ID and GIDs are hardcoded in `src/lib/sheets.ts` (`SHEET_GID` enum). Both `config.ts` and `psc-config.ts` import from there. The mapping sheet (GID 0) has columns: `customer_id`, `driver_id`, `smart_driver_id` (comma-separated UUIDs), `first_name_last_name`, `shift_start`, `shift_end`, `bot_token`, `chat_id`, `alt_drop_off_id`.
+
+<!-- code-review-graph MCP tools -->
+## MCP Tools: code-review-graph
+
+**IMPORTANT: This project has a knowledge graph. ALWAYS use the
+code-review-graph MCP tools BEFORE using Grep/Glob/Read to explore
+the codebase.** The graph is faster, cheaper (fewer tokens), and gives
+you structural context (callers, dependents, test coverage) that file
+scanning cannot.
+
+### When to use graph tools FIRST
+
+- **Exploring code**: `semantic_search_nodes_tool` or `query_graph_tool` instead of Grep
+- **Understanding impact**: `get_impact_radius_tool` instead of manually tracing imports
+- **Code review**: `detect_changes_tool` + `get_review_context_tool` instead of reading entire files
+- **Finding relationships**: `query_graph_tool` with callers_of/callees_of/imports_of/tests_for
+- **Architecture questions**: `get_architecture_overview_tool` + `list_communities_tool`
+
+Fall back to Grep/Glob/Read **only** when the graph doesn't cover what you need.
+
+### Key Tools
+
+| Tool | Use when |
+| ------ | ---------- |
+| `detect_changes_tool` | Reviewing code changes — gives risk-scored analysis |
+| `get_review_context_tool` | Need source snippets for review — token-efficient |
+| `get_impact_radius_tool` | Understanding blast radius of a change |
+| `get_affected_flows_tool` | Finding which execution paths are impacted |
+| `query_graph_tool` | Tracing callers, callees, imports, tests, dependencies |
+| `semantic_search_nodes_tool` | Finding functions/classes by name or keyword |
+| `get_architecture_overview_tool` | Understanding high-level codebase structure |
+| `refactor_tool` | Planning renames, finding dead code |
+
+### Workflow
+
+1. The graph auto-updates on file changes (via hooks).
+2. Use `detect_changes_tool` for code review.
+3. Use `get_affected_flows_tool` to understand impact.
+4. Use `query_graph_tool` pattern="tests_for" to check coverage.
