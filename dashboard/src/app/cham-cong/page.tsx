@@ -80,7 +80,10 @@ type LeaveType = "" | "nguyen_buoi" | "nua_buoi" | "nghi_viec";
 // "prev_month" exists because payroll runs on the 25th against the PREVIOUS
 // month. Without it the report shows the wrong month during the one week it is
 // most consulted.
-type TatSpan = "today" | "week" | "month" | "prev_month";
+/** The report ends at YESTERDAY — a part-finished day scored as a day turned one
+ *  slow leg into "33% đúng giờ", and refreshing it on demand was the most
+ *  expensive thing the system did. */
+type TatSpan = "latest" | "week" | "month" | "prev_month";
 
 interface TatSummary {
   trips_total: number;
@@ -131,7 +134,7 @@ interface TatReport {
   updated_at: string | null;
   refreshing: boolean;
   degraded?: string;
-  today: { date: string; summary: TatSummary; legs: TatLegCardData[] };
+  latest: { date: string; summary: TatSummary; legs: TatLegCardData[] };
   week: { from: string; to: string; summary: TatSummary; days: TatDay[] };
   prev_week: { from: string; to: string; summary: TatSummary };
   month: { from: string; to: string; summary: TatSummary; days: TatDay[] };
@@ -688,7 +691,7 @@ export default function ChamCongPage() {
   // ── Hiệu Suất tab ─────────────────────────────────────────────────────────
   // Shares the Nhận Việc session: both read data scoped to one authenticated
   // driver, so logging in once covers both.
-  const [tatSpan,    setTatSpan]    = useState<TatSpan>("today");
+  const [tatSpan,    setTatSpan]    = useState<TatSpan>("latest");
   const [tatReport,  setTatReport]  = useState<TatReport | null>(null);
   const [tatLoading, setTatLoading] = useState(false);
   const [tatError,   setTatError]   = useState<string | null>(null);
@@ -2020,7 +2023,7 @@ export default function ChamCongPage() {
                   {/* Span switcher */}
                   <div className="flex gap-1 bg-gray-100 rounded-xl p-1">
                     {([
-                      ["today", "Hôm nay"],
+                      ["latest", "Hôm qua"],
                       ["week", "Tuần này"],
                       ["month", "Tháng này"],
                       ["prev_month", "Tháng trước"],
@@ -2055,22 +2058,22 @@ export default function ChamCongPage() {
                         </div>
                       )}
 
-                      {tatSpan === "today" && (
+                      {tatSpan === "latest" && (
                         <>
-                          <TatHeadline summary={tatReport.today.summary} title="Hôm nay bạn đã chạy" />
+                          <TatHeadline summary={tatReport.latest.summary} title="Hôm qua bạn đã chạy" />
                           <div className="grid grid-cols-3 gap-2">
-                            <TatStat label="Tổng quãng đường" value={`${tatReport.today.summary.total_km} km`} />
-                            <TatStat label="Thời gian chạy" value={fmtMins(tatReport.today.summary.total_tat_mins)} />
-                            <TatStat label="TB mỗi chặng" value={fmtMins(tatReport.today.summary.avg_tat_mins)} />
+                            <TatStat label="Tổng quãng đường" value={`${tatReport.latest.summary.total_km} km`} />
+                            <TatStat label="Thời gian chạy" value={fmtMins(tatReport.latest.summary.total_tat_mins)} />
+                            <TatStat label="TB mỗi chặng" value={fmtMins(tatReport.latest.summary.avg_tat_mins)} />
                           </div>
 
-                          {tatReport.today.legs.length === 0 ? (
+                          {tatReport.latest.legs.length === 0 ? (
                             <p className="text-center text-sm text-gray-400 py-8">
-                              Hôm nay chưa có chặng nào được ghi nhận.
+                              Hôm qua chưa có chặng nào được ghi nhận.
                             </p>
                           ) : (
                             <div className="space-y-2">
-                              {tatReport.today.legs.map((leg) => (
+                              {tatReport.latest.legs.map((leg) => (
                                 <TatLegRow key={leg.seq} leg={leg} />
                               ))}
                             </div>
@@ -2149,7 +2152,7 @@ export default function ChamCongPage() {
                           Xem một ngày bất kỳ
                         </label>
                         <DateField
-                          max={tatReport.today.date}
+                          max={tatReport.latest.date}
                           value={tatOpenDay ?? ""}
                           onChange={(v) => { if (v) tatToggleDay(v); }}
                         />

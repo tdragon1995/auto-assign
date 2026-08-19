@@ -7,8 +7,8 @@
  * driver type someone else's uuid and read their performance record.
  *
  * TWO MODES
- *   (no params)  → the dashboard: today's legs, plus week / last week / this
- *                  month / LAST MONTH rollups and their day lists.
+ *   (no params)  → the dashboard: YESTERDAY's legs, plus week / last week /
+ *                  this month / LAST MONTH rollups and their day lists.
  *   ?date=YYYY-MM-DD → one day's legs, for drilling into a past day.
  *
  * LAST MONTH is not a nicety. Payroll runs on the 25th and evaluates the month
@@ -33,11 +33,26 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 export const preferredRegion = "sin1";
 
-/** How far behind today's archive may fall before a background refresh is queued.
- *  This is a reflective report; a leg appearing a few minutes after it was ridden
- *  costs nothing, and a tighter window would just make more drivers each pay for a
- *  day-fetch. */
-const STALE_MS = 15 * 60 * 1000;
+/**
+ * THE REPORT STOPS AT YESTERDAY.
+ *
+ * It used to show today, refreshed whenever the stored rows were more than
+ * fifteen minutes old. Every driver opening the tab could therefore trigger a
+ * full rebuild of the whole fleet's day — fetch it from Cartrack, re-cut every
+ * leg, re-price it, rewrite every row — and the rebuild grew heavier as the day
+ * filled up, reaching ~975 legs and six seconds by evening. At four an hour that
+ * was comfortably the most expensive thing the system did, all to refresh a
+ * report about work already finished.
+ *
+ * Ending at yesterday removes the reason to rebuild anything on demand. Every
+ * span now reads sealed rows written once by the morning pass.
+ *
+ * It also removes a real unfairness. A part-finished day was being scored as if
+ * it were a day: a driver checking at 10am with three legs behind them saw one
+ * slow leg render as "33% đúng giờ". That is noise wearing the clothes of a
+ * verdict, and it was the number they saw most often.
+ */
+const latestDayFor = (today: string) => addDays(today, -1);
 
 interface DailyRow extends TatRollupRow {
   trip_date: string;
@@ -175,11 +190,12 @@ export async function GET(req: NextRequest) {
   const env = (sp.get("env") ?? "prod") as Env;
   const driverId = session.driver_id;
   const today = vnDate();
+  const latest = latestDayFor(today);
 
   // ── Day-detail mode ───────────────────────────────────────────────────────
   const askedDate = sp.get("date");
   if (askedDate) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(askedDate) || askedDate > today) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(askedDate) || askedDate > latest) {
       return NextResponse.json({ ok: false, error: "Ngày không hợp lệ." }, { status: 400 });
     }
     try {
@@ -188,7 +204,9 @@ export async function GET(req: NextRequest) {
       // A past day with no rows has simply never been archived (the nightly seal
       // only reaches back three days). Fetch it in the background so the same tap
       // a moment later finds it, rather than showing a permanent blank.
-      const stale = legs.length === 0 || (askedDate === today && Date.now() - archivedAt > STALE_MS);
+      // Only a day with NO rows is fetched on demand. Nothing else can go stale
+      // now that the report ends at yesterday: a sealed day never changes again.
+      const stale = legs.length === 0;
       if (stale) {
         after(async () => {
           try { await archiveDay(askedDate, env); }
@@ -219,27 +237,30 @@ export async function GET(req: NextRequest) {
   const rangeStart = pmStart < prevWStart ? pmStart : prevWStart;
 
   try {
-    const [todayLegs, daily] = await Promise.all([
-      legsForDay(driverId, today),
+    const [latestLegs, daily] = await Promise.all([
+      legsForDay(driverId, latest),
       sbSelect<DailyRow>(
         "v_tat_daily",
-        `select=*&driver_id=eq.${driverId}&trip_date=gte.${rangeStart}&trip_date=lte.${today}&order=trip_date.asc`,
+        `select=*&driver_id=eq.${driverId}&trip_date=gte.${rangeStart}&trip_date=lte.${latest}&order=trip_date.asc`,
       ),
     ]);
 
     const inRange = (from: string, to: string) => daily.filter((d) => d.trip_date >= from && d.trip_date <= to);
-    const weekDays = inRange(wStart, today);
-    const monthDays = inRange(mStart, today);
+    // Ranges end at yesterday: today has no sealed row, so including it would
+    // only ever add an absent day.
+    const weekDays = inRange(wStart, latest);
+    const monthDays = inRange(mStart, latest);
     const prevMonthDays = inRange(pmStart, pmEnd);
 
-    const archivedAt = archivedAtOf(todayLegs);
-    const stale = archivedAt === 0 || Date.now() - archivedAt > STALE_MS;
-
-    // Refresh AFTER responding. The archive rewrites the whole fleet's day, so one
-    // driver opening the tab warms it for everyone who opens it next.
-    if (stale) {
+    const archivedAt = archivedAtOf(latestLegs);
+    // The ONLY remaining on-demand archive: yesterday has no rows at all, meaning
+    // the morning seal never ran or failed. Rare, self-healing, and it fires once
+    // — the moment the rows exist this stops being true. Everything else is read
+    // straight from sealed rows.
+    const missing = latestLegs.length === 0;
+    if (missing) {
       after(async () => {
-        try { await archiveDay(today, env); }
+        try { await archiveDay(latest, env); }
         catch (e) { console.error("[tat/me] background archive failed:", e instanceof Error ? e.message : e); }
       });
     }
@@ -249,20 +270,22 @@ export async function GET(req: NextRequest) {
       driver_name: session.driver_name,
       mins_per_km: MINS_PER_KM,
       updated_at: archivedAt ? new Date(archivedAt).toISOString() : null,
-      refreshing: stale,
-      today: { date: today, summary: summarizeLegs(todayLegs), legs: visibleLegs(todayLegs).map(toCard) },
+      refreshing: missing,
+      // Named `latest`, not `today`, because it is not today — a field that lied
+      // about which day it held would be found out by whoever reads it next.
+      latest: { date: latest, summary: summarizeLegs(latestLegs), legs: visibleLegs(latestLegs).map(toCard) },
       // Days with no legs are absent rather than zero rows — a day off should not
       // render as a bad day.
-      week: { from: wStart, to: today, summary: summarize(weekDays), days: weekDays.map(dayRow) },
+      week: { from: wStart, to: latest, summary: summarize(weekDays), days: weekDays.map(dayRow) },
       prev_week: { from: prevWStart, to: prevWEnd, summary: summarize(inRange(prevWStart, prevWEnd)) },
-      month: { from: mStart, to: today, summary: summarize(monthDays), days: monthDays.map(dayRow) },
+      month: { from: mStart, to: latest, summary: summarize(monthDays), days: monthDays.map(dayRow) },
       prev_month: { from: pmStart, to: pmEnd, summary: summarize(prevMonthDays), days: prevMonthDays.map(dayRow) },
     });
   } catch (e) {
     console.error("[tat/me] error:", e instanceof Error ? e.message : e);
     // Degrade to an empty-but-valid report rather than an error status: the tab
     // should render its own explanation, not a broken screen.
-    const empty = { from: today, to: today, summary: emptySummary(), days: [] as ReturnType<typeof dayRow>[] };
+    const empty = { from: latest, to: latest, summary: emptySummary(), days: [] as ReturnType<typeof dayRow>[] };
     return NextResponse.json({
       ok: true,
       driver_name: session.driver_name,
@@ -270,7 +293,7 @@ export async function GET(req: NextRequest) {
       degraded: "Không tải được báo cáo. Vui lòng thử lại sau.",
       updated_at: null,
       refreshing: false,
-      today: { date: today, summary: emptySummary(), legs: [] },
+      latest: { date: latest, summary: emptySummary(), legs: [] },
       week: empty, prev_week: { ...empty, summary: emptySummary() },
       month: empty, prev_month: empty,
     });
