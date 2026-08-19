@@ -50,13 +50,17 @@ export interface DistanceStats {
 export const MINS_PER_KM = 4;
 
 /**
- * How far past its target a leg may run before it stops counting as a slow ride
- * and starts counting as a wait.
+ * How far past its benchmark a leg runs before it is labelled a WAIT rather than a
+ * slow ride — a meal break, or time held at a clinic waiting for samples.
  *
- * Without this, one lunch break lands as "trễ 130 phút" and every driver learns
- * on day one that the report does not describe their work — which costs more
- * than the metric is worth. Legs over the line are still stored and still shown,
- * labelled as a wait, but they are left ungraded rather than counted as failures.
+ * These ARE graded: a wait that long missed its benchmark and counts as late, the
+ * same as any other leg. The flag is a label, not an exemption — it exists so the
+ * screen can show WHY a leg ran long, and so a supervisor can tell a slow ride
+ * from a stationary hour without either disappearing from the numbers.
+ *
+ * (They were previously excluded from grading, which kept a lunch break from
+ * reading as "trễ 130 phút" but also hid roughly 11% of every day from the
+ * on-time figure entirely.)
  */
 export const LONG_GAP_OVER_TARGET_MINS = 45;
 
@@ -349,10 +353,11 @@ export async function attachDistances(legs: TatLeg[]): Promise<DistanceStats> {
     if (bench == null) return;
     leg.benchmark_mins = bench;
 
+    // The flag LABELS the leg; it no longer excuses it. Every priced leg gets a
+    // verdict, so the on-time figure now covers the whole day rather than the ~89%
+    // of it that was not a wait.
     leg.long_gap = leg.tat_mins - bench > LONG_GAP_OVER_TARGET_MINS;
-    // A wait is not a slow ride, so it carries no verdict at all rather than a
-    // failing one. v_tat_daily's percentage counts only rows with a verdict.
-    leg.on_time = leg.long_gap ? null : leg.tat_mins <= bench;
+    leg.on_time = leg.tat_mins <= bench;
   });
 
   return stats;

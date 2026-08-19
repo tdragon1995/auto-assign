@@ -142,5 +142,30 @@ check("no distance means no benchmark at all", benchmarkMinsFor(null, 30) === nu
 check("...the flat rule for 1.8 km really is 8", targetMinsFor(1.8) === 8);
 check("the 1.8 km case loosens from 8 to 14", benchmarkMinsFor(targetMinsFor(1.8), 14) === 14);
 
+// ── 7. A wait is labelled, not excused ──────────────────────────────────────
+// Waits used to carry no verdict at all. That stopped a lunch break reading as a
+// 130-minute failure, but it also hid ~11% of every day from the on-time figure —
+// so the percentage described only the part of the day that was already fine.
+// They are graded now; the flag exists to explain WHY a leg ran long, not to
+// exempt it. The two decisions are made against different quantities, which is
+// what lets a leg be both flagged and late.
+{
+  const { LONG_GAP_OVER_TARGET_MINS } = await import("../src/lib/tat");
+  const bench = 20;
+
+  const isWait = (mins: number) => mins - bench > LONG_GAP_OVER_TARGET_MINS;
+  const isOnTime = (mins: number) => mins <= bench;
+
+  const wait = bench + LONG_GAP_OVER_TARGET_MINS + 1;
+  check("a long wait is flagged as a wait", isWait(wait) === true);
+  check("a long wait is still graded, and graded late", isOnTime(wait) === false);
+
+  const slow = bench + 5;
+  check("a merely slow leg is late but NOT flagged a wait", isWait(slow) === false && isOnTime(slow) === false);
+
+  const fine = bench - 1;
+  check("a leg inside its benchmark is on time and unflagged", isWait(fine) === false && isOnTime(fine) === true);
+}
+
 console.log(failures === 0 ? "\nAll TAT leg checks passed." : `\n${failures} check(s) FAILED.`);
 process.exitCode = failures === 0 ? 0 : 1;

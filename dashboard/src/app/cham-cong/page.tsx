@@ -321,8 +321,8 @@ function TatHeadline({ summary, title }: { summary: TatSummary; title: string })
             <div className={`h-full rounded-full ${tone} transition-all`} style={{ width: `${pct ?? 0}%` }} />
           </div>
           {summary.long_gaps > 0 && (
-            <p className="text-[11px] text-gray-400 pt-0.5">
-              {summary.long_gaps} chặng có thời gian chờ/nghỉ dài — không tính vào tỉ lệ đúng giờ.
+            <p className="text-[11px] text-amber-700 pt-0.5">
+              Trong đó {summary.long_gaps} chặng có thời gian chờ/nghỉ dài (đánh dấu màu cam).
             </p>
           )}
         </div>
@@ -348,10 +348,16 @@ function TatLegRow({ leg }: { leg: TatLegCardData }) {
       : "bg-slate-100 text-slate-500";
   const bench = leg.benchmark_mins ?? leg.target_mins;
   const over = late && leg.tat_mins != null && bench != null ? leg.tat_mins - bench : null;
-  const chipText = good ? "Đúng giờ" : late ? `Trễ ${over} phút` : leg.long_gap ? "Chờ / nghỉ" : "—";
+  const chipText = good ? "Đúng giờ" : late ? `Trễ ${over} phút` : "—";
 
+  // A wait is graded like any other leg, but it must not LOOK like an ordinary
+  // slow ride: the reason it ran long is completely different, and a supervisor
+  // reading a month needs to separate "rode slowly" from "stood still for an
+  // hour" at a glance. Amber edge plus its own badge, not a different verdict.
   return (
-    <div className="rounded-xl border border-gray-200 p-3 space-y-2">
+    <div className={`rounded-xl border p-3 space-y-2 ${
+      leg.long_gap ? "border-gray-200 border-l-4 border-l-amber-400 bg-amber-50/40" : "border-gray-200"
+    }`}>
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-start gap-1.5 min-w-0">
           <MapPin size={14} className="text-blue-600 shrink-0 mt-0.5" />
@@ -361,7 +367,14 @@ function TatLegRow({ leg }: { leg: TatLegCardData }) {
             {leg.to ?? "—"}
           </p>
         </div>
-        <span className={`shrink-0 text-xs font-semibold px-2 py-0.5 rounded-full ${chip}`}>{chipText}</span>
+        <div className="shrink-0 flex items-center gap-1.5">
+          {leg.long_gap && (
+            <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">
+              Chờ / nghỉ
+            </span>
+          )}
+          <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${chip}`}>{chipText}</span>
+        </div>
       </div>
 
       <div className="flex items-center gap-x-3 gap-y-1 text-xs text-gray-500 flex-wrap">
@@ -405,8 +418,8 @@ function TatLegRow({ leg }: { leg: TatLegCardData }) {
       )}
 
       {leg.long_gap && (
-        <p className="text-[11px] text-gray-400">
-          Chặng này lâu hơn mục tiêu rất nhiều — thường là giờ nghỉ hoặc chờ tại điểm, nên không tính đúng/trễ.
+        <p className="text-[11px] text-amber-700">
+          Chặng này lâu hơn mục tiêu rất nhiều — thường là giờ nghỉ trưa hoặc chờ lấy mẫu tại điểm.
         </p>
       )}
       {leg.estimated && !leg.long_gap && (
@@ -2181,6 +2194,11 @@ export default function ChamCongPage() {
                           Mục tiêu lấy <span className="font-semibold">số cao hơn</span> giữa cách tính
                           trên và thời gian bản đồ (Goong) ước tính cho đúng đoạn đường đó. Đường nào
                           thực tế đi lâu hơn thì mục tiêu tự động nới ra.
+                        </p>
+                        <p className="text-[11px] text-gray-500">
+                          Chặng <span className="font-semibold text-amber-700">chờ/nghỉ</span> (viền cam)
+                          là chặng lâu hơn mục tiêu trên 45 phút — vẫn được tính đúng/trễ như mọi chặng
+                          khác, chỉ đánh dấu để biết lý do.
                         </p>
                         {tatReport.updated_at && (
                           <p className="text-[11px] text-gray-400">
