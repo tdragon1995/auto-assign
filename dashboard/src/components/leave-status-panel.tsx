@@ -522,47 +522,38 @@ function UncoveredRowItem({
 }
 
 /**
- * Leave with nobody covering it, listed with the substitute editor on each row.
+ * TODAY's leave with nobody covering it, as a section of the "Cần xử lý" list —
+ * same shape as the assign-failure sections beside it, with the substitute
+ * editor on the row.
  *
- * Rendered twice, one day per section, because the two days are different kinds
- * of work. TODAY's goes inside the "Cần xử lý" list, where it is one more thing
- * the engine cannot resolve on its own. TOMORROW's gets its own section outside
- * that list: it still needs filling, and it is the day where filling it is free,
- * but it is not something to do right now — mixed into the do-now list it would
- * sit there all day looking equally urgent.
+ * Today only, because this list is what needs doing now: an uncovered leave
+ * today is a job the engine will refuse to assign today. TOMORROW's belongs to
+ * the leave panel below, which is the dedicated place for leave and already
+ * lists both days with the same one-field fix.
  *
- * Either way it beats where this used to live: only inside the reference panel
- * below, collapsed by default, with the count in the closed header and the
- * drivers and the button that fixes them two clicks away.
- *
- * `embedded` picks the shape — a bare section to sit among the "Cần xử lý"
- * sections, or its own card when it stands alone. Renders nothing when the day
- * is fully covered, so an empty card never appears.
+ * Renders nothing when today is fully covered.
  */
 export function UncoveredLeaveSection({
-  entries,
-  label,
+  today,
   drivers,
   onRefresh,
-  embedded = false,
 }: {
-  entries: LeaveOnDate[];
-  label: string;
+  today: LeaveOnDate[];
   drivers: ConfigDriver[];
   onRefresh: () => void;
-  embedded?: boolean;
 }) {
-  // Per-instance so the two sections cannot collide on a duplicate <datalist> id.
+  // Per-instance: the substitute editor also renders inside the panel below, and
+  // two <datalist>s cannot share an id.
   const listId = useId();
-  const items = uncoveredWindows(groupByDriver(entries));
+  const items = uncoveredWindows(groupByDriver(today));
   const fillSubs = makeFillSubs(onRefresh);
   const driverNames = new Set(drivers.map((d) => d.name));
   if (items.length === 0) return null;
 
-  const body = (
+  return (
     <div className="space-y-1.5">
       <SubNamesDatalist id={listId} drivers={drivers} />
-      <SectionHeader label={label} count={items.length} tone="amber" />
+      <SectionHeader label="Nghỉ chưa có người thay" count={items.length} tone="amber" />
       <div className="divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200">
         {items.map((item) => (
           <UncoveredRowItem
@@ -575,13 +566,6 @@ export function UncoveredLeaveSection({
         ))}
       </div>
     </div>
-  );
-
-  if (embedded) return body;
-  return (
-    <Card className="py-2 shrink-0 border-slate-200">
-      <CardContent className="px-3 text-xs">{body}</CardContent>
-    </Card>
   );
 }
 

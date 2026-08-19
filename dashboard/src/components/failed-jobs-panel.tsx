@@ -339,11 +339,9 @@ export function FailedJobsPanel({
 
             {/* ── Today's leave with nobody covering it ───────────────────── */}
             <UncoveredLeaveSection
-              entries={leaveToday}
-              label="Nghỉ chưa có người thay"
+              today={leaveToday}
               drivers={drivers}
               onRefresh={onLeaveRefresh}
-              embedded
             />
 
             {/* ── Other unassignable: assign failures ─────────────────────── */}

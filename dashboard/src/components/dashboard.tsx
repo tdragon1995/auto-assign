@@ -11,7 +11,7 @@ import { type HeldJob } from "./note-review-panel";
 import { JobAdminPanel } from "./job-admin-panel";
 import { DistanceTab } from "./distance-tab";
 import { FailedJobsPanel, type ScheduleErrorRow } from "./failed-jobs-panel";
-import { LeaveStatusPanel, UncoveredLeaveSection, uncoveredLeaveCount } from "./leave-status-panel";
+import { LeaveStatusPanel, uncoveredLeaveCount } from "./leave-status-panel";
 import { toast } from "sonner";
 import type { LogEntry, PickupWarning, FailedJob, ConfigDriver } from "@/lib/types";
 import type { DeploymentBeat } from "@/lib/smart-log-kv";
@@ -551,16 +551,6 @@ export function Dashboard() {
                     retryingSchedule={retryingSchedule}
                   />
                 </div>
-
-                {/* Tomorrow's uncovered leave — its own section, deliberately
-                    outside "Cần xử lý": still needs a substitute named, but it is
-                    not today's work, and tomorrow is when naming one is free. */}
-                <UncoveredLeaveSection
-                  entries={leave.tomorrow}
-                  label="Nghỉ ngày mai chưa có người thay"
-                  drivers={drivers}
-                  onRefresh={() => loadLeaveStatus()}
-                />
 
                 {/* Leave status — reference, below the actionable list; collapsed
                     to counts by default but flags uncovered drivers in amber. */}
