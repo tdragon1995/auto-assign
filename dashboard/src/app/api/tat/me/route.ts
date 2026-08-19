@@ -140,6 +140,12 @@ async function legsForDay(driverId: string, date: string) {
   );
 }
 
+/** The legs a driver is shown. Unscored ones (lab -> branch repositioning) are
+ *  left out of the list, exactly as they are left out of the counts — but they
+ *  are still fetched, because summarizeLegs needs their distance for mileage. */
+const visibleLegs = <T extends { unscored?: boolean }>(legs: T[]): T[] =>
+  legs.filter((l) => !l.unscored);
+
 /** Newest archived_at across a day's rows, or 0 when the day has none. Read off the
  *  rows themselves rather than a separate marker, which could outlive what it
  *  claims to describe. */
@@ -191,7 +197,7 @@ export async function GET(req: NextRequest) {
       }
       return NextResponse.json({
         ok: true, date: askedDate, refreshing: stale,
-        summary: summarizeLegs(legs), legs: legs.map(toCard),
+        summary: summarizeLegs(legs), legs: visibleLegs(legs).map(toCard),
       });
     } catch (e) {
       console.error("[tat/me] day error:", e instanceof Error ? e.message : e);
@@ -244,7 +250,7 @@ export async function GET(req: NextRequest) {
       mins_per_km: MINS_PER_KM,
       updated_at: archivedAt ? new Date(archivedAt).toISOString() : null,
       refreshing: stale,
-      today: { date: today, summary: summarizeLegs(todayLegs), legs: todayLegs.map(toCard) },
+      today: { date: today, summary: summarizeLegs(todayLegs), legs: visibleLegs(todayLegs).map(toCard) },
       // Days with no legs are absent rather than zero rows — a day off should not
       // render as a bad day.
       week: { from: wStart, to: today, summary: summarize(weekDays), days: weekDays.map(dayRow) },

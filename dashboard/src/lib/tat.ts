@@ -129,6 +129,10 @@ export interface TatLeg {
   benchmark_mins: number | null;
   on_time: boolean | null;
   long_gap: boolean;
+  /** Ridden, but not part of the performance report — see isUnmeasuredOutbound.
+   *  Carries its distance so mileage stays whole; carries no verdict, and is
+   *  filtered out of every count the driver is judged on. */
+  unscored: boolean;
 }
 
 /** Cartrack hands back VN-local wall time with no zone ("2026-08-12 14:31:07").
@@ -315,16 +319,21 @@ const CENTRAL_LAB_NAME = "BRA - D001";
 const BRANCH_NAME = /^BRA\s*-\s*D\d+$/;
 
 /**
- * The outbound run from the lab to a branch is not measured.
+ * The outbound run from the lab to a branch is not GRADED — but it is still
+ * ridden, so it still counts as distance.
  *
- * It carries no samples and no deadline — the driver is repositioning, usually
- * on the way to the next collection, and how long it takes is a routing decision
- * rather than a performance one. Measured over August it is 2,457 legs, ~15% of
- * everything, all of it graded against a target that describes nothing anyone is
- * managing.
+ * It carries no samples and no deadline: the driver is repositioning, and how
+ * long it takes is a routing decision rather than a performance one. Over August
+ * that is 2,457 legs, ~15% of everything, each graded against a target that
+ * describes nothing anyone manages.
+ *
+ * The row is KEPT, with its distance, and only the verdict is withheld. Dropping
+ * it outright would have quietly taken those kilometres off the driver's mileage
+ * — the one number on this report that is not a judgement, and the one they are
+ * least willing to see shrink.
  *
  * ONE DIRECTION ONLY. Branch → lab is the sample run: it is the whole point of
- * the fleet, it is time-critical, and it stays measured.
+ * the fleet, it is time-critical, and it stays graded.
  */
 function isUnmeasuredOutbound(fromName: string | null, toName: string | null): boolean {
   return fromName === CENTRAL_LAB_NAME && toName !== CENTRAL_LAB_NAME && BRANCH_NAME.test(toName ?? "");
@@ -355,11 +364,7 @@ export function legsForRoute(route: TimelineRoute, tripDate: string): TatLeg[] {
     const from = visits[i];
     const to = visits[i + 1];
 
-    // Dropped before any measuring happens, so it never reaches the row count,
-    // the on-time percentage or the driver's screen. Skipping a pair leaves the
-    // legs either side of it untouched — they are consecutive visits, not a chain
-    // that needs relinking.
-    if (isUnmeasuredOutbound(from.stop.customerName ?? null, to.stop.customerName ?? null)) continue;
+    const unscored = isUnmeasuredOutbound(from.stop.customerName ?? null, to.stop.customerName ?? null);
 
     // Prefer the next visit's arrival; fall back to its departure when the driver
     // never tapped "da den". tat_basis records which was used, so an inferred leg
@@ -422,6 +427,7 @@ export function legsForRoute(route: TimelineRoute, tripDate: string): TatLeg[] {
       benchmark_mins: null,
       on_time: null,
       long_gap: false,
+      unscored,
     });
   }
 
@@ -481,9 +487,15 @@ export async function attachDistances(legs: TatLeg[]): Promise<DistanceStats> {
     const km = r.distance_km ?? null;
     if (km == null) { stats.failed++; return; }
     leg.distance_km = Math.round(km * 100) / 100;
-    leg.target_mins = targetMinsFor(leg.distance_km);
     const eta = results[i]?.eta_mins;
     leg.eta_mins = typeof eta === "number" && Number.isFinite(eta) ? Math.round(eta) : null;
+
+    // The distance above is the whole point of still pricing this leg: the
+    // kilometres count toward mileage. Everything past here is a verdict, and an
+    // unscored leg does not get one.
+    if (leg.unscored) return;
+
+    leg.target_mins = targetMinsFor(leg.distance_km);
     if (leg.tat_mins == null || leg.target_mins == null) return;
 
     // The higher of the two. Goong knows the road; the flat rule is the floor, so a
@@ -575,16 +587,22 @@ export function summarize(rows: TatRollupRow[]): TatSummary {
 /** Rollup over the legs themselves, for the today span where we hold the rows
  *  rather than v_tat_daily's summary of them. */
 export function summarizeLegs(
-  legs: Pick<TatLeg, "tat_mins" | "on_time" | "distance_km" | "long_gap">[],
+  legs: Pick<TatLeg, "tat_mins" | "on_time" | "distance_km" | "long_gap" | "unscored">[],
 ): TatSummary {
+  // Must mirror v_tat_daily exactly — the same driver sees today from here and
+  // last month from the view, and the two disagreeing on the same day would be
+  // read as the report being wrong about both.
+  const scored = legs.filter((l) => !l.unscored);
   return summarize([
     {
-      trips_total: legs.length,
-      trips_measured: legs.filter((l) => l.tat_mins != null).length,
-      trips_graded: legs.filter((l) => l.on_time != null).length,
-      trips_on_time: legs.filter((l) => l.on_time === true).length,
-      long_gaps: legs.filter((l) => l.long_gap).length,
-      total_tat_mins: legs.reduce((s, l) => s + (l.long_gap ? 0 : l.tat_mins ?? 0), 0),
+      trips_total: scored.length,
+      trips_measured: scored.filter((l) => l.tat_mins != null).length,
+      trips_graded: scored.filter((l) => l.on_time != null).length,
+      trips_on_time: scored.filter((l) => l.on_time === true).length,
+      long_gaps: scored.filter((l) => l.long_gap).length,
+      total_tat_mins: scored.reduce((s, l) => s + (l.long_gap ? 0 : l.tat_mins ?? 0), 0),
+      // Distance counts every leg the driver actually rode, scored or not. It is
+      // the one figure here that is a record rather than a judgement.
       total_km: legs.reduce((s, l) => s + (Number(l.distance_km) || 0), 0),
     },
   ]);

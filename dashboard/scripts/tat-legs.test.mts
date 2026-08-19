@@ -17,7 +17,7 @@
  */
 import type { TimelineRoute, TimelineStop } from "../src/lib/types";
 
-const { legsForRoute, benchmarkMinsFor, targetMinsFor } = await import("../src/lib/tat");
+const { legsForRoute, benchmarkMinsFor, targetMinsFor, summarizeLegs } = await import("../src/lib/tat");
 
 const DATE = "2026-08-19";
 let failures = 0;
@@ -289,10 +289,14 @@ check("the 1.8 km case loosens from 8 to 14", benchmarkMinsFor(targetMinsFor(1.8
     legs[0]?.tat_mins === 90 && legs[0]?.idle_mins === 0, `${legs[0]?.tat_mins} / ${legs[0]?.idle_mins}`);
 }
 
-// ── 15. The lab → branch run is not measured ────────────────────────────────
+// ── 15. The lab → branch run is ridden but not graded ───────────────────────
 // Repositioning, not delivery: no samples aboard, no deadline, and how long it
 // takes is a routing decision. ~15% of all legs. The RETURN run is the whole
-// point of the fleet and stays measured, so the exclusion is one-directional.
+// point of the fleet and stays graded, so the rule is one-directional.
+//
+// The row is KEPT rather than dropped. Deleting it would have taken those
+// kilometres off the driver's mileage as a side effect — distance is the one
+// number on this report that is a record, not a judgement.
 {
   const legs = legsForRoute(route([
     stop({ id: 1, cust: "D001", name: "BRA - D001", lat: 10.77, lng: 106.66, arrived: "07:00:00", completed: "07:20:00" }),
@@ -300,11 +304,23 @@ check("the 1.8 km case loosens from 8 to 14", benchmarkMinsFor(targetMinsFor(1.8
     stop({ id: 3, cust: "D001", name: "BRA - D001", lat: 10.77, lng: 106.66, arrived: "09:40:00", completed: "10:00:00" }),
   ]), DATE);
 
-  check("lab → branch is dropped, branch → lab is kept", legs.length === 1, `got ${legs.length}`);
-  check("the surviving leg is the sample run home",
-    legs[0]?.from_customer_id === "D014" && legs[0]?.to_customer_id === "D001",
-    `${legs[0]?.from_customer_id} → ${legs[0]?.to_customer_id}`);
-  check("seq still starts at 1 after a drop", legs[0]?.seq === 1, String(legs[0]?.seq));
+  check("both legs are still recorded", legs.length === 2, `got ${legs.length}`);
+  check("lab → branch is marked unscored", legs[0]?.unscored === true);
+  check("branch → lab, the sample run, is scored", legs[1]?.unscored === false);
+  check("the scored one is the run home",
+    legs[1]?.from_customer_id === "D014" && legs[1]?.to_customer_id === "D001",
+    `${legs[1]?.from_customer_id} → ${legs[1]?.to_customer_id}`);
+}
+
+// The counts follow the flag, but the mileage does not.
+{
+  const base = {
+    tat_mins: 30, on_time: true as boolean | null, distance_km: 10, long_gap: false, unscored: false,
+  };
+  const s = summarizeLegs([base, { ...base, unscored: true }]);
+  check("an unscored leg is not counted as a chặng", s.trips_total === 1, String(s.trips_total));
+  check("nor graded", s.trips_graded === 1, String(s.trips_graded));
+  check("but its kilometres still count", s.total_km === 20, String(s.total_km));
 }
 
 // A clinic sits between the lab and the branch: nothing is dropped, because the
