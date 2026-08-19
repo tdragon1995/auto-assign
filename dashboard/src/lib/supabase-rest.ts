@@ -16,11 +16,35 @@
 
 const REST_TIMEOUT_MS = 15_000;
 
+/**
+ * SUPABASE_URL first, NEXT_PUBLIC_SUPABASE_URL only as a fallback.
+ *
+ * This order is load-bearing, not cosmetic. Next.js substitutes every
+ * `process.env.NEXT_PUBLIC_*` reference with a STRING LITERAL at build time —
+ * including in server code like this module. So a NEXT_PUBLIC_ variable added to
+ * Vercel after a build is invisible to that build no matter how many times it is
+ * redeployed, and the failure is silent: the value is simply `undefined` and this
+ * module reports "not configured" forever.
+ *
+ * A plain (non-public) variable is read from the process environment at runtime
+ * instead, which is what server-only config should always have been. SUPABASE_URL
+ * is also the name misa-fetcher already uses for the same kind of sink.
+ */
 function creds(): { url: string; key: string } | null {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) return null;
   return { url: url.replace(/\/$/, ""), key };
+}
+
+/** Which of the two required variables are missing. Exported so a caller can say
+ *  WHICH one rather than "not configured" — the difference between a five-second
+ *  fix and an afternoon. */
+export function missingSupabaseEnv(): string[] {
+  const missing: string[] = [];
+  if (!process.env.SUPABASE_URL && !process.env.NEXT_PUBLIC_SUPABASE_URL) missing.push("SUPABASE_URL");
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) missing.push("SUPABASE_SERVICE_ROLE_KEY");
+  return missing;
 }
 
 /** Whether Supabase is configured at all. Callers degrade to a clear "chưa cấu

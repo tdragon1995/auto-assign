@@ -10,7 +10,7 @@
 import { Redis } from "@upstash/redis";
 import { getTimelineRoutes, type Env } from "./cartrack";
 import { buildDayLegs } from "./tat";
-import { sbDelete, sbInsert, supabaseConfigured } from "./supabase-rest";
+import { sbDelete, sbInsert, supabaseConfigured, missingSupabaseEnv } from "./supabase-rest";
 import { vnDate, addDays, vnHoursMinutes } from "./time";
 
 /** Stops two overlapping cron pings — or a ping racing the report endpoint's
@@ -157,11 +157,19 @@ function insideSealWindow(d = new Date()): boolean {
  * become an assignment error.
  */
 export async function archiveSealedDays(env: Env = "prod"): Promise<ArchiveResult | null> {
-  if (!supabaseConfigured()) return null;
-
   // Cheapest check first, and free: no Redis call at all outside the window. This is
   // the whole saving — see SEAL_WINDOW_START_MIN.
   if (!insideSealWindow()) return null;
+
+  // Checked INSIDE the window, and reported rather than returned as a bare null.
+  // This function has four separate reasons to do nothing — outside the window, no
+  // Supabase, no Redis, everything already sealed — and a silent null for all of
+  // them is indistinguishable in the logs from "working normally". Naming the
+  // missing variable costs ~7 log lines a day at worst, only while broken.
+  const missing = missingSupabaseEnv();
+  if (missing.length > 0) {
+    return { ok: false, error: `Supabase chưa được cấu hình — thiếu ${missing.join(", ")}.` };
+  }
 
   const redis = getRedis();
   // Without Redis there is no way to remember what has been sealed, and an
