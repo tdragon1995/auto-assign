@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dashboard (Next.js)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "dashboard", "run", "dev"],
+      "port": 3000,
+      "autoPort": true
+    },
+    {
+      "name": "training (Next.js)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "training", "run", "dev"],
+      "port": 3001,
+      "autoPort": true
+    }
+  ]
+}

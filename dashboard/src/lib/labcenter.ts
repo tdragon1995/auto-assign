@@ -49,6 +49,97 @@ async function login(kind: "admin" | "receptionist"): Promise<string | null> {
 export const getAdminToken = () => login("admin");
 export const getReceptionistToken = () => login("receptionist");
 
+// --- Delivery requests (the SPC queue Labcenter shows its dispatchers) ---
+
+/** One row of GET /api/delivery-requests. Only the fields the ETA sync reads are
+ *  typed; the payload carries far more (attachments, hbc_path, branch_id, …). */
+export interface DeliveryRequest {
+  id: number;
+  code: string;
+  status: string;
+  /** Which fleet system owns the job — "cartrack_vn" for everything we can trace. */
+  delivery_integration_code: string | null;
+  /** The Cartrack job_id, as a string. THE join key between the two systems. */
+  delivery_integration_request_id: string | null;
+  from_name: string | null;
+  to_name: string | null;
+  created_at: string | null;
+  accepted_at: string | null;
+  started_at: string | null;
+  pickup_completed_at: string | null;
+  completed_at: string | null;
+  expected_assign_at: string | null;
+  estimate_assign_at: string | null;
+}
+
+export interface DeliveryRequestQuery {
+  /** UTC instants bounding created_at, formatted "YYYY-MM-DDTHH:mm:ss+00:00". */
+  fromCreatedAt: string;
+  toCreatedAt: string;
+  lateOverStatus: string;
+  lateOverMin: number;
+}
+
+/** GET /api/delivery-requests — paginated; follows pages until a short one.
+ *
+ *  The response carries no usable `meta` (observed `{}`), so pagination is inferred
+ *  from a full page rather than a total count. Capped at MAX_PAGES so a server that
+ *  ignores `page` can't spin this forever. */
+const PER_PAGE = 50;
+const MAX_PAGES = 20;
+
+export async function listDeliveryRequests(
+  q: DeliveryRequestQuery,
+  token: string,
+): Promise<DeliveryRequest[]> {
+  const out: DeliveryRequest[] = [];
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const params = new URLSearchParams({
+      from_created_at: q.fromCreatedAt,
+      to_created_at: q.toCreatedAt,
+      late_over_status: q.lateOverStatus,
+      late_over_min: String(q.lateOverMin),
+      page: String(page),
+      perPage: String(PER_PAGE),
+    });
+    const res = await fetch(`${DELIVERY_BASE}/api/delivery-requests?${params}`, {
+      headers: { Authorization: `Bearer ${token}`, accept: "application/json" },
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error(`Labcenter delivery-requests ${res.status}`);
+    const rows: DeliveryRequest[] = (await res.json().catch(() => ({})))?.data ?? [];
+    out.push(...rows);
+    if (rows.length < PER_PAGE) break;
+  }
+  return out;
+}
+
+/** PATCH /api/delivery-requests/{id}/update-expected-assign — publishes how many
+ *  minutes from now the driver is expected to reach the pickup. */
+export async function updateExpectedAssign(
+  requestId: number,
+  minutes: number,
+  token: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(
+    `${DELIVERY_BASE}/api/delivery-requests/${requestId}/update-expected-assign`,
+    {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        accept: "application/json",
+      },
+      body: JSON.stringify({ expected_assign_minute: minutes }),
+    },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    return { ok: false, error: `HTTP ${res.status}: ${text.slice(0, 200)}` };
+  }
+  return { ok: true };
+}
+
 export type LabcenterLocation = {
   id: number;
   name: string;

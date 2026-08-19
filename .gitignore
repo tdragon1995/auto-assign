@@ -20,3 +20,18 @@ _run_dashboard.py
 node_modules/
 misa-fetcher/.state/
 misa-fetcher/out/
+# Added by code-review-graph
+.code-review-graph/
+
+# Rendered artefacts — 100 MB+ of images, regenerate with output/collage/render-collage.js
+output/
+
+# training/ is its own git repo, synced separately
+training/
+
+# Machine-local agent state
+.impeccable/hook.cache.json
+.impeccable/config.local.json
+
+# One-off data exports
+dashboard/dist-export-*.csv
