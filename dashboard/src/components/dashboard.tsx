@@ -11,7 +11,7 @@ import { type HeldJob } from "./note-review-panel";
 import { JobAdminPanel } from "./job-admin-panel";
 import { DistanceTab } from "./distance-tab";
 import { FailedJobsPanel, type ScheduleErrorRow } from "./failed-jobs-panel";
-import { LeaveStatusPanel } from "./leave-status-panel";
+import { LeaveStatusPanel, UncoveredLeaveSection, uncoveredLeaveCount } from "./leave-status-panel";
 import { toast } from "sonner";
 import type { LogEntry, PickupWarning, FailedJob, ConfigDriver } from "@/lib/types";
 import type { DeploymentBeat } from "@/lib/smart-log-kv";
@@ -429,7 +429,11 @@ export function Dashboard() {
   }, [syncStatus, loadScheduleErrors, loadLeaveStatus]);
 
   const isProd = env === "prod";
-  const attentionCount = held.length + failed.length + warnings.length + scheduleErrors.length;
+  // Must match FailedJobsPanel's own total, uncovered leave included — the badge
+  // and the list it counts are two different computations of the same number.
+  const attentionCount =
+    held.length + failed.length + warnings.length + scheduleErrors.length +
+    uncoveredLeaveCount(leave.today);
 
   const tabBtn = (active: boolean) =>
     `px-3 py-1.5 text-xs font-semibold rounded transition-colors border flex items-center gap-1.5 whitespace-nowrap ${
@@ -541,10 +545,22 @@ export function Dashboard() {
                     drivers={drivers}
                     onAssign={handleManualAssign}
                     onScheduleFailed={handleScheduleFailed}
+                    leaveToday={leave.today}
+                    onLeaveRefresh={() => loadLeaveStatus()}
                     onRetrySchedule={retrySchedule}
                     retryingSchedule={retryingSchedule}
                   />
                 </div>
+
+                {/* Tomorrow's uncovered leave — its own section, deliberately
+                    outside "Cần xử lý": still needs a substitute named, but it is
+                    not today's work, and tomorrow is when naming one is free. */}
+                <UncoveredLeaveSection
+                  entries={leave.tomorrow}
+                  label="Nghỉ ngày mai chưa có người thay"
+                  drivers={drivers}
+                  onRefresh={() => loadLeaveStatus()}
+                />
 
                 {/* Leave status — reference, below the actionable list; collapsed
                     to counts by default but flags uncovered drivers in amber. */}

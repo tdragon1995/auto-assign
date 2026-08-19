@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { AlertTriangle, Palmtree } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -138,6 +138,46 @@ function TimeSelect({
   );
 }
 
+const SUB_NAMES_LIST_ID = "leave-sub-names";
+
+/** The driver-name options a sub input autocompletes against. Rendered once per
+ *  place the editor can appear — two <datalist>s cannot share an id. */
+function SubNamesDatalist({ id, drivers }: { id: string; drivers: ConfigDriver[] }) {
+  return (
+    <datalist id={id}>
+      {drivers.map((d) => (
+        <option key={d.driver_id} value={d.name} />
+      ))}
+    </datalist>
+  );
+}
+
+/** Write substitutes back to the Leave sheet. Shared so the "Cần xử lý" section
+ *  and the reference panel below it save through exactly one path. */
+function makeFillSubs(onRefresh: () => void): FillSubsFn {
+  return async (identity, subs) => {
+    try {
+      const res = await fetch("/api/leave-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...identity, subs }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        toast.error(data.error ?? `HTTP ${res.status}`);
+        return false;
+      }
+      if (data.warning) toast.warning(data.warning);
+      else toast.success("Đã lưu người thay vào sheet");
+      onRefresh();
+      return true;
+    } catch (e) {
+      toast.error(`Không lưu được: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
+  };
+}
+
 export type FillSubsFn = (
   identity: { driver_id: string; leave_from: string; timeLabel: string | null },
   subs: { name: string; from: string | null; to: string | null }[],
@@ -155,11 +195,15 @@ function SubEditor({
   driverNames,
   onSave,
   onCancel,
+  listId = SUB_NAMES_LIST_ID,
 }: {
   row: LeaveRowView;
   driverNames: Set<string>;
   onSave: (subs: { name: string; from: string | null; to: string | null }[]) => Promise<boolean>;
   onCancel: () => void;
+  /** Which <datalist> of driver names to bind the input to. The editor renders
+   *  in two places now, and each owns its own list. */
+  listId?: string;
 }) {
   // Leave window bounds (for prefilling a split) — "06:30–15:00" → ["06:30","15:00"]
   const bounds = row.timeLabel ? row.timeLabel.split("–") : null;
@@ -221,7 +265,7 @@ function SubEditor({
         <div key={i} className="flex flex-wrap items-center gap-1">
           <input
             type="text"
-            list="leave-sub-names"
+            list={listId}
             placeholder="Tên người thay…"
             value={b.name}
             onChange={(e) => patch(i, { name: e.target.value })}
@@ -399,6 +443,155 @@ function duplicateCount(groups: DriverGroup[]): number {
   return groups.filter((g) => g.rows.some((r) => r.duplicate)).length;
 }
 
+/** One uncovered window, flattened out of the day groups so the section can list
+ *  the thing that actually needs doing (a window with nobody covering it) rather
+ *  than a driver who might be half-covered. */
+interface UncoveredRow {
+  driver_id: string;
+  driver_name: string;
+  loai_nghi: string;
+  row: LeaveRowView;
+}
+
+function uncoveredWindows(groups: DriverGroup[]): UncoveredRow[] {
+  const out: UncoveredRow[] = [];
+  for (const g of groups) {
+    // Resigned drivers are excluded on purpose: a substitute is the wrong answer
+    // for a permanent departure — that needs the mapping sheet re-planned, which
+    // is what the reference panel below says. Same rule as uncoveredCount.
+    if (g.loai_nghi === "Nghỉ việc") continue;
+    for (const row of g.rows) {
+      if (row.subs.length === 0) {
+        out.push({ driver_id: g.driver_id, driver_name: g.driver_name, loai_nghi: g.loai_nghi, row });
+      }
+    }
+  }
+  return out;
+}
+
+
+function UncoveredRowItem({
+  item,
+  driverNames,
+  onFill,
+  listId,
+}: {
+  item: UncoveredRow;
+  driverNames: Set<string>;
+  onFill: FillSubsFn;
+  listId: string;
+}) {
+  const [editing, setEditing] = useState(false);
+  const { code, name } = splitDriverName(item.driver_name || item.driver_id);
+  return (
+    <div className="px-2 py-1.5 hover:bg-slate-50">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0">
+        <span className="text-sm font-medium text-slate-800">{name}</span>
+        {code && <span className="font-mono text-[11px] text-slate-500">{code}</span>}
+        <span className="text-[11px] font-semibold text-amber-700">{typeLabel(item.loai_nghi)}</span>
+        {item.row.timeLabel && (
+          <span className="font-mono text-[11px] text-slate-500">{item.row.timeLabel}</span>
+        )}
+        {!editing && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 px-2 text-[11px] ml-auto shrink-0"
+            onClick={() => setEditing(true)}
+          >
+            Thêm người thay
+          </Button>
+        )}
+      </div>
+      {editing && (
+        <SubEditor
+          row={item.row}
+          driverNames={driverNames}
+          listId={listId}
+          onSave={(subs) =>
+            onFill(
+              { driver_id: item.driver_id, leave_from: item.row.leave_from, timeLabel: item.row.timeLabel },
+              subs,
+            )
+          }
+          onCancel={() => setEditing(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Leave with nobody covering it, listed with the substitute editor on each row.
+ *
+ * Rendered twice, one day per section, because the two days are different kinds
+ * of work. TODAY's goes inside the "Cần xử lý" list, where it is one more thing
+ * the engine cannot resolve on its own. TOMORROW's gets its own section outside
+ * that list: it still needs filling, and it is the day where filling it is free,
+ * but it is not something to do right now — mixed into the do-now list it would
+ * sit there all day looking equally urgent.
+ *
+ * Either way it beats where this used to live: only inside the reference panel
+ * below, collapsed by default, with the count in the closed header and the
+ * drivers and the button that fixes them two clicks away.
+ *
+ * `embedded` picks the shape — a bare section to sit among the "Cần xử lý"
+ * sections, or its own card when it stands alone. Renders nothing when the day
+ * is fully covered, so an empty card never appears.
+ */
+export function UncoveredLeaveSection({
+  entries,
+  label,
+  drivers,
+  onRefresh,
+  embedded = false,
+}: {
+  entries: LeaveOnDate[];
+  label: string;
+  drivers: ConfigDriver[];
+  onRefresh: () => void;
+  embedded?: boolean;
+}) {
+  // Per-instance so the two sections cannot collide on a duplicate <datalist> id.
+  const listId = useId();
+  const items = uncoveredWindows(groupByDriver(entries));
+  const fillSubs = makeFillSubs(onRefresh);
+  const driverNames = new Set(drivers.map((d) => d.name));
+  if (items.length === 0) return null;
+
+  const body = (
+    <div className="space-y-1.5">
+      <SubNamesDatalist id={listId} drivers={drivers} />
+      <SectionHeader label={label} count={items.length} tone="amber" />
+      <div className="divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200">
+        {items.map((item) => (
+          <UncoveredRowItem
+            key={`${item.driver_id}-${item.row.leave_from}-${item.row.timeLabel ?? "full"}`}
+            item={item}
+            driverNames={driverNames}
+            onFill={fillSubs}
+            listId={listId}
+          />
+        ))}
+      </div>
+    </div>
+  );
+
+  if (embedded) return body;
+  return (
+    <Card className="py-2 shrink-0 border-slate-200">
+      <CardContent className="px-3 text-xs">{body}</CardContent>
+    </Card>
+  );
+}
+
+/** Count of today's uncovered leave windows — the badge the "Cần xử lý" tab adds
+ *  to its own total, so the tab count matches what the list actually shows.
+ *  Today only, matching UncoveredLeaveSection. */
+export function uncoveredLeaveCount(today: LeaveOnDate[]): number {
+  return uncoveredWindows(groupByDriver(today)).length;
+}
+
 /**
  * Leave-status summary for the "Cần xử lý" tab: who's off today and tomorrow,
  * with their coverage window and substitute (if any). Uncovered rows can be
@@ -428,27 +621,7 @@ export function LeaveStatusPanel({
   const totalUncovered = uncoveredCount(todayGroups) + uncoveredCount(tomorrowGroups);
   const totalDuplicate = duplicateCount(todayGroups) + duplicateCount(tomorrowGroups);
 
-  const fillSubs: FillSubsFn = async (identity, subs) => {
-    try {
-      const res = await fetch("/api/leave-status", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...identity, subs }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) {
-        toast.error(data.error ?? `HTTP ${res.status}`);
-        return false;
-      }
-      if (data.warning) toast.warning(data.warning);
-      else toast.success("Đã lưu người thay vào sheet");
-      onRefresh();
-      return true;
-    } catch (e) {
-      toast.error(`Không lưu được: ${e instanceof Error ? e.message : String(e)}`);
-      return false;
-    }
-  };
+  const fillSubs = makeFillSubs(onRefresh);
 
   if (error && noData) {
     return (
@@ -467,11 +640,7 @@ export function LeaveStatusPanel({
     <Card className="py-2 shrink-0 border-slate-200">
       <CardContent className="px-3">
         {/* Shared datalist for every sub picker in the panel */}
-        <datalist id="leave-sub-names">
-          {drivers.map((d) => (
-            <option key={d.driver_id} value={d.name} />
-          ))}
-        </datalist>
+        <SubNamesDatalist id={SUB_NAMES_LIST_ID} drivers={drivers} />
 
         {/* Collapsed header: counts + uncovered flag, click to expand */}
         <button

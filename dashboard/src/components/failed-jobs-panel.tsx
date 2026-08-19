@@ -9,7 +9,9 @@ import { DriverPicker } from "./driver-picker";
 import { DayTimePicker, DAY_LABELS, vnNowLabel, scheduledAtFor, isTimePast } from "./day-time-picker";
 import { NoteReviewPanel, type HeldJob } from "./note-review-panel";
 import { SectionHeader } from "./section-header";
+import { UncoveredLeaveSection, uncoveredLeaveCount } from "./leave-status-panel";
 import type { FailedJob, FailedReason, PickupWarning, ConfigDriver } from "@/lib/types";
+import type { LeaveOnDate } from "@/lib/leave-config";
 
 export interface ScheduleErrorRow {
   pickup_id: string;
@@ -261,6 +263,8 @@ export function FailedJobsPanel({
   onScheduleFailed,
   onRetrySchedule,
   retryingSchedule,
+  leaveToday,
+  onLeaveRefresh,
 }: {
   held: HeldJob[];
   env: "prod" | "uat";
@@ -275,8 +279,14 @@ export function FailedJobsPanel({
   onScheduleFailed: (job: FailedJob, scheduledAt: string, label: string) => void;
   onRetrySchedule: () => void;
   retryingSchedule: boolean;
+  leaveToday: LeaveOnDate[];
+  onLeaveRefresh: () => void;
 }) {
-  const total = held.length + failed.length + warnings.length + scheduleErrors.length;
+  // Today's uncovered leave counts toward the tab's total: it is a section of
+  // this list now, so an otherwise-clear day with an unfilled substitute must
+  // not render the "nothing to do" state.
+  const uncoveredLeave = uncoveredLeaveCount(leaveToday);
+  const total = held.length + failed.length + warnings.length + scheduleErrors.length + uncoveredLeave;
 
   // Group assign failures by reason in display-priority order.
   const byReason = new Map<FailedReason, FailedJob[]>();
@@ -297,7 +307,7 @@ export function FailedJobsPanel({
         <CheckCircle2 className="size-8 text-emerald-500" strokeWidth={1.75} />
         <p className="text-sm font-medium text-slate-600">Không có mục nào cần xử lý</p>
         <p className="text-xs text-slate-400">
-          Job không gán được, chờ duyệt ghi chú và lấy mẫu chậm sẽ hiện ở đây
+          Job không gán được, chờ duyệt ghi chú, nghỉ chưa có người thay và lấy mẫu chậm sẽ hiện ở đây
         </p>
       </Card>
     );
@@ -326,6 +336,15 @@ export function FailedJobsPanel({
                 embedded
               />
             )}
+
+            {/* ── Today's leave with nobody covering it ───────────────────── */}
+            <UncoveredLeaveSection
+              entries={leaveToday}
+              label="Nghỉ chưa có người thay"
+              drivers={drivers}
+              onRefresh={onLeaveRefresh}
+              embedded
+            />
 
             {/* ── Other unassignable: assign failures ─────────────────────── */}
             {groups.map(([reason, jobs]) => (
