@@ -78,21 +78,51 @@ export function resolveFixedDriver(
   customerId: string | null,
   jobTime: Date,
   leaveEntries: LeaveEntry[],
+  /** The dropoff the job actually carries. Only used to refuse: a mapping that wants
+   *  the samples somewhere else must not be answered here, because whoever assigns also
+   *  has to perform that redirection, and this function does not touch the job. */
+  dropoffId?: string | null,
 ): { driverId: string; name: string | null; subFor: string | null } | null {
   if (!customerId) return null;
 
-  // An on-shift smart mapping wins the job before the fixed path is reached.
-  const smart = config.mappings.some(
+  // An on-shift smart mapping owns the job before the fixed path is reached — but a pool
+  // of ONE is not a ranking problem. There is nobody to rank it against, so the answer is
+  // config, exactly like the fixed path, and the cycle already treats it that way (its
+  // SMART(1) branch assigns straight out with the same leave-and-substitute handling).
+  // Two or more still need live driver positions, which config cannot supply.
+  const smart = config.mappings.find(
     (m) => m.customer_id === customerId && m.smart_driver_id.length > 0 && isDriverOnShift(m, jobTime),
   );
-  if (smart) return null;
+  if (smart) {
+    if (smart.smart_driver_id.length !== 1) return null;
+    return settle(smart, smart.smart_driver_id[0], dropoffId, leaveEntries);
+  }
 
   const [drivers, status] = getDriversOnDuty(config, customerId, jobTime);
   if (status !== "happy") return null;
 
   const mapping = drivers[0];
-  let driverId = mapping.driver_id;
-  if (!driverId) return null;
+  if (!mapping.driver_id) return null;
+  return settle(mapping, mapping.driver_id, dropoffId, leaveEntries);
+}
+
+/** Shared tail of both paths: refuse a redirected dropoff, follow leave to a substitute,
+ *  and hand back a name only when one is actually known. */
+function settle(
+  mapping: Mapping,
+  configuredDriverId: string,
+  dropoffId: string | null | undefined,
+  leaveEntries: LeaveEntry[],
+): { driverId: string; name: string | null; subFor: string | null } | null {
+  // This mapping redirects the samples elsewhere, and performing that redirection is the
+  // assigner's job — the cycle rewrites the stop before it assigns. Answering here would
+  // hand the trip to a driver while it still points at the wrong destination, so decline
+  // and let the cycle do both halves. Only a redirect that DIFFERS matters; a job already
+  // created pointing at the alt location needs no rewrite.
+  const alt = mapping.alt_drop_off_id?.trim();
+  if (alt && dropoffId && alt !== dropoffId) return null;
+
+  let driverId = configuredDriverId;
   let name: string | null = mapping.first_name_last_name?.trim() || null;
   let subFor: string | null = null;
 
@@ -110,3 +140,4 @@ export function resolveFixedDriver(
   if (!isValidDriverId(driverId)) return null;
   return { driverId, name, subFor };
 }
+

@@ -282,7 +282,7 @@ export async function POST(req: NextRequest) {
     const [arm, config, leaveEntries, live] = await driverPrep;
     let assignTo: { driverId: string; name: string | null } | null = null;
     if (arm && config && leaveEntries) {
-      const who = resolveFixedDriver(config, pickup, new Date(), leaveEntries);
+      const who = resolveFixedDriver(config, pickup, new Date(), leaveEntries, dropoff);
       const known = who && live ? live.some((d) => d.deliveryDriverId === who.driverId) : false;
       if (who && known) assignTo = { driverId: who.driverId, name: who.name };
     }
