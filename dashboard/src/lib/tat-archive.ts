@@ -10,7 +10,7 @@
 import { Redis } from "@upstash/redis";
 import { getTimelineRoutes, type Env } from "./cartrack";
 import { buildDayLegs } from "./tat";
-import { sbDelete, sbInsert, supabaseConfigured, missingSupabaseEnv } from "./supabase-rest";
+import { sbDelete, sbUpsert, supabaseConfigured, missingSupabaseEnv } from "./supabase-rest";
 import { vnDate, addDays, vnHoursMinutes } from "./time";
 
 /** Stops two overlapping cron pings — or a ping racing the report endpoint's
@@ -26,6 +26,8 @@ export interface ArchiveResult {
   measured?: number;
   graded?: number;
   longGaps?: number;
+  /** Where the distance answers came from — cache vs billed API vs failed. */
+  distances?: { pairs: number; cache: number; api: number; self: number; failed: number; noCoords: number };
   skipped?: string;
   error?: string;
 }
@@ -41,16 +43,24 @@ function getRedis(): Redis | null {
  * Fetch one day's routes, cut them into legs, price them, and replace that day in
  * tat_legs.
  *
- * REPLACE, not upsert. A leg is identified by the two stops it joins, and those
- * pairs CHANGE between runs: a driver completing one more stop re-cuts the tail
- * of their day, so an upsert would leave the previous pairing behind as a
- * duplicate phantom leg. Deleting the day first is the only shape that keeps the
- * stored day equal to the day that happened.
+ * WRITE ORDER IS THE WHOLE POINT: UPSERT FIRST, THEN DELETE WHAT WAS NOT TOUCHED.
  *
- * The cost is a sub-second window where a reader sees a partially rewritten day.
- * Acceptable here — this is a reflective report, not an operational screen — and
- * the alternative (upsert plus a reconciling delete of stale pairs) is more code
- * for a weaker guarantee.
+ * This used to delete the day and then insert it, which meant any failure between
+ * the two — a 60-second timeout, a rejected column, a network blip — left the day
+ * DELETED AND EMPTY. That is not theoretical: it happened three times in one
+ * afternoon, once wiping seven consecutive days, and each time the day looked
+ * simply "missing" rather than broken.
+ *
+ * Upserting first inverts the failure: if the write dies, nothing was removed and
+ * yesterday's copy of the day survives untouched. The follow-up delete then clears
+ * only rows this pass did not write — legs whose stop pairing changed, which is
+ * what the old delete-first existed to handle. If THAT delete fails, the day keeps
+ * a few stale legs: wrong in a small, visible, self-correcting way instead of
+ * absent entirely.
+ *
+ * `archived_at` is stamped explicitly rather than left to its column default,
+ * because on an upsert the default does not re-fire — and that stamp is exactly
+ * what separates "written by this pass" from "left over from the last one".
  */
 export async function archiveDay(date: string, env: Env = "prod"): Promise<ArchiveResult> {
   if (!supabaseConfigured()) {
@@ -70,10 +80,19 @@ export async function archiveDay(date: string, env: Env = "prod"): Promise<Archi
     // good one would erase it, so a failed fetch must never reach the delete.
     if (!routes) return { ok: false, date, error: "Không lấy được lộ trình từ Cartrack." };
 
-    const legs = await buildDayLegs(routes, date);
+    const { legs, stats } = await buildDayLegs(routes, date);
 
-    await sbDelete("tat_legs", `trip_date=eq.${date}`);
-    if (legs.length > 0) await sbInsert("tat_legs", legs as unknown as Record<string, unknown>[]);
+    const stamp = new Date().toISOString();
+    if (legs.length > 0) {
+      const rows = legs.map((l) => ({ ...l, archived_at: stamp }));
+      await sbUpsert("tat_legs", rows as unknown as Record<string, unknown>[], "from_stop_id,to_stop_id");
+      // Only now, once the day is safely written, clear what this pass did not
+      // touch. Legs whose stop pairing changed since last time land here.
+      await sbDelete("tat_legs", `trip_date=eq.${date}&archived_at=lt.${encodeURIComponent(stamp)}`);
+    } else {
+      // A genuinely empty day still has to clear whatever was there before.
+      await sbDelete("tat_legs", `trip_date=eq.${date}`);
+    }
 
     return {
       ok: true,
@@ -82,6 +101,7 @@ export async function archiveDay(date: string, env: Env = "prod"): Promise<Archi
       measured: legs.filter((l) => l.tat_mins != null).length,
       graded: legs.filter((l) => l.on_time != null).length,
       longGaps: legs.filter((l) => l.long_gap).length,
+      distances: stats,
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

@@ -27,6 +27,23 @@ import { roadDistancesForPairs } from "./distance-cache";
 import { isChamCong } from "./job-filters";
 import type { TimelineRoute, TimelineStop } from "./types";
 
+/** Where a day's distance answers came from. Surfaced by the archive so the cost
+ *  of a backfill is visible rather than inferred from wall-clock time, and so
+ *  "why are 33% of legs ungraded" has a direct answer instead of a hypothesis. */
+export interface DistanceStats {
+  /** Legs with usable coordinates, i.e. pairs actually looked up. */
+  pairs: number;
+  cache: number;
+  /** Billed Goong requests. The only line that costs money. */
+  api: number;
+  /** Origin == destination; answered as 0 km without any lookup. */
+  self: number;
+  /** Looked up and came back with nothing — these legs stay ungraded. */
+  failed: number;
+  /** Legs skipped entirely because a stop carried no coordinates. */
+  noCoords: number;
+}
+
 /** Minutes allowed per whole kilometre. The single number a supervisor is most
  *  likely to want to tune — everything else derives from it. */
 export const MINS_PER_KM = 4;
@@ -76,6 +93,11 @@ export interface TatLeg {
    *  cannot distinguish on its own. Comes free: Goong returns duration in the same
    *  response as distance, and the cache has stored both all along. */
   eta_mins: number | null;
+  /** The number this leg was actually graded against: the HIGHER of the flat rule
+   *  and Goong's estimate. Where the road is genuinely slow the estimate lifts the
+   *  bar to something achievable; where Goong is optimistic the flat rule holds the
+   *  floor, so no target is ever tighter than the flat rule alone. */
+  benchmark_mins: number | null;
   on_time: boolean | null;
   long_gap: boolean;
 }
@@ -103,6 +125,19 @@ function minutesBetween(fromIso: string | null, toIsoTs: string | null): number 
 export function targetMinsFor(distanceKm: number | null): number | null {
   if (distanceKm == null || !Number.isFinite(distanceKm)) return null;
   return Math.max(1, Math.ceil(distanceKm)) * MINS_PER_KM;
+}
+
+/**
+ * The number a leg is graded against: the HIGHER of the flat per-km rule and
+ * Goong's estimate for that road.
+ *
+ * The flat rule is the FLOOR, never the ceiling — a missing or optimistic estimate
+ * can only ever leave the target where it already was, so no driver's bar gets
+ * tighter than the rule they already know. A slow road raises it; nothing lowers it.
+ */
+export function benchmarkMinsFor(targetMins: number | null, etaMins: number | null): number | null {
+  if (targetMins == null) return null;
+  return Math.max(targetMins, etaMins ?? 0);
 }
 
 const driverIdOf = (route: TimelineRoute): string | null => {
@@ -237,6 +272,7 @@ export function legsForRoute(route: TimelineRoute, tripDate: string): TatLeg[] {
       distance_km: null,
       target_mins: null,
       eta_mins: null,
+      benchmark_mins: null,
       on_time: null,
       long_gap: false,
     });
@@ -257,11 +293,13 @@ export function legsForRoute(route: TimelineRoute, tripDate: string): TatLeg[] {
  * Legs whose stops carry no coordinates are left ungraded rather than haversined
  * — an ungraded leg is honest; one graded against a straight-line guess is not.
  */
-export async function attachDistances(legs: TatLeg[]): Promise<void> {
+export async function attachDistances(legs: TatLeg[]): Promise<DistanceStats> {
+  const stats: DistanceStats = { pairs: 0, cache: 0, api: 0, self: 0, failed: 0, noCoords: 0 };
   const measurable = legs.filter(
     (l) => l.from_lat != null && l.from_lng != null && l.to_lat != null && l.to_lng != null,
   );
-  if (measurable.length === 0) return;
+  stats.noCoords = legs.length - measurable.length;
+  if (measurable.length === 0) return stats;
 
   const results = await roadDistancesForPairs(
     measurable.map((l) => ({
@@ -271,27 +309,47 @@ export async function attachDistances(legs: TatLeg[]): Promise<void> {
   );
 
   measurable.forEach((leg, i) => {
-    const km = results[i]?.distance_km ?? null;
-    if (km == null) return;
+    stats.pairs++;
+    const r = results[i];
+    if (!r) { stats.failed++; return; }
+    if (r.source === "cache") stats.cache++;
+    else if (r.source === "api") stats.api++;
+    else stats.self++;
+
+    const km = r.distance_km ?? null;
+    if (km == null) { stats.failed++; return; }
     leg.distance_km = Math.round(km * 100) / 100;
     leg.target_mins = targetMinsFor(leg.distance_km);
     const eta = results[i]?.eta_mins;
     leg.eta_mins = typeof eta === "number" && Number.isFinite(eta) ? Math.round(eta) : null;
     if (leg.tat_mins == null || leg.target_mins == null) return;
 
-    leg.long_gap = leg.tat_mins - leg.target_mins > LONG_GAP_OVER_TARGET_MINS;
+    // The higher of the two. Goong knows the road; the flat rule is the floor, so a
+    // benchmark can never come out tighter than the rule drivers already know.
+    // Held in a local so the comparisons below narrow: benchmarkMinsFor is
+    // null-returning by contract (no distance → no benchmark), even though
+    // target_mins has already been checked non-null a few lines up.
+    const bench = benchmarkMinsFor(leg.target_mins, leg.eta_mins);
+    if (bench == null) return;
+    leg.benchmark_mins = bench;
+
+    leg.long_gap = leg.tat_mins - bench > LONG_GAP_OVER_TARGET_MINS;
     // A wait is not a slow ride, so it carries no verdict at all rather than a
     // failing one. v_tat_daily's percentage counts only rows with a verdict.
-    leg.on_time = leg.long_gap ? null : leg.tat_mins <= leg.target_mins;
+    leg.on_time = leg.long_gap ? null : leg.tat_mins <= bench;
   });
+
+  return stats;
 }
 
 /** The whole pipeline for one day: routes in, priced legs out. Shared by the
  *  archiver and any caller that wants a day without persisting it. */
-export async function buildDayLegs(routes: TimelineRoute[], tripDate: string): Promise<TatLeg[]> {
+export async function buildDayLegs(
+  routes: TimelineRoute[], tripDate: string,
+): Promise<{ legs: TatLeg[]; stats: DistanceStats }> {
   const legs = routes.flatMap((r) => legsForRoute(r, tripDate));
-  await attachDistances(legs);
-  return legs;
+  const stats = await attachDistances(legs);
+  return { legs, stats };
 }
 
 // ── Rollups ─────────────────────────────────────────────────────────────────

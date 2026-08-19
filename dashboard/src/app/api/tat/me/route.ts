@@ -55,8 +55,10 @@ interface LegCard {
   distance_km: number | null;
   tat_mins: number | null;
   target_mins: number | null;
-  /** Goong's estimate for the same leg. Shown beside the target, never used to grade. */
+  /** Goong's estimate for the same leg. An INPUT to the benchmark, not the verdict. */
   eta_mins: number | null;
+  /** What the leg was actually graded against: the higher of target and Goong. */
+  benchmark_mins: number | null;
   on_time: boolean | null;
   long_gap: boolean;
   estimated: boolean;
@@ -101,6 +103,7 @@ function toCard(l: TatLeg): LegCard {
     tat_mins: l.tat_mins,
     target_mins: l.target_mins,
     eta_mins: l.eta_mins ?? null,
+    benchmark_mins: l.benchmark_mins ?? l.target_mins ?? null,
     on_time: l.on_time,
     long_gap: l.long_gap,
     // The driver never tapped "đã đến", so the arrival stamp is really the

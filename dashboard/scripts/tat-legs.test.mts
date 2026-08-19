@@ -17,7 +17,7 @@
  */
 import type { TimelineRoute, TimelineStop } from "../src/lib/types";
 
-const { legsForRoute } = await import("../src/lib/tat");
+const { legsForRoute, benchmarkMinsFor, targetMinsFor } = await import("../src/lib/tat");
 
 const DATE = "2026-08-19";
 let failures = 0;
@@ -123,6 +123,24 @@ const route = (stops: TimelineStop[]): TimelineRoute =>
     legs.map((l) => `${l.from_customer_id}${l.to_customer_id}`).join(","));
   check("seq numbers run 1..n", legs.every((l, i) => l.seq === i + 1));
 }
+
+// ── 6. The benchmark: the higher of the flat rule and Goong ─────────────────
+// The flat rule is a FLOOR. A slow road may raise the bar; nothing may lower it,
+// or a driver would quietly be held to a tighter target than the rule they know.
+check("takes Goong when the road is slower than the rule", benchmarkMinsFor(8, 14) === 14);
+check("keeps the rule when Goong is optimistic", benchmarkMinsFor(28, 19) === 28);
+check("a missing estimate leaves the rule untouched", benchmarkMinsFor(16, null) === 16);
+check(
+  "never returns below the flat rule",
+  [null, 0, 1, 5, 99].every((e) => (benchmarkMinsFor(20, e) ?? 0) >= 20),
+);
+check("no distance means no benchmark at all", benchmarkMinsFor(null, 30) === null);
+
+// The case this change exists for. 1.8 km rounds up to 2 km → 8 minutes under the
+// flat rule, which is about what the fixed overhead alone costs; Goong saying 14
+// is what makes the leg achievable instead of late by construction.
+check("...the flat rule for 1.8 km really is 8", targetMinsFor(1.8) === 8);
+check("the 1.8 km case loosens from 8 to 14", benchmarkMinsFor(targetMinsFor(1.8), 14) === 14);
 
 console.log(failures === 0 ? "\nAll TAT leg checks passed." : `\n${failures} check(s) FAILED.`);
 process.exitCode = failures === 0 ? 0 : 1;

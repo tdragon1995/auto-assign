@@ -102,9 +102,10 @@ interface TatLegCardData {
   distance_km: number | null;
   tat_mins: number | null;
   target_mins: number | null;
-  /** Goong's travel-time estimate. Shown beside the target as a road-aware
-   *  reference; it never decides đúng giờ / trễ. */
+  /** Goong's travel-time estimate — an input to the benchmark, not the verdict. */
   eta_mins: number | null;
+  /** What this leg was graded against: the higher of the flat rule and Goong. */
+  benchmark_mins: number | null;
   long_gap: boolean;
   on_time: boolean | null;
   estimated: boolean;
@@ -345,7 +346,8 @@ function TatLegRow({ leg }: { leg: TatLegCardData }) {
     : late
       ? "bg-amber-100 text-amber-800"
       : "bg-slate-100 text-slate-500";
-  const over = late && leg.tat_mins != null && leg.target_mins != null ? leg.tat_mins - leg.target_mins : null;
+  const bench = leg.benchmark_mins ?? leg.target_mins;
+  const over = late && leg.tat_mins != null && bench != null ? leg.tat_mins - bench : null;
   const chipText = good ? "Đúng giờ" : late ? `Trễ ${over} phút` : leg.long_gap ? "Chờ / nghỉ" : "—";
 
   return (
@@ -385,18 +387,18 @@ function TatLegRow({ leg }: { leg: TatLegCardData }) {
           separates a slow driver from a slow route — the flat rule alone cannot
           tell those apart, and that ambiguity is where a late leg turns into an
           argument. Goong is deliberately styled as a note, not a verdict. */}
-      {(leg.target_mins != null || leg.eta_mins != null) && (
+      {bench != null && (
         <div className="flex items-center gap-2 flex-wrap">
-          {leg.target_mins != null && (
-            <span className="inline-flex items-baseline gap-1 text-[11px] rounded-md bg-gray-100 px-2 py-1">
-              <span className="text-gray-500">Mục tiêu</span>
-              <span className="font-semibold text-gray-700">{leg.target_mins} phút</span>
-            </span>
-          )}
-          {leg.eta_mins != null && (
-            <span className="inline-flex items-baseline gap-1 text-[11px] rounded-md bg-blue-50 px-2 py-1">
-              <span className="text-blue-500">Goong</span>
-              <span className="font-semibold text-blue-700">{leg.eta_mins} phút</span>
+          <span className="inline-flex items-baseline gap-1 text-[11px] rounded-md bg-gray-100 px-2 py-1">
+            <span className="text-gray-500">Mục tiêu</span>
+            <span className="font-semibold text-gray-700">{bench} phút</span>
+          </span>
+          {/* The two inputs behind that number, so the benchmark is never a figure
+              the driver has to take on trust. Shown only when they differ — when
+              they agree, repeating it twice is noise. */}
+          {leg.target_mins != null && leg.eta_mins != null && leg.target_mins !== leg.eta_mins && (
+            <span className="text-[11px] text-gray-400">
+              (4 × km: {leg.target_mins} · Goong: {leg.eta_mins} — lấy số cao hơn)
             </span>
           )}
         </div>
@@ -2176,8 +2178,9 @@ export default function ChamCongPage() {
                           Thời gian được tính từ lúc bạn xong điểm này đến lúc tới điểm kế tiếp.
                         </p>
                         <p className="text-[11px] text-gray-500">
-                          <span className="font-semibold text-blue-600">Goong</span> là thời gian ước tính
-                          của bản đồ cho đúng đoạn đường đó — chỉ để tham khảo, không dùng để chấm đúng giờ.
+                          Mục tiêu lấy <span className="font-semibold">số cao hơn</span> giữa cách tính
+                          trên và thời gian bản đồ (Goong) ước tính cho đúng đoạn đường đó. Đường nào
+                          thực tế đi lâu hơn thì mục tiêu tự động nới ra.
                         </p>
                         {tatReport.updated_at && (
                           <p className="text-[11px] text-gray-400">

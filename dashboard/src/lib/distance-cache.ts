@@ -189,11 +189,35 @@ export async function roadDistancesForPairs(
       if (list) list.push(i);
       else byOrigin.set(k, [i]);
     }
-    for (const idxs of byOrigin.values()) {
-      const origin = miss[idxs[0]].from;
-      const res = await goongMatrix(origin.lat, origin.lon, idxs.map((i) => miss[i].to), apiKey, signal);
-      idxs.forEach((i, j) => { out[i] = res[j] ?? null; });
-    }
+
+    // Bounded concurrency, not one-at-a-time.
+    //
+    // A cold day touches ~190 distinct origins, and serially that is ~190 round
+    // trips of a few hundred ms each — which is what pushed the archive past its
+    // 60-second limit and, before the write was made safe, cost whole days of
+    // data. Same number of requests, so the Goong bill is identical; they simply
+    // stop queueing behind each other.
+    //
+    // Capped rather than unbounded: firing 190 simultaneous requests invites rate
+    // limiting, and a 429 here is worse than a slow answer — nulls are never
+    // cached, so a throttled pair is re-asked on every future pass.
+    const groups = [...byOrigin.values()];
+    const CONCURRENCY = 6;
+    let next = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, groups.length) }, async () => {
+        for (;;) {
+          const idx = next++;
+          if (idx >= groups.length) return;
+          // Honour a quota that ran out mid-flight rather than firing the rest.
+          if (signal?.quotaExceeded) return;
+          const idxs = groups[idx];
+          const origin = miss[idxs[0]].from;
+          const res = await goongMatrix(origin.lat, origin.lon, idxs.map((i) => miss[i].to), apiKey, signal);
+          idxs.forEach((i, j) => { out[i] = res[j] ?? null; });
+        }
+      }),
+    );
     return out;
   });
 }
