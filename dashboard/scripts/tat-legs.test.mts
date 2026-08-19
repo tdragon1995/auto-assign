@@ -1,0 +1,128 @@
+/**
+ * Cutting a driver's day into legs: stop merging, ordering, and the clock.
+ *
+ * The merge is the part most worth pinning down. A driver who works three jobs at
+ * one clinic made ONE journey there, but the timeline reports three stops — and
+ * left alone those produce two 0 km legs from a place to itself, each handed the
+ * 4-minute floor target and each counted as a "chặng". That pads the driver's day
+ * with trips they never rode and scores their paperwork as slow riding.
+ *
+ * Equally important is what must NOT merge: a driver returning to the lab three
+ * times across a day genuinely rode there three times. Merging by place instead of
+ * by consecutive run would erase two real journeys and silently shrink the day.
+ *
+ * Pure function, no network and no Redis — distances are attached separately.
+ *
+ *   npx tsx scripts/tat-legs.test.mts
+ */
+import type { TimelineRoute, TimelineStop } from "../src/lib/types";
+
+const { legsForRoute } = await import("../src/lib/tat");
+
+const DATE = "2026-08-19";
+let failures = 0;
+
+function check(label: string, cond: boolean, detail = "") {
+  if (cond) console.log(`  ok   ${label}`);
+  else { failures++; console.error(`  FAIL ${label}${detail ? ` — ${detail}` : ""}`); }
+}
+
+/** Minimal stop; only the fields the leg cutter reads are meaningful. */
+function stop(o: {
+  id: number; cust: string; name: string; lat: number; lng: number;
+  arrived: string | null; completed: string; ref?: string; labels?: string[];
+}): TimelineStop {
+  return {
+    stopId: o.id, jobId: o.id * 10, stopTypeId: 1, stopStatusId: 4,
+    customerId: o.cust, customerName: o.name,
+    referenceNumber: o.ref ?? `REF-${o.id}`, jobLabels: o.labels ?? [],
+    latitude: o.lat, longitude: o.lng,
+    activityArrivedTs: o.arrived ? `${DATE} ${o.arrived}` : null,
+    activityCompletedTs: `${DATE} ${o.completed}`,
+    activityStartedTs: null,
+  } as unknown as TimelineStop;
+}
+
+const route = (stops: TimelineStop[]): TimelineRoute =>
+  ({ routeId: "driver_11111111-2222-3333-4444-555555555555", orderedStops: stops,
+     driverFullname: "P - PT01 Test" } as unknown as TimelineRoute);
+
+// ── 1. Three jobs at one clinic, then the lab ───────────────────────────────
+// Arrives 08:00, works until 08:40, rides to the lab arriving 09:10.
+// One journey out, one journey in — so exactly ONE leg, not three.
+{
+  const legs = legsForRoute(route([
+    stop({ id: 1, cust: "CLINIC", name: "Clinic A", lat: 10.78, lng: 106.68, arrived: "08:00:00", completed: "08:10:00" }),
+    stop({ id: 2, cust: "CLINIC", name: "Clinic A", lat: 10.78, lng: 106.68, arrived: "08:05:00", completed: "08:25:00" }),
+    stop({ id: 3, cust: "CLINIC", name: "Clinic A", lat: 10.78, lng: 106.68, arrived: "08:20:00", completed: "08:40:00" }),
+    stop({ id: 4, cust: "LAB", name: "D001", lat: 10.77, lng: 106.66, arrived: "09:10:00", completed: "09:30:00" }),
+  ]), DATE);
+
+  check("three stops at one place collapse to a single leg", legs.length === 1, `got ${legs.length}`);
+  check("no leg is a place to itself", legs.every((l) => l.from_customer_id !== l.to_customer_id));
+  check(
+    "departs at the LAST completion there (08:40), not the first",
+    legs[0]?.departed_ts?.startsWith(`${DATE}T08:40:00`) === true, String(legs[0]?.departed_ts),
+  );
+  check("rides 08:40 → 09:10 = 30 minutes", legs[0]?.tat_mins === 30, String(legs[0]?.tat_mins));
+}
+
+// ── 2. Earliest arrival wins on the inbound leg ─────────────────────────────
+// The driver reaches the clinic at 08:00 but only taps "arrived" on the second
+// job. The inbound leg must end at 08:00 — the moment they actually got there.
+{
+  const legs = legsForRoute(route([
+    stop({ id: 1, cust: "LAB", name: "D001", lat: 10.77, lng: 106.66, arrived: "07:30:00", completed: "07:40:00" }),
+    stop({ id: 2, cust: "CLINIC", name: "Clinic A", lat: 10.78, lng: 106.68, arrived: "08:12:00", completed: "08:20:00" }),
+    stop({ id: 3, cust: "CLINIC", name: "Clinic A", lat: 10.78, lng: 106.68, arrived: "08:00:00", completed: "08:30:00" }),
+  ]), DATE);
+
+  check("merged visit arrives at the EARLIEST arrival (08:00)",
+    legs[0]?.arrived_ts?.startsWith(`${DATE}T08:00:00`) === true, String(legs[0]?.arrived_ts));
+  check("inbound leg is 07:40 → 08:00 = 20 minutes", legs[0]?.tat_mins === 20, String(legs[0]?.tat_mins));
+}
+
+// ── 3. A real return trip must NOT be merged ────────────────────────────────
+// Lab → clinic → lab. The two lab visits are separated by a journey, so they are
+// two visits and the day contains two legs.
+{
+  const legs = legsForRoute(route([
+    stop({ id: 1, cust: "LAB", name: "D001", lat: 10.77, lng: 106.66, arrived: "07:00:00", completed: "07:10:00" }),
+    stop({ id: 2, cust: "CLINIC", name: "Clinic A", lat: 10.78, lng: 106.68, arrived: "07:40:00", completed: "07:50:00" }),
+    stop({ id: 3, cust: "LAB", name: "D001", lat: 10.77, lng: 106.66, arrived: "08:20:00", completed: "08:30:00" }),
+  ]), DATE);
+
+  check("returning to the same place later is two separate legs", legs.length === 2, `got ${legs.length}`);
+  check("second leg heads back to the lab", legs[1]?.to_customer_id === "LAB", String(legs[1]?.to_customer_id));
+}
+
+// ── 4. Attendance taps are not journeys ─────────────────────────────────────
+// A check-in stamp is a button press, not a vehicle arriving somewhere.
+{
+  const legs = legsForRoute(route([
+    stop({ id: 1, cust: "LAB", name: "D001", lat: 10.77, lng: 106.66, arrived: "07:00:00", completed: "07:05:00",
+           ref: "Chấm Công - Vào", labels: ["check_in"] }),
+    stop({ id: 2, cust: "CLINIC", name: "Clinic A", lat: 10.78, lng: 106.68, arrived: "07:40:00", completed: "07:50:00" }),
+    stop({ id: 3, cust: "LAB", name: "D001", lat: 10.77, lng: 106.66, arrived: "08:20:00", completed: "08:30:00" }),
+  ]), DATE);
+
+  check("chấm công stop is excluded from the route", legs.length === 1, `got ${legs.length}`);
+  check("the surviving leg is clinic → lab", legs[0]?.from_customer_id === "CLINIC" && legs[0]?.to_customer_id === "LAB");
+}
+
+// ── 5. Legs follow the order actually worked, not the listed order ──────────
+{
+  const legs = legsForRoute(route([
+    stop({ id: 3, cust: "C", name: "Third", lat: 10.70, lng: 106.60, arrived: "10:00:00", completed: "10:10:00" }),
+    stop({ id: 1, cust: "A", name: "First", lat: 10.71, lng: 106.61, arrived: "08:00:00", completed: "08:10:00" }),
+    stop({ id: 2, cust: "B", name: "Second", lat: 10.72, lng: 106.62, arrived: "09:00:00", completed: "09:10:00" }),
+  ]), DATE);
+
+  check("sorted by completion time, so legs are A→B→C",
+    legs.map((l) => `${l.from_customer_id}${l.to_customer_id}`).join(",") === "AB,BC",
+    legs.map((l) => `${l.from_customer_id}${l.to_customer_id}`).join(","));
+  check("seq numbers run 1..n", legs.every((l, i) => l.seq === i + 1));
+}
+
+console.log(failures === 0 ? "\nAll TAT leg checks passed." : `\n${failures} check(s) FAILED.`);
+process.exitCode = failures === 0 ? 0 : 1;

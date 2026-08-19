@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo, useRef } from "react";
-import { Calendar, Clock, ClipboardCheck, FileText, NotepadText, CalendarDays, Search, Truck, MapPin, ArrowLeftRight, CheckCircle2, LogOut, RefreshCw, AlertCircle, LogIn, Loader2, Gauge } from "lucide-react";
+import { Calendar, Clock, ClipboardCheck, FileText, NotepadText, CalendarDays, Search, Truck, MapPin, ArrowLeftRight, CheckCircle2, LogOut, RefreshCw, AlertCircle, LogIn, Loader2, Gauge, ChevronRight } from "lucide-react";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 
 interface Driver {
@@ -76,7 +76,10 @@ type LeaveType = "" | "nguyen_buoi" | "nua_buoi" | "nghi_viec";
 // The unit is a LEG ("chặng") — the ride between two consecutive stops — not a
 // job. See src/lib/tat.ts for why.
 
-type TatSpan = "today" | "week" | "month";
+// "prev_month" exists because payroll runs on the 25th against the PREVIOUS
+// month. Without it the report shows the wrong month during the one week it is
+// most consulted.
+type TatSpan = "today" | "week" | "month" | "prev_month";
 
 interface TatSummary {
   trips_total: number;
@@ -121,7 +124,16 @@ interface TatReport {
   today: { date: string; summary: TatSummary; legs: TatLegCardData[] };
   week: { from: string; to: string; summary: TatSummary; days: TatDay[] };
   prev_week: { from: string; to: string; summary: TatSummary };
-  month: { from: string; to: string; summary: TatSummary };
+  month: { from: string; to: string; summary: TatSummary; days: TatDay[] };
+  prev_month: { from: string; to: string; summary: TatSummary; days: TatDay[] };
+}
+
+/** One past day, fetched on demand when a driver taps a day or picks a date. */
+interface TatDayDetail {
+  date: string;
+  summary: TatSummary;
+  legs: TatLegCardData[];
+  refreshing?: boolean;
 }
 
 interface ScheduleEntry {
@@ -381,32 +393,90 @@ function TatLegRow({ leg }: { leg: TatLegCardData }) {
   );
 }
 
-/** One day in the week list. The leg count leads, because that is the number a
- *  driver recognises as their own day; the on-time share follows it. */
-function TatDayRow({ day }: { day: TatDay }) {
+/** One day in a day list. Tappable: a day summary that cannot be opened answers
+ *  "Tuesday was 60%" without ever answering "why", which is the only question a
+ *  driver actually has after a bad day. */
+function TatDayRow({
+  day, open, loading, detail, onToggle,
+}: {
+  day: TatDay; open: boolean; loading: boolean; detail: TatDayDetail | null; onToggle: () => void;
+}) {
   const pct = day.on_time_pct;
   const tone = pct == null ? "text-gray-400" : pct >= 80 ? "text-green-600" : "text-amber-600";
   return (
-    <li className="flex items-center justify-between gap-3 px-3 py-2.5">
-      <div className="min-w-0">
-        <p className="text-sm font-medium text-gray-800">{vnWeekday(day.date)}</p>
-        <p className="text-[11px] text-gray-400">{fmtDate(day.date)}</p>
-      </div>
-      <div className="flex items-center gap-4 shrink-0">
-        <div className="text-right">
-          <p className="text-sm font-semibold text-gray-700">{day.legs}</p>
-          <p className="text-[11px] text-gray-400">chặng</p>
+    <li>
+      <button
+        onClick={onToggle}
+        className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 text-left transition-colors ${
+          open ? "bg-blue-50/50" : "hover:bg-gray-50"
+        }`}
+      >
+        <div className="min-w-0 flex items-center gap-1.5">
+          <ChevronRight
+            size={14}
+            className={`text-gray-400 shrink-0 transition-transform ${open ? "rotate-90" : ""}`}
+          />
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-gray-800">{vnWeekday(day.date)}</p>
+            <p className="text-[11px] text-gray-400">{fmtDate(day.date)}</p>
+          </div>
         </div>
-        <div className="text-right w-14">
-          <p className="text-sm font-semibold text-gray-700">{day.avg_tat_mins ?? "—"}</p>
-          <p className="text-[11px] text-gray-400">phút TB</p>
+        <div className="flex items-center gap-4 shrink-0">
+          <div className="text-right">
+            <p className="text-sm font-semibold text-gray-700">{day.legs}</p>
+            <p className="text-[11px] text-gray-400">chặng</p>
+          </div>
+          <div className="text-right w-14">
+            <p className="text-sm font-semibold text-gray-700">{day.avg_tat_mins ?? "—"}</p>
+            <p className="text-[11px] text-gray-400">phút TB</p>
+          </div>
+          <div className="text-right w-14">
+            <p className={`text-sm font-semibold ${tone}`}>{pct == null ? "—" : `${pct}%`}</p>
+            <p className="text-[11px] text-gray-400">đúng giờ</p>
+          </div>
         </div>
-        <div className="text-right w-14">
-          <p className={`text-sm font-semibold ${tone}`}>{pct == null ? "—" : `${pct}%`}</p>
-          <p className="text-[11px] text-gray-400">đúng giờ</p>
+      </button>
+
+      {open && (
+        <div className="px-3 pb-3 pt-1 space-y-2 bg-blue-50/30">
+          {loading ? (
+            <div className="flex justify-center py-4 text-gray-400"><Loader2 size={18} className="animate-spin" /></div>
+          ) : !detail || detail.legs.length === 0 ? (
+            <p className="text-xs text-gray-400 text-center py-3">
+              {detail?.refreshing ? "Đang tải dữ liệu ngày này, thử lại sau giây lát..." : "Không có chặng nào."}
+            </p>
+          ) : (
+            detail.legs.map((leg) => <TatLegRow key={leg.seq} leg={leg} />)
+          )}
         </div>
-      </div>
+      )}
     </li>
+  );
+}
+
+/** A day list with drill-down, shared by the week and month spans. */
+function TatDayList({
+  days, openDay, dayLoading, dayDetail, onToggle,
+}: {
+  days: TatDay[]; openDay: string | null; dayLoading: boolean;
+  dayDetail: TatDayDetail | null; onToggle: (date: string) => void;
+}) {
+  if (days.length === 0) return <p className="text-center text-sm text-gray-400 py-8">Chưa có số liệu.</p>;
+  return (
+    <div className="rounded-xl border border-gray-200 overflow-hidden">
+      <ul className="divide-y divide-gray-100">
+        {days.map((d) => (
+          <TatDayRow
+            key={d.date}
+            day={d}
+            open={openDay === d.date}
+            loading={openDay === d.date && dayLoading}
+            detail={openDay === d.date ? dayDetail : null}
+            onToggle={() => onToggle(d.date)}
+          />
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -574,6 +644,10 @@ export default function ChamCongPage() {
   const [tatReport,  setTatReport]  = useState<TatReport | null>(null);
   const [tatLoading, setTatLoading] = useState(false);
   const [tatError,   setTatError]   = useState<string | null>(null);
+  // Drill-down: which past day is expanded, and its legs once fetched.
+  const [tatOpenDay,   setTatOpenDay]   = useState<string | null>(null);
+  const [tatDayDetail, setTatDayDetail] = useState<TatDayDetail | null>(null);
+  const [tatDayLoading, setTatDayLoading] = useState(false);
 
   // ── Init ──────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -849,6 +923,29 @@ export default function ChamCongPage() {
       setTatError("Không kết nối được máy chủ.");
     } finally {
       setTatLoading(false);
+    }
+  }
+
+  /** Open (or close) one past day. Tapping the open day closes it, so the list
+   *  stays a list rather than becoming a stack of expanded days. */
+  async function tatToggleDay(date: string) {
+    if (tatOpenDay === date) { setTatOpenDay(null); setTatDayDetail(null); return; }
+    setTatOpenDay(date);
+    setTatDayDetail(null);
+    setTatDayLoading(true);
+    try {
+      const res = await fetch(`/api/tat/me?date=${date}`);
+      const data = await res.json();
+      if (res.status === 401) {
+        setNvSession(null);
+        try { localStorage.removeItem(LS_NV_SESSION); } catch { /* ignore */ }
+        return;
+      }
+      if (data.ok) setTatDayDetail({ date, summary: data.summary, legs: data.legs ?? [], refreshing: data.refreshing });
+    } catch {
+      /* the row renders its own empty state */
+    } finally {
+      setTatDayLoading(false);
     }
   }
 
@@ -1878,11 +1975,12 @@ export default function ChamCongPage() {
                       ["today", "Hôm nay"],
                       ["week", "Tuần này"],
                       ["month", "Tháng này"],
+                      ["prev_month", "Tháng trước"],
                     ] as [TatSpan, string][]).map(([key, label]) => (
                       <button
                         key={key}
-                        onClick={() => setTatSpan(key)}
-                        className={`flex-1 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                        onClick={() => { setTatSpan(key); setTatOpenDay(null); setTatDayDetail(null); }}
+                        className={`flex-1 py-1.5 rounded-lg text-[11px] font-semibold transition-colors whitespace-nowrap ${
                           tatSpan === key ? "bg-white text-blue-600 shadow-sm" : "text-gray-500 hover:text-gray-700"
                         }`}
                       >
@@ -1942,17 +2040,13 @@ export default function ChamCongPage() {
                           </div>
                           <TatTrend current={tatReport.week.summary} previous={tatReport.prev_week.summary} />
 
-                          {tatReport.week.days.length === 0 ? (
-                            <p className="text-center text-sm text-gray-400 py-8">Tuần này chưa có số liệu.</p>
-                          ) : (
-                            <div className="rounded-xl border border-gray-200 overflow-hidden">
-                              <ul className="divide-y divide-gray-100">
-                                {tatReport.week.days.map((d) => (
-                                  <TatDayRow key={d.date} day={d} />
-                                ))}
-                              </ul>
-                            </div>
-                          )}
+                          <TatDayList
+                            days={tatReport.week.days}
+                            openDay={tatOpenDay}
+                            dayLoading={tatDayLoading}
+                            dayDetail={tatDayDetail}
+                            onToggle={tatToggleDay}
+                          />
                         </>
                       )}
 
@@ -1967,8 +2061,86 @@ export default function ChamCongPage() {
                           <p className="text-xs text-gray-400 text-center">
                             Từ {fmtDate(tatReport.month.from)} đến {fmtDate(tatReport.month.to)}
                           </p>
+                          <TatDayList
+                            days={tatReport.month.days}
+                            openDay={tatOpenDay}
+                            dayLoading={tatDayLoading}
+                            dayDetail={tatDayDetail}
+                            onToggle={tatToggleDay}
+                          />
                         </>
                       )}
+
+                      {tatSpan === "prev_month" && (
+                        <>
+                          <TatHeadline summary={tatReport.prev_month.summary} title="Tháng trước bạn đã chạy" />
+                          <div className="grid grid-cols-3 gap-2">
+                            <TatStat label="Tổng quãng đường" value={`${tatReport.prev_month.summary.total_km} km`} />
+                            <TatStat label="Thời gian chạy" value={fmtMins(tatReport.prev_month.summary.total_tat_mins)} />
+                            <TatStat label="TB mỗi chặng" value={fmtMins(tatReport.prev_month.summary.avg_tat_mins)} />
+                          </div>
+                          <p className="text-xs text-gray-400 text-center">
+                            Từ {fmtDate(tatReport.prev_month.from)} đến {fmtDate(tatReport.prev_month.to)}
+                          </p>
+                          <TatDayList
+                            days={tatReport.prev_month.days}
+                            openDay={tatOpenDay}
+                            dayLoading={tatDayLoading}
+                            dayDetail={tatDayDetail}
+                            onToggle={tatToggleDay}
+                          />
+                        </>
+                      )}
+
+                      {/* Jump straight to a date. The day lists cover browsing; this covers
+                          the other case — someone naming a specific day in a pay dispute,
+                          which may be outside whichever span is on screen. */}
+                      <div className="rounded-xl border border-gray-200 px-3 py-2.5 space-y-2">
+                        <label className="text-[11px] font-medium text-gray-600 flex items-center gap-1.5">
+                          <Calendar size={13} className="text-gray-400" />
+                          Xem một ngày bất kỳ
+                        </label>
+                        <input
+                          type="date"
+                          max={tatReport.today.date}
+                          value={tatOpenDay ?? ""}
+                          onChange={(e) => { if (e.target.value) tatToggleDay(e.target.value); }}
+                          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                        {tatOpenDay && (
+                          <div className="space-y-2 pt-1">
+                            <div className="flex items-center justify-between">
+                              <p className="text-xs font-semibold text-gray-700">
+                                {vnWeekday(tatOpenDay)}, {fmtDate(tatOpenDay)}
+                              </p>
+                              <button
+                                onClick={() => { setTatOpenDay(null); setTatDayDetail(null); }}
+                                className="text-[11px] text-gray-400 hover:text-gray-600"
+                              >
+                                Đóng
+                              </button>
+                            </div>
+                            {tatDayLoading ? (
+                              <div className="flex justify-center py-4 text-gray-400"><Loader2 size={18} className="animate-spin" /></div>
+                            ) : !tatDayDetail || tatDayDetail.legs.length === 0 ? (
+                              <p className="text-xs text-gray-400 text-center py-3">
+                                {tatDayDetail?.refreshing
+                                  ? "Đang tải dữ liệu ngày này, thử lại sau giây lát..."
+                                  : "Không có chặng nào trong ngày này."}
+                              </p>
+                            ) : (
+                              <>
+                                <div className="grid grid-cols-3 gap-2">
+                                  <TatStat label="Chặng" value={String(tatDayDetail.summary.trips_total)} />
+                                  <TatStat label="Đúng giờ" value={tatDayDetail.summary.on_time_pct == null ? "—" : `${tatDayDetail.summary.on_time_pct}%`} />
+                                  <TatStat label="TB mỗi chặng" value={fmtMins(tatDayDetail.summary.avg_tat_mins)} />
+                                </div>
+                                {tatDayDetail.legs.map((leg) => <TatLegRow key={leg.seq} leg={leg} />)}
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </div>
 
                       {/* The rule, stated once, in the driver's own units. A target
                           nobody can reproduce in their head is a target nobody trusts. */}

@@ -118,6 +118,61 @@ const driverIdOf = (route: TimelineRoute): string | null => {
  * splice phantom legs into the day (a check-out tapped from home would invent a
  * ride across the city).
  */
+/** A stop as read off the timeline, once it is known to have been completed. */
+interface StopEntry { stop: TimelineStop; completed: string; arrived: string | null }
+
+/** One VISIT: the driver being at a place once, however many jobs they worked there. */
+interface Visit { stop: TimelineStop; arrived: string | null; departed: string }
+
+/** Identity of a place. customer_id is the real answer; coordinates are the fallback
+ *  for a stop that carries none, truncated to ~1 m so GPS jitter at one address does
+ *  not read as two places. */
+function placeKey(s: TimelineStop): string {
+  if (s.customerId) return `c:${s.customerId}`;
+  if (s.latitude != null && s.longitude != null) return `p:${s.latitude.toFixed(5)},${s.longitude.toFixed(5)}`;
+  return `s:${s.stopId ?? Math.random()}`;
+}
+
+/**
+ * Collapse CONSECUTIVE stops at the same place into one visit.
+ *
+ * A driver who collects three jobs at one clinic has three stops but made one
+ * journey there. Left unmerged those produce two 0 km legs between a place and
+ * itself, each handed the 4-minute floor target and each counted as a "chặng" —
+ * so the driver's day is padded with trips they never rode, and the paperwork
+ * time between the three jobs is scored as if it were slow riding.
+ *
+ * CONSECUTIVE ONLY, deliberately. A driver returning to the lab three times across
+ * a day genuinely rode there three times; merging by place alone would erase two
+ * real journeys. Only an unbroken run at one place is one visit.
+ *
+ * The merged visit ARRIVES at the earliest arrival of the run and DEPARTS at the
+ * latest completion. That pairing is what makes the surrounding legs honest: the
+ * inbound leg ends when the driver actually got there, and the outbound leg starts
+ * when they actually left, rather than part-way through the work they did there.
+ */
+function mergeConsecutiveStops(ordered: StopEntry[]): Visit[] {
+  const visits: Visit[] = [];
+  for (const e of ordered) {
+    const prev = visits[visits.length - 1];
+    if (prev && placeKey(prev.stop) === placeKey(e.stop)) {
+      // Earliest arrival wins. A null arrival must not beat a real one — the driver
+      // did arrive, they just did not tap it on that particular job.
+      if (e.arrived && (!prev.arrived || Date.parse(e.arrived) < Date.parse(prev.arrived))) {
+        prev.arrived = e.arrived;
+      }
+      // Latest completion wins: they left when the last job there was finished.
+      if (Date.parse(e.completed) > Date.parse(prev.departed)) {
+        prev.departed = e.completed;
+        prev.stop = e.stop; // carry the last job's ids, matching the departure stamp
+      }
+      continue;
+    }
+    visits.push({ stop: e.stop, arrived: e.arrived, departed: e.completed });
+  }
+  return visits;
+}
+
 export function legsForRoute(route: TimelineRoute, tripDate: string): TatLeg[] {
   const driverId = driverIdOf(route);
   if (!driverId) return [];
@@ -131,17 +186,18 @@ export function legsForRoute(route: TimelineRoute, tripDate: string): TatLeg[] {
     .filter((e): e is { stop: TimelineStop; completed: string; arrived: string | null } => e.completed !== null)
     .sort((a, b) => Date.parse(a.completed) - Date.parse(b.completed));
 
+  const visits = mergeConsecutiveStops(ordered);
   const legs: TatLeg[] = [];
 
-  for (let i = 0; i < ordered.length - 1; i++) {
-    const from = ordered[i];
-    const to = ordered[i + 1];
+  for (let i = 0; i < visits.length - 1; i++) {
+    const from = visits[i];
+    const to = visits[i + 1];
 
-    // Prefer the next stop's arrival; fall back to its completion when the driver
-    // never tapped "đã đến". tat_basis records which was used, so an inferred leg
+    // Prefer the next visit's arrival; fall back to its departure when the driver
+    // never tapped "da den". tat_basis records which was used, so an inferred leg
     // (which includes time spent at the destination) can be told apart later.
-    const byArrival = minutesBetween(from.completed, to.arrived);
-    const byCompletion = byArrival == null ? minutesBetween(from.completed, to.completed) : null;
+    const byArrival = minutesBetween(from.departed, to.arrived);
+    const byCompletion = byArrival == null ? minutesBetween(from.departed, to.departed) : null;
     const tatMins = byArrival ?? byCompletion;
     const basis: TatLeg["tat_basis"] = byArrival != null ? "arrived" : byCompletion != null ? "completed" : null;
 
@@ -160,7 +216,7 @@ export function legsForRoute(route: TimelineRoute, tripDate: string): TatLeg[] {
       from_name: f.customerName ?? null,
       from_lat: f.latitude ?? null,
       from_lng: f.longitude ?? null,
-      departed_ts: from.completed,
+      departed_ts: from.departed,
 
       to_stop_id: t.stopId ?? null,
       to_job_id: t.jobId ?? null,
@@ -168,7 +224,7 @@ export function legsForRoute(route: TimelineRoute, tripDate: string): TatLeg[] {
       to_name: t.customerName ?? null,
       to_lat: t.latitude ?? null,
       to_lng: t.longitude ?? null,
-      arrived_ts: to.arrived ?? to.completed,
+      arrived_ts: to.arrived ?? to.departed,
 
       tat_mins: tatMins,
       tat_basis: basis,

@@ -39,6 +39,13 @@ const { vnDate, addDays } = await import("../src/lib/time");
 
 const redis = new Redis({ url: process.env.KV_REST_API_URL!, token: "local" });
 const today = vnDate();
+
+// The pass only runs 05:00-05:10 VN. Every assertion below is about what it DOES,
+// so it must be given a clock inside that window — otherwise the "did nothing"
+// checks pass for the wrong reason and the suite is green ~99% of the day while
+// testing nothing at all.
+const INSIDE_WINDOW = new Date(`${today}T05:05:00+07:00`);
+const OUTSIDE_WINDOW = new Date(`${today}T12:00:00+07:00`);
 const sealKey = (d: string) => `tat:sealed:prod:${d}`;
 const days = Array.from({ length: TAT_LOOKBACK_DAYS }, (_, i) => addDays(today, -(i + 1)));
 const oldest = addDays(today, -TAT_LOOKBACK_DAYS);
@@ -55,7 +62,7 @@ async function clearSeals() {
 
 // ── 1. Oldest first, and a failed archive releases its seal ──────────────────
 await clearSeals();
-const first = await archiveSealedDays();
+const first = await archiveSealedDays("prod", INSIDE_WINDOW);
 check("targets the OLDEST unsealed day", first?.date === oldest, `got ${first?.date}, want ${oldest}`);
 check("reports the fetch failure rather than writing", first?.ok === false, JSON.stringify(first));
 check(
@@ -66,7 +73,7 @@ check(
 // ── 2. A sealed day is never revisited ───────────────────────────────────────
 await clearSeals();
 for (const d of days) await redis.set(sealKey(d), Date.now());
-const none = await archiveSealedDays();
+const none = await archiveSealedDays("prod", INSIDE_WINDOW);
 check("no-ops when every day in the window is already sealed", none === null, JSON.stringify(none));
 
 // ── 3. Only ONE day per call — the catch-up is paced, not a burst ────────────
@@ -77,16 +84,24 @@ await redis.del(sealKey(oldest));
 const secondOldest = addDays(today, -(TAT_LOOKBACK_DAYS - 1));
 await redis.del(sealKey(secondOldest));
 
-const one = await archiveSealedDays();
+const one = await archiveSealedDays("prod", INSIDE_WINDOW);
 check("with two gaps open, handles exactly one", one?.date === oldest, `got ${one?.date}`);
 check(
   "leaves the newer gap for the next ping",
   (await redis.get(sealKey(secondOldest))) === null,
 );
 
-// ── 4. Today is never sealed by this pass ────────────────────────────────────
+// ── 4. Outside the window it does nothing at all ────────────────────────────
+// The gate is what keeps this pass off the Redis write budget: ~680 pings a day
+// would otherwise each spend writes re-asking a question that changes once.
 await clearSeals();
-await archiveSealedDays();
+const outside = await archiveSealedDays("prod", OUTSIDE_WINDOW);
+check("outside 05:00-05:10 VN it is a no-op", outside === null, JSON.stringify(outside));
+check("and claims no seal while gated", (await redis.get(sealKey(oldest))) === null);
+
+// ── 5. Today is never sealed by this pass ────────────────────────────────────
+await clearSeals();
+await archiveSealedDays("prod", INSIDE_WINDOW);
 check("never touches today (still moving; /api/tat/me owns it)", (await redis.get(sealKey(today))) === null);
 
 await clearSeals();

@@ -156,10 +156,16 @@ function insideSealWindow(d = new Date()): boolean {
  * Never throws — the caller is the assign cron, where a reporting error must not
  * become an assignment error.
  */
-export async function archiveSealedDays(env: Env = "prod"): Promise<ArchiveResult | null> {
+export async function archiveSealedDays(
+  env: Env = "prod",
+  /** Injectable clock. Production never passes it; the tests must, because the
+   *  window below means every assertion about what this pass DOES would otherwise
+   *  only hold for ten minutes a day and pass vacuously the rest of the time. */
+  now: Date = new Date(),
+): Promise<ArchiveResult | null> {
   // Cheapest check first, and free: no Redis call at all outside the window. This is
   // the whole saving — see SEAL_WINDOW_START_MIN.
-  if (!insideSealWindow()) return null;
+  if (!insideSealWindow(now)) return null;
 
   // Checked INSIDE the window, and reported rather than returned as a bare null.
   // This function has four separate reasons to do nothing — outside the window, no
@@ -176,7 +182,7 @@ export async function archiveSealedDays(env: Env = "prod"): Promise<ArchiveResul
   // ungated archive would re-run on every ping. Better to do nothing.
   if (!redis) return null;
 
-  const today = vnDate();
+  const today = vnDate(now);
 
   try {
     for (let back = TAT_LOOKBACK_DAYS; back >= 1; back--) {

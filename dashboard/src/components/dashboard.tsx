@@ -12,13 +12,14 @@ import { JobAdminPanel } from "./job-admin-panel";
 import { DistanceTab } from "./distance-tab";
 import { FailedJobsPanel, type ScheduleErrorRow } from "./failed-jobs-panel";
 import { LeaveStatusPanel, uncoveredLeaveCount } from "./leave-status-panel";
+import { TatTeamPanel } from "./tat-team-panel";
 import { toast } from "sonner";
 import type { LogEntry, PickupWarning, FailedJob, ConfigDriver } from "@/lib/types";
 import type { DeploymentBeat } from "@/lib/smart-log-kv";
 import type { LeaveOnDate, InvalidLeaveRow } from "@/lib/leave-config";
 
 type Env = "prod" | "uat";
-type RightTab = "attention" | "live" | "admin" | "schedule" | "distance";
+type RightTab = "attention" | "live" | "admin" | "schedule" | "distance" | "tat";
 
 export function Dashboard() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -525,6 +526,9 @@ export function Dashboard() {
             <button onClick={() => setRightTab("distance")} className={tabBtn(rightTab === "distance")}>
               Khoảng cách
             </button>
+            <button onClick={() => setRightTab("tat")} className={tabBtn(rightTab === "tat")}>
+              Hiệu suất
+            </button>
           </div>
 
           {/* Tab content. On mobile the page flows + scrolls (definite heights so
@@ -582,6 +586,10 @@ export function Dashboard() {
             ) : rightTab === "admin" ? (
               <div className="h-[72vh] lg:h-full">
                 <JobAdminPanel env={env} />
+              </div>
+            ) : rightTab === "tat" ? (
+              <div className="h-[72vh] lg:h-full">
+                <TatTeamPanel />
               </div>
             ) : (
               <div className="h-[72vh] lg:h-full">

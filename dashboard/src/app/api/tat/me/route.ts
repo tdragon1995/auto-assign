@@ -6,12 +6,18 @@
  * follows and for the same reason: a readable id in the request would let any
  * driver type someone else's uuid and read their performance record.
  *
- * FRESHNESS — reads are served from Supabase immediately, even when today's rows
- * are a little behind, and a refresh is scheduled with after() so it lands before
- * the driver's next look. Blocking the response on a full Cartrack day-fetch would
- * put a couple of seconds in front of every page open to move a number that is
- * rarely the one being looked at. The response carries `updated_at` so the screen
- * can state its own age rather than implying it is live.
+ * TWO MODES
+ *   (no params)  → the dashboard: today's legs, plus week / last week / this
+ *                  month / LAST MONTH rollups and their day lists.
+ *   ?date=YYYY-MM-DD → one day's legs, for drilling into a past day.
+ *
+ * LAST MONTH is not a nicety. Payroll runs on the 25th and evaluates the month
+ * before, so for the report's main institutional use "this month" is the wrong
+ * month — the number people are actually paid against was previously unreachable.
+ *
+ * FRESHNESS — reads are served from Supabase immediately, and a refresh is queued
+ * with after() when the day asked for is missing or stale. Blocking the response
+ * on a Cartrack day-fetch would put 30+ seconds in front of a page open.
  */
 import { NextRequest, NextResponse, after } from "next/server";
 import { verifySession, NV_COOKIE } from "@/lib/driver-session";
@@ -28,9 +34,9 @@ export const maxDuration = 60;
 export const preferredRegion = "sin1";
 
 /** How far behind today's archive may fall before a background refresh is queued.
- *  Matched to a sensible cron cadence rather than to the assign cycle: this is a
- *  reflective report, and a leg appearing a few minutes after it was ridden costs
- *  nothing. Lower would just mean more drivers each paying for a day-fetch. */
+ *  This is a reflective report; a leg appearing a few minutes after it was ridden
+ *  costs nothing, and a tighter window would just make more drivers each pay for a
+ *  day-fetch. */
 const STALE_MS = 15 * 60 * 1000;
 
 interface DailyRow extends TatRollupRow {
@@ -38,8 +44,8 @@ interface DailyRow extends TatRollupRow {
   avg_tat_mins: number | null;
 }
 
-/** One row on the driver's leg list. Times are pre-formatted to HH:mm — the
- *  client should not be re-deriving VN local time from a timestamp. */
+/** One row on the driver's leg list. Times are pre-formatted to HH:mm — the client
+ *  should not be re-deriving VN local time from a timestamp. */
 interface LegCard {
   seq: number;
   from: string | null;
@@ -64,16 +70,25 @@ const hhmm = (iso: string | null): string | null => {
   return Number.isNaN(d.getTime()) ? null : timeFmt.format(d);
 };
 
-/** Monday of the week containing `date`. Date-only arithmetic in UTC so no
- *  timezone or DST shift can move the boundary. */
+/** Monday of the week containing `date`. Date-only arithmetic in UTC so no timezone
+ *  or DST shift can move the boundary. */
 function weekStart(date: string): string {
   const dow = new Date(`${date}T00:00:00Z`).getUTCDay(); // 0 = Sunday
   return addDays(date, -((dow + 6) % 7));
 }
 
 const monthStart = (date: string) => `${date.slice(0, 7)}-01`;
+/** Last day of the month containing `date` — day 0 of the next month. */
+function monthEnd(date: string): string {
+  const d = new Date(`${monthStart(date)}T00:00:00Z`);
+  d.setUTCMonth(d.getUTCMonth() + 1);
+  d.setUTCDate(0);
+  return d.toISOString().slice(0, 10);
+}
+/** Any day inside the previous month. */
+const prevMonthAnchor = (date: string) => addDays(monthStart(date), -1);
 
-function toCard(l: TatLeg & { archived_at?: string }): LegCard {
+function toCard(l: TatLeg): LegCard {
   return {
     seq: l.seq,
     from: l.from_name,
@@ -87,13 +102,34 @@ function toCard(l: TatLeg & { archived_at?: string }): LegCard {
     long_gap: l.long_gap,
     // The driver never tapped "đã đến", so the arrival stamp is really the
     // completion stamp and the minutes include time spent at the destination.
-    // Surfaced so the screen can say so rather than presenting an inflated
-    // number as measured fact.
     estimated: l.tat_basis === "completed",
   };
 }
 
 const emptySummary = (): TatSummary => summarize([]);
+
+const dayRow = (d: DailyRow) => ({
+  date: d.trip_date,
+  legs: d.trips_total,
+  avg_tat_mins: d.avg_tat_mins,
+  on_time_pct: d.trips_graded > 0 ? Math.round((d.trips_on_time / d.trips_graded) * 100) : null,
+});
+
+async function legsForDay(driverId: string, date: string) {
+  return sbSelect<TatLeg & { archived_at?: string }>(
+    "tat_legs",
+    `select=*&driver_id=eq.${driverId}&trip_date=eq.${date}&order=seq.asc`,
+  );
+}
+
+/** Newest archived_at across a day's rows, or 0 when the day has none. Read off the
+ *  rows themselves rather than a separate marker, which could outlive what it
+ *  claims to describe. */
+const archivedAtOf = (legs: { archived_at?: string }[]): number =>
+  legs.reduce<number>((max, l) => {
+    const ts = Date.parse(l.archived_at ?? "");
+    return Number.isFinite(ts) && ts > max ? ts : max;
+  }, 0);
 
 export async function GET(req: NextRequest) {
   const session = verifySession(req.cookies.get(NV_COOKIE)?.value);
@@ -111,25 +147,56 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
+  const sp = req.nextUrl.searchParams;
+  const env = (sp.get("env") ?? "prod") as Env;
   const driverId = session.driver_id;
   const today = vnDate();
+
+  // ── Day-detail mode ───────────────────────────────────────────────────────
+  const askedDate = sp.get("date");
+  if (askedDate) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(askedDate) || askedDate > today) {
+      return NextResponse.json({ ok: false, error: "Ngày không hợp lệ." }, { status: 400 });
+    }
+    try {
+      const legs = await legsForDay(driverId, askedDate);
+      const archivedAt = archivedAtOf(legs);
+      // A past day with no rows has simply never been archived (the nightly seal
+      // only reaches back three days). Fetch it in the background so the same tap
+      // a moment later finds it, rather than showing a permanent blank.
+      const stale = legs.length === 0 || (askedDate === today && Date.now() - archivedAt > STALE_MS);
+      if (stale) {
+        after(async () => {
+          try { await archiveDay(askedDate, env); }
+          catch (e) { console.error("[tat/me] background archive failed:", e instanceof Error ? e.message : e); }
+        });
+      }
+      return NextResponse.json({
+        ok: true, date: askedDate, refreshing: stale,
+        summary: summarizeLegs(legs), legs: legs.map(toCard),
+      });
+    } catch (e) {
+      console.error("[tat/me] day error:", e instanceof Error ? e.message : e);
+      return NextResponse.json({ ok: false, error: "Không tải được dữ liệu ngày này." }, { status: 200 });
+    }
+  }
+
+  // ── Dashboard mode ────────────────────────────────────────────────────────
   const wStart = weekStart(today);
   const mStart = monthStart(today);
   const prevWStart = addDays(wStart, -7);
   const prevWEnd = addDays(wStart, -1);
+  const pmAnchor = prevMonthAnchor(today);
+  const pmStart = monthStart(pmAnchor);
+  const pmEnd = monthEnd(pmAnchor);
 
-  // One rollup query covering every span the report shows, sliced in memory. The
-  // earliest boundary is whichever of "this month" and "last week" starts first —
-  // in the first days of a month, that is last week.
-  const rangeStart = mStart < prevWStart ? mStart : prevWStart;
+  // One rollup query covering every span, sliced in memory. The earliest boundary
+  // is whichever of last month and last week starts first — ~60 rows for one driver.
+  const rangeStart = pmStart < prevWStart ? pmStart : prevWStart;
 
   try {
     const [todayLegs, daily] = await Promise.all([
-      sbSelect<TatLeg & { archived_at?: string }>(
-        "tat_legs",
-        `select=*&driver_id=eq.${driverId}&trip_date=eq.${today}&order=seq.asc`,
-      ),
+      legsForDay(driverId, today),
       sbSelect<DailyRow>(
         "v_tat_daily",
         `select=*&driver_id=eq.${driverId}&trip_date=gte.${rangeStart}&trip_date=lte.${today}&order=trip_date.asc`,
@@ -138,13 +205,10 @@ export async function GET(req: NextRequest) {
 
     const inRange = (from: string, to: string) => daily.filter((d) => d.trip_date >= from && d.trip_date <= to);
     const weekDays = inRange(wStart, today);
+    const monthDays = inRange(mStart, today);
+    const prevMonthDays = inRange(pmStart, pmEnd);
 
-    // Age of today's data, taken from the rows themselves rather than a separate
-    // marker — a marker can outlive the rows it claims to describe.
-    const archivedAt = todayLegs.reduce<number>((max, l) => {
-      const ts = Date.parse(l.archived_at ?? "");
-      return Number.isFinite(ts) && ts > max ? ts : max;
-    }, 0);
+    const archivedAt = archivedAtOf(todayLegs);
     const stale = archivedAt === 0 || Date.now() - archivedAt > STALE_MS;
 
     // Refresh AFTER responding. The archive rewrites the whole fleet's day, so one
@@ -162,31 +226,19 @@ export async function GET(req: NextRequest) {
       mins_per_km: MINS_PER_KM,
       updated_at: archivedAt ? new Date(archivedAt).toISOString() : null,
       refreshing: stale,
-      today: {
-        date: today,
-        summary: summarizeLegs(todayLegs),
-        legs: todayLegs.map(toCard),
-      },
-      week: {
-        from: wStart,
-        to: today,
-        summary: summarize(weekDays),
-        // One row per day the driver actually worked; days with no legs are absent
-        // rather than rendered as zeros, which would read as a bad day, not a day off.
-        days: weekDays.map((d) => ({
-          date: d.trip_date,
-          legs: d.trips_total,
-          avg_tat_mins: d.avg_tat_mins,
-          on_time_pct: d.trips_graded > 0 ? Math.round((d.trips_on_time / d.trips_graded) * 100) : null,
-        })),
-      },
+      today: { date: today, summary: summarizeLegs(todayLegs), legs: todayLegs.map(toCard) },
+      // Days with no legs are absent rather than zero rows — a day off should not
+      // render as a bad day.
+      week: { from: wStart, to: today, summary: summarize(weekDays), days: weekDays.map(dayRow) },
       prev_week: { from: prevWStart, to: prevWEnd, summary: summarize(inRange(prevWStart, prevWEnd)) },
-      month: { from: mStart, to: today, summary: summarize(inRange(mStart, today)) },
+      month: { from: mStart, to: today, summary: summarize(monthDays), days: monthDays.map(dayRow) },
+      prev_month: { from: pmStart, to: pmEnd, summary: summarize(prevMonthDays), days: prevMonthDays.map(dayRow) },
     });
   } catch (e) {
     console.error("[tat/me] error:", e instanceof Error ? e.message : e);
     // Degrade to an empty-but-valid report rather than an error status: the tab
     // should render its own explanation, not a broken screen.
+    const empty = { from: today, to: today, summary: emptySummary(), days: [] as ReturnType<typeof dayRow>[] };
     return NextResponse.json({
       ok: true,
       driver_name: session.driver_name,
@@ -195,9 +247,8 @@ export async function GET(req: NextRequest) {
       updated_at: null,
       refreshing: false,
       today: { date: today, summary: emptySummary(), legs: [] },
-      week: { from: wStart, to: today, summary: emptySummary(), days: [] },
-      prev_week: { from: prevWStart, to: prevWEnd, summary: emptySummary() },
-      month: { from: mStart, to: today, summary: emptySummary() },
+      week: empty, prev_week: { ...empty, summary: emptySummary() },
+      month: empty, prev_month: empty,
     });
   }
 }
