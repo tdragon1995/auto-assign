@@ -109,6 +109,10 @@ export async function goongMatrix(
     if (!res.ok) {
       // 429 = Goong rate/daily-quota limit — flag so the batch short-circuits.
       if (res.status === 429 && signal) signal.quotaExceeded = true;
+      // Logged because this used to fail in total silence: a refusal returned null
+      // with no status anywhere, so ~13,000 unpriced legs looked like missing data
+      // rather than a provider saying no.
+      console.warn(`[goong] matrix HTTP ${res.status} for 1x${destinations.length}`);
       return destinations.map(() => null);
     }
     const data = await res.json();
@@ -122,7 +126,65 @@ export async function goongMatrix(
         eta_mins: Math.round(el.duration.value / 60),
       };
     });
-  } catch {
+  } catch (e) {
+    console.warn(`[goong] matrix failed: ${e instanceof Error ? e.message : e}`);
     return destinations.map(() => null);
   }
+}
+
+
+// ── Provider fallback ───────────────────────────────────────────────────────
+//
+// Goong first, VietMap for whatever it could not answer. Two providers because
+// one is a single point of failure for every distance in the system, and its
+// failure mode is silent AND permanent: unanswered pairs are never cached, so
+// they are re-asked forever and never resolve. That left a third of two months'
+// legs with no distance, no target and no verdict.
+//
+// Only the null cells are retried, so a healthy Goong costs exactly what it
+// always did and VietMap is never called at all.
+
+import { vietmapMatrixOneToMany, vietmapMatrixManyToOne } from "./vietmap";
+
+/** True when a result set has gaps worth asking a second provider about. */
+const hasGaps = (rs: (GoongResult | null)[]) => rs.some((r) => r === null);
+
+/** 1 origin → N destinations, with VietMap covering Goong's misses. */
+export async function roadMatrixOneToMany(
+  originLat: number, originLon: number, destinations: { lat: number; lon: number }[],
+  apiKey?: string, signal?: QuotaSignal,
+): Promise<(GoongResult | null)[]> {
+  const primary = await goongMatrix(originLat, originLon, destinations, apiKey, signal);
+  if (!hasGaps(primary)) return primary;
+
+  // Ask only for the gaps — a partial answer from Goong is still cheaper than a
+  // full second request, and keeps the two providers' coverage disjoint.
+  const gapIdx = primary.map((r, i) => (r === null ? i : -1)).filter((i) => i >= 0);
+  const backup = await vietmapMatrixOneToMany(
+    originLat, originLon, gapIdx.map((i) => ({ lat: destinations[i].lat, lon: destinations[i].lon })),
+  );
+  const filled = [...primary];
+  gapIdx.forEach((i, k) => { if (backup[k]) filled[i] = backup[k]; });
+  const recovered = filled.filter((r, i) => primary[i] === null && r !== null).length;
+  if (recovered > 0) console.info(`[distance] vietmap recovered ${recovered}/${gapIdx.length} pairs goong could not answer`);
+  return filled;
+}
+
+/** N origins → 1 destination, with VietMap covering Goong's misses. */
+export async function roadMatrixManyToOne(
+  origins: { lat: number; lon: number }[], dest: { lat: number; lon: number },
+  apiKey?: string, signal?: QuotaSignal,
+): Promise<(GoongResult | null)[]> {
+  const primary = await goongMatrixMultiOrigin(origins, dest, apiKey, signal);
+  if (!hasGaps(primary)) return primary;
+
+  const gapIdx = primary.map((r, i) => (r === null ? i : -1)).filter((i) => i >= 0);
+  const backup = await vietmapMatrixManyToOne(
+    gapIdx.map((i) => ({ lat: origins[i].lat, lon: origins[i].lon })), { lat: dest.lat, lon: dest.lon },
+  );
+  const filled = [...primary];
+  gapIdx.forEach((i, k) => { if (backup[k]) filled[i] = backup[k]; });
+  const recovered = filled.filter((r, i) => primary[i] === null && r !== null).length;
+  if (recovered > 0) console.info(`[distance] vietmap recovered ${recovered}/${gapIdx.length} pairs goong could not answer`);
+  return filled;
 }

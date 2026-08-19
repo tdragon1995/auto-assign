@@ -1,5 +1,5 @@
 import { Redis } from "@upstash/redis";
-import { goongMatrix, goongMatrixMultiOrigin, type GoongResult, type QuotaSignal } from "./distance";
+import { roadMatrixOneToMany, roadMatrixManyToOne, type GoongResult, type QuotaSignal } from "./distance";
 
 /**
  * Redis-backed cache for road distances between fixed locations (customer/PSC
@@ -161,7 +161,7 @@ export async function roadDistancesToPoint(
 ): Promise<(ResolvedDistance | null)[]> {
   return resolvePairs(
     origins.map((o) => ({ from: o, to: dest })),
-    (miss) => goongMatrixMultiOrigin(miss.map((m) => m.from), dest, apiKey, signal),
+    (miss) => roadMatrixManyToOne(miss.map((m) => m.from), dest, apiKey, signal),
   );
 }
 
@@ -213,7 +213,7 @@ export async function roadDistancesForPairs(
           if (signal?.quotaExceeded) return;
           const idxs = groups[idx];
           const origin = miss[idxs[0]].from;
-          const res = await goongMatrix(origin.lat, origin.lon, idxs.map((i) => miss[i].to), apiKey, signal);
+          const res = await roadMatrixOneToMany(origin.lat, origin.lon, idxs.map((i) => miss[i].to), apiKey, signal);
           idxs.forEach((i, j) => { out[i] = res[j] ?? null; });
         }
       }),
@@ -232,7 +232,7 @@ export async function roadDistancesFromPoint(
 ): Promise<(ResolvedDistance | null)[]> {
   return resolvePairs(
     dests.map((d) => ({ from: origin, to: d })),
-    (miss) => goongMatrix(origin.lat, origin.lon, miss.map((m) => m.to), apiKey, signal),
+    (miss) => roadMatrixOneToMany(origin.lat, origin.lon, miss.map((m) => m.to), apiKey, signal),
   );
 }
 
