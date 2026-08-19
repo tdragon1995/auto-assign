@@ -24,6 +24,7 @@
  *   kilometres so a driver can check the target in their head: 7 km → 28 minutes.
  */
 import { roadDistancesForPairs } from "./distance-cache";
+import type { QuotaSignal } from "./distance";
 import { isChamCong } from "./job-filters";
 import type { TimelineRoute, TimelineStop } from "./types";
 
@@ -301,11 +302,20 @@ export async function attachDistances(legs: TatLeg[]): Promise<DistanceStats> {
   stats.noCoords = legs.length - measurable.length;
   if (measurable.length === 0) return stats;
 
+  // One quota signal for the whole day. Without it, a provider that has cut us off
+  // is asked again for every single pair — measured at ~250 pointless 429s per day,
+  // each a real round trip, which both slows the archive and keeps hammering an API
+  // that is already refusing. The first 429 now short-circuits the rest straight to
+  // the fallback. The fallback is deliberately NOT given this signal: one provider's
+  // quota must never silence the other.
+  const signal: QuotaSignal = { quotaExceeded: false };
   const results = await roadDistancesForPairs(
     measurable.map((l) => ({
       from: { lat: l.from_lat!, lon: l.from_lng! },
       to: { lat: l.to_lat!, lon: l.to_lng! },
     })),
+    undefined,
+    signal,
   );
 
   measurable.forEach((leg, i) => {
