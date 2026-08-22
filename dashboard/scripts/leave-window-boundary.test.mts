@@ -22,7 +22,7 @@
  *   npx tsx scripts/leave-window-boundary.test.mts
  */
 
-import { inWindow } from "../src/lib/leave-config";
+import { inWindow, leaveEntriesOnDate, type LeaveEntry } from "../src/lib/leave-config";
 import { isDriverOnShift } from "../src/lib/fixed-driver";
 import type { Mapping } from "../src/lib/types";
 
@@ -78,6 +78,46 @@ for (const [start, end] of [MORNING, AFTERNOON, [0, 8 * 60], [21 * 60, 24 * 60 -
   }
 }
 check("mismatched minutes across 4 windows x 1440 minutes", mismatches, 0);
+
+console.log("");
+console.log("4. One day split between two substitutes stays two rows");
+// The real shape from the sheet (2026-08-22): one driver, one day, two rows,
+// both typed "Nghỉ nguyên buổi", handing over at 15:00 to a DIFFERENT sub.
+// The hours are the only thing telling them apart — drop them and the two
+// collapse onto one key, which is what made the panel cry "Trùng dòng" and
+// hide the afternoon substitute entirely.
+const split: LeaveEntry[] = [
+  {
+    driver_id: "huy", driver_name: "Đặng Khắc Huy", loai_nghi: "Nghỉ nguyên buổi",
+    leave_from: "2026-08-22", leave_to: "2026-08-22",
+    gio_bat_dau: "07:00", gio_ket_thuc: "15:00",
+    subs: [{ id: "luat-a", name: "Phạm Thế Luật DC101204", from: null, to: null }],
+  },
+  {
+    driver_id: "huy", driver_name: "Đặng Khắc Huy", loai_nghi: "Nghỉ nguyên buổi",
+    leave_from: "2026-08-22", leave_to: "2026-08-22",
+    gio_bat_dau: "15:00", gio_ket_thuc: "20:00",
+    subs: [{ id: "luat-b", name: "Phạm Thế Luật PT101280", from: null, to: null }],
+  },
+];
+const shown = leaveEntriesOnDate("2026-08-22", split);
+check("both rows survive", shown.length, 2);
+check("neither is flagged a duplicate", shown.filter((r) => r.duplicate).length, 0);
+check("morning window kept", shown[0]?.timeLabel, "07:00–15:00");
+check("afternoon window kept", shown[1]?.timeLabel, "15:00–20:00");
+check("both substitutes visible", shown.flatMap((r) => r.subs).length, 2);
+
+// A full day with NO hours must still read as a full day, and two of those are
+// still a genuine duplicate worth cleaning up.
+const plain: LeaveEntry[] = [1, 2].map(() => ({
+  driver_id: "x", driver_name: "X", loai_nghi: "Nghỉ nguyên buổi",
+  leave_from: "2026-08-22", leave_to: "2026-08-22",
+  gio_bat_dau: null, gio_ket_thuc: null, subs: [],
+}));
+const plainShown = leaveEntriesOnDate("2026-08-22", plain);
+check("hourless full day collapses to one row", plainShown.length, 1);
+check("hourless full day has no window", plainShown[0]?.timeLabel, null);
+check("hourless duplicate still flagged", plainShown[0]?.duplicate, true);
 
 console.log(failures === 0 ? "\nPASS\n" : `\n${failures} FAILED\n`);
 process.exit(failures === 0 ? 0 : 1);

@@ -158,6 +158,9 @@ export interface LeaveOnDate {
  *   mistyped half-day never renders as a full-day absence.
  * - Unlabeled manual row with a blank/invalid window → covered full-day, same
  *   as the engine's else-branch.
+ * - Full day (`Nghỉ nguyên buổi`) WITH an hour window → covered for that window
+ *   only. Two such rows are how one day is split between two substitutes, so
+ *   the hours have to survive; blank hours still mean the whole day.
  *
  * `timeLabel` is "HH:MM–HH:MM" for a windowed leave, or null for a full day.
  * Note this is date-only coverage: the engine additionally gates a windowed
@@ -176,7 +179,14 @@ function coverageOnDate(
 
   if (e.loai_nghi === "Nghỉ nguyên buổi") {
     const to = e.leave_to ?? e.leave_from;
-    return date >= e.leave_from && date <= to ? { covers: true, timeLabel: null } : NONE;
+    if (date < e.leave_from || date > to) return NONE;
+    // A full-day row CAN carry hours, and when it does they are load-bearing:
+    // this is how one day gets split between two substitutes — two rows, both
+    // "Nghỉ nguyên buổi", 07:00–15:00 handing over to 15:00–20:00. Ignoring the
+    // hours collapsed those two rows onto one key, so the panel called them a
+    // duplicate and kept only one, and the second substitute vanished.
+    // Blank/invalid hours still mean the whole day, which is the common case.
+    return { covers: true, timeLabel: windowLabel() };
   }
   if (e.loai_nghi === "Nghỉ nửa buổi") {
     if (date !== e.leave_from) return NONE;
@@ -502,10 +512,20 @@ function leaveMatchNow(
 
   if (e.loai_nghi === "Nghỉ nguyên buổi") {
     const to = e.leave_to ?? e.leave_from;
-    if (today >= e.leave_from && today <= to) {
-      return { onLeave: true, driverName, reason: `Nghỉ nguyên buổi ${e.leave_from}→${to}`, entry: e };
+    if (today < e.leave_from || today > to) return null;
+    const start = timeToMins(e.gio_bat_dau);
+    const end   = timeToMins(e.gio_ket_thuc);
+    // Mirrors coverageOnDate: hours on a full-day row are a coverage window,
+    // not decoration. Without this the driver read as off ALL day while their
+    // substitute — whose blank window inherits these same hours — covered only
+    // part of it, so the uncovered remainder failed as "no substitute" even
+    // though the sibling row named someone for exactly that stretch.
+    if (start >= 0 && end > start) {
+      return inWindow(nowMins, start, end)
+        ? { onLeave: true, driverName, reason: `Nghỉ nguyên buổi ${e.gio_bat_dau}–${e.gio_ket_thuc}`, entry: e }
+        : null;
     }
-    return null;
+    return { onLeave: true, driverName, reason: `Nghỉ nguyên buổi ${e.leave_from}→${to}`, entry: e };
   }
   if (e.loai_nghi === "Nghỉ nửa buổi") {
     if (today === e.leave_from) {
