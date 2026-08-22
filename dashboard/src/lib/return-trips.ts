@@ -100,9 +100,14 @@ async function createReturnJob(
 /**
  * Map each substitute currently covering an on-leave smart-pool driver → the
  * pool driver they cover. The sub holds that driver's outbounds today, so both
- * the return-trip creator and the cleanup pass gate the sub's return on the
- * ON-LEAVE driver's shift window (looked up via that driver's mappings) rather
- * than the sub's own — a sub has no PSC mapping of their own to gate against.
+ * the return-trip creator and the cleanup pass count the ON-LEAVE driver's shift
+ * window when deciding the sub's return.
+ *
+ * Note both callers add the covered driver's window to the sub's OWN one rather
+ * than replacing it. The original "a sub has no mapping of their own here" premise
+ * is false often enough to matter — a driver can cover someone at one branch while
+ * running their own roster at another — and replacing left them with no window at
+ * all wherever the covered driver isn't mapped.
  */
 export function subToCoveredDriver(
   config: Config,
@@ -117,6 +122,31 @@ export function subToCoveredDriver(
     if (sub.status === "ok") map.set(sub.subId, id);
   }
   return map;
+}
+
+/**
+ * The shift windows that govern one driver's return trip at one PSC: their own
+ * mappings there, PLUS those of whoever they are covering today. A union, not a
+ * replacement — see {@link subToCoveredDriver}.
+ *
+ * Both gates call this so they cannot drift apart: the creator refuses to build a
+ * return when no window is open, and the cleanup pass cancels one when this same
+ * set says the driver is off shift. An empty result means "this driver has no
+ * mapping here at all" and leaves the decision to the caller.
+ */
+export function shiftMappingsForPsc(
+  config: Config,
+  pscCustomerId: string,
+  driverId: string,
+  subCovers: Map<string, string>,
+): Mapping[] {
+  const coveredDriverId = subCovers.get(driverId);
+  const ids = coveredDriverId ? [driverId, coveredDriverId] : [driverId];
+  return config.mappings.filter(
+    (m) =>
+      m.customer_id === pscCustomerId &&
+      ids.some((id) => m.driver_id === id || m.smart_driver_id.includes(id)),
+  );
 }
 
 export async function detectAndCreateReturnTrips(
@@ -220,15 +250,14 @@ export async function detectAndCreateReturnTrips(
 
     if (!pickupStop?.customer_id || !dropoffStop?.customer_id) continue;
 
-    // Shift check for the PSC the driver just serviced. For a substitute, gate on
-    // the ON-LEAVE driver's shift window (the driver they cover).
+    // Shift check for the PSC the driver just serviced. A substitute is judged on
+    // BOTH their own window here and the covered driver's. Swapping in the covered
+    // driver ALONE left the sub with no window wherever that driver isn't mapped —
+    // and no window skips the gate below entirely, so the return was rebuilt at any
+    // hour until the end-of-day sweep. That is not hypothetical: D014 has four fixed
+    // drivers and no pool, so a sub covering a pool driver matched nothing there.
     const pscCustomerId: string = pickupStop.customer_id;
-    const shiftDriverId = subCovers.get(outbound.delivery_driver_id) ?? outbound.delivery_driver_id;
-    const driverMappings = config.mappings.filter(
-      (m) =>
-        m.customer_id === pscCustomerId &&
-        (m.driver_id === shiftDriverId || m.smart_driver_id.includes(shiftDriverId))
-    );
+    const driverMappings = shiftMappingsForPsc(config, pscCustomerId, outbound.delivery_driver_id, subCovers);
     const now = new Date();
 
     // A return trip belongs to the shift the OUTBOUND was finished in. So we need

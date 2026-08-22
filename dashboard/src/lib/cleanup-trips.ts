@@ -10,7 +10,7 @@ import {
 } from "./cartrack";
 import { isStopStarted } from "./job-filters";
 import { vnDate, vnMinutesSinceMidnight, parseVnTimestamp } from "./time";
-import { PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL, isOnShift, subToCoveredDriver } from "./return-trips";
+import { PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL, isOnShift, subToCoveredDriver, shiftMappingsForPsc } from "./return-trips";
 import { PSC_VIA_LABEL } from "./via-legs";
 import { claimTripAction, releaseTripClaim } from "./smart-log-kv";
 import type { LeaveEntry } from "./leave-config";
@@ -307,14 +307,10 @@ export async function cleanupStaleTrips(
     } else {
       if (!untouched) continue; // started same-day return: could be mid-ride — Rule D/C handle it
       // Rule B: the return's dropoff (stop_type_id 2) is the PSC. Off shift there?
-      // For a substitute, gate on the ON-LEAVE driver's shift (matches the creator).
+      // For a substitute, count their own window here AND the covered driver's —
+      // the same union the creator uses, so the two gates stay mirror images.
       const pscCustomerId: string = dropoff.customer_id;
-      const shiftDriverId = subCovers.get(driverId) ?? driverId;
-      const driverMappings = config.mappings.filter(
-        (m) =>
-          m.customer_id === pscCustomerId &&
-          (m.driver_id === shiftDriverId || m.smart_driver_id.includes(shiftDriverId))
-      );
+      const driverMappings = shiftMappingsForPsc(config, pscCustomerId, driverId, subCovers);
       // Same gate as the creator, inverted: a mapping exists and none is on shift.
       if (!(driverMappings.length > 0 && !driverMappings.some((m) => isOnShift(m, now)))) continue;
       tasks.push({ jobId: job.job_id, date, reason: RETURN_STALE_REASON, label: `Return #${job.job_id} | ${route}`, suppress });
