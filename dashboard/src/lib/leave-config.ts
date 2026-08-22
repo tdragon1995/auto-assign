@@ -461,6 +461,34 @@ async function loadLeaveSheet(
   }
 }
 
+/**
+ * Is `nowMins` inside a daily window? Half-open: `(start, end]` — start
+ * EXCLUSIVE, end INCLUSIVE.
+ *
+ * This is the config sheet's convention, not a new one: `isDriverOnShift`
+ * (fixed-driver.ts) reads shift windows the same way, on the rule that the
+ * OUTGOING driver owns the boundary minute. `resolveSubstitute` below already
+ * followed it; the leave rows themselves did not, and were inclusive at both
+ * ends. That split is what this helper closes — one definition, used by both.
+ *
+ * What it fixes: a driver with two rows on one day, 06:00–15:00 and
+ * 15:00–19:00, matched BOTH at exactly 15:00, so the engine picked between two
+ * live leaves on a coin-toss (whichever had more subs). Worse, a leave ending
+ * at 15:00 still read as on-leave at 15:00 while the substitute covering from
+ * 15:00 had not opened yet — one minute a day where a covered driver reported
+ * "Nghỉ, không người thay" and their jobs failed. Now the ending row owns
+ * 15:00 and the next opens at 15:01, exactly as two shift rows behave.
+ *
+ * Same-day windows only, deliberately. An overnight window (start > end) is
+ * something `isDriverOnShift` supports and leave does not: `coverageOnDate`
+ * refuses to render one, so teaching the engine to honour it here would put
+ * the engine and the dashboard panel back into disagreement — the one thing
+ * this module keeps insisting they must never be.
+ */
+export function inWindow(nowMins: number, start: number, end: number): boolean {
+  return nowMins > start && nowMins <= end;
+}
+
 /** Whether ONE entry puts the driver on leave right now (today + current clock),
  *  or null if it doesn't apply. Split out of {@link isDriverOnLeave} so that
  *  function can weigh several matching rows against each other instead of
@@ -483,7 +511,7 @@ function leaveMatchNow(
     if (today === e.leave_from) {
       const start = timeToMins(e.gio_bat_dau);
       const end   = timeToMins(e.gio_ket_thuc);
-      if (start >= 0 && end >= 0 && nowMins >= start && nowMins <= end) {
+      if (start >= 0 && end >= 0 && inWindow(nowMins, start, end)) {
         return { onLeave: true, driverName, reason: `Nghỉ nửa buổi ${e.gio_bat_dau}–${e.gio_ket_thuc}`, entry: e };
       }
     }
@@ -498,7 +526,7 @@ function leaveMatchNow(
   // Unlabeled / manually-typed leave (blank "Loại Nghỉ"): a date range with
   // an optional daily time window. driver_id is resolved from the name by
   // the sheet's xlookup() formula. On-leave today when within the date range;
-  // honour the [gio_bat_dau, gio_ket_thuc] window when one is given, else
+  // honour the (gio_bat_dau, gio_ket_thuc] window when one is given, else
   // treat as full-day (covers blank hours and the 00:00–00:00 sentinel).
   const to = e.leave_to ?? e.leave_from;
   if (today >= e.leave_from && today <= to) {
@@ -508,7 +536,7 @@ function leaveMatchNow(
     if (!hasWindow) {
       return { onLeave: true, driverName, reason: `Nghỉ cả ngày ${e.leave_from}${to !== e.leave_from ? `→${to}` : ""}`, entry: e };
     }
-    if (nowMins >= start && nowMins <= end) {
+    if (inWindow(nowMins, start, end)) {
       return { onLeave: true, driverName, reason: `Nghỉ ${e.gio_bat_dau}–${e.gio_ket_thuc}`, entry: e };
     }
   }
@@ -583,7 +611,7 @@ export function resolveSubstitute(
       hasWindow = start >= 0 && end > start;
     }
     if (!hasWindow) return true; // leave is full-day (no hour window) → covers all day
-    return nowMins > start && nowMins <= end; // half-open: start exclusive, end inclusive
+    return inWindow(nowMins, start, end);
   });
 
   // De-dup by id so the same sub listed in two slots isn't a false clash.
