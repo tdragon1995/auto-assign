@@ -249,6 +249,21 @@ export interface FailedJob {
   delivery_window?: string;
 }
 
+// A spreadsheet tab the engine REFUSED to read, because a column it cannot work
+// without was missing or the response was not CSV at all. The last good copy of
+// that tab keeps being served, so the engine carries on — but it is now working
+// from something older than the sheet, which is a thing a person has to be told.
+//
+// Not a FailedJob: no job has failed, and by design none will. This is the tab
+// itself reporting that it has been edited into a state the engine cannot read.
+export interface SheetAlarm {
+  /** Human name of the tab, e.g. "config (mapping)". */
+  label: string;
+  /** Why it was refused, in Vietnamese, e.g. "thiếu cột driver_id". */
+  reason: string;
+  ts: string;
+}
+
 export const DRIVER_STATUS_CONFIG: Record<
   number,
   { name: string; color: string }

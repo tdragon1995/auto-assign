@@ -1,6 +1,6 @@
 import { Redis } from "@upstash/redis";
 import type { Config, ConfigDriver, Mapping } from "./types";
-import { fetchSheetRows, SHEET_GID } from "./sheets";
+import { fetchSheetRows, isSheetShapeError, noteSheetLoad, SHEET_CONTRACT, SHEET_GID } from "./sheets";
 import { vnDate, vnIsSunday } from "./time";
 
 function getRedis(): Redis | null {
@@ -141,7 +141,7 @@ function isDeactivatedRow(row: Record<string, string>): boolean {
 export async function loadDriversFromSheet(): Promise<ConfigDriver[]> {
   if (cachedDrivers && Date.now() - cachedDriversAt < DRIVERS_TTL_MS) return cachedDrivers;
   try {
-    const rows = await fetchSheetRows(SHEET_GID.drivers);
+    const rows = await fetchSheetRows(SHEET_GID.drivers, SHEET_CONTRACT.drivers);
     const drivers: ConfigDriver[] = [];
     let skipped = 0;
     for (const row of rows) {
@@ -157,11 +157,21 @@ export async function loadDriversFromSheet(): Promise<ConfigDriver[]> {
       }
       drivers.push({ driver_id, name: name || driver_id });
     }
+    // An empty roster is never real — there are always hundreds. Caching one
+    // used to hold for the full 5 minutes and made the substitute picker reject
+    // every name typed into it, because the only list it validates against was
+    // briefly blank. Same discipline the mapping load has had all along.
+    if (drivers.length === 0) {
+      console.error("Driver roster load returned 0 rows — not caching");
+      return cachedDrivers || [];
+    }
     console.log(`Loaded ${drivers.length} active drivers from sheet (${skipped} deactivated skipped)`);
+    noteSheetLoad(SHEET_CONTRACT.drivers.label, null);
     cachedDrivers = drivers.sort((a, b) => a.name.localeCompare(b.name));
     cachedDriversAt = Date.now();
     return cachedDrivers;
   } catch (e) {
+    if (isSheetShapeError(e)) noteSheetLoad(e.sheetLabel, e);
     console.error("Error loading drivers from sheet:", e);
     return cachedDrivers || [];
   }
@@ -195,10 +205,9 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     }
   }
 
+  const tab = vnIsSunday() ? "sunday" : "mapping";
   try {
-    const rows = vnIsSunday()
-      ? await fetchSheetRows(SHEET_GID.sunday)
-      : await fetchSheetRows(SHEET_GID.mapping);
+    const rows = await fetchSheetRows(SHEET_GID[tab], SHEET_CONTRACT[tab]);
 
     const mappings: Mapping[] = [];
     for (const row of rows) {
@@ -239,6 +248,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
       return cachedConfig;
     }
 
+    noteSheetLoad(SHEET_CONTRACT[tab].label, null);
     cachedConfig = { mappings };
     cachedDay = today;
     cachedGen = gen;
@@ -256,6 +266,11 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     }
     return cachedConfig;
   } catch (e) {
+    // A SHAPE failure is a person to tell, not a request to retry: someone has
+    // edited the tab into a state this parser cannot read. The stale copy still
+    // serves, so the engine keeps running — which is exactly why it has to be
+    // said out loud somewhere.
+    if (isSheetShapeError(e)) noteSheetLoad(e.sheetLabel, e);
     console.error("Error loading config from sheets:", e);
     // Prefer stale cache over nothing on a transient fetch failure.
     return cachedConfig;

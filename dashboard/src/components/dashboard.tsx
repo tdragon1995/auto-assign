@@ -12,9 +12,10 @@ import { JobAdminPanel } from "./job-admin-panel";
 import { DistanceTab } from "./distance-tab";
 import { FailedJobsPanel, type ScheduleErrorRow } from "./failed-jobs-panel";
 import { LeaveStatusPanel, uncoveredLeaveCount } from "./leave-status-panel";
+import { SheetAlarmBanner } from "./sheet-alarm-banner";
 import { TatTeamPanel } from "./tat-team-panel";
 import { toast } from "sonner";
-import type { LogEntry, PickupWarning, FailedJob, ConfigDriver } from "@/lib/types";
+import type { LogEntry, PickupWarning, FailedJob, ConfigDriver, SheetAlarm } from "@/lib/types";
 import type { DeploymentBeat } from "@/lib/smart-log-kv";
 import type { LeaveOnDate, InvalidLeaveRow } from "@/lib/leave-config";
 
@@ -31,6 +32,7 @@ export function Dashboard() {
   const [held, setHeld] = useState<HeldJob[]>([]);
   const [warnings, setWarnings] = useState<PickupWarning[]>([]);
   const [failed, setFailed] = useState<FailedJob[]>([]);
+  const [sheetAlarms, setSheetAlarms] = useState<SheetAlarm[]>([]);
   const [mappingCount, setMappingCount] = useState(0);
   const [pscRouteCount, setPscRouteCount] = useState(0);
   const [drivers, setDrivers] = useState<ConfigDriver[]>([]);
@@ -113,6 +115,7 @@ export function Dashboard() {
         setHeld((data.held as HeldJob[]).filter((j) => !dismissed.has(j.job_id)));
       }
       if (Array.isArray(data.warnings)) setWarnings(data.warnings);
+      if (Array.isArray(data.sheetAlarms)) setSheetAlarms(data.sheetAlarms as SheetAlarm[]);
       if (Array.isArray(data.failed)) {
         const dismissed = dismissedFailedRef.current;
         const now = Date.now();
@@ -441,6 +444,7 @@ export function Dashboard() {
   // and the list it counts are two different computations of the same number.
   const attentionCount =
     held.length + failed.length + warnings.length + scheduleErrors.length +
+    sheetAlarms.length +
     uncoveredLeaveCount(leave.today, leave.tomorrow);
 
   const tabBtn = (active: boolean) =>
@@ -536,6 +540,10 @@ export function Dashboard() {
           <div className="lg:flex-1 lg:min-h-0">
             {rightTab === "attention" ? (
               <div className="flex flex-col gap-1.5 h-[72vh] lg:h-full">
+                {/* Above the job list on purpose: a refused tab means the engine
+                    is running on an older copy of the config than the sheet
+                    shows, which changes how you read everything below it. */}
+                <SheetAlarmBanner alarms={sheetAlarms} />
                 {/* Cần xử lý tab — note tasks + unassignable + late + schedule errors */}
                 <div className="flex-1 min-h-0">
                   <FailedJobsPanel

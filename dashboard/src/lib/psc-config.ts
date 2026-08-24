@@ -1,4 +1,4 @@
-import { fetchSheetRows, SHEET_GID } from "./sheets";
+import { fetchSheetRows, isSheetShapeError, noteSheetLoad, SHEET_CONTRACT, SHEET_GID } from "./sheets";
 import { PSC_ROUTES } from "./psc-routes-data";
 
 export const PSC_TINH_LABEL = "🛵 Vận chuyển mẫu tỉnh";
@@ -43,7 +43,14 @@ export function invalidatePscCache() {
 export async function loadTplEntries(): Promise<TplEntry[]> {
   if (_tplCache && Date.now() - _tplCacheAt < TPL_CACHE_MS) return _tplCache;
 
-  const rows = await fetchSheetRows(SHEET_GID.tpl);
+  const rows = await fetchSheetRows(SHEET_GID.tpl, SHEET_CONTRACT.tpl).catch((e) => {
+    // Record and rethrow: the caller's existing error handling is unchanged, but
+    // a tab edited out of shape now says so instead of just yielding no 3PL
+    // options and letting the provincial screens look empty on purpose.
+    if (isSheetShapeError(e)) noteSheetLoad(e.sheetLabel, e);
+    throw e;
+  });
+  noteSheetLoad(SHEET_CONTRACT.tpl.label, null);
   const entries = rows
     .filter((r) => r["psc-tinh"] && r["3pl_uuid"])
     .map((r) => ({

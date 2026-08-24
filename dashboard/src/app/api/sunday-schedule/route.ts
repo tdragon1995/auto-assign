@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { fetchSheetRowsByName } from "@/lib/sheets";
+import { fetchSheetRowsByName, SHEET_CONTRACT } from "@/lib/sheets";
 
 // Display-only schedule tab maintained weekly by ops. Read by visible name so a
 // re-created tab/gid doesn't break us. Columns:
@@ -46,7 +46,12 @@ export async function GET(req: Request) {
   if (!fresh && cached && cached.day === today) return NextResponse.json(cached.body);
 
   try {
-    const rows = await fetchSheetRowsByName(SHEET_NAME);
+    // The contract matters more here than anywhere else: this endpoint looks the
+    // tab up by its VISIBLE NAME, and Google answers an unknown name with the
+    // first tab in the workbook instead of an error — which is the ~1,700-row
+    // customer→driver mapping. Renaming this tab therefore used to read as
+    // perfectly good data about something else entirely.
+    const rows = await fetchSheetRowsByName(SHEET_NAME, SHEET_CONTRACT.public_sunday);
 
     // The sheet may carry several weeks; only the latest work date is "live".
     let latestKey = 0;
@@ -88,7 +93,11 @@ export async function GET(req: Request) {
     }
 
     const body: ScheduleResponse = { morning, afternoon, dateLabel };
-    cached = { day: today, body };
+    // Never cache an empty schedule for the rest of the day. The cache is held
+    // until the date turns, so one bad read used to blank the driver-facing
+    // schedule until midnight with no way back short of ?fresh=1 — and nobody
+    // knows to ask for that.
+    if (morning.length > 0 || afternoon.length > 0) cached = { day: today, body };
     return NextResponse.json(body);
   } catch (e) {
     // Serve a good earlier copy rather than an error screen — the schedule is display-only

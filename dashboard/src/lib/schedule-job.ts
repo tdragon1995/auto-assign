@@ -1,5 +1,5 @@
 import { BASE_URL, PROXY_DRIVER_ID, assignJob, createJob, getHeaders, type Env } from "./cartrack";
-import { SHEET_GID, fetchSheetRows } from "./sheets";
+import { SHEET_GID, SHEET_CONTRACT, fetchSheetRows, isSheetShapeError, noteSheetLoad } from "./sheets";
 import { vnDate, vnTimestamp } from "./time";
 
 const WEEKDAY_COLUMNS = [
@@ -56,7 +56,11 @@ export function vnWeekdayIndex(d: Date = new Date()): number {
 }
 
 export async function loadScheduleJobRows(): Promise<ScheduleJobRow[]> {
-  const rows = await fetchSheetRows(SHEET_GID.schedule_job);
+  const rows = await fetchSheetRows(SHEET_GID.schedule_job, SHEET_CONTRACT.schedule_job).catch((e) => {
+    if (isSheetShapeError(e)) noteSheetLoad(e.sheetLabel, e);
+    throw e;
+  });
+  noteSheetLoad(SHEET_CONTRACT.schedule_job.label, null);
   return rows.map((r, i) => ({
     rowIndex: i + 2,
     pickup_id: (r.pickup_id ?? "").trim(),

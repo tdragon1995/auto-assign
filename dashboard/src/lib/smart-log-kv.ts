@@ -1,6 +1,6 @@
 import { Redis } from "@upstash/redis";
 import { vnDate } from "./time";
-import type { LogEntry, PickupWarning, FailedJob } from "./types";
+import type { LogEntry, PickupWarning, FailedJob, SheetAlarm } from "./types";
 
 /**
  * COMMAND BUDGET — read this before adding a Redis call to a per-cycle path.
@@ -75,6 +75,11 @@ const F_HELD = "held";
 const F_FAILED = "failed";
 const F_WARNINGS = "warnings";
 const F_WARNINGS_TS = "warnings_ts";
+// Tabs the engine currently refuses to read. Written only when the set CHANGES
+// (see drainSheetAlarms), so a healthy day costs nothing — and it rides the same
+// HSET as the fields above, which is one command regardless of how many fields
+// it carries.
+const F_SHEET_ALARMS = "sheet_alarms";
 const WARNINGS_MAX_AGE_MS = 600_000; // 10 min — what the old PICKUP_WARNINGS TTL enforced
 
 // Server-backed live log: flat list of recent entries (all levels), so the
@@ -299,6 +304,7 @@ export interface CycleSnapshot {
   held?: HeldJob[];
   failed?: FailedJob[];
   warnings?: PickupWarning[];
+  sheetAlarms?: SheetAlarm[];
 }
 
 /** Replace part or all of the per-cycle snapshot in ONE command.
@@ -320,6 +326,7 @@ export async function setCycleSnapshot(snap: CycleSnapshot): Promise<void> {
     fields[F_WARNINGS]    = JSON.stringify(snap.warnings);
     fields[F_WARNINGS_TS] = String(Date.now());
   }
+  if (snap.sheetAlarms) fields[F_SHEET_ALARMS] = JSON.stringify(snap.sheetAlarms);
   if (Object.keys(fields).length === 0) return;
   await redis.hset(CYCLE_SNAPSHOT_KEY, fields);
 }
@@ -745,6 +752,8 @@ export interface StatusBundle {
   held: HeldJob[];
   warnings: PickupWarning[];
   failed: FailedJob[];
+  /** Spreadsheet tabs the engine is currently refusing to read. */
+  sheetAlarms: SheetAlarm[];
 }
 
 /** One pipeline request to Upstash — and, since held/failed/warnings moved into a
@@ -752,7 +761,7 @@ export interface StatusBundle {
  *  90s per open tab, so each command removed here is ~24k a month. */
 export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
   const redis = getRedis();
-  if (!redis) return { state: null, lastChecked: null, deployments: [], logs: [], held: [], warnings: [], failed: [] };
+  if (!redis) return { state: null, lastChecked: null, deployments: [], logs: [], held: [], warnings: [], failed: [], sheetAlarms: [] };
 
   const pipe = redis.pipeline();
   pipe.get(ARM_KEY);
@@ -776,6 +785,7 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
   const snap = (rawSnapshot ?? {}) as Record<string, unknown>;
   const held = parseList<HeldJob>(snap[F_HELD]);
   const failed = parseList<FailedJob>(snap[F_FAILED]);
+  const sheetAlarms = parseList<SheetAlarm>(snap[F_SHEET_ALARMS]);
 
   // Warnings expire in the READER now, not in Redis. The old 10-minute TTL existed
   // so a disarmed engine's warnings stopped being shown as current; merging keys
@@ -793,5 +803,6 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
     held,
     warnings,
     failed,
+    sheetAlarms,
   };
 }

@@ -1,5 +1,8 @@
 import { Redis } from "@upstash/redis";
-import { sheetCsvUrl, SHEET_GID } from "./sheets";
+import {
+  assertCsvResponse, assertHeaders, isSheetShapeError, noteSheetLoad,
+  sheetCsvUrl, SHEET_CONTRACT, SHEET_GID,
+} from "./sheets";
 import { addDays, timeToMins, vnDate, vnMinutesSinceMidnight } from "./time";
 
 /** The 3PL-express (Grab) booking proxy. When a substitute slot resolves to
@@ -387,12 +390,20 @@ async function loadLeaveSheet(
     const url = `${sheetCsvUrl(SHEET_GID.nghi_phep)}&_cb=${Date.now()}`;
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    assertCsvResponse(SHEET_CONTRACT.nghi_phep.label, res);
 
     const rows = parseCsv(await res.text());
     if (rows.length < 2) {
-      cache = { entries: [], invalid: [], fetchedAt: Date.now() };
-      return { entries: [], invalid: [] };
+      // Do NOT cache this. An empty answer is never real — the tab is a rolling
+      // log of hundreds of rows — so caching it held "nobody is on leave" for a
+      // full 5 minutes per instance, during which the engine hands work to
+      // drivers who are off AND the repair panel stays empty, because a row has
+      // to carry a name to be reported as broken and a garbage parse has none.
+      console.error("Leave load returned an empty sheet — not caching");
+      return { entries: cache?.entries ?? [], invalid: cache?.invalid ?? [] };
     }
+
+    assertHeaders(SHEET_CONTRACT.nghi_phep.label, rows[0], SHEET_CONTRACT.nghi_phep.require);
 
     // Header-keyed access — robust to column re-ordering/additions (the sub
     // blocks). First occurrence of each header name wins.
@@ -454,6 +465,16 @@ async function loadLeaveSheet(
         };
       });
 
+    // The same zero-guard the shared copy below has always had, now one level
+    // up. Only L2 was protected before, so a bad parse still poisoned THIS
+    // instance for 5 minutes — quietly, and in the one module where quiet is
+    // most expensive.
+    if (entries.length === 0) {
+      console.error("Leave load parsed 0 entries — not caching");
+      return { entries: cache?.entries ?? [], invalid: cache?.invalid ?? [] };
+    }
+
+    noteSheetLoad(SHEET_CONTRACT.nghi_phep.label, null);
     cache = { entries, invalid, fetchedAt: Date.now() };
     // Write-behind to L2 — but only a non-empty roster. A transient bad read
     // that parses to zero entries must never be shared to every instance (it
@@ -465,7 +486,8 @@ async function loadLeaveSheet(
       }
     }
     return { entries, invalid };
-  } catch {
+  } catch (e) {
+    if (isSheetShapeError(e)) noteSheetLoad(e.sheetLabel, e);
     // On fetch failure keep stale cache if available; otherwise return empty
     return { entries: cache?.entries ?? [], invalid: cache?.invalid ?? [] };
   }

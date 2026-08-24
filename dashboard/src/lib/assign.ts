@@ -9,6 +9,7 @@ import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
 import { cleanupStaleTrips } from "./cleanup-trips";
 import { setCycleSnapshot, claimMorningPass, deferMorningPass, runDailyMaintenance, claimLateAlert, type HeldJob } from "./smart-log-kv";
 import { isValidDriverId } from "./config";
+import { drainSheetAlarms } from "./sheets";
 import {
   vnDate,
   vnTimestamp,
@@ -1435,7 +1436,16 @@ export async function autoAssignCycle(
     log("No unassigned jobs");
     // Warnings deliberately omitted — this early exit never computed them, and
     // passing an empty list would blank warnings the last full cycle found.
-    if (!onlyJobIds) await setCycleSnapshot({ held: heldJobs, failed: failedJobs });
+    // Sheet alarms ride along even on the quiet exit: a tab being unreadable has
+    // nothing to do with whether there was work to assign, and this is the exit
+    // most cycles take.
+    if (!onlyJobIds) {
+      await setCycleSnapshot({
+        held: heldJobs,
+        failed: failedJobs,
+        sheetAlarms: drainSheetAlarms() ?? undefined,
+      });
+    }
     return logs;
   }
 
@@ -2301,7 +2311,14 @@ export async function autoAssignCycle(
       env,
     );
     await Promise.all([
-      setCycleSnapshot({ held: heldJobs, failed: failedJobs, warnings: pickupWarnings }),
+      setCycleSnapshot({
+        held: heldJobs,
+        failed: failedJobs,
+        warnings: pickupWarnings,
+        // null when nothing changed, which leaves the published field alone —
+        // the point being that a healthy fleet never rewrites it.
+        sheetAlarms: drainSheetAlarms() ?? undefined,
+      }),
       // Piggyback a one-time supervisor Zalo alert on the same overdue set for the
       // worst cases (2h+ unstarted pickups). Never throws the cycle: fire-and-log.
       alertLateJobs(pickupWarnings, env, log).catch((e) =>
