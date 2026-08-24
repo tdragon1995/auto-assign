@@ -3,6 +3,8 @@ import {
   assertCsvResponse, assertHeaders, isSheetShapeError, noteSheetLoad,
   sheetCsvUrl, SHEET_CONTRACT, SHEET_GID,
 } from "./sheets";
+import { loadDriversFromSheet } from "./config";
+import { matchDriverByName } from "./driver-match";
 import { addDays, timeToMins, vnDate, vnMinutesSinceMidnight } from "./time";
 
 /** The 3PL-express (Grab) booking proxy. When a substitute slot resolves to
@@ -30,6 +32,18 @@ export interface LeaveEntry {
   gio_bat_dau: string | null; // HH:MM
   gio_ket_thuc: string | null;
   subs: SubEntry[];         // substitutes covering this driver's leave (0–4)
+  /** The sheet gave no id and the driver was worked out from the typed name
+   *  instead — see `recoverOrphanRows`. The row still needs repairing. */
+  recovered?: boolean;
+}
+
+/** Recovering a leave row from its typed name is ON unless this is set to "0".
+ *
+ *  It changes who the engine believes is working, so it gets a way to be turned
+ *  off without a code change. Read at call time rather than module load so a
+ *  changed environment variable takes effect on the next cold start. */
+function nameRecoveryEnabled(): boolean {
+  return (process.env.LEAVE_NAME_RECOVERY ?? "1") !== "0";
 }
 
 // Two-tier cache. L1 is a per-instance in-memory copy (zero network on a warm
@@ -40,7 +54,13 @@ export interface LeaveEntry {
 // so it's far smaller than the raw CSV (drops scheduled_trips/note).
 let cache: { entries: LeaveEntry[]; invalid: InvalidLeaveRow[]; fetchedAt: number } | null = null;
 const CACHE_TTL_MS = 5 * 60 * 1000;
-const REDIS_KEY = "leave:v1:entries";
+// v2, not decoration: this blob holds a PARSE, and the parse changed when
+// name-recovered rows started arriving in `entries` and `invalid` gained its
+// `recovered` flag. Leaving the key alone would have every warm server serving a
+// blob built by the old code — recovery doing nothing, and every broken row
+// reported as urgent — with nothing to show anything was wrong. Bump this
+// whenever the shape or the meaning of what is stored changes.
+const REDIS_KEY = "leave:v2:entries";
 
 /**
  * 4 hours, up from 5 minutes — a BACKSTOP, not the freshness mechanism.
@@ -232,6 +252,11 @@ export interface InvalidLeaveRow {
   timeLabel: string | null;
   /** Whether the row names a substitute — an uncovered dropped row is worse. */
   hasSub: boolean;
+  /** True when the driver was worked out from the typed name and the leave IS
+   *  being honoured — the sheet still needs fixing, but nobody is being handed
+   *  work they cannot do in the meantime. False means it is still being ignored,
+   *  which is the urgent case. */
+  recovered: boolean;
 }
 
 /** Dropped rows whose date range covers `date`. Same range rule as an unlabeled
@@ -361,6 +386,77 @@ export async function loadInvalidLeaveRows(force = false): Promise<InvalidLeaveR
   return (await loadLeaveSheet(force)).invalid;
 }
 
+/**
+ * Decide what to do with leave rows whose driver link went blank.
+ *
+ * The blank is nearly always a rename: the roster tab's name column is rebuilt
+ * verbatim from Cartrack, so correcting someone's name there silently orphans
+ * every row elsewhere that was typed against the old spelling. Until 2026-08-19
+ * these rows vanished entirely, which meant the engine kept handing work to a
+ * driver who was off and nothing anywhere said so.
+ *
+ * A row is recovered only when exactly ONE driver who can actually work could be
+ * meant. The refusal to guess is the important half: roughly a dozen drivers hold
+ * two accounts under one personal name, and picking the wrong one would move a
+ * day's work onto the wrong record off the back of a cell already known to be
+ * wrong. Ambiguous and unmatched rows behave exactly as before.
+ *
+ * Every recovered row is STILL reported, so the sheet gets repaired rather than
+ * quietly propped up forever.
+ *
+ * The roster is only fetched when there is something to recover, so the ordinary
+ * case — no orphans at all — costs nothing.
+ */
+async function recoverOrphanRows(
+  orphans: LeaveEntry[],
+): Promise<{ recovered: LeaveEntry[]; invalid: InvalidLeaveRow[] }> {
+  const report = (e: LeaveEntry, wasRecovered: boolean): InvalidLeaveRow => {
+    const start = timeToMins(e.gio_bat_dau);
+    const end = timeToMins(e.gio_ket_thuc);
+    return {
+      driver_name: e.driver_name,
+      loai_nghi: e.loai_nghi,
+      leave_from: e.leave_from,
+      leave_to: e.leave_to,
+      timeLabel: start >= 0 && end > start ? `${e.gio_bat_dau}–${e.gio_ket_thuc}` : null,
+      hasSub: e.subs.length > 0,
+      recovered: wasRecovered,
+    };
+  };
+
+  if (orphans.length === 0) return { recovered: [], invalid: [] };
+  const noneRecovered = () => ({ recovered: [], invalid: orphans.map((e) => report(e, false)) });
+  if (!nameRecoveryEnabled()) return noneRecovered();
+
+  // Only rows that could still affect someone's day are worth resolving. The tab
+  // is a rolling log, so most orphans are months old and belong to staff who have
+  // since left — on 2026-08-24, 23 of the 25 were exactly that. Skipping them is
+  // not just tidiness: without this gate every leave load would also pull the
+  // roster, roughly doubling its cost, to answer a question about July.
+  const today = vnDate();
+  const stillMatters = (e: LeaveEntry) => (e.leave_to || e.leave_from) >= today;
+  if (!orphans.some(stillMatters)) return noneRecovered();
+
+  // Active accounts only — the roster reader already drops deactivated ones, and
+  // matching a driver who cannot take a job would be worse than not matching.
+  const roster = await loadDriversFromSheet().catch(() => []);
+  if (roster.length === 0) return noneRecovered();
+
+  const recovered: LeaveEntry[] = [];
+  const invalid: InvalidLeaveRow[] = [];
+  for (const e of orphans) {
+    const m = stillMatters(e) ? matchDriverByName(e.driver_name, roster) : ({ status: "none" } as const);
+    if (m.status === "unique") {
+      recovered.push({ ...e, driver_id: m.driver_id, recovered: true });
+      console.log(
+        `Leave row recovered by ${m.via}: "${e.driver_name}" → ${m.matched_name} (${e.leave_from})`,
+      );
+    }
+    invalid.push(report(e, m.status === "unique"));
+  }
+  return { recovered, invalid };
+}
+
 async function loadLeaveSheet(
   force = false,
 ): Promise<{ entries: LeaveEntry[]; invalid: InvalidLeaveRow[] }> {
@@ -443,27 +539,15 @@ async function loadLeaveSheet(
       // are still real leave and must reach isDriverOnLeave (see its else-branch).
     });
 
-    const entries = parsed.filter((e) => e.driver_id && e.leave_from);
+    const resolved = parsed.filter((e) => e.driver_id && e.leave_from);
 
     // Rows that look like real leave — a named driver and a start date — but
-    // carry no resolved driver_id. They stay OUT of `entries` (unchanged
-    // behaviour for the engine) and are reported for a sheet repair instead of
-    // vanishing without trace. A row with neither a name nor a date is just an
-    // empty sheet row and is not worth reporting.
-    const invalid: InvalidLeaveRow[] = parsed
-      .filter((e) => !e.driver_id && e.leave_from && e.driver_name)
-      .map((e) => {
-        const start = timeToMins(e.gio_bat_dau);
-        const end = timeToMins(e.gio_ket_thuc);
-        return {
-          driver_name: e.driver_name,
-          loai_nghi: e.loai_nghi,
-          leave_from: e.leave_from,
-          leave_to: e.leave_to,
-          timeLabel: start >= 0 && end > start ? `${e.gio_bat_dau}–${e.gio_ket_thuc}` : null,
-          hasSub: e.subs.length > 0,
-        };
-      });
+    // carry no id, because the sheet's lookup stopped resolving the name. A row
+    // with neither a name nor a date is just an empty sheet row and is not worth
+    // reporting.
+    const orphans = parsed.filter((e) => !e.driver_id && e.leave_from && e.driver_name);
+    const { recovered, invalid } = await recoverOrphanRows(orphans);
+    const entries = [...resolved, ...recovered];
 
     // The same zero-guard the shared copy below has always had, now one level
     // up. Only L2 was protected before, so a bad parse still poisoned THIS

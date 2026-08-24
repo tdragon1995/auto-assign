@@ -41,7 +41,17 @@ LABCENTER_EMAIL=                 # Labcenter API login (used by /api/customers P
 LABCENTER_PASSWORD=              # Labcenter API password
 LABCENTER_RECEPTIONIST_EMAIL=    # Separate receptionist account for /api/labcenter/client (client search in sales form)
 LABCENTER_RECEPTIONIST_PASSWORD= # Password for receptionist account
+LEAVE_NAME_RECOVERY=             # Set to "0" to stop recovering a leave row from its typed name
 ```
+
+`LEAVE_NAME_RECOVERY` is ON unless set to `0`. When a leave row's `driver_id` comes
+back blank — nearly always because the driver was renamed in Cartrack, which rewrites
+the roster tab's name column and orphans every row typed against the old spelling —
+the engine resolves the typed name against the *active* roster and honours the leave
+if **exactly one** working driver could be meant. It never guesses between two: about
+a dozen drivers hold both a PT and a DC account under one personal name, so a bare
+name matching both is left alone. Recovered rows are still reported for repair, in
+blue rather than red. See `driver-match.ts`; step 4 of the config plan deletes it.
 
 ## Architecture
 
@@ -125,6 +135,20 @@ These are the things most likely to burn a future agent working on this codebase
 2. **Fetch jobs by `scheduled_delivery_ts`, not `create_ts`.** The cycle fetches today's jobs with `getJobsByDate` (all statuses, one call) / `getJobsByStatusAndDate`, both filtered on `scheduled_delivery_ts` — so multi-day parked jobs released from the proxy driver surface on their scheduled day. A `create_ts` filter (the old `getUnassignedJobs` approach, now removed) is fine for ad-hoc jobs but silently drops scheduled/planned ones; don't reintroduce it.
 
 3. **`loadConfigFromSheets` has an in-memory cache.** It only re-fetches the sheet after `invalidateConfigCache()` is called (dashboard Refresh button). If the sheet fetch ever returns suspiciously few rows (network hiccup), the bad result gets cached and all subsequent cycles see an empty mapping — causing widespread NO MAPPING errors until the server restarts or Refresh is clicked.
+
+   **Every reader now declares the columns it cannot work without** (`SHEET_CONTRACT`
+   in `sheets.ts`). A tab missing one is refused, the last good copy keeps serving, and
+   the tab is named in the dashboard's "Cần xử lý" tab. This catches a hand-edited
+   column, an HTML error page served with a 200, and the by-name lookup being answered
+   with the WRONG TAB — that endpoint returns the *first tab in the workbook* for an
+   unknown name, which here is the ~1,700-row mapping table and parses perfectly.
+
+   **Never add a column to a contract without checking the live header row first.**
+   Requiring one that isn't there refuses the tab on every load, and the engine then
+   runs on a stale copy indefinitely with only the alarm to show for it. Run
+   `npx tsx scripts/sheet-contract-live.mts` — it drives every real reader against the
+   live workbook and fails if any tab is refused. `scripts/sheet-contract.test.mts`
+   pins the logic offline.
 
 4. **`CARTRACK_WEB_PASS` is required for JSON-RPC calls** (`getFleetwebCookie`). Without it, route optimisation and duplicate-rejection both fail silently at login.
 

@@ -445,6 +445,9 @@ export function Dashboard() {
   const attentionCount =
     held.length + failed.length + warnings.length + scheduleErrors.length +
     sheetAlarms.length +
+    // Only rows the engine still cannot see. A recovered row is already being
+    // honoured, so it is a tidy-up, not something to handle today.
+    leave.invalid.filter((r) => !r.recovered).length +
     uncoveredLeaveCount(leave.today, leave.tomorrow);
 
   const tabBtn = (active: boolean) =>

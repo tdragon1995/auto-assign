@@ -594,8 +594,10 @@ export function LeaveStatusPanel({
 }: {
   today: LeaveOnDate[];
   tomorrow: LeaveOnDate[];
-  /** Rows the loader had to discard for want of a driver_id — a sheet repair,
-   *  not leave the engine knows about. */
+  /** Rows whose driver_id came back blank. Both kinds are a sheet repair, but
+   *  they are not equally urgent: a recovered row IS being honoured (the name
+   *  matched exactly one working driver), while an unrecovered one is still
+   *  being ignored and its driver is still being given work. */
   invalid?: InvalidLeaveRow[];
   error?: boolean;
   drivers: ConfigDriver[];
@@ -608,6 +610,10 @@ export function LeaveStatusPanel({
   const tomorrowGroups = groupByDriver(tomorrow);
   const totalUncovered = uncoveredCount(todayGroups) + uncoveredCount(tomorrowGroups);
   const totalDuplicate = duplicateCount(todayGroups) + duplicateCount(tomorrowGroups);
+  // Kept apart everywhere below: red means the engine still cannot see this
+  // leave, blue means it can and the sheet is merely out of date.
+  const invalidIgnored = invalid.filter((r) => !r.recovered);
+  const invalidRecovered = invalid.filter((r) => r.recovered);
 
   const fillSubs = makeFillSubs(onRefresh);
 
@@ -649,10 +655,15 @@ export function LeaveStatusPanel({
               {totalUncovered} chưa có người thay
             </span>
           )}
-          {invalid.length > 0 && (
+          {invalidIgnored.length > 0 && (
             <span className="inline-flex items-center gap-1 rounded-full bg-red-100 text-red-700 border border-red-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
               <AlertTriangle className="size-3" strokeWidth={2} />
-              {invalid.length} thiếu driver_id
+              {invalidIgnored.length} thiếu driver_id
+            </span>
+          )}
+          {invalidRecovered.length > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-sky-100 text-sky-800 border border-sky-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
+              {invalidRecovered.length} tự nhận ra tên
             </span>
           )}
           {totalDuplicate > 0 && (
@@ -666,19 +677,41 @@ export function LeaveStatusPanel({
 
         {open && (
           <div className="mt-2 max-h-[38vh] overflow-y-auto">
-            {invalid.length > 0 && (
+            {invalidRecovered.length > 0 && (
+              <div className="mb-2 rounded-md border border-sky-300 bg-sky-50 px-2 py-1.5">
+                <div className="text-[11px] font-semibold text-sky-900">
+                  Dòng nghỉ thiếu driver_id — hệ thống đã tự nhận ra tên, vẫn cần sửa sheet
+                </div>
+                <p className="mt-0.5 text-[11px] leading-snug text-sky-900/80">
+                  Cột driver_id trống, nhưng tên chỉ khớp đúng một tài xế đang làm nên ngày nghỉ
+                  VẪN được áp dụng — không ai bị giao việc nhầm. Sửa tên trong cột{" "}
+                  <span className="font-mono">driver</span> cho khớp tab Driver để dòng tự resolve lại.
+                </p>
+                <ul className="mt-1 space-y-0.5">
+                  {invalidRecovered.map((r, i) => (
+                    <li key={`ok-${r.driver_name}-${r.leave_from}-${r.timeLabel ?? "full"}-${i}`} className="flex flex-wrap items-baseline gap-x-1.5 text-xs">
+                      <span className="font-semibold text-slate-900">{splitDriverName(r.driver_name).name}</span>
+                      <span className="text-[11px] text-slate-600">{ddmm(r.leave_from)}</span>
+                      {r.timeLabel && <span className="font-mono text-[11px] text-slate-500">{r.timeLabel}</span>}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {invalidIgnored.length > 0 && (
               <div className="mb-2 rounded-md border border-red-300 bg-red-50 px-2 py-1.5">
                 <div className="flex items-center gap-1.5 text-[11px] font-semibold text-red-800">
                   <AlertTriangle className="size-3.5 shrink-0" strokeWidth={2} />
                   Dòng nghỉ thiếu driver_id — hệ thống KHÔNG thấy, cần sửa sheet
                 </div>
                 <p className="mt-0.5 text-[11px] leading-snug text-red-900/80">
-                  Cột driver_id trống nên dòng bị bỏ qua hoàn toàn: không hiện ở trên, và engine
-                  vẫn giao việc cho tài xế này trong khung giờ đó. Sửa tên trong cột{" "}
+                  Cột driver_id trống và tên không khớp duy nhất một tài xế nào, nên dòng bị bỏ qua
+                  hoàn toàn: không hiện ở trên, và engine vẫn giao việc cho tài xế này trong khung
+                  giờ đó. Sửa tên trong cột{" "}
                   <span className="font-mono">driver</span> cho khớp tab Driver để xlookup ra id.
                 </p>
                 <ul className="mt-1 space-y-0.5">
-                  {invalid.map((r, i) => {
+                  {invalidIgnored.map((r, i) => {
                     const { code, name } = splitDriverName(r.driver_name);
                     return (
                       <li key={`${r.driver_name}-${r.leave_from}-${r.timeLabel ?? "full"}-${i}`} className="flex flex-wrap items-baseline gap-x-1.5 text-xs">
