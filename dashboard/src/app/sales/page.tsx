@@ -551,8 +551,7 @@ export default function SalesPage() {
     const t = setTimeout(async () => {
       setEdPredLoading(true);
       try {
-        // google=1: Google Places primary (better VN results), Goong fallback.
-        const res = await fetch(`/api/geo/autocomplete?google=1&input=${encodeURIComponent(q)}`, { signal: ac.signal });
+        const res = await fetch(`/api/geo/autocomplete?input=${encodeURIComponent(q)}`, { signal: ac.signal });
         const data = await res.json();
         if (res.ok) setEdPredictions(data.predictions ?? []);
       } catch { /* aborted or network — ignore */ } finally {
@@ -729,11 +728,7 @@ export default function SalesPage() {
     const t = setTimeout(async () => {
       setPredictionsLoading(true);
       try {
-        // google=1: Google Places primary (better VN results), Goong fallback.
-        // A Google prediction has no terms[]/compound — streetFromPrediction and
-        // optionFromDistrict below already fall back to main_text and
-        // point-in-polygon respectively, so nothing else here needs to change.
-        const res = await fetch(`/api/geo/autocomplete?google=1&input=${encodeURIComponent(q)}`, { signal: ac.signal });
+        const res = await fetch(`/api/geo/autocomplete?input=${encodeURIComponent(q)}`, { signal: ac.signal });
         const data = await res.json();
         if (res.ok) setPredictions(data.predictions ?? []);
       } catch {
