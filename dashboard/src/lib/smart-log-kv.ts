@@ -1,5 +1,5 @@
 import { Redis } from "@upstash/redis";
-import { vnDate } from "./time";
+import { vnDate, vnMinutesSinceMidnight } from "./time";
 import type { LogEntry, PickupWarning, FailedJob, SheetAlarm } from "./types";
 
 /**
@@ -570,6 +570,39 @@ export async function runDailyMaintenance(): Promise<void> {
 /** Keyed by env so a manual UAT cycle can't consume prod's daily slot. */
 const rolloverKey = (env: string, dateVn: string) => `assign:rollover_morning:${env}:${dateVn}`;
 
+// ── Is the morning pass still worth asking about? ──────────────────────────
+//
+// The claim below is a WRITE, so asking "has the morning pass run yet?" costs a
+// command on every cycle that asks — ~660 a day to hear "yes, hours ago" ~658
+// times. Read the COMMAND BUDGET note at the top of this file: that is ~20k a
+// month spent on one fact that stops changing before breakfast.
+//
+// So the question only reaches Redis while the answer could still be no:
+//
+//   * before MORNING_CLAIM_WINDOW_END_MIN — the window the pass belongs to, wide
+//     enough that deferMorningPass's ten-minute retries all land inside it;
+//   * after it, ONCE per instance per day. That second clause is what keeps a
+//     late recovery alive: if the pings were down or the engine sat disarmed all
+//     morning, the first cycle on any fresh lambda still asks, still claims the
+//     slot, and still rolls yesterday's leftovers in at 11:00 rather than losing
+//     the day. A per-instance flag is safe here precisely BECAUSE it is
+//     per-instance — it can suppress a repeat question from the same lambda,
+//     never the first one from a new one.
+const MORNING_CLAIM_WINDOW_END_MIN = 9 * 60; // 09:00 VN
+
+let morningClaimAskedOn: string | null = null;
+
+/** Whether to spend a command asking Redis for the day's morning-pass slot.
+ *  Pure so `scripts/morning-claim-gate.test.mts` can pin it without a stub. */
+export function morningClaimIsDue(
+  dateVn: string,
+  lastAskedOn: string | null,
+  minsSinceMidnight: number,
+): boolean {
+  if (minsSinceMidnight < MORNING_CLAIM_WINDOW_END_MIN) return true;
+  return lastAskedOn !== dateVn;
+}
+
 /** True for the FIRST armed cycle of the VN day, false for every cycle after it.
  *
  *  ONE claim, TWO morning chores — the rollover of yesterday's unfinished jobs into
@@ -592,6 +625,13 @@ const rolloverKey = (env: string, dateVn: string) => `assign:rollover_morning:${
 export async function claimMorningPass(dateVn: string, env = "prod"): Promise<boolean> {
   const redis = getRedis();
   if (!redis) return true;
+
+  const mins = vnMinutesSinceMidnight();
+  if (!morningClaimIsDue(dateVn, morningClaimAskedOn, mins)) return false;
+  // Recorded only OUTSIDE the window, so an instance that asked at 08:00 still
+  // gets its one post-window ask — the retry slot an 08:55 defer would need.
+  if (mins >= MORNING_CLAIM_WINDOW_END_MIN) morningClaimAskedOn = dateVn;
+
   const res = await redis.set(rolloverKey(env, dateVn), new Date().toISOString(), { nx: true, ex: 172_800 });
   return res === "OK";
 }
