@@ -281,11 +281,36 @@ export async function POST(req: NextRequest) {
     // Nhận Mẫu gần tôi" if they cannot wait.
     const [arm, config, leaveEntries, live] = await driverPrep;
     let assignTo: { driverId: string; name: string | null } | null = null;
-    if (arm && config && leaveEntries) {
+    // Every path that declines to attach a driver says so. Silence here used to mean a
+    // trip quietly waiting ~2 minutes for the engine with nothing to explain it — a real
+    // booking (D017, 25/08 17:04) fell back with a healthy roster and a live, logged-in
+    // driver, and there was no way to tell which check had refused. One line costs
+    // nothing and turns that from a guess into a lookup.
+    let skipped: string | null = null;
+    if (!arm) skipped = "engine disarmed";
+    else if (!config) skipped = "roster unavailable";
+    else if (!leaveEntries) skipped = "leave sheet unavailable";
+    else {
       const who = resolveFixedDriver(config, pickup, new Date(), leaveEntries, dropoff);
-      const known = who && live ? live.some((d) => d.deliveryDriverId === who.driverId) : false;
-      if (who && known) assignTo = { driverId: who.driverId, name: who.name };
+      if (!who) {
+        skipped = "roster has no single answer (pool, clash, nobody on duty, or redirected)";
+      } else if (!live) {
+        // A driver list we could not fetch is not a verdict on the driver. Attach anyway
+        // and let the create's own driver check verify — slower, but it keeps a transient
+        // fleetweb hiccup from silently turning instant assignment off, which is the most
+        // likely explanation for a trip that waits for the cycle with nothing else wrong.
+        assignTo = { driverId: who.driverId, name: who.name };
+        skipped = null;
+        plog("driver list unavailable — attaching anyway, create will verify");
+      } else if (!live.some((d) => d.deliveryDriverId === who.driverId)) {
+        // Absent from a list of ACTIVE accounts. This is the one worth refusing over: a
+        // trip on a deactivated account looks healthy and nobody ever opens it.
+        skipped = `driver ${who.name ?? who.driverId} is not an active account`;
+      } else {
+        assignTo = { driverId: who.driverId, name: who.name };
+      }
     }
+    if (skipped) plog(`no instant driver: ${skipped}`);
 
     // Via-route (e.g. D007/D004 stopping by D046): remind the driver to also grab the via PSC's
     // inbound box at this pickup, to hand over informally when passing through the via PSC.
@@ -339,7 +364,10 @@ export async function POST(req: NextRequest) {
     };
 
     const _tCreate = Date.now();
-    let createRes = await createJob(jobPayload, env, assignTo ? "ok" : undefined);
+    // "ok" skips the create's own driver lookup, and is only honest when a live list has
+    // just confirmed the account. Without that list, let the create do its own checking.
+    const preVerified = assignTo != null && live != null;
+    let createRes = await createJob(jobPayload, env, preVerified ? "ok" : undefined);
 
     // A driver Cartrack will not accept must cost the branch a trip, not a booking. If
     // the create was refused while carrying a driver, make the same trip without one and
