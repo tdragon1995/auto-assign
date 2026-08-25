@@ -1,5 +1,5 @@
 import type { Config, Driver, FailedJob, Job, LogEntry, LogLevel, Mapping, PickupWarning, TimelineRoute } from "./types";
-import { getDrivers, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, updateJobSendToDriverAt, updateJobScheduledDeliveryTs, unassignJob, optimizeDriverRoute, getJobsByStatusAndDate, getUnassignedJobsFast, getJobsByDate, getTimelineRoutes, timelineRoutesToJobs, getJobDetails, jsonRpc, PROXY_DRIVER_ID, type Env } from "./cartrack";
+import { getDrivers, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, parkOnProxy, updateJobSendToDriverAt, updateJobScheduledDeliveryTs, unassignJob, optimizeDriverRoute, getJobsByStatusAndDate, getUnassignedJobsFast, getJobsByDate, getTimelineRoutes, timelineRoutesToJobs, getJobDetails, jsonRpc, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { publishSnapshot } from "./day-snapshot";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
@@ -907,6 +907,74 @@ function parsePickupWindowTime(timeStr: string, dateVn: string): Date | null {
 }
 
 /**
+ * Give a parked job back the release time it lost.
+ *
+ * `send_to_driver_at` is Cartrack's field, and we keep no copy of it — so when it
+ * comes back blank on a job sitting on the proxy driver, the intended value is
+ * gone and can only be re-derived. A blank one is unambiguously broken: nothing
+ * parks a job without a release time, and a job in that state is invisible to the
+ * release sweep for the rest of its life (it never becomes due) while still
+ * counting as assigned everywhere else. That is how jobs 34428113 and 34428457
+ * sat on the queue driver on 2026-08-25 until a human moved them.
+ *
+ * Re-derived as WINDOW START MINUS 60 MINUTES, the same rule the cycle's own
+ * window gate parks by. Only jobs whose blank is broken get touched:
+ *
+ *  - a blank on a job with NO pickup window is left alone. The engine never parks
+ *    one of those, so it is someone holding a job on the queue driver by hand,
+ *    and it is not ours to undo.
+ *  - a job that HAS a release time is never rewritten, whatever it says. The PSC
+ *    route jobs carry their own lead time from the sheet, which is not always 60
+ *    minutes; overwriting those would move real pickups.
+ *
+ * The derived time can be wrong by however far the job's true lead differed from
+ * 60 minutes. That is the price of the field being unrecoverable, and it is
+ * bounded — against a job that otherwise never leaves the queue at all.
+ *
+ * Returns jobId → the time written, so the caller can judge this cycle's release
+ * on the repaired value instead of the blank it read.
+ */
+async function repairBlankReleaseTimes(
+  parked: Job[],
+  dateVn: string,
+  env: Env,
+  log: (msg: string, level?: LogLevel) => void,
+): Promise<Map<number, Date>> {
+  const fixed = new Map<number, Date>();
+  const blanks = parked.filter((j) => parseSendToDriverAt(j.send_to_driver_at) === null);
+  if (blanks.length === 0) return fixed;
+
+  for (let i = 0; i < blanks.length; i += 10) {
+    await Promise.all(blanks.slice(i, i + 10).map(async (job) => {
+      const pickup = job.stops?.find((s) => s.stop_type_id === 1);
+      const timeFrom = pickup?.delivery_windows?.[0]?.time_from;
+      if (!timeFrom) return; // manual hold, not a lost release time — leave it
+
+      // Same date rule the window gate parks by: a future-dated job's window
+      // belongs to its own day, not to today.
+      const schedDate = job.scheduled_delivery_ts?.slice(0, 10);
+      const windowDate = parsePickupWindowTime(
+        timeFrom,
+        schedDate && schedDate > dateVn ? schedDate : dateVn,
+      );
+      if (!windowDate || isNaN(windowDate.getTime())) return;
+
+      const sendAt = new Date(windowDate.getTime() - 60 * 60 * 1000);
+      const sendAtStr = vnTimestamp(sendAt);
+      const route = `${pickup?.customer_name ?? "—"} → ${job.stops?.find((s) => s.stop_type_id === 2)?.customer_name ?? "—"}`;
+      const res = await updateJobSendToDriverAt(job.job_id, sendAtStr, env);
+      if (res.ok) {
+        fixed.set(job.job_id, sendAt);
+        log(`Job ${job.job_id} - Parked with no release time; set to ${sendAtStr} (window: ${timeFrom}) | ${route}`, "WARN");
+      } else {
+        log(`Job ${job.job_id} - Parked with no release time; repair failed (HTTP ${res.status}) | ${route}`, "ERROR");
+      }
+    }));
+  }
+  return fixed;
+}
+
+/**
  * Release parked jobs from the proxy driver whose send_to_driver_at has passed.
  * Sets each job back to unassigned so the assign cycle picks it up.
  *
@@ -916,6 +984,8 @@ function parsePickupWindowTime(timeStr: string, dateVn: string): Date | null {
  * no-date-filter REST list (non-timeline path and the periodic stranded-job
  * sweep — the date-windowed timeline can't see a job whose scheduled day has
  * passed, e.g. a release missed during an outage).
+ *
+ * Blank release times are repaired first — see repairBlankReleaseTimes.
  */
 async function releaseDueProxyJobs(
   dateVn: string,
@@ -926,9 +996,13 @@ async function releaseDueProxyJobs(
   const _t0 = Date.now();
   const parked = proxyJobs ?? await getAllAssignedDriverJobs(PROXY_DRIVER_ID, env);
   const listMs = Date.now() - _t0;
+  const repaired = await repairBlankReleaseTimes(parked, dateVn, env, log);
   const now = Date.now();
   const due = parked.filter((job) => {
-    const sendAt = parseSendToDriverAt(job.send_to_driver_at);
+    // A just-repaired job is judged on the value we wrote, not on the blank the
+    // list was fetched with — otherwise a repair whose time has already passed
+    // waits a whole extra cycle for no reason.
+    const sendAt = repaired.get(job.job_id) ?? parseSendToDriverAt(job.send_to_driver_at);
     return sendAt !== null && sendAt.getTime() <= now;
   });
   // Release concurrently (bounded 10) — each unassign is independent.
@@ -940,7 +1014,8 @@ async function releaseDueProxyJobs(
       const relRoute = `${job.stops?.find((s) => s.stop_type_id === 1)?.customer_name ?? "—"} → ${job.stops?.find((s) => s.stop_type_id === 2)?.customer_name ?? "—"}`;
       if (ok) {
         releasedIds.push(job.job_id);
-        log(`Job ${job.job_id} - RELEASED from proxy driver (was parked until ${job.send_to_driver_at}) | ${relRoute}`, "INFO");
+        const parkedUntil = job.send_to_driver_at ?? vnTimestamp(repaired.get(job.job_id)!);
+        log(`Job ${job.job_id} - RELEASED from proxy driver (was parked until ${parkedUntil}) | ${relRoute}`, "INFO");
       } else {
         log(`Job ${job.job_id} - Release failed (HTTP ${status}) | ${relRoute}`, "WARN");
       }
@@ -1742,14 +1817,14 @@ export async function autoAssignCycle(
         if (diffMin > 60) {
           const sendAt = new Date(windowDate.getTime() - 60 * 60 * 1000);
           const sendAtStr = vnTimestamp(sendAt);
-          const [setRes, assignRes] = await Promise.all([
-            updateJobSendToDriverAt(jobId, sendAtStr, env),
-            assignJob(PROXY_DRIVER_ID, jobId, env),
-          ]);
-          if (assignRes.status === 200 && setRes.ok) {
-            log(`Job ${jobId} - PARKED until ${sendAtStr} (window: ${windowTimeFrom}) | ${route}`, "INFO");
+          const park = await parkOnProxy(jobId, sendAtStr, env);
+          if (park.ok) {
+            log(
+              `Job ${jobId} - PARKED until ${sendAtStr} (window: ${windowTimeFrom})${park.repaired ? " [release time rewritten]" : ""} | ${route}`,
+              "INFO",
+            );
           } else {
-            log(`Job ${jobId} - Park failed: set=${setRes.status} assign=${assignRes.status} | ${route}`, "WARN");
+            log(`Job ${jobId} - Park failed: ${park.detail} | ${route}`, "WARN");
           }
           continue;
         }

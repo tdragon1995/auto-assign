@@ -455,6 +455,53 @@ export async function updateJobSendToDriverAt(
   return { ok: res.ok, status: res.status };
 }
 
+/**
+ * Park a job on the proxy driver until `sendToDriverAt`.
+ *
+ * ORDER MATTERS, and the two writes must NOT be fired together. Handing the job
+ * to the proxy driver goes through Cartrack's route-slice assign, which rewrites
+ * the job record; issued alongside the send_to_driver_at PUT it can read the job
+ * before that PUT commits and write back the old (empty) release time. The job
+ * then sits on the queue driver with nothing to release it — invisible to
+ * releaseDueProxyJobs, and to every failure list, because a parked job counts as
+ * assigned. Seen in the field on 2026-08-25: jobs 34428113 (release time written
+ * 05:34:30, hand-over 05:34:31 — lost, stuck until moved by hand at 08:03) and
+ * 34428457 (both at 10:01:14 — same loss), against 34428362 the same morning
+ * whose hand-over happened to land a second BEFORE the write and survived.
+ *
+ * So: write, wait, hand over — the same order job creation has always used on the
+ * PSC route jobs, which have never lost a release time — then read the job back
+ * and repair it once if the field did not stick. The read-back is what makes this
+ * a guarantee rather than a narrower race.
+ */
+export async function parkOnProxy(
+  jobId: number,
+  sendToDriverAt: string, // "YYYY-MM-DD HH:MM:SS" (VN)
+  env: Env = "prod"
+): Promise<{ ok: boolean; detail: string; repaired: boolean }> {
+  const setRes = await updateJobSendToDriverAt(jobId, sendToDriverAt, env);
+  if (!setRes.ok) return { ok: false, detail: `set ${setRes.status}`, repaired: false };
+
+  const assignRes = await assignJob(PROXY_DRIVER_ID, jobId, env);
+  if (assignRes.status !== 200) {
+    return { ok: false, detail: `assign ${assignRes.status}`, repaired: false };
+  }
+
+  // Read back. Cartrack answers with the "+07" suffix on a value we sent bare, so
+  // compare on the first 19 chars rather than the whole string.
+  const stuck = async () => {
+    const back = (await getJobDetails(jobId, env)).data?.send_to_driver_at;
+    return typeof back === "string" && back.slice(0, 19) === sendToDriverAt.slice(0, 19);
+  };
+  if (await stuck()) return { ok: true, detail: "", repaired: false };
+
+  const retry = await updateJobSendToDriverAt(jobId, sendToDriverAt, env);
+  if (retry.ok && (await stuck())) return { ok: true, detail: "", repaired: true };
+  // Parked with no release time — the caller must say so loudly rather than log a
+  // successful park, because nothing downstream will ever pick this job up.
+  return { ok: false, detail: `release time lost (retry ${retry.status})`, repaired: false };
+}
+
 export async function updateJobScheduledDeliveryTs(
   jobId: number,
   scheduledDeliveryTs: string, // "YYYY-MM-DD HH:MM:SS"

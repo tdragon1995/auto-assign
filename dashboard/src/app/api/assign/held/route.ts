@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse, after } from "next/server";
-import { getJobDetails, updateJobStops, updateJobScheduledDeliveryTs, updateJobSendToDriverAt, assignJob, PROXY_DRIVER_ID, type Env } from "@/lib/cartrack";
+import { getJobDetails, updateJobStops, updateJobScheduledDeliveryTs, parkOnProxy, type Env } from "@/lib/cartrack";
 import { NOTE_APPROVED_MARK } from "@/lib/job-filters";
 import { getHeldJobs, removeHeldJob, addHeldJob, pushRunLog } from "@/lib/smart-log-kv";
 import { vnTimestamp, parseVnTimestamp, vnDate } from "@/lib/time";
@@ -128,14 +128,14 @@ export async function POST(req: NextRequest) {
         // Near-term SAME-DAY schedules (<=60 min) skip parking: the next cycle's
         // window path sees diffMin <= 60 and assigns them straight to a driver.
         if (shouldPark) {
-          const [stopsRes, sendRes, parkRes] = await Promise.all([
-            updateJobStops(jobId, updatedStops, env),
-            updateJobSendToDriverAt(jobId, sendAt, env),
-            assignJob(PROXY_DRIVER_ID, jobId, env),
-          ]);
+          // Window first, then park — and the park's own two writes are sequential
+          // with a read-back (see parkOnProxy). Firing the release-time write and the
+          // hand-over together loses the release time often enough to strand a job on
+          // the queue driver for the rest of the day.
+          const stopsRes = await updateJobStops(jobId, updatedStops, env);
           if (!stopsRes.ok) return putBack(`stops ${stopsRes.status}`);
-          if (!sendRes.ok) return putBack(`send ${sendRes.status}`);
-          if (parkRes.status !== 200) return putBack(`park ${parkRes.status}`);
+          const park = await parkOnProxy(jobId, sendAt, env);
+          if (!park.ok) return putBack(`park ${park.detail}`);
           // Parking on the proxy driver (and writing the pickup's from_day_offset:0
           // window) makes Cartrack recompute scheduled_delivery_ts back to the park
           // day (today), clobbering the future-day date set above. For a +1/+2 day
