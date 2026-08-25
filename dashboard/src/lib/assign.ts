@@ -1819,10 +1819,7 @@ export async function autoAssignCycle(
           const sendAtStr = vnTimestamp(sendAt);
           const park = await parkOnProxy(jobId, sendAtStr, env);
           if (park.ok) {
-            log(
-              `Job ${jobId} - PARKED until ${sendAtStr} (window: ${windowTimeFrom})${park.repaired ? " [release time rewritten]" : ""} | ${route}`,
-              "INFO",
-            );
+            log(`Job ${jobId} - PARKED until ${sendAtStr} (window: ${windowTimeFrom}) | ${route}`, "INFO");
           } else {
             log(`Job ${jobId} - Park failed: ${park.detail} | ${route}`, "WARN");
           }
