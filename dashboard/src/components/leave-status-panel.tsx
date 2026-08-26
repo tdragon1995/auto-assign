@@ -6,7 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { SectionHeader } from "./section-header";
 import { toast } from "sonner";
-import type { LeaveOnDate, InvalidLeaveRow } from "@/lib/leave-config";
+import type { LeaveOnDate, InvalidLeaveRow, SpanningLeaveRow } from "@/lib/leave-config";
 import type { ConfigDriver } from "@/lib/types";
 
 const TYPE_LABEL: Record<string, string> = {
@@ -588,6 +588,7 @@ export function LeaveStatusPanel({
   today,
   tomorrow,
   invalid = [],
+  spanning = [],
   error = false,
   drivers,
   onRefresh,
@@ -599,6 +600,10 @@ export function LeaveStatusPanel({
    *  matched exactly one working driver), while an unrecovered one is still
    *  being ignored and its driver is still being given work. */
   invalid?: InvalidLeaveRow[];
+  /** Rows covering 2+ days. Never written by the app — always hand-typed — and
+   *  their hour window repeats on every day of the span, which is rarely what
+   *  was meant. Honoured as written; shown here so it can be split per day. */
+  spanning?: SpanningLeaveRow[];
   error?: boolean;
   drivers: ConfigDriver[];
   onRefresh: () => void;
@@ -666,6 +671,12 @@ export function LeaveStatusPanel({
               {invalidRecovered.length} tự nhận ra tên
             </span>
           )}
+          {spanning.length > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 text-violet-800 border border-violet-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
+              <AlertTriangle className="size-3" strokeWidth={2} />
+              {spanning.length} dòng nhiều ngày
+            </span>
+          )}
           {totalDuplicate > 0 && (
             <span className="inline-flex items-center gap-1 rounded-full bg-orange-100 text-orange-700 border border-orange-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
               <AlertTriangle className="size-3" strokeWidth={2} />
@@ -721,6 +732,42 @@ export function LeaveStatusPanel({
                         {r.timeLabel && <span className="font-mono text-[11px] text-slate-500">{r.timeLabel}</span>}
                         {!r.hasSub && (
                           <span className="text-[11px] font-semibold text-red-700">chưa có người thay</span>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+            {spanning.length > 0 && (
+              <div className="mb-2 rounded-md border border-violet-300 bg-violet-50 px-2 py-1.5">
+                <div className="flex items-center gap-1.5 text-[11px] font-semibold text-violet-900">
+                  <AlertTriangle className="size-3.5 shrink-0" strokeWidth={2} />
+                  Dòng nghỉ kéo dài nhiều ngày — nên tách mỗi ngày một dòng
+                </div>
+                <p className="mt-0.5 text-[11px] leading-snug text-violet-900/80">
+                  Khung giờ trên dòng này được hiểu là khung giờ CỦA MỖI NGÀY trong khoảng, không
+                  phải nghỉ liên tục từ giờ bắt đầu ngày đầu đến giờ kết thúc ngày cuối. Người thay
+                  cũng vậy: cùng một người, cùng khung giờ đó, lặp lại mọi ngày. Đơn nghỉ nộp qua
+                  app luôn tách sẵn mỗi ngày một dòng — các dòng dưới đây là gõ tay.
+                </p>
+                <ul className="mt-1 space-y-0.5">
+                  {spanning.map((r, i) => {
+                    const { code, name } = splitDriverName(r.driver_name);
+                    return (
+                      <li key={`span-${r.driver_name}-${r.leave_from}-${r.leave_to}-${i}`} className="flex flex-wrap items-baseline gap-x-1.5 text-xs">
+                        <span className="font-semibold text-slate-900">{name}</span>
+                        {code && <span className="font-mono text-[11px] text-slate-500">{code}</span>}
+                        <span className="text-[11px] text-slate-600">
+                          {ddmm(r.leave_from)}–{ddmm(r.leave_to)}
+                        </span>
+                        <span className="text-[11px] font-semibold text-violet-800">{r.days} ngày</span>
+                        {r.timeLabel && <span className="font-mono text-[11px] text-slate-500">{r.timeLabel}</span>}
+                        <span className="text-[11px] text-slate-600">
+                          {r.hasSub ? "người thay lặp lại mỗi ngày" : "chưa có người thay"}
+                        </span>
+                        {!r.linked && (
+                          <span className="text-[11px] font-semibold text-red-700">thiếu driver_id</span>
                         )}
                       </li>
                     );

@@ -24,7 +24,7 @@ import { placeLabel } from "./place-label";
 import { stripDriverCode } from "./job-detail";
 import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, idleBand, type RefStop, type RefLabel } from "./smart-rank";
 import { loadLeaveEntries, isDriverOnLeave, resolveSubstitute, type LeaveEntry } from "./leave-config";
-import { isDriverOnShift, getDriversOnDuty, resolveFixedDriver } from "./fixed-driver";
+import { getDriversOnDuty, resolveFixedDriver, findSmartMapping } from "./fixed-driver";
 
 
 const DUPLICATE_REJECT_REASON =
@@ -704,13 +704,17 @@ function previewFixedDriver(
   job: Job,
   customerId: string | null,
   leaveEntries: LeaveEntry[],
+  dropoffId: string | null,
 ): { driverId: string; name: string | null; subFor: string | null } | null {
   // Held jobs are windowless by construction (a job with a pickup window bypasses
   // the note gate entirely), so the loop's window branch can't apply here and
   // jobTime reduces to the scheduled/create timestamp.
   let jobTime = parseVnTimestamp(job.scheduled_delivery_ts || job.create_ts);
   if (isNaN(jobTime.getTime())) jobTime = new Date();
-  return resolveFixedDriver(config, customerId, jobTime, leaveEntries);
+  // The destination is passed so a destination-scoped row is picked correctly, but
+  // previewOnly keeps the alt-drop-off refusal off: this only DISPLAYS a driver, so
+  // there is no job left pointing at the wrong place for it to guard against.
+  return resolveFixedDriver(config, customerId, jobTime, leaveEntries, dropoffId, { previewOnly: true });
 }
 
 export function jobHasNotes(job: Job): boolean {
@@ -1705,6 +1709,10 @@ export async function autoAssignCycle(
     clog(`[loop] job ${++_jobIdx}/${jobs.length} jobId=${jobId} (t=${Date.now() - tStart}ms)`);
     const customerId = getCustomerIdFromJob(job);
     const jobCustomerName = getCustomerNameFromJob(job);
+    // Where this job is GOING. Read once up here because it now selects the mapping
+    // (a row can be scoped to one destination), so the note-held preview needs it too
+    // — not just the duplicate check further down.
+    const dropoffId = job.stops?.find((s) => s.stop_type_id === 2)?.customer_id ?? null;
     // Uniform log suffix: every job line ends " | <pickup> → <dropoff>", so the
     // customer is always the single trailing field. All other detail (driver,
     // shifts, reason, …) goes before the one " | ". See docs/log-templates.md.
@@ -1742,7 +1750,7 @@ export async function autoAssignCycle(
         if (!approved && !onlyJobIds?.has(jobId)) {
           log(`Job ${jobId} - SKIPPED (has note): "${getJobNoteText(job)}" | ${route}`);
           // Who it would go to, for fixed-path jobs only — see previewFixedDriver.
-          const preview = previewFixedDriver(config, job, customerId, leaveEntries);
+          const preview = previewFixedDriver(config, job, customerId, leaveEntries, dropoffId);
           heldJobs.push({
             job_id: jobId,
             customer: jobCustomerName ?? customerId ?? "—",
@@ -1770,7 +1778,6 @@ export async function autoAssignCycle(
     }
 
     // ── Duplicate check: assign to proxy driver then JSONRPC-reject ──────────
-    const dropoffId = job.stops?.find((s) => s.stop_type_id === 2)?.customer_id ?? null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const jobLabels: string[] = (job as any).labels ?? [];
     const isDuplicateExempt = jobLabels.some((l) => DUPLICATE_EXEMPT_LABELS.includes(l));
@@ -1850,9 +1857,7 @@ export async function autoAssignCycle(
 
     // ── Smart-assign path ────────────────────────────────────────────────────
     // Find the smart mapping that is currently on-shift (not just the first one)
-    const smartMapping = config.mappings.find(
-      (m) => m.customer_id === customerId && m.smart_driver_id.length > 0 && isDriverOnShift(m, jobTime)
-    );
+    const smartMapping = findSmartMapping(config, customerId, jobTime, dropoffId);
 
     if (smartMapping) {
       // ── 1-driver: straight assign (like fixed auto-assign) ──────────────
@@ -1868,6 +1873,10 @@ export async function autoAssignCycle(
               log(`Job ${jobId} - Nhiều hơn 1 SUB: ${sub.subIds.length} substitutes cover for ${onLeaveName1} now | ${route}`, "WARN");
               fail("SUB_CLASH", jobId, who1, `${onLeaveName1} nghỉ — ${sub.subIds.length} người thay cùng trực, không rõ chọn ai`, "WARN");
               continue;
+            }
+            if (sub.status === "tpl") {
+              log(`Job ${jobId} - SMART(1) SKIP: ${onLeaveName1} on leave (${lc1.reason}), 3PL express covers today | ${route}`, "INFO");
+              continue;                         // covered by arrangement — no alarm
             }
             if (sub.status === "none") {
               log(`Job ${jobId} - SMART(1) SKIP: ${onLeaveName1} on leave (${lc1.reason}), no substitute covers now | ${route}`, "WARN");
@@ -1934,12 +1943,21 @@ export async function autoAssignCycle(
         const subForByDriverId = new Map<string, string>(); // ranked driver id → on-leave name they cover
         const candidates: Driver[] = [];
         const candidateIds = new Set<string>();
+        // On-leave drivers whose row hands the lane to 3PL express today. Dropped
+        // from the pool here rather than at assign time, so they never reach the
+        // failure summary — a driver the engine never tried must not be counted
+        // among "N tài xế đều đang nghỉ giải lao/offline".
+        const tplCovered: string[] = [];
         for (const cfgId of smartMapping.smart_driver_id) {
           let cand = driverById.get(cfgId);
           let subFor: string | null = null;
           const lc = isDriverOnLeave(cfgId, leaveEntries);
           if (lc.onLeave) {
             const sub = resolveSubstitute(lc.entry!);
+            if (sub.status === "tpl") {
+              tplCovered.push(lc.driverName ?? cfgId);
+              continue;                         // 3PL express covers this lane today
+            }
             if (sub.status === "ok") {
               const subDriver = driverById.get(sub.subId);
               if (subDriver && phase1Coords.has(sub.subId)) {
@@ -1963,6 +1981,13 @@ export async function autoAssignCycle(
           if (subFor) subForByDriverId.set(cand.delivery_driver_id, subFor);
         }
         if (candidates.length === 0) {
+          if (tplCovered.length > 0) {
+            // Not a staffing gap: the lane is on 3PL express today and the branch
+            // hands the samples over from the QR page. Nothing to assign, nothing
+            // to alarm — INFO keeps it out of the rolling log too.
+            log(`Job ${jobId} - SMART skipped: 3PL express covers today (${tplCovered.join(", ")}) | ${route}`, "INFO");
+            continue;
+          }
           const who = jobCustomerName ?? customerId ?? "—";
           log(`Job ${jobId} - SMART skipped: 0/${smartMapping.smart_driver_id.length} configured drivers available (GPS or start_location) | ${route}`, "WARN");
           fail("NO_DRIVER", jobId, who, `0/${smartMapping.smart_driver_id.length} tài xế cấu hình có toạ độ (GPS/điểm xuất phát)`, "WARN");
@@ -2095,6 +2120,10 @@ export async function autoAssignCycle(
                 subClash = true;
                 break;
               }
+              if (sub.status === "tpl") {
+                log(`Job ${jobId} - SMART #${attempt + 1} ${candidateName}: on leave (${lc.reason}), 3PL express covers today — trying next best candidates | ${route}`, "INFO");
+                continue;
+              }
               if (sub.status === "none") {
                 log(`Job ${jobId} - SMART #${attempt + 1} ${candidateName}: on leave (${lc.reason}), no substitute — trying next best candidates | ${route}`, "INFO");
                 continue;
@@ -2159,12 +2188,24 @@ export async function autoAssignCycle(
     }
 
     // ── Fixed driver path (original logic) ───────────────────────────────────
-    const [drivers, status] = getDriversOnDuty(config, customerId, jobTime);
+    const [drivers, status] = getDriversOnDuty(config, customerId, jobTime, dropoffId);
 
     if (status === "no_mapping") {
       const who = jobCustomerName ?? customerId ?? "—";
       log(`Job ${jobId} - NO MAPPING | ${route}`, "ERROR");
       fail("NO_MAPPING", jobId, who, "Khách hàng chưa được cấu hình trong Google Sheet");
+      continue;
+    }
+
+    // The branch IS configured — every row it has names a different destination than
+    // the one this job is going to. A different problem from NO MAPPING, and a
+    // different fix (add a row for this leg, or blank a dropoff_id so one row covers
+    // everything again), so it is said separately instead of blaming the customer.
+    if (status === "no_dropoff_rule") {
+      const who = jobCustomerName ?? customerId ?? "—";
+      const dropName = job.stops?.find((s) => s.stop_type_id === 2)?.customer_name ?? dropoffId ?? "—";
+      log(`Job ${jobId} - NO DROPOFF RULE for ${dropName} | ${route}`, "ERROR");
+      fail("NO_DROPOFF_RULE", jobId, who, `Chưa cấu hình tuyến tới ${dropName} — cần thêm dòng dropoff_id trong Google Sheet`);
       continue;
     }
 
@@ -2207,6 +2248,10 @@ export async function autoAssignCycle(
         log(`Job ${jobId} - Nhiều hơn 1 SUB: ${sub.subIds.length} substitutes cover for ${onLeaveName} now | ${route}`, "WARN");
         fail("SUB_CLASH", jobId, who, `${onLeaveName} nghỉ — ${sub.subIds.length} người thay cùng trực, không rõ chọn ai`, "WARN");
         continue;
+      }
+      if (sub.status === "tpl") {
+        log(`Job ${jobId} - SKIP: ${onLeaveName} on leave (${lcFixed.reason}), 3PL express covers today | ${route}`, "INFO");
+        continue;                               // covered by arrangement — no alarm
       }
       if (sub.status === "none") {
         log(`Job ${jobId} - SKIP: ${onLeaveName} on leave (${lcFixed.reason}), no substitute covers now | ${route}`, "WARN");

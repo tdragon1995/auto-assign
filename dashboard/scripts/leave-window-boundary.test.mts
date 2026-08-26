@@ -50,6 +50,7 @@ function shiftMapping(startMins: number, endMins: number): Mapping {
     bot_token: "",
     chat_id: "",
     alt_drop_off_id: "",
+    dropoff_id: "",
   };
 }
 

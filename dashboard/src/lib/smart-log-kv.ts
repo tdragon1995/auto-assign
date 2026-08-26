@@ -737,6 +737,7 @@ const INFO_KEEP_PATTERNS = ["RELEASED", "PARKED", "ROLLED OVER", "swapped", "[fe
 const LOG_DROP_PATTERNS = [
   "NO DRIVER ON DUTY",
   "NO MAPPING",
+  "NO DROPOFF RULE",          // branch configured, but no row for this destination
   "CLASH",                    // driver clash ("CLASH: N drivers on duty")
   "substitutes cover for",    // "Nhiều hơn 1 SUB" (renamed sub-clash)
   "no substitute covers now", // on-leave, no sub

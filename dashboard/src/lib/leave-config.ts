@@ -268,6 +268,111 @@ export function invalidLeaveRowsOnDate(date: string, rows: InvalidLeaveRow[]): I
   });
 }
 
+/**
+ * A leave row whose date range covers more than one day.
+ *
+ * Nothing in the app writes one. Full-day leave submitted through the form is
+ * written one row PER DAY, half-day is same-day by construction, and the MISA
+ * push emits one row per charged day — so a row spanning 24/08→26/08 is always
+ * hand-typed, and it does not mean what it looks like it means:
+ *
+ *   - the hour window on it is a DAILY window, re-applied to every day in the
+ *     span, not "off from 06:00 on the 24th until 19:00 on the 26th";
+ *   - each substitute's window is daily too, so one sub named on the row is
+ *     expected to cover the same stretch of every one of those days.
+ *
+ * The engine honours these rows exactly as written — this is a flag, not a
+ * rejection. Splitting one row per day is what makes it say what the supervisor
+ * means, and it is also the only shape the "add a substitute" flow in the panel
+ * can attach different cover to on different days.
+ */
+export interface SpanningLeaveRow {
+  driver_name: string;
+  loai_nghi: string;
+  leave_from: string;
+  leave_to: string;
+  /** Whole days covered, inclusive of both ends. */
+  days: number;
+  /** "HH:MM–HH:MM" when the row carries a usable window, else null. A window is
+   *  what makes a spanning row genuinely ambiguous, so the panel leads with it. */
+  timeLabel: string | null;
+  /** Whether anyone is named to cover it — the same person, the same window,
+   *  on every day of the span. */
+  hasSub: boolean;
+  /** False when the row is ALSO one the engine cannot see (blank driver_id, name
+   *  not recovered). Those are reported by the red block too, but only while the
+   *  span covers today or tomorrow — a future one would otherwise go unmentioned
+   *  by both until the morning it matters. */
+  linked: boolean;
+}
+
+/** Whole days from `from` to `to` inclusive; 0 when either date is unparseable. */
+function daysInclusive(from: string, to: string): number {
+  const a = new Date(from + "T00:00:00Z").getTime();
+  const b = new Date(to + "T00:00:00Z").getTime();
+  if (Number.isNaN(a) || Number.isNaN(b)) return 0;
+  return Math.floor((b - a) / 86_400_000) + 1;
+}
+
+/**
+ * Multi-day rows that have not fully passed yet (`leave_to >= fromDate`), so an
+ * upcoming one surfaces days before it can misfire rather than on the morning it
+ * does. Resignations are excluded: they are open-ended by design (`leave_to` is
+ * blank and the engine skips the driver from `leave_from` on), so a span there
+ * carries none of the ambiguity above.
+ */
+export function spanningLeaveRows(
+  entries: LeaveEntry[],
+  dropped: InvalidLeaveRow[],
+  fromDate: string,
+): SpanningLeaveRow[] {
+  const out: SpanningLeaveRow[] = [];
+  const seen = new Set<string>();
+
+  // Both sources, because a row can be spanning AND unlinked at once — the first
+  // real one found in the sheet was exactly that, and reading only `entries`
+  // would have said nothing about it.
+  const consider = (
+    driver_name: string,
+    loai_nghi: string,
+    leave_from: string,
+    leave_to: string | null,
+    timeLabel: string | null,
+    hasSub: boolean,
+    linked: boolean,
+  ) => {
+    if (loai_nghi === "Nghỉ việc") return;
+    if (!leave_from || !leave_to || leave_to <= leave_from || leave_to < fromDate) return;
+    const days = daysInclusive(leave_from, leave_to);
+    if (days < 2) return; // unparseable dates read as 0 — never report those
+    // A name-recovered row is in `entries` AND reported as dropped; the entries
+    // copy is walked first, so the linked reading of it wins.
+    const key = `${driver_name}|${leave_from}|${leave_to}|${timeLabel ?? ""}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ driver_name, loai_nghi, leave_from, leave_to, days, timeLabel, hasSub, linked });
+  };
+
+  for (const e of entries) {
+    const start = timeToMins(e.gio_bat_dau);
+    const end = timeToMins(e.gio_ket_thuc);
+    consider(
+      e.driver_name,
+      e.loai_nghi,
+      e.leave_from,
+      e.leave_to,
+      start >= 0 && end > start ? `${e.gio_bat_dau}–${e.gio_ket_thuc}` : null,
+      e.subs.length > 0,
+      true,
+    );
+  }
+  for (const r of dropped) {
+    consider(r.driver_name, r.loai_nghi, r.leave_from, r.leave_to, r.timeLabel, r.hasSub, r.recovered);
+  }
+
+  return out.sort((a, b) => (a.leave_from < b.leave_from ? -1 : a.leave_from > b.leave_from ? 1 : 0));
+}
+
 export function leaveEntriesOnDate(date: string, entries: LeaveEntry[]): LeaveOnDate[] {
   const raw: LeaveOnDate[] = [];
   for (const e of entries) {
@@ -704,10 +809,18 @@ export function isDriverOnLeave(
  * Resolution is exactly one layer deep: driver on leave → use the named sub,
  * full stop. We do NOT check whether the sub is themselves on leave, and we do
  * NOT chain to the sub's own sub — the supervisor manages those cases on the
- * sheet. The only subs dropped here are the 3PL-express proxy (never a real
- * assignee) and any whose coverage window doesn't include now. A blank sub
- * window inherits the leave's own window (leave_from_hr–leave_to_hr); a full-day
- * leave with no hour window means the sub covers the whole day.
+ * sheet. The only subs dropped here are any whose coverage window doesn't
+ * include now. A blank sub window inherits the leave's own window
+ * (leave_from_hr–leave_to_hr); a full-day leave with no hour window means the
+ * sub covers the whole day.
+ *
+ * The 3PL-express proxy in a substitute slot is the supervisor's shorthand for
+ * "this lane runs on 3PL express today" — a deliberate arrangement, not a gap.
+ * It still must never be auto-assigned (it isn't a person), so it resolves to
+ * its own status "tpl" rather than to "ok" or "none": callers skip the driver
+ * WITHOUT raising a missing-cover alarm. Folding it into "none" is what made the
+ * engine report a covered lane as an unstaffed one. A real sub listed alongside
+ * the proxy wins — the arrangement changed and the row was only half-updated.
  *
  * The coverage window is half-open `(from, to]` — start exclusive, end inclusive —
  * the same convention as the config-sheet shift check ({@link isDriverOnShift}).
@@ -721,12 +834,12 @@ export function resolveSubstitute(
 ):
   | { status: "ok"; subId: string }
   | { status: "clash"; subIds: string[] }
+  | { status: "tpl" }
   | { status: "none" } {
   const nowMins = vnMinutesSinceMidnight();
 
   const covering = entry.subs.filter((s) => {
     if (!s.id) return false;
-    if (s.id === PROXY_3PL_DRIVER_ID) return false; // 3PL-express proxy, never a real assignee
     let start = timeToMins(s.from);
     let end   = timeToMins(s.to);
     let hasWindow = start >= 0 && end > start;
@@ -742,7 +855,10 @@ export function resolveSubstitute(
 
   // De-dup by id so the same sub listed in two slots isn't a false clash.
   const ids = [...new Set(covering.map((s) => s.id))];
-  if (ids.length === 0) return { status: "none" };
-  if (ids.length > 1) return { status: "clash", subIds: ids };
-  return { status: "ok", subId: ids[0] };
+  // The proxy is a marker, not a candidate — it never counts toward a clash and
+  // never gets returned as a subId. Real cover always wins over the marker.
+  const realIds = ids.filter((id) => id !== PROXY_3PL_DRIVER_ID);
+  if (realIds.length === 0) return ids.length > 0 ? { status: "tpl" } : { status: "none" };
+  if (realIds.length > 1) return { status: "clash", subIds: realIds };
+  return { status: "ok", subId: realIds[0] };
 }

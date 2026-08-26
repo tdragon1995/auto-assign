@@ -41,9 +41,10 @@ const REASON_META: Record<
   CLASH:          { label: "Trùng tài xế trực", tone: "amber", order: 3 },
   SUB_CLASH:      { label: "Trùng người thay", tone: "amber", order: 4 },
   NO_MAPPING:     { label: "Chưa cấu hình (Sheet)", tone: "amber", order: 5 },
-  INVALID_DRIVER: { label: "Sai driver_id (Sheet)", tone: "red", order: 6 },
-  DEACTIVATED:    { label: "Tài khoản tài xế đã bị khoá", tone: "red", order: 7 },
-  NO_GPS:         { label: "Thiếu toạ độ GPS", tone: "red", order: 8 },
+  NO_DROPOFF_RULE:{ label: "Chưa cấu hình điểm giao", tone: "amber", order: 6 },
+  INVALID_DRIVER: { label: "Sai driver_id (Sheet)", tone: "red", order: 7 },
+  DEACTIVATED:    { label: "Tài khoản tài xế đã bị khoá", tone: "red", order: 8 },
+  NO_GPS:         { label: "Thiếu toạ độ GPS", tone: "red", order: 9 },
 };
 
 function metaFor(reason: FailedReason) {

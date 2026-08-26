@@ -299,6 +299,12 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
         customer_id,
         driver_id,
         smart_driver_id,
+        // Optional. Absent column ⇒ blank on every row ⇒ identical behaviour to
+        // before it existed, which is what lets the code ship before the column
+        // is added to the sheet. Deliberately NOT in SHEET_CONTRACT for the same
+        // reason (footgun 3: requiring a column that isn't there refuses the tab
+        // on every load and the engine then runs on a stale copy indefinitely).
+        dropoff_id: (row["dropoff_id"] ?? "").trim(),
         // The sheet's name column is headed "Driver" — the same header the Driver tab
         // uses. Reading "first_name_last_name" found nothing on all 1390 rows, which is
         // why anything printing this name fell back to a raw UUID (the instant-assign

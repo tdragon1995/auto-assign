@@ -17,7 +17,7 @@ import { TatTeamPanel } from "./tat-team-panel";
 import { toast } from "sonner";
 import type { LogEntry, PickupWarning, FailedJob, ConfigDriver, SheetAlarm } from "@/lib/types";
 import type { DeploymentBeat } from "@/lib/smart-log-kv";
-import type { LeaveOnDate, InvalidLeaveRow } from "@/lib/leave-config";
+import type { LeaveOnDate, InvalidLeaveRow, SpanningLeaveRow } from "@/lib/leave-config";
 
 type Env = "prod" | "uat";
 type RightTab = "attention" | "live" | "admin" | "schedule" | "distance" | "tat";
@@ -44,11 +44,13 @@ export function Dashboard() {
     today: LeaveOnDate[];
     tomorrow: LeaveOnDate[];
     invalid: InvalidLeaveRow[];
+    spanning: SpanningLeaveRow[];
     error: boolean;
   }>({
     today: [],
     tomorrow: [],
     invalid: [],
+    spanning: [],
     error: false,
   });
 
@@ -172,6 +174,7 @@ export function Dashboard() {
         today: Array.isArray(data.today) ? data.today : [],
         tomorrow: Array.isArray(data.tomorrow) ? data.tomorrow : [],
         invalid: Array.isArray(data.invalid) ? data.invalid : [],
+        spanning: Array.isArray(data.spanning) ? data.spanning : [],
         error: false,
       });
     } catch {
@@ -581,6 +584,7 @@ export function Dashboard() {
                   today={leave.today}
                   tomorrow={leave.tomorrow}
                   invalid={leave.invalid}
+                  spanning={leave.spanning}
                   error={leave.error}
                   drivers={drivers}
                   onRefresh={() => loadLeaveStatus()}

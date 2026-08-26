@@ -2,6 +2,17 @@ export interface Mapping {
   customer_id: string;
   driver_id: string;
   smart_driver_id: string[]; // sheet col: smart_driver_id — comma-separated UUIDs; replaces fixed driver_id routing
+  // sheet col: dropoff_id — the destination this row applies to. BLANK means "any
+  // destination", which is what all ~1,700 legacy rows are, so a blank row keeps
+  // behaving exactly as it did before this column existed.
+  //
+  // Filled in, the row applies ONLY to jobs going there: it is how one branch
+  // sends to two places under two drivers (D014 → D001 is one driver, D014 → D007
+  // is another). Selection is most-specific-wins — see mappingsForRoute().
+  //
+  // NOT to be confused with alt_drop_off_id, which REWRITES a job's destination
+  // before assigning. This one only matches; it never changes the job.
+  dropoff_id: string;
   first_name_last_name: string;
   shift_start: { hours: number; minutes: number } | null;
   shift_end: { hours: number; minutes: number } | null;
@@ -225,6 +236,7 @@ export interface PickupWarning {
 // 3 minutes. `detail` is the human-readable specifics; `ts` is when last seen.
 export type FailedReason =
   | "NO_MAPPING"      // customer not configured in the sheet
+  | "NO_DROPOFF_RULE" // customer IS configured, but no row covers this destination
   | "NO_DRIVER"       // no driver / candidate on duty for this shift
   | "CLASH"           // multiple fixed drivers on duty — ambiguous
   | "SUB_CLASH"       // multiple substitutes cover the on-leave driver

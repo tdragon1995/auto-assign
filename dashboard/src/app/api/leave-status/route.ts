@@ -5,6 +5,7 @@ import {
   leaveEntriesOnDate,
   invalidLeaveRowsOnDate,
   invalidateLeaveCache,
+  spanningLeaveRows,
 } from "@/lib/leave-config";
 import { updateLeaveSubs, LeaveWriteError, type LeaveSubWrite } from "@/lib/sheets-writer";
 import { loadDriversFromSheet } from "@/lib/config";
@@ -34,9 +35,13 @@ export async function GET(req: NextRequest) {
         ...invalidLeaveRowsOnDate(today, dropped),
         ...invalidLeaveRowsOnDate(tomorrow, dropped),
       ],
+      // Rows spanning 2+ days. Not filtered to today/tomorrow like the rest: the
+      // point of flagging one is to split it BEFORE the span starts, so anything
+      // that has not finished yet is worth showing.
+      spanning: spanningLeaveRows(entries, dropped, today),
     });
   } catch (e) {
-    return NextResponse.json({ today: [], tomorrow: [], invalid: [], error: String(e) }, { status: 500 });
+    return NextResponse.json({ today: [], tomorrow: [], invalid: [], spanning: [], error: String(e) }, { status: 500 });
   }
 }
 

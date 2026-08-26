@@ -41,24 +41,105 @@ export function isDriverOnShift(
   return jobMinutes > startMin && jobMinutes <= endMin;
 }
 
+/**
+ * The rows for this pickup that are ALLOWED to serve this destination.
+ *
+ * A row with a blank `dropoff_id` serves any destination — that is every row written
+ * before the column existed, so blank keeps the old behaviour exactly. A row that
+ * names a destination serves only that one, and rows naming a DIFFERENT destination
+ * are dropped outright: they describe somebody else's leg.
+ *
+ * When the job's destination is unknown (no dropoff stop on it), only blank rows can
+ * apply — there is nothing to match a destination row against, and guessing would
+ * hand the trip to a driver whose route we cannot confirm.
+ *
+ * `anyForCustomer` separates the two ways `applicable` comes back empty: the branch
+ * has no rows at all (not configured), versus it has rows but none for where this
+ * job is going. Those are different problems for a supervisor, so they are reported
+ * as different failures rather than both as "chưa cấu hình".
+ */
+export function mappingsForRoute(
+  config: Config,
+  customerId: string,
+  dropoffId?: string | null,
+): { applicable: Mapping[]; anyForCustomer: boolean } {
+  const all = config.mappings.filter((m) => m.customer_id === customerId);
+  const drop = dropoffId?.trim() || null;
+  const applicable = all.filter((m) => {
+    const want = m.dropoff_id?.trim();
+    return !want || want === drop;
+  });
+  return { applicable, anyForCustomer: all.length > 0 };
+}
+
+/**
+ * Most-specific-wins. If any row names this exact destination, ONLY those rows count.
+ *
+ * This is the whole reason the feature does not break the branches it is added to.
+ * Two rows for one pickup whose shifts overlap is a CLASH, and the engine refuses to
+ * assign a clash rather than guess — so adding "D014 → D007 is Hùng" beside the
+ * existing "D014 is Nam" row would, without this, stop D014 assigning altogether.
+ * The destination row is the more specific instruction, so it REPLACES the general
+ * row for that destination instead of competing with it.
+ *
+ * Applied AFTER the shift filter, deliberately: a destination row that is off shift
+ * hands the job back to the branch's general row rather than blocking it. Nobody
+ * loses coverage they had before by adding a destination row.
+ */
+export function preferDestinationRows(
+  rows: Mapping[],
+  dropoffId?: string | null,
+): Mapping[] {
+  const drop = dropoffId?.trim() || null;
+  if (!drop) return rows;
+  const exact = rows.filter((m) => m.dropoff_id?.trim() === drop);
+  return exact.length > 0 ? exact : rows;
+}
+
+/**
+ * The on-shift smart-pool row for this pickup and destination, if there is one.
+ *
+ * Same most-specific-wins rule as the fixed path — a destination row overrides the
+ * branch's general pool rather than racing it, which matters here because the old
+ * code took the FIRST on-shift smart row it found and sheet order would have decided
+ * which destination won.
+ */
+export function findSmartMapping(
+  config: Config,
+  customerId: string,
+  jobTime: Date,
+  dropoffId?: string | null,
+): Mapping | undefined {
+  const { applicable } = mappingsForRoute(config, customerId, dropoffId);
+  const onShift = applicable.filter(
+    (m) => m.smart_driver_id.length > 0 && isDriverOnShift(m, jobTime),
+  );
+  return preferDestinationRows(onShift, dropoffId)[0];
+}
+
 export function getDriversOnDuty(
   config: Config,
   customerId: string,
-  jobTime: Date
-): [Mapping[], "no_mapping" | "no_driver" | "happy" | "clash"] {
-  const customerMappings = config.mappings.filter(
-    (m) => m.customer_id === customerId
-  );
+  jobTime: Date,
+  /** Where the job is actually going. Omitted ⇒ destination-scoped rows can never
+   *  match, so only blank rows are considered — the pre-column behaviour. */
+  dropoffId?: string | null,
+): [Mapping[], "no_mapping" | "no_dropoff_rule" | "no_driver" | "happy" | "clash"] {
+  const { applicable, anyForCustomer } = mappingsForRoute(config, customerId, dropoffId);
 
-  if (customerMappings.length === 0) return [[], "no_mapping"];
+  if (applicable.length === 0) {
+    return [[], anyForCustomer ? "no_dropoff_rule" : "no_mapping"];
+  }
 
-  const onDuty = customerMappings.filter((m) =>
+  const onDuty = applicable.filter((m) =>
     isDriverOnShift(m, jobTime)
   );
 
-  if (onDuty.length === 0) return [customerMappings, "no_driver"];
-  if (onDuty.length === 1) return [onDuty, "happy"];
-  return [onDuty, "clash"];
+  if (onDuty.length === 0) return [applicable, "no_driver"];
+
+  const chosen = preferDestinationRows(onDuty, dropoffId);
+  if (chosen.length === 1) return [chosen, "happy"];
+  return [chosen, "clash"];
 }
 
 /**
@@ -78,10 +159,21 @@ export function resolveFixedDriver(
   customerId: string | null,
   jobTime: Date,
   leaveEntries: LeaveEntry[],
-  /** The dropoff the job actually carries. Only used to refuse: a mapping that wants
-   *  the samples somewhere else must not be answered here, because whoever assigns also
-   *  has to perform that redirection, and this function does not touch the job. */
+  /** The dropoff the job actually carries. Does two jobs:
+   *   1. SELECTS the mapping — a row scoped to a destination only answers for jobs
+   *      going there, and beats the branch's general row when it does (see
+   *      mappingsForRoute / preferDestinationRows);
+   *   2. REFUSES a row whose alt_drop_off_id sends the samples somewhere else, because
+   *      whoever assigns also has to perform that redirection and this function does
+   *      not touch the job. `opts.previewOnly` turns that half off. */
   dropoffId?: string | null,
+  opts?: {
+    /** The caller is only DISPLAYING who would take this job, not assigning it, so the
+     *  alt-drop-off refusal above does not apply — there is no job to leave pointing at
+     *  the wrong destination. The destination SELECTION still applies; a preview that
+     *  named the wrong driver would be worse than none. */
+    previewOnly?: boolean;
+  },
 ): { driverId: string; name: string | null; subFor: string | null } | null {
   if (!customerId) return null;
 
@@ -90,20 +182,18 @@ export function resolveFixedDriver(
   // config, exactly like the fixed path, and the cycle already treats it that way (its
   // SMART(1) branch assigns straight out with the same leave-and-substitute handling).
   // Two or more still need live driver positions, which config cannot supply.
-  const smart = config.mappings.find(
-    (m) => m.customer_id === customerId && m.smart_driver_id.length > 0 && isDriverOnShift(m, jobTime),
-  );
+  const smart = findSmartMapping(config, customerId, jobTime, dropoffId);
   if (smart) {
     if (smart.smart_driver_id.length !== 1) return null;
-    return settle(smart, smart.smart_driver_id[0], dropoffId, leaveEntries);
+    return settle(smart, smart.smart_driver_id[0], dropoffId, leaveEntries, opts);
   }
 
-  const [drivers, status] = getDriversOnDuty(config, customerId, jobTime);
+  const [drivers, status] = getDriversOnDuty(config, customerId, jobTime, dropoffId);
   if (status !== "happy") return null;
 
   const mapping = drivers[0];
   if (!mapping.driver_id) return null;
-  return settle(mapping, mapping.driver_id, dropoffId, leaveEntries);
+  return settle(mapping, mapping.driver_id, dropoffId, leaveEntries, opts);
 }
 
 /** Shared tail of both paths: refuse a redirected dropoff, follow leave to a substitute,
@@ -113,6 +203,7 @@ function settle(
   configuredDriverId: string,
   dropoffId: string | null | undefined,
   leaveEntries: LeaveEntry[],
+  opts?: { previewOnly?: boolean },
 ): { driverId: string; name: string | null; subFor: string | null } | null {
   // This mapping redirects the samples elsewhere, and performing that redirection is the
   // assigner's job — the cycle rewrites the stop before it assigns. Answering here would
@@ -120,7 +211,7 @@ function settle(
   // and let the cycle do both halves. Only a redirect that DIFFERS matters; a job already
   // created pointing at the alt location needs no rewrite.
   const alt = mapping.alt_drop_off_id?.trim();
-  if (alt && dropoffId && alt !== dropoffId) return null;
+  if (!opts?.previewOnly && alt && dropoffId && alt !== dropoffId) return null;
 
   let driverId = configuredDriverId;
   let name: string | null = mapping.first_name_last_name?.trim() || null;

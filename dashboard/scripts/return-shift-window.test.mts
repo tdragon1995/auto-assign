@@ -56,6 +56,7 @@ function mapping(
     bot_token: "",
     chat_id: "",
     alt_drop_off_id: "",
+    dropoff_id: "",
   } as Mapping;
 }
 
