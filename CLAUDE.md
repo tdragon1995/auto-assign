@@ -117,7 +117,7 @@ blue rather than red. See `driver-match.ts`; step 4 of the config plan deletes i
 
 ### Key Types (`src/lib/types.ts`)
 
-- `Mapping` — customer→driver config row from Google Sheet (includes `smart_driver_id[]`, shift times, Zalo tokens, `alt_drop_off_id`)
+- `Mapping` — customer→driver config row from Google Sheet (includes `smart_driver_id[]`, shift times, Zalo tokens, `alt_drop_off_id`, `dropoff_id`)
 - `Job` / `Stop` — Cartrack delivery job with stops (stop_type_id 1=pickup, 2=dropoff, 3=delivery)
 - `Driver` — Cartrack driver with GPS coords and status
 - `LogEntry` — `{ ts, level: "OK"|"INFO"|"WARN"|"ERROR", msg }`
@@ -211,7 +211,19 @@ report goes out twice; do not re-add `schedule:` to the workflow file.
 
 ## Google Sheet
 
-Sheet ID and GIDs are hardcoded in `src/lib/sheets.ts` (`SHEET_GID` enum). Both `config.ts` and `psc-config.ts` import from there. The mapping sheet (GID 0) has columns: `customer_id`, `driver_id`, `smart_driver_id` (comma-separated UUIDs), `first_name_last_name`, `shift_start`, `shift_end`, `bot_token`, `chat_id`, `alt_drop_off_id`.
+Sheet ID and GIDs are hardcoded in `src/lib/sheets.ts` (`SHEET_GID` enum). Both `config.ts` and `psc-config.ts` import from there. The mapping sheet (GID 0) has columns: `customer_id`, `driver_id`, `smart_driver_id` (comma-separated UUIDs), `first_name_last_name`, `shift_start`, `shift_end`, `bot_token`, `chat_id`, `alt_drop_off_id`, `dropoff_id`.
+
+`dropoff_id` scopes a row to ONE destination, so a branch can send to two places
+under two drivers ("D014 → D001 is Nam, D014 → D007 is Hùng"). Blank = any
+destination, which is what every pre-existing row is. Selection is
+most-specific-wins and runs AFTER the shift filter: a destination row replaces the
+branch's blank row for that destination (so the two never read as a CLASH), but an
+off-shift destination row falls back to the blank row rather than blocking the job.
+A branch whose rows all name other destinations fails as `NO_DROPOFF_RULE`, not
+`NO MAPPING` — different problem, different fix. Do NOT confuse it with
+`alt_drop_off_id`, which REWRITES a job's destination; `dropoff_id` only matches.
+It is deliberately absent from `SHEET_CONTRACT` (see footgun 3), so the code is
+safe to deploy before the column exists — every row simply reads blank.
 
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph

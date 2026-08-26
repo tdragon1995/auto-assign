@@ -35,3 +35,5 @@ training/
 
 # One-off data exports
 dashboard/dist-export-*.csv
+# Staged inputs / resumable state for scripts/vietmap-audit.mjs
+dashboard/scripts/_audit-*

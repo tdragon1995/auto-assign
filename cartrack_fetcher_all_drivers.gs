@@ -22,9 +22,20 @@
  *   M  start_location_customer_id  — Cartrack
  *   N  end_location_customer_id    — Cartrack
  *   O  code_name                   — employee_code + " " + employee_full_name
- *   P  is_active                   — Cartrack active flag
+ *   P  is_active                   — Cartrack active flag, WRITTEN PER DRIVER
  *
- * All drivers returned by Cartrack are written to the sheet, regardless of is_active.
+ * Only drivers with is_active === true are written to the sheet, so col P reads
+ * TRUE on every row. It is written anyway, on every fetch, because the alternative
+ * was what this sheet actually had: a column of TRUE/FALSE values entered once by
+ * hand, never rewritten, while the driver rows below were cleared and re-fetched
+ * around it. New drivers land near the top, everyone below shifts down, and each
+ * row ends up reading the flag of whoever used to sit on that line — 85 of 174
+ * active drivers were marked FALSE that way, and the dashboard's substitute picker
+ * hides anyone marked FALSE. Writing the flag with its own row every time is what
+ * makes that impossible.
+ *
+ * The clear step below now covers all 16 columns for the same reason: it sweeps
+ * out any leftover values sitting below the last driver row.
  */
 
 // ========== CONFIGURATION ==========
@@ -535,9 +546,12 @@ function updateDriverTable() {
     const allDrivers = fetchDriverData();
     if (allDrivers.length === 0) { Logger.log('No driver data found'); return 0; }
 
-    // Include all drivers returned by Cartrack, regardless of is_active
-    const drivers = allDrivers;
-    Logger.log(`Loaded ${drivers.length} drivers`);
+    // Filter active drivers only.
+    // To list inactive accounts too (col P then carries the real TRUE/FALSE and
+    // the dashboard picker hides the FALSE ones), replace the line below with:
+    //   const drivers = allDrivers;
+    const drivers = allDrivers.filter(d => d.is_active === true);
+    Logger.log(`Filtered to ${drivers.length} active drivers (from ${allDrivers.length} total)`);
 
     setupDriverHeaders(sheet);
 
@@ -586,7 +600,7 @@ function updateDriverTable() {
     }
 
     sheet.autoResizeColumns(1, 16);
-    Logger.log(`Updated ${drivers.length} drivers`);
+    Logger.log(`Updated ${drivers.length} active drivers`);
     return drivers.length;
 
   } catch (e) {
@@ -729,9 +743,9 @@ function showScheduleDialog() {
       <p><i>dropoff_id is managed as an ArrayFormula in col F — not tracked by the script.</i></p>
       <p><i>nearest_dropoff, lat, and lng are recalculated fresh on every fetch.</i></p>
       <p><i>driver_zalo_id, bot_token, and phone_number_update are preserved across every driver fetch.</i></p>
-      <p><i>All drivers returned by Cartrack are written to the Driver sheet, including inactive drivers, with is_active shown in col P.</i></p>
+      <p><i>Only active drivers (is_active = true) are written to the Driver sheet, and col P (is_active) is rewritten with each driver every fetch — never left standing while the rows move.</i></p>
     </div>
-  `).setWidth(400).setHeight(420);
+  `).setWidth(400).setHeight(440);
   SpreadsheetApp.getUi().showModalDialog(html, 'Setup Auto-Sync');
 }
 
@@ -744,7 +758,8 @@ function testAPIConnection() {
     Logger.log(`✅ Customer API: ${customers.length} customers`);
 
     const drivers = fetchDriverData();
-    Logger.log(`✅ Driver API: ${drivers.length} drivers`);
+    const activeDrivers = drivers.filter(d => d.is_active === true);
+    Logger.log(`✅ Driver API: ${drivers.length} total, ${activeDrivers.length} active`);
 
     const sample = customers.find(c => c.latitude && c.longitude);
     if (sample) {
@@ -756,7 +771,7 @@ function testAPIConnection() {
     Logger.log(`✅ PSC list: ${pscs.length} PSCs loaded`);
 
     spreadsheet.toast(
-      `✅ All OK! ${customers.length} customers, ${drivers.length} drivers, ${pscs.length} PSCs`,
+      `✅ All OK! ${customers.length} customers, ${activeDrivers.length} active drivers, ${pscs.length} PSCs`,
       'Test Result', 5
     );
   } catch (e) {
@@ -836,9 +851,10 @@ function debugDriverMeta() {
     Logger.log(`  ${id} | zaloId: "${meta.driverZaloId}" | botToken: "${meta.botToken ? '***' : ''}" | phoneUpdate: "${meta.phoneNumberUpdate}"`);
   });
 
-  const allDrivers = fetchDriverData();
-  Logger.log(`=== API Drivers: ${allDrivers.length} total ===`);
-  allDrivers.slice(0, 5).forEach(d => {
+  const allDrivers   = fetchDriverData();
+  const activeDrivers = allDrivers.filter(d => d.is_active === true);
+  Logger.log(`=== API Drivers: ${allDrivers.length} total, ${activeDrivers.length} active ===`);
+  activeDrivers.slice(0, 5).forEach(d => {
     const id    = d.delivery_driver_id || '';
     const match = existingMeta[id];
     const name  = formatDriverName(d.first_name, d.last_name);
