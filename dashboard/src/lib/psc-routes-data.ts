@@ -23,6 +23,7 @@ const D037 = "ec32d0d2-ceec-11ee-bad2-506b8d9879b5";
 const D046 = "16db29e0-73db-11ef-baa3-506b8d9879b5";
 const D049 = "0df4f904-0f8b-11f0-b683-506b8d982279";
 const D050 = "3d68332c-6698-11f0-a623-506b8d982279";
+const D051 = "4daa0bca-2d7b-11f1-9378-fa163ee8d8ac";
 
 function route(
   psc_pickup: string,
@@ -63,7 +64,7 @@ export const PSC_ROUTES: PscRoute[] = [
   route("BRA - D016", "BRA - D007", "f61cca44-3d89-11ed-b141-506b8dbc8dfb", D007, 10.905611, 106.76818),
   route("BRA - D017", "BRA - D001", "6ec25112-3d8a-11ed-acb2-506b8dbc8dfb", D001, 10.809442, 106.695022),
   route("BRA - D018", "BRA - D001", "8d623ace-3d8a-11ed-87cc-506b8dbc8dfb", D001, 10.779712, 106.70079),
-  route("BRA - D019", "BRA - D001", "a693faa0-3d8a-11ed-9fed-506b8dbc8dfb", D001, 10.792031, 106.73036),
+  route("BRA - D019", "BRA - D001", "a693faa0-3d8a-11ed-9fed-506b8dbc8dfb", D001, 10.792031, 106.73036, { via_pickup: D051, via_pickup_name: "BRA - D051" }),
   route("BRA - D020", "BRA - D001", "27eaf120-3d8c-11ed-9f85-506b8dbc8dfb", D001, 10.818625, 106.678662),
   route("BRA - D021", "3PL - D021 - TLT", "47cc1bf4-3d8c-11ed-95fc-506b8dbc8dfb", "4aa193d2-b1dd-11ef-b42b-506b8d9879b5", 10.35665, 106.361731),
   route("BRA - D022", "BRA - D001", "65d58b76-3d8c-11ed-b92b-506b8dbc8dfb", D001, 10.84253244, 106.6427306),
@@ -92,7 +93,7 @@ export const PSC_ROUTES: PscRoute[] = [
   route("BRA - D048", "BRA - D001", "2d13fd86-73db-11ef-a0d1-506b8d9879b5", D001, 10.77995, 106.649843),
   route("BRA - D049", "BRA - D001", D049, D001, 10.753095, 106.650836),
   route("BRA - D050", "BRA - D001", D050, D001, 10.786807, 106.679405),
-  route("BRA - D051", "BRA - D001", "4daa0bca-2d7b-11f1-9378-fa163ee8d8ac", D001, 10.80086399, 106.7345728),
+  route("BRA - D051", "BRA - D001", D051, D001, 10.80086399, 106.7345728),
 ];
 
 /**
