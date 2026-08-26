@@ -15,7 +15,7 @@ const { loadConfigFromSheets, loadDriversFromSheet } = await import("../src/lib/
 const { loadTplEntries } = await import("../src/lib/psc-config");
 const { loadScheduleJobRows } = await import("../src/lib/schedule-job");
 const { loadLeaveEntries } = await import("../src/lib/leave-config");
-const { drainSheetAlarms, fetchSheetRowsByName, SHEET_CONTRACT } = await import("../src/lib/sheets");
+const { currentSheetRefusals, fetchSheetRowsByName, SHEET_CONTRACT } = await import("../src/lib/sheets");
 
 let bad = 0;
 async function probe(name: string, fn: () => Promise<number>) {
@@ -37,7 +37,9 @@ await probe("Scheduled Setup", async () => (await loadScheduleJobRows()).length)
 await probe("PUBLIC SUNDAY SCHEDULE", async () =>
   (await fetchSheetRowsByName("(Edit weekly) PUBLIC SUNDAY SCHEDULE", SHEET_CONTRACT.public_sunday)).length);
 
-const raised = (drainSheetAlarms() ?? []).filter((a) => a.reason);
+// Refusals only. A data warning (a duplicate name, an overlapping shift) means
+// the tab read fine and is a separate question — `config-audit-live.mts` asks it.
+const raised = currentSheetRefusals();
 if (raised.length) { bad++; console.error(`\n  FAIL live sheet raised alarms: ${JSON.stringify(raised)}`); }
 else console.log("\n  ok   no tab was refused");
 

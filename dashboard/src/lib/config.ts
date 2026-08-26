@@ -1,6 +1,11 @@
 import { Redis } from "@upstash/redis";
 import type { Config, ConfigDriver, Mapping } from "./types";
-import { fetchSheetRows, isSheetShapeError, noteSheetLoad, SHEET_CONTRACT, SHEET_GID } from "./sheets";
+import { fetchSheetRows, isSheetShapeError, noteSheetLoad, noteSheetWarning, SHEET_CONTRACT, SHEET_GID } from "./sheets";
+import {
+  findDuplicateBranches, findShiftOverlaps,
+  duplicateBranchWarning, shiftOverlapWarning, unresolvedWarning,
+  type LocationRow, type UnresolvedRows,
+} from "./config-audit";
 import { vnDate, vnIsSunday } from "./time";
 
 function getRedis(): Redis | null {
@@ -48,12 +53,12 @@ async function readGen(): Promise<string | null> {
 // freshness mechanism — that is the gen stamp, deliberately, after a clock-based cache
 // was measured at an 87% miss rate.
 const L2_TTL_S = 48 * 60 * 60;
-//   version — the `v2` below is NOT decoration. This blob is PARSED config, so a change to
+//   version — the `v3` below is NOT decoration. This blob is PARSED config, so a change to
 //          how it is parsed (a renamed column, a new field) leaves every server reading a
 //          blob built by the old code until someone presses Refresh. That is exactly how
 //          the "Driver" column fix shipped and did nothing: correct code, stale parse.
 //          Bump this whenever the parsing changes, and the deploy invalidates itself.
-const l2Key = (gen: string, date: string) => `config:v2:${gen}:${date}`;
+const l2Key = (gen: string, date: string) => `config:v3:${gen}:${date}`;
 
 
 let cachedConfig: Config | null = null;
@@ -177,6 +182,56 @@ export async function loadDriversFromSheet(): Promise<ConfigDriver[]> {
   }
 }
 
+// Distinct alarm labels, one per fault. They share the banner with a refused tab
+// but must never overwrite each other — a tab can be perfectly readable and still
+// be carrying rows the engine cannot use.
+const A_UNRESOLVED = "config — tên không ra mã";
+const A_OVERLAP    = "config — trùng giờ";
+const A_DUPE_LOC   = "Location Table — tên trùng";
+
+/** The VN date the Location Table was last checked on this instance. That tab is
+ *  ~700 KB and duplicates appear when someone creates a customer, not minute to
+ *  minute — so it is read once a day per instance rather than on every parse. */
+let locationsAuditedOn = "";
+
+/**
+ * Everything decidable from the sheet alone, reported the moment it is parsed.
+ *
+ * Never throws: an audit that broke the config load would be far worse than the
+ * faults it looks for. The Location Table read is the only part that can fail,
+ * and it is allowed to fail quietly and be retried tomorrow.
+ */
+async function auditParsedConfig(
+  tabLabel: string,
+  mappings: Mapping[],
+  unresolved: UnresolvedRows,
+  pickupNames: Set<string>,
+  today: string,
+): Promise<void> {
+  const dropped = unresolvedWarning(unresolved);
+  noteSheetWarning(A_UNRESOLVED, dropped && `${tabLabel}: ${dropped}`);
+  noteSheetWarning(A_OVERLAP, shiftOverlapWarning(findShiftOverlaps(mappings)));
+
+  if (locationsAuditedOn === today) return;
+  try {
+    const locRows = await fetchSheetRows(SHEET_GID.locations, SHEET_CONTRACT.locations);
+    // Stamped only on success, so a failed read is retried on the next parse
+    // rather than skipped for the rest of the day.
+    locationsAuditedOn = today;
+    noteSheetLoad(SHEET_CONTRACT.locations.label, null);
+    const locations = locRows.map((r): LocationRow => ({
+      customer_name: r["customer_name"] ?? "",
+      customer_id: r["customer_id"] ?? "",
+    }));
+    noteSheetWarning(A_DUPE_LOC, duplicateBranchWarning(findDuplicateBranches(locations, pickupNames)));
+  } catch (e) {
+    // The engine does not read this tab, so a broken one costs only the check —
+    // worth saying, never worth failing the config load for.
+    if (isSheetShapeError(e)) noteSheetLoad(e.sheetLabel, e);
+    console.error("Location Table audit skipped:", e);
+  }
+}
+
 export async function loadConfigFromSheets(): Promise<Config | null> {
   const today = vnDate(new Date());
   // Read once and reuse for the write below, so a hit costs exactly one Redis GET.
@@ -210,6 +265,11 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     const rows = await fetchSheetRows(SHEET_GID[tab], SHEET_CONTRACT[tab]);
 
     const mappings: Mapping[] = [];
+    // Rows the parser is about to throw away, and the pickup names it saw. Both
+    // are collected HERE because this is the only place that still knows what a
+    // dropped row said — afterwards there is nothing left to report.
+    const unresolved: UnresolvedRows = { pickups: [], drivers: [] };
+    const pickupNames = new Set<string>();
     for (const row of rows) {
       const customer_id = row["customer_id"] ?? "";
       const driver_id = (row["driver_id"] ?? "").trim();
@@ -220,7 +280,20 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
       const smart_driver_id = (row["smart_driver_id"] ?? "")
         .split(",").map((s) => s.trim()).filter(isValidDriverId);
 
-      if (!customer_id || (!driver_id && smart_driver_id.length === 0)) continue;
+      const pickupName = (row["Điểm Pick-up"] ?? "").trim();
+      const driverName = (row["Driver"] ?? "").trim();
+      if (pickupName) pickupNames.add(pickupName);
+
+      if (!customer_id || (!driver_id && smart_driver_id.length === 0)) {
+        // A row is dropped either because it is empty residue — most of this tab
+        // is — or because a lookup stopped resolving. Only the second is worth
+        // saying, and a typed NAME with no id beside it is what tells them apart.
+        if (!customer_id && pickupName) unresolved.pickups.push(pickupName);
+        else if (customer_id && driverName && !driver_id && smart_driver_id.length === 0) {
+          unresolved.drivers.push(`${pickupName || customer_id}: ${driverName}`);
+        }
+        continue;
+      }
 
       mappings.push({
         customer_id,
@@ -249,6 +322,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     }
 
     noteSheetLoad(SHEET_CONTRACT[tab].label, null);
+    await auditParsedConfig(SHEET_CONTRACT[tab].label, mappings, unresolved, pickupNames, today);
     cachedConfig = { mappings };
     cachedDay = today;
     cachedGen = gen;

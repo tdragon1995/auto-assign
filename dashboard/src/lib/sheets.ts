@@ -11,6 +11,10 @@ export const SHEET_GID = {
   schedule_job: "834076876",
   nghi_phep: "158238549",
   drivers: "467715355",
+  // Read by the location audit only. The engine never reads this tab — it sees
+  // only the branch ids the workbook's own lookup already resolved — which is
+  // exactly why a duplicate name here goes unnoticed until a pickup fails.
+  locations: "232994825",
 } as const;
 
 /**
@@ -55,6 +59,10 @@ export const SHEET_CONTRACT = {
   public_sunday: {
     label: "PUBLIC SUNDAY SCHEDULE",
     require: ["Ngày làm việc", "STT", "Họ và tên", "Địa điểm", "Ca"],
+  },
+  locations: {
+    label: "Location Table",
+    require: ["customer_name", "customer_id"],
   },
 } as const satisfies Record<string, { label: string; require: readonly string[] }>;
 
@@ -203,6 +211,12 @@ export interface SheetFetchOptions {
 // already projected over its monthly free allowance, so a per-cycle write for a
 // condition that is almost always "fine" is exactly what not to add.
 const sheetAlarms = new Map<string, SheetAlarm>();
+// Kept apart from the refusals above because they answer different questions.
+// "Is this tab readable?" has to be answerable on its own — the contract check
+// that runs against the live workbook passes or fails on THAT alone, and a tab
+// that reads perfectly while carrying a bad row must not be able to fail it.
+// Both still reach the dashboard together: one banner, two kinds of trouble.
+const sheetWarnings = new Map<string, SheetAlarm>();
 let sheetAlarmsChanged = false;
 
 /** Record the outcome of a load. Pass the error when a tab was refused, or null
@@ -218,11 +232,43 @@ export function noteSheetLoad(label: string, err: SheetShapeError | null): void 
   }
 }
 
+/**
+ * Record a tab that READ cleanly but whose CONTENT is wrong — a lookup that no
+ * longer resolves, a name that means two different places.
+ *
+ * Separate entry point from `noteSheetLoad` because the two say different things
+ * and must not overwrite each other: a tab can be perfectly readable and still be
+ * carrying rows the engine cannot use. Keyed by a distinct label per warning so
+ * one clearing does not silence the other.
+ *
+ * Pass null to clear, exactly like a clean load. Same change-only publishing, so
+ * a healthy day still writes nothing.
+ */
+export function noteSheetWarning(label: string, reason: string | null): void {
+  if (reason) {
+    const prev = sheetWarnings.get(label);
+    if (prev?.reason === reason) return;   // same complaint, already standing
+    sheetWarnings.set(label, { label, reason, ts: vnTimestamp() });
+    sheetAlarmsChanged = true;
+  } else if (sheetWarnings.delete(label)) {
+    sheetAlarmsChanged = true;
+  }
+}
+
 /** The current set, or null when nothing has changed since the last drain — the
  *  cycle then leaves the published field untouched rather than rewriting it. */
 export function drainSheetAlarms(): SheetAlarm[] | null {
   if (!sheetAlarmsChanged) return null;
   sheetAlarmsChanged = false;
+  // Refused tabs first: a tab the engine cannot read at all outranks a tab it
+  // can read but should not trust.
+  return [...sheetAlarms.values(), ...sheetWarnings.values()];
+}
+
+/** Only the tabs that could not be READ. Separate from the drain because the
+ *  live contract check asks exactly this and nothing else, and because draining
+ *  would clear the state the cycle still needs to publish. */
+export function currentSheetRefusals(): SheetAlarm[] {
   return [...sheetAlarms.values()];
 }
 
