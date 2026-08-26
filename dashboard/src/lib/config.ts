@@ -268,7 +268,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     // Rows the parser is about to throw away, and the pickup names it saw. Both
     // are collected HERE because this is the only place that still knows what a
     // dropped row said — afterwards there is nothing left to report.
-    const unresolved: UnresolvedRows = { pickups: [], drivers: [] };
+    const unresolved: UnresolvedRows = { pickups: [], drivers: [], dropoffs: [], invalidDriverIds: [] };
     const pickupNames = new Set<string>();
     for (const row of rows) {
       const customer_id = row["customer_id"] ?? "";
@@ -282,7 +282,24 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
 
       const pickupName = (row["Điểm Pick-up"] ?? "").trim();
       const driverName = (row["Driver"] ?? "").trim();
+      const dropoffName = (row["Điểm Drop-off"] ?? "").trim();
       if (pickupName) pickupNames.add(pickupName);
+      // Checked BEFORE the drop test, and on rows that survive it: unlike the
+      // other two this row is not thrown away, it just loses its destination
+      // scope and starts taking jobs meant for someone else.
+      // Present but not an id — a failed lookup spelled out in the cell. It slips
+      // past a blank test, so it has to be named on its own.
+      //
+      // Only when there is no smart fallback: on a smart row the fixed-driver
+      // lookup is EXPECTED to fail, because the name cell holds several drivers
+      // and resolves to none. 218 rows look like that today and every one of
+      // them works. Reporting those would bury the handful that cannot assign.
+      if (driver_id && !isValidDriverId(driver_id) && smart_driver_id.length === 0) {
+        unresolved.invalidDriverIds.push(`${pickupName || customer_id}: ${driver_id}`);
+      }
+      if (dropoffName && !(row["dropoff_id"] ?? "").trim()) {
+        unresolved.dropoffs.push(`${pickupName || customer_id}: ${dropoffName}`);
+      }
 
       if (!customer_id || (!driver_id && smart_driver_id.length === 0)) {
         // A row is dropped either because it is empty residue — most of this tab

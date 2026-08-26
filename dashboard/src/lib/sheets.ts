@@ -35,6 +35,12 @@ export const SHEET_CONTRACT = {
   mapping: {
     label: "config (mapping)",
     require: ["customer_id", "driver_id", "smart_driver_id", "Driver", "shift_start", "shift_end"],
+    // Per-destination routing. Present but blank on every row as of 2026-08-26,
+    // so `require` would have been safe today and wrong tomorrow: these are the
+    // newest columns in the workbook and the likeliest to be moved or renamed
+    // while the feature is still being set up. Expected rather than required
+    // until they carry data on every tab that routes.
+    expect: ["dropoff_id", "Điểm Drop-off"],
   },
   sunday: {
     label: "CONFIG SUNDAY",
@@ -64,7 +70,7 @@ export const SHEET_CONTRACT = {
     label: "Location Table",
     require: ["customer_name", "customer_id"],
   },
-} as const satisfies Record<string, { label: string; require: readonly string[] }>;
+} as const satisfies Record<string, { label: string; require: readonly string[]; expect?: readonly string[] }>;
 
 export function sheetCsvUrl(gid: string): string {
   return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${gid}`;
@@ -180,6 +186,30 @@ export function assertHeaders(
   }
 }
 
+/** Alarm label for a tab's soft-column report. Distinct from the tab's own
+ *  refusal label so one never clears the other. */
+export const expectedColumnAlarm = (sheetLabel: string) => `${sheetLabel} — cột thiếu`;
+
+/**
+ * Report — never refuse — columns the code reads but can live without.
+ *
+ * Called on every checked load, including the clean ones: passing an empty list
+ * is what CLEARS a standing warning once the column is put back.
+ */
+export function noteExpectedHeaders(
+  sheetLabel: string,
+  headers: string[],
+  expected: readonly string[],
+): void {
+  const present = new Set(headers.map((h) => h.trim()).filter(Boolean));
+  const missing = expected.filter((c) => !present.has(c));
+  noteSheetWarning(
+    expectedColumnAlarm(sheetLabel),
+    missing.length === 0 ? null
+      : `thiếu cột ${missing.join(", ")} — đọc được nhưng mọi dòng sẽ hiểu là để trống, tính năng dùng cột này lặng lẽ trở về mặc định`,
+  );
+}
+
 /** Google serves its CSV export as text/csv; a permissions or redirect page
  *  comes back as HTML, sometimes with a 200. Checked only when the header is
  *  present and explicitly says HTML, so a missing content-type never fails a
@@ -196,6 +226,25 @@ export function assertCsvResponse(sheetLabel: string, res: Response): void {
 export interface SheetFetchOptions {
   /** Columns the caller cannot work without. Omit to skip the contract. */
   require?: readonly string[];
+  /**
+   * Columns the code READS but can still live without — absence is reported, not
+   * refused.
+   *
+   * This tier exists because `require` cannot express a column that is arriving.
+   * A new column starts life absent, so requiring it would refuse the tab on
+   * every load from the moment the code ships until someone adds it by hand —
+   * which is the footgun that makes the engine run on a stale copy forever. The
+   * alternative that has been used so far is to declare nothing at all, and that
+   * has the opposite failure: the column silently vanishes, every row reads as
+   * blank, the feature quietly reverts to its default, and nothing says so.
+   *
+   * `expect` is the middle: read it, default it when it is missing, and put a
+   * line on the dashboard so a person knows the sheet and the code disagree.
+   * Promote to `require` once it is on every tab that needs it and carrying data
+   * — `config-audit-live.mts` prints exactly that, so the decision is a look
+   * rather than a guess.
+   */
+  expect?: readonly string[];
   /** Human name for the tab, shown in the alarm. */
   label?: string;
 }
@@ -286,6 +335,7 @@ export async function fetchSheetRows(
   assertCsvResponse(label, res);
   const { headers, rows } = parseCSVWithHeaders(await res.text());
   if (opts.require) assertHeaders(label, headers, opts.require);
+  if (opts.expect) noteExpectedHeaders(label, headers, opts.expect);
   return rows;
 }
 
@@ -309,6 +359,7 @@ export async function fetchSheetRowsByName(
   // unknown tab name with the first tab in the workbook, so without a contract a
   // renamed tab reads as perfectly good data from somewhere else.
   if (opts.require) assertHeaders(label, headers, opts.require);
+  if (opts.expect) noteExpectedHeaders(label, headers, opts.expect);
   return rows;
 }
 

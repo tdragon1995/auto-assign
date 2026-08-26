@@ -150,6 +150,23 @@ These are the things most likely to burn a future agent working on this codebase
    live workbook and fails if any tab is refused. `scripts/sheet-contract.test.mts`
    pins the logic offline.
 
+   **A NEW column goes in `expect`, not `require`.** `require` cannot express a
+   column that is arriving: it starts life absent, so requiring it refuses the tab
+   from the moment the code ships until someone adds it by hand. Declaring nothing
+   has the opposite failure — the column later vanishes, every row reads blank, the
+   feature quietly reverts to its default and nothing says so. `expect` is the
+   middle: read it, default it, and put a line on the dashboard when the sheet and
+   the code disagree. Promote to `require` once it is on every tab that needs it
+   AND carrying data. `npx tsx scripts/config-audit-live.mts` prints exactly that
+   for every declared column, so promotion is a look rather than a guess.
+
+   **A failed lookup is not always blank.** Some cells come back with the words
+   `KHÔNG TÌM THẤY` in them, which pass any truthiness test — the same trap as an
+   `#N/A` leave row. Test ids with `isValidDriverId`, never `if (id)`. Note that on
+   a SMART row this is normal and harmless: the name cell holds several drivers, so
+   the fixed-driver lookup is expected to fail, and ~218 rows look like that today.
+   Only a row with no smart fallback is actually broken.
+
 4. **`CARTRACK_WEB_PASS` is required for JSON-RPC calls** (`getFleetwebCookie`). Without it, route optimisation and duplicate-rejection both fail silently at login.
 
 5. **Duplicate detection exempts PSC tỉnh jobs by design.** The exempt label list lives in `DUPLICATE_EXEMPT_LABELS` at the top of `assign.ts`. The label string itself is `PSC_TINH_LABEL` exported from `psc-config.ts` — change it in one place.

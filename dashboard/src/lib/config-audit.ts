@@ -123,6 +123,18 @@ export interface ShiftOverlap {
 
 const DAY = 24 * 60;
 
+/**
+ * Mirrors the engine's own driver-id test, deliberately duplicated rather than
+ * imported: this module is pure by design and `config.ts` imports IT.
+ *
+ * The reason it is needed at all: a failed lookup in this workbook does not
+ * always come back blank. Some cells carry the words "KHÔNG TÌM THẤY", which
+ * pass any truthiness check and would count a broken row as a working rule —
+ * the same trap that lets a `#N/A` leave row look like a real one.
+ */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const looksLikeDriverId = (v: string | undefined): boolean => UUID_RE.test((v ?? "").trim());
+
 function hhmm(min: number): string {
   const m = ((min % DAY) + DAY) % DAY;
   return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
@@ -157,7 +169,10 @@ function intersect(a: [number, number], b: [number, number]): [number, number] |
 export function findShiftOverlaps(rows: readonly AuditableRow[]): ShiftOverlap[] {
   const byCustomer = new Map<string, AuditableRow[]>();
   for (const r of rows) {
-    if (!r.customer_id || !r.driver_id) continue;   // fixed-driver rules only
+    // Fixed-driver rules only, and only rules that actually name a driver: a cell
+    // holding a failed-lookup string is a broken row, not a competing one, and is
+    // reported separately rather than as an ambiguity.
+    if (!r.customer_id || !looksLikeDriverId(r.driver_id)) continue;
     const list = byCustomer.get(r.customer_id);
     if (list) list.push(r); else byCustomer.set(r.customer_id, [r]);
   }
@@ -204,6 +219,19 @@ export interface UnresolvedRows {
   pickups: string[];
   /** Driver names that produced no id, on rows that DO have a branch. */
   drivers: string[];
+  /** Rows whose driver cell holds something that is not an id at all — a failed
+   *  lookup spelled out in words. The engine reports these per job as an invalid
+   *  driver; naming them here means the cell can be fixed before that happens. */
+  invalidDriverIds: string[];
+  /**
+   * "Điểm Drop-off" values that produced no destination id.
+   *
+   * The worst of the three, because the row is NOT dropped — it stays live and
+   * simply loses its scope. A rule meant for one destination silently becomes a
+   * rule for every destination, so it starts competing for jobs it was never
+   * meant to take, and the only visible symptom is a clash somewhere else.
+   */
+  dropoffs: string[];
 }
 
 // ── Sentences ────────────────────────────────────────────────────────────────
@@ -249,6 +277,18 @@ export function unresolvedWarning(u: UnresolvedRows): string | null {
   if (u.drivers.length) {
     parts.push(`${u.drivers.length} dòng có tên tài xế nhưng KHÔNG ra driver_id (thường do đổi tên trong Cartrack): ${list(u.drivers)}`);
   }
-  if (parts.length === 0) return null;
-  return `${parts.join(" — ")}. Những dòng này bị bỏ qua, job sẽ báo "chưa cấu hình" dù nhìn trên sheet vẫn thấy.`;
+  if (parts.length === 0 && u.dropoffs.length === 0 && u.invalidDriverIds.length === 0) return null;
+
+  // Split deliberately: the first two are rows that VANISH, the third is a row
+  // that stays and quietly widens. Same cause, opposite symptom, different fix.
+  const dropped = parts.length
+    ? `${parts.join(" — ")}. Những dòng này bị bỏ qua, job sẽ báo "chưa cấu hình" dù nhìn trên sheet vẫn thấy.`
+    : "";
+  const broken = u.invalidDriverIds.length
+    ? `${u.invalidDriverIds.length} dòng có driver_id KHÔNG phải là id (ô báo lỗi tra cứu) và cũng không có smart driver: ${list(u.invalidDriverIds)} — job ở những điểm này sẽ báo sai driver_id.`
+    : "";
+  const widened = u.dropoffs.length
+    ? `${u.dropoffs.length} dòng có tên điểm giao nhưng KHÔNG ra dropoff_id: ${list(u.dropoffs)} — dòng vẫn chạy nhưng mất giới hạn điểm giao, sẽ nhận cả job đi nơi khác.`
+    : "";
+  return [dropped, broken, widened].filter(Boolean).join(" ");
 }

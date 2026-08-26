@@ -26,12 +26,18 @@ const eq = (label: string, got: unknown, want: unknown) =>
 
 const loc = (customer_name: string, customer_id: string): LocationRow => ({ customer_name, customer_id });
 
+// The audit only counts a row whose driver cell holds a REAL id, so fixtures have
+// to carry one. Short keys are mapped to stable uuid-shaped ids for readability.
+const IDS: Record<string, string> = {};
+let idN = 0;
+const uid = (k: string) => k ? (IDS[k] ??= `00000000-0000-0000-0000-${String(++idN).padStart(12, "0")}`) : "";
+
 const row = (
   customer_id: string, driver_id: string, name: string,
   start: string | null, end: string | null, dropoff_id = "",
 ): AuditableRow => {
   const t = (v: string | null) => v ? { hours: +v.split(":")[0], minutes: +v.split(":")[1] } : null;
-  return { customer_id, driver_id, first_name_last_name: name, shift_start: t(start), shift_end: t(end), dropoff_id };
+  return { customer_id, driver_id: uid(driver_id), first_name_last_name: name, shift_start: t(start), shift_end: t(end), dropoff_id };
 };
 
 // ── duplicate branch names ───────────────────────────────────────────────────
@@ -110,7 +116,7 @@ section("two rules for one branch, live at the same minute");
 }
 {
   const o = findShiftOverlaps([row("C1", "d1", "", "06:00", "12:00"), row("C1", "d2", "", "06:00", "12:00")]);
-  eq("a nameless row falls back to its id", o[0].drivers, ["d1", "d2"]);
+  eq("a nameless row falls back to its id", o[0].drivers, [uid("d1"), uid("d2")]);
 }
 {
   const msg = shiftOverlapWarning(findShiftOverlaps([
@@ -141,8 +147,8 @@ section("two rules for one branch, live at the same minute");
 }
 {
   const o = findShiftOverlaps([
-    { customer_id: "C1", driver_id: "d1", first_name_last_name: "An", shift_start: { hours: 6, minutes: 0 }, shift_end: { hours: 18, minutes: 0 } },
-    { customer_id: "C1", driver_id: "d2", first_name_last_name: "Bình", shift_start: { hours: 6, minutes: 0 }, shift_end: { hours: 18, minutes: 0 } },
+    { customer_id: "C1", driver_id: uid("d1"), first_name_last_name: "An", shift_start: { hours: 6, minutes: 0 }, shift_end: { hours: 18, minutes: 0 } },
+    { customer_id: "C1", driver_id: uid("d2"), first_name_last_name: "Bình", shift_start: { hours: 6, minutes: 0 }, shift_end: { hours: 18, minutes: 0 } },
   ]);
   ok("rows with no destination field at all behave as today", o.length === 1);
 }
@@ -151,24 +157,49 @@ eq("no overlap, nothing said", shiftOverlapWarning([]), null);
 
 // ── lookups that stopped resolving ───────────────────────────────────────────
 section("names the workbook could not turn into an id");
-eq("nothing dropped, nothing said", unresolvedWarning({ pickups: [], drivers: [] }), null);
+eq("nothing dropped, nothing said", unresolvedWarning({ pickups: [], drivers: [], dropoffs: [], invalidDriverIds: [] }), null);
 {
-  const msg = unresolvedWarning({ pickups: ["Điểm X"], drivers: [] }) ?? "";
+  const msg = unresolvedWarning({ pickups: ["Điểm X"], drivers: [], dropoffs: [], invalidDriverIds: [] }) ?? "";
   ok("a branch that did not resolve is named", msg.includes("Điểm X"));
   ok("...and called a branch problem", msg.includes("mã khách"));
 }
 {
-  const msg = unresolvedWarning({ pickups: [], drivers: ["Điểm Y: Nguyễn Văn A"] }) ?? "";
+  const msg = unresolvedWarning({ pickups: [], drivers: ["Điểm Y: Nguyễn Văn A"], dropoffs: [], invalidDriverIds: [] }) ?? "";
   ok("a driver that did not resolve is named", msg.includes("Nguyễn Văn A"));
   ok("...and blamed on the rename, not the customer", msg.includes("đổi tên"));
 }
 {
-  const msg = unresolvedWarning({ pickups: ["a", "b", "c", "d", "e"], drivers: [] }) ?? "";
+  const msg = unresolvedWarning({ pickups: ["a", "b", "c", "d", "e"], drivers: [], dropoffs: [], invalidDriverIds: [] }) ?? "";
   ok("a long list is truncated", msg.includes("và 2 dòng nữa"));
 }
 {
-  const msg = unresolvedWarning({ pickups: ["a"], drivers: ["b: c"] }) ?? "";
+  const msg = unresolvedWarning({ pickups: ["a"], drivers: ["b: c"], dropoffs: [], invalidDriverIds: [] }) ?? "";
   ok("both kinds are reported together", msg.includes("mã khách") && msg.includes("driver_id"));
+}
+
+{
+  const msg = unresolvedWarning({ pickups: [], drivers: [], dropoffs: ["Điểm Y: Kho Z"], invalidDriverIds: [] }) ?? "";
+  ok("a destination that did not resolve is named", msg.includes("Kho Z"));
+  ok("...and says the row WIDENS rather than vanishes", msg.includes("mất giới hạn điểm giao"));
+  ok("...so it must not claim the row was skipped", !msg.includes("bị bỏ qua"));
+}
+{
+  const msg = unresolvedWarning({ pickups: ["a"], drivers: [], dropoffs: ["b: c"], invalidDriverIds: [] }) ?? "";
+  ok("dropped and widened rows are reported together", msg.includes("bị bỏ qua") && msg.includes("mất giới hạn"));
+}
+
+{
+  const o = findShiftOverlaps([
+    row("C1", "d1", "An", "06:00", "18:00"),
+    { customer_id: "C1", driver_id: "KHÔNG TÌM THẤY", first_name_last_name: "Bình",
+      shift_start: { hours: 6, minutes: 0 }, shift_end: { hours: 18, minutes: 0 } },
+  ]);
+  eq("a failed-lookup cell is a broken row, not a competing driver", o, []);
+}
+{
+  const msg = unresolvedWarning({ pickups: [], drivers: [], dropoffs: [], invalidDriverIds: ["Điểm X: KHÔNG TÌM THẤY"] }) ?? "";
+  ok("...and is named on its own", msg.includes("KHÔNG phải là id"));
+  ok("...without claiming the row was skipped", !msg.includes("bị bỏ qua"));
 }
 
 console.log(failed === 0 ? "\nAll checks passed." : `\n${failed} check(s) FAILED.`);
