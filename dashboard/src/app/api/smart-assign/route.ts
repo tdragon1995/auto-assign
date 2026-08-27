@@ -3,7 +3,7 @@ import { getDrivers, getJobsByStatusAndDate, getCustomerById, getTimelineRoutes,
 import { vnDate, vnMinutesSinceMidnight } from "@/lib/time";
 import { haversineKm } from "@/lib/distance";
 import { roadDistancesFromPoint, roadDistancesToPoint } from "@/lib/distance-cache";
-import { selectReferenceStop, computeStopStats, ROUTE_STATE_PRIORITY, enRouteGpsBand, idleBand, type RefLabel } from "@/lib/smart-rank";
+import { selectReferenceStop, computeStopStats, ROUTE_STATE_PRIORITY, enRouteGpsBand, idleBand, isUnreachedAnchor, liveGpsRef, lastRealPositionRef, type RefLabel, type RefStop } from "@/lib/smart-rank";
 import { isChamCong } from "@/lib/job-filters";
 
 const TOP_N        = 3;
@@ -139,14 +139,12 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Fetch start_location coords for drivers who need them ──
-  // Two reasons: (1) no GPS → Phase 1 fallback, (2) no route today → reference-stop fallback.
+  // Only drivers without a GPS fix: with one, both the Phase 1 coords and the
+  // reference anchor come from the fix, not from start_location.
   const customerIdsNeeded = new Set<string>();
   for (const d of drivers) {
     if (!d.start_location_customer_id) continue;
-    const noGps = d.latitude == null || d.longitude == null;
-    const rd = routeData[d.delivery_driver_id];
-    const needsRefFallback = !rd?.referenceStop;
-    if (noGps || needsRefFallback) customerIdsNeeded.add(d.start_location_customer_id);
+    if (d.latitude == null || d.longitude == null) customerIdsNeeded.add(d.start_location_customer_id);
   }
   const customerCoords = new Map<string, { lat: number; lon: number; name: string | null }>();
   await Promise.all(
@@ -159,24 +157,36 @@ export async function POST(req: NextRequest) {
     })
   );
 
-  // Reference-stop fallback: no usable ref (no route, or all stops windowed) → use start_location
+  // Anchor on a place the driver has actually been — live GPS, else the last
+  // stop they stood on, else start_location — instead of an untouched stop of a
+  // planned job. Mirrors the cycle (see assign.ts) so the preview ranks
+  // identically.
   for (const d of drivers) {
-    if (!d.start_location_customer_id) continue;
     const rd = routeData[d.delivery_driver_id];
-    if (rd?.referenceStop) continue;
-    const coords = customerCoords.get(d.start_location_customer_id);
-    if (!coords) continue;
+    const ref = rd?.referenceStop ?? null;
+    if (!isUnreachedAnchor(ref)) continue;
+
+    let nextRef: RefStop | null = null;
+    if (d.latitude != null && d.longitude != null) {
+      nextRef = liveGpsRef(ref, d.latitude, d.longitude, d.shift_time_start ?? null);
+    } else if (ref) {
+      nextRef = lastRealPositionRef(ref);
+    } else if (d.start_location_customer_id) {
+      const coords = customerCoords.get(d.start_location_customer_id);
+      if (coords) {
+        nextRef = {
+          lat: coords.lat,
+          lon: coords.lon,
+          label: "Start Location",
+          customerName: coords.name,
+          tiebreakTs: d.shift_time_start ?? null,
+        };
+      }
+    }
+    if (!nextRef) continue;
+
     const existing = rd ?? { stats: { total: 0, active: 0, done: 0 }, referenceStop: null, lastCompletedTs: null };
-    routeData[d.delivery_driver_id] = {
-      ...existing,
-      referenceStop: {
-        lat: coords.lat,
-        lon: coords.lon,
-        label: "Start Location",
-        customerName: coords.name,
-        tiebreakTs: d.shift_time_start ?? null,
-      },
-    };
+    routeData[d.delivery_driver_id] = { ...existing, referenceStop: nextRef };
   }
 
   // ── Phase 1: haversine pre-filter to top PRE_FILTER_N per job ─────────────

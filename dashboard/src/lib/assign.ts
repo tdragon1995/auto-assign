@@ -22,7 +22,7 @@ import { roadDistancesToPoint } from "./distance-cache";
 import { isChamCong, isCompletedOrRejectedStop, isNoteApproved } from "./job-filters";
 import { placeLabel } from "./place-label";
 import { stripDriverCode } from "./job-detail";
-import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, idleBand, type RefStop, type RefLabel } from "./smart-rank";
+import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, idleBand, isUnreachedAnchor, liveGpsRef, lastRealPositionRef, type RefStop, type RefLabel } from "./smart-rank";
 import { loadLeaveEntries, isDriverOnLeave, resolveSubstitute, type LeaveEntry } from "./leave-config";
 import { getDriversOnDuty, resolveFixedDriver, findSmartMapping } from "./fixed-driver";
 
@@ -1610,10 +1610,9 @@ export async function autoAssignCycle(
     for (const d of allGpsDrivers) {
       const sl = effStartLoc(d);
       if (!sl) continue;
-      const info = smartRouteData[d.delivery_driver_id];
-      const noGps = d.latitude == null || d.longitude == null;
-      const needsRefFallback = !info?.ref;
-      if (noGps || needsRefFallback) startLocIdsNeeded.add(sl);
+      // Only drivers without a GPS fix: with one, both the Phase 1 coords and
+      // the reference anchor come from the fix, not from start_location.
+      if (d.latitude == null || d.longitude == null) startLocIdsNeeded.add(sl);
     }
     const startLocCoords = new Map<string, { lat: number; lon: number; name: string | null }>();
     const nowMs = Date.now();
@@ -1639,23 +1638,42 @@ export async function autoAssignCycle(
       })
     );
 
-    // Reference-stop fallback: drivers with no usable ref (no route, or all stops windowed) → use start_location
+    // Anchor every driver on a place they have actually been. An unreached
+    // anchor — no route (start_location), or an untouched stop of a PLANNED job
+    // — is where the driver is *meant* to be, and it competes on equal footing
+    // with a driver standing on the pickup. An ad-hoc stop is left alone: it was
+    // dispatched to this driver on purpose. See isUnreachedAnchor.
     for (const d of allGpsDrivers) {
-      const sl = effStartLoc(d);
-      if (!sl) continue;
       const info = smartRouteData[d.delivery_driver_id];
-      if (info?.ref) continue;
-      const coords = startLocCoords.get(sl);
-      if (!coords) continue;
+      const ref = info?.ref ?? null;
+      if (!isUnreachedAnchor(ref)) continue;
+
+      // Best available truth, in order: the live GPS fix → the last stop we know
+      // they stood on → start_location (no route at all). A driver with none of
+      // these keeps their planned anchor; there is nothing better to say.
+      let nextRef: RefStop | null = null;
+      if (d.latitude != null && d.longitude != null) {
+        nextRef = liveGpsRef(ref, d.latitude, d.longitude, d.shift_time_start ?? null);
+      } else if (ref) {
+        nextRef = lastRealPositionRef(ref);
+      } else {
+        const sl = effStartLoc(d);
+        const coords = sl ? startLocCoords.get(sl) : undefined;
+        if (coords) {
+          nextRef = {
+            lat: coords.lat,
+            lon: coords.lon,
+            label: "Start Location",
+            customerName: coords.name,
+            tiebreakTs: d.shift_time_start ?? null,
+          };
+        }
+      }
+      if (!nextRef) continue;
+
       smartRouteData[d.delivery_driver_id] = {
-        ref: {
-          lat: coords.lat,
-          lon: coords.lon,
-          label: "Start Location",
-          customerName: coords.name,
-          tiebreakTs: d.shift_time_start ?? null,
-        },
-        label: "Start Location",
+        ref: nextRef,
+        label: nextRef.label,
         workload: info?.workload ?? 0,
         lastCompletedTs: info?.lastCompletedTs ?? null,
         jobsDone: info?.jobsDone ?? 0,

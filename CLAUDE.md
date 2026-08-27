@@ -109,7 +109,7 @@ blue rather than red. See `driver-match.ts`; step 4 of the config plan deletes i
 | `src/lib/distance.ts` | `haversineKm`, `goongDistanceKm` (1→1), `goongMatrix` (1→N batch), `goongMatrixMultiOrigin` (N→1, one request — undocumented-but-verified Goong behavior, shape-checked with null-fill fallback) |
 | `src/lib/distance-cache.ts` | `roadDistancesToPoint` (N→1), `roadDistancesFromPoint` (1→N) — resolve pairs cheapest-first: self-pair = 0 km free, then a non-expiring Redis cache (`dist:v1:` keys **truncated to 5 dp** — read, don't round, mirrors Excel `TRUNC`; value `{distance_km, eta_mins, from, to}` keeps the exact coords), then ONE matrix call for misses (write-behind; nulls never cached). Each result carries `source: "self"\|"cache"\|"api"`. `exportCachedDistances()` dumps all pairs (read-only SCAN+MGET) for download |
 | `src/lib/job-filters.ts` | `JOB_STATUS`, `STOP_STATUS` maps; `isActiveStop`, `isCompletedOrRejectedStop`, `isStopStarted` |
-| `src/lib/smart-rank.ts` | `RefStop`, `RefLabel`, `GPS_FRESH_MS`, `selectReferenceStop`, `computeStopStats`, `rankingComparator` |
+| `src/lib/smart-rank.ts` | `RefStop`, `RefLabel`, `selectReferenceStop`, `computeStopStats`, `rankingComparator`; anchor honesty: `isUnreachedAnchor`, `liveGpsRef`, `lastRealPositionRef` (see footgun 9) |
 | `src/lib/time.ts` | `vnDate`, `vnTimestamp`, `vnHoursMinutes`, `vnMinutesSinceMidnight`, `vnDayWindow`, `parseVnTimestamp` |
 | `src/lib/tat.ts` | Driver TAT: `legsForRoute` / `buildDayLegs` cut a day into **legs** (rides between consecutive stops, in the order actually worked), `MINS_PER_KM`, `targetMinsFor`, `summarize`. See `docs/driver-tat.md` |
 | `src/lib/tat-archive.ts` | `archiveDay` — fetch, price and **replace** one day in Supabase `tat_legs` |
@@ -197,6 +197,30 @@ These are the things most likely to burn a future agent working on this codebase
    the next ping retries. Today is NOT its job — `/api/tat/me` refreshes today on demand.
    Adding a cron-job.org entry for `/api/tat/archive` would just duplicate day-fetches.
    Gate logic is covered by `scripts/tat-seal.test.mts`.
+
+9. **A driver is ranked from where they have BEEN, never from where they are due.**
+   Distance from one anchor point is the ranking's primary key, so an anchor that is
+   only scheduled competes as hard fact. The rule is scoped to **Cartrack plans**, which
+   lay a driver's whole day out in advance: an untouched stop of a PLAN job does not
+   anchor them. A stop of a plan job already under way still does (a collected pickup
+   with the lab run open — they are committed to going), and so does every **ad-hoc**
+   stop, planned-looking or not: someone dispatched that job to this driver on purpose.
+   Where the anchor is dropped — and for the `start_location` of a driver with no route
+   at all — re-anchor onto the best truth available: live GPS → the last stop we know
+   they stood on → `start_location` → (nothing better) leave it.
+   The route-state LABEL never moves with the anchor: position and availability
+   are separate questions, and shifting a mid-route driver into the `Available`
+   band would quietly promote them past everyone at an equal-distance tie — which
+   is common, since drivers pile up at the same PSC on 0 km.
+
+   Why: on 27/08 a route-free driver whose `start_location` IS the pickup scored 0 km
+   road and won the Start-Location priority band, while his own GPS put him 6.3 km away
+   — the driver standing on the pickup came second. Same day, 16 of 17 drivers anchored
+   on a not-yet-started next stop were still sitting on their last completed one, up to
+   14 km from the anchor they were scored against — though only half of those anchors
+   carry a plan marker, so only half are re-anchored. `scripts/unstarted-anchor.test.mts`
+   pins the rule offline; `scripts/_replay.mts` (untracked) diffs old vs new anchors
+   against a live day.
 
 See `docs/business-rules.md` for deeper detail, `docs/cartrack-api.md` for API reference,
 and `docs/driver-tat.md` for the TAT module.

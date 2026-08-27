@@ -29,6 +29,18 @@ export interface RefStop {
    */
   altLat?: number | null;
   altLon?: number | null;
+  /**
+   * True when this anchor is a stop of a PLANNED job the driver has not started
+   * — the job carries a Cartrack plan marker and no stop of it is arrived, en
+   * route or completed. A plan lays a driver's whole day out in advance, so its
+   * untouched stops are a schedule, not a position; callers re-anchor these (see
+   * isUnreachedAnchor). Two pending stops are deliberately NOT flagged:
+   *   • a stop of a plan job already under way (pickup collected, lab run open)
+   *     — that driver is committed to going;
+   *   • an AD-HOC stop, planned or not — someone dispatched that job to this
+   *     driver specifically, which is a real commitment to honour.
+   */
+  plannedUnstarted?: boolean;
 }
 
 /**
@@ -45,9 +57,18 @@ export const ROUTE_STATE_PRIORITY: Record<RefLabel, number> = {
 };
 
 /**
+ * True when a timeline stop belongs to a job released from a Cartrack plan — a
+ * recurring route slot, laid out for the whole day in advance. `planId` is set
+ * on few stops; `lastAssignedPlanId` is the one actually populated (the same
+ * marker the day-boundary rollover reads, in its timeline spelling).
+ */
+export function isPlanStop(s: TimelineStop): boolean {
+  return s.planId != null || s.lastAssignedPlanId != null;
+}
+
+/**
  * Select the reference stop for a driver from their ordered timeline stops.
  * Priority: Arrived (3) → En Route (2) → Next pending after last completed → First pending → Available (last stop)
- * Stops with non-empty deliveryWindows are skipped as candidates and fall through to the next-best stop.
  * Returns null when no usable stop exists.
  *
  * tiebreakTs semantics by label:
@@ -65,12 +86,18 @@ export function selectReferenceStop(
   const valid = stops.filter((s) => s.latitude && s.longitude);
   if (valid.length === 0) return null;
 
+  // Jobs this driver has actually touched — any stop of the job arrived (3),
+  // en route (2) or completed (4).
+  const startedJobIds = new Set<number>();
+  for (const s of stops) if (s.stopStatusId !== 1) startedJobIds.add(s.jobId);
+
   const toRef = (s: TimelineStop, label: RefLabel, tiebreakTs: string | null): RefStop => ({
     lat: s.latitude,
     lon: s.longitude,
     label,
     customerName: s.customerName ?? null,
     tiebreakTs,
+    plannedUnstarted: s.stopStatusId === 1 && isPlanStop(s) && !startedJobIds.has(s.jobId),
   });
 
   const arrived = valid.find((s) => s.stopStatusId === 3);
@@ -112,6 +139,72 @@ export function selectReferenceStop(
   }
 
   return toRef(valid[valid.length - 1], "Available", maxCompletedTs);
+}
+
+/**
+ * Name shown in the log where the anchor is the driver's live GPS fix rather
+ * than a named location.
+ */
+export const LIVE_GPS_NAME = "live GPS";
+
+/** Name shown in the log where the anchor fell back to the driver's last completed stop. */
+export const LAST_STOP_NAME = "last stop";
+
+/**
+ * True when the anchor is a place the driver has NOT actually been:
+ *  - no reference at all → the caller's start_location fallback, which is where
+ *    the driver is *rostered* to begin, not where they are;
+ *  - an untouched stop of a PLANNED job (`plannedUnstarted`).
+ * Both read as fact and can beat a driver standing on the pickup: on 27/08 a
+ * route-free driver whose start_location IS the pickup scored 0 km and won the
+ * Start-Location priority band, while his own GPS put him 6.3 km away — the
+ * driver actually at the pickup came second. Measured the same day, 16 of 17
+ * drivers anchored on a not-yet-started next stop were still sitting on their
+ * last completed one, up to 14 km from the anchor.
+ * "Arrived", "En Route", a completed stop, a stop of a plan job already under
+ * way, and every AD-HOC stop are real commitments and are never overridden.
+ */
+export function isUnreachedAnchor(ref: RefStop | null): boolean {
+  return ref === null || ref.plannedUnstarted === true;
+}
+
+/**
+ * Re-anchor onto the driver's live GPS fix, keeping the route-state label — and
+ * therefore the priority band — intact. Position and availability are separate
+ * questions: a driver with 30 planned stops ahead is still the least available
+ * one, they are just measured from where they actually are.
+ */
+export function liveGpsRef(
+  ref: RefStop | null,
+  lat: number,
+  lon: number,
+  shiftStartTs: string | null
+): RefStop {
+  return {
+    lat,
+    lon,
+    label: ref?.label ?? "Start Location",
+    customerName: LIVE_GPS_NAME,
+    tiebreakTs: ref?.tiebreakTs ?? shiftStartTs ?? null,
+  };
+}
+
+/**
+ * No GPS fix, but the driver has a last completed stop attached (the "Next Stop"
+ * alt point) — that is the last place we know they stood, so anchor there and
+ * drop the unreached point rather than taking the flattering minimum of the two.
+ */
+export function lastRealPositionRef(ref: RefStop): RefStop | null {
+  if (ref.altLat == null || ref.altLon == null) return null;
+  return {
+    ...ref,
+    lat: ref.altLat,
+    lon: ref.altLon,
+    customerName: LAST_STOP_NAME,
+    altLat: null,
+    altLon: null,
+    plannedUnstarted: false,
+  };
 }
 
 /** Stats derived from a driver's timeline stops. */
