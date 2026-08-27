@@ -1,5 +1,5 @@
 import { Redis } from "@upstash/redis";
-import { vnDate, vnMinutesSinceMidnight } from "./time";
+import { vnDate, vnMinutesSinceMidnight, vnTimestamp } from "./time";
 import type { LogEntry, PickupWarning, FailedJob, SheetAlarm } from "./types";
 
 /**
@@ -846,4 +846,71 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
     failed,
     sheetAlarms,
   };
+}
+
+// ── Config rows written for unconfigured branches ────────────────────────────
+//
+// One row per branch, once — across every instance and both deployments. The
+// claim has to be shared, because two servers hitting the same unconfigured
+// pickup in the same minute would otherwise each append a line.
+//
+// Asked at most once per branch per instance. The naive version — claim on every
+// cycle — would ask ~660 times a day for a branch that stays unconfigured until
+// someone fills it in, which is exactly the once-per-interval-asked-every-cycle
+// waste this file has had to unpick before. A local memo of the answer costs
+// nothing and makes a cold start the only thing that re-asks.
+const writtenBranches = new Set<string>();
+const UNMAPPED_TTL_S = 30 * 24 * 60 * 60;
+
+/**
+ * True when THIS caller should write the config row for `customerId`.
+ *
+ * False when someone already has, and false when Redis is unreachable — the
+ * cautious direction on purpose: skipping a row costs a supervisor one manual
+ * entry, while writing a duplicate puts a second half-finished line into the
+ * table that drives every assignment.
+ */
+export async function claimUnmappedConfigRow(customerId: string): Promise<boolean> {
+  if (!customerId || writtenBranches.has(customerId)) return false;
+  const redis = getRedis();
+  if (!redis) return false;
+  try {
+    const res = await redis.set(`config:unmapped_written:${customerId}`, vnTimestamp(), {
+      nx: true, ex: UNMAPPED_TTL_S,
+    });
+    // Remembered either way: won or lost, this instance has its answer and never
+    // needs to ask again for this branch.
+    writtenBranches.add(customerId);
+    return res === "OK";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Serialise config-sheet writes across instances.
+ *
+ * Allocating a row is read-then-write: two servers that both look at the same
+ * moment both see the same first free row and the second silently overwrites the
+ * first, losing a line whose branch is already marked as written and therefore
+ * never retried. Rare — new branches arrive a few times a week — but silent, and
+ * this is the table every assignment reads.
+ *
+ * Short TTL: the write it guards is two API calls. If a server dies mid-write the
+ * lock clears itself well before the next cycle.
+ */
+export async function acquireConfigWriteLock(): Promise<boolean> {
+  const redis = getRedis();
+  if (!redis) return false;
+  try {
+    return (await redis.set("config:write_lock", vnTimestamp(), { nx: true, ex: 60 })) === "OK";
+  } catch {
+    return false;
+  }
+}
+
+export async function releaseConfigWriteLock(): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  try { await redis.del("config:write_lock"); } catch { /* expires on its own */ }
 }

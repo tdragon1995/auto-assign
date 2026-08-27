@@ -371,3 +371,97 @@ export async function appendNhanViecLog(row: (string | number | null)[]): Promis
     requestBody: { values: [row] },
   });
 }
+
+// ── Writing config rows ─────────────────────────────────────────────────────
+//
+// READ THIS BEFORE CHANGING ANYTHING HERE.
+//
+// The config tab is NOT laid out like the Leave Status tab. Its four id columns —
+// customer_id, dropoff_id, alt_drop_off_id, driver_id — are not per-row formulas.
+// Each is a SINGLE ARRAYFORMULA in row 2 that spills down the table, deriving the
+// id from the name beside it. Two rules follow, both learned the hard way:
+//
+//   1. NEVER write into columns A–D, not even an empty string. A literal anywhere
+//      in a spill range collapses it to #REF!, and because it is one formula per
+//      column that blanks EVERY branch id at once. Proven live on 2026-08-26.
+//   2. NEVER use values.append, and never insertDataOption INSERT_ROWS. `append`
+//      cannot be scoped to a column span — the range only locates the table, and
+//      the write then starts at the table's FIRST column, i.e. column A. That is
+//      exactly how rule 1 got broken. This module uses values.update on an
+//      explicit column-scoped range instead, which writes only where it is told.
+//
+// WHERE THE ROWS GO. The table spans rows 1–1985 but its data ends around row
+// 1749, so there are ~236 empty rows already INSIDE it. New rows go there. That
+// matters: a row below the table is outside the ARRAYFORMULA's reach and its ids
+// would stay blank forever, which is the whole thing the formula is for. When the
+// spare rows run out the table has to be extended by hand — a deliberate act, so
+// this refuses rather than quietly writing outside it.
+const CONFIG_SHEET = "config";
+const CFG_FIRST_COL_A1 = "E";   // Điểm Pick-up
+const CFG_LAST_COL_A1 = "J";    // shift_end
+
+/** Where the table ends and where its first free row is. Read live rather than
+ *  hardcoded, so extending the table by hand is all it takes to make room. */
+async function configTableBounds(
+  sheets: ReturnType<typeof google.sheets>,
+): Promise<{ firstFreeRow: number; lastTableRow: number }> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const meta: any = await sheets.spreadsheets.get({
+    spreadsheetId: SHEET_ID,
+    fields: "sheets(properties(sheetId),tables(name,range))",
+  });
+  const sheet = meta.data.sheets?.find(
+    (s: { properties?: { sheetId?: number } }) => String(s.properties?.sheetId) === String(SHEET_GID.mapping),
+  );
+  const table = sheet?.tables?.find((t: { name?: string }) => t.name === CONFIG_SHEET) ?? sheet?.tables?.[0];
+  if (!table?.range?.endRowIndex) throw new Error("config table not found — refusing to guess where rows belong");
+  const lastTableRow = Number(table.range.endRowIndex);   // endRowIndex is exclusive 0-based = last 1-based row
+
+  const col = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: `${CONFIG_SHEET}!${CFG_FIRST_COL_A1}1:${CFG_FIRST_COL_A1}${lastTableRow}`,
+  });
+  // The pickup column is the entry key the id formulas read, so a row blank HERE
+  // is a row nothing depends on — the right definition of "free".
+  const vals = (col.data.values ?? []).map((r) => String(r?.[0] ?? "").trim());
+  let lastUsed = 1;
+  vals.forEach((v, i) => { if (v) lastUsed = i + 1; });
+  return { firstFreeRow: lastUsed + 1, lastTableRow };
+}
+
+/**
+ * Write rows into the spare rows inside the config table.
+ *
+ * `rows` are the six cells E..J (see `configRowFor`). Entered the way a person
+ * typing would enter them, so "09:00" becomes a real time rather than text.
+ *
+ * Returns the 1-based row numbers written, so the caller can name them.
+ */
+export async function writeConfigRows(rows: string[][]): Promise<number[]> {
+  if (rows.length === 0) return [];
+  const sheets = getSheetsClient();
+  const { firstFreeRow, lastTableRow } = await configTableBounds(sheets);
+
+  const lastNeeded = firstFreeRow + rows.length - 1;
+  if (lastNeeded > lastTableRow) {
+    throw new Error(
+      `config table is full: rows ${firstFreeRow}–${lastNeeded} needed but the table ends at ${lastTableRow}. ` +
+      `Extend the table in the sheet — writing below it would leave every id blank.`,
+    );
+  }
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SHEET_ID,
+    // Column-scoped and row-explicit. Columns A–D are not named, so they cannot
+    // be touched; the ARRAYFORMULA fills them in on its own.
+    range: `${CONFIG_SHEET}!${CFG_FIRST_COL_A1}${firstFreeRow}:${CFG_LAST_COL_A1}${lastNeeded}`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: rows },
+  });
+
+  // No formula-copy step. The per-row formulas in K/L/M (smart_driver_id,
+  // bot_token, chat_id) are table column formulas and fill themselves on a row
+  // inside the table. Copying them explicitly is also impossible here: the tab
+  // carries an active filter, and copyPaste refuses any range covering one.
+  return rows.map((_, i) => firstFreeRow + i);
+}

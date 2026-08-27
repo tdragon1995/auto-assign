@@ -10,6 +10,7 @@ import { cleanupStaleTrips } from "./cleanup-trips";
 import { setCycleSnapshot, claimMorningPass, deferMorningPass, runDailyMaintenance, claimLateAlert, type HeldJob } from "./smart-log-kv";
 import { isValidDriverId } from "./config";
 import { drainSheetAlarms } from "./sheets";
+import { writeUnmappedConfigRows, type UnmappedBranch } from "./unmapped-row";
 import {
   vnDate,
   vnTimestamp,
@@ -1508,6 +1509,9 @@ export async function autoAssignCycle(
   // stay for the per-cycle return (smart history / debug) but are dropped from the
   // rolling live log by shouldStore. One push per job — each fails at most once.
   const failedJobs: FailedJob[] = [];
+  // Branches that turned out to have no config line at all. Gathered through the
+  // loop, written to the sheet once at the end — see writeUnmappedConfigRows.
+  const unmappedFound: UnmappedBranch[] = [];
   // `fail` is defined inside the per-job worker below so it closes over that job's
   // `route` — no shared mutable state, safe when jobs run concurrently.
 
@@ -2212,6 +2216,18 @@ export async function autoAssignCycle(
       const who = jobCustomerName ?? customerId ?? "—";
       log(`Job ${jobId} - NO MAPPING | ${route}`, "ERROR");
       fail("NO_MAPPING", jobId, who, "Khách hàng chưa được cấu hình trong Google Sheet");
+      // Everything needed to start the missing line is right here — the branch,
+      // where the trip was going, and when it was due. Collected now, written
+      // once at the end of the cycle so one branch with five stuck jobs gets one
+      // row rather than five.
+      if (customerId && jobCustomerName) {
+        unmappedFound.push({
+          customer_id: customerId,
+          pickup_name: jobCustomerName,
+          dropoff_name: job.stops?.find((st) => st.stop_type_id === 2)?.customer_name ?? "",
+          at: jobTime,
+        });
+      }
       continue;
     }
 
@@ -2459,6 +2475,7 @@ export async function autoAssignCycle(
       alertLateJobs(pickupWarnings, env, log).catch((e) =>
         log(`Late-alert push failed: ${e}`, "WARN"),
       ),
+      writeUnmappedConfigRows(unmappedFound, log),
     ]);
   }
   return logs;
