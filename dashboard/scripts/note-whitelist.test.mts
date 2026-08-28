@@ -32,7 +32,7 @@ import {
   NOTE_RELEASE_CUTOFF_MIN,
   DAYTIME_NON_BLOCKING,
 } from "../src/lib/job-filters";
-import { nextLearnEntry, NOTE_LEARN_THRESHOLD, type NoteLearnEntry } from "../src/lib/smart-log-kv";
+import { nextLearnEntry, NOTE_LEARN_THRESHOLD, type NoteLearnEntry, type NoteDecision } from "../src/lib/smart-log-kv";
 
 let failed = 0;
 const check = (name: string, got: unknown, want: unknown) => {
@@ -137,9 +137,12 @@ console.log("\n— learning from what the supervisor does —");
 // Three CLEAN approvals in a row. "Consecutive" is the whole point: a sentence
 // that was ever answered with a time has proven it changes the job, and must
 // start again from nothing rather than creep over the line on total count.
-const run = (decisions: boolean[]) => {
+const run = (decisions: (boolean | "evening")[]) => {
   let e: NoteLearnEntry | undefined;
-  for (const ok of decisions) e = nextLearnEntry(e, "Giao giờ hành chính", ok, "2026-08-29 10:00:00") ?? e;
+  for (const d of decisions) {
+    const decision: NoteDecision = d === "evening" ? "after-hours" : d ? "approved" : "rescheduled";
+    e = nextLearnEntry(e, "Giao giờ hành chính", decision, "2026-08-29 10:00:00") ?? e;
+  }
   return e;
 };
 check("three approvals in a row reach the threshold",
@@ -153,12 +156,21 @@ check("the reschedule is remembered even after later approvals",
 check("four approvals after a reschedule still get there",
   (run([true, true, false, true, true, true])?.ok ?? 0) >= NOTE_LEARN_THRESHOLD, true);
 check("an accepted sentence stops being counted",
-  nextLearnEntry({ ok: 9, sched: 0, sample: "x", last: "", state: "accepted" }, "x", true, ""), null);
+  nextLearnEntry({ ok: 9, sched: 0, sample: "x", last: "", state: "accepted" }, "x", "approved", ""), null);
 check("a dismissed sentence stops being counted",
-  nextLearnEntry({ ok: 1, sched: 0, sample: "x", last: "", state: "dismissed" }, "x", true, ""), null);
+  nextLearnEntry({ ok: 1, sched: 0, sample: "x", last: "", state: "dismissed" }, "x", "approved", ""), null);
 check("the sentence is kept as first typed, not as later retyped",
-  nextLearnEntry({ ok: 1, sched: 0, sample: "Giao giờ hành chính", last: "" }, "GIAO GIO HANH CHINH", true, "")?.sample,
+  nextLearnEntry({ ok: 1, sched: 0, sample: "Giao giờ hành chính", last: "" }, "GIAO GIO HANH CHINH", "approved", "")?.sample,
   "Giao giờ hành chính");
+
+check("an evening reschedule does NOT wipe a run — it is about the hour, not the words",
+  run([true, true, "evening", true])?.ok, 3);
+check("an evening approval does not pad the run either — evening is simply invisible",
+  run([true, "evening", "evening"])?.ok, 1);
+check("a DAYTIME reschedule still wipes it",
+  run([true, true, false, true])?.ok, 1);
+check("an evening decision leaves the entry untouched entirely",
+  nextLearnEntry({ ok: 2, sched: 0, sample: "x", last: "y" }, "x", "after-hours", "z"), null);
 
 console.log("\n— an accepted sentence joins the shipped list —");
 // What the engine does each cycle: the reviewed list, plus whatever has since

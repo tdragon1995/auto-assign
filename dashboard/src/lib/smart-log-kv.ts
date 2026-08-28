@@ -1,5 +1,6 @@
 import { Redis } from "@upstash/redis";
 import { vnDate, vnMinutesSinceMidnight, vnTimestamp } from "./time";
+import { isNoteReleaseHour } from "./job-filters";
 import type { LogEntry, PickupWarning, FailedJob, SheetAlarm } from "./types";
 
 /**
@@ -477,13 +478,17 @@ export function invalidateAcceptedNotes(): void {
  * four. Returns null for a sentence already accepted or dismissed: that
  * decision stands, and re-counting it would only churn.
  */
+export type NoteDecision = "approved" | "rescheduled" | "after-hours";
+
 export function nextLearnEntry(
   prev: NoteLearnEntry | undefined,
   sample: string,
-  approved: boolean,
+  decision: NoteDecision,
   now: string,
 ): NoteLearnEntry | null {
   if (prev?.state) return null;
+  if (decision === "after-hours") return null;
+  const approved = decision === "approved";
   return {
     ok: approved ? (prev?.ok ?? 0) + 1 : 0,
     sched: (prev?.sched ?? 0) + (approved ? 0 : 1),
@@ -502,15 +507,29 @@ export function nextLearnEntry(
 export async function recordNoteDecision(
   notes: { norm: string; sample: string }[],
   approved: boolean,
+  at: Date = new Date(),
 ): Promise<void> {
   const redis = getRedis();
   if (!redis || notes.length === 0) return;
+  // A decision taken after the cutoff is about the HOUR, not the sentence: at
+  // 8pm the shifts have ended, so "Hẹn giờ" means "not tonight" and says nothing
+  // about whether the words are safe. Letting it zero the run would keep exactly
+  // the sentences that appear on evening bookings from ever being proposed. The
+  // report excludes evening for the same reason; the two now agree, and they are
+  // ignored SYMMETRICALLY — an evening approval does not count either, so the
+  // tally cannot be nudged upward by the hour it is unwilling to be nudged down by.
+  const decision: NoteDecision = !isNoteReleaseHour(at)
+    ? "after-hours"
+    : approved
+      ? "approved"
+      : "rescheduled";
+
   const map = await readNoteLearning();
   const fields: Record<string, string> = {};
-  const now = vnTimestamp();
+  const now = vnTimestamp(at);
   for (const { norm, sample } of notes) {
     if (!norm) continue;
-    const next = nextLearnEntry(map[norm], sample, approved, now);
+    const next = nextLearnEntry(map[norm], sample, decision, now);
     if (next) fields[norm] = JSON.stringify(next);
   }
   if (Object.keys(fields).length === 0) return;
