@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { getJobDetails, updateJobStops, updateJobScheduledDeliveryTs, parkOnProxy, type Env } from "@/lib/cartrack";
-import { NOTE_APPROVED_MARK } from "@/lib/job-filters";
-import { getHeldJobs, removeHeldJob, addHeldJob, pushRunLog } from "@/lib/smart-log-kv";
+import { NOTE_APPROVED_MARK, isBlockingNote, normalizeNote } from "@/lib/job-filters";
+import { getHeldJobs, removeHeldJob, addHeldJob, pushRunLog, recordNoteDecision } from "@/lib/smart-log-kv";
 import { vnTimestamp, parseVnTimestamp, vnDate } from "@/lib/time";
 
 type RawStop = { stop_id?: number; stop_type_id?: number; customer_id?: string; customer_name?: string; note?: string };
@@ -14,12 +14,29 @@ function heldFields(jobId: number, stops: RawStop[]): { customer: string; route:
   const dropoff = stops.find((s) => s.stop_type_id === 2)?.customer_name;
   const customer = pickup ?? `Job ${jobId}`;
   const route = `${pickup ?? "—"} → ${dropoff ?? "—"}`;
+  // No `now`: this is the text shown on the review row, and a note is worth
+  // showing whether or not the safe-list would have released it at this hour.
   const note = stops
     .map((s) => s.note?.trim())
-    .filter((n) => n && n !== "Call before delivery")
+    .filter((n) => isBlockingNote(n))
     .join(" | ");
   return { customer, route, note };
 }
+
+/**
+ * The sentences on this job that a decision is evidence about — the blocking
+ * ones, paired with their comparable form.
+ *
+ * Only "Giao ngay" and "Hẹn giờ" feed the tally. "Chọn tài xế" deliberately does
+ * not: naming a driver by hand can just as easily mean the note REQUIRES that
+ * driver, so it is evidence in no direction and is left out rather than guessed
+ * at.
+ */
+const learnableNotes = (stops: RawStop[]) =>
+  stops
+    .map((s) => s.note?.trim())
+    .filter((n): n is string => isBlockingNote(n))
+    .map((n) => ({ norm: normalizeNote(n), sample: n }));
 
 // Cartrack writes are slow (~5-10s each) and we make two per action, so we never
 // block the click on them. POST validates, returns immediately, and finishes the
@@ -153,6 +170,9 @@ export async function POST(req: NextRequest) {
         }
 
         await removeHeldJob(jobId).catch(() => {});
+        // A time was given instead of an approval: this sentence changed the job,
+        // so its run of clean approvals goes back to zero.
+        await recordNoteDecision(learnableNotes(stops), false).catch(() => {});
         const { route } = heldFields(jobId, stops);
         log(`Job ${jobId} - Đã lên lịch lúc ${timePart.slice(0, 5)}${shouldPark ? ` · parked until ${sendAt}` : ""} | ${route}`);
       } catch (e) {
@@ -182,9 +202,9 @@ export async function POST(req: NextRequest) {
       // travels with the text the driver reads. "Call before delivery" never blocks.
       const updatedStops = eligibleStops.map((s) => {
         const note = s.note?.trim();
-        const blocking = note && note !== "Call before delivery";
+        const blocking = isBlockingNote(note);
         const newNote =
-          blocking && !note.includes(NOTE_APPROVED_MARK) ? `${s.note} ${NOTE_APPROVED_MARK}` : s.note;
+          blocking && note && !note.includes(NOTE_APPROVED_MARK) ? `${s.note} ${NOTE_APPROVED_MARK}` : s.note;
         return {
           stop_id: s.stop_id!,
           stop_type_id: s.stop_type_id!,
@@ -197,6 +217,10 @@ export async function POST(req: NextRequest) {
       if (!stopsRes.ok) return putBack(`stops ${stopsRes.status}`);
 
       await removeHeldJob(jobId).catch(() => {});
+      // Sent as-is: one more consecutive approval for each sentence on the job.
+      // Once a sentence reaches the threshold the dashboard OFFERS it for the safe
+      // list — nothing is ever added here, on its own.
+      await recordNoteDecision(learnableNotes(stops), true).catch(() => {});
       const { route } = heldFields(jobId, stops);
       log(`Job ${jobId} - Đã duyệt ghi chú, sẽ giao ở chu kỳ kế tiếp | ${route}`);
     } catch (e) {

@@ -364,6 +364,174 @@ export async function addHeldJob(job: HeldJob): Promise<void> {
   await redis.hset(CYCLE_SNAPSHOT_KEY, { [F_HELD]: JSON.stringify(next) });
 }
 
+// ── Learning which notes are harmless ───────────────────────────────────────
+//
+// Every "Giao ngay" is a supervisor saying "this sentence did not change the
+// job". Every "Hẹn giờ" is them saying the opposite. Counting those two is all
+// the evidence needed to spot the next sentence worth adding to the safe list —
+// and it is evidence the engine can gather on its own, so nobody has to re-run
+// a report or ship a code change to grow the list.
+//
+// The engine PROPOSES; a human accepts. Deliberately not self-promoting: the
+// same automatic test that produced the seeded list also proposed "19h" and
+// "lấy mẫu trước 5 giờ giúp e ạ", both of which name an hour and both of which
+// a person rejected on sight. And promotion cuts its own feedback wire — once a
+// sentence is on the list its jobs stop reaching the review panel, so nobody can
+// ever reschedule one, so the counter can never learn it was wrong. Acceptance
+// is the last moment anyone reads the sentence.
+const NOTE_LEARN_KEY = "assign:note_learn";
+
+/** Clean approvals needed before a sentence is proposed. Consecutive: one
+ *  "Hẹn giờ" on that sentence puts the count back to zero. */
+export const NOTE_LEARN_THRESHOLD = 3;
+
+export interface NoteLearnEntry {
+  /** Consecutive "Giao ngay" approvals since the last reschedule. */
+  ok: number;
+  /** Times a supervisor answered this sentence with "Hẹn giờ" instead. */
+  sched: number;
+  /** The sentence as a branch actually typed it, for showing on the suggestion. */
+  sample: string;
+  /** When it was last counted (VN timestamp), so a stale suggestion is visible. */
+  last: string;
+  /** Absent while still counting. */
+  state?: "accepted" | "dismissed";
+}
+
+type NoteLearnMap = Record<string, NoteLearnEntry>;
+
+async function readNoteLearning(): Promise<NoteLearnMap> {
+  const redis = getRedis();
+  if (!redis) return {};
+  const raw = await redis.hgetall(NOTE_LEARN_KEY).catch(() => null);
+  const out: NoteLearnMap = {};
+  for (const [k, v] of Object.entries((raw ?? {}) as Record<string, unknown>)) {
+    const e = parseMaybe<NoteLearnEntry>(v as string | NoteLearnEntry);
+    if (e && typeof e.ok === "number") out[k] = e;
+  }
+  return out;
+}
+
+/** Everything the dashboard needs: what is accepted, and what is being proposed. */
+export async function getNoteLearning(): Promise<{
+  accepted: NoteLearnEntry[];
+  suggestions: NoteLearnEntry[];
+}> {
+  const map = await readNoteLearning();
+  const accepted: NoteLearnEntry[] = [];
+  const suggestions: NoteLearnEntry[] = [];
+  for (const e of Object.values(map)) {
+    if (e.state === "accepted") accepted.push(e);
+    else if (!e.state && e.ok >= NOTE_LEARN_THRESHOLD) suggestions.push(e);
+  }
+  suggestions.sort((a, b) => b.ok - a.ok);
+  accepted.sort((a, b) => a.sample.localeCompare(b.sample));
+  return { accepted, suggestions };
+}
+
+// COMMAND BUDGET (see the header): read once per cycle this would be ~20k a
+// month, which is exactly the kind of addition that comment warns about. It is
+// cached in the instance instead. The list changes once or twice a MONTH, so a
+// ten-minute copy is not a compromise — a newly accepted sentence taking one
+// more cycle or two to take effect is nothing against the wait it removes, and
+// the accepting instance drops its own copy immediately.
+//
+// Only armed cycles reach this, so the overnight pings pay nothing. A cold start
+// pays one cheap HGETALL, which is the honest floor: the alternative is holding
+// the list in the code and shipping a deploy for every sentence.
+const SAFE_NOTES_TTL_MS = 10 * 60_000;
+let safeNotesCache: { at: number; set: ReadonlySet<string> } | null = null;
+
+/** Accepted sentences, cached. Returns an empty set when Redis is unreachable —
+ *  the engine then runs on the reviewed code list alone, which is the safe way
+ *  to fail: notes hold, exactly as they did before any of this existed. */
+export async function getAcceptedNotes(): Promise<ReadonlySet<string>> {
+  if (safeNotesCache && Date.now() - safeNotesCache.at < SAFE_NOTES_TTL_MS) {
+    return safeNotesCache.set;
+  }
+  try {
+    const map = await readNoteLearning();
+    const set = new Set(
+      Object.entries(map).filter(([, e]) => e.state === "accepted").map(([k]) => k),
+    );
+    safeNotesCache = { at: Date.now(), set };
+    return set;
+  } catch {
+    return safeNotesCache?.set ?? new Set<string>();
+  }
+}
+
+/** Drop the cached copy so an acceptance takes effect on the next cycle rather
+ *  than up to five minutes later. Only helps the instance that handled the
+ *  click; the rest catch up on their own TTL. */
+export function invalidateAcceptedNotes(): void {
+  safeNotesCache = null;
+}
+
+/**
+ * The counting rule, on its own so it can be checked without a Redis.
+ *
+ * An approval adds one to the run. Anything else zeroes it and records the
+ * reschedule, so it always takes three CLEAN approvals in a row — a sentence
+ * approved twice, rescheduled, then approved twice more is back at two, not
+ * four. Returns null for a sentence already accepted or dismissed: that
+ * decision stands, and re-counting it would only churn.
+ */
+export function nextLearnEntry(
+  prev: NoteLearnEntry | undefined,
+  sample: string,
+  approved: boolean,
+  now: string,
+): NoteLearnEntry | null {
+  if (prev?.state) return null;
+  return {
+    ok: approved ? (prev?.ok ?? 0) + 1 : 0,
+    sched: (prev?.sched ?? 0) + (approved ? 0 : 1),
+    sample: prev?.sample || sample,
+    last: now,
+  };
+}
+
+/**
+ * Record what a supervisor just decided about a job's notes.
+ *
+ * `approved` credits each sentence one consecutive approval. Otherwise the
+ * sentence was answered with a time, which zeroes the run and records the
+ * reschedule.
+ */
+export async function recordNoteDecision(
+  notes: { norm: string; sample: string }[],
+  approved: boolean,
+): Promise<void> {
+  const redis = getRedis();
+  if (!redis || notes.length === 0) return;
+  const map = await readNoteLearning();
+  const fields: Record<string, string> = {};
+  const now = vnTimestamp();
+  for (const { norm, sample } of notes) {
+    if (!norm) continue;
+    const next = nextLearnEntry(map[norm], sample, approved, now);
+    if (next) fields[norm] = JSON.stringify(next);
+  }
+  if (Object.keys(fields).length === 0) return;
+  await redis.hset(NOTE_LEARN_KEY, fields).catch(() => {});
+}
+
+/** Accept a proposed sentence onto the safe list, or dismiss it for good. */
+export async function setNoteDecisionState(
+  norm: string,
+  state: "accepted" | "dismissed",
+): Promise<boolean> {
+  const redis = getRedis();
+  if (!redis || !norm) return false;
+  const map = await readNoteLearning();
+  const prev = map[norm];
+  if (!prev) return false;
+  await redis.hset(NOTE_LEARN_KEY, { [norm]: JSON.stringify({ ...prev, state }) });
+  invalidateAcceptedNotes();
+  return true;
+}
+
 // ── PSC active-pair overlay (write-through, for /api/psc-assign) ────────────
 //
 // WHY THIS EXISTS. The duplicate guard answers "is this pickup→dropoff already covered

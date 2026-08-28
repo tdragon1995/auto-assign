@@ -1,3 +1,7 @@
+// time.ts is pure date arithmetic (no Redis, no fetch), so importing it keeps
+// this module edge-safe — the property the note gate and the PSC guards rely on.
+import { vnMinutesSinceMidnight } from "./time";
+
 /** Vietnamese labels for Cartrack stop statuses (stop_status_id). */
 export const STOP_STATUS: Record<number, { label: string; color: string }> = {
   1: { label: "Chờ lấy",    color: "slate"  },
@@ -24,6 +28,145 @@ export const NOTE_APPROVED_MARK = "✅";
 /** True if any stop note carries the supervisor-approved mark. */
 export function isNoteApproved(job: { stops?: { note?: string | null }[] | null }): boolean {
   return (job.stops ?? []).some((s) => s.note?.includes(NOTE_APPROVED_MARK));
+}
+
+/**
+ * A stop note reduced to its comparable form: approved mark removed, trimmed,
+ * runs of whitespace collapsed, lowercased, trailing sentence punctuation
+ * dropped. So "GIAO GIỜ HÀNH CHÍNH." and "giao  giờ hành chính" are one note.
+ *
+ * Diacritics are deliberately KEPT. Folding them merges Vietnamese words that
+ * genuinely differ, and this list decides whether a human gets to read a note
+ * before a driver is sent — too blunt a comparison is the one mistake that
+ * cannot be walked back. A branch that types a sentence both with and without
+ * accents gets both spellings on the list.
+ */
+export function normalizeNote(note?: string | null): string {
+  return (note ?? "")
+    .split(NOTE_APPROVED_MARK).join(" ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+    .replace(/[.,;:!…]+$/u, "")
+    .trim();
+}
+
+/**
+ * Notes that never hold a job, at ANY hour. Exactly the one exemption the gate
+ * has always had — Cartrack's own boilerplate, which carries no instruction.
+ * Evening jobs relied on this too, so it must stay outside the clock guard.
+ */
+const ALWAYS_NON_BLOCKING: ReadonlySet<string> = new Set([
+  "call before delivery",
+]);
+
+/**
+ * Notes proven harmless by history — sentences a supervisor has repeatedly
+ * approved as-is and never once turned into a scheduled job. Normalized form,
+ * matched WHOLE: a listed sentence buried inside a longer note does not count.
+ *
+ * Each entry carries the counts it was admitted on, so a later reader can weigh
+ * it without re-running anything. Those counts are evidence, not the decision:
+ * the automatic test proposed a set, and a supervisor then kept, dropped and
+ * added by hand — three entries here were rescheduled once each, and two were
+ * admitted on local knowledge rather than on their numbers.
+ *
+ * Re-derive with `scripts/note-scan.mts`; price a change with
+ * `scripts/note-simulate.mts` before making it, because coverage is not the sum
+ * of these counts — a job is released only when EVERY note on it is listed.
+ */
+export const DAYTIME_NON_BLOCKING: ReadonlySet<string> = new Set([
+  // Seeded 2026-08-29 from scripts/note-scan.mts over the 45 days to 2026-08-28,
+  // then reviewed by the supervisor. Almost all of these are a branch saying
+  // "there is a sample here" — the reason the job exists, not a change to it —
+  // or an on-site direction (which gate, which block) the driver needs on
+  // arrival and nobody needs to approve first.
+  "khẩn",                                       // seen 231× at 27 branches, approved 55×, rescheduled 1×
+  "pk có mẫu ạ",                                // seen 70× at 15 branches, approved 23×, rescheduled 1×
+  "bv có mẫu ạ",                                // seen 48× at 4 branches, approved 15×, rescheduled 1×
+  "mẫu không gấp",                              // seen 39× at 4 branches, approved 9×, rescheduled 0×
+  "lấy sớm giúp em",                            // seen 36× at 6 branches, approved 8×, rescheduled 0×
+  "giao nhận mẫu",                              // seen 31× at 7 branches, approved 8×, rescheduled 0×
+  "khu b vi sinh",                              // seen 29× at 1 branch, approved 7×, rescheduled 0×
+  "cổng 3",                                     // seen 27× at 1 branch, approved 5×, rescheduled 0×
+  "khu b",                                      // seen 23× at 2 branches, approved 5×, rescheduled 0×
+  "thu mẫu san",                                // seen 22× at 1 branch, approved 11×, rescheduled 0×
+  "quang",                                      // seen 22× at 2 branches, approved 2×, rescheduled 0×
+  "bv có mẫu",                                  // seen 20× at 3 branches, approved 1×, rescheduled 0×
+  "thu mẫu máu",                                // seen 20× at 1 branch, approved 6×, rescheduled 0×
+  "ghé pk song quân lấy mẫu",                   // seen 20× at 1 branch, approved 6×, rescheduled 0×
+  "pk có mẫu",                                  // seen 18× at 7 branches, approved 4×, rescheduled 0×
+  "lấy mẫu",                                    // seen 17× at 6 branches, approved 5×, rescheduled 0×
+  "có mẫu , điag ơi",                           // seen 13× at 1 branch, approved 4×, rescheduled 0×
+  "mẫu đông máu",                               // seen 12× at 1 branch, approved 5×, rescheduled 0×
+  "ntvt có mẫu đông máu khẩn ạ",                // seen 12× at 1 branch, approved 3×, rescheduled 0×
+  "lấy mẫu giun",                               // seen 11× at 1 branch, approved 6×, rescheduled 0×
+  "khoa vi sinh",                               // seen 10× at 2 branches, approved 2×, rescheduled 0×
+  "mẫu",                                        // seen 9× at 3 branches, approved 3×, rescheduled 0×
+  "mau khan",                                   // seen 9× at 4 branches, approved 4×, rescheduled 0×
+  "pk có mẫu nhé",                              // seen 8× at 1 branch, approved 6×, rescheduled 0×
+  "d1 gửi mẫu lần 3",                           // seen 7× at 1 branch, approved 6×, rescheduled 0×
+  "qua lấy mẫu , điag ơi",                      // seen 5× at 1 branch, approved 3×, rescheduled 0×
+  "bv có mẫu khẩn",                             // seen 4× at 2 branches, approved 4×, rescheduled 0×
+  "ntvt có mẫu ạ",                              // seen 3× at 1 branch, approved 2×, rescheduled 0×
+  "về nhà chị huệ",                             // seen 3× at 3 branches, approved 3×, rescheduled 0×
+  // DELIBERATELY NOT HERE, though the automatic test proposed them: "19h" and
+  // "lấy mẫu trước 5 giờ giúp e ạ". Both name a TIME. They passed only because
+  // nobody happened to reschedule them, and a note that sets an hour is exactly
+  // what the gate exists to put in front of a human.
+]);
+
+/**
+ * Past this hour a harmless note stops being harmless: the working day is over,
+ * shifts have ended, and a job released now would be offered to a driver who has
+ * gone home. Jobs booked after it wait for a human exactly as they always have.
+ *
+ * 19:30 is the hour the supervisor already works to by hand — no rule in the
+ * system enforced it before this one; the engine itself runs until 22:00.
+ */
+export const NOTE_RELEASE_CUTOFF_MIN = 19 * 60 + 30;
+
+/** True while the daytime list is allowed to release jobs. */
+export function isNoteReleaseHour(now: Date = new Date()): boolean {
+  return vnMinutesSinceMidnight(now) < NOTE_RELEASE_CUTOFF_MIN;
+}
+
+/**
+ * Does this note hold the job back?
+ *
+ * Blank never blocks. The always-list never blocks. The measured daytime list
+ * blocks unless `now` is supplied AND falls inside the working day — callers
+ * that only want to DISPLAY or stamp a note (the "Cần xử lý" panel) omit `now`
+ * and so see the gate exactly as it was before the list existed.
+ */
+export function isBlockingNote(
+  note?: string | null,
+  opts?: { now?: Date; daytimeList?: ReadonlySet<string> },
+): boolean {
+  const n = normalizeNote(note);
+  if (!n) return false;
+  if (ALWAYS_NON_BLOCKING.has(n)) return false;
+  const list = opts?.daytimeList ?? DAYTIME_NON_BLOCKING;
+  if (opts?.now && isNoteReleaseHour(opts.now) && list.has(n)) return false;
+  return true;
+}
+
+/**
+ * Every note on the job that still holds it — as the branch typed it (trimmed),
+ * not normalized, so all existing log and panel text is unchanged.
+ *
+ * One unlisted sentence anywhere on the job holds the WHOLE job: the caller sees
+ * a non-empty list and stops, exactly as it did when any note at all stopped it.
+ */
+export function blockingNotes(
+  job: { stops?: { note?: string | null }[] | null },
+  opts?: { now?: Date; daytimeList?: ReadonlySet<string> },
+): string[] {
+  const out: string[] = [];
+  for (const stop of job.stops ?? []) {
+    if (isBlockingNote(stop.note, opts)) out.push((stop.note ?? "").trim());
+  }
+  return out;
 }
 
 /** Reference-number prefix and labels of a chấm công (attendance) task — the

@@ -222,6 +222,51 @@ These are the things most likely to burn a future agent working on this codebase
    pins the rule offline; `scripts/_replay.mts` (untracked) diffs old vs new anchors
    against a live day.
 
+10. **A stop note holds a job unless the sentence is on the measured safe-list.** The gate
+    used to have exactly one exemption, the literal `"Call before delivery"`, copy-pasted
+    into four places. It is now one predicate in `job-filters.ts` (`isBlockingNote` /
+    `blockingNotes`) over two sets: `ALWAYS_NON_BLOCKING` (that one old sentence, exempt at
+    every hour, because evening jobs relied on it) and `DAYTIME_NON_BLOCKING` (sentences
+    measured harmless).
+
+    **Matching is WHOLE-NOTE and exact** after normalization (case, spacing, trailing
+    punctuation, ✅ stripped — accents deliberately KEPT). A listed sentence *inside* a
+    longer note must never release: the surrounding words are the instruction. A job is
+    released only when EVERY note on it is listed.
+
+    **The list is clock-guarded at 19:30** (`NOTE_RELEASE_CUTOFF_MIN`). Bookings after that
+    are pushed to the next day by hand because shifts have ended — nothing in the engine
+    enforced it before this, and without the guard a released 8pm job would be offered to a
+    driver who has gone home. Callers that only DISPLAY or stamp a note (the "Cần xử lý"
+    route) pass no `now` and so see the gate exactly as it was.
+
+    **Never seed the list by eye.** `scripts/note-scan.mts` reads N days of history and
+    scores each sentence on two signals — the ✅ that "Giao ngay" stamps (approved as-is)
+    versus the job ending with a pickup window (rescheduled) — counting evening bookings
+    SEPARATELY and excluding them from the verdict, or every sentence common on evening
+    bookings is condemned for the hour rather than the words. `scripts/note-simulate.mts`
+    prices a chosen list against the same days: coverage is NOT the sum of the appearance
+    counts, because a job releases only when all of its notes are listed. The trap the
+    counts hide is a note carrying a TIME ("19h", "lấy mẫu trước 5 giờ") — never
+    rescheduled, therefore a clean candidate, and genuinely an instruction.
+    `scripts/note-whitelist.test.mts` pins all of the above offline.
+
+    **The list grows itself, but never promotes itself.** Every "Giao ngay" credits
+    each of that job's sentences one CONSECUTIVE approval; every "Hẹn giờ" zeroes the
+    run and records a reschedule ("Chọn tài xế" counts for neither — naming a driver by
+    hand may mean the note *requires* that driver). At three clean approvals the
+    sentence is OFFERED in "Cần xử lý" and a click accepts it; the engine reads accepted
+    sentences and unions them with the code list each cycle. Auto-promotion was
+    considered and rejected on evidence: the same automatic test that produced the seed
+    list also proposed "19h" and "lấy mẫu trước 5 giờ giúp e ạ" — and promotion severs
+    its own feedback, since a listed sentence's jobs never reach the review panel again,
+    so no reschedule can ever demote it. Acceptance is the last moment a human reads it.
+
+    **Do not move the accepted-list read onto the per-cycle path.** It is behind a
+    10-minute in-process TTL for the reason the command-budget header in `smart-log-kv.ts`
+    gives; the list changes once or twice a month, so a stale copy costs nothing but a
+    cycle's delay.
+
 See `docs/business-rules.md` for deeper detail, `docs/cartrack-api.md` for API reference,
 and `docs/driver-tat.md` for the TAT module.
 

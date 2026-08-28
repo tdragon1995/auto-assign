@@ -7,7 +7,7 @@ import { DIAG_LOCATION_CUSTOMER_IDS } from "./psc-routes-data";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from "./return-trips";
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
 import { cleanupStaleTrips } from "./cleanup-trips";
-import { setCycleSnapshot, claimMorningPass, deferMorningPass, runDailyMaintenance, claimLateAlert, type HeldJob } from "./smart-log-kv";
+import { setCycleSnapshot, claimMorningPass, deferMorningPass, runDailyMaintenance, claimLateAlert, getAcceptedNotes, type HeldJob } from "./smart-log-kv";
 import { isValidDriverId } from "./config";
 import { drainSheetAlarms } from "./sheets";
 import { writeUnmappedConfigRows, type UnmappedBranch } from "./unmapped-row";
@@ -20,7 +20,7 @@ import {
 } from "./time";
 import { haversineKm } from "./distance";
 import { roadDistancesToPoint } from "./distance-cache";
-import { isChamCong, isCompletedOrRejectedStop, isNoteApproved } from "./job-filters";
+import { blockingNotes, isChamCong, isCompletedOrRejectedStop, isNoteApproved, DAYTIME_NON_BLOCKING } from "./job-filters";
 import { placeLabel } from "./place-label";
 import { stripDriverCode } from "./job-detail";
 import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, idleBand, isUnreachedAnchor, liveGpsRef, lastRealPositionRef, type RefStop, type RefLabel } from "./smart-rank";
@@ -718,26 +718,26 @@ function previewFixedDriver(
   return resolveFixedDriver(config, customerId, jobTime, leaveEntries, dropoffId, { previewOnly: true });
 }
 
-export function jobHasNotes(job: Job): boolean {
-  for (const stop of job.stops ?? []) {
-    const note = stop.note;
-    if (note && note.trim() && note.trim() !== "Call before delivery") {
-      return true;
-    }
-  }
-  return false;
+/**
+ * Does a note still hold this job back?
+ *
+ * `now` is passed through so the measured whitelist applies only inside the
+ * working day — see isBlockingNote. Omitting it would let an 8pm booking out to
+ * a driver whose shift ended hours ago.
+ */
+export function jobHasNotes(
+  job: Job,
+  now: Date = new Date(),
+  daytimeList?: ReadonlySet<string>,
+): boolean {
+  return blockingNotes(job, { now, daytimeList }).length > 0;
 }
 
-/** All meaningful stop notes on a job, joined — for showing why it was skipped. */
+/** All meaningful stop notes on a job, joined — for showing why it was skipped.
+ *  No `now`: this is display text, and a note is worth showing whether or not
+ *  the list would have released it. */
 export function getJobNoteText(job: Job): string {
-  const notes: string[] = [];
-  for (const stop of job.stops ?? []) {
-    const note = stop.note;
-    if (note && note.trim() && note.trim() !== "Call before delivery") {
-      notes.push(note.trim());
-    }
-  }
-  return notes.join(" | ");
+  return blockingNotes(job).join(" | ");
 }
 
 export function getCustomerIdFromJob(job: Job): string | null {
@@ -1703,6 +1703,15 @@ export async function autoAssignCycle(
   // pickup warnings and the follow-up steps too.
   const activeRouteMap = buildActiveRouteMap(assignedJobsToday ?? []);
 
+  // The safe-note list the engine works to this cycle: the reviewed one in the
+  // code, plus any sentence the supervisor has since accepted from a suggestion.
+  // Read once here, never per job. If Redis is unreachable this is just the code
+  // list, which fails the safe way — notes hold, as they always did.
+  const learnedNotes = await getAcceptedNotes();
+  const safeNotes: ReadonlySet<string> = learnedNotes.size
+    ? new Set([...DAYTIME_NON_BLOCKING, ...learnedNotes])
+    : DAYTIME_NON_BLOCKING;
+
   // Fold note-held jobs into the SAME map so an incoming twin can see them. They're
   // invisible otherwise: buildActiveRouteMap indexes only assigned (status-4) jobs,
   // and a held job `continue`s on the note gate below before it could register its
@@ -1714,7 +1723,7 @@ export async function autoAssignCycle(
   // a window, the route resolves through the normal positive path.
   for (const hj of jobs) {
     if (onlyJobIds?.has(hj.job_id)) continue;            // override-forced jobs aren't held
-    if (!jobHasNotes(hj) || isNoteApproved(hj)) continue;
+    if (!jobHasNotes(hj, new Date(), safeNotes) || isNoteApproved(hj)) continue;
     if (hj.stops?.find((s) => s.stop_type_id === 1)?.delivery_windows?.[0]?.time_from) continue; // windowed → parked, not held
     const pid = getCustomerIdFromJob(hj);
     const did = hj.stops?.find((s) => s.stop_type_id === 2)?.customer_id ?? null;
@@ -1761,7 +1770,19 @@ export async function autoAssignCycle(
     // continue/break are unaffected — this avoids converting ~20 continue→return.
     do {
 
-    if (jobHasNotes(job)) {
+    // Did the measured whitelist clear this job's notes? True only when the job
+    // carries notes that WOULD have held it under the old rule and every one of
+    // them is on the list at this hour. Purely for the success log line below —
+    // the gate itself is jobHasNotes.
+    const noteReleased = blockingNotes(job).length > 0 && !jobHasNotes(job, new Date(), safeNotes);
+    // Marker appended to whichever success line assigns this job, so the run log
+    // says WHY a job with a note went out without anyone clicking. It sits before
+    // the " | " because the customer must stay the single trailing field
+    // (docs/log-templates.md). No separate line: a released job that then fails to
+    // find a driver would reprint it every cycle for the rest of the day.
+    const noteTag = noteReleased ? " · ghi chú trong danh sách an toàn" : "";
+
+    if (jobHasNotes(job, new Date(), safeNotes)) {
       // Jobs with a delivery window bypass the note gate — the window parking path
       // handles them. The note is driver context, not a blocker for scheduled jobs.
       const hasWindow = !!(job.stops?.find((s) => s.stop_type_id === 1)?.delivery_windows?.[0]?.time_from);
@@ -2170,7 +2191,7 @@ export async function autoAssignCycle(
             if (apiStatus === 200) {
               const tag = attempt > 0 ? `[#${attempt + 1}] ` : "";
               const who = subFor ? `${ctName || targetId} (sub for ${subFor})` : rankStr;
-              log(`Job ${jobId} - SMART ${tag}: ${who} | ${route}`, "OK");
+              log(`Job ${jobId} - SMART ${tag}: ${who}${noteTag} | ${route}`, "OK");
               assigned = true;
               break;
             } else if (isDriverUnavailable(body)) {
@@ -2340,7 +2361,7 @@ export async function autoAssignCycle(
         const dropoffLon = altResult ? altResult.dropoffLon : dropoffStop?.longitude;
 
         log(
-          `Job ${jobId} - ${subFor ? `${respDriverName} (sub for ${subFor})` : respDriverName} | ${pickupName} → ${dropoffName}`,
+          `Job ${jobId} - ${subFor ? `${respDriverName} (sub for ${subFor})` : respDriverName}${noteTag} | ${pickupName} → ${dropoffName}`,
           "OK"
         );
 

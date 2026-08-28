@@ -8,6 +8,7 @@ import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 import { DriverPicker } from "./driver-picker";
 import { DayTimePicker, DAY_LABELS, vnNowLabel, scheduledAtFor, isTimePast } from "./day-time-picker";
 import { NoteReviewPanel, type HeldJob } from "./note-review-panel";
+import { NoteSuggestionPanel } from "./note-suggestion-panel";
 import { SectionHeader } from "./section-header";
 import { UncoveredLeaveSection, uncoveredLeaveCount } from "./leave-status-panel";
 import type { FailedJob, FailedReason, PickupWarning, ConfigDriver } from "@/lib/types";
@@ -305,14 +306,20 @@ export function FailedJobsPanel({
   // Now the landing tab, so an empty list shows a friendly all-clear state
   // instead of vanishing.
   if (total === 0) {
+    // A suggestion is not something that needs handling, so it must not keep the
+    // all-clear card off the screen — but it still has to be reachable on the day
+    // nothing else is wrong, which is most days.
     return (
-      <Card className="flex h-full flex-col items-center justify-center gap-1.5 py-8">
+      <div className="flex h-full flex-col gap-2">
+      <NoteSuggestionPanel />
+      <Card className="flex flex-1 flex-col items-center justify-center gap-1.5 py-8">
         <CheckCircle2 className="size-8 text-emerald-500" strokeWidth={1.75} />
         <p className="text-sm font-medium text-slate-600">Không có mục nào cần xử lý</p>
         <p className="text-xs text-slate-400">
           Job không gán được, chờ duyệt ghi chú, nghỉ chưa có người thay và lấy mẫu chậm sẽ hiện ở đây
         </p>
       </Card>
+      </div>
     );
   }
 
@@ -327,6 +334,9 @@ export function FailedJobsPanel({
       <CardContent className="px-3 flex-1 min-h-0">
         {/* Full-height scroll. Order: notes → other unassignable → late pickups. */}
         <div className="h-full max-w-5xl overflow-y-auto space-y-3 text-xs pr-1">
+            {/* ── Sentences the engine is offering for the safe list ───────── */}
+            <NoteSuggestionPanel refreshKey={held.length} />
+
             {/* ── Tasks with note (part of "unassignable") ─────────────────── */}
             {held.length > 0 && (
               <NoteReviewPanel
