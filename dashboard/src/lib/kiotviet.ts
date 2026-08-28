@@ -205,6 +205,125 @@ async function statsFromSession(token: string, range: Range): Promise<SalesStats
  *  verbatim so a dead token is visible in chat rather than silently returning 0đ. */
 export class KiotAuthError extends Error {}
 
+// Cached auto-login session token, so one login serves every request until it expires.
+const SESSION_KEY = "kiot:session_token";
+
+/** Seconds until a JWT's `exp`, or null if it can't be read. */
+function secondsUntilExpiry(jwt: string): number | null {
+  try {
+    const payload = JSON.parse(Buffer.from(jwt.split(".")[1], "base64").toString());
+    if (typeof payload.exp !== "number") return null;
+    return payload.exp - Math.floor(Date.now() / 1000);
+  } catch {
+    return null;
+  }
+}
+
+/** Dig a JWT out of a login response whose exact shape isn't documented. Checks the
+ *  plausible field names, then falls back to finding any JWT-shaped string anywhere
+ *  in the body — cheaper than guessing wrong and shipping a broken login. */
+function extractJwt(body: unknown): string | null {
+  const direct = body as Record<string, unknown> | null;
+  for (const key of ["Token", "token", "AccessToken", "access_token", "Jwt", "jwt"]) {
+    const v = direct?.[key];
+    if (typeof v === "string" && v.startsWith("ey")) return v;
+  }
+  const nested = (direct?.Data ?? direct?.data) as Record<string, unknown> | undefined;
+  for (const key of ["Token", "token", "AccessToken", "access_token"]) {
+    const v = nested?.[key];
+    if (typeof v === "string" && v.startsWith("ey")) return v;
+  }
+  const m = JSON.stringify(body ?? "").match(/ey[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/);
+  return m ? m[0] : null;
+}
+
+/** Log in with KIOTVIET_USERNAME/PASSWORD to mint a fresh session token.
+ *
+ *  This is the *internal web* login (api/account/login), NOT the SSO — the SSO has no
+ *  password grant, which is why the session token was manual for so long. The payload
+ *  is nested under `model`; a flat body is rejected with "nhập đầy đủ thông tin".
+ *
+ *  The password is read from the environment only. It is never logged, never returned,
+ *  and only leaves the server in this one request to KiotViet itself. */
+async function loginForSessionToken(): Promise<string | null> {
+  const username = process.env.KIOTVIET_USERNAME?.trim();
+  const password = process.env.KIOTVIET_PASSWORD;
+  if (!username || !password) return null;
+
+  const res = await fetch(`${INTERNAL_API_URL}/api/account/login?quan-ly=true`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json;charset=utf-8",
+      Accept: "application/json, text/plain, */*",
+      Retailer: RETAILER,
+      "X-Language": "vi-VN",
+      IsUseKvClient: "1",
+      LatestBranchId: String(BRANCH_ID),
+      Origin: `https://${RETAILER}.kiotviet.vn`,
+      Referer: `https://${RETAILER}.kiotviet.vn/`,
+    },
+    body: JSON.stringify({
+      model: {
+        RememberMe: true,
+        ShowCaptcha: false,
+        UserName: username,
+        Password: password,
+        Language: "vi-VN",
+        LatestBranchId: BRANCH_ID,
+      },
+      IsManageSide: true,
+      FingerPrintKey: process.env.KIOTVIET_FINGERPRINT ?? "",
+    }),
+  });
+
+  const text = await res.text().catch(() => "");
+  if (!res.ok) {
+    console.error("[kiotviet] login failed", res.status, text.slice(0, 200));
+    return null;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    console.error("[kiotviet] login returned non-JSON");
+    return null;
+  }
+
+  const jwt = extractJwt(parsed);
+  if (!jwt) {
+    // Field names only — never the values, which include the token itself.
+    console.error(
+      "[kiotviet] login ok but no JWT found; response keys:",
+      Object.keys((parsed as Record<string, unknown>) ?? {}).join(",")
+    );
+    return null;
+  }
+  return jwt;
+}
+
+/** A usable session token: the cached auto-login one, a fresh login, or the manually
+ *  pasted fallback. Auto-login means the 28-day expiry stops being a manual chore. */
+async function getSessionToken(): Promise<string | null> {
+  const redis = getRedis();
+  if (redis) {
+    const cached = await redis.get<string>(SESSION_KEY);
+    // Re-login early rather than racing the expiry mid-request.
+    if (cached && (secondsUntilExpiry(cached) ?? 0) > 300) return cached;
+  }
+
+  const fresh = await loginForSessionToken();
+  if (fresh) {
+    const ttl = secondsUntilExpiry(fresh);
+    if (redis && ttl && ttl > 600) {
+      await redis.set(SESSION_KEY, fresh, { ex: ttl - 300 });
+    }
+    return fresh;
+  }
+
+  return process.env.KIOTVIET_SESSION_TOKEN?.trim() || null;
+}
+
 /** Revenue + order count for a VN date (defaults to today).
  *  `untilClock` ("HH:MM") caps the window, so today-so-far can be compared against
  *  yesterday-to-the-same-minute rather than against yesterday's finished total. */
@@ -226,14 +345,40 @@ export async function getMonthToDateStats(
 }
 
 async function statsForRange(range: Range): Promise<SalesStats> {
+  // Public API first when configured, but NOT fatally. It authenticates and then
+  // still 403s "Invalid Role" until the client is granted invoice-read permission
+  // in KiotViet admin — a server-side grant no redeploy can fix. Treating that as
+  // terminal took the whole bot down, so fall through to the session path instead.
   const publicToken = await getPublicToken();
-  if (publicToken) return statsFromPublicApi(publicToken, range);
+  if (publicToken) {
+    try {
+      return await statsFromPublicApi(publicToken, range);
+    } catch (e) {
+      console.warn("[kiotviet] public API failed, falling back to session:", (e as Error).message);
+    }
+  }
 
-  const sessionToken = process.env.KIOTVIET_SESSION_TOKEN;
-  if (sessionToken) return statsFromSession(sessionToken, range);
+  const sessionToken = await getSessionToken();
+  if (sessionToken) {
+    try {
+      return await statsFromSession(sessionToken, range);
+    } catch (e) {
+      // A cached token can be dead before its `exp` — logging out elsewhere kills the
+      // session server-side. Drop it and log in once more before giving up.
+      const canRelogin = Boolean(process.env.KIOTVIET_USERNAME && process.env.KIOTVIET_PASSWORD);
+      if (!(e instanceof KiotAuthError) || !canRelogin) throw e;
+
+      console.warn("[kiotviet] session token rejected; re-logging in");
+      await getRedis()?.del(SESSION_KEY);
+      const retry = await getSessionToken();
+      if (!retry) throw e;
+      return statsFromSession(retry, range);
+    }
+  }
 
   throw new KiotAuthError(
-    "Chưa cấu hình KiotViet: cần KIOTVIET_CLIENT_ID/SECRET hoặc KIOTVIET_SESSION_TOKEN."
+    "Chưa cấu hình KiotViet: cần KIOTVIET_CLIENT_ID/SECRET, " +
+      "KIOTVIET_USERNAME/PASSWORD, hoặc KIOTVIET_SESSION_TOKEN."
   );
 }
 

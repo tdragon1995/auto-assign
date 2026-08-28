@@ -205,6 +205,7 @@ export async function GET(req: NextRequest) {
     allowedChats: allowedChats(), // chat ids, not secrets — the whole point is to compare them
     kiotviet: {
       publicApi: Boolean(process.env.KIOTVIET_CLIENT_ID && process.env.KIOTVIET_CLIENT_SECRET),
+      autoLogin: Boolean(process.env.KIOTVIET_USERNAME && process.env.KIOTVIET_PASSWORD),
       sessionToken: Boolean(process.env.KIOTVIET_SESSION_TOKEN),
     },
   });
