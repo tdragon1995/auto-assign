@@ -2,32 +2,25 @@ import { Redis } from "@upstash/redis";
 import { vnDate, addDays } from "./time";
 
 // ── KiotViet sales stats (revenue + order count) ─────────────────────────────
-// Two auth paths, tried in order. They exist because KiotViet's SSO does NOT
-// support the password grant — `grant_types_supported` on
-// id.kiotviet.vn/.well-known/openid-configuration lists only authorization_code,
-// client_credentials, refresh_token, implicit and device_code. So a bot cannot
-// log in as a human with a username/password; it needs either its own
-// machine-to-machine client, or a session token copied out of a browser.
+// Auth is the internal web session, obtained one of two ways:
 //
-//   1. "public"  — client_credentials against the SSO → Public API. Self-renewing,
-//                  no manual upkeep. Needs Public API switched on in KiotViet admin.
-//   2. "session" — the 28-day browser session JWT pasted into an env var. Works
-//                  immediately but goes stale; the bot says so instead of dying quietly.
+//   1. auto-login — KIOTVIET_USERNAME/PASSWORD against api/account/login. Mints a
+//                   token, caches it in Redis, renews before expiry. No upkeep.
+//   2. pasted     — KIOTVIET_SESSION_TOKEN copied from a browser. Fallback for when
+//                   credentials aren't configured; dies after ~28 days.
+//
+// The official Public API was tried and REMOVED. Its client_credentials login worked,
+// but every invoice query came back 403 "Invalid Role" — a permission grant that has
+// to be made inside KiotViet admin and never took effect. It also can't be reached by
+// the SSO password grant (`grant_types_supported` omits `password`), so there was no
+// way to drive it from credentials alone. Don't reintroduce it without first
+// confirming a plain /invoices call returns 200.
 
-const SSO_TOKEN_URL = "https://id.kiotviet.vn/connect/token";
-const PUBLIC_API_URL = "https://public.kiotapi.com";
 const INTERNAL_API_URL = "https://api-man1.kiotviet.vn";
-
-// Cached client_credentials token. Keyed by nothing else — one bot, one client.
-const TOKEN_KEY = "kiot:access_token";
 
 const RETAILER = process.env.KIOTVIET_RETAILER ?? "nhathuocdiag";
 const BRANCH_ID = Number(process.env.KIOTVIET_BRANCH_ID ?? 95562);
 const GROUP_ID = process.env.KIOTVIET_GROUP_ID ?? "45";
-
-// Invoice statuses that count as real sales: 1 = Hoàn thành, 3 = Đang xử lý.
-// 2 (Đã hủy / cancelled) is excluded, mirroring the KiotViet dashboard's own filter.
-const COUNTED_STATUSES = [1, 3];
 
 function getRedis() {
   const url = process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
@@ -36,53 +29,13 @@ function getRedis() {
   return new Redis({ url, token });
 }
 
-export type AuthMode = "public" | "session";
+export type AuthMode = "session";
 
 export interface SalesStats {
   date: string;        // YYYY-MM-DD (VN date)
   revenue: number;     // đồng
   orders: number;      // invoice count
   source: AuthMode;
-}
-
-/** Mint (or reuse) a Public API token via client_credentials. Null when the
- *  Public API client isn't configured — caller falls back to the session token. */
-async function getPublicToken(): Promise<string | null> {
-  const clientId = process.env.KIOTVIET_CLIENT_ID;
-  const clientSecret = process.env.KIOTVIET_CLIENT_SECRET;
-  if (!clientId || !clientSecret) return null;
-
-  const redis = getRedis();
-  if (redis) {
-    const cached = await redis.get<string>(TOKEN_KEY);
-    if (cached) return cached;
-  }
-
-  const res = await fetch(SSO_TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    // KiotViet's documented param is `scopes` (plural) — not the OAuth-standard `scope`.
-    body: new URLSearchParams({
-      grant_type: "client_credentials",
-      client_id: clientId,
-      client_secret: clientSecret,
-      scopes: "PublicApi.Access",
-    }),
-  });
-
-  if (!res.ok) {
-    console.error("[kiotviet] client_credentials failed", res.status, await res.text().catch(() => ""));
-    return null;
-  }
-
-  const json = (await res.json()) as { access_token?: string; expires_in?: number };
-  if (!json.access_token) return null;
-
-  if (redis && json.expires_in && json.expires_in > 120) {
-    // Expire a minute early so we never hand out a token mid-flight.
-    await redis.set(TOKEN_KEY, json.access_token, { ex: json.expires_in - 60 });
-  }
-  return json.access_token;
 }
 
 /** A half-open [from, to) window plus the label the resulting stats carry. */
@@ -110,55 +63,6 @@ function monthToDateRange(date: string, untilClock?: string): Range {
     to: dayRange(date, untilClock).to,
     label: date.slice(0, 7),
   };
-}
-
-/** Sales stats via the official Public API. Paginates the invoice list and
- *  aggregates client-side — the Public API has no dashboard-summary endpoint. */
-async function statsFromPublicApi(token: string, range: Range): Promise<SalesStats> {
-  const headers = {
-    Retailer: RETAILER,
-    Authorization: `Bearer ${token}`,
-    Accept: "application/json",
-  };
-
-  let revenue = 0;
-  let orders = 0;
-  let currentItem = 0;
-  const pageSize = 100;
-
-  // Bounded loop: 50 pages × 100 = 5000 invoices is far past this branch's volume even
-  // for a whole month, and stops a malformed `total` from spinning the request forever.
-  for (let page = 0; page < 50; page++) {
-    const qs = new URLSearchParams({
-      branchIds: String(BRANCH_ID),
-      fromPurchaseDate: range.from.replace("T", " "),
-      toPurchaseDate: range.to.replace("T", " "),
-      pageSize: String(pageSize),
-      currentItem: String(currentItem),
-    });
-
-    const res = await fetch(`${PUBLIC_API_URL}/invoices?${qs}`, { headers });
-    if (!res.ok) {
-      throw new Error(`KiotViet Public API ${res.status}: ${await res.text().catch(() => "")}`);
-    }
-
-    const json = (await res.json()) as {
-      total?: number;
-      data?: Array<{ total?: number; status?: number }>;
-    };
-    const rows = json.data ?? [];
-
-    for (const inv of rows) {
-      if (!COUNTED_STATUSES.includes(inv.status ?? 0)) continue;
-      revenue += inv.total ?? 0;
-      orders += 1;
-    }
-
-    currentItem += rows.length;
-    if (rows.length < pageSize || currentItem >= (json.total ?? 0)) break;
-  }
-
-  return { date: range.label, revenue, orders, source: "public" };
 }
 
 /** Sales stats via the internal dashboard endpoint the KiotViet web UI itself calls.
@@ -345,19 +249,6 @@ export async function getMonthToDateStats(
 }
 
 async function statsForRange(range: Range): Promise<SalesStats> {
-  // Public API first when configured, but NOT fatally. It authenticates and then
-  // still 403s "Invalid Role" until the client is granted invoice-read permission
-  // in KiotViet admin — a server-side grant no redeploy can fix. Treating that as
-  // terminal took the whole bot down, so fall through to the session path instead.
-  const publicToken = await getPublicToken();
-  if (publicToken) {
-    try {
-      return await statsFromPublicApi(publicToken, range);
-    } catch (e) {
-      console.warn("[kiotviet] public API failed, falling back to session:", (e as Error).message);
-    }
-  }
-
   const sessionToken = await getSessionToken();
   if (sessionToken) {
     try {
@@ -377,8 +268,7 @@ async function statsForRange(range: Range): Promise<SalesStats> {
   }
 
   throw new KiotAuthError(
-    "Chưa cấu hình KiotViet: cần KIOTVIET_CLIENT_ID/SECRET, " +
-      "KIOTVIET_USERNAME/PASSWORD, hoặc KIOTVIET_SESSION_TOKEN."
+    "Chưa cấu hình KiotViet: cần KIOTVIET_USERNAME/PASSWORD hoặc KIOTVIET_SESSION_TOKEN."
   );
 }
 
