@@ -7,7 +7,7 @@ import { DIAG_LOCATION_CUSTOMER_IDS } from "./psc-routes-data";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from "./return-trips";
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
 import { cleanupStaleTrips } from "./cleanup-trips";
-import { setCycleSnapshot, claimMorningPass, deferMorningPass, runDailyMaintenance, claimLateAlert, getAcceptedNotes, type HeldJob } from "./smart-log-kv";
+import { setCycleSnapshot, claimMorningPass, deferMorningPass, confirmMorningPass, pushRunLog, runDailyMaintenance, claimLateAlert, getAcceptedNotes, type HeldJob } from "./smart-log-kv";
 import { isValidDriverId } from "./config";
 import { drainSheetAlarms } from "./sheets";
 import { writeUnmappedConfigRows, type UnmappedBranch } from "./unmapped-row";
@@ -45,6 +45,12 @@ const PICKUP_OVERDUE_MIN = 90;
 // group (see alertLateJobs). Kept well above PICKUP_OVERDUE_MIN so the push is a
 // real "this is badly stuck" signal, not a duplicate of the dashboard warning.
 const LATE_ALERT_MIN = 120;
+
+// Share of the 60s function budget the morning rollover may spend before it
+// stops and leaves the rest for the next cycle. 25s covers ~20 jobs at the
+// measured ~6s per REST write once batched, while leaving the assign phases —
+// the cycle's actual purpose — the larger half.
+const ROLLOVER_BUDGET_MS = 25_000;
 // No lateness accrues before the working day starts. Jobs booked overnight (and
 // yesterday's leftovers, which rolloverUnfinishedJobs re-dates to 00:00:00) would
 // otherwise arrive at dawn already hours past the mark and alert on a driver who
@@ -1172,7 +1178,8 @@ async function rolloverUnfinishedJobs(
   toDate: string,
   env: Env,
   log: (msg: string, level?: LogLevel) => void,
-): Promise<Set<number>> {
+  deadlineMs: number,
+): Promise<{ bumped: Set<number>; remaining: number }> {
   const eligible = candidates.filter((j) => {
     if (hasPlanAttached(j)) return false;                 // plan slot → regenerates itself; never roll
     // A chấm công (check-in/out) task is yesterday's attendance record, not work
@@ -1193,27 +1200,47 @@ async function rolloverUnfinishedJobs(
     return true;
   });
   const bumped = new Set<number>();
-  for (const job of eligible) {
-    const route = `${job.stops?.find((s) => s.stop_type_id === 1)?.customer_name ?? "—"} → ${
-      job.stops?.find((s) => s.stop_type_id === 2)?.customer_name ?? "—"
-    }`;
-    // Pull the stale driver first so the job re-enters the unassigned pool.
-    if (job.delivery_driver_id) {
-      const { ok, status } = await unassignJob(job.job_id, env, job.delivery_driver_id);
-      if (!ok) {
-        log(`Job ${job.job_id} - Rollover unassign failed (HTTP ${status}) | ${route}`, "WARN");
-        continue;
+  let remaining = 0;
+
+  // Batched, not one-at-a-time. Each job costs up to two REST writes and the
+  // date-move alone measures ~6s against prod, so five eligible jobs — an
+  // ordinary Friday — used the entire 60s function budget on their own and the
+  // cycle was killed mid-roll (2026-08-30). The two writes for ONE job stay
+  // ordered (the unassign must land before the re-date); different jobs have no
+  // such relationship, so they go together. Ten matches releaseDueProxyJobs.
+  const BATCH = 10;
+  for (let i = 0; i < eligible.length; i += BATCH) {
+    // Stop before the platform stops us. Whatever is left keeps yesterday's date
+    // and is picked up by the next cycle, because the caller declines to confirm
+    // the day's claim while `remaining > 0`. Half a roll finished cleanly beats a
+    // kill: a kill also destroys the log of what it had already done.
+    if (Date.now() > deadlineMs) {
+      remaining = eligible.length - i;
+      log(`Morning rollover paused: ${remaining} job(s) left, out of time this cycle`, "WARN");
+      break;
+    }
+    await Promise.all(eligible.slice(i, i + BATCH).map(async (job) => {
+      const route = `${job.stops?.find((s) => s.stop_type_id === 1)?.customer_name ?? "—"} → ${
+        job.stops?.find((s) => s.stop_type_id === 2)?.customer_name ?? "—"
+      }`;
+      // Pull the stale driver first so the job re-enters the unassigned pool.
+      if (job.delivery_driver_id) {
+        const { ok, status } = await unassignJob(job.job_id, env, job.delivery_driver_id);
+        if (!ok) {
+          log(`Job ${job.job_id} - Rollover unassign failed (HTTP ${status}) | ${route}`, "WARN");
+          return;
+        }
       }
-    }
-    const { ok, status } = await updateJobScheduledDeliveryTs(job.job_id, `${toDate} 00:00:00`, env);
-    if (ok) {
-      bumped.add(job.job_id);
-      log(`Job ${job.job_id} - ROLLED OVER to ${toDate} (chưa xử lý xong hôm qua) | ${route}`, "INFO");
-    } else {
-      log(`Job ${job.job_id} - Rollover to ${toDate} failed (HTTP ${status}) | ${route}`, "WARN");
-    }
+      const { ok, status } = await updateJobScheduledDeliveryTs(job.job_id, `${toDate} 00:00:00`, env);
+      if (ok) {
+        bumped.add(job.job_id);
+        log(`Job ${job.job_id} - ROLLED OVER to ${toDate} (chưa xử lý xong hôm qua) | ${route}`, "INFO");
+      } else {
+        log(`Job ${job.job_id} - Rollover to ${toDate} failed (HTTP ${status}) | ${route}`, "WARN");
+      }
+    }));
   }
-  return bumped;
+  return { bumped, remaining };
 }
 
 export async function autoAssignCycle(
@@ -1340,10 +1367,28 @@ export async function autoAssignCycle(
     let complete = fetched.complete;
     clog(`[rollover] candidates via ${fetched.source}: ${candidates.length}`);
     try {
-      await rolloverUnfinishedJobs(candidates, today, env, log);
+      // Leave the rest of the cycle its share of the 60s function budget. The
+      // rollover is the FIRST phase, so an unbounded one starves the assigning
+      // the cycle exists to do — and the platform kills the whole invocation
+      // rather than just this phase.
+      const res = await rolloverUnfinishedJobs(
+        candidates, today, env, log, tStart + ROLLOVER_BUDGET_MS,
+      );
+      if (res.remaining > 0) complete = false; // more to do → retry next cycle
     } catch (e) {
       complete = false;
       log(`Morning rollover failed: ${e}`, "WARN");
+    }
+
+    // Write this phase's lines to the run log NOW rather than at cycle end.
+    // The end-of-cycle write is the only one, so a later timeout kill used to
+    // discard everything the rollover had said — which is why three days of
+    // mornings left no trace at all and this took an afternoon to diagnose.
+    // Entries are marked so the end-of-cycle write skips them.
+    const fresh = logs.filter((l) => !l.pushed);
+    if (fresh.length) {
+      await pushRunLog(fresh).catch((e) => console.error("[rollover] early flush failed:", e));
+      for (const l of fresh) l.pushed = true;
     }
     // Give the day's slot back if any part of it fell over. Without this the
     // gate stays consumed and yesterday's leftovers are stranded on yesterday's
@@ -1353,6 +1398,12 @@ export async function autoAssignCycle(
     if (!complete) {
       await deferMorningPass(today, env);
       log("Morning rollover incomplete — retrying in ~10 minutes", "WARN");
+    } else {
+      // Only now is the day's work genuinely done, so only now does the claim
+      // become a full-day one. Until this line runs the claim is a short lease
+      // that lapses by itself — which is what makes a timeout-killed pass retry
+      // instead of silently costing the day. Do NOT hoist this to the claim.
+      await confirmMorningPass(today, env);
     }
     phase("morning-rollover");
   }

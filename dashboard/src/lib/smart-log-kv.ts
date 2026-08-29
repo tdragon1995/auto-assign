@@ -777,6 +777,12 @@ const rolloverKey = (env: string, dateVn: string) => `assign:rollover_morning:${
 //     never the first one from a new one.
 const MORNING_CLAIM_WINDOW_END_MIN = 9 * 60; // 09:00 VN
 
+// How long a morning-pass claim is held before it lapses of its own accord.
+// Long enough that concurrent cycles (two accounts, ~90s apart) cannot both
+// take the pass, short enough that a timeout-killed pass is retried within the
+// pre-09:00 window where every cycle still asks. See claimMorningPass.
+const MORNING_LEASE_S = 900; // 15 minutes
+
 let morningClaimAskedOn: string | null = null;
 
 /** Whether to spend a command asking Redis for the day's morning-pass slot.
@@ -819,8 +825,32 @@ export async function claimMorningPass(dateVn: string, env = "prod"): Promise<bo
   // gets its one post-window ask — the retry slot an 08:55 defer would need.
   if (mins >= MORNING_CLAIM_WINDOW_END_MIN) morningClaimAskedOn = dateVn;
 
-  const res = await redis.set(rolloverKey(env, dateVn), new Date().toISOString(), { nx: true, ex: 172_800 });
+  // Claimed for MINUTES, not the day. The morning pass runs inside a 60s
+  // function; when it overruns, Vercel KILLS the process — that is not a thrown
+  // error, so `deferMorningPass` in the caller's failure branch never executes
+  // and a full-day claim would sit there until tomorrow with the work half done
+  // and its logs discarded. That is exactly what happened on 2026-08-30
+  // (claimed 05:30:44, "candidates: 83" at 05:30:48, killed at 60s) and, on the
+  // evidence, several mornings before it.
+  //
+  // So the claim is only a short lease: a killed pass lets it lapse and the next
+  // cycle picks the work up. Nothing has to run after the failure for the retry
+  // to happen, which is the whole point — a kill leaves no opportunity to run
+  // anything. `confirmMorningPass` promotes the lease to the full day once the
+  // pass has actually finished. Re-running after a completed-but-unconfirmed
+  // pass is harmless: rolled jobs now carry today's date, so yesterday's window
+  // is empty and the second pass rolls nothing.
+  const res = await redis.set(rolloverKey(env, dateVn), new Date().toISOString(), { nx: true, ex: MORNING_LEASE_S });
   return res === "OK";
+}
+
+/** Promote the short claim lease to the rest of the day — call ONLY once the
+ *  morning pass has completed. Until this runs the lease expires on its own,
+ *  which is what makes a timeout-killed pass retry instead of vanishing. */
+export async function confirmMorningPass(dateVn: string, env = "prod"): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  await redis.set(rolloverKey(env, dateVn), new Date().toISOString(), { ex: 172_800 }).catch(() => {});
 }
 
 /** Hand the day's rollover slot back after a failed attempt, so a later cycle
@@ -957,7 +987,9 @@ export async function pushRunLog(logs: LogEntry[]): Promise<void> {
   const kept = logs.filter(shouldStore);
   if (kept.length === 0) return;
   // lpush in chronological order ⇒ newest entry ends up at the head.
-  await redis.lpush(RUN_LOG_KEY, ...kept.map((l) => JSON.stringify(l)));
+  // `pushed` is an in-process marker (see the early flush in assign.ts); it must
+  // not be stored, or the dashboard reads a field that means nothing to it.
+  await redis.lpush(RUN_LOG_KEY, ...kept.map(({ pushed: _p, ...entry }) => JSON.stringify(entry)));
 }
 
 /** Most recent N live-log entries in chronological order (oldest first). */

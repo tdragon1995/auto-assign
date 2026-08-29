@@ -19,6 +19,11 @@ export async function runArmedCycle(arm: ArmState): Promise<LogEntry[]> {
     logs = await autoAssignCycle(config, arm.env as Env, false);
   }
 
-  await pushRunLog(logs).catch((e) => console.error("[run-cycle] pushRunLog failed:", e));
+  // Skip lines an early flush already stored (see assign.ts) — without this the
+  // rollover's lines would appear twice in the dashboard log.
+  const unflushed = logs.filter((l) => !l.pushed);
+  if (unflushed.length) {
+    await pushRunLog(unflushed).catch((e) => console.error("[run-cycle] pushRunLog failed:", e));
+  }
   return logs;
 }

@@ -204,6 +204,12 @@ export interface LogEntry {
   ts: string;
   level: LogLevel;
   msg: string;
+  // In-process only, never persisted: set once an entry has already been written
+  // to the run log by an early flush, so the end-of-cycle write skips it instead
+  // of storing it twice. Exists because a cycle killed by the 60s timeout used to
+  // lose every line it had produced — the end-of-cycle write is the only one, and
+  // a kill never reaches it. See the rollover flush in assign.ts.
+  pushed?: boolean;
 }
 
 export interface AssignResult {
