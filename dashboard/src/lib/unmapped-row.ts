@@ -73,17 +73,27 @@ function safeCell(v: string): string {
 }
 
 /**
- * The six cells of a new config line, in sheet order:
- * pickup, destination, alternate destination, driver, shift start, shift end.
+ * What a new config line SAYS, independent of where the columns happen to sit.
  *
- * Columns A–D are absent on purpose and must stay that way — see
- * `writeConfigRows`. The alternate destination and the driver are blank because
- * neither can be guessed: one is an override, the other is the decision being
- * asked for.
+ * Deliberately not a positional array any more: the weekday and Sunday tabs have
+ * different layouts — different column for the pickup, no destination column at
+ * all on Sunday, and a Driver column that is a formula there rather than a value.
+ * A shared array of cells would have to be right for both, and silently would not
+ * be. The writer maps these four facts onto whichever tab it is writing to.
  */
-export function configRowFor(b: UnmappedBranch): string[] {
+export interface ConfigCells {
+  pickup: string;
+  /** Where the trip was going. Written only on a tab that has a column MATCHING
+   *  a destination. Never written into an alternate-destination column, which
+   *  REWRITES a job's destination rather than matching it. */
+  dropoff: string;
+  start: string;
+  end: string;
+}
+
+export function configCellsFor(b: UnmappedBranch): ConfigCells {
   const { start, end } = shiftWindowForJob(b.at);
-  return [safeCell(b.pickup_name), safeCell(b.dropoff_name), "", "", start, end];
+  return { pickup: safeCell(b.pickup_name), dropoff: safeCell(b.dropoff_name), start, end };
 }
 
 /**
@@ -137,7 +147,7 @@ export async function writeUnmappedConfigRows(
     if (mine.length === 0) return;
 
     const { writeConfigRows } = await import("./sheets-writer");
-    const at = await writeConfigRows(mine.map(configRowFor));
+    const at = await writeConfigRows(mine.map(configCellsFor));
     mine.forEach((b, i) => {
       const { start, end } = shiftWindowForJob(b.at);
       // The row NUMBER is the useful part of this line: it is what turns "go and

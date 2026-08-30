@@ -1,5 +1,7 @@
 import { google } from "googleapis";
 import { SHEET_ID, SHEET_GID } from "./sheets";
+import { vnIsSunday } from "./time";
+import type { ConfigCells } from "./unmapped-row";
 import { timeToMins } from "./time";
 
 let cachedNghiPhepSheetName: string | null = null;
@@ -374,36 +376,74 @@ export async function appendNhanViecLog(row: (string | number | null)[]): Promis
 
 // ── Writing config rows ─────────────────────────────────────────────────────
 //
-// READ THIS BEFORE CHANGING ANYTHING HERE.
+// READ THIS BEFORE CHANGING ANYTHING HERE. Two tabs, two different layouts, and
+// each has a way of being written that destroys it.
 //
-// The config tab is NOT laid out like the Leave Status tab. Its four id columns —
-// customer_id, dropoff_id, alt_drop_off_id, driver_id — are not per-row formulas.
-// Each is a SINGLE ARRAYFORMULA in row 2 that spills down the table, deriving the
-// id from the name beside it. Two rules follow, both learned the hard way:
+// WEEKDAY ("config"). Its four id columns are a SINGLE ARRAYFORMULA each, living
+// in row 2 and spilling down the table. Nothing may ever be written into A–D, not
+// even an empty string: a literal anywhere in a spill range collapses it to #REF!
+// and, because it is one formula per column, blanks EVERY branch id at once.
+// Proven live on 2026-08-26.
 //
-//   1. NEVER write into columns A–D, not even an empty string. A literal anywhere
-//      in a spill range collapses it to #REF!, and because it is one formula per
-//      column that blanks EVERY branch id at once. Proven live on 2026-08-26.
-//   2. NEVER use values.append, and never insertDataOption INSERT_ROWS. `append`
-//      cannot be scoped to a column span — the range only locates the table, and
-//      the write then starts at the table's FIRST column, i.e. column A. That is
-//      exactly how rule 1 got broken. This module uses values.update on an
-//      explicit column-scoped range instead, which writes only where it is told.
+// SUNDAY ("(NO edit) CONFIG SUNDAY"). Almost the opposite. Its formulas are
+// PER-ROW and propagate onto a new row inside the table on their own, so nothing
+// needs copying. But its Driver column is itself a FORMULA — the one that derives
+// who covers each area from the public Sunday roster — so writing a driver there,
+// even a blank, destroys the derivation for that row. And its only destination
+// column is an alternate-destination OVERRIDE, which rewrites where a job goes;
+// putting the observed destination in it would redirect real trips. So on Sunday
+// the destination is not written at all.
 //
-// WHERE THE ROWS GO. The table spans rows 1–1985 but its data ends around row
-// 1749, so there are ~236 empty rows already INSIDE it. New rows go there. That
-// matters: a row below the table is outside the ARRAYFORMULA's reach and its ids
-// would stay blank forever, which is the whole thing the formula is for. When the
-// spare rows run out the table has to be extended by hand — a deliberate act, so
-// this refuses rather than quietly writing outside it.
-const CONFIG_SHEET = "config";
-const CFG_FIRST_COL_A1 = "E";   // Điểm Pick-up
-const CFG_LAST_COL_A1 = "J";    // shift_end
+// NEITHER tab may be written with values.append. `append` cannot be scoped to a
+// column span — the range only locates the table, and the write then starts at the
+// table's FIRST column. That is exactly how the weekday incident happened. Both
+// paths below use explicit, column-scoped values.update ranges.
+//
+// WHERE THE ROWS GO. Into the empty rows that already exist INSIDE the table
+// (weekday ~236, Sunday ~1,195). A row below the table is outside the formulas'
+// reach and its ids would stay blank forever, so this refuses rather than writing
+// there.
+
+export interface ConfigTabSpec {
+  /** Tab name as it appears in the workbook. */
+  title: string;
+  gid: string;
+  /** Column holding "Điểm Pick-up" — also the column that decides which rows are free. */
+  pickupCol: string;
+  /** Column that MATCHES a destination, when the tab has one. Sunday does not:
+   *  its only destination column is an override, and must stay blank. */
+  dropoffCol: string | null;
+  shiftStartCol: string;
+  shiftEndCol: string;
+}
+
+/** Exported so BOTH layouts stay pinned by a test. Otherwise the Sunday one —
+ *  the riskier of the two, with a formula where the weekday tab has a value — is
+ *  only exercised one day in seven. */
+export const CONFIG_TABS: Record<"weekday" | "sunday", ConfigTabSpec> = {
+  weekday: { title: "config", gid: SHEET_GID.mapping,
+             pickupCol: "E", dropoffCol: "F", shiftStartCol: "I", shiftEndCol: "J" },
+  sunday:  { title: "(NO edit) CONFIG SUNDAY", gid: SHEET_GID.sunday,
+             // No dropoff column: E here is "Điểm Drop-off thay thế", an override.
+             // Note the gap at F — the Driver formula — which is why the shift
+             // cells are written as their own range rather than one span.
+             pickupCol: "D", dropoffCol: null, shiftStartCol: "G", shiftEndCol: "H" },
+};
+
+/** Which tab the engine is reading right now. Matched to `loadConfigFromSheets`
+ *  deliberately: a row written into the tab the engine is NOT reading today fixes
+ *  nothing, and quietly adds a rule to the other half of the week. */
+export function currentConfigTab(): ConfigTabSpec {
+  return vnIsSunday() ? CONFIG_TABS.sunday : CONFIG_TABS.weekday;
+}
+
+const a1 = (t: ConfigTabSpec) => `'${t.title.replace(/'/g, "''")}'`;
 
 /** Where the table ends and where its first free row is. Read live rather than
  *  hardcoded, so extending the table by hand is all it takes to make room. */
 async function configTableBounds(
   sheets: ReturnType<typeof google.sheets>,
+  tab: ConfigTabSpec,
 ): Promise<{ firstFreeRow: number; lastTableRow: number }> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const meta: any = await sheets.spreadsheets.get({
@@ -411,18 +451,18 @@ async function configTableBounds(
     fields: "sheets(properties(sheetId),tables(name,range))",
   });
   const sheet = meta.data.sheets?.find(
-    (s: { properties?: { sheetId?: number } }) => String(s.properties?.sheetId) === String(SHEET_GID.mapping),
+    (x: { properties?: { sheetId?: number } }) => String(x.properties?.sheetId) === String(tab.gid),
   );
-  const table = sheet?.tables?.find((t: { name?: string }) => t.name === CONFIG_SHEET) ?? sheet?.tables?.[0];
-  if (!table?.range?.endRowIndex) throw new Error("config table not found — refusing to guess where rows belong");
-  const lastTableRow = Number(table.range.endRowIndex);   // endRowIndex is exclusive 0-based = last 1-based row
+  const table = sheet?.tables?.[0];
+  if (!table?.range?.endRowIndex) throw new Error(`no table on "${tab.title}" — refusing to guess where rows belong`);
+  const lastTableRow = Number(table.range.endRowIndex);   // exclusive 0-based == last 1-based row
 
   const col = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
-    range: `${CONFIG_SHEET}!${CFG_FIRST_COL_A1}1:${CFG_FIRST_COL_A1}${lastTableRow}`,
+    range: `${a1(tab)}!${tab.pickupCol}1:${tab.pickupCol}${lastTableRow}`,
   });
-  // The pickup column is the entry key the id formulas read, so a row blank HERE
-  // is a row nothing depends on — the right definition of "free".
+  // The pickup column is the entry key every id formula reads, so a row blank
+  // THERE is a row nothing depends on — the right definition of "free".
   const vals = (col.data.values ?? []).map((r) => String(r?.[0] ?? "").trim());
   let lastUsed = 1;
   vals.forEach((v, i) => { if (v) lastUsed = i + 1; });
@@ -430,38 +470,46 @@ async function configTableBounds(
 }
 
 /**
- * Write rows into the spare rows inside the config table.
- *
- * `rows` are the six cells E..J (see `configRowFor`). Entered the way a person
- * typing would enter them, so "09:00" becomes a real time rather than text.
- *
- * Returns the 1-based row numbers written, so the caller can name them.
+ * Write config lines into the spare rows inside whichever tab the engine is
+ * reading today. Returns the 1-based row numbers written.
  */
-export async function writeConfigRows(rows: string[][]): Promise<number[]> {
-  if (rows.length === 0) return [];
+export async function writeConfigRows(cells: ConfigCells[]): Promise<number[]> {
+  if (cells.length === 0) return [];
+  const tab = currentConfigTab();
   const sheets = getSheetsClient();
-  const { firstFreeRow, lastTableRow } = await configTableBounds(sheets);
+  const { firstFreeRow, lastTableRow } = await configTableBounds(sheets, tab);
 
-  const lastNeeded = firstFreeRow + rows.length - 1;
+  const lastNeeded = firstFreeRow + cells.length - 1;
   if (lastNeeded > lastTableRow) {
     throw new Error(
-      `config table is full: rows ${firstFreeRow}–${lastNeeded} needed but the table ends at ${lastTableRow}. ` +
+      `"${tab.title}" is full: rows ${firstFreeRow}–${lastNeeded} needed but the table ends at ${lastTableRow}. ` +
       `Extend the table in the sheet — writing below it would leave every id blank.`,
     );
   }
 
-  await sheets.spreadsheets.values.update({
+  // One range per contiguous run of writable columns, so a formula column sitting
+  // between them (Sunday's Driver) is stepped over rather than overwritten.
+  const data: { range: string; values: string[][] }[] = [];
+  const q = a1(tab);
+  if (tab.dropoffCol) {
+    // Weekday: pickup, destination, then two cells this must leave blank — the
+    // alternate-destination override and the driver being asked for.
+    data.push({ range: `${q}!${tab.pickupCol}${firstFreeRow}:${tab.dropoffCol}${lastNeeded}`,
+                values: cells.map((c) => [c.pickup, c.dropoff]) });
+  } else {
+    data.push({ range: `${q}!${tab.pickupCol}${firstFreeRow}:${tab.pickupCol}${lastNeeded}`,
+                values: cells.map((c) => [c.pickup]) });
+  }
+  data.push({ range: `${q}!${tab.shiftStartCol}${firstFreeRow}:${tab.shiftEndCol}${lastNeeded}`,
+              values: cells.map((c) => [c.start, c.end]) });
+
+  await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: SHEET_ID,
-    // Column-scoped and row-explicit. Columns A–D are not named, so they cannot
-    // be touched; the ARRAYFORMULA fills them in on its own.
-    range: `${CONFIG_SHEET}!${CFG_FIRST_COL_A1}${firstFreeRow}:${CFG_LAST_COL_A1}${lastNeeded}`,
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values: rows },
+    requestBody: { valueInputOption: "USER_ENTERED", data },
   });
 
-  // No formula-copy step. The per-row formulas in K/L/M (smart_driver_id,
-  // bot_token, chat_id) are table column formulas and fill themselves on a row
-  // inside the table. Copying them explicitly is also impossible here: the tab
-  // carries an active filter, and copyPaste refuses any range covering one.
-  return rows.map((_, i) => firstFreeRow + i);
+  // No formula-copy step on either tab: a row inside the table inherits its
+  // column formulas. Just as well — both tabs carry an active filter, and
+  // copyPaste refuses any range covering one.
+  return cells.map((_, i) => firstFreeRow + i);
 }

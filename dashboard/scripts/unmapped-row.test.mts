@@ -11,7 +11,7 @@
  */
 
 import type { UnmappedBranch } from "../src/lib/unmapped-row";
-const { shiftWindowForJob, configRowFor, dedupeBranches } = await import("../src/lib/unmapped-row");
+const { shiftWindowForJob, configCellsFor, dedupeBranches } = await import("../src/lib/unmapped-row");
 const { isDriverOnShift } = await import("../src/lib/fixed-driver");
 
 let failed = 0;
@@ -52,22 +52,21 @@ for (const t of ["00:00", "00:01", "06:30", "09:15", "10:00", "12:00", "17:59", 
   ok(`${t} falls inside ${start}–${end}`, isDriverOnShift(mapping as any, at(t)));
 }
 
-section("the row itself");
+section("what the row says");
 {
-  const r = configRowFor(branch("c1", "20079 - TUyen - BS Danh Vinh", "D001 - Lab", "09:15"));
-  eq("six cells, E through J", r.length, 6);
-  eq("pickup, destination, blank override, blank driver, then the window",
-     r, ["20079 - TUyen - BS Danh Vinh", "D001 - Lab", "", "", "09:00", "10:00"]);
-  ok("the driver cell is empty — this is the decision being asked for", r[3] === "");
+  const c = configCellsFor(branch("c1", "20079 - TUyen - BS Danh Vinh", "D001 - Lab", "09:15"));
+  eq("the four facts, no column positions",
+     c, { pickup: "20079 - TUyen - BS Danh Vinh", dropoff: "D001 - Lab", start: "09:00", end: "10:00" });
+  ok("no driver is carried — that is the decision being asked for", !("driver" in c));
 }
 {
-  const r = configRowFor(branch("c1", "A branch", "", "09:15"));
-  eq("a job with no destination leaves that cell blank", r[1], "");
+  const c = configCellsFor(branch("c1", "A branch", "", "09:15"));
+  eq("a job with no destination says so", c.dropoff, "");
 }
 {
-  const r = configRowFor(branch("c1", "=SUM(A1:A9)", "+7", "09:15"));
-  ok("a name that would be read as a formula is escaped", r[0].startsWith("'"));
-  ok("...and so is the destination", r[1].startsWith("'"));
+  const c = configCellsFor(branch("c1", "=SUM(A1:A9)", "+7", "09:15"));
+  ok("a name that would be read as a formula is escaped", c.pickup.startsWith("'"));
+  ok("...and so is the destination", c.dropoff.startsWith("'"));
 }
 
 section("one row per branch, not per job");
@@ -85,6 +84,31 @@ section("one row per branch, not per job");
   eq("a branch with no name is not written", dedupeBranches([branch("c1", "", "X", "09:00")]), []);
   eq("nor one with no id", dedupeBranches([branch("", "A", "X", "09:00")]), []);
   eq("nothing found, nothing written", dedupeBranches([]), []);
+}
+
+section("the two tabs have different geometry");
+{
+  const { CONFIG_TABS, currentConfigTab } = await import("../src/lib/sheets-writer");
+  const w = CONFIG_TABS.weekday, s = CONFIG_TABS.sunday;
+
+  eq("weekday: pickup is column E", w.pickupCol, "E");
+  eq("weekday: destination is column F", w.dropoffCol, "F");
+  eq("weekday: shifts at I/J", [w.shiftStartCol, w.shiftEndCol], ["I", "J"]);
+
+  eq("Sunday: pickup is column D", s.pickupCol, "D");
+  // Its only destination column is "Điểm Drop-off thay thế", an OVERRIDE that
+  // rewrites where a job goes. Writing the observed destination there would
+  // redirect real trips, so the tab carries none.
+  eq("Sunday: no destination column at all", s.dropoffCol, null);
+  eq("Sunday: shifts at G/H, past the Driver formula", [s.shiftStartCol, s.shiftEndCol], ["G", "H"]);
+  ok("Sunday: shift block does not touch F, which is the Driver FORMULA",
+     s.shiftStartCol !== "F" && s.shiftEndCol !== "F" && s.pickupCol !== "F");
+
+  for (const [name, t] of [["weekday", w], ["Sunday", s]] as const) {
+    ok(`${name}: nothing is written from column A, where the id formulas live`,
+       t.pickupCol !== "A" && t.shiftStartCol !== "A" && t.dropoffCol !== "A");
+  }
+  ok("the tab chosen today is one of the two", [w.title, s.title].includes(currentConfigTab().title));
 }
 
 console.log(failed === 0 ? "\nAll checks passed." : `\n${failed} check(s) FAILED.`);
