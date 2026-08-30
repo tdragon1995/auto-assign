@@ -1147,6 +1147,45 @@ async function fetchRolloverCandidates(
 }
 
 /**
+ * May this leftover of yesterday's be carried into today? Exported so the rule
+ * can be pinned offline (scripts/rollover-eligibility.test.mts) — it decides,
+ * unattended and once a day, whether a job is reassigned or abandoned.
+ */
+export function isRollable(j: Job): boolean {
+  if (hasPlanAttached(j)) return false;                 // plan slot → regenerates itself; never roll
+  // A chấm công (check-in/out) task is yesterday's attendance record, not work
+  // to carry over. It has no pickup stop, so it clears the guards below and
+  // would roll: unassigned from the driver it belongs to, re-dated to today,
+  // then skipped forever by the cycle ("No pickup stop found"). Leave it be.
+  if (isChamCong(j)) return false;
+  // An unridden return/via leg is the engine's own dead weight, not client work
+  // waiting to be delivered — cleanupStaleTrips exists to remove exactly these,
+  // and a fresh one is created the next time its outbound completes. Rolling one
+  // steals it from that sweep, which looks for legs still dated YESTERDAY: the
+  // rollover runs at the top of the cycle and the sweep at the end, so a rolled
+  // leg is already re-dated to today by the time the sweep looks, and invisible
+  // to it. Worse, the roll strips the driver, and every same-day cleanup rule
+  // only considers legs that still have one — so nothing could remove it ever
+  // again, and it rolled afresh every morning. (Observed on the 21:48 D001→D007
+  // return of 2026-08-29: created too late for the 21:54 end-of-day sweep, which
+  // spares anything under 20 minutes old, then rolled at 05:31 the next morning
+  // and left driverless, unassignable — D001 is no mapping's pickup — and immortal.)
+  // Outbound legs are deliberately NOT included: those carry real samples.
+  if ((j.labels ?? []).some((l) => l === PSC_RETURN_LABEL || l === PSC_VIA_LABEL)) return false;
+  const stops = j.stops ?? [];
+  // Skip if the pickup sample is already collected. Re-assignment resets a
+  // stop's activity, so rolling a job whose pickup is Hoàn thành (status 4)
+  // would send the new driver to collect the same sample again. Pickup still
+  // Chờ lấy / Đang đến / Đã đến (1/2/3) = not yet taken → safe to roll.
+  const pickup = stops.find((s) => s.stop_type_id === 1);
+  if (pickup?.stop_status_id === 4) return false;
+  // Belt-and-braces: skip a job whose every stop is already terminal (a
+  // fully-done job lagging at status 4/5). Nothing to reassign.
+  if (stops.length > 0 && stops.every((s) => isCompletedOrRejectedStop(s.stop_status_id ?? 0))) return false;
+  return true;
+}
+
+/**
  * Reclaim yesterday's unfinished ad-hoc jobs into `toDate` (today) so the
  * morning cycle assigns them. The cycle fetches by scheduled_delivery_ts =
  * today, so a job left over from yesterday is otherwise invisible — never
@@ -1155,13 +1194,15 @@ async function fetchRolloverCandidates(
  *
  * `candidates` is yesterday's status 2 (unassigned) + status 4 (assigned,
  * possibly started) — the fetch already excludes completed (5) and cancelled
- * (7), so everything here is genuinely unfinished. Two eligibility rules:
+ * (7), so everything here is genuinely unfinished. Three eligibility rules:
  *   1. NO plan attached (hasPlanAttached). Recurring plan slots regenerate
  *      themselves each day, so rolling one would duplicate it.
  *   2. Pickup NOT yet collected (pickup stop_status_id !== 4). Reassignment
  *      resets stop activity, so a job whose sample is already picked up would
  *      be re-collected — a wasted second pickup.
- * Everything else — engine legs, en-route/arrived jobs, jobs with a stale
+ *   3. NOT a return or via leg. Those belong to cleanupStaleTrips, which only
+ *      finds them while they are still dated yesterday — see the rule itself.
+ * Everything else — outbound legs, en-route/arrived jobs, jobs with a stale
  * driver — rolls.
  *
  * For each eligible job:
@@ -1180,25 +1221,7 @@ async function rolloverUnfinishedJobs(
   log: (msg: string, level?: LogLevel) => void,
   deadlineMs: number,
 ): Promise<{ bumped: Set<number>; remaining: number }> {
-  const eligible = candidates.filter((j) => {
-    if (hasPlanAttached(j)) return false;                 // plan slot → regenerates itself; never roll
-    // A chấm công (check-in/out) task is yesterday's attendance record, not work
-    // to carry over. It has no pickup stop, so it clears the guards below and
-    // would roll: unassigned from the driver it belongs to, re-dated to today,
-    // then skipped forever by the cycle ("No pickup stop found"). Leave it be.
-    if (isChamCong(j)) return false;
-    const stops = j.stops ?? [];
-    // Skip if the pickup sample is already collected. Re-assignment resets a
-    // stop's activity, so rolling a job whose pickup is Hoàn thành (status 4)
-    // would send the new driver to collect the same sample again. Pickup still
-    // Chờ lấy / Đang đến / Đã đến (1/2/3) = not yet taken → safe to roll.
-    const pickup = stops.find((s) => s.stop_type_id === 1);
-    if (pickup?.stop_status_id === 4) return false;
-    // Belt-and-braces: skip a job whose every stop is already terminal (a
-    // fully-done job lagging at status 4/5). Nothing to reassign.
-    if (stops.length > 0 && stops.every((s) => isCompletedOrRejectedStop(s.stop_status_id ?? 0))) return false;
-    return true;
-  });
+  const eligible = candidates.filter(isRollable);
   const bumped = new Set<number>();
   let remaining = 0;
 
