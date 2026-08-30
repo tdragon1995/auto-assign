@@ -2107,7 +2107,11 @@ export async function autoAssignCycle(
           }
           const who = jobCustomerName ?? customerId ?? "—";
           log(`Job ${jobId} - SMART skipped: 0/${smartMapping.smart_driver_id.length} configured drivers available (GPS or start_location) | ${route}`, "WARN");
-          fail("NO_DRIVER", jobId, who, `0/${smartMapping.smart_driver_id.length} tài xế cấu hình có toạ độ (GPS/điểm xuất phát)`, "WARN");
+          // A coordinates problem, not an uncovered hour: the drivers are rostered,
+          // none of them has a position to rank from. Reported under NO_DRIVER it
+          // would now inherit the "thiếu ca" label and send someone to edit shift
+          // times that are perfectly correct.
+          fail("NO_GPS", jobId, who, `0/${smartMapping.smart_driver_id.length} tài xế cấu hình có toạ độ (GPS/điểm xuất phát)`, "WARN");
           continue;
         }
 
@@ -2346,7 +2350,10 @@ export async function autoAssignCycle(
       const hhmm = `${String(jt.hours).padStart(2, "0")}:${String(jt.minutes).padStart(2, "0")}`;
       const who = jobCustomerName ?? customerId ?? "—";
       log(`Job ${jobId} - NO DRIVER ON DUTY at ${hhmm}, Shifts: ${shiftInfo} | ${route}`, "ERROR");
-      fail("NO_DRIVER", jobId, who, `Không có tài xế trực lúc ${hhmm} · Ca: ${shiftInfo || "—"}`);
+      // Says what is actually wrong and shows the windows that DO exist, so the
+      // hole is visible in the message itself: "nothing covers 16:10, cover is
+      // 07:00–16:00 and 16:30–19:00" is a boundary to move, not a driver to find.
+      fail("NO_DRIVER", jobId, who, `Chưa có dòng nào phủ ${hhmm} · Ca hiện có: ${shiftInfo || "—"}`);
       continue;
     }
 

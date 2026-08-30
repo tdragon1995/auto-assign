@@ -36,12 +36,26 @@ const REASON_META: Record<
   FailedReason,
   { label: string; tone: "red" | "amber"; order: number }
 > = {
-  NO_DRIVER:      { label: "Không có tài xế trực", tone: "red",   order: 0 },
+  // RED vs AMBER is a statement about how much is broken, not how annoying it is.
+  //
+  //   red   — the branch cannot be served at all: there is no line for it, or the
+  //           line it has names something the engine cannot use. Every job from
+  //           there is stuck until someone adds or repairs a row.
+  //   amber — the branch IS configured and works; one window, one destination or
+  //           one day is uncovered. A boundary to adjust, not a row to create.
+  //
+  // These two were the wrong way round: a branch with no configuration at all was
+  // the softer colour, while an uncovered hour — which usually means one shift
+  // ends at 14:30 and the next starts at 16:30 — was the loud one.
+  NO_MAPPING:     { label: "Chưa cấu hình (Sheet)", tone: "red",   order: 0 },
   UNAVAILABLE:    { label: "Giao Nhận Mẫu bận / offline", tone: "red", order: 1 },
   ON_LEAVE:       { label: "Nghỉ, không người thay", tone: "amber", order: 2 },
   CLASH:          { label: "Trùng tài xế trực", tone: "amber", order: 3 },
   SUB_CLASH:      { label: "Trùng người thay", tone: "amber", order: 4 },
-  NO_MAPPING:     { label: "Chưa cấu hình (Sheet)", tone: "amber", order: 5 },
+  // "Không có tài xế trực" read as a staffing problem — nobody available — when
+  // it almost always means the opposite: the drivers are there, no ROW covers
+  // that hour. Named for the fix it needs, next to its sibling below.
+  NO_DRIVER:      { label: "Thiếu ca cho giờ này", tone: "amber", order: 5 },
   NO_DROPOFF_RULE:{ label: "Chưa cấu hình điểm giao", tone: "amber", order: 6 },
   INVALID_DRIVER: { label: "Sai driver_id (Sheet)", tone: "red", order: 7 },
   DEACTIVATED:    { label: "Tài khoản tài xế đã bị khoá", tone: "red", order: 8 },
