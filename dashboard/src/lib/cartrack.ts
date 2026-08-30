@@ -508,6 +508,42 @@ export async function updateJobScheduledDeliveryTs(
   const vnNowPlus = new Date(Date.now() + 7 * 3_600_000 + 2 * 60_000)
     .toISOString().slice(0, 19).replace("T", " ");
   const allowedToStartAt = midnight > vnNowPlus ? midnight : vnNowPlus;
+
+  // Prefer the fleetweb RPC: measured 203ms vs 5117ms for the REST PUT (prod
+  // 2026-08-30, three alternating rounds on a throwaway job, session already
+  // warm — a cold ct_login is what made an earlier single sample read 12.3s).
+  // At ~5s saved per job this is the difference between the morning rollover
+  // fitting in the 60s function budget and being killed by it.
+  //
+  // WHY THIS IS SAFE HERE WHEN delivery_update_job IS OTHERWISE AVOIDED. That
+  // avoidance is real and stays: called WITH a `stops` array it is a full
+  // replace and silently destroys stop todos — the driver's photo/e-sign/note
+  // steps (measured 2026-07-28: dropoff 3->0, pickup 2->0, durations reset).
+  // A DATE-ONLY payload is a different call and was measured field-by-field on
+  // prod throwaway jobs (2026-08-30): todos preserved AND their ids unchanged
+  // (not recreated), stop notes, pickup delivery windows, labels, items,
+  // reference_number, durations and schedule_type_id all intact, and a
+  // send_to_driver_at left off the payload survives untouched — which the REST
+  // PUT also does, so the two are equivalent. It is the shape Cartrack's own UI
+  // sends when an operator drags a job to another day.
+  //
+  // ANYONE ADDING A FIELD TO THIS PAYLOAD: re-measure. `stops` in particular
+  // turns this back into the destructive call.
+  const iso = `${allowedToStartAt.replace(" ", "T")}+07:00`;
+  const rpc = await jsonRpc<{ data?: { scheduledDeliveryTs?: string } }>(
+    "delivery_update_job",
+    { data: { jobId, scheduledDeliveryTs: iso, allowedToStartAt: iso } },
+    { env }
+  );
+  // Guard on the echoed job rather than on `ok` alone — these endpoints have
+  // form for 200-ing a write they discarded. The echo carries the NEW
+  // scheduledDeliveryTs (its allowedToStartAt lags, so don't check that one);
+  // a bad id returns ok=false with "Job does not exist". Anything unexpected
+  // falls through to the authoritative REST PUT below.
+  if (rpc.ok && rpc.result?.data?.scheduledDeliveryTs?.slice(0, 10) === allowedToStartAt.slice(0, 10)) {
+    return { ok: true, status: 200, body: rpc.result };
+  }
+
   const res = await fetch(`${BASE_URL}/jobs/${jobId}`, {
     method: "PUT",
     headers: getHeaders(env),
