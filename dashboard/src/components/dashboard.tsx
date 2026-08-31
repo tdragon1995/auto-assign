@@ -16,7 +16,7 @@ import { ConfigTodoPanel } from "./config-todo-panel";
 import { SheetAlarmBanner } from "./sheet-alarm-banner";
 import { TatTeamPanel } from "./tat-team-panel";
 import { toast } from "sonner";
-import type { LogEntry, PickupWarning, FailedJob, ConfigDriver, SheetAlarm, UnfinishedConfigRow, CoverageGap } from "@/lib/types";
+import type { LogEntry, PickupWarning, FailedJob, ConfigDriver, SheetAlarm, UnfinishedConfigRow, CoverageGap, BranchRule } from "@/lib/types";
 import type { DeploymentBeat } from "@/lib/smart-log-kv";
 import type { LeaveOnDate, InvalidLeaveRow, SpanningLeaveRow } from "@/lib/leave-config";
 
@@ -37,6 +37,7 @@ export function Dashboard() {
   const [unfinished, setUnfinished] = useState<UnfinishedConfigRow[]>([]);
   const [gaps, setGaps] = useState<CoverageGap[]>([]);
   const [parsedAt, setParsedAt] = useState("");
+  const [branchRules, setBranchRules] = useState<Record<string, BranchRule[]>>({});
   // Rows the user has just finished, hidden until the engine catches up.
   //
   // The lists come from a snapshot the assign CYCLE publishes, so a save is not
@@ -157,6 +158,7 @@ export function Dashboard() {
         });
       }
       if (typeof data.parsedAt === "string") setParsedAt(data.parsedAt);
+      if (data.branchRules && typeof data.branchRules === "object") setBranchRules(data.branchRules as Record<string, BranchRule[]>);
       if (Array.isArray(data.failed)) {
         const dismissed = dismissedFailedRef.current;
         const now = Date.now();
@@ -638,6 +640,7 @@ export function Dashboard() {
                 <ConfigTodoPanel
                   gaps={visibleGaps}
                   unfinished={visibleUnfinished}
+                  branchRules={branchRules}
                   drivers={drivers}
                   parsedAt={parsedAt}
                   onSaved={(key?: string) => { if (key) markDone(key); syncStatus(); }}

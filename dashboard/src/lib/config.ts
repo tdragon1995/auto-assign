@@ -1,5 +1,5 @@
 import { Redis } from "@upstash/redis";
-import type { Config, ConfigDriver, Mapping, UnfinishedConfigRow, CoverageGap } from "./types";
+import type { Config, ConfigDriver, Mapping, UnfinishedConfigRow, CoverageGap, BranchRule } from "./types";
 import { fetchSheetRows, isSheetShapeError, noteSheetLoad, noteSheetWarning, SHEET_CONTRACT, SHEET_GID } from "./sheets";
 import {
   findDuplicateBranches, findShiftOverlaps, resolveGaps, coversWindow,
@@ -54,7 +54,7 @@ async function readGen(): Promise<string | null> {
 // freshness mechanism — that is the gen stamp, deliberately, after a clock-based cache
 // was measured at an 87% miss rate.
 const L2_TTL_S = 48 * 60 * 60;
-//   version — the `v7` below is NOT decoration. This blob is PARSED config, so a change to
+//   version — the `v8` below is NOT decoration. This blob is PARSED config, so a change to
 //          how it is parsed (a renamed column, a new field) leaves every server reading a
 //          blob built by the old code until someone presses Refresh. That is exactly how
 //          the "Driver" column fix shipped and did nothing: correct code, stale parse.
@@ -66,7 +66,7 @@ const L2_TTL_S = 48 * 60 * 60;
 //          exactly what happened on 2026-08-31: two fixes to this wording shipped
 //          and neither reached the screen. Hence the audit inputs now ride the blob
 //          and the sentences are rebuilt on every load, cached or not.
-const l2Key = (gen: string, date: string) => `config:v7:${gen}:${date}`;
+const l2Key = (gen: string, date: string) => `config:v8:${gen}:${date}`;
 
 
 let cachedConfig: Config | null = null;
@@ -267,11 +267,11 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     const redis = getRedis();
     if (redis) {
       try {
-        const hit = await redis.get<{ mappings: Mapping[]; unfinished?: UnfinishedConfigRow[]; gaps?: CoverageGap[]; parsedAt?: string; unresolved?: UnresolvedRows; names?: [string, string][] }>(l2Key(gen, today));
+        const hit = await redis.get<{ mappings: Mapping[]; unfinished?: UnfinishedConfigRow[]; gaps?: CoverageGap[]; branchRules?: Record<string, BranchRule[]>; parsedAt?: string; unresolved?: UnresolvedRows; names?: [string, string][] }>(l2Key(gen, today));
         // Same zero-length suspicion as the sheet path below: never adopt an empty
         // mapping, whatever it came from.
         if (hit && Array.isArray(hit.mappings) && hit.mappings.length > 0) {
-          cachedConfig = { mappings: hit.mappings, unfinished: hit.unfinished ?? [], gaps: hit.gaps ?? [], parsedAt: hit.parsedAt ?? "" };
+          cachedConfig = { mappings: hit.mappings, unfinished: hit.unfinished ?? [], gaps: hit.gaps ?? [], branchRules: hit.branchRules ?? {}, parsedAt: hit.parsedAt ?? "" };
           cachedDay = today;
           cachedGen = gen;
           // Rebuild the sentences from the cached inputs. Pure string work, and
@@ -429,6 +429,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     // that cannot work. Today that tab happens to have none, which is luck
     // rather than design.
     const isWeekday = tab === "mapping";
+
     // Which recorded gaps are still open, and which the config now covers. The
     // CLOSING is decided here, from the data, rather than by whoever recorded
     // it — an alarm only its author can retract outlives its author.
@@ -444,9 +445,24 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     } catch (e) {
       console.error("Coverage-gap resolve skipped:", e);
     }
+
+    // The rules each listed branch already has. Only those branches, because the
+    // editor needs a branch's WHOLE day — a window cannot be judged free without
+    // seeing what sits beside it — but nothing else needs carrying.
+    const branchRules: Record<string, BranchRule[]> = {};
+    if (isWeekday) {
+      const hhmm = (t: { hours: number; minutes: number } | null) =>
+        t ? `${String(t.hours).padStart(2, "0")}:${String(t.minutes).padStart(2, "0")}` : "";
+      for (const cid of new Set([...gaps.map((g) => g.customer_id), ...stillNeeded.map((u) => u.customer_id)])) {
+        branchRules[cid] = (rulesByCustomer.get(cid) ?? []).map((r) => ({
+          row: r.row, driver: r.driver, start: hhmm(r.start), end: hhmm(r.end),
+        }));
+      }
+    }
+
     await auditParsedConfig(SHEET_CONTRACT[tab].label, mappings, unresolved, pickupNames, nameByCustomer, today);
     const parsedAt = vnTimestamp();
-    cachedConfig = { mappings, unfinished: isWeekday ? stillNeeded : [], gaps: isWeekday ? gaps : [], parsedAt };
+    cachedConfig = { mappings, unfinished: isWeekday ? stillNeeded : [], gaps: isWeekday ? gaps : [], branchRules, parsedAt };
     cachedDay = today;
     cachedGen = gen;
 
@@ -457,7 +473,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
       const redis = getRedis();
       if (redis) {
         try {
-          await redis.set(l2Key(gen, today), { mappings, unfinished: isWeekday ? stillNeeded : [], gaps: isWeekday ? gaps : [], parsedAt, unresolved, names: [...nameByCustomer] }, { ex: L2_TTL_S });
+          await redis.set(l2Key(gen, today), { mappings, unfinished: isWeekday ? stillNeeded : [], gaps: isWeekday ? gaps : [], branchRules, parsedAt, unresolved, names: [...nameByCustomer] }, { ex: L2_TTL_S });
         } catch { /* best-effort; the sheet is always the fallback */ }
       }
     }

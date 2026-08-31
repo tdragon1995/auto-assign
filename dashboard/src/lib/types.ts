@@ -55,6 +55,15 @@ export interface UnfinishedConfigRow {
  * says which are deliberate. So only a hole that has actually swallowed a job
  * is reported, and the evidence is the job.
  */
+/** One rule as it stands in the sheet, with the row so it can be edited back. */
+export interface BranchRule {
+  row: number;
+  driver: string;
+  /** "HH:MM", or "" for a rule with no window (covers the whole day). */
+  start: string;
+  end: string;
+}
+
 export interface CoverageGap {
   customer_id: string;
   pickup_name: string;
@@ -65,15 +74,6 @@ export interface CoverageGap {
    *  the boundary can be moved from the dashboard. */
   before: { row: number; driver: string; window: string } | null;
   after: { row: number; driver: string; window: string } | null;
-  /**
-   * Every window this branch already has, "HH:MM"–"HH:MM" pairs.
-   *
-   * So the dashboard can grey out a time that would land inside an existing
-   * rule. Overlap is the one fault a person cannot see coming here — two rules
-   * live at the same minute make the engine refuse the job entirely — and it is
-   * much better prevented in the picker than reported afterwards.
-   */
-  busy: [string, string][];
 }
 
 export interface Config {
@@ -82,6 +82,15 @@ export interface Config {
   unfinished: UnfinishedConfigRow[];
   /** Hours a job needed and no rule covered, still uncovered as of this parse. */
   gaps: CoverageGap[];
+  /**
+   * The rules each branch in those two lists already has, keyed by branch.
+   *
+   * Shared rather than repeated on every entry: several rows can belong to one
+   * branch, and the editor needs the branch's WHOLE day — you cannot judge
+   * whether a window is free without seeing everything beside it. Only branches
+   * that actually appear are included, so this stays small.
+   */
+  branchRules: Record<string, BranchRule[]>;
   /**
    * When the sheet was last actually READ, "YYYY-MM-DD HH:MM:SS".
    *

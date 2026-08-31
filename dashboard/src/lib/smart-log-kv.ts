@@ -1,7 +1,7 @@
 import { Redis } from "@upstash/redis";
 import { vnDate, vnMinutesSinceMidnight, vnTimestamp } from "./time";
 import { isNoteReleaseHour } from "./job-filters";
-import type { LogEntry, PickupWarning, FailedJob, SheetAlarm, UnfinishedConfigRow, CoverageGap } from "./types";
+import type { LogEntry, PickupWarning, FailedJob, SheetAlarm, UnfinishedConfigRow, CoverageGap, BranchRule } from "./types";
 
 /**
  * COMMAND BUDGET — read this before adding a Redis call to a per-cycle path.
@@ -91,6 +91,7 @@ const F_UNFINISHED = "unfinished_config";
 const F_GAPS = "coverage_gaps";
 // When the sheet behind those two lists was last actually read.
 const F_PARSED_AT = "config_parsed_at";
+const F_BRANCH_RULES = "config_branch_rules";
 const WARNINGS_MAX_AGE_MS = 600_000; // 10 min — what the old PICKUP_WARNINGS TTL enforced
 
 // Server-backed live log: flat list of recent entries (all levels), so the
@@ -319,6 +320,7 @@ export interface CycleSnapshot {
   unfinished?: UnfinishedConfigRow[];
   gaps?: CoverageGap[];
   parsedAt?: string;
+  branchRules?: Record<string, BranchRule[]>;
 }
 
 /** Replace part or all of the per-cycle snapshot in ONE command.
@@ -344,6 +346,7 @@ export async function setCycleSnapshot(snap: CycleSnapshot): Promise<void> {
   if (snap.unfinished)  fields[F_UNFINISHED]   = JSON.stringify(snap.unfinished);
   if (snap.gaps)        fields[F_GAPS]         = JSON.stringify(snap.gaps);
   if (snap.parsedAt)    fields[F_PARSED_AT]   = snap.parsedAt;
+  if (snap.branchRules) fields[F_BRANCH_RULES] = JSON.stringify(snap.branchRules);
   if (Object.keys(fields).length === 0) return;
   await redis.hset(CYCLE_SNAPSHOT_KEY, fields);
 }
@@ -1036,6 +1039,8 @@ export interface StatusBundle {
   gaps: CoverageGap[];
   /** When the sheet behind both lists was last read. */
   parsedAt: string;
+  /** The rules each listed branch already has. */
+  branchRules: Record<string, BranchRule[]>;
 }
 
 /** One pipeline request to Upstash — and, since held/failed/warnings moved into a
@@ -1043,7 +1048,7 @@ export interface StatusBundle {
  *  90s per open tab, so each command removed here is ~24k a month. */
 export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
   const redis = getRedis();
-  if (!redis) return { state: null, lastChecked: null, deployments: [], logs: [], held: [], warnings: [], failed: [], sheetAlarms: [], unfinished: [], gaps: [], parsedAt: "" };
+  if (!redis) return { state: null, lastChecked: null, deployments: [], logs: [], held: [], warnings: [], failed: [], sheetAlarms: [], unfinished: [], gaps: [], parsedAt: "", branchRules: {} };
 
   const pipe = redis.pipeline();
   pipe.get(ARM_KEY);
@@ -1071,6 +1076,7 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
   const unfinished = parseList<UnfinishedConfigRow>(snap[F_UNFINISHED]);
   const gaps = parseList<CoverageGap>(snap[F_GAPS]);
   const parsedAt = typeof snap[F_PARSED_AT] === "string" ? (snap[F_PARSED_AT] as string) : "";
+  const branchRules = (() => { try { const v = snap[F_BRANCH_RULES]; return v ? (typeof v === "string" ? JSON.parse(v) : v) : {}; } catch { return {}; } })() as Record<string, BranchRule[]>;
 
   // Warnings expire in the READER now, not in Redis. The old 10-minute TTL existed
   // so a disarmed engine's warnings stopped being shown as current; merging keys
@@ -1092,6 +1098,7 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
     unfinished,
     gaps,
     parsedAt,
+    branchRules,
   };
 }
 

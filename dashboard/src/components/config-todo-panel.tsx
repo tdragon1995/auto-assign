@@ -5,7 +5,7 @@ import { ClipboardList } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import type { CoverageGap, UnfinishedConfigRow, ConfigDriver } from "@/lib/types";
+import type { CoverageGap, UnfinishedConfigRow, ConfigDriver, BranchRule } from "@/lib/types";
 
 /**
  * What the CONFIG is waiting on a person for — its own card, beside the leave
@@ -129,59 +129,121 @@ function insideBusy(t: string, busy: readonly [string, string][]): boolean {
 
 const CONFIG_NAMES_LIST_ID = "config-driver-names";
 
+/** A line as the editor holds it while being worked on. */
+interface Line {
+  /** The sheet row this came from, or undefined for one being added. */
+  row?: number;
+  driver: string;
+  start: string;
+  end: string;
+}
+
+const asLine = (r: BranchRule): Line => ({ row: r.row, driver: r.driver, start: r.start, end: r.end });
+
+/** Minutes a line is on duty, as inclusive blocks. Mirrors the engine: a blank
+ *  window is all day, the window is half-open so the start minute belongs to the
+ *  OUTGOING rule, and a start after the end wraps past midnight. */
+function blocks(l: Line): Array<[number, number]> {
+  const a = toMin(l.start), b = toMin(l.end);
+  if (a < 0 || b < 0) return [[0, 1439]];
+  if (a === b) return [];
+  return a < b ? [[a + 1, b]] : [[a + 1, 1439], [0, b]];
+}
+
 /**
- * One unfinished config line, and the decision it is waiting for.
+ * The first pair of lines that would be on duty at the same minute, if any.
  *
- * Shaped like the leave module's substitute editor on purpose: the same people
- * use both, and the same gesture should look the same — a name, a window, and a
- * button that splits the work across more than one row.
- *
- * The hours are editable because the engine only guessed them, from the hour
- * block around the job that failed. That is a hint about when the branch needs
- * collecting, not a shift anyone agreed to.
+ * Checked over the branch as a WHOLE rather than field by field, which is the
+ * point of editing it as a whole: moving one boundary is only safe in the
+ * context of everything beside it, and two rules live at the same minute make
+ * the engine refuse the job outright.
  */
-function UnfinishedRow({
-  u, drivers, onSaved,
+function findClash(lines: Line[]): [Line, Line] | null {
+  for (let i = 0; i < lines.length; i++) {
+    for (let j = i + 1; j < lines.length; j++) {
+      for (const x of blocks(lines[i])) {
+        for (const y of blocks(lines[j])) {
+          if (Math.max(x[0], y[0]) <= Math.min(x[1], y[1])) return [lines[i], lines[j]];
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * The whole of one branch's day, editable in one go.
+ *
+ * Opened from either kind of row, because both ask the same question — who
+ * collects from this place, and when — and answering it needs the branch's
+ * whole day in view. An hour with nobody on it and a line with no driver are
+ * two symptoms of one thing.
+ *
+ * Every existing rule can have its hours changed or its driver replaced, and a
+ * line can be added. Nothing is written until Lưu, and then the branch is
+ * validated as a unit: overlap is caught before anything is saved rather than
+ * discovered afterwards by a job that would not assign.
+ *
+ * Existing lines cannot be REMOVED here. Taking cover away is a different kind
+ * of decision from adjusting it, and there is nothing on the writing side that
+ * does it; only a line added and not yet saved can be dropped again.
+ */
+function BranchEditor({
+  pickupName, dropoffName, rules, extraLine, drivers, onDone, onCancel,
 }: {
-  u: UnfinishedConfigRow;
+  pickupName: string;
+  dropoffName: string;
+  rules: BranchRule[];
+  /** The unfinished row itself, when the editor was opened from one — it exists
+   *  in the sheet but carries no driver, so it is not among the usable rules. */
+  extraLine?: Line;
   drivers: ConfigDriver[];
-  onSaved: (key?: string) => void;
+  onDone: () => void;
+  onCancel: () => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const initial: Line[] = [...rules.map(asLine), ...(extraLine ? [extraLine] : [])]
+    .sort((x, y) => (toMin(x.start) - toMin(y.start)) || x.row! - y.row!);
+  const [lines, setLines] = useState<Line[]>(initial);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [from, to] = (u.window ?? "–").split("–");
-  // One block = one rule. A branch collected morning and afternoon by different
-  // drivers needs two rows, which is what "+ Thêm config" adds — the same split
-  // the leave editor offers, for the same reason.
-  const [blocks, setBlocks] = useState([{ name: "", start: from ?? "", end: to ?? "" }]);
 
-  const patch = (i: number, v: Partial<(typeof blocks)[number]>) =>
-    setBlocks((bs) => bs.map((b, j) => (j === i ? { ...b, ...v } : b)));
-  const addBlock = () => setBlocks((bs) => [...bs, { name: "", start: "", end: "" }]);
-  const dropBlock = (i: number) => setBlocks((bs) => bs.filter((_, j) => j !== i));
+  const patch = (i: number, v: Partial<Line>) =>
+    setLines((ls) => ls.map((l, j) => (j === i ? { ...l, ...v } : l)));
+  const addLine = () => setLines((ls) => [...ls, { driver: "", start: "", end: "" }]);
+  const dropLine = (i: number) => setLines((ls) => ls.filter((_, j) => j !== i));
+
+  const changed = (l: Line, i: number) => {
+    const was = initial[i];
+    return !was || !l.row || was.driver !== l.driver || was.start !== l.start || was.end !== l.end;
+  };
 
   async function save() {
     setErr(null);
-    const resolved: { name: string; start: string; end: string }[] = [];
-    for (const b of blocks) {
-      const r = resolveDriver(b.name, drivers);
+
+    // Resolve every driver first, so nothing is written if one name is wrong.
+    const resolved: Line[] = [];
+    for (const l of lines) {
+      const r = resolveDriver(l.driver, drivers);
       if ("error" in r) { setErr(r.error); return; }
-      // More than one rule for a branch means each MUST carry its own window:
-      // an open one covers the whole day and would clash with its siblings.
-      if (blocks.length > 1 && (!b.start.trim() || !b.end.trim())) {
-        setErr("Nhiều dòng thì mỗi dòng cần khung giờ riêng");
+      if (lines.length > 1 && (!l.start || !l.end)) {
+        setErr("Nhiều ca thì mỗi ca cần khung giờ riêng");
         return;
       }
-      resolved.push({ name: r.name, start: b.start.trim(), end: b.end.trim() });
+      if (l.start && l.end && l.start === l.end) {
+        setErr(`Ca ${l.start}–${l.end} không bao giờ trực`);
+        return;
+      }
+      resolved.push({ ...l, driver: r.name });
+    }
+
+    const clash = findClash(resolved);
+    if (clash) {
+      setErr(`${clash[0].driver} (${clash[0].start}–${clash[0].end}) và ${clash[1].driver} (${clash[1].start}–${clash[1].end}) trùng giờ`);
+      return;
     }
 
     setBusy(true);
     try {
-      // The first block fills the row that already exists; the rest become new
-      // rows. Sequential on purpose — a failure part way through then leaves a
-      // clear picture rather than an unknown number of half-written lines.
-      const [first, ...rest] = resolved;
       const post = async (url: string, body: unknown) => {
         const res = await fetch(url, {
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -190,29 +252,89 @@ function UnfinishedRow({
         if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
         return j;
       };
-      await post("/api/config/complete-row", {
-        row: u.row, pickup_name: u.pickup_name, driver_name: first.name,
-        shift_start: first.start, shift_end: first.end,
-      });
-      for (const b of rest) {
-        await post("/api/config/add-rule", {
-          pickup_name: u.pickup_name, dropoff_name: u.dropoff_name,
-          driver_name: b.name, shift_start: b.start, shift_end: b.end,
-        });
+      // Sequential: a failure part way then leaves a clear picture rather than
+      // an unknown number of half-written lines.
+      let written = 0;
+      for (let i = 0; i < resolved.length; i++) {
+        const l = resolved[i];
+        if (!changed(l, i)) continue;
+        if (l.row) {
+          await post("/api/config/complete-row", {
+            row: l.row, pickup_name: pickupName, driver_name: l.driver,
+            shift_start: l.start, shift_end: l.end,
+          });
+        } else {
+          await post("/api/config/add-rule", {
+            pickup_name: pickupName, dropoff_name: dropoffName,
+            driver_name: l.driver, shift_start: l.start, shift_end: l.end,
+          });
+        }
+        written++;
       }
-      toast.success(
-        rest.length
-          ? `Đã tạo ${resolved.length} dòng cho ${u.pickup_name}`
-          : `Đã gán ${first.name} cho ${u.pickup_name} (dòng ${u.row})`,
-      );
-      setOpen(false);
-      onSaved(`u:${u.row}`);
+      toast.success(written ? `Đã lưu ${written} dòng — ${pickupName}` : "Không có thay đổi nào");
+      onDone();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
   }
+
+  return (
+    <div className="mt-1 space-y-1 rounded border border-slate-300 bg-white p-1.5">
+      {lines.map((l, i) => (
+        <div key={i} className="flex flex-wrap items-center gap-1">
+          <input
+            type="text" list={CONFIG_NAMES_LIST_ID} placeholder="Tên tài xế…"
+            value={l.driver} onChange={(e) => patch(i, { driver: e.target.value })}
+            className="min-w-[140px] flex-1 rounded border border-slate-300 px-1.5 py-1 text-xs"
+          />
+          <TimeSelect label="Từ giờ" value={l.start} onChange={(v) => patch(i, { start: v })} />
+          <span className="text-slate-400 text-[11px]">→</span>
+          <TimeSelect label="Đến giờ" value={l.end} onChange={(v) => patch(i, { end: v })} />
+          <span className="w-10 shrink-0 text-right font-mono text-[10px] text-slate-400">
+            {l.row ? `#${l.row}` : "mới"}
+          </span>
+          {!l.row && (
+            <button
+              type="button" onClick={() => dropLine(i)}
+              className="text-slate-400 hover:text-red-600 text-[11px] px-0.5"
+              title="Bỏ dòng này"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+      ))}
+      <div className="flex items-center gap-1">
+        <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={addLine} disabled={busy}>
+          + Thêm ca
+        </Button>
+        <div className="ml-auto flex gap-1">
+          <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={onCancel} disabled={busy}>
+            Hủy
+          </Button>
+          <Button size="sm" className="h-6 px-2 text-[11px] bg-indigo-600 hover:bg-indigo-700" onClick={save} disabled={busy}>
+            {busy ? "Đang lưu…" : "Lưu"}
+          </Button>
+        </div>
+      </div>
+      {err && <div className="text-[11px] text-red-600">{err}</div>}
+    </div>
+  );
+}
+
+/** A branch with a line but no driver on it. */
+function UnfinishedRow({
+  u, rules, drivers, onSaved,
+}: {
+  u: UnfinishedConfigRow;
+  rules: BranchRule[];
+  drivers: ConfigDriver[];
+  onSaved: (key?: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [from, to] = (u.window ?? "–").split("–");
 
   return (
     <div className="px-2 py-1.5 hover:bg-slate-50">
@@ -234,61 +356,20 @@ function UnfinishedRow({
         )}
         {!open && (
           <Button size="sm" className="h-6 shrink-0 text-[11px] px-2" onClick={() => setOpen(true)}>
-            Chọn tài xế
+            Sửa config
           </Button>
         )}
       </div>
-
       {open && (
-        <div className="mt-1 space-y-1 rounded border border-slate-300 bg-white p-1.5">
-          {blocks.map((b, i) => (
-            <div key={i} className="flex flex-wrap items-center gap-1">
-              <input
-                type="text"
-                list={CONFIG_NAMES_LIST_ID}
-                placeholder="Tên tài xế…"
-                value={b.name}
-                onChange={(e) => patch(i, { name: e.target.value })}
-                className="min-w-[140px] flex-1 rounded border border-slate-300 px-1.5 py-1 text-xs"
-              />
-              <TimeSelect label="Từ giờ" value={b.start} onChange={(v) => patch(i, { start: v })} />
-              <span className="text-slate-400 text-[11px]">→</span>
-              <TimeSelect label="Đến giờ" value={b.end} onChange={(v) => patch(i, { end: v })} />
-              {blocks.length > 1 && (
-                <button
-                  type="button"
-                  onClick={() => dropBlock(i)}
-                  className="text-slate-400 hover:text-red-600 text-[11px] px-0.5"
-                  title="Bỏ dòng này"
-                >
-                  ✕
-                </button>
-              )}
-            </div>
-          ))}
-          <div className="flex items-center gap-1">
-            {blocks.length < 3 && (
-              <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={addBlock} disabled={busy}>
-                + Thêm config
-              </Button>
-            )}
-            <div className="ml-auto flex gap-1">
-              <Button
-                size="sm" variant="outline" className="h-6 px-2 text-[11px]"
-                onClick={() => { setOpen(false); setErr(null); }} disabled={busy}
-              >
-                Hủy
-              </Button>
-              <Button
-                size="sm" className="h-6 px-2 text-[11px] bg-indigo-600 hover:bg-indigo-700"
-                onClick={save} disabled={busy}
-              >
-                {busy ? "Đang lưu…" : "Lưu"}
-              </Button>
-            </div>
-          </div>
-          {err && <div className="text-[11px] text-red-600">{err}</div>}
-        </div>
+        <BranchEditor
+          pickupName={u.pickup_name}
+          dropoffName={u.dropoff_name}
+          rules={rules}
+          extraLine={{ row: u.row, driver: "", start: from ?? "", end: to ?? "" }}
+          drivers={drivers}
+          onCancel={() => setOpen(false)}
+          onDone={() => { setOpen(false); onSaved(`u:${u.row}`); }}
+        />
       )}
     </div>
   );
@@ -297,96 +378,19 @@ function UnfinishedRow({
 /**
  * An hour a job needed and nobody was rostered for.
  *
- * Three ways to close it, and which is right depends on who is actually
- * working — so it asks rather than choosing. Each shows the rule as it stands
- * and the rule as it would become, because that is the whole decision:
- *
- *   mở rộng giờ kết thúc   the earlier driver stays out later
- *   mở rộng giờ bắt đầu    the later driver comes on sooner
- *   a new rule        somebody else takes the stretch neither of them works
- *
- * Only one boundary ever moves. Closing from both ends would leave the two rules
- * live at the same minute, which is the fault this same tab reports elsewhere —
- * so the times that would do it are greyed out rather than left to be found.
+ * The row states the diagnosis — what covers the branch either side of the hole
+ * — and opens the same branch editor, because closing it is the same job: adjust
+ * an hour, or add a line, in the context of the whole day.
  */
 function GapRow({
-  g, drivers, onSaved,
+  g, rules, drivers, onSaved,
 }: {
   g: CoverageGap;
+  rules: BranchRule[];
   drivers: ConfigDriver[];
   onSaved: (key?: string) => void;
 }) {
-  type Mode = null | "end" | "start" | "new";
-  const [mode, setMode] = useState<Mode>(null);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [name, setName] = useState("");
-
-  const key = `g:${g.customer_id}|${g.at}`;
-  const beforeEnd = g.before ? g.before.window.split("–")[1] : "";
-  const beforeStart = g.before ? g.before.window.split("–")[0] : "";
-  const afterStart = g.after ? g.after.window.split("–")[0] : "";
-  const afterEnd = g.after ? g.after.window.split("–")[1] : "";
-
-  // Defaults close the hole completely, which is what is wanted most of the
-  // time; anything narrower is one click away in the same control.
-  const [newEnd, setNewEnd] = useState(afterStart || g.at);
-  const [newStart, setNewStart] = useState(beforeEnd || g.at);
-  const [addFrom, setAddFrom] = useState(beforeEnd || g.at);
-  const [addTo, setAddTo] = useState(afterStart || g.at);
-
-  const post = async (url: string, body: unknown) => {
-    const res = await fetch(url, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-    });
-    const j = await res.json().catch(() => ({}));
-    if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
-    return j;
-  };
-
-  async function run(fn: () => Promise<string>) {
-    setBusy(true); setErr(null);
-    try {
-      toast.success(await fn());
-      setMode(null);
-      onSaved(key);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const stretch = (row: number, edge: "start" | "end", value: string, who: string) =>
-    run(async () => {
-      await post("/api/config/stretch-rule", { row, pickup_name: g.pickup_name, edge, value });
-      return `Đã sửa ca dòng ${row} — ${who}`;
-    });
-
-  const addRule = () =>
-    run(async () => {
-      const r = resolveDriver(name, drivers);
-      if ("error" in r) throw new Error(r.error);
-      const j = await post("/api/config/add-rule", {
-        pickup_name: g.pickup_name, driver_name: r.name, shift_start: addFrom, shift_end: addTo,
-      });
-      return `Đã thêm dòng ${j.row} — ${r.name} ${addFrom}–${addTo}`;
-    });
-
-  // A rule may only grow into the hole. Anything that would shrink it, or reach
-  // past the neighbour on the far side, is greyed out.
-  const endDisabled = (t: string) => {
-    const m = toMin(t), cur = toMin(beforeEnd), lim = afterStart ? toMin(afterStart) : 24 * 60;
-    return m <= cur || m > lim;
-  };
-  const startDisabled = (t: string) => {
-    const m = toMin(t), cur = toMin(afterStart), lim = beforeEnd ? toMin(beforeEnd) : -1;
-    return m >= cur || m < lim;
-  };
-  const addDisabled = (t: string) => insideBusy(t, g.busy);
-
-  const choice = "h-6 px-2 text-[11px]";
-  const box = "mt-1 space-y-1 rounded border border-slate-300 bg-white p-1.5";
+  const [open, setOpen] = useState(false);
 
   return (
     <div className="px-2 py-1.5 hover:bg-slate-50">
@@ -397,103 +401,27 @@ function GapRow({
         <span className="min-w-0 flex-1 break-words md:truncate text-sm font-medium text-slate-800" title={g.pickup_name}>
           {g.pickup_name}
         </span>
-      </div>
-
-      <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-600">
-        <span>
-          {g.before ? `Ca trước ${g.before.window}` : "Không có ca trước"}
-          {" · "}
-          {g.after ? `ca sau ${g.after.window}` : "không có ca sau"}
-        </span>
-        {g.before && (
-          <Button size="sm" variant={mode === "end" ? "default" : "outline"} className={choice}
-            disabled={busy} onClick={() => { setMode(mode === "end" ? null : "end"); setErr(null); }}>
-            Mở rộng giờ kết thúc
+        {!open && (
+          <Button size="sm" className="h-6 shrink-0 text-[11px] px-2" onClick={() => setOpen(true)}>
+            Sửa config
           </Button>
         )}
-        {g.after && (
-          <Button size="sm" variant={mode === "start" ? "default" : "outline"} className={choice}
-            disabled={busy} onClick={() => { setMode(mode === "start" ? null : "start"); setErr(null); }}>
-            Mở rộng giờ bắt đầu
-          </Button>
-        )}
-        <Button size="sm" variant={mode === "new" ? "default" : "outline"} className={choice}
-          disabled={busy} onClick={() => { setMode(mode === "new" ? null : "new"); setErr(null); }}>
-          Thêm ca mới
-        </Button>
       </div>
-
-      {mode === "end" && g.before && (
-        <div className={box}>
-          <div className="flex flex-wrap items-center gap-1 text-[11px] text-slate-600">
-            <span className="font-medium text-slate-800">{g.before.driver}</span>
-            <span className="font-mono text-slate-400 line-through">{beforeStart}–{beforeEnd}</span>
-            <span>→</span>
-            <span className="font-mono">{beforeStart}–</span>
-            <TimeSelect label="Giờ kết thúc mới" value={newEnd} onChange={setNewEnd} disabled={endDisabled} />
-          </div>
-          <Actions busy={busy} onCancel={() => setMode(null)}
-            onConfirm={() => stretch(g.before!.row, "end", newEnd, g.before!.driver)} confirm="Lưu" />
-        </div>
-      )}
-
-      {mode === "start" && g.after && (
-        <div className={box}>
-          <div className="flex flex-wrap items-center gap-1 text-[11px] text-slate-600">
-            <span className="font-medium text-slate-800">{g.after.driver}</span>
-            <span className="font-mono text-slate-400 line-through">{afterStart}–{afterEnd}</span>
-            <span>→</span>
-            <TimeSelect label="Giờ bắt đầu mới" value={newStart} onChange={setNewStart} disabled={startDisabled} />
-            <span className="font-mono">–{afterEnd}</span>
-          </div>
-          <Actions busy={busy} onCancel={() => setMode(null)}
-            onConfirm={() => stretch(g.after!.row, "start", newStart, g.after!.driver)} confirm="Lưu" />
-        </div>
-      )}
-
-      {mode === "new" && (
-        <div className={box}>
-          <div className="flex flex-wrap items-center gap-1">
-            <input
-              type="text" list={CONFIG_NAMES_LIST_ID} placeholder="Tên tài xế…"
-              value={name} onChange={(e) => setName(e.target.value)}
-              className="min-w-[140px] flex-1 rounded border border-slate-300 px-1.5 py-1 text-xs"
-            />
-            <TimeSelect label="Từ giờ" value={addFrom} onChange={setAddFrom} disabled={addDisabled} />
-            <span className="text-slate-400 text-[11px]">→</span>
-            <TimeSelect label="Đến giờ" value={addTo} onChange={setAddTo} disabled={addDisabled} />
-          </div>
-          <div className="text-[11px] text-slate-400">
-            Giờ mờ là đã có ca khác của điểm này
-          </div>
-          <Actions busy={busy} onCancel={() => setMode(null)} onConfirm={addRule} confirm="Tạo dòng" />
-        </div>
-      )}
-
-      {err && <div className="mt-1 text-[11px] text-red-600">{err}</div>}
-    </div>
-  );
-}
-
-/** The Hủy / confirm pair every one of these editors ends with. */
-function Actions({
-  busy, onCancel, onConfirm, confirm,
-}: {
-  busy: boolean;
-  onCancel: () => void;
-  onConfirm: () => void;
-  confirm: string;
-}) {
-  return (
-    <div className="flex items-center gap-1">
-      <div className="ml-auto flex gap-1">
-        <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={onCancel} disabled={busy}>
-          Hủy
-        </Button>
-        <Button size="sm" className="h-6 px-2 text-[11px] bg-indigo-600 hover:bg-indigo-700" onClick={onConfirm} disabled={busy}>
-          {busy ? "Đang lưu…" : confirm}
-        </Button>
+      <div className="mt-0.5 text-[11px] text-slate-500">
+        {g.before ? `Ca trước ${g.before.window}` : "Không có ca trước"}
+        {" · "}
+        {g.after ? `ca sau ${g.after.window}` : "không có ca sau"}
       </div>
+      {open && (
+        <BranchEditor
+          pickupName={g.pickup_name}
+          dropoffName=""
+          rules={rules}
+          drivers={drivers}
+          onCancel={() => setOpen(false)}
+          onDone={() => { setOpen(false); onSaved(`g:${g.customer_id}|${g.at}`); }}
+        />
+      )}
     </div>
   );
 }
@@ -501,12 +429,15 @@ function Actions({
 export function ConfigTodoPanel({
   gaps,
   unfinished,
+  branchRules,
   drivers,
   parsedAt,
   onSaved,
 }: {
   gaps: CoverageGap[];
   unfinished: UnfinishedConfigRow[];
+  /** The rules each listed branch already has, keyed by branch. */
+  branchRules: Record<string, BranchRule[]>;
   drivers: ConfigDriver[];
   /** When the sheet behind both lists was last read. */
   parsedAt: string;
@@ -559,14 +490,14 @@ export function ConfigTodoPanel({
         {open && gaps.length > 0 && (
           <div className={listBox}>
             {gaps.map((g) => (
-              <GapRow key={`${g.customer_id}-${g.at}`} g={g} drivers={drivers} onSaved={onSaved} />
+              <GapRow key={`${g.customer_id}-${g.at}`} g={g} rules={branchRules[g.customer_id] ?? []} drivers={drivers} onSaved={onSaved} />
             ))}
           </div>
         )}
         {open && unfinished.length > 0 && (
           <div className={listBox}>
             {unfinished.map((u) => (
-              <UnfinishedRow key={u.row} u={u} drivers={drivers} onSaved={onSaved} />
+              <UnfinishedRow key={u.row} u={u} rules={branchRules[u.customer_id] ?? []} drivers={drivers} onSaved={onSaved} />
             ))}
           </div>
         )}

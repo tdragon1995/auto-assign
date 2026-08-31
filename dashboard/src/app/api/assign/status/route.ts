@@ -11,7 +11,7 @@ import { getStatusBundle } from "@/lib/smart-log-kv";
  * boundary second. Without `since`, the full window is returned (first load).
  */
 export async function GET(req: NextRequest) {
-  const { state, lastChecked, deployments, logs, held, warnings, failed, sheetAlarms, unfinished, gaps, parsedAt } =
+  const { state, lastChecked, deployments, logs, held, warnings, failed, sheetAlarms, unfinished, gaps, parsedAt, branchRules } =
     await getStatusBundle(100);
   const since = req.nextUrl.searchParams.get("since");
   const outLogs = since ? logs.filter((l) => l.ts >= since) : logs;
