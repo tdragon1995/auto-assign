@@ -382,6 +382,15 @@ export function resolveGaps(
       at: g.at,
       before: before ? { row: before.row, driver: before.driver, window: win(before) } : null,
       after: after ? { row: after.row, driver: after.driver, window: win(after) } : null,
+      // All-day rules are left out: one would mean nothing is uncovered, so a
+      // gap could not exist beside it, and emitting 00:00–00:00 would read as a
+      // zero-length window rather than as "everything".
+      busy: rules
+        .filter((r) => r.start && r.end)
+        .map((r) => [
+          hhmm(r.start!.hours * 60 + r.start!.minutes),
+          hhmm(r.end!.hours * 60 + r.end!.minutes),
+        ] as [string, string]),
     });
   }
   return { open, closed };
@@ -394,6 +403,7 @@ export interface CoverageGapOut {
   at: string;
   before: { row: number; driver: string; window: string } | null;
   after: { row: number; driver: string; window: string } | null;
+  busy: [string, string][];
 }
 
 

@@ -65,6 +65,15 @@ export interface CoverageGap {
    *  the boundary can be moved from the dashboard. */
   before: { row: number; driver: string; window: string } | null;
   after: { row: number; driver: string; window: string } | null;
+  /**
+   * Every window this branch already has, "HH:MM"–"HH:MM" pairs.
+   *
+   * So the dashboard can grey out a time that would land inside an existing
+   * rule. Overlap is the one fault a person cannot see coming here — two rules
+   * live at the same minute make the engine refuse the job entirely — and it is
+   * much better prevented in the picker than reported afterwards.
+   */
+  busy: [string, string][];
 }
 
 export interface Config {

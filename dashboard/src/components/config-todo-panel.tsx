@@ -79,11 +79,14 @@ const TIME_SLOTS_5: string[] = (() => {
  * supervisor could not see what they were about to save.
  */
 function TimeSelect({
-  value, onChange, label,
+  value, onChange, label, disabled,
 }: {
   value: string;
   onChange: (v: string) => void;
   label: string;
+  /** Times that would produce an invalid or overlapping rule. Greyed out rather
+   *  than hidden, so the shape of what is already taken stays visible. */
+  disabled?: (t: string) => boolean;
 }) {
   const options = value && !TIME_SLOTS_5.includes(value) ? [...TIME_SLOTS_5, value].sort() : TIME_SLOTS_5;
   return (
@@ -94,9 +97,34 @@ function TimeSelect({
       className="rounded border border-slate-300 bg-white px-1 py-1 text-xs font-mono"
     >
       <option value="">--:--</option>
-      {options.map((t) => <option key={t} value={t}>{t}</option>)}
+      {options.map((t) => (
+        <option key={t} value={t} disabled={disabled?.(t) && t !== value}>{t}</option>
+      ))}
     </select>
   );
+}
+
+const toMin = (v: string) => {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(v.trim());
+  return m ? Number(m[1]) * 60 + Number(m[2]) : -1;
+};
+
+/**
+ * Whether a time falls INSIDE a rule that already exists — strictly inside, so a
+ * clean handover is still allowed.
+ *
+ * Windows here are half-open: a rule covers (start, end], so a new rule may
+ * begin exactly where another ends and they will never both be on duty. Only
+ * the minutes properly between the two ends are taken.
+ */
+function insideBusy(t: string, busy: readonly [string, string][]): boolean {
+  const m = toMin(t);
+  if (m < 0) return false;
+  return busy.some(([f, e]) => {
+    const a = toMin(f), b = toMin(e);
+    if (a < 0 || b < 0 || a === b) return false;
+    return a < b ? m > a && m < b : m > a || m < b;   // the second case wraps midnight
+  });
 }
 
 const CONFIG_NAMES_LIST_ID = "config-driver-names";
@@ -269,14 +297,17 @@ function UnfinishedRow({
 /**
  * An hour a job needed and nobody was rostered for.
  *
- * Shows the cover either side of the hole, because that is the diagnosis: "ends
- * 14:30, next starts 16:30" tells you at a glance which boundary is wrong.
+ * Three ways to close it, and which is right depends on who is actually
+ * working — so it asks rather than choosing. Each shows the rule as it stands
+ * and the rule as it would become, because that is the whole decision:
  *
- * Only ONE of the three closes it. Widening both neighbours would leave them
- * overlapping, which is the fault this same panel reports elsewhere; and the
- * third — a rule of its own — is often the honest one, because when nobody
- * either side really works that stretch, stretching their hours records
- * something untrue about who is on duty.
+ *   extend the end    the earlier driver stays out later
+ *   extend the start  the later driver comes on sooner
+ *   a new rule        somebody else takes the stretch neither of them works
+ *
+ * Only one boundary ever moves. Closing from both ends would leave the two rules
+ * live at the same minute, which is the fault this same tab reports elsewhere —
+ * so the times that would do it are greyed out rather than left to be found.
  */
 function GapRow({
   g, drivers, onSaved,
@@ -285,16 +316,24 @@ function GapRow({
   drivers: ConfigDriver[];
   onSaved: (key?: string) => void;
 }) {
-  const [busy, setBusy] = useState<string | null>(null);
-  const [splitting, setSplitting] = useState(false);
-  const [name, setName] = useState("");
+  type Mode = null | "end" | "start" | "new";
+  const [mode, setMode] = useState<Mode>(null);
+  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [name, setName] = useState("");
 
   const key = `g:${g.customer_id}|${g.at}`;
-  const splitFrom = g.before ? g.before.window.split("–")[1] : g.at;
-  const splitTo = g.after ? g.after.window.split("–")[0] : g.at;
-  const [sFrom, setSFrom] = useState(splitFrom);
-  const [sTo, setSTo] = useState(splitTo);
+  const beforeEnd = g.before ? g.before.window.split("–")[1] : "";
+  const beforeStart = g.before ? g.before.window.split("–")[0] : "";
+  const afterStart = g.after ? g.after.window.split("–")[0] : "";
+  const afterEnd = g.after ? g.after.window.split("–")[1] : "";
+
+  // Defaults close the hole completely, which is what is wanted most of the
+  // time; anything narrower is one click away in the same control.
+  const [newEnd, setNewEnd] = useState(afterStart || g.at);
+  const [newStart, setNewStart] = useState(beforeEnd || g.at);
+  const [addFrom, setAddFrom] = useState(beforeEnd || g.at);
+  const [addTo, setAddTo] = useState(afterStart || g.at);
 
   const post = async (url: string, body: unknown) => {
     const res = await fetch(url, {
@@ -305,36 +344,49 @@ function GapRow({
     return j;
   };
 
-  async function stretch(row: number, edge: "start" | "end", tag: string) {
-    setBusy(tag); setErr(null);
+  async function run(fn: () => Promise<string>) {
+    setBusy(true); setErr(null);
     try {
-      await post("/api/config/stretch-rule", { row, pickup_name: g.pickup_name, edge, value: g.at });
-      toast.success(`Đã sửa ca dòng ${row} — ${g.pickup_name}`);
+      toast.success(await fn());
+      setMode(null);
       onSaved(key);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   }
 
-  async function addRule() {
-    const r = resolveDriver(name, drivers);
-    if ("error" in r) { setErr(r.error); return; }
-    setBusy("split"); setErr(null);
-    try {
+  const stretch = (row: number, edge: "start" | "end", value: string, who: string) =>
+    run(async () => {
+      await post("/api/config/stretch-rule", { row, pickup_name: g.pickup_name, edge, value });
+      return `Đã sửa ca dòng ${row} — ${who}`;
+    });
+
+  const addRule = () =>
+    run(async () => {
+      const r = resolveDriver(name, drivers);
+      if ("error" in r) throw new Error(r.error);
       const j = await post("/api/config/add-rule", {
-        pickup_name: g.pickup_name, driver_name: r.name, shift_start: sFrom, shift_end: sTo,
+        pickup_name: g.pickup_name, driver_name: r.name, shift_start: addFrom, shift_end: addTo,
       });
-      toast.success(`Đã thêm dòng ${j.row} — ${r.name} ${sFrom}–${sTo}`);
-      setSplitting(false);
-      onSaved(key);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(null);
-    }
-  }
+      return `Đã thêm dòng ${j.row} — ${r.name} ${addFrom}–${addTo}`;
+    });
+
+  // A rule may only grow into the hole. Anything that would shrink it, or reach
+  // past the neighbour on the far side, is greyed out.
+  const endDisabled = (t: string) => {
+    const m = toMin(t), cur = toMin(beforeEnd), lim = afterStart ? toMin(afterStart) : 24 * 60;
+    return m <= cur || m > lim;
+  };
+  const startDisabled = (t: string) => {
+    const m = toMin(t), cur = toMin(afterStart), lim = beforeEnd ? toMin(beforeEnd) : -1;
+    return m >= cur || m < lim;
+  };
+  const addDisabled = (t: string) => insideBusy(t, g.busy);
+
+  const choice = "h-6 px-2 text-[11px]";
+  const box = "mt-1 space-y-1 rounded border border-slate-300 bg-white p-1.5";
 
   return (
     <div className="px-2 py-1.5 hover:bg-slate-50">
@@ -349,79 +401,99 @@ function GapRow({
 
       <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-600">
         <span>
-          {g.before ? `Ca trước hết lúc ${g.before.window.split("–")[1]}` : "Không có ca trước"}
+          {g.before ? `Ca trước ${g.before.window}` : "Không có ca trước"}
           {" · "}
-          {g.after ? `ca sau bắt đầu ${g.after.window.split("–")[0]}` : "không có ca sau"}
+          {g.after ? `ca sau ${g.after.window}` : "không có ca sau"}
         </span>
         {g.before && (
-          <Button
-            size="sm" variant="outline" className="h-6 px-2 text-[11px]"
-            disabled={busy !== null}
-            onClick={() => stretch(g.before!.row, "end", "before")}
-            title={`Dòng ${g.before.row} · ${g.before.driver}`}
-          >
-            {busy === "before" ? "Đang lưu…" : `Kéo dài ca trước đến ${g.at}`}
+          <Button size="sm" variant={mode === "end" ? "default" : "outline"} className={choice}
+            disabled={busy} onClick={() => { setMode(mode === "end" ? null : "end"); setErr(null); }}>
+            Kéo dài giờ kết thúc
           </Button>
         )}
         {g.after && (
-          <Button
-            size="sm" variant="outline" className="h-6 px-2 text-[11px]"
-            disabled={busy !== null}
-            onClick={() => stretch(g.after!.row, "start", "after")}
-            title={`Dòng ${g.after.row} · ${g.after.driver}`}
-          >
-            {busy === "after" ? "Đang lưu…" : `Ca sau bắt đầu từ ${g.at}`}
+          <Button size="sm" variant={mode === "start" ? "default" : "outline"} className={choice}
+            disabled={busy} onClick={() => { setMode(mode === "start" ? null : "start"); setErr(null); }}>
+            Kéo sớm giờ bắt đầu
           </Button>
         )}
-        {!splitting && splitFrom !== splitTo && (
-          <Button
-            size="sm" variant="outline" className="h-6 px-2 text-[11px]"
-            disabled={busy !== null}
-            onClick={() => { setSplitting(true); setErr(null); }}
-          >
-            + Thêm config {splitFrom}–{splitTo}
-          </Button>
-        )}
+        <Button size="sm" variant={mode === "new" ? "default" : "outline"} className={choice}
+          disabled={busy} onClick={() => { setMode(mode === "new" ? null : "new"); setErr(null); }}>
+          Thêm ca mới
+        </Button>
       </div>
 
-      {splitting && (
-        <div className="mt-1 space-y-1 rounded border border-slate-300 bg-white p-1.5">
-          <div className="flex flex-wrap items-center gap-1">
-            <input
-              type="text"
-              list={CONFIG_NAMES_LIST_ID}
-              placeholder="Tên tài xế…"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="min-w-[140px] flex-1 rounded border border-slate-300 px-1.5 py-1 text-xs"
-            />
-            {/* Prefilled from the neighbours, but editable: the hole runs
-                14:30–16:30 only because that is where the two rules happen to
-                stop and start, and the person who knows the round may want a
-                narrower window than the whole space between them. */}
-            <TimeSelect label="Từ giờ" value={sFrom} onChange={setSFrom} />
-            <span className="text-slate-400 text-[11px]">→</span>
-            <TimeSelect label="Đến giờ" value={sTo} onChange={setSTo} />
+      {mode === "end" && g.before && (
+        <div className={box}>
+          <div className="flex flex-wrap items-center gap-1 text-[11px] text-slate-600">
+            <span className="font-medium text-slate-800">{g.before.driver}</span>
+            <span className="font-mono text-slate-400 line-through">{beforeStart}–{beforeEnd}</span>
+            <span>→</span>
+            <span className="font-mono">{beforeStart}–</span>
+            <TimeSelect label="Giờ kết thúc mới" value={newEnd} onChange={setNewEnd} disabled={endDisabled} />
           </div>
-          <div className="flex items-center gap-1">
-            <div className="ml-auto flex gap-1">
-              <Button
-                size="sm" variant="outline" className="h-6 px-2 text-[11px]"
-                onClick={() => { setSplitting(false); setErr(null); }} disabled={busy !== null}
-              >
-                Hủy
-              </Button>
-              <Button
-                size="sm" className="h-6 px-2 text-[11px] bg-indigo-600 hover:bg-indigo-700"
-                onClick={addRule} disabled={busy !== null}
-              >
-                {busy === "split" ? "Đang tạo…" : "Tạo dòng"}
-              </Button>
-            </div>
-          </div>
+          <Actions busy={busy} onCancel={() => setMode(null)}
+            onConfirm={() => stretch(g.before!.row, "end", newEnd, g.before!.driver)} confirm="Lưu" />
         </div>
       )}
+
+      {mode === "start" && g.after && (
+        <div className={box}>
+          <div className="flex flex-wrap items-center gap-1 text-[11px] text-slate-600">
+            <span className="font-medium text-slate-800">{g.after.driver}</span>
+            <span className="font-mono text-slate-400 line-through">{afterStart}–{afterEnd}</span>
+            <span>→</span>
+            <TimeSelect label="Giờ bắt đầu mới" value={newStart} onChange={setNewStart} disabled={startDisabled} />
+            <span className="font-mono">–{afterEnd}</span>
+          </div>
+          <Actions busy={busy} onCancel={() => setMode(null)}
+            onConfirm={() => stretch(g.after!.row, "start", newStart, g.after!.driver)} confirm="Lưu" />
+        </div>
+      )}
+
+      {mode === "new" && (
+        <div className={box}>
+          <div className="flex flex-wrap items-center gap-1">
+            <input
+              type="text" list={CONFIG_NAMES_LIST_ID} placeholder="Tên tài xế…"
+              value={name} onChange={(e) => setName(e.target.value)}
+              className="min-w-[140px] flex-1 rounded border border-slate-300 px-1.5 py-1 text-xs"
+            />
+            <TimeSelect label="Từ giờ" value={addFrom} onChange={setAddFrom} disabled={addDisabled} />
+            <span className="text-slate-400 text-[11px]">→</span>
+            <TimeSelect label="Đến giờ" value={addTo} onChange={setAddTo} disabled={addDisabled} />
+          </div>
+          <div className="text-[11px] text-slate-400">
+            Giờ mờ là đã có ca khác của điểm này
+          </div>
+          <Actions busy={busy} onCancel={() => setMode(null)} onConfirm={addRule} confirm="Tạo dòng" />
+        </div>
+      )}
+
       {err && <div className="mt-1 text-[11px] text-red-600">{err}</div>}
+    </div>
+  );
+}
+
+/** The Hủy / confirm pair every one of these editors ends with. */
+function Actions({
+  busy, onCancel, onConfirm, confirm,
+}: {
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+  confirm: string;
+}) {
+  return (
+    <div className="flex items-center gap-1">
+      <div className="ml-auto flex gap-1">
+        <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={onCancel} disabled={busy}>
+          Hủy
+        </Button>
+        <Button size="sm" className="h-6 px-2 text-[11px] bg-indigo-600 hover:bg-indigo-700" onClick={onConfirm} disabled={busy}>
+          {busy ? "Đang lưu…" : confirm}
+        </Button>
+      </div>
     </div>
   );
 }
