@@ -308,3 +308,90 @@ export function unresolvedWarning(u: UnresolvedRows): string | null {
     : "";
   return [dropped, broken, widened].filter(Boolean).join(" ");
 }
+
+
+// ── Which recorded gaps are still open ───────────────────────────────────────
+
+/** A rule as the parse saw it, with the sheet row so a boundary can be moved. */
+export interface RuleRow {
+  row: number;
+  driver: string;
+  start: { hours: number; minutes: number } | null;
+  end: { hours: number; minutes: number } | null;
+}
+
+const hhmmToMin = (v: string): number => {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(v.trim());
+  if (!m) return -1;
+  const h = Number(m[1]), mi = Number(m[2]);
+  return h < 24 && mi < 60 ? h * 60 + mi : -1;
+};
+
+const win = (r: RuleRow): string =>
+  r.start && r.end
+    ? `${hhmm(r.start.hours * 60 + r.start.minutes)}–${hhmm(r.end.hours * 60 + r.end.minutes)}`
+    : "cả ngày";
+
+/** Whether any rule covers that minute. Uses the engine's own half-open window,
+ *  via the same duty blocks the overlap check runs on, so "covered" here means
+ *  exactly what it means when a job is assigned. */
+export function isCovered(rules: readonly RuleRow[], atMin: number): boolean {
+  return rules.some((r) =>
+    dutyBlocks({ customer_id: "", driver_id: "", first_name_last_name: "", shift_start: r.start, shift_end: r.end })
+      .some(([a, b]) => atMin >= a && atMin <= b),
+  );
+}
+
+/**
+ * Turn the recorded gaps into what a supervisor can act on, and say which are
+ * now closed.
+ *
+ * The closed ones are the point: a gap disappears because the CONFIG says it is
+ * covered, not because anyone retracted it. An alarm that can only be withdrawn
+ * by whoever raised it outlives them.
+ */
+export function resolveGaps(
+  recorded: readonly { customer_id: string; pickup_name: string; at: string }[],
+  rulesByCustomer: ReadonlyMap<string, RuleRow[]>,
+): { open: CoverageGapOut[]; closed: { customer_id: string; at: string }[] } {
+  const open: CoverageGapOut[] = [];
+  const closed: { customer_id: string; at: string }[] = [];
+
+  for (const g of recorded) {
+    const at = hhmmToMin(g.at);
+    const rules = rulesByCustomer.get(g.customer_id) ?? [];
+    // A branch whose rules have all gone is not "covered" — it is a different
+    // problem entirely, and dropping the record would hide it. Keep it open.
+    if (at < 0 || (rules.length > 0 && isCovered(rules, at))) {
+      closed.push({ customer_id: g.customer_id, at: g.at });
+      continue;
+    }
+    // The cover that ends nearest BEFORE the hole, and the one starting nearest
+    // after — the two rows whose boundary could be moved to close it.
+    let before: RuleRow | null = null, after: RuleRow | null = null;
+    for (const r of rules) {
+      if (!r.start || !r.end) continue;
+      const e = r.end.hours * 60 + r.end.minutes;
+      const st = r.start.hours * 60 + r.start.minutes;
+      if (e <= at && (!before || e > (before.end!.hours * 60 + before.end!.minutes))) before = r;
+      if (st >= at && (!after || st < (after.start!.hours * 60 + after.start!.minutes))) after = r;
+    }
+    open.push({
+      customer_id: g.customer_id,
+      pickup_name: g.pickup_name,
+      at: g.at,
+      before: before ? { row: before.row, driver: before.driver, window: win(before) } : null,
+      after: after ? { row: after.row, driver: after.driver, window: win(after) } : null,
+    });
+  }
+  return { open, closed };
+}
+
+/** Local mirror of the published shape, to keep this module dependency-free. */
+export interface CoverageGapOut {
+  customer_id: string;
+  pickup_name: string;
+  at: string;
+  before: { row: number; driver: string; window: string } | null;
+  after: { row: number; driver: string; window: string } | null;
+}

@@ -1,10 +1,10 @@
 import { Redis } from "@upstash/redis";
-import type { Config, ConfigDriver, Mapping, UnfinishedConfigRow } from "./types";
+import type { Config, ConfigDriver, Mapping, UnfinishedConfigRow, CoverageGap } from "./types";
 import { fetchSheetRows, isSheetShapeError, noteSheetLoad, noteSheetWarning, SHEET_CONTRACT, SHEET_GID } from "./sheets";
 import {
-  findDuplicateBranches, findShiftOverlaps,
+  findDuplicateBranches, findShiftOverlaps, resolveGaps,
   duplicateBranchWarning, shiftOverlapWarning, unresolvedWarning,
-  type LocationRow, type UnresolvedRows,
+  type LocationRow, type UnresolvedRows, type RuleRow,
 } from "./config-audit";
 import { vnDate, vnIsSunday } from "./time";
 import { looksAutoCreated } from "./unmapped-row";
@@ -54,7 +54,7 @@ async function readGen(): Promise<string | null> {
 // freshness mechanism — that is the gen stamp, deliberately, after a clock-based cache
 // was measured at an 87% miss rate.
 const L2_TTL_S = 48 * 60 * 60;
-//   version — the `v5` below is NOT decoration. This blob is PARSED config, so a change to
+//   version — the `v6` below is NOT decoration. This blob is PARSED config, so a change to
 //          how it is parsed (a renamed column, a new field) leaves every server reading a
 //          blob built by the old code until someone presses Refresh. That is exactly how
 //          the "Driver" column fix shipped and did nothing: correct code, stale parse.
@@ -66,7 +66,7 @@ const L2_TTL_S = 48 * 60 * 60;
 //          exactly what happened on 2026-08-31: two fixes to this wording shipped
 //          and neither reached the screen. Hence the audit inputs now ride the blob
 //          and the sentences are rebuilt on every load, cached or not.
-const l2Key = (gen: string, date: string) => `config:v5:${gen}:${date}`;
+const l2Key = (gen: string, date: string) => `config:v6:${gen}:${date}`;
 
 
 let cachedConfig: Config | null = null;
@@ -267,11 +267,11 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     const redis = getRedis();
     if (redis) {
       try {
-        const hit = await redis.get<{ mappings: Mapping[]; unfinished?: UnfinishedConfigRow[]; unresolved?: UnresolvedRows; names?: [string, string][] }>(l2Key(gen, today));
+        const hit = await redis.get<{ mappings: Mapping[]; unfinished?: UnfinishedConfigRow[]; gaps?: CoverageGap[]; unresolved?: UnresolvedRows; names?: [string, string][] }>(l2Key(gen, today));
         // Same zero-length suspicion as the sheet path below: never adopt an empty
         // mapping, whatever it came from.
         if (hit && Array.isArray(hit.mappings) && hit.mappings.length > 0) {
-          cachedConfig = { mappings: hit.mappings, unfinished: hit.unfinished ?? [] };
+          cachedConfig = { mappings: hit.mappings, unfinished: hit.unfinished ?? [], gaps: hit.gaps ?? [] };
           cachedDay = today;
           cachedGen = gen;
           // Rebuild the sentences from the cached inputs. Pure string work, and
@@ -306,6 +306,8 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     const pickupNames = new Set<string>();
     // customer id → branch name, so a warning can say the place rather than the id.
     const nameByCustomer = new Map<string, string>();
+    // Rules per branch, carrying the sheet row so a boundary can later be moved.
+    const rulesByCustomer = new Map<string, RuleRow[]>();
     for (const [idx, row] of rows.entries()) {
       const customer_id = row["customer_id"] ?? "";
       const driver_id = (row["driver_id"] ?? "").trim();
@@ -366,6 +368,13 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
         continue;
       }
 
+      const rules = rulesByCustomer.get(customer_id);
+      const thisRule: RuleRow = {
+        row: idx + 2, driver: driverName,
+        start: parseTime(row["shift_start"]), end: parseTime(row["shift_end"]),
+      };
+      if (rules) rules.push(thisRule); else rulesByCustomer.set(customer_id, [thisRule]);
+
       mappings.push({
         customer_id,
         driver_id,
@@ -399,8 +408,23 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     }
 
     noteSheetLoad(SHEET_CONTRACT[tab].label, null);
+    // Which recorded gaps are still open, and which the config now covers. The
+    // CLOSING is decided here, from the data, rather than by whoever recorded
+    // it — an alarm only its author can retract outlives its author.
+    let gaps: CoverageGap[] = [];
+    try {
+      const kv = await import("./smart-log-kv");
+      const recorded = await kv.readCoverageGaps();
+      if (recorded.length) {
+        const { open, closed } = resolveGaps(recorded, rulesByCustomer);
+        gaps = open;
+        if (closed.length) await kv.clearCoverageGaps(closed);
+      }
+    } catch (e) {
+      console.error("Coverage-gap resolve skipped:", e);
+    }
     await auditParsedConfig(SHEET_CONTRACT[tab].label, mappings, unresolved, pickupNames, nameByCustomer, today);
-    cachedConfig = { mappings, unfinished };
+    cachedConfig = { mappings, unfinished, gaps };
     cachedDay = today;
     cachedGen = gen;
 
@@ -411,7 +435,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
       const redis = getRedis();
       if (redis) {
         try {
-          await redis.set(l2Key(gen, today), { mappings, unfinished, unresolved, names: [...nameByCustomer] }, { ex: L2_TTL_S });
+          await redis.set(l2Key(gen, today), { mappings, unfinished, gaps, unresolved, names: [...nameByCustomer] }, { ex: L2_TTL_S });
         } catch { /* best-effort; the sheet is always the fallback */ }
       }
     }

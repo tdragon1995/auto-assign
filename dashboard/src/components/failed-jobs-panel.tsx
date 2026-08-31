@@ -12,7 +12,7 @@ import { NoteReviewPanel, type HeldJob } from "./note-review-panel";
 import { NoteSuggestionPanel } from "./note-suggestion-panel";
 import { SectionHeader } from "./section-header";
 import { UncoveredLeaveSection, uncoveredLeaveCount } from "./leave-status-panel";
-import type { UnfinishedConfigRow, FailedJob, FailedReason, PickupWarning, ConfigDriver } from "@/lib/types";
+import type { CoverageGap, UnfinishedConfigRow, FailedJob, FailedReason, PickupWarning, ConfigDriver } from "@/lib/types";
 import type { LeaveOnDate } from "@/lib/leave-config";
 
 export interface ScheduleErrorRow {
@@ -172,6 +172,141 @@ function UnfinishedRow({
           {err && <div className="text-[11px] text-red-600">{err}</div>}
         </div>
       )}
+    </div>
+  );
+}
+
+
+/**
+ * An hour a job needed and nobody was rostered for.
+ *
+ * Shows the cover either side of the hole, because that is the diagnosis: "ends
+ * 14:30, next starts 16:30" tells you at a glance which boundary is wrong. Only
+ * one moves — closing it from both ends would leave the two rules overlapping,
+ * which is the fault this same panel reports elsewhere.
+ */
+function GapRow({ g, drivers, onSaved }: { g: CoverageGap; drivers: ConfigDriver[]; onSaved: () => void }) {
+  const [saving, setSaving] = useState<string | null>(null);
+  const [splitting, setSplitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function addRule(driverName: string, from: string, to: string) {
+    setSaving("split"); setErr(null);
+    try {
+      const res = await fetch("/api/config/add-rule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pickup_name: g.pickup_name, driver_name: driverName, shift_start: from, shift_end: to }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
+      toast.success(`Đã thêm dòng ${j.row} — ${driverName} ${from}–${to}`);
+      setSplitting(false);
+      onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  async function stretch(row: number, edge: "start" | "end", label: string) {
+    setSaving(label); setErr(null);
+    try {
+      const res = await fetch("/api/config/stretch-rule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ row, pickup_name: g.pickup_name, edge, value: g.at }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
+      toast.success(`Đã sửa ca dòng ${row} — ${g.pickup_name}`);
+      onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  const chip = "shrink-0 rounded border px-1.5 py-0.5 text-[11px]";
+
+  // The window the split rule would cover: from where cover currently ends to
+  // where it picks up again. Falls back to the failing hour when there is only
+  // one side, which is the most that can honestly be inferred.
+  const splitFrom = g.before ? g.before.window.split("–")[1] : g.at;
+  const splitTo = g.after ? g.after.window.split("–")[0] : g.at;
+
+  return (
+    <div className="px-2 py-1.5 hover:bg-slate-50">
+      <div className="flex items-center gap-2 min-w-0">
+        <span className={`${chip} border-amber-300 bg-amber-50 font-mono text-amber-800`}>{g.at}</span>
+        <span className="min-w-0 flex-1 break-words md:truncate text-sm font-medium text-slate-800" title={g.pickup_name}>
+          {g.pickup_name}
+        </span>
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-600">
+        <span>
+          {g.before ? `Ca trước hết lúc ${g.before.window.split("–")[1]}` : "Không có ca trước"}
+          {" · "}
+          {g.after ? `ca sau bắt đầu ${g.after.window.split("–")[0]}` : "không có ca sau"}
+        </span>
+        {g.before && (
+          <Button
+            size="sm" variant="outline" className="h-6 text-[11px] px-2"
+            disabled={saving !== null}
+            onClick={() => stretch(g.before!.row, "end", "before")}
+            title={`Dòng ${g.before.row} · ${g.before.driver}`}
+          >
+            {saving === "before" ? "Đang lưu…" : `Kéo dài ca trước đến ${g.at}`}
+          </Button>
+        )}
+        {g.after && (
+          <Button
+            size="sm" variant="outline" className="h-6 text-[11px] px-2"
+            disabled={saving !== null}
+            onClick={() => stretch(g.after!.row, "start", "after")}
+            title={`Dòng ${g.after.row} · ${g.after.driver}`}
+          >
+            {saving === "after" ? "Đang lưu…" : `Ca sau bắt đầu từ ${g.at}`}
+          </Button>
+        )}
+      </div>
+      {/* The third way, and often the honest one: when nobody either side really
+          works that stretch, widening their hours records something untrue about
+          who is on duty. A rule of its own says what is actually happening. */}
+      {!splitting ? (
+        splitFrom !== splitTo && (
+          <button
+            className="mt-1 text-[11px] text-indigo-600 underline hover:text-indigo-800"
+            onClick={() => setSplitting(true)}
+            disabled={saving !== null}
+          >
+            …hoặc tách thành dòng riêng {splitFrom}–{splitTo}
+          </button>
+        )
+      ) : (
+        <div className="mt-1.5 space-y-1.5">
+          <div className="text-[11px] text-slate-600">
+            Dòng mới cho {g.pickup_name} · ca {splitFrom}–{splitTo}
+          </div>
+          {saving === "split" ? (
+            <div className="text-[11px] text-slate-500">Đang tạo…</div>
+          ) : (
+            <DriverPicker
+              drivers={drivers}
+              confirmLabel="Tạo dòng"
+              onCancel={() => { setSplitting(false); setErr(null); }}
+              onConfirm={(driverId) => {
+                const name = drivers.find((d) => d.driver_id === driverId)?.name;
+                if (!name) { setErr("Không tìm thấy tài xế"); return; }
+                void addRule(name, splitFrom, splitTo);
+              }}
+            />
+          )}
+        </div>
+      )}
+      {err && <div className="mt-1 text-[11px] text-red-600">{err}</div>}
     </div>
   );
 }
@@ -403,6 +538,7 @@ export function FailedJobsPanel({
   onNoteManualAssign,
   failed,
   unfinished,
+  gaps,
   onUnfinishedSaved,
   warnings,
   scheduleErrors,
@@ -423,6 +559,8 @@ export function FailedJobsPanel({
   failed: FailedJob[];
   /** Config lines naming a branch but no driver — waiting on a person. */
   unfinished: UnfinishedConfigRow[];
+  /** Hours a job needed and no rule covered. */
+  gaps: CoverageGap[];
   /** Re-read after a row is completed, so it drops off the list. */
   onUnfinishedSaved: () => void;
   warnings: PickupWarning[];
@@ -531,6 +669,22 @@ export function FailedJobsPanel({
                 </div>
               </div>
             ))}
+
+            {/* ── An hour nobody was rostered for ─────────────────────────
+                Kept because a real job fell into it. 72 branches have a hole
+                somewhere in their day and most are deliberate — a lunch break,
+                a shift handover — so only the ones that have actually cost a
+                trip are listed, and the evidence is that trip. */}
+            {gaps.length > 0 && (
+              <div className="space-y-1.5">
+                <SectionHeader label="Giờ chưa có ca (job đã rơi vào)" count={gaps.length} tone="amber" />
+                <div className={listBox}>
+                  {gaps.map((g) => (
+                    <GapRow key={`${g.customer_id}-${g.at}`} g={g} drivers={drivers} onSaved={onUnfinishedSaved} />
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* ── Branches with a line but nobody on it ───────────────────
                 Read back out of the sheet, not from this cycle's failures. That

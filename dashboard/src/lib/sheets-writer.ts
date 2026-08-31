@@ -630,3 +630,58 @@ export async function completeConfigRow(opts: {
     requestBody: { valueInputOption: "USER_ENTERED", data },
   });
 }
+
+/**
+ * Move one end of an existing rule's window — how an uncovered hour is closed.
+ *
+ * Deliberately one boundary at a time. The hole between "cover ends 14:30" and
+ * "next starts 16:30" is closed either by the earlier rule running later or the
+ * later one starting sooner, and which is right depends on who is actually
+ * working; the dashboard offers both and a person picks. Writing both would
+ * create an overlap, which is the fault this system already reports.
+ *
+ * Same guards as completing a row: weekday only, and the branch is re-read and
+ * compared before anything is written, because the row number came from a parse
+ * that may be minutes old.
+ */
+export async function adjustConfigRowWindow(opts: {
+  row: number;
+  expectPickup: string;
+  edge: "start" | "end";
+  value: string;
+}): Promise<void> {
+  const tab = currentConfigTab();
+  if (tab.gid !== CONFIG_TABS.weekday.gid) {
+    throw new Error("Chủ nhật: ca được suy ra từ lịch trực công khai — sửa trên tab lịch Chủ nhật");
+  }
+  const sheets = getSheetsClient();
+
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${a1(tab)}!1:1` });
+  const header = (res.data.values?.[0] ?? []).map((h) => String(h ?? "").trim());
+  const at = (name: string) => {
+    const i = header.indexOf(name);
+    if (i < 0) throw new Error(`"${tab.title}" không có cột ${name}`);
+    return colLetter(i);
+  };
+  const pickupCol = at(WRITE_COLS.pickup);
+  const target = at(opts.edge === "start" ? WRITE_COLS.start : WRITE_COLS.end);
+
+  const check = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: `${a1(tab)}!${pickupCol}${opts.row}`,
+  });
+  const found = String(check.data.values?.[0]?.[0] ?? "").trim();
+  if (found !== opts.expectPickup.trim()) {
+    throw new Error(
+      `Dòng ${opts.row} giờ là "${found || "(trống)"}", không phải "${opts.expectPickup}" — ` +
+      `sheet đã thay đổi, bấm Refresh rồi thử lại`,
+    );
+  }
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SHEET_ID,
+    range: `${a1(tab)}!${target}${opts.row}`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [[opts.value]] },
+  });
+}

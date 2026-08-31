@@ -42,10 +42,34 @@ export interface UnfinishedConfigRow {
   window: string | null;
 }
 
+/**
+ * An hour a branch is configured for, except that no rule covers it — recorded
+ * because a real job fell into it.
+ *
+ * NOT derived from the config alone. 72 branches have a hole somewhere between
+ * their first and last covered minute, and those collapse into five recurring
+ * windows that look like shift handovers and a lunch break: nothing in the sheet
+ * says which are deliberate. So only a hole that has actually swallowed a job
+ * is reported, and the evidence is the job.
+ */
+export interface CoverageGap {
+  customer_id: string;
+  pickup_name: string;
+  /** "HH:MM" — the time the job needed, and nobody was on. */
+  at: string;
+  /** The rule whose cover ENDS before the hole, and the one that starts after.
+   *  Either can be absent at the ends of the day. Each carries its sheet row so
+   *  the boundary can be moved from the dashboard. */
+  before: { row: number; driver: string; window: string } | null;
+  after: { row: number; driver: string; window: string } | null;
+}
+
 export interface Config {
   mappings: Mapping[];
   /** Branches with a line but no driver. Empty on a tab that has none. */
   unfinished: UnfinishedConfigRow[];
+  /** Hours a job needed and no rule covered, still uncovered as of this parse. */
+  gaps: CoverageGap[];
 }
 
 // A driver read from the sheet's Driver tab (not a live Cartrack fetch), with

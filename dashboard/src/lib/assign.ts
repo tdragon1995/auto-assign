@@ -7,7 +7,7 @@ import { DIAG_LOCATION_CUSTOMER_IDS } from "./psc-routes-data";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from "./return-trips";
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
 import { cleanupStaleTrips } from "./cleanup-trips";
-import { setCycleSnapshot, claimMorningPass, deferMorningPass, confirmMorningPass, pushRunLog, runDailyMaintenance, claimLateAlert, getAcceptedNotes, type HeldJob } from "./smart-log-kv";
+import { setCycleSnapshot, recordCoverageGap, claimMorningPass, deferMorningPass, confirmMorningPass, pushRunLog, runDailyMaintenance, claimLateAlert, getAcceptedNotes, type HeldJob } from "./smart-log-kv";
 import { isValidDriverId } from "./config";
 import { drainSheetAlarms } from "./sheets";
 import { writeUnmappedConfigRows, type UnmappedBranch } from "./unmapped-row";
@@ -1602,6 +1602,7 @@ export async function autoAssignCycle(
         failed: failedJobs,
         sheetAlarms: drainSheetAlarms() ?? undefined,
         unfinished: config?.unfinished ?? [],
+        gaps: config?.gaps ?? [],
       });
     }
     return logs;
@@ -2365,6 +2366,12 @@ export async function autoAssignCycle(
       // hole is visible in the message itself: "nothing covers 16:10, cover is
       // 07:00–16:00 and 16:30–19:00" is a boundary to move, not a driver to find.
       fail("NO_DRIVER", jobId, who, `Chưa có dòng nào phủ ${hhmm} · Ca hiện có: ${shiftInfo || "—"}`);
+      // Unlike an unconfigured branch there is no ROW to write — the fix is
+      // stretching a rule that already exists — so the hour is recorded, and the
+      // config parse decides when it is covered again.
+      if (customerId) {
+        void recordCoverageGap(customerId, jobCustomerName ?? customerId, hhmm).catch(() => {});
+      }
       continue;
     }
 
@@ -2583,6 +2590,7 @@ export async function autoAssignCycle(
         // the point being that a healthy fleet never rewrites it.
         sheetAlarms: drainSheetAlarms() ?? undefined,
         unfinished: config?.unfinished ?? [],
+        gaps: config?.gaps ?? [],
       }),
       // Piggyback a one-time supervisor Zalo alert on the same overdue set for the
       // worst cases (2h+ unstarted pickups). Never throws the cycle: fire-and-log.

@@ -1,7 +1,7 @@
 import { Redis } from "@upstash/redis";
 import { vnDate, vnMinutesSinceMidnight, vnTimestamp } from "./time";
 import { isNoteReleaseHour } from "./job-filters";
-import type { LogEntry, PickupWarning, FailedJob, SheetAlarm, UnfinishedConfigRow } from "./types";
+import type { LogEntry, PickupWarning, FailedJob, SheetAlarm, UnfinishedConfigRow, CoverageGap } from "./types";
 
 /**
  * COMMAND BUDGET — read this before adding a Redis call to a per-cycle path.
@@ -87,6 +87,8 @@ const F_SHEET_ALARMS = "sheet_alarms";
 // an unfinished row is waiting on a person indefinitely and would otherwise be
 // visible only to someone who thought to open the workbook.
 const F_UNFINISHED = "unfinished_config";
+// Hours a job needed and nobody was on, still uncovered as of the last parse.
+const F_GAPS = "coverage_gaps";
 const WARNINGS_MAX_AGE_MS = 600_000; // 10 min — what the old PICKUP_WARNINGS TTL enforced
 
 // Server-backed live log: flat list of recent entries (all levels), so the
@@ -313,6 +315,7 @@ export interface CycleSnapshot {
   warnings?: PickupWarning[];
   sheetAlarms?: SheetAlarm[];
   unfinished?: UnfinishedConfigRow[];
+  gaps?: CoverageGap[];
 }
 
 /** Replace part or all of the per-cycle snapshot in ONE command.
@@ -336,6 +339,7 @@ export async function setCycleSnapshot(snap: CycleSnapshot): Promise<void> {
   }
   if (snap.sheetAlarms) fields[F_SHEET_ALARMS] = JSON.stringify(snap.sheetAlarms);
   if (snap.unfinished)  fields[F_UNFINISHED]   = JSON.stringify(snap.unfinished);
+  if (snap.gaps)        fields[F_GAPS]         = JSON.stringify(snap.gaps);
   if (Object.keys(fields).length === 0) return;
   await redis.hset(CYCLE_SNAPSHOT_KEY, fields);
 }
@@ -1024,6 +1028,8 @@ export interface StatusBundle {
   sheetAlarms: SheetAlarm[];
   /** Config lines naming a branch but no driver — the to-do list. */
   unfinished: UnfinishedConfigRow[];
+  /** Hours a job needed and no rule covered. */
+  gaps: CoverageGap[];
 }
 
 /** One pipeline request to Upstash — and, since held/failed/warnings moved into a
@@ -1031,7 +1037,7 @@ export interface StatusBundle {
  *  90s per open tab, so each command removed here is ~24k a month. */
 export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
   const redis = getRedis();
-  if (!redis) return { state: null, lastChecked: null, deployments: [], logs: [], held: [], warnings: [], failed: [], sheetAlarms: [], unfinished: [] };
+  if (!redis) return { state: null, lastChecked: null, deployments: [], logs: [], held: [], warnings: [], failed: [], sheetAlarms: [], unfinished: [], gaps: [] };
 
   const pipe = redis.pipeline();
   pipe.get(ARM_KEY);
@@ -1057,6 +1063,7 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
   const failed = parseList<FailedJob>(snap[F_FAILED]);
   const sheetAlarms = parseList<SheetAlarm>(snap[F_SHEET_ALARMS]);
   const unfinished = parseList<UnfinishedConfigRow>(snap[F_UNFINISHED]);
+  const gaps = parseList<CoverageGap>(snap[F_GAPS]);
 
   // Warnings expire in the READER now, not in Redis. The old 10-minute TTL existed
   // so a disarmed engine's warnings stopped being shown as current; merging keys
@@ -1076,6 +1083,7 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
     failed,
     sheetAlarms,
     unfinished,
+    gaps,
   };
 }
 
@@ -1144,4 +1152,63 @@ export async function releaseConfigWriteLock(): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
   try { await redis.del("config:write_lock"); } catch { /* expires on its own */ }
+}
+
+// ── Hours a branch was configured for but nobody was on ──────────────────────
+//
+// Recorded when a job falls into one, because unlike an unconfigured branch
+// there is no ROW to write: the fix is stretching a rule that already exists, so
+// the sheet cannot hold the record and something else must.
+//
+// Written once per gap per instance — a new one is a rare event, not a per-cycle
+// occurrence. CLEARING is not done from here: the config parse decides, by
+// checking whether the branch now covers that minute. That direction matters.
+// An alarm that can only be retracted by whoever raised it becomes immortal the
+// moment that instance goes away — which is exactly what left a wrong banner
+// standing all morning on 2026-08-31.
+const GAPS_KEY = "config:gaps";
+const seenGaps = new Set<string>();
+
+const gapField = (customerId: string, at: string) => `${customerId}|${at}`;
+
+/** Record an hour that had no cover. Idempotent, and asked at most once per
+ *  instance per gap. */
+export async function recordCoverageGap(
+  customerId: string, pickupName: string, at: string,
+): Promise<void> {
+  const field = gapField(customerId, at);
+  if (!customerId || !at || seenGaps.has(field)) return;
+  seenGaps.add(field);
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    await redis.hset(GAPS_KEY, { [field]: JSON.stringify({ customer_id: customerId, pickup_name: pickupName, at }) });
+  } catch { /* best-effort: the job has already been reported as failing */ }
+}
+
+export interface RecordedGap { customer_id: string; pickup_name: string; at: string }
+
+/** Everything recorded so far. One command. */
+export async function readCoverageGaps(): Promise<RecordedGap[]> {
+  const redis = getRedis();
+  if (!redis) return [];
+  try {
+    const all = await redis.hgetall<Record<string, string>>(GAPS_KEY);
+    if (!all) return [];
+    return Object.values(all).map((v) => (typeof v === "string" ? JSON.parse(v) : v)).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/** Drop the ones the config now covers. Called by the parse, which is the only
+ *  thing that knows. */
+export async function clearCoverageGaps(fields: { customer_id: string; at: string }[]): Promise<void> {
+  if (fields.length === 0) return;
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    await redis.hdel(GAPS_KEY, ...fields.map((f) => gapField(f.customer_id, f.at)));
+    for (const f of fields) seenGaps.delete(gapField(f.customer_id, f.at));
+  } catch { /* it will be retried on the next parse */ }
 }

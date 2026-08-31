@@ -15,7 +15,7 @@ import { LeaveStatusPanel, uncoveredLeaveCount } from "./leave-status-panel";
 import { SheetAlarmBanner } from "./sheet-alarm-banner";
 import { TatTeamPanel } from "./tat-team-panel";
 import { toast } from "sonner";
-import type { LogEntry, PickupWarning, FailedJob, ConfigDriver, SheetAlarm, UnfinishedConfigRow } from "@/lib/types";
+import type { LogEntry, PickupWarning, FailedJob, ConfigDriver, SheetAlarm, UnfinishedConfigRow, CoverageGap } from "@/lib/types";
 import type { DeploymentBeat } from "@/lib/smart-log-kv";
 import type { LeaveOnDate, InvalidLeaveRow, SpanningLeaveRow } from "@/lib/leave-config";
 
@@ -34,6 +34,7 @@ export function Dashboard() {
   const [failed, setFailed] = useState<FailedJob[]>([]);
   const [sheetAlarms, setSheetAlarms] = useState<SheetAlarm[]>([]);
   const [unfinished, setUnfinished] = useState<UnfinishedConfigRow[]>([]);
+  const [gaps, setGaps] = useState<CoverageGap[]>([]);
   const [mappingCount, setMappingCount] = useState(0);
   const [pscRouteCount, setPscRouteCount] = useState(0);
   const [drivers, setDrivers] = useState<ConfigDriver[]>([]);
@@ -120,6 +121,7 @@ export function Dashboard() {
       if (Array.isArray(data.warnings)) setWarnings(data.warnings);
       if (Array.isArray(data.sheetAlarms)) setSheetAlarms(data.sheetAlarms as SheetAlarm[]);
       if (Array.isArray(data.unfinished)) setUnfinished(data.unfinished as UnfinishedConfigRow[]);
+      if (Array.isArray(data.gaps)) setGaps(data.gaps as CoverageGap[]);
       if (Array.isArray(data.failed)) {
         const dismissed = dismissedFailedRef.current;
         const now = Date.now();
@@ -458,7 +460,7 @@ export function Dashboard() {
   // and the list it counts are two different computations of the same number.
   const attentionCount =
     held.length + failed.length + warnings.length + scheduleErrors.length +
-    sheetAlarms.length + unfinished.length +
+    sheetAlarms.length + unfinished.length + gaps.length +
     // Only rows the engine still cannot see. A recovered row is already being
     // honoured, so it is a tidy-up, not something to handle today.
     leave.invalid.filter((r) => !r.recovered).length +
@@ -577,6 +579,7 @@ export function Dashboard() {
                     onNoteManualAssign={handleHeldManualAssign}
                     failed={failed}
                   unfinished={unfinished}
+                  gaps={gaps}
                   onUnfinishedSaved={syncStatus}
                     warnings={warnings}
                     scheduleErrors={scheduleErrors}
