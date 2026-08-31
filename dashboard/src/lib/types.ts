@@ -21,8 +21,31 @@ export interface Mapping {
   alt_drop_off_id: string;
 }
 
+/**
+ * A config line that names a branch but no driver — the record of a branch
+ * waiting to be set up.
+ *
+ * This IS the to-do list, and it lives in the sheet on purpose. A row like this
+ * is dropped when the config is parsed, so it can never route anything; it sits
+ * there as a note to a human. Reading them back out is what turns the sheet into
+ * something the dashboard can show and act on, instead of a place you have to
+ * remember to go and look at.
+ */
+export interface UnfinishedConfigRow {
+  /** 1-based row in the tab, so a save can go back to the same line. Treated as
+   *  a hint and re-checked before writing, never trusted on its own. */
+  row: number;
+  pickup_name: string;
+  /** The destination the row is scoped to, or "" for any. */
+  dropoff_name: string;
+  /** "HH:MM–HH:MM" when the row carries a window, else null. */
+  window: string | null;
+}
+
 export interface Config {
   mappings: Mapping[];
+  /** Branches with a line but no driver. Empty on a tab that has none. */
+  unfinished: UnfinishedConfigRow[];
 }
 
 // A driver read from the sheet's Driver tab (not a live Cartrack fetch), with

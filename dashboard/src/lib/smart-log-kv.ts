@@ -1,7 +1,7 @@
 import { Redis } from "@upstash/redis";
 import { vnDate, vnMinutesSinceMidnight, vnTimestamp } from "./time";
 import { isNoteReleaseHour } from "./job-filters";
-import type { LogEntry, PickupWarning, FailedJob, SheetAlarm } from "./types";
+import type { LogEntry, PickupWarning, FailedJob, SheetAlarm, UnfinishedConfigRow } from "./types";
 
 /**
  * COMMAND BUDGET — read this before adding a Redis call to a per-cycle path.
@@ -81,6 +81,12 @@ const F_WARNINGS_TS = "warnings_ts";
 // HSET as the fields above, which is one command regardless of how many fields
 // it carries.
 const F_SHEET_ALARMS = "sheet_alarms";
+// Branches with a config line but no driver — read back out of the sheet, which
+// is where they are recorded. Published with the rest so the dashboard can show
+// them whether or not anything is failing at this moment: unlike a stuck job,
+// an unfinished row is waiting on a person indefinitely and would otherwise be
+// visible only to someone who thought to open the workbook.
+const F_UNFINISHED = "unfinished_config";
 const WARNINGS_MAX_AGE_MS = 600_000; // 10 min — what the old PICKUP_WARNINGS TTL enforced
 
 // Server-backed live log: flat list of recent entries (all levels), so the
@@ -306,6 +312,7 @@ export interface CycleSnapshot {
   failed?: FailedJob[];
   warnings?: PickupWarning[];
   sheetAlarms?: SheetAlarm[];
+  unfinished?: UnfinishedConfigRow[];
 }
 
 /** Replace part or all of the per-cycle snapshot in ONE command.
@@ -328,6 +335,7 @@ export async function setCycleSnapshot(snap: CycleSnapshot): Promise<void> {
     fields[F_WARNINGS_TS] = String(Date.now());
   }
   if (snap.sheetAlarms) fields[F_SHEET_ALARMS] = JSON.stringify(snap.sheetAlarms);
+  if (snap.unfinished)  fields[F_UNFINISHED]   = JSON.stringify(snap.unfinished);
   if (Object.keys(fields).length === 0) return;
   await redis.hset(CYCLE_SNAPSHOT_KEY, fields);
 }
@@ -1014,6 +1022,8 @@ export interface StatusBundle {
   failed: FailedJob[];
   /** Spreadsheet tabs the engine is currently refusing to read. */
   sheetAlarms: SheetAlarm[];
+  /** Config lines naming a branch but no driver — the to-do list. */
+  unfinished: UnfinishedConfigRow[];
 }
 
 /** One pipeline request to Upstash — and, since held/failed/warnings moved into a
@@ -1021,7 +1031,7 @@ export interface StatusBundle {
  *  90s per open tab, so each command removed here is ~24k a month. */
 export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
   const redis = getRedis();
-  if (!redis) return { state: null, lastChecked: null, deployments: [], logs: [], held: [], warnings: [], failed: [], sheetAlarms: [] };
+  if (!redis) return { state: null, lastChecked: null, deployments: [], logs: [], held: [], warnings: [], failed: [], sheetAlarms: [], unfinished: [] };
 
   const pipe = redis.pipeline();
   pipe.get(ARM_KEY);
@@ -1046,6 +1056,7 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
   const held = parseList<HeldJob>(snap[F_HELD]);
   const failed = parseList<FailedJob>(snap[F_FAILED]);
   const sheetAlarms = parseList<SheetAlarm>(snap[F_SHEET_ALARMS]);
+  const unfinished = parseList<UnfinishedConfigRow>(snap[F_UNFINISHED]);
 
   // Warnings expire in the READER now, not in Redis. The old 10-minute TTL existed
   // so a disarmed engine's warnings stopped being shown as current; merging keys
@@ -1064,6 +1075,7 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
     warnings,
     failed,
     sheetAlarms,
+    unfinished,
   };
 }
 

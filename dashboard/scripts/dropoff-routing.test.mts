@@ -66,7 +66,7 @@ function vnAt(hhmm: string): Date {
   return new Date(Date.UTC(2026, 7, 26, h - 7, m));
 }
 
-const cfg = (mappings: Mapping[]): Config => ({ mappings });
+const cfg = (mappings: Mapping[]): Config => ({ mappings, unfinished: [] });
 
 // ── 1. The legacy shape still works ──────────────────────────────────────────
 console.log("\n1. A blank dropoff_id serves every destination (all ~1,700 legacy rows)");

@@ -1601,6 +1601,7 @@ export async function autoAssignCycle(
         held: heldJobs,
         failed: failedJobs,
         sheetAlarms: drainSheetAlarms() ?? undefined,
+        unfinished: config?.unfinished ?? [],
       });
     }
     return logs;
@@ -2581,6 +2582,7 @@ export async function autoAssignCycle(
         // null when nothing changed, which leaves the published field alone —
         // the point being that a healthy fleet never rewrites it.
         sheetAlarms: drainSheetAlarms() ?? undefined,
+        unfinished: config?.unfinished ?? [],
       }),
       // Piggyback a one-time supervisor Zalo alert on the same overdue set for the
       // worst cases (2h+ unstarted pickups). Never throws the cycle: fire-and-log.

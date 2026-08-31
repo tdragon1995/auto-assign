@@ -1,5 +1,5 @@
 import { Redis } from "@upstash/redis";
-import type { Config, ConfigDriver, Mapping } from "./types";
+import type { Config, ConfigDriver, Mapping, UnfinishedConfigRow } from "./types";
 import { fetchSheetRows, isSheetShapeError, noteSheetLoad, noteSheetWarning, SHEET_CONTRACT, SHEET_GID } from "./sheets";
 import {
   findDuplicateBranches, findShiftOverlaps,
@@ -53,12 +53,12 @@ async function readGen(): Promise<string | null> {
 // freshness mechanism — that is the gen stamp, deliberately, after a clock-based cache
 // was measured at an 87% miss rate.
 const L2_TTL_S = 48 * 60 * 60;
-//   version — the `v3` below is NOT decoration. This blob is PARSED config, so a change to
+//   version — the `v4` below is NOT decoration. This blob is PARSED config, so a change to
 //          how it is parsed (a renamed column, a new field) leaves every server reading a
 //          blob built by the old code until someone presses Refresh. That is exactly how
 //          the "Driver" column fix shipped and did nothing: correct code, stale parse.
 //          Bump this whenever the parsing changes, and the deploy invalidates itself.
-const l2Key = (gen: string, date: string) => `config:v3:${gen}:${date}`;
+const l2Key = (gen: string, date: string) => `config:v4:${gen}:${date}`;
 
 
 let cachedConfig: Config | null = null;
@@ -247,11 +247,11 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     const redis = getRedis();
     if (redis) {
       try {
-        const hit = await redis.get<Mapping[]>(l2Key(gen, today));
+        const hit = await redis.get<{ mappings: Mapping[]; unfinished?: UnfinishedConfigRow[] }>(l2Key(gen, today));
         // Same zero-length suspicion as the sheet path below: never adopt an empty
         // mapping, whatever it came from.
-        if (Array.isArray(hit) && hit.length > 0) {
-          cachedConfig = { mappings: hit };
+        if (hit && Array.isArray(hit.mappings) && hit.mappings.length > 0) {
+          cachedConfig = { mappings: hit.mappings, unfinished: hit.unfinished ?? [] };
           cachedDay = today;
           cachedGen = gen;
           return cachedConfig;
@@ -269,8 +269,11 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     // are collected HERE because this is the only place that still knows what a
     // dropped row said — afterwards there is nothing left to report.
     const unresolved: UnresolvedRows = { pickups: [], drivers: [], dropoffs: [], invalidDriverIds: [] };
+    // Branches with a line but nobody on it — the to-do list, read back out of
+    // the sheet rather than kept anywhere else. See UnfinishedConfigRow.
+    const unfinished: UnfinishedConfigRow[] = [];
     const pickupNames = new Set<string>();
-    for (const row of rows) {
+    for (const [idx, row] of rows.entries()) {
       const customer_id = row["customer_id"] ?? "";
       const driver_id = (row["driver_id"] ?? "").trim();
       // Drop junk smart-driver entries (e.g. a broken #REF sheet ref) so they
@@ -308,6 +311,21 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
         if (!customer_id && pickupName) unresolved.pickups.push(pickupName);
         else if (customer_id && driverName && !driver_id && smart_driver_id.length === 0) {
           unresolved.drivers.push(`${pickupName || customer_id}: ${driverName}`);
+        } else if (customer_id && pickupName && !driverName) {
+          // A branch that resolved, with the driver cell left empty. Nothing is
+          // wrong with it — it is simply unfinished, and it is what the "Cần xử
+          // lý" tab now offers to complete.
+          //
+          // +2 maps the parsed index to the sheet row: one for the header, one
+          // for 1-based counting. Only a HINT — a save re-reads the row and
+          // checks it still holds this branch before writing anything.
+          const ws = (row["shift_start"] ?? "").trim(), we = (row["shift_end"] ?? "").trim();
+          unfinished.push({
+            row: idx + 2,
+            pickup_name: pickupName,
+            dropoff_name: dropoffName,
+            window: ws && we ? `${ws}–${we}` : null,
+          });
         }
         continue;
       }
@@ -346,7 +364,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
 
     noteSheetLoad(SHEET_CONTRACT[tab].label, null);
     await auditParsedConfig(SHEET_CONTRACT[tab].label, mappings, unresolved, pickupNames, today);
-    cachedConfig = { mappings };
+    cachedConfig = { mappings, unfinished };
     cachedDay = today;
     cachedGen = gen;
 
@@ -357,7 +375,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
       const redis = getRedis();
       if (redis) {
         try {
-          await redis.set(l2Key(gen, today), mappings, { ex: L2_TTL_S });
+          await redis.set(l2Key(gen, today), { mappings, unfinished }, { ex: L2_TTL_S });
         } catch { /* best-effort; the sheet is always the fallback */ }
       }
     }

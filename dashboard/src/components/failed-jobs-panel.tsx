@@ -11,7 +11,7 @@ import { NoteReviewPanel, type HeldJob } from "./note-review-panel";
 import { NoteSuggestionPanel } from "./note-suggestion-panel";
 import { SectionHeader } from "./section-header";
 import { UncoveredLeaveSection, uncoveredLeaveCount } from "./leave-status-panel";
-import type { FailedJob, FailedReason, PickupWarning, ConfigDriver } from "@/lib/types";
+import type { UnfinishedConfigRow, FailedJob, FailedReason, PickupWarning, ConfigDriver } from "@/lib/types";
 import type { LeaveOnDate } from "@/lib/leave-config";
 
 export interface ScheduleErrorRow {
@@ -304,6 +304,7 @@ export function FailedJobsPanel({
   onNoteAssigned,
   onNoteManualAssign,
   failed,
+  unfinished,
   warnings,
   scheduleErrors,
   drivers,
@@ -321,6 +322,8 @@ export function FailedJobsPanel({
   onNoteAssigned: (jobId: number) => void;
   onNoteManualAssign: (job: HeldJob, driverId: string) => void;
   failed: FailedJob[];
+  /** Config lines naming a branch but no driver — waiting on a person. */
+  unfinished: UnfinishedConfigRow[];
   warnings: PickupWarning[];
   scheduleErrors: ScheduleErrorRow[];
   drivers: ConfigDriver[];
@@ -427,6 +430,40 @@ export function FailedJobsPanel({
                 </div>
               </div>
             ))}
+
+            {/* ── Branches with a line but nobody on it ───────────────────
+                Read back out of the sheet, not from this cycle's failures. That
+                is the point: a stuck job disappears the moment someone handles
+                it by hand, while the branch stays unconfigured and the next trip
+                fails all over again. These persist until a driver is chosen. */}
+            {unfinished.length > 0 && (
+              <div className="space-y-1.5">
+                <SectionHeader label="Chưa chọn tài xế (dòng đã tạo sẵn)" count={unfinished.length} tone="amber" />
+                <div className={listBox}>
+                  {unfinished.map((u) => (
+                    <div key={u.row} className="px-2 py-1.5 hover:bg-slate-50">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="shrink-0 font-mono text-[11px] text-slate-500" title="Dòng trong Google Sheet">
+                          #{u.row}
+                        </span>
+                        <span
+                          className="min-w-0 flex-1 break-words md:truncate text-sm font-medium text-slate-800"
+                          title={`${u.pickup_name}${u.dropoff_name ? ` → ${u.dropoff_name}` : ""}`}
+                        >
+                          {u.pickup_name}
+                          {u.dropoff_name && <span className="text-slate-400"> → {u.dropoff_name}</span>}
+                        </span>
+                        {u.window && (
+                          <span className="shrink-0 text-[11px] text-slate-600 bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">
+                            {u.window}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* ── Other unassignable: fixed-schedule run errors ───────────── */}
             {scheduleErrors.length > 0 && (

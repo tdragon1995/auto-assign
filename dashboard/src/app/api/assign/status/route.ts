@@ -11,8 +11,14 @@ import { getStatusBundle } from "@/lib/smart-log-kv";
  * boundary second. Without `since`, the full window is returned (first load).
  */
 export async function GET(req: NextRequest) {
-  const { state, lastChecked, deployments, logs, held, warnings, failed } = await getStatusBundle(100);
+  const { state, lastChecked, deployments, logs, held, warnings, failed, sheetAlarms, unfinished } =
+    await getStatusBundle(100);
   const since = req.nextUrl.searchParams.get("since");
   const outLogs = since ? logs.filter((l) => l.ts >= since) : logs;
-  return NextResponse.json({ armed: !!state, state, lastChecked, deployments, logs: outLogs, held, warnings, failed });
+  // sheetAlarms and unfinished were being computed and then dropped here — the
+  // dashboard reads both, so the refused-tab banner had never once been shown.
+  return NextResponse.json({
+    armed: !!state, state, lastChecked, deployments, logs: outLogs,
+    held, warnings, failed, sheetAlarms, unfinished,
+  });
 }
