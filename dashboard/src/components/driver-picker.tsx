@@ -28,8 +28,17 @@ export function DriverPicker({
   const [selectedDriver, setSelectedDriver] = useState<string>("");
   const [searchInput, setSearchInput] = useState<string>("");
 
+  // Accent-insensitive, because nobody typing quickly reaches for the diacritics:
+  // "quynh" has to find "Nguyễn Hữu Quỳnh", or the search silently returns
+  // nothing and the picker looks broken rather than picky. đ is folded on its own
+  // line — it is a distinct Vietnamese letter, not a d with a mark, so Unicode
+  // decomposition leaves it exactly as it was.
+  const fold = (v: string) =>
+    v.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase();
+  const needle = fold(searchInput);
+
   const filteredDrivers = drivers.filter(d =>
-    d.name.toLowerCase().includes(searchInput.toLowerCase()) ||
+    fold(d.name).includes(needle) ||
     d.driver_id.toLowerCase().includes(searchInput.toLowerCase())
   );
 
