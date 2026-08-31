@@ -1829,6 +1829,16 @@ export async function autoAssignCycle(
     // instead), so this is the appointment the supervisor is now late for —
     // shown on the "Cần xử lý" row so they can triage by time, not job id.
     const failWindow = fmtPickupWindow(job);
+    // Where the trip actually runs, for the map link on the "Cần xử lý" row.
+    // Built from the stops rather than the names: the names here are internal
+    // codes ("BRA - D001", "3PL - TLT") that no map could place.
+    const failGps = (() => {
+      const a = job.stops?.find((st) => st.stop_type_id === 1);
+      const b = job.stops?.find((st) => st.stop_type_id === 2);
+      if (a?.latitude == null || a?.longitude == null) return undefined;
+      if (b?.latitude == null || b?.longitude == null) return undefined;
+      return `${a.latitude},${a.longitude};${b.latitude},${b.longitude}`;
+    })();
     // Per-job failure recorder — closes over this job's `route` (no shared state).
     const fail = (
       reason: FailedJob["reason"],
@@ -1837,7 +1847,7 @@ export async function autoAssignCycle(
       detail: string,
       level: "ERROR" | "WARN" = "ERROR",
     ) => {
-      if (!onlyJobIds) failedJobs.push({ job_id: jobIdArg, customer: route || customer, reason, detail, level, ts: vnTimestamp(), delivery_window: failWindow });
+      if (!onlyJobIds) failedJobs.push({ job_id: jobIdArg, customer: route || customer, reason, detail, level, ts: vnTimestamp(), delivery_window: failWindow, route_gps: failGps });
     };
     // Single-pass block: the body's many top-level `continue`s mean "skip this job"
     // (continue → while(false) → exit). The nested candidate-retry `for` loop's own

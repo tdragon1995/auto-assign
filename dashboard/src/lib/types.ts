@@ -265,6 +265,16 @@ export interface FailedJob {
   // only a start), when the job has one. The supervisor picking a driver by hand
   // needs the appointment time to judge urgency; absent for ASAP jobs.
   delivery_window?: string;
+  /**
+   * Pickup and destination coordinates as "lat,lng;lat,lng", so the row can
+   * offer a real route rather than a link into Cartrack's own map.
+   *
+   * A compact string rather than four numbers because this is republished with
+   * every cycle: ~28 characters per failing job, against a store already close
+   * to its monthly allowance. Absent when either stop has no coordinates, which
+   * is what makes the link conditional rather than broken.
+   */
+  route_gps?: string;
 }
 
 // A spreadsheet tab the engine REFUSED to read, because a column it cannot work

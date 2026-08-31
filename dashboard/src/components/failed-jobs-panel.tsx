@@ -62,6 +62,22 @@ const REASON_META: Record<
   NO_GPS:         { label: "Thiếu toạ độ GPS", tone: "red", order: 9 },
 };
 
+/**
+ * A Google Maps route between the two ends of the trip.
+ *
+ * Coordinates, never names: the branch names in this list are internal codes
+ * ("BRA - D001", "3PL - TLT") that no map could place. Returns null when either
+ * end has no coordinates, so the caller falls back to the Cartrack link rather
+ * than opening a map of nowhere.
+ */
+export function gmapsRoute(routeGps: string | undefined): string | null {
+  const [from, to] = (routeGps ?? "").split(";");
+  if (!from || !to) return null;
+  return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(from)}&destination=${encodeURIComponent(to)}&travelmode=driving`;
+}
+
+const cartrackJob = (jobId: number) => `https://fleetweb-vn.cartrack.com/delivery/map?job=${jobId}`;
+
 function metaFor(reason: FailedReason) {
   return REASON_META[reason] ?? { label: reason, tone: "red" as const, order: 99 };
 }
@@ -139,14 +155,30 @@ function FailedRow({
     <div className="px-2 py-1.5 hover:bg-slate-50">
       {/* Line 1: job link · route (reason lives in the section header) */}
       <div className="flex items-center gap-2 min-w-0">
+        {/* The job number opens the ROUTE — the question being asked here is
+            "where does this trip run", which Cartrack's own map answers slowly
+            and only for someone already signed in. Cartrack stays one click
+            away for the job's actual record. */}
         <a
-          href={`https://fleetweb-vn.cartrack.com/delivery/map?job=${job.job_id}`}
+          href={gmapsRoute(job.route_gps) ?? cartrackJob(job.job_id)}
           target="_blank"
           rel="noopener noreferrer"
           className="shrink-0 font-mono font-semibold text-indigo-600 underline hover:text-indigo-800"
+          title={gmapsRoute(job.route_gps) ? "Mở đường đi trên Google Maps" : "Mở trên Cartrack (job này chưa có toạ độ)"}
         >
           Job {job.job_id}
         </a>
+        {gmapsRoute(job.route_gps) && (
+          <a
+            href={cartrackJob(job.job_id)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="shrink-0 rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[11px] font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-800"
+            title="Mở job trên Cartrack"
+          >
+            Cartrack
+          </a>
+        )}
         {/* Mobile has no hover for the title tooltip, so wrap there; truncate from md up. */}
         <span className="min-w-0 flex-1 break-words md:truncate text-sm font-medium text-slate-800" title={job.customer}>
           {job.customer}
