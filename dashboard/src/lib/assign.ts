@@ -1603,6 +1603,7 @@ export async function autoAssignCycle(
         sheetAlarms: drainSheetAlarms() ?? undefined,
         unfinished: config?.unfinished ?? [],
         gaps: config?.gaps ?? [],
+        parsedAt: config?.parsedAt ?? undefined,
       });
     }
     return logs;
@@ -2591,6 +2592,7 @@ export async function autoAssignCycle(
         sheetAlarms: drainSheetAlarms() ?? undefined,
         unfinished: config?.unfinished ?? [],
         gaps: config?.gaps ?? [],
+        parsedAt: config?.parsedAt ?? undefined,
       }),
       // Piggyback a one-time supervisor Zalo alert on the same overdue set for the
       // worst cases (2h+ unstarted pickups). Never throws the cycle: fire-and-log.

@@ -35,6 +35,24 @@ export function Dashboard() {
   const [sheetAlarms, setSheetAlarms] = useState<SheetAlarm[]>([]);
   const [unfinished, setUnfinished] = useState<UnfinishedConfigRow[]>([]);
   const [gaps, setGaps] = useState<CoverageGap[]>([]);
+  const [parsedAt, setParsedAt] = useState("");
+  // Rows the user has just finished, hidden until the engine catches up.
+  //
+  // The lists come from a snapshot the assign CYCLE publishes, so a save is not
+  // reflected until the next one — up to three minutes of a row sitting there
+  // looking untouched after a success message said otherwise. The save itself is
+  // already confirmed by then (the sheet write returned, and the config was
+  // invalidated), so hiding it immediately states what is true.
+  //
+  // Self-healing on purpose: a key is dropped as soon as the engine stops
+  // reporting that row, so this can only ever hide something briefly. If a save
+  // somehow did not take, the row comes back on the next poll rather than being
+  // suppressed for ever — the failure mode that has bitten this dashboard twice
+  // today.
+  const [doneKeys, setDoneKeys] = useState<Set<string>>(new Set());
+  const markDone = useCallback((key: string) => {
+    setDoneKeys((prev) => new Set(prev).add(key));
+  }, []);
   const [mappingCount, setMappingCount] = useState(0);
   const [pscRouteCount, setPscRouteCount] = useState(0);
   const [drivers, setDrivers] = useState<ConfigDriver[]>([]);
@@ -120,8 +138,24 @@ export function Dashboard() {
       }
       if (Array.isArray(data.warnings)) setWarnings(data.warnings);
       if (Array.isArray(data.sheetAlarms)) setSheetAlarms(data.sheetAlarms as SheetAlarm[]);
-      if (Array.isArray(data.unfinished)) setUnfinished(data.unfinished as UnfinishedConfigRow[]);
-      if (Array.isArray(data.gaps)) setGaps(data.gaps as CoverageGap[]);
+      const nextUnfinished = Array.isArray(data.unfinished) ? (data.unfinished as UnfinishedConfigRow[]) : null;
+      const nextGaps = Array.isArray(data.gaps) ? (data.gaps as CoverageGap[]) : null;
+      if (nextUnfinished) setUnfinished(nextUnfinished);
+      if (nextGaps) setGaps(nextGaps);
+      // Forget a row the engine no longer reports: it has caught up, and keeping
+      // the key would hide the row if it ever legitimately came back.
+      if (nextUnfinished || nextGaps) {
+        setDoneKeys((prev) => {
+          if (prev.size === 0) return prev;
+          const live = new Set<string>([
+            ...(nextUnfinished ?? []).map((u) => `u:${u.row}`),
+            ...(nextGaps ?? []).map((g) => `g:${g.customer_id}|${g.at}`),
+          ]);
+          const next = new Set([...prev].filter((k) => live.has(k)));
+          return next.size === prev.size ? prev : next;
+        });
+      }
+      if (typeof data.parsedAt === "string") setParsedAt(data.parsedAt);
       if (Array.isArray(data.failed)) {
         const dismissed = dismissedFailedRef.current;
         const now = Date.now();
@@ -458,9 +492,12 @@ export function Dashboard() {
   const isProd = env === "prod";
   // Must match FailedJobsPanel's own total, uncovered leave included — the badge
   // and the list it counts are two different computations of the same number.
+  const visibleUnfinished = unfinished.filter((u) => !doneKeys.has(`u:${u.row}`));
+  const visibleGaps = gaps.filter((g) => !doneKeys.has(`g:${g.customer_id}|${g.at}`));
+
   const attentionCount =
     held.length + failed.length + warnings.length + scheduleErrors.length +
-    sheetAlarms.length + unfinished.length + gaps.length +
+    sheetAlarms.length + visibleUnfinished.length + visibleGaps.length +
     // Only rows the engine still cannot see. A recovered row is already being
     // honoured, so it is a tidy-up, not something to handle today.
     leave.invalid.filter((r) => !r.recovered).length +
@@ -578,9 +615,10 @@ export function Dashboard() {
                     }}
                     onNoteManualAssign={handleHeldManualAssign}
                     failed={failed}
-                  unfinished={unfinished}
-                  gaps={gaps}
-                  onUnfinishedSaved={syncStatus}
+                  unfinished={visibleUnfinished}
+                  gaps={visibleGaps}
+                  parsedAt={parsedAt}
+                  onUnfinishedSaved={(key?: string) => { if (key) markDone(key); syncStatus(); }}
                     warnings={warnings}
                     scheduleErrors={scheduleErrors}
                     drivers={drivers}

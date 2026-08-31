@@ -97,14 +97,43 @@ function UnfinishedRow({
 }: {
   u: UnfinishedConfigRow;
   drivers: ConfigDriver[];
-  onSaved: () => void;
+  onSaved: (key?: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  // A second rule for the SAME branch. One row covers one window, so a branch
+  // collected morning and afternoon by different drivers needs two — the same
+  // split the gap rows offer, reached from the other direction.
+  const [adding, setAdding] = useState(false);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [from, to] = (u.window ?? "–").split("–");
   const [start, setStart] = useState(from ?? "");
   const [end, setEnd] = useState(to ?? "");
+
+  async function addAnother(driverId: string) {
+    const name = drivers.find((d) => d.driver_id === driverId)?.name;
+    if (!name) { setErr("Không tìm thấy tài xế"); return; }
+    setSaving(true); setErr(null);
+    try {
+      const res = await fetch("/api/config/add-rule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pickup_name: u.pickup_name, dropoff_name: u.dropoff_name,
+          driver_name: name, shift_start: start, shift_end: end,
+        }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
+      toast.success(`Đã thêm dòng ${j.row} — ${name} ${start}–${end}`);
+      setAdding(false);
+      onSaved();   // this row is still unfinished — only the NEW row was created
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
 
   async function save(driverId: string) {
     const name = drivers.find((d) => d.driver_id === driverId)?.name;
@@ -120,7 +149,7 @@ function UnfinishedRow({
       if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
       toast.success(`Đã gán ${name} cho ${u.pickup_name} (dòng ${u.row})`);
       setOpen(false);
-      onSaved();
+      onSaved(`u:${u.row}`);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -167,7 +196,22 @@ function UnfinishedRow({
           {saving ? (
             <div className="text-[11px] text-slate-500">Đang lưu…</div>
           ) : (
-            <DriverPicker drivers={drivers} onConfirm={save} onCancel={() => { setOpen(false); setErr(null); }} confirmLabel="Lưu" />
+            <DriverPicker
+              drivers={drivers}
+              onConfirm={adding ? addAnother : save}
+              onCancel={() => { setOpen(false); setAdding(false); setErr(null); }}
+              confirmLabel={adding ? "Tạo dòng mới" : "Lưu"}
+            />
+          )}
+          {!saving && (
+            <button
+              className="text-[11px] text-indigo-600 underline hover:text-indigo-800"
+              onClick={() => { setAdding((v) => !v); setErr(null); }}
+            >
+              {adding
+                ? "← quay lại điền vào dòng này"
+                : "…hoặc tạo THÊM một dòng nữa cho điểm này (ca khác, tài xế khác)"}
+            </button>
           )}
           {err && <div className="text-[11px] text-red-600">{err}</div>}
         </div>
@@ -185,7 +229,7 @@ function UnfinishedRow({
  * one moves — closing it from both ends would leave the two rules overlapping,
  * which is the fault this same panel reports elsewhere.
  */
-function GapRow({ g, drivers, onSaved }: { g: CoverageGap; drivers: ConfigDriver[]; onSaved: () => void }) {
+function GapRow({ g, drivers, onSaved }: { g: CoverageGap; drivers: ConfigDriver[]; onSaved: (key?: string) => void }) {
   const [saving, setSaving] = useState<string | null>(null);
   const [splitting, setSplitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -202,7 +246,7 @@ function GapRow({ g, drivers, onSaved }: { g: CoverageGap; drivers: ConfigDriver
       if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
       toast.success(`Đã thêm dòng ${j.row} — ${driverName} ${from}–${to}`);
       setSplitting(false);
-      onSaved();
+      onSaved(`g:${g.customer_id}|${g.at}`);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -221,7 +265,7 @@ function GapRow({ g, drivers, onSaved }: { g: CoverageGap; drivers: ConfigDriver
       const j = await res.json().catch(() => ({}));
       if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
       toast.success(`Đã sửa ca dòng ${row} — ${g.pickup_name}`);
-      onSaved();
+      onSaved(`g:${g.customer_id}|${g.at}`);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -539,6 +583,7 @@ export function FailedJobsPanel({
   failed,
   unfinished,
   gaps,
+  parsedAt,
   onUnfinishedSaved,
   warnings,
   scheduleErrors,
@@ -561,8 +606,11 @@ export function FailedJobsPanel({
   unfinished: UnfinishedConfigRow[];
   /** Hours a job needed and no rule covered. */
   gaps: CoverageGap[];
-  /** Re-read after a row is completed, so it drops off the list. */
-  onUnfinishedSaved: () => void;
+  /** When the sheet behind both lists was last read. */
+  parsedAt: string;
+  /** Called after a row is completed. The key identifies what was finished so
+   *  it can be hidden at once rather than waiting for the next cycle. */
+  onUnfinishedSaved: (key?: string) => void;
   warnings: PickupWarning[];
   scheduleErrors: ScheduleErrorRow[];
   drivers: ConfigDriver[];
@@ -704,7 +752,16 @@ export function FailedJobsPanel({
                   className="flex w-full items-center gap-1.5 text-left"
                   aria-expanded={configOpen}
                 >
-                  <SectionHeader label="Cần tạo config" count={unfinished.length} tone="amber" className="pt-1 flex-1" />
+                  <SectionHeader label="Cần tạo config" count={unfinished.length} tone="amber" className="pt-1" />
+                  {/* When the sheet was last READ, not when the cycle ran. The parse
+                      is event-based on purpose, so a hand-edit stays invisible until
+                      someone presses Refresh — without this, a row already fixed in
+                      the sheet reads as a bug rather than as a stale list. */}
+                  {parsedAt && (
+                    <span className="flex-1 text-[11px] text-slate-400">
+                      đọc sheet lúc {parsedAt.slice(11, 16)} · vừa sửa sheet thì bấm Làm mới
+                    </span>
+                  )}
                   <span className="shrink-0 text-xs text-slate-400">{configOpen ? "▾" : "▸"}</span>
                 </button>
                 {configOpen && (

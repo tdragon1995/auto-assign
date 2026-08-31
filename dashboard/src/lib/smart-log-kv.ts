@@ -89,6 +89,8 @@ const F_SHEET_ALARMS = "sheet_alarms";
 const F_UNFINISHED = "unfinished_config";
 // Hours a job needed and nobody was on, still uncovered as of the last parse.
 const F_GAPS = "coverage_gaps";
+// When the sheet behind those two lists was last actually read.
+const F_PARSED_AT = "config_parsed_at";
 const WARNINGS_MAX_AGE_MS = 600_000; // 10 min — what the old PICKUP_WARNINGS TTL enforced
 
 // Server-backed live log: flat list of recent entries (all levels), so the
@@ -316,6 +318,7 @@ export interface CycleSnapshot {
   sheetAlarms?: SheetAlarm[];
   unfinished?: UnfinishedConfigRow[];
   gaps?: CoverageGap[];
+  parsedAt?: string;
 }
 
 /** Replace part or all of the per-cycle snapshot in ONE command.
@@ -340,6 +343,7 @@ export async function setCycleSnapshot(snap: CycleSnapshot): Promise<void> {
   if (snap.sheetAlarms) fields[F_SHEET_ALARMS] = JSON.stringify(snap.sheetAlarms);
   if (snap.unfinished)  fields[F_UNFINISHED]   = JSON.stringify(snap.unfinished);
   if (snap.gaps)        fields[F_GAPS]         = JSON.stringify(snap.gaps);
+  if (snap.parsedAt)    fields[F_PARSED_AT]   = snap.parsedAt;
   if (Object.keys(fields).length === 0) return;
   await redis.hset(CYCLE_SNAPSHOT_KEY, fields);
 }
@@ -1030,6 +1034,8 @@ export interface StatusBundle {
   unfinished: UnfinishedConfigRow[];
   /** Hours a job needed and no rule covered. */
   gaps: CoverageGap[];
+  /** When the sheet behind both lists was last read. */
+  parsedAt: string;
 }
 
 /** One pipeline request to Upstash — and, since held/failed/warnings moved into a
@@ -1037,7 +1043,7 @@ export interface StatusBundle {
  *  90s per open tab, so each command removed here is ~24k a month. */
 export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
   const redis = getRedis();
-  if (!redis) return { state: null, lastChecked: null, deployments: [], logs: [], held: [], warnings: [], failed: [], sheetAlarms: [], unfinished: [], gaps: [] };
+  if (!redis) return { state: null, lastChecked: null, deployments: [], logs: [], held: [], warnings: [], failed: [], sheetAlarms: [], unfinished: [], gaps: [], parsedAt: "" };
 
   const pipe = redis.pipeline();
   pipe.get(ARM_KEY);
@@ -1064,6 +1070,7 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
   const sheetAlarms = parseList<SheetAlarm>(snap[F_SHEET_ALARMS]);
   const unfinished = parseList<UnfinishedConfigRow>(snap[F_UNFINISHED]);
   const gaps = parseList<CoverageGap>(snap[F_GAPS]);
+  const parsedAt = typeof snap[F_PARSED_AT] === "string" ? (snap[F_PARSED_AT] as string) : "";
 
   // Warnings expire in the READER now, not in Redis. The old 10-minute TTL existed
   // so a disarmed engine's warnings stopped being shown as current; merging keys
@@ -1084,6 +1091,7 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
     sheetAlarms,
     unfinished,
     gaps,
+    parsedAt,
   };
 }
 

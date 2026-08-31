@@ -70,6 +70,18 @@ export interface Config {
   unfinished: UnfinishedConfigRow[];
   /** Hours a job needed and no rule covered, still uncovered as of this parse. */
   gaps: CoverageGap[];
+  /**
+   * When the sheet was last actually READ, "YYYY-MM-DD HH:MM:SS".
+   *
+   * Not the same as when the cycle ran. The parse is deliberately event-based —
+   * re-downloading the table every cycle would cost far more than it is worth —
+   * so a hand-edit to the sheet is invisible until someone presses Refresh or the
+   * day turns over. Everything derived from the parse inherits that, and the
+   * to-do list is where it shows most, because its whole job is to reflect what a
+   * person just did in the sheet. Surfacing the time is what stops a row that has
+   * already been fixed looking like a bug.
+   */
+  parsedAt: string;
 }
 
 // A driver read from the sheet's Driver tab (not a live Cartrack fetch), with

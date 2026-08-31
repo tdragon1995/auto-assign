@@ -6,7 +6,7 @@ import {
   duplicateBranchWarning, shiftOverlapWarning, unresolvedWarning,
   type LocationRow, type UnresolvedRows, type RuleRow,
 } from "./config-audit";
-import { vnDate, vnIsSunday } from "./time";
+import { vnDate, vnIsSunday, vnTimestamp } from "./time";
 import { looksAutoCreated } from "./unmapped-row";
 
 function getRedis(): Redis | null {
@@ -54,7 +54,7 @@ async function readGen(): Promise<string | null> {
 // freshness mechanism — that is the gen stamp, deliberately, after a clock-based cache
 // was measured at an 87% miss rate.
 const L2_TTL_S = 48 * 60 * 60;
-//   version — the `v6` below is NOT decoration. This blob is PARSED config, so a change to
+//   version — the `v7` below is NOT decoration. This blob is PARSED config, so a change to
 //          how it is parsed (a renamed column, a new field) leaves every server reading a
 //          blob built by the old code until someone presses Refresh. That is exactly how
 //          the "Driver" column fix shipped and did nothing: correct code, stale parse.
@@ -66,7 +66,7 @@ const L2_TTL_S = 48 * 60 * 60;
 //          exactly what happened on 2026-08-31: two fixes to this wording shipped
 //          and neither reached the screen. Hence the audit inputs now ride the blob
 //          and the sentences are rebuilt on every load, cached or not.
-const l2Key = (gen: string, date: string) => `config:v6:${gen}:${date}`;
+const l2Key = (gen: string, date: string) => `config:v7:${gen}:${date}`;
 
 
 let cachedConfig: Config | null = null;
@@ -267,11 +267,11 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     const redis = getRedis();
     if (redis) {
       try {
-        const hit = await redis.get<{ mappings: Mapping[]; unfinished?: UnfinishedConfigRow[]; gaps?: CoverageGap[]; unresolved?: UnresolvedRows; names?: [string, string][] }>(l2Key(gen, today));
+        const hit = await redis.get<{ mappings: Mapping[]; unfinished?: UnfinishedConfigRow[]; gaps?: CoverageGap[]; parsedAt?: string; unresolved?: UnresolvedRows; names?: [string, string][] }>(l2Key(gen, today));
         // Same zero-length suspicion as the sheet path below: never adopt an empty
         // mapping, whatever it came from.
         if (hit && Array.isArray(hit.mappings) && hit.mappings.length > 0) {
-          cachedConfig = { mappings: hit.mappings, unfinished: hit.unfinished ?? [], gaps: hit.gaps ?? [] };
+          cachedConfig = { mappings: hit.mappings, unfinished: hit.unfinished ?? [], gaps: hit.gaps ?? [], parsedAt: hit.parsedAt ?? "" };
           cachedDay = today;
           cachedGen = gen;
           // Rebuild the sentences from the cached inputs. Pure string work, and
@@ -424,7 +424,8 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
       console.error("Coverage-gap resolve skipped:", e);
     }
     await auditParsedConfig(SHEET_CONTRACT[tab].label, mappings, unresolved, pickupNames, nameByCustomer, today);
-    cachedConfig = { mappings, unfinished, gaps };
+    const parsedAt = vnTimestamp();
+    cachedConfig = { mappings, unfinished, gaps, parsedAt };
     cachedDay = today;
     cachedGen = gen;
 
@@ -435,7 +436,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
       const redis = getRedis();
       if (redis) {
         try {
-          await redis.set(l2Key(gen, today), { mappings, unfinished, gaps, unresolved, names: [...nameByCustomer] }, { ex: L2_TTL_S });
+          await redis.set(l2Key(gen, today), { mappings, unfinished, gaps, parsedAt, unresolved, names: [...nameByCustomer] }, { ex: L2_TTL_S });
         } catch { /* best-effort; the sheet is always the fallback */ }
       }
     }
