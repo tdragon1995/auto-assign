@@ -53,12 +53,19 @@ async function readGen(): Promise<string | null> {
 // freshness mechanism — that is the gen stamp, deliberately, after a clock-based cache
 // was measured at an 87% miss rate.
 const L2_TTL_S = 48 * 60 * 60;
-//   version — the `v4` below is NOT decoration. This blob is PARSED config, so a change to
+//   version — the `v5` below is NOT decoration. This blob is PARSED config, so a change to
 //          how it is parsed (a renamed column, a new field) leaves every server reading a
 //          blob built by the old code until someone presses Refresh. That is exactly how
 //          the "Driver" column fix shipped and did nothing: correct code, stale parse.
 //          Bump this whenever the parsing changes, and the deploy invalidates itself.
-const l2Key = (gen: string, date: string) => `config:v4:${gen}:${date}`;
+//          THE WARNING TEXT COUNTS AS PARSING. The audit's sentences are built from
+//          this blob, and a warning is only republished when it CHANGES — so a
+//          deploy that only rewords one leaves the OLD sentence on the dashboard
+//          indefinitely, because the condition behind it never moved. That is
+//          exactly what happened on 2026-08-31: two fixes to this wording shipped
+//          and neither reached the screen. Hence the audit inputs now ride the blob
+//          and the sentences are rebuilt on every load, cached or not.
+const l2Key = (gen: string, date: string) => `config:v5:${gen}:${date}`;
 
 
 let cachedConfig: Config | null = null;
@@ -201,6 +208,19 @@ let locationsAuditedOn = "";
  * faults it looks for. The Location Table read is the only part that can fail,
  * and it is allowed to fail quietly and be retried tomorrow.
  */
+/** The sentences, from data alone. Separate so the cached path can rebuild them
+ *  without re-reading the sheet — see the version note on the L2 key. */
+function emitConfigWarnings(
+  tabLabel: string,
+  mappings: Mapping[],
+  unresolved: UnresolvedRows,
+  nameByCustomer: ReadonlyMap<string, string>,
+): void {
+  const dropped = unresolvedWarning(unresolved);
+  noteSheetWarning(A_UNRESOLVED, dropped && `${tabLabel}: ${dropped}`);
+  noteSheetWarning(A_OVERLAP, shiftOverlapWarning(findShiftOverlaps(mappings, nameByCustomer)));
+}
+
 async function auditParsedConfig(
   tabLabel: string,
   mappings: Mapping[],
@@ -209,9 +229,7 @@ async function auditParsedConfig(
   nameByCustomer: Map<string, string>,
   today: string,
 ): Promise<void> {
-  const dropped = unresolvedWarning(unresolved);
-  noteSheetWarning(A_UNRESOLVED, dropped && `${tabLabel}: ${dropped}`);
-  noteSheetWarning(A_OVERLAP, shiftOverlapWarning(findShiftOverlaps(mappings, nameByCustomer)));
+  emitConfigWarnings(tabLabel, mappings, unresolved, nameByCustomer);
 
   if (locationsAuditedOn === today) return;
   try {
@@ -248,13 +266,24 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     const redis = getRedis();
     if (redis) {
       try {
-        const hit = await redis.get<{ mappings: Mapping[]; unfinished?: UnfinishedConfigRow[] }>(l2Key(gen, today));
+        const hit = await redis.get<{ mappings: Mapping[]; unfinished?: UnfinishedConfigRow[]; unresolved?: UnresolvedRows; names?: [string, string][] }>(l2Key(gen, today));
         // Same zero-length suspicion as the sheet path below: never adopt an empty
         // mapping, whatever it came from.
         if (hit && Array.isArray(hit.mappings) && hit.mappings.length > 0) {
           cachedConfig = { mappings: hit.mappings, unfinished: hit.unfinished ?? [] };
           cachedDay = today;
           cachedGen = gen;
+          // Rebuild the sentences from the cached inputs. Pure string work, and
+          // noteSheetWarning only marks a change when the text actually differs,
+          // so a warm instance writes nothing — but a freshly deployed one now
+          // says what the CURRENT code says instead of leaving an old sentence
+          // standing until the underlying condition happens to move.
+          emitConfigWarnings(
+            SHEET_CONTRACT[vnIsSunday() ? "sunday" : "mapping"].label,
+            hit.mappings,
+            hit.unresolved ?? { pickups: [], drivers: [], dropoffs: [], invalidDriverIds: [] },
+            new Map(hit.names ?? []),
+          );
           return cachedConfig;
         }
       } catch { /* fall through to the sheet fetch */ }
@@ -379,7 +408,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
       const redis = getRedis();
       if (redis) {
         try {
-          await redis.set(l2Key(gen, today), { mappings, unfinished }, { ex: L2_TTL_S });
+          await redis.set(l2Key(gen, today), { mappings, unfinished, unresolved, names: [...nameByCustomer] }, { ex: L2_TTL_S });
         } catch { /* best-effort; the sheet is always the fallback */ }
       }
     }
