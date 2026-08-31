@@ -12,7 +12,7 @@ import { NoteReviewPanel, type HeldJob } from "./note-review-panel";
 import { NoteSuggestionPanel } from "./note-suggestion-panel";
 import { SectionHeader } from "./section-header";
 import { UncoveredLeaveSection, uncoveredLeaveCount } from "./leave-status-panel";
-import type { CoverageGap, UnfinishedConfigRow, FailedJob, FailedReason, PickupWarning, ConfigDriver } from "@/lib/types";
+import type { FailedJob, FailedReason, PickupWarning, ConfigDriver } from "@/lib/types";
 import type { LeaveOnDate } from "@/lib/leave-config";
 
 export interface ScheduleErrorRow {
@@ -79,362 +79,6 @@ export function gmapsRoute(routeGps: string | undefined): string | null {
 
 const cartrackJob = (jobId: number) => `https://fleetweb-vn.cartrack.com/delivery/map?job=${jobId}`;
 
-
-/**
- * Fold accents so a name typed quickly still matches: "quynh" has to find
- * "Nguyễn Hữu Quỳnh". đ is handled separately — it is a distinct Vietnamese
- * letter, not a d with a mark, so decomposition leaves it untouched.
- */
-const foldName = (v: string) =>
-  v.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase();
-
-/**
- * Resolve a typed name against the roster, refusing anything ambiguous.
- *
- * The roster is what the sheet's own lookup resolves against, so a name that is
- * not on it writes perfectly well and then resolves to nothing — a row that
- * looks finished and assigns nobody.
- */
-function resolveDriver(typed: string, drivers: ConfigDriver[]): { name: string } | { error: string } {
-  const q = foldName(typed.trim());
-  if (!q) return { error: "Chưa chọn tài xế" };
-  const exact = drivers.filter((d) => foldName(d.name) === q);
-  const hits = exact.length ? exact : drivers.filter((d) => foldName(d.name).includes(q));
-  if (hits.length === 0) return { error: `"${typed}" không có trong tab Driver — chọn từ danh sách` };
-  if (hits.length > 1) return { error: `"${typed}" khớp ${hits.length} tài xế — gõ rõ hơn` };
-  return { name: hits[0].name };
-}
-
-const CONFIG_NAMES_LIST_ID = "config-driver-names";
-
-/**
- * One unfinished config line, and the decision it is waiting for.
- *
- * Shaped like the leave module's substitute editor on purpose: the same people
- * use both, and the same gesture should look the same — a name, a window, and a
- * button that splits the work across more than one row.
- *
- * The hours are editable because the engine only guessed them, from the hour
- * block around the job that failed. That is a hint about when the branch needs
- * collecting, not a shift anyone agreed to.
- */
-function UnfinishedRow({
-  u, drivers, onSaved,
-}: {
-  u: UnfinishedConfigRow;
-  drivers: ConfigDriver[];
-  onSaved: (key?: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [from, to] = (u.window ?? "–").split("–");
-  // One block = one rule. A branch collected morning and afternoon by different
-  // drivers needs two rows, which is what "+ Thêm config" adds — the same split
-  // the leave editor offers, for the same reason.
-  const [blocks, setBlocks] = useState([{ name: "", start: from ?? "", end: to ?? "" }]);
-
-  const patch = (i: number, v: Partial<(typeof blocks)[number]>) =>
-    setBlocks((bs) => bs.map((b, j) => (j === i ? { ...b, ...v } : b)));
-  const addBlock = () => setBlocks((bs) => [...bs, { name: "", start: "", end: "" }]);
-  const dropBlock = (i: number) => setBlocks((bs) => bs.filter((_, j) => j !== i));
-
-  async function save() {
-    setErr(null);
-    const resolved: { name: string; start: string; end: string }[] = [];
-    for (const b of blocks) {
-      const r = resolveDriver(b.name, drivers);
-      if ("error" in r) { setErr(r.error); return; }
-      // More than one rule for a branch means each MUST carry its own window:
-      // an open one covers the whole day and would clash with its siblings.
-      if (blocks.length > 1 && (!b.start.trim() || !b.end.trim())) {
-        setErr("Nhiều dòng thì mỗi dòng cần khung giờ riêng");
-        return;
-      }
-      resolved.push({ name: r.name, start: b.start.trim(), end: b.end.trim() });
-    }
-
-    setBusy(true);
-    try {
-      // The first block fills the row that already exists; the rest become new
-      // rows. Sequential on purpose — a failure part way through then leaves a
-      // clear picture rather than an unknown number of half-written lines.
-      const [first, ...rest] = resolved;
-      const post = async (url: string, body: unknown) => {
-        const res = await fetch(url, {
-          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-        });
-        const j = await res.json().catch(() => ({}));
-        if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
-        return j;
-      };
-      await post("/api/config/complete-row", {
-        row: u.row, pickup_name: u.pickup_name, driver_name: first.name,
-        shift_start: first.start, shift_end: first.end,
-      });
-      for (const b of rest) {
-        await post("/api/config/add-rule", {
-          pickup_name: u.pickup_name, dropoff_name: u.dropoff_name,
-          driver_name: b.name, shift_start: b.start, shift_end: b.end,
-        });
-      }
-      toast.success(
-        rest.length
-          ? `Đã tạo ${resolved.length} dòng cho ${u.pickup_name}`
-          : `Đã gán ${first.name} cho ${u.pickup_name} (dòng ${u.row})`,
-      );
-      setOpen(false);
-      onSaved(`u:${u.row}`);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const timeBox = "w-[72px] rounded border border-slate-300 px-1.5 py-1 text-xs font-mono";
-
-  return (
-    <div className="px-2 py-1.5 hover:bg-slate-50">
-      <div className="flex items-center gap-2 min-w-0">
-        <span className="shrink-0 font-mono text-[11px] text-slate-500" title="Dòng trong Google Sheet">
-          #{u.row}
-        </span>
-        <span
-          className="min-w-0 flex-1 break-words md:truncate text-sm font-medium text-slate-800"
-          title={`${u.pickup_name}${u.dropoff_name ? ` → ${u.dropoff_name}` : ""}`}
-        >
-          {u.pickup_name}
-          {u.dropoff_name && <span className="text-slate-400"> → {u.dropoff_name}</span>}
-        </span>
-        {!open && u.window && (
-          <span className="shrink-0 text-[11px] text-slate-600 bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">
-            {u.window}
-          </span>
-        )}
-        {!open && (
-          <Button size="sm" className="h-6 shrink-0 text-[11px] px-2" onClick={() => setOpen(true)}>
-            Chọn tài xế
-          </Button>
-        )}
-      </div>
-
-      {open && (
-        <div className="mt-1 space-y-1 rounded border border-slate-300 bg-white p-1.5">
-          {blocks.map((b, i) => (
-            <div key={i} className="flex flex-wrap items-center gap-1">
-              <input
-                type="text"
-                list={CONFIG_NAMES_LIST_ID}
-                placeholder="Tên tài xế…"
-                value={b.name}
-                onChange={(e) => patch(i, { name: e.target.value })}
-                className="min-w-[140px] flex-1 rounded border border-slate-300 px-1.5 py-1 text-xs"
-              />
-              <input
-                className={timeBox}
-                value={b.start}
-                placeholder="07:00"
-                onChange={(e) => patch(i, { start: e.target.value })}
-              />
-              <span className="text-slate-400 text-[11px]">→</span>
-              <input
-                className={timeBox}
-                value={b.end}
-                placeholder="08:00"
-                onChange={(e) => patch(i, { end: e.target.value })}
-              />
-              {blocks.length > 1 && (
-                <button
-                  type="button"
-                  onClick={() => dropBlock(i)}
-                  className="text-slate-400 hover:text-red-600 text-[11px] px-0.5"
-                  title="Bỏ dòng này"
-                >
-                  ✕
-                </button>
-              )}
-            </div>
-          ))}
-          <div className="flex items-center gap-1">
-            {blocks.length < 3 && (
-              <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={addBlock} disabled={busy}>
-                + Thêm config
-              </Button>
-            )}
-            <div className="ml-auto flex gap-1">
-              <Button
-                size="sm" variant="outline" className="h-6 px-2 text-[11px]"
-                onClick={() => { setOpen(false); setErr(null); }} disabled={busy}
-              >
-                Hủy
-              </Button>
-              <Button
-                size="sm" className="h-6 px-2 text-[11px] bg-indigo-600 hover:bg-indigo-700"
-                onClick={save} disabled={busy}
-              >
-                {busy ? "Đang lưu…" : "Lưu"}
-              </Button>
-            </div>
-          </div>
-          {err && <div className="text-[11px] text-red-600">{err}</div>}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * An hour a job needed and nobody was rostered for.
- *
- * Shows the cover either side of the hole, because that is the diagnosis: "ends
- * 14:30, next starts 16:30" tells you at a glance which boundary is wrong.
- *
- * Only ONE of the three closes it. Widening both neighbours would leave them
- * overlapping, which is the fault this same panel reports elsewhere; and the
- * third — a rule of its own — is often the honest one, because when nobody
- * either side really works that stretch, stretching their hours records
- * something untrue about who is on duty.
- */
-function GapRow({
-  g, drivers, onSaved,
-}: {
-  g: CoverageGap;
-  drivers: ConfigDriver[];
-  onSaved: (key?: string) => void;
-}) {
-  const [busy, setBusy] = useState<string | null>(null);
-  const [splitting, setSplitting] = useState(false);
-  const [name, setName] = useState("");
-  const [err, setErr] = useState<string | null>(null);
-
-  const key = `g:${g.customer_id}|${g.at}`;
-  const splitFrom = g.before ? g.before.window.split("–")[1] : g.at;
-  const splitTo = g.after ? g.after.window.split("–")[0] : g.at;
-
-  const post = async (url: string, body: unknown) => {
-    const res = await fetch(url, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-    });
-    const j = await res.json().catch(() => ({}));
-    if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
-    return j;
-  };
-
-  async function stretch(row: number, edge: "start" | "end", tag: string) {
-    setBusy(tag); setErr(null);
-    try {
-      await post("/api/config/stretch-rule", { row, pickup_name: g.pickup_name, edge, value: g.at });
-      toast.success(`Đã sửa ca dòng ${row} — ${g.pickup_name}`);
-      onSaved(key);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function addRule() {
-    const r = resolveDriver(name, drivers);
-    if ("error" in r) { setErr(r.error); return; }
-    setBusy("split"); setErr(null);
-    try {
-      const j = await post("/api/config/add-rule", {
-        pickup_name: g.pickup_name, driver_name: r.name, shift_start: splitFrom, shift_end: splitTo,
-      });
-      toast.success(`Đã thêm dòng ${j.row} — ${r.name} ${splitFrom}–${splitTo}`);
-      setSplitting(false);
-      onSaved(key);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  return (
-    <div className="px-2 py-1.5 hover:bg-slate-50">
-      <div className="flex items-center gap-2 min-w-0">
-        <span className="shrink-0 rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 font-mono text-[11px] text-amber-800">
-          {g.at}
-        </span>
-        <span className="min-w-0 flex-1 break-words md:truncate text-sm font-medium text-slate-800" title={g.pickup_name}>
-          {g.pickup_name}
-        </span>
-      </div>
-
-      <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-600">
-        <span>
-          {g.before ? `Ca trước hết lúc ${g.before.window.split("–")[1]}` : "Không có ca trước"}
-          {" · "}
-          {g.after ? `ca sau bắt đầu ${g.after.window.split("–")[0]}` : "không có ca sau"}
-        </span>
-        {g.before && (
-          <Button
-            size="sm" variant="outline" className="h-6 px-2 text-[11px]"
-            disabled={busy !== null}
-            onClick={() => stretch(g.before!.row, "end", "before")}
-            title={`Dòng ${g.before.row} · ${g.before.driver}`}
-          >
-            {busy === "before" ? "Đang lưu…" : `Kéo dài ca trước đến ${g.at}`}
-          </Button>
-        )}
-        {g.after && (
-          <Button
-            size="sm" variant="outline" className="h-6 px-2 text-[11px]"
-            disabled={busy !== null}
-            onClick={() => stretch(g.after!.row, "start", "after")}
-            title={`Dòng ${g.after.row} · ${g.after.driver}`}
-          >
-            {busy === "after" ? "Đang lưu…" : `Ca sau bắt đầu từ ${g.at}`}
-          </Button>
-        )}
-        {!splitting && splitFrom !== splitTo && (
-          <Button
-            size="sm" variant="outline" className="h-6 px-2 text-[11px]"
-            disabled={busy !== null}
-            onClick={() => { setSplitting(true); setErr(null); }}
-          >
-            + Thêm config {splitFrom}–{splitTo}
-          </Button>
-        )}
-      </div>
-
-      {splitting && (
-        <div className="mt-1 space-y-1 rounded border border-slate-300 bg-white p-1.5">
-          <div className="flex flex-wrap items-center gap-1">
-            <input
-              type="text"
-              list={CONFIG_NAMES_LIST_ID}
-              placeholder="Tên tài xế…"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="min-w-[140px] flex-1 rounded border border-slate-300 px-1.5 py-1 text-xs"
-            />
-            <span className="font-mono text-[11px] text-slate-600">{splitFrom}–{splitTo}</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <div className="ml-auto flex gap-1">
-              <Button
-                size="sm" variant="outline" className="h-6 px-2 text-[11px]"
-                onClick={() => { setSplitting(false); setErr(null); }} disabled={busy !== null}
-              >
-                Hủy
-              </Button>
-              <Button
-                size="sm" className="h-6 px-2 text-[11px] bg-indigo-600 hover:bg-indigo-700"
-                onClick={addRule} disabled={busy !== null}
-              >
-                {busy === "split" ? "Đang tạo…" : "Tạo dòng"}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-      {err && <div className="mt-1 text-[11px] text-red-600">{err}</div>}
-    </div>
-  );
-}
 
 function metaFor(reason: FailedReason) {
   return REASON_META[reason] ?? { label: reason, tone: "red" as const, order: 99 };
@@ -662,10 +306,6 @@ export function FailedJobsPanel({
   onNoteAssigned,
   onNoteManualAssign,
   failed,
-  unfinished,
-  gaps,
-  parsedAt,
-  onUnfinishedSaved,
   warnings,
   scheduleErrors,
   drivers,
@@ -684,14 +324,6 @@ export function FailedJobsPanel({
   onNoteManualAssign: (job: HeldJob, driverId: string) => void;
   failed: FailedJob[];
   /** Config lines naming a branch but no driver — waiting on a person. */
-  unfinished: UnfinishedConfigRow[];
-  /** Hours a job needed and no rule covered. */
-  gaps: CoverageGap[];
-  /** When the sheet behind both lists was last read. */
-  parsedAt: string;
-  /** Called after a row is completed. The key identifies what was finished so
-   *  it can be hidden at once rather than waiting for the next cycle. */
-  onUnfinishedSaved: (key?: string) => void;
   warnings: PickupWarning[];
   scheduleErrors: ScheduleErrorRow[];
   drivers: ConfigDriver[];
@@ -743,11 +375,6 @@ export function FailedJobsPanel({
   // Each section is a divided list (one bordered container, hairline rows) —
   // the tone-coloured header carries severity, so rows stay quiet.
   const listBox = "divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200";
-  // Shut by default. This list is long-lived — 32 branches today, each waiting on
-  // a person rather than on the engine — so leaving it open pushes the things
-  // that ARE urgent off the screen. The count stays in the header, which is the
-  // part that needs to be seen without opening anything.
-  const [configOpen, setConfigOpen] = useState(false);
 
   return (
     <Card className="flex h-full flex-col gap-2 py-2 border-slate-200">
@@ -756,148 +383,10 @@ export function FailedJobsPanel({
       <CardContent className="px-3 flex-1 min-h-0">
         {/* Full-height scroll. Order: notes → other unassignable → late pickups. */}
         <div className="h-full max-w-5xl overflow-y-auto space-y-3 text-xs pr-1">
-            {/* ── Sentences the engine is offering for the safe list ───────── */}
-            <NoteSuggestionPanel refreshKey={held.length} />
-
-            {/* ── Tasks with note (part of "unassignable") ─────────────────── */}
-            {held.length > 0 && (
-              <NoteReviewPanel
-                held={held}
-                env={env}
-                onRefresh={onNoteRefresh}
-                onAssigned={onNoteAssigned}
-                drivers={drivers}
-                onManualAssign={onNoteManualAssign}
-                embedded
-              />
-            )}
-
-            {/* ── Leave with nobody covering it, today then tomorrow ──────── */}
-            <UncoveredLeaveSection
-              entries={leaveToday}
-              label="Nghỉ chưa có người thay"
-              drivers={drivers}
-              onRefresh={onLeaveRefresh}
-            />
-            <UncoveredLeaveSection
-              entries={leaveTomorrow}
-              label="Nghỉ ngày mai chưa có người thay"
-              drivers={drivers}
-              onRefresh={onLeaveRefresh}
-            />
-
-            {/* ── Other unassignable: assign failures ─────────────────────── */}
-            {groups.map(([reason, jobs]) => (
-              <div key={reason} className="space-y-1.5">
-                <SectionHeader label={metaFor(reason).label} count={jobs.length} tone={metaFor(reason).tone} />
-                <div className={listBox}>
-                  {jobs.map((job) => (
-                    <FailedRow
-                      key={job.job_id}
-                      job={job}
-                      drivers={drivers}
-                      onAssign={onAssign}
-                      onSchedule={onScheduleFailed}
-                    />
-                  ))}
-                </div>
-              </div>
-            ))}
-
-            {/* ── Everything the config is waiting on a person for ────────
-                One section, two shapes of the same problem: an hour nobody is
-                rostered for, and a branch with a line but no driver. Shut by
-                default and headed like the leave panel, because these are
-                long-lived — each waits on a person, not on the engine — and left
-                open they push the genuinely urgent things off the screen. */}
-            {(gaps.length > 0 || unfinished.length > 0) && (
-              <div className="space-y-1.5 pt-1">
-                <datalist id={CONFIG_NAMES_LIST_ID}>
-                  {drivers.map((d) => <option key={d.driver_id} value={d.name} />)}
-                </datalist>
-                <button
-                  type="button"
-                  onClick={() => setConfigOpen((v) => !v)}
-                  className="flex w-full items-center gap-2 text-left"
-                  aria-expanded={configOpen}
-                >
-                  <span className="flex items-center gap-1.5 text-sm font-semibold text-slate-800">
-                    <ClipboardList className="size-4 text-amber-600" strokeWidth={2} />
-                    Cần tạo config
-                  </span>
-                  {gaps.length > 0 && (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-700 border border-amber-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
-                      {gaps.length} thiếu ca
-                    </span>
-                  )}
-                  {unfinished.length > 0 && (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
-                      {unfinished.length} chưa có tài xế
-                    </span>
-                  )}
-                  {/* When the sheet was last READ, not when the cycle ran. The
-                      parse is event-based, so a hand-edit stays invisible until
-                      someone presses Refresh — without this, a row already fixed
-                      in the sheet reads as a bug rather than as a stale list. */}
-                  {parsedAt && (
-                    <span className="text-[11px] text-slate-400">
-                      đọc sheet {parsedAt.slice(11, 16)} · vừa sửa sheet thì bấm Làm mới
-                    </span>
-                  )}
-                  <span className="ml-auto shrink-0 text-xs text-slate-400">{configOpen ? "▾" : "▸"}</span>
-                </button>
-
-                {configOpen && gaps.length > 0 && (
-                  <div className={listBox}>
-                    {gaps.map((g) => (
-                      <GapRow key={`${g.customer_id}-${g.at}`} g={g} drivers={drivers} onSaved={onUnfinishedSaved} />
-                    ))}
-                  </div>
-                )}
-                {configOpen && unfinished.length > 0 && (
-                  <div className={listBox}>
-                    {unfinished.map((u) => (
-                      <UnfinishedRow key={u.row} u={u} drivers={drivers} onSaved={onUnfinishedSaved} />
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* ── Other unassignable: fixed-schedule run errors ───────────── */}
-            {scheduleErrors.length > 0 && (
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between gap-2 pt-1">
-                  <SectionHeader label="Lịch cố định lỗi" count={scheduleErrors.length} tone="red" />
-                  <Button
-                    size="sm"
-                    className="h-6 text-[11px] px-2 bg-red-600 hover:bg-red-700"
-                    disabled={retryingSchedule}
-                    onClick={onRetrySchedule}
-                  >
-                    {retryingSchedule ? "Đang chạy…" : "Chạy lại lỗi"}
-                  </Button>
-                </div>
-                <div className={listBox}>
-                  {scheduleErrors.map((e, i) => (
-                    <div
-                      key={`${e.reference_number}-${i}`}
-                      className="px-2 py-1.5 hover:bg-slate-50"
-                    >
-                      <div className="text-sm font-semibold text-slate-800 break-words md:truncate" title={`${labelFor(e.pickup_name, e.pickup_id)} → ${labelFor(e.dropoff_name, e.dropoff_id)}`}>
-                        {labelFor(e.pickup_name, e.pickup_id)} <span className="text-slate-400">→</span> {labelFor(e.dropoff_name, e.dropoff_id)}
-                        {e.delivery_window && (
-                          <span className="ml-1.5 font-mono text-[11px] text-indigo-600">{e.delivery_window}</span>
-                        )}
-                      </div>
-                      <p className="mt-0.5 text-[11px] text-red-700 break-words md:truncate" title={e.message}>{e.message}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* ── Late pickups ("Lấy mẫu chậm") — last ─────────────────────── */}
+            {/* ── Late pickups ("Lấy mẫu chậm") — FIRST, because it is the only
+                thing on this tab that is getting worse while you read it. All
+                the rest waits on a person; this one waits on a driver who is
+                already late. ─────────────────────────────────────────────── */}
             {warnings.length > 0 && (
               <div className="space-y-1.5">
                 <SectionHeader label="Lấy mẫu chậm" count={warnings.length} tone="amber" />
@@ -947,6 +436,90 @@ export function FailedJobsPanel({
                 </div>
               </div>
             )}
+
+            {/* ── Sentences the engine is offering for the safe list ───────── */}
+            <NoteSuggestionPanel refreshKey={held.length} />
+
+            {/* ── Tasks with note (part of "unassignable") ─────────────────── */}
+            {held.length > 0 && (
+              <NoteReviewPanel
+                held={held}
+                env={env}
+                onRefresh={onNoteRefresh}
+                onAssigned={onNoteAssigned}
+                drivers={drivers}
+                onManualAssign={onNoteManualAssign}
+                embedded
+              />
+            )}
+
+            {/* ── Other unassignable: assign failures ─────────────────────── */}
+            {groups.map(([reason, jobs]) => (
+              <div key={reason} className="space-y-1.5">
+                <SectionHeader label={metaFor(reason).label} count={jobs.length} tone={metaFor(reason).tone} />
+                <div className={listBox}>
+                  {jobs.map((job) => (
+                    <FailedRow
+                      key={job.job_id}
+                      job={job}
+                      drivers={drivers}
+                      onAssign={onAssign}
+                      onSchedule={onScheduleFailed}
+                    />
+                  ))}
+                </div>
+              </div>
+            ))}
+
+            {/* ── Other unassignable: fixed-schedule run errors ───────────── */}
+            {scheduleErrors.length > 0 && (
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  <SectionHeader label="Lịch cố định lỗi" count={scheduleErrors.length} tone="red" />
+                  <Button
+                    size="sm"
+                    className="h-6 text-[11px] px-2 bg-red-600 hover:bg-red-700"
+                    disabled={retryingSchedule}
+                    onClick={onRetrySchedule}
+                  >
+                    {retryingSchedule ? "Đang chạy…" : "Chạy lại lỗi"}
+                  </Button>
+                </div>
+                <div className={listBox}>
+                  {scheduleErrors.map((e, i) => (
+                    <div
+                      key={`${e.reference_number}-${i}`}
+                      className="px-2 py-1.5 hover:bg-slate-50"
+                    >
+                      <div className="text-sm font-semibold text-slate-800 break-words md:truncate" title={`${labelFor(e.pickup_name, e.pickup_id)} → ${labelFor(e.dropoff_name, e.dropoff_id)}`}>
+                        {labelFor(e.pickup_name, e.pickup_id)} <span className="text-slate-400">→</span> {labelFor(e.dropoff_name, e.dropoff_id)}
+                        {e.delivery_window && (
+                          <span className="ml-1.5 font-mono text-[11px] text-indigo-600">{e.delivery_window}</span>
+                        )}
+                      </div>
+                      <p className="mt-0.5 text-[11px] text-red-700 break-words md:truncate" title={e.message}>{e.message}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ── Leave with nobody covering it — below the stuck jobs, because
+                it is as often tomorrow's problem as today's ──────────────── */}
+            <UncoveredLeaveSection
+              entries={leaveToday}
+              label="Nghỉ chưa có người thay"
+              drivers={drivers}
+              onRefresh={onLeaveRefresh}
+            />
+            <UncoveredLeaveSection
+              entries={leaveTomorrow}
+              label="Nghỉ ngày mai chưa có người thay"
+              drivers={drivers}
+              onRefresh={onLeaveRefresh}
+            />
+
+
         </div>
       </CardContent>
     </Card>

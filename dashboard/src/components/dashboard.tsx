@@ -12,6 +12,7 @@ import { JobAdminPanel } from "./job-admin-panel";
 import { DistanceTab } from "./distance-tab";
 import { FailedJobsPanel, type ScheduleErrorRow } from "./failed-jobs-panel";
 import { LeaveStatusPanel, uncoveredLeaveCount } from "./leave-status-panel";
+import { ConfigTodoPanel } from "./config-todo-panel";
 import { SheetAlarmBanner } from "./sheet-alarm-banner";
 import { TatTeamPanel } from "./tat-team-panel";
 import { toast } from "sonner";
@@ -615,10 +616,6 @@ export function Dashboard() {
                     }}
                     onNoteManualAssign={handleHeldManualAssign}
                     failed={failed}
-                  unfinished={visibleUnfinished}
-                  gaps={visibleGaps}
-                  parsedAt={parsedAt}
-                  onUnfinishedSaved={(key?: string) => { if (key) markDone(key); syncStatus(); }}
                     warnings={warnings}
                     scheduleErrors={scheduleErrors}
                     drivers={drivers}
@@ -634,6 +631,18 @@ export function Dashboard() {
 
                 {/* Leave status — reference, below the actionable list; collapsed
                     to counts by default but flags uncovered drivers in amber. */}
+                {/* Config to-dos sit between the stuck jobs and the leave
+                    reference: they wait on a person rather than on the engine,
+                    so they belong below anything actually failing — but above
+                    leave, which is reference rather than a task. */}
+                <ConfigTodoPanel
+                  gaps={visibleGaps}
+                  unfinished={visibleUnfinished}
+                  drivers={drivers}
+                  parsedAt={parsedAt}
+                  onSaved={(key?: string) => { if (key) markDone(key); syncStatus(); }}
+                />
+
                 <LeaveStatusPanel
                   today={leave.today}
                   tomorrow={leave.tomorrow}
