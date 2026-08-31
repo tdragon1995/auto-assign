@@ -49,6 +49,56 @@ function resolveDriver(typed: string, drivers: ConfigDriver[]): { name: string }
   return { name: hits[0].name };
 }
 
+
+/**
+ * Five-minute grid, the whole day.
+ *
+ * Finer than the leave form's half-hour slots, and for a different reason: a
+ * leave window is somebody's shift, which lands on the half hour, while these
+ * are collection boundaries that genuinely sit at 15:15 or 06:45 — the live
+ * sheet has both. Rounding those to the nearest half hour would silently move
+ * cover the supervisor did not ask to move.
+ *
+ * The whole day rather than 05:00–22:00, because the config already carries
+ * overnight rules (22:00–06:00) that the leave form has no reason to offer.
+ */
+const TIME_SLOTS_5: string[] = (() => {
+  const slots: string[] = [];
+  for (let h = 0; h < 24; h++) {
+    for (let m = 0; m < 60; m += 5) {
+      slots.push(`${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`);
+    }
+  }
+  return slots;
+})();
+
+/**
+ * A prefilled value off the grid is kept as an extra option rather than
+ * discarded — the sheet holds times typed by hand, and one landing on 08:54
+ * would otherwise render the select blank while still holding that time, so the
+ * supervisor could not see what they were about to save.
+ */
+function TimeSelect({
+  value, onChange, label,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  label: string;
+}) {
+  const options = value && !TIME_SLOTS_5.includes(value) ? [...TIME_SLOTS_5, value].sort() : TIME_SLOTS_5;
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      aria-label={label}
+      className="rounded border border-slate-300 bg-white px-1 py-1 text-xs font-mono"
+    >
+      <option value="">--:--</option>
+      {options.map((t) => <option key={t} value={t}>{t}</option>)}
+    </select>
+  );
+}
+
 const CONFIG_NAMES_LIST_ID = "config-driver-names";
 
 /**
@@ -136,8 +186,6 @@ function UnfinishedRow({
     }
   }
 
-  const timeBox = "w-[72px] rounded border border-slate-300 px-1.5 py-1 text-xs font-mono";
-
   return (
     <div className="px-2 py-1.5 hover:bg-slate-50">
       <div className="flex items-center gap-2 min-w-0">
@@ -175,19 +223,9 @@ function UnfinishedRow({
                 onChange={(e) => patch(i, { name: e.target.value })}
                 className="min-w-[140px] flex-1 rounded border border-slate-300 px-1.5 py-1 text-xs"
               />
-              <input
-                className={timeBox}
-                value={b.start}
-                placeholder="07:00"
-                onChange={(e) => patch(i, { start: e.target.value })}
-              />
+              <TimeSelect label="Từ giờ" value={b.start} onChange={(v) => patch(i, { start: v })} />
               <span className="text-slate-400 text-[11px]">→</span>
-              <input
-                className={timeBox}
-                value={b.end}
-                placeholder="08:00"
-                onChange={(e) => patch(i, { end: e.target.value })}
-              />
+              <TimeSelect label="Đến giờ" value={b.end} onChange={(v) => patch(i, { end: v })} />
               {blocks.length > 1 && (
                 <button
                   type="button"
@@ -255,6 +293,8 @@ function GapRow({
   const key = `g:${g.customer_id}|${g.at}`;
   const splitFrom = g.before ? g.before.window.split("–")[1] : g.at;
   const splitTo = g.after ? g.after.window.split("–")[0] : g.at;
+  const [sFrom, setSFrom] = useState(splitFrom);
+  const [sTo, setSTo] = useState(splitTo);
 
   const post = async (url: string, body: unknown) => {
     const res = await fetch(url, {
@@ -284,9 +324,9 @@ function GapRow({
     setBusy("split"); setErr(null);
     try {
       const j = await post("/api/config/add-rule", {
-        pickup_name: g.pickup_name, driver_name: r.name, shift_start: splitFrom, shift_end: splitTo,
+        pickup_name: g.pickup_name, driver_name: r.name, shift_start: sFrom, shift_end: sTo,
       });
-      toast.success(`Đã thêm dòng ${j.row} — ${r.name} ${splitFrom}–${splitTo}`);
+      toast.success(`Đã thêm dòng ${j.row} — ${r.name} ${sFrom}–${sTo}`);
       setSplitting(false);
       onSaved(key);
     } catch (e) {
@@ -355,7 +395,13 @@ function GapRow({
               onChange={(e) => setName(e.target.value)}
               className="min-w-[140px] flex-1 rounded border border-slate-300 px-1.5 py-1 text-xs"
             />
-            <span className="font-mono text-[11px] text-slate-600">{splitFrom}–{splitTo}</span>
+            {/* Prefilled from the neighbours, but editable: the hole runs
+                14:30–16:30 only because that is where the two rules happen to
+                stop and start, and the person who knows the round may want a
+                narrower window than the whole space between them. */}
+            <TimeSelect label="Từ giờ" value={sFrom} onChange={setSFrom} />
+            <span className="text-slate-400 text-[11px]">→</span>
+            <TimeSelect label="Đến giờ" value={sTo} onChange={setSTo} />
           </div>
           <div className="flex items-center gap-1">
             <div className="ml-auto flex gap-1">
