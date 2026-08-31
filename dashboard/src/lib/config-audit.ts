@@ -115,6 +115,9 @@ export function findDuplicateBranches(
 
 export interface ShiftOverlap {
   customer_id: string;
+  /** The branch as it is written in the sheet. A supervisor reading this needs
+   *  the place, not the id — the id is only what the rows are keyed by. */
+  pickup_name: string;
   /** Display names of the two drivers, for a message a supervisor can act on. */
   drivers: [string, string];
   /** "HH:MM–HH:MM" — the stretch both rules claim. */
@@ -166,7 +169,13 @@ function intersect(a: [number, number], b: [number, number]): [number, number] |
 
 /** Pairs of fixed-driver rules for the same branch that are both live at some
  *  minute of the day. One entry per offending pair. */
-export function findShiftOverlaps(rows: readonly AuditableRow[]): ShiftOverlap[] {
+export function findShiftOverlaps(
+  rows: readonly AuditableRow[],
+  /** customer id → the branch's name in the sheet. Passed in rather than carried
+   *  on every row: the parsed mapping does not hold the name, and adding it there
+   *  would grow the cached blob for every one of ~1,700 rows to label a handful. */
+  nameByCustomer?: ReadonlyMap<string, string>,
+): ShiftOverlap[] {
   const byCustomer = new Map<string, AuditableRow[]>();
   for (const r of rows) {
     // Fixed-driver rules only, and only rules that actually name a driver: a cell
@@ -198,6 +207,7 @@ export function findShiftOverlaps(rows: readonly AuditableRow[]): ShiftOverlap[]
         if (!hit) continue;
         out.push({
           customer_id,
+          pickup_name: nameByCustomer?.get(customer_id) ?? customer_id,
           drivers: [a.first_name_last_name || a.driver_id, b.first_name_last_name || b.driver_id],
           // Reported back in the sheet's own half-open terms, so the window
           // printed here is the one to type into the cell to fix it.
@@ -256,16 +266,22 @@ export function duplicateBranchWarning(dupes: readonly DuplicateBranch[]): strin
   );
 }
 
+/**
+ * Every pair, one per line — not a truncated sample.
+ *
+ * The other warnings summarise because they can run to hundreds of rows; this
+ * one cannot usefully be shortened. Each pair is a separate boundary to move in
+ * a different row, so a list ending in "and 2 more" names a problem while
+ * withholding what is needed to fix it. Line breaks are preserved by the banner.
+ */
 export function shiftOverlapWarning(overlaps: readonly ShiftOverlap[]): string | null {
   if (overlaps.length === 0) return null;
-  const shown = overlaps
-    .slice(0, NAMES_SHOWN)
-    .map((o) => `${o.customer_id} (${o.drivers[0]} / ${o.drivers[1]}, ${o.window})`);
-  const rest = overlaps.length - Math.min(overlaps.length, NAMES_SHOWN);
-  const tail = rest > 0 ? ` và ${rest} cặp nữa` : "";
+  const lines = overlaps.map(
+    (o) => `• ${o.pickup_name} — ${o.drivers[0]} / ${o.drivers[1]} · ${o.window}`,
+  );
   return (
     `${overlaps.length} cặp dòng TRÙNG GIỜ cho cùng một điểm — hai tài xế cố định cùng trực, ` +
-    `job rơi vào khoảng này sẽ báo CLASH và không được gán: ${shown.join("; ")}${tail}`
+    `job rơi vào khoảng này sẽ báo CLASH và không được gán:\n${lines.join("\n")}`
   );
 }
 

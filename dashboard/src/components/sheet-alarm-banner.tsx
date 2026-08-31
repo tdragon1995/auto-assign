@@ -41,7 +41,7 @@ export function SheetAlarmBanner({ alarms }: { alarms: SheetAlarm[] }) {
             {refused.map((a) => (
               <li key={a.label} className="text-[11px] leading-snug text-red-900">
                 <span className="font-medium">{a.label}</span>
-                <span className="text-red-700"> — {a.reason}</span>
+                <span className="text-red-700 whitespace-pre-line"> — {a.reason}</span>
                 <span className="text-red-500"> · {a.ts}</span>
               </li>
             ))}
@@ -65,7 +65,7 @@ export function SheetAlarmBanner({ alarms }: { alarms: SheetAlarm[] }) {
             {data.map((a) => (
               <li key={a.label} className="text-[11px] leading-snug text-amber-900">
                 <span className="font-medium">{a.label}</span>
-                <span className="text-amber-700"> — {a.reason}</span>
+                <span className="text-amber-700 whitespace-pre-line"> — {a.reason}</span>
                 <span className="text-amber-500"> · {a.ts}</span>
               </li>
             ))}

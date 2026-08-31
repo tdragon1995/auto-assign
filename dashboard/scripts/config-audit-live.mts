@@ -31,6 +31,7 @@ const rows = await fetchSheetRows(SHEET_GID[tab], SHEET_CONTRACT[tab]);
 const mappings: AuditableRow[] = [];
 const unresolved: UnresolvedRows = { pickups: [], drivers: [], dropoffs: [], invalidDriverIds: [] };
 const pickupNames = new Set<string>();
+const nameByCustomer = new Map<string, string>();
 
 for (const row of rows) {
   const customer_id = row["customer_id"] ?? "";
@@ -40,6 +41,7 @@ for (const row of rows) {
   const driverName = (row["Driver"] ?? "").trim();
   const dropoffName = (row["Điểm Drop-off"] ?? "").trim();
   if (pickupName) pickupNames.add(pickupName);
+  if (customer_id && pickupName && !nameByCustomer.has(customer_id)) nameByCustomer.set(customer_id, pickupName);
   // Present but not an id — a failed lookup spelled out in the cell. It slips
   // past a blank test, so it has to be named on its own.
   //
@@ -79,7 +81,7 @@ const locations = locRows.map((r): LocationRow => ({
 }));
 
 const dupes = findDuplicateBranches(locations, pickupNames);
-const overlaps = findShiftOverlaps(mappings);
+const overlaps = findShiftOverlaps(mappings, nameByCustomer);
 
 // Every column the contract names, and how much of it is actually there. This is
 // the promotion evidence: an `expect` column present on every routing tab and
@@ -142,7 +144,8 @@ for (const [label, msg] of banners) {
 
 if (overlaps.length) {
   console.log("\nEvery overlapping pair:");
-  for (const o of overlaps) console.log(`   ${o.customer_id}  ${o.drivers[0]}  /  ${o.drivers[1]}  ${o.window}`);
+  for (const o of overlaps) console.log(`   ${o.pickup_name}
+       ${o.drivers[0]}  /  ${o.drivers[1]}   ${o.window}`);
 }
 if (dupes.length) {
   console.log("\nEvery duplicated branch name:");

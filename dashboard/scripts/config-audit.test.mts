@@ -125,6 +125,36 @@ section("two rules for one branch, live at the same minute");
   ok("the banner says what will happen", msg.includes("CLASH"));
 }
 {
+  // The branch, not the id it happens to be keyed by.
+  const names = new Map([["C1", "20079 - TUyen - BS Danh Vinh"]]);
+  const msg = shiftOverlapWarning(findShiftOverlaps([
+    row("C1", "d1", "An", "06:00", "12:00"), row("C1", "d2", "Bình", "10:00", "18:00"),
+  ], names)) ?? "";
+  ok("the message names the branch", msg.includes("20079 - TUyen - BS Danh Vinh"));
+  ok("...and not the internal id", !msg.includes("C1"));
+}
+{
+  const msg = shiftOverlapWarning(findShiftOverlaps([
+    row("C1", "d1", "An", "06:00", "12:00"), row("C1", "d2", "Bình", "10:00", "18:00"),
+  ])) ?? "";
+  ok("with no name to hand it falls back to the id rather than saying nothing",
+     msg.includes("C1"));
+}
+{
+  // Every pair, never a sample: each one is a different row to edit, so a list
+  // ending in "and N more" names a problem while withholding the fix.
+  const rows = Array.from({ length: 6 }, (_, i) => [
+    row(`X${i}`, `a${i}`, `An ${i}`, "06:00", "12:00"),
+    row(`X${i}`, `b${i}`, `Bình ${i}`, "10:00", "18:00"),
+  ]).flat();
+  const found = findShiftOverlaps(rows);
+  eq("six branches, six pairs", found.length, 6);
+  const msg = shiftOverlapWarning(found) ?? "";
+  ok("all six are listed", [0,1,2,3,4,5].every((i) => msg.includes(`An ${i}`)));
+  ok("...with nothing trimmed off the end", !/và \d+ cặp nữa/.test(msg));
+  eq("one line per pair", msg.split("\n").length - 1, 6);
+}
+{
   const o = findShiftOverlaps([
     row("C1", "d1", "An", "06:00", "18:00", "D001"),
     row("C1", "d2", "Bình", "06:00", "18:00", "D007"),

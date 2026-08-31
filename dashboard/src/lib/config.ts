@@ -206,11 +206,12 @@ async function auditParsedConfig(
   mappings: Mapping[],
   unresolved: UnresolvedRows,
   pickupNames: Set<string>,
+  nameByCustomer: Map<string, string>,
   today: string,
 ): Promise<void> {
   const dropped = unresolvedWarning(unresolved);
   noteSheetWarning(A_UNRESOLVED, dropped && `${tabLabel}: ${dropped}`);
-  noteSheetWarning(A_OVERLAP, shiftOverlapWarning(findShiftOverlaps(mappings)));
+  noteSheetWarning(A_OVERLAP, shiftOverlapWarning(findShiftOverlaps(mappings, nameByCustomer)));
 
   if (locationsAuditedOn === today) return;
   try {
@@ -273,6 +274,8 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     // the sheet rather than kept anywhere else. See UnfinishedConfigRow.
     const unfinished: UnfinishedConfigRow[] = [];
     const pickupNames = new Set<string>();
+    // customer id → branch name, so a warning can say the place rather than the id.
+    const nameByCustomer = new Map<string, string>();
     for (const [idx, row] of rows.entries()) {
       const customer_id = row["customer_id"] ?? "";
       const driver_id = (row["driver_id"] ?? "").trim();
@@ -287,6 +290,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
       const driverName = (row["Driver"] ?? "").trim();
       const dropoffName = (row["Điểm Drop-off"] ?? "").trim();
       if (pickupName) pickupNames.add(pickupName);
+      if (customer_id && pickupName && !nameByCustomer.has(customer_id)) nameByCustomer.set(customer_id, pickupName);
       // Checked BEFORE the drop test, and on rows that survive it: unlike the
       // other two this row is not thrown away, it just loses its destination
       // scope and starts taking jobs meant for someone else.
@@ -363,7 +367,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     }
 
     noteSheetLoad(SHEET_CONTRACT[tab].label, null);
-    await auditParsedConfig(SHEET_CONTRACT[tab].label, mappings, unresolved, pickupNames, today);
+    await auditParsedConfig(SHEET_CONTRACT[tab].label, mappings, unresolved, pickupNames, nameByCustomer, today);
     cachedConfig = { mappings, unfinished };
     cachedDay = today;
     cachedGen = gen;
