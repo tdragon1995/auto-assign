@@ -301,8 +301,8 @@ function UnfinishedRow({
  * working — so it asks rather than choosing. Each shows the rule as it stands
  * and the rule as it would become, because that is the whole decision:
  *
- *   extend the end    the earlier driver stays out later
- *   extend the start  the later driver comes on sooner
+ *   mở rộng giờ kết thúc   the earlier driver stays out later
+ *   mở rộng giờ bắt đầu    the later driver comes on sooner
  *   a new rule        somebody else takes the stretch neither of them works
  *
  * Only one boundary ever moves. Closing from both ends would leave the two rules
@@ -408,13 +408,13 @@ function GapRow({
         {g.before && (
           <Button size="sm" variant={mode === "end" ? "default" : "outline"} className={choice}
             disabled={busy} onClick={() => { setMode(mode === "end" ? null : "end"); setErr(null); }}>
-            Kéo dài giờ kết thúc
+            Mở rộng giờ kết thúc
           </Button>
         )}
         {g.after && (
           <Button size="sm" variant={mode === "start" ? "default" : "outline"} className={choice}
             disabled={busy} onClick={() => { setMode(mode === "start" ? null : "start"); setErr(null); }}>
-            Kéo sớm giờ bắt đầu
+            Mở rộng giờ bắt đầu
           </Button>
         )}
         <Button size="sm" variant={mode === "new" ? "default" : "outline"} className={choice}
