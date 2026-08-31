@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
-import { CheckCircle2, Clock } from "lucide-react";
+import { CheckCircle2, ClipboardList, Clock } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
@@ -81,16 +81,42 @@ const cartrackJob = (jobId: number) => `https://fleetweb-vn.cartrack.com/deliver
 
 
 /**
- * One unfinished config line, and the one decision it is waiting for.
+ * Fold accents so a name typed quickly still matches: "quynh" has to find
+ * "Nguyễn Hữu Quỳnh". đ is handled separately — it is a distinct Vietnamese
+ * letter, not a d with a mark, so decomposition leaves it untouched.
+ */
+const foldName = (v: string) =>
+  v.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase();
+
+/**
+ * Resolve a typed name against the roster, refusing anything ambiguous.
  *
- * The hours are editable because the engine only guessed them — it takes the
- * hour block around the job that failed, which is a hint about when the branch
- * needs collecting, not a shift anyone agreed to.
+ * The roster is what the sheet's own lookup resolves against, so a name that is
+ * not on it writes perfectly well and then resolves to nothing — a row that
+ * looks finished and assigns nobody.
+ */
+function resolveDriver(typed: string, drivers: ConfigDriver[]): { name: string } | { error: string } {
+  const q = foldName(typed.trim());
+  if (!q) return { error: "Chưa chọn tài xế" };
+  const exact = drivers.filter((d) => foldName(d.name) === q);
+  const hits = exact.length ? exact : drivers.filter((d) => foldName(d.name).includes(q));
+  if (hits.length === 0) return { error: `"${typed}" không có trong tab Driver — chọn từ danh sách` };
+  if (hits.length > 1) return { error: `"${typed}" khớp ${hits.length} tài xế — gõ rõ hơn` };
+  return { name: hits[0].name };
+}
+
+const CONFIG_NAMES_LIST_ID = "config-driver-names";
+
+/**
+ * One unfinished config line, and the decision it is waiting for.
  *
- * Saving invalidates the config across every server, unlike the empty row the
- * engine wrote: that one had no driver and nothing to act on, this one is a live
- * rule the moment it lands, and making someone press Refresh afterwards would
- * leave the branch failing for no reason.
+ * Shaped like the leave module's substitute editor on purpose: the same people
+ * use both, and the same gesture should look the same — a name, a window, and a
+ * button that splits the work across more than one row.
+ *
+ * The hours are editable because the engine only guessed them, from the hour
+ * block around the job that failed. That is a hint about when the branch needs
+ * collecting, not a shift anyone agreed to.
  */
 function UnfinishedRow({
   u, drivers, onSaved,
@@ -100,64 +126,73 @@ function UnfinishedRow({
   onSaved: (key?: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  // A second rule for the SAME branch. One row covers one window, so a branch
-  // collected morning and afternoon by different drivers needs two — the same
-  // split the gap rows offer, reached from the other direction.
-  const [adding, setAdding] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [from, to] = (u.window ?? "–").split("–");
-  const [start, setStart] = useState(from ?? "");
-  const [end, setEnd] = useState(to ?? "");
+  // One block = one rule. A branch collected morning and afternoon by different
+  // drivers needs two rows, which is what "+ Thêm config" adds — the same split
+  // the leave editor offers, for the same reason.
+  const [blocks, setBlocks] = useState([{ name: "", start: from ?? "", end: to ?? "" }]);
 
-  async function addAnother(driverId: string) {
-    const name = drivers.find((d) => d.driver_id === driverId)?.name;
-    if (!name) { setErr("Không tìm thấy tài xế"); return; }
-    setSaving(true); setErr(null);
-    try {
-      const res = await fetch("/api/config/add-rule", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          pickup_name: u.pickup_name, dropoff_name: u.dropoff_name,
-          driver_name: name, shift_start: start, shift_end: end,
-        }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
-      toast.success(`Đã thêm dòng ${j.row} — ${name} ${start}–${end}`);
-      setAdding(false);
-      onSaved();   // this row is still unfinished — only the NEW row was created
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSaving(false);
+  const patch = (i: number, v: Partial<(typeof blocks)[number]>) =>
+    setBlocks((bs) => bs.map((b, j) => (j === i ? { ...b, ...v } : b)));
+  const addBlock = () => setBlocks((bs) => [...bs, { name: "", start: "", end: "" }]);
+  const dropBlock = (i: number) => setBlocks((bs) => bs.filter((_, j) => j !== i));
+
+  async function save() {
+    setErr(null);
+    const resolved: { name: string; start: string; end: string }[] = [];
+    for (const b of blocks) {
+      const r = resolveDriver(b.name, drivers);
+      if ("error" in r) { setErr(r.error); return; }
+      // More than one rule for a branch means each MUST carry its own window:
+      // an open one covers the whole day and would clash with its siblings.
+      if (blocks.length > 1 && (!b.start.trim() || !b.end.trim())) {
+        setErr("Nhiều dòng thì mỗi dòng cần khung giờ riêng");
+        return;
+      }
+      resolved.push({ name: r.name, start: b.start.trim(), end: b.end.trim() });
     }
-  }
 
-  async function save(driverId: string) {
-    const name = drivers.find((d) => d.driver_id === driverId)?.name;
-    if (!name) { setErr("Không tìm thấy tài xế"); return; }
-    setSaving(true); setErr(null);
+    setBusy(true);
     try {
-      const res = await fetch("/api/config/complete-row", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ row: u.row, pickup_name: u.pickup_name, driver_name: name, shift_start: start, shift_end: end }),
+      // The first block fills the row that already exists; the rest become new
+      // rows. Sequential on purpose — a failure part way through then leaves a
+      // clear picture rather than an unknown number of half-written lines.
+      const [first, ...rest] = resolved;
+      const post = async (url: string, body: unknown) => {
+        const res = await fetch(url, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
+        return j;
+      };
+      await post("/api/config/complete-row", {
+        row: u.row, pickup_name: u.pickup_name, driver_name: first.name,
+        shift_start: first.start, shift_end: first.end,
       });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
-      toast.success(`Đã gán ${name} cho ${u.pickup_name} (dòng ${u.row})`);
+      for (const b of rest) {
+        await post("/api/config/add-rule", {
+          pickup_name: u.pickup_name, dropoff_name: u.dropoff_name,
+          driver_name: b.name, shift_start: b.start, shift_end: b.end,
+        });
+      }
+      toast.success(
+        rest.length
+          ? `Đã tạo ${resolved.length} dòng cho ${u.pickup_name}`
+          : `Đã gán ${first.name} cho ${u.pickup_name} (dòng ${u.row})`,
+      );
       setOpen(false);
       onSaved(`u:${u.row}`);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
-      setSaving(false);
+      setBusy(false);
     }
   }
 
-  const timeBox = "w-[68px] rounded border border-slate-300 px-1.5 py-0.5 text-[11px] font-mono";
+  const timeBox = "w-[72px] rounded border border-slate-300 px-1.5 py-1 text-xs font-mono";
 
   return (
     <div className="px-2 py-1.5 hover:bg-slate-50">
@@ -185,34 +220,63 @@ function UnfinishedRow({
       </div>
 
       {open && (
-        <div className="mt-1.5 space-y-1.5">
-          <div className="flex items-center gap-1.5 text-[11px] text-slate-600">
-            <span>Ca</span>
-            <input className={timeBox} value={start} onChange={(e) => setStart(e.target.value)} placeholder="07:00" />
-            <span>–</span>
-            <input className={timeBox} value={end} onChange={(e) => setEnd(e.target.value)} placeholder="08:00" />
-            <span className="text-slate-400">giờ do hệ thống đoán, sửa nếu cần</span>
+        <div className="mt-1 space-y-1 rounded border border-slate-300 bg-white p-1.5">
+          {blocks.map((b, i) => (
+            <div key={i} className="flex flex-wrap items-center gap-1">
+              <input
+                type="text"
+                list={CONFIG_NAMES_LIST_ID}
+                placeholder="Tên tài xế…"
+                value={b.name}
+                onChange={(e) => patch(i, { name: e.target.value })}
+                className="min-w-[140px] flex-1 rounded border border-slate-300 px-1.5 py-1 text-xs"
+              />
+              <input
+                className={timeBox}
+                value={b.start}
+                placeholder="07:00"
+                onChange={(e) => patch(i, { start: e.target.value })}
+              />
+              <span className="text-slate-400 text-[11px]">→</span>
+              <input
+                className={timeBox}
+                value={b.end}
+                placeholder="08:00"
+                onChange={(e) => patch(i, { end: e.target.value })}
+              />
+              {blocks.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => dropBlock(i)}
+                  className="text-slate-400 hover:text-red-600 text-[11px] px-0.5"
+                  title="Bỏ dòng này"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          ))}
+          <div className="flex items-center gap-1">
+            {blocks.length < 3 && (
+              <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={addBlock} disabled={busy}>
+                + Thêm config
+              </Button>
+            )}
+            <div className="ml-auto flex gap-1">
+              <Button
+                size="sm" variant="outline" className="h-6 px-2 text-[11px]"
+                onClick={() => { setOpen(false); setErr(null); }} disabled={busy}
+              >
+                Hủy
+              </Button>
+              <Button
+                size="sm" className="h-6 px-2 text-[11px] bg-indigo-600 hover:bg-indigo-700"
+                onClick={save} disabled={busy}
+              >
+                {busy ? "Đang lưu…" : "Lưu"}
+              </Button>
+            </div>
           </div>
-          {saving ? (
-            <div className="text-[11px] text-slate-500">Đang lưu…</div>
-          ) : (
-            <DriverPicker
-              drivers={drivers}
-              onConfirm={adding ? addAnother : save}
-              onCancel={() => { setOpen(false); setAdding(false); setErr(null); }}
-              confirmLabel={adding ? "Tạo dòng mới" : "Lưu"}
-            />
-          )}
-          {!saving && (
-            <button
-              className="text-[11px] text-indigo-600 underline hover:text-indigo-800"
-              onClick={() => { setAdding((v) => !v); setErr(null); }}
-            >
-              {adding
-                ? "← quay lại điền vào dòng này"
-                : "…hoặc tạo THÊM một dòng nữa cho điểm này (ca khác, tài xế khác)"}
-            </button>
-          )}
           {err && <div className="text-[11px] text-red-600">{err}</div>}
         </div>
       )}
@@ -220,75 +284,85 @@ function UnfinishedRow({
   );
 }
 
-
 /**
  * An hour a job needed and nobody was rostered for.
  *
  * Shows the cover either side of the hole, because that is the diagnosis: "ends
- * 14:30, next starts 16:30" tells you at a glance which boundary is wrong. Only
- * one moves — closing it from both ends would leave the two rules overlapping,
- * which is the fault this same panel reports elsewhere.
+ * 14:30, next starts 16:30" tells you at a glance which boundary is wrong.
+ *
+ * Only ONE of the three closes it. Widening both neighbours would leave them
+ * overlapping, which is the fault this same panel reports elsewhere; and the
+ * third — a rule of its own — is often the honest one, because when nobody
+ * either side really works that stretch, stretching their hours records
+ * something untrue about who is on duty.
  */
-function GapRow({ g, drivers, onSaved }: { g: CoverageGap; drivers: ConfigDriver[]; onSaved: (key?: string) => void }) {
-  const [saving, setSaving] = useState<string | null>(null);
+function GapRow({
+  g, drivers, onSaved,
+}: {
+  g: CoverageGap;
+  drivers: ConfigDriver[];
+  onSaved: (key?: string) => void;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
   const [splitting, setSplitting] = useState(false);
+  const [name, setName] = useState("");
   const [err, setErr] = useState<string | null>(null);
 
-  async function addRule(driverName: string, from: string, to: string) {
-    setSaving("split"); setErr(null);
-    try {
-      const res = await fetch("/api/config/add-rule", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pickup_name: g.pickup_name, driver_name: driverName, shift_start: from, shift_end: to }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
-      toast.success(`Đã thêm dòng ${j.row} — ${driverName} ${from}–${to}`);
-      setSplitting(false);
-      onSaved(`g:${g.customer_id}|${g.at}`);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSaving(null);
-    }
-  }
-
-  async function stretch(row: number, edge: "start" | "end", label: string) {
-    setSaving(label); setErr(null);
-    try {
-      const res = await fetch("/api/config/stretch-rule", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ row, pickup_name: g.pickup_name, edge, value: g.at }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
-      toast.success(`Đã sửa ca dòng ${row} — ${g.pickup_name}`);
-      onSaved(`g:${g.customer_id}|${g.at}`);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSaving(null);
-    }
-  }
-
-  const chip = "shrink-0 rounded border px-1.5 py-0.5 text-[11px]";
-
-  // The window the split rule would cover: from where cover currently ends to
-  // where it picks up again. Falls back to the failing hour when there is only
-  // one side, which is the most that can honestly be inferred.
+  const key = `g:${g.customer_id}|${g.at}`;
   const splitFrom = g.before ? g.before.window.split("–")[1] : g.at;
   const splitTo = g.after ? g.after.window.split("–")[0] : g.at;
+
+  const post = async (url: string, body: unknown) => {
+    const res = await fetch(url, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
+    return j;
+  };
+
+  async function stretch(row: number, edge: "start" | "end", tag: string) {
+    setBusy(tag); setErr(null);
+    try {
+      await post("/api/config/stretch-rule", { row, pickup_name: g.pickup_name, edge, value: g.at });
+      toast.success(`Đã sửa ca dòng ${row} — ${g.pickup_name}`);
+      onSaved(key);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function addRule() {
+    const r = resolveDriver(name, drivers);
+    if ("error" in r) { setErr(r.error); return; }
+    setBusy("split"); setErr(null);
+    try {
+      const j = await post("/api/config/add-rule", {
+        pickup_name: g.pickup_name, driver_name: r.name, shift_start: splitFrom, shift_end: splitTo,
+      });
+      toast.success(`Đã thêm dòng ${j.row} — ${r.name} ${splitFrom}–${splitTo}`);
+      setSplitting(false);
+      onSaved(key);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
 
   return (
     <div className="px-2 py-1.5 hover:bg-slate-50">
       <div className="flex items-center gap-2 min-w-0">
-        <span className={`${chip} border-amber-300 bg-amber-50 font-mono text-amber-800`}>{g.at}</span>
+        <span className="shrink-0 rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 font-mono text-[11px] text-amber-800">
+          {g.at}
+        </span>
         <span className="min-w-0 flex-1 break-words md:truncate text-sm font-medium text-slate-800" title={g.pickup_name}>
           {g.pickup_name}
         </span>
       </div>
+
       <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-600">
         <span>
           {g.before ? `Ca trước hết lúc ${g.before.window.split("–")[1]}` : "Không có ca trước"}
@@ -297,57 +371,64 @@ function GapRow({ g, drivers, onSaved }: { g: CoverageGap; drivers: ConfigDriver
         </span>
         {g.before && (
           <Button
-            size="sm" variant="outline" className="h-6 text-[11px] px-2"
-            disabled={saving !== null}
+            size="sm" variant="outline" className="h-6 px-2 text-[11px]"
+            disabled={busy !== null}
             onClick={() => stretch(g.before!.row, "end", "before")}
             title={`Dòng ${g.before.row} · ${g.before.driver}`}
           >
-            {saving === "before" ? "Đang lưu…" : `Kéo dài ca trước đến ${g.at}`}
+            {busy === "before" ? "Đang lưu…" : `Kéo dài ca trước đến ${g.at}`}
           </Button>
         )}
         {g.after && (
           <Button
-            size="sm" variant="outline" className="h-6 text-[11px] px-2"
-            disabled={saving !== null}
+            size="sm" variant="outline" className="h-6 px-2 text-[11px]"
+            disabled={busy !== null}
             onClick={() => stretch(g.after!.row, "start", "after")}
             title={`Dòng ${g.after.row} · ${g.after.driver}`}
           >
-            {saving === "after" ? "Đang lưu…" : `Ca sau bắt đầu từ ${g.at}`}
+            {busy === "after" ? "Đang lưu…" : `Ca sau bắt đầu từ ${g.at}`}
+          </Button>
+        )}
+        {!splitting && splitFrom !== splitTo && (
+          <Button
+            size="sm" variant="outline" className="h-6 px-2 text-[11px]"
+            disabled={busy !== null}
+            onClick={() => { setSplitting(true); setErr(null); }}
+          >
+            + Thêm config {splitFrom}–{splitTo}
           </Button>
         )}
       </div>
-      {/* The third way, and often the honest one: when nobody either side really
-          works that stretch, widening their hours records something untrue about
-          who is on duty. A rule of its own says what is actually happening. */}
-      {!splitting ? (
-        splitFrom !== splitTo && (
-          <button
-            className="mt-1 text-[11px] text-indigo-600 underline hover:text-indigo-800"
-            onClick={() => setSplitting(true)}
-            disabled={saving !== null}
-          >
-            …hoặc tách thành dòng riêng {splitFrom}–{splitTo}
-          </button>
-        )
-      ) : (
-        <div className="mt-1.5 space-y-1.5">
-          <div className="text-[11px] text-slate-600">
-            Dòng mới cho {g.pickup_name} · ca {splitFrom}–{splitTo}
-          </div>
-          {saving === "split" ? (
-            <div className="text-[11px] text-slate-500">Đang tạo…</div>
-          ) : (
-            <DriverPicker
-              drivers={drivers}
-              confirmLabel="Tạo dòng"
-              onCancel={() => { setSplitting(false); setErr(null); }}
-              onConfirm={(driverId) => {
-                const name = drivers.find((d) => d.driver_id === driverId)?.name;
-                if (!name) { setErr("Không tìm thấy tài xế"); return; }
-                void addRule(name, splitFrom, splitTo);
-              }}
+
+      {splitting && (
+        <div className="mt-1 space-y-1 rounded border border-slate-300 bg-white p-1.5">
+          <div className="flex flex-wrap items-center gap-1">
+            <input
+              type="text"
+              list={CONFIG_NAMES_LIST_ID}
+              placeholder="Tên tài xế…"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="min-w-[140px] flex-1 rounded border border-slate-300 px-1.5 py-1 text-xs"
             />
-          )}
+            <span className="font-mono text-[11px] text-slate-600">{splitFrom}–{splitTo}</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <div className="ml-auto flex gap-1">
+              <Button
+                size="sm" variant="outline" className="h-6 px-2 text-[11px]"
+                onClick={() => { setSplitting(false); setErr(null); }} disabled={busy !== null}
+              >
+                Hủy
+              </Button>
+              <Button
+                size="sm" className="h-6 px-2 text-[11px] bg-indigo-600 hover:bg-indigo-700"
+                onClick={addRule} disabled={busy !== null}
+              >
+                {busy === "split" ? "Đang tạo…" : "Tạo dòng"}
+              </Button>
+            </div>
+          </div>
         </div>
       )}
       {err && <div className="mt-1 text-[11px] text-red-600">{err}</div>}
@@ -723,48 +804,57 @@ export function FailedJobsPanel({
               </div>
             ))}
 
-            {/* ── An hour nobody was rostered for ─────────────────────────
-                Kept because a real job fell into it. 72 branches have a hole
-                somewhere in their day and most are deliberate — a lunch break,
-                a shift handover — so only the ones that have actually cost a
-                trip are listed, and the evidence is that trip. */}
-            {gaps.length > 0 && (
-              <div className="space-y-1.5">
-                <SectionHeader label="Giờ chưa có ca (job đã rơi vào)" count={gaps.length} tone="amber" />
-                <div className={listBox}>
-                  {gaps.map((g) => (
-                    <GapRow key={`${g.customer_id}-${g.at}`} g={g} drivers={drivers} onSaved={onUnfinishedSaved} />
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* ── Branches with a line but nobody on it ───────────────────
-                Read back out of the sheet, not from this cycle's failures. That
-                is the point: a stuck job disappears the moment someone handles
-                it by hand, while the branch stays unconfigured and the next trip
-                fails all over again. These persist until a driver is chosen. */}
-            {unfinished.length > 0 && (
-              <div className="space-y-1.5">
+            {/* ── Everything the config is waiting on a person for ────────
+                One section, two shapes of the same problem: an hour nobody is
+                rostered for, and a branch with a line but no driver. Shut by
+                default and headed like the leave panel, because these are
+                long-lived — each waits on a person, not on the engine — and left
+                open they push the genuinely urgent things off the screen. */}
+            {(gaps.length > 0 || unfinished.length > 0) && (
+              <div className="space-y-1.5 pt-1">
+                <datalist id={CONFIG_NAMES_LIST_ID}>
+                  {drivers.map((d) => <option key={d.driver_id} value={d.name} />)}
+                </datalist>
                 <button
                   type="button"
                   onClick={() => setConfigOpen((v) => !v)}
-                  className="flex w-full items-center gap-1.5 text-left"
+                  className="flex w-full items-center gap-2 text-left"
                   aria-expanded={configOpen}
                 >
-                  <SectionHeader label="Cần tạo config" count={unfinished.length} tone="amber" className="pt-1" />
-                  {/* When the sheet was last READ, not when the cycle ran. The parse
-                      is event-based on purpose, so a hand-edit stays invisible until
-                      someone presses Refresh — without this, a row already fixed in
-                      the sheet reads as a bug rather than as a stale list. */}
-                  {parsedAt && (
-                    <span className="flex-1 text-[11px] text-slate-400">
-                      đọc sheet lúc {parsedAt.slice(11, 16)} · vừa sửa sheet thì bấm Làm mới
+                  <span className="flex items-center gap-1.5 text-sm font-semibold text-slate-800">
+                    <ClipboardList className="size-4 text-amber-600" strokeWidth={2} />
+                    Cần tạo config
+                  </span>
+                  {gaps.length > 0 && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-700 border border-amber-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
+                      {gaps.length} thiếu ca
                     </span>
                   )}
-                  <span className="shrink-0 text-xs text-slate-400">{configOpen ? "▾" : "▸"}</span>
+                  {unfinished.length > 0 && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
+                      {unfinished.length} chưa có tài xế
+                    </span>
+                  )}
+                  {/* When the sheet was last READ, not when the cycle ran. The
+                      parse is event-based, so a hand-edit stays invisible until
+                      someone presses Refresh — without this, a row already fixed
+                      in the sheet reads as a bug rather than as a stale list. */}
+                  {parsedAt && (
+                    <span className="text-[11px] text-slate-400">
+                      đọc sheet {parsedAt.slice(11, 16)} · vừa sửa sheet thì bấm Làm mới
+                    </span>
+                  )}
+                  <span className="ml-auto shrink-0 text-xs text-slate-400">{configOpen ? "▾" : "▸"}</span>
                 </button>
-                {configOpen && (
+
+                {configOpen && gaps.length > 0 && (
+                  <div className={listBox}>
+                    {gaps.map((g) => (
+                      <GapRow key={`${g.customer_id}-${g.at}`} g={g} drivers={drivers} onSaved={onUnfinishedSaved} />
+                    ))}
+                  </div>
+                )}
+                {configOpen && unfinished.length > 0 && (
                   <div className={listBox}>
                     {unfinished.map((u) => (
                       <UnfinishedRow key={u.row} u={u} drivers={drivers} onSaved={onUnfinishedSaved} />
