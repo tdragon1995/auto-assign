@@ -614,6 +614,11 @@ export function FailedJobsPanel({
   // Each section is a divided list (one bordered container, hairline rows) —
   // the tone-coloured header carries severity, so rows stay quiet.
   const listBox = "divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200";
+  // Shut by default. This list is long-lived — 32 branches today, each waiting on
+  // a person rather than on the engine — so leaving it open pushes the things
+  // that ARE urgent off the screen. The count stays in the header, which is the
+  // part that needs to be seen without opening anything.
+  const [configOpen, setConfigOpen] = useState(false);
 
   return (
     <Card className="flex h-full flex-col gap-2 py-2 border-slate-200">
@@ -693,12 +698,22 @@ export function FailedJobsPanel({
                 fails all over again. These persist until a driver is chosen. */}
             {unfinished.length > 0 && (
               <div className="space-y-1.5">
-                <SectionHeader label="Chưa chọn tài xế (dòng đã tạo sẵn)" count={unfinished.length} tone="amber" />
-                <div className={listBox}>
-                  {unfinished.map((u) => (
-                    <UnfinishedRow key={u.row} u={u} drivers={drivers} onSaved={onUnfinishedSaved} />
-                  ))}
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setConfigOpen((v) => !v)}
+                  className="flex w-full items-center gap-1.5 text-left"
+                  aria-expanded={configOpen}
+                >
+                  <SectionHeader label="Cần tạo config" count={unfinished.length} tone="amber" className="pt-1 flex-1" />
+                  <span className="shrink-0 text-xs text-slate-400">{configOpen ? "▾" : "▸"}</span>
+                </button>
+                {configOpen && (
+                  <div className={listBox}>
+                    {unfinished.map((u) => (
+                      <UnfinishedRow key={u.row} u={u} drivers={drivers} onSaved={onUnfinishedSaved} />
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
