@@ -3,10 +3,12 @@ import { appendNghiPhep } from "@/lib/sheets-writer";
 import { vnTimestamp } from "@/lib/time";
 import { sendZaloMessage } from "@/lib/zalo";
 import {
-  loadLeaveEntries,
+  loadLeaveEntriesStrict,
+  LeaveUnreadableError,
   invalidateLeaveCache,
   findLeaveConflict,
   type LeaveEntry,
+  type InvalidLeaveRow,
 } from "@/lib/leave-config";
 
 /** Short human label for a clashing existing leave, for the reject message. */
@@ -121,14 +123,34 @@ export async function POST(req: NextRequest) {
       };
     }
 
-    // Block duplicate/overlapping leave: read the sheet fresh (bust the 5-min
-    // cache so a leave submitted minutes ago is seen) and reject if this driver
-    // already has a clashing entry. The client's disabled-while-loading submit
-    // button handles the rapid double-click; this catches the re-submit-later
-    // case that was creating stale duplicate rows.
-    await invalidateLeaveCache();
-    const existing = await loadLeaveEntries();
-    const clash = findLeaveConflict(candidate, existing);
+    // Block duplicate/overlapping leave: read the sheet fresh (so a leave
+    // submitted minutes ago is seen) and reject if this driver already has a
+    // clashing entry. The client's disabled-while-loading submit button handles
+    // the rapid double-click; this catches the re-submit-later case that was
+    // creating stale duplicate rows.
+    //
+    // If the sheet cannot be read the write is REFUSED, not waved through. The
+    // check used to fail open: it cleared the cache, read, and took the empty
+    // list that a failed read returns as "no clash". On 30/08 a renamed column
+    // had the tab refused all day, so every one of the MISA sync's 21 runs
+    // re-appended the same eight rows — 160 identical rows for one day off. A
+    // refusal is recoverable (the caller retries, and the dashboard already
+    // names a refused tab); a blind append is not.
+    let onSheet: { entries: LeaveEntry[]; invalid: InvalidLeaveRow[] };
+    try {
+      onSheet = await loadLeaveEntriesStrict();
+    } catch (e) {
+      if (!(e instanceof LeaveUnreadableError)) throw e;
+      console.error("[nghi-phep] refusing to write — leave sheet unreadable");
+      return NextResponse.json(
+        {
+          error: "Chưa đọc được bảng nghỉ phép nên tạm chưa ghi được đơn " +
+            "(tránh ghi trùng). Vui lòng thử lại sau ít phút.",
+        },
+        { status: 503 },
+      );
+    }
+    const clash = findLeaveConflict(candidate, onSheet.entries, onSheet.invalid);
     if (clash) {
       return NextResponse.json(
         {

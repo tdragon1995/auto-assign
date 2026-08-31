@@ -449,6 +449,22 @@ function candidateDates(c: LeaveEntry): string[] {
   return out.length ? out : [c.leave_from];
 }
 
+/** A dropped row as a coverage probe. It keeps no id by definition, and its
+ *  window survived the drop as the "HH:MM–HH:MM" label, so split it back. */
+function orphanAsEntry(r: InvalidLeaveRow): LeaveEntry {
+  const [from, to] = (r.timeLabel ?? "").split("–");
+  return {
+    driver_id: "",
+    driver_name: r.driver_name,
+    loai_nghi: r.loai_nghi,
+    leave_from: r.leave_from,
+    leave_to: r.leave_to,
+    gio_bat_dau: from || null,
+    gio_ket_thuc: to || null,
+    subs: [],
+  };
+}
+
 /**
  * First existing leave for the same driver that clashes with `candidate`, or
  * null if the submission is genuinely new. Used by /api/nghi-phep to block
@@ -459,8 +475,25 @@ function candidateDates(c: LeaveEntry): string[] {
  * driver resigns once, so any existing "Nghỉ việc" clashes with a new one
  * regardless of dates (their date order can hide the overlap otherwise).
  */
-export function findLeaveConflict(candidate: LeaveEntry, existing: LeaveEntry[]): LeaveEntry | null {
-  const same = existing.filter((e) => e.driver_id && e.driver_id === candidate.driver_id);
+export function findLeaveConflict(
+  candidate: LeaveEntry,
+  existing: LeaveEntry[],
+  orphans: InvalidLeaveRow[] = [],
+): LeaveEntry | null {
+  const same = [
+    ...existing.filter((e) => e.driver_id && e.driver_id === candidate.driver_id),
+    // Rows the loader could not tie to a driver still record a real day off, and
+    // they are invisible to an id comparison — the id column is a lookup on the
+    // typed name, so a rename blanks it on every row at once. That is precisely
+    // when a re-push would duplicate: the check finds no id match, writes, and
+    // the new row is orphaned too, so the next run finds nothing again. Matching
+    // the typed name EXACTLY closes it without guessing — about a dozen drivers
+    // hold two accounts under one personal name, but the sheet stores the full
+    // account label, which names exactly one of them.
+    ...orphans
+      .filter((r) => r.driver_name.trim() === candidate.driver_name.trim())
+      .map(orphanAsEntry),
+  ];
   if (candidate.loai_nghi === "Nghỉ việc") {
     const already = same.find((e) => e.loai_nghi === "Nghỉ việc");
     if (already) return already;
@@ -483,6 +516,47 @@ export function findLeaveConflict(candidate: LeaveEntry, existing: LeaveEntry[])
  *  every instance, not just the one that handled the refresh. */
 export async function loadLeaveEntries(force = false): Promise<LeaveEntry[]> {
   return (await loadLeaveSheet(force)).entries;
+}
+
+/**
+ * The leave list could not be READ — as opposed to "nobody is on leave".
+ *
+ * Anything that writes leave must tell those two apart. The read fails whole:
+ * the sheet 404s, Google hands back an error page, or — the case that actually
+ * happened on 30/08 — a column gets renamed and the tab is refused by its
+ * header contract. Every one of those paths ends in an empty list, and an empty
+ * list answers "does this driver already have leave that day?" with "no".
+ */
+export class LeaveUnreadableError extends Error {
+  constructor() {
+    super("Leave sheet could not be read");
+    this.name = "LeaveUnreadableError";
+  }
+}
+
+/**
+ * Leave entries for a caller that is about to WRITE — a fresh read, or nothing.
+ *
+ * `loadLeaveEntries` is built for readers: when the sheet cannot be read it
+ * quietly serves the last good copy, or an empty list, because a dashboard with
+ * stale leave beats a dashboard with an error on it. For a write guard that
+ * same politeness is a hole. On 30/08 a renamed column had the tab refused all
+ * day; the duplicate check read an empty list, concluded there was nothing to
+ * clash with, and let the MISA sync append the same eight rows on all 21 of its
+ * runs — 160 identical rows for one day off.
+ *
+ * So this one throws instead. It also FORCES the read, which is what the caller
+ * wanted anyway: a leave submitted a minute ago must be visible, and the old
+ * "clear the cache, then read" dance had the nasty property of deleting the
+ * fallback copy immediately before needing it.
+ */
+export async function loadLeaveEntriesStrict(): Promise<{
+  entries: LeaveEntry[];
+  invalid: InvalidLeaveRow[];
+}> {
+  const { entries, invalid, trusted } = await loadLeaveSheet(true);
+  if (!trusted) throw new LeaveUnreadableError();
+  return { entries, invalid };
 }
 
 /** The rows loadLeaveEntries had to discard — see {@link InvalidLeaveRow}.
@@ -564,9 +638,9 @@ async function recoverOrphanRows(
 
 async function loadLeaveSheet(
   force = false,
-): Promise<{ entries: LeaveEntry[]; invalid: InvalidLeaveRow[] }> {
+): Promise<{ entries: LeaveEntry[]; invalid: InvalidLeaveRow[]; trusted: boolean }> {
   if (!force && cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS) {
-    return { entries: cache.entries, invalid: cache.invalid };
+    return { entries: cache.entries, invalid: cache.invalid, trusted: true };
   }
 
   // L2: shared Redis copy. Skipped on force; failures fall through to the fetch.
@@ -581,7 +655,7 @@ async function loadLeaveSheet(
         if (hit) {
           const shaped = Array.isArray(hit) ? { entries: hit, invalid: [] } : hit;
           cache = { ...shaped, invalid: shaped.invalid ?? [], fetchedAt: Date.now() };
-          return { entries: cache.entries, invalid: cache.invalid };
+          return { entries: cache.entries, invalid: cache.invalid, trusted: true };
         }
       } catch { /* fall through to the sheet fetch */ }
     }
@@ -601,7 +675,7 @@ async function loadLeaveSheet(
       // drivers who are off AND the repair panel stays empty, because a row has
       // to carry a name to be reported as broken and a garbage parse has none.
       console.error("Leave load returned an empty sheet — not caching");
-      return { entries: cache?.entries ?? [], invalid: cache?.invalid ?? [] };
+      return { entries: cache?.entries ?? [], invalid: cache?.invalid ?? [], trusted: false };
     }
 
     assertHeaders(SHEET_CONTRACT.nghi_phep.label, rows[0], SHEET_CONTRACT.nghi_phep.require);
@@ -660,7 +734,7 @@ async function loadLeaveSheet(
     // most expensive.
     if (entries.length === 0) {
       console.error("Leave load parsed 0 entries — not caching");
-      return { entries: cache?.entries ?? [], invalid: cache?.invalid ?? [] };
+      return { entries: cache?.entries ?? [], invalid: cache?.invalid ?? [], trusted: false };
     }
 
     noteSheetLoad(SHEET_CONTRACT.nghi_phep.label, null);
@@ -674,11 +748,11 @@ async function loadLeaveSheet(
         try { await redis.set(REDIS_KEY, { entries, invalid }, { ex: REDIS_TTL_S }); } catch { /* cache write is best-effort */ }
       }
     }
-    return { entries, invalid };
+    return { entries, invalid, trusted: true };
   } catch (e) {
     if (isSheetShapeError(e)) noteSheetLoad(e.sheetLabel, e);
     // On fetch failure keep stale cache if available; otherwise return empty
-    return { entries: cache?.entries ?? [], invalid: cache?.invalid ?? [] };
+    return { entries: cache?.entries ?? [], invalid: cache?.invalid ?? [], trusted: false };
   }
 }
 

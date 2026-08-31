@@ -90,14 +90,16 @@ export function buildLeaveSubmissions(attendanceRows, driversByCode, range, minD
 
 /**
  * Send the submissions. A 409 means the leave is already on the sheet — that is
- * the expected steady state on re-runs, not an error.
+ * the expected steady state on re-runs, not an error. A 503 means the dashboard
+ * could not read the sheet to check, which stops the batch: writing blind is
+ * what put the same day off on the sheet 21 times on 30/08.
  *
  * `dryRun` reports exactly what would be written without touching the sheet.
  */
 export async function pushLeave(submissions, { dryRun = false, baseUrl } = {}) {
   const base = (baseUrl || process.env.DASHBOARD_URL || DEFAULT_BASE).replace(/\/$/, "");
   const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
-  const result = { written: 0, duplicate: 0, failed: 0, errors: [] };
+  const result = { written: 0, duplicate: 0, failed: 0, aborted: false, errors: [] };
 
   if (dryRun) {
     log(`DRY RUN — ${submissions.length} leave day(s) would be submitted to ${base}/api/nghi-phep:`);
@@ -130,6 +132,19 @@ export async function pushLeave(submissions, { dryRun = false, baseUrl } = {}) {
       if (res.status === 409) {
         result.duplicate++;
         continue;
+      }
+      // 503 = the dashboard could not read the Nghỉ phép tab, so it refused to
+      // write rather than risk a duplicate. Every remaining submission would hit
+      // the same wall, so stop the batch instead of grinding through it: the
+      // next run picks the day up once the sheet reads again.
+      if (res.status === 503) {
+        result.failed++;
+        result.errors.push(
+          `${s.date} ${s.driver_name}: bảng nghỉ phép chưa đọc được — dừng đợt push, ` +
+            `${submissions.length - result.written - result.duplicate - result.failed} ngày còn lại bỏ qua`,
+        );
+        result.aborted = true;
+        break;
       }
       if (!res.ok) {
         const body = await res.text();

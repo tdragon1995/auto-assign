@@ -17,6 +17,19 @@ import { NextRequest, NextResponse } from "next/server";
  * deploying this ahead of the token is harmless.
  */
 
+/**
+ * How long after a finished run the next dispatch is refused.
+ *
+ * A MISA sync is not a cache reload: it drives a real browser, rewrites the
+ * shift tab and re-submits every upcoming leave day. One click per Refresh was
+ * fine while each re-submission was rejected as a duplicate — until the leave
+ * tab went unreadable on 30/08 and the rejection stopped happening, at which
+ * point 21 Refresh clicks became 21 identical copies of the same eight rows.
+ * MISA data changes a few times a day, so a quarter of an hour costs nothing
+ * and takes the amplifier out of the loop.
+ */
+const COOLDOWN_MINUTES = 15;
+
 const REPO = process.env.GITHUB_REPO ?? "tdragon1995/auto-assign";
 const WORKFLOW = "misa-shifts.yml";
 const BRANCH = process.env.GITHUB_REF_NAME ?? "master";
@@ -48,17 +61,31 @@ async function latestRun(token: string): Promise<Run | null> {
   return data.workflow_runs?.[0] ?? null;
 }
 
+/** Minutes left on the cooldown for a finished run — 0 once it has lapsed, and
+ *  0 for a run still going (that case is reported as already_running instead). */
+function cooldownLeft(run: Run): number {
+  if (run.status !== "completed") return 0;
+  const started = Date.parse(run.created_at);
+  if (!Number.isFinite(started)) return 0;
+  const elapsedMin = (Date.now() - started) / 60_000;
+  return Math.max(0, Math.ceil(COOLDOWN_MINUTES - elapsedMin));
+}
+
 export async function GET() {
   const token = process.env.GITHUB_DISPATCH_TOKEN;
   if (!token) return NextResponse.json({ status: "disabled" });
 
   const run = await latestRun(token);
-  if (!run) return NextResponse.json({ status: "unknown" });
+  if (!run) return NextResponse.json({ status: "unknown", cooldown_minutes: COOLDOWN_MINUTES });
+  const wait = cooldownLeft(run);
   return NextResponse.json({
     status: run.status,
     conclusion: run.conclusion,
     started: run.created_at,
     url: run.html_url,
+    cooldown_minutes: COOLDOWN_MINUTES,
+    // Minutes until Refresh will dispatch again; 0 when it would go now.
+    cooldown_remaining: wait,
   });
 }
 
@@ -75,6 +102,19 @@ export async function POST(req: NextRequest) {
     const running = await latestRun(token);
     if (running && (running.status === "queued" || running.status === "in_progress")) {
       return NextResponse.json({ status: "already_running", url: running.html_url });
+    }
+
+    // Ran recently enough — say so rather than starting another one. The caller
+    // is told how long is left so a Refresh never looks like it did nothing.
+    const wait = running ? cooldownLeft(running) : 0;
+    if (wait > 0) {
+      return NextResponse.json({
+        status: "cooldown",
+        cooldown_minutes: COOLDOWN_MINUTES,
+        cooldown_remaining: wait,
+        started: running!.created_at,
+        url: running!.html_url,
+      });
     }
 
     const month = req.nextUrl.searchParams.get("month");

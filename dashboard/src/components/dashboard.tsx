@@ -433,6 +433,15 @@ export function Dashboard() {
         toast.success("Đang đồng bộ ca làm việc từ MISA — bảng cập nhật sau ~2 phút");
       } else if (data.status === "already_running") {
         toast.success("Đồng bộ MISA đang chạy…");
+      } else if (data.status === "cooldown") {
+        // Not an error and not silence: the click was deliberately skipped, so
+        // say when it will go again. A MISA run drives a browser and re-submits
+        // every upcoming leave day — one per Refresh click is how the same day
+        // off ended up on the sheet 21 times.
+        toast.info(
+          `Đồng bộ MISA vừa chạy — chờ thêm ${data.cooldown_remaining} phút ` +
+            `(giãn cách ${data.cooldown_minutes} phút)`,
+        );
       } else if (data.status === "error") {
         toast.error(`Đồng bộ MISA thất bại: ${data.error}`);
       }
