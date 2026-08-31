@@ -20,6 +20,7 @@
  */
 
 import { vnHoursMinutes } from "./time";
+import { DIAG_LOCATIONS } from "./diag-locations";
 
 export interface UnmappedBranch {
   /** Cartrack customer id of the pickup. Identity for de-duplication only; it is
@@ -101,10 +102,30 @@ export function configCellsFor(b: UnmappedBranch): ConfigCells {
  * needs one line, not five. The earliest job wins the suggested window, since
  * that is the start of the stretch the branch was uncovered.
  */
+/**
+ * A pickup that is one of Diag's OWN locations — D001 → D007, D032 → D007,
+ * D027 → D001 and the like.
+ *
+ * These are internal transfers between the lab and its own PSCs, not client
+ * collections, and they are not configured with a customer→driver rule. Left in,
+ * they sit in the to-do list forever asking to be given a driver rule that they
+ * are never going to get.
+ *
+ * Matched on the customer id, not the name: the id is what the job carries and
+ * what never changes, whereas "BRA - D001" is a label that a rename would break —
+ * the same trap that started this whole piece of work.
+ */
+function isOwnLocation(customerId: string, pickupName: string): boolean {
+  const id = customerId.trim();
+  const name = pickupName.trim();
+  return DIAG_LOCATIONS.some((l) => l.customer_id === id || (!!name && l.customer_name === name));
+}
+
 export function dedupeBranches(found: readonly UnmappedBranch[]): UnmappedBranch[] {
   const first = new Map<string, UnmappedBranch>();
   for (const b of found) {
     if (!b.customer_id || !b.pickup_name) continue;   // nothing useful to write
+    if (isOwnLocation(b.customer_id, b.pickup_name)) continue;   // an internal leg, not a client
     const prev = first.get(b.customer_id);
     if (!prev || b.at < prev.at) first.set(b.customer_id, b);
   }

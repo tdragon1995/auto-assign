@@ -86,6 +86,40 @@ section("one row per branch, not per job");
   eq("nothing found, nothing written", dedupeBranches([]), []);
 }
 
+section("internal legs between our own locations are not to-dos");
+{
+  const { DIAG_LOCATIONS } = await import("../src/lib/diag-locations");
+  const d001 = DIAG_LOCATIONS.find((l) => l.name === "D001")!;
+  const d032 = DIAG_LOCATIONS.find((l) => l.name === "D032")!;
+
+  eq("D001 → D007 is dropped", dedupeBranches([
+    { customer_id: d001.customer_id, pickup_name: d001.customer_name, dropoff_name: "BRA - D007", at: at("05:30") },
+  ]), []);
+
+  // Matched on the id even when the label has drifted — a rename must not
+  // resurrect an internal leg as a to-do.
+  eq("...by id, even under a different label", dedupeBranches([
+    { customer_id: d032.customer_id, pickup_name: "something else entirely", dropoff_name: "BRA - D007", at: at("06:30") },
+  ]), []);
+
+  // ...and on the label when the id is one we do not recognise.
+  eq("...and by label when the id is unfamiliar", dedupeBranches([
+    { customer_id: "not-a-known-id", pickup_name: d001.customer_name, dropoff_name: "BRA - D007", at: at("06:30") },
+  ]), []);
+
+  const real = dedupeBranches([
+    branch("c-real", "20079 - TUyen - BS Danh Vinh", "BRA - D001", "09:15"),
+    { customer_id: d001.customer_id, pickup_name: d001.customer_name, dropoff_name: "BRA - D007", at: at("05:30") },
+  ]);
+  eq("a real clinic alongside an internal leg keeps only the clinic",
+     real.map((r) => r.pickup_name), ["20079 - TUyen - BS Danh Vinh"]);
+
+  // 3PL pickups were deliberately NOT excluded — they stay to-dos until told
+  // otherwise, so this pins the decision rather than the omission.
+  const tpl = dedupeBranches([branch("c-3pl", "3PL - TLT", "BRA - D001", "14:00")]);
+  eq("a 3PL pickup is still listed", tpl.map((r) => r.pickup_name), ["3PL - TLT"]);
+}
+
 section("what the writer is allowed to touch");
 {
   const { CONFIG_TABS, WRITE_COLS, currentConfigTab } = await import("../src/lib/sheets-writer");
