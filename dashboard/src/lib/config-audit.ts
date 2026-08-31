@@ -395,3 +395,30 @@ export interface CoverageGapOut {
   before: { row: number; driver: string; window: string } | null;
   after: { row: number; driver: string; window: string } | null;
 }
+
+
+/**
+ * Whether existing rules already cover every minute of a window.
+ *
+ * What makes a written to-do row REDUNDANT. The engine creates one when a
+ * branch has no rule at all; by the time anyone looks, the branch may have been
+ * configured properly — by hand, or from this dashboard — and the empty row is
+ * then just litter that reads as outstanding work. Row 1773 sat in the list
+ * asking for a driver for 08:00–09:00 while row 407 had covered 05:00–18:00 all
+ * along.
+ *
+ * Only rules that can actually assign count, which is why the caller passes the
+ * usable ones: a second driverless row cannot cover anything.
+ */
+export function coversWindow(rules: readonly RuleRow[], from: string, to: string): boolean {
+  const a = hhmmToMin(from), b = hhmmToMin(to);
+  if (a < 0 || b < 0 || a === b) return false;
+  // Half-open, as everywhere else: the window owns (a, b].
+  const minutes: number[] = [];
+  for (let m = a + 1; m !== (b + 1) % DAY; m = (m + 1) % DAY) {
+    minutes.push(m);
+    if (minutes.length > DAY) break;   // malformed input, never loop for ever
+  }
+  minutes.push(b);
+  return minutes.every((m) => isCovered(rules, m));
+}

@@ -2,7 +2,7 @@ import { Redis } from "@upstash/redis";
 import type { Config, ConfigDriver, Mapping, UnfinishedConfigRow, CoverageGap } from "./types";
 import { fetchSheetRows, isSheetShapeError, noteSheetLoad, noteSheetWarning, SHEET_CONTRACT, SHEET_GID } from "./sheets";
 import {
-  findDuplicateBranches, findShiftOverlaps, resolveGaps,
+  findDuplicateBranches, findShiftOverlaps, resolveGaps, coversWindow,
   duplicateBranchWarning, shiftOverlapWarning, unresolvedWarning,
   type LocationRow, type UnresolvedRows, type RuleRow,
 } from "./config-audit";
@@ -362,7 +362,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
           // half-finished — and those are not work waiting on anyone. Listing
           // them buries the ones that are.
           if (looksAutoCreated(window)) {
-            unfinished.push({ row: idx + 2, pickup_name: pickupName, dropoff_name: dropoffName, window });
+            unfinished.push({ row: idx + 2, customer_id, pickup_name: pickupName, dropoff_name: dropoffName, window });
           }
         }
         continue;
@@ -408,6 +408,27 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     }
 
     noteSheetLoad(SHEET_CONTRACT[tab].label, null);
+    // A to-do row is only outstanding while the branch is still uncovered. It was
+    // written when the branch had NO rule; by the time anyone looks, one may have
+    // been added — by hand or from the dashboard — and the empty row is then
+    // litter that reads as work. Dropped by asking the config, the same way a
+    // coverage gap closes, rather than by anyone remembering to tidy it.
+    const stillNeeded = unfinished.filter((u) => {
+      const rules = rulesByCustomer.get(u.customer_id) ?? [];
+      if (rules.length === 0) return true;
+      const [wf, wt] = (u.window ?? "").split("–");
+      // No window means the row covers the day; keep it unless something else
+      // covers the whole day too.
+      if (!wf || !wt) return !coversWindow(rules, "00:00", "23:59");
+      return !coversWindow(rules, wf, wt);
+    });
+
+    // Weekdays only, deliberately. Everything the panel offers for these rows
+    // refuses on the Sunday tab — its Driver column is a formula deriving cover
+    // from the public roster — so listing them there would be offering an action
+    // that cannot work. Today that tab happens to have none, which is luck
+    // rather than design.
+    const isWeekday = tab === "mapping";
     // Which recorded gaps are still open, and which the config now covers. The
     // CLOSING is decided here, from the data, rather than by whoever recorded
     // it — an alarm only its author can retract outlives its author.
@@ -425,7 +446,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     }
     await auditParsedConfig(SHEET_CONTRACT[tab].label, mappings, unresolved, pickupNames, nameByCustomer, today);
     const parsedAt = vnTimestamp();
-    cachedConfig = { mappings, unfinished, gaps, parsedAt };
+    cachedConfig = { mappings, unfinished: isWeekday ? stillNeeded : [], gaps: isWeekday ? gaps : [], parsedAt };
     cachedDay = today;
     cachedGen = gen;
 
@@ -436,7 +457,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
       const redis = getRedis();
       if (redis) {
         try {
-          await redis.set(l2Key(gen, today), { mappings, unfinished, gaps, parsedAt, unresolved, names: [...nameByCustomer] }, { ex: L2_TTL_S });
+          await redis.set(l2Key(gen, today), { mappings, unfinished: isWeekday ? stillNeeded : [], gaps: isWeekday ? gaps : [], parsedAt, unresolved, names: [...nameByCustomer] }, { ex: L2_TTL_S });
         } catch { /* best-effort; the sheet is always the fallback */ }
       }
     }

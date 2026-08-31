@@ -35,6 +35,9 @@ export interface UnfinishedConfigRow {
   /** 1-based row in the tab, so a save can go back to the same line. Treated as
    *  a hint and re-checked before writing, never trusted on its own. */
   row: number;
+  /** The branch this row is for — what decides whether some OTHER rule already
+   *  covers it, which is what makes this row redundant rather than outstanding. */
+  customer_id: string;
   pickup_name: string;
   /** The destination the row is scoped to, or "" for any. */
   dropoff_name: string;
