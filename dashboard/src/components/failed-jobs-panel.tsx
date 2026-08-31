@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { toast } from "sonner";
 import { CheckCircle2, Clock } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -77,6 +78,103 @@ export function gmapsRoute(routeGps: string | undefined): string | null {
 }
 
 const cartrackJob = (jobId: number) => `https://fleetweb-vn.cartrack.com/delivery/map?job=${jobId}`;
+
+
+/**
+ * One unfinished config line, and the one decision it is waiting for.
+ *
+ * The hours are editable because the engine only guessed them — it takes the
+ * hour block around the job that failed, which is a hint about when the branch
+ * needs collecting, not a shift anyone agreed to.
+ *
+ * Saving invalidates the config across every server, unlike the empty row the
+ * engine wrote: that one had no driver and nothing to act on, this one is a live
+ * rule the moment it lands, and making someone press Refresh afterwards would
+ * leave the branch failing for no reason.
+ */
+function UnfinishedRow({
+  u, drivers, onSaved,
+}: {
+  u: UnfinishedConfigRow;
+  drivers: ConfigDriver[];
+  onSaved: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [from, to] = (u.window ?? "–").split("–");
+  const [start, setStart] = useState(from ?? "");
+  const [end, setEnd] = useState(to ?? "");
+
+  async function save(driverId: string) {
+    const name = drivers.find((d) => d.driver_id === driverId)?.name;
+    if (!name) { setErr("Không tìm thấy tài xế"); return; }
+    setSaving(true); setErr(null);
+    try {
+      const res = await fetch("/api/config/complete-row", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ row: u.row, pickup_name: u.pickup_name, driver_name: name, shift_start: start, shift_end: end }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
+      toast.success(`Đã gán ${name} cho ${u.pickup_name} (dòng ${u.row})`);
+      setOpen(false);
+      onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const timeBox = "w-[68px] rounded border border-slate-300 px-1.5 py-0.5 text-[11px] font-mono";
+
+  return (
+    <div className="px-2 py-1.5 hover:bg-slate-50">
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="shrink-0 font-mono text-[11px] text-slate-500" title="Dòng trong Google Sheet">
+          #{u.row}
+        </span>
+        <span
+          className="min-w-0 flex-1 break-words md:truncate text-sm font-medium text-slate-800"
+          title={`${u.pickup_name}${u.dropoff_name ? ` → ${u.dropoff_name}` : ""}`}
+        >
+          {u.pickup_name}
+          {u.dropoff_name && <span className="text-slate-400"> → {u.dropoff_name}</span>}
+        </span>
+        {!open && u.window && (
+          <span className="shrink-0 text-[11px] text-slate-600 bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">
+            {u.window}
+          </span>
+        )}
+        {!open && (
+          <Button size="sm" className="h-6 shrink-0 text-[11px] px-2" onClick={() => setOpen(true)}>
+            Chọn tài xế
+          </Button>
+        )}
+      </div>
+
+      {open && (
+        <div className="mt-1.5 space-y-1.5">
+          <div className="flex items-center gap-1.5 text-[11px] text-slate-600">
+            <span>Ca</span>
+            <input className={timeBox} value={start} onChange={(e) => setStart(e.target.value)} placeholder="07:00" />
+            <span>–</span>
+            <input className={timeBox} value={end} onChange={(e) => setEnd(e.target.value)} placeholder="08:00" />
+            <span className="text-slate-400">giờ do hệ thống đoán, sửa nếu cần</span>
+          </div>
+          {saving ? (
+            <div className="text-[11px] text-slate-500">Đang lưu…</div>
+          ) : (
+            <DriverPicker drivers={drivers} onConfirm={save} onCancel={() => { setOpen(false); setErr(null); }} confirmLabel="Lưu" />
+          )}
+          {err && <div className="text-[11px] text-red-600">{err}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function metaFor(reason: FailedReason) {
   return REASON_META[reason] ?? { label: reason, tone: "red" as const, order: 99 };
@@ -305,6 +403,7 @@ export function FailedJobsPanel({
   onNoteManualAssign,
   failed,
   unfinished,
+  onUnfinishedSaved,
   warnings,
   scheduleErrors,
   drivers,
@@ -324,6 +423,8 @@ export function FailedJobsPanel({
   failed: FailedJob[];
   /** Config lines naming a branch but no driver — waiting on a person. */
   unfinished: UnfinishedConfigRow[];
+  /** Re-read after a row is completed, so it drops off the list. */
+  onUnfinishedSaved: () => void;
   warnings: PickupWarning[];
   scheduleErrors: ScheduleErrorRow[];
   drivers: ConfigDriver[];
@@ -441,25 +542,7 @@ export function FailedJobsPanel({
                 <SectionHeader label="Chưa chọn tài xế (dòng đã tạo sẵn)" count={unfinished.length} tone="amber" />
                 <div className={listBox}>
                   {unfinished.map((u) => (
-                    <div key={u.row} className="px-2 py-1.5 hover:bg-slate-50">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className="shrink-0 font-mono text-[11px] text-slate-500" title="Dòng trong Google Sheet">
-                          #{u.row}
-                        </span>
-                        <span
-                          className="min-w-0 flex-1 break-words md:truncate text-sm font-medium text-slate-800"
-                          title={`${u.pickup_name}${u.dropoff_name ? ` → ${u.dropoff_name}` : ""}`}
-                        >
-                          {u.pickup_name}
-                          {u.dropoff_name && <span className="text-slate-400"> → {u.dropoff_name}</span>}
-                        </span>
-                        {u.window && (
-                          <span className="shrink-0 text-[11px] text-slate-600 bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">
-                            {u.window}
-                          </span>
-                        )}
-                      </div>
-                    </div>
+                    <UnfinishedRow key={u.row} u={u} drivers={drivers} onSaved={onUnfinishedSaved} />
                   ))}
                 </div>
               </div>

@@ -560,3 +560,73 @@ export async function writeConfigRows(cells: ConfigCells[]): Promise<number[]> {
   // copyPaste refuses any range covering one.
   return cells.map((_, i) => firstFreeRow + i);
 }
+
+/**
+ * Fill in the driver (and optionally the hours) on a row this system created.
+ *
+ * WEEKDAY ONLY, and it refuses rather than assumes. On the Sunday tab the Driver
+ * column is a FORMULA deriving who covers each area from the public roster —
+ * writing a name over it destroys that derivation for the row, and there is no
+ * way to put it back from here.
+ *
+ * The row number is a HINT. It comes from the parsed index of a sheet read that
+ * may be minutes old, and rows shift when anyone inserts or deletes above them —
+ * observed moving by three in a single morning. So the branch is re-read and
+ * compared before anything is written; a mismatch throws rather than writing a
+ * driver onto whatever happens to live there now.
+ */
+export async function completeConfigRow(opts: {
+  row: number;
+  expectPickup: string;
+  driverName: string;
+  start?: string;
+  end?: string;
+}): Promise<void> {
+  const tab = currentConfigTab();
+  if (tab.gid !== CONFIG_TABS.weekday.gid) {
+    throw new Error(
+      "Chủ nhật: tài xế được suy ra từ lịch trực công khai, không chọn trong config — sửa trên tab lịch Chủ nhật",
+    );
+  }
+  const sheets = getSheetsClient();
+
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: `${a1(tab)}!1:1`,
+  });
+  const header = (res.data.values?.[0] ?? []).map((h) => String(h ?? "").trim());
+  const at = (name: string) => {
+    const i = header.indexOf(name);
+    if (i < 0) throw new Error(`"${tab.title}" không có cột ${name}`);
+    return colLetter(i);
+  };
+  const pickupCol = at(WRITE_COLS.pickup);
+  const driverCol = at("Driver");
+  const startCol = at(WRITE_COLS.start);
+  const endCol = at(WRITE_COLS.end);
+
+  // Confirm the row still holds the branch the dashboard was looking at.
+  const check = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: `${a1(tab)}!${pickupCol}${opts.row}`,
+  });
+  const found = String(check.data.values?.[0]?.[0] ?? "").trim();
+  if (found !== opts.expectPickup.trim()) {
+    throw new Error(
+      `Dòng ${opts.row} giờ là "${found || "(trống)"}", không phải "${opts.expectPickup}" — ` +
+      `sheet đã thay đổi, bấm Refresh rồi thử lại`,
+    );
+  }
+
+  const q = a1(tab);
+  const data: { range: string; values: string[][] }[] = [
+    { range: `${q}!${driverCol}${opts.row}`, values: [[opts.driverName]] },
+  ];
+  if (opts.start && opts.end) {
+    data.push({ range: `${q}!${startCol}${opts.row}:${endCol}${opts.row}`, values: [[opts.start, opts.end]] });
+  }
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: SHEET_ID,
+    requestBody: { valueInputOption: "USER_ENTERED", data },
+  });
+}

@@ -577,6 +577,7 @@ export function Dashboard() {
                     onNoteManualAssign={handleHeldManualAssign}
                     failed={failed}
                   unfinished={unfinished}
+                  onUnfinishedSaved={syncStatus}
                     warnings={warnings}
                     scheduleErrors={scheduleErrors}
                     drivers={drivers}

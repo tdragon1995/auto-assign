@@ -267,12 +267,27 @@ const sheetAlarms = new Map<string, SheetAlarm>();
 // Both still reach the dashboard together: one banner, two kinds of trouble.
 const sheetWarnings = new Map<string, SheetAlarm>();
 let sheetAlarmsChanged = false;
+// Whether this process has looked at the sheets at all, and whether it has said
+// so yet. Both are needed to close a hole that change-only publishing has on its
+// own: an instance can only CLEAR what it previously set, so once a condition
+// goes away while no live instance is holding it, the last published alarm can
+// never be retracted by anyone. On 2026-08-31 that left a warning from 10:51 —
+// wrong wording, wrong colour, and by then not even true — standing on the
+// dashboard across four deploys, because every fresh instance found nothing
+// wrong and therefore said nothing.
+//
+// So the first report from each process is unconditional: it states the truth
+// even when the truth is "nothing". After that, change-only resumes. One extra
+// write per instance lifetime, not per cycle.
+let sheetsChecked = false;
+let publishedOnce = false;
 
 /** Record the outcome of a load. Pass the error when a tab was refused, or null
  *  when it read cleanly, which clears any standing alarm for it. Callers that
  *  served a cached copy without re-reading must call NEITHER — nothing was
  *  checked, so nothing is known. */
 export function noteSheetLoad(label: string, err: SheetShapeError | null): void {
+  sheetsChecked = true;
   if (err) {
     sheetAlarms.set(label, { kind: "refused", label, reason: err.reason, ts: vnTimestamp() });
     sheetAlarmsChanged = true;
@@ -294,6 +309,7 @@ export function noteSheetLoad(label: string, err: SheetShapeError | null): void 
  * a healthy day still writes nothing.
  */
 export function noteSheetWarning(label: string, reason: string | null): void {
+  sheetsChecked = true;
   if (reason) {
     const prev = sheetWarnings.get(label);
     if (prev?.reason === reason) return;   // same complaint, already standing
@@ -307,8 +323,14 @@ export function noteSheetWarning(label: string, reason: string | null): void {
 /** The current set, or null when nothing has changed since the last drain — the
  *  cycle then leaves the published field untouched rather than rewriting it. */
 export function drainSheetAlarms(): SheetAlarm[] | null {
-  if (!sheetAlarmsChanged) return null;
+  // The first report from a process goes out even when nothing changed — that is
+  // what retracts an alarm nobody alive is holding any more. Gated on having
+  // actually looked, so an instance that has not read a sheet yet cannot publish
+  // an empty set over a real one.
+  const firstReport = sheetsChecked && !publishedOnce;
+  if (!sheetAlarmsChanged && !firstReport) return null;
   sheetAlarmsChanged = false;
+  publishedOnce = true;
   // Refused tabs first: a tab the engine cannot read at all outranks a tab it
   // can read but should not trust.
   return [...sheetAlarms.values(), ...sheetWarnings.values()];
