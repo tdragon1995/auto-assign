@@ -63,6 +63,31 @@ export function shiftWindowForJob(at: Date): { start: string; end: string } {
 }
 
 /**
+ * Whether a config line looks like one this module created.
+ *
+ * Defined by CONSTRUCTION, not by guessing at the data: `shiftWindowForJob` can
+ * only ever produce a window of exactly one hour aligned to the hour, so every
+ * row written here carries that shape and a hand-typed shift essentially never
+ * does. Living beside the writer is the point — the two cannot drift apart.
+ *
+ * It matters because the to-do list is read back out of the sheet, and the sheet
+ * also holds long-standing rows that happen to have no driver — a test row from
+ * years ago, a line someone abandoned half-finished. Those are not work waiting
+ * on anyone and listing them buries the ones that are.
+ *
+ * A false positive is harmless: a hand-typed 07:00–08:00 row with no driver is
+ * genuinely waiting for one, so showing it is right. The cost is the other way —
+ * edit one of these windows to a real shift before choosing a driver and the row
+ * drops off the list, though it is still sitting in the sheet to be finished.
+ */
+export function looksAutoCreated(window: string | null): boolean {
+  const m = /^(\d{2}):00–(\d{2}):00$/.exec(window ?? "");
+  if (!m) return false;
+  const from = Number(m[1]), to = Number(m[2]);
+  return from < 24 && to < 24 && (to - from + 24) % 24 === 1;
+}
+
+/**
  * A leading `=`, `+` or `@` would be read as a formula rather than a name once
  * the cell is entered the way a person would type it. No Cartrack customer is
  * spelled that way, but the cost of being wrong is a broken cell in the table

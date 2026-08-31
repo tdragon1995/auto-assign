@@ -7,6 +7,7 @@ import {
   type LocationRow, type UnresolvedRows,
 } from "./config-audit";
 import { vnDate, vnIsSunday } from "./time";
+import { looksAutoCreated } from "./unmapped-row";
 
 function getRedis(): Redis | null {
   const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
@@ -353,12 +354,14 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
           // for 1-based counting. Only a HINT — a save re-reads the row and
           // checks it still holds this branch before writing anything.
           const ws = (row["shift_start"] ?? "").trim(), we = (row["shift_end"] ?? "").trim();
-          unfinished.push({
-            row: idx + 2,
-            pickup_name: pickupName,
-            dropoff_name: dropoffName,
-            window: ws && we ? `${ws}–${we}` : null,
-          });
+          const window = ws && we ? `${ws}–${we}` : null;
+          // Only lines this system created. The sheet also carries rows that have
+          // simply never had a driver — a years-old test row, something abandoned
+          // half-finished — and those are not work waiting on anyone. Listing
+          // them buries the ones that are.
+          if (looksAutoCreated(window)) {
+            unfinished.push({ row: idx + 2, pickup_name: pickupName, dropoff_name: dropoffName, window });
+          }
         }
         continue;
       }

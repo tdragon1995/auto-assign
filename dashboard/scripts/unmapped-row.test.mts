@@ -11,7 +11,7 @@
  */
 
 import type { UnmappedBranch } from "../src/lib/unmapped-row";
-const { shiftWindowForJob, configCellsFor, dedupeBranches } = await import("../src/lib/unmapped-row");
+const { shiftWindowForJob, configCellsFor, dedupeBranches, looksAutoCreated } = await import("../src/lib/unmapped-row");
 const { isDriverOnShift } = await import("../src/lib/fixed-driver");
 
 let failed = 0;
@@ -118,6 +118,28 @@ section("internal legs between our own locations are not to-dos");
   // otherwise, so this pins the decision rather than the omission.
   const tpl = dedupeBranches([branch("c-3pl", "3PL - TLT", "BRA - D001", "14:00")]);
   eq("a 3PL pickup is still listed", tpl.map((r) => r.pickup_name), ["3PL - TLT"]);
+}
+
+section("telling our own rows from ones that were always driverless");
+{
+  // By construction: every window this module writes comes from shiftWindowForJob,
+  // so the check must accept everything it can produce, at every hour of the day.
+  for (const t of ["00:00", "00:30", "06:59", "09:15", "10:00", "12:00", "23:00", "23:59"]) {
+    const { start, end } = shiftWindowForJob(at(t));
+    ok(`a window written for a ${t} job is recognised (${start}–${end})`,
+       looksAutoCreated(`${start}–${end}`));
+  }
+
+  // The row that prompted this: a years-old test line, driverless forever.
+  ok("a real working day is not one of ours", !looksAutoCreated("07:00–16:00"));
+  ok("nor an afternoon shift", !looksAutoCreated("16:30–19:00"));
+  ok("nor a half-hour", !looksAutoCreated("07:00–07:30"));
+  ok("nor an off-the-hour hour", !looksAutoCreated("07:15–08:15"));
+  ok("a row with no window at all is not ours", !looksAutoCreated(null));
+  ok("...nor is an empty one", !looksAutoCreated(""));
+  ok("...nor junk", !looksAutoCreated("sáng"));
+  ok("the midnight wrap is still exactly one hour", looksAutoCreated("23:00–00:00"));
+  ok("but a whole day is not", !looksAutoCreated("00:00–00:00"));
 }
 
 section("what the writer is allowed to touch");
