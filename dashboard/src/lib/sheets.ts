@@ -274,7 +274,7 @@ let sheetAlarmsChanged = false;
  *  checked, so nothing is known. */
 export function noteSheetLoad(label: string, err: SheetShapeError | null): void {
   if (err) {
-    sheetAlarms.set(label, { label, reason: err.reason, ts: vnTimestamp() });
+    sheetAlarms.set(label, { kind: "refused", label, reason: err.reason, ts: vnTimestamp() });
     sheetAlarmsChanged = true;
   } else if (sheetAlarms.delete(label)) {
     sheetAlarmsChanged = true;
@@ -297,7 +297,7 @@ export function noteSheetWarning(label: string, reason: string | null): void {
   if (reason) {
     const prev = sheetWarnings.get(label);
     if (prev?.reason === reason) return;   // same complaint, already standing
-    sheetWarnings.set(label, { label, reason, ts: vnTimestamp() });
+    sheetWarnings.set(label, { kind: "data", label, reason, ts: vnTimestamp() });
     sheetAlarmsChanged = true;
   } else if (sheetWarnings.delete(label)) {
     sheetAlarmsChanged = true;

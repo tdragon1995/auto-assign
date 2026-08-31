@@ -308,6 +308,18 @@ export interface FailedJob {
 // Not a FailedJob: no job has failed, and by design none will. This is the tab
 // itself reporting that it has been edited into a state the engine cannot read.
 export interface SheetAlarm {
+  /**
+   * What KIND of trouble, because the two need opposite words.
+   *
+   * "refused" — the tab could not be read. The engine is serving its last good
+   *   copy, so every edit since is being ignored and the fix is urgent.
+   * "data"    — the tab read perfectly; some of its ROWS are wrong. Nothing is
+   *   stale, edits take effect normally, and the fix is to the rows.
+   *
+   * Optional for old snapshots, which only ever carried refusals; absent is
+   * read as "refused".
+   */
+  kind?: "refused" | "data";
   /** Human name of the tab, e.g. "config (mapping)". */
   label: string;
   /** Why it was refused, in Vietnamese, e.g. "thiếu cột driver_id". */
