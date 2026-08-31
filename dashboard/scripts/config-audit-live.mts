@@ -106,6 +106,27 @@ console.log(`  usable rules          ${mappings.length}`);
 console.log(`  locations read        ${locations.length}`);
 console.log(`  distinct pickups      ${pickupNames.size}\n`);
 
+// Which columns the auto-written config row can fill, on BOTH tabs. The Sunday
+// tab has no destination column yet, so a row written there covers every
+// destination — correct and safe, but worth being able to see rather than
+// remember. The writer looks these up by name, so a column appearing or moving
+// is picked up with no code change.
+{
+  const { CONFIG_TABS, WRITE_COLS } = await import("../src/lib/sheets-writer");
+  const letter = (i: number) => { let s = "", n = i; do { s = String.fromCharCode(65 + (n % 26)) + s; n = Math.floor(n / 26) - 1; } while (n >= 0); return s; };
+  console.log("Columns the auto-written row fills:");
+  for (const t of [CONFIG_TABS.weekday, CONFIG_TABS.sunday]) {
+    const hdr = await fetchSheetRows(t.gid);
+    const names = hdr.length ? Object.keys(hdr[0]) : [];
+    const shown = Object.values(WRITE_COLS).map((c) => {
+      const i = names.indexOf(c as string);
+      return `${c}=${i < 0 ? "—" : letter(i)}`;
+    });
+    console.log(`  ${t.title.padEnd(26)} ${shown.join("  ")}`);
+  }
+  console.log();
+}
+
 const banners = [
   ["tên không ra mã", unresolvedWarning(unresolved)],
   ["trùng giờ", shiftOverlapWarning(overlaps)],

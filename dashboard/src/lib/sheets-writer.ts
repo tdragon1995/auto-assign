@@ -408,26 +408,12 @@ export interface ConfigTabSpec {
   /** Tab name as it appears in the workbook. */
   title: string;
   gid: string;
-  /** Column holding "Điểm Pick-up" — also the column that decides which rows are free. */
-  pickupCol: string;
-  /** Column that MATCHES a destination, when the tab has one. Sunday does not:
-   *  its only destination column is an override, and must stay blank. */
-  dropoffCol: string | null;
-  shiftStartCol: string;
-  shiftEndCol: string;
 }
 
-/** Exported so BOTH layouts stay pinned by a test. Otherwise the Sunday one —
- *  the riskier of the two, with a formula where the weekday tab has a value — is
- *  only exercised one day in seven. */
+/** Exported so both tabs stay pinned by a test. */
 export const CONFIG_TABS: Record<"weekday" | "sunday", ConfigTabSpec> = {
-  weekday: { title: "config", gid: SHEET_GID.mapping,
-             pickupCol: "E", dropoffCol: "F", shiftStartCol: "I", shiftEndCol: "J" },
-  sunday:  { title: "(NO edit) CONFIG SUNDAY", gid: SHEET_GID.sunday,
-             // No dropoff column: E here is "Điểm Drop-off thay thế", an override.
-             // Note the gap at F — the Driver formula — which is why the shift
-             // cells are written as their own range rather than one span.
-             pickupCol: "D", dropoffCol: null, shiftStartCol: "G", shiftEndCol: "H" },
+  weekday: { title: "config", gid: SHEET_GID.mapping },
+  sunday:  { title: "(NO edit) CONFIG SUNDAY", gid: SHEET_GID.sunday },
 };
 
 /** Which tab the engine is reading right now. Matched to `loadConfigFromSheets`
@@ -439,11 +425,69 @@ export function currentConfigTab(): ConfigTabSpec {
 
 const a1 = (t: ConfigTabSpec) => `'${t.title.replace(/'/g, "''")}'`;
 
+/** 0-based column index → A1 letter. */
+function colLetter(i: number): string {
+  let s = "", n = i;
+  do { s = String.fromCharCode(65 + (n % 26)) + s; n = Math.floor(n / 26) - 1; } while (n >= 0);
+  return s;
+}
+
+/**
+ * The columns this may write, BY NAME.
+ *
+ * Named rather than lettered because the letters differ per tab and move when
+ * anyone reorganises the sheet — the assumption that has already cost this
+ * project two incidents. Looking them up means a column that moves is followed,
+ * and a column that is renamed makes the write REFUSE rather than land somewhere
+ * arbitrary.
+ *
+ * The safety property is what is ABSENT. Every id column, every formula column
+ * and — importantly — "Điểm Drop-off thay thế" are simply never named here, so
+ * no code path can reach them. That last one is a value column and would look
+ * writable, but it is an OVERRIDE that rewrites where a job goes; putting an
+ * observed destination in it would redirect real trips.
+ */
+export const WRITE_COLS = {
+  pickup: "Điểm Pick-up",
+  /** Matches a destination. Present on the weekday tab; not yet on Sunday, where
+   *  a row simply covers every destination until the column is added. Looked up
+   *  rather than assumed, so it starts being written the day it appears. */
+  dropoff: "Điểm Drop-off",
+  start: "shift_start",
+  end: "shift_end",
+} as const;
+
+/** Header name → A1 letter, for the columns this writes. Missing optional ones
+ *  are simply absent; a missing required one throws. */
+async function writableColumns(
+  sheets: ReturnType<typeof google.sheets>,
+  tab: ConfigTabSpec,
+): Promise<{ pickup: string; dropoff: string | null; start: string; end: string }> {
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: `${a1(tab)}!1:1`,
+  });
+  const header = (res.data.values?.[0] ?? []).map((h) => String(h ?? "").trim());
+  const at = (name: string) => {
+    const i = header.indexOf(name);
+    return i < 0 ? null : colLetter(i);
+  };
+  const pickup = at(WRITE_COLS.pickup), start = at(WRITE_COLS.start), end = at(WRITE_COLS.end);
+  const missing = [
+    !pickup && WRITE_COLS.pickup, !start && WRITE_COLS.start, !end && WRITE_COLS.end,
+  ].filter(Boolean);
+  if (missing.length) {
+    throw new Error(`"${tab.title}" has no ${missing.join(", ")} column — refusing to guess where to write`);
+  }
+  return { pickup: pickup!, dropoff: at(WRITE_COLS.dropoff), start: start!, end: end! };
+}
+
 /** Where the table ends and where its first free row is. Read live rather than
  *  hardcoded, so extending the table by hand is all it takes to make room. */
 async function configTableBounds(
   sheets: ReturnType<typeof google.sheets>,
   tab: ConfigTabSpec,
+  pickupCol: string,
 ): Promise<{ firstFreeRow: number; lastTableRow: number }> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const meta: any = await sheets.spreadsheets.get({
@@ -459,7 +503,7 @@ async function configTableBounds(
 
   const col = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
-    range: `${a1(tab)}!${tab.pickupCol}1:${tab.pickupCol}${lastTableRow}`,
+    range: `${a1(tab)}!${pickupCol}1:${pickupCol}${lastTableRow}`,
   });
   // The pickup column is the entry key every id formula reads, so a row blank
   // THERE is a row nothing depends on — the right definition of "free".
@@ -477,7 +521,8 @@ export async function writeConfigRows(cells: ConfigCells[]): Promise<number[]> {
   if (cells.length === 0) return [];
   const tab = currentConfigTab();
   const sheets = getSheetsClient();
-  const { firstFreeRow, lastTableRow } = await configTableBounds(sheets, tab);
+  const cols = await writableColumns(sheets, tab);
+  const { firstFreeRow, lastTableRow } = await configTableBounds(sheets, tab, cols.pickup);
 
   const lastNeeded = firstFreeRow + cells.length - 1;
   if (lastNeeded > lastTableRow) {
@@ -487,21 +532,23 @@ export async function writeConfigRows(cells: ConfigCells[]): Promise<number[]> {
     );
   }
 
-  // One range per contiguous run of writable columns, so a formula column sitting
-  // between them (Sunday's Driver) is stepped over rather than overwritten.
-  const data: { range: string; values: string[][] }[] = [];
+  // ONE RANGE PER COLUMN, never a span. A span would silently include whatever
+  // sits between two columns, and what sits between them differs per tab and
+  // moves when the sheet is reorganised — on Sunday it is the Driver formula,
+  // which a blank would destroy. Addressing each column on its own makes it
+  // impossible to touch a column this did not name.
   const q = a1(tab);
-  if (tab.dropoffCol) {
-    // Weekday: pickup, destination, then two cells this must leave blank — the
-    // alternate-destination override and the driver being asked for.
-    data.push({ range: `${q}!${tab.pickupCol}${firstFreeRow}:${tab.dropoffCol}${lastNeeded}`,
-                values: cells.map((c) => [c.pickup, c.dropoff]) });
-  } else {
-    data.push({ range: `${q}!${tab.pickupCol}${firstFreeRow}:${tab.pickupCol}${lastNeeded}`,
-                values: cells.map((c) => [c.pickup]) });
+  const range = (c: string) => `${q}!${c}${firstFreeRow}:${c}${lastNeeded}`;
+  const data: { range: string; values: string[][] }[] = [
+    { range: range(cols.pickup), values: cells.map((c) => [c.pickup]) },
+    { range: range(cols.start),  values: cells.map((c) => [c.start]) },
+    { range: range(cols.end),    values: cells.map((c) => [c.end]) },
+  ];
+  // Only when the tab actually has a destination column to match on. Without one
+  // the row covers every destination, which is the correct and safe default.
+  if (cols.dropoff) {
+    data.push({ range: range(cols.dropoff), values: cells.map((c) => [c.dropoff]) });
   }
-  data.push({ range: `${q}!${tab.shiftStartCol}${firstFreeRow}:${tab.shiftEndCol}${lastNeeded}`,
-              values: cells.map((c) => [c.start, c.end]) });
 
   await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: SHEET_ID,

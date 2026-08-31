@@ -86,29 +86,30 @@ section("one row per branch, not per job");
   eq("nothing found, nothing written", dedupeBranches([]), []);
 }
 
-section("the two tabs have different geometry");
+section("what the writer is allowed to touch");
 {
-  const { CONFIG_TABS, currentConfigTab } = await import("../src/lib/sheets-writer");
-  const w = CONFIG_TABS.weekday, s = CONFIG_TABS.sunday;
+  const { CONFIG_TABS, WRITE_COLS, currentConfigTab } = await import("../src/lib/sheets-writer");
+  const names: string[] = Object.values(WRITE_COLS);
 
-  eq("weekday: pickup is column E", w.pickupCol, "E");
-  eq("weekday: destination is column F", w.dropoffCol, "F");
-  eq("weekday: shifts at I/J", [w.shiftStartCol, w.shiftEndCol], ["I", "J"]);
+  eq("four columns, by NAME — letters differ per tab and move when the sheet is reorganised",
+     names.sort(), ["shift_end", "shift_start", "Điểm Drop-off", "Điểm Pick-up"].sort());
 
-  eq("Sunday: pickup is column D", s.pickupCol, "D");
-  // Its only destination column is "Điểm Drop-off thay thế", an OVERRIDE that
-  // rewrites where a job goes. Writing the observed destination there would
-  // redirect real trips, so the tab carries none.
-  eq("Sunday: no destination column at all", s.dropoffCol, null);
-  eq("Sunday: shifts at G/H, past the Driver formula", [s.shiftStartCol, s.shiftEndCol], ["G", "H"]);
-  ok("Sunday: shift block does not touch F, which is the Driver FORMULA",
-     s.shiftStartCol !== "F" && s.shiftEndCol !== "F" && s.pickupCol !== "F");
-
-  for (const [name, t] of [["weekday", w], ["Sunday", s]] as const) {
-    ok(`${name}: nothing is written from column A, where the id formulas live`,
-       t.pickupCol !== "A" && t.shiftStartCol !== "A" && t.dropoffCol !== "A");
+  // The safety property is what is ABSENT. None of these can be reached, because
+  // no code path names them.
+  for (const forbidden of [
+    "customer_id", "dropoff_id", "alt_drop_off_id", "driver_id",  // spilling / per-row id formulas
+    "Driver",                                                     // a FORMULA on the Sunday tab
+    "Điểm Drop-off thay thế",                                     // an OVERRIDE — rewrites a destination
+    "smart_driver_id", "bot_token", "chat_id",                    // derived
+    "area_public_on_schedule", "f=fx", "drop_off_name",           // Sunday derivations
+  ]) {
+    ok(`never writes "${forbidden}"`, !names.includes(forbidden));
   }
-  ok("the tab chosen today is one of the two", [w.title, s.title].includes(currentConfigTab().title));
+
+  eq("two tabs, named as the workbook names them",
+     [CONFIG_TABS.weekday.title, CONFIG_TABS.sunday.title], ["config", "(NO edit) CONFIG SUNDAY"]);
+  ok("the tab chosen today is one of the two",
+     [CONFIG_TABS.weekday.title, CONFIG_TABS.sunday.title].includes(currentConfigTab().title));
 }
 
 console.log(failed === 0 ? "\nAll checks passed." : `\n${failed} check(s) FAILED.`);
