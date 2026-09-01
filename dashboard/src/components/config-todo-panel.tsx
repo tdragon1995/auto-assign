@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { ClipboardList } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import type { CoverageGap, UnfinishedConfigRow, ConfigDriver, BranchRule } from "@/lib/types";
+import { resolveDriverCell, splitDriverNames } from "@/lib/driver-cell";
 
 /**
  * What the CONFIG is waiting on a person for — its own card, beside the leave
@@ -23,32 +24,6 @@ import type { CoverageGap, UnfinishedConfigRow, ConfigDriver, BranchRule } from 
  *     or splitting a rule out;
  *   * a branch with a line but no driver — fixed by naming one.
  */
-
-/**
- * Fold accents so a name typed quickly still matches: "quynh" has to find
- * "Nguyễn Hữu Quỳnh". đ is handled separately — it is a distinct Vietnamese
- * letter, not a d with a mark, so decomposition leaves it untouched.
- */
-const foldName = (v: string) =>
-  v.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase();
-
-/**
- * Resolve a typed name against the roster, refusing anything ambiguous.
- *
- * The roster is what the sheet's own lookup resolves against, so a name that is
- * not on it writes perfectly well and then resolves to nothing — a row that
- * looks finished and assigns nobody.
- */
-function resolveDriver(typed: string, drivers: ConfigDriver[]): { name: string } | { error: string } {
-  const q = foldName(typed.trim());
-  if (!q) return { error: "Chưa chọn tài xế" };
-  const exact = drivers.filter((d) => foldName(d.name) === q);
-  const hits = exact.length ? exact : drivers.filter((d) => foldName(d.name).includes(q));
-  if (hits.length === 0) return { error: `"${typed}" không có trong tab Driver — chọn từ danh sách` };
-  if (hits.length > 1) return { error: `"${typed}" khớp ${hits.length} tài xế — gõ rõ hơn` };
-  return { name: hits[0].name };
-}
-
 
 /**
  * Five-minute grid, the whole day.
@@ -140,6 +115,51 @@ interface Line {
 
 const asLine = (r: BranchRule): Line => ({ row: r.row, driver: r.driver, start: r.start, end: r.end });
 
+/**
+ * The driver cell: one name, or several for a smart row.
+ *
+ * A datalist matches against the WHOLE field, so the shared list of bare names
+ * goes dead the moment a comma is typed and the picker stops helping for exactly
+ * the case that needs it most — the second and third driver, whose long
+ * code-prefixed names are the ones nobody wants to type by hand. So once the
+ * cell holds a comma it gets its own list of "everything typed so far + each
+ * roster name", and picking one appends rather than replaces.
+ */
+function DriverInput({
+  value, onChange, drivers,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  drivers: ConfigDriver[];
+}) {
+  const ownList = useId();
+  const cut = value.lastIndexOf(",");
+  const multi = cut >= 0;
+  const prefix = multi ? `${value.slice(0, cut + 1)} ` : "";
+  // Whoever is already named earlier in the cell is not offered again — picking
+  // them would build a cell the save then refuses for being a duplicate, and a
+  // picker that offers an invalid choice is worse than one that offers fewer.
+  const taken = new Set(splitDriverNames(prefix));
+  return (
+    <>
+      <input
+        type="text"
+        list={multi ? ownList : CONFIG_NAMES_LIST_ID}
+        placeholder="Tên tài xế…"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="min-w-[140px] flex-1 rounded border border-slate-300 px-1.5 py-1 text-xs"
+      />
+      {multi && (
+        <datalist id={ownList}>
+          {drivers.filter((d) => !taken.has(d.name))
+                   .map((d) => <option key={d.driver_id} value={prefix + d.name} />)}
+        </datalist>
+      )}
+    </>
+  );
+}
+
 /** Minutes a line is on duty, as inclusive blocks. Mirrors the engine: a blank
  *  window is all day, the window is half-open so the start minute belongs to the
  *  OUTGOING rule, and a start after the end wraps past midnight. */
@@ -223,7 +243,7 @@ function BranchEditor({
     // Resolve every driver first, so nothing is written if one name is wrong.
     const resolved: Line[] = [];
     for (const l of lines) {
-      const r = resolveDriver(l.driver, drivers);
+      const r = resolveDriverCell(l.driver, drivers);
       if ("error" in r) { setErr(r.error); return; }
       if (lines.length > 1 && (!l.start || !l.end)) {
         setErr("Nhiều ca thì mỗi ca cần khung giờ riêng");
@@ -284,11 +304,7 @@ function BranchEditor({
     <div className="mt-1 space-y-1 rounded border border-slate-300 bg-white p-1.5">
       {lines.map((l, i) => (
         <div key={i} className="flex flex-wrap items-center gap-1">
-          <input
-            type="text" list={CONFIG_NAMES_LIST_ID} placeholder="Tên tài xế…"
-            value={l.driver} onChange={(e) => patch(i, { driver: e.target.value })}
-            className="min-w-[140px] flex-1 rounded border border-slate-300 px-1.5 py-1 text-xs"
-          />
+          <DriverInput value={l.driver} onChange={(v) => patch(i, { driver: v })} drivers={drivers} />
           <TimeSelect label="Từ giờ" value={l.start} onChange={(v) => patch(i, { start: v })} />
           <span className="text-slate-400 text-[11px]">→</span>
           <TimeSelect label="Đến giờ" value={l.end} onChange={(v) => patch(i, { end: v })} />
@@ -306,6 +322,12 @@ function BranchEditor({
           )}
         </div>
       ))}
+      {/* Says what the comma DOES, not just that it is allowed — the difference
+          between one driver and several is the difference between a fixed rule
+          and a smart one, and nothing else on this screen would tell you. */}
+      <div className="text-[10px] text-slate-400">
+        Nhiều tài xế trên một dòng, cách nhau bằng dấu phẩy → smart-assign: hệ thống chọn người gần điểm lấy mẫu nhất
+      </div>
       <div className="flex items-center gap-1">
         <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={addLine} disabled={busy}>
           + Thêm ca

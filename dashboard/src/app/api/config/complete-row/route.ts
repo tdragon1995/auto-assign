@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { completeConfigRow } from "@/lib/sheets-writer";
+import { splitDriverNames, DRIVER_SEP } from "@/lib/driver-cell";
 import { loadDriversFromSheet, invalidateConfigCache } from "@/lib/config";
 import { timeToMins } from "@/lib/time";
 
@@ -45,16 +46,22 @@ export async function POST(req: NextRequest) {
 
     // The roster is the sheet's own lookup source. A name that is not on it
     // resolves to a blank id, and the row would assign nobody while looking done.
+    //
+    // Checked name by name: the cell may hold SEVERAL, comma-separated, which is
+    // how a smart row is written — the engine then ranks them by distance rather
+    // than always using one person. Validating the cell as a single name refused
+    // every such row, so their hours could not be edited either.
     const drivers = await loadDriversFromSheet();
     if (drivers.length === 0) return bad("Chưa đọc được danh sách tài xế — thử lại sau", 503);
-    if (!drivers.some((d) => d.name === name)) {
-      return bad(`"${name}" không có trong tab Driver — chọn từ danh sách`);
-    }
+    const names = splitDriverNames(name);
+    const unknown = names.find((n) => !drivers.some((d) => d.name === n));
+    if (unknown) return bad(`"${unknown}" không có trong tab Driver — chọn từ danh sách`);
 
     await completeConfigRow({
       row: row as number,
       expectPickup: pickup_name,
-      driverName: name,
+      // Rejoined on the one separator the id formula beside it splits on.
+      driverName: names.join(DRIVER_SEP),
       start: start || undefined,
       end: end || undefined,
     });

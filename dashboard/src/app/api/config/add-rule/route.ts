@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { writeConfigRows, completeConfigRow } from "@/lib/sheets-writer";
+import { splitDriverNames, DRIVER_SEP } from "@/lib/driver-cell";
 import { loadDriversFromSheet, invalidateConfigCache } from "@/lib/config";
 import { timeToMins } from "@/lib/time";
 
@@ -40,16 +41,18 @@ export async function POST(req: NextRequest) {
     if (!(a >= 0 && b >= 0)) return bad(`Khung giờ không hợp lệ: ${start}–${end}`);
     if (a === b) return bad("Giờ bắt đầu và kết thúc trùng nhau — dòng sẽ không bao giờ trực");
 
+    // Name by name: several, comma-separated, is a smart row — the engine ranks
+    // them by distance instead of always using one person. See splitDriverNames.
     const drivers = await loadDriversFromSheet();
     if (drivers.length === 0) return bad("Chưa đọc được danh sách tài xế — thử lại sau", 503);
-    if (!drivers.some((d) => d.name === name)) {
-      return bad(`"${name}" không có trong tab Driver — chọn từ danh sách`);
-    }
+    const names = splitDriverNames(name);
+    const unknown = names.find((n) => !drivers.some((d) => d.name === n));
+    if (unknown) return bad(`"${unknown}" không có trong tab Driver — chọn từ danh sách`);
 
     const [row] = await writeConfigRows([
       { pickup, dropoff: (dropoff_name ?? "").trim(), start, end },
     ]);
-    await completeConfigRow({ row, expectPickup: pickup, driverName: name });
+    await completeConfigRow({ row, expectPickup: pickup, driverName: names.join(DRIVER_SEP) });
     await invalidateConfigCache();
 
     return NextResponse.json({ ok: true, row });
