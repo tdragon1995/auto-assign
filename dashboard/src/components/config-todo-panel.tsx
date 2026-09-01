@@ -411,6 +411,15 @@ function GapRow({
         {g.before ? `Ca trước ${g.before.window}` : "Không có ca trước"}
         {" · "}
         {g.after ? `ca sau ${g.after.window}` : "không có ca sau"}
+        {/* One hole, several minutes: the same gap swallows a job at a slightly
+            different time each day. Shown as a tally so it reads as one thing to
+            fix, with the times themselves on hover. */}
+        {(g.also?.length ?? 0) > 0 && (
+          <>
+            {" · "}
+            <span title={g.also!.join(", ")}>còn {g.also!.length} giờ khác</span>
+          </>
+        )}
       </div>
       {open && (
         <BranchEditor

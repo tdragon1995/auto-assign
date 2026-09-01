@@ -74,6 +74,37 @@ ok("a minute in the hole is not covered", !isCovered(day, 15 * 60 + 10));
   const { closed } = resolveGaps([gap("nonsense")], new Map([["C1", day]]));
   eq("an unparseable time is dropped rather than kept for ever", closed.length, 1);
 }
+{
+  // A gap is recorded at the MINUTE the job wanted — all a failing job knows — so
+  // a branch with a standing early booking records a fresh minute every day. They
+  // are one hole and one fix, so they must read as one to-do.
+  const rules = new Map([["C1", day]]);
+  const { open } = resolveGaps([gap("15:10"), gap("15:40"), gap("14:55")], rules);
+  eq("minutes in the same hole collapse to one row", open.length, 1);
+  eq("...headlined by the earliest", open[0].at, "14:55");
+  eq("...with the rest kept as evidence it recurs", open[0].also, ["15:10", "15:40"]);
+}
+{
+  // Two holes in one day are two different fixes: the boundaries either side are
+  // different rows, so they must NOT be merged.
+  const threeShifts = [
+    rule(10, "An", "07:00", "11:00"),
+    rule(11, "Bình", "12:00", "16:00"),
+    rule(12, "Cường", "17:00", "21:00"),
+  ];
+  const { open } = resolveGaps([gap("11:30"), gap("16:30")], new Map([["C1", threeShifts]]));
+  eq("separate holes stay separate", open.length, 2);
+  eq("...each naming its own pair of rows",
+     open.map((o) => [o.before?.row, o.after?.row]), [[10, 11], [11, 12]]);
+}
+{
+  // Same minute, different branches. Grouping is per branch or one busy morning
+  // would swallow every other clinic's hole.
+  const rules = new Map([["C1", day], ["C2", day]]);
+  const { open } = resolveGaps(
+    [gap("15:10"), { customer_id: "C2", pickup_name: "PK Hai", at: "15:10" }], rules);
+  eq("two branches with the same hole stay two rows", open.length, 2);
+}
 
 console.log(failed === 0 ? "\nAll checks passed." : `\n${failed} check(s) FAILED.`);
 process.exit(failed === 0 ? 0 : 1);

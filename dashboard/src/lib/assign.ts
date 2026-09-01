@@ -8,7 +8,7 @@ import { detectAndCreateReturnTrips, PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
 import { cleanupStaleTrips } from "./cleanup-trips";
 import { setCycleSnapshot, recordCoverageGap, claimMorningPass, deferMorningPass, confirmMorningPass, pushRunLog, runDailyMaintenance, claimLateAlert, getAcceptedNotes, type HeldJob } from "./smart-log-kv";
-import { isValidDriverId } from "./config";
+import { isValidDriverId, invalidateConfigCache, loadConfigFromSheets } from "./config";
 import { drainSheetAlarms } from "./sheets";
 import { writeUnmappedConfigRows, type UnmappedBranch } from "./unmapped-row";
 import {
@@ -1586,6 +1586,9 @@ export async function autoAssignCycle(
   // Branches that turned out to have no config line at all. Gathered through the
   // loop, written to the sheet once at the end — see writeUnmappedConfigRows.
   const unmappedFound: UnmappedBranch[] = [];
+  // Hours nobody was rostered for, one promise per job that fell into one. Each
+  // answers whether it was a hole NOBODY had recorded yet; settled after the loop.
+  const gapWrites: Promise<boolean>[] = [];
   // `fail` is defined inside the per-job worker below so it closes over that job's
   // `route` — no shared mutable state, safe when jobs run concurrently.
 
@@ -2370,9 +2373,11 @@ export async function autoAssignCycle(
       fail("NO_DRIVER", jobId, who, `Chưa có dòng nào phủ ${hhmm} · Ca hiện có: ${shiftInfo || "—"}`);
       // Unlike an unconfigured branch there is no ROW to write — the fix is
       // stretching a rule that already exists — so the hour is recorded, and the
-      // config parse decides when it is covered again.
+      // config parse decides when it is covered again. Not awaited here: the
+      // promise is settled after the loop, where a NEW hole triggers the re-parse
+      // that puts it on the dashboard.
       if (customerId) {
-        void recordCoverageGap(customerId, jobCustomerName ?? customerId, hhmm).catch(() => {});
+        gapWrites.push(recordCoverageGap(customerId, jobCustomerName ?? customerId, hhmm).catch(() => false));
       }
       continue;
     }
@@ -2583,6 +2588,25 @@ export async function autoAssignCycle(
       today,
       env,
     );
+
+    // The gap list published below is built during the SHEET PARSE, and the parse
+    // runs about once a day — so a hole found at 07:03 sat in Redis unseen until
+    // the next morning, and "Thiếu ca cho giờ này" showed jobs that had no matching
+    // entry in "Cần tạo config". Whenever this cycle recorded a hole nobody had
+    // recorded before, drop the cached parse and read the sheet again, which is the
+    // one path that resolves those records against the rules and closes the covered
+    // ones. Gated on NEW so it cannot repeat: the same branch-and-minute answers
+    // "already there" from every instance, on every later cycle.
+    let published = config;
+    if ((await Promise.all(gapWrites)).some(Boolean)) {
+      try {
+        await invalidateConfigCache();
+        published = (await loadConfigFromSheets()) ?? config;
+      } catch (e) {
+        log(`Config refresh after new coverage gap failed: ${e}`, "WARN");
+      }
+    }
+
     await Promise.all([
       setCycleSnapshot({
         held: heldJobs,
@@ -2591,10 +2615,10 @@ export async function autoAssignCycle(
         // null when nothing changed, which leaves the published field alone —
         // the point being that a healthy fleet never rewrites it.
         sheetAlarms: drainSheetAlarms() ?? undefined,
-        unfinished: config?.unfinished ?? [],
-        gaps: config?.gaps ?? [],
-        parsedAt: config?.parsedAt ?? undefined,
-        branchRules: config?.branchRules ?? undefined,
+        unfinished: published?.unfinished ?? [],
+        gaps: published?.gaps ?? [],
+        parsedAt: published?.parsedAt ?? undefined,
+        branchRules: published?.branchRules ?? undefined,
       }),
       // Piggyback a one-time supervisor Zalo alert on the same overdue set for the
       // worst cases (2h+ unstarted pickups). Never throws the cycle: fire-and-log.

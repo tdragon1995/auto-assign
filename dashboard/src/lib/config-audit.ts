@@ -356,6 +356,13 @@ export function resolveGaps(
 ): { open: CoverageGapOut[]; closed: { customer_id: string; at: string }[] } {
   const open: CoverageGapOut[] = [];
   const closed: { customer_id: string; at: string }[] = [];
+  // Same branch, same rules either side: one hole, however many minutes have
+  // fallen into it. A gap is recorded at the MINUTE the job wanted, because that
+  // is all the failing job knows — so a branch with a standing early booking
+  // records 06:53 on Monday and 06:56 on Tuesday and would grow one to-do a day
+  // for a single thing to fix. Collapsed here rather than at record time, which
+  // cannot see the rules.
+  const byHole = new Map<string, CoverageGapOut>();
 
   for (const g of recorded) {
     const at = hhmmToMin(g.at);
@@ -376,13 +383,26 @@ export function resolveGaps(
       if (e <= at && (!before || e > (before.end!.hours * 60 + before.end!.minutes))) before = r;
       if (st >= at && (!after || st < (after.start!.hours * 60 + after.start!.minutes))) after = r;
     }
-    open.push({
+    const hole = `${g.customer_id}|${before ? before.row : "-"}|${after ? after.row : "-"}`;
+    const seen = byHole.get(hole);
+    if (seen) {
+      // Earliest minute is the headline; the rest stay as evidence that it
+      // recurs, which is the difference between a one-off and a standing hole.
+      const times = [seen.at, ...seen.also, g.at].sort();
+      seen.at = times[0];
+      seen.also = times.slice(1);
+      continue;
+    }
+    const entry: CoverageGapOut = {
       customer_id: g.customer_id,
       pickup_name: g.pickup_name,
       at: g.at,
+      also: [],
       before: before ? { row: before.row, driver: before.driver, window: win(before) } : null,
       after: after ? { row: after.row, driver: after.driver, window: win(after) } : null,
-    });
+    };
+    byHole.set(hole, entry);
+    open.push(entry);
   }
   return { open, closed };
 }
@@ -392,6 +412,8 @@ export interface CoverageGapOut {
   customer_id: string;
   pickup_name: string;
   at: string;
+  /** Other minutes recorded against this same hole, earliest first. */
+  also: string[];
   before: { row: number; driver: string; window: string } | null;
   after: { row: number; driver: string; window: string } | null;
 }

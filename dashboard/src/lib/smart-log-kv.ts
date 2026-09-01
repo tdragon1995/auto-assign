@@ -1221,19 +1221,33 @@ const seenGaps = new Set<string>();
 
 const gapField = (customerId: string, at: string) => `${customerId}|${at}`;
 
-/** Record an hour that had no cover. Idempotent, and asked at most once per
- *  instance per gap. */
+/**
+ * Record an hour that had no cover. Idempotent, and asked at most once per
+ * instance per gap.
+ *
+ * Returns whether this was a hole nobody had recorded yet — HSET counts only the
+ * fields it ADDS, so a re-record of the same branch-and-minute answers 0 however
+ * many instances try it. That answer is what tells the cycle to refresh the
+ * config: the panel's list is built during the sheet parse, which happens once a
+ * day, so a gap found at 07:03 would otherwise sit in this hash unseen until
+ * tomorrow morning's parse. Only a genuinely new one is worth a re-parse.
+ */
 export async function recordCoverageGap(
   customerId: string, pickupName: string, at: string,
-): Promise<void> {
+): Promise<boolean> {
   const field = gapField(customerId, at);
-  if (!customerId || !at || seenGaps.has(field)) return;
-  seenGaps.add(field);
+  if (!customerId || !at || seenGaps.has(field)) return false;
   const redis = getRedis();
-  if (!redis) return;
+  if (!redis) return false;
   try {
-    await redis.hset(GAPS_KEY, { [field]: JSON.stringify({ customer_id: customerId, pickup_name: pickupName, at }) });
-  } catch { /* best-effort: the job has already been reported as failing */ }
+    const added = await redis.hset(GAPS_KEY, { [field]: JSON.stringify({ customer_id: customerId, pickup_name: pickupName, at }) });
+    // Marked seen only once it is actually stored, so a Redis blip retries next
+    // cycle instead of losing the gap for the life of this instance.
+    seenGaps.add(field);
+    return added > 0;
+  } catch {
+    return false; // best-effort: the job has already been reported as failing
+  }
 }
 
 export interface RecordedGap { customer_id: string; pickup_name: string; at: string }

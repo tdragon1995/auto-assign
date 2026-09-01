@@ -67,8 +67,13 @@ export interface BranchRule {
 export interface CoverageGap {
   customer_id: string;
   pickup_name: string;
-  /** "HH:MM" — the time the job needed, and nobody was on. */
+  /** "HH:MM" — the earliest time a job needed and nobody was on. */
   at: string;
+  /** Other minutes that fell into the SAME hole, earliest first. A gap is
+   *  recorded per minute, so one standing hole collects a fresh minute every day
+   *  it swallows a job; they are shown as one to-do with this as the tally.
+   *  Optional: a snapshot written by an older deploy will not carry it. */
+  also?: string[];
   /** The rule whose cover ENDS before the hole, and the one that starts after.
    *  Either can be absent at the ends of the day. Each carries its sheet row so
    *  the boundary can be moved from the dashboard. */
