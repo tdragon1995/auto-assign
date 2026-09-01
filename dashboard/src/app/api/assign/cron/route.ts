@@ -7,7 +7,7 @@ import {
   setCronHeartbeat,
 } from "@/lib/smart-log-kv";
 import { autoArmIfDue } from "@/lib/auto-arm";
-import { maybeAlertDisarmed } from "@/lib/disarm-alert";
+import { maybeAlertHeldOff } from "@/lib/disarm-alert";
 import { archiveSealedDays } from "@/lib/tat-archive";
 
 // The cycle (Cartrack + Goong calls) can take a while; give it headroom.
@@ -47,7 +47,8 @@ export async function GET(req: NextRequest) {
   });
 
   // 1) Switch off? Inside 05:30–22:00 the engine should be running, so self-heal
-  //    by auto-arming. A fresh *manual* disarm also emails an alert (who/when).
+  //    by auto-arming — unless someone turned it off by hand, which now holds
+  //    until they turn it back on. A held engine emails a daily reminder instead.
   //    Outside the window (overnight) we leave it off.
   let arm = await getArmState();
   if (!arm) {
@@ -55,7 +56,10 @@ export async function GET(req: NextRequest) {
     if (!auto) {
       return NextResponse.json({ ran: false, skipped: "disarmed" });
     }
-    if (auto.alert) after(() => maybeAlertDisarmed().catch(() => {}));
+    if (auto.kind === "held") {
+      after(() => maybeAlertHeldOff().catch(() => {}));
+      return NextResponse.json({ ran: false, skipped: "held-off", by: auto.hold.by });
+    }
     arm = auto.state; // freshly auto-armed — fall through and run a cycle now
   }
 

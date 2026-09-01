@@ -283,6 +283,41 @@ export async function clearDisarmAlert(): Promise<void> {
   await redis.del(DISARM_ALERT_KEY);
 }
 
+// ── Sticky manual off ──────────────────────────────────────────────────────
+
+// Turning the switch off is a decision, not a fault, so it HOLDS until someone
+// presses it back on. Deliberately no TTL: any expiry would hand the day back to
+// the cron's auto-arm, which is the exact behaviour this key exists to stop.
+// Cleared only by an arm.
+const ARM_HOLD_KEY = "assign:arm_hold";
+
+export interface ArmHold {
+  by: string;  // who turned it off (best-effort, from the dashboard)
+  ts: string;  // ISO time of the off
+}
+
+/** Hold the engine off until someone arms it again. */
+export async function setArmHold(by: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  const hold: ArmHold = { by: by.slice(0, 60), ts: new Date().toISOString() };
+  await redis.set(ARM_HOLD_KEY, JSON.stringify(hold));
+}
+
+/** The standing manual off, or null when none is in force. */
+export async function getArmHold(): Promise<ArmHold | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  return parseMaybe<ArmHold>(await redis.get<string | ArmHold>(ARM_HOLD_KEY));
+}
+
+/** Release the hold — called on every arm, so auto-arm resumes from then on. */
+export async function clearArmHold(): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  await redis.del(ARM_HOLD_KEY);
+}
+
 // ── Note-held jobs (for the dashboard note-review panel) ───────────────────
 
 export interface HeldJob {

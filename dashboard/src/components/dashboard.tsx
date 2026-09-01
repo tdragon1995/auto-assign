@@ -410,6 +410,7 @@ export function Dashboard() {
 
   // Turn the switch OFF immediately. `reason` is set for auto-disarm (env/mode
   // switch); a manual off leaves it empty. Both record who, for the alert email.
+  // A manual off now STAYS off — the server holds it until someone arms again.
   const disarm = useCallback(async (reason?: string) => {
     try {
       const by =
@@ -427,7 +428,11 @@ export function Dashboard() {
     setIsRunning(false);
     setArmUntil(null);
     setArmedBy("");
-    toast.info("Đã tắt tự động");
+    toast.info(
+      reason
+        ? "Đã tắt tự động"
+        : "Đã tắt — vẫn TẮT cho tới khi bật lại",
+    );
   }, []);
 
   const toggleService = useCallback((next: boolean) => {

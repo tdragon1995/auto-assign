@@ -7,6 +7,8 @@ import {
   acquireCycleLock,
   releaseCycleLock,
   setLastDisarm,
+  setArmHold,
+  clearArmHold,
   clearDisarmAlert,
   pushRunLog,
   type ArmState,
@@ -21,6 +23,9 @@ export const maxDuration = 60;
 // Manual arm always succeeds and runs until the next 22:00 VN auto-off (shared
 // with the cron's auto-arm). The engine also auto-arms across 05:30–22:00, so a
 // manual arm is mainly for arming early, switching env, or after a manual off.
+//
+// A manual off is sticky: it sets a hold that survives every cron ping and every
+// day boundary, and only an arm releases it.
 
 /** Current switch state + last cron heartbeat. */
 export async function GET() {
@@ -47,6 +52,9 @@ export async function POST(req: NextRequest) {
   };
 
   await setArmState(state);
+  // Arming is the one thing that releases a manual off, so auto-arm can look
+  // after the engine again from here on.
+  await clearArmHold().catch(() => {});
   // Re-arming ends the disarm episode — reset the alert debounce so the next
   // off-during-hours event emails again.
   await clearDisarmAlert().catch(() => {});
@@ -79,16 +87,22 @@ export async function POST(req: NextRequest) {
 
 /** Turn the switch OFF immediately. `?by=` records the operator and `?reason=`
  *  distinguishes a manual off from an auto-disarm (env switch), so the
- *  business-hours alert can name who turned it off. */
+ *  business-hours alert can name who turned it off.
+ *
+ *  A bare manual off also takes a HOLD: the cron's auto-arm will not put the
+ *  engine back on until someone presses the switch. A reasoned off (env switch)
+ *  takes no hold — that flow ends in a re-arm, and if the operator walks away
+ *  mid-switch the auto-arm should still recover the engine. */
 export async function DELETE(req: NextRequest) {
   await clearArmState();
   const by = (req.nextUrl.searchParams.get("by") ?? "").trim();
   const reason = (req.nextUrl.searchParams.get("reason") ?? "").trim();
   await setLastDisarm(by, reason || undefined).catch(() => {});
+  if (!reason) await setArmHold(by).catch(() => {});
   void pushRunLog([{
     ts: vnTimestamp(),
     level: "WARN",
-    msg: `🔴 ENGINE DISARMED by ${by || "?"}${reason ? ` — ${reason}` : ""}`,
+    msg: `🔴 ENGINE DISARMED by ${by || "?"}${reason ? ` — ${reason}` : " — vẫn TẮT cho tới khi có người bật lại"}`,
   }]).catch(() => {});
-  return NextResponse.json({ armed: false, state: null });
+  return NextResponse.json({ armed: false, state: null, held: !reason });
 }
