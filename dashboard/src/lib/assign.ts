@@ -1146,6 +1146,16 @@ async function fetchRolloverCandidates(
   return { candidates, complete, source: source.join(" + ") };
 }
 
+/** True for a leg the engine created for itself — outbound, via or return —
+ *  as opposed to a client's request. `isInternalOrPlanJob` above is a WIDER
+ *  net (plans, any Diag pickup) answering a different question, so it must not
+ *  be reused here: it would refuse to roll a genuine bag run nobody rode. */
+function isEngineLeg(j: { labels?: string[] }): boolean {
+  return (j.labels ?? []).some(
+    (l) => l === PSC_OUTBOUND_LABEL || l === PSC_VIA_LABEL || l === PSC_RETURN_LABEL,
+  );
+}
+
 /**
  * May this leftover of yesterday's be carried into today? Exported so the rule
  * can be pinned offline (scripts/rollover-eligibility.test.mts) — it decides,
@@ -1158,20 +1168,20 @@ export function isRollable(j: Job): boolean {
   // would roll: unassigned from the driver it belongs to, re-dated to today,
   // then skipped forever by the cycle ("No pickup stop found"). Leave it be.
   if (isChamCong(j)) return false;
-  // An unridden return/via leg is the engine's own dead weight, not client work
-  // waiting to be delivered — cleanupStaleTrips exists to remove exactly these,
-  // and a fresh one is created the next time its outbound completes. Rolling one
-  // steals it from that sweep, which looks for legs still dated YESTERDAY: the
-  // rollover runs at the top of the cycle and the sweep at the end, so a rolled
-  // leg is already re-dated to today by the time the sweep looks, and invisible
-  // to it. Worse, the roll strips the driver, and every same-day cleanup rule
-  // only considers legs that still have one — so nothing could remove it ever
-  // again, and it rolled afresh every morning. (Observed on the 21:48 D001→D007
-  // return of 2026-08-29: created too late for the 21:54 end-of-day sweep, which
-  // spares anything under 20 minutes old, then rolled at 05:31 the next morning
-  // and left driverless, unassignable — D001 is no mapping's pickup — and immortal.)
-  // Outbound legs are deliberately NOT included: those carry real samples.
-  if ((j.labels ?? []).some((l) => l === PSC_RETURN_LABEL || l === PSC_VIA_LABEL)) return false;
+  // NO engine leg is carried over. An unridden outbound, via or return leg is the
+  // engine's own dead weight, not client work waiting to be delivered —
+  // cleanupStaleTrips exists to remove exactly these, and a fresh leg is created
+  // the next time its route fires. Rolling one steals it from that sweep, which
+  // looks for legs still dated YESTERDAY: the rollover runs at the top of the
+  // cycle and the sweep at the end, so a rolled leg is already re-dated to today
+  // by the time the sweep looks, and invisible to it. Worse, the roll strips the
+  // driver, and every same-day cleanup rule only considers legs that still have
+  // one — so nothing could remove it ever again, and it rolled afresh every
+  // morning. (Observed on the 21:48 D001→D007 return of 2026-08-29: created too
+  // late for the 21:54 end-of-day sweep, which spares anything under 20 minutes
+  // old, then rolled at 05:31 the next morning and left driverless, unassignable
+  // — D001 is no mapping's pickup — and immortal.)
+  if (isEngineLeg(j)) return false;
   const stops = j.stops ?? [];
   // Skip if the pickup sample is already collected. Re-assignment resets a
   // stop's activity, so rolling a job whose pickup is Hoàn thành (status 4)
@@ -1200,10 +1210,10 @@ export function isRollable(j: Job): boolean {
  *   2. Pickup NOT yet collected (pickup stop_status_id !== 4). Reassignment
  *      resets stop activity, so a job whose sample is already picked up would
  *      be re-collected — a wasted second pickup.
- *   3. NOT a return or via leg. Those belong to cleanupStaleTrips, which only
- *      finds them while they are still dated yesterday — see the rule itself.
- * Everything else — outbound legs, en-route/arrived jobs, jobs with a stale
- * driver — rolls.
+ *   3. NOT an engine leg (outbound / via / return). Those belong to
+ *      cleanupStaleTrips, which only finds them while they are still dated
+ *      yesterday — see the rule itself.
+ * Everything else — en-route/arrived jobs, jobs with a stale driver — rolls.
  *
  * For each eligible job:
  *   - if a driver is still attached (status-4 stuck/started job), unassign it

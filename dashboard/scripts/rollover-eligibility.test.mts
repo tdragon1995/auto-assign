@@ -16,8 +16,11 @@
  * Job 34433562 on 2026-08-29 is the case: a D001→D007 return created 21:48,
  * six minutes before the 21:54 end-of-day sweep — which spares anything under
  * 20 minutes old, on the understanding that the morning sweep finishes the job.
- * The morning sweep never saw it. Outbound legs stay rollable: they carry real
- * samples, and are not what cleanupStaleTrips removes.
+ * The morning sweep never saw it.
+ *
+ * All three engine legs are treated alike: an outbound left overnight cannot be
+ * delivered today under yesterday's date either, and its route re-creates it.
+ * The morning sweep now collects all three labels.
  */
 import { isRollable } from "../src/lib/assign";
 import { PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from "../src/lib/return-trips";
@@ -52,9 +55,22 @@ ok(
   !isRollable(job({ labels: [PSC_RETURN_LABEL] })),
 );
 ok("a via leg does NOT roll", !isRollable(job({ labels: [PSC_VIA_LABEL] })));
+ok("an outbound leg does NOT roll", !isRollable(job({ labels: [PSC_OUTBOUND_LABEL] })));
 ok(
-  "an outbound leg still rolls — it carries real samples",
-  isRollable(job({ labels: [PSC_OUTBOUND_LABEL] })),
+  "an outbound whose pickup was collected does not roll either — the morning sweep takes it",
+  !isRollable(
+    job({
+      labels: [PSC_OUTBOUND_LABEL],
+      stops: [
+        { stop_type_id: 1, stop_status_id: 4, customer_id: "pick" },
+        { stop_type_id: 2, stop_status_id: 1, customer_id: "drop" },
+      ],
+    }),
+  ),
+);
+ok(
+  "a job with no engine label is unaffected — an ordinary Diag-to-Diag bag run still rolls",
+  isRollable(job({ labels: ["🚨 Gấp"] })),
 );
 ok(
   "a return leg is refused even mid-ride (started stops are no exemption)",
@@ -69,7 +85,7 @@ ok(
   ),
 );
 ok(
-  "a return leg among several labels is still refused",
+  "an engine leg among several labels is still refused",
   !isRollable(job({ labels: ["🚨 Gấp", PSC_RETURN_LABEL] })),
 );
 

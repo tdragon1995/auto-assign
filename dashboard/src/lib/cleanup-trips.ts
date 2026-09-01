@@ -127,13 +127,21 @@ async function rejectJob(jobId: number, reason: string, env: Env): Promise<boole
 }
 
 /**
- * Rule C — rolled-over leftovers. A return/via job from YESTERDAY that is still
- * live (status 2/4) is dead weight by definition: ops end at 22:00, nothing runs
- * overnight, and the assign cycle only fetches today's date window so nothing
- * else will ever touch it. This is the "driver accidentally pressed start, admin
- * had to remove it manually the next morning" case — the started-guard rightly
- * blocks same-day rejection (a started dropoff can be a real driver mid-ride),
- * so the sweep picks it up next morning regardless of started state.
+ * Rule C — rolled-over leftovers. ANY engine leg from YESTERDAY — outbound, via
+ * or return — still live (status 2/4) is dead weight by definition: ops end at
+ * 22:00, nothing runs overnight, and the assign cycle only fetches today's date
+ * window so nothing else will ever touch it. This is the "driver accidentally
+ * pressed start, admin had to remove it manually the next morning" case — the
+ * started-guard rightly blocks same-day rejection (a started dropoff can be a
+ * real driver mid-ride), so the sweep picks it up next morning regardless of
+ * started state.
+ *
+ * OUTBOUND legs are swept too, and unlike the other two they can be part-worked
+ * — a pickup collected but never delivered. Removing the job does not lose the
+ * samples, and yesterday's outbound cannot be delivered today under yesterday's
+ * date anyway; the run is re-created when its route next fires. What it does
+ * lose is the record of that collection, so a part-worked leftover is logged as
+ * such (see the LEFT-OVER lines below) rather than removed in silence.
  *
  * One label-filtered JSON-RPC call per label (prod-only); skipped for the rest
  * of the day once a sweep finds nothing to clean.
@@ -144,16 +152,20 @@ async function collectRolloverTasks(env: Env): Promise<CleanupTask[]> {
   if (sweptCleanOn === today) return [];
   const yesterday = vnDate(new Date(Date.now() - 24 * 3600e3));
 
-  // Two single-label calls — the multi-label filter semantics are unverified.
-  const [retStops, viaStops] = await Promise.all([
+  // One single-label call each — the multi-label filter semantics are unverified.
+  const [retStops, viaStops, outStops] = await Promise.all([
     getStopsByLabels(yesterday, [PSC_RETURN_LABEL], env),
     getStopsByLabels(yesterday, [PSC_VIA_LABEL], env),
+    getStopsByLabels(yesterday, [PSC_OUTBOUND_LABEL], env),
   ]);
-  if (!retStops || !viaStops) return []; // fetch failed — retry next cycle
+  // Any one failing aborts the pass: a partial sweep would set sweptCleanOn for
+  // the day if the labels that DID answer were clean, and the missing label's
+  // leftovers would then sit untouched until tomorrow.
+  if (!retStops || !viaStops || !outStops) return []; // fetch failed — retry next cycle
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const byJob = new Map<number, any[]>();
-  for (const s of [...retStops, ...viaStops]) {
+  for (const s of [...retStops, ...viaStops, ...outStops]) {
     const arr = byJob.get(s.job_id);
     if (arr) arr.push(s);
     else byJob.set(s.job_id, [s]);
@@ -169,7 +181,18 @@ async function collectRolloverTasks(env: Env): Promise<CleanupTask[]> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const dropoff = stops.find((s: any) => s.stop_type_id === 2);
     const route = `${pickup?.customer_name ?? "?"} → ${dropoff?.customer_name ?? "?"}`;
-    tasks.push({ jobId, date: yesterday, reason: ROLLOVER_REASON, label: `Rollover #${jobId} (${yesterday}) | ${route}` });
+    // A leg whose pickup was collected but whose dropoff never was is the one
+    // case here that had real work done on it. It still goes — it cannot be
+    // completed under yesterday's date — but it is named in the log so the
+    // morning has something to read, instead of the removal being silent.
+    const collected = pickup?.stop_status_id === 4 && dropoff?.stop_status_id !== 4;
+    const mark = collected ? " | ĐÃ LẤY MẪU, CHƯA GIAO" : "";
+    tasks.push({
+      jobId,
+      date: yesterday,
+      reason: ROLLOVER_REASON,
+      label: `Rollover #${jobId} (${yesterday}) | ${route}${mark}`,
+    });
   }
 
   // Clean slate → don't re-sweep until tomorrow. (Left unset while leftovers
