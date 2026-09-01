@@ -1137,6 +1137,26 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
   };
 }
 
+/**
+ * The bundle as the dashboard receives it.
+ *
+ * Lives here, beside the bundle, and SPREADS rather than re-listing fields. Three
+ * separate fields have been computed by getStatusBundle and then dropped on the
+ * way out of the status route: sheetAlarms, so the refused-tab banner never once
+ * appeared; then branchRules and parsedAt, which left every config editor opening
+ * with none of the branch's existing shifts in it — so a shift could be replaced
+ * but never extended. The defect is invisible at the call site: the field is
+ * fetched, typed, correct, and simply not named again. Spreading takes away the
+ * chance to forget.
+ */
+export function statusPayload(bundle: StatusBundle, since: string | null) {
+  return {
+    ...bundle,
+    armed: !!bundle.state,
+    logs: since ? bundle.logs.filter((l) => l.ts >= since) : bundle.logs,
+  };
+}
+
 // ── Config rows written for unconfigured branches ────────────────────────────
 //
 // One row per branch, once — across every instance and both deployments. The

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getStatusBundle } from "@/lib/smart-log-kv";
+import { getStatusBundle, statusPayload } from "@/lib/smart-log-kv";
 
 /**
  * One poll for the whole dashboard: switch state, heartbeat, live log, and the
@@ -11,14 +11,10 @@ import { getStatusBundle } from "@/lib/smart-log-kv";
  * boundary second. Without `since`, the full window is returned (first load).
  */
 export async function GET(req: NextRequest) {
-  const { state, lastChecked, deployments, logs, held, warnings, failed, sheetAlarms, unfinished, gaps, parsedAt, branchRules } =
-    await getStatusBundle(100);
-  const since = req.nextUrl.searchParams.get("since");
-  const outLogs = since ? logs.filter((l) => l.ts >= since) : logs;
-  // sheetAlarms and unfinished were being computed and then dropped here — the
-  // dashboard reads both, so the refused-tab banner had never once been shown.
-  return NextResponse.json({
-    armed: !!state, state, lastChecked, deployments, logs: outLogs,
-    held, warnings, failed, sheetAlarms, unfinished, gaps,
-  });
+  // Shaped by statusPayload rather than here, so the "every field the bundle
+  // computes reaches the dashboard" rule is one testable function instead of a
+  // list to keep in step. It has fallen out of step three times.
+  return NextResponse.json(
+    statusPayload(await getStatusBundle(100), req.nextUrl.searchParams.get("since")),
+  );
 }
