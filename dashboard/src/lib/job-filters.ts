@@ -203,34 +203,40 @@ export function isChamCong(job: {
 
 /** Label marking a via-leg — a deliberate second pickup at the same place on the same
  *  run, so it must never count as a duplicate of the trip it accompanies. Declared here
- *  rather than in via-legs.ts (which re-exports it) because the duplicate guard and the
- *  day snapshot both need it on the edge runtime, and via-legs pulls in the assign
- *  graph. Changing the string means changing it in Cartrack too — it is a real label. */
+ *  rather than in via-legs.ts because the duplicate guard and the day snapshot both
+ *  need it on the edge runtime, and via-legs pulls in the assign graph. Changing the
+ *  string means changing it in Cartrack too — it is a real label. */
 export const PSC_VIA_LABEL = "🛵 Vận chuyển mẫu PSC (ghé)";
 
-/** The outbound and return halves of a PSC run. Declared here beside PSC_VIA_LABEL,
- *  and re-exported from return-trips.ts (which owns the trip logic) so no call site
- *  had to move: the three labels are one concept — see ENGINE_LEG_LABELS — and a
- *  concept split across an edge-safe module and the assign graph cannot be stated
- *  once. Changing a string means changing it in Cartrack too — they are real labels. */
+/** The outbound and return halves of a PSC run. Here, rather than in return-trips.ts
+ *  which owns the trip logic, for the same reason as PSC_VIA_LABEL above and one more:
+ *  the three are one concept (see ENGINE_LEG_LABELS) and reading it whole beats reading
+ *  it in two files. That is a preference, not a constraint — the set would work in
+ *  return-trips.ts too, at the cost of the edge runtime losing reach on it. */
 export const PSC_RETURN_LABEL = "🛵 Vận chuyển mẫu PSC (về)";
 export const PSC_OUTBOUND_LABEL = "🛵 Vận chuyển mẫu PSC";
 
-/** Every label the engine puts on a leg it created for itself. THE list — the
- *  rollover rule, the late-pickup classifier and the morning cleanup sweep all
- *  read it, so a fourth leg label is one edit here rather than four across three
- *  files. Missing one of those sites is silent and expensive: an engine leg that
- *  rolls loses its driver, becomes unremovable, and re-rolls every morning. */
+/** Every label the engine puts on a leg it created for itself. THE list — the rollover
+ *  rule, the late-pickup classifier and the morning cleanup sweep all read it, where
+ *  each used to spell the three out for itself. Missing one of those sites is silent
+ *  and expensive: an engine leg that rolls loses its driver, becomes unremovable, and
+ *  re-rolls every morning.
+ *
+ *  A fourth leg label is one edit here, but NOT only here: DUPLICATE_EXEMPT_LABELS in
+ *  assign.ts is deliberately not this set (via and return are exempt from duplicate
+ *  detection, outbound is not), so it needs its own decision. */
 export const ENGINE_LEG_LABELS: readonly string[] = [
   PSC_OUTBOUND_LABEL,
   PSC_VIA_LABEL,
   PSC_RETURN_LABEL,
 ];
 
-/** True for a leg the engine created for itself — outbound, via or return — as
- *  opposed to a client's request. Note `isInternalOrPlanJob` in assign.ts is a WIDER
- *  net (plans, any Diag pickup) answering a different question: it is built ON this
- *  one, but is not a substitute for it. */
+/** True for a leg the engine created for itself — outbound, via or return — as opposed
+ *  to a client's request. `isInternalOrPlanJob` in assign.ts is a WIDER net (plans, any
+ *  Diag pickup) answering a different question: it is built ON this one but is not a
+ *  substitute for it — swapping it into the rollover rule would refuse to roll a
+ *  genuine bag run nobody rode. Reads REST-shaped labels (plain strings); see
+ *  isChamCong for the JSON-RPC `{ labelId, label }` shape, which this does not handle. */
 export function isEngineLeg(job: { labels?: string[] | null }): boolean {
   const labels = job.labels ?? [];
   return ENGINE_LEG_LABELS.some((l) => labels.includes(l));

@@ -8,10 +8,9 @@ import {
   getJobsByStatusAndDate,
   type Env,
 } from "./cartrack";
-import { isStopStarted, ENGINE_LEG_LABELS } from "./job-filters";
+import { isStopStarted, ENGINE_LEG_LABELS, PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL, PSC_VIA_LABEL } from "./job-filters";
 import { vnDate, vnMinutesSinceMidnight, parseVnTimestamp } from "./time";
-import { PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL, isOnShift, subToCoveredDriver, shiftMappingsForPsc } from "./return-trips";
-import { PSC_VIA_LABEL } from "./via-legs";
+import { isOnShift, subToCoveredDriver, shiftMappingsForPsc } from "./return-trips";
 import { claimTripAction, releaseTripClaim } from "./smart-log-kv";
 import type { LeaveEntry } from "./leave-config";
 import { recordCleanedReturns } from "./return-suppress";
@@ -166,7 +165,7 @@ async function collectRolloverTasks(env: Env): Promise<CleanupTask[]> {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const byJob = new Map<number, any[]>();
-  for (const s of perLabel.flatMap((r) => r ?? [])) {
+  for (const s of perLabel.flat()) {
     const arr = byJob.get(s.job_id);
     if (arr) arr.push(s);
     else byJob.set(s.job_id, [s]);
@@ -187,11 +186,12 @@ async function collectRolloverTasks(env: Env): Promise<CleanupTask[]> {
     // completed under yesterday's date — but it is named in the log so the
     // morning has something to read, instead of the removal being silent.
     const collected = pickup?.stop_status_id === 4 && dropoff?.stop_status_id !== 4;
+    const mark = collected ? " | ĐÃ LẤY MẪU, CHƯA GIAO" : "";
     tasks.push({
       jobId,
       date: yesterday,
       reason: ROLLOVER_REASON,
-      label: `Rollover #${jobId} (${yesterday}) | ${route}${collected ? " | ĐÃ LẤY MẪU, CHƯA GIAO" : ""}`,
+      label: `Rollover #${jobId} (${yesterday}) | ${route}${mark}`,
     });
   }
 

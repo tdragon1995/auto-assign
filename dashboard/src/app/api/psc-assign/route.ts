@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, completeJob, createJob, getJobDetails, getLiveDrivers, type Env } from "@/lib/cartrack";
 import { driverDisplayName, stripDriverCode } from "@/lib/job-detail";
 import { vnDate, vnHoursMinutes, vnTimestamp } from "@/lib/time";
-import { isBlockingPickupStop, isStopStarted, isCompletedOrRejectedStop, pscPairKey } from "@/lib/job-filters";
-import { PSC_VIA_LABEL } from "@/lib/via-legs";
+import { isBlockingPickupStop, isStopStarted, isCompletedOrRejectedStop, pscPairKey, PSC_VIA_LABEL, PSC_OUTBOUND_LABEL } from "@/lib/job-filters";
 import { acquireCreateLock, releaseCreateLock, markPscPair, unmarkPscPair, lookupPscPair, type PscDupHit } from "@/lib/smart-log-kv";
 import { blockedPair, jobIsDone, slimJob } from "@/lib/day-snapshot";
 import type { Stop } from "@/lib/types";
@@ -329,7 +328,7 @@ export async function POST(req: NextRequest) {
       job_type_id: 1,
       schedule_type_id: 1,
       reference_number: refLabel,
-      labels: ["🛵 Vận chuyển mẫu PSC"],
+      labels: [PSC_OUTBOUND_LABEL],
       ...(assignTo ? { delivery_driver_id: assignTo.driverId } : {}),
       stops: [
         {

@@ -22,7 +22,7 @@ delete process.env.KV_REST_API_TOKEN;
 
 const { buildSnapshot } = await import("../src/lib/day-snapshot");
 const { pscPairKey, STOP_STATUS, JOB_STATUS } = await import("../src/lib/job-filters");
-const { PSC_VIA_LABEL } = await import("../src/lib/via-legs");
+const { PSC_VIA_LABEL } = await import("../src/lib/job-filters");
 const { vnDate } = await import("../src/lib/time");
 
 const DATE = process.argv[2] ?? vnDate();

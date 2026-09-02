@@ -23,8 +23,7 @@
  * The morning sweep now collects all three labels.
  */
 import { isRollable } from "../src/lib/assign";
-import { PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from "../src/lib/return-trips";
-import { PSC_VIA_LABEL } from "../src/lib/job-filters";
+import { PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL, PSC_VIA_LABEL } from "../src/lib/job-filters";
 import type { Job } from "../src/lib/types";
 
 let failures = 0;
@@ -56,9 +55,9 @@ ok(
 );
 ok("a via leg does NOT roll", !isRollable(job({ labels: [PSC_VIA_LABEL] })));
 ok("an outbound leg does NOT roll", !isRollable(job({ labels: [PSC_OUTBOUND_LABEL] })));
+// Both guards refuse this one (label AND collected pickup) — it pins that they agree,
+// not the label rule on its own, which the bare-outbound case above pins.
 ok(
-  // Both guards refuse this one (label AND collected pickup) — it pins that they
-  // agree, not the label rule on its own, which the bare-outbound case above pins.
   "an outbound whose pickup was collected does not roll either — the morning sweep takes it",
   !isRollable(
     job({

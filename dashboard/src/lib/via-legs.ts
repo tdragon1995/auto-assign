@@ -2,15 +2,11 @@ import type { LogLevel, Job } from "./types";
 import { createJob, friendlyCreateError, isDriverUnavailableError, getJobsByStatusAndDate, type Env } from "./cartrack";
 import { vnDate, vnHoursMinutes, vnTimestamp } from "./time";
 import { loadPscRoutes } from "./psc-config";
-import { PSC_OUTBOUND_LABEL } from "./return-trips";
-
-// Distinct from PSC_OUTBOUND_LABEL on purpose: the return detector only inverts
-// outbound-labelled jobs, so a via-leg with this label does NOT spawn a D001→via
-// return. The via PSC's inbound is delivered informally on the next outbound run.
-// Declared in job-filters (dependency-free, importable from edge routes) and
-// re-exported here so existing importers are unaffected.
-export { PSC_VIA_LABEL } from "./job-filters";
-import { PSC_VIA_LABEL } from "./job-filters";
+// PSC_VIA_LABEL is distinct from PSC_OUTBOUND_LABEL on purpose: the return detector
+// only inverts outbound-labelled jobs, so a via-leg with this label does NOT spawn a
+// D001→via return. The via PSC's inbound is delivered informally on the next outbound
+// run. Both live in job-filters (dependency-free, importable from edge routes).
+import { PSC_OUTBOUND_LABEL, PSC_VIA_LABEL } from "./job-filters";
 import { claimTripAction, releaseTripClaim } from "./smart-log-kv";
 
 // Race guard across overlapping cycles, keyed by the triggering outbound job_id.
