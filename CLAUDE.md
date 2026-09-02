@@ -69,6 +69,21 @@ through the same `POST /api/nghi-phep` a driver's own form uses — so
   duplicate's twin is never the thing that disappears. It refuses the first data
   row: the tab is an append log so row 2 is months old, but it is also where a
   column-wide formula would be anchored. `scripts/leave-row-delete.test.mts`.
+
+  **A delete is not a tombstone.** The MISA pusher re-derives every charged day
+  from today forward on each run and dedupes purely on the row being present, so
+  deleting a FUTURE day MISA still charges is undone at the next 04:45 / 12:00
+  sync. It sticks when MISA has stopped charging the day, or when the day is in
+  the past (`minDate` never re-pushes those). Anything that wanted to survive a
+  re-push would need a suppression list keyed on driver+date — deliberately not
+  built, because the MISA record is meant to be the truth and a second one to
+  reconcile against is how the two drift apart silently.
+
+  Both post-write refreshes pass `fresh=1` (`loadLeaveStatus(true)`). Not for
+  the server cache — the write path already cleared that — but because
+  `loadLeaveStatus` skips any non-fresh reload inside a 5-minute window, which
+  would leave the panel showing the row that was just deleted and invite a
+  second click onto a row nobody meant to remove.
 - **A day off is filed against the PART-TIME TWIN too.** About a dozen people
   hold both a `DC…` and a `PT…` account and switch to the second for a trip
   running past their shift; MISA only ever names the account it charges. A full

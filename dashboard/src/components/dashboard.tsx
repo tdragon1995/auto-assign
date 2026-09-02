@@ -193,6 +193,12 @@ export function Dashboard() {
   // supervisor's edit shows at once. On failure we flag an error but keep the
   // last-known lists — the panel shows an error line only when it has nothing,
   // so a transient blip never renders as a false "nobody's on leave".
+  // Callers that have just WRITTEN to the leave sheet (a substitute filled, a row
+  // deleted) must pass fresh=true. Not for the server cache — the write path
+  // already cleared that — but because the skip-guard below would otherwise
+  // swallow the reload entirely and leave the panel showing the row that was
+  // just removed. A supervisor then clicks Xoá a second time, and the second
+  // click either takes a duplicate they meant to keep or fails as "not found".
   const loadLeaveStatus = useCallback(async (fresh = false) => {
     // Skip an automatic reload the server could only answer from cache. This fires on
     // every visibility resume, and loadLeaveEntries holds a 5-minute Redis copy — so
@@ -630,7 +636,7 @@ export function Dashboard() {
                     onScheduleFailed={handleScheduleFailed}
                     leaveToday={leave.today}
                     leaveTomorrow={leave.tomorrow}
-                    onLeaveRefresh={() => loadLeaveStatus()}
+                    onLeaveRefresh={() => loadLeaveStatus(true)}
                     onRetrySchedule={retrySchedule}
                     retryingSchedule={retryingSchedule}
                   />
@@ -658,7 +664,7 @@ export function Dashboard() {
                   spanning={leave.spanning}
                   error={leave.error}
                   drivers={drivers}
-                  onRefresh={() => loadLeaveStatus()}
+                  onRefresh={() => loadLeaveStatus(true)}
                 />
               </div>
             ) : rightTab === "live" ? (
