@@ -126,12 +126,15 @@ the cartrack_combined Apps Script project, set the token, deploy as a web app
 
 - A leave request approved only in PART still leaves the rows this pushed on the
   sheet — cancelling it in MISA does not reach back here. Remove those from the
-  dashboard's Nghỉ phép panel ("Xoá" on the row). **The delete only sticks if
-  MISA has stopped charging the day.** This pusher re-derives every charged day
-  from today forward on each run, and the dedupe it relies on is the row's own
-  presence on the sheet — so a day MISA still charges is simply written again at
-  the next 04:45 / 12:00 run. Days in the past are never re-pushed (`minDate`),
-  so deleting one of those is permanent either way.
+  dashboard's Nghỉ phép panel ("Xoá" on the row) — the delete also records the
+  day in a **"Nghỉ phép đã xoá"** tab, and this pusher is refused when it tries
+  to write it back. That refusal arrives as a `409` carrying `suppressed`, and is
+  counted separately from an ordinary duplicate in the run log, so a suppression
+  list quietly swallowing days is visible rather than inferred. Every submission
+  from here sends `automated: true`, which is what subjects it to that list; a
+  person filing leave through the app is never blocked by it. To let a day back
+  in, press "Khôi phục" on the dashboard (or delete the line from the tab) — it
+  returns at the next run if MISA still charges it.
 - Leave data uses the MISA attendance-watch view with `Status: 2` — the same
   filter the old module proved working. If leaves ever look wrong, verify what
   status code means "approved" on this tenant.

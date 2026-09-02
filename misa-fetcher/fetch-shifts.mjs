@@ -233,7 +233,8 @@ async function runOnce() {
       leaveResult = await pushLeave(submissions, { dryRun: DRY_RUN || args.has("--leave-dry") });
       if (!DRY_RUN && !args.has("--leave-dry")) {
         console.log(
-          `[run] leave push: ${leaveResult.written} written, ${leaveResult.duplicate} already present, ${leaveResult.failed} failed` +
+          `[run] leave push: ${leaveResult.written} written, ${leaveResult.duplicate} already present, ` +
+            `${leaveResult.suppressed} suppressed (đã xoá thủ công), ${leaveResult.failed} failed` +
             (leaveResult.aborted ? " — DỪNG SỚM: bảng nghỉ phép chưa đọc được" : ""),
         );
         for (const e of leaveResult.errors) console.error(`       ${e}`);

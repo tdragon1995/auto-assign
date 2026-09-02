@@ -19,6 +19,7 @@ import { toast } from "sonner";
 import type { LogEntry, PickupWarning, FailedJob, ConfigDriver, SheetAlarm, UnfinishedConfigRow, CoverageGap, BranchRule } from "@/lib/types";
 import type { DeploymentBeat } from "@/lib/smart-log-kv";
 import type { LeaveOnDate, InvalidLeaveRow, SpanningLeaveRow } from "@/lib/leave-config";
+import type { LeaveSuppression } from "@/lib/leave-suppression";
 
 type Env = "prod" | "uat";
 type RightTab = "attention" | "live" | "admin" | "schedule" | "distance" | "tat";
@@ -67,12 +68,16 @@ export function Dashboard() {
     tomorrow: LeaveOnDate[];
     invalid: InvalidLeaveRow[];
     spanning: SpanningLeaveRow[];
+    suppressed: LeaveSuppression[];
+    suppressedUnreadable: boolean;
     error: boolean;
   }>({
     today: [],
     tomorrow: [],
     invalid: [],
     spanning: [],
+    suppressed: [],
+    suppressedUnreadable: false,
     error: false,
   });
 
@@ -222,6 +227,8 @@ export function Dashboard() {
         tomorrow: Array.isArray(data.tomorrow) ? data.tomorrow : [],
         invalid: Array.isArray(data.invalid) ? data.invalid : [],
         spanning: Array.isArray(data.spanning) ? data.spanning : [],
+        suppressed: Array.isArray(data.suppressed) ? data.suppressed : [],
+        suppressedUnreadable: !!data.suppressed_unreadable,
         error: false,
       });
     } catch {
@@ -662,6 +669,8 @@ export function Dashboard() {
                   tomorrow={leave.tomorrow}
                   invalid={leave.invalid}
                   spanning={leave.spanning}
+                  suppressed={leave.suppressed}
+                  suppressedUnreadable={leave.suppressedUnreadable}
                   error={leave.error}
                   drivers={drivers}
                   onRefresh={() => loadLeaveStatus(true)}

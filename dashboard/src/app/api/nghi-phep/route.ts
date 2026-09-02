@@ -10,6 +10,7 @@ import {
   type LeaveEntry,
   type InvalidLeaveRow,
 } from "@/lib/leave-config";
+import { loadLeaveSuppressions, findSuppression } from "@/lib/leave-suppression";
 
 /** Short human label for a clashing existing leave, for the reject message. */
 function describeLeave(e: LeaveEntry): string {
@@ -51,7 +52,10 @@ async function notifyAdminGroup(text: string): Promise<void> {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { driver_id, driver_name, loai_nghi, ngay_bat_dau, ngay_ket_thuc, gio_bat_dau, gio_ket_thuc, notify_message, note } = body;
+    const {
+      driver_id, driver_name, loai_nghi, ngay_bat_dau, ngay_ket_thuc,
+      gio_bat_dau, gio_ket_thuc, notify_message, note, automated,
+    } = body;
 
     if (!driver_id || !driver_name || !loai_nghi || !ngay_bat_dau) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
@@ -150,6 +154,41 @@ export async function POST(req: NextRequest) {
         { status: 503 },
       );
     }
+    // A day a supervisor deliberately REMOVED must not be written back by the
+    // robot that keeps re-deriving it. This is the check that makes the delete
+    // button mean something: the MISA pusher rebuilds every charged day from
+    // today forward on each run and dedupes only on the row being present, so
+    // without it a partly-approved request is un-deleted at 04:45.
+    //
+    // Automated callers only, and that scoping is the safety property rather
+    // than an optimisation. A person filing leave — the driver's own form, a
+    // supervisor in the panel — is NEVER blocked by a suppression, so a stale
+    // one can never be the reason a real day off failed to register, and the way
+    // past it is the ordinary action instead of editing the sheet.
+    //
+    // An unreadable list lets the write through (`trusted`), which is exactly
+    // the behaviour before suppressions existed; failing closed here would take
+    // out the driver's leave form over a tab that, on a first deploy, correctly
+    // does not exist yet.
+    const isAutomated =
+      automated === true || (typeof note === "string" && /^MISA auto\b/.test(note.trim()));
+    if (isAutomated) {
+      const { list, trusted } = await loadLeaveSuppressions();
+      const blocked = trusted ? findSuppression(candidate, list) : null;
+      if (blocked) {
+        return NextResponse.json(
+          {
+            error:
+              `Ngày nghỉ này đã được xoá thủ công (${blocked.deleted_at || "không rõ thời điểm"}) ` +
+              `nên không tự tạo lại. Nếu cần khôi phục, bỏ dòng tương ứng trong bảng ` +
+              `"Nghỉ phép đã xoá" (nút Khôi phục trên dashboard).`,
+            suppressed: true,
+          },
+          { status: 409 },
+        );
+      }
+    }
+
     const clash = findLeaveConflict(candidate, onSheet.entries, onSheet.invalid);
     if (clash) {
       return NextResponse.json(

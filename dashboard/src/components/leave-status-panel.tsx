@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { SectionHeader } from "./section-header";
 import { toast } from "sonner";
 import type { LeaveOnDate, InvalidLeaveRow, SpanningLeaveRow } from "@/lib/leave-config";
+import type { LeaveSuppression } from "@/lib/leave-suppression";
 import type { ConfigDriver } from "@/lib/types";
 
 const TYPE_LABEL: Record<string, string> = {
@@ -415,6 +416,77 @@ function SubEditor({
   );
 }
 
+/** "HH:MM–HH:MM" for a suppression's window, or null for a whole day — the same
+ *  label shape the leave rows use, so the same identity reaches the API. */
+function suppressionTimeLabel(s: LeaveSuppression): string | null {
+  return s.gio_bat_dau && s.gio_ket_thuc ? `${s.gio_bat_dau}–${s.gio_ket_thuc}` : null;
+}
+
+/**
+ * One deliberately-removed day, with the way to put it back.
+ *
+ * The whole risk of a suppression list is that it outlives the reason for it and
+ * nobody remembers it is there — so it is rendered while it can still block
+ * anything, saying who, which day, and when it was removed. "Khôi phục" only
+ * lifts the bar; the day itself returns at the next sync if MISA still charges
+ * it, and stays gone if it does not. That is the correct answer either way, and
+ * it is why this is a one-click action rather than a trip into the workbook.
+ */
+function SuppressionRow({ s, onRestore }: { s: LeaveSuppression; onRestore: DeleteRowFn }) {
+  const [busy, setBusy] = useState(false);
+  const { code, name } = splitDriverName(s.driver_name || s.driver_id);
+  const label = suppressionTimeLabel(s);
+  return (
+    <li className="flex flex-wrap items-baseline gap-x-1.5 text-xs">
+      <span className="font-semibold text-slate-900">{name}</span>
+      {code && <span className="font-mono text-[11px] text-slate-500">{code}</span>}
+      <span className="text-[11px] text-slate-600">{rangeLabel(s.leave_from, s.leave_to)}</span>
+      {label && <span className="font-mono text-[11px] text-slate-500">{label}</span>}
+      {s.deleted_at && (
+        <span className="text-[11px] text-slate-500">xoá {s.deleted_at.slice(0, 16)}</span>
+      )}
+      <button
+        type="button"
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          await onRestore({ driver_id: s.driver_id, leave_from: s.leave_from, timeLabel: label });
+          setBusy(false);
+        }}
+        className="ml-auto rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] font-semibold text-slate-600 hover:border-emerald-400 hover:bg-emerald-50 hover:text-emerald-700 disabled:opacity-60"
+        title="Bỏ chặn ngày này — lần đồng bộ MISA tới sẽ tạo lại nếu MISA vẫn tính nghỉ"
+      >
+        {busy ? "…" : "Khôi phục"}
+      </button>
+    </li>
+  );
+}
+
+/** Lift one suppression. Same shape as the other two writers so every path in
+ *  this panel refreshes the same way. */
+function makeRestoreRow(onRefresh: () => void): DeleteRowFn {
+  return async (identity) => {
+    try {
+      const res = await fetch("/api/leave-status/suppression", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(identity),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        toast.error(data.error ?? `HTTP ${res.status}`);
+        return false;
+      }
+      toast.success("Đã bỏ chặn — lần đồng bộ MISA tới sẽ tạo lại nếu MISA vẫn tính nghỉ");
+      onRefresh();
+      return true;
+    } catch (e) {
+      toast.error(`Không khôi phục được: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
+  };
+}
+
 /**
  * Severity signalling: an on-leave driver with NO substitute is the actionable
  * case (the engine will fail their jobs with "Nghỉ, không người thay"), so the
@@ -728,6 +800,8 @@ export function LeaveStatusPanel({
   tomorrow,
   invalid = [],
   spanning = [],
+  suppressed = [],
+  suppressedUnreadable = false,
   error = false,
   drivers,
   onRefresh,
@@ -743,6 +817,11 @@ export function LeaveStatusPanel({
    *  their hour window repeats on every day of the span, which is rarely what
    *  was meant. Honoured as written; shown here so it can be split per day. */
   spanning?: SpanningLeaveRow[];
+  /** Days a supervisor deliberately removed, which the MISA sync is barred from
+   *  writing back. Only the ones that can still block something. */
+  suppressed?: LeaveSuppression[];
+  /** The tab exists but would not read, so the bar is currently off. */
+  suppressedUnreadable?: boolean;
   error?: boolean;
   drivers: ConfigDriver[];
   onRefresh: () => void;
@@ -761,6 +840,7 @@ export function LeaveStatusPanel({
 
   const fillSubs = makeFillSubs(onRefresh);
   const deleteRow = makeDeleteRow(onRefresh);
+  const restoreRow = makeRestoreRow(onRefresh);
 
   if (error && noData) {
     return (
@@ -815,6 +895,17 @@ export function LeaveStatusPanel({
             <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 text-violet-800 border border-violet-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
               <AlertTriangle className="size-3" strokeWidth={2} />
               {spanning.length} dòng nhiều ngày
+            </span>
+          )}
+          {suppressed.length > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 text-slate-700 border border-slate-300 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
+              {suppressed.length} đã xoá, không đồng bộ lại
+            </span>
+          )}
+          {suppressedUnreadable && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-red-100 text-red-700 border border-red-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
+              <AlertTriangle className="size-3" strokeWidth={2} />
+              bảng &quot;đã xoá&quot; lỗi
             </span>
           )}
           {totalDuplicate > 0 && (
@@ -912,6 +1003,40 @@ export function LeaveStatusPanel({
                       </li>
                     );
                   })}
+                </ul>
+              </div>
+            )}
+            {suppressedUnreadable && (
+              <div className="mb-2 rounded-md border border-red-300 bg-red-50 px-2 py-1.5">
+                <div className="flex items-center gap-1.5 text-[11px] font-semibold text-red-800">
+                  <AlertTriangle className="size-3.5 shrink-0" strokeWidth={2} />
+                  Không đọc được bảng &quot;Nghỉ phép đã xoá&quot;
+                </div>
+                <p className="mt-0.5 text-[11px] leading-snug text-red-900/80">
+                  Danh sách ngày đã xoá đang KHÔNG chặn được, nên lần đồng bộ MISA tới có thể
+                  tạo lại những dòng đã xoá thủ công. Kiểm tra tên/cột của tab này trong workbook.
+                </p>
+              </div>
+            )}
+            {suppressed.length > 0 && (
+              <div className="mb-2 rounded-md border border-slate-300 bg-slate-50 px-2 py-1.5">
+                <div className="text-[11px] font-semibold text-slate-800">
+                  Ngày nghỉ đã xoá thủ công — MISA sẽ không tạo lại
+                </div>
+                <p className="mt-0.5 text-[11px] leading-snug text-slate-700">
+                  Đơn nghỉ được duyệt một phần thường để lại dòng thừa; những ngày dưới đây đã
+                  được xoá và bị chặn không cho đồng bộ lại. Đơn nghỉ do người nộp (app hoặc
+                  dashboard) KHÔNG bị chặn. Bấm Khôi phục để bỏ chặn — ngày sẽ quay lại ở lần
+                  đồng bộ tới nếu MISA vẫn tính nghỉ.
+                </p>
+                <ul className="mt-1 space-y-0.5">
+                  {suppressed.map((s, i) => (
+                    <SuppressionRow
+                      key={`sup-${s.driver_id}-${s.leave_from}-${suppressionTimeLabel(s) ?? "full"}-${i}`}
+                      s={s}
+                      onRestore={restoreRow}
+                    />
+                  ))}
                 </ul>
               </div>
             )}

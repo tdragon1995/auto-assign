@@ -70,14 +70,38 @@ through the same `POST /api/nghi-phep` a driver's own form uses — so
   row: the tab is an append log so row 2 is months old, but it is also where a
   column-wide formula would be anchored. `scripts/leave-row-delete.test.mts`.
 
-  **A delete is not a tombstone.** The MISA pusher re-derives every charged day
-  from today forward on each run and dedupes purely on the row being present, so
-  deleting a FUTURE day MISA still charges is undone at the next 04:45 / 12:00
-  sync. It sticks when MISA has stopped charging the day, or when the day is in
-  the past (`minDate` never re-pushes those). Anything that wanted to survive a
-  re-push would need a suppression list keyed on driver+date — deliberately not
-  built, because the MISA record is meant to be the truth and a second one to
-  reconcile against is how the two drift apart silently.
+  **A delete IS a tombstone, because on its own it would not be.** The MISA
+  pusher re-derives every charged day from today forward on each run and dedupes
+  purely on the row being present, so a deleted future day MISA still charges
+  would be written straight back at 04:45. Every delete therefore also appends a
+  line to the **"Nghỉ phép đã xoá"** tab (created on first use), and
+  `/api/nghi-phep` refuses to re-create a day carrying one — see
+  `leave-suppression.ts`. Matching is EXACT on driver + day + window: two
+  half-days on one date are two rows, and deleting the morning must not silence
+  the afternoon.
+
+  Two rules stop that list becoming a second truth that drifts:
+
+  - **It only blocks an AUTOMATED push** (`automated: true`, or a note starting
+    `MISA auto`). A person filing leave — the driver's form, the panel — is never
+    blocked, so a stale suppression can never be why a real day off failed to
+    register, and the way past one is the ordinary action rather than sheet
+    surgery.
+  - **It is visible and reversible.** Lines that can still block something are
+    listed in the leave panel with a "Khôi phục" button
+    (`DELETE /api/leave-status/suppression`); past ones are filtered out because
+    the pusher floors its range at today and they can no longer block anything.
+    Restoring only lifts the bar — the day returns at the next sync if MISA
+    still charges it, and stays gone if it does not.
+
+  The read **fails open**, deliberately. A missing tab and an unreadable one look
+  identical through the gviz by-name endpoint (an unknown name returns the
+  workbook's FIRST tab), and the tab genuinely does not exist until the first
+  delete — so failing closed would refuse every leave submission on a fresh
+  deploy, driver form included. An untrusted read lets the write through, which
+  is exactly the pre-feature behaviour; once a process has read the tab once, a
+  later failure raises the dashboard's sheet alarm instead of going quiet.
+  `scripts/leave-suppression.test.mts`.
 
   Both post-write refreshes pass `fresh=1` (`loadLeaveStatus(true)`). Not for
   the server cache — the write path already cleared that — but because

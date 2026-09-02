@@ -8,8 +8,12 @@ import {
   spanningLeaveRows,
 } from "@/lib/leave-config";
 import {
-  updateLeaveSubs, deleteLeaveRow, LeaveWriteError, type LeaveSubWrite,
+  updateLeaveSubs, deleteLeaveRow, appendLeaveDeletion,
+  LeaveWriteError, type LeaveSubWrite,
 } from "@/lib/sheets-writer";
+import {
+  loadLeaveSuppressions, liveSuppressions, invalidateSuppressionCache,
+} from "@/lib/leave-suppression";
 import { loadDriversFromSheet } from "@/lib/config";
 import { addDays, timeToMins, vnDate } from "@/lib/time";
 
@@ -25,6 +29,7 @@ export async function GET(req: NextRequest) {
     const entries = await loadLeaveEntries(fresh);
     // Shares the same cached parse as the call above — no second sheet read.
     const dropped = await loadInvalidLeaveRows();
+    const suppressed = await loadLeaveSuppressions(fresh);
     const today = vnDate();
     const tomorrow = addDays(today, 1);
     return NextResponse.json({
@@ -41,9 +46,22 @@ export async function GET(req: NextRequest) {
       // point of flagging one is to split it BEFORE the span starts, so anything
       // that has not finished yet is worth showing.
       spanning: spanningLeaveRows(entries, dropped, today),
+      // Days deliberately removed, which the MISA sync is therefore barred from
+      // writing back. Shown so the list is never something only the sheet knows:
+      // a suppression nobody can see is how this stops being a delete and starts
+      // being a second source of truth. Past ones are dropped — the pusher never
+      // re-derives those, so they can no longer block anything.
+      suppressed: liveSuppressions(suppressed.list, today),
+      // A tab that exists but would not read. Writes are still allowed through
+      // (see SuppressionLoad.trusted), so say so rather than let the re-pushes
+      // quietly resume.
+      suppressed_unreadable: !suppressed.trusted,
     });
   } catch (e) {
-    return NextResponse.json({ today: [], tomorrow: [], invalid: [], spanning: [], error: String(e) }, { status: 500 });
+    return NextResponse.json(
+      { today: [], tomorrow: [], invalid: [], spanning: [], suppressed: [], error: String(e) },
+      { status: 500 },
+    );
   }
 }
 
@@ -148,7 +166,27 @@ export async function DELETE(req: NextRequest) {
       timeLabel: timeLabel ?? null,
     });
     await invalidateLeaveCache();
-    return NextResponse.json({ ok: true, deleted });
+
+    // The row is gone; now make it STAY gone. Without this line the MISA sync
+    // re-derives the same day at 04:45 and writes it straight back, which is the
+    // whole reason a partly-approved request needed deleting in the first place.
+    //
+    // Ordered after the delete, and its failure does not fail the request: the
+    // deletion has already happened and reporting a 500 would invite a second
+    // click onto a row that is no longer there. It IS reported, though — a
+    // delete that did not suppress is a delete that comes back tomorrow, and the
+    // supervisor should hear that now rather than discover it.
+    let warning: string | null = null;
+    try {
+      await appendLeaveDeletion(deleted, driver_id);
+      invalidateSuppressionCache();
+    } catch (e) {
+      console.error("[leave-status] deleted the row but could not log the suppression", e);
+      warning =
+        "Đã xoá dòng nghỉ, nhưng chưa ghi được vào bảng \"đã xoá\" — " +
+        "lần đồng bộ MISA tới có thể tạo lại dòng này.";
+    }
+    return NextResponse.json({ ok: true, deleted, warning });
   } catch (e) {
     if (e instanceof LeaveWriteError) return bad(e.message);
     return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });

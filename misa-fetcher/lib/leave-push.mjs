@@ -266,12 +266,19 @@ export function buildLeaveSubmissions(
  * could not read the sheet to check, which stops the batch: writing blind is
  * what put the same day off on the sheet 21 times on 30/08.
  *
+ * A 409 carrying `suppressed` is a THIRD thing, and the reason this pusher does
+ * not need to know anything about deletions: a supervisor removed that day on
+ * purpose (a request MISA approved only in part), and the dashboard is refusing
+ * to let this run write it back. Counted apart from an ordinary duplicate so the
+ * run log says the list is doing something, rather than the days silently
+ * vanishing into "already present".
+ *
  * `dryRun` reports exactly what would be written without touching the sheet.
  */
 export async function pushLeave(submissions, { dryRun = false, baseUrl } = {}) {
   const base = (baseUrl || process.env.DASHBOARD_URL || DEFAULT_BASE).replace(/\/$/, "");
   const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
-  const result = { written: 0, duplicate: 0, failed: 0, aborted: false, errors: [] };
+  const result = { written: 0, duplicate: 0, suppressed: 0, failed: 0, aborted: false, errors: [] };
 
   if (dryRun) {
     log(`DRY RUN — ${submissions.length} leave day(s) would be submitted to ${base}/api/nghi-phep:`);
@@ -301,13 +308,22 @@ export async function pushLeave(submissions, { dryRun = false, baseUrl } = {}) {
           // supervisor delete it from the dashboard without wondering whether
           // MISA will put it back.
           note: s.pt_companion ? `MISA auto PT ${stamp}` : `MISA auto ${stamp}`,
+          // Marks this as a robot write, which is what subjects it to the
+          // deleted-days list. A person's submission is never suppressed.
+          automated: true,
           // No notify_message: the leave is already approved in MISA, so the
           // admin Zalo group must not be pinged again for every synced day.
         }),
       });
 
       if (res.status === 409) {
-        result.duplicate++;
+        const body = await res.json().catch(() => ({}));
+        if (body?.suppressed) {
+          result.suppressed++;
+          log(`skipped ${s.date} ${s.driver_name} — đã xoá thủ công, không tạo lại`);
+        } else {
+          result.duplicate++;
+        }
         continue;
       }
       // 503 = the dashboard could not read the Nghỉ phép tab, so it refused to
