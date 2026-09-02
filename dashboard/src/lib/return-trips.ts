@@ -4,9 +4,12 @@ import { vnDate, vnHoursMinutes, parseVnTimestamp } from "./time";
 import { isDriverOnLeave, resolveSubstitute, type LeaveEntry } from "./leave-config";
 import { loadCleanedReturns } from "./return-suppress";
 import { claimTripAction, releaseTripClaim } from "./smart-log-kv";
+import { PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from "./job-filters";
 
-export const PSC_RETURN_LABEL = "🛵 Vận chuyển mẫu PSC (về)";
-export const PSC_OUTBOUND_LABEL = "🛵 Vận chuyển mẫu PSC";
+// Declared in job-filters.ts (edge-safe: it imports only time.ts) and re-exported
+// here, the same pattern via-legs.ts uses for PSC_VIA_LABEL — importers of this
+// module are unaffected.
+export { PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from "./job-filters";
 
 // Race-condition guard across overlapping 30s cycles. L1 only — it guards this
 // lambda. The cross-instance half is claimTripAction (Redis NX, same 60s), which

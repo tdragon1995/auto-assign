@@ -4,7 +4,7 @@ import { publishSnapshot } from "./day-snapshot";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import { DIAG_LOCATION_CUSTOMER_IDS } from "./psc-routes-data";
-import { detectAndCreateReturnTrips, PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from "./return-trips";
+import { detectAndCreateReturnTrips, PSC_RETURN_LABEL } from "./return-trips";
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
 import { cleanupStaleTrips } from "./cleanup-trips";
 import { setCycleSnapshot, recordCoverageGap, claimMorningPass, deferMorningPass, confirmMorningPass, pushRunLog, runDailyMaintenance, claimLateAlert, getAcceptedNotes, type HeldJob } from "./smart-log-kv";
@@ -20,7 +20,7 @@ import {
 } from "./time";
 import { haversineKm } from "./distance";
 import { roadDistancesToPoint } from "./distance-cache";
-import { blockingNotes, isChamCong, isCompletedOrRejectedStop, isNoteApproved, DAYTIME_NON_BLOCKING } from "./job-filters";
+import { blockingNotes, isChamCong, isCompletedOrRejectedStop, isEngineLeg, isNoteApproved, DAYTIME_NON_BLOCKING } from "./job-filters";
 import { placeLabel } from "./place-label";
 import { stripDriverCode } from "./job-detail";
 import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, idleBand, isUnreachedAnchor, liveGpsRef, lastRealPositionRef, type RefStop, type RefLabel } from "./smart-rank";
@@ -191,12 +191,7 @@ function hasPlanAttached(job: any): boolean {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function isInternalOrPlanJob(job: any): boolean {
   if (hasPlanAttached(job)) return true;
-  const labels: string[] = job.labels ?? [];
-  if (
-    labels.includes(PSC_OUTBOUND_LABEL) ||
-    labels.includes(PSC_VIA_LABEL) ||
-    labels.includes(PSC_RETURN_LABEL)
-  ) return true;
+  if (isEngineLeg(job)) return true;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const pickup = ((job.stops ?? []) as any[]).find((s: any) => s.stop_type_id === 1);
   return !!(pickup?.customer_id && DIAG_LOCATION_CUSTOMER_IDS.has(pickup.customer_id));
@@ -1144,16 +1139,6 @@ async function fetchRolloverCandidates(
   if (s4) candidates.push(...s4);
 
   return { candidates, complete, source: source.join(" + ") };
-}
-
-/** True for a leg the engine created for itself — outbound, via or return —
- *  as opposed to a client's request. `isInternalOrPlanJob` above is a WIDER
- *  net (plans, any Diag pickup) answering a different question, so it must not
- *  be reused here: it would refuse to roll a genuine bag run nobody rode. */
-function isEngineLeg(j: { labels?: string[] }): boolean {
-  return (j.labels ?? []).some(
-    (l) => l === PSC_OUTBOUND_LABEL || l === PSC_VIA_LABEL || l === PSC_RETURN_LABEL,
-  );
 }
 
 /**

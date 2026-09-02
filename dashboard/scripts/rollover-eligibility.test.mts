@@ -57,6 +57,8 @@ ok(
 ok("a via leg does NOT roll", !isRollable(job({ labels: [PSC_VIA_LABEL] })));
 ok("an outbound leg does NOT roll", !isRollable(job({ labels: [PSC_OUTBOUND_LABEL] })));
 ok(
+  // Both guards refuse this one (label AND collected pickup) — it pins that they
+  // agree, not the label rule on its own, which the bare-outbound case above pins.
   "an outbound whose pickup was collected does not roll either — the morning sweep takes it",
   !isRollable(
     job({

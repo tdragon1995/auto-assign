@@ -208,6 +208,34 @@ export function isChamCong(job: {
  *  graph. Changing the string means changing it in Cartrack too — it is a real label. */
 export const PSC_VIA_LABEL = "🛵 Vận chuyển mẫu PSC (ghé)";
 
+/** The outbound and return halves of a PSC run. Declared here beside PSC_VIA_LABEL,
+ *  and re-exported from return-trips.ts (which owns the trip logic) so no call site
+ *  had to move: the three labels are one concept — see ENGINE_LEG_LABELS — and a
+ *  concept split across an edge-safe module and the assign graph cannot be stated
+ *  once. Changing a string means changing it in Cartrack too — they are real labels. */
+export const PSC_RETURN_LABEL = "🛵 Vận chuyển mẫu PSC (về)";
+export const PSC_OUTBOUND_LABEL = "🛵 Vận chuyển mẫu PSC";
+
+/** Every label the engine puts on a leg it created for itself. THE list — the
+ *  rollover rule, the late-pickup classifier and the morning cleanup sweep all
+ *  read it, so a fourth leg label is one edit here rather than four across three
+ *  files. Missing one of those sites is silent and expensive: an engine leg that
+ *  rolls loses its driver, becomes unremovable, and re-rolls every morning. */
+export const ENGINE_LEG_LABELS: readonly string[] = [
+  PSC_OUTBOUND_LABEL,
+  PSC_VIA_LABEL,
+  PSC_RETURN_LABEL,
+];
+
+/** True for a leg the engine created for itself — outbound, via or return — as
+ *  opposed to a client's request. Note `isInternalOrPlanJob` in assign.ts is a WIDER
+ *  net (plans, any Diag pickup) answering a different question: it is built ON this
+ *  one, but is not a substitute for it. */
+export function isEngineLeg(job: { labels?: string[] | null }): boolean {
+  const labels = job.labels ?? [];
+  return ENGINE_LEG_LABELS.some((l) => labels.includes(l));
+}
+
 /** True if this stop can still block re-booking (Created, En Route, Arrived). */
 export function isActiveStop(stopStatusId: number): boolean {
   return stopStatusId === 1 || stopStatusId === 2 || stopStatusId === 3;

@@ -8,7 +8,7 @@ import {
   getJobsByStatusAndDate,
   type Env,
 } from "./cartrack";
-import { isStopStarted } from "./job-filters";
+import { isStopStarted, ENGINE_LEG_LABELS } from "./job-filters";
 import { vnDate, vnMinutesSinceMidnight, parseVnTimestamp } from "./time";
 import { PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL, isOnShift, subToCoveredDriver, shiftMappingsForPsc } from "./return-trips";
 import { PSC_VIA_LABEL } from "./via-legs";
@@ -140,8 +140,8 @@ async function rejectJob(jobId: number, reason: string, env: Env): Promise<boole
  * — a pickup collected but never delivered. Removing the job does not lose the
  * samples, and yesterday's outbound cannot be delivered today under yesterday's
  * date anyway; the run is re-created when its route next fires. What it does
- * lose is the record of that collection, so a part-worked leftover is logged as
- * such (see the LEFT-OVER lines below) rather than removed in silence.
+ * lose is the record of that collection, so a part-worked leftover is marked
+ * ĐÃ LẤY MẪU, CHƯA GIAO in its cleanup log line rather than removed in silence.
  *
  * One label-filtered JSON-RPC call per label (prod-only); skipped for the rest
  * of the day once a sweep finds nothing to clean.
@@ -152,20 +152,21 @@ async function collectRolloverTasks(env: Env): Promise<CleanupTask[]> {
   if (sweptCleanOn === today) return [];
   const yesterday = vnDate(new Date(Date.now() - 24 * 3600e3));
 
-  // One single-label call each — the multi-label filter semantics are unverified.
-  const [retStops, viaStops, outStops] = await Promise.all([
-    getStopsByLabels(yesterday, [PSC_RETURN_LABEL], env),
-    getStopsByLabels(yesterday, [PSC_VIA_LABEL], env),
-    getStopsByLabels(yesterday, [PSC_OUTBOUND_LABEL], env),
-  ]);
+  // One single-label call per engine label, in parallel. Deliberately NOT one
+  // multi-label call: the filter's AND/OR semantics are unverified, and a merged
+  // query would push all three labels through the single hardcoded page of 200
+  // that getStopsByLabels asks for — outbound alone is the highest-volume label.
+  const perLabel = await Promise.all(
+    ENGINE_LEG_LABELS.map((l) => getStopsByLabels(yesterday, [l], env)),
+  );
   // Any one failing aborts the pass: a partial sweep would set sweptCleanOn for
   // the day if the labels that DID answer were clean, and the missing label's
   // leftovers would then sit untouched until tomorrow.
-  if (!retStops || !viaStops || !outStops) return []; // fetch failed — retry next cycle
+  if (perLabel.some((r) => !r)) return []; // fetch failed — retry next cycle
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const byJob = new Map<number, any[]>();
-  for (const s of [...retStops, ...viaStops, ...outStops]) {
+  for (const s of perLabel.flatMap((r) => r ?? [])) {
     const arr = byJob.get(s.job_id);
     if (arr) arr.push(s);
     else byJob.set(s.job_id, [s]);
@@ -186,12 +187,11 @@ async function collectRolloverTasks(env: Env): Promise<CleanupTask[]> {
     // completed under yesterday's date — but it is named in the log so the
     // morning has something to read, instead of the removal being silent.
     const collected = pickup?.stop_status_id === 4 && dropoff?.stop_status_id !== 4;
-    const mark = collected ? " | ĐÃ LẤY MẪU, CHƯA GIAO" : "";
     tasks.push({
       jobId,
       date: yesterday,
       reason: ROLLOVER_REASON,
-      label: `Rollover #${jobId} (${yesterday}) | ${route}${mark}`,
+      label: `Rollover #${jobId} (${yesterday}) | ${route}${collected ? " | ĐÃ LẤY MẪU, CHƯA GIAO" : ""}`,
     });
   }
 
@@ -211,8 +211,8 @@ async function collectRolloverTasks(env: Env): Promise<CleanupTask[]> {
  *     driver passed the via PSC without servicing it, so the leg is dead weight.
  *  B) Stale return trips — an untouched return trip for a driver who is now off
  *     shift for that PSC (same `isOnShift` gate the creator uses, inverted).
- *  C) Rolled-over leftovers — yesterday's return/via jobs still live today,
- *     including STARTED ones the same-day rules must not touch (see
+ *  C) Rolled-over leftovers — yesterday's engine legs (outbound/via/return) still
+ *     live today, including STARTED ones the same-day rules must not touch (see
  *     collectRolloverTasks). Replaces the manual next-morning admin removal.
  *  D) End-of-day return sweep — in the day's last ~2 cycles (from 21:54, engine
  *     disarms 22:00) every live return is swept, started or not, so nothing
