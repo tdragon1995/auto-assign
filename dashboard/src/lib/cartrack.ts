@@ -976,7 +976,14 @@ export async function jsonRpc<T = unknown>(
 /** fleetweb label ids for this account — the RPC only accepts integers here.
  *  Discovered by REST-creating a job with the string label and reading
  *  `labels[].labelId` back via delivery_get_job_details. A label missing from
- *  this map forces the REST path; never guess ids. */
+ *  this map forces the REST path; never guess ids.
+ *
+ *  The keys stay RAW STRINGS on purpose, even where a constant exists
+ *  (PSC_OUTBOUND_LABEL and friends). An id belongs to the exact string it was
+ *  round-tripped with, so a computed key `[PSC_OUTBOUND_LABEL]: 716` would pair a
+ *  RENAMED label with the OLD id and the RPC would create jobs carrying the wrong
+ *  label — silent and wrong. A literal key simply stops matching, which falls back
+ *  to REST: slower, and the documented safe outcome. Do not "tidy" these. */
 const RPC_LABEL_IDS: Record<string, number> = {
   check_in: 728,
   check_out: 727,

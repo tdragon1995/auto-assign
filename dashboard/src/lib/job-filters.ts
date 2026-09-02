@@ -222,9 +222,13 @@ export const PSC_OUTBOUND_LABEL = "🛵 Vận chuyển mẫu PSC";
  *  and expensive: an engine leg that rolls loses its driver, becomes unremovable, and
  *  re-rolls every morning.
  *
- *  A fourth leg label is one edit here, but NOT only here: DUPLICATE_EXEMPT_LABELS in
- *  assign.ts is deliberately not this set (via and return are exempt from duplicate
- *  detection, outbound is not), so it needs its own decision. */
+ *  A fourth leg label is one edit here, but NOT only here — and the neighbouring policy
+ *  is NOT this set, in either direction. Duplicate handling splits the question in two:
+ *  DUPLICATE_EXEMPT_LABELS in assign.ts decides who is never REJECTED (return, and PSC
+ *  tỉnh — but a return still sits in the active-route map, so it can still block), while
+ *  the skip in buildActiveRouteMap decides who never BLOCKS (via — which is therefore
+ *  still rejectable itself). Outbound is in neither. A new label needs its own decision
+ *  in both places. */
 export const ENGINE_LEG_LABELS: readonly string[] = [
   PSC_OUTBOUND_LABEL,
   PSC_VIA_LABEL,

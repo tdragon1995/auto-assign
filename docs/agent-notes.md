@@ -158,9 +158,9 @@ Items marked ✅ are complete; remaining items are ordered by ROI.
 - ✅ **Extract shared Cartrack client** — `BASE_URL`, `JSONRPC_URL`, `getHeaders` exported from `lib/cartrack.ts`
 - ✅ **`lib/distance.ts`** — `haversineKm`, `goongDistanceKm`, `goongMatrix` shared by all callers
 - ✅ **VN time helpers** — `Date.now()+7h` pattern removed; use `vnDate()`/`vnHoursMinutes()` from `lib/time.ts`
-- ✅ **`lib/job-filters.ts`** — `STOP_STATUS`, `JOB_STATUS`, `isActiveStop`, `isStopStarted`, `isCompletedOrRejectedStop`
+- ✅ **`lib/job-filters.ts`** — edge-safe job/stop vocabulary; see the CLAUDE.md shared-libraries table for the current export list
 - ✅ **`lib/smart-rank.ts`** — `selectReferenceStop`, `computeStopStats`, `rankingComparator` shared by `assign.ts` and `smart-assign/route.ts`
 - ✅ **Type Cartrack responses** — `Job` and `Stop` in `lib/types.ts` now include activity timestamps, labels, delivery_driver_id, etc.
 - ✅ **Document Labcenter** — `LABCENTER_EMAIL`/`LABCENTER_PASSWORD` in CLAUDE.md and `.env.example`; all API routes documented
 - **Fix auth shadowing** — `assign.ts` inner `buildActiveRouteMap` shadows the env-aware auth with `process.env.CARTRACK_AUTH` directly; smart-assign always uses prod fleetweb credentials regardless of `?env=uat`
-- **Label taxonomy** — `PSC_TINH_LABEL`, `"🛵 Vận chuyển mẫu PSC"`, `"🛵 Vận chuyển mẫu B2B"`, `"audit_weekly"`, `"check_in"`, `"check_out"` are scattered inline; consolidate in `lib/job-filters.ts`
+- ◐ **Label taxonomy** — the PSC engine legs are done: `PSC_OUTBOUND_LABEL`, `PSC_VIA_LABEL`, `PSC_RETURN_LABEL` are declared in `lib/job-filters.ts` with `ENGINE_LEG_LABELS` / `isEngineLeg` over them, and every producer and consumer imports them from there. Still inline: `"audit_weekly"` (one file, fine as a local const), `"check_in"` / `"check_out"` (`CHAM_CONG_LABELS` exists but `/api/cham-cong` still types both strings by hand at ~7 sites), and the raw keys of `RPC_LABEL_IDS` in `cartrack.ts` — those are deliberate, see the note there before binding them

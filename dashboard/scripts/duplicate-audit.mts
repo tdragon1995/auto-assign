@@ -24,8 +24,7 @@ delete process.env.KV_REST_API_URL;
 delete process.env.KV_REST_API_TOKEN;
 
 const { buildSnapshot } = await import("../src/lib/day-snapshot");
-const { isBlockingPickupStop, pscPairKey, STOP_STATUS } = await import("../src/lib/job-filters");
-const { PSC_VIA_LABEL } = await import("../src/lib/job-filters");
+const { isBlockingPickupStop, pscPairKey, STOP_STATUS, PSC_VIA_LABEL } = await import("../src/lib/job-filters");
 const { vnDate } = await import("../src/lib/time");
 
 const DATE = vnDate();
