@@ -53,6 +53,31 @@ a dozen drivers hold both a PT and a DC account under one personal name, so a ba
 name matching both is left alone. Recovered rows are still reported for repair, in
 blue rather than red. See `driver-match.ts`; step 4 of the config plan deletes it.
 
+### Leave rows: written by MISA, removable by hand
+
+The MISA sync (`misa-fetcher/`) writes one Nghỉ phép row per day MISA charged,
+through the same `POST /api/nghi-phep` a driver's own form uses — so
+`findLeaveConflict` makes a re-run idempotent. Two things follow from that:
+
+- **A partly-approved request leaves rows behind.** Cancelling the rest in MISA
+  does not reach back into the sheet, so the engine keeps the driver off on days
+  they are working. `DELETE /api/leave-status` removes ONE row, identified the
+  way `updateLeaveSubs` identifies one (driver + `leave_from` + window,
+  re-resolved against the sheet at write time — never a row number the dashboard
+  is holding). Where several rows answer to the same identity the UNCOVERED one
+  goes first and the response says how many are left, so the substitute on a
+  duplicate's twin is never the thing that disappears. It refuses the first data
+  row: the tab is an append log so row 2 is months old, but it is also where a
+  column-wide formula would be anchored. `scripts/leave-row-delete.test.mts`.
+- **A day off is filed against the PART-TIME TWIN too.** About a dozen people
+  hold both a `DC…` and a `PT…` account and switch to the second for a trip
+  running past their shift; MISA only ever names the account it charges. A full
+  day off copies as a full day; an afternoon half-day copies as "from when they
+  leave until 23:59" — NOT the MISA window, which would leave the evening open
+  and make the feature a no-op. A morning half-day copies as nothing. The twin
+  must match by name to exactly one active PT account or the day is left alone
+  and reported. `misa-fetcher/scripts/pt-companion.test.mjs`.
+
 ## Architecture
 
 ### Data Flow

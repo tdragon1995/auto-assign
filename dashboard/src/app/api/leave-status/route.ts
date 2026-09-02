@@ -7,7 +7,9 @@ import {
   invalidateLeaveCache,
   spanningLeaveRows,
 } from "@/lib/leave-config";
-import { updateLeaveSubs, LeaveWriteError, type LeaveSubWrite } from "@/lib/sheets-writer";
+import {
+  updateLeaveSubs, deleteLeaveRow, LeaveWriteError, type LeaveSubWrite,
+} from "@/lib/sheets-writer";
 import { loadDriversFromSheet } from "@/lib/config";
 import { addDays, timeToMins, vnDate } from "@/lib/time";
 
@@ -109,6 +111,45 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     // Business rejections (row full, row not found, bad input) are the user's to
     // fix → 400 with the message verbatim; anything else is a real 500.
+    if (e instanceof LeaveWriteError) return bad(e.message);
+    return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });
+  }
+}
+
+/** DELETE — remove ONE leave row from the sheet. Body:
+ *    { driver_id, leave_from, timeLabel }
+ *  — the same identity the sub-fill uses, re-resolved against the sheet at write
+ *  time rather than trusting a row number the dashboard is holding.
+ *
+ *  The case it is for: MISA approves a leave request only in PART. The sync has
+ *  already written a row per charged day, and cancelling the rest in MISA does
+ *  not reach back into this sheet — so without this the engine keeps the driver
+ *  off on days they are working, and their lane fails every cycle.
+ *
+ *  Only ever one row per call. Where the sheet holds the duplicate pair the
+ *  panel flags, the UNCOVERED copy goes first and the response says how many
+ *  identical rows are left, so a real record is never taken out by a stray click.
+ */
+export async function DELETE(req: NextRequest) {
+  const bad = (msg: string) => NextResponse.json({ ok: false, error: msg }, { status: 400 });
+  try {
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== "object") return bad("Body không hợp lệ");
+    const { driver_id, leave_from, timeLabel } = body as {
+      driver_id?: string;
+      leave_from?: string;
+      timeLabel?: string | null;
+    };
+    if (!driver_id || !leave_from) return bad("Thiếu driver_id / leave_from");
+
+    const deleted = await deleteLeaveRow({
+      driver_id,
+      leave_from,
+      timeLabel: timeLabel ?? null,
+    });
+    await invalidateLeaveCache();
+    return NextResponse.json({ ok: true, deleted });
+  } catch (e) {
     if (e instanceof LeaveWriteError) return bad(e.message);
     return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });
   }

@@ -203,13 +203,31 @@ async function runOnce() {
     }
 
     // ── Leave → Nghỉ phép (the engine's source of truth) ────────────────
-    const { submissions, unmatched } = buildLeaveSubmissions(attendance, byCode, range);
+    // `roster` is the whole Driver tab, not the code-keyed map: the part-time
+    // twin is found by NAME, and a twin need not carry an employee_code at all.
+    const { submissions, unmatched, ptUnresolved } = buildLeaveSubmissions(
+      attendance,
+      byCode,
+      range,
+      { roster: drivers },
+    );
     if (unmatched.size) {
       console.warn(
         `[run] ⚠ ${unmatched.size} MISA employee(s) on leave have no active Cartrack driver — leave not pushed: ` +
           [...unmatched.entries()].map(([c, n]) => `${c} ${n}`).join("; "),
       );
     }
+    // A name matching two part-time accounts is left alone rather than guessed
+    // at — but silently leaving it alone is how the twin keeps taking evening
+    // work on a day off, so say which people need looking at.
+    if (ptUnresolved.size) {
+      console.warn(
+        `[run] ⚠ ${ptUnresolved.size} người nghỉ có NHIỀU tài khoản PT trùng tên — chưa tạo dòng nghỉ PT: ` +
+          [...ptUnresolved.entries()].map(([c, n]) => `${c} ${n}`).join("; "),
+      );
+    }
+    const ptRows = submissions.filter((s) => s.pt_companion).length;
+    if (ptRows) console.log(`[run] leave: ${ptRows} dòng nghỉ PT kèm theo`);
     let leaveResult = null;
     if (!args.has("--no-leave") && submissions.length) {
       leaveResult = await pushLeave(submissions, { dryRun: DRY_RUN || args.has("--leave-dry") });

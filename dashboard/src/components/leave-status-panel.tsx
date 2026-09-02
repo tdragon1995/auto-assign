@@ -183,6 +183,111 @@ export type FillSubsFn = (
   subs: { name: string; from: string | null; to: string | null }[],
 ) => Promise<boolean>;
 
+/** The identity of one leave row, as the sheet writers re-resolve it: driver +
+ *  start date + window. Never a row number — the sheet moves under us. */
+export type LeaveRowIdentity = {
+  driver_id: string;
+  leave_from: string;
+  timeLabel: string | null;
+};
+
+export type DeleteRowFn = (identity: LeaveRowIdentity) => Promise<boolean>;
+
+/** "2026-09-04" → "04/09"; a range collapses to one date when both ends match. */
+function rangeLabel(from: string, to: string | null): string {
+  return !to || to === from ? ddmm(from) : `${ddmm(from)}–${ddmm(to)}`;
+}
+
+/** Delete one leave row from the sheet. Shared by the "Cần xử lý" list and the
+ *  reference panel, exactly as makeFillSubs is, so both go through one path. */
+function makeDeleteRow(onRefresh: () => void): DeleteRowFn {
+  return async (identity) => {
+    try {
+      const res = await fetch("/api/leave-status", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(identity),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        toast.error(data.error ?? `HTTP ${res.status}`);
+        return false;
+      }
+      const d = data.deleted ?? {};
+      // Name the dates that actually went. A hand-typed row can span several
+      // days, and deleting it removes all of them — the supervisor should see
+      // that immediately, not discover it tomorrow.
+      toast.success(
+        `Đã xoá dòng nghỉ ${rangeLabel(d.leave_from ?? identity.leave_from, d.leave_to ?? null)}` +
+          (d.remaining > 0 ? ` — còn ${d.remaining} dòng trùng` : ""),
+      );
+      onRefresh();
+      return true;
+    } catch (e) {
+      toast.error(`Không xoá được: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
+  };
+}
+
+/**
+ * Two-click delete for one leave row.
+ *
+ * Armed state rather than a window.confirm: this sits inside a list that
+ * refreshes under the pointer, and a native dialog on a phone is the one place
+ * a supervisor cannot see WHICH row they are about to remove. The armed button
+ * names the row it belongs to and disarms on a second thought.
+ */
+function DeleteRowButton({
+  identity,
+  onDelete,
+}: {
+  identity: LeaveRowIdentity;
+  onDelete: DeleteRowFn;
+}) {
+  const [armed, setArmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  if (!armed) {
+    return (
+      <button
+        type="button"
+        onClick={() => setArmed(true)}
+        title="Xoá dòng nghỉ này khỏi sheet (đơn MISA bị duyệt một phần, dòng trùng…)"
+        className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] text-slate-500 hover:border-red-300 hover:bg-red-50 hover:text-red-700"
+      >
+        Xoá
+      </button>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className="text-[11px] font-semibold text-red-700">Xoá dòng này?</span>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          const ok = await onDelete(identity);
+          setBusy(false);
+          if (!ok) setArmed(false);
+        }}
+        className="rounded border border-red-500 bg-red-600 px-1.5 py-0.5 text-[11px] font-semibold text-white hover:bg-red-700 disabled:opacity-60"
+      >
+        {busy ? "Đang xoá…" : "Xoá"}
+      </button>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => setArmed(false)}
+        className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] text-slate-600 hover:bg-slate-50"
+      >
+        Hủy
+      </button>
+    </span>
+  );
+}
+
 /**
  * Inline editor for filling substitutes on an uncovered leave row. One block =
  * one sub; "+ Chia ca" splits coverage into up to 3 blocks, each with its own
@@ -321,10 +426,12 @@ function DriverCard({
   g,
   driverNames,
   onFill,
+  onDelete,
 }: {
   g: DriverGroup;
   driverNames: Set<string>;
   onFill: FillSubsFn;
+  onDelete: DeleteRowFn;
 }) {
   const resigned = g.loai_nghi === "Nghỉ việc";
   const uncovered = !resigned && g.rows.some((r) => r.subs.length === 0);
@@ -381,6 +488,12 @@ function DriverCard({
                   Trùng dòng — dọn sheet
                 </span>
               )}
+              <span className="ml-auto shrink-0">
+                <DeleteRowButton
+                  identity={{ driver_id: g.driver_id, leave_from: r.leave_from, timeLabel: r.timeLabel }}
+                  onDelete={onDelete}
+                />
+              </span>
             </div>
             {editRow === i && (
               <SubEditor
@@ -406,11 +519,13 @@ function DaySection({
   groups,
   driverNames,
   onFill,
+  onDelete,
 }: {
   label: string;
   groups: DriverGroup[];
   driverNames: Set<string>;
   onFill: FillSubsFn;
+  onDelete: DeleteRowFn;
 }) {
   return (
     <div className="flex-1 min-w-[220px]">
@@ -421,7 +536,13 @@ function DaySection({
       ) : (
         <div className="divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200">
           {groups.map((g) => (
-            <DriverCard key={g.driver_id} g={g} driverNames={driverNames} onFill={onFill} />
+            <DriverCard
+              key={g.driver_id}
+              g={g}
+              driverNames={driverNames}
+              onFill={onFill}
+              onDelete={onDelete}
+            />
           ))}
         </div>
       )}
@@ -474,11 +595,13 @@ function UncoveredRowItem({
   item,
   driverNames,
   onFill,
+  onDelete,
   listId,
 }: {
   item: UncoveredRow;
   driverNames: Set<string>;
   onFill: FillSubsFn;
+  onDelete: DeleteRowFn;
   listId: string;
 }) {
   const [editing, setEditing] = useState(false);
@@ -493,14 +616,28 @@ function UncoveredRowItem({
           <span className="font-mono text-[11px] text-slate-500">{item.row.timeLabel}</span>
         )}
         {!editing && (
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-6 px-2 text-[11px] ml-auto shrink-0"
-            onClick={() => setEditing(true)}
-          >
-            Thêm người thay
-          </Button>
+          <span className="ml-auto flex shrink-0 items-center gap-1">
+            {/* Not every uncovered window needs a substitute: a MISA request
+                approved only in part leaves days off that nobody is actually
+                taking, and the fix for those is removing the row, not staffing
+                it. Both answers live on the row that raises the question. */}
+            <DeleteRowButton
+              identity={{
+                driver_id: item.driver_id,
+                leave_from: item.row.leave_from,
+                timeLabel: item.row.timeLabel,
+              }}
+              onDelete={onDelete}
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 px-2 text-[11px]"
+              onClick={() => setEditing(true)}
+            >
+              Thêm người thay
+            </Button>
+          </span>
         )}
       </div>
       {editing && (
@@ -548,6 +685,7 @@ export function UncoveredLeaveSection({
   const listId = useId();
   const items = uncoveredWindows(groupByDriver(entries));
   const fillSubs = makeFillSubs(onRefresh);
+  const deleteRow = makeDeleteRow(onRefresh);
   const driverNames = new Set(drivers.map((d) => d.name));
   if (items.length === 0) return null;
 
@@ -562,6 +700,7 @@ export function UncoveredLeaveSection({
             item={item}
             driverNames={driverNames}
             onFill={fillSubs}
+            onDelete={deleteRow}
             listId={listId}
           />
         ))}
@@ -621,6 +760,7 @@ export function LeaveStatusPanel({
   const invalidRecovered = invalid.filter((r) => r.recovered);
 
   const fillSubs = makeFillSubs(onRefresh);
+  const deleteRow = makeDeleteRow(onRefresh);
 
   if (error && noData) {
     return (
@@ -776,8 +916,20 @@ export function LeaveStatusPanel({
               </div>
             )}
             <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-              <DaySection label="Hôm nay" groups={todayGroups} driverNames={driverNames} onFill={fillSubs} />
-              <DaySection label="Ngày mai" groups={tomorrowGroups} driverNames={driverNames} onFill={fillSubs} />
+              <DaySection
+                label="Hôm nay"
+                groups={todayGroups}
+                driverNames={driverNames}
+                onFill={fillSubs}
+                onDelete={deleteRow}
+              />
+              <DaySection
+                label="Ngày mai"
+                groups={tomorrowGroups}
+                driverNames={driverNames}
+                onFill={fillSubs}
+                onDelete={deleteRow}
+              />
             </div>
           </div>
         )}
