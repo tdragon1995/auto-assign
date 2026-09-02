@@ -67,6 +67,13 @@ export interface BranchRule {
 export interface CoverageGap {
   customer_id: string;
   pickup_name: string;
+  /** Where the job that fell into the hole was going, for context — shown grey
+   *  beside the branch, the same as on an unfinished row. Blank when the job
+   *  had no dropoff stop, when the record predates this field, or when the
+   *  minutes collapsed into this hole were going to different places (in which
+   *  case naming one of them would be a lie). Display only: it never scopes the
+   *  rule the editor writes. */
+  dropoff_name?: string;
   /** "HH:MM" — the earliest time a job needed and nobody was on. */
   at: string;
   /** Other minutes that fell into the SAME hole, earliest first. A gap is

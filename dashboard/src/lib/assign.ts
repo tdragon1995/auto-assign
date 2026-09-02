@@ -2387,7 +2387,8 @@ export async function autoAssignCycle(
       // promise is settled after the loop, where a NEW hole triggers the re-parse
       // that puts it on the dashboard.
       if (customerId) {
-        gapWrites.push(recordCoverageGap(customerId, jobCustomerName ?? customerId, hhmm).catch(() => false));
+        const dropName = job.stops?.find((st) => st.stop_type_id === 2)?.customer_name ?? "";
+        gapWrites.push(recordCoverageGap(customerId, jobCustomerName ?? customerId, hhmm, dropName).catch(() => false));
       }
       continue;
     }

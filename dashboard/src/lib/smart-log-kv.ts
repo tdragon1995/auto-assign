@@ -1253,14 +1253,17 @@ const gapField = (customerId: string, at: string) => `${customerId}|${at}`;
  * tomorrow morning's parse. Only a genuinely new one is worth a re-parse.
  */
 export async function recordCoverageGap(
-  customerId: string, pickupName: string, at: string,
+  customerId: string, pickupName: string, at: string, dropoffName = "",
 ): Promise<boolean> {
   const field = gapField(customerId, at);
   if (!customerId || !at || seenGaps.has(field)) return false;
   const redis = getRedis();
   if (!redis) return false;
   try {
-    const added = await redis.hset(GAPS_KEY, { [field]: JSON.stringify({ customer_id: customerId, pickup_name: pickupName, at }) });
+    // The destination rides along in the SAME field — context for the panel, not
+    // a second record. The key stays branch-and-minute, so a branch shipping to
+    // two places at that minute is still one hole and still one HSET.
+    const added = await redis.hset(GAPS_KEY, { [field]: JSON.stringify({ customer_id: customerId, pickup_name: pickupName, dropoff_name: dropoffName, at }) });
     // Marked seen only once it is actually stored, so a Redis blip retries next
     // cycle instead of losing the gap for the life of this instance.
     seenGaps.add(field);
@@ -1270,7 +1273,13 @@ export async function recordCoverageGap(
   }
 }
 
-export interface RecordedGap { customer_id: string; pickup_name: string; at: string }
+export interface RecordedGap {
+  customer_id: string;
+  pickup_name: string;
+  at: string;
+  /** Absent on anything written before this field existed. */
+  dropoff_name?: string;
+}
 
 /** Everything recorded so far. One command. */
 export async function readCoverageGaps(): Promise<RecordedGap[]> {

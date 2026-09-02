@@ -351,7 +351,7 @@ export function isCovered(rules: readonly RuleRow[], atMin: number): boolean {
  * by whoever raised it outlives them.
  */
 export function resolveGaps(
-  recorded: readonly { customer_id: string; pickup_name: string; at: string }[],
+  recorded: readonly { customer_id: string; pickup_name: string; at: string; dropoff_name?: string }[],
   rulesByCustomer: ReadonlyMap<string, RuleRow[]>,
 ): { open: CoverageGapOut[]; closed: { customer_id: string; at: string }[] } {
   const open: CoverageGapOut[] = [];
@@ -391,11 +391,17 @@ export function resolveGaps(
       const times = [seen.at, ...seen.also, g.at].sort();
       seen.at = times[0];
       seen.also = times.slice(1);
+      // The destination survives the collapse only while every minute in the
+      // hole agrees. One hole can swallow trips to two different labs, and
+      // showing whichever happened to be recorded first would name a place this
+      // to-do is not only about — so it says nothing rather than something wrong.
+      if ((seen.dropoff_name ?? "") !== (g.dropoff_name ?? "")) seen.dropoff_name = "";
       continue;
     }
     const entry: CoverageGapOut = {
       customer_id: g.customer_id,
       pickup_name: g.pickup_name,
+      dropoff_name: g.dropoff_name ?? "",
       at: g.at,
       also: [],
       before: before ? { row: before.row, driver: before.driver, window: win(before) } : null,
@@ -411,6 +417,9 @@ export function resolveGaps(
 export interface CoverageGapOut {
   customer_id: string;
   pickup_name: string;
+  /** Where the job was going, "" when unknown or not shared by every minute in
+   *  the hole. Context for the panel only. */
+  dropoff_name: string;
   at: string;
   /** Other minutes recorded against this same hole, earliest first. */
   also: string[];

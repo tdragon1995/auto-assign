@@ -420,8 +420,14 @@ function GapRow({
         <span className="shrink-0 rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 font-mono text-[11px] text-amber-800">
           {g.at}
         </span>
-        <span className="min-w-0 flex-1 break-words md:truncate text-sm font-medium text-slate-800" title={g.pickup_name}>
+        <span
+          className="min-w-0 flex-1 break-words md:truncate text-sm font-medium text-slate-800"
+          title={`${g.pickup_name}${g.dropoff_name ? ` → ${g.dropoff_name}` : ""}`}
+        >
           {g.pickup_name}
+          {/* Grey, exactly as on an unfinished row: the branch is what the fix is
+              about, the destination only says which trip fell in the hole. */}
+          {g.dropoff_name && <span className="text-slate-400"> → {g.dropoff_name}</span>}
         </span>
         {!open && (
           <Button size="sm" className="h-6 shrink-0 text-[11px] px-2" onClick={() => setOpen(true)}>

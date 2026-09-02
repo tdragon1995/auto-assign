@@ -98,6 +98,22 @@ ok("a minute in the hole is not covered", !isCovered(day, 15 * 60 + 10));
      open.map((o) => [o.before?.row, o.after?.row]), [[10, 11], [11, 12]]);
 }
 {
+  // The destination is context on the row, so it has to survive a collapse only
+  // while it is TRUE of the whole hole.
+  const rules = new Map([["C1", day]]);
+  const one = { customer_id: "C1", pickup_name: "PK Test", dropoff_name: "Lab A", at: "15:10" };
+  const same = { ...one, at: "15:40" };
+  const other = { ...one, dropoff_name: "Lab B", at: "15:50" };
+  eq("a lone gap carries where the job was going",
+     resolveGaps([one], rules).open[0].dropoff_name, "Lab A");
+  eq("...kept when every minute in the hole went to the same place",
+     resolveGaps([one, same], rules).open[0].dropoff_name, "Lab A");
+  eq("...dropped rather than guessed when they went to different ones",
+     resolveGaps([one, other], rules).open[0].dropoff_name, "");
+  eq("a record written before the field existed simply has none",
+     resolveGaps([gap("15:10")], rules).open[0].dropoff_name, "");
+}
+{
   // Same minute, different branches. Grouping is per branch or one busy morning
   // would swallow every other clinic's hole.
   const rules = new Map([["C1", day], ["C2", day]]);
