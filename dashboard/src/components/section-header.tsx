@@ -19,7 +19,10 @@ export function SectionHeader({
   return (
     <div className={`flex items-baseline gap-1.5 ${className}`}>
       <span className={`text-xs font-semibold ${color}`}>{label}</span>
-      <span className="text-xs tabular-nums text-slate-400">{count}</span>
+      {/* slate-500, not 400: the count is the number people actually read off
+          these headers, and at 400 it sat at 2.63:1 on white — below AA — in all
+          three panels that use this. */}
+      <span className="text-xs tabular-nums text-slate-500">{count}</span>
     </div>
   );
 }
