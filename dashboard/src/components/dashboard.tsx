@@ -11,7 +11,7 @@ import { type HeldJob } from "./note-review-panel";
 import { JobAdminPanel } from "./job-admin-panel";
 import { DistanceTab } from "./distance-tab";
 import { FailedJobsPanel, type ScheduleErrorRow } from "./failed-jobs-panel";
-import { LeaveStatusPanel, uncoveredLeaveCount } from "./leave-status-panel";
+import { LeaveStatusPanel } from "./leave-status-panel";
 import { ConfigTodoPanel } from "./config-todo-panel";
 import { SheetAlarmBanner } from "./sheet-alarm-banner";
 import { TatTeamPanel } from "./tat-team-panel";
@@ -511,18 +511,28 @@ export function Dashboard() {
   }, [syncStatus, loadScheduleErrors, loadLeaveStatus]);
 
   const isProd = env === "prod";
-  // Must match FailedJobsPanel's own total, uncovered leave included — the badge
-  // and the list it counts are two different computations of the same number.
   const visibleUnfinished = unfinished.filter((u) => !doneKeys.has(`u:${u.row}`));
   const visibleGaps = gaps.filter((g) => !doneKeys.has(`g:${g.customer_id}|${g.at}`));
 
+  // What is going wrong RIGHT NOW, and nothing else.
+  //
+  // The badge used to count everything the tab renders, which put config to-dos
+  // and unfilled leave — both of which sit until a person edits a sheet, neither
+  // of which gets worse while you read — beside stuck jobs and late pickups. On
+  // an ordinary morning those two swamped the rest, so a badge of 14 said
+  // nothing about whether anything was actually on fire, and a badge that is
+  // never near zero stops being read at all.
+  //
+  // Both still render in the tab, under their own headings and their own counts;
+  // they are just no longer what the badge is measuring. So the badge is now
+  // deliberately LOWER than the number of rows below it — it counts the work the
+  // engine is blocked on, not the work waiting on a person.
   const attentionCount =
     held.length + failed.length + warnings.length + scheduleErrors.length +
-    sheetAlarms.length + visibleUnfinished.length + visibleGaps.length +
+    sheetAlarms.length +
     // Only rows the engine still cannot see. A recovered row is already being
     // honoured, so it is a tidy-up, not something to handle today.
-    leave.invalid.filter((r) => !r.recovered).length +
-    uncoveredLeaveCount(leave.today, leave.tomorrow);
+    leave.invalid.filter((r) => !r.recovered).length;
 
   const tabBtn = (active: boolean) =>
     `px-3 py-1.5 text-xs font-semibold rounded transition-colors border flex items-center gap-1.5 whitespace-nowrap ${
