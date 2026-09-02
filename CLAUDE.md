@@ -268,6 +268,7 @@ These are the things most likely to burn a future agent working on this codebase
     cycle's delay.
 
 See `docs/business-rules.md` for deeper detail, `docs/cartrack-api.md` for API reference,
+`docs/multi-device.md` for working from more than one machine,
 and `docs/driver-tat.md` for the TAT module.
 
 ## CI/CD

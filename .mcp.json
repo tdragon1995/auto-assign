@@ -5,13 +5,8 @@
       "url": "https://mcp.supabase.com/mcp?features=account%2Cdocs%2Cdatabase%2Cdebugging%2Cdevelopment%2Cfunctions%2Cbranching%2Cstorage"
     },
     "code-review-graph": {
-      "command": "C:\\Users\\NguyenThanhLong\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
-      "args": [
-        "-m",
-        "code_review_graph",
-        "serve"
-      ],
-      "cwd": "C:\\Users\\NguyenThanhLong\\Downloads\\auto-assign-repo",
+      "command": "code-review-graph",
+      "args": ["serve"],
       "type": "stdio"
     }
   }
