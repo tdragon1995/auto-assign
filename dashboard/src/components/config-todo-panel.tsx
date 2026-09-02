@@ -106,6 +106,16 @@ const CONFIG_NAMES_LIST_ID = "config-driver-names";
 
 /** A line as the editor holds it while being worked on. */
 interface Line {
+  /**
+   * Stable identity for one line within a single editing session.
+   *
+   * Deliberately NOT the sheet row: a line being added has no row until the
+   * write comes back, and that is precisely the line a retry has to recognise —
+   * otherwise a second attempt appends a second copy of it. Survives the row
+   * being adopted after a successful add, and keeps the React key honest when a
+   * line in the middle is dropped.
+   */
+  key: string;
   /** The sheet row this came from, or undefined for one being added. */
   row?: number;
   driver: string;
@@ -113,7 +123,16 @@ interface Line {
   end: string;
 }
 
-const asLine = (r: BranchRule): Line => ({ row: r.row, driver: r.driver, start: r.start, end: r.end });
+let newLineSeq = 0;
+const newLineKey = () => `new:${++newLineSeq}`;
+
+const asLine = (r: BranchRule): Line => ({
+  key: `row:${r.row}`, row: r.row, driver: r.driver, start: r.start, end: r.end,
+});
+
+/** What a line would WRITE. Two lines with the same signature put the same
+ *  content in the sheet, which is what makes "already written" answerable. */
+const sig = (l: Line) => [l.driver, l.start, l.end].join("\u0000");
 
 /**
  * The driver cell: one name, or several for a smart row.
@@ -216,25 +235,58 @@ function BranchEditor({
   rules: BranchRule[];
   /** The unfinished row itself, when the editor was opened from one — it exists
    *  in the sheet but carries no driver, so it is not among the usable rules. */
-  extraLine?: Line;
+  extraLine?: Omit<Line, "key">;
   drivers: ConfigDriver[];
   onDone: () => void;
   onCancel: () => void;
 }) {
-  const initial: Line[] = [...rules.map(asLine), ...(extraLine ? [extraLine] : [])]
-    .sort((x, y) => (toMin(x.start) - toMin(y.start)) || x.row! - y.row!);
+  /**
+   * Frozen at mount, exactly like `lines` itself.
+   *
+   * The dashboard re-polls every 3 minutes, so `rules` can move underneath an
+   * editor that is open and half-filled. Recomputing the baseline from live
+   * props would then mark lines the supervisor never touched as changed and
+   * write them straight back.
+   */
+  const [initial] = useState<Line[]>(() =>
+    [...rules.map(asLine), ...(extraLine ? [{ ...extraLine, key: `row:${extraLine.row}` }] : [])]
+      .sort((x, y) => (toMin(x.start) - toMin(y.start)) || x.row! - y.row!)
+  );
   const [lines, setLines] = useState<Line[]>(initial);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  /**
+   * What each line looked like the last time it was successfully WRITTEN.
+   *
+   * This is what makes the retry after a partial failure safe. The save loop
+   * writes one line at a time, so a failure on line 3 leaves 1 and 2 already in
+   * the sheet — and because onDone never ran, the props they came from have not
+   * refreshed, so against the baseline alone they still read as changed. Pressing
+   * Lưu again then wrote them a second time: a harmless overwrite for a line that
+   * has a row, but for a line still being ADDED it appended a duplicate rule, and
+   * two rules alive at the same minute is exactly the clash findClash exists to
+   * prevent — now sitting in the sheet, where this editor can no longer see it.
+   */
+  const [committed, setCommitted] = useState<Record<string, string>>({});
 
   const patch = (i: number, v: Partial<Line>) =>
     setLines((ls) => ls.map((l, j) => (j === i ? { ...l, ...v } : l)));
-  const addLine = () => setLines((ls) => [...ls, { driver: "", start: "", end: "" }]);
-  const dropLine = (i: number) => setLines((ls) => ls.filter((_, j) => j !== i));
+  const addLine = () => setLines((ls) => [...ls, { key: newLineKey(), driver: "", start: "", end: "" }]);
+  const dropLine = (key: string) => setLines((ls) => ls.filter((l) => l.key !== key));
 
-  const changed = (l: Line, i: number) => {
-    const was = initial[i];
-    return !was || !l.row || was.driver !== l.driver || was.start !== l.start || was.end !== l.end;
+  const baseline = new Map(initial.map((l) => [l.key, sig(l)]));
+
+  /**
+   * Whether this line still has something to write.
+   *
+   * Matched by KEY rather than by position — dropping a line used to shift every
+   * line after it onto the wrong baseline, so an untouched line could be written
+   * with its neighbour's old values.
+   */
+  const changed = (l: Line) => {
+    if (committed[l.key] === sig(l)) return false;   // written already, unchanged since
+    const was = baseline.get(l.key);
+    return was === undefined || was !== sig(l);      // undefined = a line being added
   };
 
   async function save() {
@@ -263,6 +315,7 @@ function BranchEditor({
     }
 
     setBusy(true);
+    let written = 0;
     try {
       const post = async (url: string, body: unknown) => {
         const res = await fetch(url, {
@@ -272,29 +325,44 @@ function BranchEditor({
         if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
         return j;
       };
-      // Sequential: a failure part way then leaves a clear picture rather than
-      // an unknown number of half-written lines.
-      let written = 0;
-      for (let i = 0; i < resolved.length; i++) {
-        const l = resolved[i];
-        if (!changed(l, i)) continue;
+      // Sequential: a failure part way then leaves a clear picture rather than an
+      // unknown number of half-written lines. Each line that lands is recorded
+      // BEFORE the next is attempted, so that picture survives the throw.
+      for (const l of resolved) {
+        if (!changed(l)) continue;
         if (l.row) {
           await post("/api/config/complete-row", {
             row: l.row, pickup_name: pickupName, driver_name: l.driver,
             shift_start: l.start, shift_end: l.end,
           });
         } else {
-          await post("/api/config/add-rule", {
+          const res = await post("/api/config/add-rule", {
             pickup_name: pickupName, dropoff_name: dropoffName,
             driver_name: l.driver, shift_start: l.start, shift_end: l.end,
           });
+          // Adopt the row the sheet just gave it. This line is an existing row
+          // from here on, so a retry updates it in place instead of adding a
+          // second one beside it.
+          if (typeof res.row === "number") l.row = res.row;
         }
+        // Record the RESOLVED driver name, and normalise the field to it, so the
+        // signature still matches on a later pass — otherwise a name typed as
+        // "nam" and saved as "D001 - Nguyễn Văn Nam" reads as changed again.
+        const done = { ...l };
+        setLines((ls) => ls.map((x) => (x.key === done.key ? { ...x, row: done.row, driver: done.driver } : x)));
+        setCommitted((c) => ({ ...c, [done.key]: sig(done) }));
         written++;
       }
       toast.success(written ? `Đã lưu ${written} dòng — ${pickupName}` : "Không có thay đổi nào");
       onDone();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      // Say what landed. Without it the supervisor cannot tell a total failure
+      // from a partial one, and the obvious recovery — press Lưu again — was the
+      // move that used to duplicate rules.
+      setErr(written > 0
+        ? `Đã lưu ${written} dòng trước khi lỗi: ${msg} — bấm Lưu lại chỉ ghi phần còn thiếu`
+        : msg);
     } finally {
       setBusy(false);
     }
@@ -303,7 +371,7 @@ function BranchEditor({
   return (
     <div className="mt-1 space-y-1 rounded border border-slate-300 bg-white p-1.5">
       {lines.map((l, i) => (
-        <div key={i} className="flex flex-wrap items-center gap-1">
+        <div key={l.key} className="flex flex-wrap items-center gap-1">
           <DriverInput value={l.driver} onChange={(v) => patch(i, { driver: v })} drivers={drivers} />
           <TimeSelect label="Từ giờ" value={l.start} onChange={(v) => patch(i, { start: v })} />
           <span className="text-slate-400 text-[11px]">→</span>
@@ -313,7 +381,7 @@ function BranchEditor({
           </span>
           {!l.row && (
             <button
-              type="button" onClick={() => dropLine(i)}
+              type="button" onClick={() => dropLine(l.key)}
               className="text-slate-400 hover:text-red-600 text-[11px] px-0.5"
               title="Bỏ dòng này"
             >
@@ -341,7 +409,10 @@ function BranchEditor({
           </Button>
         </div>
       </div>
-      {err && <div className="text-[11px] text-red-600">{err}</div>}
+      {/* A save that half-landed is the one message here nobody can afford to
+          miss, and it is the one that decides whether pressing Lưu again is
+          safe — so it is announced, not just coloured. */}
+      {err && <div role="alert" className="text-[11px] text-red-600">{err}</div>}
     </div>
   );
 }
@@ -524,18 +595,29 @@ export function ConfigTodoPanel({
           <span className="ml-auto shrink-0 text-xs text-slate-400">{open ? "▾" : "▸"}</span>
         </button>
 
-        {open && gaps.length > 0 && (
-          <div className={listBox}>
-            {gaps.map((g) => (
-              <GapRow key={`${g.customer_id}-${g.at}`} g={g} rules={branchRules[g.customer_id] ?? []} drivers={drivers} onSaved={onSaved} />
-            ))}
-          </div>
-        )}
-        {open && unfinished.length > 0 && (
-          <div className={listBox}>
-            {unfinished.map((u) => (
-              <UnfinishedRow key={u.row} u={u} rules={branchRules[u.customer_id] ?? []} drivers={drivers} onSaved={onSaved} />
-            ))}
+        {/* Capped and scrolled, exactly as the leave panel caps itself.
+            These are the least urgent things on the tab — they wait on a person
+            editing a sheet — and the card is shrink-0 inside a fixed-height
+            column, so an uncapped list of a dozen open to-dos pushed the stuck
+            jobs and late pickups above it down to nothing. That list is the one
+            thing here getting worse while you read it; it does not lose its
+            space to this one. */}
+        {open && (
+          <div className="max-h-[38vh] space-y-1.5 overflow-y-auto">
+            {gaps.length > 0 && (
+              <div className={listBox}>
+                {gaps.map((g) => (
+                  <GapRow key={`${g.customer_id}-${g.at}`} g={g} rules={branchRules[g.customer_id] ?? []} drivers={drivers} onSaved={onSaved} />
+                ))}
+              </div>
+            )}
+            {unfinished.length > 0 && (
+              <div className={listBox}>
+                {unfinished.map((u) => (
+                  <UnfinishedRow key={u.row} u={u} rules={branchRules[u.customer_id] ?? []} drivers={drivers} onSaved={onSaved} />
+                ))}
+              </div>
+            )}
           </div>
         )}
       </CardContent>
