@@ -1,13 +1,13 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { ClipboardList } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { SectionHeader } from "./section-header";
 import type { CoverageGap, UnfinishedConfigRow, ConfigDriver, BranchRule } from "@/lib/types";
-import { resolveDriverCell, splitDriverNames } from "@/lib/driver-cell";
+import { DRIVER_SEP, foldName, resolveDriverCell, splitDriverNames } from "@/lib/driver-cell";
 import {
   type Line, type Stretch, toMin, newLineKey, asLine, sig, findClash, stretchOptions,
 } from "@/lib/config-shift";
@@ -85,7 +85,6 @@ function TimeSelect({
 
 
 
-const CONFIG_NAMES_LIST_ID = "config-driver-names";
 /** What the panel header discloses, so aria-expanded actually points at it. */
 const LIST_ID = "config-todo-list";
 
@@ -93,49 +92,166 @@ const LIST_ID = "config-todo-list";
 /**
  * The driver cell: one name, or several for a smart row.
  *
- * A datalist matches against the WHOLE field, so the shared list of bare names
- * goes dead the moment a comma is typed and the picker stops helping for exactly
- * the case that needs it most — the second and third driver, whose long
- * code-prefixed names are the ones nobody wants to type by hand. So once the
- * cell holds a comma it gets its own list of "everything typed so far + each
- * roster name", and picking one appends rather than replaces.
+ * Picked, not typed. The cell's multi-driver form is a comma-separated list, and
+ * the editor used to make the supervisor type that punctuation themselves — with
+ * a datalist that matches the WHOLE field, so it went dead the moment a comma
+ * appeared and stopped helping for exactly the names that needed it most: the
+ * second and third driver, whose long code-prefixed spellings nobody wants to
+ * key by hand. The separator was also the only thing distinguishing a fixed rule
+ * from a smart one, which meant a stray comma silently changed what the row DID.
+ *
+ * So the list is the control now. Names go in as chips, the search filters the
+ * roster accent-insensitively, and the comma is an implementation detail of the
+ * sheet again — assembled on the way out, never typed.
  */
-function DriverInput({
+function DriverPicker({
   value, onChange, drivers,
 }: {
   value: string;
   onChange: (v: string) => void;
   drivers: ConfigDriver[];
 }) {
-  const ownList = useId();
-  const cut = value.lastIndexOf(",");
-  const multi = cut >= 0;
-  const prefix = multi ? `${value.slice(0, cut + 1)} ` : "";
-  // Whoever is already named earlier in the cell is not offered again — picking
-  // them would build a cell the save then refuses for being a duplicate, and a
-  // picker that offers an invalid choice is worse than one that offers fewer.
-  const taken = new Set(splitDriverNames(prefix));
+  const names = splitDriverNames(value);
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  /** The menu is positioned FIXED off this box. It has to escape the panel's
+   *  own `overflow-y-auto`, which would otherwise clip it to a few pixels. */
+  const boxRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(null);
+  const listId = useId();
+
+  const taken = new Set(names);
+  const matches = drivers.filter(
+    (d) => !taken.has(d.name) && (!q.trim() || foldName(d.name).includes(foldName(q.trim()))),
+  );
+
+  const place = useCallback(() => {
+    const r = boxRef.current?.getBoundingClientRect();
+    // Bounded, not simply the field's width: the field stretches to hold several
+    // long code-prefixed chips, and a menu that wide leaves each name marooned
+    // against a mostly-empty row.
+    if (r) setRect({ left: r.left, top: r.bottom + 2, width: Math.min(Math.max(r.width, 240), 420) });
+  }, []);
+
+  /** Opening MEASURES first, in the handler, then shows. Placing from inside the
+   *  effect instead would set state during the render the effect follows, which
+   *  is a cascading render — and would also flash the menu at a stale position. */
+  const openMenu = useCallback(() => { place(); setOpen(true); }, [place]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!boxRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    // `true` so a scroll inside the panel repositions too, not just the window.
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    document.addEventListener("mousedown", onDoc);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+      document.removeEventListener("mousedown", onDoc);
+    };
+  }, [open, place]);
+
+  const add = (name: string) => {
+    onChange([...names, name].join(DRIVER_SEP));
+    setQ(""); setActive(0);
+    inputRef.current?.focus();
+    // The field grows by a chip, so the menu hanging off its bottom edge moves.
+    requestAnimationFrame(place);
+  };
+  const remove = (name: string) => onChange(names.filter((n) => n !== name).join(DRIVER_SEP));
+
+  function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!open) { openMenu(); return; }
+      setActive((i) => {
+        const n = matches.length;
+        return n === 0 ? 0 : (e.key === "ArrowDown" ? i + 1 : i - 1 + n) % n;
+      });
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (open && matches[active]) add(matches[active].name);
+    } else if (e.key === "Escape") {
+      setOpen(false);
+    } else if (e.key === "Backspace" && q === "" && names.length > 0) {
+      // The usual chip-field affordance: rubbing out backwards takes the last
+      // name off rather than doing nothing.
+      remove(names[names.length - 1]);
+    }
+  }
+
   return (
-    <>
+    <div
+      ref={boxRef}
+      className="flex min-w-[200px] flex-1 flex-wrap items-center gap-1 rounded border border-slate-300 bg-white px-1 py-0.5 focus-within:ring-2 focus-within:ring-indigo-400/50"
+    >
+      {names.map((n) => (
+        <span
+          key={n}
+          className="inline-flex max-w-full items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-800"
+        >
+          <span className="truncate">{n}</span>
+          <button
+            type="button"
+            onClick={() => remove(n)}
+            aria-label={`Bỏ ${n}`}
+            className="rounded text-slate-600 hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+          >
+            ✕
+          </button>
+        </span>
+      ))}
       <input
+        ref={inputRef}
         type="text"
-        list={multi ? ownList : CONFIG_NAMES_LIST_ID}
-        placeholder="Tên tài xế…"
-        aria-label="Tên tài xế"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="min-w-[140px] flex-1 rounded border border-slate-300 px-1.5 py-1 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+        role="combobox"
+        aria-expanded={open}
+        aria-controls={listId}
+        aria-autocomplete="list"
+        aria-label="Thêm tài xế"
+        placeholder={names.length ? "Thêm tài xế…" : "Chọn tài xế…"}
+        value={q}
+        onChange={(e) => { setQ(e.target.value); setActive(0); openMenu(); }}
+        onFocus={openMenu}
+        onKeyDown={onKeyDown}
+        className="min-w-[90px] flex-1 bg-transparent px-0.5 py-0.5 text-xs outline-none"
       />
-      {multi && (
-        <datalist id={ownList}>
-          {drivers.filter((d) => !taken.has(d.name))
-                   .map((d) => <option key={d.driver_id} value={prefix + d.name} />)}
-        </datalist>
+      {open && rect && (
+        <ul
+          id={listId}
+          role="listbox"
+          style={{ position: "fixed", left: rect.left, top: rect.top, width: rect.width, zIndex: 50 }}
+          className="max-h-56 overflow-y-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg"
+        >
+          {matches.length === 0 && (
+            <li className="px-2 py-1 text-[11px] text-slate-600">Không tìm thấy tài xế</li>
+          )}
+          {matches.map((d, i) => (
+            <li key={d.driver_id}>
+              <button
+                type="button"
+                role="option"
+                aria-selected={i === active}
+                onMouseEnter={() => setActive(i)}
+                onClick={() => add(d.name)}
+                className={`block w-full truncate px-2 py-1 text-left text-xs ${
+                  i === active ? "bg-indigo-50 text-slate-900" : "text-slate-700"
+                }`}
+              >
+                {d.name}
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
-    </>
+    </div>
   );
 }
-
 
 /**
  * The whole of one branch's day, editable in one go.
@@ -299,10 +415,23 @@ function BranchEditor({
     <div className="mt-1 space-y-1 rounded border border-slate-300 bg-white p-1.5">
       {lines.map((l, i) => (
         <div key={l.key} className="flex flex-wrap items-center gap-1">
-          <DriverInput value={l.driver} onChange={(v) => patch(i, { driver: v })} drivers={drivers} />
+          <DriverPicker value={l.driver} onChange={(v) => patch(i, { driver: v })} drivers={drivers} />
           <TimeSelect label="Từ giờ" value={l.start} onChange={(v) => patch(i, { start: v })} />
           <span aria-hidden className="text-slate-500 text-[11px]">→</span>
           <TimeSelect label="Đến giờ" value={l.end} onChange={(v) => patch(i, { end: v })} />
+          {/* Two names or more and the engine ranks them by distance instead of
+              always sending one person. That used to be spelled out in a line of
+              instructions under the form, next to the comma the supervisor had
+              to type; now that the comma is gone, this says the same thing as a
+              STATE of the row rather than as a rule to remember. */}
+          {splitDriverNames(l.driver).length > 1 && (
+            <span
+              className="shrink-0 rounded-full border border-indigo-200 bg-indigo-50 px-1.5 py-0 text-[10px] font-semibold text-indigo-800"
+              title="Nhiều tài xế: hệ thống chọn người gần điểm lấy mẫu nhất"
+            >
+              smart
+            </span>
+          )}
           <span className="w-10 shrink-0 text-right font-mono text-[10px] text-slate-600">
             {l.row ? `#${l.row}` : "mới"}
           </span>
@@ -318,12 +447,6 @@ function BranchEditor({
           )}
         </div>
       ))}
-      {/* Says what the comma DOES, not just that it is allowed — the difference
-          between one driver and several is the difference between a fixed rule
-          and a smart one, and nothing else on this screen would tell you. */}
-      <div className="text-[10px] text-slate-600">
-        Nhiều tài xế trên một dòng, cách nhau bằng dấu phẩy → smart-assign: hệ thống chọn người gần điểm lấy mẫu nhất
-      </div>
       <div className="flex items-center gap-1">
         <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={addLine} disabled={busy}>
           + Thêm ca
@@ -477,9 +600,17 @@ function GapRow({
         )}
       </div>
       <div className="mt-0.5 text-[11px] text-slate-500">
-        {g.before ? `Ca trước ${g.before.window}` : "Không có ca trước"}
+        {/* The ABSENT side is the whole diagnosis — a hole with cover on one
+            side is closed by nudging a boundary, a hole with nothing before or
+            after it means the branch is simply unstaffed at that end of the day
+            and needs a new rule. It reads as the exception it is. */}
+        {g.before
+          ? <>Ca trước <span className="tabular-nums">{g.before.window}</span></>
+          : <span className="font-semibold text-amber-800">Không có ca trước</span>}
         {" · "}
-        {g.after ? `ca sau ${g.after.window}` : "không có ca sau"}
+        {g.after
+          ? <>ca sau <span className="tabular-nums">{g.after.window}</span></>
+          : <span className="font-semibold text-amber-800">không có ca sau</span>}
         {/* The recurrence used to be spelled out here as well. It is the ×N chip
             beside the time now — where it can be seen without reading the line,
             which is the point of it — so saying it twice is just noise. */}
@@ -558,10 +689,6 @@ export function ConfigTodoPanel({
   return (
     <Card className="py-2 shrink-0 border-slate-200">
       <CardContent className="space-y-1.5 px-3">
-        <datalist id={CONFIG_NAMES_LIST_ID}>
-          {drivers.map((d) => <option key={d.driver_id} value={d.name} />)}
-        </datalist>
-
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
@@ -593,7 +720,7 @@ export function ConfigTodoPanel({
               bug rather than as a stale list. */}
           {parsedAt && (
             <span className="text-[11px] text-slate-500">
-              đọc sheet {parsedAt.slice(11, 16)} · vừa sửa sheet thì bấm Làm mới
+              đọc sheet {parsedAt.slice(11, 16)}
             </span>
           )}
           <span aria-hidden className="ml-auto shrink-0 text-xs text-slate-500">{open ? "▾" : "▸"}</span>
@@ -606,8 +733,12 @@ export function ConfigTodoPanel({
             jobs and late pickups above it down to nothing. That list is the one
             thing here getting worse while you read it; it does not lose its
             space to this one. */}
+        {/* max-w-5xl to match FailedJobsPanel's own scroll container above it.
+            Without it these rows ran the full width of the card while every row
+            in the panel above stopped short, so this panel's button sat alone
+            out at the right edge instead of in the column the others share. */}
         {open && (
-          <div id={LIST_ID} className="max-h-[38vh] space-y-1.5 overflow-y-auto">
+          <div id={LIST_ID} className="max-h-[38vh] max-w-5xl space-y-1.5 overflow-y-auto">
             {gaps.length > 0 && (
               <section aria-label="Giờ không có ai trực">
                 <SectionHeader label="Thiếu ca — giờ không ai trực" count={gaps.length} tone="amber" className="pt-0.5" />
