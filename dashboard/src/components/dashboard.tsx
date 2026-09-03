@@ -19,6 +19,7 @@ import { toast } from "sonner";
 import type { LogEntry, PickupWarning, FailedJob, ConfigDriver, SheetAlarm, UnfinishedConfigRow, CoverageGap, BranchRule } from "@/lib/types";
 import type { DeploymentBeat } from "@/lib/smart-log-kv";
 import type { LeaveOnDate, InvalidLeaveRow, SpanningLeaveRow } from "@/lib/leave-config";
+import type { LeaveSuppression } from "@/lib/leave-suppression";
 
 type Env = "prod" | "uat";
 type RightTab = "attention" | "live" | "admin" | "schedule" | "distance" | "tat";
@@ -67,12 +68,16 @@ export function Dashboard() {
     tomorrow: LeaveOnDate[];
     invalid: InvalidLeaveRow[];
     spanning: SpanningLeaveRow[];
+    suppressed: LeaveSuppression[];
+    suppressedUnreadable: boolean;
     error: boolean;
   }>({
     today: [],
     tomorrow: [],
     invalid: [],
     spanning: [],
+    suppressed: [],
+    suppressedUnreadable: false,
     error: false,
   });
 
@@ -193,6 +198,12 @@ export function Dashboard() {
   // supervisor's edit shows at once. On failure we flag an error but keep the
   // last-known lists — the panel shows an error line only when it has nothing,
   // so a transient blip never renders as a false "nobody's on leave".
+  // Callers that have just WRITTEN to the leave sheet (a substitute filled, a row
+  // deleted) must pass fresh=true. Not for the server cache — the write path
+  // already cleared that — but because the skip-guard below would otherwise
+  // swallow the reload entirely and leave the panel showing the row that was
+  // just removed. A supervisor then clicks Xoá a second time, and the second
+  // click either takes a duplicate they meant to keep or fails as "not found".
   const loadLeaveStatus = useCallback(async (fresh = false) => {
     // Skip an automatic reload the server could only answer from cache. This fires on
     // every visibility resume, and loadLeaveEntries holds a 5-minute Redis copy — so
@@ -216,6 +227,8 @@ export function Dashboard() {
         tomorrow: Array.isArray(data.tomorrow) ? data.tomorrow : [],
         invalid: Array.isArray(data.invalid) ? data.invalid : [],
         spanning: Array.isArray(data.spanning) ? data.spanning : [],
+        suppressed: Array.isArray(data.suppressed) ? data.suppressed : [],
+        suppressedUnreadable: !!data.suppressed_unreadable,
         error: false,
       });
     } catch {
@@ -640,7 +653,7 @@ export function Dashboard() {
                     onScheduleFailed={handleScheduleFailed}
                     leaveToday={leave.today}
                     leaveTomorrow={leave.tomorrow}
-                    onLeaveRefresh={() => loadLeaveStatus()}
+                    onLeaveRefresh={() => loadLeaveStatus(true)}
                     onRetrySchedule={retrySchedule}
                     retryingSchedule={retryingSchedule}
                   />
@@ -666,9 +679,11 @@ export function Dashboard() {
                   tomorrow={leave.tomorrow}
                   invalid={leave.invalid}
                   spanning={leave.spanning}
+                  suppressed={leave.suppressed}
+                  suppressedUnreadable={leave.suppressedUnreadable}
                   error={leave.error}
                   drivers={drivers}
-                  onRefresh={() => loadLeaveStatus()}
+                  onRefresh={() => loadLeaveStatus(true)}
                 />
               </div>
             ) : rightTab === "live" ? (

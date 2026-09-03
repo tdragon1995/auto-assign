@@ -61,6 +61,38 @@ lets a change be entered before it takes effect, and represents a joiner or
 leaver as a date rather than an anomaly. Outside every dated range a person
 produces no rows at all, rather than showing as "off".
 
+## Part-time twin
+
+About a dozen people hold **two** Cartrack accounts under one personal name: a
+full-time `DC…` record and a part-time `PT…` one. The full-time account works the
+rostered shift; the part-time account is what picks up a trip running past it.
+MISA only knows the employment it charges the leave against — the full-time one —
+so a day off used to leave the twin reading as available all evening.
+
+Every charged leave day therefore also produces a row for the twin:
+
+| MISA day | PT companion row |
+|---|---|
+| full day | full day |
+| half day ending **after 12:00** | from when the person leaves until `23:59` |
+| half day ending by 12:00 (morning) | none — they are back for their own shift |
+| half day with no usable window | none — the engine ignores such a row anyway |
+
+The afternoon window deliberately does **not** mirror MISA's. A 12:00–18:00 leave
+copied verbatim would leave 18:00–22:00 open, and that stretch is the only reason
+the twin account exists — the feature would look like it worked and change
+nothing.
+
+The twin is taken only when the name matches **exactly one** active part-time
+account, the same timidity as `driver-match.ts` on the dashboard side. Two
+candidates and the day is left alone and the person named in the run log:
+inventing a day off on the wrong record takes a *working* driver off the road,
+which is worse than the gap being closed. Companion rows are written with a note
+of `MISA auto PT <stamp>`, so a supervisor can tell them from a day MISA actually
+charged — and remove one from the dashboard if it is wrong.
+
+Pinned offline by `node scripts/pt-companion.test.mjs`.
+
 ## Leave/roster gaps
 
 MISA deducts leave against a company calendar, but each person has their own
@@ -92,6 +124,17 @@ the cartrack_combined Apps Script project, set the token, deploy as a web app
 
 ## Notes
 
+- A leave request approved only in PART still leaves the rows this pushed on the
+  sheet — cancelling it in MISA does not reach back here. Remove those from the
+  dashboard's Nghỉ phép panel ("Xoá" on the row) — the delete also records the
+  day in a **"Nghỉ phép đã xoá"** tab, and this pusher is refused when it tries
+  to write it back. That refusal arrives as a `409` carrying `suppressed`, and is
+  counted separately from an ordinary duplicate in the run log, so a suppression
+  list quietly swallowing days is visible rather than inferred. Every submission
+  from here sends `automated: true`, which is what subjects it to that list; a
+  person filing leave through the app is never blocked by it. To let a day back
+  in, press "Khôi phục" on the dashboard (or delete the line from the tab) — it
+  returns at the next run if MISA still charges it.
 - Leave data uses the MISA attendance-watch view with `Status: 2` — the same
   filter the old module proved working. If leaves ever look wrong, verify what
   status code means "approved" on this tenant.

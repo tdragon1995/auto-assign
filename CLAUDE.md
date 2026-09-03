@@ -53,6 +53,70 @@ a dozen drivers hold both a PT and a DC account under one personal name, so a ba
 name matching both is left alone. Recovered rows are still reported for repair, in
 blue rather than red. See `driver-match.ts`; step 4 of the config plan deletes it.
 
+### Leave rows: written by MISA, removable by hand
+
+The MISA sync (`misa-fetcher/`) writes one Nghỉ phép row per day MISA charged,
+through the same `POST /api/nghi-phep` a driver's own form uses — so
+`findLeaveConflict` makes a re-run idempotent. Two things follow from that:
+
+- **A partly-approved request leaves rows behind.** Cancelling the rest in MISA
+  does not reach back into the sheet, so the engine keeps the driver off on days
+  they are working. `DELETE /api/leave-status` removes ONE row, identified the
+  way `updateLeaveSubs` identifies one (driver + `leave_from` + window,
+  re-resolved against the sheet at write time — never a row number the dashboard
+  is holding). Where several rows answer to the same identity the UNCOVERED one
+  goes first and the response says how many are left, so the substitute on a
+  duplicate's twin is never the thing that disappears. It refuses the first data
+  row: the tab is an append log so row 2 is months old, but it is also where a
+  column-wide formula would be anchored. `scripts/leave-row-delete.test.mts`.
+
+  **A delete IS a tombstone, because on its own it would not be.** The MISA
+  pusher re-derives every charged day from today forward on each run and dedupes
+  purely on the row being present, so a deleted future day MISA still charges
+  would be written straight back at 04:45. Every delete therefore also appends a
+  line to the **"Nghỉ phép đã xoá"** tab (created on first use), and
+  `/api/nghi-phep` refuses to re-create a day carrying one — see
+  `leave-suppression.ts`. Matching is EXACT on driver + day + window: two
+  half-days on one date are two rows, and deleting the morning must not silence
+  the afternoon.
+
+  Two rules stop that list becoming a second truth that drifts:
+
+  - **It only blocks an AUTOMATED push** (`automated: true`, or a note starting
+    `MISA auto`). A person filing leave — the driver's form, the panel — is never
+    blocked, so a stale suppression can never be why a real day off failed to
+    register, and the way past one is the ordinary action rather than sheet
+    surgery.
+  - **It is visible and reversible.** Lines that can still block something are
+    listed in the leave panel with a "Khôi phục" button
+    (`DELETE /api/leave-status/suppression`); past ones are filtered out because
+    the pusher floors its range at today and they can no longer block anything.
+    Restoring only lifts the bar — the day returns at the next sync if MISA
+    still charges it, and stays gone if it does not.
+
+  The read **fails open**, deliberately. A missing tab and an unreadable one look
+  identical through the gviz by-name endpoint (an unknown name returns the
+  workbook's FIRST tab), and the tab genuinely does not exist until the first
+  delete — so failing closed would refuse every leave submission on a fresh
+  deploy, driver form included. An untrusted read lets the write through, which
+  is exactly the pre-feature behaviour; once a process has read the tab once, a
+  later failure raises the dashboard's sheet alarm instead of going quiet.
+  `scripts/leave-suppression.test.mts`.
+
+  Both post-write refreshes pass `fresh=1` (`loadLeaveStatus(true)`). Not for
+  the server cache — the write path already cleared that — but because
+  `loadLeaveStatus` skips any non-fresh reload inside a 5-minute window, which
+  would leave the panel showing the row that was just deleted and invite a
+  second click onto a row nobody meant to remove.
+- **A day off is filed against the PART-TIME TWIN too.** About a dozen people
+  hold both a `DC…` and a `PT…` account and switch to the second for a trip
+  running past their shift; MISA only ever names the account it charges. A full
+  day off copies as a full day; an afternoon half-day copies as "from when they
+  leave until 23:59" — NOT the MISA window, which would leave the evening open
+  and make the feature a no-op. A morning half-day copies as nothing. The twin
+  must match by name to exactly one active PT account or the day is left alone
+  and reported. `misa-fetcher/scripts/pt-companion.test.mjs`.
+
 ## Architecture
 
 ### Data Flow

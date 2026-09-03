@@ -1,6 +1,7 @@
 import { google } from "googleapis";
 import { SHEET_ID, SHEET_GID } from "./sheets";
-import { vnIsSunday } from "./time";
+import { vnIsSunday, vnTimestamp } from "./time";
+import { LEAVE_DELETED_SHEET, LEAVE_DELETED_HEADERS } from "./leave-suppression";
 import type { ConfigCells } from "./unmapped-row";
 import { timeToMins } from "./time";
 
@@ -328,6 +329,327 @@ export async function updateLeaveSubs(
   }
 
   return { row: rowNo, warning };
+}
+
+// ── Delete one leave row ─────────────────────────────────────────────────────
+//
+// WHY THIS EXISTS. A MISA leave request is often only PARTLY approved — three
+// days asked for, one granted — but the sync has already written a row per
+// charged day, and a supervisor rejecting the rest in MISA changes nothing here.
+// Until now the only fix was opening the workbook by hand, which is exactly the
+// step that goes undone; meanwhile the engine keeps the driver off and their
+// lane keeps failing as "Nghỉ, không người thay".
+//
+// It also gives the panel's existing "Trùng dòng — dọn sheet" flag something to
+// press: that warning has been asking for a manual cleanup since it was added.
+
+/** One sheet row that matched a delete request, with what makes it a better or
+ *  worse candidate to remove. Exported for the offline test. */
+export interface LeaveRowCandidate {
+  /** 1-based sheet row. */
+  row: number;
+  /** How many substitute slots are filled — a covered row is the one to KEEP. */
+  subCount: number;
+  driver_name: string;
+  loai_nghi: string;
+  leave_from: string;
+  leave_to: string | null;
+  /** The row's own hour window, verbatim from the sheet. Recorded rather than
+   *  re-derived from the panel's label so a suppression matches the row that
+   *  actually went, down to a "6:00" the panel rendered as "06:00". */
+  leave_from_hr: string | null;
+  leave_to_hr: string | null;
+  note: string;
+}
+
+/** The sub slots the loader reads (`buildSub` walks 1–4), not the three the
+ *  sub-editor writes: a row can carry a fourth filled in by hand. */
+const SUB_SLOTS = [1, 2, 3, 4];
+
+/**
+ * Every row that IS the leave the dashboard is pointing at: same driver, same
+ * start date, same window. Identity is re-derived from the sheet at write time
+ * (never a row number carried by the client), so an edit that shifted rows
+ * cannot make this hit the wrong line.
+ *
+ * Pure — takes the parsed grid — so the choice below can be pinned by a test.
+ */
+export function matchLeaveRows(
+  all: unknown[][],
+  col: Record<string, number>,
+  match: LeaveRowMatch,
+): LeaveRowCandidate[] {
+  const cell = (row: unknown[], name: string): string =>
+    col[name] == null ? "" : String(row[col[name]] ?? "").trim();
+  const targetDate = normDate(match.leave_from);
+  const [mFrom, mTo] = (match.timeLabel ?? "").split("–");
+  const targetWindow = match.timeLabel ? windowKey(mFrom, mTo) : "full";
+
+  const out: LeaveRowCandidate[] = [];
+  for (let r = 1; r < all.length; r++) {
+    const row = all[r];
+    if (!row) continue;
+    if (cell(row, "driver_id") !== match.driver_id) continue;
+    if (normDate(cell(row, "leave_from")) !== targetDate) continue;
+    if (windowKey(cell(row, "leave_from_hr"), cell(row, "leave_to_hr")) !== targetWindow) continue;
+    out.push({
+      row: r + 1, // 1-based sheet row
+      subCount: SUB_SLOTS.filter((n) => cell(row, `sub${n}_name`) || cell(row, `sub${n}_id`)).length,
+      driver_name: cell(row, "driver"),
+      loai_nghi: cell(row, "Loại Nghỉ"),
+      leave_from: normDate(cell(row, "leave_from")),
+      leave_to: normDate(cell(row, "leave_to")) || null,
+      leave_from_hr: cell(row, "leave_from_hr") || null,
+      leave_to_hr: cell(row, "leave_to_hr") || null,
+      note: cell(row, "note"),
+    });
+  }
+  return out;
+}
+
+/**
+ * Which of several identical rows to remove.
+ *
+ * Fewest substitutes first: when the sheet holds the duplicate pair this panel
+ * already flags — one row the requester typed and one the supervisor filled
+ * cover into — the empty one is the redundant copy and the covered one is the
+ * record. Ties go to the LAST row, i.e. the most recently appended, which is the
+ * one a re-push added.
+ *
+ * One row per call, deliberately: deleting a whole duplicate set on one click
+ * would take the covered row with it.
+ */
+export function pickLeaveRowToDelete(candidates: LeaveRowCandidate[]): LeaveRowCandidate | null {
+  let best: LeaveRowCandidate | null = null;
+  for (const c of candidates) {
+    if (!best || c.subCount < best.subCount || (c.subCount === best.subCount && c.row > best.row)) {
+      best = c;
+    }
+  }
+  return best;
+}
+
+export interface LeaveRowDeletion {
+  /** The 1-based sheet row that was removed. */
+  row: number;
+  driver_name: string;
+  loai_nghi: string;
+  leave_from: string;
+  leave_to: string | null;
+  leave_from_hr: string | null;
+  leave_to_hr: string | null;
+  note: string;
+  /** Identical rows still on the sheet after this one went — a duplicate set
+   *  needs one click per copy, and the caller says so rather than leaving the
+   *  supervisor to notice the flag did not clear. */
+  remaining: number;
+}
+
+/**
+ * Remove ONE leave row from the Nghỉ phép tab.
+ *
+ * Deletes the whole sheet row rather than blanking its cells: a blanked row
+ * keeps its formula columns alive and re-reads as an empty-but-present entry,
+ * and the loader's orphan reporting would then have to tell "cleared on purpose"
+ * from "lookup broke", which it cannot.
+ *
+ * Two things it refuses rather than guesses at:
+ *   - a row it cannot find (the sheet moved under a stale dashboard) — the
+ *     supervisor refreshes and looks again;
+ *   - the FIRST data row. The tab is an append log, so row 2 is months old and
+ *     never today's leave, but it is where a column-wide formula would be
+ *     anchored — and this workbook has already lost a whole column of ids to
+ *     exactly that mistake (see the header of the config writers below).
+ */
+export async function deleteLeaveRow(match: LeaveRowMatch): Promise<LeaveRowDeletion> {
+  const sheets = getSheetsClient();
+  const sheetName = await getNghiPhepSheetName(sheets);
+  const quotedName = `'${sheetName.replace(/'/g, "''")}'`;
+
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: quotedName,
+  });
+  const all = res.data.values ?? [];
+  if (all.length < 2) throw new LeaveWriteError("Leave sheet trống");
+
+  const col: Record<string, number> = {};
+  all[0].forEach((h, i) => {
+    const k = String(h ?? "").trim();
+    if (k && !(k in col)) col[k] = i;
+  });
+  for (const need of ["driver_id", "leave_from", "leave_from_hr", "leave_to_hr"]) {
+    if (!(need in col)) throw new LeaveWriteError(`Thiếu cột "${need}" trong Leave sheet`);
+  }
+
+  const candidates = matchLeaveRows(all, col, match);
+  const victim = pickLeaveRowToDelete(candidates);
+  if (!victim) {
+    throw new LeaveWriteError(
+      "Không tìm thấy dòng nghỉ phép — sheet có thể vừa thay đổi, thử Refresh",
+    );
+  }
+  if (victim.row <= 2) {
+    throw new LeaveWriteError(
+      "Dòng đầu bảng giữ công thức của cả cột — xoá trực tiếp trên sheet nếu thật sự cần",
+    );
+  }
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SHEET_ID,
+    requestBody: {
+      requests: [
+        {
+          deleteDimension: {
+            range: {
+              sheetId: Number(SHEET_GID.nghi_phep),
+              dimension: "ROWS",
+              startIndex: victim.row - 1, // 0-based, inclusive
+              endIndex: victim.row,       // exclusive
+            },
+          },
+        },
+      ],
+    },
+  });
+
+  return {
+    row: victim.row,
+    driver_name: victim.driver_name,
+    loai_nghi: victim.loai_nghi,
+    leave_from: victim.leave_from,
+    leave_to: victim.leave_to,
+    leave_from_hr: victim.leave_from_hr,
+    leave_to_hr: victim.leave_to_hr,
+    note: victim.note,
+    remaining: candidates.length - 1,
+  };
+}
+
+// ── The deletion log, which is also a suppression list ───────────────────────
+//
+// A delete on its own does not settle anything. The MISA pusher re-derives every
+// charged day from today forward on each run and dedupes purely on the row being
+// present, so removing a future day MISA still charges is undone at the next
+// 04:45 / 12:00 sync — which is exactly the case this whole feature is for.
+//
+// So a delete also writes a line here, and /api/nghi-phep refuses to re-create a
+// day that carries one. Two properties keep this from becoming a second source
+// of truth quietly disagreeing with MISA:
+//
+//   - it only ever blocks an AUTOMATED push. A person filing leave through the
+//     app or the panel is never blocked by it, so the escape hatch is always the
+//     obvious action rather than sheet surgery;
+//   - it is a visible TAB, listed in the dashboard panel, one line per deleted
+//     row with who and when. Removing the line — from the panel's "Khôi phục"
+//     button or by hand — lets the next sync bring the leave back.
+//
+// Created on first use, same as the Nhận Việc log below.
+
+let leaveDeletedSheetReady = false;
+
+/** Ensure the tab exists, with its header row. */
+async function ensureLeaveDeletedSheet(sheets: ReturnType<typeof google.sheets>): Promise<number> {
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
+  const found = meta.data.sheets?.find((x) => x.properties?.title === LEAVE_DELETED_SHEET);
+  if (found?.properties?.sheetId != null) {
+    leaveDeletedSheetReady = true;
+    return found.properties.sheetId;
+  }
+  const created = await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SHEET_ID,
+    requestBody: { requests: [{ addSheet: { properties: { title: LEAVE_DELETED_SHEET } } }] },
+  });
+  const sheetId = created.data.replies?.[0]?.addSheet?.properties?.sheetId;
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SHEET_ID,
+    range: `'${LEAVE_DELETED_SHEET}'!A1`,
+    valueInputOption: "RAW",
+    requestBody: { values: [[...LEAVE_DELETED_HEADERS]] },
+  });
+  leaveDeletedSheetReady = true;
+  if (sheetId == null) throw new Error(`could not create "${LEAVE_DELETED_SHEET}"`);
+  return sheetId;
+}
+
+/** Log one removed leave row. Column order matches LEAVE_DELETED_HEADERS. */
+export async function appendLeaveDeletion(
+  deleted: LeaveRowDeletion,
+  driver_id: string,
+): Promise<void> {
+  const sheets = getSheetsClient();
+  if (!leaveDeletedSheetReady) await ensureLeaveDeletedSheet(sheets);
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: SHEET_ID,
+    range: `'${LEAVE_DELETED_SHEET}'!A1`,
+    valueInputOption: "RAW",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: {
+      values: [[
+        vnTimestamp(), driver_id, deleted.driver_name, deleted.loai_nghi,
+        deleted.leave_from, deleted.leave_to ?? "",
+        deleted.leave_from_hr ?? "", deleted.leave_to_hr ?? "", deleted.note,
+      ]],
+    },
+  });
+}
+
+/**
+ * Drop one suppression line, so the next MISA sync may write that day again.
+ *
+ * Located the same way a leave row is — driver + start date + window, re-read at
+ * write time — because the same reasoning applies: the dashboard's copy of this
+ * tab is as old as its last refresh. Removes ONE line; a duplicate log entry for
+ * the same day is harmless (they suppress identically) and clearing one at a
+ * time keeps this symmetric with the delete it undoes.
+ */
+export async function removeLeaveSuppression(match: LeaveRowMatch): Promise<{ row: number }> {
+  const sheets = getSheetsClient();
+  const sheetId = await ensureLeaveDeletedSheet(sheets);
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: `'${LEAVE_DELETED_SHEET}'`,
+  });
+  const all = res.data.values ?? [];
+  if (all.length < 2) throw new LeaveWriteError("Chưa có dòng nghỉ nào bị xoá");
+
+  const col: Record<string, number> = {};
+  all[0].forEach((h, i) => {
+    const k = String(h ?? "").trim();
+    if (k && !(k in col)) col[k] = i;
+  });
+  const cell = (row: unknown[], name: string): string =>
+    col[name] == null ? "" : String(row[col[name]] ?? "").trim();
+
+  const targetDate = normDate(match.leave_from);
+  const [mFrom, mTo] = (match.timeLabel ?? "").split("–");
+  const targetWindow = match.timeLabel ? windowKey(mFrom, mTo) : "full";
+
+  // Last match wins: the newest line is the one the panel is showing.
+  let rowNo = 0;
+  for (let r = 1; r < all.length; r++) {
+    const row = all[r];
+    if (!row) continue;
+    if (cell(row, "driver_id") !== match.driver_id) continue;
+    if (normDate(cell(row, "leave_from")) !== targetDate) continue;
+    if (windowKey(cell(row, "leave_from_hr"), cell(row, "leave_to_hr")) !== targetWindow) continue;
+    rowNo = r + 1;
+  }
+  if (!rowNo) {
+    throw new LeaveWriteError("Không tìm thấy dòng đã xoá — bấm Làm mới rồi thử lại");
+  }
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SHEET_ID,
+    requestBody: {
+      requests: [{
+        deleteDimension: {
+          range: { sheetId, dimension: "ROWS", startIndex: rowNo - 1, endIndex: rowNo },
+        },
+      }],
+    },
+  });
+  return { row: rowNo };
 }
 
 // ── Nhận Việc (driver self-claim) audit log ──────────────────────────────────
