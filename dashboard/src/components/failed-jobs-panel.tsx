@@ -12,6 +12,7 @@ import { NoteReviewPanel, type HeldJob } from "./note-review-panel";
 import { NoteSuggestionPanel } from "./note-suggestion-panel";
 import { SectionHeader } from "./section-header";
 import { UncoveredLeaveSection, uncoveredLeaveCount } from "./leave-status-panel";
+import { DriverName } from "./driver-name";
 import type { FailedJob, FailedReason, PickupWarning, ConfigDriver } from "@/lib/types";
 import type { LeaveOnDate } from "@/lib/leave-config";
 
@@ -428,7 +429,9 @@ export function FailedJobsPanel({
                         </span>
                       </div>
                       {w.driver_name && (
-                        <p className="mt-0.5 text-[11px] text-slate-500 break-words md:truncate" title={w.driver_name}>{w.driver_name}</p>
+                        <p className="mt-0.5 flex flex-wrap items-baseline gap-x-1.5" title={w.driver_name}>
+                          <DriverName full={w.driver_name} className="text-[11px] text-slate-500 break-words" />
+                        </p>
                       )}
                     </div>
                     );

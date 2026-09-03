@@ -38,12 +38,20 @@ const eq = (label: string, got: unknown, want: unknown) =>
 
 // ── Reading a label ─────────────────────────────────────────────────────────
 console.log("splitting a label");
-eq("code and person come apart",
+// The "F - C - " / "P - P - " prefix is routing metadata on the Cartrack record.
+// It tells the reader nothing, and it was the widest thing on the row — on a
+// phone it pushed the actual content off the edge. Only the staff code survives,
+// because that identifies WHICH ACCOUNT, which is the one thing two rows for the
+// same person differ by.
+eq("the routing prefix is dropped, the staff code kept",
   splitDriverName("F - C - DC100320 Lý Chánh Hùng"),
-  { code: "F - C - DC100320", name: "Lý Chánh Hùng" });
+  { code: "DC100320", name: "Lý Chánh Hùng" });
 eq("the part-time account of the same person",
   splitDriverName("P - P - PT101147 Nguyễn Hồng Sơn"),
-  { code: "P - P - PT101147", name: "Nguyễn Hồng Sơn" });
+  { code: "PT101147", name: "Nguyễn Hồng Sơn" });
+eq("a relief driver's code has no digits and still survives",
+  splitDriverName("F - C - DCBU Nguyễn Tuấn Hoàng"),
+  { code: "DCBU", name: "Nguyễn Tuấn Hoàng" });
 eq("a label off the pattern is left whole",
   splitDriverName("Admin Lý Thị Thùy Linh"),
   { code: null, name: "Admin Lý Thị Thùy Linh" });
@@ -68,7 +76,7 @@ console.log("ordering by the person, not the label");
 
   const codes = [...labels].sort(compareDriverNames).map((l) => splitDriverName(l).code);
   check("the two accounts of one person are ADJACENT",
-    codes[3] === "F - C - DC100777" && codes[4] === "P - P - PT101147",
+    codes[3] === "DC100777" && codes[4] === "PT101147",
     `got ${codes[3]} then ${codes[4]}`);
 }
 check("a tie on the name is broken by the account, not left to chance",

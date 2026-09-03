@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Loader2, AlertCircle, Download, ChevronLeft, ChevronRight } from "lucide-react";
-import { driverDisplayName, staffCode } from "@/lib/display-names";
+import { DriverName } from "./driver-name";
 
 interface DriverRow {
   driver_id: string;
@@ -190,13 +190,10 @@ export function TatTeamPanel() {
                 <tr key={d.driver_id} className="hover:bg-slate-50">
                   <td className="px-3 py-2">
                     <span className="text-slate-400 text-xs mr-1.5">{i + 1}</span>
-                    <span className="font-medium text-slate-800">{driverDisplayName(d.driver_name)}</span>
-                    {/* The staff code stays: about a dozen drivers hold both a
-                        part-time and a full-time account under one personal name,
-                        and without it those are two identical rows. */}
-                    {staffCode(d.driver_name) && (
-                      <span className="text-slate-400 text-[10px] ml-1.5">{staffCode(d.driver_name)}</span>
-                    )}
+                    {/* The staff code and the FT/PT chip both stay: about a dozen
+                        drivers hold a part-time and a full-time account under one
+                        personal name, and without them those are two identical rows. */}
+                    <DriverName full={d.driver_name} className="font-medium text-slate-800" />
                   </td>
                   <td className="text-right px-2 py-2 text-slate-600">{d.days_worked}</td>
                   <td className="text-right px-2 py-2 text-slate-700 font-medium">{d.trips_total}</td>

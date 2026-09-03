@@ -1,3 +1,5 @@
+import { driverDisplayName, staffCode } from "./display-names";
+
 /**
  * Reading and ordering a driver's sheet label.
  *
@@ -18,26 +20,21 @@
  */
 
 /**
- * "F - C - DC100320 Lý Chánh Hùng" → code "F - C - DC100320", name "Lý Chánh Hùng".
+ * "F - C - DC100320 Lý Chánh Hùng" → code "DC100320", name "Lý Chánh Hùng".
  *
- * The code keeps its prefix because that is what a supervisor recognises the
- * account by — it is rendered beside the name, de-emphasised. A label not
- * following the "A - B - CODE Name" shape is returned whole rather than guessed
- * at, so an "Admin …" row still reads correctly.
+ * The employment/area prefix is dropped entirely. It is routing metadata for the
+ * Cartrack record — it says nothing a person reading a list needs, it is the
+ * widest thing on the row, and on a phone it was pushing the actual content off
+ * the edge. What survives is the staff code, which is the part that identifies
+ * the ACCOUNT: about a dozen people hold two of them under one personal name, so
+ * without it those rows are indistinguishable.
+ *
+ * Built on `driverDisplayName` / `staffCode` rather than its own split, so there
+ * is one definition of how a label comes apart and this cannot drift from the
+ * TAT panels, the name matcher, or the driver's own app.
  */
 export function splitDriverName(full: string): { code: string | null; name: string } {
-  const parts = full.split(" - ");
-  if (parts.length >= 3) {
-    const tail = parts[parts.length - 1]; // "DC100320 Lý Chánh Hùng"
-    const sp = tail.indexOf(" ");
-    if (sp > 0) {
-      return {
-        code: [...parts.slice(0, -1), tail.slice(0, sp)].join(" - "),
-        name: tail.slice(sp + 1),
-      };
-    }
-  }
-  return { code: null, name: full };
+  return { code: staffCode(full) || null, name: driverDisplayName(full) || full };
 }
 
 /**

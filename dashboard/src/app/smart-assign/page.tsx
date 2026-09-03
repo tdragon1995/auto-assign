@@ -1,5 +1,7 @@
 "use client";
 
+import { DriverName } from "@/components/driver-name";
+
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 
@@ -65,7 +67,7 @@ function DriverCell({ d }: { d: DriverSuggestion }) {
     <div className="flex flex-col gap-0.5 min-w-0">
       <div className="flex items-center gap-1.5">
         <span className={`inline-block size-2 rounded-full shrink-0 ${dot.color}`} title={dot.label} />
-        <span className="text-xs font-semibold text-slate-800 truncate">{d.driver_name}</span>
+        <DriverName full={d.driver_name} className="text-xs font-semibold text-slate-800 truncate" />
       </div>
       <span className="text-[11px] text-slate-500">{d.haversine_km} km straight · {relativeTime(d.last_login_ts)}</span>
       {d.detour_haversine_km !== null && (

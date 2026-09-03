@@ -9,10 +9,8 @@ import { toast } from "sonner";
 import type { LeaveOnDate, InvalidLeaveRow, SpanningLeaveRow } from "@/lib/leave-config";
 import type { LeaveSuppression } from "@/lib/leave-suppression";
 import type { ConfigDriver } from "@/lib/types";
-import {
-  splitDriverName, compareDriverNames, compareByDriverThenWindow,
-  employmentOf, EMPLOYMENT_LABEL, EMPLOYMENT_TITLE,
-} from "@/lib/driver-label";
+import { splitDriverName, compareDriverNames, compareByDriverThenWindow } from "@/lib/driver-label";
+import { DriverName } from "./driver-name";
 
 const TYPE_LABEL: Record<string, string> = {
   "Nghỉ nguyên buổi": "Cả ngày",
@@ -34,51 +32,6 @@ function ddmm(date: string): string {
   return date.length >= 10 ? `${date.slice(8, 10)}/${date.slice(5, 7)}` : date;
 }
 
-
-/**
- * A driver's name, what kind of account it is, and its staff code.
- *
- * The employment chip exists because `DC` and `PT` are payroll prefixes that say
- * nothing to the person reading the list, and in this panel they are exactly
- * what distinguishes two adjacent rows: a person holding both accounts is off on
- * both, and which one a substitute is covering is the whole question. Spelling
- * it out is the difference between two rows that look duplicated and two rows
- * that are obviously different things.
- *
- * Part-time is the one that carries colour. Full-time stays grey — it is the
- * common case, and colouring every row would spend the reader's attention on
- * something that is almost always the same. A label with no code at all
- * ("Admin …") gets no chip rather than a guessed one.
- */
-function DriverName({
-  full,
-  className = "text-sm font-semibold text-slate-900",
-}: {
-  full: string;
-  className?: string;
-}) {
-  const { code, name } = splitDriverName(full);
-  const employment = employmentOf(full);
-  return (
-    <>
-      <span className={className}>{name}</span>
-      {employment && (
-        <span
-          className={
-            "shrink-0 rounded-full border px-1.5 py-0 text-[10px] font-semibold leading-relaxed " +
-            (employment === "part-time"
-              ? "border-indigo-200 bg-indigo-100 text-indigo-700"
-              : "border-slate-200 bg-slate-100 text-slate-600")
-          }
-          title={EMPLOYMENT_TITLE[employment]}
-        >
-          {EMPLOYMENT_LABEL[employment]}
-        </span>
-      )}
-      {code && <span className="font-mono text-[11px] text-slate-500">{code}</span>}
-    </>
-  );
-}
 
 interface LeaveRowView {
   timeLabel: string | null;

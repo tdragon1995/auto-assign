@@ -1,5 +1,7 @@
 "use client";
 
+import { DriverName } from "./driver-name";
+
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { ConfigDriver } from "@/lib/types";
@@ -85,9 +87,9 @@ export function DriverPicker({
             <button
               key={d.driver_id}
               onClick={() => handleSelectDriver(d.driver_id)}
-              className="block w-full text-left px-2 py-1.5 text-xs hover:bg-slate-100 border-b border-slate-200 last:border-b-0"
+              className="flex w-full flex-wrap items-baseline gap-x-1.5 text-left px-2 py-1.5 text-xs hover:bg-slate-100 border-b border-slate-200 last:border-b-0"
             >
-              {d.name}
+              <DriverName full={d.name} className="text-xs text-slate-800" />
             </button>
           ))}
         </div>
