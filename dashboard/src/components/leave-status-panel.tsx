@@ -9,6 +9,9 @@ import { toast } from "sonner";
 import type { LeaveOnDate, InvalidLeaveRow, SpanningLeaveRow } from "@/lib/leave-config";
 import type { LeaveSuppression } from "@/lib/leave-suppression";
 import type { ConfigDriver } from "@/lib/types";
+import {
+  splitDriverName, compareDriverNames, compareByDriverThenWindow,
+} from "@/lib/driver-label";
 
 const TYPE_LABEL: Record<string, string> = {
   "Nghỉ nguyên buổi": "Cả ngày",
@@ -30,24 +33,6 @@ function ddmm(date: string): string {
   return date.length >= 10 ? `${date.slice(8, 10)}/${date.slice(5, 7)}` : date;
 }
 
-/** Sheet driver names look like "F - P - DC101406 Bùi Hiền Anh Kiệt" — the
- *  fleet code drowns the actual name, so split code from name and let the
- *  caller de-emphasize the code. Names not following the "A - B - CODE Name"
- *  pattern render whole. */
-function splitDriverName(full: string): { code: string | null; name: string } {
-  const parts = full.split(" - ");
-  if (parts.length >= 3) {
-    const tail = parts[parts.length - 1]; // "DC101406 Bùi Hiền Anh Kiệt"
-    const sp = tail.indexOf(" ");
-    if (sp > 0) {
-      return {
-        code: [...parts.slice(0, -1), tail.slice(0, sp)].join(" - "),
-        name: tail.slice(sp + 1),
-      };
-    }
-  }
-  return { code: null, name: full };
-}
 
 interface LeaveRowView {
   timeLabel: string | null;
@@ -85,7 +70,15 @@ function groupByDriver(drivers: LeaveOnDate[]): DriverGroup[] {
       g.rows.push(row);
     }
   }
-  return [...map.values()];
+  // By the person, not by the label: the label leads with employment type and
+  // area, so raw sheet order buries the name being looked for. Sorting on the
+  // name also lands a driver's full-time and part-time accounts side by side —
+  // both are off on the same day now that the MISA sync files the twin too.
+  // Each driver's own windows are ordered morning-first below.
+  for (const g of map.values()) {
+    g.rows.sort((a, b) => (a.timeLabel ?? "").localeCompare(b.timeLabel ?? ""));
+  }
+  return [...map.values()].sort((a, b) => compareDriverNames(a.driver_name, b.driver_name));
 }
 
 interface SubBlock {
@@ -659,7 +652,14 @@ function uncoveredWindows(groups: DriverGroup[]): UncoveredRow[] {
       }
     }
   }
-  return out;
+  // Flat rather than grouped, so the person AND their window both carry into the
+  // order — one driver's morning gap reads before their afternoon one.
+  return out.sort((a, b) =>
+    compareByDriverThenWindow(
+      { driver_name: a.driver_name, timeLabel: a.row.timeLabel },
+      { driver_name: b.driver_name, timeLabel: b.row.timeLabel },
+    ),
+  );
 }
 
 
@@ -835,8 +835,12 @@ export function LeaveStatusPanel({
   const totalDuplicate = duplicateCount(todayGroups) + duplicateCount(tomorrowGroups);
   // Kept apart everywhere below: red means the engine still cannot see this
   // leave, blue means it can and the sheet is merely out of date.
-  const invalidIgnored = invalid.filter((r) => !r.recovered);
-  const invalidRecovered = invalid.filter((r) => r.recovered);
+  // Sorted like every other driver list in the panel, and for the same reason —
+  // these are read looking for a particular person to repair.
+  const byDriver = (a: InvalidLeaveRow, b: InvalidLeaveRow) =>
+    compareByDriverThenWindow(a, b);
+  const invalidIgnored = invalid.filter((r) => !r.recovered).sort(byDriver);
+  const invalidRecovered = invalid.filter((r) => r.recovered).sort(byDriver);
 
   const fillSubs = makeFillSubs(onRefresh);
   const deleteRow = makeDeleteRow(onRefresh);
