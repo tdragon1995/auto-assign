@@ -246,3 +246,33 @@ export function overlapKey(o: { customer_id: string; rules?: readonly [{ row: nu
   const rows = o.rules ? [o.rules[0].row, o.rules[1].row].sort((a, b) => a - b).join("-") : "?";
   return `${o.customer_id}|${rows}`;
 }
+
+/**
+ * The stretch that would stop being covered if one row were removed, or null.
+ *
+ * The delete button needed this and did not have it, which made the two sides of
+ * an overlap look interchangeable when they are not. Live pair, 2026-09-03: one
+ * branch with 07:00–16:00 and 07:00–16:30 for the same driver — removing the
+ * first changes nothing, removing the second silently gives up 16:00–16:30, and
+ * both buttons read the same.
+ *
+ * `shrinkOptions` has refused to open a hole since it was written; a delete can
+ * legitimately want to shed cover, so this reports rather than refuses. But it
+ * has to be SAID, because a gap is the fault the engine reports as NO_DRIVER and
+ * the one thing the sheet itself never explains.
+ *
+ * Reported in the sheet's own half-open terms — the label is the window a rule
+ * would need in order to cover it again.
+ */
+export function coverageLostWithout(rules: BranchRule[], row: number): string | null {
+  const all = rules.map(asLine);
+  if (!all.some((l) => l.row === row)) return null;
+  const before = coveredMinutes(all);
+  const after = coveredMinutes(all.filter((l) => l.row !== row));
+  const lost: number[] = [];
+  for (let m = 0; m < 1440; m++) if (before[m] && !after[m]) lost.push(m);
+  if (lost.length === 0) return null;
+  // One label covering first to last: a removed rule's cover is contiguous in
+  // every real case, and a spanning label still names the right thing to look at.
+  return `${fromMin(lost[0] - 1)}–${fromMin(lost[lost.length - 1])}`;
+}

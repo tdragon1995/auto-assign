@@ -9,7 +9,7 @@ import { SectionHeader } from "./section-header";
 import type { CoverageGap, UnfinishedConfigRow, ConfigDriver, BranchRule, ShiftOverlap } from "@/lib/types";
 import { DRIVER_SEP, foldName, resolveDriverCell, splitDriverNames } from "@/lib/driver-cell";
 import { displayDriverCell } from "@/lib/driver-label";
-import { overlapKey, shrinkOptions } from "@/lib/config-shift";
+import { coverageLostWithout, overlapKey, shrinkOptions } from "@/lib/config-shift";
 import { searchConfigRows } from "./config-browser-panel";
 import type { ConfigRowView } from "@/app/api/config/rows/route";
 import { driverDisplayName } from "@/lib/display-names";
@@ -244,11 +244,20 @@ function OverlapRow({
           supervisor's call, not something derivable from the overlap. */}
       {!open && o.rules && (
         <div className="mt-1 flex flex-wrap items-center gap-1">
-          {o.rules.map((r) => (
+          {o.rules.map((r) => {
+            // Removing a row can give up cover the other row never had. The
+            // boundary move above has refused to do that since it was written;
+            // a delete may legitimately want to, so this says it rather than
+            // blocking it — but it has to say it, or the two sides look
+            // interchangeable when only one of them is safe.
+            const lost = coverageLostWithout(rules, r.row);
+            return (
             <span key={r.row} className="inline-flex items-center gap-1">
               {armed === r.row ? (
                 <>
-                  <span className="text-[11px] font-semibold text-red-700">Xoá dòng #{r.row}?</span>
+                  <span className="text-[11px] font-semibold text-red-700">
+                    Xoá dòng #{r.row}?{lost && ` Sẽ hở ${lost}.`}
+                  </span>
                   <Button
                     size="sm"
                     className="h-6 px-2 text-[11px] bg-red-600 hover:bg-red-700"
@@ -269,16 +278,23 @@ function OverlapRow({
               ) : (
                 <Button
                   size="sm" variant="outline"
-                  className="h-6 px-2 text-[11px] font-normal text-slate-600"
+                  className={`h-6 px-2 text-[11px] font-normal ${
+                    lost ? "border-amber-300 text-amber-800" : "text-slate-600"
+                  }`}
                   disabled={busy !== null || armed !== null}
                   onClick={() => setArmed(r.row)}
-                  title={`Xoá hẳn dòng #${r.row} (${displayDriverCell(r.driver)} ${r.window})`}
+                  title={
+                    `Xoá hẳn dòng #${r.row} (${displayDriverCell(r.driver)} ${r.window})` +
+                    (lost ? ` — sau đó ${lost} sẽ không còn ai trực` : " — không mất giờ trực nào")
+                  }
                 >
-                  Xoá {displayDriverCell(r.driver)} {r.window}
+                  Xoá {r.window}
+                  {lost && <span className="ml-1 text-amber-700">· hở {lost}</span>}
                 </Button>
               )}
             </span>
-          ))}
+            );
+          })}
         </div>
       )}
       {err && <div role="alert" className="mt-1 text-[11px] text-red-600">{err}</div>}

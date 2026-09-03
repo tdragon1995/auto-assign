@@ -17,7 +17,7 @@
  *   npx tsx scripts/config-shift.test.mts
  */
 import type { BranchRule, CoverageGap } from "../src/lib/types";
-const { stretchOptions, shrinkOptions, overlapKey, findClash, blocks, toMin, fromMin } =
+const { stretchOptions, shrinkOptions, overlapKey, coverageLostWithout, findClash, blocks, toMin, fromMin } =
   await import("../src/lib/config-shift");
 
 let failed = 0;
@@ -236,6 +236,35 @@ console.log("\nrefusals — the cases that must NOT be offered");
     eq("…and neither move gives up the evening",
       out.map((sh) => sh.window), ["07:00–15:15", "19:00–19:30"]);
   }
+
+  // Which of the two rows is safe to delete — the question the two Xoá buttons
+  // could not answer, so they looked interchangeable when only one of them was.
+  //
+  // Live pair, 2026-09-03: 07:00–16:00 and 07:00–16:30, same driver. Removing the
+  // shorter one changes nothing; removing the longer one silently gives up half an
+  // hour, and a gap is the fault the sheet itself never explains.
+  {
+    const rules: BranchRule[] = [
+      { row: 100, driver: "Nguyễn Tuấn Hoàng", start: "07:00", end: "16:00" },
+      { row: 101, driver: "Nguyễn Tuấn Hoàng", start: "07:00", end: "16:30" },
+    ];
+    eq("dropping the row wholly inside another costs nothing",
+      coverageLostWithout(rules, 100), null);
+    eq("dropping the one that reaches further gives up the difference",
+      coverageLostWithout(rules, 101), "16:00–16:30");
+  }
+  {
+    // Two rules that merely hand over: each owns its own stretch, so removing
+    // either is a real loss and both buttons should say so.
+    const rules: BranchRule[] = [
+      { row: 10, driver: "A", start: "07:00", end: "12:00" },
+      { row: 11, driver: "B", start: "12:00", end: "19:00" },
+    ];
+    eq("a handover loses the earlier half", coverageLostWithout(rules, 10), "07:00–12:00");
+    eq("…or the later one", coverageLostWithout(rules, 11), "12:00–19:00");
+  }
+  eq("a row that is not on the branch reports nothing",
+    coverageLostWithout([{ row: 10, driver: "A", start: "07:00", end: "12:00" }], 99), null);
 
   // The key has to survive the fix changing the window, or the row reappears as
   // new the moment it is dealt with.
