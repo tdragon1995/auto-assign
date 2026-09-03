@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ClipboardList } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
@@ -10,6 +10,8 @@ import type { CoverageGap, UnfinishedConfigRow, ConfigDriver, BranchRule, ShiftO
 import { DRIVER_SEP, foldName, resolveDriverCell, splitDriverNames } from "@/lib/driver-cell";
 import { displayDriverCell } from "@/lib/driver-label";
 import { overlapKey, shrinkOptions } from "@/lib/config-shift";
+import { searchConfigRows } from "./config-browser-panel";
+import type { ConfigRowView } from "@/app/api/config/rows/route";
 import { driverDisplayName } from "@/lib/display-names";
 import { DriverName } from "./driver-name";
 import {
@@ -133,8 +135,33 @@ function OverlapRow({
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [armed, setArmed] = useState<number | null>(null);
   const key = `o:${overlapKey(o)}`;
   const options = o.rules ? shrinkOptions(o.rules, rules) : [];
+
+  /** Empty one of the two rows. The other fix moves a boundary so both rules
+   *  survive; this one is for the case that boundary cannot express — a row that
+   *  should not be there at all, which is most same-driver pairs. */
+  async function clearRow(row: number) {
+    setErr(null);
+    setBusy(`clear${row}`);
+    try {
+      const res = await fetch("/api/config/clear-row", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ row, pickup_name: o.pickup_name }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
+      toast.success(`Đã xoá dòng #${row} — ${o.pickup_name}`);
+      onSaved(key);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+      setArmed(null);
+    }
+  }
 
   async function shrink(sh: Stretch) {
     setErr(null);
@@ -184,8 +211,6 @@ function OverlapRow({
         {" · "}
         {displayDriverCell(o.drivers[1])}
         {o.rules && <span className="tabular-nums"> {o.rules[1].window}</span>}
-        {" · "}
-        <span className="font-semibold text-rose-800">job giờ này sẽ báo CLASH</span>
       </div>
       {!open && options.length > 0 && (
         <div className="mt-1 flex flex-wrap items-center gap-1">
@@ -203,9 +228,46 @@ function OverlapRow({
           ))}
         </div>
       )}
-      {!open && options.length === 0 && (
-        <div className="mt-0.5 text-[11px] text-slate-500">
-          Một dòng nằm trọn trong dòng kia — cắt bên nào cũng hở giờ, nên cần sửa cả ngày.
+      {/* Removing a row, two clicks. Offered per side and never as one button:
+          the two rows are different rules, and which one is the leftover is the
+          supervisor's call, not something derivable from the overlap. */}
+      {!open && o.rules && (
+        <div className="mt-1 flex flex-wrap items-center gap-1">
+          {o.rules.map((r) => (
+            <span key={r.row} className="inline-flex items-center gap-1">
+              {armed === r.row ? (
+                <>
+                  <span className="text-[11px] font-semibold text-red-700">Xoá dòng #{r.row}?</span>
+                  <Button
+                    size="sm"
+                    className="h-6 px-2 text-[11px] bg-red-600 hover:bg-red-700"
+                    disabled={busy !== null}
+                    onClick={() => clearRow(r.row)}
+                  >
+                    {busy === `clear${r.row}` ? "Đang xoá…" : "Xoá"}
+                  </Button>
+                  <Button
+                    size="sm" variant="outline"
+                    className="h-6 px-2 text-[11px] font-normal"
+                    disabled={busy !== null}
+                    onClick={() => setArmed(null)}
+                  >
+                    Hủy
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  size="sm" variant="outline"
+                  className="h-6 px-2 text-[11px] font-normal text-slate-600"
+                  disabled={busy !== null || armed !== null}
+                  onClick={() => setArmed(r.row)}
+                  title={`Xoá hẳn dòng #${r.row} (${displayDriverCell(r.driver)} ${r.window})`}
+                >
+                  Xoá {displayDriverCell(r.driver)} {r.window}
+                </Button>
+              )}
+            </span>
+          ))}
         </div>
       )}
       {err && <div role="alert" className="mt-1 text-[11px] text-red-600">{err}</div>}
@@ -391,6 +453,147 @@ function DriverPicker({
  * of decision from adjusting it, and there is nothing on the writing side that
  * does it; only a line added and not yet saved can be dropped again.
  */
+/**
+ * Copy a branch's whole shift pattern onto the branch being set up.
+ *
+ * Most new branches are not new arrangements: the place next door is already
+ * covered 05:00–13:25 then 13:25–19:00 by two named people, and the answer here
+ * is the same shape. Retyping it is where the mistakes come from — an hour
+ * mistyped, a handover left with a gap, a driver name that does not resolve.
+ *
+ * It copies into the EDITOR, not into the sheet. Everything the supervisor would
+ * have had to get right is then still checked by the same save path: names are
+ * resolved against the roster, overlapping hours are refused, and nothing is
+ * written until Lưu. So this is a way to fill the form, not a second way to
+ * write config.
+ *
+ * Only rules that actually name a driver are copied — a source branch can itself
+ * have an empty line waiting to be filled, and copying that would carry the
+ * to-do across rather than the answer.
+ */
+function CopyFromBranch({
+  onCopy,
+  disabled,
+}: {
+  onCopy: (lines: { driver: string; start: string; end: string }[]) => void;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [rows, setRows] = useState<ConfigRowView[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const openPicker = async () => {
+    setOpen(true);
+    if (rows || loading) return;
+    setLoading(true);
+    setErr(null);
+    try {
+      const res = await fetch("/api/config/rows", { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (!Array.isArray(data.rows)) throw new Error(data.error || `Lỗi ${res.status}`);
+      setRows(data.rows as ConfigRowView[]);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Grouped by branch, because a branch's DAY is the useful unit — copying one
+  // of its three shifts would leave the other two to be typed by hand, which is
+  // the work this exists to remove.
+  const branches = useMemo(() => {
+    if (!rows || !q.trim()) return [];
+    const hit = searchConfigRows(rows, q).filter((r) => r.driver.trim() && r.pickup.trim());
+    const byBranch = new Map<string, { pickup: string; customer_id: string; rules: ConfigRowView[] }>();
+    for (const r of hit) {
+      const key = r.customer_id || r.pickup;
+      const g = byBranch.get(key);
+      if (g) g.rules.push(r);
+      else byBranch.set(key, { pickup: r.pickup, customer_id: r.customer_id, rules: [r] });
+    }
+    return [...byBranch.values()]
+      .map((g) => ({
+        ...g,
+        rules: [...g.rules].sort((a, b) => toMin(a.start) - toMin(b.start)),
+      }))
+      .slice(0, 8);
+  }, [rows, q]);
+
+  if (!open) {
+    return (
+      <Button
+        size="sm" variant="outline"
+        className="h-6 px-2 text-[11px]"
+        onClick={openPicker}
+        disabled={disabled}
+      >
+        Sao chép từ điểm khác
+      </Button>
+    );
+  }
+
+  return (
+    <div className="w-full rounded border border-slate-300 bg-white p-1.5">
+      <div className="flex items-center gap-1">
+        <input
+          type="text"
+          autoFocus
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Tìm điểm đã có config…"
+          aria-label="Tìm điểm để sao chép ca"
+          className="min-w-0 flex-1 rounded border border-slate-300 px-1.5 py-1 text-xs outline-none focus:ring-2 focus:ring-indigo-400/50"
+        />
+        <Button
+          size="sm" variant="outline"
+          className="h-6 px-2 text-[11px]"
+          onClick={() => { setOpen(false); setQ(""); }}
+        >
+          Đóng
+        </Button>
+      </div>
+      {err && <div role="alert" className="mt-1 text-[11px] text-red-600">{err}</div>}
+      {loading && <div className="mt-1 text-[11px] text-slate-500">Đang tải config…</div>}
+      {!loading && !err && q.trim() && branches.length === 0 && (
+        <div className="mt-1 text-[11px] text-slate-500">Không tìm thấy điểm nào có ca.</div>
+      )}
+      <ul className="mt-1 space-y-1">
+        {branches.map((b) => (
+          <li key={b.customer_id || b.pickup} className="rounded border border-slate-200 p-1.5">
+            <div className="flex flex-wrap items-center gap-x-1.5">
+              <span className="text-xs font-medium text-slate-800">{b.pickup}</span>
+              {b.customer_id && <span className="font-mono text-[10px] text-slate-400">{b.customer_id}</span>}
+              <Button
+                size="sm"
+                className="ml-auto h-6 px-2 text-[11px] bg-indigo-600 hover:bg-indigo-700"
+                onClick={() => {
+                  onCopy(b.rules.map((r) => ({ driver: r.driver, start: r.start, end: r.end })));
+                  setOpen(false);
+                  setQ("");
+                }}
+              >
+                Chép {b.rules.length} ca
+              </Button>
+            </div>
+            <div className="mt-0.5 space-y-0.5">
+              {b.rules.map((r) => (
+                <div key={r.row} className="text-[11px] text-slate-600">
+                  <span className="tabular-nums">{r.start && r.end ? `${r.start}–${r.end}` : "cả ngày"}</span>
+                  {" · "}
+                  {displayDriverCell(r.driver)}
+                </div>
+              ))}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function BranchEditor({
   pickupName, dropoffName, rules, extraLine, drivers, onDone, onCancel,
 }: {
@@ -571,10 +774,29 @@ function BranchEditor({
           )}
         </div>
       ))}
-      <div className="flex items-center gap-1">
+      <div className="flex flex-wrap items-center gap-1">
         <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={addLine} disabled={busy}>
           + Thêm ca
         </Button>
+        <CopyFromBranch
+          disabled={busy}
+          onCopy={(copied) =>
+            setLines((ls) => {
+              // Appended, never replacing: a branch being set up may already have
+              // the empty row this editor was opened from, and one line the
+              // supervisor has started filling. Both survive, and the clash check
+              // on save is what decides whether the result is coherent.
+              const existing = new Set(ls.map((l) => `${l.driver}\u0000${l.start}\u0000${l.end}`));
+              const fresh = copied
+                .filter((c) => !existing.has(`${c.driver}\u0000${c.start}\u0000${c.end}`))
+                .map((c) => ({ key: newLineKey(), ...c }));
+              // A blank line the supervisor has not touched is a placeholder, not
+              // a rule — drop it rather than saving an empty row beside the copy.
+              const kept = ls.filter((l) => l.driver.trim() || l.start.trim() || l.end.trim() || l.row);
+              return [...kept, ...fresh];
+            })
+          }
+        />
         <div className="ml-auto flex gap-1">
           <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={onCancel} disabled={busy}>
             Hủy
@@ -831,7 +1053,7 @@ export function ConfigTodoPanel({
           <span className="contents" role="status" aria-live="polite">
           {overlaps.length > 0 && (
             <span className="inline-flex items-center gap-1 rounded-full bg-rose-100 text-rose-800 border border-rose-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
-              {overlaps.length} trùng giờ
+              {overlaps.length} trùng config
             </span>
           )}
           {gaps.length > 0 && (
@@ -871,8 +1093,8 @@ export function ConfigTodoPanel({
         {open && (
           <div id={LIST_ID} className="max-h-[38vh] max-w-5xl space-y-1.5 overflow-y-auto">
             {overlaps.length > 0 && (
-              <section aria-label="Hai tài xế cùng trực một giờ">
-                <SectionHeader label="Trùng giờ — hai tài xế cùng trực" count={overlaps.length} tone="amber" className="pt-0.5" />
+              <section aria-label="Trùng config">
+                <SectionHeader label="Trùng config" count={overlaps.length} tone="amber" className="pt-0.5" />
                 <div className={listBox}>
                   {overlaps.map((o) => (
                     <OverlapRow

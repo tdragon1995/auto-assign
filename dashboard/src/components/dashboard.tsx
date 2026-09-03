@@ -20,11 +20,12 @@ import type { LogEntry, PickupWarning, FailedJob, ConfigDriver, SheetAlarm, Unfi
 import type { DeploymentBeat } from "@/lib/smart-log-kv";
 import type { ShiftOverlap } from "@/lib/types";
 import { overlapKey } from "@/lib/config-shift";
+import { ConfigBrowserPanel } from "./config-browser-panel";
 import type { LeaveOnDate, InvalidLeaveRow, SpanningLeaveRow } from "@/lib/leave-config";
 import type { LeaveSuppression } from "@/lib/leave-suppression";
 
 type Env = "prod" | "uat";
-type RightTab = "attention" | "live" | "admin" | "schedule" | "distance" | "tat";
+type RightTab = "attention" | "live" | "admin" | "config" | "schedule" | "distance" | "tat";
 
 export function Dashboard() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -618,6 +619,9 @@ export function Dashboard() {
             <button onClick={() => setRightTab("admin")} className={tabBtn(rightTab === "admin")}>
               Quản trị công việc
             </button>
+            <button onClick={() => setRightTab("config")} className={tabBtn(rightTab === "config")}>
+              Config
+            </button>
             <button onClick={() => setRightTab("schedule")} className={tabBtn(rightTab === "schedule")}>
               Lịch cố định
             </button>
@@ -693,6 +697,12 @@ export function Dashboard() {
                   drivers={drivers}
                   onRefresh={() => loadLeaveStatus(true)}
                 />
+              </div>
+            ) : rightTab === "config" ? (
+              /* Mounted only while the tab is open, so the ~1,700-row fetch
+                 happens when someone asks for it and not before. */
+              <div className="h-[72vh] lg:h-full">
+                <ConfigBrowserPanel />
               </div>
             ) : rightTab === "live" ? (
               <div className="h-[72vh] lg:h-full">

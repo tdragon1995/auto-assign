@@ -954,6 +954,79 @@ export async function completeConfigRow(opts: {
 }
 
 /**
+ * Empty one config row — how a duplicate rule is removed.
+ *
+ * It CLEARS the row's value cells rather than deleting the sheet row, and that is
+ * the safe choice rather than the lazy one. The weekday tab's four id columns are
+ * a single ARRAYFORMULA each, anchored in row 2 and spilling down the table; the
+ * table is also the space `writeConfigRows` writes new rules into, and it finds
+ * that space by looking for a blank pickup. So a cleared row is exactly what this
+ * system already means by "free", it keeps every other row's number stable — the
+ * dashboard is holding those for other to-dos — and it never goes near the spill.
+ *
+ * Only the columns named in WRITE_COLS, plus Driver. Every id column and
+ * "Điểm Drop-off thay thế" stay untouched: the ids are the spill, and the
+ * alternate destination is an override that rewrites where jobs go.
+ *
+ * WEEKDAY ONLY, like the other two writers, and for the same reason: the Sunday
+ * tab's Driver column is a formula deriving cover from the public roster, and a
+ * blank written over it destroys that derivation for the row.
+ */
+export async function clearConfigRow(opts: {
+  row: number;
+  expectPickup: string;
+}): Promise<void> {
+  const tab = currentConfigTab();
+  if (tab.gid !== CONFIG_TABS.weekday.gid) {
+    throw new Error(
+      "Chủ nhật: dòng được suy ra từ lịch trực công khai — sửa trên tab lịch Chủ nhật",
+    );
+  }
+  const sheets = getSheetsClient();
+
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: `${a1(tab)}!1:1`,
+  });
+  const header = (res.data.values?.[0] ?? []).map((h) => String(h ?? "").trim());
+  const at = (name: string) => {
+    const i = header.indexOf(name);
+    return i < 0 ? null : colLetter(i);
+  };
+  const pickupCol = at(WRITE_COLS.pickup);
+  if (!pickupCol) throw new Error(`"${tab.title}" không có cột ${WRITE_COLS.pickup}`);
+
+  // The row number came from a parse that may be minutes old, and rows shift when
+  // anyone inserts above them — so confirm the row still holds the branch the
+  // dashboard was looking at before blanking anything.
+  const check = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: `${a1(tab)}!${pickupCol}${opts.row}`,
+  });
+  const found = String(check.data.values?.[0]?.[0] ?? "").trim();
+  if (found !== opts.expectPickup.trim()) {
+    throw new Error(
+      `Dòng ${opts.row} giờ là "${found || "(trống)"}", không phải "${opts.expectPickup}" — ` +
+      `sheet đã thay đổi, bấm Refresh rồi thử lại`,
+    );
+  }
+
+  // One range per column, never a span: what sits between two named columns
+  // differs per tab and moves when the sheet is reorganised, and on this tab some
+  // of it is a spill that a blank would collapse.
+  const q = a1(tab);
+  const targets = [pickupCol, at("Driver"), at(WRITE_COLS.start), at(WRITE_COLS.end), at(WRITE_COLS.dropoff)]
+    .filter((c): c is string => !!c);
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: SHEET_ID,
+    requestBody: {
+      valueInputOption: "RAW",
+      data: targets.map((c) => ({ range: `${q}!${c}${opts.row}`, values: [[""]] })),
+    },
+  });
+}
+
+/**
  * Move one end of an existing rule's window — how an uncovered hour is closed.
  *
  * Deliberately one boundary at a time. The hole between "cover ends 14:30" and
