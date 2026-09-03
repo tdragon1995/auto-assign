@@ -221,9 +221,20 @@ function OverlapRow({
               className="h-6 px-2 text-[11px] font-normal"
               disabled={busy !== null}
               onClick={() => shrink(sh)}
-              title={`Ghi ${sh.value} vào giờ ${sh.edge === "end" ? "kết thúc" : "bắt đầu"} của dòng #${sh.row}`}
+              title={
+                `Dòng #${sh.row} — ${displayDriverCell(sh.driver)}: ghi ${sh.value} vào giờ ` +
+                `${sh.edge === "end" ? "kết thúc" : "bắt đầu"}`
+              }
             >
-              {busy === sh.edge + sh.row ? "Đang lưu…" : `${displayDriverCell(sh.driver)} → ${sh.window}`}
+              {/* The window BEFORE and after, not the driver's name. Both rules
+                  are often the same person — as in the pair this was written
+                  for — so the name says nothing about which row is moving,
+                  while the current window names it exactly. "Rút" is the
+                  opposite of the gap direction's "Nới", so the two read as the
+                  same action in two directions. */}
+              {busy === sh.edge + sh.row
+                ? "Đang lưu…"
+                : `Rút ${o.rules?.find((r) => r.row === sh.row)?.window ?? `#${sh.row}`} → ${sh.window}`}
             </Button>
           ))}
         </div>
