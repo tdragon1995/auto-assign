@@ -214,7 +214,7 @@ function isInternalOrPlanJob(job: any): boolean {
  * a stop" suppression work at all, so leaving them out silently breaks it. See the
  * lookup-table comment below for how that failed in the field.
  */
-function computePickupWarnings(
+export function computePickupWarnings(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   dayJobs: any[],
   today: string,
@@ -300,7 +300,25 @@ function computePickupWarnings(
     const pickup  = stops.find((s: any) => s.stop_type_id === 1);
     if (!pickup) continue;
 
-    if (pickup.activity_started_ts) continue;
+    // A pickup the driver has already reached is not an un-collected pickup, and
+    // ARRIVAL is its own signal: activity_arrived_ts is stamped when the driver gets
+    // to the branch, and nothing stamps activity_started_ts until they open the
+    // collection itself. Reading only the latter kept a driver standing in the
+    // clinic on the late list — field case: job 34437573 on 2026-09-03, arrived
+    // 18:41, still flagged on the cycles after it, because neither of the two
+    // suppressions below can catch an arrival either (driverInProgressStopIds needs
+    // a STARTED stop, and the 30-minute grace needs a COMPLETED one).
+    //
+    // activity_completed_ts is read for the reason isBlockingPickupStop gives: the
+    // status lags the timestamps, so a collected pickup can still read 1-3 and the
+    // status test below would miss it.
+    //
+    // Deliberately NOT isStopStarted, which also counts any stop_status_id !== 1.
+    // Whether Cartrack sets status 2 ("Đang đến") on a driver action or on dispatch
+    // is unverified here, and if it were the latter every assigned pickup would read
+    // as touched and this warning would never fire again. A timestamp is a driver
+    // action with no such ambiguity. Widen it once status 2 has been observed.
+    if (pickup.activity_started_ts || pickup.activity_arrived_ts || pickup.activity_completed_ts) continue;
     // Guard: skip if stop is already completed or rejected
     if (isCompletedOrRejectedStop(pickup.stop_status_id ?? 0)) continue;
 
