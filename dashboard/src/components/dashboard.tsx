@@ -35,6 +35,7 @@ export function Dashboard() {
   const [deployments, setDeployments] = useState<DeploymentBeat[]>([]);
   const [held, setHeld] = useState<HeldJob[]>([]);
   const [warnings, setWarnings] = useState<PickupWarning[]>([]);
+  const [warningsAt, setWarningsAt] = useState<string | null>(null);
   const [failed, setFailed] = useState<FailedJob[]>([]);
   const [sheetAlarms, setSheetAlarms] = useState<SheetAlarm[]>([]);
   const [unfinished, setUnfinished] = useState<UnfinishedConfigRow[]>([]);
@@ -121,6 +122,7 @@ export function Dashboard() {
       setArmUntil(data.state?.armedUntil ?? null);
       setArmedBy(data.state?.armedBy ?? "");
       setLastChecked(data.lastChecked ?? null);
+      setWarningsAt(data.warningsAt ?? null);
       setDeployments(Array.isArray(data.deployments) ? data.deployments : []);
       if (Array.isArray(data.logs)) {
         const incoming = data.logs as LogEntry[];
@@ -654,6 +656,7 @@ export function Dashboard() {
                     onNoteManualAssign={handleHeldManualAssign}
                     failed={failed}
                     warnings={warnings}
+                    warningsAt={warningsAt}
                     scheduleErrors={scheduleErrors}
                     drivers={drivers}
                     onAssign={handleManualAssign}
