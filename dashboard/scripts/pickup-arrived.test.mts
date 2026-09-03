@@ -1,20 +1,25 @@
 /**
- * The late-pickup gate must let go of a pickup the driver has already REACHED.
+ * What the late-pickup gate treats as "someone has touched this pickup".
  *
- * Why this is worth a test. `computePickupWarnings` decides "has anyone touched
- * this pickup" on its own, and it used to read exactly one timestamp —
- * activity_started_ts, stamped when the driver opens the collection. Arrival is a
- * separate stamp (activity_arrived_ts), and neither of the two suppressions that
- * follow can stand in for it: the busy-elsewhere map needs a STARTED stop, and the
- * 30-minute grace needs a COMPLETED one. So a driver standing in the clinic with
- * the collection not yet open matched nothing and stayed on the list.
+ * Read the header before changing a row. This suite pins INTENDED semantics, and
+ * one measurement bounds how much of it is load-bearing: across a real 738-job
+ * payload (1,473 stops) a stop's status and its activity stamps move in lockstep —
+ * status 1 carries nothing, 2 carries started, 3 carries started+arrived, 4 carries
+ * all three — with zero stops carrying arrived or completed while started is null.
+ * So on every shape observed so far, reading all three stamps and reading
+ * activity_started_ts alone decide identically, and the arrived/completed rows below
+ * are guarding a lag Cartrack is documented to have (see isBlockingPickupStop)
+ * rather than reproducing a failure anyone has seen.
  *
- * Field case: job 34437573 on 2026-09-03 (PK Dr Care Implant Clinic → BRA - D029),
- * anchored 16:08, driver arrived 18:41, still flagged after that.
+ * What that lockstep also means, and the reason this file exists at all: a pickup
+ * still sitting at status 1 with no stamps is a pickup the driver has not touched
+ * IN THE APP. The engine has no other way to know they are standing at the branch,
+ * so a driver who arrives without opening the collection stays on this list, and no
+ * change to this predicate can rescue that.
  *
- * The rows that MUST keep warning matter as much as the ones that must not: this
+ * The rows that MUST keep warning matter more than the ones that must not: this
  * gate is the only thing that tells a supervisor a sample has not been collected,
- * and widening it too far silences that silently.
+ * and widening it too far silences that with nothing on screen to say so.
  *
  *   npx tsx scripts/pickup-arrived.test.mts
  */
@@ -80,7 +85,7 @@ const cases: [string, unknown[], boolean][] = [
   ],
 
   // ── Must not warn: the driver has reached this pickup. ────────────────────
-  ["ARRIVED at 18:41, collection not yet open — job 34437573", [job({ stop_status_id: 3, activity_arrived_ts: `${TODAY} 18:41:00` })], false],
+  ["arrival stamped, collection not yet open", [job({ stop_status_id: 3, activity_arrived_ts: `${TODAY} 18:41:00` })], false],
   ["arrival stamped while the status still lags at 1", [job({ stop_status_id: 1, activity_arrived_ts: `${TODAY} 18:41:00` })], false],
   ["collection open (activity_started_ts) — the original guard", [job({ stop_status_id: 3, activity_started_ts: `${TODAY} 18:42:00` })], false],
   // Completed well outside the 30-minute grace, so ONLY the completion stamp can

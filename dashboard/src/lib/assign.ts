@@ -300,24 +300,26 @@ export function computePickupWarnings(
     const pickup  = stops.find((s: any) => s.stop_type_id === 1);
     if (!pickup) continue;
 
-    // A pickup the driver has already reached is not an un-collected pickup, and
-    // ARRIVAL is its own signal: activity_arrived_ts is stamped when the driver gets
-    // to the branch, and nothing stamps activity_started_ts until they open the
-    // collection itself. Reading only the latter kept a driver standing in the
-    // clinic on the late list — field case: job 34437573 on 2026-09-03, arrived
-    // 18:41, still flagged on the cycles after it, because neither of the two
-    // suppressions below can catch an arrival either (driverInProgressStopIds needs
-    // a STARTED stop, and the 30-minute grace needs a COMPLETED one).
+    // Read all three of the stop's activity timestamps, not just the first.
     //
-    // activity_completed_ts is read for the reason isBlockingPickupStop gives: the
-    // status lags the timestamps, so a collected pickup can still read 1-3 and the
-    // status test below would miss it.
+    // MEASURED, so the next reader does not have to re-derive it: across a real
+    // 738-job payload (1,473 stops) the status and the stamps move in lockstep —
+    // status 1 carries nothing, 2 carries started, 3 carries started+arrived, 4
+    // carries all three — and there is NOT ONE stop with arrived or completed set
+    // while started is null. So started strictly precedes the other two, and on
+    // every shape observed so far this condition and `activity_started_ts` alone
+    // decide identically. This is deliberate belt-and-braces, NOT a bug fix: do
+    // not read it as evidence that a job was ever flagged because of it.
     //
-    // Deliberately NOT isStopStarted, which also counts any stop_status_id !== 1.
-    // Whether Cartrack sets status 2 ("Đang đến") on a driver action or on dispatch
-    // is unverified here, and if it were the latter every assigned pickup would read
-    // as touched and this warning would never fire again. A timestamp is a driver
-    // action with no such ambiguity. Widen it once status 2 has been observed.
+    // Kept anyway for the reason isBlockingPickupStop already documents — Cartrack
+    // lags a stop's status behind its stamps, and a guard on a terminal state that
+    // reads one field is one field away from missing it. A superset costs nothing
+    // here: all three ride the payload the cycle already fetched.
+    //
+    // Still NOT isStopStarted, but the caution is now narrower than "unverified":
+    // status 2 IS driver-initiated (all 11 status-2 stops in that payload carry
+    // activity_started_ts), so widening would be safe on this evidence. It buys
+    // nothing over the stamps, and a status is the field that lags.
     if (pickup.activity_started_ts || pickup.activity_arrived_ts || pickup.activity_completed_ts) continue;
     // Guard: skip if stop is already completed or rejected
     if (isCompletedOrRejectedStop(pickup.stop_status_id ?? 0)) continue;
