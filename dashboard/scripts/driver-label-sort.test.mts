@@ -40,9 +40,13 @@ const eq = (label: string, got: unknown, want: unknown) =>
 console.log("splitting a label");
 // The "F - C - " / "P - P - " prefix is routing metadata on the Cartrack record.
 // It tells the reader nothing, and it was the widest thing on the row — on a
-// phone it pushed the actual content off the edge. Only the staff code survives,
-// because that identifies WHICH ACCOUNT, which is the one thing two rows for the
-// same person differ by.
+// phone it pushed the actual content off the edge.
+//
+// The code this still returns is NOT rendered any more either; the FT/PT chip
+// answers "which of this person's two accounts?" in two characters instead of
+// eight. It is still parsed because it breaks a tie when one person's two
+// accounts sort against each other, and because it is what the name tooltip
+// falls back on — so this is live code, not a leftover.
 eq("the routing prefix is dropped, the staff code kept",
   splitDriverName("F - C - DC100320 Lý Chánh Hùng"),
   { code: "DC100320", name: "Lý Chánh Hùng" });
