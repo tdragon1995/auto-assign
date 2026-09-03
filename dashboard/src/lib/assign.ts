@@ -1620,6 +1620,7 @@ export async function autoAssignCycle(
         sheetAlarms: drainSheetAlarms() ?? undefined,
         unfinished: config?.unfinished ?? [],
         gaps: config?.gaps ?? [],
+        overlaps: config?.overlaps ?? [],
         parsedAt: config?.parsedAt ?? undefined,
         branchRules: config?.branchRules ?? undefined,
       });
@@ -2638,6 +2639,7 @@ export async function autoAssignCycle(
         sheetAlarms: drainSheetAlarms() ?? undefined,
         unfinished: published?.unfinished ?? [],
         gaps: published?.gaps ?? [],
+        overlaps: published?.overlaps ?? [],
         parsedAt: published?.parsedAt ?? undefined,
         branchRules: published?.branchRules ?? undefined,
       }),

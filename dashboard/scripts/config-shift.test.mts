@@ -17,7 +17,8 @@
  *   npx tsx scripts/config-shift.test.mts
  */
 import type { BranchRule, CoverageGap } from "../src/lib/types";
-const { stretchOptions, findClash, blocks, toMin, fromMin } = await import("../src/lib/config-shift");
+const { stretchOptions, shrinkOptions, overlapKey, findClash, blocks, toMin, fromMin } =
+  await import("../src/lib/config-shift");
 
 let failed = 0;
 function ok(label: string, cond: boolean, detail?: string) {
@@ -28,6 +29,10 @@ function ok(label: string, cond: boolean, detail?: string) {
 
 const rule = (row: number, driver: string, start: string, end: string): BranchRule =>
   ({ row, driver, start, end }) as BranchRule;
+
+const eq = (label: string, got: unknown, want: unknown) =>
+  ok(label, JSON.stringify(got) === JSON.stringify(want),
+    `got  ${JSON.stringify(got)}\n       want ${JSON.stringify(want)}`);
 
 const gap = (at: string, g: Partial<CoverageGap> = {}): CoverageGap => ({
   customer_id: "D014", pickup_name: "PS315", at,
@@ -137,6 +142,87 @@ console.log("\nrefusals — the cases that must NOT be offered");
 {
   const g = gap("bad-time", { before: { row: 10, driver: "Nam", window: "07:00–16:00" } });
   ok("an unparseable minute yields nothing", stretchOptions(g, []).length === 0);
+}
+
+// ── Closing an OVERLAP by moving one boundary ────────────────────────────────
+//
+// The mirror of the gap direction, and it writes to the same cell through the
+// same route — so the same thing is at stake: a boundary moved onto a neighbour
+// makes the engine refuse the branch's jobs outright.
+//
+// The trap worth pinning is CONTAINMENT. One rule wholly inside another looks
+// closable — cut the outer one down to where the inner starts — and doing that
+// trades a CLASH for a five-hour HOLE, which is the worse fault: the engine
+// refuses those jobs too, and nothing in the sheet says why. Nothing may be
+// offered there.
+{
+  console.log("closing an overlap");
+  const side = (row: number, driver: string, window: string) => ({ row, driver, window });
+
+  // Two rules that simply run into each other: A until 16:00, B from 15:00.
+  {
+    const rules: BranchRule[] = [
+      { row: 10, driver: "A", start: "07:00", end: "16:00" },
+      { row: 11, driver: "B", start: "15:00", end: "20:00" },
+    ];
+    const out = shrinkOptions([side(10, "A", "07:00–16:00"), side(11, "B", "15:00–20:00")], rules);
+    eq("both single-boundary fixes are offered",
+      out.map((s) => [s.row, s.edge, s.value]),
+      [[10, "end", "15:00"], [11, "start", "16:00"]]);
+    eq("…and each states the window it ends up with",
+      out.map((s) => s.window), ["07:00–15:00", "16:00–20:00"]);
+  }
+
+  // A wholly contains B. Cutting A opens 12:00–20:00; moving B's start past its
+  // own end inverts it. Neither may be offered.
+  {
+    const rules: BranchRule[] = [
+      { row: 10, driver: "A", start: "05:00", end: "20:00" },
+      { row: 11, driver: "B", start: "08:00", end: "12:00" },
+    ];
+    const out = shrinkOptions([side(10, "A", "05:00–20:00"), side(11, "B", "08:00–12:00")], rules);
+    eq("a contained rule offers nothing — a hole is worse than the clash", out.length, 0);
+  }
+
+  // Identical windows: shrinking either leaves it covering nothing at all.
+  {
+    const rules: BranchRule[] = [
+      { row: 10, driver: "A", start: "07:00", end: "16:00" },
+      { row: 11, driver: "B", start: "07:00", end: "16:00" },
+    ];
+    const out = shrinkOptions([side(10, "A", "07:00–16:00"), side(11, "B", "07:00–16:00")], rules);
+    eq("two identical rules cannot be separated by one boundary", out.length, 0);
+  }
+
+  // A third rule sits where one of the moves would land, so only the other survives.
+  {
+    const rules: BranchRule[] = [
+      { row: 10, driver: "A", start: "07:00", end: "16:00" },
+      { row: 11, driver: "B", start: "15:00", end: "20:00" },
+      { row: 12, driver: "C", start: "20:00", end: "22:00" },
+    ];
+    const out = shrinkOptions([side(10, "A", "07:00–16:00"), side(11, "B", "15:00–20:00")], rules);
+    eq("the untouched neighbour does not block the valid moves",
+      out.map((s) => s.row), [10, 11]);
+  }
+
+  // A rule with no window is on duty all day; no single boundary separates it.
+  {
+    const rules: BranchRule[] = [
+      { row: 10, driver: "A", start: "", end: "" },
+      { row: 11, driver: "B", start: "08:00", end: "12:00" },
+    ];
+    eq("an all-day rule goes to the editor",
+      shrinkOptions([side(10, "A", ""), side(11, "B", "08:00–12:00")], rules).length, 0);
+  }
+
+  // The key has to survive the fix changing the window, or the row reappears as
+  // new the moment it is dealt with.
+  eq("the dismiss key is the branch and the two rows",
+    overlapKey({ customer_id: "D014", rules: [{ row: 11 }, { row: 10 }] }), "D014|10-11");
+  eq("…in a stable order whichever side is listed first",
+    overlapKey({ customer_id: "D014", rules: [{ row: 10 }, { row: 11 }] }),
+    overlapKey({ customer_id: "D014", rules: [{ row: 11 }, { row: 10 }] }));
 }
 
 console.log(failed === 0 ? "\nAll config-shift assertions passed.\n" : `\n${failed} FAILED\n`);

@@ -3,8 +3,9 @@ import type { Config, ConfigDriver, Mapping, UnfinishedConfigRow, CoverageGap, B
 import { fetchSheetRows, isSheetShapeError, noteSheetLoad, noteSheetWarning, SHEET_CONTRACT, SHEET_GID } from "./sheets";
 import {
   findDuplicateBranches, findShiftOverlaps, resolveGaps, coversWindow,
-  duplicateBranchWarning, shiftOverlapWarning, unresolvedWarning,
+  duplicateBranchWarning, unresolvedWarning,
   type LocationRow, type UnresolvedRows, type RuleRow,
+  type AuditableRow, type ShiftOverlap,
 } from "./config-audit";
 import { vnDate, vnIsSunday, vnTimestamp } from "./time";
 import { looksAutoCreated } from "./unmapped-row";
@@ -211,15 +212,20 @@ let locationsAuditedOn = "";
  */
 /** The sentences, from data alone. Separate so the cached path can rebuild them
  *  without re-reading the sheet — see the version note on the L2 key. */
-function emitConfigWarnings(
-  tabLabel: string,
-  mappings: Mapping[],
-  unresolved: UnresolvedRows,
-  nameByCustomer: ReadonlyMap<string, string>,
-): void {
+// Narrower than it was: the overlap sentence used to live here and needed the
+// mappings and the branch names to build. It is a to-do row now, so all that is
+// left is the unresolved-lookups line — and the retraction that clears the old
+// overlap sentence off any banner still holding one.
+function emitConfigWarnings(tabLabel: string, unresolved: UnresolvedRows): void {
   const dropped = unresolvedWarning(unresolved);
   noteSheetWarning(A_UNRESOLVED, dropped && `${tabLabel}: ${dropped}`);
-  noteSheetWarning(A_OVERLAP, shiftOverlapWarning(findShiftOverlaps(mappings, nameByCustomer)));
+  // NOT reported here any more. An overlap is now a row in "Cần tạo config"
+  // with the boundary move offered on it — saying it twice, once as a task and
+  // once as a paragraph of banner text, would leave the banner standing after
+  // the task was done, because the two are computed from different things (the
+  // banner from the cached mappings, the task from a parse that carries rows).
+  // The retraction below is what clears any sentence a previous deploy left.
+  noteSheetWarning(A_OVERLAP, null);
 }
 
 async function auditParsedConfig(
@@ -230,7 +236,7 @@ async function auditParsedConfig(
   nameByCustomer: Map<string, string>,
   today: string,
 ): Promise<void> {
-  emitConfigWarnings(tabLabel, mappings, unresolved, nameByCustomer);
+  emitConfigWarnings(tabLabel, unresolved);
 
   if (locationsAuditedOn === today) return;
   try {
@@ -267,11 +273,15 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     const redis = getRedis();
     if (redis) {
       try {
-        const hit = await redis.get<{ mappings: Mapping[]; unfinished?: UnfinishedConfigRow[]; gaps?: CoverageGap[]; branchRules?: Record<string, BranchRule[]>; parsedAt?: string; unresolved?: UnresolvedRows; names?: [string, string][] }>(l2Key(gen, today));
+        const hit = await redis.get<{ mappings: Mapping[]; unfinished?: UnfinishedConfigRow[]; gaps?: CoverageGap[]; overlaps?: ShiftOverlap[]; branchRules?: Record<string, BranchRule[]>; parsedAt?: string; unresolved?: UnresolvedRows; names?: [string, string][] }>(l2Key(gen, today));
         // Same zero-length suspicion as the sheet path below: never adopt an empty
         // mapping, whatever it came from.
         if (hit && Array.isArray(hit.mappings) && hit.mappings.length > 0) {
-          cachedConfig = { mappings: hit.mappings, unfinished: hit.unfinished ?? [], gaps: hit.gaps ?? [], branchRules: hit.branchRules ?? {}, parsedAt: hit.parsedAt ?? "" };
+          // Overlaps are READ from the blob, never recomputed here: deriving them
+          // needs the sheet rows, which the cached mappings deliberately do not
+          // carry. A blob written before this feature simply has none, and the
+          // next full parse fills them in.
+          cachedConfig = { mappings: hit.mappings, unfinished: hit.unfinished ?? [], gaps: hit.gaps ?? [], overlaps: hit.overlaps ?? [], branchRules: hit.branchRules ?? {}, parsedAt: hit.parsedAt ?? "" };
           cachedDay = today;
           cachedGen = gen;
           // Rebuild the sentences from the cached inputs. Pure string work, and
@@ -281,9 +291,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
           // standing until the underlying condition happens to move.
           emitConfigWarnings(
             SHEET_CONTRACT[vnIsSunday() ? "sunday" : "mapping"].label,
-            hit.mappings,
             hit.unresolved ?? { pickups: [], drivers: [], dropoffs: [], invalidDriverIds: [] },
-            new Map(hit.names ?? []),
           );
           return cachedConfig;
         }
@@ -308,6 +316,8 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     const nameByCustomer = new Map<string, string>();
     // Rules per branch, carrying the sheet row so a boundary can later be moved.
     const rulesByCustomer = new Map<string, RuleRow[]>();
+    // Rows in the shape the overlap check wants. See the push below.
+    const auditRows: AuditableRow[] = [];
     for (const [idx, row] of rows.entries()) {
       const customer_id = row["customer_id"] ?? "";
       const driver_id = (row["driver_id"] ?? "").trim();
@@ -374,6 +384,19 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
         start: parseTime(row["shift_start"]), end: parseTime(row["shift_end"]),
       };
       if (rules) rules.push(thisRule); else rulesByCustomer.set(customer_id, [thisRule]);
+      // The same rows the overlap check reads, carrying the sheet row so the
+      // pair it finds can be FIXED from the dashboard rather than only reported.
+      // Kept beside the mapping rather than on it: this array is derived and
+      // dropped, while a row number on every Mapping would be cached forever.
+      auditRows.push({
+        customer_id,
+        driver_id,
+        first_name_last_name: driverName,
+        shift_start: thisRule.start,
+        shift_end: thisRule.end,
+        dropoff_id: (row["dropoff_id"] ?? "").trim(),
+        row: thisRule.row,
+      });
 
       mappings.push({
         customer_id,
@@ -446,6 +469,14 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
       console.error("Coverage-gap resolve skipped:", e);
     }
 
+    // Two fixed rules live at the same minute for one branch. Derived on every
+    // parse rather than recorded at runtime the way a gap is: unlike a hole, an
+    // overlap is fully visible in the sheet, so nothing has to fall into it
+    // first. It used to be reported only as a sentence in the sheet-alarm
+    // banner while a gap — the same fault, opposite sign — got an actionable
+    // row; this is what closes that gap.
+    const overlaps = isWeekday ? findShiftOverlaps(auditRows, nameByCustomer) : [];
+
     // The rules each listed branch already has. Only those branches, because the
     // editor needs a branch's WHOLE day — a window cannot be judged free without
     // seeing what sits beside it — but nothing else needs carrying.
@@ -453,7 +484,13 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     if (isWeekday) {
       const hhmm = (t: { hours: number; minutes: number } | null) =>
         t ? `${String(t.hours).padStart(2, "0")}:${String(t.minutes).padStart(2, "0")}` : "";
-      for (const cid of new Set([...gaps.map((g) => g.customer_id), ...stillNeeded.map((u) => u.customer_id)])) {
+      for (const cid of new Set([
+        ...gaps.map((g) => g.customer_id),
+        ...stillNeeded.map((u) => u.customer_id),
+        // An overlapping branch needs its whole day here too — the boundary move
+        // is only safe judged against everything beside it.
+        ...overlaps.map((o) => o.customer_id),
+      ])) {
         branchRules[cid] = (rulesByCustomer.get(cid) ?? []).map((r) => ({
           row: r.row, driver: r.driver, start: hhmm(r.start), end: hhmm(r.end),
         }));
@@ -462,7 +499,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
 
     await auditParsedConfig(SHEET_CONTRACT[tab].label, mappings, unresolved, pickupNames, nameByCustomer, today);
     const parsedAt = vnTimestamp();
-    cachedConfig = { mappings, unfinished: isWeekday ? stillNeeded : [], gaps: isWeekday ? gaps : [], branchRules, parsedAt };
+    cachedConfig = { mappings, unfinished: isWeekday ? stillNeeded : [], gaps: isWeekday ? gaps : [], overlaps, branchRules, parsedAt };
     cachedDay = today;
     cachedGen = gen;
 
@@ -473,7 +510,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
       const redis = getRedis();
       if (redis) {
         try {
-          await redis.set(l2Key(gen, today), { mappings, unfinished: isWeekday ? stillNeeded : [], gaps: isWeekday ? gaps : [], branchRules, parsedAt, unresolved, names: [...nameByCustomer] }, { ex: L2_TTL_S });
+          await redis.set(l2Key(gen, today), { mappings, unfinished: isWeekday ? stillNeeded : [], gaps: isWeekday ? gaps : [], overlaps, branchRules, parsedAt, unresolved, names: [...nameByCustomer] }, { ex: L2_TTL_S });
         } catch { /* best-effort; the sheet is always the fallback */ }
       }
     }

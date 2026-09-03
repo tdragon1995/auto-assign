@@ -6,9 +6,10 @@ import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { SectionHeader } from "./section-header";
-import type { CoverageGap, UnfinishedConfigRow, ConfigDriver, BranchRule } from "@/lib/types";
+import type { CoverageGap, UnfinishedConfigRow, ConfigDriver, BranchRule, ShiftOverlap } from "@/lib/types";
 import { DRIVER_SEP, foldName, resolveDriverCell, splitDriverNames } from "@/lib/driver-cell";
 import { displayDriverCell } from "@/lib/driver-label";
+import { overlapKey, shrinkOptions } from "@/lib/config-shift";
 import { driverDisplayName } from "@/lib/display-names";
 import { DriverName } from "./driver-name";
 import {
@@ -107,6 +108,121 @@ const LIST_ID = "config-todo-list";
  * roster accent-insensitively, and the comma is an implementation detail of the
  * sheet again — assembled on the way out, never typed.
  */
+/**
+ * Two fixed rules on one branch that are both on duty at the same minute.
+ *
+ * The mirror of a coverage gap, and the same job to fix: a hole means the engine
+ * has nobody to give the job to (NO_DRIVER); an overlap means it has two and
+ * refuses to choose (CLASH). Both end with the job unassigned, so both belong in
+ * this list — the overlap only ever appeared as a paragraph in the sheet-alarm
+ * banner before, which named the problem without offering the fix.
+ *
+ * The fix is one boundary, the same as a gap's: the earlier rule hands over
+ * sooner, or the later one starts later. Where neither works on its own — a rule
+ * wholly inside another, where cutting either would open a hole — nothing is
+ * offered and the full editor takes over, because that shows the whole day.
+ */
+function OverlapRow({
+  o, rules, drivers, onSaved,
+}: {
+  o: ShiftOverlap;
+  rules: BranchRule[];
+  drivers: ConfigDriver[];
+  onSaved: (key?: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const key = `o:${overlapKey(o)}`;
+  const options = o.rules ? shrinkOptions(o.rules, rules) : [];
+
+  async function shrink(sh: Stretch) {
+    setErr(null);
+    setBusy(sh.edge + sh.row);
+    try {
+      const res = await fetch("/api/config/stretch-rule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ row: sh.row, pickup_name: o.pickup_name, edge: sh.edge, value: sh.value }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
+      toast.success(`${displayDriverCell(sh.driver)} giờ trực ${sh.window} — ${o.pickup_name}`);
+      onSaved(key);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="px-2 py-1.5 hover:bg-slate-50">
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="shrink-0 rounded border border-rose-300 bg-rose-50 px-1.5 py-0.5 font-mono text-[11px] text-rose-800">
+          {o.window}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-xs font-medium text-slate-800" title={o.pickup_name}>
+          {o.pickup_name}
+        </span>
+        {!open && (
+          <Button
+            size="sm" variant="outline"
+            className="h-6 shrink-0 px-2 text-[11px]"
+            onClick={() => setOpen(true)}
+          >
+            Sửa config
+          </Button>
+        )}
+      </div>
+      <div className="mt-0.5 text-[11px] text-slate-600">
+        {/* Both sides named, with their hours: the supervisor is deciding which
+            of two real people keeps the stretch, and cannot do that from the
+            branch and the window alone. */}
+        {displayDriverCell(o.drivers[0])}
+        {o.rules && <span className="tabular-nums"> {o.rules[0].window}</span>}
+        {" · "}
+        {displayDriverCell(o.drivers[1])}
+        {o.rules && <span className="tabular-nums"> {o.rules[1].window}</span>}
+        {" · "}
+        <span className="font-semibold text-rose-800">job giờ này sẽ báo CLASH</span>
+      </div>
+      {!open && options.length > 0 && (
+        <div className="mt-1 flex flex-wrap items-center gap-1">
+          {options.map((sh) => (
+            <Button
+              key={`${sh.row}-${sh.edge}`}
+              size="sm" variant="outline"
+              className="h-6 px-2 text-[11px] font-normal"
+              disabled={busy !== null}
+              onClick={() => shrink(sh)}
+              title={`Ghi ${sh.value} vào giờ ${sh.edge === "end" ? "kết thúc" : "bắt đầu"} của dòng #${sh.row}`}
+            >
+              {busy === sh.edge + sh.row ? "Đang lưu…" : `${displayDriverCell(sh.driver)} → ${sh.window}`}
+            </Button>
+          ))}
+        </div>
+      )}
+      {!open && options.length === 0 && (
+        <div className="mt-0.5 text-[11px] text-slate-500">
+          Một dòng nằm trọn trong dòng kia — cắt bên nào cũng hở giờ, nên cần sửa cả ngày.
+        </div>
+      )}
+      {err && <div role="alert" className="mt-1 text-[11px] text-red-600">{err}</div>}
+      {open && (
+        <BranchEditor
+          pickupName={o.pickup_name}
+          dropoffName=""
+          rules={rules}
+          drivers={drivers}
+          onCancel={() => setOpen(false)}
+          onDone={() => { setOpen(false); onSaved(key); }}
+        />
+      )}
+    </div>
+  );
+}
+
 function DriverPicker({
   value, onChange, drivers,
 }: {
@@ -661,6 +777,7 @@ function GapRow({
 export function ConfigTodoPanel({
   gaps,
   unfinished,
+  overlaps,
   branchRules,
   drivers,
   parsedAt,
@@ -669,6 +786,7 @@ export function ConfigTodoPanel({
   gaps: CoverageGap[];
   unfinished: UnfinishedConfigRow[];
   /** The rules each listed branch already has, keyed by branch. */
+  overlaps: ShiftOverlap[];
   branchRules: Record<string, BranchRule[]>;
   drivers: ConfigDriver[];
   /** When the sheet behind both lists was last read. */
@@ -676,7 +794,7 @@ export function ConfigTodoPanel({
   onSaved: (key?: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  if (gaps.length === 0 && unfinished.length === 0) return null;
+  if (gaps.length === 0 && unfinished.length === 0 && overlaps.length === 0) return null;
 
   const listBox = "divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200";
 
@@ -711,6 +829,11 @@ export function ConfigTodoPanel({
           {/* Announced: clearing the last row of a kind is the one thing on this
               panel a screen-reader user would otherwise have no way of noticing. */}
           <span className="contents" role="status" aria-live="polite">
+          {overlaps.length > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-rose-100 text-rose-800 border border-rose-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
+              {overlaps.length} trùng giờ
+            </span>
+          )}
           {gaps.length > 0 && (
             <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-800 border border-amber-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
               {gaps.length} thiếu ca
@@ -747,6 +870,22 @@ export function ConfigTodoPanel({
             out at the right edge instead of in the column the others share. */}
         {open && (
           <div id={LIST_ID} className="max-h-[38vh] max-w-5xl space-y-1.5 overflow-y-auto">
+            {overlaps.length > 0 && (
+              <section aria-label="Hai tài xế cùng trực một giờ">
+                <SectionHeader label="Trùng giờ — hai tài xế cùng trực" count={overlaps.length} tone="amber" className="pt-0.5" />
+                <div className={listBox}>
+                  {overlaps.map((o) => (
+                    <OverlapRow
+                      key={overlapKey(o)}
+                      o={o}
+                      rules={branchRules[o.customer_id] ?? []}
+                      drivers={drivers}
+                      onSaved={onSaved}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
             {gaps.length > 0 && (
               <section aria-label="Giờ không có ai trực">
                 <SectionHeader label="Thiếu ca — giờ không ai trực" count={gaps.length} tone="amber" className="pt-0.5" />

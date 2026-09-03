@@ -159,3 +159,90 @@ export function stretchOptions(g: CoverageGap, rules: BranchRule[]): Stretch[] {
   consider(g.after, "start");
   return out;
 }
+
+/** Every minute of the day some line is on duty. Used to prove a boundary move
+ *  does not quietly hand back coverage somewhere else. */
+function coveredMinutes(lines: readonly Line[]): boolean[] {
+  const on = new Array<boolean>(1440).fill(false);
+  for (const l of lines) {
+    for (const [a, b] of blocks(l)) {
+      for (let m = a; m <= b; m++) on[m] = true;
+    }
+  }
+  return on;
+}
+
+/**
+ * The ways an OVERLAP could be closed by moving ONE boundary — the mirror of
+ * {@link stretchOptions}, and the reason an overlap can be a to-do rather than a
+ * paragraph in a banner.
+ *
+ * Two fixed rules live at the same minute make the engine refuse the job with
+ * CLASH, which is the "Trùng tài xế trực" list on the same dashboard. The fix is
+ * the same shape as closing a hole, in the opposite direction: either the
+ * earlier rule hands over sooner, or the later one starts later. Both are one
+ * cell, and `/api/config/stretch-rule` already writes exactly that.
+ *
+ * TWO guards, and the second is the one that matters:
+ *
+ *   - the result must not clash with anything else on the branch — the same
+ *     check the gap direction makes, because the server writes the cell without
+ *     looking at its neighbours;
+ *   - the result must not UNCOVER a minute that is covered today. Without this,
+ *     a rule wholly containing another (05:00–20:00 around 08:00–12:00) would be
+ *     "fixed" by cutting the outer one down to 05:00–08:00, silently trading a
+ *     clash for a five-hour hole — and a hole is the worse fault, since the
+ *     engine refuses those jobs too but nothing in the sheet says why. Where
+ *     neither move survives, nothing is offered and the branch goes to the full
+ *     editor, which shows the whole day at once.
+ */
+export function shrinkOptions(
+  sides: readonly [{ row: number; driver: string; window: string }, { row: number; driver: string; window: string }],
+  rules: BranchRule[],
+): Stretch[] {
+  const [first, second] = sides;
+  const parse = (w: string): [string, string] | null => {
+    const [f, t] = (w ?? "").split("–");
+    return toMin(f ?? "") >= 0 && toMin(t ?? "") >= 0 ? [f, t] : null;
+  };
+  const fw = parse(first.window);
+  const sw = parse(second.window);
+  // A rule with no window is on duty all day; there is no single boundary that
+  // makes it stop competing, so the editor owns that case.
+  if (!fw || !sw) return [];
+
+  const all = rules.map(asLine);
+  const before = coveredMinutes(all);
+  const out: Stretch[] = [];
+
+  const consider = (side: { row: number; driver: string }, edge: "start" | "end", value: string) => {
+    const own = fw && side.row === first.row ? fw : sw;
+    const next: Line = {
+      key: `row:${side.row}`, row: side.row, driver: side.driver,
+      start: edge === "start" ? value : own[0],
+      end: edge === "end" ? value : own[1],
+    };
+    if (next.start === next.end) return;                  // on duty for no minute
+    const rest = all.filter((l) => l.row !== side.row);
+    const after = [...rest, next];
+    if (findClash(after)) return;                         // still competing with someone
+    const cover = coveredMinutes(after);
+    for (let m = 0; m < 1440; m++) if (before[m] && !cover[m]) return;  // opened a hole
+    out.push({ row: side.row, driver: side.driver, edge, value, window: `${next.start}–${next.end}` });
+  };
+
+  // The earlier rule hands over where the later one begins…
+  consider(first, "end", sw[0]);
+  // …or the later one starts where the earlier one ends.
+  consider(second, "start", fw[1]);
+  return out;
+}
+
+/** Stable identity for one overlapping pair, so the dashboard can remember that
+ *  it was dealt with. Built from the branch and the two ROWS rather than the
+ *  drivers or the window: fixing it changes the window and may change who is on
+ *  which side, and a key that moved would make the row reappear as new. */
+export function overlapKey(o: { customer_id: string; rules?: readonly [{ row: number }, { row: number }] }): string {
+  const rows = o.rules ? [o.rules[0].row, o.rules[1].row].sort((a, b) => a - b).join("-") : "?";
+  return `${o.customer_id}|${rows}`;
+}

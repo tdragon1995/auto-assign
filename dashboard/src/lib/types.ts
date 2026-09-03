@@ -1,3 +1,10 @@
+// config-audit.ts is a LEAF — it imports nothing at all, by design — so taking a
+// type from it here is one-way and cannot cycle. The overlap shape lives there
+// because that is where it is derived; it appears in Config because that is how
+// it reaches the dashboard.
+import type { ShiftOverlap } from "./config-audit";
+export type { ShiftOverlap, OverlapSide } from "./config-audit";
+
 export interface Mapping {
   customer_id: string;
   driver_id: string;
@@ -94,6 +101,19 @@ export interface Config {
   unfinished: UnfinishedConfigRow[];
   /** Hours a job needed and no rule covered, still uncovered as of this parse. */
   gaps: CoverageGap[];
+  /**
+   * Pairs of fixed rules covering one branch at the same minute.
+   *
+   * The other half of the same fault as a gap, and it was reported for a long
+   * time only as a sentence in the sheet-alarm banner — while a gap got a row
+   * with a one-click fix. Both end the same way at assign time: a gap fails the
+   * job as NO_DRIVER, an overlap as CLASH, and neither gets assigned.
+   *
+   * Unlike a gap this needs no runtime record: an overlap is fully visible in
+   * the sheet, so it is derived on every parse rather than learned from a job
+   * falling into it.
+   */
+  overlaps: ShiftOverlap[];
   /**
    * The rules each branch in those two lists already has, keyed by branch.
    *

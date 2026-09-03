@@ -18,6 +18,8 @@ import { TatTeamPanel } from "./tat-team-panel";
 import { toast } from "sonner";
 import type { LogEntry, PickupWarning, FailedJob, ConfigDriver, SheetAlarm, UnfinishedConfigRow, CoverageGap, BranchRule } from "@/lib/types";
 import type { DeploymentBeat } from "@/lib/smart-log-kv";
+import type { ShiftOverlap } from "@/lib/types";
+import { overlapKey } from "@/lib/config-shift";
 import type { LeaveOnDate, InvalidLeaveRow, SpanningLeaveRow } from "@/lib/leave-config";
 import type { LeaveSuppression } from "@/lib/leave-suppression";
 
@@ -37,6 +39,7 @@ export function Dashboard() {
   const [sheetAlarms, setSheetAlarms] = useState<SheetAlarm[]>([]);
   const [unfinished, setUnfinished] = useState<UnfinishedConfigRow[]>([]);
   const [gaps, setGaps] = useState<CoverageGap[]>([]);
+  const [overlaps, setOverlaps] = useState<ShiftOverlap[]>([]);
   const [parsedAt, setParsedAt] = useState("");
   const [branchRules, setBranchRules] = useState<Record<string, BranchRule[]>>({});
   // Rows the user has just finished, hidden until the engine catches up.
@@ -147,16 +150,19 @@ export function Dashboard() {
       if (Array.isArray(data.sheetAlarms)) setSheetAlarms(data.sheetAlarms as SheetAlarm[]);
       const nextUnfinished = Array.isArray(data.unfinished) ? (data.unfinished as UnfinishedConfigRow[]) : null;
       const nextGaps = Array.isArray(data.gaps) ? (data.gaps as CoverageGap[]) : null;
+      const nextOverlaps = Array.isArray(data.overlaps) ? (data.overlaps as ShiftOverlap[]) : null;
       if (nextUnfinished) setUnfinished(nextUnfinished);
       if (nextGaps) setGaps(nextGaps);
+      if (nextOverlaps) setOverlaps(nextOverlaps);
       // Forget a row the engine no longer reports: it has caught up, and keeping
       // the key would hide the row if it ever legitimately came back.
-      if (nextUnfinished || nextGaps) {
+      if (nextUnfinished || nextGaps || nextOverlaps) {
         setDoneKeys((prev) => {
           if (prev.size === 0) return prev;
           const live = new Set<string>([
             ...(nextUnfinished ?? []).map((u) => `u:${u.row}`),
             ...(nextGaps ?? []).map((g) => `g:${g.customer_id}|${g.at}`),
+            ...(nextOverlaps ?? []).map((o) => `o:${overlapKey(o)}`),
           ]);
           const next = new Set([...prev].filter((k) => live.has(k)));
           return next.size === prev.size ? prev : next;
@@ -513,6 +519,7 @@ export function Dashboard() {
   const isProd = env === "prod";
   const visibleUnfinished = unfinished.filter((u) => !doneKeys.has(`u:${u.row}`));
   const visibleGaps = gaps.filter((g) => !doneKeys.has(`g:${g.customer_id}|${g.at}`));
+  const visibleOverlaps = overlaps.filter((o) => !doneKeys.has(`o:${overlapKey(o)}`));
 
   // What is going wrong RIGHT NOW, and nothing else.
   //
@@ -667,6 +674,7 @@ export function Dashboard() {
                     leave, which is reference rather than a task. */}
                 <ConfigTodoPanel
                   gaps={visibleGaps}
+                  overlaps={visibleOverlaps}
                   unfinished={visibleUnfinished}
                   branchRules={branchRules}
                   drivers={drivers}

@@ -1,7 +1,7 @@
 import { Redis } from "@upstash/redis";
 import { vnDate, vnMinutesSinceMidnight, vnTimestamp } from "./time";
 import { isNoteReleaseHour } from "./job-filters";
-import type { LogEntry, PickupWarning, FailedJob, SheetAlarm, UnfinishedConfigRow, CoverageGap, BranchRule } from "./types";
+import type { LogEntry, PickupWarning, FailedJob, SheetAlarm, UnfinishedConfigRow, CoverageGap, BranchRule, ShiftOverlap } from "./types";
 
 /**
  * COMMAND BUDGET — read this before adding a Redis call to a per-cycle path.
@@ -354,6 +354,7 @@ export interface CycleSnapshot {
   sheetAlarms?: SheetAlarm[];
   unfinished?: UnfinishedConfigRow[];
   gaps?: CoverageGap[];
+  overlaps?: ShiftOverlap[];
   parsedAt?: string;
   branchRules?: Record<string, BranchRule[]>;
 }

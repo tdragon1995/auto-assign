@@ -31,6 +31,17 @@ export interface AuditableRow {
    * exactly the arrangement that feature exists to allow.
    */
   dropoff_id?: string;
+  /**
+   * The 1-based sheet row, when the caller has it.
+   *
+   * Optional because the mapping this is usually handed does not carry one — a
+   * row number on all ~1,700 parsed rows would grow the cached blob to label a
+   * handful, the same reasoning that keeps branch NAMES out of it. The config
+   * parse passes rows in because an overlap is only ACTIONABLE with them: the
+   * fix is moving one boundary in one row, and a report that cannot say which
+   * row is a sentence rather than a task.
+   */
+  row?: number;
 }
 
 /** One place as the Location Table lists it. */
@@ -122,6 +133,22 @@ export interface ShiftOverlap {
   drivers: [string, string];
   /** "HH:MM–HH:MM" — the stretch both rules claim. */
   window: string;
+  /**
+   * The two offending rows, when the input carried row numbers.
+   *
+   * This is what turns the report into something the dashboard can act on: each
+   * side is exactly the shape `stretchOptions` already uses for a gap's
+   * neighbours, so the same "move one boundary" flow works unchanged.
+   */
+  rules?: [OverlapSide, OverlapSide];
+}
+
+/** One side of an overlapping pair, in the shape the boundary-mover takes. */
+export interface OverlapSide {
+  row: number;
+  driver: string;
+  /** "HH:MM–HH:MM", or "" for a rule with no window (on duty all day). */
+  window: string;
 }
 
 const DAY = 24 * 60;
@@ -205,13 +232,31 @@ export function findShiftOverlaps(
           }
         }
         if (!hit) continue;
+        // Earlier rule first, so the pair always reads left to right in time and
+        // "shorten the first / start the second later" means the same thing on
+        // every row. A rule with no window sorts first: it is on duty from 00:00.
+        const startOf = (r: AuditableRow) =>
+          r.shift_start ? r.shift_start.hours * 60 + r.shift_start.minutes : -1;
+        const [first, second] = startOf(a) <= startOf(b) ? [a, b] : [b, a];
+        const sideWindow = (r: AuditableRow) =>
+          r.shift_start && r.shift_end
+            ? `${hhmm(r.shift_start.hours * 60 + r.shift_start.minutes)}–${hhmm(r.shift_end.hours * 60 + r.shift_end.minutes)}`
+            : "";
         out.push({
           customer_id,
           pickup_name: nameByCustomer?.get(customer_id) ?? customer_id,
-          drivers: [a.first_name_last_name || a.driver_id, b.first_name_last_name || b.driver_id],
+          drivers: [first.first_name_last_name || first.driver_id, second.first_name_last_name || second.driver_id],
           // Reported back in the sheet's own half-open terms, so the window
           // printed here is the one to type into the cell to fix it.
           window: `${hhmm(hit[0] - 1)}–${hhmm(hit[1])}`,
+          ...(first.row != null && second.row != null
+            ? {
+                rules: [
+                  { row: first.row, driver: first.first_name_last_name, window: sideWindow(first) },
+                  { row: second.row, driver: second.first_name_last_name, window: sideWindow(second) },
+                ] as [OverlapSide, OverlapSide],
+              }
+            : {}),
         });
       }
     }

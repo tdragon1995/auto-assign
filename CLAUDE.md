@@ -375,6 +375,29 @@ A branch whose rows all name other destinations fails as `NO_DROPOFF_RULE`, not
 It is deliberately absent from `SHEET_CONTRACT` (see footgun 3), so the code is
 safe to deploy before the column exists — every row simply reads blank.
 
+### A gap and an overlap are the same fault, so both are to-dos
+
+Two fixed rules covering one branch at the same minute fail the job as `CLASH`,
+exactly as an uncovered hour fails it as `NO_DRIVER`. Overlaps used to be
+reported only as a sentence in the sheet-alarm banner while gaps got an
+actionable row; both are now rows in "Cần tạo config", and `A_OVERLAP` is
+retracted rather than written (`emitConfigWarnings`).
+
+The fix offered is the same one-boundary move a gap gets, through the same
+`/api/config/stretch-rule`: the earlier rule hands over sooner, or the later one
+starts later. `shrinkOptions` refuses a move that would **open a hole** — a rule
+wholly inside another looks closable and is not, and trading a CLASH for a
+five-hour gap is the worse outcome. Those rows say so and send you to the
+full-day editor.
+
+Unlike a gap this needs no runtime record: an overlap is fully visible in the
+sheet, so it is derived on every parse. That derivation needs SHEET ROWS, which
+the cached `Mapping` deliberately does not carry — so `overlaps` is cached in the
+L2 blob beside `gaps` and read back, never recomputed from the cached mappings.
+`scripts/config-shift.test.mts` pins the arithmetic;
+`npx tsx scripts/shift-overlap-live.mts` prints the live pairs and says how many
+are fixable in one click.
+
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph
 
