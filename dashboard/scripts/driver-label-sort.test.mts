@@ -24,7 +24,7 @@
 
 import {
   splitDriverName, compareDriverNames, compareByDriverThenWindow,
-  employmentOf, EMPLOYMENT_LABEL,
+  employmentOf, EMPLOYMENT_LABEL, EMPLOYMENT_TITLE,
 } from "../src/lib/driver-label";
 
 let failures = 0;
@@ -126,9 +126,14 @@ eq("nothing in, nothing out", employmentOf(null), null);
 // Case matters: staff codes are upper case, and a lower-case "dc"/"pt" inside a
 // Vietnamese name must never be read as an employment type.
 eq("a lower-case 'pt' inside a name is not a code", employmentOf("Nguyễn Thị pterodactyl"), null);
-eq("both labels are spelled out for the reader",
+// Two letters, not two words: the chip shares a row with a name, a leave type,
+// an hour window and up to two buttons, and spelled-out Vietnamese pushed that
+// past the width of a phone. The long form lives in the tooltip instead.
+eq("the chip is short enough to sit on a phone row",
   [EMPLOYMENT_LABEL["full-time"], EMPLOYMENT_LABEL["part-time"]],
-  ["Toàn thời gian", "Bán thời gian"]);
+  ["FT", "PT"]);
+check("…and every one of them is explained somewhere",
+  Object.values(EMPLOYMENT_TITLE).every((t) => t.length > 10));
 check("the two accounts of one person classify differently — which is the point",
   employmentOf("F - C - DC100777 Nguyễn Hồng Sơn") !== employmentOf("P - P - PT101147 Nguyễn Hồng Sơn"));
 

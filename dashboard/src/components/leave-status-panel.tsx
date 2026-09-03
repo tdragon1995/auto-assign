@@ -11,7 +11,7 @@ import type { LeaveSuppression } from "@/lib/leave-suppression";
 import type { ConfigDriver } from "@/lib/types";
 import {
   splitDriverName, compareDriverNames, compareByDriverThenWindow,
-  employmentOf, EMPLOYMENT_LABEL,
+  employmentOf, EMPLOYMENT_LABEL, EMPLOYMENT_TITLE,
 } from "@/lib/driver-label";
 
 const TYPE_LABEL: Record<string, string> = {
@@ -70,11 +70,7 @@ function DriverName({
               ? "border-indigo-200 bg-indigo-100 text-indigo-700"
               : "border-slate-200 bg-slate-100 text-slate-600")
           }
-          title={
-            employment === "part-time"
-              ? "Tài khoản bán thời gian (PT) — tài xế chuyển sang tài khoản này cho chuyến chạy quá ca chính"
-              : "Tài khoản toàn thời gian (DC)"
-          }
+          title={EMPLOYMENT_TITLE[employment]}
         >
           {EMPLOYMENT_LABEL[employment]}
         </span>

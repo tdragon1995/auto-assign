@@ -98,8 +98,27 @@ export function employmentOf(full: string | null | undefined): Employment | null
   return m[1] === "PT" ? "part-time" : "full-time";
 }
 
-/** What to call it on screen. Vietnamese, because the panel is. */
+/**
+ * What the chip says. Two letters, not two words.
+ *
+ * These sit on a row that already carries a name, a leave type, an hour window
+ * and up to two buttons; spelled-out Vietnamese pushed that past the width of a
+ * phone. FT/PT is not shorthand invented here either — the completed-jobs export
+ * has carried an "FT/PT" column for as long as it has existed, so this is the
+ * word the team already uses.
+ *
+ * Note FT, not DC: DC is the payroll prefix on the account, FT is what the
+ * account IS. The prefix stays visible in the staff code beside it.
+ */
 export const EMPLOYMENT_LABEL: Record<Employment, string> = {
-  "full-time": "Toàn thời gian",
-  "part-time": "Bán thời gian",
+  "full-time": "FT",
+  "part-time": "PT",
+};
+
+/** The long form, for the chip's tooltip — two letters need somewhere to be
+ *  explained, and that somewhere costs no width. */
+export const EMPLOYMENT_TITLE: Record<Employment, string> = {
+  "full-time": "FT — toàn thời gian (tài khoản DC)",
+  "part-time":
+    "PT — bán thời gian: tài xế chuyển sang tài khoản này cho chuyến chạy quá ca chính",
 };
