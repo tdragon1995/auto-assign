@@ -8,6 +8,8 @@ import { toast } from "sonner";
 import { DriverPicker } from "./driver-picker";
 import { DayTimePicker, DAY_LABELS, vnNowLabel, vnDateOffset } from "./day-time-picker";
 import type { ConfigDriver } from "@/lib/types";
+import { DriverName } from "./driver-name";
+import { driverDisplayName } from "@/lib/display-names";
 
 export interface HeldJob {
   job_id: number;
@@ -313,10 +315,12 @@ export function NoteReviewPanel({
             Name comes from the Driver tab; if the id resolves to nothing we show
             nothing rather than a UUID. */}
         {previewName && (
-          <p className="text-[11px] text-slate-600">
-            Giao ngay <span className="text-slate-400">→</span>{" "}
-            <span className="font-semibold text-slate-900">{previewName}</span>
-            {job.sub_for && <span className="text-slate-600"> (thay {job.sub_for})</span>}
+          <p className="flex flex-wrap items-baseline gap-x-1 text-[11px] text-slate-600">
+            Giao ngay <span className="text-slate-400">→</span>
+            <DriverName full={previewName} className="font-semibold text-slate-900" />
+            {job.sub_for && (
+              <span className="text-slate-600"> (thay {driverDisplayName(job.sub_for) || job.sub_for})</span>
+            )}
           </p>
         )}
 

@@ -24,7 +24,7 @@
 
 import {
   splitDriverName, compareDriverNames, compareByDriverThenWindow,
-  employmentOf, EMPLOYMENT_LABEL, EMPLOYMENT_TITLE,
+  employmentOf, EMPLOYMENT_LABEL, EMPLOYMENT_TITLE, displayDriverCell,
 } from "../src/lib/driver-label";
 
 let failures = 0;
@@ -148,6 +148,29 @@ check("…and every one of them is explained somewhere",
   Object.values(EMPLOYMENT_TITLE).every((t) => t.length > 10));
 check("the two accounts of one person classify differently — which is the point",
   employmentOf("F - C - DC100777 Nguyễn Hồng Sơn") !== employmentOf("P - P - PT101147 Nguyễn Hồng Sơn"));
+
+// ── Labels embedded in a SENTENCE ───────────────────────────────────────────
+//
+// Not every driver name reaches the screen as a name element. The engine's
+// failure messages ("2 tài xế cùng trực lúc 18:16: …") and the config panel's
+// buttons ("Nới … → 05:00–13:25") build a sentence around one, and the component
+// cannot reach those — they were still printing the full label long after the
+// lists had stopped.
+console.log("labels inside a sentence");
+eq("a single-name config cell",
+  displayDriverCell("F - P - DC100074 Võ Văn Tân"), "Võ Văn Tân");
+// A smart row's cell holds several names, comma-separated. Cleaning has to keep
+// it a list — the separator is the one the sheet's own id formula splits on.
+eq("a smart row's several names stay a list",
+  displayDriverCell("F - C - DC100320 Lý Chánh Hùng, P - P - PT101147 Nguyễn Hồng Sơn"),
+  "Lý Chánh Hùng, Nguyễn Hồng Sơn");
+eq("an empty cell stays empty", displayDriverCell(""), "");
+eq("nothing in, nothing out", displayDriverCell(null), "");
+eq("a name with no code is left alone",
+  displayDriverCell("Admin Lý Thị Thùy Linh"), "Admin Lý Thị Thùy Linh");
+eq("stray spacing around the comma does not survive as a name",
+  displayDriverCell("F - C - DCBU Nguyễn Tuấn Hoàng ,  P - P - PTBU Trần Văn B"),
+  "Nguyễn Tuấn Hoàng, Trần Văn B");
 
 console.log(failures === 0 ? "\nAll driver-label sort checks passed" : `\n${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);

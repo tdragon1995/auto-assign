@@ -10,6 +10,10 @@ import { cleanupStaleTrips } from "./cleanup-trips";
 import { setCycleSnapshot, recordCoverageGap, claimMorningPass, deferMorningPass, confirmMorningPass, pushRunLog, runDailyMaintenance, claimLateAlert, getAcceptedNotes, type HeldJob } from "./smart-log-kv";
 import { isValidDriverId, invalidateConfigCache, loadConfigFromSheets } from "./config";
 import { drainSheetAlarms } from "./sheets";
+// Driver labels carry a routing prefix and a payroll code ("F - C - DC100993
+// Nguyễn Hồng Sơn"). Those identify the Cartrack RECORD; every message below is
+// read by a person, so they are stripped at the point the sentence is built.
+import { driverDisplayName } from "./display-names";
 import { writeUnmappedConfigRows, type UnmappedBranch } from "./unmapped-row";
 import {
   vnDate,
@@ -2012,7 +2016,7 @@ export async function autoAssignCycle(
           if (lc1.onLeave) {
             const sub = resolveSubstitute(lc1.entry!);
             const who1 = jobCustomerName ?? customerId ?? "—";
-            const onLeaveName1 = lc1.driverName ?? driverId;
+            const onLeaveName1 = driverDisplayName(lc1.driverName) || driverId;
             if (sub.status === "clash") {
               log(`Job ${jobId} - Nhiều hơn 1 SUB: ${sub.subIds.length} substitutes cover for ${onLeaveName1} now | ${route}`, "WARN");
               fail("SUB_CLASH", jobId, who1, `${onLeaveName1} nghỉ — ${sub.subIds.length} người thay cùng trực, không rõ chọn ai`, "WARN");
@@ -2039,11 +2043,13 @@ export async function autoAssignCycle(
           try {
             // Assign via the update endpoint — it returns the driver, so the name comes
             // straight from Cartrack's response (no driver-list fetch needed).
-            const { status: apiStatus, body, driverName: ctName } = await assignJobViaUpdate(
+            const { status: apiStatus, body, driverName: ctNameRaw } = await assignJobViaUpdate(
               jobId, driverId, env, allGpsDrivers.find((d) => d.delivery_driver_id === driverId)
             );
             if (apiStatus === 200) {
-              const driverName = ctName || (subFor ? driverId : smartMapping.first_name_last_name) || driverId;
+              const ctName = driverDisplayName(ctNameRaw);
+              const driverName =
+                ctName || (subFor ? driverId : driverDisplayName(smartMapping.first_name_last_name)) || driverId;
               const who = subFor ? `${driverName} (sub for ${subFor})` : driverName;
               log(`Job ${jobId} - SMART(1): ${who} | ${route}`, "OK");
             } else if (isDriverUnavailable(body)) {
@@ -2248,7 +2254,7 @@ export async function autoAssignCycle(
         const deactivated: string[] = [];
         for (let attempt = 0; attempt < withGoong.length; attempt++) {
           const candidate = withGoong[attempt];
-          const candidateName = `${candidate.d.first_name} ${candidate.d.last_name}`.trim();
+          const candidateName = driverDisplayName(`${candidate.d.first_name} ${candidate.d.last_name}`.trim());
 
           // A pre-swapped candidate already IS the substitute (ranked by their
           // own location above) — carry that label straight through. Otherwise
@@ -2262,7 +2268,7 @@ export async function autoAssignCycle(
               const sub = resolveSubstitute(lc.entry!);
               if (sub.status === "clash") {
                 const who = pickupStop.customer_name ?? jobCustomerName ?? customerId ?? "—";
-                const onLeaveName = lc.driverName ?? candidateName;
+                const onLeaveName = driverDisplayName(lc.driverName) || candidateName;
                 log(`Job ${jobId} - Nhiều hơn 1 SUB: ${sub.subIds.length} substitutes cover for ${onLeaveName} now | ${route}`, "WARN");
                 fail("SUB_CLASH", jobId, who, `${onLeaveName} nghỉ — ${sub.subIds.length} người thay cùng trực, không rõ chọn ai`, "WARN");
                 subClash = true;
@@ -2277,7 +2283,7 @@ export async function autoAssignCycle(
                 continue;
               }
               targetId = sub.subId;
-              subFor = lc.driverName ?? candidateName;
+              subFor = driverDisplayName(lc.driverName) || candidateName;
             }
           }
 
@@ -2288,7 +2294,7 @@ export async function autoAssignCycle(
             let apiStatus: number, body: any, ctName: string | null = null;
             if (subFor) {
               const r = await assignJobViaUpdate(jobId, targetId, env, driverById.get(targetId));
-              apiStatus = r.status; body = r.body; ctName = r.driverName;
+              apiStatus = r.status; body = r.body; ctName = driverDisplayName(r.driverName) || null;
             } else {
               const r = await assignJob(targetId, jobId, env, driverById.get(targetId));
               apiStatus = r.status; body = r.body;
@@ -2320,7 +2326,9 @@ export async function autoAssignCycle(
         }
         if (subClash) continue;
         if (!assigned) {
-          const names = withGoong.map((x) => `${x.d.first_name} ${x.d.last_name}`.trim()).join(", ");
+          const names = withGoong
+            .map((x) => driverDisplayName(`${x.d.first_name} ${x.d.last_name}`.trim()))
+            .join(", ");
           const who = pickupStop.customer_name ?? jobCustomerName ?? customerId ?? "—";
           if (deactivated.length) {
             // At least one candidate is a dead account — that's the actionable half
@@ -2395,7 +2403,7 @@ export async function autoAssignCycle(
 
     if (status === "clash") {
       const driverList = drivers
-        .map((m) => `${m.first_name_last_name || "?"} ${fmtShift(m.shift_start)}–${fmtShift(m.shift_end)}`)
+        .map((m) => `${driverDisplayName(m.first_name_last_name) || "?"} ${fmtShift(m.shift_start)}–${fmtShift(m.shift_end)}`)
         .join(", ");
       const jt = vnHoursMinutes(jobTime);
       const hhmm = `${String(jt.hours).padStart(2, "0")}:${String(jt.minutes).padStart(2, "0")}`;
@@ -2415,7 +2423,7 @@ export async function autoAssignCycle(
     if (lcFixed.onLeave) {
       const sub = resolveSubstitute(lcFixed.entry!);
       const who = jobCustomerName ?? customerId ?? "—";
-      const onLeaveName = lcFixed.driverName ?? driverId;
+      const onLeaveName = driverDisplayName(lcFixed.driverName) || driverId;
       if (sub.status === "clash") {
         log(`Job ${jobId} - Nhiều hơn 1 SUB: ${sub.subIds.length} substitutes cover for ${onLeaveName} now | ${route}`, "WARN");
         fail("SUB_CLASH", jobId, who, `${onLeaveName} nghỉ — ${sub.subIds.length} người thay cùng trực, không rõ chọn ai`, "WARN");
@@ -2457,7 +2465,7 @@ export async function autoAssignCycle(
     try {
       // Assign via the update endpoint — returns the driver, so the name comes from
       // Cartrack's response (no driver-list fetch). Single driver, no on-break fallback.
-      const { status: apiStatus, body, driverName: ctName } = await assignJobViaUpdate(
+      const { status: apiStatus, body, driverName: ctNameRaw } = await assignJobViaUpdate(
         jobId, driverId, env, allGpsDrivers.find((d) => d.delivery_driver_id === driverId)
       );
 
@@ -2467,7 +2475,9 @@ export async function autoAssignCycle(
         // job the dropoff was swapped, so its new name + coords come from the
         // applyAltDropoff result (it already fetched the alt customer record).
         // Name from Cartrack's assign response, then sheet, then UUID.
-        const respDriverName = ctName || (subFor ? driverId : mapping.first_name_last_name) || driverId;
+        const ctName = driverDisplayName(ctNameRaw);
+        const respDriverName =
+          ctName || (subFor ? driverId : driverDisplayName(mapping.first_name_last_name)) || driverId;
         const pickupStop  = job.stops?.find((s) => s.stop_type_id === 1);
         const dropoffStop = job.stops?.find((s) => s.stop_type_id === 2);
         const pickupName  = pickupStop?.customer_name ?? jobCustomerName ?? "N/A";

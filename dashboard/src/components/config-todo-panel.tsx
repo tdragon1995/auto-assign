@@ -8,6 +8,9 @@ import { Button } from "@/components/ui/button";
 import { SectionHeader } from "./section-header";
 import type { CoverageGap, UnfinishedConfigRow, ConfigDriver, BranchRule } from "@/lib/types";
 import { DRIVER_SEP, foldName, resolveDriverCell, splitDriverNames } from "@/lib/driver-cell";
+import { displayDriverCell } from "@/lib/driver-label";
+import { driverDisplayName } from "@/lib/display-names";
+import { DriverName } from "./driver-name";
 import {
   type Line, type Stretch, toMin, newLineKey, asLine, sig, findClash, stretchOptions,
 } from "@/lib/config-shift";
@@ -195,11 +198,13 @@ function DriverPicker({
           key={n}
           className="inline-flex max-w-full items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-800"
         >
-          <span className="truncate">{n}</span>
+          <span className="inline-flex items-baseline gap-x-1 truncate">
+            <DriverName full={n} className="truncate" />
+          </span>
           <button
             type="button"
             onClick={() => remove(n)}
-            aria-label={`Bỏ ${n}`}
+            aria-label={`Bỏ ${driverDisplayName(n) || n}`}
             className="rounded text-slate-600 hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
           >
             ✕
@@ -239,11 +244,11 @@ function DriverPicker({
                 aria-selected={i === active}
                 onMouseEnter={() => setActive(i)}
                 onClick={() => add(d.name)}
-                className={`block w-full truncate px-2 py-1 text-left text-xs ${
+                className={`flex w-full flex-wrap items-baseline gap-x-1.5 px-2 py-1 text-left text-xs ${
                   i === active ? "bg-indigo-50 text-slate-900" : "text-slate-700"
                 }`}
               >
-                {d.name}
+                <DriverName full={d.name} className="truncate" />
               </button>
             </li>
           ))}
@@ -353,7 +358,10 @@ function BranchEditor({
 
     const clash = findClash(resolved);
     if (clash) {
-      setErr(`${clash[0].driver} (${clash[0].start}–${clash[0].end}) và ${clash[1].driver} (${clash[1].start}–${clash[1].end}) trùng giờ`);
+      setErr(
+        `${displayDriverCell(clash[0].driver)} (${clash[0].start}–${clash[0].end}) và ` +
+        `${displayDriverCell(clash[1].driver)} (${clash[1].start}–${clash[1].end}) trùng giờ`,
+      );
       return;
     }
 
@@ -555,7 +563,7 @@ function GapRow({
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
-      toast.success(`${s.driver} giờ trực ${s.window} — ${g.pickup_name}`);
+      toast.success(`${displayDriverCell(s.driver)} giờ trực ${s.window} — ${g.pickup_name}`);
       onSaved(`g:${g.customer_id}|${g.at}`);
     } catch (e) {
       setStretchErr(e instanceof Error ? e.message : String(e));
@@ -630,7 +638,7 @@ function GapRow({
               onClick={() => stretch(s)}
               title={`Ghi ${s.value} vào giờ ${s.edge === "end" ? "kết thúc" : "bắt đầu"} của dòng #${s.row}`}
             >
-              {stretching === s.edge ? "Đang lưu…" : `Nới ${s.driver} → ${s.window}`}
+              {stretching === s.edge ? "Đang lưu…" : `Nới ${displayDriverCell(s.driver)} → ${s.window}`}
             </Button>
           ))}
         </div>

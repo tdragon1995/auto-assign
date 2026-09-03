@@ -1,4 +1,5 @@
 import { driverDisplayName, staffCode } from "./display-names";
+import { DRIVER_SEP, splitDriverNames } from "./driver-cell";
 
 /**
  * Reading and ordering a driver's sheet label.
@@ -119,3 +120,19 @@ export const EMPLOYMENT_TITLE: Record<Employment, string> = {
   "part-time":
     "PT — bán thời gian: tài xế chuyển sang tài khoản này cho chuyến chạy quá ca chính",
 };
+
+/**
+ * A config-sheet Driver CELL, cleaned for display.
+ *
+ * The cell holds one name for a fixed rule, or several comma-separated for a
+ * smart row (~218 rows look like that). Each is a full label, so a raw cell in a
+ * sentence reads "F - P - DC100074 Võ Văn Tân" — three identifiers and a person.
+ * Split, strip, rejoin on the separator the sheet's own id formula uses, so the
+ * cleaned text still reads as the same list.
+ */
+export function displayDriverCell(cell: string | null | undefined): string {
+  if (!cell) return "";
+  return splitDriverNames(cell)
+    .map((n) => driverDisplayName(n) || n)
+    .join(DRIVER_SEP);
+}
