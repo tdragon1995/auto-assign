@@ -70,3 +70,36 @@ export function compareByDriverThenWindow(
     (a.timeLabel ?? "").localeCompare(b.timeLabel ?? "")
   );
 }
+
+/**
+ * Which kind of account a label names.
+ *
+ * The staff code carries it: `DC…` is full-time, `PT…` is part-time. It is the
+ * one part of a label that survives a rename — payroll assigns it, it is not
+ * derived from how the person's name is spelled — so it is the right thing to
+ * read this off.
+ *
+ * Case-SENSITIVE, deliberately, for the same reason `staffCode` in
+ * display-names.ts is: staff codes are upper case, and a case-insensitive match
+ * would let an ordinary lower-case "dc" or "pt" inside a Vietnamese name be read
+ * as an employment type. Matched with a word boundary and any following run of
+ * capitals and digits, so the relief drivers' `DCBU` / `PTBU` — no digits at all
+ * — classify correctly rather than falling through as unknown.
+ *
+ * Returns null when there is no code to read. That is a real case, not a
+ * fallback: "Admin Lý Thị Thùy Linh" is neither, and guessing would be worse
+ * than showing nothing.
+ */
+export type Employment = "full-time" | "part-time";
+
+export function employmentOf(full: string | null | undefined): Employment | null {
+  const m = full ? /\b(PT|DC)[A-Z0-9]*/.exec(full) : null;
+  if (!m) return null;
+  return m[1] === "PT" ? "part-time" : "full-time";
+}
+
+/** What to call it on screen. Vietnamese, because the panel is. */
+export const EMPLOYMENT_LABEL: Record<Employment, string> = {
+  "full-time": "Toàn thời gian",
+  "part-time": "Bán thời gian",
+};

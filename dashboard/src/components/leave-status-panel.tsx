@@ -11,6 +11,7 @@ import type { LeaveSuppression } from "@/lib/leave-suppression";
 import type { ConfigDriver } from "@/lib/types";
 import {
   splitDriverName, compareDriverNames, compareByDriverThenWindow,
+  employmentOf, EMPLOYMENT_LABEL,
 } from "@/lib/driver-label";
 
 const TYPE_LABEL: Record<string, string> = {
@@ -33,6 +34,55 @@ function ddmm(date: string): string {
   return date.length >= 10 ? `${date.slice(8, 10)}/${date.slice(5, 7)}` : date;
 }
 
+
+/**
+ * A driver's name, what kind of account it is, and its staff code.
+ *
+ * The employment chip exists because `DC` and `PT` are payroll prefixes that say
+ * nothing to the person reading the list, and in this panel they are exactly
+ * what distinguishes two adjacent rows: a person holding both accounts is off on
+ * both, and which one a substitute is covering is the whole question. Spelling
+ * it out is the difference between two rows that look duplicated and two rows
+ * that are obviously different things.
+ *
+ * Part-time is the one that carries colour. Full-time stays grey — it is the
+ * common case, and colouring every row would spend the reader's attention on
+ * something that is almost always the same. A label with no code at all
+ * ("Admin …") gets no chip rather than a guessed one.
+ */
+function DriverName({
+  full,
+  className = "text-sm font-semibold text-slate-900",
+}: {
+  full: string;
+  className?: string;
+}) {
+  const { code, name } = splitDriverName(full);
+  const employment = employmentOf(full);
+  return (
+    <>
+      <span className={className}>{name}</span>
+      {employment && (
+        <span
+          className={
+            "shrink-0 rounded-full border px-1.5 py-0 text-[10px] font-semibold leading-relaxed " +
+            (employment === "part-time"
+              ? "border-indigo-200 bg-indigo-100 text-indigo-700"
+              : "border-slate-200 bg-slate-100 text-slate-600")
+          }
+          title={
+            employment === "part-time"
+              ? "Tài khoản bán thời gian (PT) — tài xế chuyển sang tài khoản này cho chuyến chạy quá ca chính"
+              : "Tài khoản toàn thời gian (DC)"
+          }
+        >
+          {EMPLOYMENT_LABEL[employment]}
+        </span>
+      )}
+      {code && <span className="font-mono text-[11px] text-slate-500">{code}</span>}
+    </>
+  );
+}
 
 interface LeaveRowView {
   timeLabel: string | null;
@@ -427,12 +477,10 @@ function suppressionTimeLabel(s: LeaveSuppression): string | null {
  */
 function SuppressionRow({ s, onRestore }: { s: LeaveSuppression; onRestore: DeleteRowFn }) {
   const [busy, setBusy] = useState(false);
-  const { code, name } = splitDriverName(s.driver_name || s.driver_id);
   const label = suppressionTimeLabel(s);
   return (
     <li className="flex flex-wrap items-baseline gap-x-1.5 text-xs">
-      <span className="font-semibold text-slate-900">{name}</span>
-      {code && <span className="font-mono text-[11px] text-slate-500">{code}</span>}
+      <DriverName full={s.driver_name || s.driver_id} className="font-semibold text-slate-900" />
       <span className="text-[11px] text-slate-600">{rangeLabel(s.leave_from, s.leave_to)}</span>
       {label && <span className="font-mono text-[11px] text-slate-500">{label}</span>}
       {s.deleted_at && (
@@ -504,13 +552,11 @@ function DriverCard({
   // Leading dot carries state: red = resigned, amber = uncovered, grey = covered.
   const dotClass = resigned ? "bg-red-500" : uncovered ? "bg-amber-500" : "bg-slate-300";
   const typeClass = resigned ? "text-red-700" : "text-amber-700";
-  const { code, name } = splitDriverName(g.driver_name || g.driver_id);
   return (
     <div className="px-2 py-1.5 text-xs hover:bg-slate-50">
       <div className="flex items-center gap-1.5 flex-wrap">
         <span className={`size-1.5 shrink-0 rounded-full ${dotClass}`} />
-        <span className="text-sm font-semibold text-slate-900">{name}</span>
-        {code && <span className="font-mono text-[11px] text-slate-500">{code}</span>}
+        <DriverName full={g.driver_name || g.driver_id} />
         <span className={`shrink-0 text-[11px] font-semibold ${typeClass}`}>
           {typeLabel(g.loai_nghi)}
         </span>
@@ -677,12 +723,10 @@ function UncoveredRowItem({
   listId: string;
 }) {
   const [editing, setEditing] = useState(false);
-  const { code, name } = splitDriverName(item.driver_name || item.driver_id);
   return (
     <div className="px-2 py-1.5 hover:bg-slate-50">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0">
-        <span className="text-sm font-medium text-slate-800">{name}</span>
-        {code && <span className="font-mono text-[11px] text-slate-500">{code}</span>}
+        <DriverName full={item.driver_name || item.driver_id} className="text-sm font-medium text-slate-800" />
         <span className="text-[11px] font-semibold text-amber-700">{typeLabel(item.loai_nghi)}</span>
         {item.row.timeLabel && (
           <span className="font-mono text-[11px] text-slate-500">{item.row.timeLabel}</span>
@@ -936,7 +980,7 @@ export function LeaveStatusPanel({
                 <ul className="mt-1 space-y-0.5">
                   {invalidRecovered.map((r, i) => (
                     <li key={`ok-${r.driver_name}-${r.leave_from}-${r.timeLabel ?? "full"}-${i}`} className="flex flex-wrap items-baseline gap-x-1.5 text-xs">
-                      <span className="font-semibold text-slate-900">{splitDriverName(r.driver_name).name}</span>
+                      <DriverName full={r.driver_name} className="font-semibold text-slate-900" />
                       <span className="text-[11px] text-slate-600">{ddmm(r.leave_from)}</span>
                       {r.timeLabel && <span className="font-mono text-[11px] text-slate-500">{r.timeLabel}</span>}
                     </li>
@@ -958,11 +1002,9 @@ export function LeaveStatusPanel({
                 </p>
                 <ul className="mt-1 space-y-0.5">
                   {invalidIgnored.map((r, i) => {
-                    const { code, name } = splitDriverName(r.driver_name);
                     return (
                       <li key={`${r.driver_name}-${r.leave_from}-${r.timeLabel ?? "full"}-${i}`} className="flex flex-wrap items-baseline gap-x-1.5 text-xs">
-                        <span className="font-semibold text-slate-900">{name}</span>
-                        {code && <span className="font-mono text-[11px] text-slate-500">{code}</span>}
+                        <DriverName full={r.driver_name} className="font-semibold text-slate-900" />
                         <span className="text-[11px] text-slate-600">{ddmm(r.leave_from)}</span>
                         {r.timeLabel && <span className="font-mono text-[11px] text-slate-500">{r.timeLabel}</span>}
                         {!r.hasSub && (
@@ -988,11 +1030,9 @@ export function LeaveStatusPanel({
                 </p>
                 <ul className="mt-1 space-y-0.5">
                   {spanning.map((r, i) => {
-                    const { code, name } = splitDriverName(r.driver_name);
                     return (
                       <li key={`span-${r.driver_name}-${r.leave_from}-${r.leave_to}-${i}`} className="flex flex-wrap items-baseline gap-x-1.5 text-xs">
-                        <span className="font-semibold text-slate-900">{name}</span>
-                        {code && <span className="font-mono text-[11px] text-slate-500">{code}</span>}
+                        <DriverName full={r.driver_name} className="font-semibold text-slate-900" />
                         <span className="text-[11px] text-slate-600">
                           {ddmm(r.leave_from)}–{ddmm(r.leave_to)}
                         </span>

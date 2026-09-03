@@ -24,6 +24,7 @@
 
 import {
   splitDriverName, compareDriverNames, compareByDriverThenWindow,
+  employmentOf, EMPLOYMENT_LABEL,
 } from "../src/lib/driver-label";
 
 let failures = 0;
@@ -105,6 +106,31 @@ console.log("one driver's own windows");
       { driver_name: "F - C - DC100777 A", timeLabel: null },
       { driver_name: "F - C - DC100777 A", timeLabel: "06:00–15:00" }) < 0);
 }
+
+// ── Which kind of account a label names ─────────────────────────────────────
+//
+// `DC` and `PT` are payroll prefixes that mean nothing to whoever is reading the
+// panel, and in this list they are exactly what tells two adjacent rows apart —
+// one person, two accounts, both off, and only one of them is who a substitute
+// is covering. Getting this wrong labels a working full-timer as part-time.
+console.log("classifying an account");
+eq("a DC code is full-time", employmentOf("F - C - DC100320 Lý Chánh Hùng"), "full-time");
+eq("a PT code is part-time", employmentOf("P - P - PT101147 Nguyễn Hồng Sơn"), "part-time");
+// The relief drivers' codes carry no digits at all — an older rule matching
+// (PT|DC)\d+ missed every one of them.
+eq("a relief full-timer (DCBU) still classifies", employmentOf("F - C - DCBU Nguyễn Tuấn Hoàng"), "full-time");
+eq("a relief part-timer (PTBU) too", employmentOf("P - P - PTBU Trần Văn B"), "part-time");
+eq("no code means no claim, not a guess", employmentOf("Admin Lý Thị Thùy Linh"), null);
+eq("a bare personal name is not classified", employmentOf("Phạm Thế Luật"), null);
+eq("nothing in, nothing out", employmentOf(null), null);
+// Case matters: staff codes are upper case, and a lower-case "dc"/"pt" inside a
+// Vietnamese name must never be read as an employment type.
+eq("a lower-case 'pt' inside a name is not a code", employmentOf("Nguyễn Thị pterodactyl"), null);
+eq("both labels are spelled out for the reader",
+  [EMPLOYMENT_LABEL["full-time"], EMPLOYMENT_LABEL["part-time"]],
+  ["Toàn thời gian", "Bán thời gian"]);
+check("the two accounts of one person classify differently — which is the point",
+  employmentOf("F - C - DC100777 Nguyễn Hồng Sơn") !== employmentOf("P - P - PT101147 Nguyễn Hồng Sơn"));
 
 console.log(failures === 0 ? "\nAll driver-label sort checks passed" : `\n${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);
