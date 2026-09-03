@@ -216,6 +216,27 @@ console.log("\nrefusals — the cases that must NOT be offered");
       shrinkOptions([side(10, "A", ""), side(11, "B", "08:00–12:00")], rules).length, 0);
   }
 
+  // The case that exposed all of this, from production on 2026-09-03: ONE driver
+  // on two overlapping rows for one branch. The engine clashes on row count, so
+  // it refused the job at 18:30 — and the audit was skipping same-driver pairs as
+  // "redundant", so the dashboard showed nothing beside it. Both boundary moves
+  // are valid here, and neither loses a covered minute.
+  {
+    const rules: BranchRule[] = [
+      { row: 40, driver: "Đặng Khắc Huy", start: "07:00", end: "19:00" },
+      { row: 41, driver: "Đặng Khắc Huy", start: "15:15", end: "19:30" },
+    ];
+    const out = shrinkOptions(
+      [side(40, "Đặng Khắc Huy", "07:00–19:00"), side(41, "Đặng Khắc Huy", "15:15–19:30")],
+      rules,
+    );
+    eq("the live same-driver overlap is fixable both ways",
+      out.map((sh) => [sh.row, sh.edge, sh.value]),
+      [[40, "end", "15:15"], [41, "start", "19:00"]]);
+    eq("…and neither move gives up the evening",
+      out.map((sh) => sh.window), ["07:00–15:15", "19:00–19:30"]);
+  }
+
   // The key has to survive the fix changing the window, or the row reappears as
   // new the moment it is dealt with.
   eq("the dismiss key is the branch and the two rows",

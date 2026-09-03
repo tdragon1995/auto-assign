@@ -390,6 +390,15 @@ wholly inside another looks closable and is not, and trading a CLASH for a
 five-hour gap is the worse outcome. Those rows say so and send you to the
 full-day editor.
 
+**The engine clashes on ROW COUNT, not on distinct drivers.** `getDriversOnDuty`
+returns `clash` as soon as more than one row is on duty, whoever they name — so
+one driver on two overlapping rows blocks the branch exactly like two people do.
+The audit skipped those pairs as "redundant" until 2026-09-03, when a live CLASH
+(Đặng Khắc Huy 07:00–19:00 against himself 15:15–19:30) had nothing beside it on
+the dashboard. Refusing is right on the engine's side — two rows for one person
+can differ in `alt_drop_off_id`, which REWRITES where the job goes — so this
+reports rather than letting the engine pick.
+
 Unlike a gap this needs no runtime record: an overlap is fully visible in the
 sheet, so it is derived on every parse. That derivation needs SHEET ROWS, which
 the cached `Mapping` deliberately does not carry — so `overlaps` is cached in the

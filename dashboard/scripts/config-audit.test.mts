@@ -93,8 +93,14 @@ section("two rules for one branch, live at the same minute");
   eq("different branches never clash with each other", o, []);
 }
 {
+  // The engine counts ROWS, not drivers: getDriversOnDuty returns "clash" as soon
+  // as more than one row is on duty, whoever they name. So two overlapping rows
+  // for one person block the branch's jobs exactly like two people do — this was
+  // skipped as "redundant" for a long time, which is why a live CLASH on
+  // 2026-09-03 (Đặng Khắc Huy against himself, 07:00–19:00 vs 15:15–19:30) had
+  // nothing at all on the dashboard beside it.
   const o = findShiftOverlaps([row("C1", "d1", "An", "06:00", "12:00"), row("C1", "d1", "An", "06:00", "18:00")]);
-  eq("the same driver twice is redundant, not ambiguous", o, []);
+  eq("the same driver on two overlapping rows is still a clash", o.length, 1);
 }
 {
   const o = findShiftOverlaps([row("C1", "d1", "An", null, null), row("C1", "d2", "Bình", "06:00", "12:00")]);

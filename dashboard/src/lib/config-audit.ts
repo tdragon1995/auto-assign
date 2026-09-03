@@ -118,11 +118,23 @@ export function findDuplicateBranches(
 // pair has usually been sitting there for weeks. Overlap is decidable from the
 // sheet alone.
 //
-// Deliberately conservative: only pairs where BOTH rows name a fixed driver, and
-// two DIFFERENT drivers, are reported. Two rows for the same driver are
-// redundant, not ambiguous, and smart-assign rows rank candidates rather than
-// competing, so including either would cost false alarms on a warning whose whole
-// value is that it is worth reading.
+// Only pairs where BOTH rows name a fixed driver: smart-assign rows RANK their
+// candidates rather than competing, so a pool of them on one branch is the
+// feature working, not a fault.
+//
+// Two rows naming the SAME driver used to be skipped here as "redundant, not
+// ambiguous". That was wrong, and it hid the most common real case. The engine
+// does not count DRIVERS, it counts ROWS: getDriversOnDuty returns "clash" the
+// moment more than one row is on duty, whoever they name — so a branch with the
+// same person on two overlapping rows has its jobs refused exactly like a branch
+// with two different people, and nothing anywhere said so. Observed live on
+// 2026-09-03: one branch, Đặng Khắc Huy 07:00–19:00 against Đặng Khắc Huy
+// 15:15–19:30, CLASH at 18:30, and the dashboard's overlap list was empty.
+//
+// Refusing is the right call on the engine's side, and that is why this reports
+// rather than the engine guessing: two rows for one person can still differ in
+// alt_drop_off_id — which REWRITES where the job goes — so picking either would
+// silently redirect real trips.
 
 export interface ShiftOverlap {
   customer_id: string;
@@ -219,7 +231,9 @@ export function findShiftOverlaps(
     for (let i = 0; i < list.length; i++) {
       for (let j = i + 1; j < list.length; j++) {
         const a = list[i], b = list[j];
-        if (a.driver_id === b.driver_id) continue;   // same person twice: redundant, not ambiguous
+        // NOT skipped when a.driver_id === b.driver_id — see the header. The
+        // engine clashes on row count, so the same person twice blocks the job
+        // just as hard, and usually means one row is a leftover.
         // Rows covering different destinations never see the same job, so their
         // hours are free to overlap. Equal scopes DO compete — including two
         // blanks, which is every row today.
@@ -319,6 +333,10 @@ export function duplicateBranchWarning(dupes: readonly DuplicateBranch[]): strin
  * a different row, so a list ending in "and 2 more" names a problem while
  * withholding what is needed to fix it. Line breaks are preserved by the banner.
  */
+//
+// NOT on the dashboard banner any more — overlaps are rows in "Cần tạo config"
+// with the boundary move offered on them. This formatter is kept for
+// scripts/config-audit-live.mts, which prints the same audit as text.
 export function shiftOverlapWarning(overlaps: readonly ShiftOverlap[]): string | null {
   if (overlaps.length === 0) return null;
   const lines = overlaps.map(
