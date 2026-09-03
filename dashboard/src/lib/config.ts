@@ -67,7 +67,7 @@ const L2_TTL_S = 48 * 60 * 60;
 //          exactly what happened on 2026-08-31: two fixes to this wording shipped
 //          and neither reached the screen. Hence the audit inputs now ride the blob
 //          and the sentences are rebuilt on every load, cached or not.
-const l2Key = (gen: string, date: string) => `config:v9:${gen}:${date}`;
+const l2Key = (gen: string, date: string) => `config:v10:${gen}:${date}`;
 
 
 let cachedConfig: Config | null = null;

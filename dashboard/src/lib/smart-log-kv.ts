@@ -92,6 +92,7 @@ const F_GAPS = "coverage_gaps";
 // When the sheet behind those two lists was last actually read.
 const F_PARSED_AT = "config_parsed_at";
 const F_BRANCH_RULES = "config_branch_rules";
+const F_OVERLAPS = "config_overlaps";
 const WARNINGS_MAX_AGE_MS = 600_000; // 10 min — what the old PICKUP_WARNINGS TTL enforced
 
 // Server-backed live log: flat list of recent entries (all levels), so the
@@ -383,6 +384,7 @@ export async function setCycleSnapshot(snap: CycleSnapshot): Promise<void> {
   if (snap.gaps)        fields[F_GAPS]         = JSON.stringify(snap.gaps);
   if (snap.parsedAt)    fields[F_PARSED_AT]   = snap.parsedAt;
   if (snap.branchRules) fields[F_BRANCH_RULES] = JSON.stringify(snap.branchRules);
+  if (snap.overlaps)    fields[F_OVERLAPS]     = JSON.stringify(snap.overlaps);
   if (Object.keys(fields).length === 0) return;
   await redis.hset(CYCLE_SNAPSHOT_KEY, fields);
 }
@@ -1073,6 +1075,9 @@ export interface StatusBundle {
   unfinished: UnfinishedConfigRow[];
   /** Hours a job needed and no rule covered. */
   gaps: CoverageGap[];
+  /** Pairs of fixed rules covering one branch at the same minute — the other
+   *  half of the same fault, and just as unassignable. */
+  overlaps: ShiftOverlap[];
   /** When the sheet behind both lists was last read. */
   parsedAt: string;
   /** The rules each listed branch already has. */
@@ -1084,7 +1089,7 @@ export interface StatusBundle {
  *  90s per open tab, so each command removed here is ~24k a month. */
 export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
   const redis = getRedis();
-  if (!redis) return { state: null, lastChecked: null, deployments: [], logs: [], held: [], warnings: [], failed: [], sheetAlarms: [], unfinished: [], gaps: [], parsedAt: "", branchRules: {} };
+  if (!redis) return { state: null, lastChecked: null, deployments: [], logs: [], held: [], warnings: [], failed: [], sheetAlarms: [], unfinished: [], gaps: [], overlaps: [], parsedAt: "", branchRules: {} };
 
   const pipe = redis.pipeline();
   pipe.get(ARM_KEY);
@@ -1111,6 +1116,7 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
   const sheetAlarms = parseList<SheetAlarm>(snap[F_SHEET_ALARMS]);
   const unfinished = parseList<UnfinishedConfigRow>(snap[F_UNFINISHED]);
   const gaps = parseList<CoverageGap>(snap[F_GAPS]);
+  const overlaps = parseList<ShiftOverlap>(snap[F_OVERLAPS]);
   const parsedAt = typeof snap[F_PARSED_AT] === "string" ? (snap[F_PARSED_AT] as string) : "";
   const branchRules = (() => { try { const v = snap[F_BRANCH_RULES]; return v ? (typeof v === "string" ? JSON.parse(v) : v) : {}; } catch { return {}; } })() as Record<string, BranchRule[]>;
 
@@ -1133,6 +1139,7 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
     sheetAlarms,
     unfinished,
     gaps,
+    overlaps,
     parsedAt,
     branchRules,
   };
