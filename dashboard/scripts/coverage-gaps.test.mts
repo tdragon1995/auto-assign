@@ -112,6 +112,20 @@ ok("a minute in the hole is not covered", !isCovered(day, 15 * 60 + 10));
      resolveGaps([one, other], rules).open[0].dropoff_name, "");
   eq("a record written before the field existed simply has none",
      resolveGaps([gap("15:10")], rules).open[0].dropoff_name, "");
+  // Silence is not disagreement. Every gap already in Redis when this shipped
+  // carries no destination, and one of them sitting in a hole must not gag the
+  // minutes that do know where they were going — that blanked every standing
+  // hole on the day of the deploy.
+  eq("an older minute with none defers to one that knows",
+     resolveGaps([gap("15:05"), one], rules).open[0].dropoff_name, "Lab A");
+  eq("...in either order",
+     resolveGaps([one, gap("15:20")], rules).open[0].dropoff_name, "Lab A");
+  eq("a job with no dropoff stop is the same kind of silence",
+     resolveGaps([{ ...one, dropoff_name: "", at: "15:05" }, one], rules).open[0].dropoff_name, "Lab A");
+  // ...but once two minutes have genuinely disagreed, a third agreeing with one
+  // of them must not resurrect it.
+  eq("a proven mix stays blank however many later minutes name one side",
+     resolveGaps([one, other, { ...one, at: "15:55" }], rules).open[0].dropoff_name, "");
 }
 {
   // Same minute, different branches. Grouping is per branch or one busy morning

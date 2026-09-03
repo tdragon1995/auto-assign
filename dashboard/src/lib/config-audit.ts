@@ -363,6 +363,10 @@ export function resolveGaps(
   // for a single thing to fix. Collapsed here rather than at record time, which
   // cannot see the rules.
   const byHole = new Map<string, CoverageGapOut>();
+  // Holes proven to serve more than one destination. Sticky: once two minutes
+  // have named DIFFERENT places, a third naming one of them again must not
+  // resurrect it as though the hole were single-destination.
+  const mixedDropoff = new Set<string>();
 
   for (const g of recorded) {
     const at = hhmmToMin(g.at);
@@ -391,11 +395,22 @@ export function resolveGaps(
       const times = [seen.at, ...seen.also, g.at].sort();
       seen.at = times[0];
       seen.also = times.slice(1);
-      // The destination survives the collapse only while every minute in the
-      // hole agrees. One hole can swallow trips to two different labs, and
-      // showing whichever happened to be recorded first would name a place this
-      // to-do is not only about — so it says nothing rather than something wrong.
-      if ((seen.dropoff_name ?? "") !== (g.dropoff_name ?? "")) seen.dropoff_name = "";
+      // The destination survives the collapse only while no minute CONTRADICTS
+      // it. One hole can swallow trips to two different labs, and showing
+      // whichever happened to be recorded first would name a place this to-do is
+      // not only about — so a real disagreement says nothing instead.
+      //
+      // Silence is not disagreement, and that distinction is the whole point:
+      // every gap recorded before this field existed carries none, as does a job
+      // with no dropoff stop. Treating those as a differing answer blanked any
+      // hole holding even one older minute — which is every standing hole on the
+      // day this shipped, and would have stayed that way until the config
+      // covered it. An unknown minute now defers to a known one.
+      const known = seen.dropoff_name, here = g.dropoff_name ?? "";
+      if (!mixedDropoff.has(hole)) {
+        if (!known) seen.dropoff_name = here;
+        else if (here && here !== known) { mixedDropoff.add(hole); seen.dropoff_name = ""; }
+      }
       continue;
     }
     const entry: CoverageGapOut = {
