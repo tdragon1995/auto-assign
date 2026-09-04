@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { ClipboardList } from "lucide-react";
+import { ClipboardList, Search } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -446,6 +446,19 @@ function DriverPicker({
  * of decision from adjusting it, and there is nothing on the writing side that
  * does it; only a line added and not yet saved can be dropped again.
  */
+/** How a copied line is matched against what the editor already holds. */
+const copyKey = (driver: string, start: string, end: string) =>
+  `${driver.trim()}|${start.trim()}|${end.trim()}`;
+
+/** One source branch, with its rules in the order they run. */
+type CopySource = {
+  pickup: string;
+  customer_id: string;
+  rules: ConfigRowView[];
+  /** Rules not already sitting in the editor — what pressing Chép actually adds. */
+  fresh: ConfigRowView[];
+};
+
 /**
  * Copy a branch's whole shift pattern onto the branch being set up.
  *
@@ -463,23 +476,44 @@ function DriverPicker({
  * Only rules that actually name a driver are copied — a source branch can itself
  * have an empty line waiting to be filled, and copying that would carry the
  * to-do across rather than the answer.
+ *
+ * It is a LISTBOX, not a stack of buttons. The roster picker two components up
+ * is already a keyboard combobox, and this asks the same question inside the
+ * same editor; typing a name and then reaching for the arrow keys is what a
+ * supervisor does next, and it used to do nothing here. Same reason the panel
+ * renders BELOW the editor's action row rather than inside it: opening it used
+ * to widen a flex row and push Hủy/Lưu onto a second line, so the two buttons
+ * that matter moved under the cursor at the moment the picker appeared.
+ *
+ * The count on each row is the count that will ARRIVE, not the count the source
+ * happens to have. The caller drops lines the editor already holds, so a branch
+ * whose three shifts are all present offers nothing — and now says so, instead
+ * of promising three and adding none.
  */
 function CopyFromBranch({
+  open,
+  onClose,
   onCopy,
-  disabled,
+  existingKeys,
+  panelId,
 }: {
+  open: boolean;
+  onClose: () => void;
   onCopy: (lines: { driver: string; start: string; end: string }[]) => void;
-  disabled?: boolean;
+  /** `copyKey` of every line already in the editor. */
+  existingKeys: readonly string[];
+  panelId: string;
 }) {
-  const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [rows, setRows] = useState<ConfigRowView[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [active, setActive] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listId = useId();
+  const hintId = useId();
 
-  const openPicker = async () => {
-    setOpen(true);
-    if (rows || loading) return;
+  const load = useCallback(async () => {
     setLoading(true);
     setErr(null);
     try {
@@ -492,12 +526,25 @@ function CopyFromBranch({
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  // One fetch per opening of the editor, and none at all until the picker is
+  // actually opened. The route is behind a five-minute cache on the server, so
+  // re-opening the picker in the same session costs nothing further.
+  useEffect(() => {
+    if (open && rows === null && !loading && !err) void load();
+  }, [open, rows, loading, err, load]);
+
+  useEffect(() => {
+    if (open) inputRef.current?.focus();
+  }, [open]);
+
+  const existing = useMemo(() => new Set(existingKeys), [existingKeys]);
 
   // Grouped by branch, because a branch's DAY is the useful unit — copying one
   // of its three shifts would leave the other two to be typed by hand, which is
   // the work this exists to remove.
-  const branches = useMemo(() => {
+  const all = useMemo<CopySource[]>(() => {
     if (!rows || !q.trim()) return [];
     const hit = searchConfigRows(rows, q).filter((r) => r.driver.trim() && r.pickup.trim());
     const byBranch = new Map<string, { pickup: string; customer_id: string; rules: ConfigRowView[] }>();
@@ -507,82 +554,195 @@ function CopyFromBranch({
       if (g) g.rules.push(r);
       else byBranch.set(key, { pickup: r.pickup, customer_id: r.customer_id, rules: [r] });
     }
-    return [...byBranch.values()]
-      .map((g) => ({
+    return [...byBranch.values()].map((g) => {
+      const rules = [...g.rules].sort((a, b) => toMin(a.start) - toMin(b.start));
+      return {
         ...g,
-        rules: [...g.rules].sort((a, b) => toMin(a.start) - toMin(b.start)),
-      }))
-      .slice(0, 8);
-  }, [rows, q]);
+        rules,
+        fresh: rules.filter((r) => !existing.has(copyKey(r.driver, r.start, r.end))),
+      };
+    });
+  }, [rows, q, existing]);
 
-  if (!open) {
-    return (
-      <Button
-        size="sm" variant="outline"
-        className="h-6 px-2 text-[11px]"
-        onClick={openPicker}
-        disabled={disabled}
-      >
-        Sao chép từ điểm khác
-      </Button>
-    );
-  }
+  const branches = all.slice(0, 8);
+  const hidden = all.length - branches.length;
+  const activeIndex = branches.length ? Math.min(active, branches.length - 1) : 0;
+
+  // Keep the highlight inside the list as the query narrows it.
+  useEffect(() => { setActive(0); }, [q]);
+
+  const take = (b: CopySource) => {
+    if (b.fresh.length === 0) return;
+    onCopy(b.fresh.map((r) => ({ driver: r.driver, start: r.start, end: r.end })));
+    setQ("");
+    onClose();
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Escape") { e.preventDefault(); onClose(); return; }
+    if (branches.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActive((i) => (Math.min(i, branches.length - 1) + 1) % branches.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActive((i) => (Math.min(i, branches.length - 1) - 1 + branches.length) % branches.length);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const b = branches[activeIndex];
+      if (b) take(b);
+    }
+  };
+
+  if (!open) return null;
+
+  const optionId = (i: number) => `${listId}-o${i}`;
 
   return (
-    <div className="w-full rounded border border-slate-300 bg-white p-1.5">
-      <div className="flex items-center gap-1">
-        <input
-          type="text"
-          autoFocus
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Tìm điểm đã có config…"
-          aria-label="Tìm điểm để sao chép ca"
-          className="min-w-0 flex-1 rounded border border-slate-300 px-1.5 py-1 text-xs outline-none focus:ring-2 focus:ring-indigo-400/50"
-        />
+    <div id={panelId} className="mt-1 rounded-md border border-slate-300 bg-slate-50 p-2">
+      <div className="flex items-center gap-1.5">
+        <div className="relative min-w-0 flex-1">
+          <Search aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-slate-500" />
+          <input
+            ref={inputRef}
+            type="text"
+            role="combobox"
+            aria-expanded={branches.length > 0}
+            aria-controls={listId}
+            aria-autocomplete="list"
+            aria-describedby={hintId}
+            aria-activedescendant={branches.length ? optionId(activeIndex) : undefined}
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="Tìm điểm đã có ca…"
+            aria-label="Tìm điểm để sao chép ca"
+            className="w-full rounded border border-slate-300 bg-white py-1 pl-7 pr-2 text-xs text-slate-900 outline-none placeholder:text-slate-500 focus:ring-2 focus:ring-indigo-400/50"
+          />
+        </div>
         <Button
           size="sm" variant="outline"
-          className="h-6 px-2 text-[11px]"
-          onClick={() => { setOpen(false); setQ(""); }}
+          className="h-6 shrink-0 px-2 text-[11px]"
+          onClick={onClose}
         >
           Đóng
         </Button>
       </div>
-      {err && <div role="alert" className="mt-1 text-[11px] text-red-600">{err}</div>}
-      {loading && <div className="mt-1 text-[11px] text-slate-500">Đang tải config…</div>}
-      {!loading && !err && q.trim() && branches.length === 0 && (
-        <div className="mt-1 text-[11px] text-slate-500">Không tìm thấy điểm nào có ca.</div>
+
+      <p id={hintId} className="mt-1 text-[11px] text-slate-600">
+        Chép cả ngày của một điểm khác vào form này. Chưa ghi vào sheet — vẫn phải bấm Lưu.
+      </p>
+
+      {err && (
+        <div role="alert" className="mt-1.5 flex flex-wrap items-center gap-1.5 rounded border border-red-200 bg-red-50 px-2 py-1.5 text-[11px] text-red-700">
+          <span className="min-w-0 break-words">Không tải được config: {err}</span>
+          <Button
+            size="sm" variant="outline"
+            className="ml-auto h-6 shrink-0 px-2 text-[11px]"
+            onClick={() => { setErr(null); void load(); }}
+          >
+            Thử lại
+          </Button>
+        </div>
       )}
-      <ul className="mt-1 space-y-1">
-        {branches.map((b) => (
-          <li key={b.customer_id || b.pickup} className="rounded border border-slate-200 p-1.5">
-            <div className="flex flex-wrap items-center gap-x-1.5">
-              <span className="text-xs font-medium text-slate-800">{b.pickup}</span>
-              {b.customer_id && <span className="font-mono text-[10px] text-slate-400">{b.customer_id}</span>}
-              <Button
-                size="sm"
-                className="ml-auto h-6 px-2 text-[11px] bg-indigo-600 hover:bg-indigo-700"
-                onClick={() => {
-                  onCopy(b.rules.map((r) => ({ driver: r.driver, start: r.start, end: r.end })));
-                  setOpen(false);
-                  setQ("");
-                }}
-              >
-                Chép {b.rules.length} ca
-              </Button>
+
+      {/* Skeletons rather than a line of text: the list is what the supervisor is
+          waiting for, so the wait should have the shape of the list. */}
+      {loading && (
+        <div className="mt-1.5 space-y-1" aria-hidden>
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="animate-pulse rounded border border-slate-200 bg-white p-1.5 motion-reduce:animate-none">
+              <div className="h-3 w-2/5 rounded bg-slate-200" />
+              <div className="mt-1.5 h-2.5 w-3/5 rounded bg-slate-100" />
             </div>
-            <div className="mt-0.5 space-y-0.5">
-              {b.rules.map((r) => (
-                <div key={r.row} className="text-[11px] text-slate-600">
-                  <span className="tabular-nums">{r.start && r.end ? `${r.start}–${r.end}` : "cả ngày"}</span>
-                  {" · "}
-                  {displayDriverCell(r.driver)}
-                </div>
-              ))}
-            </div>
-          </li>
-        ))}
-      </ul>
+          ))}
+        </div>
+      )}
+      <span role="status" className="sr-only">{loading ? "Đang tải config" : ""}</span>
+
+      {!loading && !err && !q.trim() && (
+        <p className="mt-1.5 rounded border border-dashed border-slate-300 bg-white px-2 py-2 text-[11px] text-slate-600">
+          Gõ tên điểm, mã điểm (VD <span className="font-mono">D014</span>) hoặc tên tài xế để tìm
+          một điểm đã được xếp ca.
+        </p>
+      )}
+
+      {!loading && !err && q.trim() && branches.length === 0 && (
+        <p className="mt-1.5 text-[11px] text-slate-600">
+          Không có điểm nào đã xếp ca khớp &ldquo;{q.trim()}&rdquo;.
+        </p>
+      )}
+
+      {branches.length > 0 && (
+        <ul id={listId} role="listbox" aria-label="Điểm để sao chép ca" className="mt-1.5 space-y-1">
+          {branches.map((b, i) => {
+            const none = b.fresh.length === 0;
+            const isActive = i === activeIndex;
+            return (
+              <li key={b.customer_id || b.pickup}>
+                <button
+                  type="button"
+                  id={optionId(i)}
+                  role="option"
+                  aria-selected={isActive}
+                  aria-disabled={none}
+                  tabIndex={-1}
+                  onMouseEnter={() => setActive(i)}
+                  onClick={() => take(b)}
+                  className={`w-full rounded border p-1.5 text-left transition-colors duration-150 ${
+                    none
+                      ? "cursor-not-allowed border-slate-200 bg-white opacity-70"
+                      : isActive
+                        ? "border-indigo-400 bg-indigo-50"
+                        : "border-slate-200 bg-white hover:border-indigo-300 hover:bg-indigo-50/60"
+                  }`}
+                >
+                  <span className="flex flex-wrap items-center gap-x-1.5">
+                    <span className="text-xs font-medium text-slate-800">{b.pickup}</span>
+                    {b.customer_id && (
+                      <span className="font-mono text-[10px] text-slate-500">{b.customer_id}</span>
+                    )}
+                    <span
+                      className={`ml-auto shrink-0 rounded px-1.5 py-0.5 text-[11px] font-semibold ${
+                        none ? "bg-slate-100 text-slate-700" : "bg-indigo-600 text-white"
+                      }`}
+                    >
+                      {none ? "Đã có đủ" : `Chép ${b.fresh.length} ca`}
+                    </span>
+                  </span>
+                  <span className="mt-0.5 block space-y-0.5">
+                    {b.rules.map((r) => {
+                      const dup = existing.has(copyKey(r.driver, r.start, r.end));
+                      return (
+                        <span key={r.row} className={`block text-[11px] ${dup ? "text-slate-500" : "text-slate-700"}`}>
+                          <span className="tabular-nums">
+                            {r.start && r.end ? `${r.start}–${r.end}` : "cả ngày"}
+                          </span>
+                          {" · "}
+                          {displayDriverCell(r.driver)}
+                          {/* A rule scoped to one destination copies its hours and its
+                              driver but NOT that scope — the new line inherits the
+                              destination of the branch being edited. Shown so the
+                              difference is visible before the copy, rather than
+                              discovered by a job that assigns somewhere else. */}
+                          {r.dropoff && <span className="text-slate-500"> → chỉ {r.dropoff}</span>}
+                          {dup && <span className="text-slate-500"> · đã có</span>}
+                        </span>
+                      );
+                    })}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {hidden > 0 && (
+        <p className="mt-1 text-[11px] text-slate-600">
+          Còn {hidden} điểm nữa — gõ thêm để thu hẹp.
+        </p>
+      )}
     </div>
   );
 }
@@ -637,6 +797,24 @@ export function BranchEditor({
    * prevent — now sitting in the sheet, where this editor can no longer see it.
    */
   const [committed, setCommitted] = useState<Record<string, string>>({});
+  const [copyOpen, setCopyOpen] = useState(false);
+  const copyBtnRef = useRef<HTMLButtonElement>(null);
+  const copyPanelId = useId();
+  /**
+   * Lines that have just arrived from a copy, held long enough to be seen.
+   *
+   * Copying used to close the picker and append silently: the supervisor was
+   * looking at the picker, and the result appeared several rows above where the
+   * panel had been. Three new rows landing in a form is a change worth pointing
+   * at, so they carry a ring until the next edit or a couple of seconds, and the
+   * toast says how many.
+   */
+  const [justAdded, setJustAdded] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    if (justAdded.size === 0) return;
+    const t = setTimeout(() => setJustAdded(new Set()), 2500);
+    return () => clearTimeout(t);
+  }, [justAdded]);
 
   const patch = (i: number, v: Partial<Line>) =>
     setLines((ls) => ls.map((l, j) => (j === i ? { ...l, ...v } : l)));
@@ -743,7 +921,12 @@ export function BranchEditor({
   return (
     <div className="mt-1 space-y-1 rounded border border-slate-300 bg-white p-1.5">
       {lines.map((l, i) => (
-        <div key={l.key} className="flex flex-wrap items-center gap-1">
+        <div
+          key={l.key}
+          className={`flex flex-wrap items-center gap-1 rounded transition-colors duration-200 ${
+            justAdded.has(l.key) ? "bg-indigo-50 ring-1 ring-indigo-300" : ""
+          }`}
+        >
           <DriverPicker value={l.driver} onChange={(v) => patch(i, { driver: v })} drivers={drivers} />
           <TimeSelect label="Từ giờ" value={l.start} onChange={(v) => patch(i, { start: v })} />
           <span aria-hidden className="text-slate-500 text-[11px]">→</span>
@@ -780,25 +963,17 @@ export function BranchEditor({
         <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={addLine} disabled={busy}>
           + Thêm ca
         </Button>
-        <CopyFromBranch
+        <Button
+          ref={copyBtnRef}
+          size="sm" variant="outline"
+          className="h-6 px-2 text-[11px]"
+          aria-expanded={copyOpen}
+          aria-controls={copyPanelId}
+          onClick={() => setCopyOpen((v) => !v)}
           disabled={busy}
-          onCopy={(copied) =>
-            setLines((ls) => {
-              // Appended, never replacing: a branch being set up may already have
-              // the empty row this editor was opened from, and one line the
-              // supervisor has started filling. Both survive, and the clash check
-              // on save is what decides whether the result is coherent.
-              const existing = new Set(ls.map((l) => `${l.driver}\u0000${l.start}\u0000${l.end}`));
-              const fresh = copied
-                .filter((c) => !existing.has(`${c.driver}\u0000${c.start}\u0000${c.end}`))
-                .map((c) => ({ key: newLineKey(), ...c }));
-              // A blank line the supervisor has not touched is a placeholder, not
-              // a rule — drop it rather than saving an empty row beside the copy.
-              const kept = ls.filter((l) => l.driver.trim() || l.start.trim() || l.end.trim() || l.row);
-              return [...kept, ...fresh];
-            })
-          }
-        />
+        >
+          Sao chép từ điểm khác
+        </Button>
         <div className="ml-auto flex gap-1">
           <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={onCancel} disabled={busy}>
             Hủy
@@ -808,6 +983,40 @@ export function BranchEditor({
           </Button>
         </div>
       </div>
+      {/* Below the action row, never inside it: the panel is wide, and rendering
+          it among the buttons pushed Hủy/Lưu onto a second line the moment it
+          opened. */}
+      <CopyFromBranch
+        open={copyOpen}
+        panelId={copyPanelId}
+        existingKeys={lines.map((l) => copyKey(l.driver, l.start, l.end))}
+        onClose={() => { setCopyOpen(false); copyBtnRef.current?.focus(); }}
+        onCopy={(copied) => {
+          const added: string[] = [];
+          setLines((ls) => {
+            // Appended, never replacing: a branch being set up may already have
+            // the empty row this editor was opened from, and one line the
+            // supervisor has started filling. Both survive, and the clash check
+            // on save is what decides whether the result is coherent.
+            const have = new Set(ls.map((l) => copyKey(l.driver, l.start, l.end)));
+            const fresh = copied
+              .filter((c) => !have.has(copyKey(c.driver, c.start, c.end)))
+              .map((c) => {
+                const key = newLineKey();
+                added.push(key);
+                return { key, ...c };
+              });
+            // A blank line the supervisor has not touched is a placeholder, not
+            // a rule — drop it rather than saving an empty row beside the copy.
+            const kept = ls.filter((l) => l.driver.trim() || l.start.trim() || l.end.trim() || l.row);
+            return [...kept, ...fresh];
+          });
+          setJustAdded(new Set(added));
+          toast.success(
+            added.length ? `Đã chép ${added.length} ca vào form — bấm Lưu để ghi` : "Các ca này đã có trong form",
+          );
+        }}
+      />
       {/* A save that half-landed is the one message here nobody can afford to
           miss, and it is the one that decides whether pressing Lưu again is
           safe — so it is announced, not just coloured. */}
