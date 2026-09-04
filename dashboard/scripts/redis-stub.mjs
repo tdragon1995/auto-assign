@@ -251,14 +251,39 @@ function exec(body) {
   return Array.isArray(body?.[0]) ? body.map(one) : one(body);
 }
 
+/**
+ * @upstash/redis asks for base64 responses by default (`Upstash-Encoding: base64`) and
+ * decodes every string it gets back. This stub used to answer in plain text regardless,
+ * so the client base64-DECODED plain strings — and the corruption was silent and
+ * selective, because only strings whose length is a multiple of 4 and whose characters
+ * are all base64-legal decode "successfully" into garbage.
+ *
+ * That is why it looked like it worked: "failed" (6) and "job_id" survived, while
+ * "warnings" (8), "held" (4) and "gaps" (4) came back as mojibake and read as absent.
+ * Any hash test on this codebase's own field names was being quietly lied to.
+ *
+ * So: honour the header the client actually sent. Only strings are encoded — numbers,
+ * booleans and nulls travel as themselves, which is what the real service does.
+ */
+const b64 = (v) =>
+  typeof v === "string" ? Buffer.from(v, "utf8").toString("base64")
+  : Array.isArray(v) ? v.map(b64)
+  : v;
+
+const encodeOut = (out) =>
+  Array.isArray(out)
+    ? out.map((o) => ("result" in o ? { ...o, result: b64(o.result) } : o))
+    : "result" in out ? { ...out, result: b64(out.result) } : out;
+
 createServer((req, res) => {
   let raw = "";
   req.on("data", (c) => { raw += c; });
   req.on("end", () => {
     res.setHeader("content-type", "application/json");
+    const wantsB64 = (req.headers["upstash-encoding"] ?? "").toString().toLowerCase() === "base64";
     try {
       const out = exec(raw ? JSON.parse(raw) : []);
-      res.end(JSON.stringify(out));
+      res.end(JSON.stringify(wantsB64 ? encodeOut(out) : out));
     } catch (e) {
       res.statusCode = 400;
       res.end(JSON.stringify({ error: String(e.message ?? e) }));
