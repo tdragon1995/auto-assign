@@ -149,7 +149,7 @@ function OverlapRow({
     setErr(null);
     setBusy(`clear${row}`);
     try {
-      const res = await fetch("/api/config/clear-row", {
+      const res = await fetch("/api/config/delete-row", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ row, pickup_name: o.pickup_name }),

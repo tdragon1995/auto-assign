@@ -147,7 +147,7 @@ through the same `POST /api/nghi-phep` a driver's own form uses — so
 | `POST /api/assign` | Main assign cycle; `?env=prod\|uat`, `?skipSmart=1` |
 | `GET /api/config` | Returns mapping/PSC route counts from sheets |
 | `GET /api/config/rows` | The config table itself, for the dashboard's Config tab and the copy-a-branch picker. NOT on the status poll — ~1,700 rows, fetched on demand behind a 5-min in-process cache |
-| `POST /api/config/clear-row` | Empties one config row (pickup/Driver/hours/dropoff). Weekday only; never touches the id spill |
+| `POST /api/config/delete-row` | Deletes one config row. Weekday only; refuses row 2 (the id ARRAYFORMULA anchor) and read-back-checks the spill afterwards |
 | `GET /api/drivers` | Proxy to Cartrack drivers list |
 | `POST /api/psc-assign` | PSC sample-transport job creation (creates unassigned job; auto-assign picks it up) |
 | `GET /api/psc-routes` | Load PSC routes from sheet (pickup→dropoff pairs with GPS coords) |
@@ -387,11 +387,19 @@ retracted rather than written (`emitConfigWarnings`).
 
 The fix offered is the same one-boundary move a gap gets, through the same
 `/api/config/stretch-rule`: the earlier rule hands over sooner, or the later one
-starts later — or the row is removed outright via `/api/config/clear-row`, which
-is what most same-driver pairs actually need. That CLEARS the row's value cells
-rather than deleting the sheet row: the id columns are one ARRAYFORMULA each
-anchored in row 2, other rows' numbers are being held by the dashboard, and a
-blank-pickup row is already what `writeConfigRows` means by free space. `shrinkOptions` refuses a move that would **open a hole** — a rule
+starts later — or the row is removed outright via `/api/config/delete-row`, which
+is what most same-driver pairs actually need.
+
+That DELETES the sheet row. It blanked the value cells at first, on the reasoning
+that a blank-pickup row is what `writeConfigRows` means by free space — which is
+only true BELOW the table's last used row. `configTableBounds` puts
+`firstFreeRow` after the LAST non-blank pickup, so a blank in the middle is
+skipped over forever: the hole stayed and no capacity came back. Deleting a row
+inside the id columns' spill is safe where WRITING into one is not — a literal
+collapses the ARRAYFORMULA to `#REF!`, a deleted row just shrinks it — so row 2,
+the anchor, is refused and the delete is followed by a read-back that would catch
+a collapse loudly. Rows below shift up by one; every writer re-reads its row and
+compares the branch first, so a stale number refuses rather than writes. `shrinkOptions` refuses a move that would **open a hole** — a rule
 wholly inside another looks closable and is not, and trading a CLASH for a
 five-hour gap is the worse outcome. Those rows say so and send you to the
 full-day editor.

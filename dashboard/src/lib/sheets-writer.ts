@@ -954,25 +954,34 @@ export async function completeConfigRow(opts: {
 }
 
 /**
- * Empty one config row — how a duplicate rule is removed.
+ * Delete one config row — how a duplicate rule is removed.
  *
- * It CLEARS the row's value cells rather than deleting the sheet row, and that is
- * the safe choice rather than the lazy one. The weekday tab's four id columns are
- * a single ARRAYFORMULA each, anchored in row 2 and spilling down the table; the
- * table is also the space `writeConfigRows` writes new rules into, and it finds
- * that space by looking for a blank pickup. So a cleared row is exactly what this
- * system already means by "free", it keeps every other row's number stable — the
- * dashboard is holding those for other to-dos — and it never goes near the spill.
+ * It removes the SHEET ROW. The first version blanked the row's value cells
+ * instead, on the reasoning that a row with no pickup is one the engine drops
+ * and one `writeConfigRows` treats as free space. Half of that was wrong:
+ * `configTableBounds` puts `firstFreeRow` after the LAST non-blank pickup, so a
+ * blank in the MIDDLE of the table is skipped over, never reused. Blanking
+ * therefore left a hole in the sheet AND gave back no capacity — the worst of
+ * both. Deleting the row closes the hole and returns a row to the table.
  *
- * Only the columns named in WRITE_COLS, plus Driver. Every id column and
- * "Điểm Drop-off thay thế" stay untouched: the ids are the spill, and the
- * alternate destination is an override that rewrites where jobs go.
+ * WHAT MAKES THIS SAFE, given the tab's four id columns are a single
+ * ARRAYFORMULA each anchored in row 2: deleting a row inside a spill is not the
+ * same as WRITING into one. A literal written into a spill collapses it to
+ * #REF! — the incident this file's header records — while a deleted row simply
+ * shrinks it. The anchor itself is the exception, so row 2 is refused outright,
+ * and the delete is followed by a read-back that would catch a collapse loudly
+ * rather than leaving the engine to run on a blanked id column.
  *
- * WEEKDAY ONLY, like the other two writers, and for the same reason: the Sunday
- * tab's Driver column is a formula deriving cover from the public roster, and a
- * blank written over it destroys that derivation for the row.
+ * ROW NUMBERS BELOW THIS ONE ALL SHIFT UP BY ONE, and the dashboard is holding
+ * some of them for its other to-dos. That is safe rather than merely tolerable:
+ * every writer re-reads its row and compares the branch before writing, so a
+ * stale number produces a refusal, never a write to the wrong line. The stale
+ * numbers clear on the next parse.
+ *
+ * WEEKDAY ONLY, like the other writers: the Sunday tab's Driver column is a
+ * formula deriving cover from the public roster.
  */
-export async function clearConfigRow(opts: {
+export async function deleteConfigRow(opts: {
   row: number;
   expectPickup: string;
 }): Promise<void> {
@@ -980,6 +989,12 @@ export async function clearConfigRow(opts: {
   if (tab.gid !== CONFIG_TABS.weekday.gid) {
     throw new Error(
       "Chủ nhật: dòng được suy ra từ lịch trực công khai — sửa trên tab lịch Chủ nhật",
+    );
+  }
+  if (opts.row <= 2) {
+    throw new Error(
+      "Dòng 2 giữ công thức id của cả cột — xoá dòng này sẽ hỏng toàn bộ bảng. " +
+      "Xoá nội dung dòng bằng tay trên sheet nếu thật sự cần.",
     );
   }
   const sheets = getSheetsClient();
@@ -996,9 +1011,9 @@ export async function clearConfigRow(opts: {
   const pickupCol = at(WRITE_COLS.pickup);
   if (!pickupCol) throw new Error(`"${tab.title}" không có cột ${WRITE_COLS.pickup}`);
 
-  // The row number came from a parse that may be minutes old, and rows shift when
-  // anyone inserts above them — so confirm the row still holds the branch the
-  // dashboard was looking at before blanking anything.
+  // The row number came from a parse that may be minutes old, and rows shift
+  // whenever anyone inserts or deletes above them — so confirm the row still
+  // holds the branch the dashboard was looking at before removing anything.
   const check = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
     range: `${a1(tab)}!${pickupCol}${opts.row}`,
@@ -1011,19 +1026,47 @@ export async function clearConfigRow(opts: {
     );
   }
 
-  // One range per column, never a span: what sits between two named columns
-  // differs per tab and moves when the sheet is reorganised, and on this tab some
-  // of it is a spill that a blank would collapse.
-  const q = a1(tab);
-  const targets = [pickupCol, at("Driver"), at(WRITE_COLS.start), at(WRITE_COLS.end), at(WRITE_COLS.dropoff)]
-    .filter((c): c is string => !!c);
-  await sheets.spreadsheets.values.batchUpdate({
+  await sheets.spreadsheets.batchUpdate({
     spreadsheetId: SHEET_ID,
     requestBody: {
-      valueInputOption: "RAW",
-      data: targets.map((c) => ({ range: `${q}!${c}${opts.row}`, values: [[""]] })),
+      requests: [{
+        deleteDimension: {
+          range: {
+            sheetId: Number(tab.gid),
+            dimension: "ROWS",
+            startIndex: opts.row - 1, // 0-based, inclusive
+            endIndex: opts.row,       // exclusive
+          },
+        },
+      }],
     },
   });
+
+  // Read back the anchored id column. If the spill had collapsed, EVERY cell in
+  // it would read #REF! — so the rows nearest the anchor answer the question,
+  // and they answer it in one small read. Best-effort: the row is already gone,
+  // and a failed check must not be reported as a failed delete.
+  try {
+    const idCol = at("customer_id");
+    if (idCol) {
+      const back = await sheets.spreadsheets.values.get({
+        spreadsheetId: SHEET_ID,
+        range: `${a1(tab)}!${idCol}2:${idCol}12`,
+      });
+      const broken = (back.data.values ?? []).some((r) =>
+        String(r?.[0] ?? "").includes("#REF!"),
+      );
+      if (broken) {
+        console.error(
+          `[config] DELETING ROW ${opts.row} COLLAPSED THE customer_id ARRAYFORMULA on ` +
+          `"${tab.title}" — every branch id is now #REF! and the engine can map nothing. ` +
+          `Undo it in the sheet's version history immediately.`,
+        );
+      }
+    }
+  } catch (e) {
+    console.error("[config] post-delete id-column check failed", e);
+  }
 }
 
 /**
