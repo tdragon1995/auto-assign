@@ -69,12 +69,28 @@ const ENV = (process.argv.find((a) => a.startsWith("--env="))?.split("=")[1] ?? 
 // Mirrors of the production constants this measurement depends on. Kept as literals
 // so a change there shows up here as a discrepancy to explain rather than silently
 // moving the answer.
-const OVERDUE_MIN = 90;      // PICKUP_OVERDUE_MIN
+// PICKUP_OVERDUE_MIN is 90; it does not appear below because a suspect is defined by
+// elapsed ≥ ALERT_MIN (minutes_late + 90 ≥ 120), which cancels it out.
 const ALERT_MIN = 120;       // LATE_ALERT_MIN — the mark that makes a warning a "suspect"
 const CLOCK_START = 7 * 60;  // PICKUP_CLOCK_START 07:00
 const ARM_FROM = 5 * 60 + 30;
 const ARM_TO = 22 * 60;
 const CYCLE_MIN = 3;
+
+/** Only the fields this measurement reads. Cartrack's job rows carry many more. */
+type RawStop = {
+  stop_type_id?: number;
+  delivery_windows?: { time_from?: string }[];
+  activity_started_ts?: string | null;
+  activity_arrived_ts?: string | null;
+  activity_completed_ts?: string | null;
+};
+type RawJob = {
+  job_id?: number;
+  create_ts?: string;
+  scheduled_delivery_ts?: string | null;
+  stops?: RawStop[];
+};
 
 const MS = 60_000;
 const minsInto = (day: string, d: Date) => (d.getTime() - new Date(`${day}T00:00:00+07:00`).getTime()) / MS;
@@ -94,20 +110,20 @@ const staleExamples: string[] = [];
 const days: string[] = FIXTURE
   ? []
   : Array.from({ length: DAYS }, (_, k) => addDays(vnDate(), -(DAYS - k)));
-const fixtureJobs: any[] = FIXTURE ? (JSON.parse(readFileSync(FIXTURE, "utf8")).data ?? []) : [];
+const fixtureJobs: RawJob[] = FIXTURE ? (JSON.parse(readFileSync(FIXTURE, "utf8")).data ?? []) : [];
 if (FIXTURE) {
   // Date the fixture by its own contents, so the window/clock arithmetic lands on
   // the day those jobs were actually scheduled for.
-  const d = fixtureJobs.find((j: any) => j.scheduled_delivery_ts)?.scheduled_delivery_ts?.slice(0, 10);
+  const d = fixtureJobs.find((j) => j.scheduled_delivery_ts)?.scheduled_delivery_ts?.slice(0, 10);
   if (!d) { console.error("fixture has no scheduled_delivery_ts to date it by"); process.exit(1); }
   days.push(d);
   console.log(`fixture: ${FIXTURE} → ${fixtureJobs.length} jobs dated ${d}\n`);
 }
 
 for (const day of days) {
-  let jobs: any[] = [];
+  let jobs: RawJob[] = [];
   try {
-    jobs = FIXTURE ? fixtureJobs : ((await getJobsByDate(day, ENV)) as any[]);
+    jobs = FIXTURE ? fixtureJobs : ((await getJobsByDate(day, ENV)) as unknown as RawJob[]);
   } catch (e) {
     console.log(`${day}  FETCH FAILED — ${e}`);
     continue;
@@ -127,8 +143,8 @@ for (const day of days) {
 
   let windowed = 0, stale = 0, fetchesEvery = 0;
   for (const j of jobs) {
-    if (isInternalOrPlanJob(j)) continue;
-    const pickup = (j.stops ?? []).find((s: any) => s.stop_type_id === 1);
+    if (isInternalOrPlanJob(j as Parameters<typeof isInternalOrPlanJob>[0])) continue;
+    const pickup = (j.stops ?? []).find((s) => s.stop_type_id === 1);
     const from = pickup?.delivery_windows?.[0]?.time_from;
     if (!from) continue;
     const ws = parsePickupWindowTime(from, day);

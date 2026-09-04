@@ -207,9 +207,9 @@ function hasPlanAttached(job: any): boolean {
  *     and PSC tỉnh legs, never a client sample request.
  * Used by the late-pickup warning.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 // Exported for scripts/late-check-cost-live.mts, so the measurement counts the
 // same jobs production does rather than re-deriving the exemptions.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function isInternalOrPlanJob(job: any): boolean {
   if (hasPlanAttached(job)) return true;
   const labels: string[] = job.labels ?? [];
