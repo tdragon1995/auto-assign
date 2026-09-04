@@ -457,7 +457,7 @@ type CopySource = {
   pickup: string;
   customer_id: string;
   rules: ConfigRowView[];
-  /** Rules not already sitting in the editor — what pressing Chép actually adds. */
+  /** Rules not already sitting in the editor — what pressing Copy actually adds. */
   fresh: ConfigRowView[];
 };
 
@@ -618,7 +618,7 @@ function CopyFromBranch({
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={onKeyDown}
             placeholder="Tìm điểm đã có ca…"
-            aria-label="Tìm điểm để sao chép ca"
+            aria-label="Tìm điểm để copy ca"
             className="w-full rounded border border-slate-300 bg-white py-1 pl-7 pr-2 text-xs text-slate-900 outline-none placeholder:text-slate-500 focus:ring-2 focus:ring-indigo-400/50"
           />
         </div>
@@ -632,7 +632,7 @@ function CopyFromBranch({
       </div>
 
       <p id={hintId} className="mt-1 text-[11px] text-slate-600">
-        Chép cả ngày của một điểm khác vào form này. Chưa ghi vào sheet — vẫn phải bấm Lưu.
+        Copy cả ngày của một điểm khác vào form này. Chưa ghi vào sheet — vẫn phải bấm Lưu.
       </p>
 
       {err && (
@@ -676,7 +676,7 @@ function CopyFromBranch({
       )}
 
       {branches.length > 0 && (
-        <ul id={listId} role="listbox" aria-label="Điểm để sao chép ca" className="mt-1.5 space-y-1">
+        <ul id={listId} role="listbox" aria-label="Điểm để copy ca" className="mt-1.5 space-y-1">
           {branches.map((b, i) => {
             const none = b.fresh.length === 0;
             const isActive = i === activeIndex;
@@ -709,7 +709,7 @@ function CopyFromBranch({
                         none ? "bg-slate-100 text-slate-700" : "bg-indigo-600 text-white"
                       }`}
                     >
-                      {none ? "Đã có đủ" : `Chép ${b.fresh.length} ca`}
+                      {none ? "Đã có đủ" : `Copy ${b.fresh.length} ca`}
                     </span>
                   </span>
                   <span className="mt-0.5 block space-y-0.5">
@@ -997,7 +997,7 @@ export function BranchEditor({
           onClick={() => setCopyOpen((v) => !v)}
           disabled={busy}
         >
-          Sao chép từ điểm khác
+          Copy từ điểm khác
         </Button>
         <div className="ml-auto flex gap-1">
           <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={onCancel} disabled={busy}>
@@ -1038,7 +1038,7 @@ export function BranchEditor({
           });
           setJustAdded(new Set(added));
           toast.success(
-            added.length ? `Đã chép ${added.length} ca vào form — bấm Lưu để ghi` : "Các ca này đã có trong form",
+            added.length ? `Đã copy ${added.length} ca vào form — bấm Lưu để ghi` : "Các ca này đã có trong form",
           );
         }}
       />

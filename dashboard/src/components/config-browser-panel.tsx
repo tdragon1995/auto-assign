@@ -61,6 +61,42 @@ export function searchConfigRows(rows: readonly ConfigRowView[], query: string):
   });
 }
 
+/**
+ * Reading order: the branch, then its day, then who works it.
+ *
+ * The sheet's own order is the order rows were APPENDED — every rule this
+ * dashboard has ever added sits at the bottom, so a branch's shifts are scattered
+ * through 1,700 lines and the two rules that hand over to each other can be
+ * hundreds of rows apart. That is the order a spreadsheet needs and the worst
+ * possible one for reading a roster.
+ *
+ * Grouping by pickup puts a branch's whole day together, which is the unit every
+ * other part of this feature already works in (the editor, the copy picker, the
+ * overlap audit). Within a branch, time — because a day is read forwards, and a
+ * gap or an overlap between consecutive rules becomes visible as two adjacent
+ * lines rather than something to hunt for. Driver last, to settle the rest.
+ *
+ * An all-day rule (no window) sorts FIRST within its branch: it is the branch's
+ * general rule, and the scoped or timed ones read as exceptions beneath it.
+ *
+ * Vietnamese collation, so accented names land where a Vietnamese reader looks
+ * for them rather than after Z. The sheet row stays on every line, so the order
+ * shown here never costs anyone the ability to find the row itself.
+ */
+export function sortConfigRows(rows: readonly ConfigRowView[]): ConfigRowView[] {
+  const vi = new Intl.Collator("vi", { sensitivity: "base", numeric: true });
+  const startMin = (r: ConfigRowView) => {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(r.start.trim());
+    return m ? Number(m[1]) * 60 + Number(m[2]) : -1;   // no window sorts first
+  };
+  return [...rows].sort((a, b) =>
+    vi.compare(a.pickup, b.pickup) ||
+    startMin(a) - startMin(b) ||
+    vi.compare(a.driver, b.driver) ||
+    a.row - b.row                                        // never an arbitrary tie
+  );
+}
+
 /** One branch's rows, in the shape the editor takes. Only rows that carry a
  *  sheet row can be edited — every writer addresses them by number. */
 function rulesOf(rows: readonly ConfigRowView[]): BranchRule[] {
@@ -99,7 +135,11 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
     void load();
   }, [load]);
 
-  const matches = useMemo(() => searchConfigRows(rows, q), [rows, q]);
+  const matches = useMemo(() => sortConfigRows(searchConfigRows(rows, q)), [rows, q]);
+  // The cap applies AFTER the sort, so it is the first N of a stable ordering
+  // rather than an arbitrary slice of the sheet. Which rows get cut is then
+  // something the reader can predict, and narrowing the search is a way to
+  // reach the rest rather than a lottery.
   const shown = matches.slice(0, RENDER_CAP);
 
   /** The branch currently open in the editor, by customer id. One at a time:

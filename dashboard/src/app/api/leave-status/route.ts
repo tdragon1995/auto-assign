@@ -22,10 +22,26 @@ export const preferredRegion = "sin1";
 
 /** GET — drivers on leave today and tomorrow (Saigon dates), from the Leave
  *  Status sheet. Powers the dashboard "Cần xử lý" leave-status panel.
- *  `?fresh=1` busts the 5-min sheet cache first (dashboard Refresh button). */
+ *  `?fresh=1` busts the 5-min sheet cache first (dashboard Refresh button).
+ *
+ *  `?date=YYYY-MM-DD` adds that ONE further day under `picked`, for the panel's
+ *  "xem ngày khác". It costs nothing: `loadLeaveEntries` already returns the
+ *  whole sheet — every row, every date — and today and tomorrow are just two
+ *  filters over it. Another day is a third filter over the same cached parse, so
+ *  no sheet read, no upstream call, and deliberately no `fresh` of its own: a
+ *  date the supervisor is browsing is not a reason to re-download the tab. */
 export async function GET(req: NextRequest) {
   try {
-    const fresh = !!new URL(req.url).searchParams.get("fresh");
+    const url = new URL(req.url);
+    const fresh = !!url.searchParams.get("fresh");
+    const asked = (url.searchParams.get("date") ?? "").trim();
+    // Refused rather than coerced. A malformed date silently answered with
+    // today's rows would read as "nobody is off then", which is the one wrong
+    // answer this panel must never give.
+    const picked = /^\d{4}-\d{2}-\d{2}$/.test(asked) ? asked : null;
+    if (asked && !picked) {
+      return NextResponse.json({ error: `Ngày không hợp lệ: ${asked}` }, { status: 400 });
+    }
     const entries = await loadLeaveEntries(fresh);
     // Shares the same cached parse as the call above — no second sheet read.
     const dropped = await loadInvalidLeaveRows();
@@ -56,6 +72,20 @@ export async function GET(req: NextRequest) {
       // (see SuppressionLoad.trusted), so say so rather than let the re-pushes
       // quietly resume.
       suppressed_unreadable: !suppressed.trusted,
+      // One further day, only when asked for. Shaped like today/tomorrow so the
+      // panel renders it with the same sections and the same substitute editor —
+      // the point of the feature is fixing an uncovered day BEFORE it arrives,
+      // and the writes behind those rows address a row by driver + date +
+      // window, so they already work on any day.
+      ...(picked
+        ? {
+            picked: {
+              date: picked,
+              entries: leaveEntriesOnDate(picked, entries),
+              invalid: invalidLeaveRowsOnDate(picked, dropped),
+            },
+          }
+        : {}),
     });
   } catch (e) {
     return NextResponse.json(

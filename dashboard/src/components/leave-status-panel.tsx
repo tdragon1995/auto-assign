@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { AlertTriangle, Palmtree } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import type { LeaveOnDate, InvalidLeaveRow, SpanningLeaveRow } from "@/lib/leave-config";
 import type { LeaveSuppression } from "@/lib/leave-suppression";
 import type { ConfigDriver } from "@/lib/types";
+import { addDays, vnDate } from "@/lib/time";
 import { splitDriverName, compareDriverNames, compareByDriverThenWindow } from "@/lib/driver-label";
 import { DriverName } from "./driver-name";
 
@@ -781,6 +782,209 @@ export function uncoveredLeaveCount(...days: LeaveOnDate[][]): number {
 }
 
 /**
+ * Any other day's leave, fetched on demand.
+ *
+ * The panel has always shown today and tomorrow, which is what the ENGINE cares
+ * about — today's uncovered leave is a job it will refuse in an hour. But that
+ * is the last moment to fix it, not the useful one: a day off filed for next
+ * Tuesday with nobody covering it is the same problem while there is still time
+ * to arrange a substitute, and until now the only way to see it was to open the
+ * sheet.
+ *
+ * It costs nothing to serve. The route already loads the WHOLE leave tab —
+ * today and tomorrow are two filters over one cached parse — so another day is a
+ * third filter over the same copy: no sheet read, no upstream call, and no
+ * `fresh`, since browsing a date is not a reason to re-download the tab. Nothing
+ * is fetched at all until a date is chosen, so the panel's normal cost is
+ * unchanged.
+ *
+ * The rows come back in the same shape as today's, so they get the same sections
+ * and the same substitute editor. That is the point rather than a convenience:
+ * the writes behind those rows address a row by driver + date + window, never by
+ * a row number, so filling in next Tuesday's substitute here is the identical
+ * operation to filling in today's.
+ */
+function OtherDaySection({
+  today,
+  driverNames,
+  onFill,
+  onDelete,
+  registerReload,
+}: {
+  /** Saigon's today, as the floor for the picker. */
+  today: string;
+  driverNames: Set<string>;
+  onFill: FillSubsFn;
+  onDelete: DeleteRowFn;
+  /** Hands the parent a way to re-read the chosen day after a write, so a
+   *  substitute filled in here does not leave the row still reading uncovered. */
+  registerReload: (fn: (() => void) | null) => void;
+}) {
+  const [date, setDate] = useState("");
+  const [state, setState] = useState<{
+    loading: boolean;
+    error: string | null;
+    /** The day actually loaded — not `date`, which changes the moment the input
+     *  does. Keeping them apart is what stops one day's rows being labelled with
+     *  another day while a fetch is in flight. */
+    shown: string | null;
+    entries: LeaveOnDate[];
+    invalid: InvalidLeaveRow[];
+  }>({ loading: false, error: null, shown: null, entries: [], invalid: [] });
+
+  const load = useCallback(async (d: string) => {
+    if (!d) {
+      setState({ loading: false, error: null, shown: null, entries: [], invalid: [] });
+      return;
+    }
+    setState((s) => ({ ...s, loading: true, error: null }));
+    try {
+      const res = await fetch(`/api/leave-status?date=${encodeURIComponent(d)}`, { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.picked) throw new Error(data.error || `Lỗi ${res.status}`);
+      setState({
+        loading: false,
+        error: null,
+        shown: String(data.picked.date ?? d),
+        entries: Array.isArray(data.picked.entries) ? data.picked.entries : [],
+        invalid: Array.isArray(data.picked.invalid) ? data.picked.invalid : [],
+      });
+    } catch (e) {
+      setState((s) => ({ ...s, loading: false, error: e instanceof Error ? e.message : String(e) }));
+    }
+  }, []);
+
+  // A write from inside this section refreshes THIS day, not the panel's two.
+  useEffect(() => {
+    registerReload(state.shown ? () => void load(state.shown!) : null);
+    return () => registerReload(null);
+  }, [registerReload, load, state.shown]);
+
+  const pick = (d: string) => { setDate(d); void load(d); };
+
+  const groups = groupByDriver(state.entries);
+  const uncovered = uncoveredCount(groups);
+  const ignored = state.invalid.filter((r) => !r.recovered);
+
+  return (
+    <div className="mt-2 border-t border-slate-200 pt-2">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <label htmlFor="leave-other-day" className="text-[11px] font-medium text-slate-700">
+          Xem ngày khác
+        </label>
+        <input
+          id="leave-other-day"
+          type="date"
+          value={date}
+          min={today}
+          onChange={(e) => pick(e.target.value)}
+          className="rounded border border-slate-300 bg-white px-1.5 py-1 text-xs text-slate-900 outline-none focus:ring-2 focus:ring-indigo-400/50"
+        />
+        {/* Two clicks that cover most of what this is for — checking the rest of
+            the week — without making the date field decoration. Named by what
+            they mean, not by their date: a bare "06/09" beside a field already
+            showing a date is one more number to decode, and the date it lands on
+            is on the section header a line below either way. */}
+        {([["Ngày kia", 2], ["Tuần sau", 7]] as const).map(([label, n]) => {
+          const d = addDays(today, n);
+          const sel = state.shown === d;
+          return (
+            <Button
+              key={n}
+              size="sm" variant="outline"
+              // Selected is a STATE, so it has to be visible and not only
+              // announced: a chip carrying aria-pressed and no styling tells a
+              // screen reader which day is on screen and tells everyone else
+              // nothing.
+              className={`h-6 px-2 text-[11px] ${sel ? "border-indigo-400 bg-indigo-50 text-indigo-900" : ""}`}
+              aria-pressed={sel}
+              title={ddmm(d)}
+              onClick={() => pick(d)}
+            >
+              {label}
+            </Button>
+          );
+        })}
+        {(date || state.shown) && (
+          <Button
+            size="sm" variant="ghost"
+            className="h-6 px-2 text-[11px]"
+            onClick={() => { setDate(""); void load(""); }}
+          >
+            Bỏ chọn
+          </Button>
+        )}
+      </div>
+
+      {state.loading && (
+        <div className="mt-1.5 space-y-1" aria-hidden>
+          {[0, 1].map((i) => (
+            <div key={i} className="h-7 animate-pulse rounded border border-slate-200 bg-slate-100 motion-reduce:animate-none" />
+          ))}
+        </div>
+      )}
+      <span role="status" className="sr-only">
+        {state.loading ? "Đang tải ngày nghỉ" : ""}
+      </span>
+
+      {state.error && (
+        <div role="alert" className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-red-600">
+          <span className="min-w-0 break-words">{state.error}</span>
+          {date && (
+            <Button size="sm" variant="outline" className="h-6 shrink-0 px-2 text-[11px]" onClick={() => void load(date)}>
+              Thử lại
+            </Button>
+          )}
+        </div>
+      )}
+
+      {!state.loading && !state.error && !state.shown && (
+        <p className="mt-1.5 text-[11px] text-slate-600">
+          Chọn một ngày để xem ai nghỉ và ai chưa có người thay — sửa được từ đây, trước khi tới ngày đó.
+        </p>
+      )}
+
+      {!state.loading && !state.error && state.shown && (
+        <div className="mt-1.5">
+          {/* The uncovered count is stated here rather than only coloured: the
+              collapsed header above counts today and tomorrow only, and a day
+              this far out has nothing else pointing at it. */}
+          <div className="mb-1 flex flex-wrap items-center gap-1.5">
+            <span className="text-[11px] font-semibold text-slate-700">{ddmm(state.shown)}</span>
+            {uncovered > 0 && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-100 px-1.5 py-0 text-[11px] font-semibold text-amber-800">
+                <AlertTriangle className="size-3" strokeWidth={2} />
+                {uncovered} chưa có người thay
+              </span>
+            )}
+            {ignored.length > 0 && (
+              <span className="rounded-full border border-red-200 bg-red-50 px-1.5 py-0 text-[11px] font-semibold text-red-700">
+                {ignored.length} dòng lỗi
+              </span>
+            )}
+          </div>
+          {groups.length === 0 ? (
+            <p className="text-xs text-slate-600">Không có ai nghỉ ngày {ddmm(state.shown)}.</p>
+          ) : (
+            <div className="divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200">
+              {groups.map((g) => (
+                <DriverCard
+                  key={g.driver_id}
+                  g={g}
+                  driverNames={driverNames}
+                  onFill={onFill}
+                  onDelete={onDelete}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * Leave-status summary for the "Cần xử lý" tab: who's off today and tomorrow,
  * with their coverage window and substitute (if any). Uncovered rows can be
  * filled in place (writes sub#_name/from/to back to the Leave sheet; the
@@ -838,6 +1042,24 @@ export function LeaveStatusPanel({
   const fillSubs = makeFillSubs(onRefresh);
   const deleteRow = makeDeleteRow(onRefresh);
   const restoreRow = makeRestoreRow(onRefresh);
+
+  /**
+   * A write inside the other-day section has to refresh THAT day too.
+   *
+   * `onRefresh` re-reads the panel's own two days and nothing else, so filling
+   * in next Tuesday's substitute through it left the row still reading
+   * "uncovered" — the one state this panel exists to clear, still on screen
+   * after the thing that clears it. The section hands up a reloader for the day
+   * it is currently showing; a ref rather than state because it changes on every
+   * day change and nothing renders from it.
+   */
+  const otherDayReload = useRef<(() => void) | null>(null);
+  const registerOtherDayReload = useCallback((fn: (() => void) | null) => {
+    otherDayReload.current = fn;
+  }, []);
+  const refreshBoth = useCallback(() => { onRefresh(); otherDayReload.current?.(); }, [onRefresh]);
+  const otherDayFill = makeFillSubs(refreshBoth);
+  const otherDayDelete = makeDeleteRow(refreshBoth);
 
   if (error && noData) {
     return (
@@ -1049,6 +1271,13 @@ export function LeaveStatusPanel({
                 onDelete={deleteRow}
               />
             </div>
+            <OtherDaySection
+              today={vnDate()}
+              driverNames={driverNames}
+              onFill={otherDayFill}
+              onDelete={otherDayDelete}
+              registerReload={registerOtherDayReload}
+            />
           </div>
         )}
       </CardContent>
