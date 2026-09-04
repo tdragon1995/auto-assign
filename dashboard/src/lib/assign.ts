@@ -7,7 +7,7 @@ import { DIAG_LOCATION_CUSTOMER_IDS } from "./psc-routes-data";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from "./return-trips";
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
 import { cleanupStaleTrips } from "./cleanup-trips";
-import { setCycleSnapshot, recordCoverageGap, claimMorningPass, deferMorningPass, confirmMorningPass, pushRunLog, runDailyMaintenance, claimLateAlert, getAcceptedNotes, type HeldJob } from "./smart-log-kv";
+import { setCycleSnapshot, recordCoverageGap, claimMorningPass, deferMorningPass, confirmMorningPass, pushRunLog, runDailyMaintenance, claimLateAlert, getAcceptedNotes, getResolvedCreateTs, saveResolvedCreateTs, type HeldJob } from "./smart-log-kv";
 import { isValidDriverId, invalidateConfigCache, loadConfigFromSheets } from "./config";
 import { drainSheetAlarms } from "./sheets";
 // Driver labels carry a routing prefix and a payroll code ("F - C - DC100993
@@ -477,17 +477,37 @@ async function dropStaleWindowWarnings(
   );
   if (suspects.length === 0) return warnings;
 
+  // One command for every booking time an earlier cycle already resolved. create_ts
+  // is immutable, so a hit is as good as a fetch and stays good all day — see the
+  // cache's own note in smart-log-kv. Before this, a windowed pickup that stayed late
+  // was re-fetched every few minutes for the rest of the day.
+  const known = await getResolvedCreateTs(today);
+  const fetched: Record<number, string> = {};
+
   const stale = new Set<number>();
   await Promise.all(
     suspects.map(async (w) => {
       try {
-        const { data } = await getJobDetails(w.job_id, env);
-        if (isStaleWindow(w.window_time_from!, today, data?.create_ts)) stale.add(w.job_id);
+        let createTs = known[w.job_id];
+        if (!createTs) {
+          const { data } = await getJobDetails(w.job_id, env);
+          createTs = data?.create_ts;
+          // Only a real value is remembered. Caching a blank would turn one failed
+          // fetch into a permanent "keep the warning" for the rest of the day.
+          if (createTs) fetched[w.job_id] = createTs;
+        }
+        if (isStaleWindow(w.window_time_from!, today, createTs)) stale.add(w.job_id);
       } catch {
         /* keep the warning — see the fail-safe note above */
       }
     }),
   );
+
+  // After the verdicts, never before: a cycle that dies mid-flight leaves the cache
+  // as it was and the next one re-fetches, which is the safe direction.
+  if (Object.keys(fetched).length > 0) {
+    await saveResolvedCreateTs(today, fetched).catch(() => {});
+  }
 
   if (stale.size === 0) return warnings;
   // Console only: this repeats every cycle for the same job all day, which is
@@ -1652,22 +1672,50 @@ export async function autoAssignCycle(
 
   if (jobs.length === 0) {
     log("No unassigned jobs");
-    // Warnings deliberately omitted — this early exit never computed them, and
-    // passing an empty list would blank warnings the last full cycle found.
-    // Sheet alarms ride along even on the quiet exit: a tab being unreadable has
-    // nothing to do with whether there was work to assign, and this is the exit
-    // most cycles take.
+    // THE LATE CHECK RUNS HERE TOO, and this is the exit most cycles take.
+    //
+    // It used to be skipped, on the reasoning that this path never computed the
+    // warnings and writing an empty list would blank the ones the last full cycle
+    // found. The second half of that is right; the first half was the bug. Having
+    // no work to assign says nothing about whether a sample already out with a
+    // driver has gone uncollected — so the late list was refreshed only as a side
+    // effect of there being something else to do, and on a quiet fleet it froze.
+    // What cleared a collected pickup from the panel was the reader's 10-minute
+    // expiry, not anyone noticing. Two jobs were queried as wrongly flagged
+    // (34437573, 34437718) before it was clear the flags were simply stale.
+    //
+    // The lists this needs were fetched a step earlier — they are HOW we know there
+    // is nothing to assign — and nothing between here and the busy exit modifies
+    // them, so the answer is identical to the one that exit would produce.
+    //
+    // Sheet alarms ride along for the same reason they always did: a tab being
+    // unreadable has nothing to do with whether there was work to assign.
     if (!onlyJobIds) {
-      await setCycleSnapshot({
-        held: heldJobs,
-        failed: failedJobs,
-        sheetAlarms: drainSheetAlarms() ?? undefined,
-        unfinished: config?.unfinished ?? [],
-        gaps: config?.gaps ?? [],
-        overlaps: config?.overlaps ?? [],
-        parsedAt: config?.parsedAt ?? undefined,
-        branchRules: config?.branchRules ?? undefined,
-      });
+      const quietWarnings = await dropStaleWindowWarnings(
+        computePickupWarnings([...(assignedJobsToday ?? []), ...(cycleS5 ?? [])], today),
+        today,
+        env,
+      );
+      await Promise.all([
+        setCycleSnapshot({
+          held: heldJobs,
+          failed: failedJobs,
+          warnings: quietWarnings,
+          sheetAlarms: drainSheetAlarms() ?? undefined,
+          unfinished: config?.unfinished ?? [],
+          gaps: config?.gaps ?? [],
+          overlaps: config?.overlaps ?? [],
+          parsedAt: config?.parsedAt ?? undefined,
+          branchRules: config?.branchRules ?? undefined,
+        }),
+        // The escalation belongs on this path too, or it stays half-broken in the
+        // same shape: a pickup crossing two hours during a quiet spell would wait
+        // for unrelated work before anyone was told. claimLateAlert still makes it
+        // once-per-job, and isLateAlertHour keeps it out of the night.
+        alertLateJobs(quietWarnings, env, log).catch((e) =>
+          log(`Late-alert push failed: ${e}`, "WARN"),
+        ),
+      ]);
     }
     return logs;
   }

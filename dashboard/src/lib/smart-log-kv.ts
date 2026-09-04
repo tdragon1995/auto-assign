@@ -811,6 +811,62 @@ export async function runDailyMaintenance(): Promise<void> {
   }
 }
 
+// ── Real create_ts for windowed pickups ─────────────────────────────────────
+//
+// The cycle's job lists come from the JSON-RPC timeline, which carries NO create_ts
+// (cartrack.ts backfills the field with scheduledDeliveryTs). The stale-window guard
+// needs the genuine booking time — it is the only thing that answers "was this booked
+// after its own window had already opened?" — so it asks REST for the job detail.
+//
+// That question's answer NEVER CHANGES: create_ts is stamped once and is not touched
+// by the overnight rollover, which re-dates scheduled_delivery_ts only. Yet the cycle
+// reads nothing back from Redis, so it re-asked Cartrack about the same immutable
+// field every few minutes, all day, for as long as a pickup stayed late.
+//
+// Cached RAW, not as a verdict. The verdict depends on the day as well as the
+// booking, and the rollover legitimately flips it — job 34421121 is stale on the day
+// it was booked for and honest on the day it was moved to. Keeping the input and
+// recomputing the answer each cycle stays right through that; caching the answer
+// would not.
+//
+// Day-scoped, so it disappears on its own and never has to be invalidated.
+const createTsKey = (dateVn: string) => `late:create_ts:${dateVn}`;
+const CREATE_TS_TTL_S = 2 * 24 * 60 * 60;
+
+/** Booking times resolved on earlier cycles, as `job_id → create_ts`. One command.
+ *  Empty on any failure — the caller then fetches, which is the pre-cache behaviour. */
+export async function getResolvedCreateTs(dateVn: string): Promise<Record<number, string>> {
+  const redis = getRedis();
+  if (!redis) return {};
+  const raw = await redis.hgetall(createTsKey(dateVn)).catch(() => null);
+  const out: Record<number, string> = {};
+  for (const [k, v] of Object.entries((raw ?? {}) as Record<string, unknown>)) {
+    const id = Number(k);
+    if (Number.isFinite(id) && typeof v === "string" && v) out[id] = v;
+  }
+  return out;
+}
+
+/** Remember booking times this cycle had to fetch. Called only when something was
+ *  actually resolved — a handful of times a day — so the EXPIRE riding along costs
+ *  nothing worth avoiding, and it re-arms the key's life on each new job. */
+export async function saveResolvedCreateTs(
+  dateVn: string,
+  entries: Record<number, string>,
+): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  const fields = Object.fromEntries(Object.entries(entries).filter(([, v]) => !!v));
+  if (Object.keys(fields).length === 0) return;
+  try {
+    await redis.hset(createTsKey(dateVn), fields);
+    await redis.expire(createTsKey(dateVn), CREATE_TS_TTL_S);
+  } catch (e) {
+    // Losing the write costs a re-fetch next cycle, nothing more.
+    console.error("[late-cache] create_ts save failed:", e instanceof Error ? e.message : e);
+  }
+}
+
 /** Keyed by env so a manual UAT cycle can't consume prod's daily slot. */
 const rolloverKey = (env: string, dateVn: string) => `assign:rollover_morning:${env}:${dateVn}`;
 
