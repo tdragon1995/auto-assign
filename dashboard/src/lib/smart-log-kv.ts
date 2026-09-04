@@ -1068,6 +1068,14 @@ export interface StatusBundle {
   logs: LogEntry[];
   held: HeldJob[];
   warnings: PickupWarning[];
+  /** When the cycle COMPUTED `warnings`, ISO-8601, or null when none are current.
+   *  Not the same question as `lastChecked`, which is the last cron PING — that
+   *  stamp is written before the arm check and before the cycle runs, so it can
+   *  read minutes fresher than the rows underneath it. The late list is the one
+   *  panel where the difference is read as fact ("+9' as of when?"), so it carries
+   *  its own age. Costs nothing: same hash, and the value is already read here to
+   *  decide expiry. */
+  warningsAt: string | null;
   failed: FailedJob[];
   /** Spreadsheet tabs the engine is currently refusing to read. */
   sheetAlarms: SheetAlarm[];
@@ -1089,7 +1097,7 @@ export interface StatusBundle {
  *  90s per open tab, so each command removed here is ~24k a month. */
 export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
   const redis = getRedis();
-  if (!redis) return { state: null, lastChecked: null, deployments: [], logs: [], held: [], warnings: [], failed: [], sheetAlarms: [], unfinished: [], gaps: [], overlaps: [], parsedAt: "", branchRules: {} };
+  if (!redis) return { state: null, lastChecked: null, deployments: [], logs: [], held: [], warnings: [], warningsAt: null, failed: [], sheetAlarms: [], unfinished: [], gaps: [], overlaps: [], parsedAt: "", branchRules: {} };
 
   const pipe = redis.pipeline();
   pipe.get(ARM_KEY);
@@ -1123,14 +1131,17 @@ export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
   // Warnings expire in the READER now, not in Redis. The old 10-minute TTL existed
   // so a disarmed engine's warnings stopped being shown as current; merging keys
   // meant that guarantee had to move here rather than be quietly dropped.
-  const warningsAt = Number(snap[F_WARNINGS_TS] ?? 0);
-  const warnings = warningsAt && Date.now() - warningsAt < WARNINGS_MAX_AGE_MS
-    ? parseList<PickupWarning>(snap[F_WARNINGS])
-    : [];
+  const warningsAtMs = Number(snap[F_WARNINGS_TS] ?? 0);
+  const warningsFresh = !!warningsAtMs && Date.now() - warningsAtMs < WARNINGS_MAX_AGE_MS;
+  const warnings = warningsFresh ? parseList<PickupWarning>(snap[F_WARNINGS]) : [];
+  // Null once the rows are dropped: an age on an empty list would date rows that
+  // are no longer being shown.
+  const warningsAt = warningsFresh ? new Date(warningsAtMs).toISOString() : null;
 
   return {
     state: validState,
     lastChecked,
+    warningsAt,
     deployments,
     logs: logEntries,
     held,
