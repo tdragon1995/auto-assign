@@ -49,6 +49,21 @@ const PICKUP_OVERDUE_MIN = 90;
 // group (see alertLateJobs). Kept well above PICKUP_OVERDUE_MIN so the push is a
 // real "this is badly stuck" signal, not a duplicate of the dashboard warning.
 const LATE_ALERT_MIN = 120;
+// Hour after which the Zalo escalation stops for the day. The dashboard warning is
+// NOT affected — a supervisor still looking at the screen should still see the row;
+// this only stops the push that reaches a phone.
+//
+// 21:30, the same shape of rule as NOTE_RELEASE_CUTOFF_MIN (19:30) in job-filters:
+// the engine runs until 22:00, but nobody is going to dispatch a driver in the last
+// half hour, so a ping then is a notification with no action behind it. Combined
+// with the 07:00 clock floor and the two-hour mark, escalations live in 09:00-21:30.
+const LATE_ALERT_CUTOFF_MIN = 21 * 60 + 30;
+
+/** True while a late pickup may still raise a Zalo push. Exported for
+ *  scripts/late-alert-hours.test.mts. */
+export function isLateAlertHour(now: Date = new Date()): boolean {
+  return vnMinutesSinceMidnight(now) < LATE_ALERT_CUTOFF_MIN;
+}
 
 // Share of the 60s function budget the morning rollover may spend before it
 // stops and leaves the rest for the next cycle. 25s covers ~20 jobs at the
@@ -504,6 +519,12 @@ async function alertLateJobs(
   log: (msg: string, level?: LogLevel) => void,
 ): Promise<void> {
   if (env !== "prod") return;
+  // Checked here, before the loop and therefore before claimLateAlert: the claim is
+  // what makes an alert once-per-job, so consuming it during the quiet hours would
+  // silence the job permanently rather than defer it. A pickup still stuck after the
+  // overnight rollover re-dates it is a fresh job-day and escalates again in the
+  // morning, which is when someone can actually act on it.
+  if (!isLateAlertHour()) return;
   const botToken = process.env.ZALO_ADMIN_BOT_TOKEN;
   const chatId = process.env.ZALO_ADMIN_CHAT_ID;
   if (!botToken || !chatId) return;
