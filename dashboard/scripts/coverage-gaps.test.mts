@@ -22,7 +22,7 @@ const eq = (l: string, got: unknown, want: unknown) =>
 
 const t = (v: string) => ({ hours: +v.split(":")[0], minutes: +v.split(":")[1] });
 const rule = (row: number, driver: string, s: string | null, e: string | null): RuleRow =>
-  ({ row, driver, start: s ? t(s) : null, end: e ? t(e) : null });
+  ({ row, driver, start: s ? t(s) : null, end: e ? t(e) : null, dropoff: "" });
 const gap = (at: string) => ({ customer_id: "C1", pickup_name: "PK Test", at });
 
 // Cover uses the engine's own half-open window: the start minute belongs to the

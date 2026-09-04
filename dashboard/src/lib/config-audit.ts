@@ -381,6 +381,10 @@ export interface RuleRow {
   driver: string;
   start: { hours: number; minutes: number } | null;
   end: { hours: number; minutes: number } | null;
+  /** Destination NAME the rule is scoped to, "" for every destination. Carried
+   *  through to `BranchRule` so the editor can tell a real clash from two rules
+   *  answering for different places. */
+  dropoff: string;
 }
 
 const hhmmToMin = (v: string): number => {

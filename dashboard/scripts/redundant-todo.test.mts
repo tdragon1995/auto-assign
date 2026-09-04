@@ -21,7 +21,7 @@ function ok(label: string, cond: boolean) {
 
 const t = (v: string) => ({ hours: +v.split(":")[0], minutes: +v.split(":")[1] });
 const rule = (s: string | null, e: string | null): RuleRow =>
-  ({ row: 1, driver: "An", start: s ? t(s) : null, end: e ? t(e) : null });
+  ({ row: 1, driver: "An", start: s ? t(s) : null, end: e ? t(e) : null, dropoff: "" });
 
 const allDay = [rule("05:00", "18:00")];
 ok("the live case: 08:00–09:00 inside 05:00–18:00 is covered", coversWindow(allDay, "08:00", "09:00"));

@@ -49,6 +49,17 @@ export interface Line {
   driver: string;
   start: string;
   end: string;
+  /**
+   * The destination NAME this line answers for; "" is every destination.
+   *
+   * Set when the line is created and never edited here. A line being ADDED
+   * carries it into the sheet; a line that already has a row cannot change it,
+   * because the only write that touches an existing row is `completeConfigRow`
+   * and it deliberately names no destination column. So this is what the rule
+   * IS, not a field being offered — but it has to be on the line, because the
+   * clash check cannot be right without it.
+   */
+  dropoff: string;
 }
 
 let newLineSeq = 0;
@@ -56,11 +67,39 @@ export const newLineKey = () => `new:${++newLineSeq}`;
 
 export const asLine = (r: BranchRule): Line => ({
   key: `row:${r.row}`, row: r.row, driver: r.driver, start: r.start, end: r.end,
+  dropoff: r.dropoff ?? "",
 });
+
+/**
+ * Whether two lines are answering for the same destination, and so can collide.
+ *
+ * The engine never compares a branch's rules as one flat list. For a job going
+ * to D it keeps the rows scoped to D if there are any, and otherwise the blank
+ * rows, and only then counts how many are on duty (`mappingsForRoute` +
+ * `preferDestinationRows` in fixed-driver.ts). Two rules can therefore sit on
+ * the same minute quite safely, as long as they answer for different places:
+ *
+ *   • blank vs "Lab Trung Tâm" — for that lab the scoped row REPLACES the blank
+ *     one, and everywhere else the scoped row is dropped. One row either way.
+ *   • "Lab A" vs "Lab B" — neither is ever in the other's candidate set.
+ *   • blank vs blank, or one destination named twice — one set, two rows, CLASH.
+ *
+ * Compared by NAME because that is what the editor holds and writes; the sheet
+ * derives the id from it, so two spellings of one place would read as two
+ * destinations here. Folded for case and spacing to take the edge off that, and
+ * it errs the safe way regardless: a name typed two ways looks like two scopes,
+ * which lets through a pair the offline audit then reports as an overlap —
+ * whereas the opposite mistake would refuse a roster that is actually fine.
+ *
+ * The same rule that audit already applies (`config-audit.ts` skips a pair whose
+ * `dropoff_id` differs), stated here against names.
+ */
+export const sameScope = (a: Line, b: Line) =>
+  a.dropoff.trim().toLowerCase() === b.dropoff.trim().toLowerCase();
 
 /** What a line would WRITE. Two lines with the same signature put the same
  *  content in the sheet, which is what makes "already written" answerable. */
-export const sig = (l: Line) => [l.driver, l.start, l.end].join("\u0000");
+export const sig = (l: Line) => [l.driver, l.start, l.end, l.dropoff].join("\u0000");
 
 /** Minutes a line is on duty, as inclusive blocks. Mirrors the engine: a blank
  *  window is all day, the window is half-open so the start minute belongs to the
@@ -79,10 +118,16 @@ export function blocks(l: Line): Array<[number, number]> {
  * point of editing it as a whole: moving one boundary is only safe in the
  * context of everything beside it, and two rules live at the same minute make
  * the engine refuse the job outright.
+ *
+ * "At the same minute" is not enough on its own — the pair also has to be
+ * answering for the same destination, or the engine never has both in hand at
+ * once. See `sameScope`. Every rule this branch had before the destination
+ * column existed is blank, so on those branches this is the check it always was.
  */
 export function findClash(lines: Line[]): [Line, Line] | null {
   for (let i = 0; i < lines.length; i++) {
     for (let j = i + 1; j < lines.length; j++) {
+      if (!sameScope(lines[i], lines[j])) continue;
       for (const x of blocks(lines[i])) {
         for (const y of blocks(lines[j])) {
           if (Math.max(x[0], y[0]) <= Math.min(x[1], y[1])) return [lines[i], lines[j]];
@@ -148,6 +193,12 @@ export function stretchOptions(g: CoverageGap, rules: BranchRule[]): Stretch[] {
       key: `row:${side.row}`, row: side.row, driver: side.driver,
       start: edge === "start" ? value : from,
       end: edge === "end" ? value : to,
+      // A stretch moves one boundary and nothing else, so the rule keeps the
+      // destination it already answered for. Taken from the branch's own rules
+      // rather than defaulted to blank: defaulting would make a scoped rule look
+      // branch-wide, and the clash check below would then refuse a stretch that
+      // is perfectly safe (or, on the other side, offer one that is not).
+      dropoff: others.find((l) => l.row === side.row)?.dropoff ?? "",
     };
     if (next.start === next.end) return;                     // would never be on duty
     const rest = others.filter((l) => l.row !== side.row);
@@ -221,6 +272,8 @@ export function shrinkOptions(
       key: `row:${side.row}`, row: side.row, driver: side.driver,
       start: edge === "start" ? value : own[0],
       end: edge === "end" ? value : own[1],
+      /** Same as in `stretchOptions`: a boundary move keeps the rule's scope. */
+      dropoff: all.find((l) => l.row === side.row)?.dropoff ?? "",
     };
     if (next.start === next.end) return;                  // on duty for no minute
     const rest = all.filter((l) => l.row !== side.row);

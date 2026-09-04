@@ -870,6 +870,17 @@ export async function writeConfigRows(cells: ConfigCells[]): Promise<number[]> {
   // the row covers every destination, which is the correct and safe default.
   if (cols.dropoff) {
     data.push({ range: range(cols.dropoff), values: cells.map((c) => [c.dropoff]) });
+  } else if (cells.some((c) => c.dropoff.trim())) {
+    // ...but only safe when nothing was ASKING to be scoped. A row meant for one
+    // destination, written without the column that says so, is a row that answers
+    // for every destination — it starts taking jobs going elsewhere, and beside
+    // the branch's existing rule it is a live CLASH the editor's own check
+    // already cleared on the understanding that the two answered for different
+    // places. Refuse instead of writing a rule that means something else.
+    throw new Error(
+      `"${tab.title}" has no ${WRITE_COLS.dropoff} column, so a rule cannot be limited to one destination — ` +
+      `add the column, or write the rule without a destination`,
+    );
   }
 
   await sheets.spreadsheets.values.batchUpdate({

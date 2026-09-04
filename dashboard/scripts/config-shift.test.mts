@@ -41,7 +41,7 @@ const gap = (at: string, g: Partial<CoverageGap> = {}): CoverageGap => ({
 
 /** Is minute m covered by any of these rules? Mirrors the engine via blocks(). */
 const covered = (m: number, rules: BranchRule[]) =>
-  rules.some((r) => blocks({ key: `row:${r.row}`, row: r.row, driver: r.driver, start: r.start, end: r.end })
+  rules.some((r) => blocks({ key: `row:${r.row}`, row: r.row, driver: r.driver, start: r.start, end: r.end, dropoff: "" })
     .some(([a, b]) => m >= a && m <= b));
 
 console.log("\ntime helpers");
@@ -73,9 +73,9 @@ console.log("\nextending the rule BEFORE the hole");
   const applied2 = rules.map((r) => (r.row === 11 ? rule(11, "Hùng", start!.value, "22:00") : r));
   ok("16:15 is covered after stretching after", covered(toMin("16:15"), applied2));
   ok("stretching before does not clash", findClash(applied.map((r) =>
-    ({ key: `row:${r.row}`, row: r.row, driver: r.driver, start: r.start, end: r.end }))) === null);
+    ({ key: `row:${r.row}`, row: r.row, driver: r.driver, start: r.start, end: r.end, dropoff: "" }))) === null);
   ok("stretching after does not clash", findClash(applied2.map((r) =>
-    ({ key: `row:${r.row}`, row: r.row, driver: r.driver, start: r.start, end: r.end }))) === null);
+    ({ key: `row:${r.row}`, row: r.row, driver: r.driver, start: r.start, end: r.end, dropoff: "" }))) === null);
 }
 
 console.log("\na hole that has recurred — the whole run must be swallowed");
@@ -273,6 +273,66 @@ console.log("\nrefusals — the cases that must NOT be offered");
   eq("…in a stable order whichever side is listed first",
     overlapKey({ customer_id: "D014", rules: [{ row: 10 }, { row: 11 }] }),
     overlapKey({ customer_id: "D014", rules: [{ row: 11 }, { row: 10 }] }));
+}
+
+console.log("\ntwo rules on one minute only clash when they answer for the same place");
+{
+  // Mirrors fixed-driver.ts: for a job going to D the engine keeps the rows
+  // scoped to D if there are any and otherwise the blank rows, and only then
+  // counts how many are on duty. So the pair has to be in one candidate set
+  // before the overlap means anything. Getting this wrong is not cosmetic in
+  // either direction: too strict refuses a roster the engine runs happily, too
+  // loose writes a CLASH that stops the branch assigning at all.
+  const line = (row: number, driver: string, start: string, end: string, dropoff = "") =>
+    ({ key: `row:${row}`, row, driver, start, end, dropoff });
+
+  ok("blank vs blank, overlapping — the check as it always was",
+    findClash([line(1, "Nam", "07:00", "16:00"), line(2, "Hùng", "12:00", "19:00")]) !== null);
+
+  ok("the same destination twice, overlapping — still a clash",
+    findClash([
+      line(1, "Nam", "07:00", "16:00", "Lab Trung Tâm"),
+      line(2, "Hùng", "12:00", "19:00", "Lab Trung Tâm"),
+    ]) !== null);
+
+  // The case the copy button creates, and the reason for all of this: a rule
+  // copied from a branch that sends to one lab lands beside a branch-wide rule.
+  ok("blank vs a destination row — the destination row REPLACES it, no clash",
+    findClash([
+      line(1, "Nam", "07:00", "16:00"),
+      line(2, "Hùng", "12:00", "19:00", "Lab Trung Tâm"),
+    ]) === null);
+
+  ok("two different destinations — never in the same candidate set",
+    findClash([
+      line(1, "Nam", "07:00", "16:00", "Lab A"),
+      line(2, "Hùng", "12:00", "19:00", "Lab B"),
+    ]) === null);
+
+  ok("one destination spelled two ways is still one destination",
+    findClash([
+      line(1, "Nam", "07:00", "16:00", "Lab Trung Tâm"),
+      line(2, "Hùng", "12:00", "19:00", "  lab trung tâm "),
+    ]) !== null);
+
+  // Non-overlapping stays non-overlapping whatever the scopes say — the scope
+  // test only ever REMOVES a pair from consideration.
+  ok("a clean handover under one destination is not a clash",
+    findClash([
+      line(1, "Nam", "07:00", "12:00", "Lab Trung Tâm"),
+      line(2, "Hùng", "12:00", "19:00", "Lab Trung Tâm"),
+    ]) === null);
+
+  // A boundary move must not silently widen or narrow what the rule answers for.
+  const scoped: BranchRule[] = [
+    { row: 10, driver: "Nam", start: "07:00", end: "16:00", dropoff: "Lab Trung Tâm" },
+    { row: 11, driver: "Hùng", start: "16:45", end: "22:00", dropoff: "Lab Trung Tâm" },
+  ];
+  const opts = stretchOptions(gap("16:15", {
+    before: { row: 10, driver: "Nam", window: "07:00–16:00" },
+    after: { row: 11, driver: "Hùng", window: "16:45–22:00" },
+  }), scoped);
+  ok("a scoped branch still gets both stretch options", opts.length === 2, JSON.stringify(opts));
 }
 
 console.log(failed === 0 ? "\nAll config-shift assertions passed.\n" : `\n${failed} FAILED\n`);

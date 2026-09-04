@@ -18,6 +18,20 @@ import { timeToMins } from "@/lib/time";
  * is created empty and then completed, so it inherits both sets of guards — the
  * column-by-name lookup that can never touch an id column, and the re-read that
  * refuses if the row moved underneath.
+ *
+ * `dropoff_name` SCOPES the rule, and is per-rule rather than per-branch.
+ *
+ * It used to be, in effect, per-branch: the editor passed the branch's own
+ * destination on every line it added, because a Line had nowhere to hold one of
+ * its own. Copying a rule from a branch that sends to one lab therefore produced
+ * a branch-wide rule here — quietly wider than the thing it was copied from, and
+ * live beside the branch's existing rules rather than beside them. It is the
+ * line's now; blank still means every destination, which is what every rule
+ * written before the column existed says.
+ *
+ * Note what this canNOT do: change the scope of a rule that already exists.
+ * `completeConfigRow` names no destination column, deliberately, and nothing
+ * here adds one. Scope is decided when a rule is created.
  */
 export async function POST(req: NextRequest) {
   const bad = (msg: string, code = 400) => NextResponse.json({ ok: false, error: msg }, { status: code });

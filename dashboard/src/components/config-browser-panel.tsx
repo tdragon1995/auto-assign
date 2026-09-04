@@ -64,7 +64,7 @@ export function searchConfigRows(rows: readonly ConfigRowView[], query: string):
 /** One branch's rows, in the shape the editor takes. Only rows that carry a
  *  sheet row can be edited — every writer addresses them by number. */
 function rulesOf(rows: readonly ConfigRowView[]): BranchRule[] {
-  return rows.map((r) => ({ row: r.row, driver: r.driver, start: r.start, end: r.end }));
+  return rows.map((r) => ({ row: r.row, driver: r.driver, start: r.start, end: r.end, dropoff: r.dropoff }));
 }
 
 export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {

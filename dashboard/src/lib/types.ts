@@ -69,6 +69,22 @@ export interface BranchRule {
   /** "HH:MM", or "" for a rule with no window (covers the whole day). */
   start: string;
   end: string;
+  /**
+   * The destination NAME this rule is scoped to; "" means every destination.
+   *
+   * Carried so the editor can tell a real clash from two rules that only look
+   * like one. Two rows live at the same minute are a CLASH — unless they answer
+   * for different destinations, in which case the engine never puts them in the
+   * same candidate set and both are fine (`mappingsForRoute`). Without this the
+   * editor had to assume every rule was branch-wide, which is the assumption
+   * that makes a copied destination rule look like a collision.
+   *
+   * The NAME, not the id, because the name is what the editor writes and what
+   * the sheet derives the id from. Optional: it rides in the L2 cache blob, so
+   * an entry written before this field existed reads back without it, and
+   * absent must mean the same as blank.
+   */
+  dropoff?: string;
 }
 
 export interface CoverageGap {

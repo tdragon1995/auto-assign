@@ -382,6 +382,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
       const thisRule: RuleRow = {
         row: idx + 2, driver: driverName,
         start: parseTime(row["shift_start"]), end: parseTime(row["shift_end"]),
+        dropoff: dropoffName,
       };
       if (rules) rules.push(thisRule); else rulesByCustomer.set(customer_id, [thisRule]);
       // The same rows the overlap check reads, carrying the sheet row so the
@@ -493,6 +494,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
       ])) {
         branchRules[cid] = (rulesByCustomer.get(cid) ?? []).map((r) => ({
           row: r.row, driver: r.driver, start: hhmm(r.start), end: hhmm(r.end),
+          dropoff: r.dropoff,
         }));
       }
     }

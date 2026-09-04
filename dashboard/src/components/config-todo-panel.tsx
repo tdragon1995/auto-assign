@@ -446,9 +446,11 @@ function DriverPicker({
  * of decision from adjusting it, and there is nothing on the writing side that
  * does it; only a line added and not yet saved can be dropped again.
  */
-/** How a copied line is matched against what the editor already holds. */
-const copyKey = (driver: string, start: string, end: string) =>
-  `${driver.trim()}|${start.trim()}|${end.trim()}`;
+/** How a copied line is matched against what the editor already holds. The
+ *  destination is part of it: the same driver on the same hours answering for a
+ *  different place is a different rule, not a duplicate of this one. */
+const copyKey = (driver: string, start: string, end: string, dropoff: string) =>
+  `${driver.trim()}|${start.trim()}|${end.trim()}|${dropoff.trim().toLowerCase()}`;
 
 /** One source branch, with its rules in the order they run. */
 type CopySource = {
@@ -499,7 +501,7 @@ function CopyFromBranch({
 }: {
   open: boolean;
   onClose: () => void;
-  onCopy: (lines: { driver: string; start: string; end: string }[]) => void;
+  onCopy: (lines: { driver: string; start: string; end: string; dropoff: string }[]) => void;
   /** `copyKey` of every line already in the editor. */
   existingKeys: readonly string[];
   panelId: string;
@@ -559,7 +561,7 @@ function CopyFromBranch({
       return {
         ...g,
         rules,
-        fresh: rules.filter((r) => !existing.has(copyKey(r.driver, r.start, r.end))),
+        fresh: rules.filter((r) => !existing.has(copyKey(r.driver, r.start, r.end, r.dropoff))),
       };
     });
   }, [rows, q, existing]);
@@ -573,7 +575,7 @@ function CopyFromBranch({
 
   const take = (b: CopySource) => {
     if (b.fresh.length === 0) return;
-    onCopy(b.fresh.map((r) => ({ driver: r.driver, start: r.start, end: r.end })));
+    onCopy(b.fresh.map((r) => ({ driver: r.driver, start: r.start, end: r.end, dropoff: r.dropoff })));
     setQ("");
     onClose();
   };
@@ -712,7 +714,7 @@ function CopyFromBranch({
                   </span>
                   <span className="mt-0.5 block space-y-0.5">
                     {b.rules.map((r) => {
-                      const dup = existing.has(copyKey(r.driver, r.start, r.end));
+                      const dup = existing.has(copyKey(r.driver, r.start, r.end, r.dropoff));
                       return (
                         <span key={r.row} className={`block text-[11px] ${dup ? "text-slate-500" : "text-slate-700"}`}>
                           <span className="tabular-nums">
@@ -818,7 +820,11 @@ export function BranchEditor({
 
   const patch = (i: number, v: Partial<Line>) =>
     setLines((ls) => ls.map((l, j) => (j === i ? { ...l, ...v } : l)));
-  const addLine = () => setLines((ls) => [...ls, { key: newLineKey(), driver: "", start: "", end: "" }]);
+  // A line added by hand inherits the BRANCH's destination — which is what every
+  // added line used to get, so this is the unchanged path. Only a copied line
+  // brings a scope of its own.
+  const addLine = () =>
+    setLines((ls) => [...ls, { key: newLineKey(), driver: "", start: "", end: "", dropoff: dropoffName }]);
   const dropLine = (key: string) => setLines((ls) => ls.filter((l) => l.key !== key));
 
   const baseline = new Map(initial.map((l) => [l.key, sig(l)]));
@@ -857,9 +863,14 @@ export function BranchEditor({
 
     const clash = findClash(resolved);
     if (clash) {
+      // The scope is named when there is one, because a clash is now a
+      // statement about a destination: these two rules collide FOR THIS PLACE,
+      // and the same two hours under different destinations would be fine.
+      const where = clash[0].dropoff.trim();
       setErr(
         `${displayDriverCell(clash[0].driver)} (${clash[0].start}–${clash[0].end}) và ` +
-        `${displayDriverCell(clash[1].driver)} (${clash[1].start}–${clash[1].end}) trùng giờ`,
+        `${displayDriverCell(clash[1].driver)} (${clash[1].start}–${clash[1].end}) trùng giờ` +
+        (where ? ` cho điểm giao ${where}` : ""),
       );
       return;
     }
@@ -887,7 +898,7 @@ export function BranchEditor({
           });
         } else {
           const res = await post("/api/config/add-rule", {
-            pickup_name: pickupName, dropoff_name: dropoffName,
+            pickup_name: pickupName, dropoff_name: l.dropoff,
             driver_name: l.driver, shift_start: l.start, shift_end: l.end,
           });
           // Adopt the row the sheet just gave it. This line is an existing row
@@ -944,6 +955,20 @@ export function BranchEditor({
               smart
             </span>
           )}
+          {/* Only this destination. Shown because it changes what the rule
+              MEANS — and because a copied line can arrive carrying a scope the
+              branch's other lines do not have, which would otherwise be
+              invisible until a job went somewhere unexpected. Read-only: the
+              write that fills an existing row names no destination column, so a
+              rule's scope is fixed when it is created. */}
+          {l.dropoff.trim() && (
+            <span
+              className="min-w-0 shrink truncate rounded-full border border-slate-300 bg-slate-100 px-1.5 py-0 text-[10px] font-medium text-slate-700"
+              title={`Chỉ áp dụng cho job giao tới ${l.dropoff.trim()}`}
+            >
+              → {l.dropoff.trim()}
+            </span>
+          )}
           <span className="w-10 shrink-0 text-right font-mono text-[10px] text-slate-600">
             {l.row ? `#${l.row}` : "mới"}
           </span>
@@ -989,7 +1014,7 @@ export function BranchEditor({
       <CopyFromBranch
         open={copyOpen}
         panelId={copyPanelId}
-        existingKeys={lines.map((l) => copyKey(l.driver, l.start, l.end))}
+        existingKeys={lines.map((l) => copyKey(l.driver, l.start, l.end, l.dropoff))}
         onClose={() => { setCopyOpen(false); copyBtnRef.current?.focus(); }}
         onCopy={(copied) => {
           const added: string[] = [];
@@ -998,9 +1023,9 @@ export function BranchEditor({
             // the empty row this editor was opened from, and one line the
             // supervisor has started filling. Both survive, and the clash check
             // on save is what decides whether the result is coherent.
-            const have = new Set(ls.map((l) => copyKey(l.driver, l.start, l.end)));
+            const have = new Set(ls.map((l) => copyKey(l.driver, l.start, l.end, l.dropoff)));
             const fresh = copied
-              .filter((c) => !have.has(copyKey(c.driver, c.start, c.end)))
+              .filter((c) => !have.has(copyKey(c.driver, c.start, c.end, c.dropoff)))
               .map((c) => {
                 const key = newLineKey();
                 added.push(key);
@@ -1069,7 +1094,7 @@ function UnfinishedRow({
           pickupName={u.pickup_name}
           dropoffName={u.dropoff_name}
           rules={rules}
-          extraLine={{ row: u.row, driver: "", start: from ?? "", end: to ?? "" }}
+          extraLine={{ row: u.row, driver: "", start: from ?? "", end: to ?? "", dropoff: u.dropoff_name }}
           drivers={drivers}
           onCancel={() => setOpen(false)}
           onDone={() => { setOpen(false); onSaved(`u:${u.row}`); }}
