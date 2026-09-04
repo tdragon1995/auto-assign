@@ -6,7 +6,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { foldName } from "@/lib/driver-cell";
 import { displayDriverCell } from "@/lib/driver-label";
+import { BranchEditor } from "./config-todo-panel";
 import type { ConfigRowView } from "@/app/api/config/rows/route";
+import type { BranchRule, ConfigDriver } from "@/lib/types";
 
 /**
  * The config table, readable and searchable from the dashboard.
@@ -21,6 +23,18 @@ import type { ConfigRowView } from "@/app/api/config/rows/route";
  * 90-second poll would be paying for it continuously to answer a question asked
  * a few times a day. It loads when the panel is first opened and can be
  * refreshed by hand.
+ *
+ * It reads the SHEET rather than the engine's parsed config, and that is what
+ * makes it useful for admin work rather than only for inspection: the parse
+ * drops every row that names a branch but no driver, which is exactly the set
+ * someone comes here to fix. It also keeps the sheet row, which every write path
+ * addresses rows by.
+ *
+ * Editing opens the SAME BranchEditor the "Cần xử lý" rows use — so a branch
+ * reached by searching for it is edited through the same four guarded routes,
+ * the same clash check and the same re-read-before-write as one reached by the
+ * engine complaining about it. The difference between the two entry points is
+ * only which branches they can reach.
  */
 
 /** How many matches to draw. A blank search matches all 1,700 rows, and drawing
@@ -47,7 +61,13 @@ export function searchConfigRows(rows: readonly ConfigRowView[], query: string):
   });
 }
 
-export function ConfigBrowserPanel() {
+/** One branch's rows, in the shape the editor takes. Only rows that carry a
+ *  sheet row can be edited — every writer addresses them by number. */
+function rulesOf(rows: readonly ConfigRowView[]): BranchRule[] {
+  return rows.map((r) => ({ row: r.row, driver: r.driver, start: r.start, end: r.end }));
+}
+
+export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
   const [rows, setRows] = useState<ConfigRowView[]>([]);
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(false);
@@ -81,6 +101,15 @@ export function ConfigBrowserPanel() {
 
   const matches = useMemo(() => searchConfigRows(rows, q), [rows, q]);
   const shown = matches.slice(0, RENDER_CAP);
+
+  /** The branch currently open in the editor, by customer id. One at a time:
+   *  the editor writes, and two open on the same branch would each hold a
+   *  baseline taken before the other's writes landed. */
+  const [editing, setEditing] = useState<string | null>(null);
+  const editingRows = useMemo(
+    () => (editing ? rows.filter((r) => (r.customer_id || r.pickup) === editing) : []),
+    [rows, editing],
+  );
 
   return (
     <Card className="py-2 h-full flex flex-col border-slate-200">
@@ -118,6 +147,29 @@ export function ConfigBrowserPanel() {
 
         {err && <div role="alert" className="text-[11px] text-red-600">{err}</div>}
 
+        {/* The branch's whole day, in the editor the to-do rows already use.
+            Above the table rather than inline in it: a row expanding inside a
+            scrolling list of 150 pushes everything the reader was looking at
+            off the screen. */}
+        {editing && editingRows.length > 0 && (
+          <div className="rounded-md border border-indigo-200 bg-indigo-50/40 p-1.5">
+            <div className="mb-1 flex flex-wrap items-baseline gap-x-1.5">
+              <span className="text-xs font-semibold text-slate-800">{editingRows[0].pickup || editing}</span>
+              {editingRows[0].customer_id && (
+                <span className="font-mono text-[10px] text-slate-500">{editingRows[0].customer_id}</span>
+              )}
+            </div>
+            <BranchEditor
+              pickupName={editingRows[0].pickup}
+              dropoffName={editingRows[0].dropoff}
+              rules={rulesOf(editingRows)}
+              drivers={drivers}
+              onCancel={() => setEditing(null)}
+              onDone={() => { setEditing(null); void load(); }}
+            />
+          </div>
+        )}
+
         <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-slate-200">
           {shown.length === 0 ? (
             <p className="px-2 py-3 text-xs text-slate-500">
@@ -127,6 +179,7 @@ export function ConfigBrowserPanel() {
             <table className="w-full text-xs">
               <thead className="sticky top-0 bg-slate-50 text-[11px] text-slate-600">
                 <tr>
+                  <th className="px-2 py-1 text-left font-medium sr-only">Sửa</th>
                   <th className="px-2 py-1 text-left font-medium">Điểm lấy</th>
                   <th className="px-2 py-1 text-left font-medium">Tài xế</th>
                   <th className="px-2 py-1 text-left font-medium">Ca</th>
@@ -137,6 +190,16 @@ export function ConfigBrowserPanel() {
               <tbody className="divide-y divide-slate-100">
                 {shown.map((r) => (
                   <tr key={r.row} className="align-top hover:bg-slate-50">
+                    <td className="px-2 py-1">
+                      <Button
+                        size="sm" variant="outline"
+                        className="h-6 px-2 text-[11px] font-normal"
+                        onClick={() => setEditing(r.customer_id || r.pickup)}
+                        disabled={!r.customer_id && !r.pickup}
+                      >
+                        Sửa
+                      </Button>
+                    </td>
                     <td className="px-2 py-1">
                       <span className="text-slate-800">{r.pickup || <span className="text-slate-400">—</span>}</span>
                       {r.customer_id && (

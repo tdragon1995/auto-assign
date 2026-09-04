@@ -702,7 +702,7 @@ export function Dashboard() {
               /* Mounted only while the tab is open, so the ~1,700-row fetch
                  happens when someone asks for it and not before. */
               <div className="h-[72vh] lg:h-full">
-                <ConfigBrowserPanel />
+                <ConfigBrowserPanel drivers={drivers} />
               </div>
             ) : rightTab === "live" ? (
               <div className="h-[72vh] lg:h-full">

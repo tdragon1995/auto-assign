@@ -9,7 +9,7 @@ import { SectionHeader } from "./section-header";
 import type { CoverageGap, UnfinishedConfigRow, ConfigDriver, BranchRule, ShiftOverlap } from "@/lib/types";
 import { DRIVER_SEP, foldName, resolveDriverCell, splitDriverNames } from "@/lib/driver-cell";
 import { displayDriverCell } from "@/lib/driver-label";
-import { coverageLostWithout, overlapKey, shrinkOptions } from "@/lib/config-shift";
+import { coverageLostWithout, overlapKey } from "@/lib/config-shift";
 import { searchConfigRows } from "./config-browser-panel";
 import type { ConfigRowView } from "@/app/api/config/rows/route";
 import { driverDisplayName } from "@/lib/display-names";
@@ -137,11 +137,14 @@ function OverlapRow({
   const [err, setErr] = useState<string | null>(null);
   const [armed, setArmed] = useState<number | null>(null);
   const key = `o:${overlapKey(o)}`;
-  const options = o.rules ? shrinkOptions(o.rules, rules) : [];
 
-  /** Empty one of the two rows. The other fix moves a boundary so both rules
-   *  survive; this one is for the case that boundary cannot express — a row that
-   *  should not be there at all, which is most same-driver pairs. */
+  /** Empty one of the two rows — the whole fix now.
+   *
+   *  The boundary move that used to sit above this is gone. It kept BOTH rules
+   *  by splitting the day between them, which on a same-driver pair — most of
+   *  this list — just turned one redundant row into two adjacent ones covering
+   *  the same stretch. The row that should not exist is what actually wants
+   *  removing. */
   async function clearRow(row: number) {
     setErr(null);
     setBusy(`clear${row}`);
@@ -160,26 +163,6 @@ function OverlapRow({
     } finally {
       setBusy(null);
       setArmed(null);
-    }
-  }
-
-  async function shrink(sh: Stretch) {
-    setErr(null);
-    setBusy(sh.edge + sh.row);
-    try {
-      const res = await fetch("/api/config/stretch-rule", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ row: sh.row, pickup_name: o.pickup_name, edge: sh.edge, value: sh.value }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
-      toast.success(`${displayDriverCell(sh.driver)} giờ trực ${sh.window} — ${o.pickup_name}`);
-      onSaved(key);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(null);
     }
   }
 
@@ -212,33 +195,6 @@ function OverlapRow({
         {displayDriverCell(o.drivers[1])}
         {o.rules && <span className="tabular-nums"> {o.rules[1].window}</span>}
       </div>
-      {!open && options.length > 0 && (
-        <div className="mt-1 flex flex-wrap items-center gap-1">
-          {options.map((sh) => (
-            <Button
-              key={`${sh.row}-${sh.edge}`}
-              size="sm" variant="outline"
-              className="h-6 px-2 text-[11px] font-normal"
-              disabled={busy !== null}
-              onClick={() => shrink(sh)}
-              title={
-                `Dòng #${sh.row} — ${displayDriverCell(sh.driver)}: ghi ${sh.value} vào giờ ` +
-                `${sh.edge === "end" ? "kết thúc" : "bắt đầu"}`
-              }
-            >
-              {/* The window BEFORE and after, not the driver's name. Both rules
-                  are often the same person — as in the pair this was written
-                  for — so the name says nothing about which row is moving,
-                  while the current window names it exactly. "Rút" is the
-                  opposite of the gap direction's "Nới", so the two read as the
-                  same action in two directions. */}
-              {busy === sh.edge + sh.row
-                ? "Đang lưu…"
-                : `Rút ${o.rules?.find((r) => r.row === sh.row)?.window ?? `#${sh.row}`} → ${sh.window}`}
-            </Button>
-          ))}
-        </div>
-      )}
       {/* Removing a row, two clicks. Offered per side and never as one button:
           the two rows are different rules, and which one is the leftover is the
           supervisor's call, not something derivable from the overlap. */}
@@ -248,8 +204,16 @@ function OverlapRow({
             // Removing a row can give up cover the other row never had. The
             // boundary move above has refused to do that since it was written;
             // a delete may legitimately want to, so this says it rather than
-            // blocking it — but it has to say it, or the two sides look
-            // interchangeable when only one of them is safe.
+            // blocking it.
+            //
+            // The SAFE side is the one that carries colour, not the risky one.
+            // That is the opposite of how this shipped, and the live list is why:
+            // 34 overlap rows, and on nearly every one of them exactly one side
+            // gives up cover — so highlighting the risk lit up the whole list and
+            // said nothing. Highlighting the side that costs nothing turns the
+            // same information into the answer: press the green one. The other
+            // still states its consequence, quietly, because choosing it is
+            // sometimes right.
             const lost = coverageLostWithout(rules, r.row);
             return (
             <span key={r.row} className="inline-flex items-center gap-1">
@@ -279,7 +243,9 @@ function OverlapRow({
                 <Button
                   size="sm" variant="outline"
                   className={`h-6 px-2 text-[11px] font-normal ${
-                    lost ? "border-amber-300 text-amber-800" : "text-slate-600"
+                    lost
+                      ? "text-slate-500"
+                      : "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
                   }`}
                   disabled={busy !== null || armed !== null}
                   onClick={() => setArmed(r.row)}
@@ -289,7 +255,7 @@ function OverlapRow({
                   }
                 >
                   Xoá {r.window}
-                  {lost && <span className="ml-1 text-amber-700">· hở {lost}</span>}
+                  {lost && <span className="ml-1 text-slate-400">· hở {lost}</span>}
                 </Button>
               )}
             </span>
@@ -621,7 +587,16 @@ function CopyFromBranch({
   );
 }
 
-function BranchEditor({
+/**
+ * Exported so the config BROWSER can open the same editor.
+ *
+ * The point of exporting it rather than writing a second one: every guard that
+ * makes an edit safe lives in here and in the four routes behind it — names
+ * resolved against the roster, overlapping hours refused, each line's row
+ * re-read and compared before it is written. A separate editor for "the other
+ * way in" would be a second set of those, and they would drift.
+ */
+export function BranchEditor({
   pickupName, dropoffName, rules, extraLine, drivers, onDone, onCancel,
 }: {
   pickupName: string;
