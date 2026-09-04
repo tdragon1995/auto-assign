@@ -93,6 +93,14 @@ function fmtLate(m: number): string {
   return mm ? `+${h}h${mm}'` : `+${h}h`;
 }
 
+/** An ISO stamp as VN wall-clock HH:mm — the form every other time on this tab is
+ *  in, so the header's "tính đến" reads against the rows' own reference times. */
+function hhmmVn(iso: string): string {
+  return new Date(iso).toLocaleTimeString("vi-VN", {
+    hour: "2-digit", minute: "2-digit", timeZone: "Asia/Ho_Chi_Minh",
+  });
+}
+
 /** Reference time the "+N'" delay is counted from: the start of the working day
  *  for pickups whose own anchor fell before it (clock_from), else the
  *  delivery-window start (the "arrive-at" time) for windowed pickups, else the
@@ -308,6 +316,7 @@ export function FailedJobsPanel({
   onNoteManualAssign,
   failed,
   warnings,
+  warningsAt,
   scheduleErrors,
   drivers,
   onAssign,
@@ -326,6 +335,8 @@ export function FailedJobsPanel({
   failed: FailedJob[];
   /** Config lines naming a branch but no driver — waiting on a person. */
   warnings: PickupWarning[];
+  /** When the cycle computed `warnings` (ISO). Shown on the section header. */
+  warningsAt: string | null;
   scheduleErrors: ScheduleErrorRow[];
   drivers: ConfigDriver[];
   onAssign: (job: FailedJob, driverId: string) => void;
@@ -390,7 +401,18 @@ export function FailedJobsPanel({
                 already late. ─────────────────────────────────────────────── */}
             {warnings.length > 0 && (
               <div className="space-y-1.5">
-                <SectionHeader label="Lấy mẫu chậm" count={warnings.length} tone="amber" />
+                {/* The rows below are a SNAPSHOT, recomputed once per cycle and
+                    shown for up to 10 minutes (WARNINGS_MAX_AGE_MS). The header
+                    chip up top is the cron heartbeat — the last PING, written
+                    before the cycle even runs — so it routinely reads minutes
+                    fresher than these rows and invites "why is this still late"
+                    about a pickup already collected. Date them where they are. */}
+                <SectionHeader
+                  label="Lấy mẫu chậm"
+                  count={warnings.length}
+                  tone="amber"
+                  note={warningsAt ? `tính đến ${hhmmVn(warningsAt)}` : undefined}
+                />
                 <div className={listBox}>
                   {warnings.map((w) => {
                     const ref = refTime(w);

@@ -214,7 +214,7 @@ function isInternalOrPlanJob(job: any): boolean {
  * a stop" suppression work at all, so leaving them out silently breaks it. See the
  * lookup-table comment below for how that failed in the field.
  */
-function computePickupWarnings(
+export function computePickupWarnings(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   dayJobs: any[],
   today: string,
@@ -300,7 +300,27 @@ function computePickupWarnings(
     const pickup  = stops.find((s: any) => s.stop_type_id === 1);
     if (!pickup) continue;
 
-    if (pickup.activity_started_ts) continue;
+    // Read all three of the stop's activity timestamps, not just the first.
+    //
+    // MEASURED, so the next reader does not have to re-derive it: across a real
+    // 738-job payload (1,473 stops) the status and the stamps move in lockstep —
+    // status 1 carries nothing, 2 carries started, 3 carries started+arrived, 4
+    // carries all three — and there is NOT ONE stop with arrived or completed set
+    // while started is null. So started strictly precedes the other two, and on
+    // every shape observed so far this condition and `activity_started_ts` alone
+    // decide identically. This is deliberate belt-and-braces, NOT a bug fix: do
+    // not read it as evidence that a job was ever flagged because of it.
+    //
+    // Kept anyway for the reason isBlockingPickupStop already documents — Cartrack
+    // lags a stop's status behind its stamps, and a guard on a terminal state that
+    // reads one field is one field away from missing it. A superset costs nothing
+    // here: all three ride the payload the cycle already fetched.
+    //
+    // Still NOT isStopStarted, but the caution is now narrower than "unverified":
+    // status 2 IS driver-initiated (all 11 status-2 stops in that payload carry
+    // activity_started_ts), so widening would be safe on this evidence. It buys
+    // nothing over the stamps, and a status is the field that lags.
+    if (pickup.activity_started_ts || pickup.activity_arrived_ts || pickup.activity_completed_ts) continue;
     // Guard: skip if stop is already completed or rejected
     if (isCompletedOrRejectedStop(pickup.stop_status_id ?? 0)) continue;
 
