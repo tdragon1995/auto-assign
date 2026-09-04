@@ -7,7 +7,7 @@ import { DIAG_LOCATION_CUSTOMER_IDS } from "./psc-routes-data";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from "./return-trips";
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
 import { cleanupStaleTrips } from "./cleanup-trips";
-import { setCycleSnapshot, recordCoverageGap, claimMorningPass, deferMorningPass, confirmMorningPass, pushRunLog, runDailyMaintenance, claimLateAlert, getAcceptedNotes, type HeldJob } from "./smart-log-kv";
+import { setCycleSnapshot, recordCoverageGap, claimMorningPass, deferMorningPass, confirmMorningPass, pushRunLog, runDailyMaintenance, claimLateAlert, getAcceptedNotes, getResolvedCreateTs, saveResolvedCreateTs, type HeldJob } from "./smart-log-kv";
 import { isValidDriverId, invalidateConfigCache, loadConfigFromSheets } from "./config";
 import { drainSheetAlarms } from "./sheets";
 // Driver labels carry a routing prefix and a payroll code ("F - C - DC100993
@@ -49,6 +49,21 @@ const PICKUP_OVERDUE_MIN = 90;
 // group (see alertLateJobs). Kept well above PICKUP_OVERDUE_MIN so the push is a
 // real "this is badly stuck" signal, not a duplicate of the dashboard warning.
 const LATE_ALERT_MIN = 120;
+// Hour after which the Zalo escalation stops for the day. The dashboard warning is
+// NOT affected — a supervisor still looking at the screen should still see the row;
+// this only stops the push that reaches a phone.
+//
+// 21:30, the same shape of rule as NOTE_RELEASE_CUTOFF_MIN (19:30) in job-filters:
+// the engine runs until 22:00, but nobody is going to dispatch a driver in the last
+// half hour, so a ping then is a notification with no action behind it. Combined
+// with the 07:00 clock floor and the two-hour mark, escalations live in 09:00-21:30.
+const LATE_ALERT_CUTOFF_MIN = 21 * 60 + 30;
+
+/** True while a late pickup may still raise a Zalo push. Exported for
+ *  scripts/late-alert-hours.test.mts. */
+export function isLateAlertHour(now: Date = new Date()): boolean {
+  return vnMinutesSinceMidnight(now) < LATE_ALERT_CUTOFF_MIN;
+}
 
 // Share of the 60s function budget the morning rollover may spend before it
 // stops and leaves the rest for the next cycle. 25s covers ~20 jobs at the
@@ -192,8 +207,10 @@ function hasPlanAttached(job: any): boolean {
  *     and PSC tỉnh legs, never a client sample request.
  * Used by the late-pickup warning.
  */
+// Exported for scripts/late-check-cost-live.mts, so the measurement counts the
+// same jobs production does rather than re-deriving the exemptions.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function isInternalOrPlanJob(job: any): boolean {
+export function isInternalOrPlanJob(job: any): boolean {
   if (hasPlanAttached(job)) return true;
   const labels: string[] = job.labels ?? [];
   if (
@@ -460,17 +477,37 @@ async function dropStaleWindowWarnings(
   );
   if (suspects.length === 0) return warnings;
 
+  // One command for every booking time an earlier cycle already resolved. create_ts
+  // is immutable, so a hit is as good as a fetch and stays good all day — see the
+  // cache's own note in smart-log-kv. Before this, a windowed pickup that stayed late
+  // was re-fetched every few minutes for the rest of the day.
+  const known = await getResolvedCreateTs(today);
+  const fetched: Record<number, string> = {};
+
   const stale = new Set<number>();
   await Promise.all(
     suspects.map(async (w) => {
       try {
-        const { data } = await getJobDetails(w.job_id, env);
-        if (isStaleWindow(w.window_time_from!, today, data?.create_ts)) stale.add(w.job_id);
+        let createTs = known[w.job_id];
+        if (!createTs) {
+          const { data } = await getJobDetails(w.job_id, env);
+          createTs = data?.create_ts;
+          // Only a real value is remembered. Caching a blank would turn one failed
+          // fetch into a permanent "keep the warning" for the rest of the day.
+          if (createTs) fetched[w.job_id] = createTs;
+        }
+        if (isStaleWindow(w.window_time_from!, today, createTs)) stale.add(w.job_id);
       } catch {
         /* keep the warning — see the fail-safe note above */
       }
     }),
   );
+
+  // After the verdicts, never before: a cycle that dies mid-flight leaves the cache
+  // as it was and the next one re-fetches, which is the safe direction.
+  if (Object.keys(fetched).length > 0) {
+    await saveResolvedCreateTs(today, fetched).catch(() => {});
+  }
 
   if (stale.size === 0) return warnings;
   // Console only: this repeats every cycle for the same job all day, which is
@@ -504,6 +541,12 @@ async function alertLateJobs(
   log: (msg: string, level?: LogLevel) => void,
 ): Promise<void> {
   if (env !== "prod") return;
+  // Checked here, before the loop and therefore before claimLateAlert: the claim is
+  // what makes an alert once-per-job, so consuming it during the quiet hours would
+  // silence the job permanently rather than defer it. A pickup still stuck after the
+  // overnight rollover re-dates it is a fresh job-day and escalates again in the
+  // morning, which is when someone can actually act on it.
+  if (!isLateAlertHour()) return;
   const botToken = process.env.ZALO_ADMIN_BOT_TOKEN;
   const chatId = process.env.ZALO_ADMIN_CHAT_ID;
   if (!botToken || !chatId) return;
@@ -934,7 +977,8 @@ function fmtPickupWindow(job: Job): string | undefined {
 }
 
 /** Parse pickup delivery_window time_from ("H:i:sP") to a full Date for dateVn. */
-function parsePickupWindowTime(timeStr: string, dateVn: string): Date | null {
+/** Exported for scripts/late-check-cost-live.mts — see isInternalOrPlanJob. */
+export function parsePickupWindowTime(timeStr: string, dateVn: string): Date | null {
   const m = timeStr.match(/^(\d{1,2}):(\d{2}):\d{2}([+-]\d{2}:?\d{2})$/);
   if (!m) return null;
   const tz = m[3].includes(":") ? m[3] : m[3].replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
@@ -1628,22 +1672,50 @@ export async function autoAssignCycle(
 
   if (jobs.length === 0) {
     log("No unassigned jobs");
-    // Warnings deliberately omitted — this early exit never computed them, and
-    // passing an empty list would blank warnings the last full cycle found.
-    // Sheet alarms ride along even on the quiet exit: a tab being unreadable has
-    // nothing to do with whether there was work to assign, and this is the exit
-    // most cycles take.
+    // THE LATE CHECK RUNS HERE TOO, and this is the exit most cycles take.
+    //
+    // It used to be skipped, on the reasoning that this path never computed the
+    // warnings and writing an empty list would blank the ones the last full cycle
+    // found. The second half of that is right; the first half was the bug. Having
+    // no work to assign says nothing about whether a sample already out with a
+    // driver has gone uncollected — so the late list was refreshed only as a side
+    // effect of there being something else to do, and on a quiet fleet it froze.
+    // What cleared a collected pickup from the panel was the reader's 10-minute
+    // expiry, not anyone noticing. Two jobs were queried as wrongly flagged
+    // (34437573, 34437718) before it was clear the flags were simply stale.
+    //
+    // The lists this needs were fetched a step earlier — they are HOW we know there
+    // is nothing to assign — and nothing between here and the busy exit modifies
+    // them, so the answer is identical to the one that exit would produce.
+    //
+    // Sheet alarms ride along for the same reason they always did: a tab being
+    // unreadable has nothing to do with whether there was work to assign.
     if (!onlyJobIds) {
-      await setCycleSnapshot({
-        held: heldJobs,
-        failed: failedJobs,
-        sheetAlarms: drainSheetAlarms() ?? undefined,
-        unfinished: config?.unfinished ?? [],
-        gaps: config?.gaps ?? [],
-        overlaps: config?.overlaps ?? [],
-        parsedAt: config?.parsedAt ?? undefined,
-        branchRules: config?.branchRules ?? undefined,
-      });
+      const quietWarnings = await dropStaleWindowWarnings(
+        computePickupWarnings([...(assignedJobsToday ?? []), ...(cycleS5 ?? [])], today),
+        today,
+        env,
+      );
+      await Promise.all([
+        setCycleSnapshot({
+          held: heldJobs,
+          failed: failedJobs,
+          warnings: quietWarnings,
+          sheetAlarms: drainSheetAlarms() ?? undefined,
+          unfinished: config?.unfinished ?? [],
+          gaps: config?.gaps ?? [],
+          overlaps: config?.overlaps ?? [],
+          parsedAt: config?.parsedAt ?? undefined,
+          branchRules: config?.branchRules ?? undefined,
+        }),
+        // The escalation belongs on this path too, or it stays half-broken in the
+        // same shape: a pickup crossing two hours during a quiet spell would wait
+        // for unrelated work before anyone was told. claimLateAlert still makes it
+        // once-per-job, and isLateAlertHour keeps it out of the night.
+        alertLateJobs(quietWarnings, env, log).catch((e) =>
+          log(`Late-alert push failed: ${e}`, "WARN"),
+        ),
+      ]);
     }
     return logs;
   }
