@@ -208,7 +208,9 @@ function hasPlanAttached(job: any): boolean {
  * Used by the late-pickup warning.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function isInternalOrPlanJob(job: any): boolean {
+// Exported for scripts/late-check-cost-live.mts, so the measurement counts the
+// same jobs production does rather than re-deriving the exemptions.
+export function isInternalOrPlanJob(job: any): boolean {
   if (hasPlanAttached(job)) return true;
   const labels: string[] = job.labels ?? [];
   if (
@@ -955,7 +957,8 @@ function fmtPickupWindow(job: Job): string | undefined {
 }
 
 /** Parse pickup delivery_window time_from ("H:i:sP") to a full Date for dateVn. */
-function parsePickupWindowTime(timeStr: string, dateVn: string): Date | null {
+/** Exported for scripts/late-check-cost-live.mts — see isInternalOrPlanJob. */
+export function parsePickupWindowTime(timeStr: string, dateVn: string): Date | null {
   const m = timeStr.match(/^(\d{1,2}):(\d{2}):\d{2}([+-]\d{2}:?\d{2})$/);
   if (!m) return null;
   const tz = m[3].includes(":") ? m[3] : m[3].replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
