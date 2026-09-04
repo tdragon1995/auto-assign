@@ -16,6 +16,7 @@ import { driverDisplayName } from "@/lib/display-names";
 import { DriverName } from "./driver-name";
 import {
   type Line, type Stretch, toMin, newLineKey, asLine, sig, findClash, stretchOptions,
+  applyCopiedLines, copyKey,
 } from "@/lib/config-shift";
 
 /**
@@ -446,12 +447,6 @@ function DriverPicker({
  * of decision from adjusting it, and there is nothing on the writing side that
  * does it; only a line added and not yet saved can be dropped again.
  */
-/** How a copied line is matched against what the editor already holds. The
- *  destination is part of it: the same driver on the same hours answering for a
- *  different place is a different rule, not a duplicate of this one. */
-const copyKey = (driver: string, start: string, end: string, dropoff: string) =>
-  `${driver.trim()}|${start.trim()}|${end.trim()}|${dropoff.trim().toLowerCase()}`;
-
 /** One source branch, with its rules in the order they run. */
 type CopySource = {
   pickup: string;
@@ -849,7 +844,17 @@ export function BranchEditor({
     const resolved: Line[] = [];
     for (const l of lines) {
       const r = resolveDriverCell(l.driver, drivers);
-      if ("error" in r) { setErr(r.error); return; }
+      if ("error" in r) {
+        // Which line, not just what is wrong with it. A branch being set up can
+        // hold several, and the one still empty is usually a sheet row the
+        // editor was opened from rather than anything on screen the supervisor
+        // put there — so "Chưa chọn tài xế" on its own sent them looking at the
+        // wrong row.
+        const at = l.row ? `Dòng #${l.row}` : "Dòng mới";
+        const when = l.start && l.end ? ` (${l.start}–${l.end})` : "";
+        setErr(lines.length > 1 ? `${at}${when}: ${r.error}` : r.error);
+        return;
+      }
       if (lines.length > 1 && (!l.start || !l.end)) {
         setErr("Nhiều ca thì mỗi ca cần khung giờ riêng");
         return;
@@ -1017,28 +1022,17 @@ export function BranchEditor({
         existingKeys={lines.map((l) => copyKey(l.driver, l.start, l.end, l.dropoff))}
         onClose={() => { setCopyOpen(false); copyBtnRef.current?.focus(); }}
         onCopy={(copied) => {
-          const added: string[] = [];
+          let touched: string[] = [];
           setLines((ls) => {
-            // Appended, never replacing: a branch being set up may already have
-            // the empty row this editor was opened from, and one line the
-            // supervisor has started filling. Both survive, and the clash check
-            // on save is what decides whether the result is coherent.
-            const have = new Set(ls.map((l) => copyKey(l.driver, l.start, l.end, l.dropoff)));
-            const fresh = copied
-              .filter((c) => !have.has(copyKey(c.driver, c.start, c.end, c.dropoff)))
-              .map((c) => {
-                const key = newLineKey();
-                added.push(key);
-                return { key, ...c };
-              });
-            // A blank line the supervisor has not touched is a placeholder, not
-            // a rule — drop it rather than saving an empty row beside the copy.
-            const kept = ls.filter((l) => l.driver.trim() || l.start.trim() || l.end.trim() || l.row);
-            return [...kept, ...fresh];
+            const next = applyCopiedLines(ls, copied);
+            touched = next.touched;
+            return next.lines;
           });
-          setJustAdded(new Set(added));
+          setJustAdded(new Set(touched));
           toast.success(
-            added.length ? `Đã copy ${added.length} ca vào form — bấm Lưu để ghi` : "Các ca này đã có trong form",
+            touched.length
+              ? `Đã copy ${touched.length} ca vào form — bấm Lưu để ghi`
+              : "Các ca này đã có trong form",
           );
         }}
       />

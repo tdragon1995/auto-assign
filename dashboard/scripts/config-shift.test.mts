@@ -17,8 +17,8 @@
  *   npx tsx scripts/config-shift.test.mts
  */
 import type { BranchRule, CoverageGap } from "../src/lib/types";
-const { stretchOptions, shrinkOptions, overlapKey, coverageLostWithout, findClash, blocks, toMin, fromMin } =
-  await import("../src/lib/config-shift");
+const { stretchOptions, shrinkOptions, overlapKey, coverageLostWithout, findClash, blocks, toMin, fromMin,
+  applyCopiedLines } = await import("../src/lib/config-shift");
 
 let failed = 0;
 function ok(label: string, cond: boolean, detail?: string) {
@@ -333,6 +333,98 @@ console.log("\ntwo rules on one minute only clash when they answer for the same 
     after: { row: 11, driver: "Hùng", window: "16:45–22:00" },
   }), scoped);
   ok("a scoped branch still gets both stretch options", opts.length === 2, JSON.stringify(opts));
+}
+
+console.log("\na copy fills the empty sheet row it was opened from");
+{
+  const line = (key: string, driver: string, start: string, end: string, dropoff = "", row?: number) =>
+    ({ key, row, driver, start, end, dropoff });
+
+  // The live report: branch "3PL - TOT3 - Q5 → BRA - D001" sat in the to-do list
+  // as row #1741 — a window, no driver. Copying a day onto it used to append
+  // beside that row, leaving it empty; the save then refused on it and the copy
+  // could not be written at all.
+  {
+    const before = [line("row:1741", "", "13:00", "14:00", "BRA - D001", 1741)];
+    const { lines, touched } = applyCopiedLines(before, [
+      { driver: "Nguyễn Hoàng Vũ", start: "08:15", end: "17:15", dropoff: "BRA - D001" },
+    ]);
+    eq("the empty row is used, not left beside a new one", lines.length, 1);
+    eq("it keeps its sheet row, so the save UPDATES it", lines[0].row, 1741);
+    eq("the driver comes from the copy", lines[0].driver, "Nguyễn Hoàng Vũ");
+    eq("so do the hours — the stale window would have clashed", [lines[0].start, lines[0].end],
+      ["08:15", "17:15"]);
+    eq("the filled row is highlighted like an added one", touched, ["row:1741"]);
+    ok("and the result saves: nothing is left without a driver",
+      lines.every((l) => l.driver.trim()) && findClash(lines) === null);
+  }
+
+  // More rules than empty rows: the rows are used up first, the rest are new.
+  {
+    const before = [line("row:9", "", "13:00", "14:00", "", 9)];
+    const { lines } = applyCopiedLines(before, [
+      { driver: "A", start: "05:00", end: "13:25", dropoff: "" },
+      { driver: "B", start: "13:25", end: "19:00", dropoff: "" },
+    ]);
+    eq("one adopted, one appended", lines.map((l) => [l.driver, l.row ?? null]),
+      [["A", 9], ["B", null]]);
+  }
+
+  // An adopted row keeps the destination the SHEET has for it: completeConfigRow
+  // writes no destination column, so taking the copy's would be the form
+  // claiming a write it cannot make.
+  {
+    const before = [line("row:9", "", "13:00", "14:00", "BRA - D001", 9)];
+    const { lines } = applyCopiedLines(before, [
+      { driver: "A", start: "05:00", end: "13:25", dropoff: "Lab Khác" },
+    ]);
+    eq("the row's own scope survives the copy", lines[0].dropoff, "BRA - D001");
+  }
+  // A rule genuinely being created is free to carry the copied scope.
+  {
+    const { lines } = applyCopiedLines([], [
+      { driver: "A", start: "05:00", end: "13:25", dropoff: "Lab Khác" },
+    ]);
+    eq("an appended rule carries the copied scope", lines[0].dropoff, "Lab Khác");
+  }
+
+  // A line already naming a driver is a rule, or work in progress. Never free space.
+  {
+    const before = [line("row:9", "Nam", "05:00", "13:25", "", 9)];
+    const { lines } = applyCopiedLines(before, [
+      { driver: "B", start: "13:25", end: "19:00", dropoff: "" },
+    ]);
+    eq("an existing rule is untouched and the copy is appended",
+      lines.map((l) => l.driver), ["Nam", "B"]);
+  }
+  {
+    const before = [line("new:x", "Nam", "", "")];
+    const { lines } = applyCopiedLines(before, [
+      { driver: "B", start: "13:25", end: "19:00", dropoff: "" },
+    ]);
+    eq("a half-filled line is work in progress, not a slot",
+      lines.map((l) => l.driver), ["Nam", "B"]);
+  }
+
+  // The untouched placeholder "+ Thêm ca" leaves behind still goes.
+  {
+    const before = [line("new:y", "", "", "")];
+    const { lines } = applyCopiedLines(before, [
+      { driver: "B", start: "13:25", end: "19:00", dropoff: "" },
+    ]);
+    eq("a blank placeholder with no row is dropped", lines.map((l) => l.driver), ["B"]);
+  }
+
+  // Same rule already present: nothing added, and nothing highlighted, so the
+  // toast and the picker's count agree.
+  {
+    const before = [line("row:9", "Nam", "05:00", "13:25", "", 9)];
+    const { lines, touched } = applyCopiedLines(before, [
+      { driver: "Nam", start: "05:00", end: "13:25", dropoff: "" },
+    ]);
+    eq("a duplicate is not added twice", lines.length, 1);
+    eq("…and nothing is reported as copied", touched, []);
+  }
 }
 
 console.log(failed === 0 ? "\nAll config-shift assertions passed.\n" : `\n${failed} FAILED\n`);

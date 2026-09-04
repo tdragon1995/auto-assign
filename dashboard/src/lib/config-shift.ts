@@ -329,3 +329,97 @@ export function coverageLostWithout(rules: BranchRule[], row: number): string | 
   // every real case, and a spanning label still names the right thing to look at.
   return `${fromMin(lost[0] - 1)}–${fromMin(lost[lost.length - 1])}`;
 }
+
+/**
+ * How a copied rule is matched against what the editor already holds.
+ *
+ * Shared with the picker rather than written twice: the picker uses it to say
+ * how many rules a branch would actually ADD, and `applyCopiedLines` uses it to
+ * decide which ones to add. Two spellings of that question would eventually
+ * disagree, and the disagreement would show as a button promising a number the
+ * copy then did not deliver — the exact defect the count was added to fix.
+ *
+ * The destination is part of the identity: the same driver on the same hours
+ * answering for a different place is a different rule, not a duplicate. Folded
+ * for case, like `sameScope`, so the two agree about what one place is.
+ */
+export const copyKey = (driver: string, start: string, end: string, dropoff: string) =>
+  `${driver.trim()}|${start.trim()}|${end.trim()}|${dropoff.trim().toLowerCase()}`;
+
+/** A rule as the copy picker hands it over: what to write, with no row yet. */
+export interface CopiedLine {
+  driver: string;
+  start: string;
+  end: string;
+  dropoff: string;
+}
+
+/**
+ * Fold copied rules into the branch being edited, filling EMPTY SHEET ROWS first.
+ *
+ * The copy used to append, always, beside whatever the editor already held. That
+ * is wrong in the one place the button matters most. The editor is usually
+ * opened FROM an unfinished row — a row this system created, carrying a window
+ * and no driver, which is the whole reason the branch is in the to-do list — and
+ * appending beside it leaves that row exactly as it was. The save then refuses
+ * on it ("Chưa chọn tài xế") and the copy cannot be written at all; name a
+ * driver on it by hand and its old window usually sits inside the copied one, so
+ * it becomes a CLASH instead. Either way the button did not work on the row it
+ * was built for.
+ *
+ * An empty row is not something to preserve. It is reserved capacity — the sheet
+ * is finite, and `writeConfigRows` refuses once the table is full — so the first
+ * copied rule takes it over, driver and hours together, and only what is left
+ * over is appended as new. The row number rides along, which is what makes the
+ * save an UPDATE of that row rather than an append beside it, so the to-do row
+ * that opened the editor is the row that gets answered.
+ *
+ * What an adopted row does NOT take from the copy is its DESTINATION. The write
+ * that fills an existing row (`completeConfigRow`) names no destination column,
+ * deliberately, so the row keeps the scope the sheet already has for it —
+ * showing the copied one would be the form claiming a write it cannot make, and
+ * would put the clash check on the wrong footing too. A rule appended as new is
+ * free to carry the copied scope, because that one is genuinely being created.
+ *
+ * Lines that already name a driver are never touched: they are real rules, and
+ * one the supervisor has half-filled is work in progress, not free space.
+ */
+export function applyCopiedLines(
+  lines: readonly Line[],
+  copied: readonly CopiedLine[],
+): { lines: Line[]; touched: string[] } {
+  // A blank line nobody has touched is a placeholder, not a rule — drop it
+  // rather than saving an empty row beside the copy. One with a sheet row stays:
+  // it exists in the sheet whether or not this editor keeps it on screen.
+  const kept = lines.filter((l) => l.driver.trim() || l.start.trim() || l.end.trim() || l.row);
+
+  // Deduped against the rules that are actually THERE. A slot waiting to be
+  // filled names no driver, so it can never match a copied rule anyway.
+  const have = new Set(
+    kept.filter((l) => l.driver.trim()).map((l) => copyKey(l.driver, l.start, l.end, l.dropoff)),
+  );
+  const incoming = copied.filter((c) => !have.has(copyKey(c.driver, c.start, c.end, c.dropoff)));
+
+  const slots = kept.filter((l) => l.row && !l.driver.trim()).map((l) => l.key);
+  const adopt = new Map<string, CopiedLine>();
+  let next = 0;
+  for (const c of incoming) {
+    if (next < slots.length) adopt.set(slots[next++], c);
+  }
+  const appended = incoming.slice(next);
+
+  const touched: string[] = [];
+  const out = kept.map((l) => {
+    const c = adopt.get(l.key);
+    if (!c) return l;
+    touched.push(l.key);
+    // Scope stays the ROW's — see above. Everything else comes from the copy.
+    return { ...l, driver: c.driver, start: c.start, end: c.end };
+  });
+  for (const c of appended) {
+    const key = newLineKey();
+    touched.push(key);
+    out.push({ key, ...c });
+  }
+  return { lines: out, touched };
+}
