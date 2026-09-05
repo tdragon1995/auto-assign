@@ -136,6 +136,13 @@ through the same `POST /api/nghi-phep` a driver's own form uses — so
   upstream work than one. `days` is capped at 14: the filtering is free, the
   RESPONSE is not. Week starts Monday (`weekStartOf`, `scripts/leave-week.test.mts`).
 
+  The substitute is PICKED, never typed: `DriverCombobox` (shared with the
+  config editor's driver cell, `max={1}` here) filters the roster
+  accent-insensitively and can only yield a real sheet label. It replaced an
+  input bound to a `<datalist>`, which matched the raw code-prefixed string —
+  so "quynh" found nothing and whatever was left in the box got written to the
+  sheet, where the xlookup then failed to resolve it.
+
   Both post-write refreshes pass `fresh=1` (`loadLeaveStatus(true)`). Not for
   the server cache — the write path already cleared that — but because
   `loadLeaveStatus` skips any non-fresh reload inside a 5-minute window, which

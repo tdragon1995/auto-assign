@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, Ban, Check, ChevronLeft, ChevronRight, Palmtree } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,7 @@ import {
   type Employment,
 } from "@/lib/driver-label";
 import { DriverName } from "./driver-name";
+import { DriverCombobox } from "./driver-combobox";
 
 const TYPE_LABEL: Record<string, string> = {
   "Nghỉ nguyên buổi": "Cả ngày",
@@ -132,20 +133,6 @@ function TimeSelect({
         </option>
       ))}
     </select>
-  );
-}
-
-const SUB_NAMES_LIST_ID = "leave-sub-names";
-
-/** The driver-name options a sub input autocompletes against. Rendered once per
- *  place the editor can appear — two <datalist>s cannot share an id. */
-function SubNamesDatalist({ id, drivers }: { id: string; drivers: ConfigDriver[] }) {
-  return (
-    <datalist id={id}>
-      {drivers.map((d) => (
-        <option key={d.driver_id} value={d.name} />
-      ))}
-    </datalist>
   );
 }
 
@@ -294,19 +281,19 @@ function DeleteRowButton({
  */
 function SubEditor({
   row,
-  driverNames,
+  drivers,
   onSave,
   onCancel,
-  listId = SUB_NAMES_LIST_ID,
 }: {
   row: LeaveRowView;
-  driverNames: Set<string>;
+  drivers: ConfigDriver[];
   onSave: (subs: { name: string; from: string | null; to: string | null }[]) => Promise<boolean>;
   onCancel: () => void;
-  /** Which <datalist> of driver names to bind the input to. The editor renders
-   *  in two places now, and each owns its own list. */
-  listId?: string;
 }) {
+  // Still checked, even though the picker can only produce a roster name: this
+  // is the last thing between a typo and a substitute the sheet's xlookup will
+  // never resolve, and it costs one Set.
+  const driverNames = new Set(drivers.map((d) => d.name));
   // Leave window bounds (for prefilling a split) — "06:30–15:00" → ["06:30","15:00"]
   const bounds = row.timeLabel ? row.timeLabel.split("–") : null;
   const [blocks, setBlocks] = useState<SubBlock[]>([{ name: "", from: "", to: "" }]);
@@ -365,13 +352,18 @@ function SubEditor({
     <div className="mt-1 space-y-1 rounded border border-slate-300 bg-white p-1.5">
       {blocks.map((b, i) => (
         <div key={i} className="flex flex-wrap items-center gap-1">
-          <input
-            type="text"
-            list={listId}
-            placeholder="Tên người thay…"
-            value={b.name}
-            onChange={(e) => patch(i, { name: e.target.value })}
-            className="min-w-[140px] flex-1 rounded border border-slate-300 px-1.5 py-1 text-xs"
+          {/* The same control the config editor uses, minus the several-names
+              part: a substitute is one person for one window, so the field
+              stands down once someone is chosen and the ✕ is how you change
+              your mind. */}
+          <DriverCombobox
+            names={b.name ? [b.name] : []}
+            onChange={(names) => patch(i, { name: names[0] ?? "" })}
+            drivers={drivers}
+            max={1}
+            placeholder="Tìm người thay…"
+            ariaLabel="Chọn người thay"
+            className="flex min-w-[140px] flex-1 flex-wrap items-center gap-1 rounded border border-slate-300 bg-white px-1 py-0.5 focus-within:ring-2 focus-within:ring-indigo-400/50"
           />
           <TimeSelect label="Từ giờ" value={b.from} onChange={(v) => patch(i, { from: v })} />
           <span className="text-slate-400 text-[11px]">→</span>
@@ -490,12 +482,12 @@ function makeRestoreRow(onRefresh: () => void): DeleteRowFn {
  */
 function DriverCard({
   g,
-  driverNames,
+  drivers,
   onFill,
   onDelete,
 }: {
   g: DriverGroup;
-  driverNames: Set<string>;
+  drivers: ConfigDriver[];
   onFill: FillSubsFn;
   onDelete: DeleteRowFn;
 }) {
@@ -563,7 +555,7 @@ function DriverCard({
             {editRow === i && (
               <SubEditor
                 row={r}
-                driverNames={driverNames}
+                drivers={drivers}
                 onCancel={() => setEditRow(null)}
                 onSave={(subs) =>
                   onFill(
@@ -629,16 +621,14 @@ function uncoveredWindows(groups: DriverGroup[]): UncoveredRow[] {
 
 function UncoveredRowItem({
   item,
-  driverNames,
+  drivers,
   onFill,
   onDelete,
-  listId,
 }: {
   item: UncoveredRow;
-  driverNames: Set<string>;
+  drivers: ConfigDriver[];
   onFill: FillSubsFn;
   onDelete: DeleteRowFn;
-  listId: string;
 }) {
   const [editing, setEditing] = useState(false);
   return (
@@ -681,8 +671,7 @@ function UncoveredRowItem({
       {editing && (
         <SubEditor
           row={item.row}
-          driverNames={driverNames}
-          listId={listId}
+          drivers={drivers}
           onSave={(subs) =>
             onFill(
               { driver_id: item.driver_id, leave_from: item.row.leave_from, timeLabel: item.row.timeLabel },
@@ -718,28 +707,22 @@ export function UncoveredLeaveSection({
   drivers: ConfigDriver[];
   onRefresh: () => void;
 }) {
-  // Per-instance: the substitute editor also renders inside the panel below, and
-  // two <datalist>s cannot share an id.
-  const listId = useId();
   const items = uncoveredWindows(groupByDriver(entries));
   const fillSubs = makeFillSubs(onRefresh);
   const deleteRow = makeDeleteRow(onRefresh);
-  const driverNames = new Set(drivers.map((d) => d.name));
   if (items.length === 0) return null;
 
   return (
     <div className="space-y-1.5">
-      <SubNamesDatalist id={listId} drivers={drivers} />
       <SectionHeader label={label} count={items.length} tone="amber" />
       <div className="divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200">
         {items.map((item) => (
           <UncoveredRowItem
             key={`${item.driver_id}-${item.row.leave_from}-${item.row.timeLabel ?? "full"}`}
             item={item}
-            driverNames={driverNames}
+            drivers={drivers}
             onFill={fillSubs}
             onDelete={deleteRow}
-            listId={listId}
           />
         ))}
       </div>
@@ -985,14 +968,14 @@ export function mergePeople(groups: DriverGroup[]): PersonCell[] {
  */
 function WeekSection({
   today,
-  driverNames,
+  drivers,
   onFill,
   onDelete,
   registerReload,
 }: {
   /** Saigon's today: the default week, and the day marked as current. */
   today: string;
-  driverNames: Set<string>;
+  drivers: ConfigDriver[];
   onFill: FillSubsFn;
   onDelete: DeleteRowFn;
   /** Hands the parent a way to re-read the shown week after a write, so a
@@ -1276,7 +1259,7 @@ function WeekSection({
                   <DriverCard
                     key={g.driver_id}
                     g={g}
-                    driverNames={driverNames}
+                    drivers={drivers}
                     onFill={onFill}
                     onDelete={onDelete}
                   />
@@ -1331,7 +1314,6 @@ export function LeaveStatusPanel({
 }) {
   const [open, setOpen] = useState(false);
   const noData = today.length === 0 && tomorrow.length === 0;
-  const driverNames = new Set(drivers.map((d) => d.name));
   const todayGroups = groupByDriver(today);
   const tomorrowGroups = groupByDriver(tomorrow);
   const totalUncovered = uncoveredCount(todayGroups) + uncoveredCount(tomorrowGroups);
@@ -1381,8 +1363,6 @@ export function LeaveStatusPanel({
   return (
     <Card className="py-2 shrink-0 border-slate-200">
       <CardContent className="px-3">
-        {/* Shared datalist for every sub picker in the panel */}
-        <SubNamesDatalist id={SUB_NAMES_LIST_ID} drivers={drivers} />
 
         {/* Collapsed header: counts + uncovered flag, click to expand */}
         <button
@@ -1544,7 +1524,7 @@ export function LeaveStatusPanel({
                 same rows twice. */}
             <WeekSection
               today={vnDate()}
-              driverNames={driverNames}
+              drivers={drivers}
               onFill={otherDayFill}
               onDelete={otherDayDelete}
               registerReload={registerOtherDayReload}

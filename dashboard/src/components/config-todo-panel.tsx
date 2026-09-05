@@ -7,13 +7,12 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { SectionHeader } from "./section-header";
 import type { CoverageGap, UnfinishedConfigRow, ConfigDriver, BranchRule, ShiftOverlap } from "@/lib/types";
-import { DRIVER_SEP, foldName, resolveDriverCell, splitDriverNames } from "@/lib/driver-cell";
+import { DRIVER_SEP, resolveDriverCell, splitDriverNames } from "@/lib/driver-cell";
 import { displayDriverCell } from "@/lib/driver-label";
 import { coverageLostWithout, overlapKey } from "@/lib/config-shift";
 import { searchConfigRows } from "./config-browser-panel";
 import type { ConfigRowView } from "@/app/api/config/rows/route";
-import { driverDisplayName } from "@/lib/display-names";
-import { DriverName } from "./driver-name";
+import { DriverCombobox } from "./driver-combobox";
 import {
   type Line, type Stretch, toMin, newLineKey, asLine, sig, findClash, stretchOptions,
   applyCopiedLines, copyKey,
@@ -96,21 +95,6 @@ function TimeSelect({
 const LIST_ID = "config-todo-list";
 
 
-/**
- * The driver cell: one name, or several for a smart row.
- *
- * Picked, not typed. The cell's multi-driver form is a comma-separated list, and
- * the editor used to make the supervisor type that punctuation themselves — with
- * a datalist that matches the WHOLE field, so it went dead the moment a comma
- * appeared and stopped helping for exactly the names that needed it most: the
- * second and third driver, whose long code-prefixed spellings nobody wants to
- * key by hand. The separator was also the only thing distinguishing a fixed rule
- * from a smart one, which meant a stray comma silently changed what the row DID.
- *
- * So the list is the control now. Names go in as chips, the search filters the
- * roster accent-insensitively, and the comma is an implementation detail of the
- * sheet again — assembled on the way out, never typed.
- */
 /**
  * Two fixed rules on one branch that are both on duty at the same minute.
  *
@@ -279,6 +263,21 @@ function OverlapRow({
   );
 }
 
+/**
+ * The driver cell: one name, or several for a smart row.
+ *
+ * Picked, not typed. The cell's multi-driver form is a comma-separated list, and
+ * the editor used to make the supervisor type that punctuation themselves — with
+ * a datalist that matches the WHOLE field, so it went dead the moment a comma
+ * appeared and stopped helping for exactly the names that needed it most: the
+ * second and third driver, whose long code-prefixed spellings nobody wants to
+ * key by hand. The separator was also the only thing distinguishing a fixed rule
+ * from a smart one, which meant a stray comma silently changed what the row DID.
+ *
+ * So the list is the control now. Names go in as chips, the search filters the
+ * roster accent-insensitively, and the comma is an implementation detail of the
+ * sheet again — assembled on the way out, never typed.
+ */
 function DriverPicker({
   value, onChange, drivers,
 }: {
@@ -286,147 +285,16 @@ function DriverPicker({
   onChange: (v: string) => void;
   drivers: ConfigDriver[];
 }) {
-  const names = splitDriverNames(value);
-  const [q, setQ] = useState("");
-  const [open, setOpen] = useState(false);
-  const [active, setActive] = useState(0);
-  /** The menu is positioned FIXED off this box. It has to escape the panel's
-   *  own `overflow-y-auto`, which would otherwise clip it to a few pixels. */
-  const boxRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(null);
-  const listId = useId();
-
-  const taken = new Set(names);
-  const matches = drivers.filter(
-    (d) => !taken.has(d.name) && (!q.trim() || foldName(d.name).includes(foldName(q.trim()))),
-  );
-
-  const place = useCallback(() => {
-    const r = boxRef.current?.getBoundingClientRect();
-    // Bounded, not simply the field's width: the field stretches to hold several
-    // long code-prefixed chips, and a menu that wide leaves each name marooned
-    // against a mostly-empty row.
-    if (r) setRect({ left: r.left, top: r.bottom + 2, width: Math.min(Math.max(r.width, 240), 420) });
-  }, []);
-
-  /** Opening MEASURES first, in the handler, then shows. Placing from inside the
-   *  effect instead would set state during the render the effect follows, which
-   *  is a cascading render — and would also flash the menu at a stale position. */
-  const openMenu = useCallback(() => { place(); setOpen(true); }, [place]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (!boxRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    // `true` so a scroll inside the panel repositions too, not just the window.
-    window.addEventListener("scroll", place, true);
-    window.addEventListener("resize", place);
-    document.addEventListener("mousedown", onDoc);
-    return () => {
-      window.removeEventListener("scroll", place, true);
-      window.removeEventListener("resize", place);
-      document.removeEventListener("mousedown", onDoc);
-    };
-  }, [open, place]);
-
-  const add = (name: string) => {
-    onChange([...names, name].join(DRIVER_SEP));
-    setQ(""); setActive(0);
-    inputRef.current?.focus();
-    // The field grows by a chip, so the menu hanging off its bottom edge moves.
-    requestAnimationFrame(place);
-  };
-  const remove = (name: string) => onChange(names.filter((n) => n !== name).join(DRIVER_SEP));
-
-  function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-      e.preventDefault();
-      if (!open) { openMenu(); return; }
-      setActive((i) => {
-        const n = matches.length;
-        return n === 0 ? 0 : (e.key === "ArrowDown" ? i + 1 : i - 1 + n) % n;
-      });
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      if (open && matches[active]) add(matches[active].name);
-    } else if (e.key === "Escape") {
-      setOpen(false);
-    } else if (e.key === "Backspace" && q === "" && names.length > 0) {
-      // The usual chip-field affordance: rubbing out backwards takes the last
-      // name off rather than doing nothing.
-      remove(names[names.length - 1]);
-    }
-  }
-
+  // The control itself is shared with the leave panel's substitute picker
+  // (`DriverCombobox`); all that lives here is the sheet's own storage shape —
+  // one comma-separated cell — assembled on the way out and taken apart on the
+  // way in, so the separator stays an implementation detail of the sheet.
   return (
-    <div
-      ref={boxRef}
-      className="flex min-w-[200px] flex-1 flex-wrap items-center gap-1 rounded border border-slate-300 bg-white px-1 py-0.5 focus-within:ring-2 focus-within:ring-indigo-400/50"
-    >
-      {names.map((n) => (
-        <span
-          key={n}
-          className="inline-flex max-w-full items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-800"
-        >
-          <span className="inline-flex items-baseline gap-x-1 truncate">
-            <DriverName full={n} className="truncate" />
-          </span>
-          <button
-            type="button"
-            onClick={() => remove(n)}
-            aria-label={`Bỏ ${driverDisplayName(n) || n}`}
-            className="rounded text-slate-600 hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
-          >
-            ✕
-          </button>
-        </span>
-      ))}
-      <input
-        ref={inputRef}
-        type="text"
-        role="combobox"
-        aria-expanded={open}
-        aria-controls={listId}
-        aria-autocomplete="list"
-        aria-label="Thêm tài xế"
-        placeholder={names.length ? "Thêm tài xế…" : "Chọn tài xế…"}
-        value={q}
-        onChange={(e) => { setQ(e.target.value); setActive(0); openMenu(); }}
-        onFocus={openMenu}
-        onKeyDown={onKeyDown}
-        className="min-w-[90px] flex-1 bg-transparent px-0.5 py-0.5 text-xs outline-none"
-      />
-      {open && rect && (
-        <ul
-          id={listId}
-          role="listbox"
-          style={{ position: "fixed", left: rect.left, top: rect.top, width: rect.width, zIndex: 50 }}
-          className="max-h-56 overflow-y-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg"
-        >
-          {matches.length === 0 && (
-            <li className="px-2 py-1 text-[11px] text-slate-600">Không tìm thấy tài xế</li>
-          )}
-          {matches.map((d, i) => (
-            <li key={d.driver_id}>
-              <button
-                type="button"
-                role="option"
-                aria-selected={i === active}
-                onMouseEnter={() => setActive(i)}
-                onClick={() => add(d.name)}
-                className={`flex w-full flex-wrap items-baseline gap-x-1.5 px-2 py-1 text-left text-xs ${
-                  i === active ? "bg-indigo-50 text-slate-900" : "text-slate-700"
-                }`}
-              >
-                <DriverName full={d.name} className="truncate" />
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
+    <DriverCombobox
+      names={splitDriverNames(value)}
+      onChange={(names) => onChange(names.join(DRIVER_SEP))}
+      drivers={drivers}
+    />
   );
 }
 
