@@ -7,10 +7,16 @@
  * 50-day backfills were lost to that in one afternoon — first against Goong, then
  * against the fallback brought in to cover it.
  *
- * Also pins the thing that makes a fallback worth having: the two providers must
+ * Also pins the thing that makes a fallback worth having: the providers must
  * brake INDEPENDENTLY. Share one signal and either one going quiet silences the
- * other; give the fallback none and a rate-limited fallback gets hammered for
- * every remaining pair. Both failure modes have already happened here.
+ * other; give a link none and a rate-limited link gets hammered for every
+ * remaining pair. Both failure modes have already happened here.
+ *
+ * The chain now leads with VIETMAP and falls back to Goong, so the `signal` every
+ * caller passes brakes VietMap and FallbackState brakes the Goong accounts. The
+ * retry behaviour below is a property of `fetchRetrying` and is the same whichever
+ * provider is in front — but which one the caller's signal belongs to is not, and
+ * getting it backwards would silently leave the lead unbraked.
  *
  *   npx tsx scripts/distance-backoff.test.mts
  */
@@ -28,12 +34,14 @@ const okGoong = (n: number) => JSON.stringify({
 });
 
 let goongHits = 0, vietmapHits = 0;
-let goongFailFirst = 0;   // how many initial Goong calls answer 429
+let goongFailFirst = 0;        // how many initial Goong calls answer 429
+let vietmapFailAlways = false; // the lead is capped for the whole run
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (u: string | URL | Request) => {
   const url = String(u);
   if (url.includes("vietmap")) {
     vietmapHits++;
+    if (vietmapFailAlways) return new Response("slow down", { status: 429 });
     return new Response(JSON.stringify({ code: "OK", distances: [[2000]], durations: [[480]] }), { status: 200 });
   }
   goongHits++;
@@ -45,38 +53,45 @@ globalThis.fetch = (async (u: string | URL | Request) => {
 const { goongMatrix, roadMatrixOneToMany, newFallbackState } = await import("../src/lib/distance");
 
 // ── A transient 429 is retried, not discarded ───────────────────────────────
-goongHits = 0; goongFailFirst = 1;
+// Driven against goongMatrix directly, below the chain, so this measures the
+// retry itself rather than which provider happens to lead today.
+goongHits = 0; goongFailFirst = 1; vietmapFailAlways = false;
 const t0 = Date.now();
 const retried = await goongMatrix(10.77, 106.66, [{ lat: 10.78, lon: 106.68 }]);
 check("one 429 then success → the pair resolves", retried[0]?.distance_km === 2, JSON.stringify(retried));
 check("it actually asked twice", goongHits === 2, `hits=${goongHits}`);
 check("and it waited before retrying", Date.now() - t0 >= 500, `${Date.now() - t0}ms`);
 
-// ── Persistent 429 gives up, and the fallback covers it ─────────────────────
-goongHits = 0; vietmapHits = 0; goongFailFirst = 99;
+// ── Persistent 429 on the LEAD gives up, and Goong covers it ────────────────
+goongHits = 0; vietmapHits = 0; goongFailFirst = 0; vietmapFailAlways = true;
 const covered = await roadMatrixOneToMany(10.77, 106.66, [{ lat: 10.78, lon: 106.68 }]);
-check("a provider that keeps refusing is not retried forever", goongHits <= 3, `hits=${goongHits}`);
-check("the fallback answered instead", covered[0]?.distance_km === 2 && vietmapHits === 1);
+check("a provider that keeps refusing is not retried forever", vietmapHits <= 3, `hits=${vietmapHits}`);
+check("Goong answered instead", covered[0]?.distance_km === 2 && goongHits === 1,
+  `km=${covered[0]?.distance_km} goongHits=${goongHits}`);
 
-// ── The two providers brake independently ───────────────────────────────────
-const goongSignal = { quotaExceeded: false };
+// ── The links brake independently ───────────────────────────────────────────
+// `signal` is the LEAD's brake now, so a standing VietMap 429 must trip it and
+// leave the Goong accounts free to answer. Getting this pairing backwards is the
+// failure the flip could most easily have introduced.
+const leadSignal = { quotaExceeded: false };
 const fallback = newFallbackState();
-goongHits = 0; vietmapHits = 0; goongFailFirst = 99;
+goongHits = 0; vietmapHits = 0; vietmapFailAlways = true;
 
-await roadMatrixOneToMany(10.77, 106.66, [{ lat: 10.78, lon: 106.68 }], undefined, goongSignal, fallback);
-check("a standing 429 trips the PRIMARY's signal", goongSignal.quotaExceeded === true);
-check("but leaves the fallbacks' untouched", fallback.vietmap.quotaExceeded === false && fallback.goong2.quotaExceeded === false);
+await roadMatrixOneToMany(10.77, 106.66, [{ lat: 10.78, lon: 106.68 }], undefined, leadSignal, fallback);
+check("a standing 429 trips the LEAD's signal", leadSignal.quotaExceeded === true);
+check("but leaves the Goong accounts' untouched",
+  fallback.goong.quotaExceeded === false && fallback.goong2.quotaExceeded === false);
 
-const goongBefore = goongHits;
-await roadMatrixOneToMany(10.77, 106.66, [{ lat: 10.79, lon: 106.69 }], undefined, goongSignal, fallback);
-check("once tripped, the primary is not called again", goongHits === goongBefore, `${goongBefore} → ${goongHits}`);
-check("while the fallback keeps answering", vietmapHits === 2, `vietmapHits=${vietmapHits}`);
+const vmBefore0 = vietmapHits;
+await roadMatrixOneToMany(10.77, 106.66, [{ lat: 10.79, lon: 106.69 }], undefined, leadSignal, fallback);
+check("once tripped, the lead is not called again", vietmapHits === vmBefore0, `${vmBefore0} → ${vietmapHits}`);
+check("while Goong keeps answering", goongHits === 2, `goongHits=${goongHits}`);
 
 // A tripped fallback must stop being asked too — the bug that lost the last run.
-fallback.vietmap.quotaExceeded = true; fallback.goong2.quotaExceeded = true;
-const vmBefore = vietmapHits;
-const abandoned = await roadMatrixOneToMany(10.77, 106.66, [{ lat: 10.80, lon: 106.70 }], undefined, goongSignal, fallback);
-check("a tripped fallback is not hammered either", vietmapHits === vmBefore, `${vmBefore} → ${vietmapHits}`);
+fallback.goong.quotaExceeded = true; fallback.goong2.quotaExceeded = true;
+const goongBefore = goongHits;
+const abandoned = await roadMatrixOneToMany(10.77, 106.66, [{ lat: 10.80, lon: 106.70 }], undefined, leadSignal, fallback);
+check("a tripped fallback is not hammered either", goongHits === goongBefore, `${goongBefore} → ${goongHits}`);
 check("and the pair is honestly left unresolved", abandoned[0] === null);
 
 globalThis.fetch = realFetch;
