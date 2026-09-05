@@ -575,6 +575,51 @@ function DriverCard({
   );
 }
 
+/**
+ * One named day, listed in full.
+ *
+ * Today and tomorrow keep their own sections above the week: they are the two
+ * days anyone can still do something about before the shift starts, and the
+ * week below is the WIDER range — a place to look ahead, not the default view.
+ * Answering "who is off right now" should not cost a scan down seven day
+ * headings for the two that are urgent.
+ */
+function DaySection({
+  label,
+  groups,
+  driverNames,
+  onFill,
+  onDelete,
+}: {
+  label: string;
+  groups: DriverGroup[];
+  driverNames: Set<string>;
+  onFill: FillSubsFn;
+  onDelete: DeleteRowFn;
+}) {
+  return (
+    <div className="flex-1 min-w-[220px]">
+      {/* Count = people off, not sheet rows */}
+      <SectionHeader label={label} count={groups.length} className="mb-1" />
+      {groups.length === 0 ? (
+        <p className="text-xs text-slate-600">Không có ai nghỉ</p>
+      ) : (
+        <div className="divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200">
+          {groups.map((g) => (
+            <DriverCard
+              key={g.driver_id}
+              g={g}
+              driverNames={driverNames}
+              onFill={onFill}
+              onDelete={onDelete}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Uncovered = day-leave drivers (not resigned) with a window that has no
  *  substitute — the actionable count surfaced in the collapsed header. */
 function uncoveredCount(groups: DriverGroup[]): number {
@@ -875,7 +920,7 @@ function WeekSection({
   }, [registerReload, load, state.shown]);
 
   const thisWeek = weekStartOf(today);
-  const onThisWeek = weekStart === thisWeek;
+  const nextWeek = addDays(thisWeek, DAYS_IN_WEEK);
   const weekEnd = addDays(weekStart, DAYS_IN_WEEK - 1);
   // Totals over the week, so the header answers "is there anything to do here"
   // without reading seven day headings.
@@ -910,22 +955,27 @@ function WeekSection({
         <span aria-live="polite" className="text-xs font-semibold text-slate-800">
           {ddmm(weekStart)} – {ddmm(weekEnd)}
         </span>
-        {onThisWeek ? (
-          <span className="rounded-full border border-indigo-200 bg-indigo-50 px-1.5 py-0 text-[11px] font-semibold text-indigo-800">
-            Tuần này
-          </span>
-        ) : (
-          // Only offered when it would DO something: a reset button that is
-          // already at its target is a control that answers a press with
-          // nothing, and the user learns to distrust the row.
-          <Button
-            size="sm" variant="outline"
-            className="h-6 px-2 text-[11px]"
-            onClick={() => setWeekStart(thisWeek)}
-          >
-            Về tuần này
-          </Button>
-        )}
+        {/* Two named jumps for the two weeks anyone actually asks for, always
+            present rather than appearing and vanishing: a control that moves
+            costs more to re-find than it saves in tidiness. Which one you are
+            ON is a STATE, so it is styled and not only announced — a chip
+            carrying aria-pressed and no styling tells a screen reader where it
+            is and tells everyone else nothing. The arrows still reach any other
+            week. */}
+        {([["Tuần hiện tại", thisWeek], ["Tuần tới", nextWeek]] as const).map(([label, target]) => {
+          const on = weekStart === target;
+          return (
+            <Button
+              key={label}
+              size="sm" variant="outline"
+              className={`h-6 px-2 text-[11px] ${on ? "border-indigo-400 bg-indigo-50 text-indigo-900" : ""}`}
+              aria-pressed={on}
+              onClick={() => setWeekStart(target)}
+            >
+              {label}
+            </Button>
+          );
+        })}
         {weekUncovered > 0 && (
           <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-100 px-1.5 py-0 text-[11px] font-semibold text-amber-800">
             <AlertTriangle className="size-3" strokeWidth={2} />
@@ -1072,6 +1122,8 @@ export function LeaveStatusPanel({
   const invalidIgnored = invalid.filter((r) => !r.recovered).sort(byDriver);
   const invalidRecovered = invalid.filter((r) => r.recovered).sort(byDriver);
 
+  const fillSubs = makeFillSubs(onRefresh);
+  const deleteRow = makeDeleteRow(onRefresh);
   const restoreRow = makeRestoreRow(onRefresh);
 
   /**
@@ -1264,8 +1316,43 @@ export function LeaveStatusPanel({
                 </p>
               </div>
             )}
+            {/* The two days that can still be acted on before the shift runs,
+                each in full. */}
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+              <DaySection
+                label="Hôm nay"
+                groups={todayGroups}
+                driverNames={driverNames}
+                onFill={fillSubs}
+                onDelete={deleteRow}
+              />
+              <DaySection
+                label="Ngày mai"
+                groups={tomorrowGroups}
+                driverNames={driverNames}
+                onFill={fillSubs}
+                onDelete={deleteRow}
+              />
+            </div>
+            {/* …and the wider range below it. Cover is arranged days ahead, so
+                the week is what you look at to plan; the two days above are what
+                you look at to act. The week does include today and tomorrow —
+                seeing them in their own row is the point of a week. */}
+            <WeekSection
+              today={vnDate()}
+              driverNames={driverNames}
+              onFill={otherDayFill}
+              onDelete={otherDayDelete}
+              registerReload={registerOtherDayReload}
+            />
+            {/* LAST, below the week. This is a reference list, not a task: every
+                line on it is already handled — a day someone deliberately
+                removed, held down so the sync cannot undo it. Reading it is how
+                you check a past decision, which is what you do after looking at
+                the week, not before. The unreadable-tab alarm above stays where
+                it is: that one IS a fault, and it says the blocking is off. */}
             {suppressed.length > 0 && (
-              <div className="mb-2 rounded-md border border-slate-300 bg-slate-50 px-2 py-1.5">
+              <div className="mt-2 rounded-md border border-slate-300 bg-slate-50 px-2 py-1.5">
                 <div className="text-[11px] font-semibold text-slate-800">
                   Ngày nghỉ đã xoá thủ công — MISA sẽ không tạo lại
                 </div>
@@ -1286,18 +1373,6 @@ export function LeaveStatusPanel({
                 </ul>
               </div>
             )}
-            {/* One week, not a today block plus a tomorrow block plus a picker.
-                Today and tomorrow are two of the seven days, marked in place —
-                the previous shape showed today twice the moment anyone picked a
-                date, and could not answer the question cover is actually
-                arranged against, which is what the WEEK looks like. */}
-            <WeekSection
-              today={vnDate()}
-              driverNames={driverNames}
-              onFill={otherDayFill}
-              onDelete={otherDayDelete}
-              registerReload={registerOtherDayReload}
-            />
           </div>
         )}
       </CardContent>
