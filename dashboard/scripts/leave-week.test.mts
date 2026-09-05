@@ -13,10 +13,20 @@
  *      a local read would shift the whole week by a day for half the world, and
  *      the server this runs against is not in Saigon.
  *
+ * And which NAMES share a line in it.
+ *
+ * The week grid shows names with no staff code, so a person holding both a
+ * full-time `DC…` and a part-time `PT…` account arrived as the same name twice
+ * in a column with nothing to say why. `mergePeople` puts them on one line. The
+ * guard is the whole test: Vietnamese names repeat, so two DIFFERENT full-time
+ * drivers can share a spelling, and merging THOSE would delete a person from
+ * the day — silently, since the line would still be there under the other one's
+ * name.
+ *
  *   npx tsx scripts/leave-week.test.mts
  */
 
-import { weekStartOf } from "../src/components/leave-status-panel";
+import { weekStartOf, mergePeople } from "../src/components/leave-status-panel";
 
 let failures = 0;
 const eq = (label: string, got: unknown, want: unknown) => {
@@ -44,6 +54,75 @@ console.log("bad input");
 eq("garbage comes back untouched rather than as an epoch week",
   weekStartOf("not-a-date"), "not-a-date");
 eq("empty stays empty", weekStartOf(""), "");
+
+// --- merging a person's two accounts -----------------------------------------
+
+type Sub = { id: string; name: string };
+const row = (subs: Sub[] = []) => ({ timeLabel: null, subs, leave_from: "2026-09-07", duplicate: false });
+const group = (driver_id: string, driver_name: string, opts: { subs?: Sub[]; loai_nghi?: string } = {}) => ({
+  driver_id,
+  driver_name,
+  loai_nghi: opts.loai_nghi ?? "Nghỉ nguyên buổi",
+  leave_from: "2026-09-07",
+  rows: [row(opts.subs)],
+});
+const someone: Sub = { id: "x", name: "F - C - DC100999 Người Thay" };
+
+console.log("\nmerging accounts onto one line");
+{
+  const cells = mergePeople([
+    group("a", "F - C - DC100320 Lý Chánh Hùng"),
+    group("b", "F - C - PT100320 Lý Chánh Hùng"),
+  ]);
+  eq("a full-time and a part-time twin become ONE line", cells.length, 1);
+  eq("both accounts hang off it", cells[0]?.groups.length, 2);
+  eq("and it is labelled with both", cells[0]?.employments.join("+"), "full-time+part-time");
+}
+{
+  const cells = mergePeople([
+    group("a", "F - C - DC100001 Nguyễn Văn Hùng"),
+    group("b", "F - P - DC100002 Nguyễn Văn Hùng"),
+  ]);
+  eq("two FULL-TIME accounts sharing a name stay two lines", cells.length, 2);
+}
+{
+  const cells = mergePeople([
+    group("a", "Admin Lý Thị Thùy Linh"),
+    group("b", "Admin Lý Thị Thùy Linh"),
+  ]);
+  eq("no staff code to read means no merge either", cells.length, 2);
+}
+
+console.log("what the line says");
+{
+  const [cell] = mergePeople([
+    group("a", "F - C - DC100320 Lý Chánh Hùng", { subs: [someone] }),
+    group("b", "F - C - PT100320 Lý Chánh Hùng"),
+  ]);
+  eq("one covered account and one open reads as OPEN", cell?.status, "uncovered");
+}
+{
+  const [cell] = mergePeople([
+    group("a", "F - C - DC100320 Lý Chánh Hùng", { subs: [someone] }),
+    group("b", "F - C - PT100320 Lý Chánh Hùng", { subs: [someone] }),
+  ]);
+  eq("both covered reads as covered", cell?.status, "covered");
+}
+{
+  const [cell] = mergePeople([
+    group("a", "F - C - DC100320 Lý Chánh Hùng", { subs: [someone] }),
+    group("b", "F - C - PT100320 Lý Chánh Hùng", { loai_nghi: "Nghỉ việc" }),
+  ]);
+  eq("a resigned account outranks a covered one", cell?.status, "resigned");
+}
+{
+  const cells = mergePeople([
+    group("b", "F - C - DC100002 Trần Ánh"),
+    group("a", "F - C - DC100001 Đặng An"),
+  ]);
+  eq("lines come out ordered by the person, in vi", cells.map((c) => c.name).join(", "),
+    "Đặng An, Trần Ánh");
+}
 
 console.log(failures === 0 ? "\nAll leave-week checks passed" : `\n${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);

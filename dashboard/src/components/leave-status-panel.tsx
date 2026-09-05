@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { AlertTriangle, ChevronLeft, ChevronRight, Palmtree } from "lucide-react";
+import { AlertTriangle, Ban, Check, ChevronLeft, ChevronRight, Palmtree } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { SectionHeader } from "./section-header";
@@ -10,7 +10,10 @@ import type { LeaveOnDate, InvalidLeaveRow, SpanningLeaveRow } from "@/lib/leave
 import type { LeaveSuppression } from "@/lib/leave-suppression";
 import type { ConfigDriver } from "@/lib/types";
 import { addDays, vnDate } from "@/lib/time";
-import { splitDriverName, compareDriverNames, compareByDriverThenWindow } from "@/lib/driver-label";
+import {
+  splitDriverName, compareDriverNames, compareByDriverThenWindow, employmentOf,
+  type Employment,
+} from "@/lib/driver-label";
 import { DriverName } from "./driver-name";
 
 const TYPE_LABEL: Record<string, string> = {
@@ -499,13 +502,14 @@ function DriverCard({
   const resigned = g.loai_nghi === "Nghỉ việc";
   const uncovered = !resigned && g.rows.some((r) => r.subs.length === 0);
   const [editRow, setEditRow] = useState<number | null>(null);
-  // Leading dot carries state: red = resigned, amber = uncovered, grey = covered.
-  const dotClass = resigned ? "bg-red-500" : uncovered ? "bg-amber-500" : "bg-slate-300";
+  // The SAME mark the week grid uses, so a row does not change language
+  // between the glance and the work.
+  const status = resigned ? "resigned" : uncovered ? "uncovered" : "covered";
   const typeClass = resigned ? "text-red-700" : "text-amber-700";
   return (
     <div className="px-2 py-1.5 text-xs hover:bg-slate-50">
       <div className="flex items-center gap-1.5 flex-wrap">
-        <span className={`size-1.5 shrink-0 rounded-full ${dotClass}`} />
+        <StatusMark status={status} className="size-3.5" />
         <DriverName full={g.driver_name || g.driver_id} />
         <span className={`shrink-0 text-[11px] font-semibold ${typeClass}`}>
           {typeLabel(g.loai_nghi)}
@@ -832,9 +836,128 @@ function weekdayLong(date: string): string {
   return i < 0 ? "" : WEEKDAY[i];
 }
 
-/** Which driver, on which day, is open in the detail strip. Keyed by both
- *  because one driver is off on several days of a week. */
-interface Picked { date: string; driverId: string }
+/** Which person, on which day, is open in the detail strip. Keyed by both
+ *  because one person is off on several days of a week. */
+interface Picked { date: string; personKey: string }
+
+/**
+ * The three things a name in the grid can be saying, in ONE vocabulary.
+ *
+ * A bare coloured dot said them before, and a dot is not a word: nothing on the
+ * screen said what amber meant, and for a reader who cannot separate amber from
+ * grey it said nothing at all. Colour is the wrong carrier for the primary
+ * signal — it is the right carrier for the SECOND one. So each state now has a
+ * SHAPE (the icon), a WORD (the legend under the grid, and the screen-reader
+ * text on every row), and a colour reinforcing both.
+ */
+const STATUS_MARK = {
+  uncovered: { Icon: AlertTriangle, tone: "text-amber-600", label: "Chưa có người thay" },
+  covered: { Icon: Check, tone: "text-emerald-600", label: "Đã có người thay" },
+  resigned: { Icon: Ban, tone: "text-red-600", label: "Nghỉ việc" },
+} as const;
+
+type LeaveStatus = keyof typeof STATUS_MARK;
+
+function StatusMark({
+  status,
+  className = "size-3",
+  labelled = false,
+}: {
+  status: LeaveStatus;
+  className?: string;
+  /** The legend spells the word out beside the icon, so it must not ALSO be
+   *  read out invisibly; every other use is icon-only and needs the text. */
+  labelled?: boolean;
+}) {
+  const { Icon, tone, label } = STATUS_MARK[status];
+  return (
+    <>
+      <Icon className={`${className} shrink-0 ${tone}`} strokeWidth={2.5} aria-hidden />
+      {!labelled && <span className="sr-only">{label}. </span>}
+    </>
+  );
+}
+
+/**
+ * One PERSON in a day column — their full-time and part-time accounts on one
+ * line instead of two.
+ *
+ * About a dozen people hold both a `DC…` and a `PT…` account, and since the MISA
+ * sync began filing the day off against the twin, both are off on the same day.
+ * The grid shows names with no staff code, so those arrived as the SAME NAME
+ * TWICE in a column, one directly under the other, with nothing to say why.
+ *
+ * Merging is safe HERE and nowhere else: this grid carries no actions. The two
+ * accounts are separate records with separate substitutes, so the card below —
+ * where a substitute is actually filled in — still shows one card per account,
+ * each with its own FT/PT chip. The grid answers "who is off", the card answers
+ * "on which account", and neither has to answer both.
+ *
+ * Two accounts merge ONLY when they are one full-time and one part-time. That is
+ * what a twin pair IS, and the guard matters: Vietnamese names repeat, so two
+ * DIFFERENT full-time drivers can share one spelling, and merging THOSE would
+ * hide a whole person from the day.
+ */
+interface PersonCell {
+  key: string;
+  name: string;
+  /** The accounts behind this line, full-time first. */
+  groups: DriverGroup[];
+  employments: Employment[];
+  status: LeaveStatus;
+}
+
+function personNameOf(g: DriverGroup): string {
+  return splitDriverName(g.driver_name || g.driver_id).name;
+}
+
+/** Worst-first: a resigned account outranks an uncovered one, which outranks a
+ *  covered one — the line must show the thing that still needs doing. */
+function statusOf(groups: DriverGroup[]): LeaveStatus {
+  if (groups.some((g) => g.loai_nghi === "Nghỉ việc")) return "resigned";
+  return groups.some(
+    (g) => g.loai_nghi !== "Nghỉ việc" && g.rows.some((r) => r.subs.length === 0),
+  )
+    ? "uncovered"
+    : "covered";
+}
+
+export function mergePeople(groups: DriverGroup[]): PersonCell[] {
+  const byPerson = new Map<string, DriverGroup[]>();
+  for (const g of groups) {
+    const key = personNameOf(g).trim().toLowerCase();
+    const list = byPerson.get(key);
+    if (list) list.push(g);
+    else byPerson.set(key, [g]);
+  }
+  const cell = (key: string, gs: DriverGroup[]): PersonCell => {
+    const sorted = [...gs].sort((a, b) => compareDriverNames(a.driver_name, b.driver_name));
+    return {
+      key,
+      name: personNameOf(sorted[0]),
+      groups: sorted,
+      employments: sorted
+        .map((g) => employmentOf(g.driver_name))
+        .filter((e): e is Employment => e !== null),
+      status: statusOf(sorted),
+    };
+  };
+  const cells: PersonCell[] = [];
+  for (const [key, gs] of byPerson) {
+    const types = gs.map((g) => employmentOf(g.driver_name));
+    const pair =
+      gs.length > 1 &&
+      types.every((t) => t !== null) &&
+      new Set(types).size === gs.length;
+    if (pair) cells.push(cell(key, gs));
+    // Not a twin pair: keep every account its own line, keyed by the account so
+    // two people sharing a name stay two lines.
+    else for (const g of gs) cells.push(cell(`${key}|${g.driver_id}`, [g]));
+  }
+  return cells.sort(
+    (a, b) => a.name.localeCompare(b.name, "vi") || a.key.localeCompare(b.key),
+  );
+}
 
 /**
  * The week as SEVEN COLUMNS, with the day being worked on opened underneath.
@@ -853,6 +976,12 @@ interface Picked { date: string; driverId: string }
  * Columns collapse before they get unreadable — two on a phone, four on a
  * tablet, seven only where seven fit. A 150px column at 7-across on a 700px
  * screen is 100px, and a Vietnamese name does not go in 100px.
+ *
+ * A column holds one line per PERSON, not per account (`mergePeople`), and each
+ * line carries a marked STATE with a legend under the grid rather than an
+ * unexplained coloured dot. Both are there for the same reason: a column this
+ * narrow has room for one name and one symbol, so the name had better be a
+ * person and the symbol had better mean something without being hovered.
  */
 function WeekSection({
   today,
@@ -915,19 +1044,23 @@ function WeekSection({
   const nextWeek = addDays(thisWeek, DAYS_IN_WEEK);
   const weekEnd = addDays(weekStart, DAYS_IN_WEEK - 1);
 
-  // Grouped once, used by both the columns and the detail strip below.
+  // Grouped once, used by both the columns and the detail strip below. Counted
+  // in PEOPLE, matching what the grid draws — a badge saying 9 above a column
+  // you can count 8 names in is a badge nobody trusts again.
   const byDay = state.days.map((d) => ({
     date: d.date,
-    groups: groupByDriver(d.entries),
+    people: mergePeople(groupByDriver(d.entries)),
     ignored: d.invalid.filter((r) => !r.recovered).length,
   }));
-  const weekUncovered = byDay.reduce((n, d) => n + uncoveredCount(d.groups), 0);
+  const uncoveredOn = (people: PersonCell[]) =>
+    people.filter((p) => p.status === "uncovered").length;
+  const weekUncovered = byDay.reduce((n, d) => n + uncoveredOn(d.people), 0);
 
-  // The open driver, re-found in the CURRENT data rather than remembered: a
+  // The open person, re-found in the CURRENT data rather than remembered: a
   // write may have removed the very row that was open, and a stale copy would
   // keep offering to delete something already gone.
   const openDay = picked ? byDay.find((d) => d.date === picked.date) : undefined;
-  const openGroup = openDay?.groups.find((g) => g.driver_id === picked?.driverId);
+  const openCell = openDay?.people.find((p) => p.key === picked?.personKey);
 
   return (
     <div className="mt-2 border-t border-slate-200 pt-2">
@@ -1003,10 +1136,10 @@ function WeekSection({
 
       {!state.loading && !state.error && state.shown && (
         <>
-          <div className="mt-1.5 grid grid-cols-2 gap-1 md:grid-cols-4 xl:grid-cols-7">
+          <div className="mt-1.5 grid grid-cols-2 items-start gap-1 md:grid-cols-4 xl:grid-cols-7">
             {byDay.map((d) => {
               const isToday = d.date === today;
-              const uncovered = uncoveredCount(d.groups);
+              const uncovered = uncoveredOn(d.people);
               return (
                 <div
                   key={d.date}
@@ -1042,34 +1175,41 @@ function WeekSection({
                       </div>
                     )}
                   </div>
-                  {d.groups.length === 0 ? (
-                    <p className="px-1.5 py-1 text-[11px] text-slate-500">—</p>
+                  {d.people.length === 0 ? (
+                    // Named, not dashed. A day with nobody off is an ANSWER —
+                    // the one the eye is looking for when it scans the week —
+                    // and "—" reads as missing data rather than as good news.
+                    <p className="px-1.5 py-1 text-[11px] text-slate-400">Không ai nghỉ</p>
                   ) : (
                     <ul className="divide-y divide-slate-100">
-                      {d.groups.map((g) => {
-                        const resigned = g.loai_nghi === "Nghỉ việc";
-                        const open = !resigned && g.rows.some((r) => r.subs.length === 0);
-                        const sel = picked?.date === d.date && picked?.driverId === g.driver_id;
-                        const { name } = splitDriverName(g.driver_name || g.driver_id);
+                      {d.people.map((p) => {
+                        const sel = picked?.date === d.date && picked?.personKey === p.key;
+                        const both = p.groups.length > 1;
+                        const pt = p.employments.includes("part-time");
                         return (
-                          <li key={g.driver_id}>
+                          <li key={p.key}>
                             <button
                               type="button"
                               aria-pressed={sel}
                               onClick={() =>
-                                setPicked(sel ? null : { date: d.date, driverId: g.driver_id })
+                                setPicked(sel ? null : { date: d.date, personKey: p.key })
                               }
-                              title={`${name} — ${weekdayLong(d.date)} ${ddmm(d.date)}`}
+                              title={`${p.name}${both ? " — nghỉ cả tài khoản FT và PT" : ""} — ${STATUS_MARK[p.status].label.toLowerCase()} — ${weekdayLong(d.date)} ${ddmm(d.date)}`}
                               className={`flex w-full items-center gap-1 px-1.5 py-1 text-left transition-colors duration-150 ${
                                 sel ? "bg-indigo-100" : "hover:bg-slate-50"
                               }`}
                             >
-                              <span
-                                className={`size-1.5 shrink-0 rounded-full ${
-                                  resigned ? "bg-red-500" : open ? "bg-amber-500" : "bg-slate-300"
-                                }`}
-                              />
-                              <span className="min-w-0 flex-1 truncate text-[11px] text-slate-800">{name}</span>
+                              <StatusMark status={p.status} className="size-3" />
+                              <span className="min-w-0 flex-1 truncate text-[11px] text-slate-800">{p.name}</span>
+                              {/* Only when it is not the ordinary case: a
+                                  full-time-only line is most of the grid, and
+                                  chipping every one of them spends the width on
+                                  the thing that is always true. */}
+                              {(both || pt) && (
+                                <span className="shrink-0 rounded-full border border-indigo-200 bg-indigo-50 px-1 text-[9px] font-semibold leading-4 text-indigo-700">
+                                  {both ? "FT+PT" : "PT"}
+                                </span>
+                              )}
                             </button>
                           </li>
                         );
@@ -1081,19 +1221,43 @@ function WeekSection({
             })}
           </div>
 
+          {/* What the marks mean, written down. The grid is glanceable only if
+              its symbols are already known, and this is where they become
+              known — once, under the thing they label, rather than in a tooltip
+              nobody hovers. */}
+          <ul className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[10px] text-slate-600">
+            {(["uncovered", "covered", "resigned"] as const).map((k) => (
+              <li key={k} className="inline-flex items-center gap-0.5">
+                <StatusMark status={k} className="size-2.5" labelled />
+                {STATUS_MARK[k].label}
+              </li>
+            ))}
+            <li className="inline-flex items-center gap-0.5">
+              <span className="rounded-full border border-indigo-200 bg-indigo-50 px-1 text-[9px] font-semibold leading-4 text-indigo-700">
+                FT+PT
+              </span>
+              Nghỉ cả hai tài khoản
+            </li>
+          </ul>
+
           {/* The day being worked on, full width, in the card the rest of the
               panel already uses — so the substitute editor and the delete guard
               have exactly one implementation. */}
-          {openGroup && picked && (
+          {openCell && picked && (
             <div
               className="mt-1.5 rounded-md border border-indigo-300 bg-indigo-50/40 p-1.5"
               role="region"
-              aria-label={`${splitDriverName(openGroup.driver_name).name} — ${weekdayLong(picked.date)} ${ddmm(picked.date)}`}
+              aria-label={`${openCell.name} — ${weekdayLong(picked.date)} ${ddmm(picked.date)}`}
             >
               <div className="mb-1 flex flex-wrap items-baseline gap-x-1.5">
                 <span className="text-[11px] font-semibold text-slate-800">
                   {weekdayLong(picked.date)} {ddmm(picked.date)}
                 </span>
+                {openCell.groups.length > 1 && (
+                  <span className="text-[11px] text-slate-600">
+                    hai tài khoản — người thay điền riêng cho từng cái
+                  </span>
+                )}
                 <Button
                   size="sm" variant="ghost"
                   className="ml-auto h-6 px-2 text-[11px]"
@@ -1102,13 +1266,21 @@ function WeekSection({
                   Đóng
                 </Button>
               </div>
-              <div className="overflow-hidden rounded-md border border-slate-200 bg-white">
-                <DriverCard
-                  g={openGroup}
-                  driverNames={driverNames}
-                  onFill={onFill}
-                  onDelete={onDelete}
-                />
+              {/* One card per ACCOUNT. The grid merged the twin pair into a
+                  single name because it only had to say who is off; here the
+                  substitute is actually written, and a substitute covers one
+                  account — so the two come back apart, each with its FT/PT
+                  chip. */}
+              <div className="divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200 bg-white">
+                {openCell.groups.map((g) => (
+                  <DriverCard
+                    key={g.driver_id}
+                    g={g}
+                    driverNames={driverNames}
+                    onFill={onFill}
+                    onDelete={onDelete}
+                  />
+                ))}
               </div>
             </div>
           )}
@@ -1269,7 +1441,7 @@ export function LeaveStatusPanel({
         </button>
 
         {open && (
-          <div className="mt-2 max-h-[38vh] overflow-y-auto">
+          <div className="mt-2 max-h-[60vh] overflow-y-auto">
             {invalidRecovered.length > 0 && (
               <div className="mb-2 rounded-md border border-sky-300 bg-sky-50 px-2 py-1.5">
                 <div className="text-[11px] font-semibold text-sky-900">

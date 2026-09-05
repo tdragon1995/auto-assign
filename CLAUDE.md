@@ -113,7 +113,18 @@ through the same `POST /api/nghi-phep` a driver's own form uses — so
   alone is a name field plus two time selects plus two buttons. So the grid
   carries the week's SHAPE, which is what seven columns are uniquely good at,
   and picking a name opens that driver's day BELOW the grid at full width in the
-  same `DriverCard` the rest of the panel uses. The compact view is new; the
+  same `DriverCard` the rest of the panel uses.
+
+  One line per PERSON, not per account (`mergePeople`): the grid shows no staff
+  code, so a twin pair arrived as the same name twice with nothing to say why.
+  Merging is safe only HERE, because the grid carries no actions — the card
+  below still shows one `DriverCard` per account, each with its FT/PT chip,
+  since a substitute covers one account. Two accounts merge ONLY when they are
+  one FT and one PT; Vietnamese names repeat, and merging two same-type accounts
+  would delete a whole person from the day. Each line's state is an ICON plus a
+  legend under the grid (`STATUS_MARK`), not a bare colour — amber vs grey said
+  nothing to a reader who could not separate them, and nothing on the page said
+  what either meant. `scripts/leave-week.test.mts` pins the merge rule. The compact view is new; the
   acting view is the one that already works, so there is no second copy of the
   substitute editor or the delete guard to drift. Columns collapse to four then
   two before they get unreadable. The deleted-days list sits LAST — every line
