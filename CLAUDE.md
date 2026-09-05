@@ -205,6 +205,8 @@ through the same `POST /api/nghi-phep` a driver's own form uses — so
 | `GET /api/sales/search-trips` | Searches today's B2B trips by `?ma_kh=` (matches reference_number suffix); returns status 2+4 jobs only |
 | `GET /api/tat/archive` | Manual/backfill archive of route **legs** into Supabase `tat_legs`; `?date=`, `?days=N`, `CRON_SECRET` auth. Idempotent (replaces the day). Routine archiving needs no cron — see footgun 8 |
 | `GET /api/tat/me` | The signed-in driver's TAT report (today + week + month). Driver id from the `nv_session` cookie only |
+| `GET /api/pay/me` | The signed-in driver's part-time earnings. `?month=YYYY-MM` for the month, `?date=` for one day. Driver id from the `nv_session` cookie only; refuses any account that is not `PT…` |
+| `GET /api/pay/team` | Every PT driver's month, for điều phối's "Lương PT" tab. Defaults to LAST month (payroll runs on the 25th) |
 
 ### Shared Libraries
 
@@ -212,13 +214,14 @@ through the same `POST /api/nghi-phep` a driver's own form uses — so
 |---|---|
 | `src/lib/cartrack.ts` | `BASE_URL`, `JSONRPC_URL`, `getHeaders`, all Cartrack REST/JSONRPC wrappers |
 | `src/lib/labcenter.ts` | `getAdminToken` / `getReceptionistToken` (cached JWT logins — admin for `spc-delivery`, receptionist for `spc-pos`), `listLocationsByClientCode`, `getCartrackCustomerId`, `updateLocationPhone`, `updateLocationAddress` |
-| `src/lib/distance.ts` | `haversineKm`, `goongDistanceKm` (1→1), `goongMatrix` (1→N batch), `goongMatrixMultiOrigin` (N→1, one request — undocumented-but-verified Goong behavior, shape-checked with null-fill fallback) |
+| `src/lib/distance.ts` | `haversineKm`, `goongDistanceKm` (1→1), `goongMatrix` (1→N batch), `goongMatrixMultiOrigin` (N→1, one request — undocumented-but-verified Goong behavior, shape-checked with null-fill fallback); `roadMatrixOneToMany`/`roadMatrixManyToOne` walk the **provider chain: VietMap → Goong → second Goong account** (footgun 12) |
 | `src/lib/distance-cache.ts` | `roadDistancesToPoint` (N→1), `roadDistancesFromPoint` (1→N) — resolve pairs cheapest-first: self-pair = 0 km free, then a non-expiring Redis cache (`dist:v1:` keys **truncated to 5 dp** — read, don't round, mirrors Excel `TRUNC`; value `{distance_km, eta_mins, from, to}` keeps the exact coords), then ONE matrix call for misses (write-behind; nulls never cached). Each result carries `source: "self"\|"cache"\|"api"`. `exportCachedDistances()` dumps all pairs (read-only SCAN+MGET) for download |
 | `src/lib/job-filters.ts` | `JOB_STATUS`, `STOP_STATUS` maps; `isActiveStop`, `isCompletedOrRejectedStop`, `isStopStarted` |
 | `src/lib/smart-rank.ts` | `RefStop`, `RefLabel`, `selectReferenceStop`, `computeStopStats`, `rankingComparator`; anchor honesty: `isUnreachedAnchor`, `liveGpsRef`, `lastRealPositionRef` (see footgun 9) |
 | `src/lib/time.ts` | `vnDate`, `vnTimestamp`, `vnHoursMinutes`, `vnMinutesSinceMidnight`, `vnDayWindow`, `parseVnTimestamp` |
 | `src/lib/tat.ts` | Driver TAT: `legsForRoute` / `buildDayLegs` cut a day into **legs** (rides between consecutive stops, in the order actually worked), `MINS_PER_KM`, `targetMinsFor`, `summarize`. See `docs/driver-tat.md` |
-| `src/lib/tat-archive.ts` | `archiveDay` — fetch, price and **replace** one day in Supabase `tat_legs` |
+| `src/lib/pay.ts` | Part-time pay: `RATE_PER_HOUR_VND`/`RATE_PER_KM_VND`, `buildDayPay` (routes → paid jobs + chấm-công punches), `workedMinutes` (the PROVISIONAL pairing formula — see footgun 11), `hourPayFor`/`kmPayFor`. See `docs/driver-pay.md` |
+| `src/lib/tat-archive.ts` | `archiveDay` — fetch, price and **replace** one day in Supabase `tat_legs`, and (in the same pass, off the same routes) `pay_jobs` + `pay_punches` |
 | `src/lib/supabase-rest.ts` | `sbSelect` / `sbInsert` / `sbUpsert` / `sbDelete` — PostgREST over `fetch`, service-role, SERVER ONLY. No SDK dependency by design |
 
 ### Key Types (`src/lib/types.ts`)
@@ -373,8 +376,57 @@ These are the things most likely to burn a future agent working on this codebase
     gives; the list changes once or twice a month, so a stale copy costs nothing but a
     cycle's delay.
 
+11. **Part-time pay measures JOBS, where TAT measures LEGS — and both are right.**
+    A paid kilometre is one job's pickup → dropoff. A TAT leg is the ride between two
+    consecutive stops. A driver collecting at three clinics before the lab run rides
+    four legs while completing three jobs, so the two km figures on the two tabs will
+    never match. Do not "fix" either to agree with the other: the leg is what they
+    rode, the job pair is what payroll pays, and the job pair is the same measure
+    `/api/export-completed` has produced for the payroll CSV all along.
+
+    **The hours formula is PROVISIONAL and lives in exactly one function.**
+    `workedMinutes` in `pay.ts` pairs each check-in with the next check-out and sums
+    the pairs; an unpaired check-in pays nothing and is surfaced with a ⚠ rather than
+    closed at a guessed time. The payroll rule is still being settled, which is why
+    the archive stores the RAW taps (all three activity stamps) and the minutes are
+    derived on READ. Changing the rule must stay a change to that one function — no
+    minute count is ever written to a column, deliberately, so a new formula applies
+    to every past month with no re-archive and no billed distance lookup behind it.
+
+    Distance is the opposite: `distance_km` is frozen onto the row because resolving
+    a new pair costs a billed request, and recomputing it would re-spend money to get
+    the same number.
+
+    **Pay rides `archiveDay` — do NOT add a schedule for it** (same rule as footgun 8).
+    `archivePay()` runs off the same routes the leg archive already fetched, after the
+    legs are written, inside its own try/catch: a pay failure must never release the
+    seal and cost the day its legs. `scripts/pay.test.mts`, `docs/driver-pay.md`.
+
+12. **The road-distance provider chain leads with VIETMAP, then Goong, then the
+    second Goong account.** It used to be the other way round. The binding constraint
+    on every distance in the system is a DAILY cap rather than answer quality —
+    batching and pacing both proved powerless against it, and Goong's cap is what
+    repeatedly left days unpriced — so the roomier allowance goes first and the scarce
+    one is spent only on what the roomy one could not answer.
+
+    The order lives in ONE place (`roadMatrixOneToMany` / `roadMatrixManyToOne` in
+    `distance.ts`) and `scripts/distance-chain.test.mts` pins it, because a chain that
+    silently reverts costs real money on the tighter account and says nothing.
+
+    Two consequences worth knowing before touching it:
+
+    - **`signal` brakes the LEAD; `FallbackState` brakes the links behind it.** Its
+      fields are `goong` and `goong2` now — renamed from `vietmap` when the order
+      flipped, because a field naming the wrong provider is worse than no field.
+      `/api/distance-checking`'s `quotaReached` therefore means "VietMap is capped",
+      not "nothing will answer"; Goong still fills the gaps behind it, so the flag is
+      now conservative advice rather than the literal truth.
+    - **Nothing already cached is re-asked.** The switch redirects only genuinely new
+      lookups, and a pair once answered keeps its original provider's figure forever
+      — which is exactly why no archived number moves when the chain is reordered.
+
 See `docs/business-rules.md` for deeper detail, `docs/cartrack-api.md` for API reference,
-and `docs/driver-tat.md` for the TAT module.
+`docs/driver-tat.md` for the TAT module, and `docs/driver-pay.md` for part-time pay.
 
 ## CI/CD
 

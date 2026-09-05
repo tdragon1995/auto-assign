@@ -1,16 +1,23 @@
 /**
- * VietMap Matrix v4 — the fallback road-distance provider behind Goong.
+ * VietMap Matrix v4 — the LEAD road-distance provider, with Goong behind it.
  *
- * WHY A SECOND PROVIDER. Goong is a single point of failure for every distance in
- * the system, and when it stops answering the failure is silent and permanent:
- * failed lookups are deliberately never cached, so an unanswered pair is re-asked
- * on every future pass and never resolves. That is exactly what left ~13,000 legs
- * (a third of two months' work) with no distance, no target and no verdict — and
- * because nothing logged a status code, it took three wrong explanations to find.
+ * WHY MORE THAN ONE PROVIDER. Either one alone is a single point of failure whose
+ * failure mode is silent and permanent: failed lookups are deliberately never
+ * cached, so an unanswered pair is re-asked on every future pass and never
+ * resolves. That is exactly what left ~13,000 legs (a third of two months' work)
+ * with no distance, no target and no verdict — and because nothing logged a status
+ * code, it took three wrong explanations to find.
+ *
+ * WHY IT LEADS RATHER THAN FOLLOWS. It was written as the fallback behind two
+ * Goong accounts, and Goong's DAILY cap is what the archive kept running into.
+ * The binding constraint is the allowance, not the answer — either provider prices
+ * a leg well enough — so the roomier allowance goes first and the scarce one is
+ * spent only on what the roomy one could not answer. The order lives in exactly
+ * one place (the provider chain in distance.ts); nothing in this file assumes it.
  *
  * SHAPE MATCHES GOONG DELIBERATELY. Same GoongResult out, same "null means no
  * answer" contract, so the cache, the batching and every caller stay unchanged and
- * neither provider is privileged anywhere except the one fallback line.
+ * neither provider is privileged anywhere except the chain's own ordering.
  *
  * DOCS: https://maps.vietmap.vn/docs/map-api/matrix-version/matrix-v4/
  *   GET /api/matrix/v4?apikey=…&point=lat,lng&point=…&sources=0;1&destinations=2;3
@@ -21,7 +28,9 @@
  *
  * Distances from two providers will not agree to the metre. That is acceptable and
  * visible — a leg priced by either is far better than one with no price at all —
- * but it is why the fallback is a fallback and not a load-balanced pair.
+ * and it is why a pair, once answered, is cached forever rather than re-asked:
+ * whichever provider answered a pair first keeps answering it, so no figure moves
+ * underneath a report because the chain reordered.
  */
 import { fetchRetrying } from "./distance";
 import type { GoongResult, QuotaSignal } from "./distance";
