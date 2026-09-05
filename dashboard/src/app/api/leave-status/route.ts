@@ -24,12 +24,13 @@ export const preferredRegion = "sin1";
  *  Status sheet. Powers the dashboard "Cần xử lý" leave-status panel.
  *  `?fresh=1` busts the 5-min sheet cache first (dashboard Refresh button).
  *
- *  `?date=YYYY-MM-DD` adds that ONE further day under `picked`, for the panel's
- *  "xem ngày khác". It costs nothing: `loadLeaveEntries` already returns the
- *  whole sheet — every row, every date — and today and tomorrow are just two
- *  filters over it. Another day is a third filter over the same cached parse, so
- *  no sheet read, no upstream call, and deliberately no `fresh` of its own: a
- *  date the supervisor is browsing is not a reason to re-download the tab. */
+ *  `?date=YYYY-MM-DD[&days=N]` adds those days under `picked`, for the panel's
+ *  week view. It costs nothing: `loadLeaveEntries` already returns the whole
+ *  sheet — every row, every date — and today and tomorrow are just two filters
+ *  over it. A week is seven more filters over the SAME cached parse, so no sheet
+ *  read, no upstream call, and deliberately no `fresh` of its own: a week the
+ *  supervisor is paging through is not a reason to re-download the tab. That is
+ *  why the panel asks for a whole week in one request rather than seven. */
 export async function GET(req: NextRequest) {
   try {
     const url = new URL(req.url);
@@ -42,6 +43,12 @@ export async function GET(req: NextRequest) {
     if (asked && !picked) {
       return NextResponse.json({ error: `Ngày không hợp lệ: ${asked}` }, { status: 400 });
     }
+    // Bounded, not because the filtering is expensive — it is seven walks over an
+    // array already in memory — but because the RESPONSE is not: every day
+    // carries its rows, and an unbounded `days` would let one URL ask for a year
+    // of them. A fortnight covers the week view and its neighbours.
+    const askedDays = Number(url.searchParams.get("days") ?? "1");
+    const days = Number.isFinite(askedDays) ? Math.min(Math.max(Math.trunc(askedDays), 1), 14) : 1;
     const entries = await loadLeaveEntries(fresh);
     // Shares the same cached parse as the call above — no second sheet read.
     const dropped = await loadInvalidLeaveRows();
@@ -77,12 +84,17 @@ export async function GET(req: NextRequest) {
       // the point of the feature is fixing an uncovered day BEFORE it arrives,
       // and the writes behind those rows address a row by driver + date +
       // window, so they already work on any day.
+      // Always an ARRAY, even for one day: one shape for the caller to handle
+      // beats a field that changes type with a query parameter.
       ...(picked
         ? {
             picked: {
-              date: picked,
-              entries: leaveEntriesOnDate(picked, entries),
-              invalid: invalidLeaveRowsOnDate(picked, dropped),
+              from: picked,
+              days: Array.from({ length: days }, (_, i) => addDays(picked, i)).map((d) => ({
+                date: d,
+                entries: leaveEntriesOnDate(d, entries),
+                invalid: invalidLeaveRowsOnDate(d, dropped),
+              })),
             },
           }
         : {}),

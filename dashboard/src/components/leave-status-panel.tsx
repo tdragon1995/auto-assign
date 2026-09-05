@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { AlertTriangle, Palmtree } from "lucide-react";
+import { AlertTriangle, ChevronLeft, ChevronRight, Palmtree } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { SectionHeader } from "./section-header";
@@ -575,42 +575,6 @@ function DriverCard({
   );
 }
 
-function DaySection({
-  label,
-  groups,
-  driverNames,
-  onFill,
-  onDelete,
-}: {
-  label: string;
-  groups: DriverGroup[];
-  driverNames: Set<string>;
-  onFill: FillSubsFn;
-  onDelete: DeleteRowFn;
-}) {
-  return (
-    <div className="flex-1 min-w-[220px]">
-      {/* Count = people off, not sheet rows */}
-      <SectionHeader label={label} count={groups.length} className="mb-1" />
-      {groups.length === 0 ? (
-        <p className="text-xs text-slate-500">Không có ai nghỉ</p>
-      ) : (
-        <div className="divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200">
-          {groups.map((g) => (
-            <DriverCard
-              key={g.driver_id}
-              g={g}
-              driverNames={driverNames}
-              onFill={onFill}
-              onDelete={onDelete}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 /** Uncovered = day-leave drivers (not resigned) with a window that has no
  *  substitute — the actionable count surfaced in the collapsed header. */
 function uncoveredCount(groups: DriverGroup[]): number {
@@ -687,14 +651,10 @@ function UncoveredRowItem({
                 approved only in part leaves days off that nobody is actually
                 taking, and the fix for those is removing the row, not staffing
                 it. Both answers live on the row that raises the question. */}
-            <DeleteRowButton
-              identity={{
-                driver_id: item.driver_id,
-                leave_from: item.row.leave_from,
-                timeLabel: item.row.timeLabel,
-              }}
-              onDelete={onDelete}
-            />
+            {/* Primary action first, destructive last. Reading order is action
+                order here: "Thêm người thay" is what this row is FOR, and a
+                delete sitting in front of it puts the irreversible option under
+                the thumb that was reaching for the ordinary one. */}
             <Button
               size="sm"
               variant="outline"
@@ -703,6 +663,14 @@ function UncoveredRowItem({
             >
               Thêm người thay
             </Button>
+            <DeleteRowButton
+              identity={{
+                driver_id: item.driver_id,
+                leave_from: item.row.leave_from,
+                timeLabel: item.row.timeLabel,
+              }}
+              onDelete={onDelete}
+            />
           </span>
         )}
       </div>
@@ -804,181 +772,246 @@ export function uncoveredLeaveCount(...days: LeaveOnDate[][]): number {
  * a row number, so filling in next Tuesday's substitute here is the identical
  * operation to filling in today's.
  */
-function OtherDaySection({
+/** Vietnamese weekday, from a YYYY-MM-DD read as UTC so no local offset can
+ *  shift it a day. Index 0 is Sunday, which is why the table starts there. */
+const WEEKDAY = ["Chủ Nhật", "Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy"] as const;
+
+function weekdayOf(date: string): string {
+  const d = new Date(date + "T00:00:00Z");
+  return Number.isNaN(d.getTime()) ? "" : WEEKDAY[d.getUTCDay()];
+}
+
+/**
+ * The Monday on or before `date`.
+ *
+ * Monday, not Sunday: the roster this panel reports on is worked Monday to
+ * Saturday, and a week that breaks between Saturday and Sunday would split the
+ * busiest stretch across two pages.
+ */
+export function weekStartOf(date: string): string {
+  const d = new Date(date + "T00:00:00Z");
+  if (Number.isNaN(d.getTime())) return date;
+  return addDays(date, -((d.getUTCDay() + 6) % 7));
+}
+
+const DAYS_IN_WEEK = 7;
+
+interface DayLeave {
+  date: string;
+  entries: LeaveOnDate[];
+  invalid: InvalidLeaveRow[];
+}
+
+/**
+ * A week of leave at a time, paged with the arrows.
+ *
+ * It replaced a single-date picker plus separate "today" and "tomorrow" blocks.
+ * Two things were wrong with that: the question this panel answers is "who is
+ * off, and is anyone uncovered" — which is a question about the WEEK, since
+ * cover is arranged days ahead — and today appeared twice the moment anyone
+ * picked a date, once in its own section and once in the picker's.
+ *
+ * Every day is listed, including the empty ones. An empty day costs one quiet
+ * line and keeps the week's SHAPE readable: "Tuesday is clear, Thursday has
+ * four" is the thing being looked for, and a list that silently omits the clear
+ * days cannot show it.
+ *
+ * The whole week arrives in ONE request. `loadLeaveEntries` returns the entire
+ * sheet and each day is a filter over that same cached parse, so seven days cost
+ * no more upstream work than one — see the note on the route.
+ */
+function WeekSection({
   today,
   driverNames,
   onFill,
   onDelete,
   registerReload,
 }: {
-  /** Saigon's today, as the floor for the picker. */
+  /** Saigon's today: the default week, and the day marked as current. */
   today: string;
   driverNames: Set<string>;
   onFill: FillSubsFn;
   onDelete: DeleteRowFn;
-  /** Hands the parent a way to re-read the chosen day after a write, so a
+  /** Hands the parent a way to re-read the shown week after a write, so a
    *  substitute filled in here does not leave the row still reading uncovered. */
   registerReload: (fn: (() => void) | null) => void;
 }) {
-  const [date, setDate] = useState("");
+  const [weekStart, setWeekStart] = useState(() => weekStartOf(today));
   const [state, setState] = useState<{
     loading: boolean;
     error: string | null;
-    /** The day actually loaded — not `date`, which changes the moment the input
-     *  does. Keeping them apart is what stops one day's rows being labelled with
-     *  another day while a fetch is in flight. */
+    /** The week actually loaded — not `weekStart`, which changes the moment an
+     *  arrow is pressed. Keeping them apart is what stops one week's rows being
+     *  labelled with another week's dates while a fetch is in flight. */
     shown: string | null;
-    entries: LeaveOnDate[];
-    invalid: InvalidLeaveRow[];
-  }>({ loading: false, error: null, shown: null, entries: [], invalid: [] });
+    days: DayLeave[];
+  }>({ loading: true, error: null, shown: null, days: [] });
 
-  const load = useCallback(async (d: string) => {
-    if (!d) {
-      setState({ loading: false, error: null, shown: null, entries: [], invalid: [] });
-      return;
-    }
+  const load = useCallback(async (from: string) => {
     setState((s) => ({ ...s, loading: true, error: null }));
     try {
-      const res = await fetch(`/api/leave-status?date=${encodeURIComponent(d)}`, { cache: "no-store" });
+      const res = await fetch(
+        `/api/leave-status?date=${encodeURIComponent(from)}&days=${DAYS_IN_WEEK}`,
+        { cache: "no-store" },
+      );
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.picked) throw new Error(data.error || `Lỗi ${res.status}`);
       setState({
         loading: false,
         error: null,
-        shown: String(data.picked.date ?? d),
-        entries: Array.isArray(data.picked.entries) ? data.picked.entries : [],
-        invalid: Array.isArray(data.picked.invalid) ? data.picked.invalid : [],
+        shown: String(data.picked.from ?? from),
+        days: Array.isArray(data.picked.days) ? (data.picked.days as DayLeave[]) : [],
       });
     } catch (e) {
       setState((s) => ({ ...s, loading: false, error: e instanceof Error ? e.message : String(e) }));
     }
   }, []);
 
-  // A write from inside this section refreshes THIS day, not the panel's two.
+  useEffect(() => { void load(weekStart); }, [load, weekStart]);
+
   useEffect(() => {
     registerReload(state.shown ? () => void load(state.shown!) : null);
     return () => registerReload(null);
   }, [registerReload, load, state.shown]);
 
-  const pick = (d: string) => { setDate(d); void load(d); };
-
-  const groups = groupByDriver(state.entries);
-  const uncovered = uncoveredCount(groups);
-  const ignored = state.invalid.filter((r) => !r.recovered);
+  const thisWeek = weekStartOf(today);
+  const onThisWeek = weekStart === thisWeek;
+  const weekEnd = addDays(weekStart, DAYS_IN_WEEK - 1);
+  // Totals over the week, so the header answers "is there anything to do here"
+  // without reading seven day headings.
+  const weekUncovered = state.days.reduce(
+    (n, d) => n + uncoveredCount(groupByDriver(d.entries)),
+    0,
+  );
 
   return (
     <div className="mt-2 border-t border-slate-200 pt-2">
       <div className="flex flex-wrap items-center gap-1.5">
-        <label htmlFor="leave-other-day" className="text-[11px] font-medium text-slate-700">
-          Xem ngày khác
-        </label>
-        <input
-          id="leave-other-day"
-          type="date"
-          value={date}
-          min={today}
-          onChange={(e) => pick(e.target.value)}
-          className="rounded border border-slate-300 bg-white px-1.5 py-1 text-xs text-slate-900 outline-none focus:ring-2 focus:ring-indigo-400/50"
-        />
-        {/* Two clicks that cover most of what this is for — checking the rest of
-            the week — without making the date field decoration. Named by what
-            they mean, not by their date: a bare "06/09" beside a field already
-            showing a date is one more number to decode, and the date it lands on
-            is on the section header a line below either way. */}
-        {([["Ngày kia", 2], ["Tuần sau", 7]] as const).map(([label, n]) => {
-          const d = addDays(today, n);
-          const sel = state.shown === d;
-          return (
-            <Button
-              key={n}
-              size="sm" variant="outline"
-              // Selected is a STATE, so it has to be visible and not only
-              // announced: a chip carrying aria-pressed and no styling tells a
-              // screen reader which day is on screen and tells everyone else
-              // nothing.
-              className={`h-6 px-2 text-[11px] ${sel ? "border-indigo-400 bg-indigo-50 text-indigo-900" : ""}`}
-              aria-pressed={sel}
-              title={ddmm(d)}
-              onClick={() => pick(d)}
-            >
-              {label}
-            </Button>
-          );
-        })}
-        {(date || state.shown) && (
+        <div className="flex items-center gap-0.5">
           <Button
-            size="sm" variant="ghost"
-            className="h-6 px-2 text-[11px]"
-            onClick={() => { setDate(""); void load(""); }}
+            size="sm" variant="outline"
+            className="size-6 p-0"
+            aria-label="Tuần trước"
+            onClick={() => setWeekStart((w) => addDays(w, -DAYS_IN_WEEK))}
           >
-            Bỏ chọn
+            <ChevronLeft className="size-3.5" strokeWidth={2} />
           </Button>
+          <Button
+            size="sm" variant="outline"
+            className="size-6 p-0"
+            aria-label="Tuần sau"
+            onClick={() => setWeekStart((w) => addDays(w, DAYS_IN_WEEK))}
+          >
+            <ChevronRight className="size-3.5" strokeWidth={2} />
+          </Button>
+        </div>
+        {/* Announced, because the arrows change the whole list below and a
+            screen reader would otherwise hear nothing move. */}
+        <span aria-live="polite" className="text-xs font-semibold text-slate-800">
+          {ddmm(weekStart)} – {ddmm(weekEnd)}
+        </span>
+        {onThisWeek ? (
+          <span className="rounded-full border border-indigo-200 bg-indigo-50 px-1.5 py-0 text-[11px] font-semibold text-indigo-800">
+            Tuần này
+          </span>
+        ) : (
+          // Only offered when it would DO something: a reset button that is
+          // already at its target is a control that answers a press with
+          // nothing, and the user learns to distrust the row.
+          <Button
+            size="sm" variant="outline"
+            className="h-6 px-2 text-[11px]"
+            onClick={() => setWeekStart(thisWeek)}
+          >
+            Về tuần này
+          </Button>
+        )}
+        {weekUncovered > 0 && (
+          <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-100 px-1.5 py-0 text-[11px] font-semibold text-amber-800">
+            <AlertTriangle className="size-3" strokeWidth={2} />
+            {weekUncovered} chưa có người thay
+          </span>
         )}
       </div>
 
       {state.loading && (
         <div className="mt-1.5 space-y-1" aria-hidden>
-          {[0, 1].map((i) => (
+          {[0, 1, 2].map((i) => (
             <div key={i} className="h-7 animate-pulse rounded border border-slate-200 bg-slate-100 motion-reduce:animate-none" />
           ))}
         </div>
       )}
       <span role="status" className="sr-only">
-        {state.loading ? "Đang tải ngày nghỉ" : ""}
+        {state.loading ? "Đang tải lịch nghỉ trong tuần" : ""}
       </span>
 
       {state.error && (
-        <div role="alert" className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-red-600">
+        <div role="alert" className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-red-700">
           <span className="min-w-0 break-words">{state.error}</span>
-          {date && (
-            <Button size="sm" variant="outline" className="h-6 shrink-0 px-2 text-[11px]" onClick={() => void load(date)}>
-              Thử lại
-            </Button>
-          )}
+          <Button
+            size="sm" variant="outline"
+            className="h-6 shrink-0 px-2 text-[11px]"
+            onClick={() => void load(weekStart)}
+          >
+            Thử lại
+          </Button>
         </div>
-      )}
-
-      {!state.loading && !state.error && !state.shown && (
-        <p className="mt-1.5 text-[11px] text-slate-600">
-          Chọn một ngày để xem ai nghỉ và ai chưa có người thay — sửa được từ đây, trước khi tới ngày đó.
-        </p>
       )}
 
       {!state.loading && !state.error && state.shown && (
-        <div className="mt-1.5">
-          {/* The uncovered count is stated here rather than only coloured: the
-              collapsed header above counts today and tomorrow only, and a day
-              this far out has nothing else pointing at it. */}
-          <div className="mb-1 flex flex-wrap items-center gap-1.5">
-            <span className="text-[11px] font-semibold text-slate-700">{ddmm(state.shown)}</span>
-            {uncovered > 0 && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-100 px-1.5 py-0 text-[11px] font-semibold text-amber-800">
-                <AlertTriangle className="size-3" strokeWidth={2} />
-                {uncovered} chưa có người thay
-              </span>
-            )}
-            {ignored.length > 0 && (
-              <span className="rounded-full border border-red-200 bg-red-50 px-1.5 py-0 text-[11px] font-semibold text-red-700">
-                {ignored.length} dòng lỗi
-              </span>
-            )}
-          </div>
-          {groups.length === 0 ? (
-            <p className="text-xs text-slate-600">Không có ai nghỉ ngày {ddmm(state.shown)}.</p>
-          ) : (
-            <div className="divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200">
-              {groups.map((g) => (
-                <DriverCard
-                  key={g.driver_id}
-                  g={g}
-                  driverNames={driverNames}
-                  onFill={onFill}
-                  onDelete={onDelete}
-                />
-              ))}
-            </div>
-          )}
-        </div>
+        <ul className="mt-1.5 divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200">
+          {state.days.map((d) => {
+            const groups = groupByDriver(d.entries);
+            const uncovered = uncoveredCount(groups);
+            const ignored = d.invalid.filter((r) => !r.recovered);
+            const isToday = d.date === today;
+            return (
+              <li key={d.date}>
+                <div
+                  className={`flex flex-wrap items-baseline gap-x-1.5 px-2 py-1 ${
+                    isToday ? "bg-indigo-50/70" : "bg-slate-50"
+                  }`}
+                >
+                  <span className="text-[11px] font-semibold text-slate-800">{weekdayOf(d.date)}</span>
+                  <span className="font-mono text-[11px] text-slate-600">{ddmm(d.date)}</span>
+                  {isToday && (
+                    <span className="rounded-full border border-indigo-200 bg-white px-1.5 py-0 text-[10px] font-semibold text-indigo-800">
+                      Hôm nay
+                    </span>
+                  )}
+                  {groups.length > 0 && (
+                    <span className="text-[11px] text-slate-600">{groups.length} nghỉ</span>
+                  )}
+                  {uncovered > 0 && (
+                    <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-800">
+                      <AlertTriangle className="size-3" strokeWidth={2} />
+                      {uncovered} chưa có người thay
+                    </span>
+                  )}
+                  {ignored.length > 0 && (
+                    <span className="text-[11px] font-semibold text-red-700">{ignored.length} dòng lỗi</span>
+                  )}
+                  {groups.length === 0 && (
+                    <span className="text-[11px] text-slate-600">Không có ai nghỉ</span>
+                  )}
+                </div>
+                {groups.length > 0 && (
+                  <div className="divide-y divide-slate-100">
+                    {groups.map((g) => (
+                      <DriverCard
+                        key={g.driver_id}
+                        g={g}
+                        driverNames={driverNames}
+                        onFill={onFill}
+                        onDelete={onDelete}
+                      />
+                    ))}
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
       )}
     </div>
   );
@@ -1039,8 +1072,6 @@ export function LeaveStatusPanel({
   const invalidIgnored = invalid.filter((r) => !r.recovered).sort(byDriver);
   const invalidRecovered = invalid.filter((r) => r.recovered).sort(byDriver);
 
-  const fillSubs = makeFillSubs(onRefresh);
-  const deleteRow = makeDeleteRow(onRefresh);
   const restoreRow = makeRestoreRow(onRefresh);
 
   /**
@@ -1255,23 +1286,12 @@ export function LeaveStatusPanel({
                 </ul>
               </div>
             )}
-            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-              <DaySection
-                label="Hôm nay"
-                groups={todayGroups}
-                driverNames={driverNames}
-                onFill={fillSubs}
-                onDelete={deleteRow}
-              />
-              <DaySection
-                label="Ngày mai"
-                groups={tomorrowGroups}
-                driverNames={driverNames}
-                onFill={fillSubs}
-                onDelete={deleteRow}
-              />
-            </div>
-            <OtherDaySection
+            {/* One week, not a today block plus a tomorrow block plus a picker.
+                Today and tomorrow are two of the seven days, marked in place —
+                the previous shape showed today twice the moment anyone picked a
+                date, and could not answer the question cover is actually
+                arranged against, which is what the WEEK looks like. */}
+            <WeekSection
               today={vnDate()}
               driverNames={driverNames}
               onFill={otherDayFill}

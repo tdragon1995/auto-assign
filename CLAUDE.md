@@ -103,6 +103,17 @@ through the same `POST /api/nghi-phep` a driver's own form uses — so
   later failure raises the dashboard's sheet alarm instead of going quiet.
   `scripts/leave-suppression.test.mts`.
 
+  The panel shows a WEEK at a time, paged with the arrows, rather than a today
+  block plus a tomorrow block plus a date picker. Cover is arranged days ahead,
+  so the week is the unit the question is asked in — and the old shape showed
+  today twice the moment anyone picked a date. Every day is listed including the
+  empty ones: an empty day costs one line and keeps the week's shape readable,
+  which is the thing being looked for. The whole week arrives in ONE request
+  (`?date=<monday>&days=7`) because `loadLeaveEntries` returns the entire sheet
+  and each day is a filter over that same cached parse — seven days cost no more
+  upstream work than one. `days` is capped at 14: the filtering is free, the
+  RESPONSE is not. Week starts Monday (`weekStartOf`, `scripts/leave-week.test.mts`).
+
   Both post-write refreshes pass `fresh=1` (`loadLeaveStatus(true)`). Not for
   the server cache — the write path already cleared that — but because
   `loadLeaveStatus` skips any non-fresh reload inside a 5-minute window, which
