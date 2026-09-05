@@ -575,51 +575,6 @@ function DriverCard({
   );
 }
 
-/**
- * One named day, listed in full.
- *
- * Today and tomorrow keep their own sections above the week: they are the two
- * days anyone can still do something about before the shift starts, and the
- * week below is the WIDER range — a place to look ahead, not the default view.
- * Answering "who is off right now" should not cost a scan down seven day
- * headings for the two that are urgent.
- */
-function DaySection({
-  label,
-  groups,
-  driverNames,
-  onFill,
-  onDelete,
-}: {
-  label: string;
-  groups: DriverGroup[];
-  driverNames: Set<string>;
-  onFill: FillSubsFn;
-  onDelete: DeleteRowFn;
-}) {
-  return (
-    <div className="flex-1 min-w-[220px]">
-      {/* Count = people off, not sheet rows */}
-      <SectionHeader label={label} count={groups.length} className="mb-1" />
-      {groups.length === 0 ? (
-        <p className="text-xs text-slate-600">Không có ai nghỉ</p>
-      ) : (
-        <div className="divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200">
-          {groups.map((g) => (
-            <DriverCard
-              key={g.driver_id}
-              g={g}
-              driverNames={driverNames}
-              onFill={onFill}
-              onDelete={onDelete}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 /** Uncovered = day-leave drivers (not resigned) with a window that has no
  *  substitute — the actionable count surfaced in the collapsed header. */
 function uncoveredCount(groups: DriverGroup[]): number {
@@ -821,11 +776,6 @@ export function uncoveredLeaveCount(...days: LeaveOnDate[][]): number {
  *  shift it a day. Index 0 is Sunday, which is why the table starts there. */
 const WEEKDAY = ["Chủ Nhật", "Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy"] as const;
 
-function weekdayOf(date: string): string {
-  const d = new Date(date + "T00:00:00Z");
-  return Number.isNaN(d.getTime()) ? "" : WEEKDAY[d.getUTCDay()];
-}
-
 /**
  * The Monday on or before `date`.
  *
@@ -865,6 +815,45 @@ interface DayLeave {
  * sheet and each day is a filter over that same cached parse, so seven days cost
  * no more upstream work than one — see the note on the route.
  */
+/** Weekday, short for a column head and long for a screen reader. Index 0 is
+ *  Sunday, matching getUTCDay. */
+const WEEKDAY_SHORT = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"] as const;
+
+function weekdayIndex(date: string): number {
+  const d = new Date(date + "T00:00:00Z");
+  return Number.isNaN(d.getTime()) ? -1 : d.getUTCDay();
+}
+function weekdayShort(date: string): string {
+  const i = weekdayIndex(date);
+  return i < 0 ? "" : WEEKDAY_SHORT[i];
+}
+function weekdayLong(date: string): string {
+  const i = weekdayIndex(date);
+  return i < 0 ? "" : WEEKDAY[i];
+}
+
+/** Which driver, on which day, is open in the detail strip. Keyed by both
+ *  because one driver is off on several days of a week. */
+interface Picked { date: string; driverId: string }
+
+/**
+ * The week as SEVEN COLUMNS, with the day being worked on opened underneath.
+ *
+ * A column is ~150px, which fits a name and a window and nothing else — the sub
+ * editor alone is a name field plus two time selects plus two buttons. So the
+ * grid is not asked to carry the actions. It carries the SHAPE of the week,
+ * which is what seven columns are uniquely good at: "Thursday is the problem"
+ * is one glance here and a scroll through seven headings in a list.
+ *
+ * Picking a name opens that driver's day below the grid at full width, in the
+ * SAME DriverCard the rest of the panel uses. That is the whole trick: the
+ * compact view is new, the acting view is the one that already works, so there
+ * is no second copy of the substitute editor or the delete guard to drift.
+ *
+ * Columns collapse before they get unreadable — two on a phone, four on a
+ * tablet, seven only where seven fit. A 150px column at 7-across on a 700px
+ * screen is 100px, and a Vietnamese name does not go in 100px.
+ */
 function WeekSection({
   today,
   driverNames,
@@ -882,12 +871,13 @@ function WeekSection({
   registerReload: (fn: (() => void) | null) => void;
 }) {
   const [weekStart, setWeekStart] = useState(() => weekStartOf(today));
+  const [picked, setPicked] = useState<Picked | null>(null);
   const [state, setState] = useState<{
     loading: boolean;
     error: string | null;
     /** The week actually loaded — not `weekStart`, which changes the moment an
-     *  arrow is pressed. Keeping them apart is what stops one week's rows being
-     *  labelled with another week's dates while a fetch is in flight. */
+     *  arrow is pressed. Keeping them apart is what stops one week's columns
+     *  being labelled with another week's dates while a fetch is in flight. */
     shown: string | null;
     days: DayLeave[];
   }>({ loading: true, error: null, shown: null, days: [] });
@@ -913,6 +903,8 @@ function WeekSection({
   }, []);
 
   useEffect(() => { void load(weekStart); }, [load, weekStart]);
+  // A different week cannot keep the old week's selection open.
+  useEffect(() => { setPicked(null); }, [weekStart]);
 
   useEffect(() => {
     registerReload(state.shown ? () => void load(state.shown!) : null);
@@ -922,12 +914,20 @@ function WeekSection({
   const thisWeek = weekStartOf(today);
   const nextWeek = addDays(thisWeek, DAYS_IN_WEEK);
   const weekEnd = addDays(weekStart, DAYS_IN_WEEK - 1);
-  // Totals over the week, so the header answers "is there anything to do here"
-  // without reading seven day headings.
-  const weekUncovered = state.days.reduce(
-    (n, d) => n + uncoveredCount(groupByDriver(d.entries)),
-    0,
-  );
+
+  // Grouped once, used by both the columns and the detail strip below.
+  const byDay = state.days.map((d) => ({
+    date: d.date,
+    groups: groupByDriver(d.entries),
+    ignored: d.invalid.filter((r) => !r.recovered).length,
+  }));
+  const weekUncovered = byDay.reduce((n, d) => n + uncoveredCount(d.groups), 0);
+
+  // The open driver, re-found in the CURRENT data rather than remembered: a
+  // write may have removed the very row that was open, and a stale copy would
+  // keep offering to delete something already gone.
+  const openDay = picked ? byDay.find((d) => d.date === picked.date) : undefined;
+  const openGroup = openDay?.groups.find((g) => g.driver_id === picked?.driverId);
 
   return (
     <div className="mt-2 border-t border-slate-200 pt-2">
@@ -950,18 +950,11 @@ function WeekSection({
             <ChevronRight className="size-3.5" strokeWidth={2} />
           </Button>
         </div>
-        {/* Announced, because the arrows change the whole list below and a
+        {/* Announced, because the arrows change the whole grid below and a
             screen reader would otherwise hear nothing move. */}
         <span aria-live="polite" className="text-xs font-semibold text-slate-800">
           {ddmm(weekStart)} – {ddmm(weekEnd)}
         </span>
-        {/* Two named jumps for the two weeks anyone actually asks for, always
-            present rather than appearing and vanishing: a control that moves
-            costs more to re-find than it saves in tidiness. Which one you are
-            ON is a STATE, so it is styled and not only announced — a chip
-            carrying aria-pressed and no styling tells a screen reader where it
-            is and tells everyone else nothing. The arrows still reach any other
-            week. */}
         {([["Tuần hiện tại", thisWeek], ["Tuần tới", nextWeek]] as const).map(([label, target]) => {
           const on = weekStart === target;
           return (
@@ -985,9 +978,9 @@ function WeekSection({
       </div>
 
       {state.loading && (
-        <div className="mt-1.5 space-y-1" aria-hidden>
-          {[0, 1, 2].map((i) => (
-            <div key={i} className="h-7 animate-pulse rounded border border-slate-200 bg-slate-100 motion-reduce:animate-none" />
+        <div className="mt-1.5 grid grid-cols-2 gap-1 md:grid-cols-4 xl:grid-cols-7" aria-hidden>
+          {Array.from({ length: DAYS_IN_WEEK }, (_, i) => (
+            <div key={i} className="h-20 animate-pulse rounded border border-slate-200 bg-slate-100 motion-reduce:animate-none" />
           ))}
         </div>
       )}
@@ -1009,59 +1002,117 @@ function WeekSection({
       )}
 
       {!state.loading && !state.error && state.shown && (
-        <ul className="mt-1.5 divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200">
-          {state.days.map((d) => {
-            const groups = groupByDriver(d.entries);
-            const uncovered = uncoveredCount(groups);
-            const ignored = d.invalid.filter((r) => !r.recovered);
-            const isToday = d.date === today;
-            return (
-              <li key={d.date}>
+        <>
+          <div className="mt-1.5 grid grid-cols-2 gap-1 md:grid-cols-4 xl:grid-cols-7">
+            {byDay.map((d) => {
+              const isToday = d.date === today;
+              const uncovered = uncoveredCount(d.groups);
+              return (
                 <div
-                  className={`flex flex-wrap items-baseline gap-x-1.5 px-2 py-1 ${
-                    isToday ? "bg-indigo-50/70" : "bg-slate-50"
+                  key={d.date}
+                  className={`min-w-0 overflow-hidden rounded-md border ${
+                    isToday ? "border-indigo-300 bg-indigo-50/50" : "border-slate-200 bg-white"
                   }`}
                 >
-                  <span className="text-[11px] font-semibold text-slate-800">{weekdayOf(d.date)}</span>
-                  <span className="font-mono text-[11px] text-slate-600">{ddmm(d.date)}</span>
-                  {isToday && (
-                    <span className="rounded-full border border-indigo-200 bg-white px-1.5 py-0 text-[10px] font-semibold text-indigo-800">
-                      Hôm nay
-                    </span>
-                  )}
-                  {groups.length > 0 && (
-                    <span className="text-[11px] text-slate-600">{groups.length} nghỉ</span>
-                  )}
-                  {uncovered > 0 && (
-                    <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-800">
-                      <AlertTriangle className="size-3" strokeWidth={2} />
-                      {uncovered} chưa có người thay
-                    </span>
-                  )}
-                  {ignored.length > 0 && (
-                    <span className="text-[11px] font-semibold text-red-700">{ignored.length} dòng lỗi</span>
-                  )}
-                  {groups.length === 0 && (
-                    <span className="text-[11px] text-slate-600">Không có ai nghỉ</span>
+                  <div className={`px-1.5 py-1 ${isToday ? "bg-indigo-100/70" : "bg-slate-50"}`}>
+                    <div className="flex items-baseline justify-between gap-1">
+                      {/* Short in the head, spelled out for a screen reader —
+                          "T5" is a label a sighted reader decodes from position
+                          and a screen reader cannot decode at all. */}
+                      <span className="text-[11px] font-semibold text-slate-800">
+                        <abbr title={`${weekdayLong(d.date)} ${ddmm(d.date)}`} className="no-underline">
+                          {weekdayShort(d.date)}
+                        </abbr>
+                      </span>
+                      <span className="font-mono text-[10px] text-slate-600">{ddmm(d.date)}</span>
+                    </div>
+                    {(uncovered > 0 || d.ignored > 0) && (
+                      <div className="mt-0.5 flex flex-wrap gap-1">
+                        {uncovered > 0 && (
+                          <span className="inline-flex items-center gap-0.5 rounded-full border border-amber-300 bg-amber-100 px-1 py-0 text-[10px] font-semibold text-amber-800">
+                            <AlertTriangle className="size-2.5" strokeWidth={2} />
+                            {uncovered}
+                          </span>
+                        )}
+                        {d.ignored > 0 && (
+                          <span className="rounded-full border border-red-200 bg-red-50 px-1 py-0 text-[10px] font-semibold text-red-700">
+                            {d.ignored} lỗi
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  {d.groups.length === 0 ? (
+                    <p className="px-1.5 py-1 text-[11px] text-slate-500">—</p>
+                  ) : (
+                    <ul className="divide-y divide-slate-100">
+                      {d.groups.map((g) => {
+                        const resigned = g.loai_nghi === "Nghỉ việc";
+                        const open = !resigned && g.rows.some((r) => r.subs.length === 0);
+                        const sel = picked?.date === d.date && picked?.driverId === g.driver_id;
+                        const { name } = splitDriverName(g.driver_name || g.driver_id);
+                        return (
+                          <li key={g.driver_id}>
+                            <button
+                              type="button"
+                              aria-pressed={sel}
+                              onClick={() =>
+                                setPicked(sel ? null : { date: d.date, driverId: g.driver_id })
+                              }
+                              title={`${name} — ${weekdayLong(d.date)} ${ddmm(d.date)}`}
+                              className={`flex w-full items-center gap-1 px-1.5 py-1 text-left transition-colors duration-150 ${
+                                sel ? "bg-indigo-100" : "hover:bg-slate-50"
+                              }`}
+                            >
+                              <span
+                                className={`size-1.5 shrink-0 rounded-full ${
+                                  resigned ? "bg-red-500" : open ? "bg-amber-500" : "bg-slate-300"
+                                }`}
+                              />
+                              <span className="min-w-0 flex-1 truncate text-[11px] text-slate-800">{name}</span>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
                   )}
                 </div>
-                {groups.length > 0 && (
-                  <div className="divide-y divide-slate-100">
-                    {groups.map((g) => (
-                      <DriverCard
-                        key={g.driver_id}
-                        g={g}
-                        driverNames={driverNames}
-                        onFill={onFill}
-                        onDelete={onDelete}
-                      />
-                    ))}
-                  </div>
-                )}
-              </li>
-            );
-          })}
-        </ul>
+              );
+            })}
+          </div>
+
+          {/* The day being worked on, full width, in the card the rest of the
+              panel already uses — so the substitute editor and the delete guard
+              have exactly one implementation. */}
+          {openGroup && picked && (
+            <div
+              className="mt-1.5 rounded-md border border-indigo-300 bg-indigo-50/40 p-1.5"
+              role="region"
+              aria-label={`${splitDriverName(openGroup.driver_name).name} — ${weekdayLong(picked.date)} ${ddmm(picked.date)}`}
+            >
+              <div className="mb-1 flex flex-wrap items-baseline gap-x-1.5">
+                <span className="text-[11px] font-semibold text-slate-800">
+                  {weekdayLong(picked.date)} {ddmm(picked.date)}
+                </span>
+                <Button
+                  size="sm" variant="ghost"
+                  className="ml-auto h-6 px-2 text-[11px]"
+                  onClick={() => setPicked(null)}
+                >
+                  Đóng
+                </Button>
+              </div>
+              <div className="overflow-hidden rounded-md border border-slate-200 bg-white">
+                <DriverCard
+                  g={openGroup}
+                  driverNames={driverNames}
+                  onFill={onFill}
+                  onDelete={onDelete}
+                />
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -1122,8 +1173,6 @@ export function LeaveStatusPanel({
   const invalidIgnored = invalid.filter((r) => !r.recovered).sort(byDriver);
   const invalidRecovered = invalid.filter((r) => r.recovered).sort(byDriver);
 
-  const fillSubs = makeFillSubs(onRefresh);
-  const deleteRow = makeDeleteRow(onRefresh);
   const restoreRow = makeRestoreRow(onRefresh);
 
   /**
@@ -1316,28 +1365,11 @@ export function LeaveStatusPanel({
                 </p>
               </div>
             )}
-            {/* The two days that can still be acted on before the shift runs,
-                each in full. */}
-            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-              <DaySection
-                label="Hôm nay"
-                groups={todayGroups}
-                driverNames={driverNames}
-                onFill={fillSubs}
-                onDelete={deleteRow}
-              />
-              <DaySection
-                label="Ngày mai"
-                groups={tomorrowGroups}
-                driverNames={driverNames}
-                onFill={fillSubs}
-                onDelete={deleteRow}
-              />
-            </div>
-            {/* …and the wider range below it. Cover is arranged days ahead, so
-                the week is what you look at to plan; the two days above are what
-                you look at to act. The week does include today and tomorrow —
-                seeing them in their own row is the point of a week. */}
+            {/* The whole week, today marked in place. There is no separate
+                today/tomorrow block here: the always-visible "Cần xử lý" list
+                above already carries the two urgent days, so repeating them
+                inside the panel you EXPAND for a wider range only showed the
+                same rows twice. */}
             <WeekSection
               today={vnDate()}
               driverNames={driverNames}

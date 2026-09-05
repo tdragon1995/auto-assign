@@ -103,15 +103,22 @@ through the same `POST /api/nghi-phep` a driver's own form uses — so
   later failure raises the dashboard's sheet alarm instead of going quiet.
   `scripts/leave-suppression.test.mts`.
 
-  The panel keeps its **today** and **tomorrow** sections and adds a **week**
-  below them, paged with the arrows plus named "Tuần hiện tại" / "Tuần tới"
-  jumps. The two are different jobs: today and tomorrow are what can still be
-  ACTED on before the shift runs, the week is what you look ahead at, since
-  cover is arranged days ahead. The deleted-days list sits LAST — every line on
-  it is already handled, so it is reference rather than a task; the
-  unreadable-tab alarm stays at the top, because that one IS a fault. Every day
-  of the week is listed including the empty ones: an empty day costs one line
-  and keeps the week's shape readable, which is the thing being looked for. The
+  The panel is a **week as seven columns**, paged with the arrows plus named
+  "Tuần hiện tại" / "Tuần tới" jumps. It carries no today/tomorrow blocks of its
+  own: the always-visible "Cần xử lý" list already holds the two urgent days, so
+  repeating them inside the panel you EXPAND for a wider range only showed the
+  same rows twice.
+
+  A column is ~150px, which fits a name and nothing else — the substitute editor
+  alone is a name field plus two time selects plus two buttons. So the grid
+  carries the week's SHAPE, which is what seven columns are uniquely good at,
+  and picking a name opens that driver's day BELOW the grid at full width in the
+  same `DriverCard` the rest of the panel uses. The compact view is new; the
+  acting view is the one that already works, so there is no second copy of the
+  substitute editor or the delete guard to drift. Columns collapse to four then
+  two before they get unreadable. The deleted-days list sits LAST — every line
+  on it is already handled, so it is reference rather than a task; the
+  unreadable-tab alarm stays at the top, because that one IS a fault. The
   whole week arrives in ONE request
   (`?date=<monday>&days=7`) because `loadLeaveEntries` returns the entire sheet
   and each day is a filter over that same cached parse — seven days cost no more
