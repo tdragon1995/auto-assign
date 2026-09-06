@@ -397,6 +397,16 @@ These are the things most likely to burn a future agent working on this codebase
     a new pair costs a billed request, and recomputing it would re-spend money to get
     the same number.
 
+    **The hourly rate is NOT 30.000đ for everyone** — Lê Ngọc Anh Tú's 06:00–15:00
+    morning shift is a fixed 35.000đ/h, on top of the evening shift his PT roster
+    line names. `RATE_PER_HOUR_VND` as one global constant is wrong.
+
+    **A day's taps do not necessarily belong to the rostered shift.** Either the
+    taps document a separate earlier shift (tap-out lands exactly at the rostered
+    start — Anh Tú 27/30 days), or one long span swallows the rostered shift with no
+    check-out between (Lê Hoàng Anh Duy 25/28). These need opposite treatment and a
+    naive "minutes early" statistic conflates them. See `docs/driver-pay.md`.
+
     **A `PT…` account is not always a part-time shift.** Some drivers hold both a
     `DC…` and a `PT…` account and switch to the second to finish trips that spill
     past their full-time shift — 20 such people are on the roster. On an overflow

@@ -223,7 +223,37 @@ the clean `MAX`.
    hold **no** twin. For them the cause
    is simply the missing clamp. Two separate faults, one shared fix.
 
-3. **The check-in tap is not evidence of work, and drivers know it.**
+3. **THE HOURLY RATE IS NOT 30.000đ FOR EVERYONE.** **Lê Ngọc Anh Tú** works a
+   morning shift, 06:00–15:00, paid a fixed **35.000đ/hour**, on top of the
+   15:00–21:00 evening shift the PT roster lists. So `RATE_PER_HOUR_VND` as a
+   single global constant is wrong, and every đồng figure derived from it is wrong
+   for anyone on a second rate. Unknown so far: how many rates exist, whether 35k
+   attaches to the shift or to the person, and whether the morning shift is paid
+   through this PT account at all or settled separately.
+
+4. **A day's chấm-công taps do not necessarily belong to the rostered shift.**
+   Two distinct signatures, and they need opposite treatment:
+
+   **(A) The taps document a SEPARATE, EARLIER shift** — the tap-out lands exactly
+   as the rostered shift begins. **Lê Ngọc Anh Tú** 27 of 30 days (taps 05:58→15:00
+   against a 15:00–21:00 roster); **Lê Hồng Thái** 15 of 24. For Anh Tú the taps are
+   his 35k morning shift; for Lê Hồng Thái, who holds DC102081, they are his
+   full-time day. Either way the taps and the roster describe DIFFERENT work, and
+   the app's tap-to-tap clock measures the one payroll is not paying on that line.
+
+   **(B) One long span swallowing the rostered shift** — one tap-in hours early, one
+   tap-out late, no check-out in between. **Lê Hoàng Anh Duy** 25 of 28 (dismissed),
+   **Phan Thanh Phương** 24 of 27, **Nguyễn Phú Quốc** 17 of 31, **Y Quý** 9 of 29.
+   Three of those four hold a DC twin, so the likely reading is a full-time day
+   followed by a PT evening with no check-out between them — the double-pay case,
+   not misuse. Lê Hoàng Anh Duy held no twin, which is what made him stand out.
+
+   A CORRECTION TO AN EARLIER READING IN THIS FILE: a naive "median minutes early"
+   statistic conflates A and B and made Anh Tú look like Duy. He is not the same
+   case — his taps are a clean nine-hour block that ends precisely when his roster
+   shift starts, which is a second job, not an early tap.
+
+5. **The check-in tap is not evidence of work, and drivers know it.**
    **Lê Hoàng Anh Duy** (PT101574, since dismissed) was rostered 17:00–20:30 and
    tapped in between 07:11 and 07:53 — nine and a half hours early — on 28 of 28
    days. His check-outs were honest to the minute (20:30–20:39 against a 20:30
@@ -244,16 +274,16 @@ the clean `MAX`.
    cycle's own rollover (`rolloverUnfinishedJobs`) re-dates such jobs, so the two
    mechanisms interact.
 
-5. **`firstTaskAt` is a proxy.** The workbook uses the job's `Started Time`; `pay_jobs`
+6. **`firstTaskAt` is a proxy.** The workbook uses the job's `Started Time`; `pay_jobs`
    stores `pickup_completed_ts`, a few minutes later. It only matters on days with no
    check-in tap (~3%). Fixing it means adding a `started_ts` column and re-archiving —
    cheap, since the distances are already cached.
 
-6. **The month view cannot supply first/last task**, because it reads `v_pay_daily`
+7. **The month view cannot supply first/last task**, because it reads `v_pay_daily`
    which carries kilometres but no stamps. The day drill-down is exact; the month is
    deliberately coarser. Revisit if the month total has to match the payslip exactly.
 
-7. **The 15/07–14/08 period IS backfilled.** `/api/tat/archive?date=…&days=N`, a few days per
+8. **The 15/07–14/08 period IS backfilled.** `/api/tat/archive?date=…&days=N`, a few days per
    request, `CRON_SECRET` in an `Authorization: Bearer` header. Watch
    `results[].pay.distances.api` — that is the billed-call count.
 
