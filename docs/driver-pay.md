@@ -207,8 +207,8 @@ the clean `MAX`.
    exists only to carry the tail.
 
    Twenty people in the roster grid hold both a `DC…` and a `PT…` code. The worst
-   discrepancy in the 15/07–14/08 reconciliation is one of them: **PT101732 (Lê
-   Hồng Thái, twin DC102081) — workbook 47.5 h over 24 days, app 329.7 h.** The
+   discrepancy in the 15/07–14/08 reconciliation is one of them: **Lê Hồng Thái**
+   (PT101732, twin DC102081) — workbook 47.5 h over 24 days, app 329.7 h. The
    workbook holds those days to a 19:00–19:30 contract; the app, with no roster,
    takes the raw span of the taps.
 
