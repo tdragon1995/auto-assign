@@ -1,0 +1,228 @@
+# Part-time pay (Thu Nhập)
+
+What a part-time driver earned, archived alongside the TAT legs and read back two
+ways: by the driver in `/cham-cong`, and by điều phối on the dashboard's **Lương
+PT** tab.
+
+## The two rates
+
+```
+30.000đ  per hour clocked, from the driver's own chấm-công check-in / check-out taps
+ 2.000đ  per kilometre, pickup → dropoff on each COMPLETED job
+```
+
+Both live in `dashboard/src/lib/pay.ts` (`RATE_PER_HOUR_VND`, `RATE_PER_KM_VND`)
+and are applied on read, never stored.
+
+## The kilometre is a JOB's pickup→dropoff, not a TAT leg
+
+These are different numbers and the difference is not small.
+
+A **leg** (`docs/driver-tat.md`) is the ride between two consecutive stops. A driver
+collecting at three clinics before the lab run rides four legs while completing three
+jobs, and the leg kilometres exceed the job kilometres by every hop between clinics.
+
+The leg is what they actually rode. The job pickup→dropoff is what payroll pays, and
+it is the **same measure `/api/export-completed` has produced for the payroll CSV all
+along** — this module did not invent a rule, it automated the one already in use.
+
+The driver's screen says so in as many words, because comparing the km on the Hiệu
+Suất tab with the km on the Thu Nhập tab is the first thing anyone will do.
+
+## Distance is frozen, hours are not
+
+`distance_km` costs a billed provider request the first time a pickup→dropoff pair is
+ever seen, so it is resolved once and stored on the row. Recomputing it would re-spend
+real money to arrive at the same number.
+
+Hours cost nothing to recompute, and **the payroll pairing formula is still being
+settled**. So the raw taps are archived — all three activity stamps, exactly as
+Cartrack reported them — and the minutes are derived on read by
+`workedMinutes()` in `pay.ts`, which is the *only* place the pairing lives.
+
+Replacing it is a change to that one function: no re-archive, no Cartrack day-fetch,
+no billed lookup, and every past month re-reads correctly the moment it ships.
+`scripts/pay.test.mts` section 1 is the thing to rewrite alongside it.
+
+### The provisional rule, today
+
+Sort the day's taps by time; pair each check-in with the next check-out; sum the
+pairs. Several pairs a day is normal — drivers check in and out at different PSCs
+across a shift, and the gap between two shifts is not paid time.
+
+An **unpaired check-in pays nothing**. There is no recorded end to that shift, and
+the data cannot tell a forgotten tap from a short one. It is surfaced instead: a ⚠ on
+the driver's day, a count on the supervisor's row, and a banner on both — because the
+fix has to happen before the 25th.
+
+## Where the data comes from
+
+Nothing here fetches anything of its own. `archiveDay()` in `tat-archive.ts` already
+pulls one day of Cartrack routes to cut TAT legs; `archivePay()` runs off the **same
+routes**, in the same pass, behind the same Redis seal.
+
+**Do not add a cron for this** — same rule as footgun 8 in `CLAUDE.md`, for the same
+reason. Backfill is the existing `/api/tat/archive?date=…&days=N`, which now writes
+both records.
+
+`archivePay()` runs *after* the legs are safely written and inside its own
+try/catch. A pay failure is reported in `ArchiveResult.pay.error` and never fails the
+day: legs are the older record and the one the seal was built for, and a released
+seal would take the day's legs down with the pay.
+
+## Tables
+
+| Table | One row is | Key |
+|---|---|---|
+| `pay_jobs` | one completed job with a real pickup and dropoff | `(trip_date, job_id)` |
+| `pay_punches` | one chấm-công tap | `(trip_date, job_id)` |
+| `v_pay_daily` | a driver's kilometres for a day (view) | — |
+
+Both tables are written upsert-first-then-delete-what-was-not-touched, exactly as
+`tat_legs` is, so a write that dies leaves the previous copy of the day intact rather
+than an empty one.
+
+RLS is on with **no policies**: only the service-role key reaches them.
+
+Migration: `supabase/migrations/20260905090000_driver_pay.sql`.
+
+## Reading it back
+
+| Route | Answers |
+|---|---|
+| `GET /api/pay/me?month=YYYY-MM` | the signed-in driver's month: totals + one line per day |
+| `GET /api/pay/me?date=YYYY-MM-DD` | that day's jobs and taps |
+| `GET /api/pay/team?month=YYYY-MM` | every PT driver's month, for điều phối. Defaults to LAST month |
+
+`/api/pay/me` takes the driver_id from the **signed HttpOnly `nv_session` cookie and
+never from a query parameter** — the rule `/api/tat/me` follows, and here the
+strictest case of it: a readable id in the request would make every driver's pay
+readable by every other driver.
+
+It also refuses anything that is not a **PT** account, including an account whose
+label carries no staff code at all. This is money, so "cannot tell" has to mean no.
+
+`/api/pay/team` carries no session and inherits the dashboard's own (absent) auth
+posture, exactly as `/api/tat/team` does. If the dashboard ever gets a gate, this
+route should be near the front of the queue — it is the one endpoint that returns
+everybody's pay.
+
+## The report stops at yesterday
+
+Same rule as the TAT report, plus a better reason. `/api/tat/me` used to refresh
+today on demand and became the most expensive thing in the system; beyond that, a
+part-day total that changes every time you look is not something anyone should be
+checking their pay against.
+
+## Rounding
+
+Totals **sum the kilometres and price once**; they never add up per-job đồng. Each
+job's figure on screen is `kmPayFor(km)` for display only — adding thirty of those
+instead would drift from the total by up to fifteen đồng, and a payslip whose lines
+do not add to its own total is a payslip nobody trusts. The same rule is why the
+supervisor CSV carries exact figures while the table rounds to millions.
+
+Hours are charged **per minute** (30.000đ/h is exactly 500đ a minute), so a
+twenty-minute shift is not rounded away to nothing.
+
+## Cost
+
+The marginal cost of this module is close to zero, by construction:
+
+- **No Cartrack calls.** It rides a day-fetch that was already happening.
+- **No new cron, no new seal.**
+- **Distance lookups go through the shared non-expiring Redis pair cache**
+  (`dist:v1:*`) that `/api/export-completed` has been warming with these exact
+  pickup→dropoff pairs for months. Only a genuinely new pair is billed, once.
+- **Storage** is one row per completed job and one per tap — a few hundred rows per
+  driver-month.
+
+The one thing that does spend is a **historical backfill**, which resolves pairs the
+cache may not hold. Run it a few days at a time rather than `days=31` in one request:
+the route's 60-second budget is per request, and a cold day can use most of it on its
+own.
+
+---
+
+# Where this is up to
+
+Written 2026-09-06, mid-build. Delete this section once the open items are closed —
+it describes work in flight, not how the module behaves.
+
+## Settled, and why
+
+**The hours rule is the payroll workbook's, not "tap to tap".** Established by
+reading `2026.08_PT_Records_Vận_14.08.xlsx` (1,076 driver-days, 15/07–14/08) and
+checking its own computed cells:
+
+```
+in  = MAX(check-in tap, shift start)       early arrival earns nothing
+out = MAX(shift end, last completed task)  paid to shift end even if you stopped
+                                           early; past it only as far as real work
+```
+
+The check-out tap is **discarded** whenever a shift end and a last task both exist —
+including obviously wrong taps (a 15:00 tap on a shift ending 21:00 paid to 21:15; a
+22:01 tap capped at 21:13). It survives only when one of the three is missing.
+`workedMinutes` implements this; `scripts/pay.test.mts` §1 pins four rows copied from
+the workbook's output.
+
+**Sunday split shifts do NOT need gap-splitting.** All 62 multi-ca Sunday driver-days
+in that file are back-to-back (`06:00-15:00 + 15:00-20:00`), so MIN/MAX and
+sum-of-ca give identical answers on every row — the workbook has never overpaid one.
+The agreed implementation is **merge touching/overlapping windows, then sum the merged
+intervals**: same answer today, correct if a real gap ever appears. NOT YET WRITTEN.
+
+**The pay period is the 15th to the 14th**, not the calendar month — that is what the
+payroll file covers and what a driver is actually paid. `?month=YYYY-MM` is therefore
+wrong and both UIs say "Tháng N". NOT YET CHANGED.
+
+**Parity is the route, not the destination.** The workbook is being retired, but the
+app has to reconcile against it first, per-row on a real month, so that its
+disagreements are examined rather than inherited. One known workbook artifact is
+already NOT copied: where the check-out tap exactly equals the shift end and the last
+task is later, its formula keeps the tap instead of extending. `workedMinutes` takes
+the clean `MAX`.
+
+## Open items
+
+1. **The shift window has no source.** `workedMinutes` takes it as an input
+   (`DayFacts.shift`) and every caller currently passes `NO_SHIFT`, so every day comes
+   back `missing_shift: true` and falls back to raw taps. The surfaces carry that
+   through as `provisional` and say so, but it is not the payroll figure.
+   The intended source is the workbook tab at **gid `1656364758`** — add it to
+   `SHEET_GID` and to `SHEET_CONTRACT` as **`expect`, never `require`** (footgun 3:
+   requiring a column that is not there yet refuses the tab on every load). Its header
+   row still needs reading. Precedence, from the workbook: **Sunday roster → substitute
+   → standing contract**.
+   Watch out: some Sunday `Họ và tên` cells carry **no PT code**, so those rows can only
+   be matched by exact full name.
+
+2. **A rolled-over job corrupts `lastTaskAt` at both ends.** A job finished the
+   following day lands its `dropoff_completed_ts` on the wrong day, which both shortens
+   the day it belonged to and extends the day it landed on — and `out` is
+   `MAX(shift end, last task)`, so it is paid time. Not analysed yet. Note the assign
+   cycle's own rollover (`rolloverUnfinishedJobs`) re-dates such jobs, so the two
+   mechanisms interact.
+
+3. **`firstTaskAt` is a proxy.** The workbook uses the job's `Started Time`; `pay_jobs`
+   stores `pickup_completed_ts`, a few minutes later. It only matters on days with no
+   check-in tap (~3%). Fixing it means adding a `started_ts` column and re-archiving —
+   cheap, since the distances are already cached.
+
+4. **The month view cannot supply first/last task**, because it reads `v_pay_daily`
+   which carries kilometres but no stamps. The day drill-down is exact; the month is
+   deliberately coarser. Revisit if the month total has to match the payslip exactly.
+
+5. **August is not backfilled.** `/api/tat/archive?date=…&days=N`, a few days per
+   request, `CRON_SECRET` in an `Authorization: Bearer` header. Watch
+   `results[].pay.distances.api` — that is the billed-call count.
+
+## Cannot be done from a restricted cloud session
+
+The session this was built in had egress limited to the **Trusted** allowlist, which
+refuses `docs.google.com`, `diag-logistics.vercel.app` and `*.supabase.co` with a 403
+at CONNECT. That is why the migration was applied by hand, the backfill never ran, and
+the roster header row above is still unread. A cloud environment set to **Custom** with
+those three domains (plus the default package-manager list) removes all three
+obstacles; a local terminal session has no such limit at all.
