@@ -4,9 +4,13 @@
  * Part-time pay for a whole month, every PT driver — the supervisor side of the
  * Thu Nhập tab drivers see in /cham-cong, and the sibling of TatTeamPanel.
  *
- * Defaults to LAST month, not this one, for the same reason the TAT monitor does:
- * payroll runs on the 25th and pays the month before, so the current month is a
- * half-finished number nobody is paid against.
+ * Defaults to the LAST COMPLETE PAY PERIOD, for the same reason the TAT monitor
+ * defaults to last month: the period now running is a half-finished number nobody
+ * is paid against.
+ *
+ * A PERIOD IS THE 15th TO THE 14th, keyed by the month it ends in — "2026-08" is
+ * 15/07 to 14/08. The header shows the SPAN rather than a month name, because
+ * naming it for a month names it for the month it mostly is not.
  *
  * Sorted by what is OWED, largest first — this is a payables list, so the biggest
  * number is the one worth checking before it is paid, not the best performer.
@@ -36,7 +40,8 @@ interface DriverRow {
 
 interface PayTeamReport {
   ok: boolean;
-  month: string;
+  period: string;
+  period_label: string;
   from: string;
   to: string;
   rates: { per_hour: number; per_km: number };
@@ -58,31 +63,41 @@ const fmtCompact = (v: number) =>
 
 const fmtHours = (mins: number) => `${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, "0")}`;
 
-const monthLabel = (m: string) => `Tháng ${Number(m.slice(5, 7))}/${m.slice(0, 4)}`;
+const PERIOD_END_DAY = 14;
 
-function shiftMonth(m: string, delta: number): string {
-  const d = new Date(`${m}-01T00:00:00Z`);
+function shiftPeriod(p: string, delta: number): string {
+  const d = new Date(`${p}-01T00:00:00Z`);
   d.setUTCMonth(d.getUTCMonth() + delta);
   return d.toISOString().slice(0, 7);
 }
 
-function defaultMonth(): string {
-  const vnNow = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Ho_Chi_Minh" })
-    .format(new Date()).slice(0, 7);
-  return shiftMonth(vnNow, -1);
+/** "2026-08" → "15/07 – 14/08". Mirrors payPeriodLabel in pay.ts; the server
+ *  sends `period_label` for the loaded period, but the arrows need a label for a
+ *  period that has not been fetched yet. */
+function periodLabel(p: string): string {
+  const prev = shiftPeriod(p, -1);
+  return `${PERIOD_END_DAY + 1}/${prev.slice(5, 7)} – ${PERIOD_END_DAY}/${p.slice(5, 7)}`;
+}
+
+/** The last period that has FINISHED — never the one still running. */
+function defaultPeriod(): string {
+  const vnToday = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Ho_Chi_Minh" }).format(new Date());
+  const key = vnToday.slice(0, 7);
+  const current = Number(vnToday.slice(8, 10)) <= PERIOD_END_DAY ? key : shiftPeriod(key, 1);
+  return shiftPeriod(current, -1);
 }
 
 export function PayTeamPanel() {
-  const [month, setMonth] = useState<string>(defaultMonth);
+  const [period, setPeriod] = useState<string>(defaultPeriod);
   const [data, setData] = useState<PayTeamReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async (m: string) => {
+  const load = useCallback(async (p: string) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/pay/team?month=${m}`);
+      const res = await fetch(`/api/pay/team?period=${p}`);
       const j = await res.json();
       if (!res.ok || !j.ok) { setError(j.error ?? "Không tải được bảng lương."); setData(null); return; }
       setData(j as PayTeamReport);
@@ -94,7 +109,7 @@ export function PayTeamPanel() {
     }
   }, []);
 
-  useEffect(() => { load(month); }, [month, load]);
+  useEffect(() => { load(period); }, [period, load]);
 
   /** CSV for the payroll conversation. Every figure is EXACT here — the screen
    *  rounds to millions to stay readable, this file is what a number gets paid
@@ -118,7 +133,7 @@ export function PayTeamPanel() {
     const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `luong-pt-${data.month}.csv`;
+    a.download = `luong-pt-${data.period}.csv`;
     a.click();
     URL.revokeObjectURL(a.href);
   }
@@ -129,20 +144,23 @@ export function PayTeamPanel() {
       <div className="flex items-center justify-between gap-2 px-3 py-2.5 border-b border-slate-200 shrink-0">
         <div className="flex items-center gap-1">
           <button
-            onClick={() => setMonth(shiftMonth(month, -1))}
+            onClick={() => setPeriod(shiftPeriod(period, -1))}
             className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100"
-            title="Tháng trước"
+            title="Kỳ trước"
           >
             <ChevronLeft className="size-4" />
           </button>
-          <span className="text-sm font-semibold text-slate-800 min-w-[120px] text-center">
-            {monthLabel(month)}
+          <span
+            className="text-sm font-semibold text-slate-800 min-w-[150px] text-center"
+            title="Kỳ lương: ngày 15 tháng trước đến hết ngày 14 tháng này"
+          >
+            {data?.period_label ? `Kỳ ${data.period_label}` : `Kỳ ${periodLabel(period)}`}
           </span>
           <button
-            onClick={() => setMonth(shiftMonth(month, 1))}
-            disabled={month >= shiftMonth(defaultMonth(), 1)}
+            onClick={() => setPeriod(shiftPeriod(period, 1))}
+            disabled={period >= shiftPeriod(defaultPeriod(), 1)}
             className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 disabled:opacity-40"
-            title="Tháng sau"
+            title="Kỳ sau"
           >
             <ChevronRight className="size-4" />
           </button>
@@ -197,7 +215,7 @@ export function PayTeamPanel() {
           </div>
         ) : !data || data.drivers.length === 0 ? (
           <p className="text-center text-sm text-slate-400 py-16">
-            Chưa có dữ liệu cho {monthLabel(month)}.
+            Chưa có dữ liệu cho kỳ {periodLabel(period)}.
           </p>
         ) : (
           <table className="w-full text-sm">
@@ -248,6 +266,7 @@ export function PayTeamPanel() {
           <p className="text-[11px] text-slate-500">
             {vnd.format(data.rates.per_hour)}đ/giờ chấm công (tính theo phút) +{" "}
             {vnd.format(data.rates.per_km)}đ/km lấy mẫu → giao mẫu của mỗi chuyến đã hoàn thành.
+            Kỳ lương từ 15 tháng trước đến hết 14 tháng này, không phải tháng dương lịch.
             Số liệu tính đến hết {data.to}. Tải CSV để lấy số chính xác.
           </p>
         </div>

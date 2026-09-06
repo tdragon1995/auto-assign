@@ -36,6 +36,56 @@ export const RATE_PER_HOUR_VND = 30_000;
 /** Đồng per kilometre ridden, pickup → dropoff. */
 export const RATE_PER_KM_VND = 2_000;
 
+/**
+ * THE PAY PERIOD RUNS THE 15th TO THE 14th, NOT THE CALENDAR MONTH.
+ *
+ * This is the shape payroll actually pays on: the workbook
+ * "2026.08_PT_Records_Vận_14.08" covers 15/07 – 14/08. So a period is KEYED BY
+ * THE MONTH IT ENDS IN, which is how payroll names it, and `2026-08` means
+ * 15 July to 14 August rather than the month of August.
+ *
+ * Getting this wrong is not cosmetic. A driver checking their earnings against
+ * a payslip has to be looking at the same days, and a calendar month shares
+ * neither end with the period they are paid for — it would disagree by roughly
+ * two weeks at both ends, every single month, while looking perfectly plausible.
+ *
+ * Arithmetic is date-only and done in UTC so no timezone or DST shift can move a
+ * boundary. The strings only ever feed date comparisons and PostgREST filters.
+ */
+export const PERIOD_END_DAY = 14;
+
+const pad = (n: number) => String(n).padStart(2, "0");
+
+/** Add whole months to a "YYYY-MM" key. */
+export function shiftPayPeriod(period: string, delta: number): string {
+  const d = new Date(`${period}-01T00:00:00Z`);
+  d.setUTCMonth(d.getUTCMonth() + delta);
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}`;
+}
+
+/** Which period a day belongs to. The 14th closes a period; the 15th opens the
+ *  next one, which is named for the month it will end in. */
+export function payPeriodOf(date: string): string {
+  const [y, m, d] = date.split("-").map(Number);
+  const key = `${y}-${pad(m)}`;
+  return d <= PERIOD_END_DAY ? key : shiftPayPeriod(key, 1);
+}
+
+/** The inclusive day range a period covers. */
+export function payPeriodRange(period: string): { from: string; to: string } {
+  const prev = shiftPayPeriod(period, -1);
+  return { from: `${prev}-${pad(PERIOD_END_DAY + 1)}`, to: `${period}-${pad(PERIOD_END_DAY)}` };
+}
+
+/** "15/07 – 14/08" — what the screens say instead of "Tháng 8", because naming a
+ *  month for a span that is mostly the previous one is exactly the confusion this
+ *  period shape causes. */
+export function payPeriodLabel(period: string): string {
+  const { from, to } = payPeriodRange(period);
+  const dm = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
+  return `${dm(from)} – ${dm(to)}`;
+}
+
 /** job_status_id 5 — Hoàn thành. Only a finished job is paid for. */
 const COMPLETED_STATUS = 5;
 /** stop_type_id 1 = pickup, 2 = dropoff. A single-stop (type 3) job has no pair. */

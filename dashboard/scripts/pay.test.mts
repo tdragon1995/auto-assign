@@ -17,6 +17,7 @@
  */
 import {
   workedMinutes, payRowsForRoute, hourPayFor, kmPayFor, NO_SHIFT,
+  payPeriodOf, payPeriodRange, shiftPayPeriod, payPeriodLabel,
   RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch, type DayFacts,
 } from "../src/lib/pay";
 import type { TimelineRoute, TimelineStop } from "../src/lib/types";
@@ -131,7 +132,49 @@ check("...and is flagged", w.inverted === true);
 
 check("no data at all is zero, not a crash", workedMinutes([]).minutes === 0);
 
-console.log("\n2. Money");
+console.log("\n2. The pay period runs 15th -> 14th");
+
+// The workbook "2026.08_PT_Records_Vận_14.08" covers 15/07 - 14/08, so a period
+// is named for the month it ENDS in. Getting this backwards would name every
+// period for the month it is mostly not.
+let r = payPeriodRange("2026-08");
+check("2026-08 is 15/07 - 14/08", r.from === "2026-07-15" && r.to === "2026-08-14", `${r.from}..${r.to}`);
+
+check("the 14th closes its period", payPeriodOf("2026-08-14") === "2026-08");
+check("the 15th opens the next one", payPeriodOf("2026-08-15") === "2026-09");
+check("the 1st belongs to the period that ENDS that month", payPeriodOf("2026-08-01") === "2026-08");
+check("the last day of a month rolls forward", payPeriodOf("2026-08-31") === "2026-09");
+
+// December -> January is where naive month arithmetic breaks.
+r = payPeriodRange("2027-01");
+check("a period can cross the year boundary", r.from === "2026-12-15" && r.to === "2027-01-14", `${r.from}..${r.to}`);
+check("...and stepping back from it lands in December", shiftPayPeriod("2027-01", -1) === "2026-12");
+check("31/12 belongs to the January period", payPeriodOf("2026-12-31") === "2027-01");
+
+// A short February must not shorten the period: the boundary is a day number,
+// not an offset from the month end.
+r = payPeriodRange("2027-03");
+check("February's length does not move the boundary", r.from === "2027-02-15" && r.to === "2027-03-14", `${r.from}..${r.to}`);
+
+check("every day lands in exactly one period", (() => {
+  // Walk a year and check the periods tile the days with no gap or overlap.
+  const d = new Date(Date.UTC(2026, 0, 1));
+  let prev: string | null = null;
+  for (let i = 0; i < 400; i++) {
+    const iso = d.toISOString().slice(0, 10);
+    const p = payPeriodOf(iso);
+    const { from, to } = payPeriodRange(p);
+    if (iso < from || iso > to) return false;
+    if (prev && p !== prev && p !== shiftPayPeriod(prev, 1)) return false;
+    prev = p;
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  return true;
+})());
+
+check("the label reads as the span, not a month", payPeriodLabel("2026-08") === "15/07 – 14/08", payPeriodLabel("2026-08"));
+
+console.log("\n3. Money");
 
 check("30.000đ/h is charged per minute", hourPayFor(60) === 30_000 && hourPayFor(30) === 15_000);
 check("a 20-minute shift is not rounded away", hourPayFor(20) === 10_000, String(hourPayFor(20)));
@@ -145,7 +188,7 @@ const summed = kmPayFor(Math.round(legs.reduce((s, km) => s + km, 0) * 100) / 10
 check("summing km then pricing differs from summing prices (hence the rule)", perJob !== summed,
   `${perJob} vs ${summed}`);
 
-console.log("\n3. What earns a kilometre");
+console.log("\n4. What earns a kilometre");
 
 const stop = (o: Partial<TimelineStop>): TimelineStop => ({
   stopId: 1, jobId: 1, stopTypeId: 1, stopStatusId: 4,
@@ -194,7 +237,7 @@ const singleStop = payRowsForRoute(route([
 ]), DAY);
 check("a single-stop job has no pickup→dropoff pair and earns nothing", singleStop.jobs.length === 0);
 
-console.log("\n4. Chấm công is a punch, never a paid job");
+console.log("\n5. Chấm công is a punch, never a paid job");
 
 const withChamCong = payRowsForRoute(route([
   stop({ jobId: 41, stopId: 10, stopTypeId: 3, referenceNumber: "Chấm Công - Vào",
@@ -218,7 +261,7 @@ const refOnly = payRowsForRoute(route([
 ]), DAY);
 check("an unlabelled tap is read off its reference number", refOnly.punches[0]?.kind === "out");
 
-console.log("\n5. Timestamps carry VN's offset, not the server's guess");
+console.log("\n6. Timestamps carry VN's offset, not the server's guess");
 check("a completion stamp becomes +07:00",
   withChamCong.jobs[0].dropoff_completed_ts === `${DAY}T09:00:00+07:00`,
   String(withChamCong.jobs[0].dropoff_completed_ts));

@@ -14,8 +14,12 @@
  * has to mean no.
  *
  * TWO MODES
- *   ?month=YYYY-MM → the month: totals, plus one line per worked day.
+ *   ?period=YYYY-MM → one PAY PERIOD: totals, plus one line per worked day.
  *   ?date=YYYY-MM-DD → one day: the jobs and the taps underneath a day's line.
+ *
+ * A PERIOD IS THE 15th TO THE 14th, not a calendar month, and is named for the
+ * month it ends in — see pay.ts. `2026-08` is 15/07 to 14/08, which is what the
+ * driver is actually paid for.
  *
  * FRESHNESS — this reads only SEALED days, the ones the morning archive pass has
  * already written, and it never triggers an archive of its own. Deliberately: the
@@ -31,6 +35,7 @@ import { sbSelect, supabaseConfigured } from "@/lib/supabase-rest";
 import { employmentOf } from "@/lib/driver-label";
 import {
   workedMinutes, hourPayFor, kmPayFor, punchAt, NO_SHIFT,
+  payPeriodOf, payPeriodRange, shiftPayPeriod, payPeriodLabel,
   RATE_PER_HOUR_VND, RATE_PER_KM_VND,
   type PayPunch, type PayJob, type DayFacts,
 } from "@/lib/pay";
@@ -67,20 +72,6 @@ const num = (v: number | string | null | undefined): number => {
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : 0;
 };
-
-const monthStart = (m: string) => `${m}-01`;
-function monthEnd(m: string): string {
-  const d = new Date(`${m}-01T00:00:00Z`);
-  d.setUTCMonth(d.getUTCMonth() + 1);
-  d.setUTCDate(0);
-  return d.toISOString().slice(0, 10);
-}
-const monthOf = (date: string) => date.slice(0, 7);
-function addMonths(m: string, n: number): string {
-  const d = new Date(`${m}-01T00:00:00Z`);
-  d.setUTCMonth(d.getUTCMonth() + n);
-  return d.toISOString().slice(0, 7);
-}
 
 /**
  * The day's facts other than the taps: the roster window, and the first and last
@@ -225,21 +216,24 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // ── Month mode ────────────────────────────────────────────────────────────
-  const askedMonth = sp.get("month") ?? monthOf(latest);
-  if (!/^\d{4}-\d{2}$/.test(askedMonth)) {
-    return NextResponse.json({ ok: false, error: "Tháng không hợp lệ." }, { status: 400 });
+  // ── Period mode ───────────────────────────────────────────────────────────
+  const askedPeriod = sp.get("period") ?? payPeriodOf(latest);
+  if (!/^\d{4}-\d{2}$/.test(askedPeriod)) {
+    return NextResponse.json({ ok: false, error: "Kỳ lương không hợp lệ." }, { status: 400 });
   }
-  const from = monthStart(askedMonth);
-  // A month still running ends at the last sealed day, not at its own last date.
-  const to = monthEnd(askedMonth) > latest ? latest : monthEnd(askedMonth);
+  const range = payPeriodRange(askedPeriod);
+  const from = range.from;
+  // A period still running ends at the last sealed day, not at its own last date.
+  const to = range.to > latest ? latest : range.to;
 
   try {
     if (to < from) {
       // A month that has not started yet — the "next month" arrow can reach it.
       return NextResponse.json({
-        ok: true, driver_name: session.driver_name, month: askedMonth, from, to: from,
-        rates, latest, days: [],
+        ok: true, driver_name: session.driver_name,
+        period: askedPeriod, period_label: payPeriodLabel(askedPeriod),
+        from, to: from, rates, latest, days: [],
+        prev_period: shiftPayPeriod(askedPeriod, -1), next_period: null,
         summary: { days: 0, jobs: 0, km: 0, worked_mins: 0, hour_pay: 0, km_pay: 0, total_pay: 0, open_in_days: 0, provisional_days: 0 },
       });
     }
@@ -289,12 +283,14 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       driver_name: session.driver_name,
-      month: askedMonth,
+      period: askedPeriod,
+      /** "15/07 – 14/08". Formatted here so no client re-derives the boundary. */
+      period_label: payPeriodLabel(askedPeriod),
       from, to, latest,
       rates,
       // The arrows' bounds, so the client never has to know when data began.
-      prev_month: addMonths(askedMonth, -1),
-      next_month: askedMonth < monthOf(latest) ? addMonths(askedMonth, 1) : null,
+      prev_period: shiftPayPeriod(askedPeriod, -1),
+      next_period: askedPeriod < payPeriodOf(latest) ? shiftPayPeriod(askedPeriod, 1) : null,
       summary: {
         days: days.filter((d) => d.jobs > 0 || d.worked_mins > 0).length,
         jobs: days.reduce((s, d) => s + d.jobs, 0),
@@ -311,7 +307,7 @@ export async function GET(req: NextRequest) {
       days,
     });
   } catch (e) {
-    console.error("[pay/me] month error:", e instanceof Error ? e.message : e);
+    console.error("[pay/me] period error:", e instanceof Error ? e.message : e);
     return NextResponse.json(
       { ok: false, error: "Không tải được bảng thu nhập. Vui lòng thử lại sau." },
       { status: 200 },
