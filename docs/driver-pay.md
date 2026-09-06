@@ -218,9 +218,24 @@ the clean `MAX`.
    the PT clock has to exclude the DC shift, which means knowing the DC roster
    too, not just the PT one. A PT-only clamp does not solve this.
 
-   Note this is only part of the 15% gap: four of the six worst-gap drivers
-   (PT101574, PT101705, PT101784, PT101589) hold **no** twin. For them the cause
+   Note this is only part of the 15% gap: four of the six worst-gap drivers — **Lê
+   Hoàng Anh Duy**, **Lê Ngọc Anh Tú**, **Nguyễn Viết Phi**, **Trần Minh Long** —
+   hold **no** twin. For them the cause
    is simply the missing clamp. Two separate faults, one shared fix.
+
+3. **The check-in tap is not evidence of work, and drivers know it.**
+   **Lê Hoàng Anh Duy** (PT101574, since dismissed) was rostered 17:00–20:30 and
+   tapped in between 07:11 and 07:53 — nine and a half hours early — on 28 of 28
+   days. His check-outs were honest to the minute (20:30–20:39 against a 20:30
+   finish), so this was the check-in specifically. The shift-start floor removed
+   **230.8 h = 6,925,500đ** from that one driver in that one period; unclamped the
+   app would have paid 358.5 h (10,755,000đ) against payroll's 125.3 h
+   (3,759,000đ).
+
+   Which is why a tap-based figure must never be shown to a driver as their
+   earnings: it is a number that goes UP when they tap in early. Three drivers —
+   **Lê Hồng Thái**, **Lê Ngọc Anh Tú**, **Lê Hoàng Anh Duy** — account for 73% of
+   the whole gap.
 
 3. **A rolled-over job corrupts `lastTaskAt` at both ends.** A job finished the
    following day lands its `dropoff_completed_ts` on the wrong day, which both shortens
@@ -229,16 +244,16 @@ the clean `MAX`.
    cycle's own rollover (`rolloverUnfinishedJobs`) re-dates such jobs, so the two
    mechanisms interact.
 
-4. **`firstTaskAt` is a proxy.** The workbook uses the job's `Started Time`; `pay_jobs`
+5. **`firstTaskAt` is a proxy.** The workbook uses the job's `Started Time`; `pay_jobs`
    stores `pickup_completed_ts`, a few minutes later. It only matters on days with no
    check-in tap (~3%). Fixing it means adding a `started_ts` column and re-archiving —
    cheap, since the distances are already cached.
 
-5. **The month view cannot supply first/last task**, because it reads `v_pay_daily`
+6. **The month view cannot supply first/last task**, because it reads `v_pay_daily`
    which carries kilometres but no stamps. The day drill-down is exact; the month is
    deliberately coarser. Revisit if the month total has to match the payslip exactly.
 
-6. **The 15/07–14/08 period IS backfilled.** `/api/tat/archive?date=…&days=N`, a few days per
+7. **The 15/07–14/08 period IS backfilled.** `/api/tat/archive?date=…&days=N`, a few days per
    request, `CRON_SECRET` in an `Authorization: Bearer` header. Watch
    `results[].pay.distances.api` — that is the billed-call count.
 
