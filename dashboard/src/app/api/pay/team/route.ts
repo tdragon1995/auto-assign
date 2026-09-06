@@ -26,7 +26,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { sbSelect, supabaseConfigured } from "@/lib/supabase-rest";
 import { employmentOf } from "@/lib/driver-label";
 import {
-  workedMinutes, hourPayFor, kmPayFor,
+  workedMinutes, hourPayFor, kmPayFor, NO_SHIFT,
   RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch,
 } from "@/lib/pay";
 import { vnDate } from "@/lib/time";
@@ -141,10 +141,15 @@ export async function GET(req: NextRequest) {
       .map(([driver_id, e]) => {
         let mins = 0;
         let openInDays = 0;
+        let provisionalDays = 0;
         for (const dayPunches of e.byDay.values()) {
-          const w = workedMinutes(dayPunches);
+          // ⚠ No roster window here either — see factsFor() in /api/pay/me. Every
+          // day is therefore the tap-only fallback, and `provisional_days` says
+          // how many, so nobody pays against this table thinking it is final.
+          const w = workedMinutes(dayPunches, { shift: NO_SHIFT, firstTaskAt: null, lastTaskAt: null });
           mins += w.minutes;
           if (w.open_in.length > 0) openInDays++;
+          if (w.missing_shift) provisionalDays++;
         }
         const km = Math.round(e.km * 100) / 100;
         return {
@@ -164,6 +169,8 @@ export async function GET(req: NextRequest) {
           /** Days with a check-in and no check-out. These pay nothing, so this is
            *  the column a supervisor acts on BEFORE the 25th, not after. */
           open_in_days: openInDays,
+          /** Days computed without a roster window — a best effort, not payroll. */
+          provisional_days: provisionalDays,
         };
       });
 
@@ -185,6 +192,7 @@ export async function GET(req: NextRequest) {
         km_pay: drivers.reduce((s, d) => s + d.km_pay, 0),
         total_pay: drivers.reduce((s, d) => s + d.total_pay, 0),
         open_in_days: drivers.reduce((s, d) => s + d.open_in_days, 0),
+        provisional_days: drivers.reduce((s, d) => s + d.provisional_days, 0),
       },
       drivers,
     });

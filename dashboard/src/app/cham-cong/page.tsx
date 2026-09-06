@@ -280,16 +280,25 @@ function NvJobCard({ job, claiming, onClaim }: { job: DriverJob; claiming: boole
 // screen (see src/lib/pay.ts), but it IS the first question a driver comparing
 // the two tabs will ask, so the screen says which measure it is paying for.
 
-interface PaySpanRow { from: string | null; to: string | null; minutes: number }
-
 interface PayDay {
   date: string;
   jobs: number;
   km: number;
   worked_mins: number;
-  spans: PaySpanRow[];
-  /** Check-ins with no check-out after them. These pay NOTHING, so they are the
-   *  one thing on this screen a driver must act on. */
+  /** The two clocks the day was actually paid between, and what set each. The
+   *  driver's own tap is only one of the possible answers — the roster shift can
+   *  override it at either end — so the screen names the basis rather than
+   *  showing two times and letting them assume. */
+  in_at: string | null;
+  out_at: string | null;
+  in_basis: "tap" | "shift_start" | "first_task" | null;
+  out_basis: "shift_end" | "last_task" | "tap" | null;
+  /** No roster window was available, so these hours are a tap-only best effort
+   *  rather than the payroll figure. */
+  provisional: boolean;
+  inverted: boolean;
+  /** Taps that did not pair off. No longer lost pay under the roster rule — a
+   *  record to tidy. */
   open_in: string[];
   stray_out: string[];
   hour_pay: number;
@@ -309,7 +318,8 @@ interface PayReport {
   next_month: string | null;
   summary: {
     days: number; jobs: number; km: number; worked_mins: number;
-    hour_pay: number; km_pay: number; total_pay: number; open_in_days: number;
+    hour_pay: number; km_pay: number; total_pay: number;
+    open_in_days: number; provisional_days: number;
   };
   days: PayDay[];
 }
@@ -338,6 +348,18 @@ const vndFmt = new Intl.NumberFormat("vi-VN");
  *  enough that a decimal would be noise, and nobody is paid a hào. */
 const fmtVnd = (v: number | null | undefined): string =>
   v == null || !Number.isFinite(v) ? "—" : `${vndFmt.format(Math.round(v))}đ`;
+
+/** What set each end of the paid day, in the driver's words. The roster can
+ *  override a tap at either end, and a number whose basis is unexplained reads as
+ *  an error rather than a rule. */
+const PAY_BASIS: Record<string, string> = {
+  tap: "giờ bạn chấm công",
+  shift_start: "giờ bắt đầu ca",
+  first_task: "chuyến đầu tiên",
+  shift_end: "giờ kết thúc ca",
+  last_task: "chuyến cuối cùng",
+  none: "—",
+};
 
 /** "2026-09" → "Tháng 9/2026". */
 function fmtMonth(m: string): string {
@@ -2512,13 +2534,13 @@ export default function ChamCongPage() {
                           not red — a forgotten tap is a correction to make, not an
                           accusation — but it is stated in đồng-terms ("chưa được
                           tính") because that is what makes it urgent. */}
-                      {payReport.summary.open_in_days > 0 && (
+                      {payReport.summary.provisional_days > 0 && (
                         <div className="flex items-start gap-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
                           <AlertCircle size={14} className="mt-0.5 shrink-0" />
                           <span>
-                            Có {payReport.summary.open_in_days} ngày bạn chấm công vào nhưng
-                            chưa chấm công ra — những ca đó <span className="font-semibold">chưa được tính giờ</span>.
-                            Xem các ngày có dấu ⚠ bên dưới và báo điều phối để bổ sung.
+                            {payReport.summary.provisional_days} ngày <span className="font-semibold">tạm tính</span>:
+                            hệ thống chưa có ca làm việc cho những ngày này nên giờ công được tính theo giờ chấm
+                            công. Số thực nhận có thể khác — bảng lương tính theo ca.
                           </span>
                         </div>
                       )}
@@ -2546,7 +2568,7 @@ export default function ChamCongPage() {
                                   <div className="min-w-0 flex-1">
                                     <p className="text-xs font-semibold text-gray-700">
                                       {vnWeekday(d.date)}, {fmtDate(d.date)}
-                                      {d.open_in.length > 0 && <span className="ml-1 text-amber-600">⚠</span>}
+                                      {(d.provisional || d.inverted) && <span className="ml-1 text-amber-600">⚠</span>}
                                     </p>
                                     <p className="text-[11px] text-gray-400">
                                       {fmtMins(d.worked_mins)} · {d.km} km · {d.jobs} chuyến
@@ -2569,29 +2591,48 @@ export default function ChamCongPage() {
                                       </p>
                                     ) : (
                                       <>
-                                        {/* The clock, shown as the spans that were
-                                            actually paired — a total alone gives a
-                                            driver nothing to check against. */}
+                                        {/* The clock, shown as the two instants the
+                                            day was paid between plus WHAT SET EACH.
+                                            A driver whose tap was overridden by the
+                                            roster needs the reason on the row, or
+                                            the number looks simply wrong. */}
                                         <div className="rounded-lg bg-white border border-gray-200 px-3 py-2 space-y-1">
-                                          <p className="text-[11px] font-semibold text-gray-600">Giờ chấm công</p>
-                                          {payDayDetail.day.spans.length === 0 ? (
-                                            <p className="text-[11px] text-gray-400">Không có ca nào được tính.</p>
+                                          <p className="text-[11px] font-semibold text-gray-600">Giờ công</p>
+                                          {payDayDetail.day.in_at == null || payDayDetail.day.out_at == null ? (
+                                            <p className="text-[11px] text-gray-400">Không đủ dữ liệu để tính giờ.</p>
                                           ) : (
-                                            payDayDetail.day.spans.map((sp, i) => (
-                                              <div key={i} className="flex items-center justify-between text-[11px]">
-                                                <span className="text-gray-600 tabular-nums">{sp.from} → {sp.to}</span>
-                                                <span className="text-gray-500">{fmtMins(sp.minutes)}</span>
+                                            <>
+                                              <div className="flex items-center justify-between text-[11px]">
+                                                <span className="text-gray-600 tabular-nums">
+                                                  {payDayDetail.day.in_at} → {payDayDetail.day.out_at}
+                                                </span>
+                                                <span className="text-gray-500">{fmtMins(payDayDetail.day.worked_mins)}</span>
                                               </div>
-                                            ))
+                                              <p className="text-[11px] text-gray-400">
+                                                Vào: {PAY_BASIS[payDayDetail.day.in_basis ?? "none"]} · Ra:{" "}
+                                                {PAY_BASIS[payDayDetail.day.out_basis ?? "none"]}
+                                              </p>
+                                            </>
+                                          )}
+                                          {payDayDetail.day.provisional && (
+                                            <p className="text-[11px] text-amber-700">
+                                              ⚠ Chưa có ca làm việc cho ngày này — giờ công tạm tính theo giờ chấm
+                                              công, có thể khác bảng lương.
+                                            </p>
+                                          )}
+                                          {payDayDetail.day.inverted && (
+                                            <p className="text-[11px] text-amber-700">
+                                              ⚠ Giờ ra sớm hơn giờ vào — cần điều phối kiểm tra.
+                                            </p>
                                           )}
                                           {payDayDetail.day.open_in.map((t) => (
-                                            <p key={t} className="text-[11px] text-amber-700">
-                                              ⚠ Chấm công vào lúc {t} chưa có chấm công ra — chưa tính giờ.
+                                            <p key={t} className="text-[11px] text-gray-400">
+                                              Chấm công vào lúc {t} chưa có chấm công ra (giờ công vẫn tính theo ca).
                                             </p>
                                           ))}
                                           {payDayDetail.day.stray_out.map((t) => (
-                                            <p key={t} className="text-[11px] text-amber-700">
-                                              ⚠ Chấm công ra lúc {t} không có chấm công vào trước đó.
+                                            <p key={t} className="text-[11px] text-gray-400">
+                                              Chấm công ra lúc {t} không có chấm công vào trước đó.
                                             </p>
                                           ))}
                                         </div>
@@ -2655,6 +2696,11 @@ export default function ChamCongPage() {
                           {vndFmt.format(payReport.rates.per_km)}đ mỗi km.
                         </p>
                         <p className="text-[11px] text-gray-500">{payReport.rates.km_basis}.</p>
+                        <p className="text-[11px] text-gray-500">
+                          Giờ công tính từ <span className="font-medium">giờ muộn hơn</span> giữa giờ bạn chấm công
+                          vào và giờ bắt đầu ca, đến <span className="font-medium">giờ muộn hơn</span> giữa giờ kết
+                          thúc ca và chuyến cuối cùng của bạn. Quên chấm công ra không làm mất giờ.
+                        </p>
                         <p className="text-[11px] text-gray-400">
                           Số km ở đây khác với &quot;quãng đường&quot; ở tab Hiệu Suất: tab đó tính từng chặng
                           giữa hai điểm liên tiếp, còn ở đây tính từ điểm lấy đến điểm giao của mỗi chuyến.

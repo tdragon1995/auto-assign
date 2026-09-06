@@ -7,15 +7,17 @@
  * clinics as a trip. Neither throws, neither shows up in a build, and both are
  * discovered on payday.
  *
- * The pairing rule is PROVISIONAL (see pay.ts/workedMinutes) — when the payroll
- * formula is settled, section 1 is the thing to rewrite, and it is deliberately
- * the only place in the codebase that has to change.
+ * Section 1 pins the rule the payroll workbook actually applies
+ * (2026.08_PT_Records), including the four rows below taken verbatim from its
+ * computed output. The rule is NOT "clock in to clock out": the contracted shift
+ * is a floor at one end and, with the last task, a ceiling at the other — and the
+ * check-out tap is discarded whenever both of those exist.
  *
  *   npx tsx scripts/pay.test.mts
  */
 import {
-  workedMinutes, payRowsForRoute, hourPayFor, kmPayFor,
-  RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch,
+  workedMinutes, payRowsForRoute, hourPayFor, kmPayFor, NO_SHIFT,
+  RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch, type DayFacts,
 } from "../src/lib/pay";
 import type { TimelineRoute, TimelineStop } from "../src/lib/types";
 
@@ -43,45 +45,91 @@ const punch = (kind: "in" | "out", hhmm: string): PayPunch => ({
   job_status_id: 5,
 });
 
-console.log("\n1. Punch pairing (PROVISIONAL formula — pay.ts/workedMinutes)");
+console.log("\n1. The roster rule (pay.ts/workedMinutes)");
 
-const oneShift = workedMinutes([punch("in", "08:00"), punch("out", "12:30")]);
-check("one shift is its own length", oneShift.minutes === 270, String(oneShift.minutes));
-check("and is reported as one span", oneShift.spans.length === 1);
+/** A day with a roster window and a last completed task. */
+const facts = (start: string | null, end: string | null, lastTask: string | null, firstTask: string | null = null): DayFacts => ({
+  shift: { start, end, source: start ? "contract" : null },
+  lastTaskAt: lastTask ? `${DAY}T${lastTask}:00+07:00` : null,
+  firstTaskAt: firstTask ? `${DAY}T${firstTask}:00+07:00` : null,
+});
 
-// The reason pairing exists at all. A driver working 08:00-12:00 and 17:00-20:00
-// worked seven hours, not twelve — the five hours between shifts are not paid.
-const twoShifts = workedMinutes([
-  punch("in", "08:00"), punch("out", "12:00"),
-  punch("in", "17:00"), punch("out", "20:00"),
-]);
-check("two shifts sum, the gap between them does not", twoShifts.minutes === 420, String(twoShifts.minutes));
-check("both spans are shown", twoShifts.spans.length === 2);
+// ── The four rows below are copied from the workbook's own computed output. ──
+// Each one is a case where the naive "tap to tap" answer is wrong, which is the
+// entire reason this function is not a subtraction.
 
-// Taps arrive from the day's routes in route order, not clock order.
-const shuffled = workedMinutes([
-  punch("out", "20:00"), punch("in", "08:00"),
-  punch("out", "12:00"), punch("in", "17:00"),
-]);
-check("order of arrival does not matter", shuffled.minutes === 420, String(shuffled.minutes));
+// Row 6: tapped out at 15:31, two and a half hours after a shift ending 13:00.
+// The workbook pays to 13:00 — the tap is discarded outright.
+let w = workedMinutes([punch("in", "08:04"), punch("out", "15:31")], facts("08:00", "13:00", "11:40"));
+check("a late tap is capped at the shift end", w.out_at === "13:00", String(w.out_at));
+check("...and the day is 4h56", w.minutes === 296, String(w.minutes));
 
-// A forgotten check-out pays NOTHING for that shift and says so, rather than
-// being closed at some plausible-looking later moment.
-const forgot = workedMinutes([punch("in", "08:00"), punch("out", "12:00"), punch("in", "17:00")]);
-check("an unclosed shift pays nothing", forgot.minutes === 240, String(forgot.minutes));
-check("and is reported, not swallowed", forgot.open_in.length === 1);
+// Row 7: tapped out at 20:53, before a shift ending 21:00. Paid to 21:00 anyway.
+w = workedMinutes([punch("in", "06:00"), punch("out", "20:53")], facts("06:00", "21:00", "19:56"));
+check("stopping early still pays to the shift end", w.out_at === "21:00", String(w.out_at));
+check("...15 hours exactly", w.minutes === 900, String(w.minutes));
 
-// Two check-ins running: the later one is the shift actually open, the earlier
-// is an orphan. Keeping the FIRST would pay the gap between them.
-const doubleIn = workedMinutes([punch("in", "08:00"), punch("in", "09:00"), punch("out", "12:00")]);
-check("two check-ins in a row keep the later", doubleIn.minutes === 180, String(doubleIn.minutes));
-check("and report the orphan", doubleIn.open_in.length === 1);
+// Row 8: a plainly wrong 15:00 check-out tap on a shift ending 21:00, with work
+// finishing 21:15. Paid to the last task.
+w = workedMinutes([punch("in", "15:00"), punch("out", "15:00")], facts("15:00", "21:00", "21:15"));
+check("work past the shift end pays to the last task", w.out_at === "21:15", String(w.out_at));
+check("...and names that as the basis", w.out_basis === "last_task", String(w.out_basis));
 
-const strayOut = workedMinutes([punch("out", "08:00"), punch("in", "09:00"), punch("out", "12:00")]);
-check("a check-out with no check-in pays nothing", strayOut.minutes === 180, String(strayOut.minutes));
-check("and is reported", strayOut.stray_out.length === 1);
+// Row 23: tapped out at 22:01, 48 minutes after the last task. Capped at 21:13.
+w = workedMinutes([punch("in", "17:00"), punch("out", "22:01")], facts("17:00", "21:00", "21:13"));
+check("overtime is capped at real work, not the tap", w.out_at === "21:13", String(w.out_at));
 
-check("no taps at all is zero, not a crash", workedMinutes([]).minutes === 0);
+// ── The in-clock is a floor, never a bonus ──────────────────────────────────
+w = workedMinutes([punch("in", "05:30"), punch("out", "12:00")], facts("06:00", "12:00", "11:40"));
+check("arriving early earns nothing", w.in_at === "06:00" && w.minutes === 360, `${w.in_at} ${w.minutes}`);
+check("...and says the shift set it", w.in_basis === "shift_start", String(w.in_basis));
+
+w = workedMinutes([punch("in", "06:07"), punch("out", "19:10")], facts("06:00", "19:00", "19:10"));
+check("arriving late starts the clock late", w.in_at === "06:07" && w.in_basis === "tap", String(w.in_at));
+
+// ── THE REGRESSION THIS REWRITE EXISTS FOR ──────────────────────────────────
+// The old rule paid ZERO for a shift with no check-out. On the payroll data that
+// was 51 of 1,076 driver-days (5%), plus 29 with no check-in (3%).
+w = workedMinutes([punch("in", "15:00")], facts("15:00", "21:00", "20:30"));
+check("a forgotten check-out does NOT zero the day", w.minutes === 360, String(w.minutes));
+check("...it pays to the shift end", w.out_at === "21:00", String(w.out_at));
+check("...and the unpaired tap is still reported", w.open_in.length === 1);
+
+// No check-in tap either: the workbook falls back to the first task, then floors
+// it at the shift start.
+// The shift start is a FLOOR, not a start gun: a driver whose first task was
+// 15:33 is paid from 15:33, not from the 15:00 the roster opens at. Only a tap
+// EARLIER than the shift gets lifted.
+w = workedMinutes([], facts("15:00", "21:00", "20:30", "15:33"));
+check("no taps at all still pays, from the first task to the shift end",
+  w.minutes === 327 && w.in_at === "15:33" && w.out_at === "21:00", `${w.in_at}-${w.out_at} ${w.minutes}`);
+check("...naming the first task as the basis", w.in_basis === "first_task", String(w.in_basis));
+w = workedMinutes([], facts(null, null, "20:30", "15:33"));
+check("with no shift either, it spans first task to last", w.minutes === 297, String(w.minutes));
+check("...and flags itself as not the payroll figure", w.missing_shift === true);
+
+// ── Degradation without a roster window ─────────────────────────────────────
+w = workedMinutes([punch("in", "08:00"), punch("out", "12:30")], { shift: NO_SHIFT, lastTaskAt: null, firstTaskAt: null });
+check("no shift → falls back to raw taps", w.minutes === 270, String(w.minutes));
+check("...marked provisional", w.missing_shift === true);
+check("...and names the tap as the basis", w.out_basis === "tap", String(w.out_basis));
+
+// ── Split shifts collapse into ONE span, unlike the old rule ────────────────
+// The workbook takes the first tap of each kind and closes on the roster, so a
+// driver with a morning and an evening shift on one roster line is paid straight
+// through. Pinned because it is a deliberate behaviour change, not an accident.
+w = workedMinutes(
+  [punch("in", "08:00"), punch("out", "12:00"), punch("in", "17:00"), punch("out", "20:00")],
+  facts("08:00", "20:00", "19:50"),
+);
+check("two taps in a day are ONE span under the roster rule", w.minutes === 720, String(w.minutes));
+
+// ── Nonsense is reported, never silently paid ───────────────────────────────
+w = workedMinutes([punch("in", "18:00")], facts("18:00", "09:00", "08:30"));
+check("an out before an in pays zero", w.minutes === 0);
+check("...and is flagged", w.inverted === true);
+
+check("no data at all is zero, not a crash", workedMinutes([]).minutes === 0);
 
 console.log("\n2. Money");
 
@@ -160,7 +208,7 @@ check("chấm công does not become a paid job", withChamCong.jobs.length === 1,
 check("it becomes two punches", withChamCong.punches.length === 2);
 check("pointing the right ways",
   withChamCong.punches[0].kind === "in" && withChamCong.punches[1].kind === "out");
-check("and the day they bound is 9h10", workedMinutes(withChamCong.punches).minutes === 550,
+check("and with no roster they bound a 9h10 day", workedMinutes(withChamCong.punches).minutes === 550,
   String(workedMinutes(withChamCong.punches).minutes));
 
 // Labels arrive as objects over JSON-RPC and as strings over REST; the reference

@@ -144,70 +144,170 @@ export function punchAt(p: Pick<PayPunch, "started_ts" | "arrived_ts" | "complet
   return p.completed_ts ?? p.arrived_ts ?? p.started_ts ?? null;
 }
 
-export interface WorkedDay {
-  /** Minutes the formula below counts as worked. */
-  minutes: number;
-  /** The spans that produced them, for showing the driver the working, in order. */
-  spans: { from: string; to: string; minutes: number }[];
-  /** A check-in with no check-out after it. Contributes NOTHING to `minutes` — a
-   *  shift that was never closed has no recorded end, and inventing one would be
-   *  paying against a guess. Surfaced so the driver can get it corrected rather
-   *  than discover the hole on payday. */
-  open_in: string[];
-  /** A check-out with no check-in before it. Also contributes nothing; listed for
-   *  the same reason. */
-  stray_out: string[];
+/** The contracted window a driver was rostered for on one day, VN local "HH:MM".
+ *
+ *  NOT derived from the taps — this is the roster's answer to "when were they
+ *  meant to work", and the payroll rule leans on it in both directions (see
+ *  workedMinutes). `source` travels so a disputed day can say WHICH roster
+ *  answered: a Sunday shift, a substitution, or the standing contract. */
+export interface ShiftWindow {
+  start: string | null;
+  end: string | null;
+  source: "sunday" | "sub" | "contract" | null;
 }
 
+/** Everything about a driver's day that is NOT a chấm-công tap but still shapes
+ *  the clock. Passed in rather than looked up, so the pairing rule stays a pure
+ *  function and the (harder, still-unsettled) question of where a shift window
+ *  comes from is answered by the caller. */
+export interface DayFacts {
+  shift: ShiftWindow;
+  /** ISO instant of the day's LAST completed delivery — the workbook's
+   *  "Last Task". This is half of the check-out clock, not a nicety. */
+  lastTaskAt: string | null;
+  /** ISO instant of the day's FIRST task. Used only when a check-in tap is
+   *  missing, which is ~3% of days. */
+  firstTaskAt: string | null;
+}
+
+export const NO_SHIFT: ShiftWindow = { start: null, end: null, source: null };
+
+export interface WorkedDay {
+  /** Minutes the rule below counts as worked. */
+  minutes: number;
+  /** The two clocks actually used, "HH:MM", so a driver can check the sum. */
+  in_at: string | null;
+  out_at: string | null;
+  /** What each clock was taken from — the whole point of showing the working. */
+  in_basis: "tap" | "shift_start" | "first_task" | null;
+  out_basis: "shift_end" | "last_task" | "tap" | null;
+  /** No roster window was available, so the day fell back to raw taps. The
+   *  number is then a best effort, not the payroll rule, and must say so. */
+  missing_shift: boolean;
+  /** A check-in tap with no check-out. Under THIS rule it no longer costs the
+   *  driver anything — the clock runs to the shift end regardless — so it is
+   *  reported as a record to tidy, not as lost pay. */
+  open_in: string[];
+  stray_out: string[];
+  /** out < in. Should be impossible; kept visible rather than clamped silently. */
+  inverted: boolean;
+}
+
+/** "HH:MM" (or an ISO instant) → minutes since VN midnight. Null if unparseable. */
+function minsOfDay(v: string | null): number | null {
+  if (!v) return null;
+  const hhmm = /^(\d{1,2}):(\d{2})/.exec(v);
+  if (hhmm) return Number(hhmm[1]) * 60 + Number(hhmm[2]);
+  const iso = /T(\d{2}):(\d{2})/.exec(v);
+  if (iso) return Number(iso[1]) * 60 + Number(iso[2]);
+  return null;
+}
+
+const hhmmOf = (mins: number | null): string | null =>
+  mins == null ? null : `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}`;
+
 /**
- * ⚠ PROVISIONAL FORMULA — the payroll rule is still being settled, and this is
- * the ONLY place the pairing lives. Replacing it is a change to this function and
- * nothing else: the archive stores raw taps, `/api/pay/me` derives the minutes on
- * read, so a new rule applies to every past month the moment it deploys, with no
- * re-archive and no billed distance lookup behind it.
+ * A day's paid minutes, following the rule the payroll workbook actually applies
+ * (2026.08_PT_Records, sheets "Driver Daily Report" + "Final Report").
  *
- * What it does today: sort the day's taps by time, pair each check-in with the
- * next check-out, sum the pairs. Several pairs a day is normal and all of them
- * count — drivers check in and out at different PSCs across a shift, and the gap
- * between two shifts is not paid time.
+ * THE CONTRACTED SHIFT IS A FLOOR AND A CEILING. That is the whole rule, and it
+ * is not what a naive reading of "clock in, clock out" gives you:
  *
- * What it deliberately does NOT do: close an unpaired check-in at some plausible
- * later moment. There is no recorded end to that shift, and the difference
- * between a forgotten tap and a short one is not something this data can tell
- * apart. It counts zero and says so on screen.
+ *   in  = MAX(check-in tap, shift start)      early arrival earns nothing
+ *   out = MAX(shift end, last completed task) you are paid to the end of the
+ *                                             shift even if you stopped early,
+ *                                             and past it only as far as real work
+ *
+ * THE CHECK-OUT TAP IS ALMOST NEVER USED. Verified against 1,074 computed rows:
+ * whenever a shift end and a last task both exist, the workbook takes MAX of
+ * those two and DISCARDS the tap — including taps that were plainly wrong (a
+ * 15:00 tap on a shift ending 21:00 paid to 21:15; a 22:01 tap capped at 21:13).
+ * The tap survives only when one of the three values is missing.
+ *
+ * WHICH MEANS A FORGOTTEN CHECK-OUT COSTS NOTHING. The previous implementation
+ * paid ZERO for an unclosed shift, on the reasoning that its end was unknowable.
+ * Against this data that would have zeroed 51 of 1,076 driver-days (5%), plus 29
+ * more with no check-in (3%) — roughly 7% of everyone's month, all of it wrong.
+ * The roster knows when the shift ended; the tap was never the authority.
+ *
+ * WITHOUT A SHIFT WINDOW it degrades to raw taps (tap-in → tap-out, falling back
+ * to first/last task) and sets `missing_shift`. That is not the payroll rule and
+ * the screen must not present it as one — but it is far closer than paying zero,
+ * so an unsourced day is under-informed rather than unpaid.
+ *
+ * ONE SPAN PER DAY, not a sum of pairs. Since the close is driven by the roster
+ * and the last task, several taps in a day collapse into one window — which is
+ * what the workbook does (it matches the FIRST tap of each kind) and the opposite
+ * of the old rule, which summed every in/out pair and so refused to pay the gap
+ * between two shifts. If split shifts must each be paid separately, this is the
+ * function that has to change, and the workbook does not do it today.
  */
-export function workedMinutes(punches: PayPunch[]): WorkedDay {
-  const ordered = punches
+export function workedMinutes(punches: PayPunch[], facts: DayFacts = { shift: NO_SHIFT, lastTaskAt: null, firstTaskAt: null }): WorkedDay {
+  const stamped = punches
     .map((p) => ({ kind: p.kind, at: punchAt(p) }))
     .filter((p): p is { kind: "in" | "out"; at: string } => p.at !== null)
     .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
 
-  const out: WorkedDay = { minutes: 0, spans: [], open_in: [], stray_out: [] };
-  let open: string | null = null;
+  const ins = stamped.filter((p) => p.kind === "in");
+  const outs = stamped.filter((p) => p.kind === "out");
 
-  for (const p of ordered) {
-    if (p.kind === "in") {
-      // Two check-ins in a row: the first was never closed. Keep the LATER one —
-      // it is the shift that is actually running — and report the orphan.
-      if (open) out.open_in.push(open);
-      open = p.at;
-      continue;
-    }
-    if (!open) { out.stray_out.push(p.at); continue; }
-    const mins = Math.round((Date.parse(p.at) - Date.parse(open)) / 60_000);
-    // A negative span means the taps landed out of order, which is not a
-    // measurement. Dropped rather than clamped to zero, so it shows up as an
-    // unpaired check-in instead of a silent 0-minute shift.
-    if (mins > 0) {
-      out.spans.push({ from: open, to: p.at, minutes: mins });
-      out.minutes += mins;
-    } else {
-      out.open_in.push(open);
-    }
-    open = null;
+  // EARLIEST of each kind. The workbook takes whichever row MATCH happens to hit
+  // first, which is sheet order and therefore arbitrary; earliest-by-clock is the
+  // same answer on every well-formed day and a defensible one on the rest.
+  const tapIn = ins[0]?.at ?? null;
+  const tapOut = outs[0]?.at ?? null;
+
+  const shiftStart = minsOfDay(facts.shift.start);
+  const shiftEnd = minsOfDay(facts.shift.end);
+  const lastTask = minsOfDay(facts.lastTaskAt);
+  const firstTask = minsOfDay(facts.firstTaskAt);
+  const tapInM = minsOfDay(tapIn);
+  const tapOutM = minsOfDay(tapOut);
+
+  const out: WorkedDay = {
+    minutes: 0, in_at: null, out_at: null, in_basis: null, out_basis: null,
+    missing_shift: shiftStart == null || shiftEnd == null,
+    // Every tap that did not pair off, so the record can still be tidied even
+    // though the money no longer depends on it.
+    open_in: ins.slice(tapOut ? 1 : 0).map((p) => p.at),
+    stray_out: outs.slice(1).map((p) => p.at),
+    inverted: false,
+  };
+
+  // ── The in-clock: later of when they showed up and when the shift began ──
+  const rawIn = tapInM ?? firstTask;
+  const rawInBasis: WorkedDay["in_basis"] = tapInM != null ? "tap" : firstTask != null ? "first_task" : null;
+  let inM: number | null = rawIn;
+  if (rawIn != null && shiftStart != null && shiftStart > rawIn) {
+    inM = shiftStart;
+    out.in_basis = "shift_start";
+  } else {
+    out.in_basis = rawInBasis;
   }
-  if (open) out.open_in.push(open);
 
+  // ── The out-clock: later of the shift end and the last real work ──
+  let outM: number | null;
+  if (shiftEnd != null && lastTask != null) {
+    outM = Math.max(shiftEnd, lastTask);
+    out.out_basis = outM === lastTask && lastTask > shiftEnd ? "last_task" : "shift_end";
+  } else {
+    // One of the two is missing, so fall back exactly as the workbook does:
+    // the tap, then the last task.
+    outM = tapOutM ?? lastTask;
+    out.out_basis = tapOutM != null ? "tap" : lastTask != null ? "last_task" : null;
+  }
+
+  out.in_at = hhmmOf(inM);
+  out.out_at = hhmmOf(outM);
+
+  if (inM == null || outM == null) return out;
+  if (outM < inM) {
+    // Never seen in the payroll data and not something to guess at: an overnight
+    // shift and a mis-stamped day look identical from here. Reported, paid zero.
+    out.inverted = true;
+    return out;
+  }
+  out.minutes = outM - inM;
   return out;
 }
 
