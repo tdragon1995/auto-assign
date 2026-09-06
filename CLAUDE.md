@@ -397,6 +397,16 @@ These are the things most likely to burn a future agent working on this codebase
     a new pair costs a billed request, and recomputing it would re-spend money to get
     the same number.
 
+    **A `PT…` account is not always a part-time shift.** Some drivers hold both a
+    `DC…` and a `PT…` account and switch to the second to finish trips that spill
+    past their full-time shift — 20 such people are on the roster. On an overflow
+    day there is no PT roster row at all, and if the chấm-công taps on that account
+    span the working day, an hourly clock bills hours ALREADY SALARIED under the DC
+    account. That is double payment, not merely overstatement, so a twin holder's PT
+    clock has to exclude their DC shift — which needs the DC roster too. Measured on
+    15/07–14/08: PT101732 (twin DC102081) reads 329.7 h in the app against 47.5 h in
+    payroll. See `docs/driver-pay.md`.
+
     **Pay rides `archiveDay` — do NOT add a schedule for it** (same rule as footgun 8).
     `archivePay()` runs off the same routes the leg archive already fetched, after the
     legs are written, inside its own try/catch: a pay failure must never release the

@@ -198,23 +198,47 @@ the clean `MAX`.
    Watch out: some Sunday `Họ và tên` cells carry **no PT code**, so those rows can only
    be matched by exact full name.
 
-2. **A rolled-over job corrupts `lastTaskAt` at both ends.** A job finished the
+2. **A PT account is not always a part-time shift — it is sometimes an FT
+   driver's overflow, and paying it by the clock DOUBLE-PAYS.**
+
+   Some drivers hold both accounts and **switch to the PT account to finish trips
+   that spill past their full-time shift**. On such a day there is no PT roster
+   row, because the person was rostered under their `DC…` code; the `PT…` account
+   exists only to carry the tail.
+
+   Twenty people in the roster grid hold both a `DC…` and a `PT…` code. The worst
+   discrepancy in the 15/07–14/08 reconciliation is one of them: **PT101732 (Lê
+   Hồng Thái, twin DC102081) — workbook 47.5 h over 24 days, app 329.7 h.** The
+   workbook holds those days to a 19:00–19:30 contract; the app, with no roster,
+   takes the raw span of the taps.
+
+   The hazard is not just overstatement. If the chấm-công taps on the PT account
+   span the whole working day, the hourly clock covers hours **already salaried
+   under the DC account** — the company pays for them twice. So for a twin holder
+   the PT clock has to exclude the DC shift, which means knowing the DC roster
+   too, not just the PT one. A PT-only clamp does not solve this.
+
+   Note this is only part of the 15% gap: four of the six worst-gap drivers
+   (PT101574, PT101705, PT101784, PT101589) hold **no** twin. For them the cause
+   is simply the missing clamp. Two separate faults, one shared fix.
+
+3. **A rolled-over job corrupts `lastTaskAt` at both ends.** A job finished the
    following day lands its `dropoff_completed_ts` on the wrong day, which both shortens
    the day it belonged to and extends the day it landed on — and `out` is
    `MAX(shift end, last task)`, so it is paid time. Not analysed yet. Note the assign
    cycle's own rollover (`rolloverUnfinishedJobs`) re-dates such jobs, so the two
    mechanisms interact.
 
-3. **`firstTaskAt` is a proxy.** The workbook uses the job's `Started Time`; `pay_jobs`
+4. **`firstTaskAt` is a proxy.** The workbook uses the job's `Started Time`; `pay_jobs`
    stores `pickup_completed_ts`, a few minutes later. It only matters on days with no
    check-in tap (~3%). Fixing it means adding a `started_ts` column and re-archiving —
    cheap, since the distances are already cached.
 
-4. **The month view cannot supply first/last task**, because it reads `v_pay_daily`
+5. **The month view cannot supply first/last task**, because it reads `v_pay_daily`
    which carries kilometres but no stamps. The day drill-down is exact; the month is
    deliberately coarser. Revisit if the month total has to match the payslip exactly.
 
-5. **August is not backfilled.** `/api/tat/archive?date=…&days=N`, a few days per
+6. **The 15/07–14/08 period IS backfilled.** `/api/tat/archive?date=…&days=N`, a few days per
    request, `CRON_SECRET` in an `Authorization: Bearer` header. Watch
    `results[].pay.distances.api` — that is the billed-call count.
 
