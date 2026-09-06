@@ -20,6 +20,17 @@
  *   and the arithmetic runs on read, so settling the formula later is a change to
  *   ONE function with no re-archive and no billed distance call behind it.
  *
+ * WHAT A PAID KILOMETRE IS NOT. Three exclusions, all measured against
+ * 15/07–14/08 before being written (5,260 completed pairs in that period):
+ *   - a RETURN leg (`PSC_RETURN_LABEL`) carries nothing back — 28 jobs, 0.5%;
+ *   - a VIA leg (`PSC_VIA_LABEL`) with no item tracking number collected
+ *     nothing — 17 of the 115 via legs;
+ *   - jobs that rode together, i.e. collected on ONE visit and delivered on ONE
+ *     visit, are one ride and paid once — 37 jobs, 0.7%.
+ * The third is the one to be careful with: grouping by driver+day+pair instead
+ * of by visit collapses 36.7% of every job in the period, because the shuttle
+ * runs repeat the same pair hourly and those are separate rides.
+ *
  * COST: this module adds no Cartrack fetch of its own. It is handed the same
  * day of routes the TAT archive had already pulled, and its distance lookups go
  * through the same non-expiring Redis pair cache the payroll export has been
@@ -27,7 +38,8 @@
  */
 import { roadDistancesForPairs } from "./distance-cache";
 import { newFallbackState, type QuotaSignal } from "./distance";
-import { isChamCong, CHAM_CONG_PREFIX } from "./job-filters";
+import { isChamCong, CHAM_CONG_PREFIX, PSC_VIA_LABEL } from "./job-filters";
+import { PSC_RETURN_LABEL } from "./return-trips";
 import type { DistanceStats } from "./tat";
 import type { TimelineRoute, TimelineStop } from "./types";
 
@@ -425,7 +437,36 @@ export function payRowsForRoute(
     if (list) list.push(s); else byJob.set(id, [s]);
   }
 
+  // ── Which VISIT each stop belongs to ──────────────────────────────────────
+  // Consecutive stops at the same place are ONE visit — the same rule tat.ts
+  // uses. Two jobs collected on one visit and delivered on one visit are one
+  // ride, and a ride is paid once however many jobs rode along.
+  //
+  // A time window was considered and rejected on measurement: grouping by
+  // driver+day+pair alone collapses 36.7% of all jobs, because the shuttle runs
+  // repeat the same pair hourly all afternoon (15:19, 16:46, 17:40, 20:52 …) and
+  // those are separate rides. Consecutiveness collapses 0.7%, which is the real
+  // number of merged visits, and needs no magic threshold.
+  const visitOf = new Map<number, number>();
+  {
+    const ordered = stops
+      .filter((s) => !isChamCong(s as unknown as { referenceNumber?: string | null; jobLabels?: unknown }))
+      .map((s) => ({ s, at: toIso(s.activityCompletedTs) }))
+      .filter((e): e is { s: TimelineStop; at: string } => e.at !== null)
+      .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+    let idx = -1;
+    let prevPlace: string | null = null;
+    for (const { s } of ordered) {
+      const place = `${s.customerId ?? ""}|${s.latitude},${s.longitude}`;
+      if (place !== prevPlace) { idx++; prevPlace = place; }
+      visitOf.set(Number(s.stopId), idx);
+    }
+  }
+
   const jobs: PayJob[] = [];
+  /** One paid ride per (pickup visit → dropoff visit). */
+  const ridePaid = new Set<string>();
+
   for (const [jobId, jobStops] of byJob) {
     const pickup = jobStops.find((s) => Number(s.stopTypeId) === PICKUP_STOP);
     const dropoff = jobStops.find((s) => Number(s.stopTypeId) === DROPOFF_STOP);
@@ -433,6 +474,38 @@ export function payRowsForRoute(
     // pay row at all. Single-stop (type 3) delivery jobs land here, as do the
     // half-jobs left when only one leg of a transport job reached this route.
     if (!pickup || !dropoff) continue;
+
+    const labels = labelNames(dropoff.jobLabels ?? pickup.jobLabels);
+
+    // ── RETURN TRIPS ARE NOT PAID ─────────────────────────────────────────
+    // The run back from the lab carries nothing. It is a real ride and it is
+    // already counted as distance by the TAT report, which measures what was
+    // ridden; pay measures what was delivered, and this delivered nothing.
+    if (labels.includes(PSC_RETURN_LABEL)) continue;
+
+    // ── A VIA LEG IS PAID ONLY IF IT ACTUALLY CARRIED A BATCH ─────────────
+    // A "ghé" leg is a deliberate second pickup on an existing run. With a
+    // tracking number it moved samples and is a delivery like any other;
+    // without one nothing was collected, so there is nothing to pay for.
+    if (labels.includes(PSC_VIA_LABEL)) {
+      const carried = [pickup, dropoff].some(
+        (st) => Array.isArray(st.itemTrackingNumbers) && st.itemTrackingNumbers.length > 0,
+      );
+      if (!carried) continue;
+    }
+
+    // ── MERGED STOPS ARE ONE RIDE ─────────────────────────────────────────
+    // Jobs collected on the same visit and delivered on the same visit rode
+    // together. The first one carries the distance; the rest are dropped rather
+    // than priced at zero, because a 0 km row on the driver's screen reads as a
+    // measurement failure rather than "this was the same trip".
+    const pv = visitOf.get(Number(pickup.stopId));
+    const dv = visitOf.get(Number(dropoff.stopId));
+    if (pv != null && dv != null) {
+      const ride = `${pv}>${dv}`;
+      if (ridePaid.has(ride)) continue;
+      ridePaid.add(ride);
+    }
 
     jobs.push({
       trip_date: tripDate,

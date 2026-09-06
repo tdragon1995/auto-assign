@@ -212,13 +212,16 @@ const route = (stops: TimelineStop[]): TimelineRoute =>
 // before one lab run: three JOBS (three paid pickup→dropoff pairs), which is not
 // the same set of distances as the four LEGS the driver rode. Note the stops are
 // interleaved — a job's pickup and dropoff are usually NOT consecutive.
+// customerId and coords vary per clinic, as they do in real data — the
+// merged-visit rule keys on the PLACE, so a fixture leaving them constant would
+// collapse three separate collections into one ride and prove nothing.
 const threeJobs = payRowsForRoute(route([
-  stop({ jobId: 11, stopId: 1, stopTypeId: 1, customerName: "Clinic 1" }),
-  stop({ jobId: 12, stopId: 2, stopTypeId: 1, customerName: "Clinic 2" }),
-  stop({ jobId: 13, stopId: 3, stopTypeId: 1, customerName: "Clinic 3" }),
-  stop({ jobId: 11, stopId: 4, stopTypeId: 2, customerName: "BRA - D001" }),
-  stop({ jobId: 12, stopId: 5, stopTypeId: 2, customerName: "BRA - D001" }),
-  stop({ jobId: 13, stopId: 6, stopTypeId: 2, customerName: "BRA - D001" }),
+  stop({ jobId: 11, stopId: 1, stopTypeId: 1, customerId: "C1", customerName: "Clinic 1", latitude: 10.71 }),
+  stop({ jobId: 12, stopId: 2, stopTypeId: 1, customerId: "C2", customerName: "Clinic 2", latitude: 10.72 }),
+  stop({ jobId: 13, stopId: 3, stopTypeId: 1, customerId: "C3", customerName: "Clinic 3", latitude: 10.73 }),
+  stop({ jobId: 11, stopId: 4, stopTypeId: 2, customerId: "D1", customerName: "BRA - D001", latitude: 10.80 }),
+  stop({ jobId: 12, stopId: 5, stopTypeId: 2, customerId: "D1", customerName: "BRA - D001", latitude: 10.80 }),
+  stop({ jobId: 13, stopId: 6, stopTypeId: 2, customerId: "D1", customerName: "BRA - D001", latitude: 10.80 }),
 ]), DAY);
 check("three jobs collected then delivered are three paid jobs", threeJobs.jobs.length === 3,
   String(threeJobs.jobs.length));
@@ -237,7 +240,59 @@ const singleStop = payRowsForRoute(route([
 ]), DAY);
 check("a single-stop job has no pickup→dropoff pair and earns nothing", singleStop.jobs.length === 0);
 
-console.log("\n5. Chấm công is a punch, never a paid job");
+console.log("\n5. What does NOT earn a kilometre");
+
+const RET = "🛵 Vận chuyển mẫu PSC (về)";
+const VIA = "🛵 Vận chuyển mẫu PSC (ghé)";
+
+// A return leg carries nothing back. It IS a real ride and TAT counts its
+// distance; pay measures what was DELIVERED, and this delivered nothing.
+const withReturn = payRowsForRoute(route([
+  stop({ jobId: 61, stopId: 20, stopTypeId: 1, customerId: "D1", customerName: "BRA - D001", jobLabels: [{ label: RET }] }),
+  stop({ jobId: 61, stopId: 21, stopTypeId: 2, customerId: "C9", customerName: "BRA - D011", jobLabels: [{ label: RET }] }),
+]), DAY);
+check("a return leg earns nothing", withReturn.jobs.length === 0, String(withReturn.jobs.length));
+
+// A via leg is a deliberate second pickup on an existing run. With a batch it
+// moved samples; with none it collected nothing, so there is nothing to pay for.
+const viaEmpty = payRowsForRoute(route([
+  stop({ jobId: 62, stopId: 22, stopTypeId: 1, customerId: "CV", customerName: "Clinic V", jobLabels: [{ label: VIA }], itemTrackingNumbers: [] }),
+  stop({ jobId: 62, stopId: 23, stopTypeId: 2, customerId: "D1", customerName: "BRA - D001", jobLabels: [{ label: VIA }], itemTrackingNumbers: [] }),
+]), DAY);
+check("a via leg carrying no batch earns nothing", viaEmpty.jobs.length === 0, String(viaEmpty.jobs.length));
+
+const viaLoaded = payRowsForRoute(route([
+  stop({ jobId: 63, stopId: 24, stopTypeId: 1, customerId: "CV", customerName: "Clinic V", jobLabels: [{ label: VIA }], itemTrackingNumbers: ["B011260715065606"] }),
+  stop({ jobId: 63, stopId: 25, stopTypeId: 2, customerId: "D1", customerName: "BRA - D001", jobLabels: [{ label: VIA }] }),
+]), DAY);
+check("a via leg WITH a batch is paid like any trip", viaLoaded.jobs.length === 1, String(viaLoaded.jobs.length));
+
+// Two jobs collected on ONE visit and delivered on ONE visit rode together, so
+// the driver is paid once however many batches came along.
+const merged = payRowsForRoute(route([
+  stop({ jobId: 71, stopId: 30, stopTypeId: 1, customerId: "C1", customerName: "Clinic 1", latitude: 10.71, activityCompletedTs: `${DAY} 09:00:00` }),
+  stop({ jobId: 72, stopId: 31, stopTypeId: 1, customerId: "C1", customerName: "Clinic 1", latitude: 10.71, activityCompletedTs: `${DAY} 09:03:00` }),
+  stop({ jobId: 71, stopId: 32, stopTypeId: 2, customerId: "D1", customerName: "BRA - D001", latitude: 10.80, activityCompletedTs: `${DAY} 10:00:00` }),
+  stop({ jobId: 72, stopId: 33, stopTypeId: 2, customerId: "D1", customerName: "BRA - D001", latitude: 10.80, activityCompletedTs: `${DAY} 10:02:00` }),
+]), DAY);
+check("two jobs riding together are paid once", merged.jobs.length === 1, String(merged.jobs.length));
+
+// THE CASE THAT MUST NOT COLLAPSE. The shuttle runs repeat the same pair every
+// hour or so all afternoon and those are separate rides. Grouping by
+// driver+day+pair instead of by VISIT collapses 36.7% of every job in the
+// payroll period — 1,930 real payments — which is why the rule is
+// consecutiveness and not a time window.
+const shuttle = payRowsForRoute(route([
+  stop({ jobId: 81, stopId: 40, stopTypeId: 1, customerId: "C2", customerName: "BRA - D002", latitude: 10.72, activityCompletedTs: `${DAY} 15:19:00` }),
+  stop({ jobId: 81, stopId: 41, stopTypeId: 2, customerId: "D1", customerName: "BRA - D001", latitude: 10.80, activityCompletedTs: `${DAY} 15:55:00` }),
+  stop({ jobId: 82, stopId: 42, stopTypeId: 1, customerId: "C2", customerName: "BRA - D002", latitude: 10.72, activityCompletedTs: `${DAY} 16:46:00` }),
+  stop({ jobId: 82, stopId: 43, stopTypeId: 2, customerId: "D1", customerName: "BRA - D001", latitude: 10.80, activityCompletedTs: `${DAY} 17:20:00` }),
+  stop({ jobId: 83, stopId: 44, stopTypeId: 1, customerId: "C2", customerName: "BRA - D002", latitude: 10.72, activityCompletedTs: `${DAY} 17:40:00` }),
+  stop({ jobId: 83, stopId: 45, stopTypeId: 2, customerId: "D1", customerName: "BRA - D001", latitude: 10.80, activityCompletedTs: `${DAY} 18:20:00` }),
+]), DAY);
+check("the same pair ridden three times pays three times", shuttle.jobs.length === 3, String(shuttle.jobs.length));
+
+console.log("\n6. Chấm công is a punch, never a paid job");
 
 const withChamCong = payRowsForRoute(route([
   stop({ jobId: 41, stopId: 10, stopTypeId: 3, referenceNumber: "Chấm Công - Vào",
@@ -261,7 +316,7 @@ const refOnly = payRowsForRoute(route([
 ]), DAY);
 check("an unlabelled tap is read off its reference number", refOnly.punches[0]?.kind === "out");
 
-console.log("\n6. Timestamps carry VN's offset, not the server's guess");
+console.log("\n7. Timestamps carry VN's offset, not the server's guess");
 check("a completion stamp becomes +07:00",
   withChamCong.jobs[0].dropoff_completed_ts === `${DAY}T09:00:00+07:00`,
   String(withChamCong.jobs[0].dropoff_completed_ts));

@@ -184,6 +184,40 @@ already NOT copied: where the check-out tap exactly equals the shift end and the
 task is later, its formula keeps the tap instead of extending. `workedMinutes` takes
 the clean `MAX`.
 
+## Answered, 2026-09-06
+
+**The 35.000đ rate belongs to the PERSON, not the shift** — it is Lê Ngọc Anh Tú's
+arrangement, and his 06:00–15:00 morning work **is not normal delivery work** and is
+**paid separately**, outside this module. So the app must not price those taps at all:
+not at 30k, not at 35k. They are somebody else's ledger.
+
+**A PT account cannot be paid for being early.** That is exactly what the roster
+window is for. Phan Thanh Phương's mid-day gap is the FT→PT handover, not overtime.
+
+**No check-out → take the latest completed task.** Which is what the workbook does
+and what `workedMinutes` already implements: `out = MAX(shift end, last task)`.
+
+**Distance exclusions** — implemented and measured over 15/07–14/08 (5,260 completed
+pairs), see `payRowsForRoute`:
+
+| rule | jobs removed | share |
+|---|---:|---:|
+| return leg (`PSC_RETURN_LABEL`) carries nothing back | 28 | 0.5% |
+| via leg (`PSC_VIA_LABEL`) with no item tracking number | 17 of 115 | 0.3% |
+| jobs riding together — one visit out, one visit back | 37 | 0.7% |
+
+**The third rule nearly went in wrong.** Grouping by driver + day + pickup + dropoff
+looks equivalent and removes **36.7% of every job in the period — 1,930 real
+payments** — because the shuttle runs repeat the same pair hourly all afternoon
+(15:19, 16:46, 17:40, 20:52 …) and those are separate rides. Merging is by
+CONSECUTIVE stops at one place, the same rule `tat.ts` uses, which needs no
+threshold. `scripts/pay.test.mts` §5 pins both directions.
+
+Excluded jobs are not written to `pay_jobs` at all, so they do not appear on the
+driver's trip list. That keeps the schema unchanged, at the cost of "why is my trip
+missing" — an `excluded_reason` column would be the transparent version, and needs a
+migration applied BEFORE the code ships or the pay archive fails its write.
+
 ## Open items
 
 1. **The shift window has no source.** `workedMinutes` takes it as an input
