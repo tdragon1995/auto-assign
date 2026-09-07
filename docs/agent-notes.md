@@ -139,6 +139,28 @@ POST /api/psc-assign
 
 ---
 
+## Knowledge Graph (graphify)
+
+A repo-wide graphify knowledge graph was built 2026-09-07 covering all 639 tracked
+files (9,522 nodes, 23,784 edges, 340 communities). It lives in `graphify-out/`,
+which is gitignored (`graph.json` alone runs ~15MB) — rebuild locally with
+`/graphify` before relying on it; a stale prior build is not committed anywhere.
+`graphify query "<question>"` answers questions from it once rebuilt.
+
+**Critique-archive edges are inferred, not extracted — verify before trusting one.**
+`.impeccable/critique/*.md` files are named by file slug (e.g.
+`dashboard-src-components-note-review-panel-tsx`) but the critique text itself
+never names the reviewed component's exported symbol — it only ever says "the
+panel". The graph therefore links a critique doc to its component at
+`AMBIGUOUS`/0.3 confidence, which is correct: it's a same-file inference, not a
+citation found in the text. Traced and confirmed by hand for
+`NoteReviewPanel()` ↔ `2026-07-22T11-13-43Z__dashboard-src-components-note-review-panel-tsx.md`
+— the file exports exactly one component, so the inference holds, but a future
+agent should re-verify per-file rather than assume every critique-slug maps to
+exactly one export.
+
+---
+
 ## Debug Slash Commands
 
 | Command | Purpose |
