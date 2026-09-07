@@ -1,15 +1,22 @@
 /**
  * Does a distance answered by the FALLBACK get written to the shared cache?
  *
- * This is the whole economics of the fallback. If VietMap's answers were not
+ * This is the whole economics of the fallback. If a fallback's answers were not
  * cached, every future pass would re-ask for the same pairs forever — the exact
  * trap the ~13,000 unpriced legs were already stuck in, just with a different
  * provider's bill attached. Caching is what makes a single recovery pass permanent.
  *
- * It works because the fallback sits INSIDE the fetch-misses callback, below the
- * caching layer, rather than wrapping it — so the cache cannot tell which provider
- * answered and stores either identically. That is easy to break by "simplifying"
- * the fallback upward, hence this test.
+ * It works because the whole chain sits INSIDE the fetch-misses callback, below
+ * the caching layer, rather than wrapping it — so the cache cannot tell which
+ * provider answered and stores any of them identically. That is easy to break by
+ * "simplifying" a fallback upward, hence this test.
+ *
+ * VIETMAP IS NOW THE LEAD, so the fallback under test here is GOONG: the lead is
+ * made to refuse and the pairs must still resolve, still be marked `api`, and
+ * still land in the cache. Which provider sits in which slot is deliberately not
+ * what this file asserts — distance-chain.test.mts owns the order. What it
+ * asserts is that the slot makes no difference to the cache, which is the
+ * property that has to survive every future reordering.
  *
  *   node scripts/redis-stub.mjs &
  *   npx tsx scripts/vietmap-cache.test.mts
@@ -29,6 +36,8 @@ function check(label: string, cond: boolean, detail = "") {
 }
 
 let goongCalls = 0, vietmapCalls = 0;
+/** The lead refuses, so every answer below comes from a FALLBACK slot. */
+let vietmapDown = true;
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (u: string | URL | Request, init?: RequestInit) => {
   const url = String(u);
@@ -37,6 +46,8 @@ globalThis.fetch = (async (u: string | URL | Request, init?: RequestInit) => {
 
   if (url.includes("vietmap")) {
     vietmapCalls++;
+    // The LEAD, exhausted — so the chain has to fall through to Goong.
+    if (vietmapDown) return new Response("rate limited", { status: 429 });
     // Shape the reply from sources/destinations, NOT from a guess about which end
     // is which: rows are sources, columns are destinations. Assuming one origin
     // here silently returned a 1xN matrix for an Nx1 request and made the code
@@ -49,9 +60,18 @@ globalThis.fetch = (async (u: string | URL | Request, init?: RequestInit) => {
       durations: Array.from({ length: rows }, () => Array.from({ length: cols }, () => 900)),  // s → 15 min
     }), { status: 200 });
   }
-  // Goong: exhausted, exactly as production is right now.
   goongCalls++;
-  return new Response("rate limited", { status: 429 });
+  // Goong's two shapes: rows are ORIGINS, columns are destinations. These pairs are
+  // N origins → 1 destination, so the reply must be N rows of one element — the
+  // 1xN shape parses as a length mismatch and returns all-null, which reads exactly
+  // like a provider outage and cost an afternoon the last time it was assumed.
+  const q = new URL(url).searchParams;
+  const rows = (q.get("origins") ?? "").split("|").filter(Boolean).length || 1;
+  const cols = (q.get("destinations") ?? "").split("|").filter(Boolean).length || 1;
+  const el = () => ({ status: "OK", distance: { value: 4321 }, duration: { value: 900 } });
+  return new Response(JSON.stringify({
+    rows: Array.from({ length: rows }, () => ({ elements: Array.from({ length: cols }, el) })),
+  }), { status: 200 });
 }) as typeof fetch;
 
 const { Redis } = await import("@upstash/redis");
@@ -66,18 +86,23 @@ const pairs = [
 // Clear any prior run so a stale key cannot fake a pass.
 for (const k of await redis.keys("dist:v1:*")) await redis.del(k);
 
-// ── First pass: Goong refuses, VietMap answers ──────────────────────────────
+// ── First pass: the lead refuses, a fallback answers ────────────────────────
 const first = await roadDistancesForPairs(pairs);
-check("both pairs resolved despite Goong being down", first.every((r) => r?.distance_km === 4.3),
+check("both pairs resolved despite the lead being down", first.every((r) => r?.distance_km === 4.3),
   JSON.stringify(first));
 check("the answers came from the API path", first.every((r) => r?.source === "api"));
-check("Goong was actually asked and refused", goongCalls > 0);
-check("VietMap was actually used", vietmapCalls > 0);
+check("the lead was actually asked and refused", vietmapCalls > 0);
+check("the fallback was actually used", goongCalls > 0);
 check("duration survived the fallback too", first.every((r) => r?.eta_mins === 15));
 
 const keys = await redis.keys("dist:v1:*");
 check(`fallback answers were WRITTEN to the shared cache (${keys.length} keys)`, keys.length === 2,
   JSON.stringify(keys));
+
+// The cache must not care WHICH provider answered — that is the property that has
+// to hold through any reordering of the chain.
+check("and are indistinguishable from a lead-answered pair",
+  first.every((r) => r?.source === "api" && r?.eta_mins === 15));
 
 // ── Second pass: nothing should reach either provider ───────────────────────
 goongCalls = 0; vietmapCalls = 0;

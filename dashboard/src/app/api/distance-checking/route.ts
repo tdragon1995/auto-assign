@@ -69,8 +69,16 @@ export async function POST(req: NextRequest) {
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
     const results: DistanceResult[] = new Array(rows.length);
     // Shared across every chunk in this request: the first 429 flips this, and
-    // all later Goong calls short-circuit to cache-only. Reported so the caller
-    // knows to stop and resume tomorrow (computed pairs are already cached).
+    // all later calls to the LEAD provider short-circuit to cache-only. Reported
+    // so the caller knows to stop and resume tomorrow (computed pairs are already
+    // cached).
+    //
+    // Since VietMap became the lead this flag means "VietMap is capped", not "no
+    // provider will answer" — Goong still fills the gaps behind it, so results
+    // after the flag are BETTER than they used to be and "resume tomorrow" is now
+    // conservative advice rather than the literal truth. Left as-is deliberately:
+    // stopping early costs a re-run, and a sheet half-priced by the last account
+    // with any allowance left is the thing worth avoiding.
     const quota = { quotaExceeded: false };
 
     // Flatten groups into chunks: one matrix call per pickup, split if it has

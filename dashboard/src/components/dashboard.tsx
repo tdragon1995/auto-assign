@@ -15,6 +15,7 @@ import { LeaveStatusPanel } from "./leave-status-panel";
 import { ConfigTodoPanel } from "./config-todo-panel";
 import { SheetAlarmBanner } from "./sheet-alarm-banner";
 import { TatTeamPanel } from "./tat-team-panel";
+import { PayTeamPanel } from "./pay-team-panel";
 import { toast } from "sonner";
 import type { LogEntry, PickupWarning, FailedJob, ConfigDriver, SheetAlarm, UnfinishedConfigRow, CoverageGap, BranchRule } from "@/lib/types";
 import type { DeploymentBeat } from "@/lib/smart-log-kv";
@@ -25,7 +26,7 @@ import type { LeaveOnDate, InvalidLeaveRow, SpanningLeaveRow } from "@/lib/leave
 import type { LeaveSuppression } from "@/lib/leave-suppression";
 
 type Env = "prod" | "uat";
-type RightTab = "attention" | "live" | "admin" | "config" | "schedule" | "distance" | "tat";
+type RightTab = "attention" | "live" | "admin" | "config" | "schedule" | "distance" | "tat" | "pay";
 
 export function Dashboard() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -633,6 +634,9 @@ export function Dashboard() {
             <button onClick={() => setRightTab("tat")} className={tabBtn(rightTab === "tat")}>
               Hiệu suất
             </button>
+            <button onClick={() => setRightTab("pay")} className={tabBtn(rightTab === "pay")}>
+              Lương PT
+            </button>
           </div>
 
           {/* Tab content. On mobile the page flows + scrolls (definite heights so
@@ -722,6 +726,13 @@ export function Dashboard() {
             ) : rightTab === "tat" ? (
               <div className="h-[72vh] lg:h-full">
                 <TatTeamPanel />
+              </div>
+            ) : rightTab === "pay" ? (
+              /* Mounted only while the tab is open, like the config browser: a
+                 month of punches across the fleet is not something to fetch on
+                 every dashboard load for the days nobody opens it. */
+              <div className="h-[72vh] lg:h-full">
+                <PayTeamPanel />
               </div>
             ) : (
               <div className="h-[72vh] lg:h-full">

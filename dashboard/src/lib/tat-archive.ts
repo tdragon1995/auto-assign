@@ -10,8 +10,10 @@
 import { Redis } from "@upstash/redis";
 import { getTimelineRoutes, type Env } from "./cartrack";
 import { buildDayLegs } from "./tat";
+import { buildDayPay } from "./pay";
 import { sbDelete, sbUpsert, supabaseConfigured, missingSupabaseEnv } from "./supabase-rest";
 import { vnDate, addDays, vnHoursMinutes } from "./time";
+import type { TimelineRoute } from "./types";
 
 /** Stops two overlapping cron pings — or a ping racing the report endpoint's
  *  stale-refresh — from both fetching the day and both rewriting it. Sized above
@@ -28,6 +30,14 @@ export interface ArchiveResult {
   longGaps?: number;
   /** Where the distance answers came from — cache vs billed API vs failed. */
   distances?: { pairs: number; cache: number; api: number; self: number; failed: number; noCoords: number };
+  /** The part-time pay half of the same pass. `error` here is reported, never
+   *  thrown: pay rides the leg archive and must never be able to fail it. */
+  pay?: {
+    jobs?: number;
+    punches?: number;
+    distances?: { pairs: number; cache: number; api: number; self: number; failed: number; noCoords: number };
+    error?: string;
+  };
   skipped?: string;
   error?: string;
 }
@@ -37,6 +47,59 @@ function getRedis(): Redis | null {
   const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
   if (!url || !token) return null;
   return new Redis({ url, token });
+}
+
+/**
+ * The part-time pay rows for a day, written with the same upsert-then-delete
+ * order and for the same reason as the legs above: a write that dies must leave
+ * the previous copy of the day intact rather than an empty one.
+ *
+ * NEVER THROWS. It is called from inside archiveDay's own try, where an
+ * exception would be caught as an archive failure — which releases the seal and
+ * costs the day its legs as well as its pay. Pay is the newer, smaller record and
+ * rides along; it does not get to fail the thing it is riding on.
+ *
+ * Punches are written even for a driver with no paid jobs. A day where somebody
+ * clocked in and was never dispatched is still hours worked, and dropping it
+ * because the job list came back empty would quietly stop paying for it.
+ */
+async function archivePay(
+  routes: TimelineRoute[],
+  date: string,
+): Promise<NonNullable<ArchiveResult["pay"]>> {
+  try {
+    const { jobs, punches, stats } = await buildDayPay(routes, date);
+    const stamp = new Date().toISOString();
+    const staleOf = (d: string) => `trip_date=eq.${d}&archived_at=lt.${encodeURIComponent(stamp)}`;
+
+    if (jobs.length > 0) {
+      await sbUpsert(
+        "pay_jobs",
+        jobs.map((j) => ({ ...j, archived_at: stamp })) as unknown as Record<string, unknown>[],
+        "trip_date,job_id",
+      );
+      await sbDelete("pay_jobs", staleOf(date));
+    } else {
+      await sbDelete("pay_jobs", `trip_date=eq.${date}`);
+    }
+
+    if (punches.length > 0) {
+      await sbUpsert(
+        "pay_punches",
+        punches.map((p) => ({ ...p, archived_at: stamp })) as unknown as Record<string, unknown>[],
+        "trip_date,job_id",
+      );
+      await sbDelete("pay_punches", staleOf(date));
+    } else {
+      await sbDelete("pay_punches", `trip_date=eq.${date}`);
+    }
+
+    return { jobs: jobs.length, punches: punches.length, distances: stats };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[tat-archive] pay archive failed:", msg);
+    return { error: msg };
+  }
 }
 
 /**
@@ -94,6 +157,13 @@ export async function archiveDay(date: string, env: Env = "prod"): Promise<Archi
       await sbDelete("tat_legs", `trip_date=eq.${date}`);
     }
 
+    // The pay half of the same day, off the SAME routes — no second Cartrack
+    // fetch, no second cron, no second seal. It runs AFTER the legs are safely
+    // written and inside its own try/catch, because a pay failure must never cost
+    // the day its TAT archive: legs are the older record and the one the seal was
+    // built for, and a lost seal would take the day's legs with it.
+    const pay = await archivePay(routes, date);
+
     return {
       ok: true,
       date,
@@ -102,6 +172,7 @@ export async function archiveDay(date: string, env: Env = "prod"): Promise<Archi
       graded: legs.filter((l) => l.on_time != null).length,
       longGaps: legs.filter((l) => l.long_gap).length,
       distances: stats,
+      pay,
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { AlertTriangle, Palmtree } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AlertTriangle, Ban, Check, ChevronLeft, ChevronRight, Palmtree } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { SectionHeader } from "./section-header";
@@ -10,8 +10,12 @@ import type { LeaveOnDate, InvalidLeaveRow, SpanningLeaveRow } from "@/lib/leave
 import type { LeaveSuppression } from "@/lib/leave-suppression";
 import type { ConfigDriver } from "@/lib/types";
 import { addDays, vnDate } from "@/lib/time";
-import { splitDriverName, compareDriverNames, compareByDriverThenWindow } from "@/lib/driver-label";
+import {
+  splitDriverName, compareDriverNames, compareByDriverThenWindow, employmentOf,
+  type Employment,
+} from "@/lib/driver-label";
 import { DriverName } from "./driver-name";
+import { DriverCombobox } from "./driver-combobox";
 
 const TYPE_LABEL: Record<string, string> = {
   "Nghỉ nguyên buổi": "Cả ngày",
@@ -129,20 +133,6 @@ function TimeSelect({
         </option>
       ))}
     </select>
-  );
-}
-
-const SUB_NAMES_LIST_ID = "leave-sub-names";
-
-/** The driver-name options a sub input autocompletes against. Rendered once per
- *  place the editor can appear — two <datalist>s cannot share an id. */
-function SubNamesDatalist({ id, drivers }: { id: string; drivers: ConfigDriver[] }) {
-  return (
-    <datalist id={id}>
-      {drivers.map((d) => (
-        <option key={d.driver_id} value={d.name} />
-      ))}
-    </datalist>
   );
 }
 
@@ -291,19 +281,19 @@ function DeleteRowButton({
  */
 function SubEditor({
   row,
-  driverNames,
+  drivers,
   onSave,
   onCancel,
-  listId = SUB_NAMES_LIST_ID,
 }: {
   row: LeaveRowView;
-  driverNames: Set<string>;
+  drivers: ConfigDriver[];
   onSave: (subs: { name: string; from: string | null; to: string | null }[]) => Promise<boolean>;
   onCancel: () => void;
-  /** Which <datalist> of driver names to bind the input to. The editor renders
-   *  in two places now, and each owns its own list. */
-  listId?: string;
 }) {
+  // Still checked, even though the picker can only produce a roster name: this
+  // is the last thing between a typo and a substitute the sheet's xlookup will
+  // never resolve, and it costs one Set.
+  const driverNames = new Set(drivers.map((d) => d.name));
   // Leave window bounds (for prefilling a split) — "06:30–15:00" → ["06:30","15:00"]
   const bounds = row.timeLabel ? row.timeLabel.split("–") : null;
   const [blocks, setBlocks] = useState<SubBlock[]>([{ name: "", from: "", to: "" }]);
@@ -362,13 +352,18 @@ function SubEditor({
     <div className="mt-1 space-y-1 rounded border border-slate-300 bg-white p-1.5">
       {blocks.map((b, i) => (
         <div key={i} className="flex flex-wrap items-center gap-1">
-          <input
-            type="text"
-            list={listId}
-            placeholder="Tên người thay…"
-            value={b.name}
-            onChange={(e) => patch(i, { name: e.target.value })}
-            className="min-w-[140px] flex-1 rounded border border-slate-300 px-1.5 py-1 text-xs"
+          {/* The same control the config editor uses, minus the several-names
+              part: a substitute is one person for one window, so the field
+              stands down once someone is chosen and the ✕ is how you change
+              your mind. */}
+          <DriverCombobox
+            names={b.name ? [b.name] : []}
+            onChange={(names) => patch(i, { name: names[0] ?? "" })}
+            drivers={drivers}
+            max={1}
+            placeholder="Tìm người thay…"
+            ariaLabel="Chọn người thay"
+            className="flex min-w-[140px] flex-1 flex-wrap items-center gap-1 rounded border border-slate-300 bg-white px-1 py-0.5 focus-within:ring-2 focus-within:ring-indigo-400/50"
           />
           <TimeSelect label="Từ giờ" value={b.from} onChange={(v) => patch(i, { from: v })} />
           <span className="text-slate-400 text-[11px]">→</span>
@@ -487,25 +482,26 @@ function makeRestoreRow(onRefresh: () => void): DeleteRowFn {
  */
 function DriverCard({
   g,
-  driverNames,
+  drivers,
   onFill,
   onDelete,
 }: {
   g: DriverGroup;
-  driverNames: Set<string>;
+  drivers: ConfigDriver[];
   onFill: FillSubsFn;
   onDelete: DeleteRowFn;
 }) {
   const resigned = g.loai_nghi === "Nghỉ việc";
   const uncovered = !resigned && g.rows.some((r) => r.subs.length === 0);
   const [editRow, setEditRow] = useState<number | null>(null);
-  // Leading dot carries state: red = resigned, amber = uncovered, grey = covered.
-  const dotClass = resigned ? "bg-red-500" : uncovered ? "bg-amber-500" : "bg-slate-300";
+  // The SAME mark the week grid uses, so a row does not change language
+  // between the glance and the work.
+  const status = resigned ? "resigned" : uncovered ? "uncovered" : "covered";
   const typeClass = resigned ? "text-red-700" : "text-amber-700";
   return (
     <div className="px-2 py-1.5 text-xs hover:bg-slate-50">
       <div className="flex items-center gap-1.5 flex-wrap">
-        <span className={`size-1.5 shrink-0 rounded-full ${dotClass}`} />
+        <StatusMark status={status} className="size-3.5" />
         <DriverName full={g.driver_name || g.driver_id} />
         <span className={`shrink-0 text-[11px] font-semibold ${typeClass}`}>
           {typeLabel(g.loai_nghi)}
@@ -559,7 +555,7 @@ function DriverCard({
             {editRow === i && (
               <SubEditor
                 row={r}
-                driverNames={driverNames}
+                drivers={drivers}
                 onCancel={() => setEditRow(null)}
                 onSave={(subs) =>
                   onFill(
@@ -571,42 +567,6 @@ function DriverCard({
             )}
           </div>
         ))}
-    </div>
-  );
-}
-
-function DaySection({
-  label,
-  groups,
-  driverNames,
-  onFill,
-  onDelete,
-}: {
-  label: string;
-  groups: DriverGroup[];
-  driverNames: Set<string>;
-  onFill: FillSubsFn;
-  onDelete: DeleteRowFn;
-}) {
-  return (
-    <div className="flex-1 min-w-[220px]">
-      {/* Count = people off, not sheet rows */}
-      <SectionHeader label={label} count={groups.length} className="mb-1" />
-      {groups.length === 0 ? (
-        <p className="text-xs text-slate-500">Không có ai nghỉ</p>
-      ) : (
-        <div className="divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200">
-          {groups.map((g) => (
-            <DriverCard
-              key={g.driver_id}
-              g={g}
-              driverNames={driverNames}
-              onFill={onFill}
-              onDelete={onDelete}
-            />
-          ))}
-        </div>
-      )}
     </div>
   );
 }
@@ -661,16 +621,14 @@ function uncoveredWindows(groups: DriverGroup[]): UncoveredRow[] {
 
 function UncoveredRowItem({
   item,
-  driverNames,
+  drivers,
   onFill,
   onDelete,
-  listId,
 }: {
   item: UncoveredRow;
-  driverNames: Set<string>;
+  drivers: ConfigDriver[];
   onFill: FillSubsFn;
   onDelete: DeleteRowFn;
-  listId: string;
 }) {
   const [editing, setEditing] = useState(false);
   return (
@@ -687,14 +645,10 @@ function UncoveredRowItem({
                 approved only in part leaves days off that nobody is actually
                 taking, and the fix for those is removing the row, not staffing
                 it. Both answers live on the row that raises the question. */}
-            <DeleteRowButton
-              identity={{
-                driver_id: item.driver_id,
-                leave_from: item.row.leave_from,
-                timeLabel: item.row.timeLabel,
-              }}
-              onDelete={onDelete}
-            />
+            {/* Primary action first, destructive last. Reading order is action
+                order here: "Thêm người thay" is what this row is FOR, and a
+                delete sitting in front of it puts the irreversible option under
+                the thumb that was reaching for the ordinary one. */}
             <Button
               size="sm"
               variant="outline"
@@ -703,14 +657,21 @@ function UncoveredRowItem({
             >
               Thêm người thay
             </Button>
+            <DeleteRowButton
+              identity={{
+                driver_id: item.driver_id,
+                leave_from: item.row.leave_from,
+                timeLabel: item.row.timeLabel,
+              }}
+              onDelete={onDelete}
+            />
           </span>
         )}
       </div>
       {editing && (
         <SubEditor
           row={item.row}
-          driverNames={driverNames}
-          listId={listId}
+          drivers={drivers}
           onSave={(subs) =>
             onFill(
               { driver_id: item.driver_id, leave_from: item.row.leave_from, timeLabel: item.row.timeLabel },
@@ -746,28 +707,22 @@ export function UncoveredLeaveSection({
   drivers: ConfigDriver[];
   onRefresh: () => void;
 }) {
-  // Per-instance: the substitute editor also renders inside the panel below, and
-  // two <datalist>s cannot share an id.
-  const listId = useId();
   const items = uncoveredWindows(groupByDriver(entries));
   const fillSubs = makeFillSubs(onRefresh);
   const deleteRow = makeDeleteRow(onRefresh);
-  const driverNames = new Set(drivers.map((d) => d.name));
   if (items.length === 0) return null;
 
   return (
     <div className="space-y-1.5">
-      <SubNamesDatalist id={listId} drivers={drivers} />
       <SectionHeader label={label} count={items.length} tone="amber" />
       <div className="divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200">
         {items.map((item) => (
           <UncoveredRowItem
             key={`${item.driver_id}-${item.row.leave_from}-${item.row.timeLabel ?? "full"}`}
             item={item}
-            driverNames={driverNames}
+            drivers={drivers}
             onFill={fillSubs}
             onDelete={deleteRow}
-            listId={listId}
           />
         ))}
       </div>
@@ -804,181 +759,515 @@ export function uncoveredLeaveCount(...days: LeaveOnDate[][]): number {
  * a row number, so filling in next Tuesday's substitute here is the identical
  * operation to filling in today's.
  */
-function OtherDaySection({
+/** Vietnamese weekday, from a YYYY-MM-DD read as UTC so no local offset can
+ *  shift it a day. Index 0 is Sunday, which is why the table starts there. */
+const WEEKDAY = ["Chủ Nhật", "Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy"] as const;
+
+/**
+ * The Monday on or before `date`.
+ *
+ * Monday, not Sunday: the roster this panel reports on is worked Monday to
+ * Saturday, and a week that breaks between Saturday and Sunday would split the
+ * busiest stretch across two pages.
+ */
+export function weekStartOf(date: string): string {
+  const d = new Date(date + "T00:00:00Z");
+  if (Number.isNaN(d.getTime())) return date;
+  return addDays(date, -((d.getUTCDay() + 6) % 7));
+}
+
+const DAYS_IN_WEEK = 7;
+
+interface DayLeave {
+  date: string;
+  entries: LeaveOnDate[];
+  invalid: InvalidLeaveRow[];
+}
+
+/**
+ * A week of leave at a time, paged with the arrows.
+ *
+ * It replaced a single-date picker plus separate "today" and "tomorrow" blocks.
+ * Two things were wrong with that: the question this panel answers is "who is
+ * off, and is anyone uncovered" — which is a question about the WEEK, since
+ * cover is arranged days ahead — and today appeared twice the moment anyone
+ * picked a date, once in its own section and once in the picker's.
+ *
+ * Every day is listed, including the empty ones. An empty day costs one quiet
+ * line and keeps the week's SHAPE readable: "Tuesday is clear, Thursday has
+ * four" is the thing being looked for, and a list that silently omits the clear
+ * days cannot show it.
+ *
+ * The whole week arrives in ONE request. `loadLeaveEntries` returns the entire
+ * sheet and each day is a filter over that same cached parse, so seven days cost
+ * no more upstream work than one — see the note on the route.
+ */
+/** Weekday, short for a column head and long for a screen reader. Index 0 is
+ *  Sunday, matching getUTCDay. */
+const WEEKDAY_SHORT = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"] as const;
+
+function weekdayIndex(date: string): number {
+  const d = new Date(date + "T00:00:00Z");
+  return Number.isNaN(d.getTime()) ? -1 : d.getUTCDay();
+}
+function weekdayShort(date: string): string {
+  const i = weekdayIndex(date);
+  return i < 0 ? "" : WEEKDAY_SHORT[i];
+}
+function weekdayLong(date: string): string {
+  const i = weekdayIndex(date);
+  return i < 0 ? "" : WEEKDAY[i];
+}
+
+/** Which person, on which day, is open in the detail strip. Keyed by both
+ *  because one person is off on several days of a week. */
+interface Picked { date: string; personKey: string }
+
+/**
+ * The three things a name in the grid can be saying, in ONE vocabulary.
+ *
+ * A bare coloured dot said them before, and a dot is not a word: nothing on the
+ * screen said what amber meant, and for a reader who cannot separate amber from
+ * grey it said nothing at all. Colour is the wrong carrier for the primary
+ * signal — it is the right carrier for the SECOND one. So each state now has a
+ * SHAPE (the icon), a WORD (the legend under the grid, and the screen-reader
+ * text on every row), and a colour reinforcing both.
+ */
+const STATUS_MARK = {
+  uncovered: { Icon: AlertTriangle, tone: "text-amber-600", label: "Chưa có người thay" },
+  covered: { Icon: Check, tone: "text-emerald-600", label: "Đã có người thay" },
+  resigned: { Icon: Ban, tone: "text-red-600", label: "Nghỉ việc" },
+} as const;
+
+type LeaveStatus = keyof typeof STATUS_MARK;
+
+function StatusMark({
+  status,
+  className = "size-3",
+  labelled = false,
+}: {
+  status: LeaveStatus;
+  className?: string;
+  /** The legend spells the word out beside the icon, so it must not ALSO be
+   *  read out invisibly; every other use is icon-only and needs the text. */
+  labelled?: boolean;
+}) {
+  const { Icon, tone, label } = STATUS_MARK[status];
+  return (
+    <>
+      <Icon className={`${className} shrink-0 ${tone}`} strokeWidth={2.5} aria-hidden />
+      {!labelled && <span className="sr-only">{label}. </span>}
+    </>
+  );
+}
+
+/**
+ * One PERSON in a day column — their full-time and part-time accounts on one
+ * line instead of two.
+ *
+ * About a dozen people hold both a `DC…` and a `PT…` account, and since the MISA
+ * sync began filing the day off against the twin, both are off on the same day.
+ * The grid shows names with no staff code, so those arrived as the SAME NAME
+ * TWICE in a column, one directly under the other, with nothing to say why.
+ *
+ * Merging is safe HERE and nowhere else: this grid carries no actions. The two
+ * accounts are separate records with separate substitutes, so the card below —
+ * where a substitute is actually filled in — still shows one card per account,
+ * each with its own FT/PT chip. The grid answers "who is off", the card answers
+ * "on which account", and neither has to answer both.
+ *
+ * Two accounts merge ONLY when they are one full-time and one part-time. That is
+ * what a twin pair IS, and the guard matters: Vietnamese names repeat, so two
+ * DIFFERENT full-time drivers can share one spelling, and merging THOSE would
+ * hide a whole person from the day.
+ */
+interface PersonCell {
+  key: string;
+  name: string;
+  /** The accounts behind this line, full-time first. */
+  groups: DriverGroup[];
+  employments: Employment[];
+  status: LeaveStatus;
+}
+
+function personNameOf(g: DriverGroup): string {
+  return splitDriverName(g.driver_name || g.driver_id).name;
+}
+
+/** Worst-first: a resigned account outranks an uncovered one, which outranks a
+ *  covered one — the line must show the thing that still needs doing. */
+function statusOf(groups: DriverGroup[]): LeaveStatus {
+  if (groups.some((g) => g.loai_nghi === "Nghỉ việc")) return "resigned";
+  return groups.some(
+    (g) => g.loai_nghi !== "Nghỉ việc" && g.rows.some((r) => r.subs.length === 0),
+  )
+    ? "uncovered"
+    : "covered";
+}
+
+export function mergePeople(groups: DriverGroup[]): PersonCell[] {
+  const byPerson = new Map<string, DriverGroup[]>();
+  for (const g of groups) {
+    const key = personNameOf(g).trim().toLowerCase();
+    const list = byPerson.get(key);
+    if (list) list.push(g);
+    else byPerson.set(key, [g]);
+  }
+  const cell = (key: string, gs: DriverGroup[]): PersonCell => {
+    const sorted = [...gs].sort((a, b) => compareDriverNames(a.driver_name, b.driver_name));
+    return {
+      key,
+      name: personNameOf(sorted[0]),
+      groups: sorted,
+      employments: sorted
+        .map((g) => employmentOf(g.driver_name))
+        .filter((e): e is Employment => e !== null),
+      status: statusOf(sorted),
+    };
+  };
+  const cells: PersonCell[] = [];
+  for (const [key, gs] of byPerson) {
+    const types = gs.map((g) => employmentOf(g.driver_name));
+    const pair =
+      gs.length > 1 &&
+      types.every((t) => t !== null) &&
+      new Set(types).size === gs.length;
+    if (pair) cells.push(cell(key, gs));
+    // Not a twin pair: keep every account its own line, keyed by the account so
+    // two people sharing a name stay two lines.
+    else for (const g of gs) cells.push(cell(`${key}|${g.driver_id}`, [g]));
+  }
+  return cells.sort(
+    (a, b) => a.name.localeCompare(b.name, "vi") || a.key.localeCompare(b.key),
+  );
+}
+
+/**
+ * The week as SEVEN COLUMNS, with the day being worked on opened underneath.
+ *
+ * A column is ~150px, which fits a name and a window and nothing else — the sub
+ * editor alone is a name field plus two time selects plus two buttons. So the
+ * grid is not asked to carry the actions. It carries the SHAPE of the week,
+ * which is what seven columns are uniquely good at: "Thursday is the problem"
+ * is one glance here and a scroll through seven headings in a list.
+ *
+ * Picking a name opens that driver's day below the grid at full width, in the
+ * SAME DriverCard the rest of the panel uses. That is the whole trick: the
+ * compact view is new, the acting view is the one that already works, so there
+ * is no second copy of the substitute editor or the delete guard to drift.
+ *
+ * Columns collapse before they get unreadable — two on a phone, four on a
+ * tablet, seven only where seven fit. A 150px column at 7-across on a 700px
+ * screen is 100px, and a Vietnamese name does not go in 100px.
+ *
+ * A column holds one line per PERSON, not per account (`mergePeople`), and each
+ * line carries a marked STATE with a legend under the grid rather than an
+ * unexplained coloured dot. Both are there for the same reason: a column this
+ * narrow has room for one name and one symbol, so the name had better be a
+ * person and the symbol had better mean something without being hovered.
+ */
+function WeekSection({
   today,
-  driverNames,
+  drivers,
   onFill,
   onDelete,
   registerReload,
 }: {
-  /** Saigon's today, as the floor for the picker. */
+  /** Saigon's today: the default week, and the day marked as current. */
   today: string;
-  driverNames: Set<string>;
+  drivers: ConfigDriver[];
   onFill: FillSubsFn;
   onDelete: DeleteRowFn;
-  /** Hands the parent a way to re-read the chosen day after a write, so a
+  /** Hands the parent a way to re-read the shown week after a write, so a
    *  substitute filled in here does not leave the row still reading uncovered. */
   registerReload: (fn: (() => void) | null) => void;
 }) {
-  const [date, setDate] = useState("");
+  const [weekStart, setWeekStart] = useState(() => weekStartOf(today));
+  const [picked, setPicked] = useState<Picked | null>(null);
   const [state, setState] = useState<{
     loading: boolean;
     error: string | null;
-    /** The day actually loaded — not `date`, which changes the moment the input
-     *  does. Keeping them apart is what stops one day's rows being labelled with
-     *  another day while a fetch is in flight. */
+    /** The week actually loaded — not `weekStart`, which changes the moment an
+     *  arrow is pressed. Keeping them apart is what stops one week's columns
+     *  being labelled with another week's dates while a fetch is in flight. */
     shown: string | null;
-    entries: LeaveOnDate[];
-    invalid: InvalidLeaveRow[];
-  }>({ loading: false, error: null, shown: null, entries: [], invalid: [] });
+    days: DayLeave[];
+  }>({ loading: true, error: null, shown: null, days: [] });
 
-  const load = useCallback(async (d: string) => {
-    if (!d) {
-      setState({ loading: false, error: null, shown: null, entries: [], invalid: [] });
-      return;
-    }
+  const load = useCallback(async (from: string) => {
     setState((s) => ({ ...s, loading: true, error: null }));
     try {
-      const res = await fetch(`/api/leave-status?date=${encodeURIComponent(d)}`, { cache: "no-store" });
+      const res = await fetch(
+        `/api/leave-status?date=${encodeURIComponent(from)}&days=${DAYS_IN_WEEK}`,
+        { cache: "no-store" },
+      );
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.picked) throw new Error(data.error || `Lỗi ${res.status}`);
       setState({
         loading: false,
         error: null,
-        shown: String(data.picked.date ?? d),
-        entries: Array.isArray(data.picked.entries) ? data.picked.entries : [],
-        invalid: Array.isArray(data.picked.invalid) ? data.picked.invalid : [],
+        shown: String(data.picked.from ?? from),
+        days: Array.isArray(data.picked.days) ? (data.picked.days as DayLeave[]) : [],
       });
     } catch (e) {
       setState((s) => ({ ...s, loading: false, error: e instanceof Error ? e.message : String(e) }));
     }
   }, []);
 
-  // A write from inside this section refreshes THIS day, not the panel's two.
+  useEffect(() => { void load(weekStart); }, [load, weekStart]);
+  // A different week cannot keep the old week's selection open.
+  useEffect(() => { setPicked(null); }, [weekStart]);
+
   useEffect(() => {
     registerReload(state.shown ? () => void load(state.shown!) : null);
     return () => registerReload(null);
   }, [registerReload, load, state.shown]);
 
-  const pick = (d: string) => { setDate(d); void load(d); };
+  const thisWeek = weekStartOf(today);
+  const nextWeek = addDays(thisWeek, DAYS_IN_WEEK);
+  const weekEnd = addDays(weekStart, DAYS_IN_WEEK - 1);
 
-  const groups = groupByDriver(state.entries);
-  const uncovered = uncoveredCount(groups);
-  const ignored = state.invalid.filter((r) => !r.recovered);
+  // Grouped once, used by both the columns and the detail strip below. Counted
+  // in PEOPLE, matching what the grid draws — a badge saying 9 above a column
+  // you can count 8 names in is a badge nobody trusts again.
+  const byDay = state.days.map((d) => ({
+    date: d.date,
+    people: mergePeople(groupByDriver(d.entries)),
+    ignored: d.invalid.filter((r) => !r.recovered).length,
+  }));
+  const uncoveredOn = (people: PersonCell[]) =>
+    people.filter((p) => p.status === "uncovered").length;
+  const weekUncovered = byDay.reduce((n, d) => n + uncoveredOn(d.people), 0);
+
+  // The open person, re-found in the CURRENT data rather than remembered: a
+  // write may have removed the very row that was open, and a stale copy would
+  // keep offering to delete something already gone.
+  const openDay = picked ? byDay.find((d) => d.date === picked.date) : undefined;
+  const openCell = openDay?.people.find((p) => p.key === picked?.personKey);
 
   return (
     <div className="mt-2 border-t border-slate-200 pt-2">
       <div className="flex flex-wrap items-center gap-1.5">
-        <label htmlFor="leave-other-day" className="text-[11px] font-medium text-slate-700">
-          Xem ngày khác
-        </label>
-        <input
-          id="leave-other-day"
-          type="date"
-          value={date}
-          min={today}
-          onChange={(e) => pick(e.target.value)}
-          className="rounded border border-slate-300 bg-white px-1.5 py-1 text-xs text-slate-900 outline-none focus:ring-2 focus:ring-indigo-400/50"
-        />
-        {/* Two clicks that cover most of what this is for — checking the rest of
-            the week — without making the date field decoration. Named by what
-            they mean, not by their date: a bare "06/09" beside a field already
-            showing a date is one more number to decode, and the date it lands on
-            is on the section header a line below either way. */}
-        {([["Ngày kia", 2], ["Tuần sau", 7]] as const).map(([label, n]) => {
-          const d = addDays(today, n);
-          const sel = state.shown === d;
+        <div className="flex items-center gap-0.5">
+          <Button
+            size="sm" variant="outline"
+            className="size-6 p-0"
+            aria-label="Tuần trước"
+            onClick={() => setWeekStart((w) => addDays(w, -DAYS_IN_WEEK))}
+          >
+            <ChevronLeft className="size-3.5" strokeWidth={2} />
+          </Button>
+          <Button
+            size="sm" variant="outline"
+            className="size-6 p-0"
+            aria-label="Tuần sau"
+            onClick={() => setWeekStart((w) => addDays(w, DAYS_IN_WEEK))}
+          >
+            <ChevronRight className="size-3.5" strokeWidth={2} />
+          </Button>
+        </div>
+        {/* Announced, because the arrows change the whole grid below and a
+            screen reader would otherwise hear nothing move. */}
+        <span aria-live="polite" className="text-xs font-semibold text-slate-800">
+          {ddmm(weekStart)} – {ddmm(weekEnd)}
+        </span>
+        {([["Tuần hiện tại", thisWeek], ["Tuần tới", nextWeek]] as const).map(([label, target]) => {
+          const on = weekStart === target;
           return (
             <Button
-              key={n}
+              key={label}
               size="sm" variant="outline"
-              // Selected is a STATE, so it has to be visible and not only
-              // announced: a chip carrying aria-pressed and no styling tells a
-              // screen reader which day is on screen and tells everyone else
-              // nothing.
-              className={`h-6 px-2 text-[11px] ${sel ? "border-indigo-400 bg-indigo-50 text-indigo-900" : ""}`}
-              aria-pressed={sel}
-              title={ddmm(d)}
-              onClick={() => pick(d)}
+              className={`h-6 px-2 text-[11px] ${on ? "border-indigo-400 bg-indigo-50 text-indigo-900" : ""}`}
+              aria-pressed={on}
+              onClick={() => setWeekStart(target)}
             >
               {label}
             </Button>
           );
         })}
-        {(date || state.shown) && (
-          <Button
-            size="sm" variant="ghost"
-            className="h-6 px-2 text-[11px]"
-            onClick={() => { setDate(""); void load(""); }}
-          >
-            Bỏ chọn
-          </Button>
+        {weekUncovered > 0 && (
+          <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-100 px-1.5 py-0 text-[11px] font-semibold text-amber-800">
+            <AlertTriangle className="size-3" strokeWidth={2} />
+            {weekUncovered} chưa có người thay
+          </span>
         )}
       </div>
 
       {state.loading && (
-        <div className="mt-1.5 space-y-1" aria-hidden>
-          {[0, 1].map((i) => (
-            <div key={i} className="h-7 animate-pulse rounded border border-slate-200 bg-slate-100 motion-reduce:animate-none" />
+        <div className="mt-1.5 grid grid-cols-2 gap-1 md:grid-cols-4 xl:grid-cols-7" aria-hidden>
+          {Array.from({ length: DAYS_IN_WEEK }, (_, i) => (
+            <div key={i} className="h-20 animate-pulse rounded border border-slate-200 bg-slate-100 motion-reduce:animate-none" />
           ))}
         </div>
       )}
       <span role="status" className="sr-only">
-        {state.loading ? "Đang tải ngày nghỉ" : ""}
+        {state.loading ? "Đang tải lịch nghỉ trong tuần" : ""}
       </span>
 
       {state.error && (
-        <div role="alert" className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-red-600">
+        <div role="alert" className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-red-700">
           <span className="min-w-0 break-words">{state.error}</span>
-          {date && (
-            <Button size="sm" variant="outline" className="h-6 shrink-0 px-2 text-[11px]" onClick={() => void load(date)}>
-              Thử lại
-            </Button>
-          )}
+          <Button
+            size="sm" variant="outline"
+            className="h-6 shrink-0 px-2 text-[11px]"
+            onClick={() => void load(weekStart)}
+          >
+            Thử lại
+          </Button>
         </div>
-      )}
-
-      {!state.loading && !state.error && !state.shown && (
-        <p className="mt-1.5 text-[11px] text-slate-600">
-          Chọn một ngày để xem ai nghỉ và ai chưa có người thay — sửa được từ đây, trước khi tới ngày đó.
-        </p>
       )}
 
       {!state.loading && !state.error && state.shown && (
-        <div className="mt-1.5">
-          {/* The uncovered count is stated here rather than only coloured: the
-              collapsed header above counts today and tomorrow only, and a day
-              this far out has nothing else pointing at it. */}
-          <div className="mb-1 flex flex-wrap items-center gap-1.5">
-            <span className="text-[11px] font-semibold text-slate-700">{ddmm(state.shown)}</span>
-            {uncovered > 0 && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-100 px-1.5 py-0 text-[11px] font-semibold text-amber-800">
-                <AlertTriangle className="size-3" strokeWidth={2} />
-                {uncovered} chưa có người thay
-              </span>
-            )}
-            {ignored.length > 0 && (
-              <span className="rounded-full border border-red-200 bg-red-50 px-1.5 py-0 text-[11px] font-semibold text-red-700">
-                {ignored.length} dòng lỗi
-              </span>
-            )}
+        <>
+          <div className="mt-1.5 grid grid-cols-2 items-start gap-1 md:grid-cols-4 xl:grid-cols-7">
+            {byDay.map((d) => {
+              const isToday = d.date === today;
+              const uncovered = uncoveredOn(d.people);
+              return (
+                <div
+                  key={d.date}
+                  className={`min-w-0 overflow-hidden rounded-md border ${
+                    isToday ? "border-indigo-300 bg-indigo-50/50" : "border-slate-200 bg-white"
+                  }`}
+                >
+                  <div className={`px-1.5 py-1 ${isToday ? "bg-indigo-100/70" : "bg-slate-50"}`}>
+                    <div className="flex items-baseline justify-between gap-1">
+                      {/* Short in the head, spelled out for a screen reader —
+                          "T5" is a label a sighted reader decodes from position
+                          and a screen reader cannot decode at all. */}
+                      <span className="text-[11px] font-semibold text-slate-800">
+                        <abbr title={`${weekdayLong(d.date)} ${ddmm(d.date)}`} className="no-underline">
+                          {weekdayShort(d.date)}
+                        </abbr>
+                      </span>
+                      <span className="font-mono text-[10px] text-slate-600">{ddmm(d.date)}</span>
+                    </div>
+                    {(uncovered > 0 || d.ignored > 0) && (
+                      <div className="mt-0.5 flex flex-wrap gap-1">
+                        {uncovered > 0 && (
+                          <span className="inline-flex items-center gap-0.5 rounded-full border border-amber-300 bg-amber-100 px-1 py-0 text-[10px] font-semibold text-amber-800">
+                            <AlertTriangle className="size-2.5" strokeWidth={2} />
+                            {uncovered}
+                          </span>
+                        )}
+                        {d.ignored > 0 && (
+                          <span className="rounded-full border border-red-200 bg-red-50 px-1 py-0 text-[10px] font-semibold text-red-700">
+                            {d.ignored} lỗi
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  {d.people.length === 0 ? (
+                    // Named, not dashed. A day with nobody off is an ANSWER —
+                    // the one the eye is looking for when it scans the week —
+                    // and "—" reads as missing data rather than as good news.
+                    <p className="px-1.5 py-1 text-[11px] text-slate-400">Không ai nghỉ</p>
+                  ) : (
+                    <ul className="divide-y divide-slate-100">
+                      {d.people.map((p) => {
+                        const sel = picked?.date === d.date && picked?.personKey === p.key;
+                        const both = p.groups.length > 1;
+                        const pt = p.employments.includes("part-time");
+                        return (
+                          <li key={p.key}>
+                            <button
+                              type="button"
+                              aria-pressed={sel}
+                              onClick={() =>
+                                setPicked(sel ? null : { date: d.date, personKey: p.key })
+                              }
+                              title={`${p.name}${both ? " — nghỉ cả tài khoản FT và PT" : ""} — ${STATUS_MARK[p.status].label.toLowerCase()} — ${weekdayLong(d.date)} ${ddmm(d.date)}`}
+                              className={`flex w-full items-center gap-1 px-1.5 py-1 text-left transition-colors duration-150 ${
+                                sel ? "bg-indigo-100" : "hover:bg-slate-50"
+                              }`}
+                            >
+                              <StatusMark status={p.status} className="size-3" />
+                              <span className="min-w-0 flex-1 truncate text-[11px] text-slate-800">{p.name}</span>
+                              {/* Only when it is not the ordinary case: a
+                                  full-time-only line is most of the grid, and
+                                  chipping every one of them spends the width on
+                                  the thing that is always true. */}
+                              {(both || pt) && (
+                                <span className="shrink-0 rounded-full border border-indigo-200 bg-indigo-50 px-1 text-[9px] font-semibold leading-4 text-indigo-700">
+                                  {both ? "FT+PT" : "PT"}
+                                </span>
+                              )}
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+              );
+            })}
           </div>
-          {groups.length === 0 ? (
-            <p className="text-xs text-slate-600">Không có ai nghỉ ngày {ddmm(state.shown)}.</p>
-          ) : (
-            <div className="divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200">
-              {groups.map((g) => (
-                <DriverCard
-                  key={g.driver_id}
-                  g={g}
-                  driverNames={driverNames}
-                  onFill={onFill}
-                  onDelete={onDelete}
-                />
-              ))}
+
+          {/* What the marks mean, written down. The grid is glanceable only if
+              its symbols are already known, and this is where they become
+              known — once, under the thing they label, rather than in a tooltip
+              nobody hovers. */}
+          <ul className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[10px] text-slate-600">
+            {(["uncovered", "covered", "resigned"] as const).map((k) => (
+              <li key={k} className="inline-flex items-center gap-0.5">
+                <StatusMark status={k} className="size-2.5" labelled />
+                {STATUS_MARK[k].label}
+              </li>
+            ))}
+            <li className="inline-flex items-center gap-0.5">
+              <span className="rounded-full border border-indigo-200 bg-indigo-50 px-1 text-[9px] font-semibold leading-4 text-indigo-700">
+                FT+PT
+              </span>
+              Nghỉ cả hai tài khoản
+            </li>
+          </ul>
+
+          {/* The day being worked on, full width, in the card the rest of the
+              panel already uses — so the substitute editor and the delete guard
+              have exactly one implementation. */}
+          {openCell && picked && (
+            <div
+              className="mt-1.5 rounded-md border border-indigo-300 bg-indigo-50/40 p-1.5"
+              role="region"
+              aria-label={`${openCell.name} — ${weekdayLong(picked.date)} ${ddmm(picked.date)}`}
+            >
+              <div className="mb-1 flex flex-wrap items-baseline gap-x-1.5">
+                <span className="text-[11px] font-semibold text-slate-800">
+                  {weekdayLong(picked.date)} {ddmm(picked.date)}
+                </span>
+                {openCell.groups.length > 1 && (
+                  <span className="text-[11px] text-slate-600">
+                    hai tài khoản — người thay điền riêng cho từng cái
+                  </span>
+                )}
+                <Button
+                  size="sm" variant="ghost"
+                  className="ml-auto h-6 px-2 text-[11px]"
+                  onClick={() => setPicked(null)}
+                >
+                  Đóng
+                </Button>
+              </div>
+              {/* One card per ACCOUNT. The grid merged the twin pair into a
+                  single name because it only had to say who is off; here the
+                  substitute is actually written, and a substitute covers one
+                  account — so the two come back apart, each with its FT/PT
+                  chip. */}
+              <div className="divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200 bg-white">
+                {openCell.groups.map((g) => (
+                  <DriverCard
+                    key={g.driver_id}
+                    g={g}
+                    drivers={drivers}
+                    onFill={onFill}
+                    onDelete={onDelete}
+                  />
+                ))}
+              </div>
             </div>
           )}
-        </div>
+        </>
       )}
     </div>
   );
@@ -1025,7 +1314,6 @@ export function LeaveStatusPanel({
 }) {
   const [open, setOpen] = useState(false);
   const noData = today.length === 0 && tomorrow.length === 0;
-  const driverNames = new Set(drivers.map((d) => d.name));
   const todayGroups = groupByDriver(today);
   const tomorrowGroups = groupByDriver(tomorrow);
   const totalUncovered = uncoveredCount(todayGroups) + uncoveredCount(tomorrowGroups);
@@ -1039,8 +1327,6 @@ export function LeaveStatusPanel({
   const invalidIgnored = invalid.filter((r) => !r.recovered).sort(byDriver);
   const invalidRecovered = invalid.filter((r) => r.recovered).sort(byDriver);
 
-  const fillSubs = makeFillSubs(onRefresh);
-  const deleteRow = makeDeleteRow(onRefresh);
   const restoreRow = makeRestoreRow(onRefresh);
 
   /**
@@ -1077,8 +1363,6 @@ export function LeaveStatusPanel({
   return (
     <Card className="py-2 shrink-0 border-slate-200">
       <CardContent className="px-3">
-        {/* Shared datalist for every sub picker in the panel */}
-        <SubNamesDatalist id={SUB_NAMES_LIST_ID} drivers={drivers} />
 
         {/* Collapsed header: counts + uncovered flag, click to expand */}
         <button
@@ -1137,7 +1421,7 @@ export function LeaveStatusPanel({
         </button>
 
         {open && (
-          <div className="mt-2 max-h-[38vh] overflow-y-auto">
+          <div className="mt-2 max-h-[60vh] overflow-y-auto">
             {invalidRecovered.length > 0 && (
               <div className="mb-2 rounded-md border border-sky-300 bg-sky-50 px-2 py-1.5">
                 <div className="text-[11px] font-semibold text-sky-900">
@@ -1233,8 +1517,26 @@ export function LeaveStatusPanel({
                 </p>
               </div>
             )}
+            {/* The whole week, today marked in place. There is no separate
+                today/tomorrow block here: the always-visible "Cần xử lý" list
+                above already carries the two urgent days, so repeating them
+                inside the panel you EXPAND for a wider range only showed the
+                same rows twice. */}
+            <WeekSection
+              today={vnDate()}
+              drivers={drivers}
+              onFill={otherDayFill}
+              onDelete={otherDayDelete}
+              registerReload={registerOtherDayReload}
+            />
+            {/* LAST, below the week. This is a reference list, not a task: every
+                line on it is already handled — a day someone deliberately
+                removed, held down so the sync cannot undo it. Reading it is how
+                you check a past decision, which is what you do after looking at
+                the week, not before. The unreadable-tab alarm above stays where
+                it is: that one IS a fault, and it says the blocking is off. */}
             {suppressed.length > 0 && (
-              <div className="mb-2 rounded-md border border-slate-300 bg-slate-50 px-2 py-1.5">
+              <div className="mt-2 rounded-md border border-slate-300 bg-slate-50 px-2 py-1.5">
                 <div className="text-[11px] font-semibold text-slate-800">
                   Ngày nghỉ đã xoá thủ công — MISA sẽ không tạo lại
                 </div>
@@ -1255,29 +1557,6 @@ export function LeaveStatusPanel({
                 </ul>
               </div>
             )}
-            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-              <DaySection
-                label="Hôm nay"
-                groups={todayGroups}
-                driverNames={driverNames}
-                onFill={fillSubs}
-                onDelete={deleteRow}
-              />
-              <DaySection
-                label="Ngày mai"
-                groups={tomorrowGroups}
-                driverNames={driverNames}
-                onFill={fillSubs}
-                onDelete={deleteRow}
-              />
-            </div>
-            <OtherDaySection
-              today={vnDate()}
-              driverNames={driverNames}
-              onFill={otherDayFill}
-              onDelete={otherDayDelete}
-              registerReload={registerOtherDayReload}
-            />
           </div>
         )}
       </CardContent>

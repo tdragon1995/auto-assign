@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useState, useMemo, useRef } from "react";
-import { Calendar, Clock, ClipboardCheck, FileText, NotepadText, CalendarDays, Search, Truck, MapPin, ArrowLeftRight, CheckCircle2, LogOut, RefreshCw, AlertCircle, LogIn, Loader2, Gauge, ChevronRight } from "lucide-react";
+import { Calendar, Clock, ClipboardCheck, FileText, NotepadText, CalendarDays, Search, Truck, MapPin, ArrowLeftRight, CheckCircle2, LogOut, RefreshCw, AlertCircle, LogIn, Loader2, Gauge, ChevronRight, ChevronLeft, Wallet } from "lucide-react";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 import { driverDisplayName, placeName } from "@/lib/display-names";
+import { employmentOf } from "@/lib/driver-label";
 
 interface Driver {
   driver_id: string;
@@ -66,7 +67,7 @@ interface ShiftState {
 
 type ActionType = "check-in" | "check-out";
 type Status = "idle" | "loading" | "success" | "error";
-type Tab = "cham-cong" | "nghi-phep" | "lich-cn" | "nhan-viec" | "hieu-suat";
+type Tab = "cham-cong" | "nghi-phep" | "lich-cn" | "nhan-viec" | "hieu-suat" | "thu-nhap";
 type LeaveType = "" | "nguyen_buoi" | "nua_buoi" | "nghi_viec";
 
 // ── Hiệu Suất (driver TAT report) ───────────────────────────────────────────
@@ -264,6 +265,95 @@ function NvJobCard({ job, claiming, onClaim }: { job: DriverJob; claiming: boole
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+// ── Thu Nhập (part-time earnings) ───────────────────────────────────────────
+// Mirrors the /api/pay/me response. Two rates, two sources: 30.000đ an hour off
+// the driver's own chấm-công taps, 2.000đ a kilometre off each completed job's
+// pickup → dropoff distance.
+//
+// The kilometres here are NOT the "chặng đường" of the Hiệu Suất tab and the two
+// screens will not agree — a leg is the ride between two consecutive stops, a
+// paid kilometre is one job's pickup to its dropoff. That is not a bug in either
+// screen (see src/lib/pay.ts), but it IS the first question a driver comparing
+// the two tabs will ask, so the screen says which measure it is paying for.
+
+interface PaySpanRow { from: string | null; to: string | null; minutes: number }
+
+interface PayDay {
+  date: string;
+  jobs: number;
+  km: number;
+  worked_mins: number;
+  spans: PaySpanRow[];
+  /** Check-ins with no check-out after them. These pay NOTHING, so they are the
+   *  one thing on this screen a driver must act on. */
+  open_in: string[];
+  stray_out: string[];
+  hour_pay: number;
+  km_pay: number;
+  total_pay: number;
+}
+
+interface PayReport {
+  ok: true;
+  driver_name: string;
+  month: string;
+  from: string;
+  to: string;
+  latest: string;
+  rates: { per_hour: number; per_km: number; km_basis: string };
+  prev_month: string;
+  next_month: string | null;
+  summary: {
+    days: number; jobs: number; km: number; worked_mins: number;
+    hour_pay: number; km_pay: number; total_pay: number; open_in_days: number;
+  };
+  days: PayDay[];
+}
+
+interface PayJobRow {
+  job_id: number;
+  reference_number: string | null;
+  pickup: string | null;
+  dropoff: string | null;
+  picked_at: string | null;
+  dropped_at: string | null;
+  km: number | null;
+  pay: number | null;
+}
+
+interface PayDayDetail {
+  date: string;
+  day: PayDay;
+  jobs: PayJobRow[];
+  punches: { kind: "in" | "out"; at: string | null; location: string | null }[];
+}
+
+const vndFmt = new Intl.NumberFormat("vi-VN");
+
+/** Đồng, grouped the Vietnamese way. Whole đồng only — the rates divide evenly
+ *  enough that a decimal would be noise, and nobody is paid a hào. */
+const fmtVnd = (v: number | null | undefined): string =>
+  v == null || !Number.isFinite(v) ? "—" : `${vndFmt.format(Math.round(v))}đ`;
+
+/** "2026-09" → "Tháng 9/2026". */
+function fmtMonth(m: string): string {
+  const [y, mm] = m.split("-");
+  return `Tháng ${Number(mm)}/${y}`;
+}
+
+/** One line of the pay breakdown: what was counted, at what rate, for how much. */
+function PayLine({ label, detail, amount }: { label: string; detail: string; amount: number }) {
+  return (
+    <div className="flex items-baseline justify-between gap-2">
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-gray-700">{label}</p>
+        <p className="text-[11px] text-gray-400">{detail}</p>
+      </div>
+      <p className="text-sm font-bold text-gray-800 shrink-0 tabular-nums">{fmtVnd(amount)}</p>
     </div>
   );
 }
@@ -698,6 +788,18 @@ export default function ChamCongPage() {
   // Drill-down: which past day is expanded, and its legs once fetched.
   const [tatOpenDay,   setTatOpenDay]   = useState<string | null>(null);
   const [tatDayDetail, setTatDayDetail] = useState<TatDayDetail | null>(null);
+
+  // ── Thu Nhập tab ──────────────────────────────────────────────────────────
+  // Shares the same authenticated session as Nhận Việc and Hiệu Suất. The month
+  // is held here rather than derived, because the arrows walk it and the server
+  // is what says how far forward they may go.
+  const [payMonth,     setPayMonth]     = useState<string | null>(null);
+  const [payReport,    setPayReport]    = useState<PayReport | null>(null);
+  const [payLoading,   setPayLoading]   = useState(false);
+  const [payError,     setPayError]     = useState<string | null>(null);
+  const [payOpenDay,   setPayOpenDay]   = useState<string | null>(null);
+  const [payDayDetail, setPayDayDetail] = useState<PayDayDetail | null>(null);
+  const [payDayLoading, setPayDayLoading] = useState(false);
   const [tatDayLoading, setTatDayLoading] = useState(false);
 
   // ── Init ──────────────────────────────────────────────────────────────────
@@ -733,6 +835,15 @@ export default function ChamCongPage() {
   const nvLoggedIn = !!nvSession;
   const nvDisplayName = driverDisplayName(nvSession?.driver_name);
 
+  // The earnings tab exists only for part-time accounts: the rates are the
+  // part-time contract, and a full-time driver shown a figure computed from them
+  // would be looking at a wrong payslip. Read off the staff code on the
+  // authenticated name (PT… / DC…), the one part of a label that survives a
+  // rename. The server enforces the same rule — this only decides whether the
+  // tab is worth showing, and an unauthenticated visitor is not shown it at all
+  // rather than being shown a tab that would refuse them.
+  const isPartTime = employmentOf(nvSession?.driver_name) === "part-time";
+
   // Sunday roster: load when its tab is first opened, mirroring nhan-viec below. Once per
   // page life is enough — ops edits the sheet weekly, not while a driver is looking at it,
   // and the route holds a day-keyed cache behind this anyway.
@@ -762,6 +873,14 @@ export default function ChamCongPage() {
   // they did not ask for.
   useEffect(() => {
     if (tab === "hieu-suat" && nvSession) tatLoad();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, nvSession]);
+
+  // Thu Nhập: same pattern again. Loads the current month on first open and then
+  // stays put — the month arrows are what move it, so re-opening the tab does not
+  // throw away the month the driver had navigated to.
+  useEffect(() => {
+    if (tab === "thu-nhap" && nvSession && !payReport && !payLoading) payLoad(payMonth);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, nvSession]);
 
@@ -975,6 +1094,53 @@ export default function ChamCongPage() {
     } finally {
       setTatLoading(false);
     }
+  }
+
+  /** Load one month of earnings. `month` null on the first call means "whatever
+   *  the server considers current", which is the month containing the last sealed
+   *  day — not necessarily today's month on the 1st. */
+  async function payLoad(month?: string | null) {
+    setPayLoading(true);
+    setPayError(null);
+    setPayOpenDay(null);
+    setPayDayDetail(null);
+    try {
+      const res = await fetch(`/api/pay/me${month ? `?month=${month}` : ""}`);
+      const data = await res.json();
+      if (res.status === 401) {
+        // Cookie expired while the name lingered in localStorage — drop the stale
+        // session so the tab shows the login prompt rather than an empty month.
+        setNvSession(null);
+        try { localStorage.removeItem(LS_NV_SESSION); } catch { /* ignore */ }
+        return;
+      }
+      if (res.status === 403) {
+        setPayError(data.error ?? "Bảng thu nhập chỉ áp dụng cho tài khoản bán thời gian.");
+        return;
+      }
+      if (!res.ok || !data.ok) { setPayError(data.error ?? "Không tải được bảng thu nhập."); return; }
+      setPayReport(data as PayReport);
+      setPayMonth((data as PayReport).month);
+    } catch {
+      setPayError("Không kết nối được máy chủ.");
+    } finally {
+      setPayLoading(false);
+    }
+  }
+
+  /** Open (or close) one day of the month. Same rule as the performance tab:
+   *  tapping the open day closes it, so the month stays a list. */
+  async function payToggleDay(date: string) {
+    if (payOpenDay === date) { setPayOpenDay(null); setPayDayDetail(null); return; }
+    setPayOpenDay(date);
+    setPayDayDetail(null);
+    setPayDayLoading(true);
+    try {
+      const res = await fetch(`/api/pay/me?date=${date}`);
+      const data = await res.json();
+      if (res.ok && data.ok) setPayDayDetail(data as PayDayDetail);
+    } catch { /* the row stays open and empty; tapping again retries */ }
+    finally { setPayDayLoading(false); }
   }
 
   /** Open (or close) one past day. Tapping the open day closes it, so the list
@@ -1336,11 +1502,16 @@ export default function ChamCongPage() {
         {/* Tab bar. Icon ABOVE label, not beside it: at five tabs the side-by-side
             row needed 373px inside a 343px card on a 375px phone, so the last tab
             was clipped by the card's overflow-hidden. Stacking drops each tab's
-            width to its label alone, which fits with room to spare. */}
-        <div className="flex border-b border-gray-200">
+            width to its label alone, which fits with room to spare.
+
+            A part-time driver gets a SIXTH tab (Thu Nhập), which is why each tab
+            now carries a min-width and the row may scroll. Six labels at 54px is
+            324px and still fits the 343px card — the scroll is the floor for a
+            320px phone, not the normal case, and at five tabs nothing moves. */}
+        <div className="flex border-b border-gray-200 overflow-x-auto">
           <button
             onClick={() => setTab("cham-cong")}
-            className={`flex-1 py-2.5 text-[11px] font-semibold transition-colors flex flex-col items-center justify-center gap-0.5 whitespace-nowrap ${
+            className={`flex-1 min-w-[54px] shrink-0 py-2.5 text-[11px] font-semibold transition-colors flex flex-col items-center justify-center gap-0.5 whitespace-nowrap ${
               tab === "cham-cong"
                 ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/40"
                 : "text-gray-500 hover:text-gray-700"
@@ -1351,7 +1522,7 @@ export default function ChamCongPage() {
           </button>
           <button
             onClick={() => setTab("nghi-phep")}
-            className={`flex-1 py-2.5 text-[11px] font-semibold transition-colors flex flex-col items-center justify-center gap-0.5 whitespace-nowrap ${
+            className={`flex-1 min-w-[54px] shrink-0 py-2.5 text-[11px] font-semibold transition-colors flex flex-col items-center justify-center gap-0.5 whitespace-nowrap ${
               tab === "nghi-phep"
                 ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/40"
                 : "text-gray-500 hover:text-gray-700"
@@ -1365,7 +1536,7 @@ export default function ChamCongPage() {
               setTab("lich-cn");
               if (driverCleanName) setScheduleSearch(driverCleanName);
             }}
-            className={`flex-1 py-2.5 text-[11px] font-semibold transition-colors flex flex-col items-center justify-center gap-0.5 whitespace-nowrap relative ${
+            className={`flex-1 min-w-[54px] shrink-0 py-2.5 text-[11px] font-semibold transition-colors flex flex-col items-center justify-center gap-0.5 whitespace-nowrap relative ${
               tab === "lich-cn"
                 ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/40"
                 : "text-gray-500 hover:text-gray-700"
@@ -1381,7 +1552,7 @@ export default function ChamCongPage() {
           </button>
           <button
             onClick={() => setTab("nhan-viec")}
-            className={`flex-1 py-2.5 text-[11px] font-semibold transition-colors flex flex-col items-center justify-center gap-0.5 whitespace-nowrap ${
+            className={`flex-1 min-w-[54px] shrink-0 py-2.5 text-[11px] font-semibold transition-colors flex flex-col items-center justify-center gap-0.5 whitespace-nowrap ${
               tab === "nhan-viec"
                 ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/40"
                 : "text-gray-500 hover:text-gray-700"
@@ -1392,7 +1563,7 @@ export default function ChamCongPage() {
           </button>
           <button
             onClick={() => setTab("hieu-suat")}
-            className={`flex-1 py-2.5 text-[11px] font-semibold transition-colors flex flex-col items-center justify-center gap-0.5 whitespace-nowrap ${
+            className={`flex-1 min-w-[54px] shrink-0 py-2.5 text-[11px] font-semibold transition-colors flex flex-col items-center justify-center gap-0.5 whitespace-nowrap ${
               tab === "hieu-suat"
                 ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/40"
                 : "text-gray-500 hover:text-gray-700"
@@ -1401,14 +1572,32 @@ export default function ChamCongPage() {
             <Gauge size={14} />
             Hiệu Suất
           </button>
+          {/* Part-time only, and only once logged in: before that we do not know
+              which kind of account this is, and a tab that would refuse you is
+              worse than no tab. */}
+          {nvLoggedIn && isPartTime && (
+            <button
+              onClick={() => setTab("thu-nhap")}
+              className={`flex-1 min-w-[54px] shrink-0 py-2.5 text-[11px] font-semibold transition-colors flex flex-col items-center justify-center gap-0.5 whitespace-nowrap ${
+                tab === "thu-nhap"
+                  ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/40"
+                  : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              <Wallet size={14} />
+              Thu Nhập
+            </button>
+          )}
         </div>
 
         <div className="p-6 space-y-5">
 
           {/* ── Shared: Driver dropdown (hidden wherever identity is not a picker:
-                 the schedule tab needs none, and the self-claim + performance tabs
-                 take their driver from the authenticated session instead) ── */}
-          {tab !== "lich-cn" && tab !== "nhan-viec" && tab !== "hieu-suat" && (
+                 the schedule tab needs none, and the self-claim, performance and
+                 earnings tabs take their driver from the authenticated session
+                 instead — on the earnings tab a picker would be worse than
+                 useless, since it would suggest you can look up someone's pay) ── */}
+          {tab !== "lich-cn" && tab !== "nhan-viec" && tab !== "hieu-suat" && tab !== "thu-nhap" && (
           <div className="space-y-1 relative">
             <label className="text-sm font-medium text-gray-700">
               Nhân Viên Giao Nhận
@@ -2210,6 +2399,269 @@ export default function ChamCongPage() {
                             {tatReport.refreshing && " · đang cập nhật..."}
                           </p>
                         )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ── Thu Nhập ─────────────────────────────────────────────────────
+              One number leads: what the month comes to. Everything under it is
+              the working, in the order a driver would check it — the two rates,
+              then the days that produced them, then a day's own jobs. */}
+          {tab === "thu-nhap" && (
+            <>
+              {!nvLoggedIn ? (
+                <div className="space-y-3">
+                  <p className="text-sm text-gray-500">
+                    Đăng nhập ở tab <span className="font-semibold text-gray-700">Nhận Việc</span> để xem
+                    thu nhập của bạn. Mỗi người chỉ xem được số liệu của chính mình.
+                  </p>
+                  <button
+                    onClick={() => setTab("nhan-viec")}
+                    className="w-full flex items-center justify-center gap-2 bg-blue-600 text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-blue-700 transition-colors"
+                  >
+                    <LogIn size={16} />
+                    Tới trang đăng nhập
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-xs text-gray-500">Thu nhập của</p>
+                      <p className="text-sm font-semibold text-gray-800 truncate">{nvDisplayName}</p>
+                    </div>
+                    <button
+                      onClick={() => payLoad(payMonth)}
+                      disabled={payLoading}
+                      className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-50"
+                      title="Tải lại"
+                    >
+                      <RefreshCw size={16} className={payLoading ? "animate-spin" : ""} />
+                    </button>
+                  </div>
+
+                  {/* Month walker. The server says how far forward the arrow may
+                      go (never past the last sealed day), so the client never has
+                      to know when the data begins or ends. */}
+                  {payReport && (
+                    <div className="flex items-center justify-between gap-2">
+                      <button
+                        onClick={() => payLoad(payReport.prev_month)}
+                        disabled={payLoading}
+                        className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-40"
+                        aria-label="Tháng trước"
+                      >
+                        <ChevronLeft size={18} />
+                      </button>
+                      <p className="text-sm font-semibold text-gray-800">{fmtMonth(payReport.month)}</p>
+                      <button
+                        onClick={() => payReport.next_month && payLoad(payReport.next_month)}
+                        disabled={payLoading || !payReport.next_month}
+                        className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-40"
+                        aria-label="Tháng sau"
+                      >
+                        <ChevronRight size={18} />
+                      </button>
+                    </div>
+                  )}
+
+                  {payLoading && !payReport ? (
+                    <div className="flex items-center justify-center py-12 text-gray-400">
+                      <Loader2 size={22} className="animate-spin" />
+                    </div>
+                  ) : payError ? (
+                    <div className="flex items-start gap-2 text-sm text-red-600 bg-red-50 rounded-lg px-4 py-3">
+                      <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                      <span>{payError}</span>
+                    </div>
+                  ) : !payReport ? null : (
+                    <>
+                      {/* The headline. */}
+                      <div className="rounded-2xl border border-gray-200 overflow-hidden">
+                        <div className="px-4 pt-4 pb-3">
+                          <p className="text-xs text-gray-500">{fmtMonth(payReport.month)} bạn được</p>
+                          <p className="text-3xl font-bold text-gray-900 leading-tight mt-0.5 tabular-nums">
+                            {fmtVnd(payReport.summary.total_pay)}
+                          </p>
+                        </div>
+                        <div className="px-4 pb-4 space-y-2.5 border-t border-gray-100 pt-3">
+                          <PayLine
+                            label="Giờ chấm công"
+                            detail={`${fmtMins(payReport.summary.worked_mins)} × ${vndFmt.format(payReport.rates.per_hour)}đ/giờ`}
+                            amount={payReport.summary.hour_pay}
+                          />
+                          <PayLine
+                            label="Quãng đường"
+                            detail={`${payReport.summary.km} km × ${vndFmt.format(payReport.rates.per_km)}đ/km`}
+                            amount={payReport.summary.km_pay}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2">
+                        <TatStat label="Ngày làm" value={String(payReport.summary.days)} />
+                        <TatStat label="Chuyến" value={String(payReport.summary.jobs)} />
+                        <TatStat label="Quãng đường" value={`${payReport.summary.km} km`} />
+                      </div>
+
+                      {/* The one thing on this screen that needs acting on. Amber,
+                          not red — a forgotten tap is a correction to make, not an
+                          accusation — but it is stated in đồng-terms ("chưa được
+                          tính") because that is what makes it urgent. */}
+                      {payReport.summary.open_in_days > 0 && (
+                        <div className="flex items-start gap-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+                          <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                          <span>
+                            Có {payReport.summary.open_in_days} ngày bạn chấm công vào nhưng
+                            chưa chấm công ra — những ca đó <span className="font-semibold">chưa được tính giờ</span>.
+                            Xem các ngày có dấu ⚠ bên dưới và báo điều phối để bổ sung.
+                          </span>
+                        </div>
+                      )}
+
+                      {/* The days. Each is tappable; only the one you open costs a
+                          request for its jobs. */}
+                      {payReport.days.length === 0 ? (
+                        <p className="text-xs text-gray-400 text-center py-6">
+                          Chưa có dữ liệu cho tháng này.
+                        </p>
+                      ) : (
+                        <div className="rounded-xl border border-gray-200 divide-y divide-gray-100 overflow-hidden">
+                          {payReport.days.map((d) => {
+                            const open = payOpenDay === d.date;
+                            return (
+                              <div key={d.date}>
+                                <button
+                                  onClick={() => payToggleDay(d.date)}
+                                  className="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-gray-50 transition-colors"
+                                >
+                                  <ChevronRight
+                                    size={14}
+                                    className={`text-gray-400 shrink-0 transition-transform ${open ? "rotate-90" : ""}`}
+                                  />
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-xs font-semibold text-gray-700">
+                                      {vnWeekday(d.date)}, {fmtDate(d.date)}
+                                      {d.open_in.length > 0 && <span className="ml-1 text-amber-600">⚠</span>}
+                                    </p>
+                                    <p className="text-[11px] text-gray-400">
+                                      {fmtMins(d.worked_mins)} · {d.km} km · {d.jobs} chuyến
+                                    </p>
+                                  </div>
+                                  <p className="text-xs font-bold text-gray-800 shrink-0 tabular-nums">
+                                    {fmtVnd(d.total_pay)}
+                                  </p>
+                                </button>
+
+                                {open && (
+                                  <div className="px-3 pb-3 pt-1 bg-gray-50/60 space-y-2">
+                                    {payDayLoading ? (
+                                      <div className="flex justify-center py-4 text-gray-400">
+                                        <Loader2 size={18} className="animate-spin" />
+                                      </div>
+                                    ) : !payDayDetail ? (
+                                      <p className="text-[11px] text-gray-400 text-center py-3">
+                                        Không tải được chi tiết ngày này.
+                                      </p>
+                                    ) : (
+                                      <>
+                                        {/* The clock, shown as the spans that were
+                                            actually paired — a total alone gives a
+                                            driver nothing to check against. */}
+                                        <div className="rounded-lg bg-white border border-gray-200 px-3 py-2 space-y-1">
+                                          <p className="text-[11px] font-semibold text-gray-600">Giờ chấm công</p>
+                                          {payDayDetail.day.spans.length === 0 ? (
+                                            <p className="text-[11px] text-gray-400">Không có ca nào được tính.</p>
+                                          ) : (
+                                            payDayDetail.day.spans.map((sp, i) => (
+                                              <div key={i} className="flex items-center justify-between text-[11px]">
+                                                <span className="text-gray-600 tabular-nums">{sp.from} → {sp.to}</span>
+                                                <span className="text-gray-500">{fmtMins(sp.minutes)}</span>
+                                              </div>
+                                            ))
+                                          )}
+                                          {payDayDetail.day.open_in.map((t) => (
+                                            <p key={t} className="text-[11px] text-amber-700">
+                                              ⚠ Chấm công vào lúc {t} chưa có chấm công ra — chưa tính giờ.
+                                            </p>
+                                          ))}
+                                          {payDayDetail.day.stray_out.map((t) => (
+                                            <p key={t} className="text-[11px] text-amber-700">
+                                              ⚠ Chấm công ra lúc {t} không có chấm công vào trước đó.
+                                            </p>
+                                          ))}
+                                        </div>
+
+                                        {/* The kilometres, one line per completed job. */}
+                                        <div className="rounded-lg bg-white border border-gray-200 divide-y divide-gray-100 overflow-hidden">
+                                          <p className="text-[11px] font-semibold text-gray-600 px-3 pt-2 pb-1">
+                                            Chuyến đã hoàn thành
+                                          </p>
+                                          {payDayDetail.jobs.length === 0 ? (
+                                            <p className="text-[11px] text-gray-400 px-3 py-2">
+                                              Không có chuyến nào trong ngày này.
+                                            </p>
+                                          ) : (
+                                            payDayDetail.jobs.map((j) => (
+                                              <div key={j.job_id} className="flex items-start gap-2 px-3 py-2">
+                                                <div className="min-w-0 flex-1">
+                                                  <p className="text-[11px] text-gray-700 truncate">
+                                                    {placeName(j.pickup) || "—"} → {placeName(j.dropoff) || "—"}
+                                                  </p>
+                                                  <p className="text-[11px] text-gray-400 tabular-nums">
+                                                    {j.dropped_at ?? "—"} · {j.km == null ? "chưa đo được" : `${j.km} km`}
+                                                  </p>
+                                                </div>
+                                                <p className="text-[11px] font-semibold text-gray-700 shrink-0 tabular-nums">
+                                                  {j.pay == null ? "—" : fmtVnd(j.pay)}
+                                                </p>
+                                              </div>
+                                            ))
+                                          )}
+                                        </div>
+
+                                        {/* Why the lines may not add to the day's
+                                            total to the đồng: the total prices the
+                                            summed kilometres once. Said plainly
+                                            rather than left to be discovered. */}
+                                        {payDayDetail.jobs.some((j) => j.km == null) && (
+                                          <p className="text-[11px] text-gray-400">
+                                            Chuyến &quot;chưa đo được&quot; là chuyến hệ thống chưa lấy được quãng đường —
+                                            báo điều phối để được bổ sung.
+                                          </p>
+                                        )}
+                                      </>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {/* The rule, stated once, in the driver's own units — the
+                          same principle the performance tab follows. The km line
+                          says WHICH distance it pays for, because the Hiệu Suất
+                          tab shows a different one and the two will not match. */}
+                      <div className="rounded-xl bg-gray-50 border border-gray-200 px-3 py-2.5 space-y-1">
+                        <p className="text-[11px] text-gray-600">
+                          <span className="font-semibold">Cách tính:</span>{" "}
+                          {vndFmt.format(payReport.rates.per_hour)}đ mỗi giờ chấm công (tính theo phút) +{" "}
+                          {vndFmt.format(payReport.rates.per_km)}đ mỗi km.
+                        </p>
+                        <p className="text-[11px] text-gray-500">{payReport.rates.km_basis}.</p>
+                        <p className="text-[11px] text-gray-400">
+                          Số km ở đây khác với &quot;quãng đường&quot; ở tab Hiệu Suất: tab đó tính từng chặng
+                          giữa hai điểm liên tiếp, còn ở đây tính từ điểm lấy đến điểm giao của mỗi chuyến.
+                        </p>
+                        <p className="text-[11px] text-gray-400">
+                          Số liệu tính đến hết ngày {fmtDate(payReport.latest)}. Ngày hôm nay chưa được tính.
+                        </p>
                       </div>
                     </>
                   )}

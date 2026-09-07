@@ -160,9 +160,9 @@ export async function goongMatrix(
 
 // ── Provider chain ──────────────────────────────────────────────────────────
 //
-// Goong, then a SECOND Goong account, then VietMap. Each link is asked only for
-// what the previous one could not answer, so a healthy primary costs exactly what
-// it always did and the rest are never called.
+// VIETMAP FIRST, then Goong, then a SECOND Goong account. Each link is asked only
+// for what the previous one could not answer, so a healthy lead costs exactly one
+// call per batch and the rest are never touched.
 //
 // Why three. A single provider is a single point of failure whose failure mode is
 // silent and permanent: refusals are never cached, so an unanswered pair is
@@ -172,22 +172,44 @@ export async function goongMatrix(
 // (20 seconds between days still returned nothing), and the only thing that adds
 // headroom against a daily cap is a separate allowance.
 //
+// WHY VIETMAP LEADS. It used to be last, behind both Goong accounts, and Goong's
+// daily cap is what the archive kept running into — the caps are the binding
+// constraint here, not the answers, since either provider prices a leg well
+// enough. Putting the roomier allowance first spends the scarce one only on what
+// the roomy one could not answer, which is the opposite of the old order.
+//
+// This changes which provider is BILLED for a new pair everywhere, not only here:
+// the TAT archive, the smart-assign ranking, the payroll export and the
+// distance-checking sheet all resolve through this chain. Nothing already in the
+// Redis pair cache is re-asked, so the switch costs nothing for a pair that has
+// been seen before — it only redirects genuinely new lookups.
+//
+// Distances from two providers will not agree to the metre. That was already true
+// when VietMap was the fallback and is why a pair, once answered, is cached
+// forever: whichever provider answered first is the one that keeps answering.
+//
 // Each link carries its OWN quota signal. Sharing one would let any exhausted
 // provider silence the rest, which defeats the entire arrangement; omitting them
 // means an exhausted provider is re-asked for every remaining pair.
 
 import { vietmapMatrixOneToMany, vietmapMatrixManyToOne } from "./vietmap";
 
-/** Per-run exhaustion state for the fallback links. Created once per day by the
- *  archive so one 429 stops that provider for the run rather than per call. */
+/** Per-run exhaustion state for the links BEHIND the lead. Created once per day by
+ *  the archive so one 429 stops that provider for the run rather than per call.
+ *
+ *  The lead provider's own brake is the `signal` argument every caller already
+ *  passes; these are the two Goong accounts that now sit behind VietMap. Renamed
+ *  from `vietmap` when the order flipped rather than left pointing at the wrong
+ *  provider — a field whose name lies about which API it is throttling is worse
+ *  than no field. */
 export interface FallbackState {
+  goong: QuotaSignal;
   goong2: QuotaSignal;
-  vietmap: QuotaSignal;
 }
 
 export const newFallbackState = (): FallbackState => ({
+  goong: { quotaExceeded: false },
   goong2: { quotaExceeded: false },
-  vietmap: { quotaExceeded: false },
 });
 
 /** The second Goong account, or null when it is unset or identical to the primary
@@ -215,40 +237,46 @@ async function fillGaps(
   return out;
 }
 
-/** 1 origin → N destinations, through the whole chain. */
+/** 1 origin → N destinations, through the whole chain: VietMap, then Goong, then
+ *  the second Goong account. `signal` brakes the LEAD (VietMap); `fallback` brakes
+ *  the two behind it. */
 export async function roadMatrixOneToMany(
   originLat: number, originLon: number, destinations: { lat: number; lon: number }[],
   apiKey?: string, signal?: QuotaSignal, fallback?: FallbackState,
 ): Promise<(GoongResult | null)[]> {
-  let out = await goongMatrix(originLat, originLon, destinations, apiKey, signal);
+  let out = await vietmapMatrixOneToMany(originLat, originLon, destinations, undefined, signal);
 
+  if (!fallback?.goong.quotaExceeded) {
+    out = await fillGaps(out, (idx) =>
+      goongMatrix(originLat, originLon, idx.map((i) => destinations[i]), apiKey, fallback?.goong), "goong");
+  }
   const key2 = secondGoongKey(apiKey);
   if (key2 && !fallback?.goong2.quotaExceeded) {
     out = await fillGaps(out, (idx) =>
       goongMatrix(originLat, originLon, idx.map((i) => destinations[i]), key2, fallback?.goong2), "goong#2");
   }
-  if (!fallback?.vietmap.quotaExceeded) {
-    out = await fillGaps(out, (idx) =>
-      vietmapMatrixOneToMany(originLat, originLon, idx.map((i) => destinations[i]), undefined, fallback?.vietmap), "vietmap");
-  }
   return out;
 }
 
-/** N origins → 1 destination, through the whole chain. */
+/** N origins → 1 destination, through the whole chain, same order as above.
+ *
+ *  Note the Goong link here is `goongMatrixMultiOrigin`, the undocumented-but-
+ *  verified N→1 shape. It stays behind VietMap like the rest — being the clever
+ *  call is not a reason to be the first one billed. */
 export async function roadMatrixManyToOne(
   origins: { lat: number; lon: number }[], dest: { lat: number; lon: number },
   apiKey?: string, signal?: QuotaSignal, fallback?: FallbackState,
 ): Promise<(GoongResult | null)[]> {
-  let out = await goongMatrixMultiOrigin(origins, dest, apiKey, signal);
+  let out = await vietmapMatrixManyToOne(origins, dest, undefined, signal);
 
+  if (!fallback?.goong.quotaExceeded) {
+    out = await fillGaps(out, (idx) =>
+      goongMatrixMultiOrigin(idx.map((i) => origins[i]), dest, apiKey, fallback?.goong), "goong");
+  }
   const key2 = secondGoongKey(apiKey);
   if (key2 && !fallback?.goong2.quotaExceeded) {
     out = await fillGaps(out, (idx) =>
       goongMatrixMultiOrigin(idx.map((i) => origins[i]), dest, key2, fallback?.goong2), "goong#2");
-  }
-  if (!fallback?.vietmap.quotaExceeded) {
-    out = await fillGaps(out, (idx) =>
-      vietmapMatrixManyToOne(idx.map((i) => origins[i]), dest, undefined, fallback?.vietmap), "vietmap");
   }
   return out;
 }

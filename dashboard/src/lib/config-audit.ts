@@ -410,6 +410,25 @@ export function isCovered(rules: readonly RuleRow[], atMin: number): boolean {
 }
 
 /**
+ * The rules that could actually have taken this job.
+ *
+ * A row scoped to ANOTHER destination never competes for it — `mappingsForRoute`
+ * never puts the two in the same candidate set — so counting one as cover is
+ * three wrongs at once: a hole reads as closed while it is still open, the
+ * neighbour named as "ca trước" belongs to a trip going somewhere else, and the
+ * one-click stretch button then offers to widen that unrelated row.
+ *
+ * Blank rows stay in: those are the branch-wide rule and they do serve this job.
+ *
+ * Where the destination is unknown — a record written before it was carried, or
+ * a job with no dropoff stop — nothing can be ruled out, so nothing is.
+ */
+const servingRules = (rules: readonly RuleRow[], dropoff: string): readonly RuleRow[] => {
+  const want = dropoff.trim();
+  return want ? rules.filter((r) => !r.dropoff.trim() || r.dropoff.trim() === want) : rules;
+};
+
+/**
  * Turn the recorded gaps into what a supervisor can act on, and say which are
  * now closed.
  *
@@ -437,7 +456,7 @@ export function resolveGaps(
 
   for (const g of recorded) {
     const at = hhmmToMin(g.at);
-    const rules = rulesByCustomer.get(g.customer_id) ?? [];
+    const rules = servingRules(rulesByCustomer.get(g.customer_id) ?? [], g.dropoff_name ?? "");
     // A branch whose rules have all gone is not "covered" — it is a different
     // problem entirely, and dropping the record would hide it. Keep it open.
     if (at < 0 || (rules.length > 0 && isCovered(rules, at))) {

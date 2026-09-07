@@ -1,6 +1,14 @@
 // Generated from the Supabase project "Auto-assign Config" (ref qudnkxivfgntwvmydpkt)
 // via `generate_typescript_types` on 2026-07-04. Regenerate after any schema change.
 // Not yet consumed by the app — see docs/supabase-migration.md (phase 3).
+//
+// THIS FILE COVERS ONE OF THE TWO PROJECTS, and not the one the dashboard talks to.
+// `tat_legs`, `pay_jobs` and `pay_punches` are absent below because they live in
+// the OTHER project (odbmfkzkipklepmghjwj) — the one NEXT_PUBLIC_SUPABASE_URL
+// points at. Regenerating against the ref in the line above will therefore keep
+// producing a file with no TAT and no pay in it; that is correct, not a stale
+// export. See the two-project note in dashboard/.env.example, which also records
+// that the two sit under different Supabase logins.
 
 export type Json =
   | string
