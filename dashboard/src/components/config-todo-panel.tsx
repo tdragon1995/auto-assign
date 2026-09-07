@@ -14,7 +14,7 @@ import { searchConfigRows } from "./config-browser-panel";
 import type { ConfigRowView } from "@/app/api/config/rows/route";
 import { DriverCombobox } from "./driver-combobox";
 import {
-  type Line, toMin, newLineKey, asLine, sig, findClash,
+  type Line, toMin, newLineKey, asLine, sig, findClash, servesDropoff,
   applyCopiedLines, copyKey,
 } from "@/lib/config-shift";
 
@@ -955,7 +955,7 @@ function UnfinishedRow({
         <BranchEditor
           pickupName={u.pickup_name}
           dropoffName={u.dropoff_name}
-          rules={rules}
+          rules={servesDropoff(rules, u.dropoff_name)}
           extraLine={{ row: u.row, driver: "", start: from ?? "", end: to ?? "", dropoff: u.dropoff_name }}
           drivers={drivers}
           onCancel={() => setOpen(false)}
@@ -1038,8 +1038,8 @@ function GapRow({
       {open && (
         <BranchEditor
           pickupName={g.pickup_name}
-          dropoffName=""
-          rules={rules}
+          dropoffName={g.dropoff_name ?? ""}
+          rules={servesDropoff(rules, g.dropoff_name ?? "")}
           drivers={drivers}
           onCancel={() => setOpen(false)}
           onDone={() => { setOpen(false); onSaved(`g:${g.customer_id}|${g.at}`); }}

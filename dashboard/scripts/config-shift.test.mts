@@ -15,7 +15,7 @@
  *   npx tsx scripts/config-shift.test.mts
  */
 import type { BranchRule, CoverageGap } from "../src/lib/types";
-const { shrinkOptions, overlapKey, coverageLostWithout, findClash, blocks, toMin, fromMin,
+const { servesDropoff, shrinkOptions, overlapKey, coverageLostWithout, findClash, blocks, toMin, fromMin,
   applyCopiedLines } = await import("../src/lib/config-shift");
 
 let failed = 0;
@@ -317,6 +317,30 @@ console.log("\na copy fills the empty sheet row it was opened from");
     eq("a duplicate is not added twice", lines.length, 1);
     eq("…and nothing is reported as copied", touched, []);
   }
+}
+
+console.log("\nthe branch's day as ONE destination sees it");
+{
+  // Live case, BRA - D001: #1703 runs the MEDIC trip, #1702 the Biotek trip,
+  // #1700 is branch-wide. A hole on the MEDIC route opened an editor listing
+  // the Biotek rule too, which reads as a shift overlapping the one being
+  // fixed while having nothing to do with it.
+  const MEDIC = "SENDOUT2 - D10 - HHao - MEDIC";
+  const BIOTEK = "SENDOUT22 - D7 - TXSoan - Nam Khoa Biotek";
+  const at = (row: number, dropoff: string): BranchRule =>
+    ({ row, driver: "Ai đó", start: "05:30", end: "15:15", dropoff }) as BranchRule;
+  const branch = [at(1703, MEDIC), at(1702, BIOTEK), at(1700, "")];
+
+  const day = servesDropoff(branch, MEDIC);
+  ok("the other destination's rule is dropped", !day.some((r) => r.row === 1702), JSON.stringify(day.map((r) => r.row)));
+  ok("this destination's rule stays", day.some((r) => r.row === 1703));
+  // The one that must never be hidden: branch-wide rules DO serve this trip, so
+  // they are the rules a new line can genuinely clash with.
+  ok("the branch-wide rule stays", day.some((r) => r.row === 1700));
+
+  ok("an unknown destination filters nothing", servesDropoff(branch, "").length === 3);
+  ok("whitespace is not a destination", servesDropoff(branch, "   ").length === 3);
+  ok("padding either side still matches", servesDropoff(branch, ` ${MEDIC} `).length === 2);
 }
 
 console.log(failed === 0 ? "\nAll config-shift assertions passed.\n" : `\n${failed} FAILED\n`);

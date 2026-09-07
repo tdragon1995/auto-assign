@@ -101,6 +101,28 @@ export const sameScope = (a: Line, b: Line) =>
  *  content in the sheet, which is what makes "already written" answerable. */
 export const sig = (l: Line) => [l.driver, l.start, l.end, l.dropoff].join("\u0000");
 
+/**
+ * The branch's day AS THIS DESTINATION SEES IT.
+ *
+ * A branch can send to two places under two drivers, and a row scoped to the
+ * OTHER place never competes for this trip — the engine never has both in hand
+ * at once. Showing it in the editor for a hole on this route is noise at best:
+ * it reads as a shift that overlaps the one being fixed, when the two have
+ * nothing to do with each other.
+ *
+ * Blank rows stay, and that is the part worth stating: those are branch-wide,
+ * they DO serve this trip, and they are the only rules that can genuinely clash
+ * with what is being written. Hiding them would let the editor validate against
+ * an incomplete day.
+ *
+ * An unknown destination filters nothing — there is nothing to rule out.
+ */
+export function servesDropoff<T extends { dropoff?: string }>(rules: T[], dropoff: string): T[] {
+  const want = dropoff.trim();
+  if (!want) return rules;
+  return rules.filter((r) => !(r.dropoff ?? "").trim() || (r.dropoff ?? "").trim() === want);
+}
+
 /** Minutes a line is on duty, as inclusive blocks. Mirrors the engine: a blank
  *  window is all day, the window is half-open so the start minute belongs to the
  *  OUTGOING rule, and a start after the end wraps past midnight. */
