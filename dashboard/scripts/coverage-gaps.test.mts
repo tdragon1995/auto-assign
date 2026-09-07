@@ -136,5 +136,41 @@ ok("a minute in the hole is not covered", !isCovered(day, 15 * 60 + 10));
   eq("two branches with the same hole stay two rows", open.length, 2);
 }
 
+{
+  // A branch sending to two places under two drivers. Live case, BRA - D001:
+  // #1703 runs the MEDIC trip 05:30–15:15, #1702 runs the Biotek trip
+  // 06:45–15:15. A 15:37 job to MEDIC fell in a hole and the panel offered to
+  // stretch #1702 — a row that will never take a MEDIC job. Both rows end at
+  // 15:15, so the wrong one won purely on sheet order.
+  const scoped = (row: number, driver: string, s: string, e: string, to: string): RuleRow =>
+    ({ ...rule(row, driver, s, e), dropoff: to });
+  const MEDIC = "SENDOUT2 - D10 - HHao - MEDIC";
+  const BIOTEK = "SENDOUT22 - D7 - TXSoan - Nam Khoa Biotek";
+  const twoRoutes = [
+    scoped(1703, "Hùng", "05:30", "15:15", MEDIC),
+    scoped(1702, "Thái", "06:45", "15:15", BIOTEK),
+  ];
+  const to = (at: string, dropoff_name: string) => ({ ...gap(at), dropoff_name });
+
+  const { open } = resolveGaps([to("15:37", MEDIC)], new Map([["C1", twoRoutes]]));
+  eq("the neighbour named serves the same destination", open[0].before?.row, 1703);
+  eq("...with that row's window, not the other's", open[0].before?.window, "05:30–15:15");
+
+  // The dangerous half: the other route's rule must not close a hole it can
+  // never cover.
+  const late = [scoped(1702, "Thái", "06:45", "21:00", BIOTEK), scoped(1703, "Hùng", "05:30", "15:15", MEDIC)];
+  const r = resolveGaps([to("15:37", MEDIC)], new Map([["C1", late]]));
+  eq("another destination's cover does not close the hole", r.open.length, 1);
+  eq("...and it is not retracted", r.closed.length, 0);
+
+  // A branch-wide row serves every destination, so it still counts.
+  const wide = [scoped(1703, "Hùng", "05:30", "15:15", MEDIC), rule(1700, "Chung", "15:00", "20:00")];
+  eq("a blank-destination rule still covers", resolveGaps([to("15:37", MEDIC)], new Map([["C1", wide]])).open.length, 0);
+
+  // Nothing known about where it was going ⇒ nothing ruled out (old records).
+  eq("an unknown destination scopes nothing away",
+     resolveGaps([gap("15:37")], new Map([["C1", late]])).open.length, 0);
+}
+
 console.log(failed === 0 ? "\nAll checks passed." : `\n${failed} check(s) FAILED.`);
 process.exit(failed === 0 ? 0 : 1);
