@@ -136,9 +136,23 @@ function TimeSelect({
   );
 }
 
+/**
+ * What a write here does after it lands: re-read the panel, and say when that
+ * has finished.
+ *
+ * The promise is the whole point. A sheet write costs ~3s and the re-read
+ * another ~6s, and every one of these writers used to fire the refresh without
+ * waiting — so the button stopped looking busy while the row it had just acted
+ * on stayed on screen for another six seconds. Restoring a suppression looked
+ * completely dead: a success toast, a button back to normal, and the line still
+ * sitting there. The obvious response is to click again, and the second click
+ * fails as "not found", because the first one worked.
+ */
+type RefreshFn = () => void | Promise<void>;
+
 /** Write substitutes back to the Leave sheet. Shared so the "Cần xử lý" section
  *  and the reference panel below it save through exactly one path. */
-function makeFillSubs(onRefresh: () => void): FillSubsFn {
+function makeFillSubs(onRefresh: RefreshFn): FillSubsFn {
   return async (identity, subs, replace) => {
     try {
       const res = await fetch("/api/leave-status", {
@@ -153,7 +167,7 @@ function makeFillSubs(onRefresh: () => void): FillSubsFn {
       }
       if (data.warning) toast.warning(data.warning);
       else toast.success("Đã lưu người thay vào sheet");
-      onRefresh();
+      await onRefresh();
       return true;
     } catch (e) {
       toast.error(`Không lưu được: ${e instanceof Error ? e.message : String(e)}`);
@@ -187,7 +201,7 @@ function rangeLabel(from: string, to: string | null): string {
 
 /** Delete one leave row from the sheet. Shared by the "Cần xử lý" list and the
  *  reference panel, exactly as makeFillSubs is, so both go through one path. */
-function makeDeleteRow(onRefresh: () => void): DeleteRowFn {
+function makeDeleteRow(onRefresh: RefreshFn): DeleteRowFn {
   return async (identity) => {
     try {
       const res = await fetch("/api/leave-status", {
@@ -208,7 +222,7 @@ function makeDeleteRow(onRefresh: () => void): DeleteRowFn {
         `Đã xoá dòng nghỉ ${rangeLabel(d.leave_from ?? identity.leave_from, d.leave_to ?? null)}` +
           (d.remaining > 0 ? ` — còn ${d.remaining} dòng trùng` : ""),
       );
-      onRefresh();
+      await onRefresh();
       return true;
     } catch (e) {
       toast.error(`Không xoá được: ${e instanceof Error ? e.message : String(e)}`);
@@ -467,7 +481,7 @@ function SuppressionRow({ s, onRestore }: { s: LeaveSuppression; onRestore: Dele
 
 /** Lift one suppression. Same shape as the other two writers so every path in
  *  this panel refreshes the same way. */
-function makeRestoreRow(onRefresh: () => void): DeleteRowFn {
+function makeRestoreRow(onRefresh: RefreshFn): DeleteRowFn {
   return async (identity) => {
     try {
       const res = await fetch("/api/leave-status/suppression", {
@@ -481,7 +495,7 @@ function makeRestoreRow(onRefresh: () => void): DeleteRowFn {
         return false;
       }
       toast.success("Đã bỏ chặn — lần đồng bộ MISA tới sẽ tạo lại nếu MISA vẫn tính nghỉ");
-      onRefresh();
+      await onRefresh();
       return true;
     } catch (e) {
       toast.error(`Không khôi phục được: ${e instanceof Error ? e.message : String(e)}`);
@@ -743,7 +757,7 @@ export function UncoveredLeaveSection({
   entries: LeaveOnDate[];
   label: string;
   drivers: ConfigDriver[];
-  onRefresh: () => void;
+  onRefresh: RefreshFn;
 }) {
   const items = uncoveredWindows(groupByDriver(entries));
   const fillSubs = makeFillSubs(onRefresh);
@@ -1010,6 +1024,7 @@ function WeekSection({
   onFill,
   onDelete,
   registerReload,
+  refreshKey,
 }: {
   /** Saigon's today: the default week, and the day marked as current. */
   today: string;
@@ -1018,7 +1033,14 @@ function WeekSection({
   onDelete: DeleteRowFn;
   /** Hands the parent a way to re-read the shown week after a write, so a
    *  substitute filled in here does not leave the row still reading uncovered. */
-  registerReload: (fn: (() => void) | null) => void;
+  registerReload: (fn: RefreshFn | null) => void;
+  /** Bumped by every explicit refresh upstream ("Làm mới"). The grid has its
+   *  OWN fetch, which nothing else re-issues — so without this, pressing
+   *  refresh re-read today and tomorrow and left this week exactly as it was,
+   *  however many times it was pressed. A row typed straight into the workbook
+   *  was then invisible here until the page was reloaded or the week paged away
+   *  and back. */
+  refreshKey: number;
 }) {
   const [weekStart, setWeekStart] = useState(() => weekStartOf(today));
   const [picked, setPicked] = useState<Picked | null>(null);
@@ -1032,11 +1054,16 @@ function WeekSection({
     days: DayLeave[];
   }>({ loading: true, error: null, shown: null, days: [] });
 
-  const load = useCallback(async (from: string) => {
+  // `fresh` busts the SERVER's parse, not the browser's. Paging weeks does not
+  // need it — every day is a filter over one cached read — but an explicit
+  // refresh does: a row typed into the workbook by hand invalidates nothing, so
+  // without it the answer can come from a copy taken before that edit and the
+  // refresh reports the sheet as it was.
+  const load = useCallback(async (from: string, fresh = false) => {
     setState((s) => ({ ...s, loading: true, error: null }));
     try {
       const res = await fetch(
-        `/api/leave-status?date=${encodeURIComponent(from)}&days=${DAYS_IN_WEEK}`,
+        `/api/leave-status?date=${encodeURIComponent(from)}&days=${DAYS_IN_WEEK}${fresh ? "&fresh=1" : ""}`,
         { cache: "no-store" },
       );
       const data = await res.json().catch(() => ({}));
@@ -1056,8 +1083,19 @@ function WeekSection({
   // A different week cannot keep the old week's selection open.
   useEffect(() => { setPicked(null); }, [weekStart]);
 
+  // An upstream refresh re-reads THIS week too, and forces the sheet. Skipped on
+  // mount, where the effect above has just loaded it.
+  const mounted = useRef(false);
   useEffect(() => {
-    registerReload(state.shown ? () => void load(state.shown!) : null);
+    if (!mounted.current) { mounted.current = true; return; }
+    void load(weekStart, true);
+    // weekStart is deliberately absent: a week CHANGE is already loaded above,
+    // and listing it here would fire a second, forced read on every arrow press.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshKey, load]);
+
+  useEffect(() => {
+    registerReload(state.shown ? () => load(state.shown!) : null);
     return () => registerReload(null);
   }, [registerReload, load, state.shown]);
 
@@ -1329,6 +1367,7 @@ export function LeaveStatusPanel({
   error = false,
   drivers,
   onRefresh,
+  refreshKey = 0,
 }: {
   today: LeaveOnDate[];
   tomorrow: LeaveOnDate[];
@@ -1348,7 +1387,10 @@ export function LeaveStatusPanel({
   suppressedUnreadable?: boolean;
   error?: boolean;
   drivers: ConfigDriver[];
-  onRefresh: () => void;
+  onRefresh: RefreshFn;
+  /** Bumped by the dashboard on every explicit refresh, so the week grid
+   *  below re-reads too — see WeekSection's own note. */
+  refreshKey?: number;
 }) {
   const [open, setOpen] = useState(false);
   const noData = today.length === 0 && tomorrow.length === 0;
@@ -1381,7 +1423,13 @@ export function LeaveStatusPanel({
   const registerOtherDayReload = useCallback((fn: (() => void) | null) => {
     otherDayReload.current = fn;
   }, []);
-  const refreshBoth = useCallback(() => { onRefresh(); otherDayReload.current?.(); }, [onRefresh]);
+  // Both, and not done until BOTH are — the write's caller keeps its button
+  // busy on this promise, so releasing it while the week grid is still
+  // re-reading is the same lie the un-awaited refresh told.
+  const refreshBoth = useCallback(
+    async () => { await Promise.all([onRefresh(), otherDayReload.current?.()]); },
+    [onRefresh],
+  );
   const otherDayFill = makeFillSubs(refreshBoth);
   const otherDayDelete = makeDeleteRow(refreshBoth);
 
@@ -1566,6 +1614,7 @@ export function LeaveStatusPanel({
               onFill={otherDayFill}
               onDelete={otherDayDelete}
               registerReload={registerOtherDayReload}
+              refreshKey={refreshKey}
             />
             {/* LAST, below the week. This is a reference list, not a task: every
                 line on it is already handled — a day someone deliberately

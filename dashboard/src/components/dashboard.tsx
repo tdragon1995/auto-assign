@@ -38,6 +38,9 @@ export function Dashboard() {
   const [held, setHeld] = useState<HeldJob[]>([]);
   const [warnings, setWarnings] = useState<PickupWarning[]>([]);
   const [warningsAt, setWarningsAt] = useState<string | null>(null);
+  /** Counts explicit leave refreshes, so the leave panel's week grid — which
+   *  owns a fetch of its own — re-reads when Làm mới is pressed. */
+  const [leaveRefreshKey, setLeaveRefreshKey] = useState(0);
   const [failed, setFailed] = useState<FailedJob[]>([]);
   const [sheetAlarms, setSheetAlarms] = useState<SheetAlarm[]>([]);
   const [unfinished, setUnfinished] = useState<UnfinishedConfigRow[]>([]);
@@ -241,6 +244,13 @@ export function Dashboard() {
         suppressedUnreadable: !!data.suppressed_unreadable,
         error: false,
       });
+      // Tell the leave panel's week grid to re-read as well. It owns a separate
+      // fetch that nothing else re-issues, so before this a refresh re-read
+      // today and tomorrow and left the rest of the week on screen unchanged —
+      // which is what a row added straight into the workbook looked like:
+      // absent, however many times Làm mới was pressed. Bumped only on an
+      // explicit refresh, so the ordinary poll does not force a sheet read.
+      if (fresh) setLeaveRefreshKey((k) => k + 1);
     } catch {
       setLeave((prev) => ({ ...prev, error: true }));
     }
@@ -703,6 +713,7 @@ export function Dashboard() {
                   error={leave.error}
                   drivers={drivers}
                   onRefresh={() => loadLeaveStatus(true)}
+                  refreshKey={leaveRefreshKey}
                 />
               </div>
             ) : rightTab === "config" ? (
