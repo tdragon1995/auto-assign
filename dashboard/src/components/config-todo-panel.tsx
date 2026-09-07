@@ -14,7 +14,7 @@ import { searchConfigRows } from "./config-browser-panel";
 import type { ConfigRowView } from "@/app/api/config/rows/route";
 import { DriverCombobox } from "./driver-combobox";
 import {
-  type Line, type Stretch, toMin, newLineKey, asLine, sig, findClash, stretchOptions,
+  type Line, toMin, newLineKey, asLine, sig, findClash,
   applyCopiedLines, copyKey,
 } from "@/lib/config-shift";
 
@@ -982,31 +982,7 @@ function GapRow({
   onSaved: (key?: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [stretching, setStretching] = useState<string | null>(null);
-  const [stretchErr, setStretchErr] = useState<string | null>(null);
   const repeats = g.also?.length ?? 0;
-  const options = stretchOptions(g, rules);
-
-  /** Close the hole by moving one boundary — the whole fix, in one request. */
-  async function stretch(s: Stretch) {
-    setStretchErr(null);
-    setStretching(s.edge);
-    try {
-      const res = await fetch("/api/config/stretch-rule", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ row: s.row, pickup_name: g.pickup_name, edge: s.edge, value: s.value }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
-      toast.success(`${displayDriverCell(s.driver)} giờ trực ${s.window} — ${g.pickup_name}`);
-      onSaved(`g:${g.customer_id}|${g.at}`);
-    } catch (e) {
-      setStretchErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setStretching(null);
-    }
-  }
 
   return (
     <div className="px-2 py-1.5 hover:bg-slate-50">
@@ -1059,27 +1035,6 @@ function GapRow({
             beside the time now — where it can be seen without reading the line,
             which is the point of it — so saying it twice is just noise. */}
       </div>
-      {/* The one-boundary fixes, when the branch allows one. Each says who ends
-          up working what, because that — not the hole — is what the supervisor
-          is actually agreeing to. The full editor stays beside them for the
-          cases these cannot express. */}
-      {!open && options.length > 0 && (
-        <div className="mt-1 flex flex-wrap items-center gap-1">
-          {options.map((s) => (
-            <Button
-              key={s.edge}
-              size="sm" variant="outline"
-              className="h-6 px-2 text-[11px] font-normal"
-              disabled={stretching !== null}
-              onClick={() => stretch(s)}
-              title={`Ghi ${s.value} vào giờ ${s.edge === "end" ? "kết thúc" : "bắt đầu"} của dòng #${s.row}`}
-            >
-              {stretching === s.edge ? "Đang lưu…" : `Nới ${displayDriverCell(s.driver)} → ${s.window}`}
-            </Button>
-          ))}
-        </div>
-      )}
-      {stretchErr && <div role="alert" className="mt-1 text-[11px] text-red-600">{stretchErr}</div>}
       {open && (
         <BranchEditor
           pickupName={g.pickup_name}
