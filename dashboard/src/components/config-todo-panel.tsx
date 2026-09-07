@@ -991,7 +991,35 @@ function GapRow({
   onSaved: (key?: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [dropping, setDropping] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
   const repeats = g.also?.length ?? 0;
+
+  /** Take the row off the list without touching the config.
+   *
+   *  Every other fix here closes a gap by covering it, and the parse then
+   *  retracts the record on its own. This is for the record that no sheet edit
+   *  answers — an hour nobody intends to cover, or one recorded before the
+   *  destination was known. It deletes the observation, not the rule, so if the
+   *  hole is real the next job that falls in brings the row straight back. */
+  async function dismiss() {
+    setErr(null);
+    setDropping(true);
+    try {
+      const res = await fetch("/api/config/dismiss-gap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customer_id: g.customer_id, at: g.at, also: g.also ?? [] }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
+      toast.success(`Đã bỏ ${g.at} — ${g.pickup_name}`);
+      onSaved(`g:${g.customer_id}|${g.at}`);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+      setDropping(false);
+    }
+  }
 
   return (
     <div className="px-2 py-1.5 hover:bg-slate-50">
@@ -1020,12 +1048,25 @@ function GapRow({
           {g.dropoff_name && <span className="text-slate-500"> → {g.dropoff_name}</span>}
         </span>
         {!open && (
-          <Button
-            size="sm" variant="outline" className="h-6 shrink-0 text-[11px] px-2"
-            onClick={() => setOpen(true)}
-          >
-            Sửa config
-          </Button>
+          <>
+            {/* Deliberately quieter than "Sửa config": covering the hour is the
+                answer, and dropping the row is what is left when it is not. */}
+            <Button
+              size="sm" variant="ghost"
+              className="h-6 shrink-0 px-2 text-[11px] font-normal text-slate-500 hover:text-slate-800"
+              disabled={dropping}
+              onClick={dismiss}
+              title="Bỏ dòng này khỏi danh sách. Không sửa config — nếu vẫn còn job rơi vào giờ này thì dòng sẽ quay lại."
+            >
+              {dropping ? "Đang bỏ…" : "Bỏ qua"}
+            </Button>
+            <Button
+              size="sm" variant="outline" className="h-6 shrink-0 text-[11px] px-2"
+              onClick={() => setOpen(true)}
+            >
+              Sửa config
+            </Button>
+          </>
         )}
       </div>
       <div className="mt-0.5 text-[11px] text-slate-500">
@@ -1050,6 +1091,7 @@ function GapRow({
             beside the time now — where it can be seen without reading the line,
             which is the point of it — so saying it twice is just noise. */}
       </div>
+      {err && <div role="alert" className="mt-1 text-[11px] text-red-600">{err}</div>}
       {open && (
         <BranchEditor
           pickupName={g.pickup_name}
