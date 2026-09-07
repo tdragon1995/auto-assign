@@ -388,7 +388,8 @@ function SubEditor({
             <button
               type="button"
               onClick={() => removeBlock(i)}
-              className="text-slate-400 hover:text-red-600 text-[11px] px-0.5"
+              aria-label="Bỏ dòng này"
+              className="flex size-6 items-center justify-center rounded text-[11px] text-slate-400 hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
               title="Bỏ dòng này"
             >
               ✕

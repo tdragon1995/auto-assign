@@ -207,7 +207,7 @@ export default function AuditPage() {
             {driverSearch && (
               <button
                 aria-label="Xoá tên tài xế"
-                className="absolute right-2 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center text-gray-400 hover:text-gray-600"
+                className="absolute right-2 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded text-gray-400 hover:text-gray-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                 onMouseDown={(e) => { e.preventDefault(); clearDriver(); }}
               >
                 ×
@@ -245,7 +245,7 @@ export default function AuditPage() {
             {locationSearch && (
               <button
                 aria-label="Xoá địa điểm"
-                className="absolute right-2 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center text-gray-400 hover:text-gray-600"
+                className="absolute right-2 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded text-gray-400 hover:text-gray-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                 onMouseDown={(e) => { e.preventDefault(); clearLocation(); }}
               >
                 ×

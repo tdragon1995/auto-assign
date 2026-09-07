@@ -70,7 +70,7 @@ export function DriverPicker({
                 setSelectedDriver("");
                 setSearchInput("");
               }}
-              className="absolute right-1 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center text-slate-400 hover:text-slate-600"
+              className="absolute right-1 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded text-slate-400 hover:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
             >
               ✕
             </button>
