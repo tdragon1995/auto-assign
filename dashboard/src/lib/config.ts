@@ -9,6 +9,7 @@ import {
 } from "./config-audit";
 import { vnDate, vnIsSunday, vnTimestamp } from "./time";
 import { looksAutoCreated } from "./unmapped-row";
+import { GEN_KEY, readConfigGen } from "./config-gen";
 
 function getRedis(): Redis | null {
   const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
@@ -22,21 +23,12 @@ function getRedis(): Redis | null {
 // never clear the others; they kept their copy until they were recycled. Each load now
 // compares a few bytes against the stamp its copy was built under and re-reads the sheet
 // only when they differ. One tiny GET in place of a ~100 KB CSV download.
-const GEN_KEY = "config:gen";
 let cachedGen: string | null = null;
 
-/** Current stamp, or null when Redis is unconfigured or unreachable. Null means "no reason
- *  to invalidate", deliberately: a Redis blip that made every instance re-download the
- *  sheet at the same moment is a worse failure than briefly missing a Refresh. */
-async function readGen(): Promise<string | null> {
-  const redis = getRedis();
-  if (!redis) return null;
-  try {
-    return (await redis.get<string>(GEN_KEY)) ?? null;
-  } catch {
-    return null;
-  }
-}
+/** Re-exported shape kept for this file's readers; the stamp itself lives in
+ *  config-gen.ts so `/api/config/rows` can honour it too without importing the
+ *  parser. */
+const readGen = readConfigGen;
 
 // L2 — the parsed mapping, shared by every instance and every deployment on this Redis.
 // GEN_KEY stops an instance serving a STALE copy; it does nothing for a COLD one, which

@@ -111,11 +111,17 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
   const [meta, setMeta] = useState<{ tab: string; fetchedAt: string } | null>(null);
   const loadedRef = useRef(false);
 
-  const load = useCallback(async () => {
+  /** `fresh` is the Tải lại button: it bypasses the route's own cache as well as
+   *  the browser's. Without it the button re-fetched a route that answered from
+   *  memory for five minutes, so pressing it did nothing at all — only the
+   *  "đọc HH:MM" stamp, which never moved, gave it away. An ordinary load stays
+   *  cheap: the route compares the shared config stamp and re-reads the sheet
+   *  only when a write has actually moved it. */
+  const load = useCallback(async (fresh = false) => {
     setLoading(true);
     setErr(null);
     try {
-      const res = await fetch("/api/config/rows", { cache: "no-store" });
+      const res = await fetch(`/api/config/rows${fresh ? "?fresh=1" : ""}`, { cache: "no-store" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok && !Array.isArray(data.rows)) throw new Error(data.error || `Lỗi ${res.status}`);
       setRows(Array.isArray(data.rows) ? data.rows : []);
@@ -142,12 +148,17 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
   // reach the rest rather than a lottery.
   const shown = matches.slice(0, RENDER_CAP);
 
-  /** The branch currently open in the editor, by customer id. One at a time:
-   *  the editor writes, and two open on the same branch would each hold a
-   *  baseline taken before the other's writes landed. */
-  const [editing, setEditing] = useState<string | null>(null);
+  /** One branch at a time: the editor writes, and two open on the same branch
+   *  would each hold a baseline taken before the other's writes landed.
+   *
+   *  The branch open in the editor, and the row whose Sửa was clicked.
+   *
+   *  The row is carried as well as the branch because the editor renders under
+   *  THAT row: a branch has several, and opening under the first of them would
+   *  still move the form away from the button that summoned it. */
+  const [editing, setEditing] = useState<{ branch: string; row: number } | null>(null);
   const editingRows = useMemo(
-    () => (editing ? rows.filter((r) => (r.customer_id || r.pickup) === editing) : []),
+    () => (editing ? rows.filter((r) => (r.customer_id || r.pickup) === editing.branch) : []),
     [rows, editing],
   );
 
@@ -169,7 +180,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
           <Button
             size="sm" variant="outline"
             className="h-7 px-2 text-[11px]"
-            onClick={load}
+            onClick={() => void load(true)}
             disabled={loading}
           >
             {loading ? "Đang tải…" : "Tải lại"}
@@ -186,29 +197,6 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
         </div>
 
         {err && <div role="alert" className="text-[11px] text-red-600">{err}</div>}
-
-        {/* The branch's whole day, in the editor the to-do rows already use.
-            Above the table rather than inline in it: a row expanding inside a
-            scrolling list of 150 pushes everything the reader was looking at
-            off the screen. */}
-        {editing && editingRows.length > 0 && (
-          <div className="rounded-md border border-indigo-200 bg-indigo-50/40 p-1.5">
-            <div className="mb-1 flex flex-wrap items-baseline gap-x-1.5">
-              <span className="text-xs font-semibold text-slate-800">{editingRows[0].pickup || editing}</span>
-              {editingRows[0].customer_id && (
-                <span className="font-mono text-[10px] text-slate-500">{editingRows[0].customer_id}</span>
-              )}
-            </div>
-            <BranchEditor
-              pickupName={editingRows[0].pickup}
-              dropoffName={editingRows[0].dropoff}
-              rules={rulesOf(editingRows)}
-              drivers={drivers}
-              onCancel={() => setEditing(null)}
-              onDone={() => { setEditing(null); void load(); }}
-            />
-          </div>
-        )}
 
         <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-slate-200">
           {shown.length === 0 ? (
@@ -228,16 +216,29 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {shown.map((r) => (
-                  <tr key={r.row} className="align-top hover:bg-slate-50">
+                {shown.flatMap((r) => {
+                  const branch = r.customer_id || r.pickup;
+                  // Every row of the branch being edited is marked, not just the
+                  // one clicked: the editor holds the branch's WHOLE day, so the
+                  // other rows are the very things it is about to rewrite, and
+                  // leaving them looking untouched invited a second Sửa on a row
+                  // already open in the form above.
+                  const inBranch = !!editing && editing.branch === branch;
+                  const openHere = !!editing && editing.row === r.row;
+                  return [(
+                  <tr
+                    key={r.row}
+                    className={`align-top ${inBranch ? "bg-indigo-50/60" : "hover:bg-slate-50"}`}
+                  >
                     <td className="px-2 py-1">
                       <Button
-                        size="sm" variant="outline"
-                        className="h-6 px-2 text-[11px] font-normal"
-                        onClick={() => setEditing(r.customer_id || r.pickup)}
+                        size="sm" variant={openHere ? "default" : "outline"}
+                        className={`h-6 px-2 text-[11px] font-normal ${openHere ? "bg-indigo-600 hover:bg-indigo-700" : ""}`}
+                        aria-expanded={openHere}
+                        onClick={() => setEditing(openHere ? null : { branch, row: r.row })}
                         disabled={!r.customer_id && !r.pickup}
                       >
-                        Sửa
+                        {openHere ? "Đóng" : "Sửa"}
                       </Button>
                     </td>
                     <td className="px-2 py-1">
@@ -262,7 +263,33 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                     </td>
                     <td className="px-2 py-1 text-right font-mono text-[10px] text-slate-400">{r.row}</td>
                   </tr>
-                ))}
+                  ),
+                  // Directly beneath the row it was opened from, which is the
+                  // whole point. It used to render in its own box ABOVE the
+                  // table, on the reasoning that expanding a row inside a
+                  // 150-row scroller pushes the reader's place off screen — but
+                  // the form then appeared somewhere the reader was not looking,
+                  // often scrolled out of view entirely, with nothing tying it to
+                  // the row whose button had just been pressed. An expander that
+                  // opens where it was asked for is what the "Cần xử lý" rows
+                  // already do with this same editor; the config tab was the one
+                  // place that did something else.
+                  openHere && editingRows.length > 0 ? (
+                    <tr key={`${r.row}-edit`} className="bg-indigo-50/60">
+                      <td colSpan={6} className="px-2 pb-2">
+                        <BranchEditor
+                          pickupName={editingRows[0].pickup}
+                          dropoffName={editingRows[0].dropoff}
+                          rules={rulesOf(editingRows)}
+                          drivers={drivers}
+                          onCancel={() => setEditing(null)}
+                          onDone={() => { setEditing(null); void load(); }}
+                        />
+                      </td>
+                    </tr>
+                  ) : null,
+                  ];
+                })}
               </tbody>
             </table>
           )}

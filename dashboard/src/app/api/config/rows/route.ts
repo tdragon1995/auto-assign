@@ -1,5 +1,6 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { fetchSheetRows, SHEET_CONTRACT, SHEET_GID } from "@/lib/sheets";
+import { readConfigGen } from "@/lib/config-gen";
 import { vnIsSunday, vnTimestamp } from "@/lib/time";
 
 export const runtime = "nodejs";
@@ -42,16 +43,40 @@ export interface ConfigRowView {
   smart: boolean;
 }
 
-let cache: { rows: ConfigRowView[]; tab: string; at: number; fetchedAt: string } | null = null;
+/**
+ * `gen` is the shared config stamp this copy was built under.
+ *
+ * The TTL alone made both of the Config tab's freshness bugs. Every writer here
+ * calls `invalidateConfigCache`, which clears the ENGINE's cache and moves the
+ * stamp — but nothing touched this one, so a rule edited from "Cần xử lý" kept
+ * reading the pre-edit row for up to five minutes, and "Tải lại" spent the whole
+ * of that window re-fetching a route that answered from memory. The button
+ * looked broken because from the outside it was: it did exactly nothing.
+ *
+ * The stamp is the right signal rather than a local invalidator because this
+ * cache is per serverless INSTANCE. A write and the GET after it need not land
+ * on the same instance, so clearing the one that served the write would leave
+ * every other warm instance still serving the old table. Comparing a few bytes
+ * closes that for every instance at once, and every existing writer already
+ * bumps it — none of them need to know this reader exists.
+ */
+let cache: { rows: ConfigRowView[]; tab: string; at: number; fetchedAt: string; gen: string | null } | null = null;
 const TTL_MS = 5 * 60 * 1000;
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const sunday = vnIsSunday();
   const contract = sunday ? SHEET_CONTRACT.sunday : SHEET_CONTRACT.mapping;
   const gid = sunday ? SHEET_GID.sunday : SHEET_GID.mapping;
+  // The explicit reload. Belt and braces beside the stamp: it also covers the
+  // case where Redis is unconfigured or unreachable, where `readConfigGen`
+  // deliberately reports "no reason to invalidate" and the stamp can never move.
+  // A button that says Tải lại has to re-read the sheet every time it is pressed.
+  const fresh = !!new URL(req.url).searchParams.get("fresh");
 
   try {
-    if (cache && cache.tab === contract.label && Date.now() - cache.at < TTL_MS) {
+    const gen = await readConfigGen();
+    if (!fresh && cache && cache.tab === contract.label && cache.gen === gen
+        && Date.now() - cache.at < TTL_MS) {
       return NextResponse.json({ rows: cache.rows, tab: cache.tab, fetchedAt: cache.fetchedAt, cached: true });
     }
 
@@ -85,7 +110,7 @@ export async function GET() {
       );
     }
 
-    cache = { rows, tab: contract.label, at: Date.now(), fetchedAt: vnTimestamp() };
+    cache = { rows, tab: contract.label, at: Date.now(), fetchedAt: vnTimestamp(), gen };
     return NextResponse.json({ rows, tab: cache.tab, fetchedAt: cache.fetchedAt, cached: false });
   } catch (e) {
     // Serve the stale copy rather than an empty table: a browser showing last
