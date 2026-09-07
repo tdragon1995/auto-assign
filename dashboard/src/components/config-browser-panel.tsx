@@ -43,6 +43,34 @@ import type { BranchRule, ConfigDriver } from "@/lib/types";
  *  there is more. */
 const RENDER_CAP = 150;
 
+/** Accent-folded, split on spaces and punctuation. */
+const pieces = (s: string) => foldName(s).split(/[^a-z0-9]+/).filter(Boolean);
+
+/**
+ * A row's text as WORDS — including the words hidden inside the run-together
+ * staff codes this sheet labels every branch with.
+ *
+ * "NVHoai" has to count as "hoai" too, because a term matches the START of a
+ * word and people type the readable half: "hoai", "khoi", "thang". Splitting
+ * only on spaces would bury those and turn a working search into a silent miss.
+ *
+ * Two breaks, both on the ORIGINAL text — the capitals are the only evidence of
+ * where one word ends, and folding destroys them:
+ *   DKhoi   → D Khoi     a capital after a lowercase or a digit
+ *   NVHoai  → NV Hoai    the last capital of a run that starts a word
+ */
+function searchWords(s: string): string[] {
+  return [
+    // The code as WRITTEN, so typing "NVHoai" off the screen still finds it…
+    ...pieces(s),
+    // …and the words inside it, so typing what you can read does too.
+    ...pieces(
+      s.replace(/(\p{Lu}+)(?=\p{Lu}\p{Ll})/gu, "$1 ")
+       .replace(/(\p{Ll}|\p{Nd})(?=\p{Lu})/gu, "$1 "),
+    ),
+  ];
+}
+
 /**
  * Rows matching every whitespace-separated term, accent-insensitively.
  *
@@ -51,13 +79,22 @@ const RENDER_CAP = 150;
  * to know which column each word lives in. Accent folding is the same one the
  * driver pickers use: "quynh" has to find "Quỳnh", or the search reads as broken
  * rather than picky.
+ *
+ * A term matches a word it PREFIXES, never any old substring. That is the whole
+ * difference between a useful search and this, which was live: "đa khoa ái
+ * nghĩa" returned "Bệnh Viện Đa Khoa Khu Vực Củ Chi", because `da` and `khoa`
+ * are in "Đa Khoa", `nghia` was the driver Phan Thanh Nghĩa two columns over,
+ * and `ai` sat inside "NVHo·ai·". Four hits, none of them the branch anyone
+ * asked for — and the shorter the term, the more of the sheet it drags in.
  */
 export function searchConfigRows(rows: readonly ConfigRowView[], query: string): ConfigRowView[] {
-  const terms = foldName(query).split(/\s+/).filter(Boolean);
+  // The query is split only on spaces and punctuation — never camel-split, or
+  // typing one code would silently demand each of its halves as well.
+  const terms = pieces(query);
   if (terms.length === 0) return rows as ConfigRowView[];
   return rows.filter((r) => {
-    const hay = foldName([r.pickup, r.customer_id, r.driver, r.dropoff, r.start, r.end].join(" "));
-    return terms.every((t) => hay.includes(t));
+    const words = searchWords([r.pickup, r.customer_id, r.driver, r.dropoff, r.start, r.end].join(" "));
+    return terms.every((t) => words.some((w) => w.startsWith(t)));
   });
 }
 

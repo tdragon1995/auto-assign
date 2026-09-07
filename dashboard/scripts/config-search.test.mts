@@ -66,5 +66,40 @@ eq("a branch with no driver is still findable — that IS the to-do", found("PS3
 check("a smart row is not hidden", found("d021").length === 1);
 eq("nothing matches gibberish", found("zzzz"), []);
 
+// ── A term prefixes a WORD; it is not a substring hunt ───────────────────────
+//
+// Live report: searching "đa khoa ái nghĩa" returned "Bệnh Viện Đa Khoa Khu Vực
+// Củ Chi". Every term hit, and not one of them hit the branch asked for — `da`
+// and `khoa` from "Đa Khoa", `nghia` from the DRIVER two columns over, and `ai`
+// from inside the staff code "NVHo·ai·". The shorter the term, the more of the
+// sheet a substring match drags in.
+{
+  const CUCHI = row({
+    row: 20, customer_id: "17347",
+    pickup: "17347 - CChi - NVHoai - Bệnh Viện Đa Khoa Khu Vực Củ Chi",
+    driver: "Trần Nguyễn Thanh Duy, Phan Thanh Nghĩa", start: "05:00", end: "15:30",
+  });
+  const AINGHIA = row({
+    row: 21, customer_id: "12702",
+    pickup: "12702 - BHoa - DKhoi - PHÒNG KHÁM ĐA KHOA ÁI NGHĨA ĐỒNG KHỞI",
+    driver: "Nguyễn Minh Nhật", start: "07:00", end: "16:00",
+  });
+  const both = [CUCHI, AINGHIA];
+  const hits = (q: string) => searchConfigRows(both, q).map((r) => r.row);
+
+  eq("the branch asked for, and only it", hits("đa khoa ái nghĩa"), [21]);
+  eq("...typed without accents too", hits("da khoa ai nghia"), [21]);
+  eq("a term inside a staff code is not a match", hits("ai"), [21]);
+
+  // The reason a word-START rule and not a whole-word one: the run-together
+  // codes are how every row is labelled, and people type the readable half.
+  eq("the readable half of a code still finds it", hits("hoai"), [20]);
+  eq("...and of another", hits("khoi"), [21]);
+  eq("the code itself still finds it", hits("nvhoai"), [20]);
+  eq("a prefix of a real word still matches", hits("nguy"), [20, 21]);
+  // Cross-field is deliberate and stays.
+  eq("branch and driver together", hits("cu chi nghia"), [20]);
+}
+
 console.log(failures === 0 ? "\nAll config-search checks passed" : `\n${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);
