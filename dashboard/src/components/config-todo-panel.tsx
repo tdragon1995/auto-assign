@@ -257,6 +257,7 @@ function OverlapRow({
           drivers={drivers}
           onCancel={() => setOpen(false)}
           onDone={() => { setOpen(false); onSaved(key); }}
+          onRemoved={() => { setOpen(false); onSaved(); }}
         />
       )}
     </div>
@@ -311,9 +312,13 @@ function DriverPicker({
  * validated as a unit: overlap is caught before anything is saved rather than
  * discovered afterwards by a job that would not assign.
  *
- * Existing lines cannot be REMOVED here. Taking cover away is a different kind
- * of decision from adjusting it, and there is nothing on the writing side that
- * does it; only a line added and not yet saved can be dropped again.
+ * A rule can also be REMOVED, which this used to refuse. The reason it gave —
+ * "there is nothing on the writing side that does it" — stopped being true when
+ * `/api/config/delete-row` arrived for the overlap rows, and the refusal outlived
+ * it: the one screen showing a branch's whole day, which is where you can
+ * actually see whether a rule should still exist, was the one place that could
+ * not remove one. See `DeleteRuleButton` for what makes it different from every
+ * other control here (it writes immediately, and it says what cover it costs).
  */
 /** One source branch, with its rules in the order they run. */
 type CopySource = {
@@ -613,6 +618,136 @@ function CopyFromBranch({
 }
 
 /**
+ * Remove one rule from the sheet, from inside the branch editor.
+ *
+ * The editor used to say this was impossible, and the reason it gave was true
+ * when it was written: "there is nothing on the writing side that does it". That
+ * changed when `/api/config/delete-row` arrived for the overlap rows, and the
+ * comment outlived it — so the one place showing a branch's WHOLE day, which is
+ * exactly where you can see whether a rule should still exist, was the one place
+ * that could not remove one. Both ways into the editor get it, because both are
+ * the same editor.
+ *
+ * Two clicks, armed rather than a `window.confirm`, for the reason the leave
+ * panel gives: this list refreshes under the pointer, and a native dialog is the
+ * one thing that cannot name WHICH row is about to go.
+ *
+ * Two things make this different from removing a leave row, and both are on the
+ * button:
+ *
+ *   * Its tooltip says what COVER is lost. Deleting a rule is how a branch
+ *     silently acquires a hole nobody rostered for, and the hole is not obvious
+ *     by eye — a rule wholly inside another costs nothing, while one reaching
+ *     past its neighbour gives up the difference. `coverageLostWithout` already
+ *     answers this for the overlap rows. It sits on the title rather than in the
+ *     row because a sentence of prose per rule turns a dense form into a wall of
+ *     warnings, and the row is the thing being read to make the decision.
+ *   * It writes IMMEDIATELY, unlike every other control in this editor, which
+ *     waits for Lưu. So it says so, and the editor closes and re-reads
+ *     afterwards rather than carrying on — deleting a row shifts every row below
+ *     it up by one, which would leave every other line in the form holding a
+ *     number that now points at its neighbour. The writers re-read and refuse a
+ *     moved row rather than write to it, so nothing would be corrupted; it would
+ *     just fail confusingly a minute later, which is worth not doing.
+ */
+function DeleteRuleButton({
+  row,
+  pickupName,
+  window: windowLabel,
+  driver,
+  lost,
+  onlyRule,
+  disabled,
+  onDeleted,
+}: {
+  row: number;
+  pickupName: string;
+  /** "HH:MM–HH:MM", or "" for a rule with no window. */
+  window: string;
+  driver: string;
+  /** Hours nobody would be on duty for afterwards, or null when none are lost. */
+  lost: string | null;
+  /** The branch's last remaining rule — removing it leaves the branch with no
+   *  config at all, which fails every job as NO MAPPING rather than as a gap. */
+  onlyRule: boolean;
+  disabled?: boolean;
+  onDeleted: () => void;
+}) {
+  const [armed, setArmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  async function remove() {
+    setBusy(true);
+    try {
+      const res = await fetch("/api/config/delete-row", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ row, pickup_name: pickupName }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
+      toast.success(`Đã xoá dòng #${row} — ${pickupName}`);
+      onDeleted();
+    } catch (e) {
+      toast.error(`Không xoá được dòng #${row}: ${e instanceof Error ? e.message : String(e)}`);
+      setArmed(false);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!armed) {
+    return (
+      <button
+        type="button"
+        onClick={() => setArmed(true)}
+        disabled={disabled}
+        aria-label={`Xoá dòng #${row}`}
+        title={
+          `Xoá hẳn dòng #${row} (${displayDriverCell(driver) || "chưa có tài xế"}` +
+          `${windowLabel ? ` ${windowLabel}` : ""}) khỏi sheet` +
+          (onlyRule
+            ? " — đây là dòng cuối của điểm này, xoá xong điểm sẽ không còn config"
+            : lost
+              ? ` — sau đó ${lost} sẽ không còn ai trực`
+              : " — không mất giờ trực nào")
+        }
+        className="shrink-0 rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] text-slate-600 hover:border-red-300 hover:bg-red-50 hover:text-red-700 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+      >
+        Xoá
+      </button>
+    );
+  }
+
+  return (
+    // `w-full` puts the confirmation on its OWN line of the row's flex-wrap
+    // rather than inside it. Inline, arming shrank the driver field and slid the
+    // time selects sideways — the controls moving is the last thing wanted at
+    // the moment someone is deciding whether to remove a rule, and the row is
+    // also what they are reading to decide.
+    <span className="flex w-full flex-wrap items-center gap-1 pl-1">
+      <span className="text-[11px] font-semibold text-red-700">Xoá dòng #{row}?</span>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={remove}
+        className="rounded border border-red-500 bg-red-600 px-1.5 py-0.5 text-[11px] font-semibold text-white hover:bg-red-700 disabled:opacity-60"
+      >
+        {busy ? "Đang xoá…" : "Xoá ngay"}
+      </button>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => setArmed(false)}
+        className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] text-slate-600 hover:bg-slate-50 disabled:opacity-60"
+      >
+        Hủy
+      </button>
+    </span>
+  );
+}
+
+/**
  * Exported so the config BROWSER can open the same editor.
  *
  * The point of exporting it rather than writing a second one: every guard that
@@ -622,7 +757,7 @@ function CopyFromBranch({
  * way in" would be a second set of those, and they would drift.
  */
 export function BranchEditor({
-  pickupName, dropoffName, rules, extraLine, drivers, onDone, onCancel,
+  pickupName, dropoffName, rules, extraLine, drivers, onDone, onRemoved, onCancel,
 }: {
   pickupName: string;
   dropoffName: string;
@@ -632,6 +767,17 @@ export function BranchEditor({
   extraLine?: Omit<Line, "key">;
   drivers: ConfigDriver[];
   onDone: () => void;
+  /**
+   * After a rule was REMOVED, as distinct from saved.
+   *
+   * The two cannot share a callback. `onDone` marks the to-do that opened the
+   * editor as dealt with, and that dismissal is local and lasts the session — so
+   * routing a delete through it would let removing a rule HIDE the very gap the
+   * removal just opened, for the rest of the day. A save at least claims to have
+   * fixed something; a delete makes no such claim. Falls back to `onDone` for
+   * the config browser, which dismisses nothing.
+   */
+  onRemoved?: () => void;
   onCancel: () => void;
 }) {
   /**
@@ -662,6 +808,20 @@ export function BranchEditor({
    * prevent — now sitting in the sheet, where this editor can no longer see it.
    */
   const [committed, setCommitted] = useState<Record<string, string>>({});
+  /**
+   * The branch as the SHEET currently holds it, for judging a delete.
+   *
+   * Not `lines`: those carry edits that have not been written yet, and a delete
+   * lands now, against what is actually in the sheet. Telling the supervisor
+   * that removing #41 opens 13:25–19:00 when the hours they just typed (and have
+   * not saved) would have closed it is the wrong answer to the question they are
+   * asking, which is "what happens if I press this".
+   */
+  const sheetRules = useMemo<BranchRule[]>(
+    () => initial.filter((l) => l.row)
+      .map((l) => ({ row: l.row!, driver: l.driver, start: l.start, end: l.end, dropoff: l.dropoff })),
+    [initial],
+  );
   const [copyOpen, setCopyOpen] = useState(false);
   const copyBtnRef = useRef<HTMLButtonElement>(null);
   const copyPanelId = useId();
@@ -845,7 +1005,23 @@ export function BranchEditor({
           <span className="w-10 shrink-0 text-right font-mono text-[10px] text-slate-600">
             {l.row ? `#${l.row}` : "mới"}
           </span>
-          {!l.row && (
+          {/* Every line gets a removal control in the same place; what it MEANS
+              differs, and the label is what says so. A line with no row exists
+              only in this form, so ✕ simply drops it. A line with a row is in
+              the sheet, so Xoá removes it from the sheet — two clicks, and it
+              says what cover that costs. */}
+          {l.row ? (
+            <DeleteRuleButton
+              row={l.row}
+              pickupName={pickupName}
+              window={l.start && l.end ? `${l.start}–${l.end}` : ""}
+              driver={l.driver}
+              lost={coverageLostWithout(sheetRules, l.row)}
+              onlyRule={sheetRules.length <= 1}
+              disabled={busy}
+              onDeleted={onRemoved ?? onDone}
+            />
+          ) : (
             <button
               type="button" onClick={() => dropLine(l.key)}
               aria-label="Bỏ dòng này"
@@ -960,6 +1136,7 @@ function UnfinishedRow({
           drivers={drivers}
           onCancel={() => setOpen(false)}
           onDone={() => { setOpen(false); onSaved(`u:${u.row}`); }}
+          onRemoved={() => { setOpen(false); onSaved(); }}
         />
       )}
     </div>
@@ -1088,6 +1265,7 @@ function GapRow({
           drivers={drivers}
           onCancel={() => setOpen(false)}
           onDone={() => { setOpen(false); onSaved(`g:${g.customer_id}|${g.at}`); }}
+          onRemoved={() => { setOpen(false); onSaved(); }}
         />
       )}
     </div>
