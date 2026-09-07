@@ -359,7 +359,8 @@ export function JobAdminPanel({ env }: { env: Env }) {
                                   />
                                   {pscSearch && (
                                     <button
-                                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                                      aria-label="Xoá điểm giao đã tìm"
+                                      className="absolute right-2 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center text-slate-400 hover:text-slate-600"
                                       onMouseDown={(e) => { e.preventDefault(); clearPsc(); }}
                                     >
                                       ×

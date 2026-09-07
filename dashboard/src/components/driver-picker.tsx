@@ -65,11 +65,12 @@ export function DriverPicker({
           />
           {selectedDriver && (
             <button
+              aria-label="Xoá tài xế đã chọn"
               onClick={() => {
                 setSelectedDriver("");
                 setSearchInput("");
               }}
-              className="absolute right-1 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              className="absolute right-1 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center text-slate-400 hover:text-slate-600"
             >
               ✕
             </button>
@@ -94,7 +95,7 @@ export function DriverPicker({
           ))}
         </div>
       )}
-      <div className="flex gap-1">
+      <div className="flex gap-2">
         <Button
           size="sm"
           className="flex-1 h-6 text-[11px] bg-indigo-600 hover:bg-indigo-700"

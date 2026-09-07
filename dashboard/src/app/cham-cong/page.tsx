@@ -1625,7 +1625,8 @@ export default function ChamCongPage() {
               />
               {driverSearch && (
                 <button
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                  aria-label="Xoá tên tài xế"
+                  className="absolute right-2 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center text-gray-400 hover:text-gray-600"
                   onMouseDown={(e) => { e.preventDefault(); clearDriver(); }}
                 >
                   ×
@@ -1679,7 +1680,8 @@ export default function ChamCongPage() {
                   />
                   {locationSearch && (
                     <button
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                      aria-label="Xoá địa điểm"
+                      className="absolute right-2 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center text-gray-400 hover:text-gray-600"
                       onMouseDown={(e) => { e.preventDefault(); clearLocation(); }}
                     >
                       ×
@@ -2038,7 +2040,8 @@ export default function ChamCongPage() {
                     />
                     {scheduleSearch && (
                       <button
-                        className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                        aria-label="Xoá tìm kiếm"
+                        className="absolute right-2 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center text-gray-400 hover:text-gray-600"
                         onClick={() => setScheduleSearch("")}
                       >
                         ×
