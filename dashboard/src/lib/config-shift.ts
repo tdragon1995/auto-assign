@@ -101,6 +101,28 @@ export const sameScope = (a: Line, b: Line) =>
  *  content in the sheet, which is what makes "already written" answerable. */
 export const sig = (l: Line) => [l.driver, l.start, l.end, l.dropoff].join("\u0000");
 
+/**
+ * The branch's day AS THIS DESTINATION SEES IT.
+ *
+ * A branch can send to two places under two drivers, and a row scoped to the
+ * OTHER place never competes for this trip — the engine never has both in hand
+ * at once. Showing it in the editor for a hole on this route is noise at best:
+ * it reads as a shift that overlaps the one being fixed, when the two have
+ * nothing to do with each other.
+ *
+ * Blank rows stay, and that is the part worth stating: those are branch-wide,
+ * they DO serve this trip, and they are the only rules that can genuinely clash
+ * with what is being written. Hiding them would let the editor validate against
+ * an incomplete day.
+ *
+ * An unknown destination filters nothing — there is nothing to rule out.
+ */
+export function servesDropoff<T extends { dropoff?: string }>(rules: T[], dropoff: string): T[] {
+  const want = dropoff.trim();
+  if (!want) return rules;
+  return rules.filter((r) => !(r.dropoff ?? "").trim() || (r.dropoff ?? "").trim() === want);
+}
+
 /** Minutes a line is on duty, as inclusive blocks. Mirrors the engine: a blank
  *  window is all day, the window is half-open so the start minute belongs to the
  *  OUTGOING rule, and a start after the end wraps past midnight. */
@@ -143,8 +165,7 @@ export const fromMin = (m: number) => {
   return `${String(Math.floor(x / 60)).padStart(2, "0")}:${String(x % 60).padStart(2, "0")}`;
 };
 
-/** One neighbouring rule that could be stretched to swallow the hole, and the
- *  window it would end up with. */
+/** One rule whose boundary could be moved, and the window it would end up with. */
 export interface Stretch {
   row: number;
   driver: string;
@@ -153,62 +174,6 @@ export interface Stretch {
   value: string;
   /** The whole window afterwards, for the button to state plainly. */
   window: string;
-}
-
-/**
- * The ways this gap could be closed by moving ONE boundary, already checked
- * against the rest of the branch.
- *
- * The third fix for a hole, and usually the quickest: when the person either
- * side already works up to it, nobody needs a new rule — one of them just
- * covers a little more. `/api/config/stretch-rule` has existed for this the
- * whole time and nothing ever called it, so every gap went through the full
- * editor instead.
- *
- * The arithmetic mirrors `blocks`: a rule covers (start, end], so extending the
- * rule BEFORE means writing the last uncovered minute into its end, while
- * extending the one AFTER means writing the minute before the first uncovered
- * one into its start. An option is only offered if the branch still has no
- * clash afterwards — the server writes the cell without checking that, and a
- * boundary moved onto a neighbour makes the engine refuse the branch outright.
- */
-export function stretchOptions(g: CoverageGap, rules: BranchRule[]): Stretch[] {
-  const mins = [g.at, ...(g.also ?? [])].map(toMin).filter((m) => m >= 0).sort((a, b) => a - b);
-  if (mins.length === 0) return [];
-  const earliest = mins[0], latest = mins[mins.length - 1];
-  // A hole that appears to straddle midnight is not one hole for this purpose,
-  // and stretching a rule across it would rewrite half the day. Leave it to the
-  // editor.
-  if (latest - earliest > 720) return [];
-
-  const others = rules.map(asLine);
-  const out: Stretch[] = [];
-
-  const consider = (side: { row: number; driver: string; window: string } | null, edge: "start" | "end") => {
-    if (!side) return;
-    const [from, to] = side.window.split("–");
-    if (toMin(from ?? "") < 0 || toMin(to ?? "") < 0) return;
-    const value = edge === "end" ? fromMin(latest) : fromMin(earliest - 1);
-    const next: Line = {
-      key: `row:${side.row}`, row: side.row, driver: side.driver,
-      start: edge === "start" ? value : from,
-      end: edge === "end" ? value : to,
-      // A stretch moves one boundary and nothing else, so the rule keeps the
-      // destination it already answered for. Taken from the branch's own rules
-      // rather than defaulted to blank: defaulting would make a scoped rule look
-      // branch-wide, and the clash check below would then refuse a stretch that
-      // is perfectly safe (or, on the other side, offer one that is not).
-      dropoff: others.find((l) => l.row === side.row)?.dropoff ?? "",
-    };
-    if (next.start === next.end) return;                     // would never be on duty
-    const rest = others.filter((l) => l.row !== side.row);
-    if (findClash([...rest, next])) return;                  // lands on a neighbour
-    out.push({ row: side.row, driver: side.driver, edge, value, window: `${next.start}–${next.end}` });
-  };
-
-  consider(g.before, "end");
-  consider(g.after, "start");
-  return out;
 }
 
 /** Every minute of the day some line is on duty. Used to prove a boundary move
@@ -224,9 +189,8 @@ function coveredMinutes(lines: readonly Line[]): boolean[] {
 }
 
 /**
- * The ways an OVERLAP could be closed by moving ONE boundary — the mirror of
- * {@link stretchOptions}, and the reason an overlap can be a to-do rather than a
- * paragraph in a banner.
+ * The ways an OVERLAP could be closed by moving ONE boundary, and the reason an
+ * overlap can be a to-do rather than a paragraph in a banner.
  *
  * Two fixed rules live at the same minute make the engine refuse the job with
  * CLASH, which is the "Trùng tài xế trực" list on the same dashboard. The fix is
@@ -272,7 +236,7 @@ export function shrinkOptions(
       key: `row:${side.row}`, row: side.row, driver: side.driver,
       start: edge === "start" ? value : own[0],
       end: edge === "end" ? value : own[1],
-      /** Same as in `stretchOptions`: a boundary move keeps the rule's scope. */
+      /** A boundary move keeps the rule's own destination scope. */
       dropoff: all.find((l) => l.row === side.row)?.dropoff ?? "",
     };
     if (next.start === next.end) return;                  // on duty for no minute

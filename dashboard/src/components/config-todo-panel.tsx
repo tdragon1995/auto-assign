@@ -14,7 +14,7 @@ import { searchConfigRows } from "./config-browser-panel";
 import type { ConfigRowView } from "@/app/api/config/rows/route";
 import { DriverCombobox } from "./driver-combobox";
 import {
-  type Line, type Stretch, toMin, newLineKey, asLine, sig, findClash, stretchOptions,
+  type Line, toMin, newLineKey, asLine, sig, findClash, servesDropoff,
   applyCopiedLines, copyKey,
 } from "@/lib/config-shift";
 
@@ -1131,7 +1131,7 @@ function UnfinishedRow({
         <BranchEditor
           pickupName={u.pickup_name}
           dropoffName={u.dropoff_name}
-          rules={rules}
+          rules={servesDropoff(rules, u.dropoff_name)}
           extraLine={{ row: u.row, driver: "", start: from ?? "", end: to ?? "", dropoff: u.dropoff_name }}
           drivers={drivers}
           onCancel={() => setOpen(false)}
@@ -1142,6 +1142,15 @@ function UnfinishedRow({
     </div>
   );
 }
+
+/**
+ * One edge of a "HH:MM–HH:MM" window, or the whole thing when it is not one —
+ * a rule with no window reads "cả ngày", and half of that is nonsense.
+ */
+const edgeOf = (window: string, edge: "start" | "end"): string => {
+  const parts = window.split("–");
+  return parts.length === 2 ? parts[edge === "end" ? 1 : 0] : window;
+};
 
 /**
  * An hour a job needed and nobody was rostered for.
@@ -1159,29 +1168,33 @@ function GapRow({
   onSaved: (key?: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [stretching, setStretching] = useState<string | null>(null);
-  const [stretchErr, setStretchErr] = useState<string | null>(null);
+  const [dropping, setDropping] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
   const repeats = g.also?.length ?? 0;
-  const options = stretchOptions(g, rules);
 
-  /** Close the hole by moving one boundary — the whole fix, in one request. */
-  async function stretch(s: Stretch) {
-    setStretchErr(null);
-    setStretching(s.edge);
+  /** Take the row off the list without touching the config.
+   *
+   *  Every other fix here closes a gap by covering it, and the parse then
+   *  retracts the record on its own. This is for the record that no sheet edit
+   *  answers — an hour nobody intends to cover, or one recorded before the
+   *  destination was known. It deletes the observation, not the rule, so if the
+   *  hole is real the next job that falls in brings the row straight back. */
+  async function dismiss() {
+    setErr(null);
+    setDropping(true);
     try {
-      const res = await fetch("/api/config/stretch-rule", {
+      const res = await fetch("/api/config/dismiss-gap", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ row: s.row, pickup_name: g.pickup_name, edge: s.edge, value: s.value }),
+        body: JSON.stringify({ customer_id: g.customer_id, at: g.at, also: g.also ?? [] }),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
-      toast.success(`${displayDriverCell(s.driver)} giờ trực ${s.window} — ${g.pickup_name}`);
+      toast.success(`Đã bỏ ${g.at} — ${g.pickup_name}`);
       onSaved(`g:${g.customer_id}|${g.at}`);
     } catch (e) {
-      setStretchErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setStretching(null);
+      setErr(e instanceof Error ? e.message : String(e));
+      setDropping(false);
     }
   }
 
@@ -1212,12 +1225,25 @@ function GapRow({
           {g.dropoff_name && <span className="text-slate-500"> → {g.dropoff_name}</span>}
         </span>
         {!open && (
-          <Button
-            size="sm" variant="outline" className="h-6 shrink-0 text-[11px] px-2"
-            onClick={() => setOpen(true)}
-          >
-            Sửa config
-          </Button>
+          <>
+            {/* Deliberately quieter than "Sửa config": covering the hour is the
+                answer, and dropping the row is what is left when it is not. */}
+            <Button
+              size="sm" variant="ghost"
+              className="h-6 shrink-0 px-2 text-[11px] font-normal text-slate-500 hover:text-slate-800"
+              disabled={dropping}
+              onClick={dismiss}
+              title="Bỏ dòng này khỏi danh sách. Không sửa config — nếu vẫn còn job rơi vào giờ này thì dòng sẽ quay lại."
+            >
+              {dropping ? "Đang bỏ…" : "Bỏ qua"}
+            </Button>
+            <Button
+              size="sm" variant="outline" className="h-6 shrink-0 text-[11px] px-2"
+              onClick={() => setOpen(true)}
+            >
+              Sửa config
+            </Button>
+          </>
         )}
       </div>
       <div className="mt-0.5 text-[11px] text-slate-500">
@@ -1225,43 +1251,29 @@ function GapRow({
             side is closed by nudging a boundary, a hole with nothing before or
             after it means the branch is simply unstaffed at that end of the day
             and needs a new rule. It reads as the exception it is. */}
+        {/* The BOUNDARY, not the neighbouring shift's whole window.
+            Several rules can end at the same minute — a branch running two
+            routes has one per route — and whichever the parse happened to pick
+            was then printed as "the shift before", contradicting the editor
+            below, which lists them all. The edge is the same number whichever
+            rule owns it, so saying only that is both shorter and true. */}
         {g.before
-          ? <>Ca trước <span className="tabular-nums">{g.before.window}</span></>
+          ? <>Ca trước kết thúc <span className="tabular-nums">{edgeOf(g.before.window, "end")}</span></>
           : <span className="font-semibold text-amber-800">Không có ca trước</span>}
         {" · "}
         {g.after
-          ? <>ca sau <span className="tabular-nums">{g.after.window}</span></>
+          ? <>ca sau bắt đầu <span className="tabular-nums">{edgeOf(g.after.window, "start")}</span></>
           : <span className="font-semibold text-amber-800">không có ca sau</span>}
         {/* The recurrence used to be spelled out here as well. It is the ×N chip
             beside the time now — where it can be seen without reading the line,
             which is the point of it — so saying it twice is just noise. */}
       </div>
-      {/* The one-boundary fixes, when the branch allows one. Each says who ends
-          up working what, because that — not the hole — is what the supervisor
-          is actually agreeing to. The full editor stays beside them for the
-          cases these cannot express. */}
-      {!open && options.length > 0 && (
-        <div className="mt-1 flex flex-wrap items-center gap-1">
-          {options.map((s) => (
-            <Button
-              key={s.edge}
-              size="sm" variant="outline"
-              className="h-6 px-2 text-[11px] font-normal"
-              disabled={stretching !== null}
-              onClick={() => stretch(s)}
-              title={`Ghi ${s.value} vào giờ ${s.edge === "end" ? "kết thúc" : "bắt đầu"} của dòng #${s.row}`}
-            >
-              {stretching === s.edge ? "Đang lưu…" : `Nới ${displayDriverCell(s.driver)} → ${s.window}`}
-            </Button>
-          ))}
-        </div>
-      )}
-      {stretchErr && <div role="alert" className="mt-1 text-[11px] text-red-600">{stretchErr}</div>}
+      {err && <div role="alert" className="mt-1 text-[11px] text-red-600">{err}</div>}
       {open && (
         <BranchEditor
           pickupName={g.pickup_name}
-          dropoffName=""
-          rules={rules}
+          dropoffName={g.dropoff_name ?? ""}
+          rules={servesDropoff(rules, g.dropoff_name ?? "")}
           drivers={drivers}
           onCancel={() => setOpen(false)}
           onDone={() => { setOpen(false); onSaved(`g:${g.customer_id}|${g.at}`); }}
