@@ -57,7 +57,11 @@ eq("empty stays empty", weekStartOf(""), "");
 
 // --- merging a person's two accounts -----------------------------------------
 
-type Sub = { id: string; name: string };
+// The full SubEntry shape, or these rows are not LeaveRowViews and the file
+// stops compiling — which stops `next build`, since tsconfig type-checks
+// scripts/ too. A null window is the ordinary case: a substitute without one
+// inherits the leave row's own hours.
+type Sub = { id: string; name: string; from: string | null; to: string | null };
 const row = (subs: Sub[] = []) => ({ timeLabel: null, subs, leave_from: "2026-09-07", duplicate: false });
 const group = (driver_id: string, driver_name: string, opts: { subs?: Sub[]; loai_nghi?: string } = {}) => ({
   driver_id,
@@ -66,7 +70,7 @@ const group = (driver_id: string, driver_name: string, opts: { subs?: Sub[]; loa
   leave_from: "2026-09-07",
   rows: [row(opts.subs)],
 });
-const someone: Sub = { id: "x", name: "F - C - DC100999 Người Thay" };
+const someone: Sub = { id: "x", name: "F - C - DC100999 Người Thay", from: null, to: null };
 
 console.log("\nmerging accounts onto one line");
 {

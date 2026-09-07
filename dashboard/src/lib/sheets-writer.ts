@@ -261,9 +261,21 @@ export async function updateLeaveSubs(
     requestBody: { valueInputOption: "RAW", data },
   });
 
-  // Best-effort: make sure each used slot's sub#_id xlookup formula exists
-  // (damaged rows lose it), then verify it resolved. A written name whose id
-  // stays blank is invisible to the engine — worth a loud warning.
+  const warning = await repairAndVerifySubIds(sheets, quotedName, col, rowNo, used);
+  return { row: rowNo, warning };
+}
+
+/** Shared tail of {@link updateLeaveSubs} and {@link replaceLeaveSubs}: make
+ *  sure each used slot's sub#_id xlookup formula exists (damaged rows lose
+ *  it), then verify it resolved. A written name whose id stays blank is
+ *  invisible to the engine — worth a loud warning. */
+async function repairAndVerifySubIds(
+  sheets: ReturnType<typeof google.sheets>,
+  quotedName: string,
+  col: Record<string, number>,
+  rowNo: number,
+  used: number[],
+): Promise<string | undefined> {
   let warning: string | undefined;
   try {
     const idCols = used
@@ -327,8 +339,97 @@ export async function updateLeaveSubs(
     console.error("[leave-subs] sub_id formula check failed (subs were written)", e);
     warning = "Đã ghi người thay nhưng chưa kiểm tra được công thức sub_id trên sheet";
   }
+  return warning;
+}
 
+/**
+ * Replace ALL substitutes on the leave row the panel is showing — used to EDIT
+ * a row that already has coverage, as opposed to {@link updateLeaveSubs} which
+ * only ever fills EMPTY slots (it treats an already-named slot as unusable, by
+ * design, so the "+ Thêm" flow on an uncovered row can never clobber someone
+ * else's entry). Editing needs the opposite: overwrite whatever is there.
+ *
+ * `subs` becomes the row's complete sub list — slots beyond `subs.length` are
+ * cleared, so dropping down from 2 substitutes to 1 actually removes the
+ * second one rather than leaving it stranded.
+ *
+ * Where the sheet holds a duplicate pair for this identity (the panel's
+ * "Trùng dòng" flag), the row edited is the MOST-covered candidate — the same
+ * one `leaveEntriesOnDate` collapses onto and shows the supervisor, so editing
+ * what's on screen edits the row that produced it. `deleteLeaveRow` picks the
+ * opposite (least-covered) on purpose, for the opposite reason: it keeps the
+ * record and drops the redundant copy.
+ */
+export async function replaceLeaveSubs(
+  match: LeaveRowMatch,
+  subs: LeaveSubWrite[],
+): Promise<{ row: number; warning?: string }> {
+  if (subs.length > 3) throw new LeaveWriteError("Tối đa 3 người thay");
+  const sheets = getSheetsClient();
+  const sheetName = await getNghiPhepSheetName(sheets);
+  const quotedName = `'${sheetName.replace(/'/g, "''")}'`;
+
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: quotedName,
+  });
+  const all = res.data.values ?? [];
+  if (all.length < 2) throw new LeaveWriteError("Leave sheet trống");
+
+  const col: Record<string, number> = {};
+  all[0].forEach((h, i) => {
+    const k = String(h ?? "").trim();
+    if (k && !(k in col)) col[k] = i;
+  });
+  for (const need of ["driver_id", "leave_from", "leave_from_hr", "leave_to_hr"]) {
+    if (!(need in col)) throw new LeaveWriteError(`Thiếu cột "${need}" trong Leave sheet`);
+  }
+  const slots = [1, 2, 3].filter(
+    (n) => `sub${n}_name` in col && `sub${n}_from` in col && `sub${n}_to` in col,
+  );
+  if (subs.length > slots.length) throw new LeaveWriteError("Sheet không đủ ô người thay");
+
+  const candidates = matchLeaveRows(all, col, match);
+  const rowNo = pickLeaveRowToEdit(candidates);
+  if (!rowNo) {
+    throw new LeaveWriteError(
+      "Không tìm thấy dòng nghỉ phép — sheet có thể vừa thay đổi, thử Refresh",
+    );
+  }
+
+  // Every slot is written, not just the used ones: this is how a slot beyond
+  // subs.length gets CLEARED instead of left holding the previous edit's name.
+  const data = slots.flatMap((n, i) => {
+    const s = subs[i];
+    return [
+      { range: `${quotedName}!${colA1(col[`sub${n}_name`])}${rowNo}`, values: [[s?.name ?? ""]] },
+      { range: `${quotedName}!${colA1(col[`sub${n}_from`])}${rowNo}`, values: [[s?.from ?? ""]] },
+      { range: `${quotedName}!${colA1(col[`sub${n}_to`])}${rowNo}`, values: [[s?.to ?? ""]] },
+    ];
+  });
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: SHEET_ID,
+    requestBody: { valueInputOption: "RAW", data },
+  });
+
+  const used = slots.slice(0, subs.length);
+  const warning = await repairAndVerifySubIds(sheets, quotedName, col, rowNo, used);
   return { row: rowNo, warning };
+}
+
+/** Which candidate row an EDIT applies to: the MOST-covered one — the row
+ *  `leaveEntriesOnDate`'s "most subs wins" collapse is showing on screen right
+ *  now. Opposite of {@link pickLeaveRowToDelete}, and for the opposite reason:
+ *  a delete wants to drop the redundant empty copy, an edit wants to change
+ *  the one substitute actually on the record. Ties go to the earliest row. */
+function pickLeaveRowToEdit(candidates: LeaveRowCandidate[]): number | null {
+  let best: LeaveRowCandidate | null = null;
+  for (const c of candidates) {
+    if (!best || c.subCount > best.subCount || (c.subCount === best.subCount && c.row < best.row)) {
+      best = c;
+    }
+  }
+  return best ? best.row : null;
 }
 
 // ── Delete one leave row ─────────────────────────────────────────────────────

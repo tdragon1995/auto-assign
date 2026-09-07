@@ -8,7 +8,7 @@ import {
   spanningLeaveRows,
 } from "@/lib/leave-config";
 import {
-  updateLeaveSubs, deleteLeaveRow, appendLeaveDeletion,
+  updateLeaveSubs, replaceLeaveSubs, deleteLeaveRow, appendLeaveDeletion,
   LeaveWriteError, type LeaveSubWrite,
 } from "@/lib/sheets-writer";
 import {
@@ -107,23 +107,30 @@ export async function GET(req: NextRequest) {
   }
 }
 
-/** POST — fill substitute(s) on a leave row that has none ("Chưa có người
- *  thay" in the panel). Body:
- *    { driver_id, leave_from, timeLabel, subs: [{ name, from, to }] }
+/** POST — fill substitute(s) on a leave row. Body:
+ *    { driver_id, leave_from, timeLabel, subs: [{ name, from, to }], replace? }
  *  1–3 subs; with 2+ every sub needs its own non-overlapping HH:MM window
  *  (an open window covers the whole day, which would SUB CLASH the others).
  *  Sub names must match the Driver tab exactly — that's what the sheet's
- *  sub#_id xlookup resolves against; anything else is invisible to the engine. */
+ *  sub#_id xlookup resolves against; anything else is invisible to the engine.
+ *
+ *  `replace: true` is the EDIT path — it overwrites whatever the row already
+ *  carries instead of only filling empty slots, so a covered row ("Đã có
+ *  người thay" in the panel) can have its name or window changed the same way
+ *  an uncovered one gets filled in the first place. Default (omitted/false) is
+ *  the original "+ Thêm" behaviour: fill into the first empty slots and leave
+ *  an existing one untouched. */
 export async function POST(req: NextRequest) {
   const bad = (msg: string) => NextResponse.json({ ok: false, error: msg }, { status: 400 });
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== "object") return bad("Body không hợp lệ");
-    const { driver_id, leave_from, timeLabel, subs } = body as {
+    const { driver_id, leave_from, timeLabel, subs, replace } = body as {
       driver_id?: string;
       leave_from?: string;
       timeLabel?: string | null;
       subs?: { name?: string; from?: string | null; to?: string | null }[];
+      replace?: boolean;
     };
     if (!driver_id || !leave_from) return bad("Thiếu driver_id / leave_from");
     if (!Array.isArray(subs) || subs.length < 1 || subs.length > 3)
@@ -162,10 +169,10 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const result = await updateLeaveSubs(
-      { driver_id, leave_from, timeLabel: timeLabel ?? null },
-      clean,
-    );
+    const identity = { driver_id, leave_from, timeLabel: timeLabel ?? null };
+    const result = replace
+      ? await replaceLeaveSubs(identity, clean)
+      : await updateLeaveSubs(identity, clean);
     await invalidateLeaveCache();
     return NextResponse.json({ ok: true, row: result.row, warning: result.warning ?? null });
   } catch (e) {

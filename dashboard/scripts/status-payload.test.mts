@@ -35,6 +35,7 @@ const bundle: StatusBundle = {
   ],
   held: [],
   warnings: [],
+  warningsAt: null,
   failed: [],
   sheetAlarms: [],
   unfinished: [],

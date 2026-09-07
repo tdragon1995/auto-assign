@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Search } from "lucide-react";
+import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { foldName } from "@/lib/driver-cell";
+import { foldName, splitDriverNames, DRIVER_SEP } from "@/lib/driver-cell";
 import { displayDriverCell } from "@/lib/driver-label";
-import { BranchEditor } from "./config-todo-panel";
+import { BranchEditor, TimeSelect } from "./config-todo-panel";
+import { DriverCombobox } from "./driver-combobox";
 import type { ConfigRowView } from "@/app/api/config/rows/route";
 import type { BranchRule, ConfigDriver } from "@/lib/types";
 
@@ -140,6 +142,274 @@ function rulesOf(rows: readonly ConfigRowView[]): BranchRule[] {
   return rows.map((r) => ({ row: r.row, driver: r.driver, start: r.start, end: r.end, dropoff: r.dropoff }));
 }
 
+/**
+ * Whether a row can be addressed by a write at all.
+ *
+ * Every config writer re-reads the row's pickup cell and refuses if it is not
+ * the branch it was told to expect. A row with a BLANK pickup passes that
+ * check against any other blank cell, so the one guard standing between a
+ * bulk write and the wrong line does nothing for it — those rows stay
+ * single-edit only, where a human is looking at the one row they mean.
+ */
+const isWritable = (r: ConfigRowView) => r.pickup.trim().length > 0;
+
+async function postJson(url: string, body: unknown) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
+  return j;
+}
+
+/**
+ * One bulk write, row by row.
+ *
+ * SEQUENTIAL, never parallel: these all land on one sheet, and the delete path
+ * additionally SHIFTS every row below the one it removes — two in flight would
+ * be reading each other's aftermath.
+ *
+ * It runs to the END rather than stopping at the first failure, and says what
+ * landed. Carrying on is safe because it is not this loop that protects the
+ * sheet: every route re-reads its row and refuses when the branch sitting
+ * there is not the one being addressed, so a row that drifted is skipped
+ * rather than overwritten. Stopping instead would leave a partial write with
+ * no account of which rows were still pending.
+ */
+async function runBulk(
+  targets: readonly ConfigRowView[],
+  step: (r: ConfigRowView) => Promise<void>,
+  onProgress: (done: number) => void,
+): Promise<{ ok: number; errors: string[] }> {
+  let ok = 0;
+  const errors: string[] = [];
+  for (let i = 0; i < targets.length; i++) {
+    const r = targets[i];
+    try {
+      await step(r);
+      ok++;
+    } catch (e) {
+      errors.push(`Dòng ${r.row} (${r.pickup}): ${e instanceof Error ? e.message : String(e)}`);
+    }
+    onProgress(i + 1);
+  }
+  return { ok, errors };
+}
+
+type BulkMode = "driver" | "hours" | "delete";
+
+/**
+ * The same three edits the single-row editor makes, applied to every ticked row.
+ *
+ * It writes through the EXISTING guarded routes — `complete-row` for a driver
+ * or a window, `delete-row` for a removal — one call per row, rather than a
+ * bulk endpoint of its own. That is what keeps the roster check, the
+ * re-read-before-write and the Sunday refusal identical to what a single edit
+ * gets: bulk here means "do this repeatedly", not "do this a second way".
+ *
+ * Two things the shape of those routes decides for us:
+ *   - a window change also sends the row's EXISTING driver, because the route
+ *     always writes the driver cell — so a row with no driver cannot take one
+ *     and is counted out before the run rather than failing inside it;
+ *   - a driver change sends NO window, which leaves each row's own hours
+ *     alone. Rows on different shifts keep them.
+ */
+function BulkBar({
+  targets,
+  drivers,
+  onDone,
+  onClear,
+}: {
+  /** The ticked rows, already filtered to the writable ones. */
+  targets: ConfigRowView[];
+  drivers: ConfigDriver[];
+  /** A write landed: re-read the sheet (row numbers move after a delete). */
+  onDone: () => void;
+  onClear: () => void;
+}) {
+  const [mode, setMode] = useState<BulkMode | null>(null);
+  const [driverCell, setDriverCell] = useState("");
+  const [start, setStart] = useState("");
+  const [end, setEnd] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(0);
+  const [armed, setArmed] = useState(false);
+
+  // A window write carries the driver cell with it, so a driverless row has
+  // nothing to send. Named up front — "2 dòng chưa có tài xế sẽ bị bỏ qua" is
+  // something to see before pressing, not to read in the error list after.
+  const driverless = targets.filter((r) => !r.driver.trim());
+  const hourTargets = targets.filter((r) => r.driver.trim());
+
+  const finish = (label: string, res: { ok: number; errors: string[] }) => {
+    if (res.errors.length === 0) toast.success(`${label}: ${res.ok} dòng`);
+    else if (res.ok > 0) toast.warning(`${label}: ${res.ok} dòng — ${res.errors.length} lỗi. ${res.errors[0]}`);
+    else toast.error(`Không ghi được dòng nào. ${res.errors[0] ?? ""}`);
+    setMode(null);
+    setArmed(false);
+    setDone(0);
+    onDone();
+  };
+
+  const run = async (label: string, rows: readonly ConfigRowView[], step: (r: ConfigRowView) => Promise<void>) => {
+    setBusy(true);
+    setDone(0);
+    const res = await runBulk(rows, step, setDone);
+    setBusy(false);
+    finish(label, res);
+  };
+
+  const applyDriver = () => {
+    const cell = splitDriverNames(driverCell).join(DRIVER_SEP);
+    if (!cell) return toast.error("Chọn tài xế trước");
+    return run("Đã đổi tài xế", targets, (r) =>
+      postJson("/api/config/complete-row", {
+        row: r.row, pickup_name: r.pickup, driver_name: cell,
+      }).then(() => undefined),
+    );
+  };
+
+  const applyHours = () => {
+    if (!start || !end) return toast.error("Ca phải đủ cả từ và đến");
+    if (start === end) return toast.error("Giờ bắt đầu và kết thúc trùng nhau — dòng sẽ không bao giờ trực");
+    if (hourTargets.length === 0) return toast.error("Các dòng đã chọn đều chưa có tài xế");
+    return run("Đã đổi ca", hourTargets, (r) =>
+      postJson("/api/config/complete-row", {
+        row: r.row, pickup_name: r.pickup, driver_name: r.driver,
+        shift_start: start, shift_end: end,
+      }).then(() => undefined),
+    );
+  };
+
+  const applyDelete = () =>
+    // HIGHEST ROW FIRST. Removing a row shifts every row below it up by one,
+    // so descending order leaves the rows still to go untouched above the
+    // cut. Ascending would walk into numbers that had all moved.
+    run("Đã xoá", [...targets].sort((a, b) => b.row - a.row), (r) =>
+      postJson("/api/config/delete-row", { row: r.row, pickup_name: r.pickup }).then(() => undefined),
+    );
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-indigo-300 bg-indigo-50/70 px-2 py-1.5">
+      <span className="text-[11px] font-semibold text-indigo-900" aria-live="polite">
+        {busy ? `Đang ghi ${done}/${targets.length}…` : `${targets.length} dòng đã chọn`}
+      </span>
+
+      {!busy && mode === null && (
+        <>
+          <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => setMode("driver")}>
+            Đổi tài xế
+          </Button>
+          <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => setMode("hours")}>
+            Đổi ca
+          </Button>
+          <Button
+            size="sm" variant="outline"
+            className="h-6 px-2 text-[11px] text-red-700 hover:border-red-300 hover:bg-red-50"
+            onClick={() => setMode("delete")}
+          >
+            Xoá
+          </Button>
+          <Button size="sm" variant="ghost" className="ml-auto h-6 px-2 text-[11px]" onClick={onClear}>
+            Bỏ chọn
+          </Button>
+        </>
+      )}
+
+      {mode === "driver" && (
+        <>
+          <DriverCombobox
+            names={splitDriverNames(driverCell)}
+            onChange={(names) => setDriverCell(names.join(DRIVER_SEP))}
+            drivers={drivers}
+            placeholder="Tìm tài xế…"
+            className="flex min-w-[180px] flex-1 flex-wrap items-center gap-1 rounded border border-slate-300 bg-white px-1 py-0.5 focus-within:ring-2 focus-within:ring-indigo-400/50"
+          />
+          {/* Said in full, because this is the part that surprises: the hours
+              on each row are NOT touched, so a set of rows on different
+              shifts keeps them. */}
+          <span className="text-[11px] text-indigo-900">giữ nguyên ca của từng dòng</span>
+          <div className="ml-auto flex gap-1">
+            <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => setMode(null)} disabled={busy}>
+              Hủy
+            </Button>
+            <Button
+              size="sm"
+              className="h-6 px-2 text-[11px] bg-indigo-600 hover:bg-indigo-700"
+              onClick={applyDriver}
+              disabled={busy}
+            >
+              Áp dụng {targets.length} dòng
+            </Button>
+          </div>
+        </>
+      )}
+
+      {mode === "hours" && (
+        <>
+          <TimeSelect label="Từ giờ" value={start} onChange={setStart} />
+          <span className="text-[11px] text-slate-500">→</span>
+          <TimeSelect label="Đến giờ" value={end} onChange={setEnd} />
+          {driverless.length > 0 && (
+            <span className="text-[11px] font-semibold text-amber-700">
+              bỏ qua {driverless.length} dòng chưa có tài xế
+            </span>
+          )}
+          <div className="ml-auto flex gap-1">
+            <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => setMode(null)} disabled={busy}>
+              Hủy
+            </Button>
+            <Button
+              size="sm"
+              className="h-6 px-2 text-[11px] bg-indigo-600 hover:bg-indigo-700"
+              onClick={applyHours}
+              disabled={busy}
+            >
+              Áp dụng {hourTargets.length} dòng
+            </Button>
+          </div>
+        </>
+      )}
+
+      {mode === "delete" && (
+        <>
+          {/* The count is IN the confirm, not only above it: this is the one
+              action here that cannot be undone from the dashboard, and "Xoá"
+              beside a stale selection reads the same whether it means two rows
+              or a hundred and fifty. */}
+          <span className="text-[11px] font-semibold text-red-800">
+            Xoá {targets.length} dòng khỏi sheet? Không hoàn tác được.
+          </span>
+          <label className="flex items-center gap-1 text-[11px] text-red-800">
+            <input
+              type="checkbox"
+              checked={armed}
+              onChange={(e) => setArmed(e.target.checked)}
+              className="size-3.5 accent-red-600"
+            />
+            Tôi chắc chắn
+          </label>
+          <div className="ml-auto flex gap-1">
+            <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => { setMode(null); setArmed(false); }} disabled={busy}>
+              Hủy
+            </Button>
+            <Button
+              size="sm"
+              className="h-6 px-2 text-[11px] bg-red-600 hover:bg-red-700"
+              onClick={applyDelete}
+              disabled={busy || !armed}
+            >
+              Xoá {targets.length} dòng
+            </Button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
   const [rows, setRows] = useState<ConfigRowView[]>([]);
   const [q, setQ] = useState("");
@@ -199,6 +469,40 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
     [rows, editing],
   );
 
+  /**
+   * Ticked rows, by SHEET ROW.
+   *
+   * Cleared after every bulk write and every reload, deliberately: a delete
+   * renumbers everything below it, so a selection made before one is a set of
+   * numbers that now point at different lines. The guard on each route would
+   * refuse those, but a selection that silently means something else is not a
+   * thing to keep on screen.
+   */
+  const [selected, setSelected] = useState<ReadonlySet<number>>(new Set());
+  const selectable = useMemo(() => shown.filter(isWritable), [shown]);
+  const selectedRows = useMemo(
+    () => rows.filter((r) => selected.has(r.row) && isWritable(r)),
+    [rows, selected],
+  );
+  const allShownPicked = selectable.length > 0 && selectable.every((r) => selected.has(r.row));
+  const toggleRow = (row: number) =>
+    setSelected((s) => {
+      const next = new Set(s);
+      if (!next.delete(row)) next.add(row);
+      return next;
+    });
+  // Everything currently DRAWN, which is the search's results up to the render
+  // cap — the count line above says when those differ, so the box never
+  // silently reaches rows nobody has looked at.
+  const toggleAllShown = () =>
+    setSelected((s) => {
+      const next = new Set(s);
+      if (allShownPicked) for (const r of selectable) next.delete(r.row);
+      else for (const r of selectable) next.add(r.row);
+      return next;
+    });
+  const clearSelection = useCallback(() => setSelected(new Set()), []);
+
   return (
     <Card className="py-2 h-full flex flex-col border-slate-200">
       <CardContent className="px-3 flex flex-col min-h-0 gap-2">
@@ -235,6 +539,15 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
 
         {err && <div role="alert" className="text-[11px] text-red-600">{err}</div>}
 
+        {selectedRows.length > 0 && (
+          <BulkBar
+            targets={selectedRows}
+            drivers={drivers}
+            onDone={() => { clearSelection(); void load(true); }}
+            onClear={clearSelection}
+          />
+        )}
+
         <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-slate-200">
           {shown.length === 0 ? (
             <p className="px-2 py-3 text-xs text-slate-500">
@@ -244,6 +557,23 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
             <table className="w-full text-xs">
               <thead className="sticky top-0 bg-slate-50 text-[11px] text-slate-600">
                 <tr>
+                  <th className="px-2 py-1 text-left font-medium">
+                    <input
+                      type="checkbox"
+                      checked={allShownPicked}
+                      // Partly ticked reads as its own state rather than as
+                      // "off": the box is about the rows on screen, and a
+                      // hand-picked few of them is neither.
+                      ref={(el) => {
+                        if (el) el.indeterminate = !allShownPicked && selectable.some((r) => selected.has(r.row));
+                      }}
+                      onChange={toggleAllShown}
+                      disabled={selectable.length === 0}
+                      aria-label={`Chọn ${selectable.length} dòng đang hiện`}
+                      title={`Chọn tất cả ${selectable.length} dòng đang hiện`}
+                      className="size-3.5 accent-indigo-600"
+                    />
+                  </th>
                   <th className="px-2 py-1 text-left font-medium sr-only">Sửa</th>
                   <th className="px-2 py-1 text-left font-medium">Điểm lấy</th>
                   <th className="px-2 py-1 text-left font-medium">Tài xế</th>
@@ -265,8 +595,21 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                   return [(
                   <tr
                     key={r.row}
-                    className={`align-top ${inBranch ? "bg-indigo-50/60" : "hover:bg-slate-50"}`}
+                    className={`align-top ${
+                      selected.has(r.row) ? "bg-indigo-50" : inBranch ? "bg-indigo-50/60" : "hover:bg-slate-50"
+                    }`}
                   >
+                    <td className="px-2 py-1">
+                      <input
+                        type="checkbox"
+                        checked={selected.has(r.row)}
+                        onChange={() => toggleRow(r.row)}
+                        disabled={!isWritable(r)}
+                        aria-label={`Chọn dòng ${r.row}${r.pickup ? ` — ${r.pickup}` : ""}`}
+                        title={isWritable(r) ? undefined : "Dòng không có điểm lấy — sửa từng dòng bằng nút Sửa"}
+                        className="size-3.5 accent-indigo-600"
+                      />
+                    </td>
                     <td className="px-2 py-1">
                       <Button
                         size="sm" variant={openHere ? "default" : "outline"}
@@ -313,7 +656,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                   // place that did something else.
                   openHere && editingRows.length > 0 ? (
                     <tr key={`${r.row}-edit`} className="bg-indigo-50/60">
-                      <td colSpan={6} className="px-2 pb-2">
+                      <td colSpan={7} className="px-2 pb-2">
                         <BranchEditor
                           pickupName={editingRows[0].pickup}
                           dropoffName={editingRows[0].dropoff}

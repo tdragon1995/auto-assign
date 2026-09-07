@@ -63,7 +63,7 @@ const TIME_SLOTS_5: string[] = (() => {
  * would otherwise render the select blank while still holding that time, so the
  * supervisor could not see what they were about to save.
  */
-function TimeSelect({
+export function TimeSelect({
   value, onChange, label, disabled,
 }: {
   value: string;

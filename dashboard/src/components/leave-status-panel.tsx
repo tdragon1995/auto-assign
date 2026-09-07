@@ -139,12 +139,12 @@ function TimeSelect({
 /** Write substitutes back to the Leave sheet. Shared so the "Cần xử lý" section
  *  and the reference panel below it save through exactly one path. */
 function makeFillSubs(onRefresh: () => void): FillSubsFn {
-  return async (identity, subs) => {
+  return async (identity, subs, replace) => {
     try {
       const res = await fetch("/api/leave-status", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...identity, subs }),
+        body: JSON.stringify({ ...identity, subs, replace: !!replace }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
@@ -165,6 +165,9 @@ function makeFillSubs(onRefresh: () => void): FillSubsFn {
 export type FillSubsFn = (
   identity: { driver_id: string; leave_from: string; timeLabel: string | null },
   subs: { name: string; from: string | null; to: string | null }[],
+  /** true = EDIT an already-covered row (overwrite whatever's there); default
+   *  (false/omitted) only fills empty slots — the original "+ Thêm" flow. */
+  replace?: boolean,
 ) => Promise<boolean>;
 
 /** The identity of one leave row, as the sheet writers re-resolve it: driver +
@@ -252,9 +255,15 @@ function DeleteRowButton({
         disabled={busy}
         onClick={async () => {
           setBusy(true);
-          const ok = await onDelete(identity);
+          await onDelete(identity);
+          // Unconditional: on success the row is gone (or, for a duplicate
+          // pair, the record row is untouched on purpose — see
+          // replaceLeaveSubs's doc comment) and this button either unmounts
+          // with it or should read as an ordinary "Xoá" again; on failure the
+          // toast already said so, and re-arming from scratch is clearer than
+          // leaving a stale confirm sitting on screen.
           setBusy(false);
-          if (!ok) setArmed(false);
+          setArmed(false);
         }}
         className="rounded border border-red-500 bg-red-600 px-1.5 py-0.5 text-[11px] font-semibold text-white hover:bg-red-700 disabled:opacity-60"
       >
@@ -282,11 +291,16 @@ function DeleteRowButton({
 function SubEditor({
   row,
   drivers,
+  initial,
   onSave,
   onCancel,
 }: {
   row: LeaveRowView;
   drivers: ConfigDriver[];
+  /** Prefills the blocks with what the row already carries — the EDIT case
+   *  (change a name or a window on a row that's already covered). Omitted for
+   *  the original "+ Thêm" case, which starts from one empty block. */
+  initial?: SubBlock[];
   onSave: (subs: { name: string; from: string | null; to: string | null }[]) => Promise<boolean>;
   onCancel: () => void;
 }) {
@@ -296,7 +310,9 @@ function SubEditor({
   const driverNames = new Set(drivers.map((d) => d.name));
   // Leave window bounds (for prefilling a split) — "06:30–15:00" → ["06:30","15:00"]
   const bounds = row.timeLabel ? row.timeLabel.split("–") : null;
-  const [blocks, setBlocks] = useState<SubBlock[]>([{ name: "", from: "", to: "" }]);
+  const [blocks, setBlocks] = useState<SubBlock[]>(
+    initial && initial.length > 0 ? initial : [{ name: "", from: "", to: "" }],
+  );
   const [busy, setBusy] = useState(false);
 
   const patch = (i: number, p: Partial<SubBlock>) =>
@@ -512,16 +528,31 @@ function DriverCard({
           label is in the title attr). Wraps on mobile — nothing truncates. */}
       {!resigned &&
         g.rows.map((r, i) => (
-          <div key={i}>
+          // Stable, not the array index: a delete or an edit can shift what
+          // sits at position i, and an index key would hand that row's local
+          // state (SubEditor open, DeleteRowButton armed) to whatever row
+          // lands there next.
+          <div key={`${r.leave_from}-${r.timeLabel ?? "full"}`}>
             <div className="mt-0.5 flex flex-wrap items-baseline gap-x-1.5 text-xs">
               {r.timeLabel && <span className="font-mono text-slate-500">{r.timeLabel}</span>}
               {r.subs.length > 0 ? (
-                <span
-                  className="text-emerald-700 break-words"
-                  title={`Thay: ${r.subs.map((s) => s.name || s.id).join(", ")}`}
-                >
-                  ✓ {r.subs.map((s) => splitDriverName(s.name || s.id).name).join(", ")}
-                </span>
+                <>
+                  <span
+                    className="text-emerald-700 break-words"
+                    title={`Thay: ${r.subs.map((s) => s.name || s.id).join(", ")}`}
+                  >
+                    ✓ {r.subs.map((s) => splitDriverName(s.name || s.id).name).join(", ")}
+                  </span>
+                  {editRow !== i && (
+                    <button
+                      type="button"
+                      onClick={() => setEditRow(i)}
+                      className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] font-semibold text-slate-600 hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700"
+                    >
+                      Sửa
+                    </button>
+                  )}
+                </>
               ) : (
                 <>
                   <span className="font-semibold text-amber-700">Chưa có người thay</span>
@@ -556,11 +587,17 @@ function DriverCard({
               <SubEditor
                 row={r}
                 drivers={drivers}
+                initial={
+                  r.subs.length > 0
+                    ? r.subs.map((s) => ({ name: s.name, from: s.from ?? "", to: s.to ?? "" }))
+                    : undefined
+                }
                 onCancel={() => setEditRow(null)}
                 onSave={(subs) =>
                   onFill(
                     { driver_id: g.driver_id, leave_from: r.leave_from, timeLabel: r.timeLabel },
                     subs,
+                    r.subs.length > 0,
                   )
                 }
               />
