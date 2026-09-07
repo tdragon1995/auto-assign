@@ -967,6 +967,15 @@ function UnfinishedRow({
 }
 
 /**
+ * One edge of a "HH:MM–HH:MM" window, or the whole thing when it is not one —
+ * a rule with no window reads "cả ngày", and half of that is nonsense.
+ */
+const edgeOf = (window: string, edge: "start" | "end"): string => {
+  const parts = window.split("–");
+  return parts.length === 2 ? parts[edge === "end" ? 1 : 0] : window;
+};
+
+/**
  * An hour a job needed and nobody was rostered for.
  *
  * The row states the diagnosis — what covers the branch either side of the hole
@@ -1024,12 +1033,18 @@ function GapRow({
             side is closed by nudging a boundary, a hole with nothing before or
             after it means the branch is simply unstaffed at that end of the day
             and needs a new rule. It reads as the exception it is. */}
+        {/* The BOUNDARY, not the neighbouring shift's whole window.
+            Several rules can end at the same minute — a branch running two
+            routes has one per route — and whichever the parse happened to pick
+            was then printed as "the shift before", contradicting the editor
+            below, which lists them all. The edge is the same number whichever
+            rule owns it, so saying only that is both shorter and true. */}
         {g.before
-          ? <>Ca trước <span className="tabular-nums">{g.before.window}</span></>
+          ? <>Ca trước kết thúc <span className="tabular-nums">{edgeOf(g.before.window, "end")}</span></>
           : <span className="font-semibold text-amber-800">Không có ca trước</span>}
         {" · "}
         {g.after
-          ? <>ca sau <span className="tabular-nums">{g.after.window}</span></>
+          ? <>ca sau bắt đầu <span className="tabular-nums">{edgeOf(g.after.window, "start")}</span></>
           : <span className="font-semibold text-amber-800">không có ca sau</span>}
         {/* The recurrence used to be spelled out here as well. It is the ×N chip
             beside the time now — where it can be seen without reading the line,
