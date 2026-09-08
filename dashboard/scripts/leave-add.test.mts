@@ -173,6 +173,17 @@ eq("a zero-length window refuses",
   errored({ name: HUNG, loai_nghi: "nua_buoi", days: ["2026-09-10"], start: "08:00", end: "08:00" }), true);
 eq("a backwards window refuses",
   errored({ name: HUNG, loai_nghi: "nua_buoi", days: ["2026-09-10"], start: "17:00", end: "08:00" }), true);
+// The window is typed, not chosen off a half-hour grid: a person leaves at
+// 13:15, and the row has to say 13:15. Nothing may snap it to the nearest slot.
+eq("an off-grid window is written exactly as picked",
+  (build({ name: HUNG, loai_nghi: "nua_buoi", days: ["2026-09-10"], start: "13:15", end: "17:42" }) as LeavePayload[])[0],
+  { ...BASE, loai_nghi: "nua_buoi", ngay_bat_dau: "2026-09-10", gio_bat_dau: "13:15", gio_ket_thuc: "17:42" });
+// Ordering is compared as zero-padded "HH:MM", which is only correct to the
+// MINUTE — an hour-only comparison would let this pair through.
+eq("a window that runs backwards by minutes alone still refuses",
+  errored({ name: HUNG, loai_nghi: "nua_buoi", days: ["2026-09-10"], start: "13:45", end: "13:15" }), true);
+eq("one minute forward is a valid window",
+  errored({ name: HUNG, loai_nghi: "nua_buoi", days: ["2026-09-10"], start: "13:15", end: "13:16" }), false);
 
 // --- 6. the range cap -------------------------------------------------------
 
@@ -267,6 +278,9 @@ eq("a window straddling noon still runs to the end of the day",
   "23:59");
 eq("a MORNING half day reaches the twin as nothing — they are back for their shift",
   ptCompanionOf(own({ loai_nghi: "nua_buoi", gio_bat_dau: "08:00", gio_ket_thuc: "12:00" }), HUNG_PT), null);
+eq("an off-grid afternoon window reaches the twin from that exact minute",
+  ptCompanionOf(own({ loai_nghi: "nua_buoi", gio_bat_dau: "13:15", gio_ket_thuc: "17:42" }), HUNG_PT),
+  { ...TBASE, loai_nghi: "nua_buoi", ngay_bat_dau: "2026-09-10", gio_bat_dau: "13:15", gio_ket_thuc: "23:59" });
 eq("noon exactly is still a morning — the boundary is not off by one",
   ptCompanionOf(own({ loai_nghi: "nua_buoi", gio_bat_dau: "08:00", gio_ket_thuc: "12:01" }), HUNG_PT)?.gio_ket_thuc,
   "23:59");

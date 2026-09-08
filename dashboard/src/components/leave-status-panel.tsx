@@ -556,19 +556,6 @@ function AddLeaveForm({ drivers, onSaved }: { drivers: ConfigDriver[]; onSaved: 
   const shifts = useShiftDays(driverId, form.days);
   const suggestion = suggestWindow(form.days.map((d) => shifts.days[d]));
 
-  // Prefilled, never overwritten: the moment a half day has a driver and days
-  // with one agreed roster, the window starts as that roster. A supervisor who
-  // has already typed something keeps it — the button below is how they go back
-  // to the scheduled hours on purpose.
-  useEffect(() => {
-    if (form.loai_nghi !== "nua_buoi" || !suggestion) return;
-    setForm((f) =>
-      f.loai_nghi === "nua_buoi" && !f.start && !f.end
-        ? { ...f, start: suggestion.start, end: suggestion.end }
-        : f,
-    );
-  }, [form.loai_nghi, suggestion]);
-
   const reset = () => {
     setForm(EMPTY_LEAVE_FORM);
     setPickFrom(""); setPickTo(""); setError(""); setBusy("");
@@ -693,16 +680,36 @@ function AddLeaveForm({ drivers, onSaved }: { drivers: ConfigDriver[]; onSaved: 
 
         {form.loai_nghi === "nua_buoi" && (
           <>
-            <TimeSelect value={form.start} onChange={(v) => set("start", v)} label="Giờ bắt đầu nghỉ" />
+            {/* Native time inputs, not the half-hour grid the substitute editor
+                uses. A leave window is whatever hour the person actually left
+                at — 13:15 is a real answer — and a grid quietly rounds it to
+                the nearest one it happens to hold. */}
+            <input
+              type="time"
+              value={form.start}
+              onChange={(e) => set("start", e.target.value)}
+              aria-label="Giờ bắt đầu nghỉ"
+              className="rounded border border-slate-300 bg-white px-1 py-1 text-xs"
+            />
             <span className="text-[11px] text-slate-600">–</span>
-            <TimeSelect value={form.end} onChange={(v) => set("end", v)} label="Giờ kết thúc nghỉ" />
+            <input
+              type="time"
+              value={form.end}
+              onChange={(e) => set("end", e.target.value)}
+              aria-label="Giờ kết thúc nghỉ"
+              className="rounded border border-slate-300 bg-white px-1 py-1 text-xs"
+            />
+            {/* OFFERED, never applied on its own. The roster says what the day
+                was supposed to be, not what happened on it, so it fills the
+                window only when someone presses this. */}
             {suggestion && (form.start !== suggestion.start || form.end !== suggestion.end) && (
               <Button
                 size="sm" variant="outline"
                 className="h-6 px-2 text-[11px]"
+                title="Điền khung giờ theo ca đã xếp cho tài xế này"
                 onClick={() => setForm((f) => ({ ...f, start: suggestion.start, end: suggestion.end }))}
               >
-                Theo ca {suggestion.start}–{suggestion.end}
+                Dùng giờ ca {suggestion.start}–{suggestion.end}
               </Button>
             )}
           </>
