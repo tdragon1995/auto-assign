@@ -286,3 +286,31 @@ export function isClientPickupJob(job: {
   const pickup = (job.stops ?? []).find((s) => s.stop_type_id === 1);
   return !!pickup && !/^\s*(BRA|3PL)\b/i.test(pickup.customer_name ?? "");
 }
+
+/**
+ * Client accounts the lab watches WHEREVER their samples go.
+ *
+ * The rest of the lab's feed is "trips that end at D001". These five are followed by
+ * account instead: AIH sends to D019 on some runs and D001 on others, and the DYM
+ * branch in D7 goes to D006 and never touches D001 at all — so a destination rule loses
+ * exactly the accounts D001 is asked about most.
+ *
+ * The leading segment of a Cartrack customer name is the account code
+ * ("46069949 - D2 - NHoang - BV Quốc tế Mỹ AIH"). Matched whole, not by prefix: 18513
+ * must not also catch 185134.
+ */
+export const LAB_WATCHED_CLIENTS: readonly string[] = [
+  "46069949", // BV Quốc tế Mỹ AIH
+  "18513",    // DYM Medical Center — chi nhánh D7
+  "43983877", // DYM Medical Center Việt Nam
+  "46647681",
+  "42460373",
+];
+
+export function isLabWatchedClient(job: {
+  stops?: { stop_type_id?: number; customer_name?: string }[] | null;
+}): boolean {
+  const pickup = (job.stops ?? []).find((s) => s.stop_type_id === 1);
+  const code = (pickup?.customer_name ?? "").split(" - ")[0].trim();
+  return !!code && LAB_WATCHED_CLIENTS.includes(code);
+}

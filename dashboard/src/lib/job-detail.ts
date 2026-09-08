@@ -11,20 +11,20 @@ import type { Job } from "@/lib/types";
 // REST embeds the human name in driver.last_name (first_name is an internal code);
 // timeline-derived jobs carry the route's driverFullname in first_name, prefixed with
 // that internal code ("F - C - DC100320 Lý Chánh Hùng"). Take whichever is populated
-// and strip the code prefix. The code is any two-letter series plus digits, not just
-// DC — part-timers carry PT ("P - P - PT101408 Đào Thanh Bình").
-const DRIVER_CODE_PREFIX = /^(?:[A-Z]{1,2}\s*-\s*)*[A-Z]{2}\d+\s+/;
-
-/** Strip the payroll-code prefix off an already-assembled driver name, for callers
- *  holding a string rather than the driver object ("F - P - DC101691 Phan Thanh
- *  Nghĩa" → "Phan Thanh Nghĩa"). A name with no code prefix passes through. */
-export function stripDriverCode(name: string): string {
-  return name.trim().replace(DRIVER_CODE_PREFIX, "");
-}
+// and strip the code prefix.
+//
+// The stripping itself is display-names.ts and nowhere else. This module carried its
+// own copy of the rule, matching a two-letter series plus DIGITS — which is every
+// staff code except a RELIEF driver's, whose code is "DCBU" / "PTBU" with no digits at
+// all. So the branch feeds, the booking response and the assign log printed
+// "F - C - DCBU Trần Đông Hà" while every screen reading the shared module printed his
+// name, and the two copies had already been fixed once, separately. One rule now.
+export { driverDisplayName as stripDriverCode } from "./display-names";
+import { driverDisplayName as stripCode } from "./display-names";
 
 export function driverDisplayName(driver: Job["driver"]): string | null {
   const raw = driver?.last_name?.trim() || driver?.first_name?.trim() || null;
-  return raw ? stripDriverCode(raw) : null;
+  return raw ? stripCode(raw) : null;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

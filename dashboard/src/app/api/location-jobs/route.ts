@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { driverDisplayName, fetchJobDetail } from "@/lib/job-detail";
-import { isClientPickupJob, LAB_CUSTOMER_ID } from "@/lib/job-filters";
+import { isClientPickupJob, isLabWatchedClient, LAB_CUSTOMER_ID } from "@/lib/job-filters";
 import { locationJobs, slimJob } from "@/lib/day-snapshot";
 import type { Job, Stop } from "@/lib/types";
 
@@ -101,7 +101,8 @@ export async function GET(req: NextRequest) {
     if (code) {
       const jobs = allJobs
         .filter((j) => matchesStatus(j.job_status_id, status))
-        .filter((j) => (j.stops ?? []).some((s: Stop) => s.customer_id === code))
+        .filter((j) => (j.stops ?? []).some((s: Stop) => s.customer_id === code)
+          || (code === LAB_CUSTOMER_ID && isLabWatchedClient(j)))
         .filter((j) => keepForLocation(code, j))
         .map((j) => slimJob(j, driverDisplayName(j.driver)));
       return NextResponse.json({ jobs });

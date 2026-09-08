@@ -12,7 +12,7 @@
  *   npx tsx scripts/lab-feed.test.mts
  */
 import type { Job } from "../src/lib/types";
-const { isClientPickupJob } = await import("../src/lib/job-filters");
+const { isClientPickupJob, isLabWatchedClient } = await import("../src/lib/job-filters");
 const { notesOf } = await import("../src/lib/stop-notes");
 
 let failed = 0;
@@ -48,6 +48,19 @@ ok("a chấm-công tap is not a trip", !isClientPickupJob({
   job_id: 2, stops: [{ stop_type_id: 3, customer_name: "BRA - D001" }],
 } as Job));
 ok("a job with no stops at all is not a trip", !isClientPickupJob({ job_id: 3 } as Job));
+
+console.log("\nclients the lab follows wherever they go");
+// AIH sends to D019 on some runs and D001 on others; the DYM branch in D7 never
+// touches D001 at all. Both belong on the lab's feed, so these are matched by ACCOUNT.
+ok("a watched account going somewhere else is still the lab's",
+  isLabWatchedClient(trip("46069949 - D2 - NHoang - BV Quốc tế Mỹ AIH")));
+ok("a watched account with no zone segments", isLabWatchedClient(trip("18513")));
+ok("an ordinary client is not watched",
+  !isLabWatchedClient(trip("50873452 - D3 - NDChieu - PHÒNG KHÁM AN KHANG")));
+// Whole segment, not a prefix — otherwise 18513 drags in every account starting with it.
+ok("a longer code starting with a watched one is not watched",
+  !isLabWatchedClient(trip("185134 - D3 - NTMKhai - Phòng khám khác")));
+ok("a branch is not a watched client", !isLabWatchedClient(trip("BRA - D019")));
 
 console.log("\nthe note on a card");
 eq("both ends", notesOf(trip("client", "Bảo 2 ống đỏ", "Trúc 2 ống đỏ")), { p: "Bảo 2 ống đỏ", d: "Trúc 2 ống đỏ" });

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Redis } from "@upstash/redis";
 import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
-import { isClientPickupJob, LAB_CUSTOMER_ID } from "@/lib/job-filters";
+import { isClientPickupJob, isLabWatchedClient, LAB_CUSTOMER_ID } from "@/lib/job-filters";
 import { notesOf, type NoteMap } from "@/lib/stop-notes";
 import type { Job } from "@/lib/types";
 
@@ -85,7 +85,7 @@ export async function GET(req: NextRequest) {
     for (const j of jobs) {
       // The same two tests the feed applies, so a note can never appear for a trip the
       // lab's feed does not show.
-      if (!(j.stops ?? []).some((s) => s.customer_id === code)) continue;
+      if (!(j.stops ?? []).some((s) => s.customer_id === code) && !isLabWatchedClient(j)) continue;
       if (!isClientPickupJob(j)) continue;
       const n = notesOf(j);
       if (n) notes[j.job_id] = n;

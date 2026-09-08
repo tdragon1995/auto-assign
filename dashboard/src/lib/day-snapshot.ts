@@ -1,6 +1,6 @@
 import { Redis } from "@upstash/redis";
 import { getTimelineJobs, getUnroutedJobs, type Env } from "./cartrack";
-import { isBlockingPickupStop, pscPairKey, PSC_VIA_LABEL } from "./job-filters";
+import { isBlockingPickupStop, isLabWatchedClient, LAB_CUSTOMER_ID, pscPairKey, PSC_VIA_LABEL } from "./job-filters";
 import { driverDisplayName } from "./job-detail";
 import type { Job, Stop } from "./types";
 
@@ -308,6 +308,13 @@ export function assembleSnapshot(
       if (!s.customer_id || seen.has(s.customer_id)) continue;
       seen.add(s.customer_id);
       (byLocation[s.customer_id] ??= []).push(j.job_id);
+    }
+    // The lab also watches a handful of client accounts wherever their samples go — some
+    // of those trips end at another PSC and would never appear in D001's bucket. Filed
+    // here rather than read separately because the index is built once per snapshot and
+    // shared, where a second read would be paid on every feed load.
+    if (!seen.has(LAB_CUSTOMER_ID) && isLabWatchedClient(j)) {
+      (byLocation[LAB_CUSTOMER_ID] ??= []).push(j.job_id);
     }
     if (j.delivery_driver_id) (byDriver[j.delivery_driver_id] ??= []).push(j.job_id);
   }

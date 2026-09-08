@@ -10,6 +10,11 @@
  *   npx tsx scripts/display-names.test.mts
  */
 const { driverDisplayName, staffCode, placeName } = await import("../src/lib/display-names");
+// The same rule reached through the JOB shape, which is what the branch feeds, the
+// booking response and the assign log all go through. It carried its own copy of the
+// regex — digits only — so relief drivers kept their code on those screens long after
+// this file was green.
+const { driverDisplayName: fromJob } = await import("../src/lib/job-detail");
 
 let failures = 0;
 function check(label: string, cond: boolean, detail = "") {
@@ -50,6 +55,11 @@ eq("no code, no string", staffCode("Admin Lý Thị Thùy Linh"), "");
   check("the same person's two accounts are told apart by code, not name",
     driverDisplayName(a) === driverDisplayName(b) && staffCode(a) !== staffCode(b));
 }
+
+eq("the job shape strips a relief code too",
+  fromJob({ first_name: "F - C - DCBU Trần Đông Hà", last_name: null }) ?? "", "Trần Đông Hà");
+eq("the job shape prefers the human name column",
+  fromJob({ first_name: "F - C - DCBU", last_name: "Lý Anh Nam" }) ?? "", "Lý Anh Nam");
 
 // ── Place names ─────────────────────────────────────────────────────────────
 eq("branch", placeName("BRA - D001"), "D001");
