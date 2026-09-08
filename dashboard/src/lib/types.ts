@@ -178,6 +178,10 @@ export interface Stop {
   activity_arrived_ts?: string | null;
   activity_completed_ts?: string | null;
   delivery_windows?: { time_from?: string; time_to?: string }[];
+  // Only the REST job endpoints return these; the route timeline carries no todos at
+  // all. Typed to what a reader needs — the driver's typed note (todo_type_id 5) —
+  // rather than the full todo record.
+  todos?: { todo_type_id?: number; note?: string | null }[];
 }
 
 // The driver block Cartrack embeds in each job of the `GET /jobs` list response

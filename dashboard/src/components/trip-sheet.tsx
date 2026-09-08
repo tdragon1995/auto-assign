@@ -55,6 +55,27 @@ export function Photos({ todos }: { todos: Todo[] }) {
   );
 }
 
+/** The driver's TYPED note (todo_type_id 5, "Note @ dropoff" — "Trúc 2 ống đỏ"). It is
+ *  the only todo whose value is text rather than an image, so Photos rendered nothing for
+ *  it and the note was invisible on every screen that had it in hand. */
+export function TodoNotes({ todos }: { todos: Todo[] }) {
+  const notes = todos
+    .filter((t) => t.todo_type_id === 5)
+    .map((t) => (t.note ?? "").trim())
+    .filter(Boolean);
+  if (!notes.length) return null;
+  return (
+    <>
+      {notes.map((note, i) => (
+        <p key={i} className="flex items-start gap-1.5 text-xs text-slate-600 mt-1 leading-snug">
+          <StickyNote aria-hidden className="w-3.5 h-3.5 shrink-0 mt-px text-slate-400" />
+          <span>{note}</span>
+        </p>
+      ))}
+    </>
+  );
+}
+
 export type Tone = "done" | "now" | "future";
 export interface TlEvent { tone: Tone; time?: string | null; label: string; body?: React.ReactNode }
 

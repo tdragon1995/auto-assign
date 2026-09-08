@@ -263,3 +263,26 @@ export function isStopStarted(stop: {
     !!stop.activity_completed_ts
   );
 }
+
+/** D001 — the central lab. Every branch in the network delivers to it, so its own /qr
+ *  feed is the whole day's shuttle traffic: 488 jobs touched it on 2026-09-08 against
+ *  54 client pickups. The lab watches that page for CLIENT samples arriving, which the
+ *  shuttle runs bury. Hard-coded here rather than derived from PSC_ROUTES because the
+ *  edge feed route must not pull the routes table in to answer one comparison. */
+export const LAB_CUSTOMER_ID = "3927b076-3af9-11ed-b939-506b8dbc8dfb";
+
+/**
+ * True for a trip the LAB's feed keeps: one collected from a client.
+ *
+ * Diag's own sites are named "BRA - D0xx" and the 3PL handoff accounts "3PL - TOT1 - Q1",
+ * so both are recognised by their pickup's name — Cartrack has no field saying what kind
+ * of place a customer is. A job with no pickup stop at all is never a trip: chấm-công
+ * taps are a single stop of type 3 and would otherwise pass, having no branch name to
+ * match against.
+ */
+export function isClientPickupJob(job: {
+  stops?: { stop_type_id?: number; customer_name?: string }[] | null;
+}): boolean {
+  const pickup = (job.stops ?? []).find((s) => s.stop_type_id === 1);
+  return !!pickup && !/^\s*(BRA|3PL)\b/i.test(pickup.customer_name ?? "");
+}

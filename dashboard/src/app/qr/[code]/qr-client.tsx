@@ -6,11 +6,13 @@ import { useParams } from "next/navigation";
 // fetching /api/psc-routes — no function invocation, no network round-trip, instant render.
 import {
   Package, Check, ChevronDown, ChevronRight, Clock, Phone, Bike, CalendarDays,
-  ArrowUp, ArrowDown, ArrowRight, Loader2, Search, XCircle,
+  ArrowUp, ArrowDown, ArrowRight, Loader2, Search, XCircle, StickyNote,
 } from "lucide-react";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
 import { placeLabel } from "@/lib/place-label";
-import { Photos, Timeline, TODO_ICON, type TlEvent } from "@/components/trip-sheet";
+import { Photos, Timeline, TodoNotes, TODO_ICON, type TlEvent } from "@/components/trip-sheet";
+import { LAB_CUSTOMER_ID } from "@/lib/job-filters";
+import { noteLine, type StopNotes } from "@/lib/stop-notes";
 import { proxyKind, driverLabel, THREE_PL_LABEL } from "@/lib/proxy-drivers";
 
 interface Stop {
@@ -126,6 +128,18 @@ function windowLabel(stop?: Stop | null): string | null {
 // combining mark; đ/Đ has no decomposition, so it needs replacing separately.
 function norm(s: string): string {
   return (s ?? "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/g, "d");
+}
+
+/** The note as it reads on a card: one line, no heading. The lab's question is "who
+ *  handed what over", and the answer is short enough that a labelled block around it
+ *  would be longer than the note itself. */
+function NoteLine({ note }: { note: string }) {
+  return (
+    <span className="flex items-start gap-1.5 mt-2.5 text-[12px] text-slate-600 text-left">
+      <StickyNote aria-hidden className="w-3.5 h-3.5 shrink-0 mt-px text-slate-400" />
+      <span>{note}</span>
+    </span>
+  );
 }
 
 function pickupOf(j: Job) { return j.stops.find((s) => s.stop_type_id === 1); }
@@ -296,7 +310,7 @@ function buildEvents(
   if (p?.activity_arrived_ts) ev.push({ tone: "done", time: fmtTs(p.activity_arrived_ts), label: "Đến điểm lấy mẫu", body: addr(p) });
   else if (state === 1) ev.push({ tone: "now", label: "Đang đến điểm lấy mẫu", body: addr(p) });
 
-  if (p?.activity_completed_ts) ev.push({ tone: "done", time: fmtTs(p.activity_completed_ts), label: "Lấy mẫu xong", body: pTodos.length ? <Photos todos={pTodos} /> : undefined });
+  if (p?.activity_completed_ts) ev.push({ tone: "done", time: fmtTs(p.activity_completed_ts), label: "Lấy mẫu xong", body: pTodos.length ? <><TodoNotes todos={pTodos} /><Photos todos={pTodos} /></> : undefined });
   else ev.push({ tone: "future", label: "Lấy mẫu" });
 
   if (d?.activity_started_ts) ev.push({ tone: "done", time: fmtTs(d.activity_started_ts), label: `Bắt đầu giao đến ${destName}` });
@@ -305,7 +319,7 @@ function buildEvents(
   if (d?.activity_arrived_ts) ev.push({ tone: "done", time: fmtTs(d.activity_arrived_ts), label: `Đến ${destName}`, body: addr(d) });
   else if (state === 2) ev.push({ tone: "now", label: `Đang trên đường đến ${destName}`, body: addr(d) });
 
-  if (d?.activity_completed_ts) ev.push({ tone: "done", time: fmtTs(d.activity_completed_ts), label: "Bàn giao hoàn tất", body: dTodos.length ? <Photos todos={dTodos} /> : undefined });
+  if (d?.activity_completed_ts) ev.push({ tone: "done", time: fmtTs(d.activity_completed_ts), label: "Bàn giao hoàn tất", body: dTodos.length ? <><TodoNotes todos={dTodos} /><Photos todos={dTodos} /></> : undefined });
   else ev.push({ tone: "future", label: `Bàn giao tại ${destName}` });
 
   return ev;
@@ -411,9 +425,10 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
 
 /* ─────────────────────────── feed cards ─────────────────────────── */
 
-function TripCard({ job, code, onOpen, onCancel, onSendVia3pl, onChangeDriver }: {
+function TripCard({ job, code, note, onOpen, onCancel, onSendVia3pl, onChangeDriver }: {
   job: Job;
   code: string;
+  note: string | null;
   onOpen: () => void;
   onCancel: (t: { job_id: number; reference: string }) => void;
   onSendVia3pl: (t: { job_id: number; reference: string }) => void;
@@ -485,6 +500,8 @@ function TripCard({ job, code, onOpen, onCancel, onSendVia3pl, onChangeDriver }:
         ) : (
           <Stepper job={job} state={state} />
         )}
+
+        {note && <NoteLine note={note} />}
 
         {isWaiting(state) ? (
           <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100 text-[13px] font-semibold text-amber-700">
@@ -603,6 +620,11 @@ export default function QrPage() {
   const [loaded, setLoaded] = useState(false);
   const [pending, setPending] = useState<PendingReq[]>([]);
 
+  // The driver's typed notes, keyed by job. Its own request because nothing the feed is
+  // built from carries a todo — see /api/location-notes. Only the lab asks: everyone
+  // else would pay a day-sized fetch for a dozen trips.
+  const [notes, setNotes] = useState<Record<number, StopNotes>>({});
+
   const [sheetJob, setSheetJob] = useState<Job | null>(null);
   // Open by default: the completed list is the branch's record of its own day, and
   // collapsing it hid the thing most staff open this page to check.
@@ -680,6 +702,14 @@ export default function QrPage() {
         return t(b).localeCompare(t(a));
       });
       setJobs(list);
+      // After the feed, never blocking it: a missing note is a smaller loss than a feed
+      // that waits ~6s on Cartrack's day listing to render trips it already has.
+      if (code === LAB_CUSTOMER_ID) {
+        fetch(`/api/location-notes?date=${date}&code=${encodeURIComponent(code)}`)
+          .then((r) => r.json())
+          .then((d) => setNotes(d.notes ?? {}))
+          .catch(() => {});
+      }
     } catch {
       setJobs([]);
     } finally {
@@ -1008,7 +1038,7 @@ export default function QrPage() {
               onSendVia3pl={openVia3pl} onChangeDriver={openChangeDriver} />
           ))}
           {active.map((j) => (
-            <TripCard key={j.job_id} job={j} code={code} onOpen={() => setSheetJob(j)}
+            <TripCard key={j.job_id} job={j} code={code} note={noteLine(notes[j.job_id])} onOpen={() => setSheetJob(j)}
               onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl}
               onChangeDriver={openChangeDriver} />
           ))}
@@ -1068,6 +1098,7 @@ export default function QrPage() {
                 const p = pickupOf(j), d = dropoffOf(j);
                 const threePl = isThreePl(j.driver?.last_name);
                 const outbound = p?.customer_id === code;
+                const note = noteLine(notes[j.job_id]);
                 return (
                   <button key={j.job_id} onClick={() => setSheetJob(j)}
                     aria-label={`Xem chi tiết chuyến ${placeLabel(p?.customer_name ?? "")} đến ${placeLabel(d?.customer_name ?? "")}`}
@@ -1101,6 +1132,7 @@ export default function QrPage() {
                     ) : (
                       <Stepper job={j} state={3} />
                     )}
+                    {note && <NoteLine note={note} />}
                   </button>
                 );
               })}
