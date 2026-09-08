@@ -3,7 +3,7 @@ import { loadTplEntries, PSC_TINH_LABEL } from "@/lib/psc-config";
 import { BASE_URL, getHeaders, getStopsByLabels, createJob, type Env } from "@/lib/cartrack";
 import { vnDate, vnTimestamp } from "@/lib/time";
 import { STOP_STATUS, JOB_STATUS } from "@/lib/job-filters";
-import { pushRunLog, acquireCreateLock, releaseCreateLock } from "@/lib/smart-log-kv";
+import { pushRunLog, acquireCreateLock, releaseCreateLock, nextOrderNumber } from "@/lib/smart-log-kv";
 import { fetchJobDetail } from "@/lib/job-detail";
 
 export const runtime = "edge";
@@ -222,36 +222,45 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Fast path (prod): count the exact rows the orders view shows — reusing
-    // buildOrdersFromStops keeps the reference counter and the visible order list
+    // Fast path (prod): read the exact rows the orders view shows — reusing
+    // buildOrdersFromStops keeps the reference numbering and the visible order list
     // in lockstep, so a job the view renders is never skipped by the numbering.
     // A throw degrades to the REST fallback below.
-    let count: number | null = null;
+    let refs: string[] | null = null;
     try {
       const labelStops = await getStopsByLabels(today, [PSC_TINH_LABEL], env);
-      if (labelStops) count = buildOrdersFromStops(labelStops, prefix).length;
+      if (labelStops) refs = buildOrdersFromStops(labelStops, prefix).map((o) => o.reference);
     } catch {
-      count = null;
+      refs = null;
     }
 
-    // Fallback (UAT / JSON-RPC unavailable): REST — fetch the day's jobs and count.
-    if (count === null) {
+    // Fallback (UAT / JSON-RPC unavailable): REST — fetch the day's jobs and read theirs.
+    if (refs === null) {
       const countRes = await fetch(
         `${BASE_URL}/jobs?filter[scheduled_delivery_ts_from]=${today} 00:00:00&filter[scheduled_delivery_ts_to]=${today} 23:59:59&limit=1000`,
         { headers, cache: "no-store" }
       );
 
-      count = 0;
+      refs = [];
       if (countRes.ok) {
         const countData = await countRes.json();
         const jobs: { reference_number?: string; job_status_id?: number }[] = countData.data ?? [];
-        count = jobs.filter(
-          (j) => j.job_status_id !== 7 && j.job_status_id !== 3 && (j.reference_number ?? "").startsWith(prefix)
-        ).length;
+        refs = jobs
+          .filter((j) => j.job_status_id !== 7 && (j.reference_number ?? "").startsWith(prefix))
+          .map((j) => j.reference_number ?? "");
       }
     }
 
-    const refNumber = `${prefix} ${count + 1}`;
+    // The number COUNTS UP; it is not the number of orders alive right now. Cancelling
+    // deletes the job, so a live count goes backwards and re-issues a number already in
+    // use — that is how D030 came to have two "Mẫu 4" on 2026-09-08. The highest number
+    // on the day is passed as the floor so the counter can never start below what the
+    // branch and the 3PL have already been told, whatever Redis does.
+    const highest = refs.reduce((max, r) => {
+      const n = parseInt(r.slice(prefix.length).trim(), 10);
+      return Number.isFinite(n) && n > max ? n : max;
+    }, 0);
+    const refNumber = `${prefix} ${await nextOrderNumber(`${psc_code}-${today}`, highest)}`;
 
     // Build ETA window: time_from = eta, time_to = eta + 30 min
     const [etaH, etaM] = eta.split(":").map(Number);

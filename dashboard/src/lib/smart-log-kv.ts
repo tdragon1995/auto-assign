@@ -724,6 +724,40 @@ export async function lookupPscPair(dateVn: string, pairKey: string): Promise<Ps
   }
 }
 
+// ── Per-branch daily order number ──────────────────────────────
+const ORDER_SEQ_PREFIX = "order_seq:";
+const ORDER_SEQ_TTL_SEC = 172_800; // 2 days — the number only means anything on its own day
+
+/** The next order number for one branch on one day, counting UP and never back.
+ *
+ *  It replaced "how many orders exist right now, plus one". That count DROPS when an
+ *  order is cancelled — cancelling deletes the job outright — so the next booking was
+ *  handed a number that was already in use: on 2026-09-08 D030 had two live "Mẫu 4"s,
+ *  and the supervisor renumbered one by hand.
+ *
+ *  `floor` is the highest number already visible for the day, and is what makes a lost
+ *  key safe: an INCR that comes back below it (empty key, first call mid-day) is pushed
+ *  up rather than trusted, so the counter can never restart underneath numbers branches
+ *  have already been told. Without Redis it degrades to floor + 1 — still better than
+ *  the count it replaces, since a deleted order no longer pulls the next number down.
+ *
+ *  One or two commands per BOOKING, not per cycle — a few dozen a day. */
+export async function nextOrderNumber(key: string, floor: number): Promise<number> {
+  const redis = getRedis();
+  if (!redis) return floor + 1;
+  try {
+    const n = await redis.incr(ORDER_SEQ_PREFIX + key);
+    if (n > floor) {
+      if (n === 1) await redis.expire(ORDER_SEQ_PREFIX + key, ORDER_SEQ_TTL_SEC);
+      return n;
+    }
+    await redis.set(ORDER_SEQ_PREFIX + key, floor + 1, { ex: ORDER_SEQ_TTL_SEC });
+    return floor + 1;
+  } catch {
+    return floor + 1; // the booking must not fail over its own reference number
+  }
+}
+
 // ── Cross-instance create lock ──────────────────────────────────────────────
 const CREATE_LOCK_PREFIX = "create_lock:";
 
