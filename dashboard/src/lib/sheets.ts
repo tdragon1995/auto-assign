@@ -11,6 +11,12 @@ export const SHEET_GID = {
   schedule_job: "834076876",
   nghi_phep: "158238549",
   drivers: "467715355",
+  // The rostered schedule, flat: one row per person per day. Written by
+  // misa-fetcher alongside the "Lịch Ca" month grid (gid 1656364758) from the
+  // same parsed rows — the grid is the human view, this is the machine one. See
+  // the header of `shift-window.ts` for why a reader wants this tab and not that
+  // one.
+  driver_shift: "2131164961",
   // Read by the location audit only. The engine never reads this tab — it sees
   // only the branch ids the workbook's own lookup already resolved — which is
   // exactly why a duplicate name here goes unnoticed until a pickup fails.
@@ -49,6 +55,17 @@ export const SHEET_CONTRACT = {
   drivers: {
     label: "Driver (roster)",
     require: ["Driver", "delivery_driver_id", "is_active"],
+  },
+  driver_shift: {
+    label: "Driver Shift (lịch ca)",
+    require: ["employee_code", "full_name", "date", "start_time", "end_time"],
+    // The leave window and the still-rostered flag. Present and carrying data on
+    // 2026-09-06 (112 rows with a window, 2 flagged), so `require` would pass
+    // today — but this tab is written by a GitHub Action whose column set has
+    // changed once already, and refusing it would take the whole schedule
+    // offline rather than degrade it. Reported instead, and promoted to
+    // `require` once a pay rule actually depends on the half-day window.
+    expect: ["leave_start_time", "leave_end_time", "leave_gap"],
   },
   nghi_phep: {
     label: "Leave Status (nghỉ phép)",

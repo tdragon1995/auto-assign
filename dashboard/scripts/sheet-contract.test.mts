@@ -46,6 +46,8 @@ const HEADERS = {
   tpl: "psc-tinh,3pl,3pl_uuid,address",
   schedule_job: "pickup_id,pickup,dropoff_id,dropoff,delivery_windows,sent_to_driver_before,reference,monday,tuesday,wednesday,thursday,friday,saturday,sunday,driver_id,Driver",
   public_sunday: "Ngày làm việc,STT,Họ và tên,Địa điểm,Ca,Ghi chú,Số điện thoại,Xin nghỉ",
+  // Written by misa-fetcher, read on 2026-09-06.
+  driver_shift: "employee_code,full_name,date,start_time,end_time,leave_start_time,leave_end_time,leave_gap",
 } as const;
 
 const cols = (headerRow: string) => headerRow.split(",");

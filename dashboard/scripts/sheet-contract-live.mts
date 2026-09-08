@@ -15,6 +15,7 @@ const { loadConfigFromSheets, loadDriversFromSheet } = await import("../src/lib/
 const { loadTplEntries } = await import("../src/lib/psc-config");
 const { loadScheduleJobRows } = await import("../src/lib/schedule-job");
 const { loadLeaveEntries } = await import("../src/lib/leave-config");
+const { loadShiftIndex } = await import("../src/lib/shift-window");
 const { currentSheetRefusals, fetchSheetRowsByName, SHEET_CONTRACT } = await import("../src/lib/sheets");
 
 let bad = 0;
@@ -34,6 +35,7 @@ await probe("Driver roster", async () => (await loadDriversFromSheet()).length);
 await probe("Leave Status", async () => (await loadLeaveEntries()).length);
 await probe("3PL", async () => (await loadTplEntries()).length);
 await probe("Scheduled Setup", async () => (await loadScheduleJobRows()).length);
+await probe("Driver Shift (lịch ca)", async () => (await loadShiftIndex(true)).byCodeDate.size);
 await probe("PUBLIC SUNDAY SCHEDULE", async () =>
   (await fetchSheetRowsByName("(Edit weekly) PUBLIC SUNDAY SCHEDULE", SHEET_CONTRACT.public_sunday)).length);
 
