@@ -6,13 +6,13 @@ import { useParams } from "next/navigation";
 // fetching /api/psc-routes — no function invocation, no network round-trip, instant render.
 import {
   Package, Check, ChevronDown, ChevronRight, Clock, Phone, Bike, CalendarDays,
-  ArrowUp, ArrowDown, ArrowRight, Loader2, Search, XCircle, StickyNote,
+  ArrowUp, ArrowDown, ArrowRight, Loader2, Search, XCircle,
 } from "lucide-react";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
 import { placeLabel } from "@/lib/place-label";
 import { Photos, Timeline, TodoNotes, TODO_ICON, type TlEvent } from "@/components/trip-sheet";
 import { LAB_CUSTOMER_ID } from "@/lib/job-filters";
-import { noteLine, type StopNotes } from "@/lib/stop-notes";
+import { isNoSample, type StopNotes } from "@/lib/stop-notes";
 import { proxyKind, driverLabel, THREE_PL_LABEL } from "@/lib/proxy-drivers";
 
 interface Stop {
@@ -130,14 +130,54 @@ function norm(s: string): string {
   return (s ?? "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/g, "d");
 }
 
-/** The note as it reads on a card: one line, no heading. The lab's question is "who
- *  handed what over", and the answer is short enough that a labelled block around it
- *  would be longer than the note itself. */
-function NoteLine({ note }: { note: string }) {
+/**
+ * The driver's handover note: who handed the samples over, and who received them.
+ *
+ * TWO ROWS, NOT ONE LINE. This started as a single "Lấy: … · Giao: …" run-on, on the
+ * reasoning that two short phrases did not need structure around them. Measured against
+ * a real day that was wrong twice over: a third of the notes wrapped to two or three
+ * lines anyway, so the "·" separator landed mid-wrap where it separated nothing, and the
+ * labels repeated the words "Lấy" and "Giao" that the STEPPER prints ten pixels above —
+ * two different meanings for one word, adjacent.
+ *
+ * The labels name PEOPLE now, which is also what the reader is looking for. "Giao:" was
+ * worse than redundant: the dropoff note names the person at D001 who RECEIVED the
+ * samples, so a label reading "giao" taught new reception staff the opposite of the
+ * truth. The value carries more weight than its label — it is the only thing on the card
+ * that says what physically arrived.
+ */
+function NoteRow({ label, value }: { label: string; value: string }) {
   return (
-    <span className="flex items-start gap-1.5 mt-2.5 text-[12px] text-slate-600 text-left">
-      <StickyNote aria-hidden className="w-3.5 h-3.5 shrink-0 mt-px text-slate-400" />
-      <span>{note}</span>
+    <span className="flex gap-2 text-[12px] leading-snug">
+      <span className="w-[72px] shrink-0 font-semibold text-slate-500">{label}</span>
+      <span className="flex-1 min-w-0 text-slate-700">{value}</span>
+    </span>
+  );
+}
+
+/** `expected` says a note SHOULD be there — the samples have been collected, so the
+ *  driver has been past the box that writes it. Only then is its absence worth a line:
+ *  on a trip nobody has reached yet, "chưa có ghi chú" is just noise. */
+function NoteBlock({ notes, expected }: { notes?: StopNotes; expected: boolean }) {
+  if (notes && isNoSample(notes)) {
+    return (
+      <span className="inline-block mt-2.5 text-[12px] font-semibold text-slate-500 bg-slate-100 rounded-md px-2 py-0.5">
+        Không có mẫu
+      </span>
+    );
+  }
+  if (!notes?.p && !notes?.d) {
+    if (!expected) return null;
+    return (
+      <span className="block mt-2.5 pt-2.5 border-t border-slate-100 text-[12px] text-slate-500">
+        Chưa có ghi chú giao nhận
+      </span>
+    );
+  }
+  return (
+    <span className="block mt-2.5 pt-2.5 border-t border-slate-100 space-y-1 text-left">
+      {notes.p && <NoteRow label="Người giao" value={notes.p} />}
+      {notes.d && <NoteRow label="Người nhận" value={notes.d} />}
     </span>
   );
 }
@@ -425,10 +465,10 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
 
 /* ─────────────────────────── feed cards ─────────────────────────── */
 
-function TripCard({ job, code, note, onOpen, onCancel, onSendVia3pl, onChangeDriver }: {
+function TripCard({ job, code, notes, onOpen, onCancel, onSendVia3pl, onChangeDriver }: {
   job: Job;
   code: string;
-  note: string | null;
+  notes?: StopNotes;
   onOpen: () => void;
   onCancel: (t: { job_id: number; reference: string }) => void;
   onSendVia3pl: (t: { job_id: number; reference: string }) => void;
@@ -501,7 +541,7 @@ function TripCard({ job, code, note, onOpen, onCancel, onSendVia3pl, onChangeDri
           <Stepper job={job} state={state} />
         )}
 
-        {note && <NoteLine note={note} />}
+        <NoteBlock notes={notes} expected={!!p?.activity_completed_ts} />
 
         {isWaiting(state) ? (
           <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100 text-[13px] font-semibold text-amber-700">
@@ -624,6 +664,11 @@ export default function QrPage() {
   // built from carries a todo — see /api/location-notes. Only the lab asks: everyone
   // else would pay a day-sized fetch for a dozen trips.
   const [notes, setNotes] = useState<Record<number, StopNotes>>({});
+  // Whether the notes request failed. A note that never arrives looks exactly like a
+  // driver who typed nothing, so a broken endpoint would empty every card at once and
+  // the page would read as a quiet day — the same silence footgun 3 warns about for the
+  // config sheet. One line says it, not thirty-eight.
+  const [notesFailed, setNotesFailed] = useState(false);
 
   const [sheetJob, setSheetJob] = useState<Job | null>(null);
   // Open by default: the completed list is the branch's record of its own day, and
@@ -707,8 +752,8 @@ export default function QrPage() {
       if (code === LAB_CUSTOMER_ID) {
         fetch(`/api/location-notes?date=${date}&code=${encodeURIComponent(code)}`)
           .then((r) => r.json())
-          .then((d) => setNotes(d.notes ?? {}))
-          .catch(() => {});
+          .then((d) => { setNotes(d.notes ?? {}); setNotesFailed(false); })
+          .catch(() => setNotesFailed(true));
       }
     } catch {
       setJobs([]);
@@ -1032,13 +1077,19 @@ export default function QrPage() {
           </div>
         )}
 
+        {notesFailed && (
+          <p role="alert" className="mb-3 px-3 py-2 rounded-xl text-[12px] font-semibold text-amber-700 bg-amber-50 border border-amber-200">
+            Không tải được ghi chú giao nhận. Mở từng chuyến để xem.
+          </p>
+        )}
+
         <div className="space-y-3">
           {pending.map((p) => (
             <PendingCard key={p.job_id} req={p} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }}
               onSendVia3pl={openVia3pl} onChangeDriver={openChangeDriver} />
           ))}
           {active.map((j) => (
-            <TripCard key={j.job_id} job={j} code={code} note={noteLine(notes[j.job_id])} onOpen={() => setSheetJob(j)}
+            <TripCard key={j.job_id} job={j} code={code} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)}
               onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl}
               onChangeDriver={openChangeDriver} />
           ))}
@@ -1098,10 +1149,13 @@ export default function QrPage() {
                 const p = pickupOf(j), d = dropoffOf(j);
                 const threePl = isThreePl(j.driver?.last_name);
                 const outbound = p?.customer_id === code;
-                const note = noteLine(notes[j.job_id]);
+
+                // No aria-label on the button below: on a button it REPLACES the whole
+                // accessible name, so it hid the note, the driver and all four timestamps
+                // from a screen reader — while the active cards, which carry none,
+                // announced every one of them.
                 return (
                   <button key={j.job_id} onClick={() => setSheetJob(j)}
-                    aria-label={`Xem chi tiết chuyến ${placeLabel(p?.customer_name ?? "")} đến ${placeLabel(d?.customer_name ?? "")}`}
                     className="group w-full block px-4 py-3 border-t border-slate-100 text-left hover:bg-slate-50 active:bg-slate-100 transition-colors">
                     <span className="flex items-start gap-2.5">
                       <Check aria-hidden className="w-4 h-4 text-green-600 shrink-0 mt-0.5" />
@@ -1132,7 +1186,7 @@ export default function QrPage() {
                     ) : (
                       <Stepper job={j} state={3} />
                     )}
-                    {note && <NoteLine note={note} />}
+                    <NoteBlock notes={notes[j.job_id]} expected />
                   </button>
                 );
               })}

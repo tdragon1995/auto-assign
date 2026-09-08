@@ -13,7 +13,7 @@
  */
 import type { Job } from "../src/lib/types";
 const { isClientPickupJob } = await import("../src/lib/job-filters");
-const { notesOf, noteLine } = await import("../src/lib/stop-notes");
+const { notesOf, cleanNote, isNoSample } = await import("../src/lib/stop-notes");
 
 let failed = 0;
 function ok(label: string, cond: boolean, detail?: string) {
@@ -56,10 +56,26 @@ eq("no todos at all", notesOf(trip("client")), null);
 eq("an empty note is no note", notesOf(trip("client", "", "")), null);
 eq("a whitespace note is no note", notesOf(trip("client", "   ")), null);
 eq("a note is trimmed", notesOf(trip("client", "  Hân 2 mẫu  ")), { p: "Hân 2 mẫu" });
-eq("line, both ends", noteLine({ p: "Bảo 2 ống đỏ", d: "Trúc 2 ống đỏ" }), "Lấy: Bảo 2 ống đỏ · Giao: Trúc 2 ống đỏ");
-eq("line, one end", noteLine({ d: "phuc" }), "Giao: phuc");
-eq("line, nothing", noteLine(undefined), null);
-eq("line, empty object", noteLine({}), null);
+
+console.log("\nnotes typed with the return key");
+// Everywhere else on the feed the first word is WHO, so a name typed last has to be
+// hoisted or the reader's learned scan takes "1" for the name.
+eq("a trailing name is hoisted to the front", cleanNote("1 đỏ \n1 lọ \nDung"), "Dung, 1 đỏ, 1 lọ");
+eq("a leading name is left where it is", cleanNote("Dung\n1 đỏ"), "Dung, 1 đỏ");
+eq("a trailing segment with a digit is not a name", cleanNote("Dung\n2 ống đỏ"), "Dung, 2 ống đỏ");
+eq("a long trailing phrase is not a name", cleanNote("2 đỏ\ngiao tại quầy lễ tân tầng trệt"), "2 đỏ, giao tại quầy lễ tân tầng trệt");
+eq("a single line passes through", cleanNote("Bảo 2 ống đỏ"), "Bảo 2 ống đỏ");
+
+console.log("\ntrips that collected nothing");
+ok("K mẫu", isNoSample({ p: "K mẫu" }));
+ok("không có mẫu, with a time appended", isNoSample({ p: "Không có mẫu 11h29" }));
+ok("ko mau, unaccented", isNoSample({ p: "ko mau" }));
+ok("only the dropoff says it", isNoSample({ d: "k mẫu" }));
+// The words have to START the note: a handover that merely mentions a missing tube
+// type is a real delivery and must never read as an empty trip.
+ok("a note that mentions it mid-sentence is a real handover", !isNoSample({ p: "Bảo không có mẫu tím, 2 đỏ" }));
+ok("an ordinary note is not an empty trip", !isNoSample({ p: "Bảo 2 ống đỏ", d: "Trúc 2 ống đỏ" }));
+ok("nothing at all is not the empty-trip state", !isNoSample({}));
 
 console.log(failed ? `\n${failed} FAILED\n` : "\nall passed\n");
 process.exit(failed ? 1 : 0);
