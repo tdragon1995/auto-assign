@@ -20,6 +20,9 @@ function describeLeave(e: LeaveEntry): string {
   return `${e.loai_nghi || "Nghỉ"} ${dm(e.leave_from)}${to}${hrs}`;
 }
 
+/** Upper bound on one whole-day submission. Mirrored on the dashboard form. */
+const MAX_LEAVE_DAYS = 31;
+
 function datesBetween(from: string, to: string): string[] {
   const dates: string[] = [];
   const end = new Date(to + "T00:00:00");
@@ -95,6 +98,21 @@ export async function POST(req: NextRequest) {
     if (loai_nghi === "nguyen_buoi") {
       // One row per day in the range — all written in one atomic API call
       const days = datesBetween(ngay_bat_dau, ngay_ket_thuc ?? ngay_bat_dau);
+      // A whole-day range costs one ROW PER DAY, so a mistyped year here is
+      // hundreds of appends into a tab a supervisor then has to clean by hand.
+      // Bounded at a month: longer real absences exist and are filed again.
+      // The dashboard form refuses the same number before it posts; this is
+      // the copy that matters, since the driver form and the MISA sync post
+      // here too.
+      if (days.length === 0 || days.length > MAX_LEAVE_DAYS) {
+        return NextResponse.json(
+          {
+            error: `Khoảng nghỉ ${days.length} ngày không hợp lệ — tối đa ` +
+              `${MAX_LEAVE_DAYS} ngày mỗi lần.`,
+          },
+          { status: 400 },
+        );
+      }
       rows = days.map((day) => withNote([ts, driver_id, driver_name, loaiNghiText, day, day, null, null]));
       candidate = {
         driver_id, driver_name, loai_nghi: loaiNghiText,

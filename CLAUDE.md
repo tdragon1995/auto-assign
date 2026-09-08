@@ -59,6 +59,27 @@ The MISA sync (`misa-fetcher/`) writes one Nghỉ phép row per day MISA charged
 through the same `POST /api/nghi-phep` a driver's own form uses — so
 `findLeaveConflict` makes a re-run idempotent. Two things follow from that:
 
+A supervisor can file leave through that same endpoint from the leave panel
+("Thêm ngày nghỉ"). Two differences from the driver's form, both in
+`buildLeaveSubmission`: days are a SET rather than a range (Monday and Thursday
+off is not Monday-to-Thursday), regrouped into consecutive runs so a week off is
+still one request; and each chosen day shows the window that driver was actually
+rostered for (`/api/shift`), which prefills a half-day with their own hours and
+flags a day they were never working. It sends no `automated` flag, so it is
+never blocked by a suppression — that is the documented way to put a deleted day
+back.
+
+It also files the PART-TIME TWIN, by the same rules as the MISA sync
+(`findPtTwin` / `ptCompanionOf`, mirroring `misa-fetcher/lib/leave-push.mjs`;
+if the two ever disagree, that one is the definition): a full day copies as a
+full day, an afternoon half-day copies as "from when they leave until 23:59",
+a morning half-day copies as nothing, and a RESIGNATION copies as nothing —
+a person can move from full-time to part-time, so closing the twin on a guess
+would retire a driver who is still working. Two namesake PT accounts resolve to
+neither. The form says which of these will happen before the write, since a
+second row on someone's other account is otherwise a surprise.
+`scripts/leave-add.test.mts`.
+
 - **A partly-approved request leaves rows behind.** Cancelling the rest in MISA
   does not reach back into the sheet, so the engine keeps the driver off on days
   they are working. `DELETE /api/leave-status` removes ONE row, identified the
@@ -194,6 +215,7 @@ through the same `POST /api/nghi-phep` a driver's own form uses — so
 | `GET /api/psc-tinh` | Provincial PSC route lookup; `?psc=D021` for 3PL options, `?psc=D021&mode=orders` for today's orders; `DELETE` cancels a job |
 | `POST /api/smart-assign` | Smart-assign dry-run — returns ranked driver suggestions without assigning |
 | `GET /api/audit` | List locations for weekly audit job creation; `POST` creates the audit job and assigns it |
+| `GET /api/shift` | What one driver was SCHEDULED to work on given days (`?driver_id=&dates=a,b,c`, max 31). Read-only door onto `shift-window.ts`; `unknown` is passed through as itself, never flattened into "off" |
 | `GET /api/cham-cong` | Attendance (chấm công) — lists today's check-in/out jobs for a driver (`?driver_id=`); `POST` creates a check-in or check-out job |
 | `POST /api/distance-checking` | Batch Goong road-distance queries (`{ rows: DistanceRow[] }`); sequential with 1s gaps |
 | `GET /api/location-jobs` | Fetch all jobs for a date+status (`?date=YYYY-MM-DD&status=4`), paginating to exhaustion |
@@ -328,8 +350,7 @@ These are the things most likely to burn a future agent working on this codebase
    on a not-yet-started next stop were still sitting on their last completed one, up to
    14 km from the anchor they were scored against — though only half of those anchors
    carry a plan marker, so only half are re-anchored. `scripts/unstarted-anchor.test.mts`
-   pins the rule offline; `scripts/_replay.mts` (untracked) diffs old vs new anchors
-   against a live day.
+   pins the rule offline.
 
 10. **A stop note holds a job unless the sentence is on the measured safe-list.** The gate
     used to have exactly one exemption, the literal `"Call before delivery"`, copy-pasted
