@@ -12,7 +12,7 @@ import { PSC_ROUTES } from "@/lib/psc-routes-data";
 import { placeLabel } from "@/lib/place-label";
 import { Photos, Timeline, TodoNotes, TODO_ICON, type TlEvent } from "@/components/trip-sheet";
 import { LAB_CUSTOMER_ID } from "@/lib/job-filters";
-import { isNoSample, type StopNotes } from "@/lib/stop-notes";
+import type { StopNotes } from "@/lib/stop-notes";
 import { proxyKind, driverLabel, THREE_PL_LABEL } from "@/lib/proxy-drivers";
 
 interface Stop {
@@ -65,6 +65,7 @@ interface PendingReq {
 type Status = "idle" | "loading" | "success" | "error";
 
 const STEPS = ["Yêu cầu", "Lấy mẫu", "Đang giao", "Đã giao"] as const;
+const COMPACT_STEPS = ["Lấy mẫu", "Đã giao"] as const;
 
 // Shortest gap between two automatic feed refreshes. Mirrors MAX_AGE_MS in
 // lib/day-snapshot — a request inside that window gets the snapshot already on screen,
@@ -140,44 +141,29 @@ function norm(s: string): string {
  * labels repeated the words "Lấy" and "Giao" that the STEPPER prints ten pixels above —
  * two different meanings for one word, adjacent.
  *
- * The labels name PEOPLE now, which is also what the reader is looking for. "Giao:" was
- * worse than redundant: the dropoff note names the person at D001 who RECEIVED the
- * samples, so a label reading "giao" taught new reception staff the opposite of the
- * truth. The value carries more weight than its label — it is the only thing on the card
- * that says what physically arrived.
+ * The labels are the DRIVER'S two actions, in the order they happened: they took the
+ * samples at the clinic ("Nhận") and handed them over at the lab ("Giao"). Read that way
+ * the second row is the person who received at D001, which is what the reader wants and
+ * what the old flat "Giao: Hân" line already said — the fault there was never the word,
+ * it was that both words sat inline in one sentence with nothing saying which end each
+ * belonged to. The rows say it. The value also carries more weight than its label: it is
+ * the only thing on the card that says what physically arrived.
  */
 function NoteRow({ label, value }: { label: string; value: string }) {
   return (
     <span className="flex gap-2 text-[12px] leading-snug">
-      <span className="w-[72px] shrink-0 font-semibold text-slate-500">{label}</span>
+      <span className="w-[44px] shrink-0 font-semibold text-slate-500">{label}</span>
       <span className="flex-1 min-w-0 text-slate-700">{value}</span>
     </span>
   );
 }
 
-/** `expected` says a note SHOULD be there — the samples have been collected, so the
- *  driver has been past the box that writes it. Only then is its absence worth a line:
- *  on a trip nobody has reached yet, "chưa có ghi chú" is just noise. */
-function NoteBlock({ notes, expected }: { notes?: StopNotes; expected: boolean }) {
-  if (notes && isNoSample(notes)) {
-    return (
-      <span className="inline-block mt-2.5 text-[12px] font-semibold text-slate-500 bg-slate-100 rounded-md px-2 py-0.5">
-        Không có mẫu
-      </span>
-    );
-  }
-  if (!notes?.p && !notes?.d) {
-    if (!expected) return null;
-    return (
-      <span className="block mt-2.5 pt-2.5 border-t border-slate-100 text-[12px] text-slate-500">
-        Chưa có ghi chú giao nhận
-      </span>
-    );
-  }
+function NoteBlock({ notes }: { notes?: StopNotes }) {
+  if (!notes?.p && !notes?.d) return null;
   return (
     <span className="block mt-2.5 pt-2.5 border-t border-slate-100 space-y-1 text-left">
-      {notes.p && <NoteRow label="Người giao" value={notes.p} />}
-      {notes.d && <NoteRow label="Người nhận" value={notes.d} />}
+      {notes.p && <NoteRow label="Nhận" value={notes.p} />}
+      {notes.d && <NoteRow label="Giao" value={notes.d} />}
     </span>
   );
 }
@@ -247,6 +233,10 @@ const DIRECTION_STYLE = {
   in: "bg-violet-100 text-violet-700",
 } as const;
 
+// Not rendered on the LAB's feed: its rows are client pickups only, so the tag read
+// "Nhận về" on every one of them. On a branch page both directions really do occur —
+// samples going to the lab and a client's samples coming in — and there it is the only
+// thing telling them apart.
 function DirectionTag({ outbound }: { outbound: boolean }) {
   const Icon = outbound ? ArrowUp : ArrowDown;
   return (
@@ -259,16 +249,29 @@ function DirectionTag({ outbound }: { outbound: boolean }) {
 
 /* ─────────────────────────── progress stepper ─────────────────────────── */
 
-function Stepper({ job, state }: { job: Job; state: TripState }) {
+/**
+ * `compact` cuts the four steps to the two the LAB reads: collected, and handed over.
+ * The other two answer questions a branch has about its own booking — when it asked,
+ * and when the driver set off — and D001 did not do the asking. Two steps also give
+ * each remaining label the width of two.
+ */
+function Stepper({ job, state, compact = false }: { job: Job; state: TripState; compact?: boolean }) {
   const p = pickupOf(job), d = dropoffOf(job);
-  const times = [requestedAt(job), fmtTs(p?.activity_completed_ts), fmtTs(d?.activity_started_ts), fmtTs(d?.activity_completed_ts)];
+  const labels = compact ? COMPACT_STEPS : STEPS;
+  const times = compact
+    ? [fmtTs(p?.activity_completed_ts), fmtTs(d?.activity_completed_ts)]
+    : [requestedAt(job), fmtTs(p?.activity_completed_ts), fmtTs(d?.activity_started_ts), fmtTs(d?.activity_completed_ts)];
   // Steps completed so far; the "current" step pulses.
-  const doneUpto = state === 2 ? 1 : state === 3 ? 3 : 0;
-  const nowIdx = state === 3 ? -1 : isWaiting(state) ? 0 : state === 1 ? 1 : 2;
+  const doneUpto = compact
+    ? (state === 3 ? 1 : state === 2 ? 0 : -1)
+    : (state === 2 ? 1 : state === 3 ? 3 : 0);
+  const nowIdx = compact
+    ? (state === 3 ? -1 : state === 2 ? 1 : 0)
+    : (state === 3 ? -1 : isWaiting(state) ? 0 : state === 1 ? 1 : 2);
 
   return (
     <div className="flex items-start mt-1 mb-1">
-      {STEPS.map((label, i) => {
+      {labels.map((label, i) => {
         const done = state === 3 || i <= doneUpto;
         const current = i === nowIdx;
         return (
@@ -507,7 +510,7 @@ function TripCard({ job, code, notes, onOpen, onCancel, onSendVia3pl, onChangeDr
               {placeLabel(p?.customer_name ?? "")} <ArrowRight aria-hidden className="inline w-4 h-4 text-slate-500 mx-0.5 shrink-0" /> {destName}
             </p>
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1">
-              <DirectionTag outbound={outbound} />
+              {code !== LAB_CUSTOMER_ID && <DirectionTag outbound={outbound} />}
               <span className="text-[11px] font-semibold text-slate-500">Yêu cầu lúc {requestedAt(job) ?? "—"}</span>
               {win && (
                 <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700">
@@ -538,10 +541,10 @@ function TripCard({ job, code, notes, onOpen, onCancel, onSendVia3pl, onChangeDr
             </p>
           </div>
         ) : (
-          <Stepper job={job} state={state} />
+          <Stepper job={job} state={state} compact={code === LAB_CUSTOMER_ID} />
         )}
 
-        <NoteBlock notes={notes} expected={!!p?.activity_completed_ts} />
+        <NoteBlock notes={notes} />
 
         {isWaiting(state) ? (
           <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100 text-[13px] font-semibold text-amber-700">
@@ -1164,7 +1167,7 @@ export default function QrPage() {
                           {placeLabel(p?.customer_name ?? "")} <ArrowRight aria-hidden className="inline w-3.5 h-3.5 text-slate-500 mx-0.5 shrink-0" /> {placeLabel(d?.customer_name ?? "")}
                         </span>
                         <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
-                          <DirectionTag outbound={outbound} />
+                          {code !== LAB_CUSTOMER_ID && <DirectionTag outbound={outbound} />}
                           <span className="text-[11px] text-slate-500">{driverText(j.driver?.last_name)}</span>
                           {windowLabel(p) && (
                             <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700">
@@ -1184,9 +1187,9 @@ export default function QrPage() {
                         Gửi qua {THREE_PL_LABEL} · {fmtTs(d?.activity_completed_ts ?? p?.activity_completed_ts) ?? "—"}
                       </span>
                     ) : (
-                      <Stepper job={j} state={3} />
+                      <Stepper job={j} state={3} compact={code === LAB_CUSTOMER_ID} />
                     )}
-                    <NoteBlock notes={notes[j.job_id]} expected />
+                    <NoteBlock notes={notes[j.job_id]} />
                   </button>
                 );
               })}
