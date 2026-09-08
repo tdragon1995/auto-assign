@@ -213,7 +213,7 @@ export async function writeUnmappedConfigRows(
   const kv = await import("./smart-log-kv");
   // Taken BEFORE the per-branch claims, not after: a branch marked as written by
   // a run that then failed to get the lock would never be written by anyone.
-  if (!(await kv.acquireConfigWriteLock())) return;
+  if (!(await kv.acquireSheetWriteLock())) return;
 
   try {
     const mine: UnmappedBranch[] = [];
@@ -233,6 +233,6 @@ export async function writeUnmappedConfigRows(
   } catch (e) {
     log(`Không ghi được dòng config cho điểm chưa cấu hình: ${e}`, "WARN");
   } finally {
-    await kv.releaseConfigWriteLock();
+    await kv.releaseSheetWriteLock();
   }
 }

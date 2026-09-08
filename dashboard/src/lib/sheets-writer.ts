@@ -46,79 +46,221 @@ async function getNghiPhepSheetName(
   return cachedNghiPhepSheetName;
 }
 
-export async function appendNghiPhep(rows: (string | null)[][]): Promise<void> {
-  const sheets = getSheetsClient();
-  const sheetName = await getNghiPhepSheetName(sheets);
-  // Sheet names with spaces must be wrapped in single quotes in A1 notation
-  const quotedName = `'${sheetName.replace(/'/g, "''")}'`;
+/**
+ * What a leave row SAYS, independent of where the columns happen to sit.
+ *
+ * It was a positional array — `[ts, driver_id, driver_name, …]` — which is
+ * exactly how `driver_id`, a FORMULA column, came to be written as a literal on
+ * 76 rows of the live tab. Naming the fields makes the derived columns
+ * unreachable rather than merely undocumented.
+ */
+export interface LeaveCells {
+  submitted_at: string;
+  driver_name: string;
+  loai_nghi: string;
+  leave_from: string;
+  /** Blank on a resignation, which has no end. */
+  leave_to?: string | null;
+  leave_from_hr?: string | null;
+  leave_to_hr?: string | null;
+  note?: string | null;
+}
 
-  const appendRes = await sheets.spreadsheets.values.append({
-    spreadsheetId: SHEET_ID,
-    range: `${quotedName}!A1`,
-    valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: { values: rows },
-  });
+/**
+ * The columns a leave write may touch, BY NAME — the same discipline, and for
+ * the same reason, as `WRITE_COLS` on the config tab.
+ *
+ * WHAT IS ABSENT IS THE POINT. `driver_id`, `day` and `sub#_id` are DERIVED:
+ * each looks its value up from a column beside it. Writing a literal into one is
+ * harmless-looking today, where every row carries its own copy of the formula —
+ * it silently replaces that one row's, which is why 76 rows have lost theirs. It
+ * stops being harmless the moment those columns become one ARRAYFORMULA anchored
+ * in row 2, the way the config tab's id columns already are: a literal written
+ * anywhere inside a spill collapses the WHOLE column to #REF!. This workbook has
+ * lost a column of ids that way once already.
+ */
+const LEAVE_WRITE_COLS = {
+  submitted_at: "Ngày Nộp Đơn",
+  driver_name: "driver",
+  loai_nghi: "Loại Nghỉ",
+  leave_from: "leave_from",
+  leave_to: "leave_to",
+  leave_from_hr: "leave_from_hr",
+  leave_to_hr: "leave_to_hr",
+  note: "note",
+} as const;
 
-  // The sheet has several per-row FORMULA columns (driver_id, day, sub#_id,
-  // scheduled_trips, …). A plain append writes a literal into the ones the form
-  // fills (driver_id) and leaves the rest blank on the new row — wiping the
-  // formula layout. Re-fill every formula column on the appended row(s) by
-  // copy-paste-FORMULA from a template row: this adjusts the relative row refs
-  // automatically and is robust to which columns are formulas / how they're laid
-  // out. Value columns (the ones the form actually fills) aren't formulas in the
-  // template, so they're left exactly as written.
-  //
-  // This step is BEST-EFFORT. The append above already wrote a functional row:
-  // it carries the real driver_id UUID as a literal plus the leave dates, which
-  // is all the assign engine needs (loadLeaveEntries reads driver_id directly and
-  // drops only rows where it's blank). The formula columns are a supervisor-facing
-  // convenience. So if this fails — e.g. a protected-range change revokes the
-  // service account's edit access — DON'T throw: a 500 here would make the driver
-  // resubmit and duplicate a leave that was already recorded.
-  try {
-    const updatedRange = appendRes.data.updates?.updatedRange ?? "";
-    const startRow = Number(updatedRange.match(/![A-Z]+(\d+)/)?.[1]);
-    if (Number.isFinite(startRow)) {
-      const sheetId = Number(SHEET_GID.nghi_phep);
-      // Scan the first data rows for the formula layout (which column → a row that
-      // holds its formula). Avoids depending on any single template row being intact.
-      const tpl = await sheets.spreadsheets.values.get({
-        spreadsheetId: SHEET_ID,
-        range: `${quotedName}!2:31`,
-        valueRenderOption: "FORMULA",
-      });
-      const tplRows = tpl.data.values ?? [];
-      const srcRowForCol = new Map<number, number>(); // colIndex → 1-based sheet row
-      const width = tplRows.reduce((w, r) => Math.max(w, r.length), 0);
-      for (let c = 0; c < width; c++) {
-        for (let i = 0; i < tplRows.length; i++) {
-          const v = tplRows[i]?.[c];
-          if (typeof v === "string" && v.startsWith("=")) { srcRowForCol.set(c, i + 2); break; }
-        }
-      }
-      if (srcRowForCol.size > 0) {
-        const requests = [...srcRowForCol.entries()].map(([col, srcRow]) => ({
-          copyPaste: {
-            source:      { sheetId, startRowIndex: srcRow - 1,   endRowIndex: srcRow,                     startColumnIndex: col, endColumnIndex: col + 1 },
-            destination: { sheetId, startRowIndex: startRow - 1, endRowIndex: startRow - 1 + rows.length, startColumnIndex: col, endColumnIndex: col + 1 },
-            pasteType: "PASTE_FORMULA",
-          },
-        }));
-        await sheets.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests } });
-      }
-    }
-  } catch (e) {
-    // Leave row WAS written and is honoured by the engine; only the formula
-    // columns are missing on it and need manual attention in the sheet.
-    console.error(
-      "[nghi-phep] formula-refill failed — leave row was saved, but its formula " +
-      "columns (driver_id formula, day, sub#_id, scheduled_trips, …) were not " +
-      "filled. Check that the service account still has edit access to the Leave " +
-      "Status sheet's protected ranges.",
-      e
+/** The two that make a row a leave at all: the name every derived column looks
+ *  its value up from, and the day. A tab missing either is refused. */
+const LEAVE_REQUIRED: (keyof typeof LEAVE_WRITE_COLS)[] = ["driver_name", "leave_from"];
+
+const LEAVE_LOCK = "leave:write_lock";
+
+/**
+ * Which cells a leave write puts where — the whole decision, with no network in
+ * it. One range per column, never a span: what sits BETWEEN two of these columns
+ * is a derived one. `scripts/leave-write-ranges.test.mts`.
+ */
+export function leaveWriteRanges(
+  quotedName: string,
+  colOf: (header: string) => string | null,
+  rows: LeaveCells[],
+  firstRow: number,
+): { range: string; values: string[][] }[] {
+  const missing = LEAVE_REQUIRED.filter((f) => !colOf(LEAVE_WRITE_COLS[f]));
+  if (missing.length) {
+    throw new Error(
+      `Leave sheet thiếu cột ${missing.map((f) => LEAVE_WRITE_COLS[f]).join(", ")} — không ghi đoán`,
     );
   }
+  const last = firstRow + rows.length - 1;
+  const data: { range: string; values: string[][] }[] = [];
+  for (const field of Object.keys(LEAVE_WRITE_COLS) as (keyof typeof LEAVE_WRITE_COLS)[]) {
+    const c = colOf(LEAVE_WRITE_COLS[field]);
+    if (!c) continue;   // an optional column this tab does not have
+    data.push({
+      range: `${quotedName}!${c}${firstRow}:${c}${last}`,
+      // Blank, not skipped: the rows may be reused ones, and a value left over
+      // from an older leave reads as part of the new one.
+      values: rows.map((r) => [String(r[field] ?? "")]),
+    });
+  }
+  return data;
+}
+
+/**
+ * Add leave rows to the tab.
+ *
+ * WRITES INSIDE THE TABLE, the way the config writer does, rather than through
+ * `values.append`. Append picks its own row by scanning for the end of the data,
+ * and a cell holding a formula counts as data even when that formula returns "".
+ * The live tab shows what that costs: 480 real leave rows spread over 2,481,
+ * with holes of exactly 1,000 rows at 401–1400 and 1480–2479 — the per-row
+ * formulas were dragged a thousand rows down to pre-fill them, and every append
+ * since has jumped to the far side of the block instead of taking the next row.
+ * Against one ARRAYFORMULA covering the column it is worse than untidy: every
+ * row looks occupied, so every append lands past the spill and the tab grows by
+ * a row per leave for good.
+ *
+ * Choosing the row instead of being handed one costs the atomicity append had,
+ * so it is taken under a lock. Without the lock — Redis unreachable, or another
+ * writer holding it — it falls back to append: a worse row, but a leave row that
+ * is written beats a tidy tab and a lost submission.
+ */
+export async function appendNghiPhep(rows: LeaveCells[]): Promise<void> {
+  if (rows.length === 0) return;
+  const sheets = getSheetsClient();
+  const sheetName = await getNghiPhepSheetName(sheets);
+  const quotedName = `'${sheetName.replace(/'/g, "''")}'`;
+
+  const kv = await import("./smart-log-kv");
+  const locked = await kv.acquireSheetWriteLock(LEAVE_LOCK);
+  try {
+    if (locked) {
+      const [header, tableEnd] = await Promise.all([
+        sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${quotedName}!1:1` }),
+        tableEndRow(sheets, SHEET_GID.nghi_phep),
+      ]);
+      const names = (header.data.values?.[0] ?? []).map((h) => String(h ?? "").trim());
+      const colOf = (h: string) => { const i = names.indexOf(h); return i < 0 ? null : colLetter(i); };
+      const nameCol = colOf(LEAVE_WRITE_COLS.driver_name);
+      if (nameCol && tableEnd) {
+        // Blank in the NAME column is the definition of free: it is what every
+        // derived column on the row looks its value up from, so a row blank
+        // there is a row nothing depends on. The FIRST such run, not the row
+        // after the last used one, because reusing the holes is how the tab
+        // recovers from the ones it already has.
+        const free = await firstFreeRow(sheets, quotedName, nameCol, tableEnd, rows.length);
+        if (free) {
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: SHEET_ID,
+            requestBody: {
+              // RAW, as the append was: a note is whatever the driver typed, and
+              // USER_ENTERED would read a leading "=" as a formula.
+              valueInputOption: "RAW",
+              data: leaveWriteRanges(quotedName, colOf, rows, free),
+            },
+          });
+          return;
+        }
+      }
+    }
+    // ponytail: last resort, and it is the pre-existing behaviour — append picks
+    // a poor row but never loses the submission. Reached when the tab is full,
+    // the lock could not be taken, or the header no longer names the columns.
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range: `${quotedName}!A1`,
+      valueInputOption: "RAW",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: { values: appendShape(rows) },
+    });
+  } finally {
+    if (locked) await kv.releaseSheetWriteLock(LEAVE_LOCK);
+  }
+}
+
+/** The fallback's positional row, in the order the tab has always had. Index 1,
+ *  `driver_id`, is left BLANK rather than carrying the literal that used to go
+ *  there: the column derives it from the name two cells along. */
+export function appendShape(rows: LeaveCells[]): (string | null)[][] {
+  return rows.map((r) => {
+    const row: (string | null)[] = [
+      r.submitted_at, null, r.driver_name, r.loai_nghi,
+      r.leave_from, r.leave_to ?? null, r.leave_from_hr ?? null, r.leave_to_hr ?? null,
+    ];
+    if (r.note) { while (row.length < 13) row.push(null); row[13] = r.note; }
+    return row;
+  });
+}
+
+/** Last 1-based row of a tab's Table, or null when it has none. */
+async function tableEndRow(
+  sheets: ReturnType<typeof google.sheets>,
+  gid: string,
+): Promise<number | null> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const meta: any = await sheets.spreadsheets.get({
+    spreadsheetId: SHEET_ID,
+    fields: "sheets(properties(sheetId),tables(name,range))",
+  });
+  const sheet = meta.data.sheets?.find(
+    (x: { properties?: { sheetId?: number } }) => String(x.properties?.sheetId) === String(gid),
+  );
+  const end = sheet?.tables?.[0]?.range?.endRowIndex;
+  return end ? Number(end) : null;
+}
+
+/**
+ * The start of the first run of `need` rows blank in `col`, or null when the
+ * table holds no such run. Consecutive because a range of days off is written as
+ * one block and reading it back as one leave depends on the rows adjoining.
+ */
+export function pickFreeRow(values: string[], firstDataRow: number, need: number): number | null {
+  let run = 0;
+  for (let i = 0; i < values.length; i++) {
+    if (String(values[i] ?? "").trim()) { run = 0; continue; }
+    if (++run === need) return i + firstDataRow - (need - 1);
+  }
+  return null;
+}
+
+async function firstFreeRow(
+  sheets: ReturnType<typeof google.sheets>,
+  quotedName: string,
+  col: string,
+  lastRow: number,
+  need: number,
+): Promise<number | null> {
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: `${quotedName}!${col}2:${col}${lastRow}`,
+  });
+  // values.get truncates trailing blanks, so pad back to the table's height —
+  // the run at the end is the one this is most likely to land in.
+  const vals = (res.data.values ?? []).map((r) => String(r?.[0] ?? ""));
+  while (vals.length < lastRow - 1) vals.push("");
+  return pickFreeRow(vals, 2, need);
 }
 
 // ── Fill substitutes on an existing leave row ────────────────────────────────
@@ -266,15 +408,25 @@ export async function updateLeaveSubs(
     requestBody: { valueInputOption: "RAW", data },
   });
 
-  const warning = await repairAndVerifySubIds(sheets, quotedName, col, rowNo, used);
+  const warning = await verifySubIds(sheets, quotedName, col, rowNo, used);
   return { row: rowNo, warning };
 }
 
-/** Shared tail of {@link updateLeaveSubs} and {@link replaceLeaveSubs}: make
- *  sure each used slot's sub#_id xlookup formula exists (damaged rows lose
- *  it), then verify it resolved. A written name whose id stays blank is
- *  invisible to the engine — worth a loud warning. */
-async function repairAndVerifySubIds(
+/**
+ * Shared tail of {@link updateLeaveSubs} and {@link replaceLeaveSubs}: check the
+ * sub#_id the sheet derived from the name that was just written. A name whose id
+ * stays blank is invisible to the engine — worth a loud warning.
+ *
+ * It used to REPAIR as well, pasting the xlookup back into any row that had lost
+ * it. That has to go: it wrote a per-row formula into a derived column, which is
+ * the one thing an ARRAYFORMULA cannot survive — a literal formula inside a
+ * spill collapses the whole column to #REF!, and the repair would fire exactly
+ * when the spill was healthy and the per-row copy therefore "missing". Losing it
+ * costs nothing the warning did not already cover: a row with no id was reported
+ * before and is reported now, and nothing else here writes over the formula any
+ * more, so rows stop losing it in the first place.
+ */
+async function verifySubIds(
   sheets: ReturnType<typeof google.sheets>,
   quotedName: string,
   col: Record<string, number>,
@@ -287,44 +439,6 @@ async function repairAndVerifySubIds(
       .map((n) => col[`sub${n}_id`])
       .filter((c): c is number => c != null);
     if (idCols.length) {
-      const fRes = await sheets.spreadsheets.values.get({
-        spreadsheetId: SHEET_ID,
-        range: `${quotedName}!${rowNo}:${rowNo}`,
-        valueRenderOption: "FORMULA",
-      });
-      const fRow = fRes.data.values?.[0] ?? [];
-      const missing = idCols.filter(
-        (c) => !(typeof fRow[c] === "string" && String(fRow[c]).startsWith("=")),
-      );
-      if (missing.length) {
-        // Find a template row holding the formula for each missing column.
-        const tpl = await sheets.spreadsheets.values.get({
-          spreadsheetId: SHEET_ID,
-          range: `${quotedName}!2:31`,
-          valueRenderOption: "FORMULA",
-        });
-        const tplRows = tpl.data.values ?? [];
-        const sheetId = Number(SHEET_GID.nghi_phep);
-        const requests = [];
-        for (const c of missing) {
-          for (let i = 0; i < tplRows.length; i++) {
-            const v = tplRows[i]?.[c];
-            if (typeof v === "string" && v.startsWith("=")) {
-              requests.push({
-                copyPaste: {
-                  source:      { sheetId, startRowIndex: i + 1,     endRowIndex: i + 2,  startColumnIndex: c, endColumnIndex: c + 1 },
-                  destination: { sheetId, startRowIndex: rowNo - 1, endRowIndex: rowNo,  startColumnIndex: c, endColumnIndex: c + 1 },
-                  pasteType: "PASTE_FORMULA",
-                },
-              });
-              break;
-            }
-          }
-        }
-        if (requests.length) {
-          await sheets.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests } });
-        }
-      }
       // Re-read as values: blank id ⇒ xlookup didn't resolve (or formula still missing).
       const vRes = await sheets.spreadsheets.values.get({
         spreadsheetId: SHEET_ID,
@@ -341,7 +455,7 @@ async function repairAndVerifySubIds(
       }
     }
   } catch (e) {
-    console.error("[leave-subs] sub_id formula check failed (subs were written)", e);
+    console.error("[leave-subs] sub_id check failed (subs were written)", e);
     warning = "Đã ghi người thay nhưng chưa kiểm tra được công thức sub_id trên sheet";
   }
   return warning;
@@ -418,7 +532,7 @@ export async function replaceLeaveSubs(
   });
 
   const used = slots.slice(0, subs.length);
-  const warning = await repairAndVerifySubIds(sheets, quotedName, col, rowNo, used);
+  const warning = await verifySubIds(sheets, quotedName, col, rowNo, used);
   return { row: rowNo, warning };
 }
 

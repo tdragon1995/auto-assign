@@ -1312,7 +1312,11 @@ export async function claimUnmappedConfigRow(key: string): Promise<boolean> {
 }
 
 /**
- * Serialise config-sheet writes across instances.
+ * Serialise writes to ONE tab across instances, by key.
+ *
+ * Not config-only any more: the leave tab allocates a row the same way and needs
+ * the same protection. Separate keys, because the two writes have nothing to say
+ * to each other and one waiting on the other would be needless.
  *
  * Allocating a row is read-then-write: two servers that both look at the same
  * moment both see the same first free row and the second silently overwrites the
@@ -1323,20 +1327,20 @@ export async function claimUnmappedConfigRow(key: string): Promise<boolean> {
  * Short TTL: the write it guards is two API calls. If a server dies mid-write the
  * lock clears itself well before the next cycle.
  */
-export async function acquireConfigWriteLock(): Promise<boolean> {
+export async function acquireSheetWriteLock(key = "config:write_lock"): Promise<boolean> {
   const redis = getRedis();
   if (!redis) return false;
   try {
-    return (await redis.set("config:write_lock", vnTimestamp(), { nx: true, ex: 60 })) === "OK";
+    return (await redis.set(key, vnTimestamp(), { nx: true, ex: 60 })) === "OK";
   } catch {
     return false;
   }
 }
 
-export async function releaseConfigWriteLock(): Promise<void> {
+export async function releaseSheetWriteLock(key = "config:write_lock"): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
-  try { await redis.del("config:write_lock"); } catch { /* expires on its own */ }
+  try { await redis.del(key); } catch { /* expires on its own */ }
 }
 
 // ── Hours a branch was configured for but nobody was on ──────────────────────
