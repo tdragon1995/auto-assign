@@ -115,6 +115,9 @@ export interface ConfigCells {
   dropoff: string;
   start: string;
   end: string;
+  /** Written in the SAME batch as the hours, on the weekday tab only. Absent on
+   *  a row created for someone to fill in later, which is what this file makes. */
+  driver?: string;
 }
 
 export function configCellsFor(b: UnmappedBranch): ConfigCells {
@@ -123,39 +126,66 @@ export function configCellsFor(b: UnmappedBranch): ConfigCells {
 }
 
 /**
- * One row per BRANCH, not per job: a branch that sent five unassignable trips
- * needs one line, not five. The earliest job wins the suggested window, since
- * that is the start of the stretch the branch was uncovered.
- */
-/**
- * A pickup that is one of Diag's OWN locations — D001 → D007, D032 → D007,
- * D027 → D001 and the like.
+ * One of Diag's OWN locations, by id or by name.
  *
- * These are internal transfers between the lab and its own PSCs, not client
- * collections, and they are not configured with a customer→driver rule. Left in,
- * they sit in the to-do list forever asking to be given a driver rule that they
- * are never going to get.
- *
- * Matched on the customer id, not the name: the id is what the job carries and
- * what never changes, whereas "BRA - D001" is a label that a rename would break —
- * the same trap that started this whole piece of work.
+ * Matched on the customer id first, not the name: the id is what the job carries
+ * and what never changes, whereas "BRA - D001" is a label that a rename would
+ * break — the same trap that started this whole piece of work.
  */
-function isOwnLocation(customerId: string, pickupName: string): boolean {
-  const id = customerId.trim();
-  const name = pickupName.trim();
-  return DIAG_LOCATIONS.some((l) => l.customer_id === id || (!!name && l.customer_name === name));
+function isOwnLocation(customerId: string, name: string): boolean {
+  const id = customerId.trim(), n = name.trim();
+  return DIAG_LOCATIONS.some((l) => l.customer_id === id || (!!n && l.customer_name === n));
 }
 
+/**
+ * An INTERNAL LEG — D001 → D007, D032 → D007, D027 → D001 and the like.
+ *
+ * Diag's own locations moving samples between themselves, not a client
+ * collection, and not configured with a customer→driver rule. Left in, they sit
+ * in the to-do list forever asking to be given a rule they are never going to
+ * get.
+ *
+ * BOTH ENDS, not just the pickup. On the pickup alone this also swallowed every
+ * SENDOUT — D001 → MEDIC, → Nam Khoa Biotek, → K LABTECH: the lab shipping to an
+ * outside lab, which very much is a configured route (D001 has real rules with
+ * real drivers for two of those today). So a job to a third such lab reported
+ * "chưa cấu hình điểm giao" every cycle while the one thing that could have put
+ * it on the to-do list was discarding it as an internal transfer.
+ *
+ * A leg with NO destination stays excluded on a Diag pickup: nothing says where
+ * it was going, so an internal leg is the safer reading and it is what this did
+ * before.
+ */
+function isInternalLeg(b: UnmappedBranch): boolean {
+  if (!isOwnLocation(b.customer_id, b.pickup_name)) return false;
+  return !b.dropoff_name.trim() || isOwnLocation("", b.dropoff_name);
+}
+
+/**
+ * One row per BRANCH AND DESTINATION. The row this writes is SCOPED — it carries
+ * the destination — so a branch shipping to two places needs two of them; keying
+ * on the branch alone wrote a row for wherever its first job happened to be going
+ * and left every other destination failing with nothing on the list to fix it.
+ * Same branch, same destination, five stuck jobs is still one row.
+ *
+ * The earliest job wins the suggested window, since that is the start of the
+ * stretch the branch was uncovered.
+ */
 export function dedupeBranches(found: readonly UnmappedBranch[]): UnmappedBranch[] {
   const first = new Map<string, UnmappedBranch>();
   for (const b of found) {
     if (!b.customer_id || !b.pickup_name) continue;   // nothing useful to write
-    if (isOwnLocation(b.customer_id, b.pickup_name)) continue;   // an internal leg, not a client
-    const prev = first.get(b.customer_id);
-    if (!prev || b.at < prev.at) first.set(b.customer_id, b);
+    if (isInternalLeg(b)) continue;
+    const key = branchKey(b);
+    const prev = first.get(key);
+    if (!prev || b.at < prev.at) first.set(key, b);
   }
   return [...first.values()];
 }
+
+/** Identity of one to-do row: the branch AND where it was going. */
+export const branchKey = (b: Pick<UnmappedBranch, "customer_id" | "dropoff_name">) =>
+  `${b.customer_id}|${b.dropoff_name.trim()}`;
 
 // ── Writing them ─────────────────────────────────────────────────────────────
 
@@ -188,7 +218,7 @@ export async function writeUnmappedConfigRows(
   try {
     const mine: UnmappedBranch[] = [];
     for (const b of branches) {
-      if (await kv.claimUnmappedConfigRow(b.customer_id)) mine.push(b);
+      if (await kv.claimUnmappedConfigRow(branchKey(b))) mine.push(b);
     }
     if (mine.length === 0) return;
 

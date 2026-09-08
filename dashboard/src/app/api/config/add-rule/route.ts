@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { writeConfigRows, completeConfigRow } from "@/lib/sheets-writer";
+import { writeConfigRows } from "@/lib/sheets-writer";
 import { splitDriverNames, DRIVER_SEP } from "@/lib/driver-cell";
 import { loadDriversFromSheet, invalidateConfigCache } from "@/lib/config";
 import { timeToMins } from "@/lib/time";
@@ -14,10 +14,16 @@ import { timeToMins } from "@/lib/time";
  * happening — this person covers this window — which is also what makes the
  * roster readable later.
  *
- * Built from the two writes that already exist rather than a third path: the row
- * is created empty and then completed, so it inherits both sets of guards — the
- * column-by-name lookup that can never touch an id column, and the re-read that
- * refuses if the row moved underneath.
+ * ONE WRITE, not two. It used to create the row empty and then fill the driver
+ * in through `completeConfigRow`, to inherit that path's guards. Only one of the
+ * two was worth having here. The column-by-name lookup — which can never touch
+ * an id column — is kept and now covers Driver as well. The re-read that refuses
+ * if the row moved underneath is gone, because it was guarding a row number this
+ * same request had just chosen and written a moment earlier; the case it exists
+ * for is `complete-row`, where the number comes from a parse minutes old. What it
+ * could actually do here was fire between the two writes and leave the row with
+ * hours and no driver on it — which a single batch cannot do. Four round trips
+ * to Google instead of seven.
  *
  * `dropoff_name` SCOPES the rule, and is per-rule rather than per-branch.
  *
@@ -64,9 +70,8 @@ export async function POST(req: NextRequest) {
     if (unknown) return bad(`"${unknown}" không có trong tab Driver — chọn từ danh sách`);
 
     const [row] = await writeConfigRows([
-      { pickup, dropoff: (dropoff_name ?? "").trim(), start, end },
+      { pickup, dropoff: (dropoff_name ?? "").trim(), start, end, driver: names.join(DRIVER_SEP) },
     ]);
-    await completeConfigRow({ row, expectPickup: pickup, driverName: names.join(DRIVER_SEP) });
     await invalidateConfigCache();
 
     return NextResponse.json({ ok: true, row });

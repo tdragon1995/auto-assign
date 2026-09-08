@@ -6,8 +6,13 @@ import type { ConfigCells } from "./unmapped-row";
 import { timeToMins } from "./time";
 
 let cachedNghiPhepSheetName: string | null = null;
+let cachedSheets: ReturnType<typeof google.sheets> | null = null;
 
+/** Memoised per process. A fresh GoogleAuth caches its access token on ITSELF,
+ *  so building one per call bought a signed-JWT exchange with Google — ~100 ms
+ *  before the request that wanted it, on every write in this file. */
 function getSheetsClient(): ReturnType<typeof google.sheets> {
+  if (cachedSheets) return cachedSheets;
   const keyJson = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
   if (!keyJson) throw new Error("GOOGLE_SERVICE_ACCOUNT_KEY is not set");
 
@@ -23,7 +28,7 @@ function getSheetsClient(): ReturnType<typeof google.sheets> {
     credentials,
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
   });
-  return google.sheets({ version: "v4", auth });
+  return (cachedSheets = google.sheets({ version: "v4", auth }));
 }
 
 async function getNghiPhepSheetName(
@@ -885,7 +890,8 @@ export const WRITE_COLS = {
 async function writableColumns(
   sheets: ReturnType<typeof google.sheets>,
   tab: ConfigTabSpec,
-): Promise<{ pickup: string; dropoff: string | null; start: string; end: string }> {
+  withDriver = false,
+): Promise<{ pickup: string; dropoff: string | null; start: string; end: string; driver: string | null }> {
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
     range: `${a1(tab)}!1:1`,
@@ -902,16 +908,21 @@ async function writableColumns(
   if (missing.length) {
     throw new Error(`"${tab.title}" has no ${missing.join(", ")} column — refusing to guess where to write`);
   }
-  return { pickup: pickup!, dropoff: at(WRITE_COLS.dropoff), start: start!, end: end! };
+  return {
+    pickup: pickup!, dropoff: at(WRITE_COLS.dropoff), start: start!, end: end!,
+    // Kept out of WRITE_COLS on purpose: unlike the four above, Driver is
+    // writable only where a caller has already cleared the Sunday-formula rule.
+    driver: withDriver ? at("Driver") : null,
+  };
 }
 
-/** Where the table ends and where its first free row is. Read live rather than
- *  hardcoded, so extending the table by hand is all it takes to make room. */
-async function configTableBounds(
+/** Where the table ends. Read live rather than hardcoded, so extending the table
+ *  by hand is all it takes to make room. Split from the free-row scan below
+ *  because it needs nothing from the header — the two reads go out together. */
+async function configTableEnd(
   sheets: ReturnType<typeof google.sheets>,
   tab: ConfigTabSpec,
-  pickupCol: string,
-): Promise<{ firstFreeRow: number; lastTableRow: number }> {
+): Promise<number> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const meta: any = await sheets.spreadsheets.get({
     spreadsheetId: SHEET_ID,
@@ -922,8 +933,16 @@ async function configTableBounds(
   );
   const table = sheet?.tables?.[0];
   if (!table?.range?.endRowIndex) throw new Error(`no table on "${tab.title}" — refusing to guess where rows belong`);
-  const lastTableRow = Number(table.range.endRowIndex);   // exclusive 0-based == last 1-based row
+  return Number(table.range.endRowIndex);   // exclusive 0-based == last 1-based row
+}
 
+/** The first row inside the table with a blank pickup. */
+async function firstFreeConfigRow(
+  sheets: ReturnType<typeof google.sheets>,
+  tab: ConfigTabSpec,
+  pickupCol: string,
+  lastTableRow: number,
+): Promise<number> {
   const col = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
     range: `${a1(tab)}!${pickupCol}1:${pickupCol}${lastTableRow}`,
@@ -933,36 +952,32 @@ async function configTableBounds(
   const vals = (col.data.values ?? []).map((r) => String(r?.[0] ?? "").trim());
   let lastUsed = 1;
   vals.forEach((v, i) => { if (v) lastUsed = i + 1; });
-  return { firstFreeRow: lastUsed + 1, lastTableRow };
+  return lastUsed + 1;
 }
 
 /**
- * Write config lines into the spare rows inside whichever tab the engine is
- * reading today. Returns the 1-based row numbers written.
+ * Which cells the write puts where — the whole decision, with no network in it.
+ *
+ * ONE RANGE PER COLUMN, never a span. A span would silently include whatever
+ * sits between two columns, and what sits between them differs per tab and moves
+ * when the sheet is reorganised — on Sunday it is the Driver formula, which a
+ * blank would destroy. Addressing each column on its own makes it impossible to
+ * touch a column this did not name.
+ *
+ * Both refusals below are the same shape: a value that MEANS something narrow
+ * has nowhere to be written, so writing the row anyway would file a rule wider
+ * than the one asked for. `scripts/config-write-ranges.test.mts`.
  */
-export async function writeConfigRows(cells: ConfigCells[]): Promise<number[]> {
-  if (cells.length === 0) return [];
-  const tab = currentConfigTab();
-  const sheets = getSheetsClient();
-  const cols = await writableColumns(sheets, tab);
-  const { firstFreeRow, lastTableRow } = await configTableBounds(sheets, tab, cols.pickup);
-
+export function configWriteRanges(
+  tabTitle: string,
+  cols: { pickup: string; dropoff: string | null; start: string; end: string; driver?: string | null },
+  cells: ConfigCells[],
+  firstFreeRow: number,
+): { range: string; values: string[][] }[] {
+  const q = `'${tabTitle.replace(/'/g, "''")}'`;
   const lastNeeded = firstFreeRow + cells.length - 1;
-  if (lastNeeded > lastTableRow) {
-    throw new Error(
-      `"${tab.title}" is full: rows ${firstFreeRow}–${lastNeeded} needed but the table ends at ${lastTableRow}. ` +
-      `Extend the table in the sheet — writing below it would leave every id blank.`,
-    );
-  }
-
-  // ONE RANGE PER COLUMN, never a span. A span would silently include whatever
-  // sits between two columns, and what sits between them differs per tab and
-  // moves when the sheet is reorganised — on Sunday it is the Driver formula,
-  // which a blank would destroy. Addressing each column on its own makes it
-  // impossible to touch a column this did not name.
-  const q = a1(tab);
   const range = (c: string) => `${q}!${c}${firstFreeRow}:${c}${lastNeeded}`;
-  const data: { range: string; values: string[][] }[] = [
+  const data = [
     { range: range(cols.pickup), values: cells.map((c) => [c.pickup]) },
     { range: range(cols.start),  values: cells.map((c) => [c.start]) },
     { range: range(cols.end),    values: cells.map((c) => [c.end]) },
@@ -979,10 +994,54 @@ export async function writeConfigRows(cells: ConfigCells[]): Promise<number[]> {
     // already cleared on the understanding that the two answered for different
     // places. Refuse instead of writing a rule that means something else.
     throw new Error(
-      `"${tab.title}" has no ${WRITE_COLS.dropoff} column, so a rule cannot be limited to one destination — ` +
+      `"${tabTitle}" has no ${WRITE_COLS.dropoff} column, so a rule cannot be limited to one destination — ` +
       `add the column, or write the rule without a destination`,
     );
   }
+  // The driver rides the SAME write as the hours it works. It used to be a
+  // second call — create the row, then fill the name in — which cost a round
+  // trip and could stop between the two, leaving a row with hours and nobody on
+  // it. One batch cannot half-land.
+  if (cells.some((c) => (c.driver ?? "").trim())) {
+    if (!cols.driver) throw new Error(`"${tabTitle}" không có cột Driver`);
+    data.push({ range: range(cols.driver), values: cells.map((c) => [c.driver ?? ""]) });
+  }
+  return data;
+}
+
+/**
+ * Write config lines into the spare rows inside whichever tab the engine is
+ * reading today. Returns the 1-based row numbers written.
+ */
+export async function writeConfigRows(cells: ConfigCells[]): Promise<number[]> {
+  if (cells.length === 0) return [];
+  const tab = currentConfigTab();
+  const sheets = getSheetsClient();
+  // WEEKDAY ONLY for a named driver, exactly as completeConfigRow refuses: the
+  // Sunday tab derives Driver from the public roster with a formula, and a name
+  // written over it destroys that derivation with no way back from here.
+  const wantsDriver = cells.some((c) => (c.driver ?? "").trim());
+  if (wantsDriver && tab.gid !== CONFIG_TABS.weekday.gid) {
+    throw new Error(
+      "Chủ nhật: tài xế được suy ra từ lịch trực công khai, không chọn trong config — sửa trên tab lịch Chủ nhật",
+    );
+  }
+  // Independent reads, so they go out together rather than one after the other.
+  const [cols, lastTableRow] = await Promise.all([
+    writableColumns(sheets, tab, wantsDriver),
+    configTableEnd(sheets, tab),
+  ]);
+  const firstFreeRow = await firstFreeConfigRow(sheets, tab, cols.pickup, lastTableRow);
+
+  const lastNeeded = firstFreeRow + cells.length - 1;
+  if (lastNeeded > lastTableRow) {
+    throw new Error(
+      `"${tab.title}" is full: rows ${firstFreeRow}–${lastNeeded} needed but the table ends at ${lastTableRow}. ` +
+      `Extend the table in the sheet — writing below it would leave every id blank.`,
+    );
+  }
+
+  const data = configWriteRanges(tab.title, cols, cells, firstFreeRow);
 
   await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: SHEET_ID,
