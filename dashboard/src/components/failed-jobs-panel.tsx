@@ -140,13 +140,19 @@ function FailedRow({
   const [dayOffset, setDayOffset] = useState(0);
   const [timeLabel, setTimeLabel] = useState<string | null>(null);
 
-  // Only unconfigured customers get the scheduler. Every other reason is a
-  // roster problem the supervisor fixes by naming a driver; NO_MAPPING is the one
-  // where the right answer is often "not now" — the client isn't in the sheet
-  // yet, so park the job on its real pickup time instead of forcing it out to
-  // whoever is free. Parking drops it off the unassigned list, so it stops
-  // re-flagging every cycle, and it comes back an hour before it is due.
-  const canSchedule = job.reason === "NO_MAPPING";
+  // Three reasons get the scheduler as well as the manual pick, because for all
+  // three the right answer is often "not now":
+  //   NO_MAPPING — the client is not in the sheet yet, so park the job on its real
+  //     pickup time instead of forcing it out to whoever is free.
+  //   NO_DRIVER  — no ROW covers this hour. The drivers are there; parking the job
+  //     into an hour a shift does cover is the fix, where a manual pick hands it to
+  //     someone who is off.
+  //   ON_LEAVE   — the rostered driver is off and nobody is covering yet. Parking it
+  //     until the substitute is named beats pushing it onto whoever is free.
+  // Parking drops the job off the unassigned list, so it stops re-flagging every
+  // cycle, and it comes back an hour before it is due.
+  const canSchedule =
+    job.reason === "NO_MAPPING" || job.reason === "NO_DRIVER" || job.reason === "ON_LEAVE";
   const timeIsPast = isTimePast(dayOffset, timeLabel);
   const scheduleReady = !!timeLabel && !timeIsPast;
 
