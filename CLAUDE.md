@@ -65,8 +65,12 @@ A supervisor can file leave through that same endpoint from the leave panel
 off is not Monday-to-Thursday), regrouped into consecutive runs so a week off is
 still one request; and each chosen day shows the window that driver was actually
 rostered for (`/api/shift`), which prefills a half-day with their own hours and
-flags a day they were never working. It sends no `automated` flag, so it is
-never blocked by a suppression — that is the documented way to put a deleted day
+flags a day they were never working; and the substitute can be named in the same
+form, which writes through the panel's own `POST /api/leave-status` once the
+rows exist — addressed per DAY, since a whole-day range is one row per day, and
+by window for a half day. The twin's row is deliberately not covered by it: a
+substitute covers one account, and the twin's row is the evening. It sends no
+`automated` flag, so it is never blocked by a suppression — that is the documented way to put a deleted day
 back.
 
 It also files the PART-TIME TWIN, by the same rules as the MISA sync

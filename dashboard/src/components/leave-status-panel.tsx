@@ -181,10 +181,13 @@ export interface NewLeaveForm {
   /** Window — nua_buoi only, the same window on each chosen day. */
   start: string;
   end: string;
+  /** Who covers, optional. A full sheet label like every other driver field;
+   *  "" means the days are filed uncovered, exactly as before this existed. */
+  sub: string;
 }
 
 export const EMPTY_LEAVE_FORM: NewLeaveForm = {
-  name: "", loai_nghi: "", days: [], start: "", end: "",
+  name: "", loai_nghi: "", days: [], start: "", end: "", sub: "",
 };
 
 export interface LeavePayload {
@@ -341,6 +344,47 @@ export function ptCompanionOf(p: LeavePayload, twin: ConfigDriver): LeavePayload
   return { ...base, gio_bat_dau: p.gio_bat_dau, gio_ket_thuc: PT_DAY_END };
 }
 
+/** One `POST /api/leave-status` — the row to cover, and who covers it. */
+export interface SubWrite {
+  driver_id: string;
+  leave_from: string;
+  timeLabel: string | null;
+  subs: { name: string; from: null; to: null }[];
+}
+
+/**
+ * The ROWS one payload is about to create, addressed the way the sheet writer
+ * addresses them: driver + start date + window, never a row number.
+ *
+ * This is the part worth getting right. `/api/nghi-phep` writes ONE ROW PER DAY
+ * for a whole-day range, so a Monday-to-Friday payload becomes five rows and
+ * therefore five identities — asking to cover "29/09–02/10" as a single row
+ * would match nothing and the substitute would silently not be written. A half
+ * day is one row carrying its window, and the window is part of its identity:
+ * a day can hold two rows split between two substitutes, and the label is what
+ * tells them apart.
+ *
+ * The en dash is the one `coverageOnDate` builds and the writer splits on. A
+ * hyphen here would fail to match every windowed row.
+ */
+function subIdentities(p: LeavePayload): { driver_id: string; leave_from: string; timeLabel: string | null }[] {
+  // A resignation is not a day off someone stands in for; the row has no window
+  // and no end, and naming a substitute on it would say the wrong thing.
+  if (p.loai_nghi === "nghi_viec") return [];
+  if (p.loai_nghi === "nua_buoi") {
+    return [{
+      driver_id: p.driver_id,
+      leave_from: p.ngay_bat_dau,
+      timeLabel: `${p.gio_bat_dau}–${p.gio_ket_thuc}`,
+    }];
+  }
+  return expandRange(p.ngay_bat_dau, p.ngay_ket_thuc ?? p.ngay_bat_dau).map((d) => ({
+    driver_id: p.driver_id,
+    leave_from: d,
+    timeLabel: null,
+  }));
+}
+
 /**
  * The form state as the requests that will be sent.
  *
@@ -352,18 +396,46 @@ export function ptCompanionOf(p: LeavePayload, twin: ConfigDriver): LeavePayload
 export function buildLeaveSubmission(
   f: NewLeaveForm,
   drivers: ConfigDriver[],
-): { error: string } | { payloads: LeavePayload[] } {
+): { error: string } | { payloads: LeavePayload[]; subWrites: SubWrite[] } {
   const built = buildOwnSubmission(f, drivers);
   if ("error" in built) return built;
-  // The person's own rows FIRST, then the twin's. A twin write that fails
-  // leaves the real absence recorded, which is the half to keep.
   const driver = drivers.find((d) => d.name === f.name)!;
   const { twin } = findPtTwin(driver, drivers);
-  if (!twin) return built;
-  const companions = built.payloads
-    .map((p) => ptCompanionOf(p, twin))
-    .filter((p): p is LeavePayload => p !== null);
-  return { payloads: [...built.payloads, ...companions] };
+
+  // Who covers, if anyone. Checked here rather than left to the write: the sub
+  // endpoint would reject an unknown name too, but only AFTER the leave rows
+  // are on the sheet — so the day would be filed and the cover silently not.
+  const subName = f.sub.trim();
+  let subWrites: SubWrite[] = [];
+  if (subName) {
+    const cover = drivers.find((d) => d.name === subName);
+    if (!cover) return { error: "Chọn người thay từ danh sách" };
+    if (cover.driver_id === driver.driver_id) {
+      return { error: "Người thay trùng với tài xế đang nghỉ" };
+    }
+    // …and not their own other account either, which the endpoint cannot catch:
+    // the ids differ, so it reads as a different person while being the same one,
+    // off that day, standing in for themselves.
+    if (twin && cover.driver_id === twin.driver_id) {
+      return { error: "Người thay là tài khoản PT của chính tài xế đang nghỉ" };
+    }
+    // The person's OWN rows only. A substitute covers one account, and the
+    // twin's row is the evening — a different question with a different answer,
+    // which the panel has always asked separately.
+    subWrites = built.payloads.flatMap(subIdentities).map((id) => ({
+      ...id,
+      // No window: blank means "the leave row's own hours", so a half day is
+      // covered for exactly its window and a whole day for the whole day.
+      subs: [{ name: cover.name, from: null, to: null }],
+    }));
+  }
+
+  // The person's own rows FIRST, then the twin's. A twin write that fails
+  // leaves the real absence recorded, which is the half to keep.
+  const companions = twin
+    ? built.payloads.map((p) => ptCompanionOf(p, twin)).filter((p): p is LeavePayload => p !== null)
+    : [];
+  return { payloads: [...built.payloads, ...companions], subWrites };
 }
 
 /** The rows for the account actually picked, before any twin is considered. */
@@ -573,12 +645,16 @@ function AddLeaveForm({ drivers, onSaved }: { drivers: ConfigDriver[]; onSaved: 
     setError("");
     const built = buildLeaveSubmission(form, drivers);
     if ("error" in built) { setError(built.error); return; }
-    const { payloads } = built;
+    const { payloads, subWrites } = built;
 
     let written = 0;
     let failure = "";
+    // Both phases counted in one progress line: from where the button is
+    // pressed they are one action, and a bar that reaches the end and then
+    // keeps working is worse than no bar.
+    const steps = payloads.length + subWrites.length;
     for (const [i, payload] of payloads.entries()) {
-      setBusy(payloads.length > 1 ? `Đang lưu ${i + 1}/${payloads.length}…` : "Đang lưu…");
+      setBusy(steps > 1 ? `Đang lưu ${i + 1}/${steps}…` : "Đang lưu…");
       try {
         const res = await fetch("/api/nghi-phep", {
           method: "POST",
@@ -598,22 +674,59 @@ function AddLeaveForm({ drivers, onSaved }: { drivers: ConfigDriver[]; onSaved: 
         break;
       }
     }
+    // The cover, once every day it is for actually exists. Skipped entirely if
+    // any leave write failed: an identity for a row that was never created
+    // matches nothing, and the resulting "không tìm thấy dòng nghỉ" would read
+    // as a bug rather than as the earlier failure it is.
+    let covered = 0;
+    if (!failure) {
+      for (const [i, w] of subWrites.entries()) {
+        setBusy(`Đang lưu ${payloads.length + i + 1}/${steps}…`);
+        try {
+          const res = await fetch("/api/leave-status", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(w),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.ok) {
+            failure = `người thay ${ddmm(w.leave_from)}: ${data.error ?? `Lỗi ${res.status}`}`;
+            break;
+          }
+          covered++;
+        } catch (e) {
+          failure = `người thay ${ddmm(w.leave_from)}: ${e instanceof Error ? e.message : String(e)}`;
+          break;
+        }
+      }
+    }
     setBusy("");
 
     // Said out loud, because a partial write is the one outcome a supervisor
     // must not re-run blindly: the days already on the sheet would come back as
     // duplicates-refused and hide which day actually failed.
     if (written > 0) {
+      const cover = subWrites.length > 0 ? ` — người thay ${covered}/${subWrites.length} ngày` : "";
       toast.success(
-        payloads.length === 1
+        (payloads.length === 1
           ? `Đã ghi ${submissionLabel(payloads[0])}`
-          : `Đã ghi ${written}/${payloads.length} đợt nghỉ`,
+          : `Đã ghi ${written}/${payloads.length} đợt nghỉ`) + cover,
       );
       // Awaited, like every other write in this panel: releasing the button
       // while the week is still re-reading is what invites a second click.
       await onSaved();
     }
     if (failure) {
+      // The leave landed in full and only the COVER failed. Re-submitting this
+      // form would re-file days that are already on the sheet and be refused as
+      // duplicates, so the form closes and the panel's own editor is where the
+      // substitute gets filled — but the reason has to survive the close, which
+      // clears the inline error along with everything else.
+      if (written === payloads.length) {
+        toast.error(`Đã ghi ngày nghỉ, chưa gán được ${failure}`);
+        close();
+        return;
+      }
       setError(written > 0 ? `Đã ghi ${written} đợt, dừng ở — ${failure}` : failure);
       // Whatever landed is gone from the set, so a retry re-sends only the rest.
       if (written > 0) {
@@ -788,6 +901,28 @@ function AddLeaveForm({ drivers, onSaved }: { drivers: ConfigDriver[]; onSaved: 
             );
           })}
         </ul>
+      )}
+
+      {/* Who covers, in the same breath as the day off.
+          Optional, and absent for a resignation — that is not a day someone
+          stands in for. Filled here it saves the trip back through "Thêm người
+          thay" on every row this creates, which for a week off was seven. */}
+      {!isResign && form.loai_nghi && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] text-slate-700">Người thay (tuỳ chọn)</span>
+          <DriverCombobox
+            names={form.sub ? [form.sub] : []}
+            onChange={(names) => set("sub", names[0] ?? "")}
+            drivers={drivers}
+            max={1}
+            ariaLabel="Chọn người thay"
+            placeholder="Chưa có người thay…"
+            className="flex w-[260px] max-w-full flex-wrap items-center gap-1 rounded border border-slate-300 bg-white px-1 py-0.5 focus-within:ring-2 focus-within:ring-indigo-400/50"
+          />
+          {form.sub && form.days.length > 1 && (
+            <span className="text-[11px] text-slate-600">cho cả {form.days.length} ngày</span>
+          )}
+        </div>
       )}
 
       {!isResign && form.days.some((d) => shifts.days[d]?.kind === "off") && (

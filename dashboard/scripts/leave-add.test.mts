@@ -40,7 +40,7 @@
 import {
   buildLeaveSubmission, groupConsecutive, expandRange, normalizeDays, suggestWindow,
   findPtTwin, ptCompanionOf, EMPTY_LEAVE_FORM, MAX_LEAVE_DAYS,
-  type NewLeaveForm, type LeavePayload,
+  type NewLeaveForm, type LeavePayload, type SubWrite,
 } from "../src/components/leave-status-panel";
 import type { ConfigDriver } from "../src/lib/types";
 
@@ -69,6 +69,11 @@ const form = (over: Partial<NewLeaveForm>): NewLeaveForm => ({ ...EMPTY_LEAVE_FO
 const build = (over: Partial<NewLeaveForm>): LeavePayload[] | string => {
   const r = buildLeaveSubmission(form(over), DRIVERS);
   return "error" in r ? `ERROR: ${r.error}` : r.payloads;
+};
+/** The substitute half of the same call. */
+const subs = (over: Partial<NewLeaveForm>): SubWrite[] | string => {
+  const r = buildLeaveSubmission(form(over), DRIVERS);
+  return "error" in r ? `ERROR: ${r.error}` : r.subWrites;
 };
 const errored = (over: Partial<NewLeaveForm>): boolean => typeof build(over) === "string";
 
@@ -321,6 +326,69 @@ eq("a full-timer with no twin still files exactly one row",
 // counting rows would halve how much leave a twin-holder could file at once.
 eq("the twin's rows do not count against the day cap",
   errored({ name: HUNG_FT.name, loai_nghi: "nguyen_buoi", days: run("2026-09-01", MAX_LEAVE_DAYS) }), false);
+
+
+// --- 9. the substitute filed with the leave ----------------------------------
+//
+// Naming the cover in the same form saves a trip back through "Thêm người thay"
+// on every row the leave creates — seven of them for a week off. The write goes
+// to the endpoint that editor already uses, so the risk is not the write but
+// the ADDRESS: a leave row is identified by driver + start date + window, and
+// an identity that matches no row fails as "không tìm thấy dòng nghỉ" AFTER the
+// leave is already on the sheet.
+//
+// The trap is the whole-day range. /api/nghi-phep writes ONE ROW PER DAY across
+// it, so Mon–Fri is five rows and five identities; addressing it as the single
+// range it was submitted as would cover nothing and say nothing.
+
+console.log("addressing the rows to cover");
+eq("no substitute picked writes none", subs({ name: HUNG, loai_nghi: "nguyen_buoi", days: ["2026-09-10"] }), []);
+eq("a whole-day RANGE is addressed one row per day, not once for the range",
+  subs({ name: HUNG, loai_nghi: "nguyen_buoi", days: ["2026-09-10", "2026-09-11", "2026-09-12"], sub: HUNG_PT.name }),
+  ["2026-09-10", "2026-09-11", "2026-09-12"].map((d) => ({
+    driver_id: "uuid-solo", leave_from: d, timeLabel: null,
+    subs: [{ name: HUNG_PT.name, from: null, to: null }],
+  })));
+eq("scattered days each get their own",
+  (subs({ name: HUNG, loai_nghi: "nguyen_buoi", days: ["2026-09-10", "2026-09-12"], sub: HUNG_PT.name }) as SubWrite[])
+    .map((w) => w.leave_from), ["2026-09-10", "2026-09-12"]);
+// The window is part of the identity — one day can hold two rows split between
+// two substitutes, and the label is what tells them apart. The dash is the EN
+// DASH the sheet reader builds; a hyphen matches no windowed row at all.
+eq("a half day is addressed by its window, with an en dash",
+  subs({ name: HUNG, loai_nghi: "nua_buoi", days: ["2026-09-10"], start: "13:15", end: "17:42", sub: HUNG_PT.name }),
+  [{
+    driver_id: "uuid-solo", leave_from: "2026-09-10", timeLabel: "13:15–17:42",
+    subs: [{ name: HUNG_PT.name, from: null, to: null }],
+  }]);
+eq("the substitute window is left blank — it inherits the leave's own hours",
+  (subs({ name: HUNG, loai_nghi: "nua_buoi", days: ["2026-09-10"], start: "13:00", end: "17:00", sub: HUNG_PT.name }) as SubWrite[])[0]
+    .subs[0], { name: HUNG_PT.name, from: null, to: null });
+
+console.log("who may cover");
+eq("a resignation takes no substitute — nobody stands in for it",
+  subs({ name: HUNG, loai_nghi: "nghi_viec", days: ["2026-09-30"], sub: HUNG_PT.name }), []);
+eq("a name that is not on the roster refuses BEFORE the leave is written",
+  subs({ name: HUNG, loai_nghi: "nguyen_buoi", days: ["2026-09-10"], sub: "Ai Đó" }),
+  "ERROR: Chọn người thay từ danh sách");
+eq("a driver cannot cover their own day off",
+  subs({ name: HUNG, loai_nghi: "nguyen_buoi", days: ["2026-09-10"], sub: HUNG }),
+  "ERROR: Người thay trùng với tài xế đang nghỉ");
+// The ids differ, so the endpoint reads this as a different person — while it
+// is the same one, off that day, standing in for themselves.
+eq("nor their own part-time account, which the endpoint cannot catch",
+  subs({ name: HUNG_FT.name, loai_nghi: "nguyen_buoi", days: ["2026-09-10"], sub: HUNG_PT.name }),
+  "ERROR: Người thay là tài khoản PT của chính tài xế đang nghỉ");
+
+console.log("the twin is covered separately");
+// A substitute covers ONE account. The twin's row is the evening — a different
+// question, which the panel has always asked on its own card.
+eq("the twin's rows are not addressed by this cover",
+  (subs({ name: HUNG_FT.name, loai_nghi: "nguyen_buoi", days: ["2026-09-10"], sub: SOLO.name }) as SubWrite[])
+    .map((w) => w.driver_id), ["uuid-hung"]);
+eq("and the twin's leave row is still written",
+  (build({ name: HUNG_FT.name, loai_nghi: "nguyen_buoi", days: ["2026-09-10"], sub: SOLO.name }) as LeavePayload[])
+    .map((p) => p.driver_id), ["uuid-hung", "uuid-hung-pt"]);
 
 console.log(failures === 0 ? "\nAll passed." : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
