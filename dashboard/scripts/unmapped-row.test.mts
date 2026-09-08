@@ -69,16 +69,29 @@ section("what the row says");
   ok("...and so is the destination", c.dropoff.startsWith("'"));
 }
 
-section("one row per branch, not per job");
+section("one row per branch AND destination, not per job");
 {
-  const rows = dedupeBranches([
+  // Five stuck trips down the same route is one row.
+  const same = dedupeBranches([
+    branch("c1", "A", "X", "11:00"),
+    branch("c1", "A", "X", "08:30"),
+    branch("c1", "A", "X", "14:00"),
+  ]);
+  eq("the same route collapses to one row", same.length, 1);
+  eq("the EARLIEST job sets the window", shiftWindowForJob(same[0].at), { start: "08:00", end: "09:00" });
+
+  // ...but two DESTINATIONS are two rows. The row written carries the
+  // destination, so one row can only ever answer for one of them; keying on the
+  // branch alone wrote a row for wherever the first stuck job happened to be
+  // going and left the other route failing with nothing on the list to fix it.
+  const two = dedupeBranches([
     branch("c1", "A", "X", "11:00"),
     branch("c1", "A", "Y", "08:30"),
     branch("c2", "B", "Z", "09:00"),
   ]);
-  eq("two branches, two rows", rows.length, 2);
-  const a = rows.find((r) => r.customer_id === "c1")!;
-  eq("the EARLIEST job sets the window", shiftWindowForJob(a.at), { start: "08:00", end: "09:00" });
+  eq("one branch shipping two places needs two rows", two.length, 3);
+  eq("each row keeps its own destination",
+     two.filter((r) => r.customer_id === "c1").map((r) => r.dropoff_name).sort(), ["X", "Y"]);
 }
 {
   eq("a branch with no name is not written", dedupeBranches([branch("c1", "", "X", "09:00")]), []);
@@ -113,6 +126,21 @@ section("internal legs between our own locations are not to-dos");
   ]);
   eq("a real clinic alongside an internal leg keeps only the clinic",
      real.map((r) => r.pickup_name), ["20079 - TUyen - BS Danh Vinh"]);
+
+  // A SENDOUT is not an internal leg. D001 shipping to an outside lab is a real
+  // configured route — it has rules with real drivers today — and excluding it on
+  // the pickup alone is why a job to a third such lab reported "chưa cấu hình
+  // điểm giao" every cycle with nothing on the to-do list to answer it.
+  eq("D001 → an outside lab is kept", dedupeBranches([
+    { customer_id: d001.customer_id, pickup_name: d001.customer_name,
+      dropoff_name: "SENDOUT5 - D2 - 7A - K LABTECH", at: at("11:51") },
+  ]).map((r) => r.dropoff_name), ["SENDOUT5 - D2 - 7A - K LABTECH"]);
+
+  // With nowhere named, an internal leg is the safer reading — and the one this
+  // has always taken.
+  eq("...but a Diag pickup with no destination stays excluded", dedupeBranches([
+    { customer_id: d001.customer_id, pickup_name: d001.customer_name, dropoff_name: "", at: at("05:30") },
+  ]), []);
 
   // 3PL pickups were deliberately NOT excluded — they stay to-dos until told
   // otherwise, so this pins the decision rather than the omission.

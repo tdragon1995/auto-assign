@@ -1247,24 +1247,30 @@ const writtenBranches = new Set<string>();
 const UNMAPPED_TTL_S = 30 * 24 * 60 * 60;
 
 /**
- * True when THIS caller should write the config row for `customerId`.
+ * True when THIS caller should write the config row for one branch-and-destination.
+ *
+ * Claimed per DESTINATION, not per branch, because the row it guards carries one:
+ * a branch already claimed for where its first stuck job was going could never be
+ * given a row for the second place it ships to, and that second route then failed
+ * forever with nothing on the to-do list. `key` is `branchKey` — the two must
+ * agree or a row is written twice or never.
  *
  * False when someone already has, and false when Redis is unreachable — the
  * cautious direction on purpose: skipping a row costs a supervisor one manual
  * entry, while writing a duplicate puts a second half-finished line into the
  * table that drives every assignment.
  */
-export async function claimUnmappedConfigRow(customerId: string): Promise<boolean> {
-  if (!customerId || writtenBranches.has(customerId)) return false;
+export async function claimUnmappedConfigRow(key: string): Promise<boolean> {
+  if (!key || writtenBranches.has(key)) return false;
   const redis = getRedis();
   if (!redis) return false;
   try {
-    const res = await redis.set(`config:unmapped_written:${customerId}`, vnTimestamp(), {
+    const res = await redis.set(`config:unmapped_written:${key}`, vnTimestamp(), {
       nx: true, ex: UNMAPPED_TTL_S,
     });
     // Remembered either way: won or lost, this instance has its answer and never
-    // needs to ask again for this branch.
-    writtenBranches.add(customerId);
+    // needs to ask again for this branch and destination.
+    writtenBranches.add(key);
     return res === "OK";
   } catch {
     return false;

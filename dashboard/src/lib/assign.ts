@@ -2467,6 +2467,24 @@ export async function autoAssignCycle(
       const dropName = job.stops?.find((s) => s.stop_type_id === 2)?.customer_name ?? dropoffId ?? "—";
       log(`Job ${jobId} - NO DROPOFF RULE for ${dropName} | ${route}`, "ERROR");
       fail("NO_DROPOFF_RULE", jobId, who, `Chưa cấu hình tuyến tới ${dropName} — cần thêm dòng dropoff_id trong Google Sheet`);
+      // The fix is the same object as an unconfigured branch's — a row, this time
+      // scoped to THIS destination — so it goes down the same path. Until this,
+      // the failure was reported in "Cần xử lý" and NOWHERE ELSE: nothing put it in
+      // the config to-do list, so the row it needs was never offered and the job
+      // failed again every cycle with no way to act on it from the dashboard.
+      //
+      // Only with a destination we can NAME. The sheet matches destinations by
+      // name, so a row written blank would answer for every destination — it
+      // would sit beside the branch's real rules claiming their trips too.
+      const dropStopName = job.stops?.find((st) => st.stop_type_id === 2)?.customer_name ?? "";
+      if (customerId && jobCustomerName && dropStopName) {
+        unmappedFound.push({
+          customer_id: customerId,
+          pickup_name: jobCustomerName,
+          dropoff_name: dropStopName,
+          at: jobTime,
+        });
+      }
       continue;
     }
 
