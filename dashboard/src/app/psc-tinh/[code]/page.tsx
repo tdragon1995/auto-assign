@@ -8,7 +8,7 @@ import PscTinhPage from "./psc-tinh-client";
 export const dynamic = "force-static";
 
 export function generateStaticParams() {
-  return ["D021", "D023", "D030", "D036"].map((code) => ({ code }));
+  return ["D021", "D023", "D030", "D036", "KGIANG"].map((code) => ({ code }));
 }
 
 export default function Page() {

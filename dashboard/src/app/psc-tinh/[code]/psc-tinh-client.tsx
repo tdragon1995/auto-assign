@@ -45,6 +45,7 @@ const PSC_META: Record<string, { label: string; psc_code: string }> = {
   D023: { label: "BRA - D023 (Vũng Tàu)", psc_code: "D023" },
   D030: { label: "BRA - D030", psc_code: "D030" },
   D036: { label: "BRA - D036 (Tân An)", psc_code: "D036" },
+  KGIANG: { label: "BRA - KGiang", psc_code: "KGIANG" },
 };
 
 const hm = (ts?: string | null) => (ts ? ts.slice(11, 16) : null);
