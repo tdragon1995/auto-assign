@@ -301,9 +301,12 @@ interface PayDay {
    *  record to tidy. */
   open_in: string[];
   stray_out: string[];
-  hour_pay: number;
+  /** null when the day has no rostered shift — the hours are withheld. */
+  hour_pay: number | null;
   km_pay: number;
   total_pay: number;
+  /** Why the day has no shift, in Vietnamese, when provisional. */
+  miss_reason: string | null;
 }
 
 interface PayReport {
@@ -2517,7 +2520,7 @@ export default function ChamCongPage() {
                         </div>
                         <div className="px-4 pb-4 space-y-2.5 border-t border-gray-100 pt-3">
                           <PayLine
-                            label="Giờ chấm công"
+                            label="Giờ công"
                             detail={`${fmtMins(payReport.summary.worked_mins)} × ${vndFmt.format(payReport.rates.per_hour)}đ/giờ`}
                             amount={payReport.summary.hour_pay}
                           />
@@ -2543,9 +2546,9 @@ export default function ChamCongPage() {
                         <div className="flex items-start gap-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
                           <AlertCircle size={14} className="mt-0.5 shrink-0" />
                           <span>
-                            {payReport.summary.provisional_days} ngày <span className="font-semibold">tạm tính</span>:
-                            hệ thống chưa có ca làm việc cho những ngày này nên giờ công được tính theo giờ chấm
-                            công. Số thực nhận có thể khác — bảng lương tính theo ca.
+                            {payReport.summary.provisional_days} ngày <span className="font-semibold">chưa tính tiền
+                            giờ</span> vì chưa có ca trong bảng công. Số km của những ngày đó vẫn được tính đủ. Mở
+                            từng ngày để xem lý do, và báo điều phối để bổ sung.
                           </span>
                         </div>
                       )}
@@ -2581,6 +2584,9 @@ export default function ChamCongPage() {
                                   </div>
                                   <p className="text-xs font-bold text-gray-800 shrink-0 tabular-nums">
                                     {fmtVnd(d.total_pay)}
+                                    {d.hour_pay === null && (
+                                      <span className="block text-[10px] font-normal text-amber-600">km only</span>
+                                    )}
                                   </p>
                                 </button>
 
@@ -2621,8 +2627,9 @@ export default function ChamCongPage() {
                                           )}
                                           {payDayDetail.day.provisional && (
                                             <p className="text-[11px] text-amber-700">
-                                              ⚠ Chưa có ca làm việc cho ngày này — giờ công tạm tính theo giờ chấm
-                                              công, có thể khác bảng lương.
+                                              ⚠ {payDayDetail.day.miss_reason ?? "Chưa có ca làm việc cho ngày này"} —
+                                              ngày này <span className="font-semibold">chưa tính tiền giờ</span>. Số
+                                              km vẫn được tính. Báo điều phối để bổ sung bảng công.
                                             </p>
                                           )}
                                           {payDayDetail.day.inverted && (

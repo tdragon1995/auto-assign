@@ -11,6 +11,8 @@ export const SHEET_GID = {
   schedule_job: "834076876",
   nghi_phep: "158238549",
   drivers: "467715355",
+  // Per-driver, per-DATE roster. The only source of a pay shift — see shift-grid.ts.
+  shift_grid: "1656364758",
   // Read by the location audit only. The engine never reads this tab — it sees
   // only the branch ids the workbook's own lookup already resolved — which is
   // exactly why a duplicate name here goes unnoticed until a pickup fails.
@@ -45,6 +47,12 @@ export const SHEET_CONTRACT = {
   sunday: {
     label: "CONFIG SUNDAY",
     require: ["customer_id", "driver_id", "smart_driver_id", "Driver", "shift_start", "shift_end"],
+  },
+  shift_grid: {
+    label: "Shift grid (bảng công)",
+    // Date columns are `d/M` and rotate monthly, so only the identity columns
+    // can be required — see loadShiftGrid.
+    require: ["Nhân viên", "Mã NV"],
   },
   drivers: {
     label: "Driver (roster)",

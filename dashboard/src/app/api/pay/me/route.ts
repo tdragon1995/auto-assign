@@ -40,6 +40,8 @@ import {
   type PayPunch, type PayJob, type DayFacts,
 } from "@/lib/pay";
 import { vnDate, addDays } from "@/lib/time";
+import { loadShiftGrid, lookupShift, type ShiftGrid } from "@/lib/shift-grid";
+import { staffCode } from "@/lib/display-names";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -77,32 +79,42 @@ const num = (v: number | string | null | undefined): number => {
  * The day's facts other than the taps: the roster window, and the first and last
  * real task.
  *
- * ⚠ THE SHIFT WINDOW IS NOT SOURCED YET. The payroll rule leans on it in both
- * directions (pay.ts/workedMinutes), but the roster that holds it lives in the
- * Google Sheet and the OTHER Supabase project, neither of which this route
- * reads. Until that is wired, every day comes back `missing_shift: true` and the
- * clock falls back to raw taps — closer than the old pay-nothing rule, but NOT
- * the payroll figure, and the response says so per day rather than quietly.
+ * THE SHIFT COMES FROM THE GRID AND NOWHERE ELSE. Where the grid has no window
+ * the day is NOT priced — `workedMinutes` still returns a best-effort span so the
+ * screen can show something, but `provisional` is set and the caller suppresses
+ * the đồng. Falling back to the taps is what pays a 3.5-hour shift as 12.83.
  *
  * `firstTaskAt` is a PROXY. The workbook uses the job's Started Time; pay_jobs
- * stores the pickup's completion instead, which is a few minutes later. It only
- * matters on days with no check-in tap (~3%), and only to those few minutes.
+ * stores the pickup's completion instead, a few minutes later. It only matters on
+ * days with no check-in tap (~3%), and only by those few minutes.
  */
-function factsFor(jobs: PayJob[]): DayFacts {
+function factsFor(jobs: PayJob[], grid: ShiftGrid | null, driverName: string, date: string): DayFacts {
   const stamps = (xs: (string | null)[]) => xs.filter((t): t is string => !!t).map(Date.parse).filter(Number.isFinite);
   const firsts = stamps(jobs.map((j) => j.pickup_completed_ts));
   const lasts = stamps(jobs.map((j) => j.dropoff_completed_ts));
+  const look = grid ? lookupShift(grid, staffCode(driverName) || null, date) : null;
   return {
-    shift: NO_SHIFT,
+    shift: look?.shift
+      ? { start: look.shift.start, end: look.shift.end, source: "contract" }
+      : NO_SHIFT,
     firstTaskAt: firsts.length ? new Date(Math.min(...firsts)).toISOString() : null,
     lastTaskAt: lasts.length ? new Date(Math.max(...lasts)).toISOString() : null,
   };
 }
 
+/** Why a day has no rostered shift, in the driver's own words. Shown instead of
+ *  a đồng figure, so an unpriced day reads as a record to fix rather than a bug. */
+const MISS_REASON: Record<string, string> = {
+  "day-off": "Bảng công ghi ngày nghỉ",
+  "not-working": "Bảng công ghi không đi làm",
+  "no-driver-row": "Chưa có tên bạn trong bảng công",
+  "date-not-covered": "Bảng công chưa có ngày này",
+};
+
 /** One day's line on the month view. The hours are derived HERE, from the stored
  *  taps, rather than read from a column — that is what makes the payroll formula
  *  replaceable without re-archiving anything. See pay.ts/workedMinutes. */
-function dayLine(date: string, km: number, jobs: number, punches: PayPunch[], facts: DayFacts) {
+function dayLine(date: string, km: number, jobs: number, punches: PayPunch[], facts: DayFacts, missReason: string | null = null) {
   const worked = workedMinutes(punches, facts);
   return {
     date,
@@ -115,16 +127,21 @@ function dayLine(date: string, km: number, jobs: number, punches: PayPunch[], fa
     out_at: worked.out_at,
     in_basis: worked.in_basis,
     out_basis: worked.out_basis,
-    /** No roster window — this day's hours are a best effort, not payroll. */
+    /** No roster window, so the hours are a best effort and NOT payroll. The
+     *  caller shows `miss_reason` in place of the đồng figure. */
     provisional: worked.missing_shift,
+    miss_reason: worked.missing_shift ? missReason : null,
     inverted: worked.inverted,
     // Taps that did not pair off. Under the roster rule these no longer cost the
     // driver anything, so they are a record to tidy rather than lost pay.
     open_in: worked.open_in.map(hhmm).filter((t): t is string => t !== null),
     stray_out: worked.stray_out.map(hhmm).filter((t): t is string => t !== null),
-    hour_pay: hourPayFor(worked.minutes),
+    // NO ĐỒNG FOR AN UNROSTERED DAY. The kilometres are still real and still
+    // paid; only the hours half is withheld, because that is the half the roster
+    // decides. Paying tap-to-tap here is the 12.83-vs-3.5 error.
+    hour_pay: worked.missing_shift ? null : hourPayFor(worked.minutes),
     km_pay: kmPayFor(km),
-    total_pay: hourPayFor(worked.minutes) + kmPayFor(km),
+    total_pay: (worked.missing_shift ? 0 : hourPayFor(worked.minutes)) + kmPayFor(km),
   };
 }
 
@@ -174,6 +191,10 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "Ngày không hợp lệ." }, { status: 400 });
     }
     try {
+      // The grid read is cached for ten minutes and shared across drivers, so a
+      // day open costs at most one sheet fetch. It must never fail the response —
+      // a day with no shift is a fault to report, not an error page.
+      const grid = await loadShiftGrid().catch(() => null);
       const [jobs, punches] = await Promise.all([
         sbSelect<PayJob>(
           "pay_jobs",
@@ -190,7 +211,9 @@ export async function GET(req: NextRequest) {
         ok: true,
         date: askedDate,
         rates,
-        day: dayLine(askedDate, km, jobs.length, punches, factsFor(jobs)),
+        day: dayLine(askedDate, km, jobs.length, punches,
+          factsFor(jobs, grid, session.driver_name, askedDate),
+          grid ? MISS_REASON[lookupShift(grid, staffCode(session.driver_name) || null, askedDate).reason ?? ""] ?? null : null),
         jobs: jobs.map((j) => ({
           job_id: j.job_id,
           reference_number: j.reference_number,
@@ -238,6 +261,7 @@ export async function GET(req: NextRequest) {
       });
     }
 
+    const grid = await loadShiftGrid().catch(() => null);
     const [daily, punches] = await Promise.all([
       sbSelect<DailyRow>(
         "v_pay_daily",
@@ -267,11 +291,18 @@ export async function GET(req: NextRequest) {
     // fetching a month of job rows to sharpen it would undo the reason the rollup
     // exists — so the month is deliberately the coarser of the two views, and the
     // day drill-down (which does have the rows) is the exact one.
-    const days = dates.map((d) =>
-      dayLine(d, kmByDay.get(d) ?? 0, jobsByDay.get(d) ?? 0, punchesByDay.get(d) ?? [], {
-        shift: NO_SHIFT, firstTaskAt: null, lastTaskAt: null,
-      }),
-    );
+    // The month view reads the rollup, which carries kilometres but no stamps, so
+    // it cannot supply first/last task. Those only sharpen the fallback path; the
+    // SHIFT still comes from the grid, which is what decides whether a day is
+    // priced at all.
+    const code = staffCode(session.driver_name) || null;
+    const days = dates.map((d) => {
+      const look = grid ? lookupShift(grid, code, d) : null;
+      return dayLine(d, kmByDay.get(d) ?? 0, jobsByDay.get(d) ?? 0, punchesByDay.get(d) ?? [], {
+        shift: look?.shift ? { start: look.shift.start, end: look.shift.end, source: "contract" } : NO_SHIFT,
+        firstTaskAt: null, lastTaskAt: null,
+      }, look ? MISS_REASON[look.reason ?? ""] ?? null : null);
+    });
 
     // Totals are built from the month's own sums, not from adding up the day
     // lines' đồng: the kilometres are summed first and priced once, for the same
@@ -296,9 +327,9 @@ export async function GET(req: NextRequest) {
         jobs: days.reduce((s, d) => s + d.jobs, 0),
         km: roundedKm,
         worked_mins: totalMins,
-        hour_pay: hourPayFor(totalMins),
+        hour_pay: days.reduce((s2, d) => s2 + (d.hour_pay ?? 0), 0),
         km_pay: kmPayFor(roundedKm),
-        total_pay: hourPayFor(totalMins) + kmPayFor(roundedKm),
+        total_pay: days.reduce((s2, d) => s2 + (d.hour_pay ?? 0), 0) + kmPayFor(roundedKm),
         open_in_days: days.filter((d) => d.open_in.length > 0).length,
         /** Days whose hours are a tap-only best effort because no roster window
          *  was available. While the shift source is unwired this is every day. */

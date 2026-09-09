@@ -321,5 +321,45 @@ check("a completion stamp becomes +07:00",
   withChamCong.jobs[0].dropoff_completed_ts === `${DAY}T09:00:00+07:00`,
   String(withChamCong.jobs[0].dropoff_completed_ts));
 
+
+console.log("\n8. The roster grid decides whether a day is priced");
+
+const { resolveGridDate, parseGridCell, buildShiftGrid, lookupShift } =
+  await import("../src/lib/shift-grid");
+
+check("a window parses", JSON.stringify(parseGridCell("6:00-15:00")) === '{"start":"06:00","end":"15:00"}',
+  JSON.stringify(parseGridCell("6:00-15:00")));
+check("'P' is not a shift", parseGridCell("P") === null);
+check("'Quốc khánh' is not a shift", parseGridCell("Quốc khánh") === null);
+check("blank is not a shift", parseGridCell("") === null);
+
+// Headers carry no year, so each column takes the year nearest today. This has
+// to survive a December→January boundary in BOTH directions.
+check("1/8 near an August today", resolveGridDate("1/8", "2026-08-20") === "2026-08-01");
+check("2/1 read from late December is NEXT year",
+  resolveGridDate("2/1", "2026-12-28") === "2027-01-02", String(resolveGridDate("2/1", "2026-12-28")));
+check("28/12 read from early January is LAST year",
+  resolveGridDate("28/12", "2027-01-03") === "2026-12-28", String(resolveGridDate("28/12", "2027-01-03")));
+check("31/2 does not silently become 3 March", resolveGridDate("31/2", "2026-02-10") === null);
+
+const grid = buildShiftGrid([
+  { "Nhân viên": "", "Mã NV": "", "1/8": "T7", "2/8": "CN" },          // weekday strip
+  { "Nhân viên": "A", "Mã NV": "PT101705", "1/8": "15:00-21:00", "2/8": "" },
+  { "Nhân viên": "B", "Mã NV": "PT101574", "1/8": "P", "2/8": "17:00-20:30" },
+], "2026-08-05");
+
+check("the weekday strip is not a driver", grid.drivers.size === 2, String(grid.drivers.size));
+check("a rostered day resolves",
+  lookupShift(grid, "PT101705", "2026-08-01").shift?.start === "15:00");
+check("a blank cell is a day off, not missing data",
+  lookupShift(grid, "PT101705", "2026-08-02").reason === "day-off");
+check("'P' reads as not working", lookupShift(grid, "PT101574", "2026-08-01").reason === "not-working");
+check("an unknown driver is no-driver-row",
+  lookupShift(grid, "PT999999", "2026-08-01").reason === "no-driver-row");
+check("a date outside the grid says so",
+  lookupShift(grid, "PT101705", "2026-07-15").reason === "date-not-covered");
+check("...and NEVER returns a shift it does not have",
+  lookupShift(grid, "PT101705", "2026-07-15").shift === null);
+
 console.log(failures === 0 ? "\nAll pay checks passed." : `\n${failures} check(s) FAILED.`);
 process.exitCode = failures === 0 ? 0 : 1;

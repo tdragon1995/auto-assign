@@ -34,6 +34,8 @@ import {
   RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch,
 } from "@/lib/pay";
 import { vnDate } from "@/lib/time";
+import { loadShiftGrid, lookupShift } from "@/lib/shift-grid";
+import { staffCode } from "@/lib/display-names";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -86,6 +88,10 @@ export async function GET(req: NextRequest) {
   const { from, to } = payPeriodRange(period);
 
   try {
+    // Cached ten minutes and shared across every driver in the response, so the
+    // whole panel costs one sheet fetch. Never fatal: an unreadable grid means
+    // every day reports as unrostered, which is visible, rather than a 502.
+    const grid = await loadShiftGrid().catch(() => null);
     const [daily, punches] = await Promise.all([
       selectAllPages<DailyRow>(
         "v_pay_daily",
@@ -136,14 +142,20 @@ export async function GET(req: NextRequest) {
         let mins = 0;
         let openInDays = 0;
         let provisionalDays = 0;
-        for (const dayPunches of e.byDay.values()) {
-          // ⚠ No roster window here either — see factsFor() in /api/pay/me. Every
-          // day is therefore the tap-only fallback, and `provisional_days` says
-          // how many, so nobody pays against this table thinking it is final.
-          const w = workedMinutes(dayPunches, { shift: NO_SHIFT, firstTaskAt: null, lastTaskAt: null });
-          mins += w.minutes;
+        const code = staffCode(e.name ?? "") || null;
+        for (const [day, dayPunches] of e.byDay) {
+          const look = grid ? lookupShift(grid, code, day) : null;
+          const w = workedMinutes(dayPunches, {
+            shift: look?.shift ? { start: look.shift.start, end: look.shift.end, source: "contract" } : NO_SHIFT,
+            firstTaskAt: null, lastTaskAt: null,
+          });
+          // Unrostered days contribute NO paid minutes. Their kilometres still
+          // count — the roster decides the clock, not the distance — and the day
+          // is counted in `provisional_days` so điều phối can see how much of the
+          // month is waiting on the bảng công rather than on the drivers.
+          if (!w.missing_shift) mins += w.minutes;
+          else provisionalDays++;
           if (w.open_in.length > 0) openInDays++;
-          if (w.missing_shift) provisionalDays++;
         }
         const km = Math.round(e.km * 100) / 100;
         return {
