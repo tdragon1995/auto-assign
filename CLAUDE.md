@@ -397,6 +397,15 @@ These are the things most likely to burn a future agent working on this codebase
     a new pair costs a billed request, and recomputing it would re-spend money to get
     the same number.
 
+    **The shift comes from the roster grid ALONE** (`gid=1656364758`) plus the
+    driver's own taps. The payroll workbook is being DEPRECATED — learn the rules from
+    it, do not reproduce it, and do NOT wire its `Ca làm` standing-contract tab, which
+    is not authoritative. Sunday and substitutions are maintained in the grid.
+    Do not validate against August: the grid's columns begin 2026-08-01 and the review
+    was forward-looking, so 64% agreement there measures the old month, not the rule.
+    A shift that cannot be resolved is a DATA FAULT for "Cần xử lý" — never a
+    tap-to-tap fallback, which over-pays. See `docs/driver-pay.md`.
+
     **The hourly rate is NOT 30.000đ for everyone** — Lê Ngọc Anh Tú's 06:00–15:00
     morning shift is a fixed 35.000đ/h, on top of the evening shift his PT roster
     line names. `RATE_PER_HOUR_VND` as one global constant is wrong.

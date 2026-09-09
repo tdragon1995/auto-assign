@@ -184,6 +184,50 @@ already NOT copied: where the check-out tap exactly equals the shift end and the
 task is later, its formula keeps the tap instead of extending. `workedMinutes` takes
 the clean `MAX`.
 
+## Decided, 2026-09-09 — the app replaces the workbook
+
+**The payroll workbook is being deprecated.** It is a reference to learn the rules
+from, not a target to reproduce. The app becomes the source of truth, and
+`2026.08_PT_Records_Vận_14.08.xlsx` should be read as history once this ships.
+
+**The shift comes from ONE place: the roster grid** (`gid=1656364758`), in
+conjunction with the driver's actual chấm-công taps. **Ignore `Ca làm`** — the
+standing weekly contract the workbook used is not authoritative and must not be
+wired. Sunday rows and substitutions are maintained in the grid itself.
+
+Which makes the resolution chain a single lookup, not the four-source precedence the
+workbook implements:
+
+```
+shift = grid[driver code][date]        // "6:00-15:00", or P / Quốc khánh / blank
+in    = MAX(check-in tap, shift start)
+out   = MAX(shift end, last completed task)
+```
+
+### Do not validate this against August
+
+Measured 1–14/08 after the grid was reviewed: **307 of 482 payroll driver-days match
+(64%)**, barely moved from 295 before. That is NOT evidence the grid is wrong — the
+grid's date columns start 2026-08-01 and the review was forward-looking, so August
+largely predates the discipline. The workbook is also the thing being retired, so
+agreeing with it is not the goal.
+
+The 175 that do not match break down cleanly, and **these three are the fault
+classes the app should REPORT rather than guess at**:
+
+| what | count | meaning |
+|---|---:|---|
+| driver code absent from the grid entirely | 73 | paid but never rostered — includes the FT-overflow accounts, which are rostered under their `DC…` twin and so have no PT row at all |
+| cell blank (day off) but payroll paid | 66 | concentrated on Sundays (02/08 etc.) — either the Sunday roster has not been folded in for past months, or they worked unrostered |
+| cell says `P` (phép) but payroll paid | 5 | a straight contradiction: on leave and paid |
+
+None of these should silently fall back to tap-to-tap, which over-pays (see Lê Hoàng
+Anh Duy). An unresolvable shift is a DATA FAULT and belongs in "Cần xử lý" beside the
+sheet alarms, with no đồng figure for that day.
+
+Validate from **September onward**, where the grid is being maintained, against
+whatever payroll produces for the 15/09–14/10 period.
+
 ## Answered, 2026-09-06
 
 **The 35.000đ rate belongs to the PERSON, not the shift** — it is Lê Ngọc Anh Tú's
