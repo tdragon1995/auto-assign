@@ -17,6 +17,8 @@ import {
 import { normalizeDriverName } from "@/lib/driver-match";
 import { DriverName } from "./driver-name";
 import { DriverCombobox } from "./driver-combobox";
+import { createDutyLeave } from "@/lib/create-duty-leave";
+import type { SubDutyConflict } from "@/lib/sub-duty";
 
 const TYPE_LABEL: Record<string, string> = {
   "Nghỉ nguyên buổi": "Cả ngày",
@@ -40,6 +42,8 @@ function ddmm(date: string): string {
 
 
 interface LeaveRowView {
+  subDutyConflicts?: SubDutyConflict[];
+  subDutyWarning?: string | null;
   timeLabel: string | null;
   subs: LeaveOnDate["subs"];
   leave_from: string;
@@ -60,7 +64,7 @@ function groupByDriver(drivers: LeaveOnDate[]): DriverGroup[] {
   const map = new Map<string, DriverGroup>();
   for (const d of drivers) {
     const g = map.get(d.driver_id);
-    const row = { timeLabel: d.timeLabel, subs: d.subs, leave_from: d.leave_from, duplicate: d.duplicate };
+    const row = { subDutyConflicts: d.subDutyConflicts, subDutyWarning: d.subDutyWarning, timeLabel: d.timeLabel, subs: d.subs, leave_from: d.leave_from, duplicate: d.duplicate };
     if (!g) {
       map.set(d.driver_id, {
         driver_id: d.driver_id,
@@ -1257,6 +1261,83 @@ function makeRestoreRow(onRefresh: RefreshFn): DeleteRowFn {
  * drivers stay quiet with a green check. Resigned drivers (permanent — routing
  * needs a re-plan, not a sub) get a red chip plus their first day off.
  */
+
+function DutyCoverRow({ duty, parentId, drivers, onFill }: {
+  duty: SubDutyConflict;
+  parentId: string;
+  drivers: ConfigDriver[];
+  onFill: FillSubsFn;
+}) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const created = useRef(false);
+  const saving = useRef(false);
+  const [done, setDone] = useState(false);
+  const candidates = drivers.filter((d) => d.driver_id !== duty.driver_id && d.driver_id !== parentId);
+  const windowLabel = duty.from && duty.to ? duty.from + "–" + duty.to : null;
+
+  async function save() {
+    if (saving.current) return;
+    const cover = candidates.find((d) => d.name === name);
+    if (!cover) { setError("Chọn người thay từ danh sách"); return; }
+    saving.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      if (!created.current) {
+        await createDutyLeave(duty, fetch);
+        created.current = true;
+      }
+      const ok = await onFill(
+        { driver_id: duty.driver_id, leave_from: duty.date, timeLabel: windowLabel },
+        [{ name: cover.name, from: null, to: null }],
+      );
+      if (!ok) {
+        setError("Đã tạo dòng nghỉ, chưa lưu được người thay. Bấm lưu để thử lại việc gán người thay.");
+        return;
+      }
+      setDone(true);
+      setOpen(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      saving.current = false;
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-1 border-t border-dotted border-amber-400 pt-1 text-[11px] text-amber-800">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <AlertTriangle className="size-3 shrink-0" aria-hidden="true" />
+        <DriverName full={duty.name} />
+        <span>có {duty.branches} tuyến riêng · {ddmm(duty.date)} · {windowLabel || "Cả ngày"}</span>
+        {done ? <span className="text-emerald-700">Đã tạo dòng nghỉ và gán người thay</span> : (
+          <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]"
+            disabled={busy} onClick={() => setOpen((v) => !v)}>
+            {open ? "Đóng" : "Thêm người thay"}
+          </Button>
+        )}
+      </div>
+      {open && (
+        <div className="mt-1">
+          <p>Tạo dòng nghỉ riêng cho {splitDriverName(duty.name).name} trong ngày và khung giờ trên.</p>
+          <fieldset disabled={busy} className="mt-1 flex flex-wrap items-center gap-1.5">
+            <DriverCombobox names={name ? [name] : []} onChange={(names) => setName(names[0] || "")}
+              drivers={candidates} max={1} ariaLabel={"Người thay cho " + duty.name} />
+            <Button size="sm" className="h-6 px-2 text-[11px]" onClick={() => void save()} disabled={busy || !name}>
+              {busy ? "Đang lưu…" : created.current ? "Lưu người thay" : "Tạo dòng nghỉ và lưu"}
+            </Button>
+          </fieldset>
+        </div>
+      )}
+      {error && <p role="alert" className="mt-1 text-red-700">{error}</p>}
+    </div>
+  );
+}
+
 function DriverCard({
   g,
   drivers,
@@ -1344,6 +1425,10 @@ function DriverCard({
                 />
               </span>
             </div>
+            {r.subDutyConflicts?.map((duty) => (
+              <DutyCoverRow key={duty.driver_id + duty.date + duty.from + duty.to}
+                duty={duty} parentId={g.driver_id} drivers={drivers} onFill={onFill} />
+            ))}
             {editRow === i && (
               <SubEditor
                 row={r}

@@ -15,7 +15,7 @@ import {
   loadLeaveSuppressions, liveSuppressions, invalidateSuppressionCache,
 } from "@/lib/leave-suppression";
 import { loadDriversFromSheet, loadConfigFromSheets } from "@/lib/config";
-import { subDutyWarning, parseWindowLabel } from "@/lib/sub-duty";
+import { subDutyWarning, subDutyConflicts, parseWindowLabel } from "@/lib/sub-duty";
 import { addDays, timeToMins, vnDate } from "@/lib/time";
 
 export const runtime = "nodejs";
@@ -54,11 +54,24 @@ export async function GET(req: NextRequest) {
     // Shares the same cached parse as the call above — no second sheet read.
     const dropped = await loadInvalidLeaveRows();
     const suppressed = await loadLeaveSuppressions(fresh);
+    // Refresh warnings on reads as well as writes.
+    const config = await loadConfigFromSheets().catch(() => null);
+    const onDate = (date: string) => leaveEntriesOnDate(date, entries).map((entry) => ({
+      ...entry,
+      subDutyConflicts: config ? subDutyConflicts(
+        entry.subs, parseWindowLabel(entry.timeLabel), date, config.mappings,
+      ) : [],
+      subDutyWarning: config ? subDutyWarning(
+        entry.subs.map((sub) => ({ ...sub, driver_id: sub.id })),
+        parseWindowLabel(entry.timeLabel),
+        config.mappings,
+      ) : null,
+    }));
     const today = vnDate();
     const tomorrow = addDays(today, 1);
     return NextResponse.json({
-      today: leaveEntriesOnDate(today, entries),
-      tomorrow: leaveEntriesOnDate(tomorrow, entries),
+      today: onDate(today),
+      tomorrow: onDate(tomorrow),
       // Rows the loader could not attach to a driver, so the panel can ask for a
       // sheet repair. They are NOT leave the engine knows about — see
       // InvalidLeaveRow.
@@ -93,7 +106,7 @@ export async function GET(req: NextRequest) {
               from: picked,
               days: Array.from({ length: days }, (_, i) => addDays(picked, i)).map((d) => ({
                 date: d,
-                entries: leaveEntriesOnDate(d, entries),
+                entries: onDate(d),
                 invalid: invalidLeaveRowsOnDate(d, dropped),
               })),
             },

@@ -153,6 +153,9 @@ function parseCsv(text: string): string[][] {
  *  (dashboard "Cần xử lý" leave-status panel) — not tied to the current clock
  *  the way `isDriverOnLeave` is, so "on leave tomorrow" can be listed today. */
 export interface LeaveOnDate {
+  /** Current config conflict, populated by the dashboard read endpoint. */
+  subDutyWarning?: string | null;
+  subDutyConflicts?: import("./sub-duty").SubDutyConflict[];
   driver_id: string;
   driver_name: string;
   loai_nghi: string;

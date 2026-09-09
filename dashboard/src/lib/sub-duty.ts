@@ -102,3 +102,30 @@ export function subDutyWarning(
     `Cần bố trí người thay cho chính họ, hoặc kiểm tra lại giờ.`
   );
 }
+
+
+/** One actionable warning for one substitute on the displayed day. */
+export interface SubDutyConflict {
+  driver_id: string;
+  name: string;
+  date: string;
+  from: string | null;
+  to: string | null;
+  branches: number;
+}
+
+export function subDutyConflicts(
+  subs: readonly { id: string; name: string; from: string | null; to: string | null }[],
+  leaveWindow: { start: string; end: string } | null,
+  date: string,
+  mappings: readonly Mapping[],
+): SubDutyConflict[] {
+  return subs.flatMap((sub) => {
+    const window = sub.from && sub.to ? { start: sub.from, end: sub.to } : leaveWindow;
+    const branches = busyBranches(sub.id, window, mappings).length;
+    return branches ? [{
+      driver_id: sub.id, name: sub.name, date,
+      from: window?.start ?? null, to: window?.end ?? null, branches,
+    }] : [];
+  });
+}
