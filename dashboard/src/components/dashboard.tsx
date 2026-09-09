@@ -485,9 +485,6 @@ export function Dashboard() {
 
   // Refresh handler with toast
   const handleRefresh = useCallback(async () => {
-    syncStatus();
-    loadScheduleErrors();
-    loadLeaveStatus(true);
     try {
       const configRes = await fetch("/api/config");
       if (!configRes.ok) throw new Error(`Config returned ${configRes.status}`);
@@ -496,11 +493,15 @@ export function Dashboard() {
       setMappingCount(configData.mappingCount ?? 0);
       setPscRouteCount(configData.pscRouteCount ?? 0);
       setDrivers(configData.drivers ?? []);
+      await syncStatus();
       toast.success(`Google Sheet reloaded: ${configData.mappingCount} mapping(s), ${configData.pscRouteCount} PSC route(s) fetched`);
     } catch (err) {
       toast.error(`Refresh failed: ${err instanceof Error ? err.message : String(err)}`);
     }
 
+  }, [syncStatus]);
+
+  const handleMisaRefresh = useCallback(async () => {
     // Shift/leave sync from MISA. It can't run in this app — the login needs a
     // real browser — so this only dispatches the GitHub Actions run that does,
     // and the sheet updates a couple of minutes later. Reported separately from
@@ -528,7 +529,8 @@ export function Dashboard() {
     } catch (err) {
       toast.error(`Đồng bộ MISA thất bại: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [syncStatus, loadScheduleErrors, loadLeaveStatus]);
+    await loadLeaveStatus(true);
+  }, [loadLeaveStatus]);
 
   const isProd = env === "prod";
   const visibleUnfinished = unfinished.filter((u) => !doneKeys.has(`u:${u.row}`));
@@ -606,7 +608,10 @@ export function Dashboard() {
           </div>
 
           <Button variant="outline" size="sm" className="text-slate-900" onClick={handleRefresh}>
-            Làm mới
+            Làm mới config auto-assign
+          </Button>
+          <Button variant="outline" size="sm" className="text-slate-900" onClick={handleMisaRefresh}>
+            Đồng bộ MISA
           </Button>
         </div>
       </header>
@@ -700,7 +705,7 @@ export function Dashboard() {
                   branchRules={branchRules}
                   drivers={drivers}
                   parsedAt={parsedAt}
-                  onSaved={(key?: string) => { if (key) markDone(key); syncStatus(); }}
+                  onSaved={(key?: string) => { if (key) markDone(key); void handleRefresh(); }}
                 />
 
                 <LeaveStatusPanel

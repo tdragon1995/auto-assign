@@ -303,6 +303,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     // Branches with a line but nobody on it — the to-do list, read back out of
     // the sheet rather than kept anywhere else. See UnfinishedConfigRow.
     const unfinished: UnfinishedConfigRow[] = [];
+    const recordedMissing = await (await import("./smart-log-kv")).readCoverageGaps();
     const pickupNames = new Set<string>();
     // customer id → branch name, so a warning can say the place rather than the id.
     const nameByCustomer = new Map<string, string>();
@@ -363,8 +364,9 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
           // simply never had a driver — a years-old test row, something abandoned
           // half-finished — and those are not work waiting on anyone. Listing
           // them buries the ones that are.
-          if (looksAutoCreated(window)) {
-            unfinished.push({ row: idx + 2, customer_id, pickup_name: pickupName, dropoff_name: dropoffName, window });
+          const missingTimes = recordedMissing.filter((g) => g.customer_id === customer_id && (!dropoffName || g.dropoff_name === dropoffName)).map((g) => g.at);
+          if (looksAutoCreated(window) || missingTimes.length > 0) {
+            unfinished.push({ row: idx + 2, customer_id, pickup_name: pickupName, dropoff_name: dropoffName, window, missingTimes });
           }
         }
         continue;
@@ -452,10 +454,10 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     let gaps: CoverageGap[] = [];
     try {
       const kv = await import("./smart-log-kv");
-      const recorded = await kv.readCoverageGaps();
+      const recorded = recordedMissing;
       if (recorded.length) {
         const { open, closed } = resolveGaps(recorded, rulesByCustomer);
-        gaps = open;
+        gaps = open.filter((g) => !stillNeeded.some((u) => u.customer_id === g.customer_id && (!u.dropoff_name || u.dropoff_name === g.dropoff_name)));
         if (closed.length) await kv.clearCoverageGaps(closed);
       }
     } catch (e) {

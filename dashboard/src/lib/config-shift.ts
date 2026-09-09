@@ -310,6 +310,20 @@ export function coverageLostWithout(rules: BranchRule[], row: number): string | 
 export const copyKey = (driver: string, start: string, end: string, dropoff: string) =>
   `${driver.trim()}|${start.trim()}|${end.trim()}|${dropoff.trim().toLowerCase()}`;
 
+/** A boundary is available if it can form a nonempty shift without overlapping peers. */
+export function availableTime(lines: readonly Line[], index: number, edge: "start" | "end", value: string): boolean {
+  const own = lines[index];
+  const other = edge === "start" ? "end" : "start";
+  const peers = lines.filter((l, i) => i !== index && sameScope(l, own));
+  const valid = (boundary: string) => {
+    const candidate = { ...own, [edge]: value, [other]: boundary };
+    return candidate.start !== candidate.end && peers.every((p) => !findClash([candidate, p]));
+  };
+  if (own[other]) return valid(own[other]);
+  for (let m = 0; m < 1440; m += 5) if (valid(fromMin(m))) return true;
+  return false;
+}
+
 /** A rule as the copy picker hands it over: what to write, with no row yet. */
 export interface CopiedLine {
   driver: string;

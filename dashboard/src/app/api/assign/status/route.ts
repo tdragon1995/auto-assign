@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { loadConfigFromSheets } from "@/lib/config";
 import { getStatusBundle, statusPayload } from "@/lib/smart-log-kv";
 
 /**
@@ -14,7 +15,8 @@ export async function GET(req: NextRequest) {
   // Shaped by statusPayload rather than here, so the "every field the bundle
   // computes reaches the dashboard" rule is one testable function instead of a
   // list to keep in step. It has fallen out of step three times.
-  return NextResponse.json(
-    statusPayload(await getStatusBundle(100), req.nextUrl.searchParams.get("since")),
-  );
+  const [bundle, config] = await Promise.all([getStatusBundle(100), loadConfigFromSheets()]);
+  return NextResponse.json({ ...statusPayload(bundle, req.nextUrl.searchParams.get("since")),
+    ...(config ? { unfinished: config.unfinished, gaps: config.gaps, overlaps: config.overlaps,
+      branchRules: config.branchRules, parsedAt: config.parsedAt } : {}) });
 }

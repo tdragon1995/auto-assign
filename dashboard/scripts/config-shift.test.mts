@@ -16,7 +16,7 @@
  */
 import type { BranchRule, CoverageGap } from "../src/lib/types";
 const { servesDropoff, shrinkOptions, overlapKey, coverageLostWithout, findClash, blocks, toMin, fromMin,
-  applyCopiedLines } = await import("../src/lib/config-shift");
+  applyCopiedLines, availableTime } = await import("../src/lib/config-shift");
 
 let failed = 0;
 function ok(label: string, cond: boolean, detail?: string) {
@@ -341,6 +341,17 @@ console.log("\nthe branch's day as ONE destination sees it");
   ok("an unknown destination filters nothing", servesDropoff(branch, "").length === 3);
   ok("whitespace is not a destination", servesDropoff(branch, "   ").length === 3);
   ok("padding either side still matches", servesDropoff(branch, ` ${MEDIC} `).length === 2);
+}
+
+{
+  const line = (start: string, end: string, dropoff = "") => ({ key: start, driver: "A", start, end, dropoff });
+  const day = [line("08:00", "12:00"), line("12:00", "18:00")];
+  ok("hide a start inside the previous shift", !availableTime(day, 1, "start", "11:55"));
+  ok("offer an exact handover", availableTime(day, 1, "start", "12:00"));
+  ok("allow a free overnight end", availableTime(day, 1, "end", "07:00"));
+  ok("exclude overnight overlap", !availableTime([line("22:00", "06:00"), line("06:00", "12:00")], 1, "start", "05:55"));
+  ok("different destinations can use the same hours", availableTime([line("08:00", "12:00", "X"), line("08:00", "12:00", "Y")], 1, "start", "09:00"));
+  ok("a blank new line cannot begin inside a busy window", !availableTime([line("08:00", "12:00"), line("", "")], 1, "start", "09:00"));
 }
 
 console.log(failed === 0 ? "\nAll config-shift assertions passed.\n" : `\n${failed} FAILED\n`);

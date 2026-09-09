@@ -134,7 +134,7 @@ export async function POST(req: NextRequest) {
       replace?: boolean;
     };
     if (!driver_id || !leave_from) return bad("Thiếu driver_id / leave_from");
-    if (!Array.isArray(subs) || subs.length < 1 || subs.length > 3)
+    if (!Array.isArray(subs) || (!replace && subs.length < 1) || subs.length > 3)
       return bad("Cần 1–3 người thay");
 
     // Validate names against the Driver tab (the xlookup source). A name not in

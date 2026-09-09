@@ -56,7 +56,7 @@ section("what the row says");
 {
   const c = configCellsFor(branch("c1", "20079 - TUyen - BS Danh Vinh", "D001 - Lab", "09:15"));
   eq("the four facts, no column positions",
-     c, { pickup: "20079 - TUyen - BS Danh Vinh", dropoff: "D001 - Lab", start: "09:00", end: "10:00" });
+     c, { pickup: "20079 - TUyen - BS Danh Vinh", dropoff: "", start: "", end: "" });
   ok("no driver is carried — that is the decision being asked for", !("driver" in c));
 }
 {
@@ -64,7 +64,7 @@ section("what the row says");
   eq("a job with no destination says so", c.dropoff, "");
 }
 {
-  const c = configCellsFor(branch("c1", "=SUM(A1:A9)", "+7", "09:15"));
+  const c = configCellsFor(branch("3927b076-3af9-11ed-b939-506b8dbc8dfb", "=SUM(A1:A9)", "+7", "09:15"));
   ok("a name that would be read as a formula is escaped", c.pickup.startsWith("'"));
   ok("...and so is the destination", c.dropoff.startsWith("'"));
 }
@@ -89,9 +89,9 @@ section("one row per branch AND destination, not per job");
     branch("c1", "A", "Y", "08:30"),
     branch("c2", "B", "Z", "09:00"),
   ]);
-  eq("one branch shipping two places needs two rows", two.length, 3);
+  eq("non-D001 pickup uses one row across destinations", two.length, 2);
   eq("each row keeps its own destination",
-     two.filter((r) => r.customer_id === "c1").map((r) => r.dropoff_name).sort(), ["X", "Y"]);
+     two.filter((r) => r.customer_id === "c1").map((r) => r.dropoff_name).sort(), ["Y"]);
 }
 {
   eq("a branch with no name is not written", dedupeBranches([branch("c1", "", "X", "09:00")]), []);

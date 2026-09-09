@@ -39,6 +39,7 @@ export interface Mapping {
  * remember to go and look at.
  */
 export interface UnfinishedConfigRow {
+  missingTimes?: string[];
   /** 1-based row in the tab, so a save can go back to the same line. Treated as
    *  a hint and re-checked before writing, never trusted on its own. */
   row: number;

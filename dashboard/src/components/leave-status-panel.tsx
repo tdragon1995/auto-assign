@@ -1096,7 +1096,8 @@ function SubEditor({
     setBlocks((prev) => (prev.length > 1 ? prev.filter((_, j) => j !== i) : prev));
 
   const save = async () => {
-    for (const b of blocks) {
+    const chosen = blocks.filter((b) => b.name.trim());
+    for (const b of chosen) {
       if (!b.name.trim()) return toast.error("Chọn người thay từ danh sách");
       if (!driverNames.has(b.name.trim()))
         return toast.error(`"${b.name.trim()}" không có trong danh sách tài xế`);
@@ -1104,10 +1105,10 @@ function SubEditor({
       if (b.from && b.to && b.from >= b.to)
         return toast.error(`Khung giờ không hợp lệ: ${b.from}–${b.to}`);
     }
-    if (blocks.length > 1) {
-      if (blocks.some((b) => !b.from || !b.to))
+    if (chosen.length > 1) {
+      if (chosen.some((b) => !b.from || !b.to))
         return toast.error("Nhiều người thay thì mỗi người cần khung giờ riêng");
-      const sorted = [...blocks].sort((a, b) => a.from.localeCompare(b.from));
+      const sorted = [...chosen].sort((a, b) => a.from.localeCompare(b.from));
       for (let i = 1; i < sorted.length; i++) {
         if (sorted[i].from < sorted[i - 1].to)
           return toast.error(
@@ -1117,7 +1118,7 @@ function SubEditor({
     }
     setBusy(true);
     const ok = await onSave(
-      blocks.map((b) => ({ name: b.name.trim(), from: b.from || null, to: b.to || null })),
+      chosen.map((b) => ({ name: b.name.trim(), from: b.from || null, to: b.to || null })),
     );
     setBusy(false);
     if (ok) onCancel();

@@ -121,8 +121,7 @@ export interface ConfigCells {
 }
 
 export function configCellsFor(b: UnmappedBranch): ConfigCells {
-  const { start, end } = shiftWindowForJob(b.at);
-  return { pickup: safeCell(b.pickup_name), dropoff: safeCell(b.dropoff_name), start, end };
+  return { pickup: safeCell(b.pickup_name), dropoff: isD001(b.customer_id) ? safeCell(b.dropoff_name) : "", start: "", end: "" };
 }
 
 /**
@@ -183,9 +182,11 @@ export function dedupeBranches(found: readonly UnmappedBranch[]): UnmappedBranch
   return [...first.values()];
 }
 
+const isD001 = (id: string) => DIAG_LOCATIONS.some((l) => l.name === "D001" && l.customer_id === id);
+
 /** Identity of one to-do row: the branch AND where it was going. */
 export const branchKey = (b: Pick<UnmappedBranch, "customer_id" | "dropoff_name">) =>
-  `${b.customer_id}|${b.dropoff_name.trim()}`;
+  `${b.customer_id}|${isD001(b.customer_id) ? b.dropoff_name.trim() : ""}`;
 
 // ── Writing them ─────────────────────────────────────────────────────────────
 
@@ -211,6 +212,10 @@ export async function writeUnmappedConfigRows(
   if (branches.length === 0) return;
 
   const kv = await import("./smart-log-kv");
+  for (const b of found.filter((b) => b.customer_id && b.pickup_name && !isInternalLeg(b))) {
+    const { hours, minutes } = vnHoursMinutes(b.at);
+    await kv.recordCoverageGap(b.customer_id, b.pickup_name, HHMM(hours * 60 + minutes), isD001(b.customer_id) ? b.dropoff_name : "");
+  }
   // Taken BEFORE the per-branch claims, not after: a branch marked as written by
   // a run that then failed to get the lock would never be written by anyone.
   if (!(await kv.acquireSheetWriteLock())) return;
@@ -225,10 +230,10 @@ export async function writeUnmappedConfigRows(
     const { writeConfigRows } = await import("./sheets-writer");
     const at = await writeConfigRows(mine.map(configCellsFor));
     mine.forEach((b, i) => {
-      const { start, end } = shiftWindowForJob(b.at);
+      const { hours, minutes } = vnHoursMinutes(b.at);
       // The row NUMBER is the useful part of this line: it is what turns "go and
       // configure this branch" into "open the sheet at row 1751".
-      log(`Đã thêm dòng config ${at[i]} cho ${b.pickup_name} (${start}–${end}) — cần chọn tài xế | ${b.pickup_name} → ${b.dropoff_name || "—"}`, "WARN");
+      log(`Đã thêm dòng config ${at[i]} cho ${b.pickup_name} (thiếu lúc ${HHMM(hours * 60 + minutes)}) — cần chọn tài xế | ${b.pickup_name} → ${b.dropoff_name || "—"}`, "WARN");
     });
   } catch (e) {
     log(`Không ghi được dòng config cho điểm chưa cấu hình: ${e}`, "WARN");
