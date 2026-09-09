@@ -3,6 +3,7 @@ import { loadTplEntries, PSC_TINH_LABEL } from "@/lib/psc-config";
 import { BASE_URL, getHeaders, getStopsByLabels, createJob, type Env } from "@/lib/cartrack";
 import { addDays, vnDate, vnTimestamp } from "@/lib/time";
 import { pscTinhSchedule } from "@/lib/psc-tinh-time";
+import { parkScheduledJob } from "@/lib/scheduled-dispatch";
 import { STOP_STATUS, JOB_STATUS } from "@/lib/job-filters";
 import { pushRunLog, acquireCreateLock, releaseCreateLock, nextOrderNumber } from "@/lib/smart-log-kv";
 import { fetchJobDetail } from "@/lib/job-detail";
@@ -320,6 +321,20 @@ export async function POST(req: NextRequest) {
 
     const created = createRes.body;
     const jobId = created.data?.job_id;
+    let parked = false;
+    let schedulingWarning: string | null = null;
+    if (jobId) {
+      try {
+        parked = await parkScheduledJob(jobId, `${deliveryDate} ${eta}:00`, env);
+      } catch (e) {
+        // Creation already succeeded. Never return a create error that invites a duplicate.
+        schedulingWarning = `Đã tạo Job #${jobId}, nhưng chưa hoàn tất lên lịch. Vui lòng báo điều phối, không gửi lại yêu cầu.`;
+        await pushRunLog([{
+          ts: vnTimestamp(), level: "ERROR",
+          msg: `[PSC-tỉnh] Job ${jobId} - Lên lịch THẤT BẠI: ${e} | ${psc_code}, ETA ${deliveryDate} ${eta}`,
+        }]).catch(() => {});
+      }
+    }
     void pushRunLog([{
       ts: vnTimestamp(),
       level: "OK",
@@ -330,6 +345,8 @@ export async function POST(req: NextRequest) {
       reference: refNumber,
       job_id: jobId,
       delivery_date: deliveryDate,
+      parked,
+      scheduling_warning: schedulingWarning,
     });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });

@@ -30,6 +30,7 @@ interface Order {
   dropoff_update_ts: string | null;
   eta: string | null;
   delivery_date?: string;
+  parked?: boolean;
   pickup_name?: string;
   pickup_address?: string;
   dropoff_status_id?: number | null;
@@ -59,7 +60,7 @@ const hm = (ts?: string | null) => (ts ? ts.slice(11, 16) : null);
 // that created the request.
 function isParkedOrder(o: Order): boolean {
   const kind = proxyKind(o.driver_name);
-  return (kind === "queue" || kind === "reject") && !o.pickup_completed_ts;
+  return (o.parked || kind === "queue" || kind === "reject") && !o.pickup_completed_ts;
 }
 
 function stateOf(o: Order): TripState {
@@ -383,7 +384,7 @@ export default function PscTinhPage() {
       if (!res.ok) {
         setResult({ ok: false, msg: data.error ?? "Lỗi không xác định" });
       } else {
-        setResult({ ok: true, msg: `Tạo thành công! ${data.reference} — ${etaTime}, ${pscTinhDayLabel(deliveryDate)} (Job #${data.job_id})` });
+        setResult({ ok: !data.scheduling_warning, msg: data.scheduling_warning ?? `Tạo thành công! ${data.reference} — ${etaTime}, ${pscTinhDayLabel(deliveryDate)} (Job #${data.job_id})` });
         // Put the trip on screen immediately. Everything here is known from the request and
         // the response — no second call, and nothing that depends on Cartrack having
         // indexed the job yet. job_status_id 2 with no driver renders it as "Chờ điều phối",
@@ -402,6 +403,7 @@ export default function PscTinhPage() {
             dropoff_update_ts: null,
             eta: etaTime,
             delivery_date: deliveryDate,
+            parked: data.parked === true,
             pickup_name: selectedOption?.tpl_name ?? "",
             pickup_address: selectedOption?.address ?? "",
             create_ts: null,

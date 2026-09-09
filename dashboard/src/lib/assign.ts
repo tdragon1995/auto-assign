@@ -1,6 +1,7 @@
 import type { Config, Driver, FailedJob, Job, LogEntry, LogLevel, Mapping, PickupWarning, TimelineRoute } from "./types";
 import { getDrivers, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, parkOnProxy, updateJobSendToDriverAt, updateJobScheduledDeliveryTs, unassignJob, optimizeDriverRoute, getJobsByStatusAndDate, getUnassignedJobsFast, getJobsByDate, getTimelineRoutes, timelineRoutesToJobs, getJobDetails, jsonRpc, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { publishSnapshot } from "./day-snapshot";
+import { getDueTomorrowJobs } from "./scheduled-dispatch";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import { DIAG_LOCATION_CUSTOMER_IDS } from "./psc-routes-data";
@@ -1637,6 +1638,17 @@ export async function autoAssignCycle(
       assignedJobsToday = s4Jobs;
       cycleS5 = s5Jobs;
       clog(`[fetch] REST: fetch ${fetchMs}ms + partition ${partitionMs}ms (s2:${s2Jobs.length} s4:${s4Jobs.length} s5:${s5Jobs.length})`);
+    }
+
+    if (!onlyJobIds) {
+      try {
+        const dueTomorrow = await getDueTomorrowJobs(env, log);
+        const seen = new Set(s2Jobs.map((j) => j.job_id));
+        s2Jobs.push(...dueTomorrow.filter((j) => !seen.has(j.job_id)));
+        cycleStartS2 = s2Jobs;
+      } catch (e) {
+        log(`Tomorrow's scheduled jobs could not be checked: ${e}`, "WARN");
+      }
     }
 
     // The PSC dedup index used to be written here, once per cycle. It now lives in the
