@@ -3,6 +3,7 @@ import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { DELIVERY_BASE, getAdminToken } from "@/lib/labcenter";
 import { loadPscRoutes } from "@/lib/psc-config";
 import { haversineKm } from "@/lib/distance";
+import { notifyAdminGroup } from "@/lib/zalo";
 
 export const runtime = "edge";
 export const preferredRegion = "sin1";
@@ -227,6 +228,10 @@ export async function POST(req: NextRequest) {
         labcenter = { ok: false, error: String(e) };
       }
     }
+
+    await notifyAdminGroup(
+      `🆕 Sales tạo khách hàng mới\n${customer_name}\n${address_line_1 || "(không có địa chỉ)"}`,
+    );
 
     return NextResponse.json({ success: true, customer, labcenter });
   } catch (e) {

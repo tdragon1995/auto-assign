@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { appendNghiPhep, type LeaveCells } from "@/lib/sheets-writer";
 import { vnTimestamp } from "@/lib/time";
-import { sendZaloMessage } from "@/lib/zalo";
+import { notifyAdminGroup } from "@/lib/zalo";
 import {
   loadLeaveEntriesStrict,
   LeaveUnreadableError,
@@ -35,21 +35,6 @@ function datesBetween(from: string, to: string): string[] {
     cur.setDate(cur.getDate() + 1);
   }
   return dates;
-}
-
-// Fire-and-forget notification to the admin Zalo group. The leave is already
-// saved to the sheet, so a Zalo failure must never fail the request. The text is
-// the same template the cham-cong page shows the driver to copy/share.
-async function notifyAdminGroup(text: string): Promise<void> {
-  if (!text) return;
-  const botToken = process.env.ZALO_ADMIN_BOT_TOKEN;
-  const chatId = process.env.ZALO_ADMIN_CHAT_ID;
-  if (!botToken || !chatId) return;
-  try {
-    await sendZaloMessage(botToken, chatId, text);
-  } catch (e) {
-    console.error("[nghi-phep] admin Zalo notify failed", e);
-  }
 }
 
 export async function POST(req: NextRequest) {

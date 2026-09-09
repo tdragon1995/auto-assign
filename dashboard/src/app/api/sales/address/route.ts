@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { updateCustomerAddress, type Env } from "@/lib/cartrack";
 import { getAdminToken, getCartrackCustomerId, updateLocationAddress } from "@/lib/labcenter";
+import { notifyAdminGroup } from "@/lib/zalo";
 
 export const runtime = "edge";
 export const preferredRegion = "sin1";
@@ -18,11 +19,12 @@ export async function PUT(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { location_id, address_line_1, latitude, longitude } = body as {
+    const { location_id, address_line_1, latitude, longitude, customer_name } = body as {
       location_id?: number;
       address_line_1?: string;
       latitude?: number;
       longitude?: number;
+      customer_name?: string; // display only, for the Zalo notice
     };
 
     if (typeof location_id !== "number") {
@@ -57,6 +59,11 @@ export async function PUT(req: NextRequest) {
     const labcenter = await updateLocationAddress(location_id, { address, latitude, longitude }, token);
 
     if (cartrack.ok && labcenter.ok) {
+      // Only on a clean write: a partial one asks the user to retry, and the
+      // retry is what should announce the address.
+      await notifyAdminGroup(
+        `📍 Sales đổi địa chỉ\n${customer_name?.trim() || `Địa điểm #${location_id}`}\n${address}`,
+      );
       return NextResponse.json({ success: true, address_line_1: address, latitude, longitude, cartrack, labcenter });
     }
 

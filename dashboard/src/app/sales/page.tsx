@@ -611,7 +611,7 @@ export default function SalesPage() {
         const res = await fetch("/api/sales/address", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ location_id: edLocationId, address_line_1: edAddress.trim(), latitude: edLat, longitude: edLon }),
+          body: JSON.stringify({ location_id: edLocationId, address_line_1: edAddress.trim(), latitude: edLat, longitude: edLon, customer_name: edSelectedLocation?.name }),
         });
         const data = await res.json();
         if (res.ok) {
