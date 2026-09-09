@@ -30,23 +30,31 @@
  * at all — a multi-day row repeats its hours on every day of the span, which is
  * the shape the panel already flags as a thing to split.
  *
- * Plus the range cap (one sheet row per day, so a mistyped year is hundreds of
- * appends; the route enforces the same bound) and the shift suggestion, which
- * must refuse to guess when the picked days do not share one roster.
+ * Plus the range cap: one sheet row per day, so a mistyped year is hundreds of
+ * appends, and the route enforces the same bound.
  *
  *   npx tsx scripts/leave-add.test.mts
  */
 
 import {
-  buildLeaveSubmission, groupConsecutive, expandRange, normalizeDays, suggestWindow,
+  buildLeaveSubmission, groupConsecutive, expandRange, normalizeDays,
   findPtTwin, ptCompanionOf, EMPTY_LEAVE_FORM, MAX_LEAVE_DAYS,
   type NewLeaveForm, type LeavePayload, type SubWrite,
 } from "../src/components/leave-status-panel";
 import type { ConfigDriver } from "../src/lib/types";
 
 let failures = 0;
+/** Key order is not part of any of these contracts — a payload built by
+ *  spreading a base reads the same as one built field by field — so it is not
+ *  allowed to fail an assertion either. */
+const stable = (v: unknown) =>
+  JSON.stringify(v, (_k, val) =>
+    val && typeof val === "object" && !Array.isArray(val)
+      ? Object.fromEntries(Object.entries(val as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)))
+      : val,
+  );
 const eq = (label: string, got: unknown, want: unknown) => {
-  const g = JSON.stringify(got), w = JSON.stringify(want);
+  const g = stable(got), w = stable(want);
   if (g === w) console.log(`  ok   ${label}`);
   else { failures++; console.error(`  FAIL ${label}\n         got  ${g}\n         want ${w}`); }
 };
@@ -208,28 +216,6 @@ eq("the cap counts DAYS, not requests — 32 scattered days still refuse",
     days: run("2026-09-01", MAX_LEAVE_DAYS + 1),
   }), true);
 
-// --- 7. suggesting the window from the roster --------------------------------
-
-console.log("the shift suggestion");
-const sched = (start: string, end: string) => ({ kind: "scheduled" as const, start, end, covered: true });
-const off = { kind: "off" as const, covered: true };
-const unknown = { kind: "unknown" as const, reason: "no-row", covered: false };
-
-eq("one scheduled day suggests its own window", suggestWindow([sched("06:00", "15:00")]),
-  { start: "06:00", end: "15:00" });
-eq("days that agree suggest that window",
-  suggestWindow([sched("06:00", "15:00"), sched("06:00", "15:00")]), { start: "06:00", end: "15:00" });
-// The one that matters: picking either would write the wrong hours onto the
-// other day, silently.
-eq("days that DISAGREE suggest nothing rather than the first one",
-  suggestWindow([sched("06:00", "15:00"), sched("08:00", "17:00")]), null);
-eq("a day off among scheduled days is ignored, not treated as a window",
-  suggestWindow([sched("06:00", "15:00"), off]), { start: "06:00", end: "15:00" });
-eq("no schedule at all suggests nothing", suggestWindow([unknown, unknown]), null);
-eq("a day the roster has not answered for yet suggests nothing",
-  suggestWindow([undefined, undefined]), null);
-eq("nothing picked suggests nothing", suggestWindow([]), null);
-
 // --- 8. the part-time twin ---------------------------------------------------
 //
 // About a dozen people hold both a DC… and a PT… account and switch to the
@@ -264,31 +250,36 @@ const HBASE = { driver_id: "uuid-hung", driver_name: HUNG_FT.name, note: "Nhập
 const TBASE = {
   driver_id: "uuid-hung-pt", driver_name: HUNG_PT.name,
   note: "Nhập từ dashboard — theo tài khoản FT",
+  // The flag is the whole contract with the server: it says "this row is
+  // derived", and the server decides — against the config — whether it is
+  // written and rewrites a half day's end once it is. See
+  // `scripts/leave-gates.test.mts` for that half.
+  pt_companion: true,
 };
 const own = (over: Partial<LeavePayload>): LeavePayload => ({
   ...HBASE, loai_nghi: "nguyen_buoi", ngay_bat_dau: "2026-09-10", ...over,
 });
 
-eq("a full day is a full day on both accounts",
+eq("a full day is offered to the twin unchanged",
   ptCompanionOf(own({ ngay_ket_thuc: "2026-09-12" }), HUNG_PT),
   { ...TBASE, loai_nghi: "nguyen_buoi", ngay_bat_dau: "2026-09-10", ngay_ket_thuc: "2026-09-12" });
-// The window is NOT mirrored: copying 13:00–18:00 as 13:00–18:00 would leave
-// 18:00–22:00 — exactly when the twin account is used — reading as available,
-// which makes the whole feature a no-op.
-eq("an afternoon half day runs to the END OF THE DAY on the twin",
+// The window travels AS ASKED FOR. Rewriting it here to "until the end of the
+// day" — which this used to do — destroys the only thing the server's gate can
+// judge: those hours overlap every evening rule and let everything through,
+// which is the bug the gate exists to fix. The rewrite happens on the server,
+// after the gate has passed.
+eq("an afternoon half day carries its own hours, for the server to judge",
   ptCompanionOf(own({ loai_nghi: "nua_buoi", gio_bat_dau: "13:00", gio_ket_thuc: "18:00" }), HUNG_PT),
-  { ...TBASE, loai_nghi: "nua_buoi", ngay_bat_dau: "2026-09-10", gio_bat_dau: "13:00", gio_ket_thuc: "23:59" });
-eq("a window straddling noon still runs to the end of the day",
+  { ...TBASE, loai_nghi: "nua_buoi", ngay_bat_dau: "2026-09-10", gio_bat_dau: "13:00", gio_ket_thuc: "18:00" });
+eq("so does a window straddling noon",
   ptCompanionOf(own({ loai_nghi: "nua_buoi", gio_bat_dau: "08:00", gio_ket_thuc: "15:00" }), HUNG_PT)?.gio_ket_thuc,
-  "23:59");
-eq("a MORNING half day reaches the twin as nothing — they are back for their shift",
-  ptCompanionOf(own({ loai_nghi: "nua_buoi", gio_bat_dau: "08:00", gio_ket_thuc: "12:00" }), HUNG_PT), null);
-eq("an off-grid afternoon window reaches the twin from that exact minute",
-  ptCompanionOf(own({ loai_nghi: "nua_buoi", gio_bat_dau: "13:15", gio_ket_thuc: "17:42" }), HUNG_PT),
-  { ...TBASE, loai_nghi: "nua_buoi", ngay_bat_dau: "2026-09-10", gio_bat_dau: "13:15", gio_ket_thuc: "23:59" });
-eq("noon exactly is still a morning — the boundary is not off by one",
-  ptCompanionOf(own({ loai_nghi: "nua_buoi", gio_bat_dau: "08:00", gio_ket_thuc: "12:01" }), HUNG_PT)?.gio_ket_thuc,
-  "23:59");
+  "15:00");
+// And a MORNING one is offered rather than dropped: a part-time account
+// rostered 06:00–10:00 is missed by a morning absence, which the clock this
+// replaced could never see. Whether it is written is the config's answer.
+eq("a morning half day is offered too — the config decides, not the hour",
+  ptCompanionOf(own({ loai_nghi: "nua_buoi", gio_bat_dau: "08:00", gio_ket_thuc: "12:00" }), HUNG_PT),
+  { ...TBASE, loai_nghi: "nua_buoi", ngay_bat_dau: "2026-09-10", gio_bat_dau: "08:00", gio_ket_thuc: "12:00" });
 eq("a half day with no usable window copies nothing rather than a guessed one",
   ptCompanionOf(own({ loai_nghi: "nua_buoi", gio_bat_dau: "", gio_ket_thuc: "" }), HUNG_PT), null);
 eq("a backwards window copies nothing",
@@ -305,18 +296,18 @@ eq("a full day off files the person FIRST, then the twin",
     { ...HBASE, loai_nghi: "nguyen_buoi", ngay_bat_dau: "2026-09-10", ngay_ket_thuc: "2026-09-11" },
     { ...TBASE, loai_nghi: "nguyen_buoi", ngay_bat_dau: "2026-09-10", ngay_ket_thuc: "2026-09-11" },
   ]);
-eq("an afternoon half day over two days files two twin rows too",
+eq("an afternoon half day over two days offers two twin rows too",
   (build({
     name: HUNG_FT.name, loai_nghi: "nua_buoi",
     days: ["2026-09-10", "2026-09-11"], start: "13:00", end: "17:30",
   }) as LeavePayload[]).map((p) => `${p.driver_id} ${p.ngay_bat_dau} ${p.gio_bat_dau}-${p.gio_ket_thuc}`),
   [
     "uuid-hung 2026-09-10 13:00-17:30", "uuid-hung 2026-09-11 13:00-17:30",
-    "uuid-hung-pt 2026-09-10 13:00-23:59", "uuid-hung-pt 2026-09-11 13:00-23:59",
+    "uuid-hung-pt 2026-09-10 13:00-17:30", "uuid-hung-pt 2026-09-11 13:00-17:30",
   ]);
-eq("a morning half day files the person only",
-  (build({ name: HUNG_FT.name, loai_nghi: "nua_buoi", days: ["2026-09-10"], start: "06:00", end: "11:00" }) as LeavePayload[])
-    .map((p) => p.driver_id), ["uuid-hung"]);
+eq("only the twin's rows carry the flag — the person's own are not derived",
+  (build({ name: HUNG_FT.name, loai_nghi: "nguyen_buoi", days: ["2026-09-10"] }) as LeavePayload[])
+    .map((p) => p.pt_companion ?? false), [false, true]);
 eq("filing against the PT account itself adds nothing",
   (build({ name: HUNG_PT.name, loai_nghi: "nguyen_buoi", days: ["2026-09-10"] }) as LeavePayload[])
     .map((p) => p.driver_id), ["uuid-hung-pt"]);

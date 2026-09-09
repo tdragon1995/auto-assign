@@ -11,6 +11,8 @@ import {
   type InvalidLeaveRow,
 } from "@/lib/leave-config";
 import { loadLeaveSuppressions, findSuppression } from "@/lib/leave-suppression";
+import { loadConfigFromSheets } from "@/lib/config";
+import { configDutyBlocks, companionNeeded } from "@/lib/pt-companion";
 
 /** Short human label for a clashing existing leave, for the reject message. */
 function describeLeave(e: LeaveEntry): string {
@@ -22,6 +24,7 @@ function describeLeave(e: LeaveEntry): string {
 
 /** Upper bound on one whole-day submission. Mirrored on the dashboard form. */
 const MAX_LEAVE_DAYS = 31;
+
 
 function datesBetween(from: string, to: string): string[] {
   const dates: string[] = [];
@@ -41,9 +44,12 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const {
-      driver_id, driver_name, loai_nghi, ngay_bat_dau, ngay_ket_thuc,
-      gio_bat_dau, gio_ket_thuc, notify_message, note, automated,
+      driver_id, driver_name, ngay_bat_dau, notify_message, note, automated, pt_companion,
     } = body;
+    // Rewritten below when this is a companion row: past the config gate it
+    // becomes a whole day, so the type and the hours it arrived with are
+    // replaced rather than carried through.
+    let { loai_nghi, ngay_ket_thuc, gio_bat_dau, gio_ket_thuc } = body;
 
     if (!driver_id || !driver_name || !loai_nghi || !ngay_bat_dau) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
@@ -54,10 +60,54 @@ export async function POST(req: NextRequest) {
       nua_buoi: "Nghỉ nửa buổi",
       nghi_viec: "Nghỉ việc",
     };
-    const loaiNghiText = loaiNghiLabels[loai_nghi];
-    if (!loaiNghiText) {
+    if (!loaiNghiLabels[loai_nghi]) {
       return NextResponse.json({ error: "Invalid loai_nghi" }, { status: 400 });
     }
+
+    // A row derived from someone's OTHER account, not a day off anyone asked
+    // for. Both writers offer one — the MISA sync and the dashboard's leave form
+    // — and neither can see the config from where it runs, so the decision is
+    // made here, for both. See `pt-companion.ts`.
+    //
+    // The window on the body is the ORIGINAL one, unrewritten: whether the day
+    // reaches the twin is a question about the hours the person actually asked
+    // off, and a companion's own "until the end of the day" hours would overlap
+    // every evening rule and let everything through.
+    if (pt_companion === true) {
+      const config = await loadConfigFromSheets();
+      if (!config) {
+        return NextResponse.json(
+          { error: "Chưa đọc được config nên chưa biết tài khoản PT có cần nghỉ không." },
+          { status: 503 },
+        );
+      }
+      const askedWindow =
+        loai_nghi === "nua_buoi" && gio_bat_dau && gio_ket_thuc
+          ? { start: String(gio_bat_dau), end: String(gio_ket_thuc) }
+          : null;
+      if (!companionNeeded(askedWindow, configDutyBlocks(driver_id, config.mappings))) {
+        // Not an error: nothing was wrong with the request, the twin simply has
+        // no work to miss. Answered 200 so the MISA sync does not record a
+        // correct decision as a failed day.
+        return NextResponse.json({ success: true, skipped: "pt_no_config_overlap" });
+      }
+      // PAST THE GATE, A COMPANION IS A WHOLE DAY. The hours on the body were
+      // only ever evidence — they say which part of the person's day was asked
+      // off, and they have now been used for that. Carrying them onto the twin's
+      // row would file a second partial day whose window belongs to the OTHER
+      // account's shift, and the pair then has to be read together to mean
+      // anything. Once the day off reaches this account, it is off.
+      loai_nghi = "nguyen_buoi";
+      gio_bat_dau = null;
+      gio_ket_thuc = null;
+      ngay_ket_thuc = ngay_ket_thuc ?? ngay_bat_dau;
+    }
+
+    // AFTER the rewrite above, never before. Taking the label from the type the
+    // request arrived with wrote a companion as "Nghỉ nửa buổi" carrying no
+    // hours — a shape `coverageOnDate` refuses, so the row existed on the sheet
+    // and was invisible to every reader, the duplicate check included.
+    const loaiNghiText = loaiNghiLabels[loai_nghi];
 
     const ts = vnTimestamp();
 

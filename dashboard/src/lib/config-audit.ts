@@ -191,7 +191,7 @@ function hhmm(min: number): string {
  * equals its end is on duty for no minute at all — faithful to the engine, which
  * would never pick it.
  */
-function dutyBlocks(r: AuditableRow): Array<[number, number]> {
+export function dutyBlocks(r: AuditableRow): Array<[number, number]> {
   if (!r.shift_start || !r.shift_end) return [[0, DAY - 1]];
   const s = r.shift_start.hours * 60 + r.shift_start.minutes;
   const e = r.shift_end.hours * 60 + r.shift_end.minutes;

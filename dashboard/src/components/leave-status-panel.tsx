@@ -9,7 +9,7 @@ import { toast } from "sonner";
 import type { LeaveOnDate, InvalidLeaveRow, SpanningLeaveRow } from "@/lib/leave-config";
 import type { LeaveSuppression } from "@/lib/leave-suppression";
 import type { ConfigDriver } from "@/lib/types";
-import { addDays, timeToMins, vnDate } from "@/lib/time";
+import { addDays, vnDate } from "@/lib/time";
 import {
   splitDriverName, compareDriverNames, compareByDriverThenWindow, employmentOf,
   type Employment,
@@ -114,12 +114,19 @@ function TimeSelect({
   value,
   onChange,
   label,
+  after,
 }: {
   value: string;
   onChange: (v: string) => void;
   label: string;
+  /** Only offer slots strictly LATER than this. An end that cannot be set
+   *  before its start is a window that cannot be entered backwards — much
+   *  better than a picker that accepts one and an error that explains it after
+   *  the fact. Omitted (the substitute editor) offers the whole grid. */
+  after?: string;
 }) {
-  const options = value && !TIME_SLOTS.includes(value) ? [...TIME_SLOTS, value].sort() : TIME_SLOTS;
+  const grid = after ? TIME_SLOTS.filter((t) => t > after) : TIME_SLOTS;
+  const options = value && !grid.includes(value) ? [...grid, value].sort() : grid;
   return (
     <select
       value={value}
@@ -158,13 +165,8 @@ function TimeSelect({
  *   REGROUPED into consecutive runs before sending, so a whole week off is still
  *   one request writing seven rows rather than seven requests.
  *
- *   THE SCHEDULE IS SHOWN AND SUGGESTED FROM. Every picked day carries the
- *   window that driver was actually rostered for, so a half-day defaults to
- *   their own hours instead of a guessed 08:00, and a full day filed on a day
- *   they were never working — nearly always the wrong date — says so before it
- *   is written. `unknown` is never drawn as "off": the roster covers a rolling
- *   two-month window and only part of the PT accounts, so "no schedule" is a
- *   common answer and a different one.
+ *   THE PART-TIME TWIN IS FILED TOO, where the day off reaches it. See
+ *   `ptCompanionOf`.
  *
  * The builder below is pure and separately tested (`scripts/leave-add.test.mts`),
  * because everything that can go quietly wrong here is a payload shape: days
@@ -199,6 +201,11 @@ export interface LeavePayload {
   gio_bat_dau?: string;
   gio_ket_thuc?: string;
   note: string;
+  /** Set on a row derived from someone's OTHER account. The SERVER decides
+   *  whether such a row is written — it needs the config, which the browser
+   *  does not have — and rewrites a half day's end to the end of the day once
+   *  it has. See `pt-companion.ts` and `/api/nghi-phep`. */
+  pt_companion?: true;
 }
 
 /** A whole-day submission writes ONE SHEET ROW PER DAY, so a mistyped year is a
@@ -260,16 +267,10 @@ export function groupConsecutive(days: string[]): { from: string; to: string }[]
 // here has to do the same or the dashboard is the one door that produces a
 // half-recorded absence.
 //
-// The rules are `misa-fetcher/lib/leave-push.mjs`'s, deliberately identical:
-// `findPtTwin` / `buildPtCompanion` there, `scripts/pt-companion.test.mjs` for
-// their own tests. Two implementations exist because that package is plain .mjs
-// run from a GitHub Action; if they ever disagree, THAT one is the definition.
-
-/** Noon. A day off reaches the twin only if it runs past this. */
-const PT_SWITCH_MIN = 12 * 60;
-/** Half-open at the start, inclusive at the end, so this is the last minute of
- *  the day and the engine reads it as "off for the rest of it". */
-const PT_DAY_END = "23:59";
+// WHO the twin is, is decided here; WHETHER the day reaches them is decided on
+// the server, in `pt-companion.ts`, because that answer needs the config. The
+// MISA sync goes through the same gate, so the two writers cannot drift apart
+// on the rule the way two copies of a clock-based one did.
 
 export type TwinReason = "ok" | "not-full-time" | "none" | "ambiguous";
 
@@ -324,24 +325,31 @@ export function findPtTwin(
  *     working. The form says so, so it is filed by hand when it is meant.
  */
 export function ptCompanionOf(p: LeavePayload, twin: ConfigDriver): LeavePayload | null {
+  // A resignation is a fact about ONE contract. People move from full-time to
+  // part-time, so closing the twin on a guess would retire a driver who is
+  // still working — the one case decided here rather than on the server,
+  // because no config could tell the difference.
   if (p.loai_nghi === "nghi_viec") return null;
-  const base: LeavePayload = {
+  // An unusable window is not a config question. The engine ignores such a
+  // leave row, so offering one would ask the server to judge hours that mean
+  // nothing — the same refusal `buildPtCompanion` makes in misa-fetcher.
+  if (p.loai_nghi === "nua_buoi") {
+    const start = p.gio_bat_dau ?? "";
+    const end = p.gio_ket_thuc ?? "";
+    if (!/^\d{1,2}:\d{2}$/.test(start) || !/^\d{1,2}:\d{2}$/.test(end) || end <= start) return null;
+  }
+  return {
     ...p,
     driver_id: twin.driver_id,
     driver_name: twin.name,
     // Marks the row in the sheet's note column, so a supervisor reading the tab
     // can tell a derived row from one that was actually asked for.
     note: `${p.note} — theo tài khoản FT`,
+    // The window is left EXACTLY as asked for. Whether this row is written at
+    // all is a config question the browser cannot answer, and the server tests
+    // it against these hours before rewriting a half day to the day's end.
+    pt_companion: true,
   };
-  if (p.loai_nghi !== "nua_buoi") return base;
-
-  const start = timeToMins(p.gio_bat_dau);
-  const end = timeToMins(p.gio_ket_thuc);
-  // No usable window: the engine ignores such a row anyway, so guessing one here
-  // would make the twin MORE off than the person it copies.
-  if (start < 0 || end <= start) return null;
-  if (end <= PT_SWITCH_MIN) return null;
-  return { ...base, gio_bat_dau: p.gio_bat_dau, gio_ket_thuc: PT_DAY_END };
 }
 
 /** One `POST /api/leave-status` — the row to cover, and who covers it. */
@@ -487,87 +495,6 @@ function buildOwnSubmission(
   };
 }
 
-// ── The rostered day, as this form uses it ──────────────────────────────────
-
-/** One day of `/api/shift`: `shiftDayForDriver` plus whether the schedule spans
- *  that date at all. Structural, so the client never imports the server module
- *  (which pulls in Redis). */
-type ShiftDayView =
-  | { kind: "scheduled"; start: string; end: string; covered: boolean }
-  | { kind: "off"; covered: boolean }
-  | { kind: "unknown"; reason: string; covered: boolean };
-
-/**
- * The window to offer for a half day.
- *
- * Only when every picked day that HAS a schedule agrees on one window. Two
- * different rosters have no single right answer, and picking either would
- * silently write the wrong hours onto half the days — so that case suggests
- * nothing and the supervisor sets the window themselves.
- */
-export function suggestWindow(
-  shifts: (ShiftDayView | undefined)[],
-): { start: string; end: string } | null {
-  const windows = shifts
-    .filter((s): s is Extract<ShiftDayView, { kind: "scheduled" }> => s?.kind === "scheduled")
-    .map((s) => ({ start: s.start, end: s.end }));
-  if (windows.length === 0) return null;
-  const [first] = windows;
-  return windows.every((w) => w.start === first.start && w.end === first.end) ? first : null;
-}
-
-/** What a chip says about the day beside the date. Empty until a driver is
- *  picked: with nobody chosen nothing has been ASKED, and a "?" beside every
- *  date reads as an answer — "we looked and found nothing". */
-function shiftLabel(s: ShiftDayView | undefined, loading: boolean, asked: boolean): string {
-  if (!asked) return "";
-  if (loading) return "…";
-  if (!s) return "?";
-  if (s.kind === "scheduled") return `${s.start}–${s.end}`;
-  if (s.kind === "off") return "không có ca";
-  return "chưa có lịch";
-}
-
-/** The schedule for one driver over the picked days. Refetched whenever either
- *  changes; an in-flight answer for a previous selection is dropped rather than
- *  landing on top of the current one. */
-function useShiftDays(driverId: string, days: string[]) {
-  const key = days.join(",");
-  const [state, setState] = useState<{
-    loading: boolean;
-    days: Record<string, ShiftDayView>;
-    degraded: boolean;
-  }>({ loading: false, days: {}, degraded: false });
-
-  useEffect(() => {
-    if (!driverId || !key) { setState({ loading: false, days: {}, degraded: false }); return; }
-    let live = true;
-    setState((s) => ({ ...s, loading: true }));
-    (async () => {
-      try {
-        const res = await fetch(
-          `/api/shift?driver_id=${encodeURIComponent(driverId)}&dates=${encodeURIComponent(key)}`,
-          { cache: "no-store" },
-        );
-        const data = await res.json().catch(() => ({}));
-        if (!live) return;
-        // A schedule this form could not read is simply not shown — it is a
-        // hint beside the date, and nothing here depends on it being there.
-        setState({
-          loading: false,
-          days: res.ok && data.days ? (data.days as Record<string, ShiftDayView>) : {},
-          degraded: !res.ok || !!data.degraded,
-        });
-      } catch {
-        if (live) setState({ loading: false, days: {}, degraded: true });
-      }
-    })();
-    return () => { live = false; };
-  }, [driverId, key]);
-
-  return state;
-}
-
 /** "nghỉ nguyên buổi 04/09–06/09" — what the toast says actually landed. */
 function submissionLabel(p: LeavePayload): string {
   const type = ({
@@ -587,7 +514,13 @@ function submissionLabel(p: LeavePayload): string {
  * morning half-day filing NOTHING is just as surprising the other way.
  */
 function twinEffect(f: NewLeaveForm): { copies: boolean; text: string } {
-  if (f.loai_nghi === "nguyen_buoi") return { copies: true, text: "nghỉ cả ngày" };
+  // HEDGED on purpose. Whether the twin gets a row depends on the config, which
+  // this form cannot read — so it says what the server will decide rather than
+  // promising an outcome it does not know. The toast after the write reports
+  // what actually happened.
+  if (f.loai_nghi === "nguyen_buoi") {
+    return { copies: true, text: "nghỉ cả ngày, nếu tài khoản PT có tuyến trong config" };
+  }
   if (f.loai_nghi === "nghi_viec") {
     return {
       copies: false,
@@ -595,11 +528,15 @@ function twinEffect(f: NewLeaveForm): { copies: boolean; text: string } {
     };
   }
   if (f.loai_nghi === "nua_buoi") {
-    if (!f.start || !f.end) return { copies: false, text: "chọn giờ để biết có ảnh hưởng ca tối không" };
-    if (timeToMins(f.end) <= 12 * 60) {
-      return { copies: false, text: "nửa buổi sáng không chạm ca tối nên không ghi cho PT" };
+    if (!f.start || !f.end) {
+      return { copies: false, text: "chọn giờ để biết có trùng ca PT không" };
     }
-    return { copies: true, text: `nghỉ ${f.start}–23:59 (hết ngày, không phải hết khung giờ trên)` };
+    // A companion is a WHOLE day even when the leave it came from is not: the
+    // hours decide whether the twin is filed, not how much of its day is taken.
+    return {
+      copies: true,
+      text: `nghỉ CẢ NGÀY, nếu ${f.start}–${f.end} trùng giờ ca PT trong config`,
+    };
   }
   return { copies: false, text: "" };
 }
@@ -622,12 +559,8 @@ function AddLeaveForm({ drivers, onSaved }: { drivers: ConfigDriver[]; onSaved: 
     setForm((f) => ({ ...f, [k]: v }));
 
   const picked = drivers.find((d) => d.name === form.name);
-  const driverId = picked?.driver_id ?? "";
   const twinInfo = picked ? findPtTwin(picked, drivers) : null;
   const twinWill = twinEffect(form);
-  const shifts = useShiftDays(driverId, form.days);
-  const suggestion = suggestWindow(form.days.map((d) => shifts.days[d]));
-
   const reset = () => {
     setForm(EMPTY_LEAVE_FORM);
     setPickFrom(""); setPickTo(""); setError(""); setBusy("");
@@ -648,6 +581,7 @@ function AddLeaveForm({ drivers, onSaved }: { drivers: ConfigDriver[]; onSaved: 
     const { payloads, subWrites } = built;
 
     let written = 0;
+    let skippedPt = 0;
     let failure = "";
     // Both phases counted in one progress line: from where the button is
     // pressed they are one action, and a bar that reaches the end and then
@@ -668,7 +602,12 @@ function AddLeaveForm({ drivers, onSaved }: { drivers: ConfigDriver[]; onSaved: 
           failure = `${submissionLabel(payload)}: ${data.error ?? `Lỗi ${res.status}`}`;
           break;
         }
-        written++;
+        // A companion the config said was unnecessary. Counted apart from the
+        // rows that landed, because "2/2 written" for a submission that wrote
+        // one row would be a lie, and silence would leave the supervisor
+        // wondering whether the PT side worked.
+        if (data.skipped) skippedPt++;
+        else written++;
       } catch (e) {
         failure = `${submissionLabel(payload)}: ${e instanceof Error ? e.message : String(e)}`;
         break;
@@ -679,6 +618,7 @@ function AddLeaveForm({ drivers, onSaved }: { drivers: ConfigDriver[]; onSaved: 
     // matches nothing, and the resulting "không tìm thấy dòng nghỉ" would read
     // as a bug rather than as the earlier failure it is.
     let covered = 0;
+    let subWarning = "";
     if (!failure) {
       for (const [i, w] of subWrites.entries()) {
         setBusy(`Đang lưu ${payloads.length + i + 1}/${steps}…`);
@@ -693,6 +633,8 @@ function AddLeaveForm({ drivers, onSaved }: { drivers: ConfigDriver[]; onSaved: 
             failure = `người thay ${ddmm(w.leave_from)}: ${data.error ?? `Lỗi ${res.status}`}`;
             break;
           }
+          // Same sentence for every day of the same leave, so it is shown once.
+          if (data.warning && !subWarning) subWarning = String(data.warning);
           covered++;
         } catch (e) {
           failure = `người thay ${ddmm(w.leave_from)}: ${e instanceof Error ? e.message : String(e)}`;
@@ -707,11 +649,13 @@ function AddLeaveForm({ drivers, onSaved }: { drivers: ConfigDriver[]; onSaved: 
     // duplicates-refused and hide which day actually failed.
     if (written > 0) {
       const cover = subWrites.length > 0 ? ` — người thay ${covered}/${subWrites.length} ngày` : "";
+      const pt = skippedPt > 0 ? " — tài khoản PT không trùng tuyến nên không ghi" : "";
       toast.success(
         (payloads.length === 1
           ? `Đã ghi ${submissionLabel(payloads[0])}`
-          : `Đã ghi ${written}/${payloads.length} đợt nghỉ`) + cover,
+          : `Đã ghi ${written} đợt nghỉ`) + cover + pt,
       );
+      if (subWarning) toast.warning(subWarning);
       // Awaited, like every other write in this panel: releasing the button
       // while the week is still re-reading is what invites a second click.
       await onSaved();
@@ -722,7 +666,7 @@ function AddLeaveForm({ drivers, onSaved }: { drivers: ConfigDriver[]; onSaved: 
       // duplicates, so the form closes and the panel's own editor is where the
       // substitute gets filled — but the reason has to survive the close, which
       // clears the inline error along with everything else.
-      if (written === payloads.length) {
+      if (written + skippedPt === payloads.length) {
         toast.error(`Đã ghi ngày nghỉ, chưa gán được ${failure}`);
         close();
         return;
@@ -793,38 +737,28 @@ function AddLeaveForm({ drivers, onSaved }: { drivers: ConfigDriver[]; onSaved: 
 
         {form.loai_nghi === "nua_buoi" && (
           <>
-            {/* Native time inputs, not the half-hour grid the substitute editor
-                uses. A leave window is whatever hour the person actually left
-                at — 13:15 is a real answer — and a grid quietly rounds it to
-                the nearest one it happens to hold. */}
-            <input
-              type="time"
+            {/* The same half-hour grid the substitute editor and the driver's
+                own form use. Shift windows are set on the half hour, so the
+                free-minute picker offered a precision the roster does not have
+                and read as fiddly for the one thing it is used for. */}
+            <TimeSelect
               value={form.start}
-              onChange={(e) => set("start", e.target.value)}
-              aria-label="Giờ bắt đầu nghỉ"
-              className="rounded border border-slate-300 bg-white px-1 py-1 text-xs"
+              label="Giờ bắt đầu nghỉ"
+              onChange={(v) =>
+                // Moving the start past the end clears the end rather than
+                // leaving a backwards window sitting in the form waiting to be
+                // refused on save.
+                setForm((f) => ({ ...f, start: v, end: v && f.end && f.end <= v ? "" : f.end }))
+              }
             />
             <span className="text-[11px] text-slate-600">–</span>
-            <input
-              type="time"
+            {/* Bounded by the start, so the end simply cannot be set before it. */}
+            <TimeSelect
               value={form.end}
-              onChange={(e) => set("end", e.target.value)}
-              aria-label="Giờ kết thúc nghỉ"
-              className="rounded border border-slate-300 bg-white px-1 py-1 text-xs"
+              label="Giờ kết thúc nghỉ"
+              after={form.start || undefined}
+              onChange={(v) => set("end", v)}
             />
-            {/* OFFERED, never applied on its own. The roster says what the day
-                was supposed to be, not what happened on it, so it fills the
-                window only when someone presses this. */}
-            {suggestion && (form.start !== suggestion.start || form.end !== suggestion.end) && (
-              <Button
-                size="sm" variant="outline"
-                className="h-6 px-2 text-[11px]"
-                title="Điền khung giờ theo ca đã xếp cho tài xế này"
-                onClick={() => setForm((f) => ({ ...f, start: suggestion.start, end: suggestion.end }))}
-              >
-                Dùng giờ ca {suggestion.start}–{suggestion.end}
-              </Button>
-            )}
           </>
         )}
       </div>
@@ -869,26 +803,16 @@ function AddLeaveForm({ drivers, onSaved }: { drivers: ConfigDriver[]; onSaved: 
         )}
       </div>
 
-      {/* Every chosen day with the shift that day, so a date picked by mistake
-          shows up as "không có ca" before it is written. */}
+      {/* The chosen days. */}
       {!isResign && form.days.length > 0 && (
         <ul className="mt-1 flex flex-wrap gap-1">
           {form.days.map((d) => {
-            const s = shifts.days[d];
-            const off = s?.kind === "off";
             return (
               <li
                 key={d}
-                className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] ${
-                  off ? "border-amber-300 bg-amber-50 text-amber-900" : "border-slate-300 bg-white text-slate-800"
-                }`}
+                className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] text-slate-800"
               >
                 <span className="font-semibold">{weekdayShort(d)} {ddmm(d)}</span>
-                {/* Inherits the chip's own colour rather than a fixed grey:
-                    slate on the amber ground reads as disabled text. */}
-                <span className={`font-mono text-[10px] ${off ? "text-amber-800" : "text-slate-600"}`}>
-                  {shiftLabel(s, shifts.loading, !!driverId)}
-                </span>
                 <button
                   type="button"
                   onClick={() => removeDay(d)}
@@ -925,17 +849,6 @@ function AddLeaveForm({ drivers, onSaved }: { drivers: ConfigDriver[]; onSaved: 
         </div>
       )}
 
-      {!isResign && form.days.some((d) => shifts.days[d]?.kind === "off") && (
-        <p className="mt-1 text-[11px] text-amber-800">
-          Ngày viền vàng: lịch ca không có ca nào cho tài xế này — kiểm tra lại ngày trước khi lưu.
-        </p>
-      )}
-      {!isResign && !!driverId && form.days.length > 0 && !shifts.loading &&
-        form.days.every((d) => (shifts.days[d]?.kind ?? "unknown") === "unknown") && (
-        <p className="mt-1 text-[11px] text-slate-600">
-          Chưa có lịch ca cho tài xế/ngày này — vẫn ghi được, chỉ là không gợi ý được giờ.
-        </p>
-      )}
 
       {twinInfo?.reason === "ambiguous" && (
         <p className="mt-1 text-[11px] text-amber-800">
@@ -995,7 +908,9 @@ function makeFillSubs(onRefresh: RefreshFn): FillSubsFn {
         toast.error(data.error ?? `HTTP ${res.status}`);
         return false;
       }
-      if (data.warning) toast.warning(data.warning);
+      // The write LANDED either way — a warning here is about what happens
+      // next, not about whether it saved, and a bare warning read as a failure.
+      if (data.warning) toast.warning(`Đã lưu người thay. ${data.warning}`);
       else toast.success("Đã lưu người thay vào sheet");
       await onRefresh();
       return true;

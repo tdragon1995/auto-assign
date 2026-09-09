@@ -27,7 +27,6 @@ import {
   findPtTwin,
   buildPtCompanion,
   buildLeaveSubmissions,
-  PT_SWITCH_MIN,
 } from "../lib/leave-push.mjs";
 
 let failures = 0;
@@ -103,20 +102,35 @@ const afternoon = buildPtCompanion(
   day({ loai_nghi: "nua_buoi", gio_bat_dau: "12:00", gio_ket_thuc: "18:00" }),
   SON_PT,
 );
+// A half-day companion is a CANDIDATE now, carrying the window MISA charged.
+// Whether it is written, and the rewrite to the end of the day once it is, both
+// belong to /api/nghi-phep — the only place that can see whether the PT account
+// is rostered for any of those hours. A clock cannot answer that: 06:00–13:00
+// used to reach the twin because it ended after noon, marking an evening the
+// person works as absent, while a PT account rostered 06:00–10:00 got nothing
+// for a morning absence that plainly covers it.
 eq("an afternoon half-day starts when the person leaves", afternoon.gio_bat_dau, "12:00");
-eq("…and runs to the end of the day, NOT the MISA window", afternoon.gio_ket_thuc, "23:59");
+eq("…and carries the window AS CHARGED, for the config gate to judge",
+  afternoon.gio_ket_thuc, "18:00");
 
 const straddling = buildPtCompanion(
   day({ loai_nghi: "nua_buoi", gio_bat_dau: "10:00", gio_ket_thuc: "14:00" }),
   SON_PT,
 );
-eq("a window crossing noon counts as afternoon", straddling?.gio_ket_thuc, "23:59");
-eq("…from its own start, not from noon", straddling?.gio_bat_dau, "10:00");
+eq("a window crossing noon is offered with its own hours", straddling?.gio_ket_thuc, "14:00");
+eq("…from its own start", straddling?.gio_bat_dau, "10:00");
 
-check(
-  "a morning half-day leaves the twin alone",
-  buildPtCompanion(day({ loai_nghi: "nua_buoi", gio_bat_dau: "06:00", gio_ket_thuc: "12:00" }), SON_PT) === null,
+const morning = buildPtCompanion(
+  day({ loai_nghi: "nua_buoi", gio_bat_dau: "06:00", gio_ket_thuc: "12:00" }),
+  SON_PT,
 );
+eq("a morning half-day is offered too — the config decides, not the hour",
+  [morning?.gio_bat_dau, morning?.gio_ket_thuc], ["06:00", "12:00"]);
+check("…and is marked derived, which is what the gate keys on", morning?.pt_companion === true);
+
+// The two that stay refusals here: an unusable window is not a config question.
+// The engine ignores such a leave row, so offering one would ask the server to
+// decide about hours that mean nothing.
 check(
   "a half-day with no window is left alone (the engine ignores it too)",
   buildPtCompanion(day({ loai_nghi: "nua_buoi", gio_bat_dau: null, gio_ket_thuc: null }), SON_PT) === null,
@@ -125,7 +139,6 @@ check(
   "a half-day whose window is backwards is left alone",
   buildPtCompanion(day({ loai_nghi: "nua_buoi", gio_bat_dau: "18:00", gio_ket_thuc: "12:00" }), SON_PT) === null,
 );
-eq("noon is the switch", PT_SWITCH_MIN, 720);
 
 // ── End to end, through the attendance parser ───────────────────────────────
 console.log("through buildLeaveSubmissions");
@@ -160,7 +173,7 @@ eq(
   withRoster.submissions
     .filter((s) => s.pt_companion)
     .map((s) => [s.driver_name, s.gio_bat_dau, s.gio_ket_thuc]),
-  [[SON_PT.label, "13:00", "23:59"]],
+  [[SON_PT.label, "13:00", "18:00"]],
 );
 check(
   "the driver with no twin gets exactly one row",

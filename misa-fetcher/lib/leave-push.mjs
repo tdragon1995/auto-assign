@@ -29,23 +29,6 @@ function todayVn() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-/**
- * The hour a driver stops being their full-time self.
- *
- * Roughly a dozen people hold TWO Cartrack accounts under one personal name: a
- * full-time `DC…` record and a part-time `PT…` one. The full-time account works
- * the rostered shift; the part-time account is what picks up a trip running past
- * it. MISA only knows the employment the person is paid leave against — the
- * full-time one — so leave arrives naming that account alone, and the twin stays
- * "available" all evening. This threshold is where that matters: leave covering
- * any part of the day after noon takes the evening with it.
- */
-export const PT_SWITCH_MIN = 12 * 60; // 12:00
-
-/** The end of the PT companion window. Half-open at the start, inclusive at the
- *  end (see inWindow in leave-config.ts), so 23:59 is the last minute of the day
- *  and the engine reads it as "off for the rest of it". */
-const DAY_END = "23:59";
 
 /** "06:30" → 390; -1 for anything unparseable. Mirrors timeToMins in
  *  dashboard/src/lib/time.ts — this package cannot import the TypeScript one. */
@@ -159,9 +142,12 @@ export function buildPtCompanion(sub, twin) {
   const start = timeToMins(sub.gio_bat_dau);
   const end = timeToMins(sub.gio_ket_thuc);
   if (start < 0 || end <= start) return null; // no usable window — see above
-  if (end <= PT_SWITCH_MIN) return null;      // morning only
 
-  return { ...base, gio_bat_dau: sub.gio_bat_dau, gio_ket_thuc: DAY_END };
+  // The WINDOW AS CHARGED, not rewritten to the end of the day. The dashboard
+  // gates this row on whether those hours overlap a shift the PT account is
+  // actually rostered for, and rewrites the end itself once they do — testing
+  // "until 23:59" would overlap every evening rule and let everything through.
+  return { ...base, gio_bat_dau: sub.gio_bat_dau, gio_ket_thuc: sub.gio_ket_thuc };
 }
 
 /**
@@ -308,6 +294,11 @@ export async function pushLeave(submissions, { dryRun = false, baseUrl } = {}) {
           // supervisor delete it from the dashboard without wondering whether
           // MISA will put it back.
           note: s.pt_companion ? `MISA auto PT ${stamp}` : `MISA auto ${stamp}`,
+          // Says "this row is derived from the twin's". The dashboard decides
+          // whether it is written at all, against the config — the roster this
+          // package cannot see — so that the rule lives in one place for both
+          // writers instead of two clocks drifting apart.
+          pt_companion: s.pt_companion === true ? true : undefined,
           // Marks this as a robot write, which is what subjects it to the
           // deleted-days list. A person's submission is never suppressed.
           automated: true,

@@ -63,9 +63,7 @@ A supervisor can file leave through that same endpoint from the leave panel
 ("Thêm ngày nghỉ"). Two differences from the driver's form, both in
 `buildLeaveSubmission`: days are a SET rather than a range (Monday and Thursday
 off is not Monday-to-Thursday), regrouped into consecutive runs so a week off is
-still one request; and each chosen day shows the window that driver was actually
-rostered for (`/api/shift`), which prefills a half-day with their own hours and
-flags a day they were never working; and the substitute can be named in the same
+still one request; and the substitute can be named in the same
 form, which writes through the panel's own `POST /api/leave-status` once the
 rows exist — addressed per DAY, since a whole-day range is one row per day, and
 by window for a half day. The twin's row is deliberately not covered by it: a
@@ -73,16 +71,49 @@ substitute covers one account, and the twin's row is the evening. It sends no
 `automated` flag, so it is never blocked by a suppression — that is the documented way to put a deleted day
 back.
 
-It also files the PART-TIME TWIN, by the same rules as the MISA sync
-(`findPtTwin` / `ptCompanionOf`, mirroring `misa-fetcher/lib/leave-push.mjs`;
-if the two ever disagree, that one is the definition): a full day copies as a
-full day, an afternoon half-day copies as "from when they leave until 23:59",
-a morning half-day copies as nothing, and a RESIGNATION copies as nothing —
-a person can move from full-time to part-time, so closing the twin on a guess
-would retire a driver who is still working. Two namesake PT accounts resolve to
-neither. The form says which of these will happen before the write, since a
-second row on someone's other account is otherwise a surprise.
-`scripts/leave-add.test.mts`.
+**The PART-TIME TWIN is decided by the CONFIG, on the server, for both
+writers.** `findPtTwin` (dashboard) and its twin in `misa-fetcher` still decide
+WHO the twin is and offer a candidate row flagged `pt_companion: true`;
+`/api/nghi-phep` decides whether it is written, because that answer needs the
+config and neither writer can see it — the sync is a GitHub Action and the form
+is a browser. A refused companion answers `200 {success, skipped:
+"pt_no_config_overlap"}`, not an error: nothing was wrong with the request.
+
+`pt-companion.ts` holds the rule. A WHOLE DAY reaches the twin when the twin is
+in the config at all; a HALF DAY only where the ORIGINAL window overlaps hours
+the twin is actually on duty for (`dutyBlocks`, so blank shifts, overnight wraps
+and the exclusive-start convention read as the engine reads them). Both a fixed
+`driver_id` and membership of a `smart_driver_id` list count as duty — the smart
+list is exactly what smart-assign ranks. The overlap is compared **by the hour**,
+not the minute: shift boundaries are hand-typed and drift between rows, and a
+rule that answers differently for 16:59 and 17:00 is one nobody can predict.
+
+**A companion is always a WHOLE DAY**, whatever it came from. The hours on the
+body are evidence for the gate and nothing more; carrying them onto the twin's
+row would file a partial day whose window belongs to the OTHER account's shift.
+The rewrite happens after the gate — and `loaiNghiText` is taken after it too.
+Taking the label from the type the request arrived with wrote the companion as
+"Nghỉ nửa buổi" carrying no hours, a shape `coverageOnDate` refuses: the row sat
+on the sheet invisible to every reader, the duplicate check included, so
+re-running the sync appended another one each time.
+
+This replaced a NOON CLOCK that was wrong in both directions. "06:00–13:00"
+means back at one, and the clock filed the twin off until 23:59 — marking an
+evening the person works as absent. And a PT account rostered 06:00–10:00 (there
+are several) got nothing for a morning absence that plainly covers it.
+
+A RESIGNATION still copies as nothing, and that stays on the client: people move
+from full-time to part-time, so closing the twin would retire a driver who is
+still working, and no config could tell the difference. Two namesake PT accounts
+resolve to neither. `scripts/leave-add.test.mts`, `scripts/leave-gates.test.mts`,
+`misa-fetcher/scripts/pt-companion.test.mjs`.
+
+**Naming a substitute warns when that substitute is already busy.** `POST
+/api/leave-status` returns a `warning` (the write still lands) when the sub is
+the FIXED driver of their own branches during the hours they are covering —
+`sub-duty.ts`. Fixed rows only, and only where the hours actually meet: a smart
+row is one candidate among several and would fire on nearly every substitute
+ever named, which is how a warning stops being read.
 
 - **A partly-approved request leaves rows behind.** Cancelling the rest in MISA
   does not reach back into the sheet, so the engine keeps the driver off on days
@@ -219,7 +250,6 @@ second row on someone's other account is otherwise a surprise.
 | `GET /api/psc-tinh` | Provincial PSC route lookup; `?psc=D021` for 3PL options, `?psc=D021&mode=orders` for today's orders; `DELETE` cancels a job |
 | `POST /api/smart-assign` | Smart-assign dry-run — returns ranked driver suggestions without assigning |
 | `GET /api/audit` | List locations for weekly audit job creation; `POST` creates the audit job and assigns it |
-| `GET /api/shift` | What one driver was SCHEDULED to work on given days (`?driver_id=&dates=a,b,c`, max 31). Read-only door onto `shift-window.ts`; `unknown` is passed through as itself, never flattened into "off" |
 | `GET /api/cham-cong` | Attendance (chấm công) — lists today's check-in/out jobs for a driver (`?driver_id=`); `POST` creates a check-in or check-out job |
 | `POST /api/distance-checking` | Batch Goong road-distance queries (`{ rows: DistanceRow[] }`); sequential with 1s gaps |
 | `GET /api/location-jobs` | Fetch all jobs for a date+status (`?date=YYYY-MM-DD&status=4`), paginating to exhaustion |

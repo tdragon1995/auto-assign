@@ -14,7 +14,8 @@ import {
 import {
   loadLeaveSuppressions, liveSuppressions, invalidateSuppressionCache,
 } from "@/lib/leave-suppression";
-import { loadDriversFromSheet } from "@/lib/config";
+import { loadDriversFromSheet, loadConfigFromSheets } from "@/lib/config";
+import { subDutyWarning, parseWindowLabel } from "@/lib/sub-duty";
 import { addDays, timeToMins, vnDate } from "@/lib/time";
 
 export const runtime = "nodejs";
@@ -174,7 +175,33 @@ export async function POST(req: NextRequest) {
       ? await replaceLeaveSubs(identity, clean)
       : await updateLeaveSubs(identity, clean);
     await invalidateLeaveCache();
-    return NextResponse.json({ ok: true, row: result.row, warning: result.warning ?? null });
+
+    // A substitute who is already the fixed driver of their own branches at
+    // these hours. Reported AFTER the write and never instead of it: this is
+    // routinely deliberate, and the supervisor knows things the config does not
+    // — but they cannot see it from a name in a combobox. See `sub-duty.ts`.
+    //
+    // Best-effort: a config that will not load is not a reason to fail a write
+    // that already landed, so the warning is simply missing in that case.
+    let busy: string | null = null;
+    try {
+      const config = await loadConfigFromSheets();
+      if (config) {
+        busy = subDutyWarning(
+          clean.map((c) => ({ ...c, driver_id: idByName.get(c.name) ?? "" })),
+          parseWindowLabel(timeLabel),
+          config.mappings,
+        );
+      }
+    } catch (e) {
+      console.error("[leave-status] sub duty check failed", e);
+    }
+
+    // Both, when both apply. The writer's own warning is about the row that was
+    // just written; this one is about tomorrow's problem, and dropping either
+    // to fit one field is how a supervisor stops seeing the one that mattered.
+    const warning = [result.warning, busy].filter(Boolean).join(" ") || null;
+    return NextResponse.json({ ok: true, row: result.row, warning });
   } catch (e) {
     // Business rejections (row full, row not found, bad input) are the user's to
     // fix → 400 with the message verbatim; anything else is a real 500.
