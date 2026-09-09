@@ -10,6 +10,8 @@ import { TripSteps, TRIP_STATE_STYLE, tripStateText, tripStateFromStops, type Tr
 import { Photos, Timeline, TODO_ICON, SheetShell, type TlEvent, type Todo } from "@/components/trip-sheet";
 import { proxyKind, driverLabel } from "@/lib/proxy-drivers";
 import { useParams } from "next/navigation";
+import { addDays, vnDate } from "@/lib/time";
+import { buildPscTinhTimeSlots, pscTinhDayLabel } from "@/lib/psc-tinh-time";
 
 interface TplOption {
   tpl_uuid: string;
@@ -27,6 +29,7 @@ interface Order {
   dropoff_color: string;
   dropoff_update_ts: string | null;
   eta: string | null;
+  delivery_date?: string;
   pickup_name?: string;
   pickup_address?: string;
   dropoff_status_id?: number | null;
@@ -155,7 +158,7 @@ function PscJobSheet({ order, onClose }: { order: Order; onClose: () => void }) 
       body: (
         <>
           <p className="text-xs text-slate-500 mt-0.5">Từ {pickupName}</p>
-          {win && <p className="text-xs font-semibold text-amber-700 mt-0.5">Hẹn tới nhà xe: {win}</p>}
+          {win && <p className="text-xs font-semibold text-amber-700 mt-0.5">Hẹn tới nhà xe: {win}{order.delivery_date && ` — ${pscTinhDayLabel(order.delivery_date)}`}</p>}
         </>
       ),
     },
@@ -226,19 +229,6 @@ function PscJobSheet({ order, onClose }: { order: Order; onClose: () => void }) 
   );
 }
 
-function buildTimeSlots(): string[] {
-  const vnParts = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Ho_Chi_Minh", hour: "numeric", minute: "numeric", hour12: false }).formatToParts(new Date());
-  const currentMins = parseInt(vnParts.find(p => p.type === "hour")?.value ?? "0") * 60 + parseInt(vnParts.find(p => p.type === "minute")?.value ?? "0");
-  const slots: string[] = [];
-  for (let m = 0; m < 24 * 60; m += 5) {
-    if (m <= currentMins) continue;
-    const h = String(Math.floor(m / 60)).padStart(2, "0");
-    const min = String(m % 60).padStart(2, "0");
-    slots.push(`${h}:${min}`);
-  }
-  return slots;
-}
-
 export default function PscTinhPage() {
   const params = useParams();
   const code = (params.code as string)?.toUpperCase();
@@ -267,6 +257,7 @@ export default function PscTinhPage() {
   const [selectedUuid, setSelectedUuid] = useState("");
 
   const [eta, setEta] = useState("");
+  const [slotNow, setSlotNow] = useState<Date | null>(null);
   const [note, setNote] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
@@ -281,9 +272,14 @@ export default function PscTinhPage() {
     lastLoadRef.current = Date.now();
     setOrdersLoading(true);
     try {
-      const res = await fetch(`/api/psc-tinh?psc=${code}&mode=orders`);
-      const data = await res.json();
-      setOrders(data.orders ?? []);
+      const today = vnDate();
+      const days = await Promise.all([today, addDays(today, 1)].map(async (date) => {
+        const res = await fetch(`/api/psc-tinh?psc=${code}&mode=orders&date=${date}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "Lỗi tải yêu cầu");
+        return (data.orders ?? []) as Order[];
+      }));
+      setOrders(days.flat());
     } catch {
       setOrders([]);
     } finally {
@@ -308,6 +304,18 @@ export default function PscTinhPage() {
   }, [code]);
 
   useEffect(() => { loadOptions(); }, [loadOptions]);
+
+  // Populate after hydration and refresh across midnight or a return from the background.
+  useEffect(() => {
+    const refresh = () => setSlotNow(new Date());
+    refresh();
+    const timer = window.setInterval(refresh, 60_000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, []);
 
   // One feed, so the list loads with the page instead of waiting for a tab switch.
   useEffect(() => { loadOrders(); }, [loadOrders]);
@@ -354,6 +362,7 @@ export default function PscTinhPage() {
 
   const submit = async () => {
     if (!selectedUuid || !eta) return;
+    const [deliveryDate, etaTime] = eta.split("T");
     setLoading(true);
     setResult(null);
     try {
@@ -365,7 +374,8 @@ export default function PscTinhPage() {
           psc_label: meta.label,
           tpl_uuid: selectedUuid,
           tpl_name: selectedOption?.tpl_name ?? "",
-          eta,
+          eta: etaTime,
+          delivery_date: deliveryDate,
           note,
         }),
       });
@@ -373,7 +383,7 @@ export default function PscTinhPage() {
       if (!res.ok) {
         setResult({ ok: false, msg: data.error ?? "Lỗi không xác định" });
       } else {
-        setResult({ ok: true, msg: `Tạo thành công! ${data.reference} (Job #${data.job_id})` });
+        setResult({ ok: true, msg: `Tạo thành công! ${data.reference} — ${etaTime}, ${pscTinhDayLabel(deliveryDate)} (Job #${data.job_id})` });
         // Put the trip on screen immediately. Everything here is known from the request and
         // the response — no second call, and nothing that depends on Cartrack having
         // indexed the job yet. job_status_id 2 with no driver renders it as "Chờ điều phối",
@@ -390,7 +400,8 @@ export default function PscTinhPage() {
             dropoff_status: "Chờ lấy",
             dropoff_color: "slate",
             dropoff_update_ts: null,
-            eta,
+            eta: etaTime,
+            delivery_date: deliveryDate,
             pickup_name: selectedOption?.tpl_name ?? "",
             pickup_address: selectedOption?.address ?? "",
             create_ts: null,
@@ -430,11 +441,13 @@ export default function PscTinhPage() {
   // A placeholder retires the moment Cartrack lists the real job — matched on job_id, which
   // the create response gave us, so the row is never shown twice.
   const known = new Set(orders.map((o) => o.job_id));
-  const stillPending = pending.filter((p) => !known.has(p.job_id));
+  const today = slotNow ? vnDate(slotNow) : vnDate();
+  const stillPending = pending.filter((p) => !known.has(p.job_id) && (!p.delivery_date || p.delivery_date >= today));
   const active = [...stillPending, ...orders.filter((o) => stateOf(o) !== 3)];
-  const done = orders.filter((o) => stateOf(o) === 3);
-  const canSubmit = selectedUuid && eta && !loading;
-  const timeSlots = buildTimeSlots();
+  const done = orders.filter((o) => stateOf(o) === 3 && o.delivery_date === today);
+  const timeSlots = slotNow ? buildPscTinhTimeSlots(slotNow) : [];
+  const selectedTime = timeSlots.flatMap((day) => day.slots).some((slot) => slot.value === eta);
+  const canSubmit = selectedUuid && selectedTime && !loading;
 
   return (
     <div className="min-h-screen bg-slate-100 flex justify-center">
@@ -490,19 +503,25 @@ export default function PscTinhPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                <label htmlFor="psc-tinh-eta" className="block text-sm font-semibold text-slate-700 mb-1.5">
                   Thời gian tới nhà xe
                 </label>
                 <select
-                  value={eta}
+                  id="psc-tinh-eta"
+                  value={selectedTime ? eta : ""}
                   onChange={(e) => setEta(e.target.value)}
+                  onFocus={() => setSlotNow(new Date())}
+                  aria-describedby="psc-tinh-eta-hint"
                   className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
                 >
                   <option value="">-- Chọn giờ --</option>
-                  {timeSlots.map((slot) => (
-                    <option key={slot} value={slot}>{slot}</option>
+                  {timeSlots.filter((day) => day.slots.length > 0).map((day) => (
+                    <optgroup key={day.date} label={day.label}>
+                      {day.slots.map((slot) => <option key={slot.value} value={slot.value}>{slot.label}</option>)}
+                    </optgroup>
                   ))}
                 </select>
+                <p id="psc-tinh-eta-hint" className="mt-1.5 text-xs text-slate-600">Cuộn qua 23:55 để chọn giờ ngày mai.</p>
               </div>
 
               <div>
@@ -569,7 +588,7 @@ export default function PscTinhPage() {
                         <span className="text-[11px] font-bold px-1.5 py-0.5 rounded-md bg-blue-50 text-blue-700">{mauLabel(o.reference)}</span>
                         {o.eta && (
                           <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700">
-                            <Clock aria-hidden className="w-3 h-3" />Hẹn {o.eta}
+                            <Clock aria-hidden className="w-3 h-3" />Hẹn {o.eta}{o.delivery_date && ` — ${pscTinhDayLabel(o.delivery_date, today)}`}
                           </span>
                         )}
                       </div>
@@ -657,7 +676,7 @@ export default function PscTinhPage() {
                         <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-blue-50 text-blue-700">{mauLabel(o.reference)}</span>
                         {o.eta && (
                           <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700">
-                            <Clock aria-hidden className="w-3 h-3" />Hẹn {o.eta}
+                            <Clock aria-hidden className="w-3 h-3" />Hẹn {o.eta}{o.delivery_date && ` — ${pscTinhDayLabel(o.delivery_date, today)}`}
                           </span>
                         )}
                       </span>
@@ -682,7 +701,7 @@ export default function PscTinhPage() {
               <p className="text-sm font-bold text-slate-800">Huỷ yêu cầu?</p>
               <p className="text-xs text-slate-500 font-semibold">{cancelTarget.reference}</p>
               {cancelTarget.eta && (
-                <p className="text-xs text-slate-500">Thời gian tới nhà xe: <span className="font-semibold text-slate-700">{cancelTarget.eta}</span></p>
+                <p className="text-xs text-slate-500">Thời gian tới nhà xe: <span className="font-semibold text-slate-700">{cancelTarget.eta}{cancelTarget.delivery_date && ` — ${pscTinhDayLabel(cancelTarget.delivery_date, today)}`}</span></p>
               )}
               <p className="text-xs text-slate-500">Hành động này không thể hoàn tác.</p>
             </div>

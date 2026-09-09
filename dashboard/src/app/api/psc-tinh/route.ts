@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadTplEntries, PSC_TINH_LABEL } from "@/lib/psc-config";
 import { BASE_URL, getHeaders, getStopsByLabels, createJob, type Env } from "@/lib/cartrack";
-import { vnDate, vnTimestamp } from "@/lib/time";
+import { addDays, vnDate, vnTimestamp } from "@/lib/time";
+import { pscTinhSchedule } from "@/lib/psc-tinh-time";
 import { STOP_STATUS, JOB_STATUS } from "@/lib/job-filters";
 import { pushRunLog, acquireCreateLock, releaseCreateLock, nextOrderNumber } from "@/lib/smart-log-kv";
 import { fetchJobDetail } from "@/lib/job-detail";
@@ -15,7 +16,7 @@ const D001_UUID = "3927b076-3af9-11ed-b939-506b8dbc8dfb";
  *  (reference prefix) that aren't failed/cancelled, and map to the orders view shape.
  *  Address comes straight off the stop (address_line_1) — no TPL uuid→address lookup. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildOrdersFromStops(stops: any[], prefix: string) {
+function buildOrdersFromStops(stops: any[], prefix: string, deliveryDate: string) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const byJob = new Map<number, any[]>();
   for (const s of stops) {
@@ -42,6 +43,7 @@ function buildOrdersFromStops(stops: any[], prefix: string) {
     .map(({ pickup, dropoff, ref, jobStatusId }) => ({
       job_id:    pickup?.job_id ?? dropoff?.job_id,
       reference: ref,
+      delivery_date: deliveryDate,
       job_status: JOB_STATUS[jobStatusId] ?? "Không rõ",
       job_status_id: jobStatusId ?? null,
       rejected_ts: (pickup?.activity_rejected_ts ?? dropoff?.activity_rejected_ts)?.slice(0, 19) ?? null,
@@ -69,7 +71,7 @@ function buildOrdersFromStops(stops: any[], prefix: string) {
 }
 
 // ── GET /api/psc-tinh?psc=D021 — 3PL options ─────────────────────────────────
-// GET /api/psc-tinh?psc=D021&mode=orders — today's orders for this PSC
+// GET /api/psc-tinh?psc=D021&mode=orders&date=YYYY-MM-DD — today/tomorrow's orders
 
 export async function GET(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
@@ -91,9 +93,13 @@ export async function GET(req: NextRequest) {
 
   if (!psc) return NextResponse.json({ error: "Missing psc param" }, { status: 400 });
 
-  // ── mode=orders: fetch today's jobs for this PSC ──────────────────────────
+  // ── mode=orders: fetch the selected day's jobs for this PSC ───────────────
   if (mode === "orders") {
     const today = vnDate();
+    const deliveryDate = req.nextUrl.searchParams.get("date") ?? today;
+    if (![today, addDays(today, 1)].includes(deliveryDate)) {
+      return NextResponse.json({ error: "Vui lòng chọn hôm nay hoặc ngày mai." }, { status: 400 });
+    }
     const prefix = `BRA - ${psc} - Mẫu`;
 
     // Fast path (prod): one label-filtered JSON-RPC call returns only PSC-tỉnh stops
@@ -103,12 +109,12 @@ export async function GET(req: NextRequest) {
     // fallback like any other fast-path failure instead of 500ing the view.
     let labelStops: Awaited<ReturnType<typeof getStopsByLabels>> = null;
     try {
-      labelStops = await getStopsByLabels(today, [PSC_TINH_LABEL], env);
+      labelStops = await getStopsByLabels(deliveryDate, [PSC_TINH_LABEL], env);
     } catch {
       labelStops = null;
     }
     if (labelStops) {
-      return NextResponse.json({ orders: buildOrdersFromStops(labelStops, prefix) });
+      return NextResponse.json({ orders: buildOrdersFromStops(labelStops, prefix, deliveryDate) });
     }
 
     // Fallback (UAT / JSON-RPC unavailable): REST — fetch the day's jobs, filter by prefix.
@@ -117,7 +123,7 @@ export async function GET(req: NextRequest) {
 
       const [jobsRes, tplEntries] = await Promise.all([
         fetch(
-          `${BASE_URL}/jobs?filter[scheduled_delivery_ts_from]=${today} 00:00:00&filter[scheduled_delivery_ts_to]=${today} 23:59:59&limit=1000`,
+          `${BASE_URL}/jobs?filter[scheduled_delivery_ts_from]=${deliveryDate} 00:00:00&filter[scheduled_delivery_ts_to]=${deliveryDate} 23:59:59&limit=1000`,
           { headers, cache: "no-store" }
         ),
         loadTplEntries(),
@@ -140,6 +146,7 @@ export async function GET(req: NextRequest) {
           return {
             job_id:    j.job_id,
             reference: j.reference_number,
+            delivery_date: deliveryDate,
             job_status: JOB_STATUS[j.job_status_id] ?? "Không rõ",
             job_status_id: j.job_status_id ?? null,
             rejected_ts: (pickup?.activity_rejected_ts ?? dropoff?.activity_rejected_ts)?.slice(0, 19) ?? null,
@@ -191,16 +198,22 @@ export async function POST(req: NextRequest) {
   let lockKey: string | null = null;
 
   try {
-    const { psc_code, tpl_uuid, eta, note } = await req.json();
+    const { psc_code, tpl_uuid, eta, note, delivery_date } = await req.json();
 
     if (!psc_code || !tpl_uuid || !eta) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
+    let schedule: ReturnType<typeof pscTinhSchedule>;
+    try {
+      schedule = pscTinhSchedule(eta, delivery_date);
+    } catch (e) {
+      return NextResponse.json({ error: (e as Error).message }, { status: 400 });
+    }
     const headers = getHeaders(env);
 
-    // Count today's non-cancelled jobs from this PSC for reference_number.
-    const today = vnDate();
+    // Number and lock by the delivery day, including bookings made the day before.
+    const { deliveryDate } = schedule;
     const prefix = `BRA - ${psc_code} - Mẫu`;
 
     // Serialise count-then-create per PSC. The reference number below is derived from a
@@ -213,7 +226,7 @@ export async function POST(req: NextRequest) {
     // several batches a day is normal here — the numbering exists precisely for that — so
     // the lock is released on every exit path rather than held to its TTL. The TTL only
     // bounds how long a crashed instance can wedge the counter.
-    lockKey = `psctinh:${psc_code}-${today}`;
+    lockKey = `psctinh:${psc_code}-${deliveryDate}`;
     if (!(await acquireCreateLock(lockKey))) {
       lockKey = null; // someone else holds it; the finally must not release theirs
       return NextResponse.json(
@@ -228,8 +241,8 @@ export async function POST(req: NextRequest) {
     // A throw degrades to the REST fallback below.
     let refs: string[] | null = null;
     try {
-      const labelStops = await getStopsByLabels(today, [PSC_TINH_LABEL], env);
-      if (labelStops) refs = buildOrdersFromStops(labelStops, prefix).map((o) => o.reference);
+      const labelStops = await getStopsByLabels(deliveryDate, [PSC_TINH_LABEL], env);
+      if (labelStops) refs = buildOrdersFromStops(labelStops, prefix, deliveryDate).map((o) => o.reference);
     } catch {
       refs = null;
     }
@@ -237,7 +250,7 @@ export async function POST(req: NextRequest) {
     // Fallback (UAT / JSON-RPC unavailable): REST — fetch the day's jobs and read theirs.
     if (refs === null) {
       const countRes = await fetch(
-        `${BASE_URL}/jobs?filter[scheduled_delivery_ts_from]=${today} 00:00:00&filter[scheduled_delivery_ts_to]=${today} 23:59:59&limit=1000`,
+        `${BASE_URL}/jobs?filter[scheduled_delivery_ts_from]=${deliveryDate} 00:00:00&filter[scheduled_delivery_ts_to]=${deliveryDate} 23:59:59&limit=1000`,
         { headers, cache: "no-store" }
       );
 
@@ -260,7 +273,7 @@ export async function POST(req: NextRequest) {
       const n = parseInt(r.slice(prefix.length).trim(), 10);
       return Number.isFinite(n) && n > max ? n : max;
     }, 0);
-    const refNumber = `${prefix} ${await nextOrderNumber(`${psc_code}-${today}`, highest)}`;
+    const refNumber = `${prefix} ${await nextOrderNumber(`${psc_code}-${deliveryDate}`, highest)}`;
 
     // Build ETA window: time_from = eta, time_to = eta + 30 min
     const [etaH, etaM] = eta.split(":").map(Number);
@@ -272,7 +285,7 @@ export async function POST(req: NextRequest) {
 
     const jobPayload = {
       job_type_id: 1,
-      schedule_type_id: 1,
+      ...schedule.fields,
       reference_number: refNumber,
       labels: [PSC_TINH_LABEL],
       stops: [
@@ -310,12 +323,13 @@ export async function POST(req: NextRequest) {
     void pushRunLog([{
       ts: vnTimestamp(),
       level: "OK",
-      msg: `[PSC-tỉnh] Tạo chuyến: Job ${jobId}, ETA ${eta}, Ref: ${refNumber} | ${psc_code}`,
+      msg: `[PSC-tỉnh] Tạo chuyến: Job ${jobId}, ETA ${deliveryDate} ${eta}, Ref: ${refNumber} | ${psc_code}`,
     }]);
     return NextResponse.json({
       success: true,
       reference: refNumber,
       job_id: jobId,
+      delivery_date: deliveryDate,
     });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
@@ -365,4 +379,3 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
 }
-
