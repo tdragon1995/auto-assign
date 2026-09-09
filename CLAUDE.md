@@ -422,6 +422,35 @@ These are the things most likely to burn a future agent working on this codebase
     a new pair costs a billed request, and recomputing it would re-spend money to get
     the same number.
 
+    **The shift comes from the roster grid ALONE** (`gid=1656364758`) plus the
+    driver's own taps. The payroll workbook is being DEPRECATED — learn the rules from
+    it, do not reproduce it, and do NOT wire its `Ca làm` standing-contract tab, which
+    is not authoritative. Sunday and substitutions are maintained in the grid.
+    Do not validate against August: the grid's columns begin 2026-08-01 and the review
+    was forward-looking, so 64% agreement there measures the old month, not the rule.
+    A shift that cannot be resolved is a DATA FAULT for "Cần xử lý" — never a
+    tap-to-tap fallback, which over-pays. See `docs/driver-pay.md`.
+
+    **The hourly rate is NOT 30.000đ for everyone** — Lê Ngọc Anh Tú's 06:00–15:00
+    morning shift is a fixed 35.000đ/h, on top of the evening shift his PT roster
+    line names. `RATE_PER_HOUR_VND` as one global constant is wrong.
+
+    **A day's taps do not necessarily belong to the rostered shift.** Either the
+    taps document a separate earlier shift (tap-out lands exactly at the rostered
+    start — Anh Tú 27/30 days), or one long span swallows the rostered shift with no
+    check-out between (Lê Hoàng Anh Duy 25/28). These need opposite treatment and a
+    naive "minutes early" statistic conflates them. See `docs/driver-pay.md`.
+
+    **A `PT…` account is not always a part-time shift.** Some drivers hold both a
+    `DC…` and a `PT…` account and switch to the second to finish trips that spill
+    past their full-time shift — 20 such people are on the roster. On an overflow
+    day there is no PT roster row at all, and if the chấm-công taps on that account
+    span the working day, an hourly clock bills hours ALREADY SALARIED under the DC
+    account. That is double payment, not merely overstatement, so a twin holder's PT
+    clock has to exclude their DC shift — which needs the DC roster too. Measured on
+    15/07–14/08, **Lê Hồng Thái** (PT101732, twin DC102081) reads 329.7 h in the app
+    against 47.5 h in payroll. See `docs/driver-pay.md`.
+
     **Pay rides `archiveDay` — do NOT add a schedule for it** (same rule as footgun 8).
     `archivePay()` runs off the same routes the leg archive already fetched, after the
     legs are written, inside its own try/catch: a pay failure must never release the

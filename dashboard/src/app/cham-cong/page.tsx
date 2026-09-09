@@ -280,16 +280,25 @@ function NvJobCard({ job, claiming, onClaim }: { job: DriverJob; claiming: boole
 // screen (see src/lib/pay.ts), but it IS the first question a driver comparing
 // the two tabs will ask, so the screen says which measure it is paying for.
 
-interface PaySpanRow { from: string | null; to: string | null; minutes: number }
-
 interface PayDay {
   date: string;
   jobs: number;
   km: number;
   worked_mins: number;
-  spans: PaySpanRow[];
-  /** Check-ins with no check-out after them. These pay NOTHING, so they are the
-   *  one thing on this screen a driver must act on. */
+  /** The two clocks the day was actually paid between, and what set each. The
+   *  driver's own tap is only one of the possible answers — the roster shift can
+   *  override it at either end — so the screen names the basis rather than
+   *  showing two times and letting them assume. */
+  in_at: string | null;
+  out_at: string | null;
+  in_basis: "tap" | "shift_start" | "first_task" | null;
+  out_basis: "shift_end" | "last_task" | "tap" | null;
+  /** No roster window was available, so these hours are a tap-only best effort
+   *  rather than the payroll figure. */
+  provisional: boolean;
+  inverted: boolean;
+  /** Taps that did not pair off. No longer lost pay under the roster rule — a
+   *  record to tidy. */
   open_in: string[];
   stray_out: string[];
   hour_pay: number;
@@ -300,16 +309,20 @@ interface PayDay {
 interface PayReport {
   ok: true;
   driver_name: string;
-  month: string;
+  /** Pay period, keyed by the month it ENDS in: "2026-08" is 15/07 – 14/08. */
+  period: string;
+  /** "15/07 – 14/08", formatted server-side so the boundary is defined once. */
+  period_label: string;
   from: string;
   to: string;
   latest: string;
   rates: { per_hour: number; per_km: number; km_basis: string };
-  prev_month: string;
-  next_month: string | null;
+  prev_period: string;
+  next_period: string | null;
   summary: {
     days: number; jobs: number; km: number; worked_mins: number;
-    hour_pay: number; km_pay: number; total_pay: number; open_in_days: number;
+    hour_pay: number; km_pay: number; total_pay: number;
+    open_in_days: number; provisional_days: number;
   };
   days: PayDay[];
 }
@@ -339,11 +352,25 @@ const vndFmt = new Intl.NumberFormat("vi-VN");
 const fmtVnd = (v: number | null | undefined): string =>
   v == null || !Number.isFinite(v) ? "—" : `${vndFmt.format(Math.round(v))}đ`;
 
-/** "2026-09" → "Tháng 9/2026". */
-function fmtMonth(m: string): string {
-  const [y, mm] = m.split("-");
-  return `Tháng ${Number(mm)}/${y}`;
-}
+/** What set each end of the paid day, in the driver's words. The roster can
+ *  override a tap at either end, and a number whose basis is unexplained reads as
+ *  an error rather than a rule. */
+const PAY_BASIS: Record<string, string> = {
+  tap: "giờ bạn chấm công",
+  shift_start: "giờ bắt đầu ca",
+  first_task: "chuyến đầu tiên",
+  shift_end: "giờ kết thúc ca",
+  last_task: "chuyến cuối cùng",
+  none: "—",
+};
+
+/** The pay period, as a driver should read it.
+ *
+ *  NOT "Tháng 8". The period runs the 15th to the 14th, so naming it for a month
+ *  would name it for the month it mostly is NOT — and a driver comparing this
+ *  screen against a payslip has to be looking at the same days. The span leads;
+ *  the month it closes in is the quiet subtitle. */
+const fmtPeriod = (r: { period_label: string }) => `Kỳ ${r.period_label}`;
 
 /** One line of the pay breakdown: what was counted, at what rate, for how much. */
 function PayLine({ label, detail, amount }: { label: string; detail: string; amount: number }) {
@@ -790,10 +817,10 @@ export default function ChamCongPage() {
   const [tatDayDetail, setTatDayDetail] = useState<TatDayDetail | null>(null);
 
   // ── Thu Nhập tab ──────────────────────────────────────────────────────────
-  // Shares the same authenticated session as Nhận Việc and Hiệu Suất. The month
-  // is held here rather than derived, because the arrows walk it and the server
-  // is what says how far forward they may go.
-  const [payMonth,     setPayMonth]     = useState<string | null>(null);
+  // Shares the same authenticated session as Nhận Việc and Hiệu Suất. The pay
+  // period is held here rather than derived, because the arrows walk it and the
+  // server is what says how far forward they may go.
+  const [payPeriod,    setPayPeriod]    = useState<string | null>(null);
   const [payReport,    setPayReport]    = useState<PayReport | null>(null);
   const [payLoading,   setPayLoading]   = useState(false);
   const [payError,     setPayError]     = useState<string | null>(null);
@@ -876,11 +903,11 @@ export default function ChamCongPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, nvSession]);
 
-  // Thu Nhập: same pattern again. Loads the current month on first open and then
-  // stays put — the month arrows are what move it, so re-opening the tab does not
-  // throw away the month the driver had navigated to.
+  // Thu Nhập: same pattern again. Loads the current period on first open and then
+  // stays put — the arrows are what move it, so re-opening the tab does not throw
+  // away the period the driver had navigated to.
   useEffect(() => {
-    if (tab === "thu-nhap" && nvSession && !payReport && !payLoading) payLoad(payMonth);
+    if (tab === "thu-nhap" && nvSession && !payReport && !payLoading) payLoad(payPeriod);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, nvSession]);
 
@@ -1096,16 +1123,16 @@ export default function ChamCongPage() {
     }
   }
 
-  /** Load one month of earnings. `month` null on the first call means "whatever
-   *  the server considers current", which is the month containing the last sealed
-   *  day — not necessarily today's month on the 1st. */
-  async function payLoad(month?: string | null) {
+  /** Load one PAY PERIOD of earnings (15th → 14th, keyed by the month it ends
+   *  in). Null on the first call means "whatever the server considers current",
+   *  which is the period containing the last sealed day. */
+  async function payLoad(period?: string | null) {
     setPayLoading(true);
     setPayError(null);
     setPayOpenDay(null);
     setPayDayDetail(null);
     try {
-      const res = await fetch(`/api/pay/me${month ? `?month=${month}` : ""}`);
+      const res = await fetch(`/api/pay/me${period ? `?period=${period}` : ""}`);
       const data = await res.json();
       if (res.status === 401) {
         // Cookie expired while the name lingered in localStorage — drop the stale
@@ -1120,7 +1147,7 @@ export default function ChamCongPage() {
       }
       if (!res.ok || !data.ok) { setPayError(data.error ?? "Không tải được bảng thu nhập."); return; }
       setPayReport(data as PayReport);
-      setPayMonth((data as PayReport).month);
+      setPayPeriod((data as PayReport).period);
     } catch {
       setPayError("Không kết nối được máy chủ.");
     } finally {
@@ -2438,7 +2465,7 @@ export default function ChamCongPage() {
                       <p className="text-sm font-semibold text-gray-800 truncate">{nvDisplayName}</p>
                     </div>
                     <button
-                      onClick={() => payLoad(payMonth)}
+                      onClick={() => payLoad(payPeriod)}
                       disabled={payLoading}
                       className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-50"
                       title="Tải lại"
@@ -2447,25 +2474,25 @@ export default function ChamCongPage() {
                     </button>
                   </div>
 
-                  {/* Month walker. The server says how far forward the arrow may
+                  {/* Period walker. The server says how far forward the arrow may
                       go (never past the last sealed day), so the client never has
                       to know when the data begins or ends. */}
                   {payReport && (
                     <div className="flex items-center justify-between gap-2">
                       <button
-                        onClick={() => payLoad(payReport.prev_month)}
+                        onClick={() => payLoad(payReport.prev_period)}
                         disabled={payLoading}
                         className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-40"
-                        aria-label="Tháng trước"
+                        aria-label="Kỳ trước"
                       >
                         <ChevronLeft size={18} />
                       </button>
-                      <p className="text-sm font-semibold text-gray-800">{fmtMonth(payReport.month)}</p>
+                      <p className="text-sm font-semibold text-gray-800">{fmtPeriod(payReport)}</p>
                       <button
-                        onClick={() => payReport.next_month && payLoad(payReport.next_month)}
-                        disabled={payLoading || !payReport.next_month}
+                        onClick={() => payReport.next_period && payLoad(payReport.next_period)}
+                        disabled={payLoading || !payReport.next_period}
                         className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-40"
-                        aria-label="Tháng sau"
+                        aria-label="Kỳ sau"
                       >
                         <ChevronRight size={18} />
                       </button>
@@ -2486,7 +2513,7 @@ export default function ChamCongPage() {
                       {/* The headline. */}
                       <div className="rounded-2xl border border-gray-200 overflow-hidden">
                         <div className="px-4 pt-4 pb-3">
-                          <p className="text-xs text-gray-500">{fmtMonth(payReport.month)} bạn được</p>
+                          <p className="text-xs text-gray-500">Kỳ lương {payReport.period_label} bạn được</p>
                           <p className="text-3xl font-bold text-gray-900 leading-tight mt-0.5 tabular-nums">
                             {fmtVnd(payReport.summary.total_pay)}
                           </p>
@@ -2515,13 +2542,13 @@ export default function ChamCongPage() {
                           not red — a forgotten tap is a correction to make, not an
                           accusation — but it is stated in đồng-terms ("chưa được
                           tính") because that is what makes it urgent. */}
-                      {payReport.summary.open_in_days > 0 && (
+                      {payReport.summary.provisional_days > 0 && (
                         <div className="flex items-start gap-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
                           <AlertCircle size={14} className="mt-0.5 shrink-0" />
                           <span>
-                            Có {payReport.summary.open_in_days} ngày bạn chấm công vào nhưng
-                            chưa chấm công ra — những ca đó <span className="font-semibold">chưa được tính giờ</span>.
-                            Xem các ngày có dấu ⚠ bên dưới và báo điều phối để bổ sung.
+                            {payReport.summary.provisional_days} ngày <span className="font-semibold">tạm tính</span>:
+                            hệ thống chưa có ca làm việc cho những ngày này nên giờ công được tính theo giờ chấm
+                            công. Số thực nhận có thể khác — bảng lương tính theo ca.
                           </span>
                         </div>
                       )}
@@ -2530,7 +2557,7 @@ export default function ChamCongPage() {
                           request for its jobs. */}
                       {payReport.days.length === 0 ? (
                         <p className="text-xs text-gray-400 text-center py-6">
-                          Chưa có dữ liệu cho tháng này.
+                          Chưa có dữ liệu cho kỳ này.
                         </p>
                       ) : (
                         <div className="rounded-xl border border-gray-200 divide-y divide-gray-100 overflow-hidden">
@@ -2549,7 +2576,7 @@ export default function ChamCongPage() {
                                   <div className="min-w-0 flex-1">
                                     <p className="text-xs font-semibold text-gray-700">
                                       {vnWeekday(d.date)}, {fmtDate(d.date)}
-                                      {d.open_in.length > 0 && <span className="ml-1 text-amber-600">⚠</span>}
+                                      {(d.provisional || d.inverted) && <span className="ml-1 text-amber-600">⚠</span>}
                                     </p>
                                     <p className="text-[11px] text-gray-400">
                                       {fmtMins(d.worked_mins)} · {d.km} km · {d.jobs} chuyến
@@ -2572,29 +2599,48 @@ export default function ChamCongPage() {
                                       </p>
                                     ) : (
                                       <>
-                                        {/* The clock, shown as the spans that were
-                                            actually paired — a total alone gives a
-                                            driver nothing to check against. */}
+                                        {/* The clock, shown as the two instants the
+                                            day was paid between plus WHAT SET EACH.
+                                            A driver whose tap was overridden by the
+                                            roster needs the reason on the row, or
+                                            the number looks simply wrong. */}
                                         <div className="rounded-lg bg-white border border-gray-200 px-3 py-2 space-y-1">
-                                          <p className="text-[11px] font-semibold text-gray-600">Giờ chấm công</p>
-                                          {payDayDetail.day.spans.length === 0 ? (
-                                            <p className="text-[11px] text-gray-400">Không có ca nào được tính.</p>
+                                          <p className="text-[11px] font-semibold text-gray-600">Giờ công</p>
+                                          {payDayDetail.day.in_at == null || payDayDetail.day.out_at == null ? (
+                                            <p className="text-[11px] text-gray-400">Không đủ dữ liệu để tính giờ.</p>
                                           ) : (
-                                            payDayDetail.day.spans.map((sp, i) => (
-                                              <div key={i} className="flex items-center justify-between text-[11px]">
-                                                <span className="text-gray-600 tabular-nums">{sp.from} → {sp.to}</span>
-                                                <span className="text-gray-500">{fmtMins(sp.minutes)}</span>
+                                            <>
+                                              <div className="flex items-center justify-between text-[11px]">
+                                                <span className="text-gray-600 tabular-nums">
+                                                  {payDayDetail.day.in_at} → {payDayDetail.day.out_at}
+                                                </span>
+                                                <span className="text-gray-500">{fmtMins(payDayDetail.day.worked_mins)}</span>
                                               </div>
-                                            ))
+                                              <p className="text-[11px] text-gray-400">
+                                                Vào: {PAY_BASIS[payDayDetail.day.in_basis ?? "none"]} · Ra:{" "}
+                                                {PAY_BASIS[payDayDetail.day.out_basis ?? "none"]}
+                                              </p>
+                                            </>
+                                          )}
+                                          {payDayDetail.day.provisional && (
+                                            <p className="text-[11px] text-amber-700">
+                                              ⚠ Chưa có ca làm việc cho ngày này — giờ công tạm tính theo giờ chấm
+                                              công, có thể khác bảng lương.
+                                            </p>
+                                          )}
+                                          {payDayDetail.day.inverted && (
+                                            <p className="text-[11px] text-amber-700">
+                                              ⚠ Giờ ra sớm hơn giờ vào — cần điều phối kiểm tra.
+                                            </p>
                                           )}
                                           {payDayDetail.day.open_in.map((t) => (
-                                            <p key={t} className="text-[11px] text-amber-700">
-                                              ⚠ Chấm công vào lúc {t} chưa có chấm công ra — chưa tính giờ.
+                                            <p key={t} className="text-[11px] text-gray-400">
+                                              Chấm công vào lúc {t} chưa có chấm công ra (giờ công vẫn tính theo ca).
                                             </p>
                                           ))}
                                           {payDayDetail.day.stray_out.map((t) => (
-                                            <p key={t} className="text-[11px] text-amber-700">
-                                              ⚠ Chấm công ra lúc {t} không có chấm công vào trước đó.
+                                            <p key={t} className="text-[11px] text-gray-400">
+                                              Chấm công ra lúc {t} không có chấm công vào trước đó.
                                             </p>
                                           ))}
                                         </div>
@@ -2658,9 +2704,18 @@ export default function ChamCongPage() {
                           {vndFmt.format(payReport.rates.per_km)}đ mỗi km.
                         </p>
                         <p className="text-[11px] text-gray-500">{payReport.rates.km_basis}.</p>
+                        <p className="text-[11px] text-gray-500">
+                          Giờ công tính từ <span className="font-medium">giờ muộn hơn</span> giữa giờ bạn chấm công
+                          vào và giờ bắt đầu ca, đến <span className="font-medium">giờ muộn hơn</span> giữa giờ kết
+                          thúc ca và chuyến cuối cùng của bạn. Quên chấm công ra không làm mất giờ.
+                        </p>
                         <p className="text-[11px] text-gray-400">
                           Số km ở đây khác với &quot;quãng đường&quot; ở tab Hiệu Suất: tab đó tính từng chặng
                           giữa hai điểm liên tiếp, còn ở đây tính từ điểm lấy đến điểm giao của mỗi chuyến.
+                        </p>
+                        <p className="text-[11px] text-gray-500">
+                          <span className="font-medium">Kỳ lương</span> tính từ ngày 15 tháng trước đến hết ngày 14
+                          tháng này — không phải theo tháng dương lịch.
                         </p>
                         <p className="text-[11px] text-gray-400">
                           Số liệu tính đến hết ngày {fmtDate(payReport.latest)}. Ngày hôm nay chưa được tính.

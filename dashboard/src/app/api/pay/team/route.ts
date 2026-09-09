@@ -11,9 +11,12 @@
  * it, and it should be near the front of the queue when that happens, because
  * this is the one endpoint that returns everybody's pay.
  *
- * DEFAULTS TO LAST MONTH, exactly as the TAT monitor does, and for the same
- * reason: payroll runs on the 25th against the month before, so the current month
- * is a half-finished number nobody is paid against.
+ * DEFAULTS TO THE LAST COMPLETE PAY PERIOD, for the reason the TAT monitor
+ * defaults to last month: the period now running is a half-finished number nobody
+ * is paid against.
+ *
+ * A PERIOD IS THE 15th TO THE 14th, named for the month it ends in — see pay.ts.
+ * `2026-08` is 15/07 to 14/08, which is the span the payroll workbook covers.
  *
  * PART-TIME ONLY. Full-time drivers appear in pay_jobs and pay_punches like
  * everyone else — the archive does not filter, and should not, because the rows
@@ -26,7 +29,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { sbSelect, supabaseConfigured } from "@/lib/supabase-rest";
 import { employmentOf } from "@/lib/driver-label";
 import {
-  workedMinutes, hourPayFor, kmPayFor,
+  workedMinutes, hourPayFor, kmPayFor, NO_SHIFT,
+  payPeriodOf, payPeriodRange, shiftPayPeriod, payPeriodLabel,
   RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch,
 } from "@/lib/pay";
 import { vnDate } from "@/lib/time";
@@ -64,20 +68,10 @@ async function selectAllPages<T>(table: string, query: string): Promise<T[]> {
   }
 }
 
-function monthRange(month: string): { from: string; to: string } {
-  const from = `${month}-01`;
-  const d = new Date(`${from}T00:00:00Z`);
-  d.setUTCMonth(d.getUTCMonth() + 1);
-  d.setUTCDate(0);
-  return { from, to: d.toISOString().slice(0, 10) };
-}
-
-/** The month before the one containing `date` — the payroll default. */
-function prevMonthOf(date: string): string {
-  const d = new Date(`${date.slice(0, 7)}-01T00:00:00Z`);
-  d.setUTCMonth(d.getUTCMonth() - 1);
-  return d.toISOString().slice(0, 7);
-}
+/** The last period that has FINISHED. The one containing today is still running,
+ *  so it is never the default — a half-period read as a full one invites comparing
+ *  eighteen days of one driver with thirty-one of another. */
+const lastClosedPeriod = (today: string): string => shiftPayPeriod(payPeriodOf(today), -1);
 
 export async function GET(req: NextRequest) {
   if (!supabaseConfigured()) {
@@ -85,11 +79,11 @@ export async function GET(req: NextRequest) {
   }
 
   const today = vnDate();
-  const month = req.nextUrl.searchParams.get("month") ?? prevMonthOf(today);
-  if (!/^\d{4}-\d{2}$/.test(month)) {
-    return NextResponse.json({ ok: false, error: "month phải có dạng YYYY-MM" }, { status: 400 });
+  const period = req.nextUrl.searchParams.get("period") ?? lastClosedPeriod(today);
+  if (!/^\d{4}-\d{2}$/.test(period)) {
+    return NextResponse.json({ ok: false, error: "period phải có dạng YYYY-MM" }, { status: 400 });
   }
-  const { from, to } = monthRange(month);
+  const { from, to } = payPeriodRange(period);
 
   try {
     const [daily, punches] = await Promise.all([
@@ -141,10 +135,15 @@ export async function GET(req: NextRequest) {
       .map(([driver_id, e]) => {
         let mins = 0;
         let openInDays = 0;
+        let provisionalDays = 0;
         for (const dayPunches of e.byDay.values()) {
-          const w = workedMinutes(dayPunches);
+          // ⚠ No roster window here either — see factsFor() in /api/pay/me. Every
+          // day is therefore the tap-only fallback, and `provisional_days` says
+          // how many, so nobody pays against this table thinking it is final.
+          const w = workedMinutes(dayPunches, { shift: NO_SHIFT, firstTaskAt: null, lastTaskAt: null });
           mins += w.minutes;
           if (w.open_in.length > 0) openInDays++;
+          if (w.missing_shift) provisionalDays++;
         }
         const km = Math.round(e.km * 100) / 100;
         return {
@@ -164,6 +163,8 @@ export async function GET(req: NextRequest) {
           /** Days with a check-in and no check-out. These pay nothing, so this is
            *  the column a supervisor acts on BEFORE the 25th, not after. */
           open_in_days: openInDays,
+          /** Days computed without a roster window — a best effort, not payroll. */
+          provisional_days: provisionalDays,
         };
       });
 
@@ -173,7 +174,10 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       ok: true,
-      month, from, to,
+      period,
+      /** "15/07 – 14/08", so no client re-derives the boundary. */
+      period_label: payPeriodLabel(period),
+      from, to,
       rates: { per_hour: RATE_PER_HOUR_VND, per_km: RATE_PER_KM_VND },
       driver_count: drivers.length,
       totals: {
@@ -185,11 +189,12 @@ export async function GET(req: NextRequest) {
         km_pay: drivers.reduce((s, d) => s + d.km_pay, 0),
         total_pay: drivers.reduce((s, d) => s + d.total_pay, 0),
         open_in_days: drivers.reduce((s, d) => s + d.open_in_days, 0),
+        provisional_days: drivers.reduce((s, d) => s + d.provisional_days, 0),
       },
       drivers,
     });
   } catch (e) {
     console.error("[pay/team] error:", e instanceof Error ? e.message : e);
-    return NextResponse.json({ ok: false, error: "Không tải được bảng lương tháng." }, { status: 502 });
+    return NextResponse.json({ ok: false, error: "Không tải được bảng lương kỳ này." }, { status: 502 });
   }
 }
