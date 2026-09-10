@@ -136,6 +136,46 @@ function run(args) {
       return next;
     }
 
+    case "EVAL": {
+      const [script, keyCountRaw, ...rest] = a;
+      const keyCount = Number(keyCountRaw);
+      const keys = rest.slice(0, keyCount);
+      const argv = rest.slice(keyCount);
+      const key = keys[0];
+
+      // These two scripts are the only Lua used by the app. Implement their semantics
+      // directly so local tests exercise the same atomic revision protocol as Upstash.
+      if (script.includes("day-snapshot-cas-v1")) {
+        const rec = alive(key);
+        const current = rec?.value instanceof Map
+          ? rec.value.get("__revision__") ?? ""
+          : "";
+        if (current !== argv[0]) return 0;
+
+        const mode = argv[3];
+        let i = 5;
+        const deleteCount = Number(argv[4]);
+        if (mode === "full") store.delete(key);
+        for (let n = 0; n < deleteCount; n++) run(["HDEL", key, argv[i++]]);
+        const fieldCount = Number(argv[i++]);
+        for (let n = 0; n < fieldCount; n++) {
+          run(["HSET", key, argv[i++], argv[i++]]);
+        }
+        run(["HSET", key, "__revision__", argv[1]]);
+        run(["EXPIRE", key, argv[2]]);
+        return 1;
+      }
+
+      if (script.includes("day-snapshot-invalidate-v1")) {
+        if (!alive(key)) return 0;
+        run(["HDEL", key, "__built__"]);
+        run(["HSET", key, "__revision__", argv[0]]);
+        return 1;
+      }
+
+      throw new Error("redis-stub: unsupported EVAL script");
+    }
+
     case "HSET": {
       const [key] = a;
       const rec = alive(key);

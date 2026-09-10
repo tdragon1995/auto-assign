@@ -1,5 +1,27 @@
 const TZ = "Asia/Ho_Chi_Minh";
 
+const VN_WEEKDAY_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: TZ,
+  weekday: "long",
+});
+const VN_DATE_FORMATTER = new Intl.DateTimeFormat("sv-SE", { timeZone: TZ });
+const VN_TIMESTAMP_FORMATTER = new Intl.DateTimeFormat("sv-SE", {
+  timeZone: TZ,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
+const VN_HOURS_MINUTES_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: TZ,
+  hour: "numeric",
+  minute: "numeric",
+  hour12: false,
+});
+
 /** Current moment as a plain Date (identical to `new Date()`; use with vnDate/vnTimestamp/vnHoursMinutes). */
 export function vnNow(): Date {
   return new Date();
@@ -7,12 +29,12 @@ export function vnNow(): Date {
 
 /** Whether the given Date (default: now) falls on a Sunday in Saigon time. */
 export function vnIsSunday(d: Date = new Date()): boolean {
-  return new Intl.DateTimeFormat("en-US", { timeZone: TZ, weekday: "long" }).format(d) === "Sunday";
+  return VN_WEEKDAY_FORMATTER.format(d) === "Sunday";
 }
 
 /** "YYYY-MM-DD" for the given Date (default: now) in Saigon time. */
 export function vnDate(d: Date = new Date()): string {
-  return new Intl.DateTimeFormat("sv-SE", { timeZone: TZ }).format(d).slice(0, 10);
+  return VN_DATE_FORMATTER.format(d).slice(0, 10);
 }
 
 /**
@@ -38,28 +60,14 @@ export function timeToMins(t: string | null | undefined): number {
 
 /** "YYYY-MM-DD HH:mm:ss" for the given Date (default: now) in Saigon time. */
 export function vnTimestamp(d: Date = new Date()): string {
-  const parts = new Intl.DateTimeFormat("sv-SE", {
-    timeZone: TZ,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).formatToParts(d);
+  const parts = VN_TIMESTAMP_FORMATTER.formatToParts(d);
   const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "00";
   return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:${get("second")}`;
 }
 
 /** Hours and minutes of the given Date (default: now) in Saigon time. */
 export function vnHoursMinutes(d: Date = new Date()): { hours: number; minutes: number } {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: TZ,
-    hour: "numeric",
-    minute: "numeric",
-    hour12: false,
-  }).formatToParts(d);
+  const parts = VN_HOURS_MINUTES_FORMATTER.formatToParts(d);
   const hours = parseInt(parts.find((p) => p.type === "hour")?.value ?? "0", 10);
   const minutes = parseInt(parts.find((p) => p.type === "minute")?.value ?? "0", 10);
   return { hours, minutes };

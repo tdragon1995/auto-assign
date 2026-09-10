@@ -104,11 +104,86 @@ const LOCK_TTL_S = 20;
  *  GUARD_MAX_AGE_MS — which is a number, not a second copy of the truth.
  */
 const BUILT = "__built__";
+/** Changes on every atomic write. Readers compare it across their two HMGETs so an
+ *  index can never be paired with job rows from a different snapshot. */
+const REVISION = "__revision__";
 
 const IDX_LOC = "x:loc";
 const IDX_DRV = "x:drv";
 const IDX_PAIRS = "x:pairs";
 const jobField = (id: number) => `j:${id}`;
+
+/** One request performs the compare-and-swap and the complete hash mutation. This is
+ *  what lets a warm function write only changed fields without an older invocation
+ *  overwriting a newer snapshot. */
+const CAS_WRITE_SCRIPT = `-- day-snapshot-cas-v1
+local current = redis.call("HGET", KEYS[1], "${REVISION}") or ""
+if current ~= ARGV[1] then return 0 end
+if ARGV[4] == "full" then redis.call("DEL", KEYS[1]) end
+local i = 6
+local delete_count = tonumber(ARGV[5])
+for n = 1, delete_count do
+  redis.call("HDEL", KEYS[1], ARGV[i])
+  i = i + 1
+end
+local field_count = tonumber(ARGV[i])
+i = i + 1
+for n = 1, field_count do
+  redis.call("HSET", KEYS[1], ARGV[i], ARGV[i + 1])
+  i = i + 2
+end
+redis.call("HSET", KEYS[1], "${REVISION}", ARGV[2])
+redis.call("EXPIRE", KEYS[1], tonumber(ARGV[3]))
+return 1`;
+
+/** Invalidation participates in the same revision protocol. If it races a publisher,
+ *  either it invalidates the new value or it changes the revision and makes that
+ *  publisher's compare-and-swap fail. */
+const INVALIDATE_SCRIPT = `-- day-snapshot-invalidate-v1
+if redis.call("EXISTS", KEYS[1]) == 0 then return 0 end
+redis.call("HDEL", KEYS[1], "${BUILT}")
+redis.call("HSET", KEYS[1], "${REVISION}", ARGV[1])
+return 1`;
+
+type SerializedSnapshot = { revision: string; fields: Record<string, string> };
+const baselines = new Map<string, SerializedSnapshot>();
+const MAX_BASELINES = 4;
+const INSTANCE_ID = Math.random().toString(36).slice(2, 10);
+const UTF8_ENCODER = new TextEncoder();
+let revisionSequence = 0;
+
+function nextRevision(builtAt: number): string {
+  revisionSequence = (revisionSequence + 1) % Number.MAX_SAFE_INTEGER;
+  return `${builtAt}:${INSTANCE_ID}:${revisionSequence}`;
+}
+
+function revisionTimestamp(revision: string): number {
+  const separator = revision.indexOf(":");
+  return Number(separator < 0 ? revision : revision.slice(0, separator)) || 0;
+}
+
+function rememberBaseline(cacheKey: string, baseline: SerializedSnapshot): void {
+  baselines.delete(cacheKey);
+  baselines.set(cacheKey, baseline);
+  while (baselines.size > MAX_BASELINES) {
+    const oldest = baselines.keys().next().value as string | undefined;
+    if (!oldest) break;
+    baselines.delete(oldest);
+  }
+}
+
+/** Node exposes active CPU time; the branch feed also imports this module in the Edge
+ *  runtime, so discover it dynamically and report n/a there. */
+function cpuMicros(): number | null {
+  const runtime = Reflect.get(globalThis, "process") as
+    { cpuUsage?: () => { user: number; system: number } } | undefined;
+  const usage = runtime?.cpuUsage?.();
+  return usage ? usage.user + usage.system : null;
+}
+
+function utf8Bytes(value: string): number {
+  return UTF8_ENCODER.encode(value).byteLength;
+}
 
 function key(env: Env, date: string) { return `day:v1:${env}:${date}`; }
 function lockKey(env: Env, date: string) { return `day:lock:${env}:${date}`; }
@@ -322,7 +397,7 @@ export function assembleSnapshot(
   return { jobs, byLocation, byDriver, pairs: buildPairs(all), builtAt };
 }
 
-async function write(redis: Redis, env: Env, date: string, snap: Snapshot): Promise<void> {
+function serializeSnapshot(snap: Snapshot): Record<string, string> {
   const fields: Record<string, string> = {
     [BUILT]: String(snap.builtAt),
     [IDX_LOC]: JSON.stringify(snap.byLocation),
@@ -330,13 +405,86 @@ async function write(redis: Redis, env: Env, date: string, snap: Snapshot): Prom
     [IDX_PAIRS]: JSON.stringify(snap.pairs),
   };
   for (const [id, j] of snap.jobs) fields[jobField(id)] = JSON.stringify(j);
-  // DEL first so yesterday's jobs for a location that has none today don't linger, and
-  // as a transaction so a concurrent reader never sees a half-built hash.
-  const tx = redis.multi();
-  tx.del(key(env, date));
-  tx.hset(key(env, date), fields);
-  tx.expire(key(env, date), HASH_TTL_S);
-  await tx.exec();
+  return fields;
+}
+
+type WriteResult =
+  | { status: "written"; mode: "full" | "delta" }
+  | { status: "superseded" | "conflict" };
+
+/** Store a complete logical snapshot while sending only the changed fields on a warm
+ *  invocation. A cold function still performs one full replacement, then retains a
+ *  bounded serialized baseline for later cycles in that same runtime. */
+async function write(redis: Redis, env: Env, date: string, snap: Snapshot): Promise<WriteResult> {
+  const cpuStart = cpuMicros();
+  const elapsedStart = performance.now();
+  const cacheKey = key(env, date);
+  const head = await redis.hmget<Record<string, unknown>>(cacheKey, REVISION, BUILT);
+  const expectedRevision = head?.[REVISION] == null ? "" : String(head[REVISION]);
+  const existingBuiltAt = Number(head?.[BUILT] ?? 0);
+  if (existingBuiltAt && existingBuiltAt >= snap.builtAt) return { status: "superseded" };
+  // invalidateSnapshot removes BUILT and stamps its own revision time. A cycle whose
+  // payload was fetched before that invalidation must not restore the stale day merely
+  // because its write began after the invalidation script completed.
+  if (!existingBuiltAt && revisionTimestamp(expectedRevision) >= snap.builtAt) {
+    return { status: "superseded" };
+  }
+
+  const fields = serializeSnapshot(snap);
+  const baseline = baselines.get(cacheKey);
+  const canUseDelta = baseline?.revision === expectedRevision;
+  const mode: "full" | "delta" = canUseDelta ? "delta" : "full";
+  const changed: [string, string][] = [];
+  const deleted: string[] = [];
+
+  if (!canUseDelta || !baseline) {
+    changed.push(...Object.entries(fields));
+  } else {
+    for (const [field, value] of Object.entries(fields)) {
+      if (baseline.fields[field] !== value) changed.push([field, value]);
+    }
+    for (const field of Object.keys(baseline.fields)) {
+      if (!(field in fields)) deleted.push(field);
+    }
+  }
+
+  const revision = nextRevision(snap.builtAt);
+  const args: string[] = [
+    expectedRevision,
+    revision,
+    String(HASH_TTL_S),
+    mode,
+    String(deleted.length),
+    ...deleted,
+    String(changed.length),
+  ];
+  for (const [field, value] of changed) args.push(field, value);
+
+  const applied = Number(await redis.eval(CAS_WRITE_SCRIPT, [cacheKey], args));
+  const cpuEnd = cpuMicros();
+  const cpuMs = cpuStart == null || cpuEnd == null ? null : (cpuEnd - cpuStart) / 1000;
+  const elapsedMs = performance.now() - elapsedStart;
+  const payloadBytes = changed.reduce(
+    (total, [field, value]) => total + utf8Bytes(field) + utf8Bytes(value),
+    deleted.reduce((total, field) => total + utf8Bytes(field), 0),
+  );
+  const timings = `cpu_ms=${cpuMs?.toFixed(1) ?? "n/a"} elapsed_ms=${elapsedMs.toFixed(1)}`;
+
+  if (applied !== 1) {
+    baselines.delete(cacheKey);
+    console.info(
+      `[day-snapshot] conflict env=${env} date=${date} mode=${mode} ` +
+      `changed=${changed.length} deleted=${deleted.length} bytes=${payloadBytes} ${timings}`,
+    );
+    return { status: "conflict" };
+  }
+
+  rememberBaseline(cacheKey, { revision, fields });
+  console.info(
+    `[day-snapshot] written env=${env} date=${date} mode=${mode} ` +
+    `changed=${changed.length} deleted=${deleted.length} bytes=${payloadBytes} ${timings}`,
+  );
+  return { status: "written", mode };
 }
 
 function parse<T>(raw: unknown, fallback: T): T {
@@ -375,24 +523,33 @@ export interface ReadOpts {
 
 type Slice = { jobs: SnapJob[]; builtAt: number | null; source: "cache" | "build" };
 
-/** Read one index entry's jobs. Two round-trips by design: the index names the ids,
- *  then one HMGET brings back only those jobs. */
+/** Read one index entry's jobs. The revision is read in both round-trips; if a publish
+ *  lands between them, retry once instead of combining an old index with new jobs. */
 async function readSlice(
   redis: Redis, env: Env, date: string, indexField: string, indexKey: string,
 ): Promise<Slice | null> {
-  const head = await redis.hmget<Record<string, unknown>>(key(env, date), BUILT, indexField);
-  const builtAt = Number(head?.[BUILT] ?? 0);
-  if (!builtAt) return null;
-  const index = parse<Record<string, number[]>>(head?.[indexField], {});
-  const ids = index[indexKey] ?? [];
-  if (!ids.length) return { jobs: [], builtAt, source: "cache" };
-  const rows = await redis.hmget<Record<string, unknown>>(key(env, date), ...ids.map(jobField));
-  const jobs: SnapJob[] = [];
-  for (const id of ids) {
-    const j = parse<SnapJob | null>(rows?.[jobField(id)], null);
-    if (j) jobs.push(j);
+  const cacheKey = key(env, date);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const head = await redis.hmget<Record<string, unknown>>(cacheKey, REVISION, BUILT, indexField);
+    const builtAt = Number(head?.[BUILT] ?? 0);
+    if (!builtAt) return null;
+    const revision = head?.[REVISION] == null ? "" : String(head[REVISION]);
+    const index = parse<Record<string, number[]>>(head?.[indexField], {});
+    const ids = index[indexKey] ?? [];
+    const rows = await redis.hmget<Record<string, unknown>>(
+      cacheKey, REVISION, ...ids.map(jobField),
+    );
+    const rowRevision = rows?.[REVISION] == null ? "" : String(rows[REVISION]);
+    if (rowRevision !== revision) continue;
+
+    const jobs: SnapJob[] = [];
+    for (const id of ids) {
+      const j = parse<SnapJob | null>(rows?.[jobField(id)], null);
+      if (j) jobs.push(j);
+    }
+    return { jobs, builtAt, source: "cache" };
   }
-  return { jobs, builtAt, source: "cache" };
+  return null;
 }
 
 async function slice(
@@ -436,7 +593,11 @@ async function slice(
 export async function invalidateSnapshot(date: string, env: Env): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
-  try { await redis.hdel(key(env, date), BUILT); } catch { /* best-effort */ }
+  const cacheKey = key(env, date);
+  baselines.delete(cacheKey);
+  try {
+    await redis.eval(INVALIDATE_SCRIPT, [cacheKey], [nextRevision(Date.now())]);
+  } catch { /* best-effort */ }
 }
 
 /** Publish a day the ASSIGN CYCLE already fetched, for the display readers only.
@@ -462,9 +623,9 @@ export async function publishSnapshot(
   const redis = getRedis();
   if (!redis) return "skipped";
   try {
-    const existing = Number(await redis.hget(key(env, date), BUILT));
-    if (existing && existing >= fetchedAt) return "superseded";
-    await write(redis, env, date, assembleSnapshot(timeline, unrouted, fetchedAt));
+    const result = await write(redis, env, date, assembleSnapshot(timeline, unrouted, fetchedAt));
+    if (result.status === "superseded") return "superseded";
+    if (result.status === "conflict") return "skipped";
     return "written";
   } catch {
     return "skipped"; // publishing is an optimisation; never fail a cycle over it

@@ -30,6 +30,8 @@ const { publishSnapshot, locationJobs, blockedPair, invalidateSnapshot } =
   await import("../src/lib/day-snapshot");
 const { pscPairKey } = await import("../src/lib/job-filters");
 const { markPscPair, unmarkPscPair, lookupPscPair } = await import("../src/lib/smart-log-kv");
+const { Redis } = await import("@upstash/redis");
+const redis = new Redis({ url: `http://127.0.0.1:${PORT}`, token: "local" });
 
 const DATE = "2026-08-11";
 const PICKUP = "cust-psc-d006";
@@ -78,8 +80,17 @@ function check(name: string, pass: boolean, detail = "") {
 
 console.log("\npublished day + write-through overlay\n");
 
-const res = await publishSnapshot(DATE, "prod", timeline, unrouted, Date.now());
+let stamp = Date.now();
+const snapshotLogs: string[] = [];
+const originalInfo = console.info;
+console.info = (...args: unknown[]) => {
+  snapshotLogs.push(args.map(String).join(" "));
+  originalInfo(...args);
+};
+
+const res = await publishSnapshot(DATE, "prod", timeline, unrouted, stamp);
 check("publish writes", res === "written", `got "${res}"`);
+check("cold publish uses a full write", snapshotLogs.some((line) => line.includes("mode=full")));
 
 // 1. The feed must serve the published day without touching Cartrack.
 const feed = await locationJobs(DATE, "prod", PICKUP);
@@ -95,16 +106,36 @@ check("guard reads the published day", guard !== null && guard.hit?.job_id === 9
   guard === null ? "rebuilt — it is not reading the publish" : `job ${guard.hit?.job_id}, age ${guard.ageMs}ms`);
 
 // 3. A newer publish wins; an older one is refused rather than overwriting.
-const stale = await publishSnapshot(DATE, "prod", timeline, unrouted, Date.now() - 60_000);
+const stale = await publishSnapshot(DATE, "prod", timeline, unrouted, stamp - 60_000);
 check("older publish is refused", stale === "superseded", `got "${stale}"`);
-const newer = await publishSnapshot(DATE, "prod", timeline, unrouted, Date.now() + 1);
+const newer = await publishSnapshot(DATE, "prod", timeline, unrouted, ++stamp);
 check("newer publish is accepted", newer === "written", `got "${newer}"`);
+check("warm unchanged publish writes only the freshness field",
+  snapshotLogs.some((line) => line.includes("mode=delta") && line.includes("changed=1")));
 
-// 4. THE POINT OF THE OVERLAY. A pair booked seconds ago is not in the published day —
+// 4. A delta has to update changed jobs and physically delete disappeared job fields.
+//    Merely changing the index would make the feed look right while stale hash data
+//    accumulates forever, so inspect both the public result and the stored field.
+const changedTimeline = [{ ...timeline[0], reference_number: "D006→D001_UPDATED" }] as any[];
+const changed = await publishSnapshot(DATE, "prod", changedTimeline, [], ++stamp);
+check("changed day publishes as a delta", changed === "written",
+  `got "${changed}"`);
+const changedFeed = await locationJobs(DATE, "prod", PICKUP);
+check("delta updates a job and removes another", changedFeed?.length === 1 &&
+  changedFeed[0]?.reference_number === "D006→D001_UPDATED");
+check("delta deletes the removed job field",
+  await redis.hget(`day:v1:prod:${DATE}`, "j:900002") === null);
+check("delete is reported in snapshot metrics",
+  snapshotLogs.some((line) => line.includes("mode=delta") && line.includes("deleted=1")));
+
+// Restore the original day for the pair-overlay assertions below.
+await publishSnapshot(DATE, "prod", timeline, unrouted, ++stamp);
+
+// 5. THE POINT OF THE OVERLAY. A pair booked seconds ago is not in the published day —
 //    that is exactly the window a cheap snapshot opens, and the window in which a twin
 //    trip gets created. The overlay has to cover it, and be droppable again.
 const NEW_PAIR = pscPairKey("cust-psc-d007", "cust-lab-d001");
-await publishSnapshot(DATE, "prod", timeline, unrouted, Date.now());
+await publishSnapshot(DATE, "prod", timeline, unrouted, ++stamp);
 check("a just-booked pair is absent from the published day",
   (await blockedPair(DATE, "prod", NEW_PAIR))?.hit == null);
 await markPscPair(DATE, NEW_PAIR, { job_id: 900003, reference_number: "D007→D001_10:00" });
@@ -115,20 +146,29 @@ check("overlay releases it on cancel", (await lookupPscPair(DATE, NEW_PAIR)) ===
 check("yesterday's overlay cannot block today",
   (await lookupPscPair("2026-08-10", NEW_PAIR)) === null);
 
-// 5. invalidateSnapshot still forces a rebuild — chấm-công re-reads its list after acting,
+// 6. invalidateSnapshot still forces a rebuild — chấm-công re-reads its list after acting,
 //    so the driver must not be served the day from before their check-in.
 await invalidateSnapshot(DATE, "prod");
 const afterInvalidate = await locationJobs(DATE, "prod", PICKUP);
 check("invalidate clears the feed stamp", afterInvalidate === null,
   afterInvalidate === null ? "rebuilt (correct)" : `still served ${afterInvalidate.length} job(s) from cache`);
+const staleAfterInvalidate = await publishSnapshot(
+  DATE, "prod", timeline, unrouted, stamp - 60_000,
+);
+check("a pre-invalidation payload cannot restore the stale day",
+  staleAfterInvalidate === "superseded", `got "${staleAfterInvalidate}"`);
+check("stale publish leaves the feed invalidated",
+  await locationJobs(DATE, "prod", PICKUP) === null);
 
-// 6. fresh=1 always goes live, published or not.
-await publishSnapshot(DATE, "prod", timeline, unrouted, Date.now());
+// 7. fresh=1 always goes live, published or not.
+stamp = Math.max(stamp + 1, Date.now() + 1);
+await publishSnapshot(DATE, "prod", timeline, unrouted, stamp);
 const forced = await locationJobs(DATE, "prod", PICKUP, { fresh: true });
 check("fresh=1 bypasses the published day", forced === null,
   forced === null ? "rebuilt (correct)" : "served from cache");
 
 console.log(failures === 0 ? "\nall passed\n" : `\n${failures} FAILED\n`);
+console.info = originalInfo;
 // exitCode, not process.exit(): the Upstash client keeps keep-alive sockets open, and
 // tearing the loop down under them trips a libuv assertion on Windows. Let Node drain.
 process.exitCode = failures === 0 ? 0 : 1;
