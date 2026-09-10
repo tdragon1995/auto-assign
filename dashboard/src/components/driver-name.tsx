@@ -29,9 +29,11 @@ import {
  */
 export function DriverName({
   full,
+  tooltip = true,
   className = "text-sm font-semibold text-slate-900",
 }: {
   full: string;
+  tooltip?: boolean;
   /** Styling for the name itself; the chip is fixed and small. */
   className?: string;
 }) {
@@ -41,7 +43,7 @@ export function DriverName({
     <>
       {/* The whole label, code and all, one hover away — so dropping it from the
           row costs nothing on the rare occasion the code is what is wanted. */}
-      <span className={className} title={full}>{name}</span>
+      <span className={className} title={tooltip ? full : undefined}>{name}</span>
       {employment && (
         <span
           className={
@@ -50,7 +52,7 @@ export function DriverName({
               ? "border-indigo-200 bg-indigo-100 text-indigo-700"
               : "border-slate-200 bg-slate-100 text-slate-600")
           }
-          title={EMPLOYMENT_TITLE[employment]}
+          title={tooltip ? EMPLOYMENT_TITLE[employment] : undefined}
         >
           {EMPLOYMENT_LABEL[employment]}
         </span>

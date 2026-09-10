@@ -863,7 +863,7 @@ function AddLeaveForm({ drivers, onSaved }: { drivers: ConfigDriver[]; onSaved: 
       {twinInfo?.twin && twinWill.text && (
         <p className={`mt-1 text-[11px] ${twinWill.copies ? "text-slate-700" : "text-slate-600"}`}>
           {twinWill.copies ? "Ghi thêm cho tài khoản PT" : "Tài khoản PT"}{" "}
-          <DriverName full={twinInfo.twin.name} className="font-semibold" />: {twinWill.text}
+          <DriverName tooltip={false} full={twinInfo.twin.name} className="font-semibold" />: {twinWill.text}
         </p>
       )}
 
@@ -1003,7 +1003,6 @@ function DeleteRowButton({
       <button
         type="button"
         onClick={() => setArmed(true)}
-        title="Xoá dòng nghỉ này khỏi sheet (đơn MISA bị duyệt một phần, dòng trùng…)"
         className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] text-slate-500 hover:border-red-300 hover:bg-red-50 hover:text-red-700"
       >
         Xoá
@@ -1154,7 +1153,6 @@ function SubEditor({
               onClick={() => removeBlock(i)}
               aria-label="Bỏ dòng này"
               className="flex size-6 items-center justify-center rounded text-[11px] text-slate-400 hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
-              title="Bỏ dòng này"
             >
               ✕
             </button>
@@ -1206,7 +1204,7 @@ function SuppressionRow({ s, onRestore }: { s: LeaveSuppression; onRestore: Dele
   const label = suppressionTimeLabel(s);
   return (
     <li className="flex flex-wrap items-baseline gap-x-1.5 text-xs">
-      <DriverName full={s.driver_name || s.driver_id} className="font-semibold text-slate-900" />
+      <DriverName tooltip={false} full={s.driver_name || s.driver_id} className="font-semibold text-slate-900" />
       <span className="text-[11px] text-slate-600">{rangeLabel(s.leave_from, s.leave_to)}</span>
       {label && <span className="font-mono text-[11px] text-slate-500">{label}</span>}
       {s.deleted_at && (
@@ -1221,7 +1219,6 @@ function SuppressionRow({ s, onRestore }: { s: LeaveSuppression; onRestore: Dele
           setBusy(false);
         }}
         className="ml-auto rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] font-semibold text-slate-600 hover:border-emerald-400 hover:bg-emerald-50 hover:text-emerald-700 disabled:opacity-60"
-        title="Bỏ chặn ngày này — lần đồng bộ MISA tới sẽ tạo lại nếu MISA vẫn tính nghỉ"
       >
         {busy ? "…" : "Khôi phục"}
       </button>
@@ -1262,9 +1259,45 @@ function makeRestoreRow(onRefresh: RefreshFn): DeleteRowFn {
  * needs a re-plan, not a sub) get a red chip plus their first day off.
  */
 
-function DutyCoverRow({ duty, parentId, drivers, onFill }: {
+
+/** Crossing arrows: orange means the substitute's own routes still need cover. */
+function UnfilledCoverMark() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+      strokeLinecap="round" strokeLinejoin="round" className="size-5 shrink-0 text-orange-600" aria-hidden="true">
+      <path d="M3 6h5c3 0 5 12 8 12h5M3 18h5c3 0 5-12 8-12h5" />
+      <path d="m6 3-3 3 3 3m12 6 3 3-3 3" />
+    </svg>
+  );
+}
+
+export function VisibleDutyCoverRows({ days, drivers, onFill }: {
+  days: { date: string; entries: LeaveOnDate[] }[];
+  drivers: ConfigDriver[];
+  onFill: FillSubsFn;
+}) {
+  const rows = days.flatMap((day) => day.entries.flatMap((entry) =>
+    (entry.subDutyConflicts ?? []).map((duty) => ({ duty, parent: entry })),
+  ));
+  if (!rows.length) return null;
+  return (
+    <section className="mt-2" aria-label="Người thay cần bố trí tuyến riêng">
+      <h3 className="text-xs font-semibold text-slate-800">Người thay cần bố trí tuyến riêng</h3>
+      <div className="divide-y divide-slate-200">
+        {rows.map(({ duty, parent }) => (
+          <DutyCoverRow key={[parent.driver_id, parent.leave_from, parent.timeLabel, duty.driver_id, duty.date, duty.from, duty.to].join("|")}
+            duty={duty} parentId={parent.driver_id} parentName={parent.driver_name}
+            drivers={drivers} onFill={onFill} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+export function DutyCoverRow({ duty, parentId, parentName, drivers, onFill }: {
   duty: SubDutyConflict;
   parentId: string;
+  parentName?: string;
   drivers: ConfigDriver[];
   onFill: FillSubsFn;
 }) {
@@ -1309,14 +1342,16 @@ function DutyCoverRow({ duty, parentId, drivers, onFill }: {
   }
 
   return (
-    <div className="mt-1 border-t border-dotted border-amber-400 pt-1 text-[11px] text-amber-800">
+    <div className="py-2 text-xs text-slate-800">
       <div className="flex flex-wrap items-center gap-1.5">
-        <AlertTriangle className="size-3 shrink-0" aria-hidden="true" />
-        <DriverName full={duty.name} />
-        <span>có {duty.branches} tuyến riêng · {ddmm(duty.date)} · {windowLabel || "Cả ngày"}</span>
+        {done ? <Check className="size-5 shrink-0 text-emerald-700" aria-hidden="true" /> : <UnfilledCoverMark />}
+        <DriverName tooltip={false} full={duty.name} />
+        {!done && <span className="font-semibold text-orange-700">Chưa có người thay</span>}
+        <span>{duty.branches} tuyến riêng · {ddmm(duty.date)} · {windowLabel || "Cả ngày"}</span>
+        {parentName && <span>đang thay {splitDriverName(parentName).name}</span>}
         {done ? <span className="text-emerald-700">Đã tạo dòng nghỉ và gán người thay</span> : (
-          <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]"
-            disabled={busy} onClick={() => setOpen((v) => !v)}>
+          <Button size="sm" variant="outline" className="min-h-11 px-3 text-xs md:min-h-9"
+            disabled={busy} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
             {open ? "Đóng" : "Thêm người thay"}
           </Button>
         )}
@@ -1326,8 +1361,8 @@ function DutyCoverRow({ duty, parentId, drivers, onFill }: {
           <p>Tạo dòng nghỉ riêng cho {splitDriverName(duty.name).name} trong ngày và khung giờ trên.</p>
           <fieldset disabled={busy} className="mt-1 flex flex-wrap items-center gap-1.5">
             <DriverCombobox names={name ? [name] : []} onChange={(names) => setName(names[0] || "")}
-              drivers={candidates} max={1} ariaLabel={"Người thay cho " + duty.name} />
-            <Button size="sm" className="h-6 px-2 text-[11px]" onClick={() => void save()} disabled={busy || !name}>
+              drivers={candidates} max={1} className="flex min-h-11 min-w-0 w-full flex-wrap items-center gap-1 rounded border border-slate-300 bg-white px-2 focus-within:ring-2 focus-within:ring-indigo-400/50 sm:w-72" ariaLabel={"Người thay cho " + duty.name} />
+            <Button size="sm" className="min-h-11 px-3 text-xs md:min-h-9" onClick={() => void save()} disabled={busy || !name}>
               {busy ? "Đang lưu…" : created.current ? "Lưu người thay" : "Tạo dòng nghỉ và lưu"}
             </Button>
           </fieldset>
@@ -1360,7 +1395,7 @@ function DriverCard({
     <div className="px-2 py-1.5 text-xs hover:bg-slate-50">
       <div className="flex items-center gap-1.5 flex-wrap">
         <StatusMark status={status} className="size-3.5" />
-        <DriverName full={g.driver_name || g.driver_id} />
+        <DriverName tooltip={false} full={g.driver_name || g.driver_id} />
         <span className={`shrink-0 text-[11px] font-semibold ${typeClass}`}>
           {typeLabel(g.loai_nghi)}
         </span>
@@ -1381,7 +1416,6 @@ function DriverCard({
                 <>
                   <span
                     className="text-emerald-700 break-words"
-                    title={`Thay: ${r.subs.map((s) => s.name || s.id).join(", ")}`}
                   >
                     ✓ {r.subs.map((s) => splitDriverName(s.name || s.id).name).join(", ")}
                   </span>
@@ -1412,7 +1446,6 @@ function DriverCard({
               {r.duplicate && (
                 <span
                   className="inline-flex items-center gap-1 rounded-full border border-orange-200 bg-orange-100 px-1.5 py-0 text-[11px] font-semibold text-orange-700"
-                  title="Sheet có nhiều dòng nghỉ trùng cho tài xế này cùng khung giờ — xoá bớt dòng thừa để tránh nhầm lẫn."
                 >
                   <AlertTriangle className="size-3" strokeWidth={2} />
                   Trùng dòng — dọn sheet
@@ -1425,10 +1458,6 @@ function DriverCard({
                 />
               </span>
             </div>
-            {r.subDutyConflicts?.map((duty) => (
-              <DutyCoverRow key={duty.driver_id + duty.date + duty.from + duty.to}
-                duty={duty} parentId={g.driver_id} drivers={drivers} onFill={onFill} />
-            ))}
             {editRow === i && (
               <SubEditor
                 row={r}
@@ -1517,7 +1546,7 @@ function UncoveredRowItem({
   return (
     <div className="px-2 py-1.5 hover:bg-slate-50">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0">
-        <DriverName full={item.driver_name || item.driver_id} className="text-sm font-medium text-slate-800" />
+        <DriverName tooltip={false} full={item.driver_name || item.driver_id} className="text-sm font-medium text-slate-800" />
         <span className="text-[11px] font-semibold text-amber-700">{typeLabel(item.loai_nghi)}</span>
         {item.row.timeLabel && (
           <span className="font-mono text-[11px] text-slate-500">{item.row.timeLabel}</span>
@@ -2026,6 +2055,7 @@ function WeekSection({
 
       {!state.loading && !state.error && state.shown && (
         <>
+          <VisibleDutyCoverRows days={state.days} drivers={drivers} onFill={onFill} />
           <div className="mt-1.5 grid grid-cols-2 items-start gap-1 md:grid-cols-4 xl:grid-cols-7">
             {byDay.map((d) => {
               const isToday = d.date === today;
@@ -2043,9 +2073,9 @@ function WeekSection({
                           "T5" is a label a sighted reader decodes from position
                           and a screen reader cannot decode at all. */}
                       <span className="text-[11px] font-semibold text-slate-800">
-                        <abbr title={`${weekdayLong(d.date)} ${ddmm(d.date)}`} className="no-underline">
+                        <span aria-label={weekdayLong(d.date)}>
                           {weekdayShort(d.date)}
-                        </abbr>
+                        </span>
                       </span>
                       <span className="font-mono text-[10px] text-slate-600">{ddmm(d.date)}</span>
                     </div>
@@ -2084,7 +2114,6 @@ function WeekSection({
                               onClick={() =>
                                 setPicked(sel ? null : { date: d.date, personKey: p.key })
                               }
-                              title={`${p.name}${both ? " — nghỉ cả tài khoản FT và PT" : ""} — ${STATUS_MARK[p.status].label.toLowerCase()} — ${weekdayLong(d.date)} ${ddmm(d.date)}`}
                               className={`flex w-full items-center gap-1 px-1.5 py-1 text-left transition-colors duration-150 ${
                                 sel ? "bg-indigo-100" : "hover:bg-slate-50"
                               }`}
@@ -2352,7 +2381,7 @@ export function LeaveStatusPanel({
                 <ul className="mt-1 space-y-0.5">
                   {invalidRecovered.map((r, i) => (
                     <li key={`ok-${r.driver_name}-${r.leave_from}-${r.timeLabel ?? "full"}-${i}`} className="flex flex-wrap items-baseline gap-x-1.5 text-xs">
-                      <DriverName full={r.driver_name} className="font-semibold text-slate-900" />
+                      <DriverName tooltip={false} full={r.driver_name} className="font-semibold text-slate-900" />
                       <span className="text-[11px] text-slate-600">{ddmm(r.leave_from)}</span>
                       {r.timeLabel && <span className="font-mono text-[11px] text-slate-500">{r.timeLabel}</span>}
                     </li>
@@ -2376,7 +2405,7 @@ export function LeaveStatusPanel({
                   {invalidIgnored.map((r, i) => {
                     return (
                       <li key={`${r.driver_name}-${r.leave_from}-${r.timeLabel ?? "full"}-${i}`} className="flex flex-wrap items-baseline gap-x-1.5 text-xs">
-                        <DriverName full={r.driver_name} className="font-semibold text-slate-900" />
+                        <DriverName tooltip={false} full={r.driver_name} className="font-semibold text-slate-900" />
                         <span className="text-[11px] text-slate-600">{ddmm(r.leave_from)}</span>
                         {r.timeLabel && <span className="font-mono text-[11px] text-slate-500">{r.timeLabel}</span>}
                         {!r.hasSub && (
@@ -2404,7 +2433,7 @@ export function LeaveStatusPanel({
                   {spanning.map((r, i) => {
                     return (
                       <li key={`span-${r.driver_name}-${r.leave_from}-${r.leave_to}-${i}`} className="flex flex-wrap items-baseline gap-x-1.5 text-xs">
-                        <DriverName full={r.driver_name} className="font-semibold text-slate-900" />
+                        <DriverName tooltip={false} full={r.driver_name} className="font-semibold text-slate-900" />
                         <span className="text-[11px] text-slate-600">
                           {ddmm(r.leave_from)}–{ddmm(r.leave_to)}
                         </span>
