@@ -4,7 +4,7 @@ import { isStopStarted } from "@/lib/job-filters";
 import { pushRunLog } from "@/lib/smart-log-kv";
 import { vnTimestamp } from "@/lib/time";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const preferredRegion = "sin1";
 
 export async function POST(req: NextRequest) {

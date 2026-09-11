@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { vnDate } from "@/lib/time";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const preferredRegion = "sin1";
 
 const B2B_LABEL = "🛵 Vận chuyển mẫu B2B";

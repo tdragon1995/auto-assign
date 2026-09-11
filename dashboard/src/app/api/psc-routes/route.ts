@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { loadPscRoutes } from "@/lib/psc-config";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const preferredRegion = "sin1";
 
 // Data is a hard-coded constant ([[psc-routes-data]]); the app's own pages import it directly

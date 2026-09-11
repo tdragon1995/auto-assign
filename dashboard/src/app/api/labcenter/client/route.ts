@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getReceptionistToken } from "@/lib/labcenter";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const preferredRegion = "sin1";
 
 const CLIENT_URL = "https://api.labcenter.vn/spc-pos/api/client";

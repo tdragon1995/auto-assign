@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const preferredRegion = "sin1";
 
 // Proxies Goong "Place Search by Keyword with Autocomplete" to keep GOONG_API_KEY off the client.

@@ -7,7 +7,7 @@ import {
   updateLocationPhone,
 } from "@/lib/labcenter";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const preferredRegion = "sin1";
 
 // A contact number must be plausibly dialable. Existing rows are inconsistent

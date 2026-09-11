@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const preferredRegion = "sin1";
 
 // Proxies Goong "Place Detail" to resolve a place_id from autocomplete to lat/lon + formatted address.

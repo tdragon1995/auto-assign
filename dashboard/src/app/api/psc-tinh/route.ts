@@ -8,7 +8,7 @@ import { STOP_STATUS, JOB_STATUS } from "@/lib/job-filters";
 import { pushRunLog, acquireCreateLock, releaseCreateLock, nextOrderNumber } from "@/lib/smart-log-kv";
 import { fetchJobDetail } from "@/lib/job-detail";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const preferredRegion = "sin1";
 
 const D001_UUID = "3927b076-3af9-11ed-b939-506b8dbc8dfb";

@@ -3,7 +3,7 @@ import { updateCustomerAddress, type Env } from "@/lib/cartrack";
 import { getAdminToken, getCartrackCustomerId, updateLocationAddress } from "@/lib/labcenter";
 import { notifyAdminGroup } from "@/lib/zalo";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const preferredRegion = "sin1";
 
 // ── PUT /api/sales/address — update a location's address + GPS in both systems ─

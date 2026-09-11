@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const preferredRegion = "sin1";
 
 // Follows Google Maps short links (maps.app.goo.gl, goo.gl/maps) and returns the expanded URL.

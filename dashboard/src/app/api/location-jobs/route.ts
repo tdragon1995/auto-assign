@@ -5,7 +5,7 @@ import { isClientPickupJob, isLabWatchedClient, LAB_CUSTOMER_ID } from "@/lib/jo
 import { locationJobs, slimJob } from "@/lib/day-snapshot";
 import type { Job, Stop } from "@/lib/types";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const preferredRegion = "sin1";
 
 // GET /api/location-jobs?date=2026-04-11&status=4&code=<customer_uuid>
