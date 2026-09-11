@@ -81,6 +81,41 @@ function dutyWindows(driverId: string, mappings: readonly Mapping[]): Window[] {
   return result;
 }
 
+/** Fixed-duty windows shared by both drivers on the same configured route.
+ * Leave rows do not carry a customer id, so a fixed source leave is compared
+ * against the substitute only on routes both drivers actually own. */
+function sharedDutyWindows(
+  sourceDriverId: string,
+  substituteId: string,
+  mappings: readonly Mapping[],
+): Window[] {
+  const source = mappings.filter((mapping) => mapping.driver_id === sourceDriverId);
+  const substitute = mappings.filter((mapping) => mapping.driver_id === substituteId);
+  if (source.length === 0) return dutyWindows(substituteId, mappings);
+  const substituteByCustomer = new Map<string, Mapping[]>();
+  for (const mapping of substitute) {
+    const rows = substituteByCustomer.get(mapping.customer_id) ?? [];
+    rows.push(mapping);
+    substituteByCustomer.set(mapping.customer_id, rows);
+  }
+  return source.flatMap((sourceMapping) => {
+    const sourceWindows = windows(
+      sourceMapping.shift_start ? `${String(sourceMapping.shift_start.hours).padStart(2, "0")}:${String(sourceMapping.shift_start.minutes).padStart(2, "0")}` : null,
+      sourceMapping.shift_end ? `${String(sourceMapping.shift_end.hours).padStart(2, "0")}:${String(sourceMapping.shift_end.minutes).padStart(2, "0")}` : null,
+    );
+    return (substituteByCustomer.get(sourceMapping.customer_id) ?? []).flatMap((substituteMapping) => {
+      const substituteWindows = windows(
+        substituteMapping.shift_start ? `${String(substituteMapping.shift_start.hours).padStart(2, "0")}:${String(substituteMapping.shift_start.minutes).padStart(2, "0")}` : null,
+        substituteMapping.shift_end ? `${String(substituteMapping.shift_end.hours).padStart(2, "0")}:${String(substituteMapping.shift_end.minutes).padStart(2, "0")}` : null,
+      );
+      return sourceWindows.flatMap((a) => substituteWindows.flatMap((b) => {
+        const hit = intersection(a, b);
+        return hit ? [hit] : [];
+      }));
+    });
+  });
+}
+
 function merge(windowsToMerge: Window[]): Window[] {
   const sorted = [...windowsToMerge].sort((a, b) => a.start - b.start || a.end - b.end);
   const result: Window[] = [];
@@ -196,7 +231,7 @@ export function deriveThayCaRows(
         const coverage = windows(sub.from ?? entry.gio_bat_dau, sub.to ?? entry.gio_ket_thuc);
         // Overnight windows are split before intersection so each generated
         // row remains a normal same-day leave row.
-        const allHits = merge(coverage.flatMap((a) => dutyWindows(sub.id, mappings).flatMap((b) =>
+        const allHits = merge(coverage.flatMap((a) => sharedDutyWindows(entry.driver_id, sub.id, mappings).flatMap((b) =>
           parentWindow.flatMap((p) => {
             const dutyHit = intersection(b, p);
             const hit = dutyHit ? intersection(a, dutyHit) : null;

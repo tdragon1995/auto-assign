@@ -34,14 +34,18 @@ function typeLabel(loaiNghi: string): string {
   return TYPE_LABEL[loaiNghi] ?? loaiNghi;
 }
 
-function ThayCaMark() {
+function ThayCaMark({ className = "size-4" }: { className?: string } = {}) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-      strokeLinecap="round" strokeLinejoin="round" className="size-4 shrink-0 text-orange-600" aria-hidden="true">
+      strokeLinecap="round" strokeLinejoin="round" className={`${className} shrink-0 text-orange-600`} aria-hidden="true">
       <path d="M3 6h5c3 0 5 12 8 12h5M3 18h5c3 0 5-12 8-12h5" />
       <path d="m6 3-3 3 3 3m12 6 3 3-3 3" />
     </svg>
   );
+}
+
+function UncoveredMark({ className = "size-3" }: { className?: string }) {
+  return <ThayCaMark className={className} />;
 }
 
 /** "2026-07-13" → "13/07" for compact date context on resigned drivers. */
@@ -1647,7 +1651,7 @@ interface Picked { date: string; personKey: string }
  * text on every row), and a colour reinforcing both.
  */
 const STATUS_MARK = {
-  uncovered: { Icon: AlertTriangle, tone: "text-amber-600", label: "Chưa có người thay" },
+  uncovered: { Icon: UncoveredMark, tone: "text-orange-600", label: "Chưa có người thay" },
   covered: { Icon: Check, tone: "text-emerald-600", label: "Đã có người thay" },
   resigned: { Icon: Ban, tone: "text-red-600", label: "Nghỉ việc" },
 } as const;
@@ -1924,7 +1928,7 @@ function WeekSection({
         })}
         {weekUncovered > 0 && (
           <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-100 px-1.5 py-0 text-[11px] font-semibold text-amber-800">
-            <AlertTriangle className="size-3" strokeWidth={2} />
+            <UncoveredMark className="size-3" />
             {weekUncovered} chưa có người thay
           </span>
         )}
@@ -1983,7 +1987,7 @@ function WeekSection({
                       <div className="mt-0.5 flex flex-wrap gap-1">
                         {uncovered > 0 && (
                           <span className="inline-flex items-center gap-0.5 rounded-full border border-amber-300 bg-amber-100 px-1 py-0 text-[10px] font-semibold text-amber-800">
-                            <AlertTriangle className="size-2.5" strokeWidth={2} />
+                            <UncoveredMark className="size-2.5" />
                             {uncovered}
                           </span>
                         )}
@@ -2225,7 +2229,7 @@ export function LeaveStatusPanel({
           </span>
           {totalUncovered > 0 && (
             <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-700 border border-amber-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
-              <AlertTriangle className="size-3" strokeWidth={2} />
+              <UncoveredMark className="size-3" />
               {totalUncovered} chưa có người thay
             </span>
           )}

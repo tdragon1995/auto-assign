@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { deriveThayCaRows, encodeThayCaNote, parseThayCaNote } from "../src/lib/thay-ca";
 import type { Mapping } from "../src/lib/types";
 
-const mapping = (driver_id: string, start: string, end: string): Mapping => ({
-  customer_id: `branch-${driver_id}`,
+const mapping = (driver_id: string, start: string, end: string, customer_id = `branch-${driver_id}`): Mapping => ({
+  customer_id,
   driver_id,
   smart_driver_id: [],
   dropoff_id: "",
@@ -27,6 +27,24 @@ assert.equal(rows[0].driver_id, "b");
 
 assert.equal(deriveThayCaRows([base], [mapping("b", "12:00", "14:00")]).length, 0);
 assert.equal(deriveThayCaRows([base], [mapping("b", "13:00", "14:00")]).length, 0);
+
+const sourceAndSub = {
+  ...base, driver_id: "a", gio_bat_dau: null, gio_ket_thuc: null,
+  subs: [{ id: "b", name: "Driver B", from: null, to: null }],
+};
+assert.equal(
+  deriveThayCaRows([sourceAndSub], [
+    mapping("a", "16:45", "20:30", "route-1"),
+    mapping("b", "07:00", "16:45", "route-1"),
+  ]).length,
+  0,
+  "same-route touching shifts do not create a transfer",
+);
+const sameRouteOverlap = deriveThayCaRows([sourceAndSub], [
+  mapping("a", "16:00", "20:30", "route-1"),
+  mapping("b", "07:00", "17:00", "route-1"),
+]);
+assert.deepEqual(sameRouteOverlap.map((row) => [row.leave_from_hr, row.leave_to_hr]), [["16:00", "17:00"]]);
 
 const separated = deriveThayCaRows(
   [{ ...base, gio_bat_dau: null, gio_ket_thuc: null, subs: [{ id: "b", name: "Driver B", from: "08:00", to: "18:00" }] }],
