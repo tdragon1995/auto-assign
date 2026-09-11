@@ -5,7 +5,9 @@ import { loadPscRoutes } from "@/lib/psc-config";
 import { haversineKm } from "@/lib/distance";
 import { notifyAdminGroup } from "@/lib/zalo";
 
-export const runtime = "edge";
+// This route loads PSC routes through the Google Sheets client, which depends on
+// Node modules. It cannot run in Vercel's Edge runtime.
+export const runtime = "nodejs";
 export const preferredRegion = "sin1";
 const COUNTRY_ID = 235;
 const DEFAULT_CONTACT_CODE = "84";
