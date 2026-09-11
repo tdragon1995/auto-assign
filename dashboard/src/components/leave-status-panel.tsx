@@ -17,13 +17,12 @@ import {
 import { normalizeDriverName } from "@/lib/driver-match";
 import { DriverName } from "./driver-name";
 import { DriverCombobox } from "./driver-combobox";
-import { createDutyLeave } from "@/lib/create-duty-leave";
-import type { SubDutyConflict } from "@/lib/sub-duty";
 
 const TYPE_LABEL: Record<string, string> = {
   "Nghỉ nguyên buổi": "Cả ngày",
   "Nghỉ nửa buổi": "Nửa buổi",
   "Nghỉ việc": "Nghỉ việc",
+  "Thay ca": "Thay ca",
 };
 
 // Most rows use one of the three cham-cong labels (shortened above), but many
@@ -35,6 +34,16 @@ function typeLabel(loaiNghi: string): string {
   return TYPE_LABEL[loaiNghi] ?? loaiNghi;
 }
 
+function ThayCaMark() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+      strokeLinecap="round" strokeLinejoin="round" className="size-4 shrink-0 text-orange-600" aria-hidden="true">
+      <path d="M3 6h5c3 0 5 12 8 12h5M3 18h5c3 0 5-12 8-12h5" />
+      <path d="m6 3-3 3 3 3m12 6 3 3-3 3" />
+    </svg>
+  );
+}
+
 /** "2026-07-13" → "13/07" for compact date context on resigned drivers. */
 function ddmm(date: string): string {
   return date.length >= 10 ? `${date.slice(8, 10)}/${date.slice(5, 7)}` : date;
@@ -42,8 +51,7 @@ function ddmm(date: string): string {
 
 
 interface LeaveRowView {
-  subDutyConflicts?: SubDutyConflict[];
-  subDutyWarning?: string | null;
+  loai_nghi?: string;
   timeLabel: string | null;
   subs: LeaveOnDate["subs"];
   leave_from: string;
@@ -64,7 +72,7 @@ function groupByDriver(drivers: LeaveOnDate[]): DriverGroup[] {
   const map = new Map<string, DriverGroup>();
   for (const d of drivers) {
     const g = map.get(d.driver_id);
-    const row = { subDutyConflicts: d.subDutyConflicts, subDutyWarning: d.subDutyWarning, timeLabel: d.timeLabel, subs: d.subs, leave_from: d.leave_from, duplicate: d.duplicate };
+    const row = { loai_nghi: d.loai_nghi, timeLabel: d.timeLabel, subs: d.subs, leave_from: d.leave_from, duplicate: d.duplicate };
     if (!g) {
       map.set(d.driver_id, {
         driver_id: d.driver_id,
@@ -639,6 +647,7 @@ function AddLeaveForm({ drivers, onSaved }: { drivers: ConfigDriver[]; onSaved: 
           }
           // Same sentence for every day of the same leave, so it is shown once.
           if (data.warning && !subWarning) subWarning = String(data.warning);
+          if (data.thayCaWarning && !subWarning) subWarning = String(data.thayCaWarning);
           covered++;
         } catch (e) {
           failure = `người thay ${ddmm(w.leave_from)}: ${e instanceof Error ? e.message : String(e)}`;
@@ -916,6 +925,7 @@ function makeFillSubs(onRefresh: RefreshFn): FillSubsFn {
       // next, not about whether it saved, and a bare warning read as a failure.
       if (data.warning) toast.warning(`Đã lưu người thay. ${data.warning}`);
       else toast.success("Đã lưu người thay vào sheet");
+      if (data.thayCaWarning) toast.error(String(data.thayCaWarning));
       await onRefresh();
       return true;
     } catch (e) {
@@ -1260,119 +1270,6 @@ function makeRestoreRow(onRefresh: RefreshFn): DeleteRowFn {
  */
 
 
-/** Crossing arrows: orange means the substitute's own routes still need cover. */
-function UnfilledCoverMark() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-      strokeLinecap="round" strokeLinejoin="round" className="size-5 shrink-0 text-orange-600" aria-hidden="true">
-      <path d="M3 6h5c3 0 5 12 8 12h5M3 18h5c3 0 5-12 8-12h5" />
-      <path d="m6 3-3 3 3 3m12 6 3 3-3 3" />
-    </svg>
-  );
-}
-
-export function VisibleDutyCoverRows({ days, drivers, onFill }: {
-  days: { date: string; entries: LeaveOnDate[] }[];
-  drivers: ConfigDriver[];
-  onFill: FillSubsFn;
-}) {
-  const rows = days.flatMap((day) => day.entries.flatMap((entry) =>
-    (entry.subDutyConflicts ?? []).map((duty) => ({ duty, parent: entry })),
-  ));
-  if (!rows.length) return null;
-  return (
-    <section className="mt-2" aria-label="Người thay cần bố trí tuyến riêng">
-      <h3 className="text-xs font-semibold text-slate-800">Người thay cần bố trí tuyến riêng</h3>
-      <div className="divide-y divide-slate-200">
-        {rows.map(({ duty, parent }) => (
-          <DutyCoverRow key={[parent.driver_id, parent.leave_from, parent.timeLabel, duty.driver_id, duty.date, duty.from, duty.to].join("|")}
-            duty={duty} parentId={parent.driver_id} parentName={parent.driver_name}
-            drivers={drivers} onFill={onFill} />
-        ))}
-      </div>
-    </section>
-  );
-}
-
-export function DutyCoverRow({ duty, parentId, parentName, drivers, onFill }: {
-  duty: SubDutyConflict;
-  parentId: string;
-  parentName?: string;
-  drivers: ConfigDriver[];
-  onFill: FillSubsFn;
-}) {
-  const [open, setOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const created = useRef(false);
-  const saving = useRef(false);
-  const [done, setDone] = useState(false);
-  const candidates = drivers.filter((d) => d.driver_id !== duty.driver_id && d.driver_id !== parentId);
-  const windowLabel = duty.from && duty.to ? duty.from + "–" + duty.to : null;
-
-  async function save() {
-    if (saving.current) return;
-    const cover = candidates.find((d) => d.name === name);
-    if (!cover) { setError("Chọn người thay từ danh sách"); return; }
-    saving.current = true;
-    setBusy(true);
-    setError("");
-    try {
-      if (!created.current) {
-        await createDutyLeave(duty, fetch);
-        created.current = true;
-      }
-      const ok = await onFill(
-        { driver_id: duty.driver_id, leave_from: duty.date, timeLabel: windowLabel },
-        [{ name: cover.name, from: null, to: null }],
-      );
-      if (!ok) {
-        setError("Đã tạo dòng nghỉ, chưa lưu được người thay. Bấm lưu để thử lại việc gán người thay.");
-        return;
-      }
-      setDone(true);
-      setOpen(false);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      saving.current = false;
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="py-2 text-xs text-slate-800">
-      <div className="flex flex-wrap items-center gap-1.5">
-        {done ? <Check className="size-5 shrink-0 text-emerald-700" aria-hidden="true" /> : <UnfilledCoverMark />}
-        <DriverName tooltip={false} full={duty.name} />
-        {!done && <span className="font-semibold text-orange-700">Chưa có người thay</span>}
-        <span>{duty.branches} tuyến riêng · {ddmm(duty.date)} · {windowLabel || "Cả ngày"}</span>
-        {parentName && <span>đang thay {splitDriverName(parentName).name}</span>}
-        {done ? <span className="text-emerald-700">Đã tạo dòng nghỉ và gán người thay</span> : (
-          <Button size="sm" variant="outline" className="min-h-11 px-3 text-xs md:min-h-9"
-            disabled={busy} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-            {open ? "Đóng" : "Thêm người thay"}
-          </Button>
-        )}
-      </div>
-      {open && (
-        <div className="mt-1">
-          <p>Tạo dòng nghỉ riêng cho {splitDriverName(duty.name).name} trong ngày và khung giờ trên.</p>
-          <fieldset disabled={busy} className="mt-1 flex flex-wrap items-center gap-1.5">
-            <DriverCombobox names={name ? [name] : []} onChange={(names) => setName(names[0] || "")}
-              drivers={candidates} max={1} className="flex min-h-11 min-w-0 w-full flex-wrap items-center gap-1 rounded border border-slate-300 bg-white px-2 focus-within:ring-2 focus-within:ring-indigo-400/50 sm:w-72" ariaLabel={"Người thay cho " + duty.name} />
-            <Button size="sm" className="min-h-11 px-3 text-xs md:min-h-9" onClick={() => void save()} disabled={busy || !name}>
-              {busy ? "Đang lưu…" : created.current ? "Lưu người thay" : "Tạo dòng nghỉ và lưu"}
-            </Button>
-          </fieldset>
-        </div>
-      )}
-      {error && <p role="alert" className="mt-1 text-red-700">{error}</p>}
-    </div>
-  );
-}
-
 function DriverCard({
   g,
   drivers,
@@ -1411,6 +1308,10 @@ function DriverCard({
           // lands there next.
           <div key={`${r.leave_from}-${r.timeLabel ?? "full"}`}>
             <div className="mt-0.5 flex flex-wrap items-baseline gap-x-1.5 text-xs">
+              {r.loai_nghi === "Thay ca" && r.subs.length === 0 && <ThayCaMark />}
+              {r.loai_nghi && r.loai_nghi !== g.loai_nghi && (
+                <span className="font-semibold text-orange-700">{typeLabel(r.loai_nghi)}</span>
+              )}
               {r.timeLabel && <span className="font-mono text-slate-500">{r.timeLabel}</span>}
               {r.subs.length > 0 ? (
                 <>
@@ -2055,7 +1956,6 @@ function WeekSection({
 
       {!state.loading && !state.error && state.shown && (
         <>
-          <VisibleDutyCoverRows days={state.days} drivers={drivers} onFill={onFill} />
           <div className="mt-1.5 grid grid-cols-2 items-start gap-1 md:grid-cols-4 xl:grid-cols-7">
             {byDay.map((d) => {
               const isToday = d.date === today;

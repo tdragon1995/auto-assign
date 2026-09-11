@@ -5,6 +5,7 @@ import {
   leaveEntriesOnDate,
   invalidLeaveRowsOnDate,
   invalidateLeaveCache,
+  loadLeaveEntriesStrict,
   spanningLeaveRows,
 } from "@/lib/leave-config";
 import {
@@ -15,11 +16,53 @@ import {
   loadLeaveSuppressions, liveSuppressions, invalidateSuppressionCache,
 } from "@/lib/leave-suppression";
 import { loadDriversFromSheet, loadConfigFromSheets } from "@/lib/config";
-import { subDutyWarning, subDutyConflicts, parseWindowLabel } from "@/lib/sub-duty";
+import {
+  deriveThayCaRows, parseSwapNote, parseThayCaNote, sourceKey, THAY_CA_LABEL,
+  type SwapMeta,
+} from "@/lib/thay-ca";
+import { syncThayCaRows } from "@/lib/sheets-writer";
 import { addDays, timeToMins, vnDate } from "@/lib/time";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
+
+/** Rebuild generated duty-transfer rows after a source leave/substitute write.
+ * A few passes are intentional: a newly updated B row can itself have a
+ * substitute C, so C's row must be derived from B's updated interval. The
+ * provenance chain in `thay-ca.ts` stops reciprocal assignments from looping. */
+async function reconcileThayCa(): Promise<{ created: number; updated: number; deleted: number }> {
+  const config = await loadConfigFromSheets();
+  if (!config) throw new Error("Chưa đọc được config để tạo dòng Thay ca");
+  let total = { created: 0, updated: 0, deleted: 0 };
+  for (let pass = 0; pass < 5; pass++) {
+    const { entries } = await loadLeaveEntriesStrict();
+    const byKey = new Map(entries.map((entry) => [
+      sourceKey(entry.driver_id, entry.leave_from, entry.gio_bat_dau, entry.gio_ket_thuc), entry,
+    ]));
+    const swaps: SwapMeta[] = [];
+    for (const entry of entries) {
+      const meta = parseThayCaNote(entry.note);
+      if (!meta || !meta.parentKey.startsWith("leave|") || !entry.subs.some((sub) => sub.id === meta.sourceDriverId)) continue;
+      const source = byKey.get(meta.parentKey);
+      if (!source) continue;
+      const previous = parseSwapNote(source.note);
+      swaps.push({
+        sourceKey: meta.parentKey,
+        originalType: previous?.originalType ?? meta.sourceLeaveType ?? source.loai_nghi,
+        originalNote: previous?.originalNote ?? source.note ?? "",
+      });
+    }
+    const result = await syncThayCaRows(deriveThayCaRows(entries, config.mappings), swaps);
+    total = {
+      created: total.created + result.created,
+      updated: total.updated + result.updated,
+      deleted: total.deleted + result.deleted,
+    };
+    if (result.created === 0 && result.updated === 0 && result.deleted === 0) break;
+    await invalidateLeaveCache();
+  }
+  return total;
+}
 
 /** GET — drivers on leave today and tomorrow (Saigon dates), from the Leave
  *  Status sheet. Powers the dashboard "Cần xử lý" leave-status panel.
@@ -54,19 +97,7 @@ export async function GET(req: NextRequest) {
     // Shares the same cached parse as the call above — no second sheet read.
     const dropped = await loadInvalidLeaveRows();
     const suppressed = await loadLeaveSuppressions(fresh);
-    // Refresh warnings on reads as well as writes.
-    const config = await loadConfigFromSheets().catch(() => null);
-    const onDate = (date: string) => leaveEntriesOnDate(date, entries).map((entry) => ({
-      ...entry,
-      subDutyConflicts: config ? subDutyConflicts(
-        entry.subs, parseWindowLabel(entry.timeLabel), date, config.mappings,
-      ) : [],
-      subDutyWarning: config ? subDutyWarning(
-        entry.subs.map((sub) => ({ ...sub, driver_id: sub.id })),
-        parseWindowLabel(entry.timeLabel),
-        config.mappings,
-      ) : null,
-    }));
+    const onDate = (date: string) => leaveEntriesOnDate(date, entries);
     const today = vnDate();
     const tomorrow = addDays(today, 1);
     return NextResponse.json({
@@ -189,32 +220,16 @@ export async function POST(req: NextRequest) {
       : await updateLeaveSubs(identity, clean);
     await invalidateLeaveCache();
 
-    // A substitute who is already the fixed driver of their own branches at
-    // these hours. Reported AFTER the write and never instead of it: this is
-    // routinely deliberate, and the supervisor knows things the config does not
-    // — but they cannot see it from a name in a combobox. See `sub-duty.ts`.
-    //
-    // Best-effort: a config that will not load is not a reason to fail a write
-    // that already landed, so the warning is simply missing in that case.
-    let busy: string | null = null;
+    const warning = result.warning ?? null;
+    let thayCa: { created: number; updated: number; deleted: number } | null = null;
+    let thayCaWarning: string | null = null;
     try {
-      const config = await loadConfigFromSheets();
-      if (config) {
-        busy = subDutyWarning(
-          clean.map((c) => ({ ...c, driver_id: idByName.get(c.name) ?? "" })),
-          parseWindowLabel(timeLabel),
-          config.mappings,
-        );
-      }
+      thayCa = await reconcileThayCa();
     } catch (e) {
-      console.error("[leave-status] sub duty check failed", e);
+      console.error("[leave-status] Thay ca reconciliation failed", e);
+      thayCaWarning = `Đã lưu người thay nhưng chưa đồng bộ dòng ${THAY_CA_LABEL}: ${String(e)}`;
     }
-
-    // Both, when both apply. The writer's own warning is about the row that was
-    // just written; this one is about tomorrow's problem, and dropping either
-    // to fit one field is how a supervisor stops seeing the one that mattered.
-    const warning = [result.warning, busy].filter(Boolean).join(" ") || null;
-    return NextResponse.json({ ok: true, row: result.row, warning });
+    return NextResponse.json({ ok: true, row: result.row, warning, thayCa, thayCaWarning });
   } catch (e) {
     // Business rejections (row full, row not found, bad input) are the user's to
     // fix → 400 with the message verbatim; anything else is a real 500.
@@ -275,7 +290,15 @@ export async function DELETE(req: NextRequest) {
         "Đã xoá dòng nghỉ, nhưng chưa ghi được vào bảng \"đã xoá\" — " +
         "lần đồng bộ MISA tới có thể tạo lại dòng này.";
     }
-    return NextResponse.json({ ok: true, deleted, warning });
+    let thayCa: { created: number; updated: number; deleted: number } | null = null;
+    let thayCaWarning: string | null = null;
+    try {
+      thayCa = await reconcileThayCa();
+    } catch (e) {
+      console.error("[leave-status] Thay ca reconciliation after delete failed", e);
+      thayCaWarning = `Đã xoá dòng nghỉ nhưng chưa đồng bộ dòng ${THAY_CA_LABEL}: ${String(e)}`;
+    }
+    return NextResponse.json({ ok: true, deleted, warning, thayCa, thayCaWarning });
   } catch (e) {
     if (e instanceof LeaveWriteError) return bad(e.message);
     return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });

@@ -4,6 +4,11 @@ import { vnIsSunday, vnTimestamp } from "./time";
 import { LEAVE_DELETED_SHEET, LEAVE_DELETED_HEADERS } from "./leave-suppression";
 import type { ConfigCells } from "./unmapped-row";
 import { timeToMins } from "./time";
+import {
+  encodeSwapNote, parseSwapNote, parseThayCaNote, sourceKey, THAY_CA_NOTE_PREFIX,
+  type ThayCaDesired,
+  type SwapMeta,
+} from "./thay-ca";
 
 let cachedNghiPhepSheetName: string | null = null;
 let cachedSheets: ReturnType<typeof google.sheets> | null = null;
@@ -212,6 +217,167 @@ export function appendShape(rows: LeaveCells[]): (string | null)[][] {
     if (r.note) { while (row.length < 13) row.push(null); row[13] = r.note; }
     return row;
   });
+}
+
+export interface LeaveSheetDataRow {
+  row: number;
+  values: Record<string, string>;
+}
+
+/** Read the leave tab once for reconciliation jobs that need stable row numbers. */
+export async function readLeaveSheetData(): Promise<LeaveSheetDataRow[]> {
+  const sheets = getSheetsClient();
+  const sheetName = await getNghiPhepSheetName(sheets);
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: `'${sheetName.replace(/'/g, "''")}'`,
+  });
+  const all = res.data.values ?? [];
+  const headers = all[0] ?? [];
+  return all.slice(1).map((row, index) => ({
+    row: index + 2,
+    values: Object.fromEntries(headers.map((header, column) => [
+      String(header ?? "").trim(), String(row[column] ?? "").trim(),
+    ])),
+  }));
+}
+
+/** Update only named leave columns, preserving derived ids and substitute slots. */
+export async function updateLeaveSheetRow(row: number, values: LeaveCells): Promise<void> {
+  const sheets = getSheetsClient();
+  const sheetName = await getNghiPhepSheetName(sheets);
+  const header = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: `'${sheetName.replace(/'/g, "''")}'!1:1`,
+  });
+  const names = (header.data.values?.[0] ?? []).map((h) => String(h ?? "").trim());
+  const colOf = (name: string) => {
+    const index = names.indexOf(name);
+    return index < 0 ? null : colLetter(index);
+  };
+  const quoted = `'${sheetName.replace(/'/g, "''")}'`;
+  const data = (Object.keys(LEAVE_WRITE_COLS) as (keyof typeof LEAVE_WRITE_COLS)[]).flatMap((field) => {
+    const column = colOf(LEAVE_WRITE_COLS[field]);
+    return column ? [{ range: `${quoted}!${column}${row}`, values: [[String(values[field] ?? "")]] }] : [];
+  });
+  if (!data.length) throw new LeaveWriteError("Leave sheet không có cột để cập nhật");
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: SHEET_ID,
+    requestBody: { valueInputOption: "RAW", data },
+  });
+}
+
+export async function deleteLeaveSheetRows(rows: number[]): Promise<void> {
+  if (!rows.length) return;
+  const sheets = getSheetsClient();
+  const requests = [...new Set(rows)]
+    .filter((row) => row > 2)
+    .sort((a, b) => b - a)
+    .map((row) => ({
+      deleteDimension: {
+        range: { sheetId: Number(SHEET_GID.nghi_phep), dimension: "ROWS", startIndex: row - 1, endIndex: row },
+      },
+    }));
+  if (requests.length) {
+    await sheets.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests } });
+  }
+}
+
+/**
+ * Reconcile generated Thay ca rows by their provenance marker. Existing rows
+ * retain their substitute slots while their overlap window is trimmed or moved.
+ */
+export async function syncThayCaRows(
+  desired: readonly ThayCaDesired[],
+  swaps: readonly SwapMeta[] = [],
+): Promise<{
+  created: number;
+  updated: number;
+  deleted: number;
+}> {
+  const rows = await readLeaveSheetData();
+  const existing = rows.filter((row) => row.values.note.startsWith(THAY_CA_NOTE_PREFIX));
+  const desiredByKey = new Map(desired.map((row) => [row.recordKey, row]));
+  const used = new Set<string>();
+  const updates: Promise<void>[] = [];
+  let updated = 0;
+
+  for (const row of existing) {
+    let meta: { recordKey?: string } = {};
+    const parsed = parseThayCaNote(row.values.note);
+    if (parsed) meta = parsed;
+    const wanted = meta.recordKey ? desiredByKey.get(meta.recordKey) : undefined;
+    if (!wanted || used.has(wanted.recordKey)) continue;
+    used.add(wanted.recordKey);
+    const next: LeaveCells = {
+      submitted_at: row.values["Ngày Nộp Đơn"] || new Date().toISOString(),
+      driver_name: wanted.driver_name,
+      loai_nghi: "Thay ca",
+      leave_from: wanted.leave_from,
+      leave_to: wanted.leave_to,
+      leave_from_hr: wanted.leave_from_hr,
+      leave_to_hr: wanted.leave_to_hr,
+      note: wanted.note,
+    };
+    const changed = [
+      row.values.driver !== next.driver_name,
+      row.values["Loại Nghỉ"] !== next.loai_nghi,
+      row.values.leave_from !== next.leave_from,
+      row.values.leave_to !== next.leave_to,
+      row.values.leave_from_hr !== next.leave_from_hr,
+      row.values.leave_to_hr !== next.leave_to_hr,
+      row.values.note !== next.note,
+    ].some(Boolean);
+    if (changed) { updated++; updates.push(updateLeaveSheetRow(row.row, next)); }
+  }
+  await Promise.all(updates);
+
+  // A reciprocal assignment is a deliberate swap. Mark the original leave as
+  // Thay ca for the same interval, then restore its original type/note as soon
+  // as the reciprocal substitute is removed.
+  const swapsByKey = new Map(swaps.map((swap) => [swap.sourceKey, swap]));
+  const swapUpdates: Promise<void>[] = [];
+  for (const row of rows) {
+    if (row.values.note.startsWith(THAY_CA_NOTE_PREFIX)) continue;
+    const key = row.values.driver_id && row.values.leave_from
+      ? sourceKey(row.values.driver_id, row.values.leave_from, row.values.leave_from_hr || null, row.values.leave_to_hr || null)
+      : "";
+    const active = key ? swapsByKey.get(key) : undefined;
+    const previous = parseSwapNote(row.values.note);
+    if (!active && !previous) continue;
+    const nextType = active ? "Thay ca" : previous!.originalType;
+    const nextNote = active ? encodeSwapNote(active) : previous!.originalNote;
+    if (row.values["Loại Nghỉ"] === nextType && row.values.note === nextNote) continue;
+    updated++;
+    swapUpdates.push(updateLeaveSheetRow(row.row, {
+      submitted_at: row.values["Ngày Nộp Đơn"] || new Date().toISOString(),
+      driver_name: row.values.driver,
+      loai_nghi: nextType,
+      leave_from: row.values.leave_from,
+      leave_to: row.values.leave_to || null,
+      leave_from_hr: row.values.leave_from_hr || null,
+      leave_to_hr: row.values.leave_to_hr || null,
+      note: nextNote,
+    }));
+  }
+  await Promise.all(swapUpdates);
+
+  const obsolete = existing
+    .filter((row) => {
+      let key = "";
+      try { key = String(parseThayCaNote(row.values.note)?.recordKey ?? ""); } catch { /* malformed */ }
+      return !key || !used.has(key) || !desiredByKey.has(key);
+    })
+    .map((row) => row.row);
+  await deleteLeaveSheetRows(obsolete);
+
+  const missing = desired.filter((row) => !used.has(row.recordKey)).map((row): LeaveCells => ({
+    submitted_at: new Date().toISOString(), driver_name: row.driver_name, loai_nghi: "Thay ca",
+    leave_from: row.leave_from, leave_to: row.leave_to,
+    leave_from_hr: row.leave_from_hr, leave_to_hr: row.leave_to_hr, note: row.note,
+  }));
+  if (missing.length) await appendNghiPhep(missing);
+  return { created: missing.length, updated, deleted: obsolete.length };
 }
 
 /** Last 1-based row of a tab's Table, or null when it has none. */

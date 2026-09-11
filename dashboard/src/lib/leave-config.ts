@@ -32,6 +32,8 @@ export interface LeaveEntry {
   gio_bat_dau: string | null; // HH:MM
   gio_ket_thuc: string | null;
   subs: SubEntry[];         // substitutes covering this driver's leave (0–4)
+  /** Free-text provenance. Generated “Thay ca” rows use a versioned marker here. */
+  note?: string | null;
   /** The sheet gave no id and the driver was worked out from the typed name
    *  instead — see `recoverOrphanRows`. The row still needs repairing. */
   recovered?: boolean;
@@ -153,9 +155,6 @@ function parseCsv(text: string): string[][] {
  *  (dashboard "Cần xử lý" leave-status panel) — not tied to the current clock
  *  the way `isDriverOnLeave` is, so "on leave tomorrow" can be listed today. */
 export interface LeaveOnDate {
-  /** Current config conflict, populated by the dashboard read endpoint. */
-  subDutyWarning?: string | null;
-  subDutyConflicts?: import("./sub-duty").SubDutyConflict[];
   driver_id: string;
   driver_name: string;
   loai_nghi: string;
@@ -715,6 +714,7 @@ async function loadLeaveSheet(
         gio_bat_dau:  get(f, "leave_from_hr") || null,
         gio_ket_thuc: get(f, "leave_to_hr") || null,
         subs,
+        note: get(f, "note") || null,
       };
       // NOTE: do NOT require loai_nghi here. Many rows are typed straight into
       // the sheet with a date + time window but a blank "Loại Nghỉ" cell; those
