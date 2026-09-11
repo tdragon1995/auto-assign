@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { roadDistancesFromPoint, exportCachedDistances, type DistanceSource } from "@/lib/distance-cache";
 
-export const runtime = "edge";
+// distance-cache uses Redis and other Node-only dependencies, so this route
+// must run in Vercel's Node.js runtime rather than Edge.
+export const runtime = "nodejs";
 export const preferredRegion = "sin1";
 
 export interface DistanceRow {
