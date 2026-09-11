@@ -534,7 +534,7 @@ export function Dashboard() {
 
   const isProd = env === "prod";
   const visibleUnfinished = unfinished.filter((u) => !doneKeys.has(`u:${u.row}`));
-  const visibleGaps = gaps.filter((g) => !doneKeys.has(`g:${g.customer_id}|${g.at}`));
+  const visibleGaps = gaps.filter((g) => !doneKeys.has(`g:${g.customer_id}|${g.dropoff_name ?? ""}|${g.at}`));
   const visibleOverlaps = overlaps.filter((o) => !doneKeys.has(`o:${overlapKey(o)}`));
 
   // What is going wrong RIGHT NOW, and nothing else.

@@ -8,7 +8,7 @@ import {
   type AuditableRow, type ShiftOverlap,
 } from "./config-audit";
 import { vnDate, vnIsSunday, vnTimestamp } from "./time";
-import { looksAutoCreated } from "./unmapped-row";
+import { looksAutoCreated, scopedDropoffName } from "./unmapped-row";
 import { GEN_KEY, readConfigGen } from "./config-gen";
 
 function getRedis(): Redis | null {
@@ -364,9 +364,12 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
           // simply never had a driver — a years-old test row, something abandoned
           // half-finished — and those are not work waiting on anyone. Listing
           // them buries the ones that are.
-          const missingTimes = recordedMissing.filter((g) => g.customer_id === customer_id && (!dropoffName || g.dropoff_name === dropoffName)).map((g) => g.at);
+          const todoDropoff = scopedDropoffName(customer_id, dropoffName);
+          const missingTimes = recordedMissing
+            .filter((g) => g.customer_id === customer_id && (!todoDropoff || g.dropoff_name === todoDropoff))
+            .map((g) => g.at);
           if (looksAutoCreated(window) || missingTimes.length > 0) {
-            unfinished.push({ row: idx + 2, customer_id, pickup_name: pickupName, dropoff_name: dropoffName, window, missingTimes });
+            unfinished.push({ row: idx + 2, customer_id, pickup_name: pickupName, dropoff_name: todoDropoff, window, missingTimes });
           }
         }
         continue;

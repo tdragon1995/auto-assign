@@ -329,7 +329,6 @@ export interface CopiedLine {
   driver: string;
   start: string;
   end: string;
-  dropoff: string;
 }
 
 /**
@@ -365,6 +364,7 @@ export interface CopiedLine {
 export function applyCopiedLines(
   lines: readonly Line[],
   copied: readonly CopiedLine[],
+  dropoff: string,
 ): { lines: Line[]; touched: string[] } {
   // A blank line nobody has touched is a placeholder, not a rule — drop it
   // rather than saving an empty row beside the copy. One with a sheet row stays:
@@ -376,7 +376,9 @@ export function applyCopiedLines(
   const have = new Set(
     kept.filter((l) => l.driver.trim()).map((l) => copyKey(l.driver, l.start, l.end, l.dropoff)),
   );
-  const incoming = copied.filter((c) => !have.has(copyKey(c.driver, c.start, c.end, c.dropoff)));
+  const incoming = copied
+    .map((c) => ({ ...c, dropoff }))
+    .filter((c) => !have.has(copyKey(c.driver, c.start, c.end, c.dropoff)));
 
   const slots = kept.filter((l) => l.row && !l.driver.trim()).map((l) => l.key);
   const adopt = new Map<string, CopiedLine>();

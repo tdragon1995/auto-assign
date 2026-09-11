@@ -439,9 +439,9 @@ const servingRules = (rules: readonly RuleRow[], dropoff: string): readonly Rule
 export function resolveGaps(
   recorded: readonly { customer_id: string; pickup_name: string; at: string; dropoff_name?: string }[],
   rulesByCustomer: ReadonlyMap<string, RuleRow[]>,
-): { open: CoverageGapOut[]; closed: { customer_id: string; at: string }[] } {
+): { open: CoverageGapOut[]; closed: { customer_id: string; at: string; dropoff_name: string }[] } {
   const open: CoverageGapOut[] = [];
-  const closed: { customer_id: string; at: string }[] = [];
+  const closed: { customer_id: string; at: string; dropoff_name: string }[] = [];
   // Same branch, same rules either side: one hole, however many minutes have
   // fallen into it. A gap is recorded at the MINUTE the job wanted, because that
   // is all the failing job knows — so a branch with a standing early booking
@@ -449,18 +449,13 @@ export function resolveGaps(
   // for a single thing to fix. Collapsed here rather than at record time, which
   // cannot see the rules.
   const byHole = new Map<string, CoverageGapOut>();
-  // Holes proven to serve more than one destination. Sticky: once two minutes
-  // have named DIFFERENT places, a third naming one of them again must not
-  // resurrect it as though the hole were single-destination.
-  const mixedDropoff = new Set<string>();
-
   for (const g of recorded) {
     const at = hhmmToMin(g.at);
     const rules = servingRules(rulesByCustomer.get(g.customer_id) ?? [], g.dropoff_name ?? "");
     // A branch whose rules have all gone is not "covered" — it is a different
     // problem entirely, and dropping the record would hide it. Keep it open.
     if (at < 0 || (rules.length > 0 && isCovered(rules, at))) {
-      closed.push({ customer_id: g.customer_id, at: g.at });
+      closed.push({ customer_id: g.customer_id, at: g.at, dropoff_name: g.dropoff_name ?? "" });
       continue;
     }
     // The cover that ends nearest BEFORE the hole, and the one starting nearest
@@ -473,7 +468,7 @@ export function resolveGaps(
       if (e <= at && (!before || e > (before.end!.hours * 60 + before.end!.minutes))) before = r;
       if (st >= at && (!after || st < (after.start!.hours * 60 + after.start!.minutes))) after = r;
     }
-    const hole = `${g.customer_id}|${before ? before.row : "-"}|${after ? after.row : "-"}`;
+    const hole = `${g.customer_id}|${g.dropoff_name?.trim() ?? ""}|${before ? before.row : "-"}|${after ? after.row : "-"}`;
     const seen = byHole.get(hole);
     if (seen) {
       // Earliest minute is the headline; the rest stay as evidence that it
@@ -481,22 +476,6 @@ export function resolveGaps(
       const times = [seen.at, ...seen.also, g.at].sort();
       seen.at = times[0];
       seen.also = times.slice(1);
-      // The destination survives the collapse only while no minute CONTRADICTS
-      // it. One hole can swallow trips to two different labs, and showing
-      // whichever happened to be recorded first would name a place this to-do is
-      // not only about — so a real disagreement says nothing instead.
-      //
-      // Silence is not disagreement, and that distinction is the whole point:
-      // every gap recorded before this field existed carries none, as does a job
-      // with no dropoff stop. Treating those as a differing answer blanked any
-      // hole holding even one older minute — which is every standing hole on the
-      // day this shipped, and would have stayed that way until the config
-      // covered it. An unknown minute now defers to a known one.
-      const known = seen.dropoff_name, here = g.dropoff_name ?? "";
-      if (!mixedDropoff.has(hole)) {
-        if (!known) seen.dropoff_name = here;
-        else if (here && here !== known) { mixedDropoff.add(hole); seen.dropoff_name = ""; }
-      }
       continue;
     }
     const entry: CoverageGapOut = {

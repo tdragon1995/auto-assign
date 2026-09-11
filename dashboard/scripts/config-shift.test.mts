@@ -239,8 +239,8 @@ console.log("\na copy fills the empty sheet row it was opened from");
   {
     const before = [line("row:1741", "", "13:00", "14:00", "BRA - D001", 1741)];
     const { lines, touched } = applyCopiedLines(before, [
-      { driver: "Nguyễn Hoàng Vũ", start: "08:15", end: "17:15", dropoff: "BRA - D001" },
-    ]);
+      { driver: "Nguyễn Hoàng Vũ", start: "08:15", end: "17:15" },
+    ], "BRA - D001");
     eq("the empty row is used, not left beside a new one", lines.length, 1);
     eq("it keeps its sheet row, so the save UPDATES it", lines[0].row, 1741);
     eq("the driver comes from the copy", lines[0].driver, "Nguyễn Hoàng Vũ");
@@ -255,9 +255,9 @@ console.log("\na copy fills the empty sheet row it was opened from");
   {
     const before = [line("row:9", "", "13:00", "14:00", "", 9)];
     const { lines } = applyCopiedLines(before, [
-      { driver: "A", start: "05:00", end: "13:25", dropoff: "" },
-      { driver: "B", start: "13:25", end: "19:00", dropoff: "" },
-    ]);
+      { driver: "A", start: "05:00", end: "13:25" },
+      { driver: "B", start: "13:25", end: "19:00" },
+    ], "");
     eq("one adopted, one appended", lines.map((l) => [l.driver, l.row ?? null]),
       [["A", 9], ["B", null]]);
   }
@@ -268,32 +268,32 @@ console.log("\na copy fills the empty sheet row it was opened from");
   {
     const before = [line("row:9", "", "13:00", "14:00", "BRA - D001", 9)];
     const { lines } = applyCopiedLines(before, [
-      { driver: "A", start: "05:00", end: "13:25", dropoff: "Lab Khác" },
-    ]);
+      { driver: "A", start: "05:00", end: "13:25" },
+    ], "BRA - D001");
     eq("the row's own scope survives the copy", lines[0].dropoff, "BRA - D001");
   }
-  // A rule genuinely being created is free to carry the copied scope.
+  // A rule genuinely being created uses the destination of the branch being edited.
   {
     const { lines } = applyCopiedLines([], [
-      { driver: "A", start: "05:00", end: "13:25", dropoff: "Lab Khác" },
-    ]);
-    eq("an appended rule carries the copied scope", lines[0].dropoff, "Lab Khác");
+      { driver: "A", start: "05:00", end: "13:25" },
+    ], "BRA - D001");
+    eq("an appended rule carries the target scope", lines[0].dropoff, "BRA - D001");
   }
 
   // A line already naming a driver is a rule, or work in progress. Never free space.
   {
     const before = [line("row:9", "Nam", "05:00", "13:25", "", 9)];
     const { lines } = applyCopiedLines(before, [
-      { driver: "B", start: "13:25", end: "19:00", dropoff: "" },
-    ]);
+      { driver: "B", start: "13:25", end: "19:00" },
+    ], "");
     eq("an existing rule is untouched and the copy is appended",
       lines.map((l) => l.driver), ["Nam", "B"]);
   }
   {
     const before = [line("new:x", "Nam", "", "")];
     const { lines } = applyCopiedLines(before, [
-      { driver: "B", start: "13:25", end: "19:00", dropoff: "" },
-    ]);
+      { driver: "B", start: "13:25", end: "19:00" },
+    ], "");
     eq("a half-filled line is work in progress, not a slot",
       lines.map((l) => l.driver), ["Nam", "B"]);
   }
@@ -302,8 +302,8 @@ console.log("\na copy fills the empty sheet row it was opened from");
   {
     const before = [line("new:y", "", "", "")];
     const { lines } = applyCopiedLines(before, [
-      { driver: "B", start: "13:25", end: "19:00", dropoff: "" },
-    ]);
+      { driver: "B", start: "13:25", end: "19:00" },
+    ], "");
     eq("a blank placeholder with no row is dropped", lines.map((l) => l.driver), ["B"]);
   }
 
@@ -312,8 +312,8 @@ console.log("\na copy fills the empty sheet row it was opened from");
   {
     const before = [line("row:9", "Nam", "05:00", "13:25", "", 9)];
     const { lines, touched } = applyCopiedLines(before, [
-      { driver: "Nam", start: "05:00", end: "13:25", dropoff: "" },
-    ]);
+      { driver: "Nam", start: "05:00", end: "13:25" },
+    ], "");
     eq("a duplicate is not added twice", lines.length, 1);
     eq("…and nothing is reported as copied", touched, []);
   }

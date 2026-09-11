@@ -365,13 +365,15 @@ function CopyFromBranch({
   onClose,
   onCopy,
   existingKeys,
+  targetDropoff,
   panelId,
 }: {
   open: boolean;
   onClose: () => void;
-  onCopy: (lines: { driver: string; start: string; end: string; dropoff: string }[]) => void;
+  onCopy: (lines: { driver: string; start: string; end: string }[]) => void;
   /** `copyKey` of every line already in the editor. */
   existingKeys: readonly string[];
+  targetDropoff: string;
   panelId: string;
 }) {
   const [q, setQ] = useState("");
@@ -429,10 +431,10 @@ function CopyFromBranch({
       return {
         ...g,
         rules,
-        fresh: rules.filter((r) => !existing.has(copyKey(r.driver, r.start, r.end, r.dropoff))),
+        fresh: rules.filter((r) => !existing.has(copyKey(r.driver, r.start, r.end, targetDropoff))),
       };
     });
-  }, [rows, q, existing]);
+  }, [rows, q, existing, targetDropoff]);
 
   const branches = all.slice(0, 8);
   const hidden = all.length - branches.length;
@@ -443,7 +445,7 @@ function CopyFromBranch({
 
   const take = (b: CopySource) => {
     if (b.fresh.length === 0) return;
-    onCopy(b.fresh.map((r) => ({ driver: r.driver, start: r.start, end: r.end, dropoff: r.dropoff })));
+    onCopy(b.fresh.map((r) => ({ driver: r.driver, start: r.start, end: r.end })));
     setQ("");
     onClose();
   };
@@ -582,7 +584,7 @@ function CopyFromBranch({
                   </span>
                   <span className="mt-0.5 block space-y-0.5">
                     {b.rules.map((r) => {
-                      const dup = existing.has(copyKey(r.driver, r.start, r.end, r.dropoff));
+                      const dup = existing.has(copyKey(r.driver, r.start, r.end, targetDropoff));
                       return (
                         <span key={r.row} className={`block text-[11px] ${dup ? "text-slate-500" : "text-slate-700"}`}>
                           <span className="tabular-nums">
@@ -627,14 +629,14 @@ function CopyFromBranch({
  * way in" would be a second set of those, and they would drift.
  */
 export function BranchEditor({
-  pickupName, dropoffName, rules, extraLine, drivers, onDone, onRemoved, onCancel,
+  pickupName, dropoffName, rules, extraLines = [], drivers, onDone, onRemoved, onCancel,
 }: {
   pickupName: string;
   dropoffName: string;
   rules: BranchRule[];
-  /** The unfinished row itself, when the editor was opened from one — it exists
-   *  in the sheet but carries no driver, so it is not among the usable rules. */
-  extraLine?: Omit<Line, "key">;
+  /** Driverless rows for this pending config. They exist in the sheet but are
+   *  not among the usable rules. */
+  extraLines?: Omit<Line, "key">[];
   drivers: ConfigDriver[];
   onDone: () => void;
   /**
@@ -659,7 +661,7 @@ export function BranchEditor({
    * write them straight back.
    */
   const [initial] = useState<Line[]>(() =>
-    [...rules.map(asLine), ...(extraLine ? [{ ...extraLine, key: `row:${extraLine.row}` }] : [])]
+    [...rules.map(asLine), ...extraLines.map((line) => ({ ...line, key: `row:${line.row}` }))]
       .sort((x, y) => (toMin(x.start) - toMin(y.start)) || x.row! - y.row!)
   );
   const [lines, setLines] = useState<Line[]>(initial);
@@ -788,7 +790,7 @@ export function BranchEditor({
         if (l.row) {
           await post("/api/config/complete-row", {
             row: l.row, pickup_name: pickupName, driver_name: l.driver,
-            shift_start: l.start, shift_end: l.end,
+            shift_start: l.start, shift_end: l.end, dropoff_name: l.dropoff,
           });
         } else {
           const res = await post("/api/config/add-rule", {
@@ -912,11 +914,12 @@ export function BranchEditor({
         open={copyOpen}
         panelId={copyPanelId}
         existingKeys={lines.map((l) => copyKey(l.driver, l.start, l.end, l.dropoff))}
+        targetDropoff={dropoffName}
         onClose={() => { setCopyOpen(false); copyBtnRef.current?.focus(); }}
         onCopy={(copied) => {
           let touched: string[] = [];
           setLines((ls) => {
-            const next = applyCopiedLines(ls, copied);
+            const next = applyCopiedLines(ls, copied, dropoffName);
             touched = next.touched;
             return next.lines;
           });
@@ -938,21 +941,21 @@ export function BranchEditor({
 
 /** A branch with a line but no driver on it. */
 function UnfinishedRow({
-  u, rules, drivers, onSaved,
+  rows, rules, drivers, onSaved,
 }: {
-  u: UnfinishedConfigRow;
+  rows: UnfinishedConfigRow[];
   rules: BranchRule[];
   drivers: ConfigDriver[];
   onSaved: (key?: string) => void;
 }) {
+  const u = rows[0];
   const [open, setOpen] = useState(false);
-  const [from, to] = (u.window ?? "–").split("–");
 
   return (
     <div className="px-2 py-1.5 hover:bg-slate-50">
       <div className="flex items-center gap-2 min-w-0">
         <span className="shrink-0 font-mono text-[11px] text-slate-500" title="Dòng trong Google Sheet">
-          #{u.row}
+          #{u.row}{rows.length > 1 ? ` +${rows.length - 1}` : ""}
         </span>
         <span
           className="min-w-0 flex-1 break-words md:truncate text-sm font-medium text-slate-800"
@@ -980,10 +983,13 @@ function UnfinishedRow({
           pickupName={u.pickup_name}
           dropoffName={u.dropoff_name}
           rules={servesDropoff(rules, u.dropoff_name)}
-          extraLine={{ row: u.row, driver: "", start: from ?? "", end: to ?? "", dropoff: u.dropoff_name }}
+          extraLines={rows.map((row) => {
+            const [start, end] = (row.window ?? "–").split("–");
+            return { row: row.row, driver: "", start: start ?? "", end: end ?? "", dropoff: row.dropoff_name };
+          })}
           drivers={drivers}
           onCancel={() => setOpen(false)}
-          onDone={() => { setOpen(false); onSaved(`u:${u.row}`); }}
+          onDone={() => { setOpen(false); onSaved(); }}
           onRemoved={() => { setOpen(false); onSaved(); }}
         />
       )}
@@ -1034,12 +1040,12 @@ function GapRow({
       const res = await fetch("/api/config/dismiss-gap", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customer_id: g.customer_id, at: g.at, also: g.also ?? [] }),
+        body: JSON.stringify({ customer_id: g.customer_id, dropoff_name: g.dropoff_name ?? "", at: g.at, also: g.also ?? [] }),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
       toast.success(`Đã bỏ ${g.at} — ${g.pickup_name}`);
-      onSaved(`g:${g.customer_id}|${g.at}`);
+      onSaved(`g:${g.customer_id}|${g.dropoff_name ?? ""}|${g.at}`);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
       setDropping(false);
@@ -1124,7 +1130,7 @@ function GapRow({
           rules={servesDropoff(rules, g.dropoff_name ?? "")}
           drivers={drivers}
           onCancel={() => setOpen(false)}
-          onDone={() => { setOpen(false); onSaved(`g:${g.customer_id}|${g.at}`); }}
+          onDone={() => { setOpen(false); onSaved(`g:${g.customer_id}|${g.dropoff_name ?? ""}|${g.at}`); }}
           onRemoved={() => { setOpen(false); onSaved(); }}
         />
       )}
@@ -1152,7 +1158,16 @@ export function ConfigTodoPanel({
   onSaved: (key?: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  if (gaps.length === 0 && unfinished.length === 0 && overlaps.length === 0) return null;
+  const groupedUnfinished = useMemo(() => {
+    const groups = new Map<string, UnfinishedConfigRow[]>();
+    for (const row of unfinished) {
+      const key = `${row.customer_id}|${row.dropoff_name.trim().toLowerCase()}`;
+      const group = groups.get(key);
+      if (group) group.push(row); else groups.set(key, [row]);
+    }
+    return [...groups.values()];
+  }, [unfinished]);
+  if (gaps.length === 0 && groupedUnfinished.length === 0 && overlaps.length === 0) return null;
 
   const listBox = "divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200";
 
@@ -1197,9 +1212,9 @@ export function ConfigTodoPanel({
               {gaps.length} thiếu ca
             </span>
           )}
-          {unfinished.length > 0 && (
+          {groupedUnfinished.length > 0 && (
             <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
-              {unfinished.length} chưa có tài xế
+              {groupedUnfinished.length} chưa có tài xế
             </span>
           )}
           </span>
@@ -1254,12 +1269,12 @@ export function ConfigTodoPanel({
                 </div>
               </section>
             )}
-            {unfinished.length > 0 && (
+            {groupedUnfinished.length > 0 && (
               <section aria-label="Dòng config chưa có tài xế">
-                <SectionHeader label="Chưa có tài xế" count={unfinished.length} className="pt-0.5" />
+                <SectionHeader label="Chưa có tài xế" count={groupedUnfinished.length} className="pt-0.5" />
                 <div className={listBox}>
-                  {unfinished.map((u) => (
-                    <UnfinishedRow key={u.row} u={u} rules={branchRules[u.customer_id] ?? []} drivers={drivers} onSaved={onSaved} />
+                  {groupedUnfinished.map((rows) => (
+                    <UnfinishedRow key={`${rows[0].customer_id}|${rows[0].dropoff_name}`} rows={rows} rules={branchRules[rows[0].customer_id] ?? []} drivers={drivers} onSaved={onSaved} />
                   ))}
                 </div>
               </section>

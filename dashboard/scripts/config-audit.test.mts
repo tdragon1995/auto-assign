@@ -11,7 +11,7 @@
 import type { AuditableRow, LocationRow } from "../src/lib/config-audit";
 const {
   findDuplicateBranches, findShiftOverlaps,
-  duplicateBranchWarning, shiftOverlapWarning, unresolvedWarning,
+  duplicateBranchWarning, shiftOverlapWarning, unresolvedWarning, resolveGaps,
 } = await import("../src/lib/config-audit");
 
 let failed = 0;
@@ -39,6 +39,16 @@ const row = (
   const t = (v: string | null) => v ? { hours: +v.split(":")[0], minutes: +v.split(":")[1] } : null;
   return { customer_id, driver_id: uid(driver_id), first_name_last_name: name, shift_start: t(start), shift_end: t(end), dropoff_id };
 };
+
+section("destination-scoped coverage gaps");
+{
+  const { open } = resolveGaps([
+    { customer_id: "D001", pickup_name: "BRA - D001", dropoff_name: "Lab A", at: "09:00" },
+    { customer_id: "D001", pickup_name: "BRA - D001", dropoff_name: "Lab B", at: "09:00" },
+  ], new Map());
+  eq("two D001 destinations at one minute remain two to-dos",
+    open.map((g) => g.dropoff_name).sort(), ["Lab A", "Lab B"]);
+}
 
 // ── duplicate branch names ───────────────────────────────────────────────────
 section("a branch name that means two places");

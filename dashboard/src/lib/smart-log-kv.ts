@@ -2,6 +2,7 @@ import { Redis } from "@upstash/redis";
 import { vnDate, vnMinutesSinceMidnight, vnTimestamp } from "./time";
 import { isNoteReleaseHour } from "./job-filters";
 import type { LogEntry, PickupWarning, FailedJob, SheetAlarm, UnfinishedConfigRow, CoverageGap, BranchRule, ShiftOverlap } from "./types";
+import { scopedDropoffName } from "./unmapped-row";
 
 /**
  * COMMAND BUDGET — read this before adding a Redis call to a per-cycle path.
@@ -1358,7 +1359,8 @@ export async function releaseSheetWriteLock(key = "config:write_lock"): Promise<
 const GAPS_KEY = "config:gaps";
 const seenGaps = new Set<string>();
 
-const gapField = (customerId: string, at: string) => `${customerId}|${at}`;
+const gapField = (customerId: string, at: string, dropoffName = "") =>
+  `${customerId}|${at}${scopedDropoffName(customerId, dropoffName) ? `|${scopedDropoffName(customerId, dropoffName)}` : ""}`;
 
 /**
  * Record an hour that had no cover. Idempotent, and asked at most once per
@@ -1374,7 +1376,8 @@ const gapField = (customerId: string, at: string) => `${customerId}|${at}`;
 export async function recordCoverageGap(
   customerId: string, pickupName: string, at: string, dropoffName = "",
 ): Promise<boolean> {
-  const field = gapField(customerId, at);
+  const scope = scopedDropoffName(customerId, dropoffName);
+  const field = gapField(customerId, at, scope);
   if (!customerId || !at || seenGaps.has(field)) return false;
   const redis = getRedis();
   if (!redis) return false;
@@ -1382,7 +1385,7 @@ export async function recordCoverageGap(
     // The destination rides along in the SAME field — context for the panel, not
     // a second record. The key stays branch-and-minute, so a branch shipping to
     // two places at that minute is still one hole and still one HSET.
-    const added = await redis.hset(GAPS_KEY, { [field]: JSON.stringify({ customer_id: customerId, pickup_name: pickupName, dropoff_name: dropoffName, at }) });
+    const added = await redis.hset(GAPS_KEY, { [field]: JSON.stringify({ customer_id: customerId, pickup_name: pickupName, dropoff_name: scope, at }) });
     // Marked seen only once it is actually stored, so a Redis blip retries next
     // cycle instead of losing the gap for the life of this instance.
     seenGaps.add(field);
@@ -1415,12 +1418,19 @@ export async function readCoverageGaps(): Promise<RecordedGap[]> {
 
 /** Drop the ones the config now covers. Called by the parse, which is the only
  *  thing that knows. */
-export async function clearCoverageGaps(fields: { customer_id: string; at: string }[]): Promise<void> {
+export async function clearCoverageGaps(fields: { customer_id: string; at: string; dropoff_name?: string }[]): Promise<void> {
   if (fields.length === 0) return;
   const redis = getRedis();
   if (!redis) return;
   try {
-    await redis.hdel(GAPS_KEY, ...fields.map((f) => gapField(f.customer_id, f.at)));
-    for (const f of fields) seenGaps.delete(gapField(f.customer_id, f.at));
+    await redis.hdel(GAPS_KEY, ...fields.flatMap((f) => {
+      const scoped = gapField(f.customer_id, f.at, f.dropoff_name);
+      const legacy = gapField(f.customer_id, f.at);
+      return scoped === legacy ? [scoped] : [scoped, legacy];
+    }));
+    for (const f of fields) {
+      seenGaps.delete(gapField(f.customer_id, f.at, f.dropoff_name));
+      seenGaps.delete(gapField(f.customer_id, f.at));
+    }
   } catch { /* it will be retried on the next parse */ }
 }

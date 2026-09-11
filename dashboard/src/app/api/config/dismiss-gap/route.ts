@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== "object") return bad("Body không hợp lệ");
-    const { customer_id, at, also } = body as { customer_id?: string; at?: string; also?: unknown };
+    const { customer_id, at, also, dropoff_name } = body as { customer_id?: string; at?: string; also?: unknown; dropoff_name?: string };
 
     const cid = (customer_id ?? "").trim();
     const head = (at ?? "").trim();
@@ -40,7 +40,7 @@ export async function POST(req: NextRequest) {
       .map((t) => String(t ?? "").trim())
       .filter((t) => /^\d{1,2}:\d{2}$/.test(t));
 
-    await clearCoverageGaps(times.map((t) => ({ customer_id: cid, at: t })));
+    await clearCoverageGaps(times.map((t) => ({ customer_id: cid, at: t, dropoff_name })));
     // The panel reads gaps off the parsed config, which caches them. Without
     // this the row survives until the next parse — up to a day.
     await invalidateConfigCache();

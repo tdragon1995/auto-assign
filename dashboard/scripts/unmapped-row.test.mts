@@ -11,7 +11,7 @@
  */
 
 import type { UnmappedBranch } from "../src/lib/unmapped-row";
-const { shiftWindowForJob, configCellsFor, dedupeBranches, looksAutoCreated } = await import("../src/lib/unmapped-row");
+const { shiftWindowForJob, configCellsFor, dedupeBranches, looksAutoCreated, scopedDropoffName } = await import("../src/lib/unmapped-row");
 const { isDriverOnShift } = await import("../src/lib/fixed-driver");
 
 let failed = 0;
@@ -63,6 +63,7 @@ section("what the row says");
   const c = configCellsFor(branch("c1", "A branch", "", "09:15"));
   eq("a job with no destination says so", c.dropoff, "");
 }
+eq("ordinary pending config is never scoped to a destination", scopedDropoffName("c1", "Some lab"), "");
 {
   const c = configCellsFor(branch("3927b076-3af9-11ed-b939-506b8dbc8dfb", "=SUM(A1:A9)", "+7", "09:15"));
   ok("a name that would be read as a formula is escaped", c.pickup.startsWith("'"));

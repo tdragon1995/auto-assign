@@ -1354,6 +1354,8 @@ export async function completeConfigRow(opts: {
   driverName: string;
   start?: string;
   end?: string;
+  /** Blank clears an old destination scope on a pending non-D001 row. */
+  dropoff?: string;
 }): Promise<void> {
   const tab = currentConfigTab();
   if (tab.gid !== CONFIG_TABS.weekday.gid) {
@@ -1377,6 +1379,7 @@ export async function completeConfigRow(opts: {
   const driverCol = at("Driver");
   const startCol = at(WRITE_COLS.start);
   const endCol = at(WRITE_COLS.end);
+  const dropoffCol = header.includes(WRITE_COLS.dropoff) ? at(WRITE_COLS.dropoff) : null;
 
   // Confirm the row still holds the branch the dashboard was looking at.
   const check = await sheets.spreadsheets.values.get({
@@ -1397,6 +1400,12 @@ export async function completeConfigRow(opts: {
   ];
   if (opts.start && opts.end) {
     data.push({ range: `${q}!${startCol}${opts.row}:${endCol}${opts.row}`, values: [[opts.start, opts.end]] });
+  }
+  if (opts.dropoff !== undefined) {
+    if (!dropoffCol && opts.dropoff.trim()) {
+      throw new Error(`"${tab.title}" không có cột ${WRITE_COLS.dropoff}`);
+    }
+    if (dropoffCol) data.push({ range: `${q}!${dropoffCol}${opts.row}`, values: [[opts.dropoff]] });
   }
   await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: SHEET_ID,

@@ -121,7 +121,7 @@ export interface ConfigCells {
 }
 
 export function configCellsFor(b: UnmappedBranch): ConfigCells {
-  return { pickup: safeCell(b.pickup_name), dropoff: isD001(b.customer_id) ? safeCell(b.dropoff_name) : "", start: "", end: "" };
+  return { pickup: safeCell(b.pickup_name), dropoff: safeCell(scopedDropoffName(b.customer_id, b.dropoff_name)), start: "", end: "" };
 }
 
 /**
@@ -182,11 +182,16 @@ export function dedupeBranches(found: readonly UnmappedBranch[]): UnmappedBranch
   return [...first.values()];
 }
 
-const isD001 = (id: string) => DIAG_LOCATIONS.some((l) => l.name === "D001" && l.customer_id === id);
+/** D001 is the only pickup whose pending config can be scoped to a destination. */
+export const isD001 = (id: string) => DIAG_LOCATIONS.some((l) => l.name === "D001" && l.customer_id === id);
+
+/** The destination scope a config to-do is allowed to keep. */
+export const scopedDropoffName = (customerId: string, dropoffName: string) =>
+  isD001(customerId) ? dropoffName.trim() : "";
 
 /** Identity of one to-do row: the branch AND where it was going. */
 export const branchKey = (b: Pick<UnmappedBranch, "customer_id" | "dropoff_name">) =>
-  `${b.customer_id}|${isD001(b.customer_id) ? b.dropoff_name.trim() : ""}`;
+  `${b.customer_id}|${scopedDropoffName(b.customer_id, b.dropoff_name)}`;
 
 // ── Writing them ─────────────────────────────────────────────────────────────
 
@@ -214,7 +219,7 @@ export async function writeUnmappedConfigRows(
   const kv = await import("./smart-log-kv");
   for (const b of found.filter((b) => b.customer_id && b.pickup_name && !isInternalLeg(b))) {
     const { hours, minutes } = vnHoursMinutes(b.at);
-    await kv.recordCoverageGap(b.customer_id, b.pickup_name, HHMM(hours * 60 + minutes), isD001(b.customer_id) ? b.dropoff_name : "");
+    await kv.recordCoverageGap(b.customer_id, b.pickup_name, HHMM(hours * 60 + minutes), scopedDropoffName(b.customer_id, b.dropoff_name));
   }
   // Taken BEFORE the per-branch claims, not after: a branch marked as written by
   // a run that then failed to get the lock would never be written by anyone.

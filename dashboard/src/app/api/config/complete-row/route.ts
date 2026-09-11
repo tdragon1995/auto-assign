@@ -24,9 +24,9 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== "object") return bad("Body không hợp lệ");
-    const { row, pickup_name, driver_name, shift_start, shift_end } = body as {
+    const { row, pickup_name, driver_name, shift_start, shift_end, dropoff_name } = body as {
       row?: number; pickup_name?: string; driver_name?: string;
-      shift_start?: string; shift_end?: string;
+      shift_start?: string; shift_end?: string; dropoff_name?: string;
     };
 
     if (!Number.isInteger(row) || (row as number) < 2) return bad("Thiếu số dòng hợp lệ");
@@ -64,6 +64,7 @@ export async function POST(req: NextRequest) {
       driverName: names.join(DRIVER_SEP),
       start: start || undefined,
       end: end || undefined,
+      dropoff: typeof dropoff_name === "string" ? dropoff_name.trim() : undefined,
     });
     // Now it is a real rule; make every server see it rather than waiting for
     // someone to press Refresh.
