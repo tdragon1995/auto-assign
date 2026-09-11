@@ -104,10 +104,15 @@ async function liveDuplicateCheck(
  * A fetch failure returns true (keep blocking): a request we cannot verify is safer
  * refused than allowed, since the cost of a wrong "no" is a phone call and the cost of
  * a wrong "yes" is a duplicate trip.
+ *
+ * Except a 404: that IS an answer. A job deleted in Cartrack cannot be a duplicate, and
+ * the overlay names it until the day ends — on 2026-09-11 a deleted D015→D004 trip kept
+ * the branch locked out of its route with "vẫn chưa rời chi nhánh".
  */
 async function stillBlocking(hit: PscDupHit, pickup: string, dropoff: string, env: Env): Promise<boolean> {
   try {
     const res = await fetch(`${BASE_URL}/jobs/${hit.job_id}`, { headers: getHeaders(env), cache: "no-store" });
+    if (res.status === 404) return false;
     if (!res.ok) return true;
     const job = (await res.json())?.data;
     if (!job) return true;
