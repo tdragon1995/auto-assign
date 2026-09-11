@@ -1787,7 +1787,8 @@ function WeekSection({
   registerReload,
   refreshKey,
 }: {
-  /** Saigon's today: the default week, and the day marked as current. */
+  /** Saigon's today: the first day on the initial seven-day view, and the day
+   * marked as current. */
   today: string;
   drivers: ConfigDriver[];
   onFill: FillSubsFn;
@@ -1803,7 +1804,7 @@ function WeekSection({
    *  and back. */
   refreshKey: number;
 }) {
-  const [weekStart, setWeekStart] = useState(() => weekStartOf(today));
+  const [weekStart, setWeekStart] = useState(() => today);
   const [picked, setPicked] = useState<Picked | null>(null);
   const [state, setState] = useState<{
     loading: boolean;
@@ -1860,8 +1861,6 @@ function WeekSection({
     return () => registerReload(null);
   }, [registerReload, load, state.shown]);
 
-  const thisWeek = weekStartOf(today);
-  const nextWeek = addDays(thisWeek, DAYS_IN_WEEK);
   const weekEnd = addDays(weekStart, DAYS_IN_WEEK - 1);
 
   // Grouped once, used by both the columns and the detail strip below. Counted
@@ -1889,7 +1888,8 @@ function WeekSection({
           <Button
             size="sm" variant="outline"
             className="size-6 p-0"
-            aria-label="Tuần trước"
+            aria-label="7 ngày trước"
+            title="7 ngày trước"
             onClick={() => setWeekStart((w) => addDays(w, -DAYS_IN_WEEK))}
           >
             <ChevronLeft className="size-3.5" strokeWidth={2} />
@@ -1897,7 +1897,8 @@ function WeekSection({
           <Button
             size="sm" variant="outline"
             className="size-6 p-0"
-            aria-label="Tuần sau"
+            aria-label="7 ngày sau"
+            title="7 ngày sau"
             onClick={() => setWeekStart((w) => addDays(w, DAYS_IN_WEEK))}
           >
             <ChevronRight className="size-3.5" strokeWidth={2} />
@@ -1908,20 +1909,6 @@ function WeekSection({
         <span aria-live="polite" className="text-xs font-semibold text-slate-800">
           {ddmm(weekStart)} – {ddmm(weekEnd)}
         </span>
-        {([["Tuần hiện tại", thisWeek], ["Tuần tới", nextWeek]] as const).map(([label, target]) => {
-          const on = weekStart === target;
-          return (
-            <Button
-              key={label}
-              size="sm" variant="outline"
-              className={`h-6 px-2 text-[11px] ${on ? "border-indigo-400 bg-indigo-50 text-indigo-900" : ""}`}
-              aria-pressed={on}
-              onClick={() => setWeekStart(target)}
-            >
-              {label}
-            </Button>
-          );
-        })}
         {weekUncovered > 0 && (
           <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-100 px-1.5 py-0 text-[11px] font-semibold text-amber-800">
             <AlertTriangle className="size-3" strokeWidth={2} />
