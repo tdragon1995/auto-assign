@@ -6,9 +6,11 @@ import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { foldName, splitDriverNames, DRIVER_SEP } from "@/lib/driver-cell";
-import { displayDriverCell } from "@/lib/driver-label";
+import { displayDriverCell, splitDriverName } from "@/lib/driver-label";
+import { configFilterOptions, EMPTY_CONFIG_FILTERS, filterConfigRows } from "@/lib/config-filters";
 import { BranchEditor, TimeSelect } from "./config-todo-panel";
 import { DriverCombobox } from "./driver-combobox";
+import { FilterMultiSelect } from "./filter-multi-select";
 import type { ConfigRowView } from "@/app/api/config/rows/route";
 import type { BranchRule, ConfigDriver } from "@/lib/types";
 
@@ -412,7 +414,8 @@ function BulkBar({
 
 export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
   const [rows, setRows] = useState<ConfigRowView[]>([]);
-  const [q, setQ] = useState("");
+  const [filters, setFilters] = useState(EMPTY_CONFIG_FILTERS);
+  const [selected, setSelected] = useState<ReadonlySet<number>>(new Set());
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [meta, setMeta] = useState<{ tab: string; fetchedAt: string } | null>(null);
@@ -432,6 +435,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok && !Array.isArray(data.rows)) throw new Error(data.error || `Lỗi ${res.status}`);
       setRows(Array.isArray(data.rows) ? data.rows : []);
+      setSelected(new Set());
       setMeta({ tab: data.tab ?? "", fetchedAt: data.fetchedAt ?? "" });
       if (data.error) setErr(String(data.error));
     } catch (e) {
@@ -448,7 +452,20 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
     void load();
   }, [load]);
 
-  const matches = useMemo(() => sortConfigRows(searchConfigRows(rows, q)), [rows, q]);
+  const optionValues = useMemo(() => configFilterOptions(rows), [rows]);
+  const driverOptions = useMemo(() => optionValues.drivers.map((value) => {
+    const { name, code } = splitDriverName(value);
+    return { value, label: code ? `${name} · ${code}` : name };
+  }), [optionValues.drivers]);
+  const pickupOptions = useMemo(
+    () => optionValues.pickups.map((value) => ({ value, label: value })),
+    [optionValues.pickups],
+  );
+  const dropoffOptions = useMemo(
+    () => optionValues.dropoffs.map((value) => ({ value, label: value || "mọi điểm" })),
+    [optionValues.dropoffs],
+  );
+  const matches = useMemo(() => sortConfigRows(filterConfigRows(rows, filters)), [rows, filters]);
   // The cap applies AFTER the sort, so it is the first N of a stable ordering
   // rather than an arbitrary slice of the sheet. Which rows get cut is then
   // something the reader can predict, and narrowing the search is a way to
@@ -478,7 +495,6 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
    * refuse those, but a selection that silently means something else is not a
    * thing to keep on screen.
    */
-  const [selected, setSelected] = useState<ReadonlySet<number>>(new Set());
   const selectable = useMemo(() => shown.filter(isWritable), [shown]);
   const selectedRows = useMemo(
     () => rows.filter((r) => selected.has(r.row) && isWritable(r)),
@@ -502,6 +518,14 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
       return next;
     });
   const clearSelection = useCallback(() => setSelected(new Set()), []);
+  const updateFilters = (next: typeof filters) => {
+    setFilters(next);
+    clearSelection();
+  };
+  const hasFilters = Boolean(
+    filters.query.trim() || filters.drivers.length || filters.pickups.length ||
+    filters.pickupContains.trim() || filters.dropoffs.length || filters.dropoffContains.trim(),
+  );
 
   return (
     <Card className="py-2 h-full flex flex-col border-slate-200">
@@ -511,11 +535,11 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
             <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Tìm điểm, mã, tài xế…"
+              value={filters.query}
+              onChange={(e) => updateFilters({ ...filters, query: e.target.value })}
+              placeholder="Tìm chính xác điểm, mã, tài xế…"
               aria-label="Tìm trong config"
-              className="w-full rounded border border-slate-300 bg-white py-1 pl-7 pr-2 text-xs outline-none focus:ring-2 focus:ring-indigo-400/50"
+              className="w-full rounded border border-slate-300 bg-white py-1 pl-7 pr-2 text-xs text-slate-900 outline-none placeholder:text-slate-500 focus:ring-2 focus:ring-indigo-400/50"
             />
           </div>
           <Button
@@ -528,13 +552,68 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
           </Button>
         </div>
 
-        <div className="flex flex-wrap items-baseline gap-x-2 text-[11px] text-slate-500">
-          <span>
-            {matches.length}/{rows.length} dòng
-            {matches.length > shown.length && ` · hiện ${shown.length} đầu tiên`}
-          </span>
-          {meta?.tab && <span className="text-slate-400">{meta.tab}</span>}
-          {meta?.fetchedAt && <span className="text-slate-400">đọc {meta.fetchedAt.slice(11, 16)}</span>}
+        <div className="grid grid-cols-1 gap-2 lg:grid-cols-3">
+          <FilterMultiSelect
+            label="Tài xế là một trong"
+            values={[...filters.drivers]}
+            options={driverOptions}
+            onChange={(values) => updateFilters({ ...filters, drivers: values })}
+            placeholder="Chọn tài xế…"
+          />
+          <div className="min-w-0 space-y-1.5">
+            <FilterMultiSelect
+              label="Điểm lấy là một trong"
+              values={[...filters.pickups]}
+              options={pickupOptions}
+              onChange={(values) => updateFilters({ ...filters, pickups: values })}
+              placeholder="Chọn điểm lấy…"
+            />
+            <input
+              type="text"
+              value={filters.pickupContains}
+              onChange={(e) => updateFilters({ ...filters, pickupContains: e.target.value })}
+              placeholder="Điểm lấy chứa chữ…"
+              aria-label="Điểm lấy chứa chữ"
+              className="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 outline-none placeholder:text-slate-500 focus:ring-2 focus:ring-indigo-400/50"
+            />
+          </div>
+          <div className="min-w-0 space-y-1.5">
+            <FilterMultiSelect
+              label="Điểm giao là một trong"
+              values={[...filters.dropoffs]}
+              options={dropoffOptions}
+              onChange={(values) => updateFilters({ ...filters, dropoffs: values })}
+              placeholder="Chọn điểm giao…"
+            />
+            <input
+              type="text"
+              value={filters.dropoffContains}
+              onChange={(e) => updateFilters({ ...filters, dropoffContains: e.target.value })}
+              placeholder="Điểm giao chứa chữ…"
+              aria-label="Điểm giao chứa chữ"
+              className="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 outline-none placeholder:text-slate-500 focus:ring-2 focus:ring-indigo-400/50"
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-baseline gap-x-2 text-[11px] text-slate-500">
+            <span>
+              {matches.length}/{rows.length} dòng
+              {matches.length > shown.length && ` · hiện ${shown.length} đầu tiên`}
+            </span>
+            {meta?.tab && <span className="text-slate-400">{meta.tab}</span>}
+            {meta?.fetchedAt && <span className="text-slate-400">đọc {meta.fetchedAt.slice(11, 16)}</span>}
+          </div>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 px-2 text-[11px] text-slate-600"
+            disabled={!hasFilters}
+            onClick={() => updateFilters(EMPTY_CONFIG_FILTERS)}
+          >
+            Xoá bộ lọc
+          </Button>
         </div>
 
         {err && <div role="alert" className="text-[11px] text-red-600">{err}</div>}

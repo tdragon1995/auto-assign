@@ -18,6 +18,7 @@
  */
 
 import { searchConfigRows } from "../src/components/config-browser-panel";
+import { configFilterOptions, EMPTY_CONFIG_FILTERS, filterConfigRows } from "../src/lib/config-filters";
 import type { ConfigRowView } from "../src/app/api/config/rows/route";
 
 let failures = 0;
@@ -99,6 +100,47 @@ eq("nothing matches gibberish", found("zzzz"), []);
   eq("a prefix of a real word still matches", hits("nguy"), [20, 21]);
   // Cross-field is deliberate and stays.
   eq("branch and driver together", hits("cu chi nghia"), [20]);
+}
+
+console.log("dashboard phrase and facet filters");
+{
+  const HOANG_PHI = "F - C - DC100001 Nguyễn Hoàng Phi";
+  const VIET_PHI = "F - C - DC100002 Nguyễn Viết Phi";
+  const THANH_AN = "P - P - PT100003 Trần Thanh An";
+  const FILTER_ROWS = [
+    row({ row: 30, customer_id: "D030", pickup: "Kho Trung Tâm", driver: HOANG_PHI, start: "05:00", end: "13:00", dropoff: "Bệnh viện Quận 1" }),
+    row({ row: 31, customer_id: "D031", pickup: "Điểm Hoàng Gia", driver: VIET_PHI, start: "13:00", end: "21:00", dropoff: "Bệnh viện Quận 2" }),
+    row({ row: 32, customer_id: "D032", pickup: "Kho Miền Đông", driver: `${VIET_PHI}, ${THANH_AN}`, start: "07:00", end: "16:00", dropoff: "", smart: true }),
+    row({ row: 33, customer_id: "D033", pickup: "Kho Miền Tây", driver: THANH_AN, start: "08:00", end: "17:00", dropoff: "Phòng khám An Bình" }),
+  ];
+  const hits = (partial: Partial<typeof EMPTY_CONFIG_FILTERS>) =>
+    filterConfigRows(FILTER_ROWS, { ...EMPTY_CONFIG_FILTERS, ...partial }).map((r) => r.row);
+
+  eq("an empty dashboard filter returns every row", hits({}), [30, 31, 32, 33]);
+  eq("a driver phrase finds the right Phi", hits({ query: "Nguyễn Hoàng Phi" }), [30]);
+  eq("the same phrase without accents", hits({ query: "nguyen hoang phi" }), [30]);
+  eq("extra whitespace is collapsed", hits({ query: "  nguyen   hoang   phi  " }), [30]);
+  eq("a name cannot be assembled from pickup and driver", hits({ query: "hoàng phi" }), [30]);
+  eq("a phrase cannot span the customer code and driver", hits({ query: "D030 Nguyễn" }), []);
+  eq("a phrase cannot span two drivers in a smart row", hits({ query: "Phi Trần" }), []);
+  eq("punctuation remains literal", hits({ query: "Nguyễn-Hoàng Phi" }), []);
+  eq("displayed shift punctuation remains searchable", hits({ query: "05:00–13:00" }), [30]);
+
+  eq("selected drivers are OR choices", hits({ drivers: [HOANG_PHI, THANH_AN] }), [30, 32, 33]);
+  eq("a selected driver matches inside a smart row", hits({ drivers: [VIET_PHI] }), [31, 32]);
+  eq("pickup selections are exact OR choices", hits({ pickups: ["Kho Trung Tâm", "Kho Miền Tây"] }), [30, 33]);
+  eq("pickup contains is accent-insensitive", hits({ pickupContains: "mien dong" }), [32]);
+  eq("drop-off selections are exact", hits({ dropoffs: ["Bệnh viện Quận 2"] }), [31]);
+  eq("a selected drop-off excludes all-destination rows", hits({ dropoffs: ["Bệnh viện Quận 2"] }), [31]);
+  eq("all destinations is an explicit blank selection", hits({ dropoffs: [""] }), [32]);
+  eq("drop-off contains is accent-insensitive", hits({ dropoffContains: "phong kham" }), [33]);
+  eq("separate controls combine with AND", hits({ drivers: [VIET_PHI], pickupContains: "miền", dropoffs: [""] }), [32]);
+
+  const options = configFilterOptions(FILTER_ROWS);
+  eq("driver options split and deduplicate smart cells", options.drivers.length, 3);
+  eq("pickup options are deduplicated", options.pickups.length, 4);
+  eq("all destinations is the first drop-off option", options.dropoffs[0], "");
+  eq("option ordering is stable", options, configFilterOptions(FILTER_ROWS));
 }
 
 console.log(failures === 0 ? "\nAll config-search checks passed" : `\n${failures} check(s) failed`);
