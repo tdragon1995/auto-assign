@@ -115,26 +115,48 @@ const jobField = (id: number) => `j:${id}`;
 
 /** One request performs the compare-and-swap and the complete hash mutation. This is
  *  what lets a warm function write only changed fields without an older invocation
- *  overwriting a newer snapshot. */
-const CAS_WRITE_SCRIPT = `-- day-snapshot-cas-v1
+ *  overwriting a newer snapshot.
+ *
+ *  Fields go through multi-field HSET/HDEL in batches of CAS_BATCH_FIELDS, never one
+ *  command per field: Upstash counts every redis.call inside a script, and the old
+ *  per-field loop spent 845 commands on one cold 845-field write — the budget that
+ *  filled the database. Batched it is 4, plus HGET/DEL/HSET revision/EXPIRE.
+ *  `scripts/snapshot-lua.test.mts` runs this exact script and counts. */
+export const CAS_BATCH_FIELDS = 256;
+export const CAS_WRITE_SCRIPT = `-- day-snapshot-cas-v1
 local current = redis.call("HGET", KEYS[1], "${REVISION}") or ""
 if current ~= ARGV[1] then return 0 end
+local unpack = table.unpack or unpack
+local batch = ${CAS_BATCH_FIELDS}
 if ARGV[4] == "full" then redis.call("DEL", KEYS[1]) end
 local i = 6
 local delete_count = tonumber(ARGV[5])
-for n = 1, delete_count do
-  redis.call("HDEL", KEYS[1], ARGV[i])
-  i = i + 1
+for n = 1, delete_count, batch do
+  local j = i + math.min(batch, delete_count - n + 1) - 1
+  redis.call("HDEL", KEYS[1], unpack(ARGV, i, j))
+  i = j + 1
 end
 local field_count = tonumber(ARGV[i])
 i = i + 1
-for n = 1, field_count do
-  redis.call("HSET", KEYS[1], ARGV[i], ARGV[i + 1])
-  i = i + 2
+for n = 1, field_count, batch do
+  local j = i + 2 * math.min(batch, field_count - n + 1) - 1
+  redis.call("HSET", KEYS[1], unpack(ARGV, i, j))
+  i = j + 1
 end
 redis.call("HSET", KEYS[1], "${REVISION}", ARGV[2])
 redis.call("EXPIRE", KEYS[1], tonumber(ARGV[3]))
 return 1`;
+
+/** ARGV for CAS_WRITE_SCRIPT: expected revision, new revision, ttl, mode,
+ *  delete count, deleted fields..., field count, field, value, ... */
+export function casWriteArgs(
+  expectedRevision: string, revision: string, ttlS: number, mode: "full" | "delta",
+  deleted: string[], changed: [string, string][],
+): string[] {
+  const args = [expectedRevision, revision, String(ttlS), mode, String(deleted.length), ...deleted, String(changed.length)];
+  for (const [field, value] of changed) args.push(field, value);
+  return args;
+}
 
 /** Invalidation participates in the same revision protocol. If it races a publisher,
  *  either it invalidates the new value or it changes the revision and makes that
@@ -449,16 +471,7 @@ async function write(redis: Redis, env: Env, date: string, snap: Snapshot): Prom
   }
 
   const revision = nextRevision(snap.builtAt);
-  const args: string[] = [
-    expectedRevision,
-    revision,
-    String(HASH_TTL_S),
-    mode,
-    String(deleted.length),
-    ...deleted,
-    String(changed.length),
-  ];
-  for (const [field, value] of changed) args.push(field, value);
+  const args = casWriteArgs(expectedRevision, revision, HASH_TTL_S, mode, deleted, changed);
 
   const applied = Number(await redis.eval(CAS_WRITE_SCRIPT, [cacheKey], args));
   const cpuEnd = cpuMicros();

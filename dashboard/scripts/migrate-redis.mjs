@@ -69,8 +69,11 @@ const excludeRe = EXCLUDE
         "$"
     )
   : null;
-const src = new Redis({ url: srcUrl, token: srcToken });
-const dst = new Redis({ url: dstUrl, token: dstToken });
+// Raw strings both ways. With the client's default JSON round-trip a value can come
+// back changed: "007" -> 7, a long numeric id loses precision, a JSON string loses
+// its quotes.
+const src = new Redis({ url: srcUrl, token: srcToken, automaticDeserialization: false });
+const dst = new Redis({ url: dstUrl, token: dstToken, automaticDeserialization: false });
 
 async function scanAll(redis, match) {
   const keys = [];
@@ -90,12 +93,15 @@ async function migrateKey(key) {
     case "string": {
       const v = await src.get(key);
       if (v === null) return "missing";
-      await dst.set(key, typeof v === "string" ? v : JSON.stringify(v));
+      await dst.set(key, v);
       break;
     }
     case "hash": {
-      const v = await src.hgetall(key);
-      if (v && Object.keys(v).length) await dst.hset(key, v);
+      // Undeserialized, HGETALL is the flat [field, value, ...] reply.
+      const flat = (await src.hgetall(key)) ?? [];
+      const v = {};
+      for (let i = 0; i < flat.length; i += 2) v[flat[i]] = flat[i + 1];
+      if (flat.length) await dst.hset(key, v);
       break;
     }
     case "set": {
@@ -110,9 +116,9 @@ async function migrateKey(key) {
     }
     case "zset": {
       const v = await src.zrange(key, 0, -1, { withScores: true });
-      for (let i = 0; i < v.length; i += 2) {
-        await dst.zadd(key, { score: v[i + 1], member: v[i] });
-      }
+      const members = [];
+      for (let i = 0; i < v.length; i += 2) members.push({ score: Number(v[i + 1]), member: v[i] });
+      if (members.length) await dst.zadd(key, ...members);
       break;
     }
     default:
