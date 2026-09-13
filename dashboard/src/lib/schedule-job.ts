@@ -14,7 +14,7 @@ const WEEKDAY_COLUMNS = [
 
 const TZ = "Asia/Ho_Chi_Minh";
 
-const SCHEDULE_JOB_LABEL = "📅 Lịch cố định";
+export const SCHEDULE_JOB_LABEL = "📅 Lịch cố định";
 
 const TIME_RE = /^([01]?\d|2[0-3]):([0-5]\d)$/;
 

@@ -25,6 +25,7 @@
 import { isRollable } from "../src/lib/assign";
 import { PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from "../src/lib/return-trips";
 import { PSC_VIA_LABEL } from "../src/lib/job-filters";
+import { SCHEDULE_JOB_LABEL } from "../src/lib/schedule-job";
 import type { Job } from "../src/lib/types";
 
 let failures = 0;
@@ -87,6 +88,11 @@ ok(
 ok(
   "an engine leg among several labels is still refused",
   !isRollable(job({ labels: ["🚨 Gấp", PSC_RETURN_LABEL] })),
+);
+
+ok(
+  "a fixed-schedule job does NOT roll — the schedule recreates it (job 34447974, 12→13/09)",
+  !isRollable(job({ labels: [SCHEDULE_JOB_LABEL] })),
 );
 
 // The pre-existing rules, so this refactor cannot have quietly dropped one.

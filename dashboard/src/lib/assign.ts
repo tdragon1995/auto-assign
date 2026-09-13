@@ -2,6 +2,7 @@ import type { Config, Driver, FailedJob, Job, LogEntry, LogLevel, Mapping, Picku
 import { getDrivers, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, parkOnProxy, updateJobSendToDriverAt, updateJobScheduledDeliveryTs, unassignJob, optimizeDriverRoute, getJobsByStatusAndDate, getUnassignedJobsFast, getJobsByDate, getTimelineRoutes, timelineRoutesToJobs, getJobDetails, jsonRpc, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { publishSnapshot } from "./day-snapshot";
 import { getDueTomorrowJobs } from "./scheduled-dispatch";
+import { SCHEDULE_JOB_LABEL } from "./schedule-job";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import { DIAG_LOCATION_CUSTOMER_IDS } from "./psc-routes-data";
@@ -1251,6 +1252,11 @@ export function isRollable(j: Job): boolean {
   // old, then rolled at 05:31 the next morning and left driverless, unassignable
   // — D001 is no mapping's pickup — and immortal.)
   if (isEngineLeg(j)) return false;
+  // A fixed-schedule job is recreated by the schedule for every day it runs, so —
+  // like a plan slot — rolling one duplicates tomorrow's copy, or sends a driver on
+  // a day the schedule does not cover. (Job 34447974: Saturday's 10:30 Bình Lợi
+  // Trung pickup rolled onto Sunday 13/09 and was bounced between drivers.)
+  if ((j.labels ?? []).includes(SCHEDULE_JOB_LABEL)) return false;
   const stops = j.stops ?? [];
   // Skip if the pickup sample is already collected. Re-assignment resets a
   // stop's activity, so rolling a job whose pickup is Hoàn thành (status 4)
