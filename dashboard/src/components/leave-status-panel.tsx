@@ -1282,11 +1282,10 @@ function DriverCard({
   onDelete: DeleteRowFn;
 }) {
   const resigned = g.loai_nghi === "Nghỉ việc";
-  const uncovered = !resigned && g.rows.some((r) => r.subs.length === 0);
   const [editRow, setEditRow] = useState<number | null>(null);
   // The SAME mark the week grid uses, so a row does not change language
   // between the glance and the work.
-  const status = resigned ? "resigned" : uncovered ? "uncovered" : "covered";
+  const status = resigned ? "resigned" : statusOf([g]);
   const typeClass = resigned ? "text-red-700" : "text-amber-700";
   return (
     <div className="px-2 py-1.5 text-xs hover:bg-slate-50">
@@ -1308,7 +1307,8 @@ function DriverCard({
           // lands there next.
           <div key={`${r.leave_from}-${r.timeLabel ?? "full"}`}>
             <div className="mt-0.5 flex flex-wrap items-baseline gap-x-1.5 text-xs">
-              {r.loai_nghi === "Thay ca" && r.subs.length === 0 && <ThayCaMark />}
+              {/* The header already carries the mark when Thay ca is all that is open. */}
+              {status !== "thayca" && r.loai_nghi === "Thay ca" && r.subs.length === 0 && <ThayCaMark />}
               {r.loai_nghi && r.loai_nghi !== g.loai_nghi && (
                 <span className="font-semibold text-orange-700">{typeLabel(r.loai_nghi)}</span>
               )}
@@ -1646,8 +1646,14 @@ interface Picked { date: string; personKey: string }
  * SHAPE (the icon), a WORD (the legend under the grid, and the screen-reader
  * text on every row), and a colour reinforcing both.
  */
+/** ThayCaMark in the shape `StatusMark` renders an icon with. */
+function ThayCaIcon({ className }: { className?: string; strokeWidth?: number; "aria-hidden"?: boolean }) {
+  return <ThayCaMark className={className} />;
+}
+
 const STATUS_MARK = {
   uncovered: { Icon: AlertTriangle, tone: "text-amber-600", label: "Chưa có người thay" },
+  thayca: { Icon: ThayCaIcon, tone: "text-orange-600", label: "Thay ca chưa có người thay" },
   covered: { Icon: Check, tone: "text-emerald-600", label: "Đã có người thay" },
   resigned: { Icon: Ban, tone: "text-red-600", label: "Nghỉ việc" },
 } as const;
@@ -1701,6 +1707,8 @@ interface PersonCell {
   groups: DriverGroup[];
   employments: Employment[];
   status: LeaveStatus;
+  /** Any of this person's rows is a Thay ca — labelled on the line once covered. */
+  thayCa: boolean;
 }
 
 function personNameOf(g: DriverGroup): string {
@@ -1711,11 +1719,9 @@ function personNameOf(g: DriverGroup): string {
  *  covered one — the line must show the thing that still needs doing. */
 function statusOf(groups: DriverGroup[]): LeaveStatus {
   if (groups.some((g) => g.loai_nghi === "Nghỉ việc")) return "resigned";
-  return groups.some(
-    (g) => g.loai_nghi !== "Nghỉ việc" && g.rows.some((r) => r.subs.length === 0),
-  )
-    ? "uncovered"
-    : "covered";
+  const open = groups.flatMap((g) => g.rows.filter((r) => r.subs.length === 0));
+  if (open.some((r) => r.loai_nghi !== "Thay ca")) return "uncovered";
+  return open.length > 0 ? "thayca" : "covered";
 }
 
 export function mergePeople(groups: DriverGroup[]): PersonCell[] {
@@ -1736,6 +1742,7 @@ export function mergePeople(groups: DriverGroup[]): PersonCell[] {
         .map((g) => employmentOf(g.driver_name))
         .filter((e): e is Employment => e !== null),
       status: statusOf(sorted),
+      thayCa: sorted.some((g) => g.rows.some((r) => r.loai_nghi === "Thay ca")),
     };
   };
   const cells: PersonCell[] = [];
@@ -1872,7 +1879,7 @@ function WeekSection({
     ignored: d.invalid.filter((r) => !r.recovered).length,
   }));
   const uncoveredOn = (people: PersonCell[]) =>
-    people.filter((p) => p.status === "uncovered").length;
+    people.filter((p) => p.status === "uncovered" || p.status === "thayca").length;
   const weekUncovered = byDay.reduce((n, d) => n + uncoveredOn(d.people), 0);
 
   // The open person, re-found in the CURRENT data rather than remembered: a
@@ -2006,7 +2013,12 @@ function WeekSection({
                               }`}
                             >
                               <StatusMark status={p.status} className="size-3" />
-                              <span className="min-w-0 flex-1 truncate text-[11px] text-slate-800">{p.name}</span>
+                              <span className="min-w-0 flex-1 truncate text-[11px] text-slate-800">
+                                {p.name}
+                                {p.thayCa && p.status === "covered" && (
+                                  <span className="ml-1 text-[10px] font-semibold text-orange-700">Thay ca</span>
+                                )}
+                              </span>
                               {/* Only when it is not the ordinary case: a
                                   full-time-only line is most of the grid, and
                                   chipping every one of them spends the width on
@@ -2032,7 +2044,7 @@ function WeekSection({
               known — once, under the thing they label, rather than in a tooltip
               nobody hovers. */}
           <ul className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[10px] text-slate-600">
-            {(["uncovered", "covered", "resigned"] as const).map((k) => (
+            {(["uncovered", "thayca", "covered", "resigned"] as const).map((k) => (
               <li key={k} className="inline-flex items-center gap-0.5">
                 <StatusMark status={k} className="size-2.5" labelled />
                 {STATUS_MARK[k].label}

@@ -62,13 +62,13 @@ eq("empty stays empty", weekStartOf(""), "");
 // scripts/ too. A null window is the ordinary case: a substitute without one
 // inherits the leave row's own hours.
 type Sub = { id: string; name: string; from: string | null; to: string | null };
-const row = (subs: Sub[] = []) => ({ timeLabel: null, subs, leave_from: "2026-09-07", duplicate: false });
+const row = (subs: Sub[] = [], loai_nghi?: string) => ({ loai_nghi, timeLabel: null, subs, leave_from: "2026-09-07", duplicate: false });
 const group = (driver_id: string, driver_name: string, opts: { subs?: Sub[]; loai_nghi?: string } = {}) => ({
   driver_id,
   driver_name,
   loai_nghi: opts.loai_nghi ?? "Nghỉ nguyên buổi",
   leave_from: "2026-09-07",
-  rows: [row(opts.subs)],
+  rows: [row(opts.subs, opts.loai_nghi)],
 });
 const someone: Sub = { id: "x", name: "F - C - DC100999 Người Thay", from: null, to: null };
 
@@ -118,6 +118,22 @@ console.log("what the line says");
     group("b", "F - C - PT100320 Lý Chánh Hùng", { loai_nghi: "Nghỉ việc" }),
   ]);
   eq("a resigned account outranks a covered one", cell?.status, "resigned");
+}
+{
+  const [cell] = mergePeople([group("a", "P - C - PT101275 Phan Thanh Phương", { loai_nghi: "Thay ca" })]);
+  eq("an open Thay ca reads as thayca, not the warning", cell?.status, "thayca");
+}
+{
+  const [cell] = mergePeople([
+    group("a", "F - C - DC100320 Lý Chánh Hùng"),
+    group("b", "F - C - PT100320 Lý Chánh Hùng", { loai_nghi: "Thay ca" }),
+  ]);
+  eq("an open ordinary leave still outranks an open Thay ca", cell?.status, "uncovered");
+}
+{
+  const [cell] = mergePeople([group("a", "P - C - PT101275 Phan Thanh Phương", { loai_nghi: "Thay ca", subs: [someone] })]);
+  eq("a covered Thay ca keeps the tick", cell?.status, "covered");
+  eq("and is labelled Thay ca", cell?.thayCa, true);
 }
 {
   const cells = mergePeople([
