@@ -1,54 +1,34 @@
 import { NextRequest, NextResponse } from "next/server";
-import { BASE_URL, getHeaders, assignJob, getLiveDrivers, getDrivers, type Env } from "@/lib/cartrack";
-import { driversAtPscPickup, NEARBY_RADIUS_M, type NearbyCandidate } from "@/lib/nearby-driver";
+import { BASE_URL, getHeaders, assignJob, type Env } from "@/lib/cartrack";
 import { isCompletedOrRejectedStop } from "@/lib/job-filters";
-import { loadLeaveEntries, isDriverOnLeave } from "@/lib/leave-config";
+import { driverChoices, loadChoiceInputs, type PickerResult } from "@/lib/psc-driver-choices";
 import { pushRunLog } from "@/lib/smart-log-kv";
-import { vnTimestamp } from "@/lib/time";
+import { parseVnTimestamp, vnDate, vnTimestamp } from "@/lib/time";
 import type { Stop } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
 
 /**
- * Branch-triggered driver change — the escape hatch for the cases the roster cannot
- * describe.
- *
- * The engine assigns from configuration: shift windows, pools, leave, substitutes. That
- * covers the ordinary day and nothing else. It cannot know that today's driver is stuck
- * across the city while a different one is standing in reception — and the branch can see
- * exactly that. So the branch is handed the one fact the engine lacks, who is physically
- * here, and allowed to act on it.
+ * Branch-triggered driver change: hand a trip that has not been collected yet to another
+ * driver whose roster row covers the time the trip was requested, ±10 minutes.
  *
  * Nothing here runs automatically. The engine keeps assigning by roster; this fires only
- * when a person at the branch decides the roster is wrong for this one trip.
+ * when a person at the branch decides this one trip should go to someone else.
  */
 
-/** Positions for every live driver. Fleetweb list first (active accounts only, ~110-190ms),
- *  REST as fallback, so a fleetweb outage costs accuracy rather than the whole feature. */
-async function livePositions(env: Env): Promise<NearbyCandidate[]> {
-  const fast = await getLiveDrivers(env);
-  if (fast && fast.length > 0) return fast;
-  const rest = await getDrivers(env).catch(() => []);
-  return rest.map((d) => ({
-    deliveryDriverId: d.delivery_driver_id,
-    firstName: d.first_name,
-    lastName: d.last_name,
-    latitude: d.latitude,
-    longitude: d.longitude,
-    isLoggedIn: d.is_online,
-    lastOnlineTs: d.last_login_ts ?? null,
-  }));
-}
-
-/** The trip, plus the pickup stop every guard below turns on. */
+/** The trip, plus the stops every guard below turns on. */
 async function loadJob(jobId: number, env: Env) {
   const res = await fetch(`${BASE_URL}/jobs/${jobId}`, { headers: getHeaders(env), cache: "no-store" });
   if (!res.ok) return null;
   const data = (await res.json())?.data;
   if (!data) return null;
   const stops: Stop[] = data.stops ?? [];
-  return { data, pickup: stops.find((s) => s.stop_type_id === 1) ?? null };
+  return {
+    data,
+    pickup: stops.find((s) => s.stop_type_id === 1) ?? null,
+    dropoff: stops.find((s) => s.stop_type_id === 2) ?? null,
+  };
 }
 
 /**
@@ -66,41 +46,46 @@ function blockingReason(status: number | null, pickup: Stop | null): string | nu
   return null;
 }
 
-/** GET ?job_id= — who is standing at this trip's pickup right now, nearest first. */
-export async function GET(req: NextRequest) {
-  const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
-  const jobId = Number(req.nextUrl.searchParams.get("job_id"));
-  if (!Number.isInteger(jobId) || jobId <= 0) {
-    return NextResponse.json({ error: "Thiếu mã chuyến" }, { status: 400 });
+/** Loads the job, applies the guards, and resolves today's roster for its route. */
+async function choicesForJob(jobId: number, env: Env): Promise<NextResponse | { job: NonNullable<Awaited<ReturnType<typeof loadJob>>>; choices: PickerResult }> {
+  // Started first: the roster reads do not need the trip, so they overlap its fetch.
+  const inputs = loadChoiceInputs(env);
+  const job = await loadJob(jobId, env);
+  if (!job) return NextResponse.json({ error: "Không tìm thấy chuyến" }, { status: 404 });
+  const blocked = blockingReason(job.data.job_status_id ?? null, job.pickup);
+  if (blocked) return NextResponse.json({ error: blocked }, { status: 409 });
+  if (!job.pickup?.customer_id || !job.dropoff?.customer_id) {
+    return NextResponse.json({ error: "Chuyến không có điểm lấy hoặc điểm giao" }, { status: 409 });
   }
+  // The request time, not now: a trip booked at 12:00 belongs to the 11:50–12:10 roster.
+  const requested = parseVnTimestamp(job.data.create_ts?.slice(0, 19));
+  const choices = driverChoices(
+    await inputs, job.pickup.customer_id, job.dropoff.customer_id,
+    Number.isNaN(requested.getTime()) ? new Date() : requested,
+    job.data.delivery_driver_id ?? null,
+  );
+  return { job, choices };
+}
 
+const badId = (v: number) => !Number.isInteger(v) || v <= 0;
+
+/**
+ * GET ?pickup=&dropoff=&at=HH:mm — the list to pick from. Built from what the card
+ * already shows rather than a fresh fetch of the trip: that fetch was the slowest part
+ * of opening the list, and the POST re-checks the real trip before anything changes.
+ * The page leaves out the driver the trip already has.
+ */
+export async function GET(req: NextRequest) {
+  const sp = req.nextUrl.searchParams;
+  const env = (sp.get("env") ?? "prod") as Env;
+  const pickup = sp.get("pickup") ?? "";
+  const dropoff = sp.get("dropoff") ?? "";
+  const at = sp.get("at") ?? "";
+  if (!pickup || !dropoff) return NextResponse.json({ error: "Thiếu tuyến" }, { status: 400 });
+  const requested = /^\d{2}:\d{2}$/.test(at) ? parseVnTimestamp(`${vnDate()} ${at}:00`) : new Date();
   try {
-    const job = await loadJob(jobId, env);
-    if (!job) return NextResponse.json({ error: "Không tìm thấy chuyến" }, { status: 404 });
-
-    const blocked = blockingReason(job.data.job_status_id ?? null, job.pickup);
-    if (blocked) return NextResponse.json({ error: blocked }, { status: 409 });
-
-    const pickupId = job.pickup?.customer_id;
-    if (!pickupId) return NextResponse.json({ error: "Chuyến không có điểm lấy mẫu" }, { status: 409 });
-
-    const [live, leaveEntries] = await Promise.all([
-      livePositions(env),
-      // An unreadable leave sheet offers nobody rather than somebody who is off today.
-      // A wrong name here is a wasted trip; an empty list is a two-minute wait.
-      loadLeaveEntries().catch(() => null),
-    ]);
-    if (!leaveEntries) {
-      return NextResponse.json({ error: "Chưa đọc được lịch nghỉ, vui lòng thử lại" }, { status: 503 });
-    }
-
-    const current = job.data.delivery_driver_id ?? null;
-    const drivers = driversAtPscPickup(live, pickupId)
-      .filter((d) => !isDriverOnLeave(d.driverId, leaveEntries).onLeave)
-      // Offering the driver who already holds the trip would just be a no-op button.
-      .filter((d) => d.driverId !== current);
-
-    return NextResponse.json({ radius_m: NEARBY_RADIUS_M, drivers });
+    const choices = driverChoices(await loadChoiceInputs(env), pickup, dropoff, requested);
+    return NextResponse.json(choices, { headers: { "Cache-Control": "no-store" } });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
@@ -114,40 +99,23 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}));
     const jobId = Number(body?.job_id);
     const driverId = String(body?.driver_id ?? "").trim();
-    if (!Number.isInteger(jobId) || jobId <= 0) {
-      return NextResponse.json({ error: "Thiếu mã chuyến" }, { status: 400 });
-    }
+    if (badId(jobId)) return NextResponse.json({ error: "Thiếu mã chuyến" }, { status: 400 });
     if (!/^[0-9a-f-]{36}$/i.test(driverId)) {
       return NextResponse.json({ error: "Giao Nhận Mẫu không hợp lệ" }, { status: 400 });
     }
 
-    const job = await loadJob(jobId, env);
-    if (!job) return NextResponse.json({ error: "Không tìm thấy chuyến" }, { status: 404 });
-    const blocked = blockingReason(job.data.job_status_id ?? null, job.pickup);
-    if (blocked) return NextResponse.json({ error: blocked }, { status: 409 });
-
-    const pickupId = job.pickup?.customer_id;
-    if (!pickupId) return NextResponse.json({ error: "Chuyến không có điểm lấy mẫu" }, { status: 409 });
-
     // Re-checked at the moment of the change, not merely when the list was drawn. A branch
-    // can sit on that screen for minutes, and the driver they tap may have ridden off or
-    // gone on leave in between.
-    const [live, leaveEntries] = await Promise.all([
-      livePositions(env),
-      loadLeaveEntries().catch(() => null),
-    ]);
-    if (!leaveEntries) {
-      return NextResponse.json({ error: "Chưa đọc được lịch nghỉ, vui lòng thử lại" }, { status: 503 });
-    }
-    const here = driversAtPscPickup(live, pickupId).find((d) => d.driverId === driverId);
-    if (!here) {
+    // can sit on that screen for minutes, and the driver they tap may have gone on leave.
+    const out = await choicesForJob(jobId, env);
+    if (out instanceof NextResponse) return out;
+    const pick = out.choices.drivers.find((d) => d.driver_id === driverId);
+    if (!pick) {
       return NextResponse.json(
-        { error: `Giao Nhận Mẫu này không còn trong bán kính ${NEARBY_RADIUS_M}m` },
-        { status: 409 }
+        { error: out.choices.reason === "no_driver" || !out.choices.reason
+            ? "Giao Nhận Mẫu này không còn trong danh sách, vui lòng chọn lại"
+            : "Chưa đọc được lịch phân công, vui lòng thử lại" },
+        { status: 409 },
       );
-    }
-    if (isDriverOnLeave(driverId, leaveEntries).onLeave) {
-      return NextResponse.json({ error: "Giao Nhận Mẫu này đang nghỉ phép" }, { status: 409 });
     }
 
     const res = await assignJob(driverId, jobId, env);
@@ -166,10 +134,10 @@ export async function POST(req: NextRequest) {
     pushRunLog([{
       ts: vnTimestamp(),
       level: "OK",
-      msg: `Job ${jobId} - Chi nhánh đổi Giao Nhận Mẫu sang ${here.name} (${here.metres}m tại điểm lấy) | ${job.data.reference_number ?? ""}`,
+      msg: `Job ${jobId} - Chi nhánh đổi Giao Nhận Mẫu sang ${pick.name} | ${out.job.data.reference_number ?? ""}`,
     }]).catch(() => {});
 
-    return NextResponse.json({ success: true, job_id: jobId, driver_id: driverId, driver_name: here.name });
+    return NextResponse.json({ success: true, job_id: jobId, driver_id: driverId, driver_name: pick.name });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }

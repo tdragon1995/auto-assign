@@ -14,6 +14,8 @@ import { Photos, Timeline, TodoNotes, TODO_ICON, type TlEvent } from "@/componen
 import { LAB_CUSTOMER_ID } from "@/lib/job-filters";
 import type { StopNotes } from "@/lib/stop-notes";
 import { proxyKind, driverLabel, THREE_PL_LABEL } from "@/lib/proxy-drivers";
+import { driverDisplayName } from "@/lib/display-names";
+import type { PickerDriver } from "@/lib/psc-driver-choices";
 
 interface Stop {
   stop_id: number;
@@ -110,8 +112,38 @@ function isParked(name?: string | null): boolean {
   return k === "queue" || k === "reject";
 }
 
+// Personal name only: never a staff code or the "F - C -" / "P - P -" prefix.
 function driverText(name?: string | null): string {
-  return driverLabel(name) ?? "—";
+  const label = driverLabel(name);
+  return label ? driverDisplayName(label) : "—";
+}
+
+// What the driver list needs: the trip's route, when it was requested, and who holds it now.
+type ChangeTarget = { job_id: number; reference: string; pickup: string; dropoff: string; at: string | null; current: string | null };
+
+// The two driver actions on a trip card. Kept together so both cards read the same.
+const CHANGE_CTA = "shrink-0 min-h-11 px-3 rounded-xl text-xs font-bold text-blue-700 border border-blue-200 active:bg-blue-50 focus-visible:outline-2 focus-visible:outline-blue-600";
+const PICK_CTA = "w-full min-h-12 inline-flex items-center justify-center gap-2 rounded-xl text-[13px] font-bold text-white bg-blue-700 active:bg-blue-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600";
+
+function DriverRow({ name, onOpen, onChange }: { name: string; onOpen?: () => void; onChange?: () => void }) {
+  const who = (
+    <>
+      <span aria-hidden className="w-8 h-8 flex-none rounded-full bg-blue-100 text-blue-700 font-extrabold text-xs flex items-center justify-center">
+        {initial(name)}
+      </span>
+      <span className="flex-1 min-w-0 text-sm font-bold text-slate-800 break-words">{name}</span>
+    </>
+  );
+  return (
+    <div className="flex items-center gap-2.5 mt-3 pt-3 border-t border-slate-100">
+      {onOpen
+        ? <button onClick={onOpen} className="flex-1 min-w-0 flex items-center gap-2.5 text-left active:opacity-70">{who}</button>
+        : <span className="flex-1 min-w-0 flex items-center gap-2.5">{who}</span>}
+      {onChange
+        ? <button onClick={onChange} className={CHANGE_CTA}>Đổi giao nhận mẫu</button>
+        : onOpen && <ChevronRight aria-hidden className="w-4 h-4 text-slate-400 shrink-0" />}
+    </div>
+  );
 }
 
 // Cartrack sends window bounds as time-only strings ("07:00:00+07"). Only client pickups
@@ -205,14 +237,13 @@ const STATE_STYLE: Record<number, string> = {
   5: "bg-amber-100 text-amber-700",
 };
 
-// "lab" only ever meant D001. Hub routes drop at D007/D009/D046 and inbound client legs
-// drop at the branch itself, so the destination is named rather than assumed.
-function stateText(state: TripState, dest?: string): string {
-  const to = dest ? ` đến ${dest}` : "";
+// The route is printed right beside every tag, so a tag never repeats the destination —
+// on a long client name it also pushed the tag off the card.
+function stateText(state: TripState): string {
   if (state === 0) return "Chờ điều phối";
   if (state === 5) return "Chờ tới giờ hẹn";
   if (state === 1) return "Giao Nhận Mẫu đang đến lấy";
-  if (state === 2) return `Đang giao${to}`;
+  if (state === 2) return "Đang giao";
   if (state === 4) return "Đã từ chối";
   return "Đã giao";
 }
@@ -388,7 +419,6 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
   const shown: Job = detail ? { ...detail, stops: detail.stops } : job;
   const p = pickupOf(shown), d = dropoffOf(shown);
   const state = stateOf(shown);
-  const destName = placeLabel(d?.customer_name ?? "");
   const batches = shown.item_tracking_numbers ?? [];
   const threePl = isThreePl(shown.driver?.last_name);
   const parked = isParked(shown.driver?.last_name);
@@ -417,7 +447,7 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
             {placeLabel(p?.customer_name ?? "")} <ArrowRight aria-hidden className="inline w-4 h-4 text-slate-500 mx-0.5 shrink-0" /> {placeLabel(d?.customer_name ?? "")}
           </p>
           <span className={`text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${STATE_STYLE[state]}`}>
-            {stateText(state, destName)}
+            {stateText(state)}
           </span>
         </div>
 
@@ -475,7 +505,7 @@ function TripCard({ job, code, notes, onOpen, onCancel, onSendVia3pl, onChangeDr
   onOpen: () => void;
   onCancel: (t: { job_id: number; reference: string }) => void;
   onSendVia3pl: (t: { job_id: number; reference: string }) => void;
-  onChangeDriver: (t: { job_id: number; reference: string }) => void;
+  onChangeDriver: (t: ChangeTarget) => void;
 }) {
   const state = stateOf(job);
   const p = pickupOf(job), d = dropoffOf(job);
@@ -494,12 +524,16 @@ function TripCard({ job, code, notes, onOpen, onCancel, onSendVia3pl, onChangeDr
     !p.activity_started_ts && !p.activity_arrived_ts && !p.activity_completed_ts;
   // 3PL handoff stays open until the sample is actually collected.
   const via3plEligible = !rejected && !!p && p.customer_id === code && !p.activity_completed_ts && p.stop_status_id !== 5;
-  // Changing hands stays open exactly as long as the 3PL handoff does — right up until
-  // the samples are collected. That window is the point: a branch usually discovers the
-  // assigned driver is not coming AFTER the trip has already been dispatched to them.
-  const changeDriverEligible = via3plEligible;
+  // Picking or changing the driver stays open until the samples are collected — the moment
+  // a branch usually discovers the assigned driver is not coming. Not on a trip parked for
+  // its appointment time: nobody should be sent before then.
+  const changeDriverEligible = via3plEligible && state !== 5;
 
   const target = { job_id: job.job_id, reference: job.reference_number };
+  const change: ChangeTarget = {
+    ...target, pickup: p?.customer_id ?? "", dropoff: d?.customer_id ?? "",
+    at: requestedAt(job), current: state === 0 ? null : driver,
+  };
 
   return (
     <div className="rounded-2xl bg-white shadow-sm border border-slate-100 p-4">
@@ -520,7 +554,7 @@ function TripCard({ job, code, notes, onOpen, onCancel, onSendVia3pl, onChangeDr
             </div>
           </div>
           <span className={`flex-none text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${STATE_STYLE[state]}`}>
-            {threePl ? "Đã gửi qua đối tác" : stateText(state, destName)}
+            {threePl ? "Đã gửi qua đối tác" : stateText(state)}
           </span>
         </div>
 
@@ -545,31 +579,26 @@ function TripCard({ job, code, notes, onOpen, onCancel, onSendVia3pl, onChangeDr
         )}
 
         <NoteBlock notes={notes} />
-
-        {isWaiting(state) ? (
-          <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100 text-[13px] font-semibold text-amber-700">
-            <Clock aria-hidden className="w-4 h-4 shrink-0" />
-            {state === 5 ? "Đã đặt lịch, chờ tới giờ hẹn lấy mẫu" : "Đang chờ điều phối Giao Nhận Mẫu"}
-          </div>
-        ) : state === 4 ? null : !threePl && (
-          <div className="flex items-center gap-2.5 mt-3 pt-3 border-t border-slate-100">
-            <span aria-hidden className="w-8 h-8 flex-none rounded-full bg-blue-100 text-blue-700 font-extrabold text-xs flex items-center justify-center">
-              {initial(driver)}
-            </span>
-            <span className="flex-1 min-w-0 text-sm font-bold text-slate-800">{driver}</span>
-            <ChevronRight aria-hidden className="w-4 h-4 text-slate-400 shrink-0" />
-          </div>
-        )}
       </button>
 
-      {(via3plEligible || cancellable || changeDriverEligible) && (
+      {/* Outside the card's open-button: a button inside a button is invalid, and the
+          driver action must not also open the trip sheet. */}
+      {state === 0 && changeDriverEligible ? (
+        <div className="mt-3 pt-3 border-t border-slate-100">
+          <button onClick={() => onChangeDriver(change)} className={PICK_CTA}>Chọn GNM để giao ngay</button>
+        </div>
+      ) : isWaiting(state) ? (
+        <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100 text-[13px] font-semibold text-amber-700">
+          <Clock aria-hidden className="w-4 h-4 shrink-0" />
+          {state === 5 ? "Đã đặt lịch, chờ tới giờ hẹn lấy mẫu" : "Đang chờ điều phối Giao Nhận Mẫu"}
+        </div>
+      ) : state === 4 ? null : !threePl && (
+        <DriverRow name={driver} onOpen={onOpen}
+          onChange={changeDriverEligible ? () => onChangeDriver(change) : undefined} />
+      )}
+
+      {(via3plEligible || cancellable) && (
         <div className="space-y-1.5 mt-3">
-          {changeDriverEligible && (
-            <button onClick={() => onChangeDriver(target)}
-              className="w-full py-2.5 rounded-xl text-xs font-bold text-blue-700 border border-blue-200 active:bg-blue-50">
-              Gửi cho Giao Nhận Mẫu gần tôi
-            </button>
-          )}
           {via3plEligible && (
             <button onClick={() => onSendVia3pl(target)}
               className="w-full py-2.5 rounded-xl text-xs font-bold text-white bg-teal-600 active:bg-teal-800">
@@ -588,13 +617,18 @@ function TripCard({ job, code, notes, onOpen, onCancel, onSendVia3pl, onChangeDr
   );
 }
 
-function PendingCard({ req, onCancel, onSendVia3pl, onChangeDriver }: {
+function PendingCard({ req, pickup, dropoff, onCancel, onSendVia3pl, onChangeDriver }: {
   req: PendingReq;
+  pickup: string;
+  dropoff: string;
   onCancel: (t: { job_id: number; reference: string }) => void;
   onSendVia3pl: (t: { job_id: number; reference: string }) => void;
-  onChangeDriver: (t: { job_id: number; reference: string }) => void;
+  onChangeDriver: (t: ChangeTarget) => void;
 }) {
   const target = { job_id: req.job_id, reference: req.reference };
+  const change: ChangeTarget = {
+    ...target, pickup, dropoff, at: req.created_ts, current: req.driver_name ? driverText(req.driver_name) : null,
+  };
   const [from, to] = req.reference.split("_")[0].split("→");
   return (
     <div className="rounded-2xl bg-white shadow-sm border border-amber-200 p-4">
@@ -612,22 +646,13 @@ function PendingCard({ req, onCancel, onSendVia3pl, onChangeDriver }: {
         </span>
       </div>
       {req.driver_name ? (
-        <div className="flex items-center gap-2.5 mt-3 pt-3 border-t border-slate-100">
-          <span aria-hidden className="w-8 h-8 flex-none rounded-full bg-blue-100 text-blue-700 font-extrabold text-xs flex items-center justify-center">
-            {initial(driverText(req.driver_name))}
-          </span>
-          <span className="flex-1 min-w-0 text-sm font-bold text-slate-800 truncate">{driverText(req.driver_name)}</span>
-        </div>
+        <DriverRow name={driverText(req.driver_name)} onChange={() => onChangeDriver(change)} />
       ) : (
-        <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100 text-[13px] font-semibold text-amber-700">
-        <Clock aria-hidden className="w-4 h-4 shrink-0" />Đã gửi lúc {req.created_ts} — đang chờ điều phối Giao Nhận Mẫu
+        <div className="mt-3 pt-3 border-t border-slate-100">
+          <button onClick={() => onChangeDriver(change)} className={PICK_CTA}>Chọn GNM để giao ngay</button>
         </div>
       )}
       <div className="space-y-1.5 mt-3">
-        <button onClick={() => onChangeDriver(target)}
-          className="w-full py-2.5 rounded-xl text-xs font-bold text-blue-700 border border-blue-200 active:bg-blue-50">
-          Gửi cho Giao Nhận Mẫu gần tôi
-        </button>
         <button onClick={() => onSendVia3pl(target)}
           className="w-full py-2.5 rounded-xl text-xs font-bold text-white bg-teal-600 active:bg-teal-800">
           Gửi mẫu qua Grab/Be/XanhSM/Ahamove
@@ -689,11 +714,11 @@ export default function QrPage() {
   const [via3plError, setVia3plError] = useState("");
   const [batchInput, setBatchInput] = useState("");
 
-  // Change-driver: the branch's escape hatch for the trips configuration cannot describe.
-  // The list is fetched fresh every time it opens — who is standing at the door is the one
-  // thing that must never come from a cache.
-  const [changeTarget, setChangeTarget] = useState<{ job_id: number; reference: string } | null>(null);
-  const [changeList, setChangeList] = useState<{ driverId: string; name: string; metres: number }[]>([]);
+  // Pick / change driver: the roster for the trip's route at the time it was requested
+  // (±10 min). Fetched fresh every time it opens — leave and shifts move during the day.
+  const [changeTarget, setChangeTarget] = useState<ChangeTarget | null>(null);
+  const [changeList, setChangeList] = useState<PickerDriver[]>([]);
+  const [changeReason, setChangeReason] = useState<string | null>(null);
   const [changeLoading, setChangeLoading] = useState(false);
   const [changeBusyId, setChangeBusyId] = useState("");
   const [changeError, setChangeError] = useState("");
@@ -844,7 +869,8 @@ export default function QrPage() {
             ...pending,
           ]);
         }
-        showToast("Đã gửi yêu cầu lấy mẫu", true);
+        if (data.job_id) showToast("Đã gửi yêu cầu lấy mẫu", true);
+        else { showToast("Đã gửi yêu cầu. Vui lòng kiểm tra danh sách chuyến.", true); loadJobs(); }
         setTimeout(() => setAssignStatus("idle"), 3500);
         // No reload. The response already carries job_id and reference, and the pending
         // placeholder above renders the new trip immediately — re-reading the whole
@@ -901,16 +927,21 @@ export default function QrPage() {
     setBatchInput("");
   };
 
-  const openChangeDriver = async (t: { job_id: number; reference: string }) => {
+  const openChangeDriver = async (t: ChangeTarget) => {
     setChangeTarget(t);
     setChangeList([]);
+    setChangeReason(null);
     setChangeError("");
     setChangeLoading(true);
     try {
-      const res = await fetch("/api/psc-assign/reassign?job_id=" + t.job_id, { cache: "no-store" });
+      const q = new URLSearchParams({ pickup: t.pickup, dropoff: t.dropoff, at: t.at ?? "" });
+      const res = await fetch(`/api/psc-assign/reassign?${q}`, { cache: "no-store" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { setChangeError(data.error ?? "Không tải được danh sách"); return; }
-      setChangeList(data.drivers ?? []);
+      // The driver already on the trip is not a choice. Matched by name: the feed carries
+      // no driver id, and the list is already one line per name.
+      setChangeList(((data.drivers ?? []) as PickerDriver[]).filter((d) => d.name !== t.current));
+      setChangeReason(data.reason ?? null);
     } catch {
       setChangeError("Không thể kết nối. Vui lòng thử lại.");
     } finally {
@@ -936,7 +967,7 @@ export default function QrPage() {
       const jobId = changeTarget.job_id;
       const newName = data.driver_name ?? name;
       setPending((ps) => ps.map((x) => (x.job_id === jobId ? { ...x, driver_name: newName } : x)));
-      showToast("Đã chuyển chuyến cho " + newName + ".", true);
+      showToast("Đã giao chuyến cho " + newName + ".", true);
       // The feed is the authority on who holds a trip. Reload rather than patch the row
       // locally: this name is the one the branch will go and physically hand a box to.
       loadJobs();
@@ -1088,7 +1119,7 @@ export default function QrPage() {
 
         <div className="space-y-3">
           {pending.map((p) => (
-            <PendingCard key={p.job_id} req={p} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }}
+            <PendingCard key={p.job_id} req={p} pickup={route.pickup} dropoff={route.dropoff} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }}
               onSendVia3pl={openVia3pl} onChangeDriver={openChangeDriver} />
           ))}
           {active.map((j) => (
@@ -1258,31 +1289,31 @@ export default function QrPage() {
           onClick={() => { if (!changeBusyId) setChangeTarget(null); }}>
           <div role="dialog" aria-modal="true" className="w-full max-w-sm bg-white rounded-2xl p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
             <div className="space-y-1">
-              <p className="text-base font-bold text-slate-800">Đổi Giao Nhận Mẫu</p>
+              <p className="text-base font-bold text-slate-800">Chọn giao nhận mẫu</p>
               <p className="text-xs text-slate-500 font-semibold break-all">{changeTarget.reference}</p>
-              <p className="text-xs text-slate-500">Những người đang ở trong bán kính 100m quanh chi nhánh.</p>
             </div>
 
             {changeLoading ? (
-              <p className="py-6 text-center text-sm font-semibold text-slate-500">Đang tìm…</p>
+              <p role="status" className="py-6 text-center text-sm font-semibold text-slate-500">Đang tải…</p>
             ) : changeList.length === 0 ? (
-              <p className="py-6 text-center text-sm font-semibold text-slate-500">
-                Hiện không có Giao Nhận Mẫu nào ở gần chi nhánh.
-              </p>
+              changeError ? null : (
+                <p role="status" className="py-6 text-center text-sm font-semibold text-slate-500">
+                  {changeReason === "roster_unavailable" || changeReason === "leave_unavailable" || changeReason === "drivers_unavailable"
+                    ? "Chưa tải được danh sách, vui lòng thử lại."
+                    : "Không có Giao Nhận Mẫu khác trong lịch lúc này."}
+                </p>
+              )
             ) : (
               <div className="space-y-1.5 max-h-64 overflow-y-auto">
                 {changeList.map((d) => (
-                  <button key={d.driverId} onClick={() => handleChangeDriver(d.driverId, d.name)}
+                  <button key={d.driver_id} onClick={() => handleChangeDriver(d.driver_id, d.name)}
                     disabled={!!changeBusyId}
-                    className="w-full flex items-center gap-2.5 p-3 rounded-xl border border-slate-200 text-left active:bg-slate-50 disabled:opacity-40">
+                    className="w-full min-h-12 flex items-center gap-2.5 p-3 rounded-xl border border-slate-200 text-left active:bg-slate-50 disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-blue-600">
                     <span aria-hidden className="w-8 h-8 flex-none rounded-full bg-blue-100 text-blue-700 font-extrabold text-xs flex items-center justify-center">
-                      {initial(driverText(d.name))}
+                      {initial(d.name)}
                     </span>
-                    <span className="flex-1 min-w-0">
-                      <span className="block text-sm font-bold text-slate-800 truncate">{driverText(d.name)}</span>
-                      <span className="block text-[11px] font-semibold text-slate-500">Cách {d.metres}m</span>
-                    </span>
-                    {changeBusyId === d.driverId && <span className="text-[11px] font-bold text-blue-700">Đang đổi…</span>}
+                    <span className="flex-1 min-w-0 text-sm font-bold text-slate-800 break-words">{d.name}</span>
+                    {changeBusyId === d.driver_id && <span className="text-[11px] font-bold text-blue-700">Đang giao…</span>}
                   </button>
                 ))}
               </div>

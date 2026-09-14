@@ -131,6 +131,8 @@ async function stillBlocking(hit: PscDupHit, pickup: string, dropoff: string, en
 export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
   let lockKey: string | null = null;
+  // Once a create has been sent, a thrown error (timeout) cannot say whether the trip exists.
+  let createSent = false;
   const _t0 = Date.now();
   const plog = (m: string) => console.log(`[VN ${vnTimestamp()}] [psc-assign] ${m}`);
 
@@ -187,7 +189,8 @@ export async function POST(req: NextRequest) {
     // not quietly assign itself anyway — that switch exists precisely to stop that.
     const driverPrep = Promise.all([
       getArmState().catch(() => null),
-      loadConfigFromSheets().catch(() => null),
+      // Today's roster or none: a stale-day copy would name yesterday's driver.
+      loadConfigFromSheets({ requireCurrentDay: true }).catch(() => null),
       // An unreadable leave sheet is NOT an empty one. Book the trip driverless and let
       // the engine sort it out rather than send someone who is off today.
       loadLeaveEntries().catch(() => null),
@@ -282,8 +285,8 @@ export async function POST(req: NextRequest) {
     // holds active accounts only, which rules out the failure that actually hurts: a
     // trip sitting on a deactivated account, looking healthy, that nobody can open.
     // Break state is deliberately NOT consulted — a driver on break still gets the trip
-    // and picks it up when they return, and the branch can move it with "Gửi cho Giao
-    // Nhận Mẫu gần tôi" if they cannot wait.
+    // and picks it up when they return, and the branch can move it with "Đổi giao
+    // nhận mẫu" if they cannot wait.
     const [arm, config, leaveEntries, live] = await driverPrep;
     let assignTo: { driverId: string; name: string | null } | null = null;
     // Every path that declines to attach a driver says so. Silence here used to mean a
@@ -372,17 +375,30 @@ export async function POST(req: NextRequest) {
     // "ok" skips the create's own driver lookup, and is only honest when a live list has
     // just confirmed the account. Without that list, let the create do its own checking.
     const preVerified = assignTo != null && live != null;
+    createSent = true;
     let createRes = await createJob(jobPayload, env, preVerified ? "ok" : undefined);
 
     // A driver Cartrack will not accept must cost the branch a trip, not a booking. If
     // the create was refused while carrying a driver, make the same trip without one and
     // let the engine place it — which is exactly what used to happen anyway.
-    if (!createRes.ok && assignTo) {
+    // Only a 4xx is a refusal of the DRIVER. A 5xx — including "RPC said ok but gave no
+    // job id" — may have created the trip, and posting again would make its twin.
+    if (!createRes.ok && assignTo && createRes.status >= 400 && createRes.status < 500) {
       plog(`create refused with driver (${createRes.status}) — retrying unassigned`);
       const { delivery_driver_id: _dropped, ...driverless } = jobPayload as Record<string, unknown>;
       void _dropped;
       assignTo = null;
       createRes = await createJob(driverless, env);
+    }
+
+    if (!createRes.ok && createRes.status >= 500) {
+      // Unknown whether a trip exists. Keep BOTH locks (they self-expire) so a quick retap
+      // cannot make a second one, and send the branch to the list first.
+      plog(`create result ambiguous (${createRes.status}) — holding the pair lock`);
+      return NextResponse.json(
+        { error: "Chưa xác nhận được yêu cầu. Vui lòng kiểm tra danh sách chuyến bên dưới trước khi gửi lại.", details: createRes.body },
+        { status: 502 },
+      );
     }
 
     if (!createRes.ok) {
@@ -435,6 +451,13 @@ export async function POST(req: NextRequest) {
       driver_name: assignTo?.name ? stripDriverCode(assignTo.name) : null,
     });
   } catch (e) {
+    if (createSent) {
+      // Same as an ambiguous 5xx: keep the locks, point the branch at the list.
+      return NextResponse.json(
+        { error: "Chưa xác nhận được yêu cầu. Vui lòng kiểm tra danh sách chuyến bên dưới trước khi gửi lại.", details: String(e) },
+        { status: 502 },
+      );
+    }
     if (lockKey) {
       releaseLock(lockKey);
       void releaseCreateLock(lockKey);

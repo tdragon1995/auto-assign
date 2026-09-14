@@ -1,7 +1,9 @@
 import type { Config, Mapping } from "./types";
-import { vnHoursMinutes } from "./time";
+import { vnHoursMinutes, vnMinutesSinceMidnight } from "./time";
 import { isValidDriverId } from "./config";
 import { isDriverOnLeave, resolveSubstitute, type LeaveEntry } from "./leave-config";
+import { dutyBlocks } from "./config-audit";
+import { proxyKind } from "./proxy-drivers";
 
 /**
  * The fixed-path roster lookup, on its own and free of the assign cycle.
@@ -232,3 +234,58 @@ function settle(
   return { driverId, name, subFor };
 }
 
+
+export type DriverChoice = {
+  driverId: string;
+  /** The substitute's name from the leave sheet, else the fixed row's name. Null for a
+   *  pool member — a smart row's name cell lists the whole pool. Callers name from the
+   *  live driver list and only fall back to this. */
+  name: string | null;
+};
+
+export type ChoicesResult =
+  | { ok: true; drivers: DriverChoice[] }
+  | { ok: false; reason: "no_mapping" | "no_driver" };
+
+/** Minutes either side of the request time a roster row may cover to be offered. */
+export const CHOICE_WINDOW_MIN = 10;
+
+/**
+ * Who a branch may hand-pick for a trip on this route: every driver whose row covers
+ * any minute within ±CHOICE_WINDOW_MIN of when the trip was requested — a request at
+ * 12:00 offers the rows covering 11:50–12:10, so a handover inside that window offers
+ * both sides of it.
+ *
+ * A list for a person to choose from, not an assignment, so rows are UNIONED — pools,
+ * fixed rows, and two rows that would clash for the engine. Destination rows still
+ * replace the branch's blank rows for their destination, a redirecting row is left out
+ * (only the engine rewrites the stop), and leave is judged at the REAL clock.
+ */
+export function resolveDriverChoices(
+  config: Config,
+  pickup: string,
+  dropoff: string,
+  leaveEntries: LeaveEntry[],
+  requestedAt: Date = new Date(),
+): ChoicesResult {
+  const { applicable } = mappingsForRoute(config, pickup, dropoff);
+  if (applicable.length === 0) return { ok: false, reason: "no_mapping" };
+
+  const t = vnMinutesSinceMidnight(requestedAt);
+  // ponytail: clamped to today, so 00:05 does not look back into yesterday's evening rows.
+  const from = Math.max(0, t - CHOICE_WINDOW_MIN);
+  const to = Math.min(24 * 60 - 1, t + CHOICE_WINDOW_MIN);
+  const covering = applicable.filter((m) => dutyBlocks(m).some(([a, b]) => a <= to && b >= from));
+  // settle() below drops a redirecting row's drivers.
+  const rows = preferDestinationRows(covering, dropoff);
+
+  const drivers: DriverChoice[] = [];
+  for (const m of rows) {
+    for (const id of m.smart_driver_id.length > 0 ? m.smart_driver_id : [m.driver_id]) {
+      const s = settle(m, id, dropoff, leaveEntries);
+      if (!s || proxyKind(null, s.driverId) || drivers.some((d) => d.driverId === s.driverId)) continue;
+      drivers.push({ driverId: s.driverId, name: m.smart_driver_id.length > 0 && !s.subFor ? null : s.name });
+    }
+  }
+  return drivers.length ? { ok: true, drivers } : { ok: false, reason: "no_driver" };
+}

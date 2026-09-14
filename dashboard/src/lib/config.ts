@@ -250,8 +250,24 @@ async function auditParsedConfig(
   }
 }
 
-export async function loadConfigFromSheets(): Promise<Config | null> {
-  const today = vnDate(new Date());
+/**
+ * `requireCurrentDay` refuses any answer not built for today's VN date — the stale copy
+ * served after a failed fetch, or a fetch that started on Sunday and finished on Monday.
+ * The engine keeps the default (a stale copy beats no copy for a cycle); a caller that
+ * hands a trip to a named person would rather have nothing than yesterday's roster.
+ */
+export async function loadConfigFromSheets(opts?: { requireCurrentDay?: boolean }): Promise<Config | null> {
+  const now = new Date();
+  const config = await loadConfigAt(now);
+  if (opts?.requireCurrentDay && (cachedDay !== vnDate(now) || vnDate() !== vnDate(now))) return null;
+  return config;
+}
+
+async function loadConfigAt(now: Date): Promise<Config | null> {
+  // ONE clock read for both the date and the tab: reading it twice let a fetch that
+  // crossed midnight cache Saturday's tab under Sunday's date.
+  const today = vnDate(now);
+  const sunday = vnIsSunday(now);
   // Read once and reuse for the write below, so a hit costs exactly one Redis GET.
   const gen = await readGen();
   if (cachedConfig && cachedDay === today && (gen === null || gen === cachedGen)) {
@@ -282,7 +298,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
           // says what the CURRENT code says instead of leaving an old sentence
           // standing until the underlying condition happens to move.
           emitConfigWarnings(
-            SHEET_CONTRACT[vnIsSunday() ? "sunday" : "mapping"].label,
+            SHEET_CONTRACT[sunday ? "sunday" : "mapping"].label,
             hit.unresolved ?? { pickups: [], drivers: [], dropoffs: [], invalidDriverIds: [] },
           );
           return cachedConfig;
@@ -291,7 +307,7 @@ export async function loadConfigFromSheets(): Promise<Config | null> {
     }
   }
 
-  const tab = vnIsSunday() ? "sunday" : "mapping";
+  const tab = sunday ? "sunday" : "mapping";
   try {
     const rows = await fetchSheetRows(SHEET_GID[tab], SHEET_CONTRACT[tab]);
 
