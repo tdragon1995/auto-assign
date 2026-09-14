@@ -50,19 +50,13 @@ function hhmm(value: number): string {
  * rows; it does not infer or append uncovered gaps around them.
  */
 export function buildLeaveSplit(
-  sourceFrom: string | null,
-  sourceTo: string | null,
+  _sourceFrom: string | null,
+  _sourceTo: string | null,
   blocks: readonly LeaveSplitBlock[],
 ): LeaveSplitPart[] {
   if (blocks.length < 2 || blocks.length > 3) {
     throw new LeaveSplitValidationError("Chia ca cần 2–3 dòng người thay");
   }
-  const start = sourceFrom ? minute(sourceFrom) : 0;
-  const end = sourceTo ? minute(sourceTo) : DAY_MINUTES;
-  if (start < 0 || end <= start) {
-    throw new LeaveSplitValidationError("Khung giờ nghỉ gốc không hợp lệ");
-  }
-
   const chosen = blocks.map((block) => {
     const name = block.name.trim();
     const from = (block.from ?? "").trim();
@@ -74,11 +68,6 @@ export function buildLeaveSplit(
     const toMinutes = minute(to);
     if (fromMinutes < 0 || toMinutes <= fromMinutes) {
       throw new LeaveSplitValidationError(`Khung giờ không hợp lệ: ${from || "--:--"}–${to || "--:--"}`);
-    }
-    if (fromMinutes < start || toMinutes > end) {
-      throw new LeaveSplitValidationError(
-        `Ca ${from}–${to} nằm ngoài giờ nghỉ ${hhmm(start)}–${hhmm(end)}`,
-      );
     }
     return { name, from: hhmm(fromMinutes), to: hhmm(toMinutes), fromMinutes, toMinutes };
   }).sort((a, b) => a.fromMinutes - b.fromMinutes || a.toMinutes - b.toMinutes);

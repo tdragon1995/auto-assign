@@ -39,9 +39,11 @@ assert.throws(
   () => buildLeaveSplit("07:00", "17:00", [block("A", "07:00", "12:30"), block("B", "12:00", "17:00")]),
   /bị chồng/,
 );
-assert.throws(
-  () => buildLeaveSplit("07:00", "17:00", [block("A", "06:30", "12:00"), block("B", "12:00", "17:00")]),
-  /nằm ngoài/,
+assert.deepEqual(
+  buildLeaveSplit("07:00", "17:00", [block("A", "06:30", "12:00"), block("B", "12:00", "18:00")])
+    .map((part) => [part.from, part.to, part.sub?.name]),
+  [["06:30", "12:00", "A"], ["12:00", "18:00", "B"]],
+  "substitute shifts may extend before and after the leave window",
 );
 assert.throws(
   () => buildLeaveSplit("07:00", "17:00", [block("A", "07:00", "12:00"), block("", "12:00", "17:00")]),
