@@ -17,7 +17,7 @@ import {
 import { normalizeDriverName } from "@/lib/driver-match";
 import { DriverName } from "./driver-name";
 import { DriverCombobox } from "./driver-combobox";
-import { buildLeaveSplit, type LeaveSplitPart } from "@/lib/leave-split";
+import { buildLeaveSplit } from "@/lib/leave-split";
 
 const TYPE_LABEL: Record<string, string> = {
   "Nghỉ nguyên buổi": "Cả ngày",
@@ -1105,19 +1105,6 @@ function SubEditor({
   );
   const [busy, setBusy] = useState(false);
   const isSplit = blocks.length > 1;
-  let preview: LeaveSplitPart[] | null = null;
-  let previewError: string | null = null;
-  if (isSplit) {
-    try {
-      preview = buildLeaveSplit(
-        bounds?.[0] || null,
-        bounds?.[1] || null,
-        blocks.map((block) => ({ name: block.name, from: block.from || null, to: block.to || null })),
-      );
-    } catch (error) {
-      previewError = error instanceof Error ? error.message : String(error);
-    }
-  }
 
   const patch = (i: number, p: Partial<SubBlock>) =>
     setBlocks((prev) => prev.map((b, j) => (j === i ? { ...b, ...p } : b)));
@@ -1202,25 +1189,6 @@ function SubEditor({
           )}
         </div>
       ))}
-      {isSplit && (
-        <div className="rounded-md border border-indigo-200 bg-indigo-50/70 px-2 py-1.5" aria-live="polite">
-          <p className="text-[11px] font-semibold text-indigo-900">Các dòng nghỉ sau khi lưu</p>
-          {preview ? (
-            <ul className="mt-1 flex flex-wrap gap-1">
-              {preview.map((part) => (
-                <li key={`${part.from}-${part.to}`} className="rounded border border-indigo-200 bg-white px-1.5 py-0.5 text-[11px] text-slate-700">
-                  <span className="font-mono font-semibold">{part.from}–{part.to}</span>
-                  <span className={part.sub ? "ml-1 text-indigo-700" : "ml-1 text-amber-700"}>
-                    {part.sub?.name || "Chưa có người thay"}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p role="alert" className="mt-0.5 text-[11px] text-amber-800">{previewError}</p>
-          )}
-        </div>
-      )}
       <div className="flex items-center gap-1">
         {blocks.length < 3 && (
           <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={addBlock} disabled={busy}>
