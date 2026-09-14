@@ -22,20 +22,17 @@ assert.deepEqual(
 assert.deepEqual(
   buildLeaveSplit("07:00", "17:00", [block("B", "13:00", "16:00"), block("A", "08:00", "12:00")]),
   [
-    { from: "07:00", to: "08:00", sub: null },
     { from: "08:00", to: "12:00", sub: block("A", "08:00", "12:00") },
-    { from: "12:00", to: "13:00", sub: null },
     { from: "13:00", to: "16:00", sub: block("B", "13:00", "16:00") },
-    { from: "16:00", to: "17:00", sub: null },
   ],
-  "uncovered edges and gaps remain leave rows",
+  "only entered shifts become rows",
 );
 
 const fullDay = buildLeaveSplit(null, null, [block("A", "07:00", "12:00"), block("B", "12:00", "17:00")]);
 assert.deepEqual(
   fullDay.map((part) => [part.from, part.to, part.sub?.name ?? null]),
-  [["00:00", "07:00", null], ["07:00", "12:00", "A"], ["12:00", "17:00", "B"], ["17:00", "24:00", null]],
-  "full-day leave keeps both uncovered edges",
+  [["07:00", "12:00", "A"], ["12:00", "17:00", "B"]],
+  "full-day leave creates no inferred edge rows",
 );
 
 assert.throws(
@@ -66,4 +63,4 @@ const updated = replaceSplitOriginalNote(wrapped, "new operational note");
 assert.equal(unwrapLeaveSplitNote(updated), "new operational note");
 assert.equal(parseLeaveSplitNote(updated)?.operationKey, "split-1", "reconciliation preserves retry metadata");
 
-console.log("Leave split: rows, gaps, boundaries, validation and retry metadata passed.");
+console.log("Leave split: entered rows only, boundaries, API validation and retry metadata passed.");

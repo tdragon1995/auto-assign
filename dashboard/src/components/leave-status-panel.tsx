@@ -17,7 +17,6 @@ import {
 import { normalizeDriverName } from "@/lib/driver-match";
 import { DriverName } from "./driver-name";
 import { DriverCombobox } from "./driver-combobox";
-import { buildLeaveSplit } from "@/lib/leave-split";
 
 const TYPE_LABEL: Record<string, string> = {
   "Nghỉ nguyên buổi": "Cả ngày",
@@ -1094,10 +1093,6 @@ function SubEditor({
   ) => Promise<boolean>;
   onCancel: () => void;
 }) {
-  // Still checked, even though the picker can only produce a roster name: this
-  // is the last thing between a typo and a substitute the sheet's xlookup will
-  // never resolve, and it costs one Set.
-  const driverNames = new Set(drivers.map((d) => d.name));
   // Leave window bounds (for prefilling a split) — "06:30–15:00" → ["06:30","15:00"]
   const bounds = row.timeLabel ? row.timeLabel.split("–") : null;
   const [blocks, setBlocks] = useState<SubBlock[]>(
@@ -1129,25 +1124,6 @@ function SubEditor({
 
   const save = async () => {
     const chosen = isSplit ? blocks : blocks.filter((b) => b.name.trim());
-    for (const b of chosen) {
-      if (!b.name.trim()) return toast.error("Chọn người thay từ danh sách");
-      if (!driverNames.has(b.name.trim()))
-        return toast.error(`"${b.name.trim()}" không có trong danh sách tài xế`);
-      if (!!b.from !== !!b.to) return toast.error("Khung giờ thay phải đủ cả từ và đến");
-      if (b.from && b.to && b.from >= b.to)
-        return toast.error(`Khung giờ không hợp lệ: ${b.from}–${b.to}`);
-    }
-    if (isSplit) {
-      try {
-        buildLeaveSplit(
-          bounds?.[0] || null,
-          bounds?.[1] || null,
-          chosen.map((block) => ({ name: block.name, from: block.from || null, to: block.to || null })),
-        );
-      } catch (error) {
-        return toast.error(error instanceof Error ? error.message : String(error));
-      }
-    }
     setBusy(true);
     const ok = await onSave(
       chosen.map((b) => ({ name: b.name.trim(), from: b.from || null, to: b.to || null })),

@@ -46,8 +46,8 @@ function hhmm(value: number): string {
 
 /**
  * Turn the editor's substitute blocks into the exact leave rows that will be
- * saved. Full-day leave is treated as 00:00–24:00 so uncovered edges remain
- * real leave instead of disappearing when only the working shift is staffed.
+ * saved. Chia ca is literal: only intervals entered by the supervisor become
+ * rows; it does not infer or append uncovered gaps around them.
  */
 export function buildLeaveSplit(
   sourceFrom: string | null,
@@ -91,21 +91,11 @@ export function buildLeaveSplit(
     }
   }
 
-  const result: LeaveSplitPart[] = [];
-  let cursor = start;
-  for (const block of chosen) {
-    if (cursor < block.fromMinutes) {
-      result.push({ from: hhmm(cursor), to: block.from, sub: null });
-    }
-    result.push({
+  return chosen.map((block) => ({
       from: block.from,
       to: block.to,
       sub: { name: block.name, from: block.from, to: block.to },
-    });
-    cursor = block.toMinutes;
-  }
-  if (cursor < end) result.push({ from: hhmm(cursor), to: hhmm(end), sub: null });
-  return result;
+    }));
 }
 
 function hash(value: string): string {
