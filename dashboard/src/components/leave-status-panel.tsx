@@ -17,6 +17,7 @@ import {
 import { normalizeDriverName } from "@/lib/driver-match";
 import { DriverName } from "./driver-name";
 import { DriverCombobox } from "./driver-combobox";
+import { buildLeaveSplit, type LeaveSplitPart } from "@/lib/leave-split";
 
 const TYPE_LABEL: Record<string, string> = {
   "Nghỉ nguyên buổi": "Cả ngày",
@@ -909,12 +910,18 @@ type RefreshFn = () => void | Promise<void>;
 /** Write substitutes back to the Leave sheet. Shared so the "Cần xử lý" section
  *  and the reference panel below it save through exactly one path. */
 function makeFillSubs(onRefresh: RefreshFn): FillSubsFn {
-  return async (identity, subs, replace) => {
+  return async (identity, subs, options = {}) => {
     try {
       const res = await fetch("/api/leave-status", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...identity, subs, replace: !!replace }),
+        body: JSON.stringify({
+          ...identity,
+          subs,
+          replace: !!options.replace,
+          mode: options.split ? "split" : undefined,
+          expectedSubs: options.expectedSubs,
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
@@ -923,8 +930,11 @@ function makeFillSubs(onRefresh: RefreshFn): FillSubsFn {
       }
       // The write LANDED either way — a warning here is about what happens
       // next, not about whether it saved, and a bare warning read as a failure.
-      if (data.warning) toast.warning(`Đã lưu người thay. ${data.warning}`);
-      else toast.success("Đã lưu người thay vào sheet");
+      const saved = data.split
+        ? `Đã chia thành ${Array.isArray(data.rows) ? data.rows.length : "các"} dòng nghỉ`
+        : "Đã lưu người thay vào sheet";
+      if (data.warning) toast.warning(`${saved}. ${data.warning}`);
+      else toast.success(saved);
       if (data.thayCaWarning) toast.error(String(data.thayCaWarning));
       await onRefresh();
       return true;
@@ -938,9 +948,14 @@ function makeFillSubs(onRefresh: RefreshFn): FillSubsFn {
 export type FillSubsFn = (
   identity: { driver_id: string; leave_from: string; timeLabel: string | null },
   subs: { name: string; from: string | null; to: string | null }[],
-  /** true = EDIT an already-covered row (overwrite whatever's there); default
-   *  (false/omitted) only fills empty slots — the original "+ Thêm" flow. */
-  replace?: boolean,
+  options?: {
+    /** EDIT one existing row. */
+    replace?: boolean;
+    /** Transform the source into separate leave rows. */
+    split?: boolean;
+    /** Snapshot shown by the editor; the API rejects a stale overwrite. */
+    expectedSubs?: { name: string; from: string | null; to: string | null }[];
+  },
 ) => Promise<boolean>;
 
 /** The identity of one leave row, as the sheet writers re-resolve it: driver +
@@ -1073,7 +1088,10 @@ function SubEditor({
    *  (change a name or a window on a row that's already covered). Omitted for
    *  the original "+ Thêm" case, which starts from one empty block. */
   initial?: SubBlock[];
-  onSave: (subs: { name: string; from: string | null; to: string | null }[]) => Promise<boolean>;
+  onSave: (
+    subs: { name: string; from: string | null; to: string | null }[],
+    split: boolean,
+  ) => Promise<boolean>;
   onCancel: () => void;
 }) {
   // Still checked, even though the picker can only produce a roster name: this
@@ -1086,6 +1104,20 @@ function SubEditor({
     initial && initial.length > 0 ? initial : [{ name: "", from: "", to: "" }],
   );
   const [busy, setBusy] = useState(false);
+  const isSplit = blocks.length > 1;
+  let preview: LeaveSplitPart[] | null = null;
+  let previewError: string | null = null;
+  if (isSplit) {
+    try {
+      preview = buildLeaveSplit(
+        bounds?.[0] || null,
+        bounds?.[1] || null,
+        blocks.map((block) => ({ name: block.name, from: block.from || null, to: block.to || null })),
+      );
+    } catch (error) {
+      previewError = error instanceof Error ? error.message : String(error);
+    }
+  }
 
   const patch = (i: number, p: Partial<SubBlock>) =>
     setBlocks((prev) => prev.map((b, j) => (j === i ? { ...b, ...p } : b)));
@@ -1109,7 +1141,7 @@ function SubEditor({
     setBlocks((prev) => (prev.length > 1 ? prev.filter((_, j) => j !== i) : prev));
 
   const save = async () => {
-    const chosen = blocks.filter((b) => b.name.trim());
+    const chosen = isSplit ? blocks : blocks.filter((b) => b.name.trim());
     for (const b of chosen) {
       if (!b.name.trim()) return toast.error("Chọn người thay từ danh sách");
       if (!driverNames.has(b.name.trim()))
@@ -1118,20 +1150,21 @@ function SubEditor({
       if (b.from && b.to && b.from >= b.to)
         return toast.error(`Khung giờ không hợp lệ: ${b.from}–${b.to}`);
     }
-    if (chosen.length > 1) {
-      if (chosen.some((b) => !b.from || !b.to))
-        return toast.error("Nhiều người thay thì mỗi người cần khung giờ riêng");
-      const sorted = [...chosen].sort((a, b) => a.from.localeCompare(b.from));
-      for (let i = 1; i < sorted.length; i++) {
-        if (sorted[i].from < sorted[i - 1].to)
-          return toast.error(
-            `Khung giờ bị chồng: ${sorted[i - 1].from}–${sorted[i - 1].to} và ${sorted[i].from}–${sorted[i].to}`,
-          );
+    if (isSplit) {
+      try {
+        buildLeaveSplit(
+          bounds?.[0] || null,
+          bounds?.[1] || null,
+          chosen.map((block) => ({ name: block.name, from: block.from || null, to: block.to || null })),
+        );
+      } catch (error) {
+        return toast.error(error instanceof Error ? error.message : String(error));
       }
     }
     setBusy(true);
     const ok = await onSave(
       chosen.map((b) => ({ name: b.name.trim(), from: b.from || null, to: b.to || null })),
+      isSplit,
     );
     setBusy(false);
     if (ok) onCancel();
@@ -1156,7 +1189,7 @@ function SubEditor({
           />
           <TimeSelect label="Từ giờ" value={b.from} onChange={(v) => patch(i, { from: v })} />
           <span className="text-slate-400 text-[11px]">→</span>
-          <TimeSelect label="Đến giờ" value={b.to} onChange={(v) => patch(i, { to: v })} />
+          <TimeSelect label="Đến giờ" value={b.to} after={b.from || undefined} onChange={(v) => patch(i, { to: v })} />
           {blocks.length > 1 && (
             <button
               type="button"
@@ -1169,6 +1202,25 @@ function SubEditor({
           )}
         </div>
       ))}
+      {isSplit && (
+        <div className="rounded-md border border-indigo-200 bg-indigo-50/70 px-2 py-1.5" aria-live="polite">
+          <p className="text-[11px] font-semibold text-indigo-900">Các dòng nghỉ sau khi lưu</p>
+          {preview ? (
+            <ul className="mt-1 flex flex-wrap gap-1">
+              {preview.map((part) => (
+                <li key={`${part.from}-${part.to}`} className="rounded border border-indigo-200 bg-white px-1.5 py-0.5 text-[11px] text-slate-700">
+                  <span className="font-mono font-semibold">{part.from}–{part.to}</span>
+                  <span className={part.sub ? "ml-1 text-indigo-700" : "ml-1 text-amber-700"}>
+                    {part.sub?.name || "Chưa có người thay"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p role="alert" className="mt-0.5 text-[11px] text-amber-800">{previewError}</p>
+          )}
+        </div>
+      )}
       <div className="flex items-center gap-1">
         {blocks.length < 3 && (
           <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={addBlock} disabled={busy}>
@@ -1185,7 +1237,7 @@ function SubEditor({
             onClick={save}
             disabled={busy}
           >
-            {busy ? "Đang lưu…" : "Lưu"}
+            {busy ? "Đang lưu…" : isSplit ? "Lưu chia ca" : "Lưu"}
           </Button>
         </div>
       </div>
@@ -1369,11 +1421,19 @@ function DriverCard({
                     : undefined
                 }
                 onCancel={() => setEditRow(null)}
-                onSave={(subs) =>
+                onSave={(subs, split) =>
                   onFill(
                     { driver_id: g.driver_id, leave_from: r.leave_from, timeLabel: r.timeLabel },
                     subs,
-                    r.subs.length > 0,
+                    {
+                      split,
+                      replace: !split && r.subs.length > 0,
+                      expectedSubs: r.subs.map((sub) => ({
+                        name: sub.name,
+                        from: sub.from,
+                        to: sub.to,
+                      })),
+                    },
                   )
                 }
               />
@@ -1485,10 +1545,11 @@ function UncoveredRowItem({
         <SubEditor
           row={item.row}
           drivers={drivers}
-          onSave={(subs) =>
+          onSave={(subs, split) =>
             onFill(
               { driver_id: item.driver_id, leave_from: item.row.leave_from, timeLabel: item.row.timeLabel },
               subs,
+              { split, expectedSubs: [] },
             )
           }
           onCancel={() => setEditing(false)}

@@ -9,6 +9,11 @@ import {
   type ThayCaDesired,
   type SwapMeta,
 } from "./thay-ca";
+import {
+  encodeLeaveSplitNote, leaveSplitOperationKey, parseLeaveSplitNote,
+  replaceSplitOriginalNote, unwrapLeaveSplitNote,
+  type LeaveSplitPart,
+} from "./leave-split";
 
 let cachedNghiPhepSheetName: string | null = null;
 let cachedSheets: ReturnType<typeof google.sheets> | null = null;
@@ -296,7 +301,7 @@ export async function syncThayCaRows(
   deleted: number;
 }> {
   const rows = await readLeaveSheetData();
-  const existing = rows.filter((row) => row.values.note.startsWith(THAY_CA_NOTE_PREFIX));
+  const existing = rows.filter((row) => unwrapLeaveSplitNote(row.values.note).startsWith(THAY_CA_NOTE_PREFIX));
   const desiredByKey = new Map(desired.map((row) => [row.recordKey, row]));
   const used = new Set<string>();
   const updates: Promise<void>[] = [];
@@ -304,7 +309,7 @@ export async function syncThayCaRows(
 
   for (const row of existing) {
     let meta: { recordKey?: string } = {};
-    const parsed = parseThayCaNote(row.values.note);
+    const parsed = parseThayCaNote(unwrapLeaveSplitNote(row.values.note));
     if (parsed) meta = parsed;
     const wanted = meta.recordKey ? desiredByKey.get(meta.recordKey) : undefined;
     if (!wanted || used.has(wanted.recordKey)) continue;
@@ -317,7 +322,7 @@ export async function syncThayCaRows(
       leave_to: wanted.leave_to,
       leave_from_hr: wanted.leave_from_hr,
       leave_to_hr: wanted.leave_to_hr,
-      note: wanted.note,
+      note: replaceSplitOriginalNote(row.values.note, wanted.note),
     };
     const changed = [
       row.values.driver !== next.driver_name,
@@ -338,15 +343,19 @@ export async function syncThayCaRows(
   const swapsByKey = new Map(swaps.map((swap) => [swap.sourceKey, swap]));
   const swapUpdates: Promise<void>[] = [];
   for (const row of rows) {
-    if (row.values.note.startsWith(THAY_CA_NOTE_PREFIX)) continue;
+    const operationalNote = unwrapLeaveSplitNote(row.values.note);
+    if (operationalNote.startsWith(THAY_CA_NOTE_PREFIX)) continue;
     const key = row.values.driver_id && row.values.leave_from
       ? sourceKey(row.values.driver_id, row.values.leave_from, row.values.leave_from_hr || null, row.values.leave_to_hr || null)
       : "";
     const active = key ? swapsByKey.get(key) : undefined;
-    const previous = parseSwapNote(row.values.note);
+    const previous = parseSwapNote(operationalNote);
     if (!active && !previous) continue;
     const nextType = active ? "Thay ca" : previous!.originalType;
-    const nextNote = active ? encodeSwapNote(active) : previous!.originalNote;
+    const nextNote = replaceSplitOriginalNote(
+      row.values.note,
+      active ? encodeSwapNote(active) : previous!.originalNote,
+    );
     if (row.values["Loại Nghỉ"] === nextType && row.values.note === nextNote) continue;
     updated++;
     swapUpdates.push(updateLeaveSheetRow(row.row, {
@@ -365,7 +374,7 @@ export async function syncThayCaRows(
   const obsolete = existing
     .filter((row) => {
       let key = "";
-      try { key = String(parseThayCaNote(row.values.note)?.recordKey ?? ""); } catch { /* malformed */ }
+      try { key = String(parseThayCaNote(unwrapLeaveSplitNote(row.values.note))?.recordKey ?? ""); } catch { /* malformed */ }
       return !key || !used.has(key) || !desiredByKey.has(key);
     })
     .map((row) => row.row);
@@ -435,7 +444,7 @@ async function firstFreeRow(
  *  input) — the route maps this to 400 with the message shown verbatim, vs a
  *  real 500 for an unexpected fault. */
 export class LeaveWriteError extends Error {
-  constructor(message: string) {
+  constructor(message: string, public readonly status = 400) {
     super(message);
     this.name = "LeaveWriteError";
   }
@@ -700,6 +709,212 @@ export async function replaceLeaveSubs(
   const used = slots.slice(0, subs.length);
   const warning = await verifySubIds(sheets, quotedName, col, rowNo, used);
   return { row: rowNo, warning };
+}
+
+export interface LeaveSplitResult {
+  rows: number[];
+  created: number;
+  warning?: string;
+}
+
+function splitPartKey(part: LeaveSplitPart): string {
+  return `${part.from}-${part.to}`;
+}
+
+function rowSubs(row: unknown[], col: Record<string, number>): LeaveSubWrite[] {
+  const cell = (name: string) => col[name] == null ? "" : String(row[col[name]] ?? "").trim();
+  return SUB_SLOTS.flatMap((n) => {
+    const name = cell(`sub${n}_name`);
+    const id = cell(`sub${n}_id`);
+    if (!name && !id) return [];
+    return [{ name, from: cell(`sub${n}_from`) || null, to: cell(`sub${n}_to`) || null }];
+  });
+}
+
+function sameSubs(a: readonly LeaveSubWrite[], b: readonly LeaveSubWrite[]): boolean {
+  const normalized = (subs: readonly LeaveSubWrite[]) => subs.map((sub) => ({
+    name: sub.name.trim(),
+    from: sub.from ? timeToMins(sub.from) : null,
+    to: sub.to ? timeToMins(sub.to) : null,
+  }));
+  return JSON.stringify(normalized(a)) === JSON.stringify(normalized(b));
+}
+
+/**
+ * Replace one leave row with the exact rows produced by “Chia ca”. The complete
+ * read/allocate/write sequence is guarded by the leave-tab lock. Every resulting
+ * row carries the same deterministic operation key, so an uncertain network
+ * response can be retried without appending another copy.
+ */
+export async function splitLeaveRow(
+  match: LeaveRowMatch,
+  parts: readonly LeaveSplitPart[],
+  expectedSubs: readonly LeaveSubWrite[],
+): Promise<LeaveSplitResult> {
+  if (parts.length < 2) throw new LeaveWriteError("Chia ca phải tạo ít nhất 2 dòng nghỉ");
+  const [sourceFrom = "", sourceTo = ""] = (match.timeLabel ?? "").split("–");
+  const operationKey = leaveSplitOperationKey(
+    match.driver_id, normDate(match.leave_from), sourceFrom || null, sourceTo || null, parts,
+  );
+  const sourceIdentity = sourceKey(
+    match.driver_id, normDate(match.leave_from), sourceFrom || null, sourceTo || null,
+  );
+
+  const kv = await import("./smart-log-kv");
+  let locked = false;
+  for (let attempt = 0; attempt < 3 && !locked; attempt++) {
+    locked = await kv.acquireSheetWriteLock(LEAVE_LOCK);
+    if (!locked && attempt < 2) await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  if (!locked) {
+    throw new LeaveWriteError("Sheet đang được cập nhật — thử lưu lại sau vài giây", 409);
+  }
+
+  try {
+    const sheets = getSheetsClient();
+    const sheetName = await getNghiPhepSheetName(sheets);
+    const quotedName = `'${sheetName.replace(/'/g, "''")}'`;
+    const [sheet, tableEnd] = await Promise.all([
+      sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: quotedName }),
+      tableEndRow(sheets, SHEET_GID.nghi_phep),
+    ]);
+    const all = sheet.data.values ?? [];
+    if (all.length < 2) throw new LeaveWriteError("Leave sheet trống");
+    if (!tableEnd) throw new LeaveWriteError("Không đọc được phạm vi bảng Leave");
+
+    const headers = all[0].map((h) => String(h ?? "").trim());
+    const col: Record<string, number> = {};
+    headers.forEach((header, index) => { if (header && !(header in col)) col[header] = index; });
+    for (const need of [
+      "driver_id", "driver", "Loại Nghỉ", "leave_from", "leave_to",
+      "leave_from_hr", "leave_to_hr", "note", "sub1_name", "sub1_from", "sub1_to",
+    ]) {
+      if (!(need in col)) throw new LeaveWriteError(`Thiếu cột "${need}" trong Leave sheet`);
+    }
+    const cell = (row: unknown[], name: string): string =>
+      col[name] == null ? "" : String(row[col[name]] ?? "").trim();
+
+    const operationRows = all.slice(1).flatMap((row, index) => {
+      const meta = parseLeaveSplitNote(cell(row, "note"));
+      return meta?.operationKey === operationKey ? [{ row: index + 2, values: row, meta }] : [];
+    });
+
+    let sourceRow: { row: number; values: unknown[] };
+    let originalNote: string;
+    if (operationRows.length) {
+      sourceRow = operationRows[0];
+      originalNote = operationRows[0].meta.originalNote;
+    } else {
+      const candidates = matchLeaveRows(all, col, match);
+      const rowNo = pickLeaveRowToEdit(candidates);
+      if (!rowNo) {
+        throw new LeaveWriteError(
+          "Dòng nghỉ đã thay đổi hoặc không còn tồn tại — Refresh rồi chia ca lại",
+          409,
+        );
+      }
+      const values = all[rowNo - 1] ?? [];
+      if (!sameSubs(rowSubs(values, col), expectedSubs)) {
+        throw new LeaveWriteError(
+          "Người thay trên dòng nghỉ đã thay đổi — Refresh để tránh ghi đè dữ liệu mới",
+          409,
+        );
+      }
+      sourceRow = { row: rowNo, values };
+      originalNote = unwrapLeaveSplitNote(cell(values, "note"));
+    }
+
+    const existingByPart = new Map<string, { row: number; values: unknown[] }>();
+    for (const existing of operationRows) {
+      if (!existingByPart.has(existing.meta.partKey)) existingByPart.set(existing.meta.partKey, existing);
+    }
+
+    const targetRows: number[] = [];
+    const used = new Set<number>();
+    for (const part of parts) {
+      const existing = existingByPart.get(splitPartKey(part));
+      if (existing) { targetRows.push(existing.row); used.add(existing.row); }
+      else targetRows.push(0);
+    }
+    if (!operationRows.length) {
+      targetRows[0] = sourceRow.row;
+      used.add(sourceRow.row);
+    }
+
+    const missing = targetRows.filter((row) => row === 0).length;
+    const freeRows: number[] = [];
+    if (missing) {
+      for (let rowNo = 2; rowNo <= tableEnd && freeRows.length < missing; rowNo++) {
+        if (used.has(rowNo)) continue;
+        const row = all[rowNo - 1] ?? [];
+        if (!cell(row, "driver")) freeRows.push(rowNo);
+      }
+      if (freeRows.length < missing) {
+        throw new LeaveWriteError(`Bảng Leave không còn đủ ${missing} dòng trống để chia ca`);
+      }
+      let cursor = 0;
+      for (let i = 0; i < targetRows.length; i++) {
+        if (!targetRows[i]) targetRows[i] = freeRows[cursor++];
+      }
+    }
+
+    const submittedAt = cell(sourceRow.values, "Ngày Nộp Đơn") || vnTimestamp();
+    const driverName = cell(sourceRow.values, "driver");
+    const leaveType = cell(sourceRow.values, "Loại Nghỉ");
+    const leaveFrom = cell(sourceRow.values, "leave_from");
+    const leaveTo = cell(sourceRow.values, "leave_to") || null;
+    const colOf = (header: string) => col[header] == null ? null : colA1(col[header]);
+    const data: { range: string; values: string[][] }[] = [];
+
+    parts.forEach((part, index) => {
+      const rowNo = targetRows[index];
+      const values: LeaveCells = {
+        submitted_at: submittedAt,
+        driver_name: driverName,
+        loai_nghi: leaveType,
+        leave_from: leaveFrom,
+        leave_to: leaveTo,
+        leave_from_hr: part.from,
+        leave_to_hr: part.to,
+        note: encodeLeaveSplitNote({
+          operationKey,
+          sourceKey: sourceIdentity,
+          partKey: splitPartKey(part),
+          originalNote,
+        }),
+      };
+      for (const field of Object.keys(LEAVE_WRITE_COLS) as (keyof typeof LEAVE_WRITE_COLS)[]) {
+        const column = colOf(LEAVE_WRITE_COLS[field]);
+        if (column) data.push({ range: `${quotedName}!${column}${rowNo}`, values: [[String(values[field] ?? "")]] });
+      }
+      for (const [header, value] of [
+        ["sub1_name", part.sub?.name ?? ""],
+        ["sub1_from", part.sub?.from ?? ""],
+        ["sub1_to", part.sub?.to ?? ""],
+      ] as const) {
+        data.push({ range: `${quotedName}!${colA1(col[header])}${rowNo}`, values: [[value]] });
+      }
+    });
+
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: SHEET_ID,
+      requestBody: { valueInputOption: "RAW", data },
+    });
+
+    const warnings = new Set<string>();
+    for (let i = 0; i < parts.length; i++) {
+      if (!parts[i].sub) continue;
+      const warning = await verifySubIds(sheets, quotedName, col, targetRows[i], [1]);
+      if (warning) warnings.add(warning);
+    }
+    return {
+      rows: targetRows,
+      created: targetRows.filter((row) => row !== sourceRow.row && !operationRows.some((x) => x.row === row)).length,
+      warning: warnings.size ? [...warnings].join(" ") : undefined,
+    };
+  } finally {
+    await kv.releaseSheetWriteLock(LEAVE_LOCK);
+  }
 }
 
 /** Which candidate row an EDIT applies to: the MOST-covered one — the row

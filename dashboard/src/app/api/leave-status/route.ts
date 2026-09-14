@@ -9,7 +9,7 @@ import {
   spanningLeaveRows,
 } from "@/lib/leave-config";
 import {
-  updateLeaveSubs, replaceLeaveSubs, deleteLeaveRow, appendLeaveDeletion,
+  updateLeaveSubs, replaceLeaveSubs, splitLeaveRow, deleteLeaveRow, appendLeaveDeletion,
   LeaveWriteError, type LeaveSubWrite,
 } from "@/lib/sheets-writer";
 import {
@@ -22,6 +22,7 @@ import {
 } from "@/lib/thay-ca";
 import { syncThayCaRows } from "@/lib/sheets-writer";
 import { addDays, timeToMins, vnDate } from "@/lib/time";
+import { buildLeaveSplit, LeaveSplitValidationError } from "@/lib/leave-split";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -153,7 +154,7 @@ export async function GET(req: NextRequest) {
 }
 
 /** POST — fill substitute(s) on a leave row. Body:
- *    { driver_id, leave_from, timeLabel, subs: [{ name, from, to }], replace? }
+ *    { driver_id, leave_from, timeLabel, subs: [{ name, from, to }], replace?, mode? }
  *  1–3 subs; with 2+ every sub needs its own non-overlapping HH:MM window
  *  (an open window covers the whole day, which would SUB CLASH the others).
  *  Sub names must match the Driver tab exactly — that's what the sheet's
@@ -170,12 +171,14 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== "object") return bad("Body không hợp lệ");
-    const { driver_id, leave_from, timeLabel, subs, replace } = body as {
+    const { driver_id, leave_from, timeLabel, subs, replace, mode, expectedSubs } = body as {
       driver_id?: string;
       leave_from?: string;
       timeLabel?: string | null;
       subs?: { name?: string; from?: string | null; to?: string | null }[];
       replace?: boolean;
+      mode?: "split";
+      expectedSubs?: { name?: string; from?: string | null; to?: string | null }[];
     };
     if (!driver_id || !leave_from) return bad("Thiếu driver_id / leave_from");
     if (!Array.isArray(subs) || (!replace && subs.length < 1) || subs.length > 3)
@@ -215,9 +218,25 @@ export async function POST(req: NextRequest) {
     }
 
     const identity = { driver_id, leave_from, timeLabel: timeLabel ?? null };
-    const result = replace
-      ? await replaceLeaveSubs(identity, clean)
-      : await updateLeaveSubs(identity, clean);
+    const split = mode === "split";
+    let result: { row: number; warning?: string; rows?: number[]; created?: number };
+    if (split) {
+      const [sourceFrom = "", sourceTo = ""] = (timeLabel ?? "").split("–");
+      const parts = buildLeaveSplit(sourceFrom || null, sourceTo || null, clean);
+      const expected: LeaveSubWrite[] = Array.isArray(expectedSubs)
+        ? expectedSubs.map((sub) => ({
+          name: String(sub.name ?? "").trim(),
+          from: String(sub.from ?? "").trim() || null,
+          to: String(sub.to ?? "").trim() || null,
+        }))
+        : [];
+      const saved = await splitLeaveRow(identity, parts, expected);
+      result = { row: saved.rows[0], rows: saved.rows, created: saved.created, warning: saved.warning };
+    } else {
+      result = replace
+        ? await replaceLeaveSubs(identity, clean)
+        : await updateLeaveSubs(identity, clean);
+    }
     await invalidateLeaveCache();
 
     const warning = result.warning ?? null;
@@ -229,11 +248,23 @@ export async function POST(req: NextRequest) {
       console.error("[leave-status] Thay ca reconciliation failed", e);
       thayCaWarning = `Đã lưu người thay nhưng chưa đồng bộ dòng ${THAY_CA_LABEL}: ${String(e)}`;
     }
-    return NextResponse.json({ ok: true, row: result.row, warning, thayCa, thayCaWarning });
+    return NextResponse.json({
+      ok: true,
+      row: result.row,
+      rows: result.rows,
+      created: result.created,
+      split,
+      warning,
+      thayCa,
+      thayCaWarning,
+    });
   } catch (e) {
     // Business rejections (row full, row not found, bad input) are the user's to
     // fix → 400 with the message verbatim; anything else is a real 500.
-    if (e instanceof LeaveWriteError) return bad(e.message);
+    if (e instanceof LeaveSplitValidationError) return bad(e.message);
+    if (e instanceof LeaveWriteError) {
+      return NextResponse.json({ ok: false, error: e.message }, { status: e.status });
+    }
     return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });
   }
 }

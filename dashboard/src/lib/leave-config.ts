@@ -6,6 +6,7 @@ import {
 import { loadDriversFromSheet } from "./config";
 import { matchDriverByName } from "./driver-match";
 import { addDays, timeToMins, vnDate, vnMinutesSinceMidnight } from "./time";
+import { unwrapLeaveSplitNote } from "./leave-split";
 
 /** The 3PL-express (Grab) booking proxy. When a substitute slot resolves to
  *  this UUID it means the leave is covered by a 3PL-express booking, NOT a real
@@ -62,7 +63,7 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 // blob built by the old code — recovery doing nothing, and every broken row
 // reported as urgent — with nothing to show anything was wrong. Bump this
 // whenever the shape or the meaning of what is stored changes.
-const REDIS_KEY = "leave:v2:entries";
+const REDIS_KEY = "leave:v3:entries";
 
 /**
  * 4 hours, up from 5 minutes — a BACKSTOP, not the freshness mechanism.
@@ -714,7 +715,9 @@ async function loadLeaveSheet(
         gio_bat_dau:  get(f, "leave_from_hr") || null,
         gio_ket_thuc: get(f, "leave_to_hr") || null,
         subs,
-        note: get(f, "note") || null,
+        // Split rows carry retry/source metadata around the original note. The
+        // assignment and Thay ca layers must continue to see that original note.
+        note: unwrapLeaveSplitNote(get(f, "note")) || null,
       };
       // NOTE: do NOT require loai_nghi here. Many rows are typed straight into
       // the sheet with a date + time window but a blank "Loại Nghỉ" cell; those
