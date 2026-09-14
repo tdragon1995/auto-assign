@@ -67,53 +67,36 @@ function windows(start: string | null, end: string | null): Window[] {
   ];
 }
 
-function dutyWindows(driverId: string, mappings: readonly Mapping[]): Window[] {
-  const result: Window[] = [];
-  for (const mapping of mappings) {
-    // Smart candidates are intentionally excluded. “Thay ca” is only created
-    // when the substitute is committed to a fixed duty they would otherwise own.
-    if (mapping.driver_id !== driverId) continue;
-    result.push(...windows(
-      mapping.shift_start ? `${String(mapping.shift_start.hours).padStart(2, "0")}:${String(mapping.shift_start.minutes).padStart(2, "0")}` : null,
-      mapping.shift_end ? `${String(mapping.shift_end.hours).padStart(2, "0")}:${String(mapping.shift_end.minutes).padStart(2, "0")}` : null,
-    ));
-  }
-  return result;
+function rowWindows(mapping: Mapping): Window[] {
+  const hhmmOf = (t: Mapping["shift_start"]) =>
+    t ? `${String(t.hours).padStart(2, "0")}:${String(t.minutes).padStart(2, "0")}` : null;
+  return windows(hhmmOf(mapping.shift_start), hhmmOf(mapping.shift_end));
 }
 
-/** Fixed-duty windows shared by both drivers on the same configured route.
- * Leave rows do not carry a customer id, so a fixed source leave is compared
- * against the substitute only on routes both drivers actually own. */
+/** The hours the substitute is double-booked: the source's duty (which the sub
+ * now covers) against the sub's OWN duty, on ANY route — being on two routes at
+ * once is the conflict, not sharing one. Duty is a fixed row or a smart pool:
+ * the engine takes an on-leave candidate out of a pool just as it takes a fixed
+ * driver off a route. A pool the source is also in is not extra work — the
+ * engine ranks the sub in the source's place and dedups them. A source with no
+ * config rows at all is treated as on duty all day. */
 function sharedDutyWindows(
   sourceDriverId: string,
   substituteId: string,
   mappings: readonly Mapping[],
 ): Window[] {
-  const source = mappings.filter((mapping) => mapping.driver_id === sourceDriverId);
-  const substitute = mappings.filter((mapping) => mapping.driver_id === substituteId);
-  if (source.length === 0) return dutyWindows(substituteId, mappings);
-  const substituteByCustomer = new Map<string, Mapping[]>();
-  for (const mapping of substitute) {
-    const rows = substituteByCustomer.get(mapping.customer_id) ?? [];
-    rows.push(mapping);
-    substituteByCustomer.set(mapping.customer_id, rows);
-  }
-  return source.flatMap((sourceMapping) => {
-    const sourceWindows = windows(
-      sourceMapping.shift_start ? `${String(sourceMapping.shift_start.hours).padStart(2, "0")}:${String(sourceMapping.shift_start.minutes).padStart(2, "0")}` : null,
-      sourceMapping.shift_end ? `${String(sourceMapping.shift_end.hours).padStart(2, "0")}:${String(sourceMapping.shift_end.minutes).padStart(2, "0")}` : null,
-    );
-    return (substituteByCustomer.get(sourceMapping.customer_id) ?? []).flatMap((substituteMapping) => {
-      const substituteWindows = windows(
-        substituteMapping.shift_start ? `${String(substituteMapping.shift_start.hours).padStart(2, "0")}:${String(substituteMapping.shift_start.minutes).padStart(2, "0")}` : null,
-        substituteMapping.shift_end ? `${String(substituteMapping.shift_end.hours).padStart(2, "0")}:${String(substituteMapping.shift_end.minutes).padStart(2, "0")}` : null,
-      );
-      return sourceWindows.flatMap((a) => substituteWindows.flatMap((b) => {
-        const hit = intersection(a, b);
-        return hit ? [hit] : [];
-      }));
-    });
-  });
+  const source = mappings
+    .filter((m) => m.driver_id === sourceDriverId || m.smart_driver_id.includes(sourceDriverId))
+    .flatMap(rowWindows);
+  const substitute = mappings
+    .filter((m) => m.driver_id === substituteId ||
+      (m.smart_driver_id.includes(substituteId) && !m.smart_driver_id.includes(sourceDriverId)))
+    .flatMap(rowWindows);
+  if (source.length === 0) return substitute;
+  return source.flatMap((a) => substitute.flatMap((b) => {
+    const hit = intersection(a, b);
+    return hit ? [hit] : [];
+  }));
 }
 
 function merge(windowsToMerge: Window[]): Window[] {

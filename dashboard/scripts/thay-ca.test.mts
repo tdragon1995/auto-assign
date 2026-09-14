@@ -52,6 +52,38 @@ const separated = deriveThayCaRows(
 );
 assert.deepEqual(separated.map((row) => [row.leave_from_hr, row.leave_to_hr]), [["08:00", "10:00"], ["14:00", "16:00"]]);
 
+const smart = (pool: string[], start: string, end: string, customer_id = "pool"): Mapping =>
+  ({ ...mapping("", start, end, customer_id), smart_driver_id: pool });
+assert.deepEqual(
+  deriveThayCaRows([base], [smart(["b", "c"], "10:00", "14:00")]).map((row) => [row.driver_id, row.leave_from_hr, row.leave_to_hr]),
+  [["b", "10:00", "12:00"]],
+  "a smart pool the sub belongs to is duty too",
+);
+assert.equal(
+  deriveThayCaRows([base], [smart(["a", "b"], "08:00", "12:00")]).length,
+  0,
+  "a pool shared with the source is not extra work",
+);
+assert.deepEqual(
+  deriveThayCaRows([sourceAndSub], [
+    mapping("a", "08:00", "12:00", "route-1"),
+    smart(["b", "c"], "11:00", "14:00", "route-1"),
+  ]).map((row) => [row.leave_from_hr, row.leave_to_hr]),
+  [["11:00", "12:00"]],
+  "a fixed source still matches the sub's smart row on the same route",
+);
+
+// Live case 14/09: Lợi fixed on BRA-D009 14:45–19:45, full day off, Phương PT
+// covers 15:00–20:00 while fixed on unrelated clinic routes 16:45–20:30.
+assert.deepEqual(
+  deriveThayCaRows(
+    [{ ...sourceAndSub, subs: [{ id: "b", name: "Driver B", from: "15:00", to: "20:00" }] }],
+    [mapping("a", "14:45", "19:45", "bra-d009"), mapping("b", "16:45", "20:30", "clinic-1"), mapping("b", "16:45", "20:30", "clinic-2")],
+  ).map((row) => [row.driver_id, row.leave_from_hr, row.leave_to_hr]),
+  [["b", "16:45", "19:45"]],
+  "a sub busy on a different route still needs cover",
+);
+
 const chain = deriveThayCaRows(
   [{ ...base, note: encodeThayCaNote({
     recordKey: "thay|root|b|0", logicalKey: "thay|root|b", parentKey: "root",
