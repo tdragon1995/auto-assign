@@ -1414,12 +1414,6 @@ function uncoveredCount(groups: DriverGroup[]): number {
   ).length;
 }
 
-/** Drivers with at least one duplicated leave row — a sheet-cleanup prompt,
- *  surfaced in the collapsed header so it's not missed while the panel is shut. */
-function duplicateCount(groups: DriverGroup[]): number {
-  return groups.filter((g) => g.rows.some((r) => r.duplicate)).length;
-}
-
 /** One uncovered window, flattened out of the day groups so the section can list
  *  the thing that actually needs doing (a window with nobody covering it) rather
  *  than a driver who might be half-covered. */
@@ -2181,7 +2175,6 @@ export function LeaveStatusPanel({
   const todayGroups = groupByDriver(today);
   const tomorrowGroups = groupByDriver(tomorrow);
   const totalUncovered = uncoveredCount(todayGroups) + uncoveredCount(tomorrowGroups);
-  const totalDuplicate = duplicateCount(todayGroups) + duplicateCount(tomorrowGroups);
   // Kept apart everywhere below: red means the engine still cannot see this
   // leave, blue means it can and the sheet is merely out of date.
   // Sorted like every other driver list in the panel, and for the same reason —
@@ -2234,7 +2227,8 @@ export function LeaveStatusPanel({
     <Card className="py-2 shrink-0 border-slate-200">
       <CardContent className="px-3">
 
-        {/* Collapsed header: counts + uncovered flag, click to expand */}
+        {/* Keep the collapsed summary focused on the one action supervisors
+            need to see without opening the leave panel. */}
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
@@ -2244,47 +2238,10 @@ export function LeaveStatusPanel({
             <Palmtree className="size-4 text-emerald-600" strokeWidth={2} />
             Nghỉ phép
           </span>
-          <span className="text-[11px] text-slate-500">
-            Hôm nay {todayGroups.length} · Ngày mai {tomorrowGroups.length}
-          </span>
           {totalUncovered > 0 && (
             <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-700 border border-amber-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
               <AlertTriangle className="size-3" strokeWidth={2} />
               {totalUncovered} chưa có người thay
-            </span>
-          )}
-          {invalidIgnored.length > 0 && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-red-100 text-red-700 border border-red-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
-              <AlertTriangle className="size-3" strokeWidth={2} />
-              {invalidIgnored.length} thiếu driver_id
-            </span>
-          )}
-          {invalidRecovered.length > 0 && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-sky-100 text-sky-800 border border-sky-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
-              {invalidRecovered.length} tự nhận ra tên
-            </span>
-          )}
-          {spanning.length > 0 && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 text-violet-800 border border-violet-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
-              <AlertTriangle className="size-3" strokeWidth={2} />
-              {spanning.length} dòng nhiều ngày
-            </span>
-          )}
-          {suppressed.length > 0 && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 text-slate-700 border border-slate-300 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
-              {suppressed.length} đã xoá, không đồng bộ lại
-            </span>
-          )}
-          {suppressedUnreadable && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-red-100 text-red-700 border border-red-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
-              <AlertTriangle className="size-3" strokeWidth={2} />
-              bảng &quot;đã xoá&quot; lỗi
-            </span>
-          )}
-          {totalDuplicate > 0 && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-orange-100 text-orange-700 border border-orange-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
-              <AlertTriangle className="size-3" strokeWidth={2} />
-              {totalDuplicate} trùng dòng
             </span>
           )}
           <span className="ml-auto text-slate-400 text-xs">{open ? "▾" : "▸"}</span>
