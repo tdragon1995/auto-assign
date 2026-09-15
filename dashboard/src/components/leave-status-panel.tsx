@@ -2176,6 +2176,7 @@ export function LeaveStatusPanel({
   refreshKey?: number;
 }) {
   const [open, setOpen] = useState(false);
+  const [suppressionOpen, setSuppressionOpen] = useState(false);
   const noData = today.length === 0 && tomorrow.length === 0;
   const todayGroups = groupByDriver(today);
   const tomorrowGroups = groupByDriver(tomorrow);
@@ -2410,25 +2411,43 @@ export function LeaveStatusPanel({
                 the week, not before. The unreadable-tab alarm above stays where
                 it is: that one IS a fault, and it says the blocking is off. */}
             {suppressed.length > 0 && (
-              <div className="mt-2 rounded-md border border-slate-300 bg-slate-50 px-2 py-1.5">
-                <div className="text-[11px] font-semibold text-slate-800">
-                  Ngày nghỉ đã xoá thủ công — MISA sẽ không tạo lại
-                </div>
-                <p className="mt-0.5 text-[11px] leading-snug text-slate-700">
-                  Đơn nghỉ được duyệt một phần thường để lại dòng thừa; những ngày dưới đây đã
-                  được xoá và bị chặn không cho đồng bộ lại. Đơn nghỉ do người nộp (app hoặc
-                  dashboard) KHÔNG bị chặn. Bấm Khôi phục để bỏ chặn — ngày sẽ quay lại ở lần
-                  đồng bộ tới nếu MISA vẫn tính nghỉ.
-                </p>
-                <ul className="mt-1 space-y-0.5">
-                  {suppressed.map((s, i) => (
-                    <SuppressionRow
-                      key={`sup-${s.driver_id}-${s.leave_from}-${suppressionTimeLabel(s) ?? "full"}-${i}`}
-                      s={s}
-                      onRestore={restoreRow}
-                    />
-                  ))}
-                </ul>
+              <div className="mt-2 overflow-hidden rounded-md border border-slate-300 bg-slate-50">
+                <button
+                  type="button"
+                  aria-expanded={suppressionOpen}
+                  aria-controls="leave-suppression-list"
+                  onClick={() => setSuppressionOpen((value) => !value)}
+                  className="flex min-h-9 w-full items-center gap-1.5 px-2 py-1.5 text-left text-[11px] font-semibold text-slate-800 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset"
+                >
+                  <ChevronRight
+                    aria-hidden="true"
+                    className={`size-3.5 shrink-0 transition-transform duration-200 motion-reduce:transition-none ${suppressionOpen ? "rotate-90" : ""}`}
+                    strokeWidth={2}
+                  />
+                  <span>Ngày nghỉ đã xoá thủ công — MISA sẽ không tạo lại</span>
+                  <span className="ml-auto shrink-0 rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] tabular-nums text-slate-700">
+                    {suppressed.length}
+                  </span>
+                </button>
+                {suppressionOpen && (
+                  <div id="leave-suppression-list" className="border-t border-slate-200 px-2 pb-1.5 pt-1">
+                    <p className="text-[11px] leading-snug text-slate-700">
+                      Đơn nghỉ được duyệt một phần thường để lại dòng thừa; những ngày dưới đây đã
+                      được xoá và bị chặn không cho đồng bộ lại. Đơn nghỉ do người nộp (app hoặc
+                      dashboard) KHÔNG bị chặn. Bấm Khôi phục để bỏ chặn — ngày sẽ quay lại ở lần
+                      đồng bộ tới nếu MISA vẫn tính nghỉ.
+                    </p>
+                    <ul className="mt-1 space-y-0.5">
+                      {suppressed.map((s, i) => (
+                        <SuppressionRow
+                          key={`sup-${s.driver_id}-${s.leave_from}-${suppressionTimeLabel(s) ?? "full"}-${i}`}
+                          s={s}
+                          onRestore={restoreRow}
+                        />
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
             )}
           </div>
