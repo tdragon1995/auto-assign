@@ -5,7 +5,6 @@ import {
   leaveEntriesOnDate,
   invalidLeaveRowsOnDate,
   invalidateLeaveCache,
-  loadLeaveEntriesStrict,
   spanningLeaveRows,
 } from "@/lib/leave-config";
 import {
@@ -15,55 +14,14 @@ import {
 import {
   loadLeaveSuppressions, liveSuppressions, invalidateSuppressionCache,
 } from "@/lib/leave-suppression";
-import { loadDriversFromSheet, loadConfigFromSheets } from "@/lib/config";
-import {
-  deriveThayCaRows, parseSwapNote, parseThayCaNote, sourceKey, THAY_CA_LABEL,
-  type SwapMeta,
-} from "@/lib/thay-ca";
-import { syncThayCaRows } from "@/lib/sheets-writer";
+import { loadDriversFromSheet } from "@/lib/config";
+import { THAY_CA_LABEL } from "@/lib/thay-ca";
 import { addDays, timeToMins, vnDate } from "@/lib/time";
 import { buildLeaveSplit, LeaveSplitValidationError } from "@/lib/leave-split";
+import { reconcileThayCa } from "@/lib/thay-ca-reconcile";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
-
-/** Rebuild generated duty-transfer rows after a source leave/substitute write.
- * A few passes are intentional: a newly updated B row can itself have a
- * substitute C, so C's row must be derived from B's updated interval. The
- * provenance chain in `thay-ca.ts` stops reciprocal assignments from looping. */
-async function reconcileThayCa(): Promise<{ created: number; updated: number; deleted: number }> {
-  const config = await loadConfigFromSheets();
-  if (!config) throw new Error("Chưa đọc được config để tạo dòng Thay ca");
-  let total = { created: 0, updated: 0, deleted: 0 };
-  for (let pass = 0; pass < 5; pass++) {
-    const { entries } = await loadLeaveEntriesStrict();
-    const byKey = new Map(entries.map((entry) => [
-      sourceKey(entry.driver_id, entry.leave_from, entry.gio_bat_dau, entry.gio_ket_thuc), entry,
-    ]));
-    const swaps: SwapMeta[] = [];
-    for (const entry of entries) {
-      const meta = parseThayCaNote(entry.note);
-      if (!meta || !meta.parentKey.startsWith("leave|") || !entry.subs.some((sub) => sub.id === meta.sourceDriverId)) continue;
-      const source = byKey.get(meta.parentKey);
-      if (!source) continue;
-      const previous = parseSwapNote(source.note);
-      swaps.push({
-        sourceKey: meta.parentKey,
-        originalType: previous?.originalType ?? meta.sourceLeaveType ?? source.loai_nghi,
-        originalNote: previous?.originalNote ?? source.note ?? "",
-      });
-    }
-    const result = await syncThayCaRows(deriveThayCaRows(entries, config.mappings), swaps);
-    total = {
-      created: total.created + result.created,
-      updated: total.updated + result.updated,
-      deleted: total.deleted + result.deleted,
-    };
-    if (result.created === 0 && result.updated === 0 && result.deleted === 0) break;
-    await invalidateLeaveCache();
-  }
-  return total;
-}
 
 /** GET — drivers on leave today and tomorrow (Saigon dates), from the Leave
  *  Status sheet. Powers the dashboard "Cần xử lý" leave-status panel.
@@ -288,10 +246,11 @@ export async function DELETE(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== "object") return bad("Body không hợp lệ");
-    const { driver_id, leave_from, timeLabel } = body as {
+    const { driver_id, leave_from, timeLabel, loai_nghi } = body as {
       driver_id?: string;
       leave_from?: string;
       timeLabel?: string | null;
+      loai_nghi?: string | null;
     };
     if (!driver_id || !leave_from) return bad("Thiếu driver_id / leave_from");
 
@@ -299,6 +258,7 @@ export async function DELETE(req: NextRequest) {
       driver_id,
       leave_from,
       timeLabel: timeLabel ?? null,
+      loai_nghi: loai_nghi ?? null,
     });
     await invalidateLeaveCache();
 

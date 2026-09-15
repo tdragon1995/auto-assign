@@ -464,6 +464,9 @@ export interface LeaveRowMatch {
   /** "HH:MM–HH:MM" for a windowed row, null for full-day — same derivation as
    *  the panel's timeLabel, used to pick between same-day rows. */
   timeLabel: string | null;
+  /** Delete/restore paths use the visible row's type to avoid hitting a normal
+   * leave row that happens to share a generated Thay ca window. */
+  loai_nghi?: string | null;
 }
 
 /** "2026-07-13" and "13/07/2026" both → "2026-07-13"; anything else verbatim. */
@@ -552,6 +555,7 @@ export async function updateLeaveSubs(
     if (cell(row, "driver_id") !== match.driver_id) continue;
     if (normDate(cell(row, "leave_from")) !== targetDate) continue;
     if (windowKey(cell(row, "leave_from_hr"), cell(row, "leave_to_hr")) !== targetWindow) continue;
+    if (match.loai_nghi && cell(row, "Loại Nghỉ") !== match.loai_nghi) continue;
     const free = slots.filter((n) => !cell(row, `sub${n}_name`));
     if (free.length < subs.length) {
       foundButFull = true;
@@ -993,6 +997,7 @@ export function matchLeaveRows(
     if (cell(row, "driver_id") !== match.driver_id) continue;
     if (normDate(cell(row, "leave_from")) !== targetDate) continue;
     if (windowKey(cell(row, "leave_from_hr"), cell(row, "leave_to_hr")) !== targetWindow) continue;
+    if (match.loai_nghi && cell(row, "Loại Nghỉ") !== match.loai_nghi) continue;
     out.push({
       row: r + 1, // 1-based sheet row
       subCount: SUB_SLOTS.filter((n) => cell(row, `sub${n}_name`) || cell(row, `sub${n}_id`)).length,
@@ -1204,7 +1209,7 @@ export async function appendLeaveDeletion(
  * the same day is harmless (they suppress identically) and clearing one at a
  * time keeps this symmetric with the delete it undoes.
  */
-export async function removeLeaveSuppression(match: LeaveRowMatch): Promise<{ row: number }> {
+export async function removeLeaveSuppression(match: LeaveRowMatch): Promise<{ row: number; loai_nghi: string }> {
   const sheets = getSheetsClient();
   const sheetId = await ensureLeaveDeletedSheet(sheets);
   const res = await sheets.spreadsheets.values.get({
@@ -1228,13 +1233,16 @@ export async function removeLeaveSuppression(match: LeaveRowMatch): Promise<{ ro
 
   // Last match wins: the newest line is the one the panel is showing.
   let rowNo = 0;
+  let leaveType = "";
   for (let r = 1; r < all.length; r++) {
     const row = all[r];
     if (!row) continue;
     if (cell(row, "driver_id") !== match.driver_id) continue;
     if (normDate(cell(row, "leave_from")) !== targetDate) continue;
     if (windowKey(cell(row, "leave_from_hr"), cell(row, "leave_to_hr")) !== targetWindow) continue;
+    if (match.loai_nghi && cell(row, "Loại Nghỉ") !== match.loai_nghi) continue;
     rowNo = r + 1;
+    leaveType = cell(row, "Loại Nghỉ");
   }
   if (!rowNo) {
     throw new LeaveWriteError("Không tìm thấy dòng đã xoá — bấm Làm mới rồi thử lại");
@@ -1250,7 +1258,7 @@ export async function removeLeaveSuppression(match: LeaveRowMatch): Promise<{ ro
       }],
     },
   });
-  return { row: rowNo };
+  return { row: rowNo, loai_nghi: leaveType };
 }
 
 // ── Nhận Việc (driver self-claim) audit log ──────────────────────────────────

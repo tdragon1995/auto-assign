@@ -71,6 +71,21 @@ console.log("finding the row the dashboard means");
   eq("nothing to delete answers null", victim(sheet, { driver_id: SON, leave_from: "2026-09-06", timeLabel: null }), null);
 }
 
+// A generated Thay ca can share the same driver/date/window with real leave.
+// The delete button carries its visible type so it cannot remove the other row.
+{
+  const sheet = [
+    HEADER,
+    row({ driver_id: OTHER, driver: "Ai đó", leave_from: "2026-01-01" }),
+    row({ driver_id: SON, driver: "Sơn", "Loại Nghỉ": "Nghỉ nguyên buổi", leave_from: "2026-09-04", leave_from_hr: "07:00", leave_to_hr: "12:00" }),
+    row({ driver_id: SON, driver: "Sơn", "Loại Nghỉ": "Thay ca", leave_from: "2026-09-04", leave_from_hr: "07:00", leave_to_hr: "12:00" }),
+  ];
+  eq("type-specific delete selects only Thay ca",
+    matchLeaveRows(sheet, col, {
+      driver_id: SON, leave_from: "2026-09-04", timeLabel: "07:00–12:00", loai_nghi: "Thay ca",
+    }).map((candidate) => candidate.row), [4]);
+}
+
 // The sheet's date cells come back in whatever the cell's locale formatting
 // gives — a d/m/yyyy row must still be findable from the ISO date the API serves.
 {

@@ -963,6 +963,7 @@ export type LeaveRowIdentity = {
   driver_id: string;
   leave_from: string;
   timeLabel: string | null;
+  loai_nghi?: string | null;
 };
 
 export type DeleteRowFn = (identity: LeaveRowIdentity) => Promise<boolean>;
@@ -1211,6 +1212,9 @@ function SuppressionRow({ s, onRestore }: { s: LeaveSuppression; onRestore: Dele
   return (
     <li className="flex flex-wrap items-baseline gap-x-1.5 text-xs">
       <DriverName tooltip={false} full={s.driver_name || s.driver_id} className="font-semibold text-slate-900" />
+      {s.loai_nghi === "Thay ca" && (
+        <span className="text-[11px] font-semibold text-orange-700">Thay ca</span>
+      )}
       <span className="text-[11px] text-slate-600">{rangeLabel(s.leave_from, s.leave_to)}</span>
       {label && <span className="font-mono text-[11px] text-slate-500">{label}</span>}
       {s.deleted_at && (
@@ -1221,7 +1225,12 @@ function SuppressionRow({ s, onRestore }: { s: LeaveSuppression; onRestore: Dele
         disabled={busy}
         onClick={async () => {
           setBusy(true);
-          await onRestore({ driver_id: s.driver_id, leave_from: s.leave_from, timeLabel: label });
+          await onRestore({
+            driver_id: s.driver_id,
+            leave_from: s.leave_from,
+            timeLabel: label,
+            loai_nghi: s.loai_nghi,
+          });
           setBusy(false);
         }}
         className="ml-auto rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] font-semibold text-slate-600 hover:border-emerald-400 hover:bg-emerald-50 hover:text-emerald-700 disabled:opacity-60"
@@ -1247,7 +1256,11 @@ function makeRestoreRow(onRefresh: RefreshFn): DeleteRowFn {
         toast.error(data.error ?? `HTTP ${res.status}`);
         return false;
       }
-      toast.success("Đã bỏ chặn — lần đồng bộ MISA tới sẽ tạo lại nếu MISA vẫn tính nghỉ");
+      const message = data.loai_nghi === "Thay ca"
+        ? "Đã cho phép tạo lại dòng Thay ca"
+        : "Đã bỏ chặn — lần đồng bộ MISA tới sẽ tạo lại nếu MISA vẫn tính nghỉ";
+      if (data.warning) toast.warning(`${message}. ${data.warning}`);
+      else toast.success(message);
       await onRefresh();
       return true;
     } catch (e) {
@@ -1350,7 +1363,12 @@ function DriverCard({
               )}
               <span className="ml-auto shrink-0">
                 <DeleteRowButton
-                  identity={{ driver_id: g.driver_id, leave_from: r.leave_from, timeLabel: r.timeLabel }}
+                  identity={{
+                    driver_id: g.driver_id,
+                    leave_from: r.leave_from,
+                    timeLabel: r.timeLabel,
+                    loai_nghi: r.loai_nghi ?? g.loai_nghi,
+                  }}
                   onDelete={onDelete}
                 />
               </span>
@@ -1479,6 +1497,7 @@ function UncoveredRowItem({
                 driver_id: item.driver_id,
                 leave_from: item.row.leave_from,
                 timeLabel: item.row.timeLabel,
+                loai_nghi: item.row.loai_nghi ?? item.loai_nghi,
               }}
               onDelete={onDelete}
             />

@@ -31,6 +31,8 @@
 
 import { fetchSheetRowsByName, isSheetShapeError, noteSheetLoad } from "./sheets";
 import { timeToMins, vnDate } from "./time";
+import { parseThayCaNote, THAY_CA_LABEL } from "./thay-ca";
+import { unwrapLeaveSplitNote } from "./leave-split";
 
 /** The tab a delete logs to, and the shape it is written and read in.
  *
@@ -125,11 +127,25 @@ export function findSuppression(
   const want = windowKey(candidate.gio_bat_dau, candidate.gio_ket_thuc);
   const dates = candidateDates(normDate(candidate.leave_from), normDate(candidate.leave_to) || null);
   for (const s of list) {
+    // Generated duty transfers have their own reconciliation suppression. They
+    // must never block a real MISA leave that happens to share the same hours.
+    if (s.loai_nghi === THAY_CA_LABEL) continue;
     if (s.driver_id !== candidate.driver_id) continue;
     if (windowKey(s.gio_bat_dau, s.gio_ket_thuc) !== want) continue;
     if (dates.some((d) => coversDate(s, d))) return s;
   }
   return null;
+}
+
+/** Generated record identities a supervisor explicitly deleted. */
+export function suppressedThayCaRecordKeys(list: readonly LeaveSuppression[]): Set<string> {
+  const keys = new Set<string>();
+  for (const suppression of list) {
+    if (suppression.loai_nghi !== THAY_CA_LABEL) continue;
+    const meta = parseThayCaNote(unwrapLeaveSplitNote(suppression.note));
+    if (meta?.recordKey) keys.add(meta.recordKey);
+  }
+  return keys;
 }
 
 /**

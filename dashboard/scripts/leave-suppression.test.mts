@@ -28,8 +28,10 @@
  */
 
 import {
-  findSuppression, liveSuppressions, windowKey, type LeaveSuppression,
+  findSuppression, liveSuppressions, suppressedThayCaRecordKeys, windowKey, type LeaveSuppression,
 } from "../src/lib/leave-suppression";
+import { encodeThayCaNote } from "../src/lib/thay-ca";
+import { encodeLeaveSplitNote } from "../src/lib/leave-split";
 
 let failures = 0;
 function check(label: string, cond: boolean, detail = "") {
@@ -73,6 +75,26 @@ console.log("blocking a day that was deliberately removed");
 check("the same full day is blocked", findSuppression(cand(), [supp({})]) !== null);
 check("an empty list blocks nothing", findSuppression(cand(), []) === null);
 check("another day is untouched", findSuppression(cand({ leave_from: "2026-09-11", leave_to: "2026-09-11" }), [supp({})]) === null);
+
+const thayCaNote = encodeThayCaNote({
+  recordKey: "thay|source|sub|0", logicalKey: "thay|source|sub", parentKey: "leave|source",
+  sourceDriverId: "source", sourceDate: "2026-09-10", sourceSubId: SON,
+  chain: ["source", SON], interval: 0,
+});
+const thayCaSuppression = supp({ loai_nghi: "Thay ca", note: thayCaNote });
+check("a deleted Thay ca row does not suppress a real MISA leave with the same window",
+  findSuppression(cand(), [thayCaSuppression]) === null);
+eq("a deleted Thay ca record blocks its stable generated identity",
+  [...suppressedThayCaRecordKeys([thayCaSuppression])], ["thay|source|sub|0"]);
+const wrappedThayCa = supp({
+  loai_nghi: "Thay ca",
+  note: encodeLeaveSplitNote({
+    operationKey: "split-1", sourceKey: "leave|source", partKey: "07:00-12:00",
+    originalNote: thayCaNote,
+  }),
+});
+eq("split provenance still exposes the generated identity",
+  [...suppressedThayCaRecordKeys([wrappedThayCa])], ["thay|source|sub|0"]);
 
 // ── Never the wrong person ──────────────────────────────────────────────────
 console.log("never reaching past the driver it was filed for");

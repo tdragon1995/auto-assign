@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { removeLeaveSuppression, LeaveWriteError } from "@/lib/sheets-writer";
 import { invalidateSuppressionCache } from "@/lib/leave-suppression";
+import { invalidateLeaveCache } from "@/lib/leave-config";
+import { THAY_CA_LABEL } from "@/lib/thay-ca";
+import { reconcileThayCa } from "@/lib/thay-ca-reconcile";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -16,9 +19,8 @@ export const preferredRegion = "sin1";
  * panel while it can still block anything, and removing it is one click rather
  * than a trip into the workbook.
  *
- * Restoring does not re-create the leave row itself — it lifts the bar, and the
- * next sync (04:45 / 12:00 VN) writes the day back if MISA still charges it. If
- * MISA no longer does, nothing comes back, which is the correct answer.
+ * Restoring an ordinary leave lifts the MISA bar. Restoring a generated Thay ca
+ * suppression reconciles immediately so the operational row can return.
  */
 export async function DELETE(req: NextRequest) {
   const bad = (msg: string) => NextResponse.json({ ok: false, error: msg }, { status: 400 });
@@ -38,7 +40,24 @@ export async function DELETE(req: NextRequest) {
       timeLabel: timeLabel ?? null,
     });
     invalidateSuppressionCache();
-    return NextResponse.json({ ok: true, row: result.row });
+    let thayCa = null;
+    let warning = null;
+    if (result.loai_nghi === THAY_CA_LABEL) {
+      try {
+        await invalidateLeaveCache();
+        thayCa = await reconcileThayCa();
+      } catch (error) {
+        console.error("[leave-status] Thay ca reconciliation after restore failed", error);
+        warning = `Đã bỏ chặn nhưng chưa tạo lại dòng ${THAY_CA_LABEL}: ${String(error)}`;
+      }
+    }
+    return NextResponse.json({
+      ok: true,
+      row: result.row,
+      loai_nghi: result.loai_nghi,
+      thayCa,
+      warning,
+    });
   } catch (e) {
     if (e instanceof LeaveWriteError) return bad(e.message);
     return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });
