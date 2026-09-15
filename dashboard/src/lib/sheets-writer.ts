@@ -1537,8 +1537,8 @@ async function copyConfigRowParts(
       requests: [
         // A:N is the complete config row. PASTE_FORMAT leaves all target values alone.
         { copyPaste: { source: source(0, 14), destination: destination(0, 14), pasteType: "PASTE_FORMAT" } },
-        // K:M are per-row formulas; relative references become the destination row.
-        { copyPaste: { source: source(10, 13), destination: destination(10, 13), pasteType: "PASTE_FORMULA" } },
+        // K is the per-row smart_driver_id formula; relative references become the destination row.
+        { copyPaste: { source: source(10, 11), destination: destination(10, 11), pasteType: "PASTE_FORMULA" } },
       ],
     },
   });
@@ -1582,8 +1582,9 @@ export async function writeConfigRows(cells: ConfigCells[]): Promise<number[]> {
   // when they are filled through the API. Restore those parts from the source
   // row selected by the copy picker. Keep this deliberately scoped:
   //   - A:N gets formatting, so every column in the config row matches its source;
-  //   - K:M gets formulas, so smart_driver_id and its token/chat lookups point at
-  //     the new row with Sheets' normal relative-reference adjustment;
+  //   - K gets its per-row smart_driver_id formula, with Sheets' normal
+  //     relative-reference adjustment;
+  //   - L:M are ARRAYFORMULA columns anchored in row 2 and must never be touched;
   //   - A:D are weekday ARRAYFORMULA spill columns and receive formatting only;
   //   - values in E/F/H/I/J are written below, while G/N remain the target row's
   //     own values rather than accidentally copying a source destination override.
