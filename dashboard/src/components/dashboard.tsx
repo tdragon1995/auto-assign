@@ -16,6 +16,7 @@ import { ConfigTodoPanel } from "./config-todo-panel";
 import { SheetAlarmBanner } from "./sheet-alarm-banner";
 import { TatTeamPanel } from "./tat-team-panel";
 import { PayTeamPanel } from "./pay-team-panel";
+import { LocationsPanel } from "./locations-panel";
 import { toast } from "sonner";
 import type { LogEntry, PickupWarning, FailedJob, ConfigDriver, SheetAlarm, UnfinishedConfigRow, CoverageGap, BranchRule } from "@/lib/types";
 import type { DeploymentBeat } from "@/lib/smart-log-kv";
@@ -26,7 +27,7 @@ import type { LeaveOnDate, InvalidLeaveRow, SpanningLeaveRow } from "@/lib/leave
 import type { LeaveSuppression } from "@/lib/leave-suppression";
 
 type Env = "prod" | "uat";
-type RightTab = "attention" | "live" | "admin" | "config" | "schedule" | "distance" | "tat" | "pay";
+type RightTab = "attention" | "live" | "admin" | "config" | "schedule" | "distance" | "tat" | "pay" | "locations";
 
 export function Dashboard() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -620,6 +621,9 @@ export function Dashboard() {
             <button onClick={() => setRightTab("pay")} className={tabBtn(rightTab === "pay")}>
               Lương PT
             </button>
+            <button onClick={() => setRightTab("locations")} className={tabBtn(rightTab === "locations")}>
+              Địa điểm PSC
+            </button>
           </div>
 
           {/* Tab content. On mobile the page flows + scrolls (definite heights so
@@ -717,6 +721,10 @@ export function Dashboard() {
                  every dashboard load for the days nobody opens it. */
               <div className="h-[72vh] lg:h-full">
                 <PayTeamPanel />
+              </div>
+            ) : rightTab === "locations" ? (
+              <div className="h-[72vh] lg:h-full overflow-y-auto">
+                <LocationsPanel />
               </div>
             ) : (
               <div className="h-[72vh] lg:h-full">

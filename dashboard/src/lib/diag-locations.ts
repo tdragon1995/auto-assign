@@ -53,6 +53,7 @@ const RAW_LOCATIONS: Omit<DiagLocation, "customer_name">[] = [
   { customer_id: "0df4f904-0f8b-11f0-b683-506b8d982279", name: "D049", address: "1075 Nguyễn Trãi, Phường 14, Quận 5, Thành phố Hồ Chí Minh" },
   { customer_id: "3d68332c-6698-11f0-a623-506b8d982279", name: "D050", address: "211 Lê Văn Sỹ, Phường 12, Quận 3, Thành Phố Hồ Chí Minh" },
   { customer_id: "4daa0bca-2d7b-11f1-9378-fa163ee8d8ac", name: "D051", address: "51 Võ Nguyên Giáp, Thảo Điền, An Khánh, Hồ Chí Minh" },
+  { customer_id: "e6f95bb6-9c5a-11f1-9378-fa163ee8d8ac", name: "D052", address: "18 Ter Nguyễn Thị Minh Khai, Sài Gòn, Hồ Chí Minh" },
 ];
 
 export const DIAG_LOCATIONS: DiagLocation[] = RAW_LOCATIONS.map((l) => ({
