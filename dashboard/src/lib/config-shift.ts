@@ -49,6 +49,8 @@ export interface Line {
   driver: string;
   start: string;
   end: string;
+  /** Source sheet row whose per-row formulas/format should be copied on append. */
+  copyFromRow?: number;
   /**
    * The destination NAME this line answers for; "" is every destination.
    *
@@ -329,6 +331,8 @@ export interface CopiedLine {
   driver: string;
   start: string;
   end: string;
+  /** Source sheet row used to restore per-row formulas and formatting. */
+  sourceRow?: number;
 }
 
 /**
@@ -394,12 +398,12 @@ export function applyCopiedLines(
     if (!c) return l;
     touched.push(l.key);
     // Scope stays the ROW's — see above. Everything else comes from the copy.
-    return { ...l, driver: c.driver, start: c.start, end: c.end };
+    return { ...l, driver: c.driver, start: c.start, end: c.end, copyFromRow: c.sourceRow };
   });
   for (const c of appended) {
     const key = newLineKey();
     touched.push(key);
-    out.push({ key, ...c });
+    out.push({ key, driver: c.driver, start: c.start, end: c.end, dropoff: c.dropoff, copyFromRow: c.sourceRow });
   }
   return { lines: out, touched };
 }

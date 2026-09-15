@@ -44,9 +44,10 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== "object") return bad("Body không hợp lệ");
-    const { pickup_name, dropoff_name, driver_name, shift_start, shift_end } = body as {
+    const { pickup_name, dropoff_name, driver_name, shift_start, shift_end, copy_from_row } = body as {
       pickup_name?: string; dropoff_name?: string; driver_name?: string;
       shift_start?: string; shift_end?: string;
+      copy_from_row?: number;
     };
 
     const pickup = (pickup_name ?? "").trim();
@@ -70,7 +71,7 @@ export async function POST(req: NextRequest) {
     if (unknown) return bad(`"${unknown}" không có trong tab Driver — chọn từ danh sách`);
 
     const [row] = await writeConfigRows([
-      { pickup, dropoff: (dropoff_name ?? "").trim(), start, end, driver: names.join(DRIVER_SEP) },
+      { pickup, dropoff: (dropoff_name ?? "").trim(), start, end, driver: names.join(DRIVER_SEP), copyFromRow: copy_from_row },
     ]);
     await invalidateConfigCache();
 

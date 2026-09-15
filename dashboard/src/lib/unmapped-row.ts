@@ -118,6 +118,8 @@ export interface ConfigCells {
   /** Written in the SAME batch as the hours, on the weekday tab only. Absent on
    *  a row created for someone to fill in later, which is what this file makes. */
   driver?: string;
+  /** Optional source row used to restore formulas and formatting on a new row. */
+  copyFromRow?: number;
 }
 
 export function configCellsFor(b: UnmappedBranch): ConfigCells {

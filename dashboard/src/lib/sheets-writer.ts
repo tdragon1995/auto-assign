@@ -1512,6 +1512,38 @@ export function configWriteRanges(
   return data;
 }
 
+/** Copy only the reusable row presentation and derived formulas. */
+async function copyConfigRowParts(
+  sheets: ReturnType<typeof google.sheets>,
+  tab: ConfigTabSpec,
+  sourceRow: number,
+  destinationRow: number,
+  lastTableRow: number,
+): Promise<void> {
+  if (!Number.isInteger(sourceRow) || sourceRow < 2 || sourceRow > lastTableRow || sourceRow === destinationRow) {
+    throw new Error(`Dòng nguồn copy không hợp lệ: ${sourceRow}`);
+  }
+  const source = (startColumnIndex: number, endColumnIndex: number) => ({
+    sheetId: Number(tab.gid), startRowIndex: sourceRow - 1, endRowIndex: sourceRow,
+    startColumnIndex, endColumnIndex,
+  });
+  const destination = (startColumnIndex: number, endColumnIndex: number) => ({
+    sheetId: Number(tab.gid), startRowIndex: destinationRow - 1, endRowIndex: destinationRow,
+    startColumnIndex, endColumnIndex,
+  });
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SHEET_ID,
+    requestBody: {
+      requests: [
+        // A:N is the complete config row. PASTE_FORMAT leaves all target values alone.
+        { copyPaste: { source: source(0, 14), destination: destination(0, 14), pasteType: "PASTE_FORMAT" } },
+        // K:M are per-row formulas; relative references become the destination row.
+        { copyPaste: { source: source(10, 13), destination: destination(10, 13), pasteType: "PASTE_FORMULA" } },
+      ],
+    },
+  });
+}
+
 /**
  * Write config lines into the spare rows inside whichever tab the engine is
  * reading today. Returns the 1-based row numbers written.
@@ -1546,14 +1578,32 @@ export async function writeConfigRows(cells: ConfigCells[]): Promise<number[]> {
 
   const data = configWriteRanges(tab.title, cols, cells, firstFreeRow);
 
+  // New rows do not reliably inherit the table's per-row formulas or formatting
+  // when they are filled through the API. Restore those parts from the source
+  // row selected by the copy picker. Keep this deliberately scoped:
+  //   - A:N gets formatting, so every column in the config row matches its source;
+  //   - K:M gets formulas, so smart_driver_id and its token/chat lookups point at
+  //     the new row with Sheets' normal relative-reference adjustment;
+  //   - A:D are weekday ARRAYFORMULA spill columns and receive formatting only;
+  //   - values in E/F/H/I/J are written below, while G/N remain the target row's
+  //     own values rather than accidentally copying a source destination override.
+  const copyRows = cells.map((c) => c.copyFromRow).filter((r): r is number => r !== undefined);
+  if (copyRows.length) {
+    if (tab.gid !== CONFIG_TABS.weekday.gid) {
+      throw new Error("Cấu hình copy công thức chỉ hỗ trợ tab config ngày thường");
+    }
+    for (const [i, c] of cells.entries()) {
+      if (c.copyFromRow !== undefined) {
+        await copyConfigRowParts(sheets, tab, c.copyFromRow, firstFreeRow + i, lastTableRow);
+      }
+    }
+  }
+
   await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: SHEET_ID,
     requestBody: { valueInputOption: "USER_ENTERED", data },
   });
 
-  // No formula-copy step on either tab: a row inside the table inherits its
-  // column formulas. Just as well — both tabs carry an active filter, and
-  // copyPaste refuses any range covering one.
   return cells.map((_, i) => firstFreeRow + i);
 }
 
@@ -1579,6 +1629,8 @@ export async function completeConfigRow(opts: {
   end?: string;
   /** Blank clears an old destination scope on a pending non-D001 row. */
   dropoff?: string;
+  /** Optional source row used to restore formulas and formatting after a copy. */
+  copyFromRow?: number;
 }): Promise<void> {
   const tab = currentConfigTab();
   if (tab.gid !== CONFIG_TABS.weekday.gid) {
@@ -1615,6 +1667,11 @@ export async function completeConfigRow(opts: {
       `Dòng ${opts.row} giờ là "${found || "(trống)"}", không phải "${opts.expectPickup}" — ` +
       `sheet đã thay đổi, bấm Refresh rồi thử lại`,
     );
+  }
+
+  if (opts.copyFromRow !== undefined) {
+    const lastTableRow = await configTableEnd(sheets, tab);
+    await copyConfigRowParts(sheets, tab, opts.copyFromRow, opts.row, lastTableRow);
   }
 
   const q = a1(tab);

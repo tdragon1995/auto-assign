@@ -14,7 +14,7 @@ import { searchConfigRows } from "./config-browser-panel";
 import type { ConfigRowView } from "@/app/api/config/rows/route";
 import { DriverCombobox } from "./driver-combobox";
 import {
-  type Line, toMin, newLineKey, asLine, sig, findClash, servesDropoff,
+  type Line, type CopiedLine, toMin, newLineKey, asLine, sig, findClash, servesDropoff,
   applyCopiedLines, copyKey, availableTime,
 } from "@/lib/config-shift";
 
@@ -370,7 +370,7 @@ function CopyFromBranch({
 }: {
   open: boolean;
   onClose: () => void;
-  onCopy: (lines: { driver: string; start: string; end: string }[]) => void;
+  onCopy: (lines: CopiedLine[]) => void;
   /** `copyKey` of every line already in the editor. */
   existingKeys: readonly string[];
   targetDropoff: string;
@@ -445,7 +445,7 @@ function CopyFromBranch({
 
   const take = (b: CopySource) => {
     if (b.fresh.length === 0) return;
-    onCopy(b.fresh.map((r) => ({ driver: r.driver, start: r.start, end: r.end })));
+    onCopy(b.fresh.map((r) => ({ driver: r.driver, start: r.start, end: r.end, sourceRow: r.row })));
     setQ("");
     onClose();
   };
@@ -791,11 +791,13 @@ export function BranchEditor({
           await post("/api/config/complete-row", {
             row: l.row, pickup_name: pickupName, driver_name: l.driver,
             shift_start: l.start, shift_end: l.end, dropoff_name: l.dropoff,
+            copy_from_row: l.copyFromRow,
           });
         } else {
           const res = await post("/api/config/add-rule", {
             pickup_name: pickupName, dropoff_name: l.dropoff,
             driver_name: l.driver, shift_start: l.start, shift_end: l.end,
+            copy_from_row: l.copyFromRow,
           });
           // Adopt the row the sheet just gave it. This line is an existing row
           // from here on, so a retry updates it in place instead of adding a
