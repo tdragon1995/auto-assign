@@ -42,7 +42,7 @@ export default function NdtpPage() {
   const [dropoffId, setDropoffId] = useState("");
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState(false);
-  const [note, setNote] = useState("");
+  const [day, setDay] = useState<"today" | "tomorrow">("today");
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [message, setMessage] = useState("");
 
@@ -93,7 +93,7 @@ export default function NdtpPage() {
       const res = await fetch("/api/ndtp", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ dropoff_id: dropoffId, note }),
+        body: JSON.stringify({ dropoff_id: dropoffId, day }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -101,10 +101,13 @@ export default function NdtpPage() {
         setMessage(data.error ?? "Có lỗi xảy ra. Vui lòng thử lại.");
         return;
       }
-      setStatus("success");
-      setMessage(`Đã gửi yêu cầu (Job #${data.job_id ?? "?"}).`);
+      setStatus(data.warning ? "error" : "success");
+      setMessage(data.warning ?? (day === "tomorrow"
+        ? `Đã hẹn lấy mẫu 08:00 sáng mai (Job #${data.job_id ?? "?"}).`
+        : `Đã gửi yêu cầu (Job #${data.job_id ?? "?"}).`));
       const dropoff = NDTP_DROPOFFS.find((d) => d.customer_id === dropoffId);
-      if (data.job_id && dropoff) {
+      // Only today's list is shown; tomorrow's trip appears there tomorrow.
+      if (data.job_id && dropoff && day === "today") {
         const now = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Ho_Chi_Minh" });
         setSent((prev) => [{
           job_id: data.job_id, dropoff_name: dropoff.name, job_status_id: 2, pickup_status_id: 1,
@@ -114,7 +117,7 @@ export default function NdtpPage() {
       }
       setDropoffId("");
       setSearch("");
-      setNote("");
+      setDay("today");
     } catch {
       setStatus("error");
       setMessage("Không thể kết nối. Vui lòng thử lại.");
@@ -176,18 +179,25 @@ export default function NdtpPage() {
           )}
         </div>
 
-        <div className="space-y-1">
-          <label htmlFor="note" className="text-sm font-medium text-gray-700">Ghi chú (không bắt buộc)</label>
-          <textarea
-            id="note"
-            rows={2}
-            maxLength={500}
-            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="Người yêu cầu, số lượng mẫu..."
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-          />
-        </div>
+        <fieldset className="space-y-1">
+          <legend className="text-sm font-medium text-gray-700">Ngày lấy mẫu</legend>
+          <div className="grid grid-cols-2 gap-2">
+            {([["today", "Hôm nay"], ["tomorrow", "Ngày mai"]] as const).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={day === value}
+                onClick={() => setDay(value)}
+                className={`rounded-lg border px-3 py-2 text-sm font-semibold transition-colors ${
+                  day === value ? "border-blue-500 bg-blue-50 text-blue-700 ring-2 ring-blue-200" : "border-gray-300 text-gray-700 hover:bg-gray-50"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {day === "tomorrow" && <p className="text-xs text-gray-500">Giao Nhận Mẫu đến lấy lúc 08:00 sáng mai.</p>}
+        </fieldset>
 
         <button
           disabled={status === "loading"}

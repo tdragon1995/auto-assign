@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createJob, type Env } from "@/lib/cartrack";
-import { vnDate, vnHoursMinutes } from "@/lib/time";
-import { acquireCreateLock, releaseCreateLock } from "@/lib/smart-log-kv";
+import { addDays, vnDate, vnHoursMinutes, vnTimestamp } from "@/lib/time";
+import { acquireCreateLock, pushRunLog, releaseCreateLock } from "@/lib/smart-log-kv";
+import { parkScheduledJob } from "@/lib/scheduled-dispatch";
 import { notifyAdminGroup } from "@/lib/zalo";
 import { NDTP_DROPOFFS, NDTP_PICKUP } from "@/lib/ndtp";
 import { locationJobs } from "@/lib/day-snapshot";
@@ -62,17 +63,22 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ trips });
 }
 
-// POST /api/ndtp — { dropoff_id, note? }. Creates an unassigned pickup job (the assign
-// cycle places it by config, like any client pickup) and tells the admin group.
+// A tomorrow request is a pickup at this time, booked the /psc-tinh way.
+const TOMORROW_PICKUP = "08:00";
+
+// POST /api/ndtp — { dropoff_id, day?: "today" | "tomorrow" }. Today: an unassigned pickup
+// the assign cycle places by config, like any client pickup. Tomorrow: dated tomorrow with
+// an 08:00 pickup window and parked on the queue proxy, which the engine releases an hour
+// before. Either way the admin group is told.
 export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
   const body = await req.json().catch(() => ({}));
   const dropoff = NDTP_DROPOFFS.find((d) => d.customer_id === body?.dropoff_id);
   if (!dropoff) return NextResponse.json({ error: "Nơi giao không hợp lệ" }, { status: 400 });
-  const note = String(body?.note ?? "").trim().slice(0, 500);
+  const tomorrow = body?.day === "tomorrow" ? addDays(vnDate(), 1) : null;
 
   // Double-tap guard only (120s); a second real request for the same site is allowed after.
-  const lockKey = `ndtp:${dropoff.customer_id}-${vnDate()}`;
+  const lockKey = `ndtp:${dropoff.customer_id}-${tomorrow ?? vnDate()}`;
   if (!(await acquireCreateLock(lockKey))) {
     return NextResponse.json(
       { error: "Yêu cầu tới nơi này vừa được ghi nhận. Vui lòng đợi 2 phút trước khi gửi lại." },
@@ -88,16 +94,19 @@ export async function POST(req: NextRequest) {
     const res = await createJob(
       {
         job_type_id: 1,
-        schedule_type_id: 1,
+        // Day-start makes tomorrow's job visible from midnight; the time lives in the window.
+        ...(tomorrow
+          ? { schedule_type_id: 2, scheduled_delivery_ts: `${tomorrow} 00:00:00` }
+          : { schedule_type_id: 1 }),
         reference_number: reference,
-        // The requester's note rides on the item, NOT the stop: any stop note holds the
-        // job out of auto-assign until a supervisor approves it.
-        ...(note ? { items: [{ description: `📝 ${note}`, item_type_id: 1, quantity: 1, weight: 0, tracking_number: "" }] } : {}),
         stops: [
           {
             stop_type_id: 1,
             customer_id: NDTP_PICKUP.customer_id,
             duration: 5,
+            ...(tomorrow
+              ? { delivery_windows: [{ time_from: `${TOMORROW_PICKUP}:00+07:00`, time_to: "08:30:00+07:00" }] }
+              : {}),
             todos: [
               { todo_type_id: 2, description: "📦 Chụp rõ số lượng và thông tin mẫu nhận" },
               { todo_type_id: 5, description: "Số lượng mẫu" },
@@ -121,15 +130,27 @@ export async function POST(req: NextRequest) {
     }
 
     const jobId = res.body?.data?.job_id ?? null;
+    let warning: string | null = null;
+    if (tomorrow && jobId) {
+      try {
+        await parkScheduledJob(jobId, `${tomorrow} ${TOMORROW_PICKUP}:00`, env);
+      } catch (e) {
+        // The trip exists. Never answer with an error that invites a second one.
+        warning = `Đã tạo Job #${jobId}, nhưng chưa hoàn tất hẹn giờ. Vui lòng báo điều phối, không gửi lại yêu cầu.`;
+        await pushRunLog([{ ts: vnTimestamp(), level: "ERROR", msg: `[NĐTP] Job ${jobId} - Hẹn giờ THẤT BẠI: ${e} | ${tomorrow} ${TOMORROW_PICKUP}` }]).catch(() => {});
+      }
+    }
+
+    const when = tomorrow ? `ngày mai ${tomorrow.slice(8, 10)}/${tomorrow.slice(5, 7)} lúc ${TOMORROW_PICKUP}` : `gửi lúc ${hhmm}`;
     await notifyAdminGroup(
-      `🧪 Yêu cầu lấy mẫu NĐTP (${hhmm})\n` +
+      `🧪 Yêu cầu lấy mẫu NĐTP (${when})\n` +
         `Từ: ${NDTP_PICKUP.name}\n` +
         `Đến: ${dropoff.name}\n` +
         `Job #${jobId ?? "?"}` +
-        (note ? `\nGhi chú: ${note}` : ""),
+        (warning ? "\n⚠️ Chưa hẹn giờ được — cần xử lý tay" : ""),
     );
 
-    return NextResponse.json({ success: true, job_id: jobId, reference });
+    return NextResponse.json({ success: true, job_id: jobId, reference, delivery_date: tomorrow ?? vnDate(), warning });
   } catch (e) {
     // Thrown after the create was sent: unknown whether it exists, so the lock stays.
     return NextResponse.json({ error: "Chưa xác nhận được yêu cầu. Vui lòng liên hệ điều phối trước khi gửi lại.", details: String(e) }, { status: 502 });
