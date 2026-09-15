@@ -4,9 +4,63 @@ import { vnDate, vnHoursMinutes } from "@/lib/time";
 import { acquireCreateLock, releaseCreateLock } from "@/lib/smart-log-kv";
 import { notifyAdminGroup } from "@/lib/zalo";
 import { NDTP_DROPOFFS, NDTP_PICKUP } from "@/lib/ndtp";
+import { locationJobs } from "@/lib/day-snapshot";
+import { proxyKind } from "@/lib/proxy-drivers";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
+
+export interface NdtpTrip {
+  job_id: number;
+  dropoff_name: string;
+  job_status_id: number | null;
+  pickup_status_id: number | null;
+  dropoff_status_id: number | null;
+  driver_name: string | null;
+  parked: boolean;
+  requested_ts: string | null;
+  pickup_completed_ts: string | null;
+  dropoff_started_ts: string | null;
+  dropoff_completed_ts: string | null;
+}
+
+// GET /api/ndtp — today's trips picked up at NĐTP, whoever booked them. Reads the day
+// the assign cron already publishes (same source as the /qr feeds), so a load normally
+// costs a Redis read and no Cartrack call; up to ~5 minutes behind.
+export async function GET(req: NextRequest) {
+  const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
+  const jobs = await locationJobs(vnDate(), env, NDTP_PICKUP.customer_id).catch(() => null);
+  if (!jobs) return NextResponse.json({ error: "Chưa tải được danh sách chuyến" }, { status: 503 });
+
+  const trips: NdtpTrip[] = [];
+  for (const j of jobs) {
+    // Cancelled and rejected trips are dispatch's business. A plan slot with NO driver is a
+    // daily placeholder, not a trip — but NĐTP's scheduled runs ARE plan jobs, so unlike
+    // /qr a plan job with a driver stays: it is the hospital's real morning pickup.
+    if (![2, 4, 5].includes(j.job_status_id ?? 0)) continue;
+    if (j.last_assigned_plan_id != null && !j.delivery_driver_id && j.job_status_id !== 5) continue;
+    const pickup = j.stops.find((s) => s.stop_type_id === 1 && s.customer_id === NDTP_PICKUP.customer_id);
+    if (!pickup) continue; // a trip only DELIVERING here
+    const dropoff = j.stops.find((s) => s.stop_type_id === 2);
+    const kind = proxyKind(j.driver.last_name, j.delivery_driver_id);
+    trips.push({
+      job_id: j.job_id,
+      dropoff_name: dropoff?.customer_name ?? "—",
+      job_status_id: j.job_status_id ?? null,
+      pickup_status_id: pickup.stop_status_id ?? null,
+      dropoff_status_id: dropoff?.stop_status_id ?? null,
+      driver_name: kind ? null : j.driver.last_name,
+      parked: kind === "queue" || kind === "reject",
+      // The unrouted pool writes "T", the timeline a space; one shape sorts and slices.
+      requested_ts: j.scheduled_delivery_ts?.replace("T", " ").slice(0, 19) ?? null,
+      pickup_completed_ts: pickup.activity_completed_ts,
+      dropoff_started_ts: dropoff?.activity_started_ts ?? null,
+      dropoff_completed_ts: dropoff?.activity_completed_ts ?? null,
+    });
+  }
+  trips.sort((a, b) => (b.requested_ts ?? "").localeCompare(a.requested_ts ?? ""));
+  return NextResponse.json({ trips });
+}
 
 // POST /api/ndtp — { dropoff_id, note? }. Creates an unassigned pickup job (the assign
 // cycle places it by config, like any client pickup) and tells the admin group.
