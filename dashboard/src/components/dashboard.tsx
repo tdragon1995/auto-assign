@@ -68,7 +68,7 @@ export function Dashboard() {
   const [mappingCount, setMappingCount] = useState(0);
   const [pscRouteCount, setPscRouteCount] = useState(0);
   const [drivers, setDrivers] = useState<ConfigDriver[]>([]);
-  const [env, setEnv] = useState<Env>("prod");
+  const env: Env = "prod";
   const [rightTab, setRightTab] = useState<RightTab>("attention");
   const [scheduleErrors, setScheduleErrors] = useState<ScheduleErrorRow[]>([]);
   const [retryingSchedule, setRetryingSchedule] = useState(false);
@@ -472,17 +472,6 @@ export function Dashboard() {
     if (next) arm(); else disarm();
   }, [arm, disarm]);
 
-  // Switch environment — disarm first so a stale env can't keep assigning.
-  const handleEnvSwitch = useCallback((checked: boolean) => {
-    const newEnv: Env = checked ? "uat" : "prod";
-    setEnv(newEnv);
-    if (isRunning) {
-      disarm("đổi môi trường");
-      toast.info("Tự động đã tắt do đổi môi trường");
-    }
-    toast.info(`Switched to ${newEnv.toUpperCase()}`);
-  }, [isRunning, disarm]);
-
   // Refresh handler with toast
   const handleRefresh = useCallback(async () => {
     try {
@@ -532,7 +521,6 @@ export function Dashboard() {
     await loadLeaveStatus(true);
   }, [loadLeaveStatus]);
 
-  const isProd = env === "prod";
   const visibleUnfinished = unfinished.filter((u) => !doneKeys.has(`u:${u.row}`));
   const visibleGaps = gaps.filter((g) => !doneKeys.has(`g:${g.customer_id}|${g.dropoff_name ?? ""}|${g.at}`));
   const visibleOverlaps = overlaps.filter((o) => !doneKeys.has(`o:${overlapKey(o)}`));
@@ -581,26 +569,6 @@ export function Dashboard() {
         </div>
 
         <div className="flex items-center gap-3 sm:gap-4 ml-auto">
-          {/* Environment — segmented control so the active env is unmistakable */}
-          <div className="flex items-center rounded-md border border-slate-600 p-0.5 text-xs sm:text-sm font-semibold">
-            <button
-              type="button"
-              onClick={() => { if (!isProd) handleEnvSwitch(false); }}
-              className={`rounded px-2 py-0.5 transition-colors ${isProd ? "bg-red-500 text-white" : "text-slate-400 hover:text-slate-200"}`}
-            >
-              PROD
-            </button>
-            <button
-              type="button"
-              onClick={() => { if (isProd) handleEnvSwitch(true); }}
-              className={`rounded px-2 py-0.5 transition-colors ${!isProd ? "bg-amber-500 text-white" : "text-slate-400 hover:text-slate-200"}`}
-            >
-              UAT
-            </button>
-          </div>
-
-          <div className="w-px h-6 bg-slate-600" />
-
           {/* Auto-Assign switch */}
           <div className="flex items-center gap-2">
             <span className="text-xs sm:text-sm text-slate-300">Tự động</span>

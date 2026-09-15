@@ -10,7 +10,7 @@ import type { Stop } from "@/lib/types";
 import { loadConfigFromSheets } from "@/lib/config";
 import { loadLeaveEntries } from "@/lib/leave-config";
 import { resolveFixedDriver } from "@/lib/fixed-driver";
-import { getArmState, pushRunLog } from "@/lib/smart-log-kv";
+import { pushRunLog } from "@/lib/smart-log-kv";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -185,10 +185,9 @@ export async function POST(req: NextRequest) {
     // check instead of queueing behind it. By the time the pair is cleared these have
     // landed, and putting the driver on the trip costs the booking nothing.
     //
-    // Disarmed is respected: if a supervisor has switched the engine off, a booking must
-    // not quietly assign itself anyway — that switch exists precisely to stop that.
+    // The engine switch is NOT consulted: the rostered driver is the one the engine would
+    // pick anyway, so an off switch only made the trip wait (2026-09-15, D027 sat 6 min).
     const driverPrep = Promise.all([
-      getArmState().catch(() => null),
       // Today's roster or none: a stale-day copy would name yesterday's driver.
       loadConfigFromSheets({ requireCurrentDay: true }).catch(() => null),
       // An unreadable leave sheet is NOT an empty one. Book the trip driverless and let
@@ -287,7 +286,7 @@ export async function POST(req: NextRequest) {
     // Break state is deliberately NOT consulted — a driver on break still gets the trip
     // and picks it up when they return, and the branch can move it with "Đổi giao
     // nhận mẫu" if they cannot wait.
-    const [arm, config, leaveEntries, live] = await driverPrep;
+    const [config, leaveEntries, live] = await driverPrep;
     let assignTo: { driverId: string; name: string | null } | null = null;
     // Every path that declines to attach a driver says so. Silence here used to mean a
     // trip quietly waiting ~2 minutes for the engine with nothing to explain it — a real
@@ -295,8 +294,7 @@ export async function POST(req: NextRequest) {
     // driver, and there was no way to tell which check had refused. One line costs
     // nothing and turns that from a guess into a lookup.
     let skipped: string | null = null;
-    if (!arm) skipped = "engine disarmed";
-    else if (!config) skipped = "roster unavailable";
+    if (!config) skipped = "roster unavailable";
     else if (!leaveEntries) skipped = "leave sheet unavailable";
     else {
       const who = resolveFixedDriver(config, pickup, new Date(), leaveEntries, dropoff);
