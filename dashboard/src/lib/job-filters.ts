@@ -320,8 +320,9 @@ export function isLabWatchedClient(job: {
 //
 // A HUB keeps the provincial branches that route through it: D014, D016 and D032 into
 // D007, D028 and D033 into D009, D015 into D004, D035 into D006. The hub forwards those
-// samples to the lab, so their arrival is its own work, and they stay on its list after
-// delivery like a client's. `feeders` is the set of branches whose configured route ends
+// samples to the lab, so their arrival is its own work — but only while it is still
+// coming: once delivered the samples are in the hub's hands and the row leaves, the same
+// as its own requests below. `feeders` is the set of branches whose configured route ends
 // at this location — the caller reads it off the PSC route table, which is the one place
 // those routes are written down. What is still dropped at a hub is the lab's return runs.
 //
@@ -348,9 +349,10 @@ export function keepOnBranchFeed(code: string, job: FeedJob, feeders: ReadonlySe
   const stops = job.stops ?? [];
   const pickup = stops.find((s) => s.stop_type_id === 1);
   const dropoff = stops.find((s) => s.stop_type_id !== 1);
-  if (pickup?.customer_id && feeders.has(pickup.customer_id) && dropoff?.customer_id === code) return true;
-  const ownRequest = pickup?.customer_id === code;
   const handedOver = job.job_status_id === 5
     || stops.some((s) => s.stop_type_id !== 1 && !!s.activity_completed_ts);
-  return ownRequest && !handedOver;
+  if (handedOver) return false;
+  const hubArrival = !!pickup?.customer_id && feeders.has(pickup.customer_id) && dropoff?.customer_id === code;
+  const ownRequest = pickup?.customer_id === code;
+  return hubArrival || ownRequest;
 }

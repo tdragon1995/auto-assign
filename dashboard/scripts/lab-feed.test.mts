@@ -75,7 +75,7 @@ console.log("\nwhich trips a branch sees");
   ok("another branch's run passing through is not shown", !keepOnBranchFeed(D010, run(D032, "BRA - D032")));
   ok("a 3PL handoff arriving is not shown", !keepOnBranchFeed(D010, run("y", "3PL - TOT3 - Q5")));
   // A hub forwards its provincial branches' samples to the lab, so their arrival is its
-  // own work — and like a client's, it stays as the day's record after delivery.
+  // own work — while it is still coming. Once delivered it leaves, like the hub's own requests.
   const D007 = "debfa9a0-3d81-11ed-9ba7-506b8dbc8dfb";
   const D014 = "c79d5fa2-3d85-11ed-a6db-506b8dbc8dfb";
   const LAB = LAB_CUSTOMER_ID;
@@ -88,7 +88,7 @@ console.log("\nwhich trips a branch sees");
   });
   const d007Feeders = new Set([D014, D032]);
   ok("a hub sees a provincial branch that routes through it", keepOnBranchFeed(D007, toHub(D014, "BRA - D014"), d007Feeders));
-  ok("…and keeps it after delivery", keepOnBranchFeed(D007, toHub(D014, "BRA - D014", D007, true), d007Feeders));
+  ok("…and drops it once delivered", !keepOnBranchFeed(D007, toHub(D014, "BRA - D014", D007, true), d007Feeders));
   ok("a hub does not see the lab's return run", !keepOnBranchFeed(D007, toHub(LAB, "BRA - D001"), d007Feeders));
   ok("a branch that does not route through the hub is not shown",
     !keepOnBranchFeed(D007, toHub(D010, "BRA - D010"), d007Feeders));
