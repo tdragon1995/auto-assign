@@ -6,12 +6,11 @@ import { useParams } from "next/navigation";
 // fetching /api/psc-routes — no function invocation, no network round-trip, instant render.
 import {
   Package, Check, ChevronDown, ChevronRight, Clock, Phone, Bike, CalendarDays,
-  ArrowUp, ArrowDown, ArrowRight, Loader2, Search, XCircle,
+  ArrowRight, Loader2, Search, XCircle,
 } from "lucide-react";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
 import { placeLabel } from "@/lib/place-label";
 import { Photos, Timeline, TodoNotes, TODO_ICON, type TlEvent } from "@/components/trip-sheet";
-import { LAB_CUSTOMER_ID } from "@/lib/job-filters";
 import type { StopNotes } from "@/lib/stop-notes";
 import { proxyKind, driverLabel, THREE_PL_LABEL } from "@/lib/proxy-drivers";
 import { driverDisplayName } from "@/lib/display-names";
@@ -66,8 +65,7 @@ interface PendingReq {
 
 type Status = "idle" | "loading" | "success" | "error";
 
-const STEPS = ["Yêu cầu", "Lấy mẫu", "Đang giao", "Đã giao"] as const;
-const COMPACT_STEPS = ["Lấy mẫu", "Đã giao"] as const;
+const STEPS = ["Lấy mẫu", "Đã giao"] as const;
 
 // Shortest gap between two automatic feed refreshes. Mirrors MAX_AGE_MS in
 // lib/day-snapshot — a request inside that window gets the snapshot already on screen,
@@ -253,56 +251,24 @@ function initial(name?: string | null): string {
   return parts.length ? parts[parts.length - 1][0].toUpperCase() : "?";
 }
 
-// Whose work a trip is: samples leaving this branch, or a client's samples coming in.
-// Both directions share the feed and are otherwise indistinguishable at a glance.
-// Styles live in a lookup rather than an inline ternary so each pairing is one complete
-// unit — sky-800/sky-100 is 6.6:1, violet-700/violet-100 is 6.0:1. Outbound is sky rather
-// than the state chips' blue-700/blue-100 so the two never read as the same badge; they
-// sit on the same row and mean entirely different things.
-const DIRECTION_STYLE = {
-  out: "bg-sky-100 text-sky-800",
-  in: "bg-violet-100 text-violet-700",
-} as const;
-
-// Not rendered on the LAB's feed: its rows are client pickups only, so the tag read
-// "Nhận về" on every one of them. On a branch page both directions really do occur —
-// samples going to the lab and a client's samples coming in — and there it is the only
-// thing telling them apart.
-function DirectionTag({ outbound }: { outbound: boolean }) {
-  const Icon = outbound ? ArrowUp : ArrowDown;
-  return (
-    <span className={`inline-flex items-center gap-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded-md ${outbound ? DIRECTION_STYLE.out : DIRECTION_STYLE.in}`}>
-      <Icon aria-hidden className="w-3 h-3" />
-      {outbound ? "Gửi đi" : "Nhận về"}
-    </span>
-  );
-}
-
 /* ─────────────────────────── progress stepper ─────────────────────────── */
 
 /**
- * `compact` cuts the four steps to the two the LAB reads: collected, and handed over.
- * The other two answer questions a branch has about its own booking — when it asked,
- * and when the driver set off — and D001 did not do the asking. Two steps also give
- * each remaining label the width of two.
+ * Two steps: collected, and handed over. There were four — "Yêu cầu" and "Đang giao"
+ * as well — but the request time is already printed on the card's own header, and the
+ * moment a driver sets off towards the destination is not a question anyone reading this
+ * page asks. Two steps also give each label the width of two.
  */
-function Stepper({ job, state, compact = false }: { job: Job; state: TripState; compact?: boolean }) {
+function Stepper({ job, state }: { job: Job; state: TripState }) {
   const p = pickupOf(job), d = dropoffOf(job);
-  const labels = compact ? COMPACT_STEPS : STEPS;
-  const times = compact
-    ? [fmtTs(p?.activity_completed_ts), fmtTs(d?.activity_completed_ts)]
-    : [requestedAt(job), fmtTs(p?.activity_completed_ts), fmtTs(d?.activity_started_ts), fmtTs(d?.activity_completed_ts)];
+  const times = [fmtTs(p?.activity_completed_ts), fmtTs(d?.activity_completed_ts)];
   // Steps completed so far; the "current" step pulses.
-  const doneUpto = compact
-    ? (state === 3 ? 1 : state === 2 ? 0 : -1)
-    : (state === 2 ? 1 : state === 3 ? 3 : 0);
-  const nowIdx = compact
-    ? (state === 3 ? -1 : state === 2 ? 1 : 0)
-    : (state === 3 ? -1 : isWaiting(state) ? 0 : state === 1 ? 1 : 2);
+  const doneUpto = state === 3 ? 1 : state === 2 ? 0 : -1;
+  const nowIdx = state === 3 ? -1 : state === 2 ? 1 : 0;
 
   return (
     <div className="flex items-start mt-1 mb-1">
-      {labels.map((label, i) => {
+      {STEPS.map((label, i) => {
         const done = state === 3 || i <= doneUpto;
         const current = i === nowIdx;
         return (
@@ -513,9 +479,6 @@ function TripCard({ job, code, notes, onOpen, onCancel, onSendVia3pl, onChangeDr
   const threePl = isThreePl(job.driver?.last_name);
   const driver = driverText(job.driver?.last_name);
   const win = windowLabel(p);
-  // Whose work this is: samples leaving this branch, or a client's samples coming in.
-  // Both directions sit in the same feed and used to look identical.
-  const outbound = p?.customer_id === code;
 
   // A rejected trip is already closed — there is nothing left to cancel or hand off.
   const rejected = state === 4;
@@ -544,7 +507,6 @@ function TripCard({ job, code, notes, onOpen, onCancel, onSendVia3pl, onChangeDr
               {placeLabel(p?.customer_name ?? "")} <ArrowRight aria-hidden className="inline w-4 h-4 text-slate-500 mx-0.5 shrink-0" /> {destName}
             </p>
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1">
-              {code !== LAB_CUSTOMER_ID && <DirectionTag outbound={outbound} />}
               <span className="text-[11px] font-semibold text-slate-500">Yêu cầu lúc {requestedAt(job) ?? "—"}</span>
               {win && (
                 <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700">
@@ -575,7 +537,7 @@ function TripCard({ job, code, notes, onOpen, onCancel, onSendVia3pl, onChangeDr
             </p>
           </div>
         ) : (
-          <Stepper job={job} state={state} compact={code === LAB_CUSTOMER_ID} />
+          <Stepper job={job} state={state} />
         )}
 
         <NoteBlock notes={notes} />
@@ -689,8 +651,8 @@ export default function QrPage() {
   const [pending, setPending] = useState<PendingReq[]>([]);
 
   // The driver's typed notes, keyed by job. Its own request because nothing the feed is
-  // built from carries a todo — see /api/location-notes. Only the lab asks: everyone
-  // else would pay a day-sized fetch for a dozen trips.
+  // built from carries a todo. Asked for by the ids this feed is showing, so the answer
+  // is only ever about trips on screen.
   const [notes, setNotes] = useState<Record<number, StopNotes>>({});
   // Whether the notes request failed. A note that never arrives looks exactly like a
   // driver who typed nothing, so a broken endpoint would empty every card at once and
@@ -777,8 +739,8 @@ export default function QrPage() {
       setJobs(list);
       // After the feed, never blocking it: a missing note is a smaller loss than a feed
       // that waits ~6s on Cartrack's day listing to render trips it already has.
-      if (code === LAB_CUSTOMER_ID) {
-        fetch(`/api/location-notes?date=${date}&code=${encodeURIComponent(code)}`)
+      if (list.length) {
+        fetch(`/api/location-notes?date=${date}&ids=${list.map((j) => j.job_id).join(",")}`)
           .then((r) => r.json())
           .then((d) => { setNotes(d.notes ?? {}); setNotesFailed(false); })
           .catch(() => setNotesFailed(true));
@@ -1182,7 +1144,6 @@ export default function QrPage() {
               ) : doneShown.map((j) => {
                 const p = pickupOf(j), d = dropoffOf(j);
                 const threePl = isThreePl(j.driver?.last_name);
-                const outbound = p?.customer_id === code;
 
                 // No aria-label on the button below: on a button it REPLACES the whole
                 // accessible name, so it hid the note, the driver and all four timestamps
@@ -1198,7 +1159,6 @@ export default function QrPage() {
                           {placeLabel(p?.customer_name ?? "")} <ArrowRight aria-hidden className="inline w-3.5 h-3.5 text-slate-500 mx-0.5 shrink-0" /> {placeLabel(d?.customer_name ?? "")}
                         </span>
                         <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
-                          {code !== LAB_CUSTOMER_ID && <DirectionTag outbound={outbound} />}
                           <span className="text-[11px] text-slate-500">{driverText(j.driver?.last_name)}</span>
                           {windowLabel(p) && (
                             <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700">
@@ -1218,7 +1178,7 @@ export default function QrPage() {
                         Gửi qua {THREE_PL_LABEL} · {fmtTs(d?.activity_completed_ts ?? p?.activity_completed_ts) ?? "—"}
                       </span>
                     ) : (
-                      <Stepper job={j} state={3} compact={code === LAB_CUSTOMER_ID} />
+                      <Stepper job={j} state={3} />
                     )}
                     <NoteBlock notes={notes[j.job_id]} />
                   </button>

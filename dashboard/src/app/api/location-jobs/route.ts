@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { driverDisplayName, fetchJobDetail } from "@/lib/job-detail";
-import { isClientPickupJob, isLabWatchedClient, LAB_CUSTOMER_ID } from "@/lib/job-filters";
+import { isLabWatchedClient, keepOnBranchFeed, LAB_CUSTOMER_ID } from "@/lib/job-filters";
 import { locationJobs, slimJob } from "@/lib/day-snapshot";
 import type { Job, Stop } from "@/lib/types";
 
@@ -34,13 +34,6 @@ export const preferredRegion = "sin1";
 // alone only ever contains 4 and 5, so without the second source a branch never sees a
 // request that hasn't been picked up or one a driver turned down.
 const ALL_STATUSES = [2, 3, 4, 5];
-
-// The lab sees only client pickups — see isClientPickupJob. Applied HERE rather than on
-// the phone because it is also the download: D001's day is ~490 jobs and ~54 of them
-// survive this.
-function keepForLocation(code: string, job: { stops?: { stop_type_id?: number; customer_name?: string }[] }): boolean {
-  return code !== LAB_CUSTOMER_ID || isClientPickupJob(job);
-}
 
 function matchesStatus(jobStatusId: number | undefined, status: string): boolean {
   if (status === "all") return ALL_STATUSES.includes(jobStatusId ?? 0);
@@ -81,7 +74,7 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({
           jobs: mine
             .filter((j) => matchesStatus(j.job_status_id, status))
-            .filter((j) => keepForLocation(code, j)),
+            .filter((j) => keepOnBranchFeed(code, j)),
         });
       }
     }
@@ -103,7 +96,7 @@ export async function GET(req: NextRequest) {
         .filter((j) => matchesStatus(j.job_status_id, status))
         .filter((j) => (j.stops ?? []).some((s: Stop) => s.customer_id === code)
           || (code === LAB_CUSTOMER_ID && isLabWatchedClient(j)))
-        .filter((j) => keepForLocation(code, j))
+        .filter((j) => keepOnBranchFeed(code, j))
         .map((j) => slimJob(j, driverDisplayName(j.driver)));
       return NextResponse.json({ jobs });
     }

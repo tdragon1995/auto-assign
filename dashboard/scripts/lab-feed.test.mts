@@ -12,7 +12,7 @@
  *   npx tsx scripts/lab-feed.test.mts
  */
 import type { Job } from "../src/lib/types";
-const { isClientPickupJob, isLabWatchedClient } = await import("../src/lib/job-filters");
+const { isClientPickupJob, isLabWatchedClient, keepOnBranchFeed, LAB_CUSTOMER_ID } = await import("../src/lib/job-filters");
 const { notesOf } = await import("../src/lib/stop-notes");
 
 let failed = 0;
@@ -48,6 +48,36 @@ ok("a chấm-công tap is not a trip", !isClientPickupJob({
   job_id: 2, stops: [{ stop_type_id: 3, customer_name: "BRA - D001" }],
 } as Job));
 ok("a job with no stops at all is not a trip", !isClientPickupJob({ job_id: 3 } as Job));
+
+console.log("\nwhich trips a branch sees");
+{
+  const D010 = "9a15e7a4-3d83-11ed-be4e-506b8dbc8dfb";
+  const D032 = "17dd37b4-3d9d-11ed-93b6-506b8dbc8dfb";
+  // A trip with real ids and a dropoff completion time, which is what "handed over" reads.
+  const run = (pickupId: string, pickupName: string, delivered = false, status = 4) => ({
+    job_status_id: status,
+    stops: [
+      { stop_type_id: 1, customer_id: pickupId, customer_name: pickupName },
+      { stop_type_id: 2, customer_id: D010, customer_name: "BRA - D010",
+        activity_completed_ts: delivered ? "2026-09-14 10:10:00" : null },
+    ],
+  });
+  ok("a client's samples coming in are shown",
+    keepOnBranchFeed(D010, run("x", "50873452 - D3 - NDChieu - PHÒNG KHÁM AN KHANG")));
+  ok("…and stay shown once delivered, as the day's record",
+    keepOnBranchFeed(D010, run("x", "50873452 - D3 - NDChieu - PHÒNG KHÁM AN KHANG", true, 5)));
+  // The reason the lab's rule could not simply be copied: a branch's own pickup is a
+  // "BRA - " name too, and the client rule alone takes every request it ever made.
+  ok("the branch's own request is shown while under way", keepOnBranchFeed(D010, run(D010, "BRA - D010")));
+  ok("…and leaves the list once handed over", !keepOnBranchFeed(D010, run(D010, "BRA - D010", true)));
+  ok("…or once Cartrack closes the job, even with no dropoff time",
+    !keepOnBranchFeed(D010, run(D010, "BRA - D010", false, 5)));
+  ok("another branch's run passing through is not shown", !keepOnBranchFeed(D010, run(D032, "BRA - D032")));
+  ok("a 3PL handoff arriving is not shown", !keepOnBranchFeed(D010, run("y", "3PL - TOT3 - Q5")));
+  // The lab books nothing, so nothing counts as its own request.
+  ok("the lab gets clients only, even for a run starting at the lab",
+    !keepOnBranchFeed(LAB_CUSTOMER_ID, run(LAB_CUSTOMER_ID, "BRA - D001")));
+}
 
 console.log("\nclients the lab follows wherever they go");
 // AIH sends to D019 on some runs and D001 on others; the DYM branch in D7 never

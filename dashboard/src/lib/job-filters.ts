@@ -314,3 +314,34 @@ export function isLabWatchedClient(job: {
   const code = (pickup?.customer_name ?? "").split(" - ")[0].trim();
   return !!code && LAB_WATCHED_CLIENTS.includes(code);
 }
+
+// Every feed shows CLIENT pickups and drops other sites' runs passing through — a Diag
+// branch's shuttle ("BRA - …") or a 3PL handoff ("3PL - …"). On 14/09 that was 26 of
+// D007's 56 rows: the lab's return runs plus D014/D016/D032's samples arriving at the hub.
+//
+// A branch ALSO keeps the trips it booked itself, but only WHILE THEY ARE UNDER WAY: the
+// supervisor's rule is that a branch watches its outbound requests until they are handed
+// over, and its day's record is the clients' samples. Its own pickup is named
+// "BRA - D0xx" too, so the client rule alone would have taken every one of them, the
+// cancel, 3PL and pick-a-driver buttons included. The lab books nothing — its page has no
+// request button — so it gets the client rule alone.
+//
+// "Handed over" is the same test the page uses for its "Đã giao" state: the dropoff has a
+// completion time, or Cartrack has closed the job. A 3PL handoff closes both stops at
+// submission, so it leaves the list the moment it is sent.
+//
+// Applied by the feed endpoint rather than on the phone, because it is also the download.
+type FeedJob = {
+  job_status_id?: number;
+  stops?: { stop_type_id?: number; customer_id?: string; customer_name?: string; activity_completed_ts?: string | null }[];
+};
+
+export function keepOnBranchFeed(code: string, job: FeedJob): boolean {
+  if (isClientPickupJob(job)) return true;
+  if (code === LAB_CUSTOMER_ID) return false;
+  const stops = job.stops ?? [];
+  const ownRequest = stops.some((s) => s.stop_type_id === 1 && s.customer_id === code);
+  const handedOver = job.job_status_id === 5
+    || stops.some((s) => s.stop_type_id !== 1 && !!s.activity_completed_ts);
+  return ownRequest && !handedOver;
+}
