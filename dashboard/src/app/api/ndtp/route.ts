@@ -36,13 +36,18 @@ export async function POST(req: NextRequest) {
         job_type_id: 1,
         schedule_type_id: 1,
         reference_number: reference,
-        // No stop note: any note holds the job out of auto-assign.
+        // The requester's note rides on the item, NOT the stop: any stop note holds the
+        // job out of auto-assign until a supervisor approves it.
+        ...(note ? { items: [{ description: `📝 ${note}`, item_type_id: 1, quantity: 1, weight: 0, tracking_number: "" }] } : {}),
         stops: [
           {
             stop_type_id: 1,
             customer_id: NDTP_PICKUP.customer_id,
             duration: 5,
-            todos: [{ todo_type_id: 2, description: "📦 Chụp rõ số lượng và thông tin mẫu nhận" }],
+            todos: [
+              { todo_type_id: 2, description: "📦 Chụp rõ số lượng và thông tin mẫu nhận" },
+              { todo_type_id: 5, description: "Số lượng mẫu" },
+            ],
           },
           {
             stop_type_id: 2,
