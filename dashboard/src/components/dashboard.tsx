@@ -666,20 +666,6 @@ export function Dashboard() {
 
                 {/* Leave status — reference, below the actionable list; collapsed
                     to counts by default but flags uncovered drivers in amber. */}
-                {/* Config to-dos sit between the stuck jobs and the leave
-                    reference: they wait on a person rather than on the engine,
-                    so they belong below anything actually failing — but above
-                    leave, which is reference rather than a task. */}
-                <ConfigTodoPanel
-                  gaps={visibleGaps}
-                  overlaps={visibleOverlaps}
-                  unfinished={visibleUnfinished}
-                  branchRules={branchRules}
-                  drivers={drivers}
-                  parsedAt={parsedAt}
-                  onSaved={(key?: string) => { if (key) markDone(key); void handleRefresh(); }}
-                />
-
                 <LeaveStatusPanel
                   today={leave.today}
                   tomorrow={leave.tomorrow}
@@ -696,8 +682,19 @@ export function Dashboard() {
             ) : rightTab === "config" ? (
               /* Mounted only while the tab is open, so the ~1,700-row fetch
                  happens when someone asks for it and not before. */
-              <div className="h-[72vh] lg:h-full">
-                <ConfigBrowserPanel drivers={drivers} />
+              <div className="h-[72vh] lg:h-full overflow-y-auto space-y-2">
+                <ConfigTodoPanel
+                  gaps={visibleGaps}
+                  overlaps={visibleOverlaps}
+                  unfinished={visibleUnfinished}
+                  branchRules={branchRules}
+                  drivers={drivers}
+                  parsedAt={parsedAt}
+                  onSaved={(key?: string) => { if (key) markDone(key); void handleRefresh(); }}
+                />
+                <div className="min-h-[28rem]">
+                  <ConfigBrowserPanel drivers={drivers} />
+                </div>
               </div>
             ) : rightTab === "live" ? (
               <div className="h-[72vh] lg:h-full">

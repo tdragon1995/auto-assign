@@ -836,6 +836,40 @@ export function BranchEditor({
 
   return (
     <div className="mt-1 space-y-1 rounded border border-slate-300 bg-white p-1.5">
+      <div className="flex items-center gap-1">
+        <Button
+          ref={copyBtnRef}
+          size="sm" variant="outline"
+          className="h-6 px-2 text-[11px]"
+          aria-expanded={copyOpen}
+          aria-controls={copyPanelId}
+          onClick={() => setCopyOpen((v) => !v)}
+          disabled={busy}
+        >
+          Copy từ config khác
+        </Button>
+      </div>
+      <CopyFromBranch
+        open={copyOpen}
+        panelId={copyPanelId}
+        existingKeys={lines.map((l) => copyKey(l.driver, l.start, l.end, l.dropoff))}
+        targetDropoff={dropoffName}
+        onClose={() => { setCopyOpen(false); copyBtnRef.current?.focus(); }}
+        onCopy={(copied) => {
+          let touched: string[] = [];
+          setLines((ls) => {
+            const next = applyCopiedLines(ls, copied, dropoffName);
+            touched = next.touched;
+            return next.lines;
+          });
+          setJustAdded(new Set(touched));
+          toast.success(
+            touched.length
+              ? `Đã copy ${touched.length} ca vào form — bấm Lưu để ghi`
+              : "Các ca này đã có trong form",
+          );
+        }}
+      />
       {pendingDeletes.length > 0 && <div className="text-xs text-slate-600">Sẽ xoá {pendingDeletes.length} dòng khi bấm Lưu.</div>}
       {lines.map((l, i) => (
         <div
@@ -887,17 +921,7 @@ export function BranchEditor({
         <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={addLine} disabled={busy}>
           + Thêm ca
         </Button>
-        <Button
-          ref={copyBtnRef}
-          size="sm" variant="outline"
-          className="h-6 px-2 text-[11px]"
-          aria-expanded={copyOpen}
-          aria-controls={copyPanelId}
-          onClick={() => setCopyOpen((v) => !v)}
-          disabled={busy}
-        >
-          Copy từ điểm khác
-        </Button>
+
         <div className="ml-auto flex gap-1">
           <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={onCancel} disabled={busy}>
             Hủy
@@ -907,30 +931,7 @@ export function BranchEditor({
           </Button>
         </div>
       </div>
-      {/* Below the action row, never inside it: the panel is wide, and rendering
-          it among the buttons pushed Hủy/Lưu onto a second line the moment it
-          opened. */}
-      <CopyFromBranch
-        open={copyOpen}
-        panelId={copyPanelId}
-        existingKeys={lines.map((l) => copyKey(l.driver, l.start, l.end, l.dropoff))}
-        targetDropoff={dropoffName}
-        onClose={() => { setCopyOpen(false); copyBtnRef.current?.focus(); }}
-        onCopy={(copied) => {
-          let touched: string[] = [];
-          setLines((ls) => {
-            const next = applyCopiedLines(ls, copied, dropoffName);
-            touched = next.touched;
-            return next.lines;
-          });
-          setJustAdded(new Set(touched));
-          toast.success(
-            touched.length
-              ? `Đã copy ${touched.length} ca vào form — bấm Lưu để ghi`
-              : "Các ca này đã có trong form",
-          );
-        }}
-      />
+
       {/* A save that half-landed is the one message here nobody can afford to
           miss, and it is the one that decides whether pressing Lưu again is
           safe — so it is announced, not just coloured. */}
