@@ -316,8 +316,14 @@ export function isLabWatchedClient(job: {
 }
 
 // Every feed shows CLIENT pickups and drops other sites' runs passing through — a Diag
-// branch's shuttle ("BRA - …") or a 3PL handoff ("3PL - …"). On 14/09 that was 26 of
-// D007's 56 rows: the lab's return runs plus D014/D016/D032's samples arriving at the hub.
+// branch's shuttle ("BRA - …") or a 3PL handoff ("3PL - …") — with two exceptions below.
+//
+// A HUB keeps the provincial branches that route through it: D014, D016 and D032 into
+// D007, D028 and D033 into D009, D015 into D004, D035 into D006. The hub forwards those
+// samples to the lab, so their arrival is its own work, and they stay on its list after
+// delivery like a client's. `feeders` is the set of branches whose configured route ends
+// at this location — the caller reads it off the PSC route table, which is the one place
+// those routes are written down. What is still dropped at a hub is the lab's return runs.
 //
 // A branch ALSO keeps the trips it booked itself, but only WHILE THEY ARE UNDER WAY: the
 // supervisor's rule is that a branch watches its outbound requests until they are handed
@@ -336,11 +342,14 @@ type FeedJob = {
   stops?: { stop_type_id?: number; customer_id?: string; customer_name?: string; activity_completed_ts?: string | null }[];
 };
 
-export function keepOnBranchFeed(code: string, job: FeedJob): boolean {
+export function keepOnBranchFeed(code: string, job: FeedJob, feeders: ReadonlySet<string> = new Set()): boolean {
   if (isClientPickupJob(job)) return true;
   if (code === LAB_CUSTOMER_ID) return false;
   const stops = job.stops ?? [];
-  const ownRequest = stops.some((s) => s.stop_type_id === 1 && s.customer_id === code);
+  const pickup = stops.find((s) => s.stop_type_id === 1);
+  const dropoff = stops.find((s) => s.stop_type_id !== 1);
+  if (pickup?.customer_id && feeders.has(pickup.customer_id) && dropoff?.customer_id === code) return true;
+  const ownRequest = pickup?.customer_id === code;
   const handedOver = job.job_status_id === 5
     || stops.some((s) => s.stop_type_id !== 1 && !!s.activity_completed_ts);
   return ownRequest && !handedOver;

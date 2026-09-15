@@ -74,6 +74,29 @@ console.log("\nwhich trips a branch sees");
     !keepOnBranchFeed(D010, run(D010, "BRA - D010", false, 5)));
   ok("another branch's run passing through is not shown", !keepOnBranchFeed(D010, run(D032, "BRA - D032")));
   ok("a 3PL handoff arriving is not shown", !keepOnBranchFeed(D010, run("y", "3PL - TOT3 - Q5")));
+  // A hub forwards its provincial branches' samples to the lab, so their arrival is its
+  // own work — and like a client's, it stays as the day's record after delivery.
+  const D007 = "debfa9a0-3d81-11ed-9ba7-506b8dbc8dfb";
+  const D014 = "c79d5fa2-3d85-11ed-a6db-506b8dbc8dfb";
+  const LAB = LAB_CUSTOMER_ID;
+  const toHub = (from: string, name: string, to = D007, delivered = false) => ({
+    job_status_id: delivered ? 5 : 4,
+    stops: [
+      { stop_type_id: 1, customer_id: from, customer_name: name },
+      { stop_type_id: 2, customer_id: to, customer_name: "BRA - hub", activity_completed_ts: delivered ? "2026-09-14 10:10:00" : null },
+    ],
+  });
+  const d007Feeders = new Set([D014, D032]);
+  ok("a hub sees a provincial branch that routes through it", keepOnBranchFeed(D007, toHub(D014, "BRA - D014"), d007Feeders));
+  ok("…and keeps it after delivery", keepOnBranchFeed(D007, toHub(D014, "BRA - D014", D007, true), d007Feeders));
+  ok("a hub does not see the lab's return run", !keepOnBranchFeed(D007, toHub(LAB, "BRA - D001"), d007Feeders));
+  ok("a branch that does not route through the hub is not shown",
+    !keepOnBranchFeed(D007, toHub(D010, "BRA - D010"), d007Feeders));
+  // Named in the route table as a feeder, but this trip goes somewhere else.
+  ok("a feeder's trip to another place is not the hub's",
+    !keepOnBranchFeed(D007, toHub(D014, "BRA - D014", LAB), d007Feeders));
+  ok("without a feeder set a branch behaves as before", !keepOnBranchFeed(D007, toHub(D014, "BRA - D014")));
+
   // The lab books nothing, so nothing counts as its own request.
   ok("the lab gets clients only, even for a run starting at the lab",
     !keepOnBranchFeed(LAB_CUSTOMER_ID, run(LAB_CUSTOMER_ID, "BRA - D001")));

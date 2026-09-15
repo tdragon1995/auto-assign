@@ -3,6 +3,7 @@ import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { driverDisplayName, fetchJobDetail } from "@/lib/job-detail";
 import { isLabWatchedClient, keepOnBranchFeed, LAB_CUSTOMER_ID } from "@/lib/job-filters";
 import { locationJobs, slimJob } from "@/lib/day-snapshot";
+import { PSC_ROUTES } from "@/lib/psc-routes-data";
 import type { Job, Stop } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -35,6 +36,12 @@ export const preferredRegion = "sin1";
 // request that hasn't been picked up or one a driver turned down.
 const ALL_STATUSES = [2, 3, 4, 5];
 
+/** Branches whose configured route ends at `code` — the provincial branches a hub receives.
+ *  The lab is excluded by the feed rule itself, so every branch listing it does no harm. */
+function feedersOf(code: string): Set<string> {
+  return new Set(PSC_ROUTES.filter((r) => r.dropoff === code).map((r) => r.pickup));
+}
+
 function matchesStatus(jobStatusId: number | undefined, status: string): boolean {
   if (status === "all") return ALL_STATUSES.includes(jobStatusId ?? 0);
   return jobStatusId === Number(status);
@@ -66,6 +73,7 @@ export async function GET(req: NextRequest) {
   try {
     // Fast path (code-scoped): one slice of the shared day snapshot. Any failure
     // (including a throw) falls back to REST rather than 500ing the branch's feed.
+    const feeders = code ? feedersOf(code) : new Set<string>();
     if (code) {
       const fresh = req.nextUrl.searchParams.get("fresh") === "1";
       const mine = await locationJobs(date, env, code, { fresh }).catch(() => null);
@@ -74,7 +82,7 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({
           jobs: mine
             .filter((j) => matchesStatus(j.job_status_id, status))
-            .filter((j) => keepOnBranchFeed(code, j)),
+            .filter((j) => keepOnBranchFeed(code, j, feeders)),
         });
       }
     }
@@ -96,7 +104,7 @@ export async function GET(req: NextRequest) {
         .filter((j) => matchesStatus(j.job_status_id, status))
         .filter((j) => (j.stops ?? []).some((s: Stop) => s.customer_id === code)
           || (code === LAB_CUSTOMER_ID && isLabWatchedClient(j)))
-        .filter((j) => keepOnBranchFeed(code, j))
+        .filter((j) => keepOnBranchFeed(code, j, feeders))
         .map((j) => slimJob(j, driverDisplayName(j.driver)));
       return NextResponse.json({ jobs });
     }
