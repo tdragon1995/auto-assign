@@ -34,6 +34,7 @@ import {
   RATE_PER_HOUR_VND, RATE_PER_KM_VND,
   type PayPunch, type PayJob,
 } from "@/lib/pay";
+import { payrollPeriod } from "@/lib/pay-period";
 import { vnDate, addDays } from "@/lib/time";
 
 export const runtime = "nodejs";
@@ -68,13 +69,6 @@ const num = (v: number | string | null | undefined): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
-const monthStart = (m: string) => `${m}-01`;
-function monthEnd(m: string): string {
-  const d = new Date(`${m}-01T00:00:00Z`);
-  d.setUTCMonth(d.getUTCMonth() + 1);
-  d.setUTCDate(0);
-  return d.toISOString().slice(0, 10);
-}
 const monthOf = (date: string) => date.slice(0, 7);
 function addMonths(m: string, n: number): string {
   const d = new Date(`${m}-01T00:00:00Z`);
@@ -192,13 +186,13 @@ export async function GET(req: NextRequest) {
   }
 
   // ── Month mode ────────────────────────────────────────────────────────────
-  const askedMonth = sp.get("month") ?? monthOf(latest);
-  if (!/^\d{4}-\d{2}$/.test(askedMonth)) {
+  const askedMonth = sp.get("month") ?? monthOf(vnDate());
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(askedMonth)) {
     return NextResponse.json({ ok: false, error: "Tháng không hợp lệ." }, { status: 400 });
   }
-  const from = monthStart(askedMonth);
+  const { from, to: periodEnd } = payrollPeriod(askedMonth);
   // A month still running ends at the last sealed day, not at its own last date.
-  const to = monthEnd(askedMonth) > latest ? latest : monthEnd(askedMonth);
+  const to = periodEnd > latest ? latest : periodEnd;
 
   try {
     if (to < from) {
@@ -253,7 +247,7 @@ export async function GET(req: NextRequest) {
       rates,
       // The arrows' bounds, so the client never has to know when data began.
       prev_month: addMonths(askedMonth, -1),
-      next_month: askedMonth < monthOf(latest) ? addMonths(askedMonth, 1) : null,
+      next_month: askedMonth < monthOf(vnDate()) ? addMonths(askedMonth, 1) : null,
       summary: {
         days: days.filter((d) => d.jobs > 0 || d.worked_mins > 0).length,
         jobs: days.reduce((s, d) => s + d.jobs, 0),

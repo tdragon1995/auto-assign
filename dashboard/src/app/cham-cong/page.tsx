@@ -2487,6 +2487,7 @@ export default function ChamCongPage() {
                       <div className="rounded-2xl border border-gray-200 overflow-hidden">
                         <div className="px-4 pt-4 pb-3">
                           <p className="text-xs text-gray-500">{fmtMonth(payReport.month)} bạn được</p>
+                          <p className="text-xs text-gray-500">Từ {fmtDate(payReport.from)} đến {fmtDate(payReport.to)}</p>
                           <p className="text-3xl font-bold text-gray-900 leading-tight mt-0.5 tabular-nums">
                             {fmtVnd(payReport.summary.total_pay)}
                           </p>

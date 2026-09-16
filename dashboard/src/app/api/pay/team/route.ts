@@ -11,9 +11,8 @@
  * it, and it should be near the front of the queue when that happens, because
  * this is the one endpoint that returns everybody's pay.
  *
- * DEFAULTS TO LAST MONTH, exactly as the TAT monitor does, and for the same
- * reason: payroll runs on the 25th against the month before, so the current month
- * is a half-finished number nobody is paid against.
+ * Defaults to the current payroll month: previous month’s 15th through this
+ * month’s 14th, inclusive.
  *
  * PART-TIME ONLY. Full-time drivers appear in pay_jobs and pay_punches like
  * everyone else — the archive does not filter, and should not, because the rows
@@ -29,6 +28,7 @@ import {
   workedMinutes, hourPayFor, kmPayFor,
   RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch,
 } from "@/lib/pay";
+import { payrollPeriod } from "@/lib/pay-period";
 import { vnDate } from "@/lib/time";
 
 export const runtime = "nodejs";
@@ -64,32 +64,17 @@ async function selectAllPages<T>(table: string, query: string): Promise<T[]> {
   }
 }
 
-function monthRange(month: string): { from: string; to: string } {
-  const from = `${month}-01`;
-  const d = new Date(`${from}T00:00:00Z`);
-  d.setUTCMonth(d.getUTCMonth() + 1);
-  d.setUTCDate(0);
-  return { from, to: d.toISOString().slice(0, 10) };
-}
-
-/** The month before the one containing `date` — the payroll default. */
-function prevMonthOf(date: string): string {
-  const d = new Date(`${date.slice(0, 7)}-01T00:00:00Z`);
-  d.setUTCMonth(d.getUTCMonth() - 1);
-  return d.toISOString().slice(0, 7);
-}
-
 export async function GET(req: NextRequest) {
   if (!supabaseConfigured()) {
     return NextResponse.json({ ok: false, error: "Chưa cấu hình hệ thống lưu trữ." }, { status: 503 });
   }
 
   const today = vnDate();
-  const month = req.nextUrl.searchParams.get("month") ?? prevMonthOf(today);
-  if (!/^\d{4}-\d{2}$/.test(month)) {
+  const month = req.nextUrl.searchParams.get("month") ?? today.slice(0, 7);
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
     return NextResponse.json({ ok: false, error: "month phải có dạng YYYY-MM" }, { status: 400 });
   }
-  const { from, to } = monthRange(month);
+  const { from, to } = payrollPeriod(month);
 
   try {
     const [daily, punches] = await Promise.all([

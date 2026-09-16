@@ -4,9 +4,7 @@
  * Part-time pay for a whole month, every PT driver — the supervisor side of the
  * Thu Nhập tab drivers see in /cham-cong, and the sibling of TatTeamPanel.
  *
- * Defaults to LAST month, not this one, for the same reason the TAT monitor does:
- * payroll runs on the 25th and pays the month before, so the current month is a
- * half-finished number nobody is paid against.
+ * Defaults to this payroll month: the previous 15th through this 14th.
  *
  * Sorted by what is OWED, largest first — this is a payables list, so the biggest
  * number is the one worth checking before it is paid, not the best performer.
@@ -69,7 +67,7 @@ function shiftMonth(m: string, delta: number): string {
 function defaultMonth(): string {
   const vnNow = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Ho_Chi_Minh" })
     .format(new Date()).slice(0, 7);
-  return shiftMonth(vnNow, -1);
+  return vnNow;
 }
 
 export function PayTeamPanel() {
@@ -118,7 +116,7 @@ export function PayTeamPanel() {
     const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `luong-pt-${data.month}.csv`;
+    a.download = `luong-pt-${data.month}_${data.from}_${data.to}.csv`;
     a.click();
     URL.revokeObjectURL(a.href);
   }
@@ -140,7 +138,7 @@ export function PayTeamPanel() {
           </span>
           <button
             onClick={() => setMonth(shiftMonth(month, 1))}
-            disabled={month >= shiftMonth(defaultMonth(), 1)}
+            disabled={month >= defaultMonth()}
             className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 disabled:opacity-40"
             title="Tháng sau"
           >
@@ -156,6 +154,12 @@ export function PayTeamPanel() {
           CSV
         </button>
       </div>
+
+      {data && (
+        <p className="px-3 py-2 text-xs text-slate-600 border-b border-slate-200">
+          Kỳ lương: {data.from.split("-").reverse().join("/")} – {data.to.split("-").reverse().join("/")}
+        </p>
+      )}
 
       {/* Fleet totals. The money leads, because that is what this panel is for. */}
       {data && data.drivers.length > 0 && (
@@ -248,7 +252,7 @@ export function PayTeamPanel() {
           <p className="text-[11px] text-slate-500">
             {vnd.format(data.rates.per_hour)}đ/giờ chấm công (tính theo phút) +{" "}
             {vnd.format(data.rates.per_km)}đ/km lấy mẫu → giao mẫu của mỗi chuyến đã hoàn thành.
-            Số liệu tính đến hết {data.to}. Tải CSV để lấy số chính xác.
+            Kỳ lương từ {data.from} đến {data.to}. Tải CSV để lấy số chính xác.
           </p>
         </div>
       )}
