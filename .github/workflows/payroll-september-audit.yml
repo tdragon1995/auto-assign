@@ -15,6 +15,7 @@ concurrency:
 jobs:
   baseline:
     runs-on: ubuntu-latest
+    environment: "Production – diag-logistics"
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
