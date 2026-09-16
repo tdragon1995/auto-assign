@@ -22,14 +22,14 @@
  * rename.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { sbSelect, supabaseConfigured } from "@/lib/supabase-rest";
+import { sbSelectAll, supabaseConfigured } from "@/lib/supabase-rest";
 import { employmentOf } from "@/lib/driver-label";
 import {
   workedMinutes, hourPayFor, kmPayFor,
   RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch,
 } from "@/lib/pay";
 import { payrollPeriod } from "@/lib/pay-period";
-import { vnDate } from "@/lib/time";
+import { vnDate, addDays } from "@/lib/time";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -49,21 +49,6 @@ const num = (v: number | string | null | undefined): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
-/** PostgREST caps a response at 1,000 rows by default and says so only by
- *  returning exactly that many — a silent truncation that would drop whole
- *  drivers off the end of a month, which on THIS endpoint means somebody not
- *  getting paid. Page until a short page arrives. */
-async function selectAllPages<T>(table: string, query: string): Promise<T[]> {
-  const PAGE = 1000;
-  const out: T[] = [];
-  for (let offset = 0; ; offset += PAGE) {
-    const page = await sbSelect<T>(table, `${query}&limit=${PAGE}&offset=${offset}`);
-    out.push(...page);
-    if (page.length < PAGE) return out;
-    if (offset > 200_000) return out;
-  }
-}
-
 export async function GET(req: NextRequest) {
   if (!supabaseConfigured()) {
     return NextResponse.json({ ok: false, error: "Chưa cấu hình hệ thống lưu trữ." }, { status: 503 });
@@ -77,21 +62,38 @@ export async function GET(req: NextRequest) {
   const { from, to } = payrollPeriod(month);
 
   try {
-    const [daily, punches] = await Promise.all([
-      selectAllPages<DailyRow>(
+    const [daily, punches, sealed] = await Promise.all([
+      sbSelectAll<DailyRow>(
         "v_pay_daily",
-        `select=*&trip_date=gte.${from}&trip_date=lte.${to}&order=trip_date.asc`,
+        `select=*&trip_date=gte.${from}&trip_date=lte.${to}`,
+        "trip_date.asc,driver_id.asc",
       ),
-      selectAllPages<PayPunch>(
+      sbSelectAll<PayPunch>(
         "pay_punches",
         `select=*&trip_date=gte.${from}&trip_date=lte.${to}`,
+        "id.asc",
+      ),
+      sbSelectAll<{ trip_date: string }>(
+        "pay_days",
+        `select=trip_date&trip_date=gte.${from}&trip_date=lte.${to}`,
+        "trip_date.asc",
       ),
     ]);
+
+    // COVERAGE. A day only counts once its payroll rows were written (pay_days);
+    // zero rows otherwise looks exactly like a day nobody worked. Days up to
+    // yesterday are expected — today and later cannot be sealed yet.
+    const lastExpected = to < addDays(today, -1) ? to : addDays(today, -1);
+    const have = new Set(sealed.map((d) => d.trip_date));
+    const missingDays: string[] = [];
+    for (let d = from; d <= lastExpected; d = addDays(d, 1)) if (!have.has(d)) missingDays.push(d);
+    const periodClosed = to < today;
 
     interface Acc {
       name: string | null;
       km: number;
       jobs: number;
+      unpriced: number;
       /** Punches bucketed BY DAY, because the pairing is a within-day rule: a
        *  month's taps thrown into one list would pair a Monday check-in with a
        *  Tuesday check-out and bill the night in between. */
@@ -101,7 +103,7 @@ export async function GET(req: NextRequest) {
     }
     const acc = new Map<string, Acc>();
     const get = (id: string, name: string | null): Acc => {
-      const e = acc.get(id) ?? { name, km: 0, jobs: 0, byDay: new Map(), days: new Set() };
+      const e = acc.get(id) ?? { name, km: 0, jobs: 0, unpriced: 0, byDay: new Map(), days: new Set() };
       if (!e.name && name) e.name = name;
       acc.set(id, e);
       return e;
@@ -111,6 +113,7 @@ export async function GET(req: NextRequest) {
       const e = get(d.driver_id, d.driver_name);
       e.km += num(d.total_km);
       e.jobs += d.jobs_total;
+      e.unpriced += d.jobs_total - d.jobs_priced;
       e.days.add(d.trip_date);
     }
     for (const p of punches) {
@@ -149,6 +152,8 @@ export async function GET(req: NextRequest) {
           /** Days with a check-in and no check-out. These pay nothing, so this is
            *  the column a supervisor acts on BEFORE the 25th, not after. */
           open_in_days: openInDays,
+          /** Completed jobs with no distance: paid 0 km until priced. */
+          unpriced_jobs: e.unpriced,
         };
       });
 
@@ -161,6 +166,13 @@ export async function GET(req: NextRequest) {
       month, from, to,
       rates: { per_hour: RATE_PER_HOUR_VND, per_km: RATE_PER_KM_VND },
       driver_count: drivers.length,
+      coverage: {
+        expected_days: missingDays.length + [...have].filter((d) => d <= lastExpected).length,
+        missing_days: missingDays,
+        period_closed: periodClosed,
+        // Approval needs every day of a finished period in, and every job priced.
+        ready: periodClosed && missingDays.length === 0 && drivers.every((d) => d.unpriced_jobs === 0),
+      },
       totals: {
         days_worked: drivers.reduce((s, d) => s + d.days_worked, 0),
         jobs: drivers.reduce((s, d) => s + d.jobs, 0),
@@ -170,6 +182,7 @@ export async function GET(req: NextRequest) {
         km_pay: drivers.reduce((s, d) => s + d.km_pay, 0),
         total_pay: drivers.reduce((s, d) => s + d.total_pay, 0),
         open_in_days: drivers.reduce((s, d) => s + d.open_in_days, 0),
+        unpriced_jobs: drivers.reduce((s, d) => s + d.unpriced_jobs, 0),
       },
       drivers,
     });

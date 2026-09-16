@@ -12,7 +12,9 @@
  * header, and open when the variable is unset.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { archiveDay, type ArchiveResult } from "@/lib/tat-archive";
+import { archiveDay, getRedis, LOCK_TTL_S, type ArchiveResult } from "@/lib/tat-archive";
+import { reconcilePayDay, restorePayDay } from "@/lib/pay-reconcile";
+import { supabaseConfigured } from "@/lib/supabase-rest";
 import { vnDate } from "@/lib/time";
 import type { Env } from "@/lib/cartrack";
 
@@ -62,4 +64,52 @@ export async function GET(req: NextRequest) {
 
   const ok = results.every((r) => r.ok);
   return NextResponse.json({ ok, results }, { status: ok ? 200 : 502 });
+}
+
+/**
+ * POST /api/tat/archive — PAYROLL-ONLY reconciliation of ONE day. Operator use,
+ * driven by scripts/pay-reconcile.mts; same CRON_SECRET gate as GET.
+ *
+ *   { date }                                  dry-run: diff, exceptions, backup
+ *   { date, apply: true, digest, delete_job_ids?, delete_punch_ids? }
+ *                                             write the reviewed diff
+ *   { date, restore: { jobs, punches } }      roll a day back to a backup
+ *
+ * Never touches tat_legs. It lives here rather than on a new route so no new
+ * endpoint is exposed; it shares this route's secret and the day lock the seal
+ * pass holds, so it cannot race the morning archive of the same day.
+ */
+export async function POST(req: NextRequest) {
+  if (!authorized(req)) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (!supabaseConfigured()) return NextResponse.json({ ok: false, error: "Supabase not configured" }, { status: 503 });
+
+  const body = await req.json().catch(() => null);
+  const date = body?.date;
+  if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return NextResponse.json({ ok: false, error: "date phải có dạng YYYY-MM-DD" }, { status: 400 });
+  }
+
+  const redis = getRedis();
+  const lockKey = `tat:lock:prod:${date}`;
+  if (redis) {
+    const got = await redis.set(lockKey, Date.now(), { nx: true, ex: LOCK_TTL_S }).catch(() => null);
+    if (got !== "OK") return NextResponse.json({ ok: false, retry: true, error: "day is locked by another archive run" }, { status: 409 });
+  }
+  try {
+    const result = body.restore
+      ? await restorePayDay(date, body.restore)
+      : await reconcilePayDay(date, {
+          apply: body.apply === true,
+          digest: body.digest,
+          delete_job_ids: body.delete_job_ids,
+          delete_punch_ids: body.delete_punch_ids,
+        });
+    return NextResponse.json(result, { status: result.ok ? 200 : 409 });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[pay-reconcile] failed:", msg);
+    return NextResponse.json({ ok: false, retry: true, date, error: msg }, { status: 502 });
+  } finally {
+    if (redis) await redis.del(lockKey).catch(() => {});
+  }
 }

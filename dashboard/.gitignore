@@ -43,3 +43,6 @@ yarn-error.log*
 next-env.d.ts
 
 .vercel
+
+# payroll reconciliation reports — contain pay data, keep local
+/reports/

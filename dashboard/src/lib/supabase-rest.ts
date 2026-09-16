@@ -96,6 +96,20 @@ export async function sbSelect<T>(table: string, query: string): Promise<T[]> {
   return (await res.json()) as T[];
 }
 
+/** SELECT every row, paged. PostgREST caps a response at 1,000 rows and says so
+ *  only by returning exactly that many — a silent truncation that on the payroll
+ *  reads means somebody not getting paid. `order` is REQUIRED, and must end on a
+ *  unique column: offset paging over an unstable order skips and repeats rows. */
+export async function sbSelectAll<T>(table: string, query: string, order: string, page = 1000): Promise<T[]> {
+  if (!order.trim()) throw new Error("sbSelectAll requires a stable order");
+  const out: T[] = [];
+  for (let offset = 0; ; offset += page) {
+    const rows = await sbSelect<T>(table, `${query}&order=${order}&limit=${page}&offset=${offset}`);
+    out.push(...rows);
+    if (rows.length < page) return out;
+  }
+}
+
 /** DELETE by filter, e.g. `trip_date=eq.2026-08-12`.
  *
  *  PostgREST will happily delete a whole table if handed an empty filter, so a

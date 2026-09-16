@@ -11,7 +11,9 @@ import { Redis } from "@upstash/redis";
 import { getTimelineRoutes, type Env } from "./cartrack";
 import { buildDayLegs } from "./tat";
 import { buildDayPay } from "./pay";
-import { sbDelete, sbUpsert, supabaseConfigured, missingSupabaseEnv } from "./supabase-rest";
+import { sbDelete, sbUpsert, sbSelectAll, supabaseConfigured, missingSupabaseEnv } from "./supabase-rest";
+import { keepStoredDistances, markPayDay } from "./pay-reconcile";
+import type { PayJob } from "./pay";
 import { vnDate, addDays, vnHoursMinutes } from "./time";
 import type { TimelineRoute } from "./types";
 
@@ -19,7 +21,7 @@ import type { TimelineRoute } from "./types";
  *  stale-refresh — from both fetching the day and both rewriting it. Sized above
  *  the endpoint's own maxDuration so a killed invocation cannot leave a second
  *  one writing into the gap. */
-const LOCK_TTL_S = 90;
+export const LOCK_TTL_S = 90;
 
 export interface ArchiveResult {
   ok: boolean;
@@ -42,7 +44,7 @@ export interface ArchiveResult {
   error?: string;
 }
 
-function getRedis(): Redis | null {
+export function getRedis(): Redis | null {
   const url = process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
   if (!url || !token) return null;
@@ -69,6 +71,11 @@ async function archivePay(
 ): Promise<NonNullable<ArchiveResult["pay"]>> {
   try {
     const { jobs, punches, stats } = await buildDayPay(routes, date);
+    // A failed lookup must never overwrite a distance already stored for the same
+    // pair — the upsert below would otherwise turn a paid trip into an unpriced one.
+    if (jobs.some((j) => j.distance_km == null)) {
+      keepStoredDistances(jobs, await sbSelectAll<PayJob>("pay_jobs", `select=*&trip_date=eq.${date}`, "job_id.asc"));
+    }
     const stamp = new Date().toISOString();
     const staleOf = (d: string) => `trip_date=eq.${d}&archived_at=lt.${encodeURIComponent(stamp)}`;
 
@@ -93,6 +100,10 @@ async function archivePay(
     } else {
       await sbDelete("pay_punches", `trip_date=eq.${date}`);
     }
+
+    // Only once both tables are written: this row is what Tính lương counts as
+    // "this day is in the payroll".
+    await markPayDay(date, jobs.length, punches.length, jobs.filter((j) => j.distance_km == null).length, "archive");
 
     return { jobs: jobs.length, punches: punches.length, distances: stats };
   } catch (e) {
@@ -159,13 +170,16 @@ export async function archiveDay(date: string, env: Env = "prod"): Promise<Archi
 
     // The pay half of the same day, off the SAME routes — no second Cartrack
     // fetch, no second cron, no second seal. It runs AFTER the legs are safely
-    // written and inside its own try/catch, because a pay failure must never cost
-    // the day its TAT archive: legs are the older record and the one the seal was
-    // built for, and a lost seal would take the day's legs with it.
+    // written and inside its own try/catch, so a pay failure can never cost the day
+    // its legs. It does fail the day, though (below), so the seal is retried.
     const pay = await archivePay(routes, date);
 
+    // A pay failure does not undo the legs (already written), but it must NOT let
+    // the day seal: ok:false releases the seal so the next ping retries the day.
+    // Re-running the legs is harmless — they upsert on the same keys.
     return {
-      ok: true,
+      ok: !pay.error,
+      ...(pay.error ? { error: `pay archive failed: ${pay.error}` } : {}),
       date,
       legs: legs.length,
       measured: legs.filter((l) => l.tat_mins != null).length,

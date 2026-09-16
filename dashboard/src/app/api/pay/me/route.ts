@@ -27,7 +27,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { verifySession, NV_COOKIE } from "@/lib/driver-session";
-import { sbSelect, supabaseConfigured } from "@/lib/supabase-rest";
+import { sbSelectAll, supabaseConfigured } from "@/lib/supabase-rest";
 import { employmentOf } from "@/lib/driver-label";
 import {
   workedMinutes, hourPayFor, kmPayFor, punchAt,
@@ -144,13 +144,15 @@ export async function GET(req: NextRequest) {
     }
     try {
       const [jobs, punches] = await Promise.all([
-        sbSelect<PayJob>(
+        sbSelectAll<PayJob>(
           "pay_jobs",
-          `select=*&driver_id=eq.${driverId}&trip_date=eq.${askedDate}&order=dropoff_completed_ts.asc`,
+          `select=*&driver_id=eq.${driverId}&trip_date=eq.${askedDate}`,
+          "dropoff_completed_ts.asc,job_id.asc",
         ),
-        sbSelect<PayPunch>(
+        sbSelectAll<PayPunch>(
           "pay_punches",
           `select=*&driver_id=eq.${driverId}&trip_date=eq.${askedDate}`,
+          "id.asc",
         ),
       ]);
 
@@ -205,13 +207,15 @@ export async function GET(req: NextRequest) {
     }
 
     const [daily, punches] = await Promise.all([
-      sbSelect<DailyRow>(
+      sbSelectAll<DailyRow>(
         "v_pay_daily",
-        `select=*&driver_id=eq.${driverId}&trip_date=gte.${from}&trip_date=lte.${to}&order=trip_date.asc`,
+        `select=*&driver_id=eq.${driverId}&trip_date=gte.${from}&trip_date=lte.${to}`,
+        "trip_date.asc",
       ),
-      sbSelect<PayPunch>(
+      sbSelectAll<PayPunch>(
         "pay_punches",
         `select=*&driver_id=eq.${driverId}&trip_date=gte.${from}&trip_date=lte.${to}`,
+        "id.asc",
       ),
     ]);
 

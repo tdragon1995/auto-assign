@@ -30,6 +30,7 @@ interface DriverRow {
   km_pay: number;
   total_pay: number;
   open_in_days: number;
+  unpriced_jobs: number;
 }
 
 interface PayTeamReport {
@@ -39,6 +40,7 @@ interface PayTeamReport {
   to: string;
   rates: { per_hour: number; per_km: number };
   driver_count: number;
+  coverage: { expected_days: number; missing_days: string[]; period_closed: boolean; ready: boolean };
   totals: Omit<DriverRow, "driver_id" | "driver_name">;
   drivers: DriverRow[];
   error?: string;
@@ -101,14 +103,18 @@ export function PayTeamPanel() {
   function exportCsv() {
     if (!data) return;
     const head = ["Tài xế", "Số ngày", "Số chuyến", "Tổng km", "Giờ chấm công (phút)",
-                  "Tiền giờ (đ)", "Tiền km (đ)", "Tổng (đ)", "Ngày thiếu chấm công ra"];
+                  "Tiền giờ (đ)", "Tiền km (đ)", "Tổng (đ)", "Ngày thiếu chấm công ra", "Chuyến chưa có km"];
     const rows = data.drivers.map((d) => [
       // FULL name here, staff code and all, unlike the table on screen. This file
       // gets matched against attendance and leave in a spreadsheet, and the code
       // is what those are keyed on — two drivers share a display name today.
       d.driver_name, d.days_worked, d.jobs, d.km, d.worked_mins,
-      d.hour_pay, d.km_pay, d.total_pay, d.open_in_days,
+      d.hour_pay, d.km_pay, d.total_pay, d.open_in_days, d.unpriced_jobs,
     ]);
+    // An incomplete payroll must not leave this screen looking final.
+    if (!data.coverage.ready) {
+      rows.unshift([`CHƯA ĐỦ DỮ LIỆU — thiếu ${data.coverage.missing_days.length} ngày, ${data.totals.unpriced_jobs} chuyến chưa có km`, "", "", "", "", "", "", "", "", ""]);
+    }
     const csv = [head, ...rows]
       .map((r) => r.map((c) => (typeof c === "string" && /[",\n]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c)).join(","))
       .join("\n");
@@ -175,6 +181,20 @@ export function PayTeamPanel() {
               <p className="text-[11px] text-slate-500">{label}</p>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Incomplete coverage comes first: every figure below is short until it clears. */}
+      {data && !data.coverage.ready && (
+        <div className="flex items-start gap-2 text-[11px] text-red-800 bg-red-50 border-b border-red-200 px-3 py-2 shrink-0">
+          <AlertCircle className="size-3.5 mt-0.5 shrink-0" />
+          <span>
+            <strong>Chưa đủ dữ liệu — chưa duyệt lương kỳ này.</strong>{" "}
+            {!data.coverage.period_closed && "Kỳ lương chưa kết thúc. "}
+            {data.coverage.missing_days.length > 0 &&
+              `Thiếu ${data.coverage.missing_days.length}/${data.coverage.expected_days} ngày: ${data.coverage.missing_days.map((d) => d.slice(8, 10) + "/" + d.slice(5, 7)).join(", ")}. `}
+            {data.totals.unpriced_jobs > 0 && `${data.totals.unpriced_jobs} chuyến chưa có km (đang tính 0đ).`}
+          </span>
         </div>
       )}
 
