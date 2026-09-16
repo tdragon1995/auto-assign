@@ -305,10 +305,14 @@ interface PayReport {
   to: string;
   latest: string;
   rates: { per_hour: number; per_km: number; km_basis: string };
+  coverage: {
+    days_expected: number; days_reconciled: number;
+    complete: boolean; ready_for_approval: boolean;
+  };
   prev_month: string;
   next_month: string | null;
   summary: {
-    days: number; jobs: number; km: number; worked_mins: number;
+    days: number; jobs: number; unpriced_jobs: number; km: number; worked_mins: number;
     hour_pay: number; km_pay: number; total_pay: number; open_in_days: number;
   };
   days: PayDay[];
@@ -2483,6 +2487,16 @@ export default function ChamCongPage() {
                     </div>
                   ) : !payReport ? null : (
                     <>
+                      {!payReport.coverage.ready_for_approval && (
+                        <div className="flex items-start gap-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+                          <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                          <span>
+                            Kỳ lương đang được đối soát ({payReport.coverage.days_reconciled}/{payReport.coverage.days_expected} ngày).
+                            Số tiền hiện tại chưa phải số cuối cùng.
+                            {payReport.summary.unpriced_jobs > 0 && ` Còn ${payReport.summary.unpriced_jobs} chuyến chưa có km.`}
+                          </span>
+                        </div>
+                      )}
                       {/* The headline. */}
                       <div className="rounded-2xl border border-gray-200 overflow-hidden">
                         <div className="px-4 pt-4 pb-3">

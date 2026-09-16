@@ -37,5 +37,7 @@ training/
 dashboard/dist-export-*.csv
 # Staged inputs / resumable state for scripts/vietmap-audit.mjs
 dashboard/scripts/_audit-*
+# Restricted payroll reconciliation backups, proposals and run state.
+dashboard/payroll-audits/
 # graphify knowledge-graph build (local only — graph.json runs ~15MB; rebuild with /graphify)
 graphify-out/

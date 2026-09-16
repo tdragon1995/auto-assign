@@ -370,6 +370,7 @@ export async function attachPayDistances(jobs: PayJob[]): Promise<DistanceStats>
 export async function buildDayPay(
   routes: TimelineRoute[],
   tripDate: string,
+  existingJobs: PayJob[] = [],
 ): Promise<{ jobs: PayJob[]; punches: PayPunch[]; stats: DistanceStats }> {
   const jobs: PayJob[] = [];
   const punches: PayPunch[] = [];
@@ -378,6 +379,11 @@ export async function buildDayPay(
     jobs.push(...rows.jobs);
     punches.push(...rows.punches);
   }
-  const stats = await attachPayDistances(jobs);
+  const storedByKey = new Map(existingJobs.map((job) => [`${job.trip_date}:${job.job_id}`, job]));
+  for (const job of jobs) {
+    const stored = storedByKey.get(`${job.trip_date}:${job.job_id}`);
+    if (stored?.distance_km != null) job.distance_km = Number(stored.distance_km);
+  }
+  const stats = await attachPayDistances(jobs.filter((job) => job.distance_km == null));
   return { jobs, punches, stats };
 }

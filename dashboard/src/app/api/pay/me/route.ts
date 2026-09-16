@@ -27,7 +27,8 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { verifySession, NV_COOKIE } from "@/lib/driver-session";
-import { sbSelect, supabaseConfigured } from "@/lib/supabase-rest";
+import { sbSelectAll, supabaseConfigured } from "@/lib/supabase-rest";
+import { getPayrollCoverage, missingPayrollCoverage } from "@/lib/payroll-coverage";
 import { employmentOf } from "@/lib/driver-label";
 import {
   workedMinutes, hourPayFor, kmPayFor, punchAt,
@@ -144,13 +145,13 @@ export async function GET(req: NextRequest) {
     }
     try {
       const [jobs, punches] = await Promise.all([
-        sbSelect<PayJob>(
+        sbSelectAll<PayJob>(
           "pay_jobs",
-          `select=*&driver_id=eq.${driverId}&trip_date=eq.${askedDate}&order=dropoff_completed_ts.asc`,
+          `select=*&driver_id=eq.${driverId}&trip_date=eq.${askedDate}&order=dropoff_completed_ts.asc,job_id.asc`,
         ),
-        sbSelect<PayPunch>(
+        sbSelectAll<PayPunch>(
           "pay_punches",
-          `select=*&driver_id=eq.${driverId}&trip_date=eq.${askedDate}`,
+          `select=*&driver_id=eq.${driverId}&trip_date=eq.${askedDate}&order=job_id.asc`,
         ),
       ]);
 
@@ -197,23 +198,26 @@ export async function GET(req: NextRequest) {
   try {
     if (to < from) {
       // A month that has not started yet — the "next month" arrow can reach it.
+      const coverage = missingPayrollCoverage(askedMonth, from, periodEnd);
       return NextResponse.json({
         ok: true, driver_name: session.driver_name, month: askedMonth, from, to: from,
-        rates, latest, days: [],
-        summary: { days: 0, jobs: 0, km: 0, worked_mins: 0, hour_pay: 0, km_pay: 0, total_pay: 0, open_in_days: 0 },
+        rates, latest, coverage, days: [],
+        summary: { days: 0, jobs: 0, unpriced_jobs: 0, km: 0, worked_mins: 0, hour_pay: 0, km_pay: 0, total_pay: 0, open_in_days: 0 },
       });
     }
 
-    const [daily, punches] = await Promise.all([
-      sbSelect<DailyRow>(
+    const [daily, punches, storedCoverage] = await Promise.all([
+      sbSelectAll<DailyRow>(
         "v_pay_daily",
         `select=*&driver_id=eq.${driverId}&trip_date=gte.${from}&trip_date=lte.${to}&order=trip_date.asc`,
       ),
-      sbSelect<PayPunch>(
+      sbSelectAll<PayPunch>(
         "pay_punches",
-        `select=*&driver_id=eq.${driverId}&trip_date=gte.${from}&trip_date=lte.${to}`,
+        `select=*&driver_id=eq.${driverId}&trip_date=gte.${from}&trip_date=lte.${to}&order=trip_date.asc,job_id.asc`,
       ),
+      getPayrollCoverage(askedMonth),
     ]);
+    const coverage = storedCoverage ?? missingPayrollCoverage(askedMonth, from, periodEnd);
 
     const punchesByDay = new Map<string, PayPunch[]>();
     for (const p of punches) {
@@ -245,12 +249,14 @@ export async function GET(req: NextRequest) {
       month: askedMonth,
       from, to, latest,
       rates,
+      coverage,
       // The arrows' bounds, so the client never has to know when data began.
       prev_month: addMonths(askedMonth, -1),
       next_month: askedMonth < monthOf(vnDate()) ? addMonths(askedMonth, 1) : null,
       summary: {
         days: days.filter((d) => d.jobs > 0 || d.worked_mins > 0).length,
         jobs: days.reduce((s, d) => s + d.jobs, 0),
+        unpriced_jobs: daily.reduce((s, d) => s + Math.max(0, d.jobs_total - d.jobs_priced), 0),
         km: roundedKm,
         worked_mins: totalMins,
         hour_pay: hourPayFor(totalMins),

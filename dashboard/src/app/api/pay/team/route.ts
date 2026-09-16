@@ -22,7 +22,8 @@
  * rename.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { sbSelect, supabaseConfigured } from "@/lib/supabase-rest";
+import { sbSelectAll, supabaseConfigured } from "@/lib/supabase-rest";
+import { getPayrollCoverage, missingPayrollCoverage } from "@/lib/payroll-coverage";
 import { employmentOf } from "@/lib/driver-label";
 import {
   workedMinutes, hourPayFor, kmPayFor,
@@ -49,21 +50,6 @@ const num = (v: number | string | null | undefined): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
-/** PostgREST caps a response at 1,000 rows by default and says so only by
- *  returning exactly that many — a silent truncation that would drop whole
- *  drivers off the end of a month, which on THIS endpoint means somebody not
- *  getting paid. Page until a short page arrives. */
-async function selectAllPages<T>(table: string, query: string): Promise<T[]> {
-  const PAGE = 1000;
-  const out: T[] = [];
-  for (let offset = 0; ; offset += PAGE) {
-    const page = await sbSelect<T>(table, `${query}&limit=${PAGE}&offset=${offset}`);
-    out.push(...page);
-    if (page.length < PAGE) return out;
-    if (offset > 200_000) return out;
-  }
-}
-
 export async function GET(req: NextRequest) {
   if (!supabaseConfigured()) {
     return NextResponse.json({ ok: false, error: "Chưa cấu hình hệ thống lưu trữ." }, { status: 503 });
@@ -77,20 +63,23 @@ export async function GET(req: NextRequest) {
   const { from, to } = payrollPeriod(month);
 
   try {
-    const [daily, punches] = await Promise.all([
-      selectAllPages<DailyRow>(
+    const [daily, punches, storedCoverage] = await Promise.all([
+      sbSelectAll<DailyRow>(
         "v_pay_daily",
-        `select=*&trip_date=gte.${from}&trip_date=lte.${to}&order=trip_date.asc`,
+        `select=*&trip_date=gte.${from}&trip_date=lte.${to}&order=trip_date.asc,driver_id.asc`,
       ),
-      selectAllPages<PayPunch>(
+      sbSelectAll<PayPunch>(
         "pay_punches",
-        `select=*&trip_date=gte.${from}&trip_date=lte.${to}`,
+        `select=*&trip_date=gte.${from}&trip_date=lte.${to}&order=trip_date.asc,driver_id.asc,job_id.asc`,
       ),
+      getPayrollCoverage(month),
     ]);
+    const coverage = storedCoverage ?? missingPayrollCoverage(month, from, to);
 
     interface Acc {
       name: string | null;
       km: number;
+      unpriced: number;
       jobs: number;
       /** Punches bucketed BY DAY, because the pairing is a within-day rule: a
        *  month's taps thrown into one list would pair a Monday check-in with a
@@ -101,7 +90,7 @@ export async function GET(req: NextRequest) {
     }
     const acc = new Map<string, Acc>();
     const get = (id: string, name: string | null): Acc => {
-      const e = acc.get(id) ?? { name, km: 0, jobs: 0, byDay: new Map(), days: new Set() };
+      const e = acc.get(id) ?? { name, km: 0, jobs: 0, unpriced: 0, byDay: new Map(), days: new Set() };
       if (!e.name && name) e.name = name;
       acc.set(id, e);
       return e;
@@ -111,6 +100,7 @@ export async function GET(req: NextRequest) {
       const e = get(d.driver_id, d.driver_name);
       e.km += num(d.total_km);
       e.jobs += d.jobs_total;
+      e.unpriced += Math.max(0, d.jobs_total - d.jobs_priced);
       e.days.add(d.trip_date);
     }
     for (const p of punches) {
@@ -141,6 +131,7 @@ export async function GET(req: NextRequest) {
           driver_name: e.name || driver_id.slice(0, 8),
           days_worked: e.days.size,
           jobs: e.jobs,
+          unpriced_jobs: e.unpriced,
           km,
           worked_mins: mins,
           hour_pay: hourPayFor(mins),
@@ -160,10 +151,12 @@ export async function GET(req: NextRequest) {
       ok: true,
       month, from, to,
       rates: { per_hour: RATE_PER_HOUR_VND, per_km: RATE_PER_KM_VND },
+      coverage,
       driver_count: drivers.length,
       totals: {
         days_worked: drivers.reduce((s, d) => s + d.days_worked, 0),
         jobs: drivers.reduce((s, d) => s + d.jobs, 0),
+        unpriced_jobs: drivers.reduce((s, d) => s + d.unpriced_jobs, 0),
         km: Math.round(drivers.reduce((s, d) => s + d.km, 0) * 100) / 100,
         worked_mins: drivers.reduce((s, d) => s + d.worked_mins, 0),
         hour_pay: drivers.reduce((s, d) => s + d.hour_pay, 0),

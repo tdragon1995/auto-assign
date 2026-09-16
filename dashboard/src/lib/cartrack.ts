@@ -1630,13 +1630,14 @@ export async function getUnassignedJobsFast(dateVn: string, env: Env = "prod"): 
 export async function getJobsByStatusAndDate(
   statusId: number,
   dateVn: string, // "YYYY-MM-DD"
-  env: Env = "prod"
+  env: Env = "prod",
+  options: { strictPagination?: boolean } = {},
 ): Promise<Job[]> {
   // Paginate to exhaustion: a single page caps at 1000 rows and busy days now
   // approach that (825 assigned jobs on 2026-06-12). Silent truncation would
   // drop jobs from duplicate detection, via-legs and return-trip dedup.
   const PAGE_SIZE = 1000;
-  const MAX_PAGES = 5;
+  const MAX_PAGES = options.strictPagination ? 1000 : 5;
   const all: Job[] = [];
   const seen = new Set<number>();
   for (let page = 1; page <= MAX_PAGES; page++) {
@@ -1654,6 +1655,9 @@ export async function getJobsByStatusAndDate(
     });
     if (!r.ok) throw new Error(`getJobsByStatusAndDate ${statusId} failed: ${r.status}`);
     const json = await r.json();
+    if (options.strictPagination && !Array.isArray(json.data)) {
+      throw new Error(`Cartrack ${dateVn} returned an unfamiliar jobs response`);
+    }
     const batch: Job[] = json.data ?? [];
     let added = 0;
     for (const j of batch) {
@@ -1664,8 +1668,13 @@ export async function getJobsByStatusAndDate(
     }
     // A short page is the last page. `added === 0` guards against an API that
     // ignores `page` and replays the same rows forever.
-    if (batch.length < PAGE_SIZE || added === 0) break;
+    if (batch.length < PAGE_SIZE) break;
+    if (added === 0) {
+      if (options.strictPagination) throw new Error(`Cartrack repeated a full page for ${dateVn}; completeness cannot be verified`);
+      break;
+    }
     if (page === MAX_PAGES) {
+      if (options.strictPagination) throw new Error(`Cartrack ${dateVn} reached the pagination cap; completeness cannot be verified`);
       console.warn(`[cartrack] getJobsByStatusAndDate(${statusId}, ${dateVn}) hit the ${MAX_PAGES}-page cap — list may be truncated`);
     }
   }

@@ -96,6 +96,23 @@ export async function sbSelect<T>(table: string, query: string): Promise<T[]> {
   return (await res.json()) as T[];
 }
 
+/** Exhaust a PostgREST query without accepting its silent 1,000-row default.
+ * Callers must include a deterministic `order=` clause so rows cannot move
+ * between pages when several records share the leading sort field. */
+export async function sbSelectAll<T>(table: string, query: string): Promise<T[]> {
+  if (!/(^|&)order=/.test(query)) {
+    throw new Error("sbSelectAll requires a stable order= clause");
+  }
+  const pageSize = 1000;
+  const out: T[] = [];
+  for (let offset = 0; ; offset += pageSize) {
+    const page = await sbSelect<T>(table, `${query}&limit=${pageSize}&offset=${offset}`);
+    out.push(...page);
+    if (page.length < pageSize) return out;
+    if (offset >= 200_000) throw new Error(`Supabase ${table} exceeded the pagination safety cap`);
+  }
+}
+
 /** DELETE by filter, e.g. `trip_date=eq.2026-08-12`.
  *
  *  PostgREST will happily delete a whole table if handed an empty filter, so a

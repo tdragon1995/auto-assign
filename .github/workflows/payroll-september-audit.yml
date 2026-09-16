@@ -1,0 +1,42 @@
+name: September payroll baseline
+
+# A bounded operator audit on its isolated branch. No cron or public endpoint.
+on:
+  push:
+    branches: [codex/payroll-september-audit]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: payroll-september-baseline
+  cancel-in-progress: false
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci --no-audit --no-fund
+        working-directory: dashboard
+      - name: Capture encrypted payroll baseline
+        working-directory: dashboard
+        run: >-
+          node node_modules/tsx/dist/cli.mjs scripts/payroll-reconcile.mts
+          --month=2026-09 --capture-baseline=baseline.encrypted.json
+          --recipient=scripts/payroll-audit-recipient.pem
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: payroll-september-encrypted-baseline
+          path: dashboard/baseline.encrypted.json
+          retention-days: 7
+          if-no-files-found: error

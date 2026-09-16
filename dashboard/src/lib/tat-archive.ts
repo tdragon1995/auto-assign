@@ -11,7 +11,10 @@ import { Redis } from "@upstash/redis";
 import { getTimelineRoutes, type Env } from "./cartrack";
 import { buildDayLegs } from "./tat";
 import { buildDayPay } from "./pay";
-import { sbDelete, sbUpsert, supabaseConfigured, missingSupabaseEnv } from "./supabase-rest";
+import { sbDelete, sbSelectAll, sbUpsert, supabaseConfigured, missingSupabaseEnv } from "./supabase-rest";
+import { diffPayRows, onlyPartTime } from "./payroll-reconcile";
+import { invalidatePayrollCoverageForDate } from "./payroll-coverage";
+import type { PayJob, PayPunch } from "./pay";
 import { vnDate, addDays, vnHoursMinutes } from "./time";
 import type { TimelineRoute } from "./types";
 
@@ -30,8 +33,8 @@ export interface ArchiveResult {
   longGaps?: number;
   /** Where the distance answers came from — cache vs billed API vs failed. */
   distances?: { pairs: number; cache: number; api: number; self: number; failed: number; noCoords: number };
-  /** The part-time pay half of the same pass. `error` here is reported, never
-   *  thrown: pay rides the leg archive and must never be able to fail it. */
+  /** The part-time pay half of the same pass. A reported error makes the whole
+   *  archive result unsuccessful so the daily seal is released and retried. */
   pay?: {
     jobs?: number;
     punches?: number;
@@ -49,15 +52,17 @@ function getRedis(): Redis | null {
   return new Redis({ url, token });
 }
 
+/** Kept explicit so the seal contract is testable: payroll failure must make the
+ * day retryable even when the TAT rows themselves were written successfully. */
+export const payrollArchiveSucceeded = (pay: ArchiveResult["pay"]): boolean => !pay?.error;
+
 /**
  * The part-time pay rows for a day, written with the same upsert-then-delete
  * order and for the same reason as the legs above: a write that dies must leave
  * the previous copy of the day intact rather than an empty one.
  *
- * NEVER THROWS. It is called from inside archiveDay's own try, where an
- * exception would be caught as an archive failure — which releases the seal and
- * costs the day its legs as well as its pay. Pay is the newer, smaller record and
- * rides along; it does not get to fail the thing it is riding on.
+ * NEVER THROWS. Its structured error makes archiveDay return ok=false, which
+ * releases the daily seal for a retry while keeping the already-written TAT rows.
  *
  * Punches are written even for a driver with no paid jobs. A day where somebody
  * clocked in and was never dispatched is still hours worked, and dropping it
@@ -68,7 +73,16 @@ async function archivePay(
   date: string,
 ): Promise<NonNullable<ArchiveResult["pay"]>> {
   try {
-    const { jobs, punches, stats } = await buildDayPay(routes, date);
+    const [existingJobs, existingPunches] = await Promise.all([
+      sbSelectAll<PayJob>("pay_jobs", `select=*&trip_date=eq.${date}&order=job_id.asc`),
+      sbSelectAll<PayPunch>("pay_punches", `select=*&trip_date=eq.${date}&order=job_id.asc`),
+    ]);
+    const { jobs, punches, stats } = await buildDayPay(routes, date, existingJobs);
+    const jobDiff = diffPayRows(onlyPartTime(jobs), onlyPartTime(existingJobs));
+    const punchDiff = diffPayRows(onlyPartTime(punches), onlyPartTime(existingPunches));
+    if ([jobDiff, punchDiff].some((diff) => diff.missing.length || diff.stale.length || diff.changed.length)) {
+      await invalidatePayrollCoverageForDate(date);
+    }
     const stamp = new Date().toISOString();
     const staleOf = (d: string) => `trip_date=eq.${d}&archived_at=lt.${encodeURIComponent(stamp)}`;
 
@@ -159,13 +173,13 @@ export async function archiveDay(date: string, env: Env = "prod"): Promise<Archi
 
     // The pay half of the same day, off the SAME routes — no second Cartrack
     // fetch, no second cron, no second seal. It runs AFTER the legs are safely
-    // written and inside its own try/catch, because a pay failure must never cost
-    // the day its TAT archive: legs are the older record and the one the seal was
-    // built for, and a lost seal would take the day's legs with it.
+    // written. A payroll error preserves those legs but releases the seal so the
+    // scheduled pass can retry payroll on its next run.
     const pay = await archivePay(routes, date);
+    const payOk = payrollArchiveSucceeded(pay);
 
     return {
-      ok: true,
+      ok: payOk,
       date,
       legs: legs.length,
       measured: legs.filter((l) => l.tat_mins != null).length,
@@ -173,6 +187,7 @@ export async function archiveDay(date: string, env: Env = "prod"): Promise<Archi
       longGaps: legs.filter((l) => l.long_gap).length,
       distances: stats,
       pay,
+      error: pay.error ? `Payroll archive failed: ${pay.error}` : undefined,
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

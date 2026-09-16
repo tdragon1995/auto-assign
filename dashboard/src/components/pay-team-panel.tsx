@@ -24,6 +24,7 @@ interface DriverRow {
   driver_name: string;
   days_worked: number;
   jobs: number;
+  unpriced_jobs: number;
   km: number;
   worked_mins: number;
   hour_pay: number;
@@ -38,6 +39,11 @@ interface PayTeamReport {
   from: string;
   to: string;
   rates: { per_hour: number; per_km: number };
+  coverage: {
+    days_expected: number; days_reconciled: number; failed_days: string[];
+    source_exceptions: number; unpriced_jobs: number; attendance_exceptions: number;
+    complete: boolean; ready_for_approval: boolean; reconciled_at: string;
+  };
   driver_count: number;
   totals: Omit<DriverRow, "driver_id" | "driver_name">;
   drivers: DriverRow[];
@@ -101,13 +107,15 @@ export function PayTeamPanel() {
   function exportCsv() {
     if (!data) return;
     const head = ["Tài xế", "Số ngày", "Số chuyến", "Tổng km", "Giờ chấm công (phút)",
-                  "Tiền giờ (đ)", "Tiền km (đ)", "Tổng (đ)", "Ngày thiếu chấm công ra"];
+                  "Tiền giờ (đ)", "Tiền km (đ)", "Tổng (đ)", "Ngày thiếu chấm công ra",
+                  "Chuyến chưa có km", "Từ ngày", "Đến ngày", "Trạng thái kỳ lương"];
     const rows = data.drivers.map((d) => [
       // FULL name here, staff code and all, unlike the table on screen. This file
       // gets matched against attendance and leave in a spreadsheet, and the code
       // is what those are keyed on — two drivers share a display name today.
       d.driver_name, d.days_worked, d.jobs, d.km, d.worked_mins,
-      d.hour_pay, d.km_pay, d.total_pay, d.open_in_days,
+      d.hour_pay, d.km_pay, d.total_pay, d.open_in_days, d.unpriced_jobs, data.from, data.to,
+      data.coverage.ready_for_approval ? "Sẵn sàng duyệt" : "Chưa sẵn sàng duyệt",
     ]);
     const csv = [head, ...rows]
       .map((r) => r.map((c) => (typeof c === "string" && /[",\n]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c)).join(","))
@@ -159,6 +167,18 @@ export function PayTeamPanel() {
         <p className="px-3 py-2 text-xs text-slate-600 border-b border-slate-200">
           Kỳ lương: {data.from.split("-").reverse().join("/")} – {data.to.split("-").reverse().join("/")}
         </p>
+      )}
+
+      {data && !data.coverage.ready_for_approval && (
+        <div className="flex items-start gap-2 text-[11px] text-amber-800 bg-amber-50 border-b border-amber-200 px-3 py-2 shrink-0">
+          <AlertCircle className="size-3.5 mt-0.5 shrink-0" />
+          <span>
+            Kỳ lương chưa sẵn sàng duyệt: đã đối soát {data.coverage.days_reconciled}/{data.coverage.days_expected} ngày
+            {data.totals.unpriced_jobs > 0 ? `, còn ${data.totals.unpriced_jobs} chuyến chưa có km` : ""}.
+            {data.coverage.source_exceptions > 0 && ` Còn ${data.coverage.source_exceptions} chênh lệch cần xử lý.`}
+            {data.coverage.attendance_exceptions > 0 && ` Có ${data.coverage.attendance_exceptions} chấm công cần duyệt.`}
+          </span>
+        </div>
       )}
 
       {/* Fleet totals. The money leads, because that is what this panel is for. */}
@@ -224,6 +244,7 @@ export function PayTeamPanel() {
                         drivers hold a part-time and a full-time account under one
                         personal name, and pay is filed against the ACCOUNT. */}
                     <DriverName full={d.driver_name} className="font-medium text-slate-800" />
+                    {d.unpriced_jobs > 0 && <p className="text-[11px] text-amber-700">{d.unpriced_jobs} chuyến chưa có km</p>}
                   </td>
                   <td className="text-right px-2 py-2 text-slate-600">{d.days_worked}</td>
                   <td className="text-right px-2 py-2 text-slate-600 tabular-nums">{fmtHours(d.worked_mins)}</td>
