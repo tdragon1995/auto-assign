@@ -164,7 +164,7 @@ export function JobAdminPanel({ env }: { env: Env }) {
       const res = await fetch(`/api/admin/complete-job?env=${env}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ job_id: job.job_id }),
+        body: JSON.stringify({ job_id: job.job_id, driver_id: job.delivery_driver_id }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -182,21 +182,22 @@ export function JobAdminPanel({ env }: { env: Env }) {
   }, [job, env, setHitStatus]);
 
   const [unlocking, setUnlocking] = useState(false);
+  // driver_id → when their geofence locks again, so the button shows it is already open.
+  const [openUntil, setOpenUntil] = useState<Record<string, number>>({});
   const doGeofenceBypass = useCallback(async () => {
     if (!job?.delivery_driver_id) return;
-    if (!window.confirm("Mở geofence 5 phút cho tài xế của job này?\n\nTài xế hoàn thành điểm dừng được dù không ở gần; hệ thống tự khoá lại sau ~5–7 phút.")) return;
     setUnlocking(true);
     try {
       const res = await fetch(`/api/admin/geofence-bypass?env=${env}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ job_id: job.job_id }),
+        body: JSON.stringify({ job_id: job.job_id, driver_id: job.delivery_driver_id }),
       });
       const data = await res.json();
       if (!res.ok) toast.error(data.error ?? "Mở geofence thất bại");
       else {
-        toast.success(`Đã mở geofence (${data.stage === "pickup" ? "lấy mẫu" : "giao mẫu"}) đến ${new Date(data.until).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}`);
-        if (data.warning) toast.warning(data.warning);
+        setOpenUntil((m) => ({ ...m, [job.delivery_driver_id!]: data.until }));
+        toast.success(`Đã mở geofence đến ${new Date(data.until).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}`);
       }
     } catch {
       toast.error("Lỗi kết nối, vui lòng thử lại");
@@ -363,11 +364,15 @@ export function JobAdminPanel({ env }: { env: Env }) {
                               {job.delivery_driver_id ? (
                                 <Button
                                   onClick={doGeofenceBypass}
-                                  disabled={unlocking}
+                                  disabled={unlocking || (openUntil[job.delivery_driver_id] ?? 0) > Date.now()}
                                   variant="outline"
                                   className="w-full h-8"
                                 >
-                                  {unlocking ? "Đang mở…" : "Mở geofence 5 phút"}
+                                  {unlocking
+                                    ? "Đang mở…"
+                                    : (openUntil[job.delivery_driver_id] ?? 0) > Date.now()
+                                      ? `Đã mở đến ${new Date(openUntil[job.delivery_driver_id]).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}`
+                                      : "Mở geofence 5 phút"}
                                 </Button>
                               ) : (
                                 <p className="text-[11px] text-slate-400">Chỉ hoàn thành được job đã giao cho tài xế.</p>

@@ -1292,7 +1292,7 @@ async function ensureLogSheet(
   readyLogSheets.add(title);
 }
 
-async function appendLogRow(title: string, headers: string[], row: (string | number | null)[]): Promise<void> {
+async function appendLogRows(title: string, headers: string[], rows: (string | number | null)[][]): Promise<void> {
   const sheets = getSheetsClient();
   await ensureLogSheet(sheets, title, headers);
   await sheets.spreadsheets.values.append({
@@ -1300,7 +1300,7 @@ async function appendLogRow(title: string, headers: string[], row: (string | num
     range: `'${title}'!A1`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
-    requestBody: { values: [row] },
+    requestBody: { values: rows },
   });
 }
 
@@ -1308,7 +1308,7 @@ async function appendLogRow(title: string, headers: string[], row: (string | num
  *  NV_LOG_HEADERS. Caller should treat this as best-effort (don't fail the claim
  *  if it throws). */
 export async function appendNhanViecLog(row: (string | number | null)[]): Promise<void> {
-  await appendLogRow(NV_LOG_SHEET, NV_LOG_HEADERS, row);
+  await appendLogRows(NV_LOG_SHEET, NV_LOG_HEADERS, [row]);
 }
 
 // ── Geofence bypass log ("Mở geofence 5 phút" in Quản trị công việc) ──────────
@@ -1321,9 +1321,9 @@ const GF_LOG_HEADERS = [
   "Loại", "Điểm mở", "Điểm lấy", "Điểm giao", "Mở đến",
 ];
 
-/** Order matches GF_LOG_HEADERS. Best-effort — the geofence is already open. */
-export async function appendGeofenceLog(row: (string | number | null)[]): Promise<void> {
-  await appendLogRow(GF_LOG_SHEET, GF_LOG_HEADERS, row);
+/** Rows in GF_LOG_HEADERS order, queued in Redis and flushed by the assign cron. */
+export async function appendGeofenceLog(rows: (string | number | null)[][]): Promise<void> {
+  await appendLogRows(GF_LOG_SHEET, GF_LOG_HEADERS, rows);
 }
 
 // ── Writing config rows ─────────────────────────────────────────────────────
