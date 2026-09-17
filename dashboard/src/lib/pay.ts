@@ -240,6 +240,34 @@ export function payEligible(jobStops: Pick<TimelineStop, "jobLabels" | "itemTrac
   return true;
 }
 
+/** Two jobs closer than this at BOTH ends are one trip. */
+export const SAME_TRIP_WINDOW_MS = 5 * 60_000;
+
+/**
+ * SAME-TRIP DUPLICATES (payroll rule, confirmed 2026-09-17): one driver's jobs with
+ * the same pickup and dropoff customer, picked up within 5 minutes of each other AND
+ * dropped off within 5 minutes of each other, are one ride and pay once. The lowest
+ * job id is kept. This covers a job completed twice (a plan slot plus a booking for
+ * the same pickup) and two batches carried together on one ride. A job missing
+ * either stamp is never merged — there is nothing to prove it was the same ride.
+ */
+export function dropSameTripDuplicates<T extends Pick<PayJob,
+  "job_id" | "driver_id" | "pickup_customer_id" | "dropoff_customer_id" | "pickup_completed_ts" | "dropoff_completed_ts">>(jobs: T[]): T[] {
+  const kept: T[] = [];
+  const near = (a: string | null, b: string | null) =>
+    a != null && b != null && Math.abs(Date.parse(a) - Date.parse(b)) <= SAME_TRIP_WINDOW_MS;
+  for (const j of [...jobs].sort((a, b) => a.job_id - b.job_id)) {
+    const dup = kept.some((k) =>
+      k.driver_id === j.driver_id &&
+      k.pickup_customer_id === j.pickup_customer_id &&
+      k.dropoff_customer_id === j.dropoff_customer_id &&
+      near(k.pickup_completed_ts, j.pickup_completed_ts) &&
+      near(k.dropoff_completed_ts, j.dropoff_completed_ts));
+    if (!dup) kept.push(j);
+  }
+  return kept;
+}
+
 /**
  * One driver's day of routes → the rows to archive.
  *
@@ -323,6 +351,9 @@ export function payRowsForRoute(
   }
 
   // Oldest first, so a day reads down the page in the order it was worked.
+  const paid = dropSameTripDuplicates(jobs);
+  jobs.length = 0;
+  jobs.push(...paid);
   jobs.sort((a, b) => Date.parse(a.dropoff_completed_ts ?? "") - Date.parse(b.dropoff_completed_ts ?? ""));
   return { jobs, punches };
 }

@@ -14,7 +14,7 @@
  *   npx tsx scripts/pay.test.mts
  */
 import {
-  workedMinutes, payRowsForRoute, hourPayFor, kmPayFor,
+  workedMinutes, payRowsForRoute, hourPayFor, kmPayFor, dropSameTripDuplicates,
   RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch,
 } from "../src/lib/pay";
 import type { TimelineRoute, TimelineStop } from "../src/lib/types";
@@ -122,9 +122,9 @@ const route = (stops: TimelineStop[]): TimelineRoute =>
 // the same set of distances as the four LEGS the driver rode. Note the stops are
 // interleaved — a job's pickup and dropoff are usually NOT consecutive.
 const threeJobs = payRowsForRoute(route([
-  stop({ jobId: 11, stopId: 1, stopTypeId: 1, customerName: "Clinic 1" }),
-  stop({ jobId: 12, stopId: 2, stopTypeId: 1, customerName: "Clinic 2" }),
-  stop({ jobId: 13, stopId: 3, stopTypeId: 1, customerName: "Clinic 3" }),
+  stop({ jobId: 11, stopId: 1, stopTypeId: 1, customerId: "CL1", customerName: "Clinic 1" }),
+  stop({ jobId: 12, stopId: 2, stopTypeId: 1, customerId: "CL2", customerName: "Clinic 2" }),
+  stop({ jobId: 13, stopId: 3, stopTypeId: 1, customerId: "CL3", customerName: "Clinic 3" }),
   stop({ jobId: 11, stopId: 4, stopTypeId: 2, customerName: "BRA - D001" }),
   stop({ jobId: 12, stopId: 5, stopTypeId: 2, customerName: "BRA - D001" }),
   stop({ jobId: 13, stopId: 6, stopTypeId: 2, customerName: "BRA - D001" }),
@@ -151,7 +151,7 @@ console.log("\n4. Chấm công is a punch, never a paid job");
 const withChamCong = payRowsForRoute(route([
   stop({ jobId: 41, stopId: 10, stopTypeId: 3, referenceNumber: "Chấm Công - Vào",
         jobLabels: [{ label: "check_in" }], activityCompletedTs: `${DAY} 07:55:00` }),
-  stop({ jobId: 42, stopId: 11, stopTypeId: 1, customerName: "Clinic 1" }),
+  stop({ jobId: 42, stopId: 11, stopTypeId: 1, customerId: "CL1", customerName: "Clinic 1" }),
   stop({ jobId: 42, stopId: 12, stopTypeId: 2, customerName: "BRA - D001" }),
   stop({ jobId: 43, stopId: 13, stopTypeId: 3, referenceNumber: "Chấm Công - Ra",
         jobLabels: [{ label: "check_out" }], activityCompletedTs: `${DAY} 17:05:00` }),
@@ -181,7 +181,7 @@ console.log("\n6. Eligibility: return runs never, via runs only with a batch");
   const RET = [{ labelId: 739, label: "🛵 Vận chuyển mẫu PSC (về)" }] as unknown as Labels;
   const VIA = [{ labelId: 743, label: "🛵 Vận chuyển mẫu PSC (ghé)" }] as unknown as Labels;
   const pair = (id: number, extra: Partial<TimelineStop>) => [
-    stop({ jobId: id, stopId: id * 10 + 1, stopTypeId: 1, ...extra }),
+    stop({ jobId: id, stopId: id * 10 + 1, stopTypeId: 1, customerId: `P${id}`, ...extra }),
     stop({ jobId: id, stopId: id * 10 + 2, stopTypeId: 2, ...extra }),
   ];
   const r = payRowsForRoute(route([
@@ -196,6 +196,29 @@ console.log("\n6. Eligibility: return runs never, via runs only with a batch");
   check("via run with no batch is not paid", !ids.includes(22) && !ids.includes(25));
   check("via run carrying a batch is paid", ids.includes(23));
   check("outbound run is paid as before", ids.includes(24), JSON.stringify(ids));
+}
+
+console.log("\n7. Same trip within 5 minutes at both ends pays once");
+{
+  const j = (id: number, pick: string, drop: string, o: Record<string, unknown> = {}) => ({
+    job_id: id, driver_id: "d1", pickup_customer_id: "D004", dropoff_customer_id: "D001",
+    pickup_completed_ts: `${DAY}T${pick}+07:00`, dropoff_completed_ts: `${DAY}T${drop}+07:00`, ...o,
+  }) as Parameters<typeof dropSameTripDuplicates>[0][number];
+  const ids = (xs: ReturnType<typeof dropSameTripDuplicates>) => xs.map((x) => x.job_id).sort();
+  check("exact double-completion keeps the lower id",
+    JSON.stringify(ids(dropSameTripDuplicates([j(2, "19:46:52", "20:26:40"), j(1, "19:46:52", "20:26:40")]))) === "[1]");
+  check("two batches picked 4 min apart, dropped together → one",
+    ids(dropSameTripDuplicates([j(1, "19:46:52", "20:26:40"), j(2, "19:50:50", "20:27:51")])).length === 1);
+  check("pickup 6 min apart → two trips",
+    ids(dropSameTripDuplicates([j(1, "19:40:00", "20:26:40"), j(2, "19:46:01", "20:26:40")])).length === 2);
+  check("drop 6 min apart → two trips",
+    ids(dropSameTripDuplicates([j(1, "19:40:00", "20:20:00"), j(2, "19:40:00", "20:26:01")])).length === 2);
+  check("different dropoff → two trips",
+    ids(dropSameTripDuplicates([j(1, "19:40:00", "20:20:00"), j(2, "19:40:00", "20:20:00", { dropoff_customer_id: "D002" })])).length === 2);
+  check("different driver → two trips",
+    ids(dropSameTripDuplicates([j(1, "19:40:00", "20:20:00"), j(2, "19:40:00", "20:20:00", { driver_id: "d2" })])).length === 2);
+  check("missing stamp is never merged",
+    ids(dropSameTripDuplicates([j(1, "19:40:00", "20:20:00"), j(2, "19:40:00", "20:20:00", { pickup_completed_ts: null })])).length === 2);
 }
 
 console.log(failures === 0 ? "\nAll pay checks passed." : `\n${failures} check(s) FAILED.`);
