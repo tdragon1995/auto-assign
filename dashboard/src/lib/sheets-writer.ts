@@ -1268,41 +1268,62 @@ const NV_LOG_HEADERS = [
   "Thời gian", "Tài xế", "driver_id", "Job ID", "Mã đơn",
   "Điểm lấy", "Điểm giao", "Tài xế trước đó", "Trạng thái lấy hàng",
 ];
-let nvLogSheetReady = false;
+const readyLogSheets = new Set<string>();
 
-/** Ensure the log tab exists (create with a header row on first use). */
-async function ensureNvLogSheet(sheets: ReturnType<typeof google.sheets>): Promise<void> {
-  if (nvLogSheetReady) return;
+/** Ensure a log tab exists (create with a header row on first use). */
+async function ensureLogSheet(
+  sheets: ReturnType<typeof google.sheets>, title: string, headers: string[],
+): Promise<void> {
+  if (readyLogSheets.has(title)) return;
   const meta = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
-  const exists = meta.data.sheets?.some((s) => s.properties?.title === NV_LOG_SHEET);
+  const exists = meta.data.sheets?.some((s) => s.properties?.title === title);
   if (!exists) {
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId: SHEET_ID,
-      requestBody: { requests: [{ addSheet: { properties: { title: NV_LOG_SHEET } } }] },
+      requestBody: { requests: [{ addSheet: { properties: { title } } }] },
     });
     await sheets.spreadsheets.values.update({
       spreadsheetId: SHEET_ID,
-      range: `'${NV_LOG_SHEET}'!A1`,
+      range: `'${title}'!A1`,
       valueInputOption: "RAW",
-      requestBody: { values: [NV_LOG_HEADERS] },
+      requestBody: { values: [headers] },
     });
   }
-  nvLogSheetReady = true;
+  readyLogSheets.add(title);
+}
+
+async function appendLogRow(title: string, headers: string[], row: (string | number | null)[]): Promise<void> {
+  const sheets = getSheetsClient();
+  await ensureLogSheet(sheets, title, headers);
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: SHEET_ID,
+    range: `'${title}'!A1`,
+    valueInputOption: "RAW",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: { values: [row] },
+  });
 }
 
 /** Append one audit row for a successful driver self-claim. Order matches
  *  NV_LOG_HEADERS. Caller should treat this as best-effort (don't fail the claim
  *  if it throws). */
 export async function appendNhanViecLog(row: (string | number | null)[]): Promise<void> {
-  const sheets = getSheetsClient();
-  await ensureNvLogSheet(sheets);
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: SHEET_ID,
-    range: `'${NV_LOG_SHEET}'!A1`,
-    valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: { values: [row] },
-  });
+  await appendLogRow(NV_LOG_SHEET, NV_LOG_HEADERS, row);
+}
+
+// ── Geofence bypass log ("Mở geofence 5 phút" in Quản trị công việc) ──────────
+// "Loại" is Lấy mẫu while the pickup stop is not yet completed, Giao mẫu once it is;
+// "Điểm mở" is the stop that stage points at.
+
+const GF_LOG_SHEET = "Mở Geofence Log";
+const GF_LOG_HEADERS = [
+  "Thời gian", "Tài xế", "driver_id", "Job ID", "Mã đơn",
+  "Loại", "Điểm mở", "Điểm lấy", "Điểm giao", "Mở đến",
+];
+
+/** Order matches GF_LOG_HEADERS. Best-effort — the geofence is already open. */
+export async function appendGeofenceLog(row: (string | number | null)[]): Promise<void> {
+  await appendLogRow(GF_LOG_SHEET, GF_LOG_HEADERS, row);
 }
 
 // ── Writing config rows ─────────────────────────────────────────────────────

@@ -190,11 +190,14 @@ export function JobAdminPanel({ env }: { env: Env }) {
       const res = await fetch(`/api/admin/geofence-bypass?env=${env}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ driver_id: job.delivery_driver_id }),
+        body: JSON.stringify({ job_id: job.job_id }),
       });
       const data = await res.json();
       if (!res.ok) toast.error(data.error ?? "Mở geofence thất bại");
-      else toast.success(`Đã mở geofence đến ${new Date(data.until).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}`);
+      else {
+        toast.success(`Đã mở geofence (${data.stage === "pickup" ? "lấy mẫu" : "giao mẫu"}) đến ${new Date(data.until).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}`);
+        if (data.warning) toast.warning(data.warning);
+      }
     } catch {
       toast.error("Lỗi kết nối, vui lòng thử lại");
     } finally {
