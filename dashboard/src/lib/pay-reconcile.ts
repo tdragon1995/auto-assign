@@ -22,12 +22,12 @@
  */
 import { createHash } from "node:crypto";
 import { getTimelineRoutes, getJobsByStatusAndDate, type Env } from "./cartrack";
-import { payRowsForRoute, attachPayDistances, workedMinutes, hourPayFor, kmPayFor, type PayJob, type PayPunch } from "./pay";
-import { isChamCong } from "./job-filters";
+import { payRowsForRoute, payEligible, attachPayDistances, workedMinutes, hourPayFor, kmPayFor, type PayJob, type PayPunch } from "./pay";
+import { isChamCong, PSC_RETURN_LABEL } from "./job-filters";
 import { employmentOf } from "./driver-label";
 import { sbSelectAll, sbUpsert, sbDelete } from "./supabase-rest";
 import type { DistanceStats } from "./tat";
-import type { Job, TimelineRoute } from "./types";
+import type { Job, TimelineRoute, TimelineStop } from "./types";
 
 type StoredJob = PayJob & { id?: number; archived_at?: string };
 type StoredPunch = PayPunch & { id?: number; archived_at?: string };
@@ -116,6 +116,9 @@ export interface DayInput {
   /** REST completed jobs scheduled that day — the cross-check source. */
   restCompleted: Job[];
   stored: { jobs: StoredJob[]; punches: StoredPunch[] };
+  /** Jobs the timeline shows as completed pairs that the pay rule excludes (return
+   *  runs, vias without a batch). Not paid on purpose, so not a cross-check miss. */
+  ineligible?: Set<number>;
   /** The same job ids stored under ANOTHER trip_date. */
   otherDates: { job_id: number; trip_date: string; driver_id: string }[];
 }
@@ -134,6 +137,7 @@ export function diffPayDay(input: DayInput, proposedJobsIn: PayJob[], proposedPu
   const restDriver = new Map<number, string | null>();
   for (const j of restCompleted) {
     if (isChamCong(j)) continue;
+    if (input.ineligible?.has(Number(j.job_id)) || (j.labels ?? []).includes(PSC_RETURN_LABEL)) continue;
     const types = new Set((j.stops ?? []).map((s) => Number(s.stop_type_id)));
     if (!types.has(1) || !types.has(2)) continue;
     restDriver.set(Number(j.job_id), j.delivery_driver_id ?? null);
@@ -244,7 +248,13 @@ export async function reconcilePayDay(date: string, opts: ReconcileOptions = {},
   const jobs: PayJob[] = [];
   const punches: PayPunch[] = [];
   const tracking = new Map<number, string[]>();
+  const ineligible = new Set<number>();
   for (const r of routes) {
+    const byJob = new Map<number, TimelineStop[]>();
+    for (const s of r.orderedStops ?? []) {
+      const l = byJob.get(Number(s.jobId)); if (l) l.push(s); else byJob.set(Number(s.jobId), [s]);
+    }
+    for (const [id, st] of byJob) if (!payEligible(st)) ineligible.add(id);
     const rows = payRowsForRoute(r, date);
     jobs.push(...rows.jobs); punches.push(...rows.punches);
     for (const s of r.orderedStops ?? []) {
@@ -265,7 +275,7 @@ export async function reconcilePayDay(date: string, opts: ReconcileOptions = {},
       "pay_jobs", `select=job_id,trip_date,driver_id&trip_date=neq.${date}&job_id=in.(${ids.slice(i, i + 150).join(",")})`, "id.asc"));
   }
 
-  const report = diffPayDay({ date, routes, restCompleted, stored: { jobs: storedJobs, punches: storedPunches }, otherDates }, jobs, punches, tracking);
+  const report = diffPayDay({ date, routes, restCompleted, stored: { jobs: storedJobs, punches: storedPunches }, otherDates, ineligible }, jobs, punches, tracking);
   const { write, ...rest } = report;
   const base = { ok: true, mode: opts.apply ? "apply" : "dry-run", distances: { ...stats, reused_stored: reused }, ...rest, backup: { jobs: storedJobs, punches: storedPunches } };
 

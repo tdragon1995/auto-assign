@@ -107,6 +107,16 @@ console.log("\n6. Attendance exceptions — nothing invented");
   check("REST-only job flagged, not dropped silently", diffPayDay(input({ restCompleted: [rest(77)] }), [], [], new Map()).exceptions.some((e) => e.kind === "rest_only_job"));
 }
 
+console.log("\n6b. Jobs excluded by the pay rule are not cross-check misses");
+{
+  const ret = { ...rest(501), labels: ["🛵 Vận chuyển mẫu PSC (về)"] } as Job;
+  const r = diffPayDay(input({ restCompleted: [ret, rest(502), rest(503)], ineligible: new Set([502]) }), [], [], new Map());
+  const flagged = r.exceptions.filter((e) => e.kind === "rest_only_job").map((e) => e.job_id);
+  check("return-labelled REST job not flagged", !flagged.includes(501));
+  check("timeline-ineligible job not flagged", !flagged.includes(502));
+  check("a genuinely unpaid job still is", flagged.includes(503), JSON.stringify(flagged));
+}
+
 console.log("\n7. Extras are reported, not deleted");
 {
   const r = diffPayDay(input({ stored: { jobs: [job(99)], punches: [punch(98, "in", "07:00")] } }), [], [], new Map());
