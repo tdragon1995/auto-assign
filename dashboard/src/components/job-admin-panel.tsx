@@ -194,10 +194,10 @@ export function JobAdminPanel({ env }: { env: Env }) {
         body: JSON.stringify({ job_id: job.job_id, driver_id: job.delivery_driver_id }),
       });
       const data = await res.json();
-      if (!res.ok) toast.error(data.error ?? "Mở geofence thất bại");
+      if (!res.ok) toast.error(data.error ?? "Mở khóa tọa độ thất bại");
       else {
         setOpenUntil((m) => ({ ...m, [job.delivery_driver_id!]: data.until }));
-        toast.success(`Đã mở geofence đến ${new Date(data.until).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}`);
+        toast.success(`Đã mở khóa tọa độ đến ${new Date(data.until).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}`);
       }
     } catch {
       toast.error("Lỗi kết nối, vui lòng thử lại");
