@@ -978,12 +978,15 @@ function fmtPickupWindow(job: Job): string | undefined {
   return to ? `${from}–${to}` : from;
 }
 
-/** Parse pickup delivery_window time_from ("H:i:sP") to a full Date for dateVn. */
+/** Parse pickup delivery_window time_from to a full Date for dateVn. REST sends
+ *  "08:00:00+07:00"; the timeline (where every status-4 job now comes from) sends
+ *  "08:00:00+07" — rejecting that bare-hour offset silently disabled the late flag
+ *  for every windowed pickup. scripts/window-time-parse.test.mts. */
 /** Exported for scripts/late-check-cost-live.mts — see isInternalOrPlanJob. */
 export function parsePickupWindowTime(timeStr: string, dateVn: string): Date | null {
-  const m = timeStr.match(/^(\d{1,2}):(\d{2}):\d{2}([+-]\d{2}:?\d{2})$/);
+  const m = timeStr.match(/^(\d{1,2}):(\d{2}):\d{2}([+-]\d{2})(?::?(\d{2}))?$/);
   if (!m) return null;
-  const tz = m[3].includes(":") ? m[3] : m[3].replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+  const tz = `${m[3]}:${m[4] ?? "00"}`;
   return new Date(`${dateVn}T${m[1].padStart(2, "0")}:${m[2]}:00${tz}`);
 }
 
