@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRunLog, getFailedJobs, getHeldJobs } from "@/lib/smart-log-kv";
 import { loadDriversFromSheet } from "@/lib/config";
-import { getAllAssignedDriverJobs, type Env } from "@/lib/cartrack";
+import type { Env } from "@/lib/cartrack";
+import { driverJobs, FEED_MAX_AGE_MS } from "@/lib/day-snapshot";
+import { vnDate } from "@/lib/time";
 import { foldName } from "@/lib/driver-cell";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
+
+const TERMINAL = new Set([3, 5, 7]); // rejected, completed, cancelled
 
 // Job IDs always appear as "Job <digits>" in our log lines.
 const JOB_ID_RE = /\bJob (\d+)\b/g;
@@ -27,7 +31,7 @@ function extractCustomer(msg: string): string {
 /**
  * GET /api/admin/search-jobs?q=<customer or driver name>&env=
  *
- * A driver-name match lists that driver's assigned jobs from Cartrack (up to 5 drivers).
+ * A driver-name match lists that driver's unfinished jobs today from the day snapshot (up to 5 drivers).
  * Otherwise a log scan — no Cartrack call. The activity log + held/failed snapshots
  * carry the customer name next to the Job ID. Coverage is whatever logged recently
  * (~today, last 500 entries).
@@ -44,11 +48,17 @@ export async function GET(req: NextRequest) {
     getHeldJobs(),
     loadDriversFromSheet().catch(() => []),
   ]);
-  // Driver-name match → that driver's open (assigned, unfinished) jobs, straight from
-  // Cartrack. Capped: a two-letter query matches half the roster.
+  // Driver-name match → that driver's unfinished jobs TODAY, from the day snapshot the
+  // cron publishes every ~3 min (no Cartrack call when it is fresh). Capped: a two-letter
+  // query matches half the roster.
+  const today = vnDate();
   const matchedDrivers = drivers.filter((d) => foldName(d.name).includes(needle)).slice(0, 5);
-  const driverJobs = await Promise.all(
-    matchedDrivers.map((d) => getAllAssignedDriverJobs(d.driver_id, env).then((jobs) => ({ d, jobs })).catch(() => ({ d, jobs: [] }))),
+  const byDriver = await Promise.all(
+    matchedDrivers.map((d) =>
+      driverJobs(today, env, d.driver_id, { maxAgeMs: FEED_MAX_AGE_MS })
+        .then((jobs) => ({ d, jobs: (jobs ?? []).filter((j) => !TERMINAL.has(j.job_status_id ?? 0)) }))
+        .catch(() => ({ d, jobs: [] })),
+    ),
   );
 
   // Dedupe by job_id, keeping the newest (most relevant) line.
@@ -57,9 +67,9 @@ export async function GET(req: NextRequest) {
     if (Number.isInteger(id) && id > 0 && !found.has(id)) found.set(id, { job_id: id, label, ts });
   };
 
-  for (const { d, jobs } of driverJobs) {
+  for (const { d, jobs } of byDriver) {
     for (const j of jobs) {
-      const route = j.stops?.map((st) => st.customer_name ?? st.name).filter(Boolean).join(" → ");
+      const route = j.stops?.map((st) => st.customer_name).filter(Boolean).join(" → ");
       if (!found.has(j.job_id)) found.set(j.job_id, { job_id: j.job_id, label: `${d.name}${route ? ` | ${route}` : ""}`, statusId: j.job_status_id ?? null });
     }
   }
