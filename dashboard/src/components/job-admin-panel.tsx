@@ -372,7 +372,7 @@ export function JobAdminPanel({ env }: { env: Env }) {
                                     ? "Đang mở…"
                                     : (openUntil[job.delivery_driver_id] ?? 0) > Date.now()
                                       ? `Đã mở đến ${new Date(openUntil[job.delivery_driver_id]).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}`
-                                      : "Mở geofence 5 phút"}
+                                      : "Mở khóa tọa độ"}
                                 </Button>
                               ) : (
                                 <p className="text-[11px] text-slate-400">Chỉ hoàn thành được job đã giao cho tài xế.</p>
