@@ -164,7 +164,7 @@ export function JobAdminPanel({ env }: { env: Env }) {
       const res = await fetch(`/api/admin/complete-job?env=${env}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ job_id: job.job_id, driver_id: job.delivery_driver_id }),
+        body: JSON.stringify({ job_id: job.job_id }),
       });
       const data = await res.json();
       if (!res.ok) {
