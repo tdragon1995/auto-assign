@@ -5,7 +5,8 @@ import { isDriverOnLeave, resolveSubstitute, type LeaveEntry } from "./leave-con
 import { loadCleanedReturns } from "./return-suppress";
 import { claimTripAction, releaseTripClaim } from "./smart-log-kv";
 
-export const PSC_RETURN_LABEL = "🛵 Vận chuyển mẫu PSC (về)";
+export { PSC_RETURN_LABEL } from "./job-filters";
+import { PSC_RETURN_LABEL } from "./job-filters";
 export const PSC_OUTBOUND_LABEL = "🛵 Vận chuyển mẫu PSC";
 
 // Race-condition guard across overlapping 30s cycles. L1 only — it guards this

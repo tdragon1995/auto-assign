@@ -208,6 +208,10 @@ export function isChamCong(job: {
  *  graph. Changing the string means changing it in Cartrack too — it is a real label. */
 export const PSC_VIA_LABEL = "🛵 Vận chuyển mẫu PSC (ghé)";
 
+/** Return run from the lab back to a PSC. Declared here beside the via label so
+ *  pay.ts can read it without importing the assign graph; return-trips re-exports it. */
+export const PSC_RETURN_LABEL = "🛵 Vận chuyển mẫu PSC (về)";
+
 /** True if this stop can still block re-booking (Created, En Route, Arrived). */
 export function isActiveStop(stopStatusId: number): boolean {
   return stopStatusId === 1 || stopStatusId === 2 || stopStatusId === 3;

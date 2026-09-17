@@ -27,7 +27,7 @@
  */
 import { roadDistancesForPairs } from "./distance-cache";
 import { newFallbackState, type QuotaSignal } from "./distance";
-import { isChamCong, CHAM_CONG_PREFIX } from "./job-filters";
+import { isChamCong, CHAM_CONG_PREFIX, PSC_RETURN_LABEL, PSC_VIA_LABEL } from "./job-filters";
 import type { DistanceStats } from "./tat";
 import type { TimelineRoute, TimelineStop } from "./types";
 
@@ -227,6 +227,20 @@ export const hourPayFor = (minutes: number): number =>
 export const kmPayFor = (km: number): number => Math.round(km * RATE_PER_KM_VND);
 
 /**
+ * PAY ELIGIBILITY (payroll rule, confirmed by the supervisor 2026-09-17):
+ *   - a RETURN run "(về)" is never paid — the ride back is part of the outbound trip;
+ *   - a VIA run "(ghé)" is paid only when it carried a batch, i.e. a sample
+ *     tracking code was scanned on it. An empty stop-by is not a paid trip.
+ * Everything else that completed a pickup→dropoff pair is paid as before.
+ */
+export function payEligible(jobStops: Pick<TimelineStop, "jobLabels" | "itemTrackingNumbers">[]): boolean {
+  const labels = new Set(jobStops.flatMap((s) => labelNames(s.jobLabels)));
+  if (labels.has(PSC_RETURN_LABEL)) return false;
+  if (labels.has(PSC_VIA_LABEL)) return jobStops.some((s) => (s.itemTrackingNumbers ?? []).some((t) => String(t).trim() !== ""));
+  return true;
+}
+
+/**
  * One driver's day of routes → the rows to archive.
  *
  * Jobs are grouped by job_id rather than read off consecutive stops, because a
@@ -283,6 +297,7 @@ export function payRowsForRoute(
     // pay row at all. Single-stop (type 3) delivery jobs land here, as do the
     // half-jobs left when only one leg of a transport job reached this route.
     if (!pickup || !dropoff) continue;
+    if (!payEligible(jobStops)) continue;
 
     jobs.push({
       trip_date: tripDate,

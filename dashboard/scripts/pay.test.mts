@@ -175,5 +175,28 @@ check("a completion stamp becomes +07:00",
   withChamCong.jobs[0].dropoff_completed_ts === `${DAY}T09:00:00+07:00`,
   String(withChamCong.jobs[0].dropoff_completed_ts));
 
+console.log("\n6. Eligibility: return runs never, via runs only with a batch");
+{
+  type Labels = TimelineStop["jobLabels"];
+  const RET = [{ labelId: 739, label: "🛵 Vận chuyển mẫu PSC (về)" }] as unknown as Labels;
+  const VIA = [{ labelId: 743, label: "🛵 Vận chuyển mẫu PSC (ghé)" }] as unknown as Labels;
+  const pair = (id: number, extra: Partial<TimelineStop>) => [
+    stop({ jobId: id, stopId: id * 10 + 1, stopTypeId: 1, ...extra }),
+    stop({ jobId: id, stopId: id * 10 + 2, stopTypeId: 2, ...extra }),
+  ];
+  const r = payRowsForRoute(route([
+    ...pair(21, { jobLabels: RET }),
+    ...pair(22, { jobLabels: VIA }),
+    ...pair(23, { jobLabels: VIA, itemTrackingNumbers: ["B046260823022509"] }),
+    ...pair(24, { jobLabels: ["🛵 Vận chuyển mẫu PSC"] as unknown as Labels }),
+    ...pair(25, { jobLabels: VIA, itemTrackingNumbers: [" "] }),
+  ]), DAY);
+  const ids = r.jobs.map((j) => j.job_id);
+  check("return run is not paid", !ids.includes(21));
+  check("via run with no batch is not paid", !ids.includes(22) && !ids.includes(25));
+  check("via run carrying a batch is paid", ids.includes(23));
+  check("outbound run is paid as before", ids.includes(24), JSON.stringify(ids));
+}
+
 console.log(failures === 0 ? "\nAll pay checks passed." : `\n${failures} check(s) FAILED.`);
 process.exitCode = failures === 0 ? 0 : 1;
