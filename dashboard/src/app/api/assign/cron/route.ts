@@ -9,6 +9,7 @@ import {
 import { autoArmIfDue } from "@/lib/auto-arm";
 import { maybeAlertHeldOff } from "@/lib/disarm-alert";
 import { archiveSealedDays } from "@/lib/tat-archive";
+import { restoreExpiredGeofences } from "@/lib/geofence-bypass";
 
 // The cycle (Cartrack + Goong calls) can take a while; give it headroom.
 export const maxDuration = 60;
@@ -44,6 +45,13 @@ export async function GET(req: NextRequest) {
   after(async () => {
     const res = await archiveSealedDays().catch(() => null);
     if (res) console.log("[cron] TAT seal:", JSON.stringify(res));
+  });
+
+  // Temporary geofence bypasses — before the arm check, so a disarmed engine never
+  // leaves a driver's geofence open.
+  after(async () => {
+    const n = await restoreExpiredGeofences().catch((e) => { console.error("[cron] geofence restore:", e); return 0; });
+    if (n) console.log(`[cron] geofence restored for ${n} driver(s)`);
   });
 
   // 1) Switch off? Inside 05:30–22:00 the engine should be running, so self-heal

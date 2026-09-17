@@ -181,6 +181,27 @@ export function JobAdminPanel({ env }: { env: Env }) {
     }
   }, [job, env, setHitStatus]);
 
+  const [unlocking, setUnlocking] = useState(false);
+  const doGeofenceBypass = useCallback(async () => {
+    if (!job?.delivery_driver_id) return;
+    if (!window.confirm("Mở geofence 5 phút cho tài xế của job này?\n\nTài xế hoàn thành điểm dừng được dù không ở gần; hệ thống tự khoá lại sau ~5–7 phút.")) return;
+    setUnlocking(true);
+    try {
+      const res = await fetch(`/api/admin/geofence-bypass?env=${env}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ driver_id: job.delivery_driver_id }),
+      });
+      const data = await res.json();
+      if (!res.ok) toast.error(data.error ?? "Mở geofence thất bại");
+      else toast.success(`Đã mở geofence đến ${new Date(data.until).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}`);
+    } catch {
+      toast.error("Lỗi kết nối, vui lòng thử lại");
+    } finally {
+      setUnlocking(false);
+    }
+  }, [job, env]);
+
   const doChangeDropoff = useCallback(async () => {
     if (!job || !pscId) return;
     if (!window.confirm(`Đổi điểm giao của Job ${job.job_id}\nsang ${pscName}?`)) return;
@@ -334,6 +355,16 @@ export function JobAdminPanel({ env }: { env: Env }) {
                                   className="w-full h-8 bg-emerald-600 hover:bg-emerald-700"
                                 >
                                   {completing ? "Đang hoàn thành…" : "Hoàn thành job"}
+                                </Button>
+                              ) : null}
+                              {job.delivery_driver_id ? (
+                                <Button
+                                  onClick={doGeofenceBypass}
+                                  disabled={unlocking}
+                                  variant="outline"
+                                  className="w-full h-8"
+                                >
+                                  {unlocking ? "Đang mở…" : "Mở geofence 5 phút"}
                                 </Button>
                               ) : (
                                 <p className="text-[11px] text-slate-400">Chỉ hoàn thành được job đã giao cho tài xế.</p>
