@@ -260,7 +260,7 @@ export function JobAdminPanel({ env }: { env: Env }) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") runSearch(); }}
-            placeholder="Job ID hoặc tên khách hàng…"
+            placeholder="Job ID, tên khách hàng hoặc tài xế…"
             className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
           />
           <Button size="sm" onClick={runSearch} disabled={!query.trim() || searching}>
