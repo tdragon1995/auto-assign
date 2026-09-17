@@ -14,7 +14,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { archiveDay, getRedis, LOCK_TTL_S, type ArchiveResult } from "@/lib/tat-archive";
 import { reconcilePayDay, restorePayDay } from "@/lib/pay-reconcile";
-import { supabaseConfigured } from "@/lib/supabase-rest";
+import { supabaseConfigured, sbUpsert } from "@/lib/supabase-rest";
 import { shortenCachedDistances } from "@/lib/distance-cache";
 import { vnDate } from "@/lib/time";
 import type { Env } from "@/lib/cartrack";
@@ -89,7 +89,13 @@ export async function POST(req: NextRequest) {
   // the distance cache; only ever lowers a pair (scripts/distance-revalidate.mts).
   if (Array.isArray(body?.distance_shorten)) {
     try {
-      return NextResponse.json({ ok: true, ...(await shortenCachedDistances(body.distance_shorten)) });
+      const items = body.distance_shorten as { key: string; cached_km: number; distance_km: number; eta_mins: number | null }[];
+      const source = typeof body.source === "string" ? body.source : "operator";
+      // Recorded first: the audit row is what re-prices stored pay (a SQL join on
+      // the key), and it must exist even when the cache already holds the figure.
+      await sbUpsert("distance_corrections",
+        items.map((x) => ({ key: x.key, cached_km: x.cached_km, new_km: x.distance_km, source })), "key,source");
+      return NextResponse.json({ ok: true, ...(await shortenCachedDistances(items)) });
     } catch (e) {
       return NextResponse.json({ ok: false, retry: true, error: e instanceof Error ? e.message : String(e) }, { status: 502 });
     }

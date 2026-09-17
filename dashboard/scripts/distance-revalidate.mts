@@ -107,3 +107,25 @@ for (const r of recs) {
 const summary = { pairs: recs.length, requests_this_run: requests, unanswered, keep_cached: keep, accept_shorter: accept.length, review_much_shorter: review.length, rejected: rejected.length, accept_km_saved_per_trip_sum: Math.round(savedKm * 100) / 100 };
 writeFileSync(`${DIR}/proposal.json`, JSON.stringify({ summary, accept, review, rejected }, null, 2));
 console.log(summary);
+
+// --apply: send accept + review to the deployment (CRON_SECRET), 250 per call.
+if (argv.includes("--apply")) {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) throw new Error("CRON_SECRET not set");
+  const rows = [...accept, ...review] as { key: string; cached_km: number; vietmap_km: number; vietmap_mins: number | null }[];
+  let updated = 0, skipped = 0;
+  for (let i = 0; i < rows.length; i += 250) {
+    const res = await fetch("https://diag-logistics.vercel.app/api/tat/archive", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-cron-secret": secret },
+      body: JSON.stringify({
+        source: "vietmap-recheck-2026-09-17",
+        distance_shorten: rows.slice(i, i + 250).map((r) => ({ key: r.key, cached_km: r.cached_km, distance_km: r.vietmap_km, eta_mins: r.vietmap_mins })),
+      }),
+    });
+    const j = await res.json() as { ok: boolean; updated?: number; skipped?: number; error?: string };
+    if (!j.ok) throw new Error(`batch ${i}: ${j.error}`);
+    updated += j.updated ?? 0; skipped += j.skipped ?? 0;
+  }
+  console.log({ apply: { sent: rows.length, cache_updated: updated, cache_skipped: skipped } });
+}
