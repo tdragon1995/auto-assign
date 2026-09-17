@@ -46,6 +46,22 @@ interface PayTeamReport {
   error?: string;
 }
 
+interface DetailJob {
+  job_id: number;
+  reference_number: string | null;
+  driver_name: string | null;
+  trip_date: string;
+  pickup_name: string | null;
+  dropoff_name: string | null;
+  pickup_completed_ts: string | null;
+  dropoff_completed_ts: string | null;
+  distance_km: number | string | null;
+}
+
+const staffCode = (name: string | null) => /\b(PT\w+|DC\w+)/.exec(name ?? "")?.[1] ?? "";
+const hhmmFmt = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit", hour12: false });
+const hhmm = (iso: string | null) => (iso ? hhmmFmt.format(new Date(iso)) : "");
+
 const vnd = new Intl.NumberFormat("vi-VN");
 const fmtVnd = (v: number) => `${vnd.format(Math.round(v))}đ`;
 
@@ -100,31 +116,57 @@ export function PayTeamPanel() {
    *  rounds to millions to stay readable, this file is what a number gets paid
    *  from, and the two must not be confused. The per-rate columns travel too, so
    *  a disputed total can be re-derived without opening the dashboard. */
-  function exportCsv() {
+  const [exporting, setExporting] = useState(false);
+
+  async function exportCsv() {
     if (!data) return;
-    const head = ["Tài xế", "Số ngày", "Số chuyến", "Tổng km", "Giờ chấm công (phút)",
-                  "Tiền giờ (đ)", "Tiền km (đ)", "Tổng (đ)", "Ngày thiếu chấm công ra", "Chuyến chưa có km"];
-    const rows = data.drivers.map((d) => [
-      // FULL name here, staff code and all, unlike the table on screen. This file
-      // gets matched against attendance and leave in a spreadsheet, and the code
-      // is what those are keyed on — two drivers share a display name today.
-      d.driver_name, d.days_worked, d.jobs, d.km, d.worked_mins,
-      d.hour_pay, d.km_pay, d.total_pay, d.open_in_days, d.unpriced_jobs,
-    ]);
-    // An incomplete payroll must not leave this screen looking final.
-    if (!data.coverage.ready) {
-      rows.unshift([`CHƯA ĐỦ DỮ LIỆU — thiếu ${data.coverage.missing_days.length} ngày, ${data.totals.unpriced_jobs} chuyến chưa có km`, "", "", "", "", "", "", "", "", ""]);
+    setExporting(true);
+    try {
+      // The job lines are fetched on demand — the table view never needs them.
+      const res = await fetch(`/api/pay/team?month=${data.month}&detail=1`);
+      const j = await res.json();
+      if (!res.ok || !j.ok) { setError(j.error ?? "Không tải được chi tiết chuyến."); return; }
+      const jobs = j.jobs as DetailJob[];
+
+      const head = ["Tài xế", "Số ngày", "Số chuyến", "Tổng km", "Giờ chấm công (phút)",
+                    "Tiền giờ (đ)", "Tiền km (đ)", "Tổng (đ)", "Ngày thiếu chấm công ra", "Chuyến chưa có km"];
+      const rows: (string | number)[][] = data.drivers.map((d) => [
+        // FULL name here, staff code and all, unlike the table on screen. This file
+        // gets matched against attendance and leave in a spreadsheet, and the code
+        // is what those are keyed on — two drivers share a display name today.
+        d.driver_name, d.days_worked, d.jobs, d.km, d.worked_mins,
+        d.hour_pay, d.km_pay, d.total_pay, d.open_in_days, d.unpriced_jobs,
+      ]);
+      // An incomplete payroll must not leave this screen looking final.
+      if (!data.coverage.ready) {
+        rows.unshift([`CHƯA ĐỦ DỮ LIỆU — thiếu ${data.coverage.missing_days.length} ngày, ${data.totals.unpriced_jobs} chuyến chưa có km`]);
+      }
+
+      // Every paid job, one line each, so any driver's km can be checked trip by trip.
+      const detailHead = ["Mã chuyến", "Mã tham chiếu", "Tài khoản giao nhận", "Mã số nhân viên", "Ngày",
+                          "Giờ lấy", "Giờ giao", "Điểm đi", "Điểm đến", "Số km", "Tiền km (đ)"];
+      const detail = jobs.map((x) => [
+        x.job_id, x.reference_number ?? "", x.driver_name ?? "", staffCode(x.driver_name), x.trip_date,
+        hhmm(x.pickup_completed_ts), hhmm(x.dropoff_completed_ts), x.pickup_name ?? "", x.dropoff_name ?? "",
+        x.distance_km == null ? "" : Number(x.distance_km),
+        x.distance_km == null ? "" : Math.round(Number(x.distance_km) * data.rates.per_km),
+      ]);
+
+      const csv = [head, ...rows, [], ["CHI TIẾT CHUYẾN"], detailHead, ...detail]
+        .map((r) => r.map((c) => (typeof c === "string" && /[",\n]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c)).join(","))
+        .join("\n");
+      // BOM so Excel opens Vietnamese diacritics correctly instead of mojibake.
+      const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `luong-pt-${data.month}_${data.from}_${data.to}.csv`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch {
+      setError("Không kết nối được máy chủ.");
+    } finally {
+      setExporting(false);
     }
-    const csv = [head, ...rows]
-      .map((r) => r.map((c) => (typeof c === "string" && /[",\n]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c)).join(","))
-      .join("\n");
-    // BOM so Excel opens Vietnamese diacritics correctly instead of mojibake.
-    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `luong-pt-${data.month}_${data.from}_${data.to}.csv`;
-    a.click();
-    URL.revokeObjectURL(a.href);
   }
 
   return (
@@ -153,7 +195,7 @@ export function PayTeamPanel() {
         </div>
         <button
           onClick={exportCsv}
-          disabled={!data || data.drivers.length === 0}
+          disabled={!data || data.drivers.length === 0 || exporting}
           className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 border border-slate-300 rounded-lg px-2.5 py-1.5 hover:bg-slate-50 disabled:opacity-40"
         >
           <Download className="size-3.5" />

@@ -26,7 +26,7 @@ import { sbSelectAll, supabaseConfigured } from "@/lib/supabase-rest";
 import { employmentOf } from "@/lib/driver-label";
 import {
   workedMinutes, hourPayFor, kmPayFor,
-  RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch,
+  RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch, type PayJob,
 } from "@/lib/pay";
 import { payrollPeriod } from "@/lib/pay-period";
 import { vnDate, addDays } from "@/lib/time";
@@ -62,6 +62,20 @@ export async function GET(req: NextRequest) {
   const { from, to } = payrollPeriod(month);
 
   try {
+    // ?detail=1 — the per-job lines behind the totals, for the CSV. Fetched only
+    // when asked: ~5,000 rows is too much to carry on every view of the panel.
+    if (req.nextUrl.searchParams.get("detail") === "1") {
+      const jobs = await sbSelectAll<PayJob>(
+        "pay_jobs",
+        `select=job_id,reference_number,driver_id,driver_name,trip_date,pickup_name,dropoff_name,pickup_completed_ts,dropoff_completed_ts,distance_km&trip_date=gte.${from}&trip_date=lte.${to}`,
+        "trip_date.asc,driver_id.asc,dropoff_completed_ts.asc,job_id.asc",
+      );
+      return NextResponse.json({
+        ok: true, month, from, to,
+        jobs: jobs.filter((j) => employmentOf(j.driver_name) === "part-time"),
+      });
+    }
+
     const [daily, punches, sealed] = await Promise.all([
       sbSelectAll<DailyRow>(
         "v_pay_daily",

@@ -2489,15 +2489,12 @@ export default function ChamCongPage() {
                           <p className="text-xs text-gray-500">{fmtMonth(payReport.month)} bạn được</p>
                           <p className="text-xs text-gray-500">Từ {fmtDate(payReport.from)} đến {fmtDate(payReport.to)}</p>
                           <p className="text-3xl font-bold text-gray-900 leading-tight mt-0.5 tabular-nums">
-                            {fmtVnd(payReport.summary.total_pay)}
+                            {/* Hours are hidden for now (supervisor, 2026-09-17): the
+                                driver sees mileage pay only until the hours rule is set. */}
+                            {fmtVnd(payReport.summary.km_pay)}
                           </p>
                         </div>
                         <div className="px-4 pb-4 space-y-2.5 border-t border-gray-100 pt-3">
-                          <PayLine
-                            label="Giờ chấm công"
-                            detail={`${fmtMins(payReport.summary.worked_mins)} × ${vndFmt.format(payReport.rates.per_hour)}đ/giờ`}
-                            amount={payReport.summary.hour_pay}
-                          />
                           <PayLine
                             label="Quãng đường"
                             detail={`${payReport.summary.km} km × ${vndFmt.format(payReport.rates.per_km)}đ/km`}
@@ -2507,35 +2504,20 @@ export default function ChamCongPage() {
                       </div>
 
                       <div className="grid grid-cols-3 gap-2">
-                        <TatStat label="Ngày làm" value={String(payReport.summary.days)} />
+                        <TatStat label="Ngày làm" value={String(payReport.days.filter((d) => d.jobs > 0).length)} />
                         <TatStat label="Chuyến" value={String(payReport.summary.jobs)} />
                         <TatStat label="Quãng đường" value={`${payReport.summary.km} km`} />
                       </div>
 
-                      {/* The one thing on this screen that needs acting on. Amber,
-                          not red — a forgotten tap is a correction to make, not an
-                          accusation — but it is stated in đồng-terms ("chưa được
-                          tính") because that is what makes it urgent. */}
-                      {payReport.summary.open_in_days > 0 && (
-                        <div className="flex items-start gap-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
-                          <AlertCircle size={14} className="mt-0.5 shrink-0" />
-                          <span>
-                            Có {payReport.summary.open_in_days} ngày bạn chấm công vào nhưng
-                            chưa chấm công ra — những ca đó <span className="font-semibold">chưa được tính giờ</span>.
-                            Xem các ngày có dấu ⚠ bên dưới và báo điều phối để bổ sung.
-                          </span>
-                        </div>
-                      )}
-
                       {/* The days. Each is tappable; only the one you open costs a
                           request for its jobs. */}
-                      {payReport.days.length === 0 ? (
+                      {payReport.days.every((d) => d.jobs === 0) ? (
                         <p className="text-xs text-gray-400 text-center py-6">
                           Chưa có dữ liệu cho tháng này.
                         </p>
                       ) : (
                         <div className="rounded-xl border border-gray-200 divide-y divide-gray-100 overflow-hidden">
-                          {payReport.days.map((d) => {
+                          {payReport.days.filter((d) => d.jobs > 0).map((d) => {
                             const open = payOpenDay === d.date;
                             return (
                               <div key={d.date}>
@@ -2550,14 +2532,13 @@ export default function ChamCongPage() {
                                   <div className="min-w-0 flex-1">
                                     <p className="text-xs font-semibold text-gray-700">
                                       {vnWeekday(d.date)}, {fmtDate(d.date)}
-                                      {d.open_in.length > 0 && <span className="ml-1 text-amber-600">⚠</span>}
                                     </p>
                                     <p className="text-[11px] text-gray-400">
-                                      {fmtMins(d.worked_mins)} · {d.km} km · {d.jobs} chuyến
+                                      {d.km} km · {d.jobs} chuyến
                                     </p>
                                   </div>
                                   <p className="text-xs font-bold text-gray-800 shrink-0 tabular-nums">
-                                    {fmtVnd(d.total_pay)}
+                                    {fmtVnd(d.km_pay)}
                                   </p>
                                 </button>
 
@@ -2573,33 +2554,6 @@ export default function ChamCongPage() {
                                       </p>
                                     ) : (
                                       <>
-                                        {/* The clock, shown as the spans that were
-                                            actually paired — a total alone gives a
-                                            driver nothing to check against. */}
-                                        <div className="rounded-lg bg-white border border-gray-200 px-3 py-2 space-y-1">
-                                          <p className="text-[11px] font-semibold text-gray-600">Giờ chấm công</p>
-                                          {payDayDetail.day.spans.length === 0 ? (
-                                            <p className="text-[11px] text-gray-400">Không có ca nào được tính.</p>
-                                          ) : (
-                                            payDayDetail.day.spans.map((sp, i) => (
-                                              <div key={i} className="flex items-center justify-between text-[11px]">
-                                                <span className="text-gray-600 tabular-nums">{sp.from} → {sp.to}</span>
-                                                <span className="text-gray-500">{fmtMins(sp.minutes)}</span>
-                                              </div>
-                                            ))
-                                          )}
-                                          {payDayDetail.day.open_in.map((t) => (
-                                            <p key={t} className="text-[11px] text-amber-700">
-                                              ⚠ Chấm công vào lúc {t} chưa có chấm công ra — chưa tính giờ.
-                                            </p>
-                                          ))}
-                                          {payDayDetail.day.stray_out.map((t) => (
-                                            <p key={t} className="text-[11px] text-amber-700">
-                                              ⚠ Chấm công ra lúc {t} không có chấm công vào trước đó.
-                                            </p>
-                                          ))}
-                                        </div>
-
                                         {/* The kilometres, one line per completed job. */}
                                         <div className="rounded-lg bg-white border border-gray-200 divide-y divide-gray-100 overflow-hidden">
                                           <p className="text-[11px] font-semibold text-gray-600 px-3 pt-2 pb-1">
@@ -2655,7 +2609,6 @@ export default function ChamCongPage() {
                       <div className="rounded-xl bg-gray-50 border border-gray-200 px-3 py-2.5 space-y-1">
                         <p className="text-[11px] text-gray-600">
                           <span className="font-semibold">Cách tính:</span>{" "}
-                          {vndFmt.format(payReport.rates.per_hour)}đ mỗi giờ chấm công (tính theo phút) +{" "}
                           {vndFmt.format(payReport.rates.per_km)}đ mỗi km.
                         </p>
                         <p className="text-[11px] text-gray-500">{payReport.rates.km_basis}.</p>
