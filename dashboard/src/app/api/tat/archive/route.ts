@@ -15,6 +15,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { archiveDay, getRedis, LOCK_TTL_S, type ArchiveResult } from "@/lib/tat-archive";
 import { reconcilePayDay, restorePayDay } from "@/lib/pay-reconcile";
 import { supabaseConfigured } from "@/lib/supabase-rest";
+import { shortenCachedDistances } from "@/lib/distance-cache";
 import { vnDate } from "@/lib/time";
 import type { Env } from "@/lib/cartrack";
 
@@ -84,6 +85,15 @@ export async function POST(req: NextRequest) {
   if (!supabaseConfigured()) return NextResponse.json({ ok: false, error: "Supabase not configured" }, { status: 503 });
 
   const body = await req.json().catch(() => null);
+  // { distance_shorten: [{ key, distance_km, eta_mins }] } — operator correction of
+  // the distance cache; only ever lowers a pair (scripts/distance-revalidate.mts).
+  if (Array.isArray(body?.distance_shorten)) {
+    try {
+      return NextResponse.json({ ok: true, ...(await shortenCachedDistances(body.distance_shorten)) });
+    } catch (e) {
+      return NextResponse.json({ ok: false, retry: true, error: e instanceof Error ? e.message : String(e) }, { status: 502 });
+    }
+  }
   const date = body?.date;
   if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return NextResponse.json({ ok: false, error: "date phải có dạng YYYY-MM-DD" }, { status: 400 });

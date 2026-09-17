@@ -339,3 +339,35 @@ export async function exportCachedDistances(): Promise<CachedRecord[]> {
   }
   return out;
 }
+
+/**
+ * Operator correction: replace cached pairs with a SHORTER figure (the 2026-09-17
+ * VietMap re-check). Each key is re-read first and only overwritten when the new
+ * distance is strictly shorter than what is there now, so a re-run is a no-op and
+ * nothing can grow. Coordinates are kept from the stored value.
+ */
+export async function shortenCachedDistances(
+  items: { key: string; distance_km: number; eta_mins: number | null }[],
+): Promise<{ updated: number; skipped: number }> {
+  const redis = getRedis();
+  if (!redis) throw new Error("Redis not configured");
+  let updated = 0, skipped = 0;
+  for (let i = 0; i < items.length; i += 256) {
+    const slice = items.slice(i, i + 256).filter((x) => x.key.startsWith("dist:v1:") && x.distance_km > 0);
+    skipped += Math.min(256, items.length - i) - slice.length;
+    if (!slice.length) continue;
+    const current = await redis.mget<(StoredDistance | string | null)[]>(...slice.map((x) => x.key));
+    const pipe = redis.pipeline();
+    let n = 0;
+    slice.forEach((x, j) => {
+      const raw = current[j];
+      const v = (typeof raw === "string" ? safeParse(raw) : raw) as StoredDistance | null;
+      if (!v || typeof v.distance_km !== "number" || x.distance_km >= v.distance_km) { skipped++; return; }
+      pipe.set(x.key, JSON.stringify({ ...v, distance_km: x.distance_km, eta_mins: x.eta_mins ?? v.eta_mins }));
+      n++;
+    });
+    if (n) await pipe.exec();
+    updated += n;
+  }
+  return { updated, skipped };
+}
