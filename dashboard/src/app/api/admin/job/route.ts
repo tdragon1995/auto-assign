@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getJobDetails, type Env } from "@/lib/cartrack";
+import { getJobDetailsFast, type Env } from "@/lib/cartrack";
 import { isStopStarted } from "@/lib/job-filters";
 
 // ── GET /api/admin/job?job_id=&env= — job summary for the admin job tools ──
@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const details = await getJobDetails(jobId, env);
+    const details = await getJobDetailsFast(jobId, env);
     const data = details.data;
     if (!data?.job_id) {
       return NextResponse.json({ error: "Không tìm thấy job" }, { status: 404 });

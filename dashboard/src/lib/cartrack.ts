@@ -1539,6 +1539,32 @@ export async function optimizeDriverRoute(
   return out.ok;
 }
 
+/** One job via fleetweb `delivery_get_job_details` (~0.1s) instead of REST GET /jobs/{id}
+ *  (~4s, measured 2026-09-17), in the REST spelling — top level, stops, and each stop's
+ *  nested `customer` (the live name; the flat stop.customer_name goes stale after a dropoff
+ *  swap). Falls back to REST on any RPC doubt. Only for callers reading job/stop basics:
+ *  REST-only extras (todos, items) are not guaranteed here. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function getJobDetailsFast(jobId: number, env: Env = "prod"): Promise<{ data: any }> {
+  const det = await jsonRpc<{ jobs?: Record<string, unknown>[] }>(
+    "delivery_get_job_details", { data: { jobIds: [jobId] } }, { env },
+  );
+  const raw = det.ok ? det.result?.jobs?.[0] : undefined;
+  const dj = raw ? rpcDataToRestShape(raw) : null;
+  const rawStops = dj?.stop ?? dj?.stops;
+  if (!dj || Number(dj.job_id) !== jobId || !Array.isArray(rawStops)) return getJobDetails(jobId, env);
+  return {
+    data: {
+      ...dj,
+      stops: rawStops.map((s) => {
+        const st = stopToRestShape(s as Record<string, unknown>);
+        if (st.customer && typeof st.customer === "object") st.customer = rpcDataToRestShape(st.customer as Record<string, unknown>);
+        return st;
+      }),
+    },
+  };
+}
+
 export async function getJobDetails(
   jobId: number,
   env: Env = "prod"

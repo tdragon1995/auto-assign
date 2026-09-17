@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse, after } from "next/server";
-import { getJobDetails, type Env } from "@/lib/cartrack";
+import { getJobDetailsFast, type Env } from "@/lib/cartrack";
 import { loadDriversFromSheet } from "@/lib/config";
 import { openGeofence, queueBypassLog } from "@/lib/geofence-bypass";
 import { isCompletedOrRejectedStop } from "@/lib/job-filters";
@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
   after(async () => {
     try {
       const [data, drivers] = await Promise.all([
-        getJobDetails(jobId, env).then((r) => r.data),
+        getJobDetailsFast(jobId, env).then((r) => r.data),
         loadDriversFromSheet().catch(() => []),
       ]);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
