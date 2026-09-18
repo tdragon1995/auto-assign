@@ -62,7 +62,7 @@ async function downloadExcel(title: string, groups: Group[]) {
   const XLSX = await import("xlsx");
   const rows = flatRows(groups);
   const aoa: (string | number)[][] = [
-    [`BÀN GIAO KẾT QUẢ BẢN CỨNG — ${title} — ${today("vi-VN")}`], [], HEAD,
+    [`BÀN GIAO KẾT QUẢ BẢN CỨNG — ${title}`], [`Ngày in: ${today("vi-VN")}`], [], HEAD,
     ...rows.map((r) => [...r, "☐"]),
     [], [`Tổng: ${rows.length} hồ sơ`], [], ["Người giao:", "", "", "Người nhận:", "", "Thời gian:"],
   ];
@@ -102,7 +102,7 @@ th { background: #eee; font-size: 9.5pt; }
 .sign p { margin: 0 0 18mm; font-weight: bold; }
 </style></head><body>
 <h1>BÀN GIAO KẾT QUẢ BẢN CỨNG — ${esc(title)}</h1>
-<div class="meta">Ngày ${esc(today("vi-VN"))} · Tổng: ${rows.length} hồ sơ</div>
+<div class="meta">Ngày in: ${esc(today("vi-VN"))} · Tổng: ${rows.length} hồ sơ</div>
 <table><thead><tr>${HEAD.filter(keep).map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table>
 <div class="sign"><div><p>Người giao</p>(Ký, ghi rõ họ tên)</div><div><p>Người nhận</p>(Ký, ghi rõ họ tên)</div><div><p>Thời gian</p>____:____ ngày ____/____</div></div>
 </body></html>`;

@@ -30,7 +30,10 @@ async function lookup(vid: string, token: string) {
     if (!res.ok) return { vid, error: `Labcenter ${res.status}` };
     const o = (await res.json().catch(() => ({})))?.data;
     if (!o?.branch_code && !o?.client_id) return { vid, error: "Không tìm thấy" };
-    const remark = (o.remarks || o.history || "").trim() || null;
+    // Only HBC orders carry a hard-copy destination in the remark; every other branch keeps its own.
+    // Read Ghi chú (remarks) and Bệnh sử (history) together — staff type the sentence into either.
+    const notes = [...new Set([o.remarks, o.history].map((v) => String(v ?? "").trim()).filter(Boolean))];
+    const remark = o.branch_code === "HBC" ? notes.join(" | ") || null : null;
     const fromRemark = destFromRemark(remark);
     return {
       vid,
@@ -39,7 +42,7 @@ async function lookup(vid: string, token: string) {
       client_name: o.client_name?.trim() || null,
       patient_name: o.patient_full_name?.trim() || null,
       remark,
-      // Where the paper result goes: the remark when it names a real branch, else the order's branch.
+      // Where the paper result goes: for HBC, the branch its remark names; otherwise the order's branch.
       dest: fromRemark ?? o.branch_code ?? null,
       dest_from_remark: !!fromRemark,
     };

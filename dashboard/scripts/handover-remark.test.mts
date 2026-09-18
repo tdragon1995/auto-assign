@@ -22,3 +22,8 @@ const cases: [string | null, string | null][] = [
 
 for (const [input, want] of cases) assert.equal(destFromRemark(input), want, String(input));
 console.log(`ok — ${cases.length} cases`);
+
+// The route joins Ghi chú and Bệnh sử with " | " — the sentence may sit in either.
+assert.equal(destFromRemark("Thời gian lấy mẫu 12:04 ngày 17/9/2026 | Bản cứng kết quả gửi về D015"), "D015");
+assert.equal(destFromRemark("Bản cứng gửi về D015 | Thời gian lấy mẫu 12:04"), "D015");
+console.log("ok — joined notes");
