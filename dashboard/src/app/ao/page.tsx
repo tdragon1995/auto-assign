@@ -33,6 +33,94 @@ interface Order {
   create_ts: string | null;
 }
 
+interface VidRow {
+  vid: string;
+  branch_code?: string | null;
+  client_id?: string | null;
+  client_name?: string | null;
+  error?: string;
+}
+
+function VidLookup() {
+  const [text, setText] = useState("");
+  const [rows, setRows] = useState<VidRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const lookup = async () => {
+    const vids = text.split(/\D+/).filter(Boolean);
+    if (!vids.length || loading) return;
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/labcenter/orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vids }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setError(data.error ?? "Tra cứu thất bại"); setRows([]); }
+      else setRows(data.results ?? []);
+    } catch {
+      setError("Không thể kết nối. Vui lòng thử lại.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-2xl shadow-sm p-4 mt-5 space-y-3">
+      <p className="text-[15px] font-bold text-slate-800">Tra cứu VID</p>
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder="Dán danh sách VID, mỗi dòng một số"
+        rows={4}
+        aria-label="Danh sách VID"
+        className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm text-slate-700 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+      />
+      <button
+        onClick={lookup}
+        disabled={loading || !/\d/.test(text)}
+        className="w-full rounded-xl py-3 text-white text-sm font-bold flex items-center justify-center gap-2 bg-blue-700 active:scale-[.97] transition disabled:opacity-40"
+      >
+        {loading ? <><Loader2 aria-hidden className="w-4 h-4 animate-spin" />Đang tra cứu…</> : "Tra cứu"}
+      </button>
+      {error && <p role="alert" className="text-xs text-red-600 font-medium">{error}</p>}
+      {rows.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left text-slate-500">
+                <th className="py-1.5 pr-2 font-semibold">VID</th>
+                <th className="py-1.5 pr-2 font-semibold">Chi nhánh</th>
+                <th className="py-1.5 pr-2 font-semibold">Client ID</th>
+                <th className="py-1.5 font-semibold">Khách hàng</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.vid} className="border-t border-slate-100 align-top">
+                  <td className="py-1.5 pr-2 font-mono text-slate-700">{r.vid}</td>
+                  {r.error ? (
+                    <td colSpan={3} className="py-1.5 text-red-600">{r.error}</td>
+                  ) : (
+                    <>
+                      <td className="py-1.5 pr-2 font-semibold text-slate-800">{r.branch_code ?? "—"}</td>
+                      <td className="py-1.5 pr-2 text-slate-700">{r.client_id ?? "—"}</td>
+                      <td className="py-1.5 text-slate-700">{r.client_name ?? "—"}</td>
+                    </>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const hm = (ts?: string | null) => (ts ? ts.slice(11, 16) : null);
 
 function stateOf(o: Order): TripState {
@@ -283,6 +371,8 @@ export default function AoPage() {
             </div>
           )}
         </div>
+
+        <VidLookup />
       </div>
 
       {/* Cancel confirm overlay */}
