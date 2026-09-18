@@ -222,7 +222,7 @@ function Req() {
 
 // Shown under a mandatory field once "Tạo" was pressed with it still empty.
 const MISSING_MSG: Record<string, string> = {
-  address: "Bắt buộc — chọn Địa Chỉ từ gợi ý để lấy toạ độ.",
+  address: "Bắt buộc — gõ địa chỉ rồi bấm chọn một dòng trong danh sách gợi ý để lấy toạ độ.",
   quan: "Bắt buộc — chọn Quận Cũ từ danh sách.",
   street: "Bắt buộc — bấm để nhập Tên Đường.",
   phone: "Bắt buộc — nhập số điện thoại liên hệ.",
@@ -834,7 +834,7 @@ export default function SalesPage() {
     !phone.trim() && "phone",
   ].filter((k): k is string => !!k);
   const isMissing = (k: string) => showMissing && missingFields.includes(k);
-  const hl = (k: string) => (isMissing(k) ? " rounded-xl ring-2 ring-red-400 ring-offset-4" : "");
+  const hl = (k: string) => (isMissing(k) ? " rounded-xl ring-2 ring-red-400 bg-red-50/60 -mx-3 px-3 py-2.5" : "");
   const missingMsg = (k: string) =>
     isMissing(k) && <p className="text-xs text-red-600 mt-1">{MISSING_MSG[k]}</p>;
 
