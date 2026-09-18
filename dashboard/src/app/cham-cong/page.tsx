@@ -2567,8 +2567,15 @@ export default function ChamCongPage() {
                                             payDayDetail.jobs.map((j) => (
                                               <div key={j.job_id} className="flex items-start gap-2 px-3 py-2">
                                                 <div className="min-w-0 flex-1">
-                                                  <p className="text-[11px] text-gray-700 truncate">
-                                                    {placeName(j.pickup) || "—"} → {placeName(j.dropoff) || "—"}
+                                                  {/* Pickup and dropoff on their OWN lines, wrapping. One
+                                                      truncated line hid the dropoff entirely on a phone —
+                                                      "PHÒNG KHÁM ĐA KHOA ÁI NGHĨA N…" and the driver could
+                                                      not tell which trip it was. */}
+                                                  <p className="text-[11px] text-gray-700 leading-snug break-words">
+                                                    {placeName(j.pickup) || "—"}
+                                                  </p>
+                                                  <p className="text-[11px] text-gray-700 leading-snug break-words">
+                                                    → {placeName(j.dropoff) || "—"}
                                                   </p>
                                                   <p className="text-[11px] text-gray-400 tabular-nums">
                                                     {j.dropped_at ?? "—"} · {j.km == null ? "chưa đo được" : `${j.km} km`}
