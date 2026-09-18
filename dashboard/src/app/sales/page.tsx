@@ -216,6 +216,18 @@ function Icon({ paths, className }: { paths: string[]; className?: string }) {
   );
 }
 
+function Req() {
+  return <span className="text-red-500 ml-0.5" aria-hidden>*</span>;
+}
+
+// Shown under a mandatory field once "Tạo" was pressed with it still empty.
+const MISSING_MSG: Record<string, string> = {
+  address: "Bắt buộc — chọn Địa Chỉ từ gợi ý để lấy toạ độ.",
+  quan: "Bắt buộc — chọn Quận Cũ từ danh sách.",
+  street: "Bắt buộc — bấm để nhập Tên Đường.",
+  phone: "Bắt buộc — nhập số điện thoại liên hệ.",
+};
+
 function FieldIcon({ paths }: { paths: string[] }) {
   return (
     <span className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
@@ -648,6 +660,8 @@ export default function SalesPage() {
   const [tenKh, setTenKh] = useState("");
   const [diaChi, setDiaChi] = useState("");
   const [phone, setPhone] = useState("");
+  // Set by pressing "Tạo" with fields missing: every missing field turns red.
+  const [showMissing, setShowMissing] = useState(false);
   const [lat, setLat] = useState("");
   const [lon, setLon] = useState("");
 
@@ -808,14 +822,21 @@ export default function SalesPage() {
     return { customerName: parts.join(" - "), checkPrefix: prefix };
   }, [maKh, quanCu, tenDuong, tenKh]);
 
-  const canSubmit =
-    maKhValid &&
-    quanCu.trim() &&
-    tenDuong.trim() &&
-    nameValid &&
-    phone.trim() &&
-    hasCoords &&
-    !loading;
+  // Mandatory fields in on-screen order — the first one is where "Tạo" jumps.
+  const missingFields = [
+    !maKhValid && "client",
+    clientSelected && !nameValid && "name",
+    !hasCoords && "address",
+    addressPicked && !quanCu.trim() && "quan",
+    addressPicked && !tenDuong.trim() && "street",
+    !phone.trim() && "phone",
+  ].filter((k): k is string => !!k);
+  const isMissing = (k: string) => showMissing && missingFields.includes(k);
+  const hl = (k: string) => (isMissing(k) ? " rounded-xl ring-2 ring-red-400 ring-offset-4" : "");
+  const missingMsg = (k: string) =>
+    isMissing(k) && <p className="text-xs text-red-600 mt-1">{MISSING_MSG[k]}</p>;
+
+  const canSubmit = missingFields.length === 0 && !loading;
 
   const doSubmit = async (forceName?: string) => {
     if (!canSubmit) return;
@@ -872,7 +893,16 @@ export default function SalesPage() {
     }
   };
 
-  const submit = () => doSubmit();
+  const submit = () => {
+    const first = missingFields[0];
+    if (!first) { setShowMissing(false); return doSubmit(); }
+    setShowMissing(true);
+    if (first === "name") setShowClientNameModal(true);
+    if (first === "street") setShowStreetModal(true);
+    const el = document.querySelector<HTMLElement>(`[data-field="${first}"]`);
+    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    el?.querySelector<HTMLElement>("input, button")?.focus({ preventScroll: true });
+  };
 
   const submitForce = () => {
     const abbr = abbrStreet(tenDuong);
@@ -1119,8 +1149,8 @@ export default function SalesPage() {
           <div className="p-6 space-y-4 border-t border-slate-100">
 
             {/* Thông Tin Khách Hàng — search by code or name */}
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1">Thông Tin Khách Hàng</label>
+            <div data-field="client" className={hl("client")}>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">Thông Tin Khách Hàng<Req /></label>
               <p className="text-[10.5px] text-slate-400 mb-1.5 leading-relaxed">
                 Điền Client Code hoặc tên khách hàng
               </p>
@@ -1132,7 +1162,7 @@ export default function SalesPage() {
                 onClear={clearClient}
                 onBlurUnselected={() => setClientBlurred(true)}
               />
-              {clientBlurred && !clientSelected && (
+              {(clientBlurred || isMissing("client")) && !clientSelected && (
                 <p className="text-xs text-red-600 mt-1">Vui lòng chọn khách hàng từ danh sách gợi ý.</p>
               )}
               {maKh && !maKhValid && (
@@ -1142,8 +1172,8 @@ export default function SalesPage() {
 
             {/* Tên Khách Hàng — confirmed via popup after picking a client */}
             {clientSelected && (
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1">Tên Khách Hàng</label>
+              <div data-field="name" className={hl("name")}>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">Tên Khách Hàng<Req /></label>
                 <button
                   type="button"
                   onClick={() => setShowClientNameModal(true)}
@@ -1165,8 +1195,8 @@ export default function SalesPage() {
             )}
 
             {/* Địa Chỉ */}
-            <div className="relative">
-              <label className="block text-sm font-semibold text-slate-700 mb-1">Địa Chỉ</label>
+            <div data-field="address" className={"relative" + hl("address")}>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">Địa Chỉ<Req /></label>
               <p className="text-[10.5px] text-slate-400 mb-1.5 leading-relaxed">
                 Sẽ hiển thị trên giao diện của khách hàng.
               </p>
@@ -1204,12 +1234,13 @@ export default function SalesPage() {
                   ))}
                 </ul>
               )}
+              {missingMsg("address")}
             </div>
 
             {/* Quận Cũ — appears after an address is picked (auto-filled, editable) */}
             {addressPicked && (
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1">Quận Cũ</label>
+            <div data-field="quan" className={hl("quan")}>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">Quận Cũ<Req /></label>
               <p className="text-[10.5px] text-slate-400 mb-1.5 leading-relaxed">
                 Với khu vực xa trung tâm, chọn tỉnh hoặc thành phố như Thuận An, Dĩ An, Bến Cát, Biên Hòa...
               </p>
@@ -1250,13 +1281,14 @@ export default function SalesPage() {
                   </ul>
                 )}
               </div>
+              {missingMsg("quan")}
             </div>
             )}
 
             {/* Tên Đường — auto-derived from the address pick, confirmed via popup */}
             {addressPicked && (
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1">Tên Đường</label>
+            <div data-field="street" className={hl("street")}>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">Tên Đường<Req /></label>
               {tenDuong ? (
                 <button
                   type="button"
@@ -1278,6 +1310,7 @@ export default function SalesPage() {
                   Không lấy được tên đường — bấm để nhập
                 </button>
               )}
+              {missingMsg("street")}
             </div>
             )}
 
@@ -1362,8 +1395,8 @@ export default function SalesPage() {
             )}
 
             {/* Số Điện Thoại */}
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Số Điện Thoại Liên Hệ Nhận Mẫu</label>
+            <div data-field="phone" className={hl("phone")}>
+              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Số Điện Thoại Liên Hệ Nhận Mẫu<Req /></label>
               <div className="relative">
                 <FieldIcon paths={ICON_PHONE} />
                 <input
@@ -1374,6 +1407,7 @@ export default function SalesPage() {
                   className="w-full border rounded-xl pl-9 pr-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
                 />
               </div>
+              {missingMsg("phone")}
             </div>
 
             {customerName && (
@@ -1383,15 +1417,15 @@ export default function SalesPage() {
               </div>
             )}
 
-            {!hasCoords && maKhValid && quanCu.trim() && tenDuong.trim() && nameValid && phone.trim() && (
-              <p className="text-xs text-amber-600 font-medium -mt-1">
-                ⚠ Chọn Địa Chỉ từ gợi ý để lấy toạ độ — bắt buộc để tạo địa điểm và yêu cầu giao nhận.
+            {showMissing && missingFields.length > 0 && (
+              <p className="text-xs text-red-600 font-medium -mt-1">
+                Còn {missingFields.length} mục bắt buộc (<span className="text-red-500">*</span>) chưa điền — xem các ô viền đỏ.
               </p>
             )}
 
             <button
               onClick={submit}
-              disabled={!canSubmit}
+              disabled={loading}
               className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
             >
               {loading ? "Đang kiểm tra & tạo..." : "Tạo địa điểm lấy mẫu cho khách hàng mới"}
