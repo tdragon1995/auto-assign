@@ -1,14 +1,18 @@
 /**
  * Payroll reconciliation, operator-only. DRY-RUN BY DEFAULT.
  *
- * Drives POST /api/tat/archive (CRON_SECRET-gated, payroll-only — never tat_legs)
- * one day at a time, sequentially, against the deployment that already holds the
- * Cartrack, Supabase, Redis and distance credentials. No secret is downloaded:
- * the only thing this needs locally is CRON_SECRET.
+ * TWO WAYS TO RUN, same reports either way:
+ *   default — drives POST /api/tat/archive (CRON_SECRET-gated, payroll-only, never
+ *     tat_legs) against the deployment that holds the credentials. Nothing but
+ *     CRON_SECRET is needed locally; every day costs the deployment an invocation.
+ *   --local — runs the same reconciliation IN THIS PROCESS. Needs the credentials
+ *     in the environment (Supabase, Cartrack, Redis, distance keys) and costs the
+ *     deployment nothing. This is what the Payroll reconcile workflow uses.
  *
  *   npx tsx scripts/pay-reconcile.mts                         # dry-run 15/08–14/09
  *   npx tsx scripts/pay-reconcile.mts --from 2026-08-15 --to 2026-09-14 --driver PT101690
  *   npx tsx scripts/pay-reconcile.mts --apply                 # write the REVIEWED dry-run
+ *   npx tsx scripts/pay-reconcile.mts --no-cross-check        # skip the 2nd Cartrack fetch
  *   npx tsx scripts/pay-reconcile.mts --apply --delete reviewed-deletes.json
  *   npx tsx scripts/pay-reconcile.mts --restore 2026-08-20    # roll one day back
  *
@@ -42,6 +46,8 @@ const RESTORE = arg("restore");
 const DRIVER = arg("driver");
 const OUT = arg("out", join("reports", "pay-reconcile", `${FROM}_${TO}`))!;
 
+const LOCAL = flag("local");
+
 function secret(): string {
   if (process.env.CRON_SECRET) return process.env.CRON_SECRET;
   try {
@@ -50,7 +56,7 @@ function secret(): string {
   } catch { /* fall through */ }
   throw new Error("CRON_SECRET not set (env or .env.local)");
 }
-const SECRET = secret();
+const SECRET = LOCAL ? "" : secret();
 
 const days: string[] = [];
 for (let d = FROM; d <= TO; ) {
@@ -67,8 +73,28 @@ type Progress = Record<string, { dry?: string; applied?: string; error?: string 
 const progress: Progress = readJson<Progress>("progress.json") ?? {};
 const saveProgress = () => writeJson("progress.json", progress);
 
+/** In-process equivalent of the POST, for --local. Imported lazily so the default
+ *  mode needs no credentials and no app modules at all. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function runLocal(body: any): Promise<any> {
+  const lib = await import("../src/lib/pay-reconcile");
+  try {
+    if (body.restore) return await lib.restorePayDay(body.date, body.restore);
+    return await lib.reconcilePayDay(body.date, {
+      apply: body.apply === true,
+      digest: body.digest,
+      delete_job_ids: body.delete_job_ids,
+      delete_punch_ids: body.delete_punch_ids,
+      skip_cross_check: body.skip_cross_check === true,
+    });
+  } catch (e) {
+    return { ok: false, retry: true, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function post(body: unknown): Promise<any> {
+  if (LOCAL) return runLocal(body);
   const waits = [5_000, 15_000, 45_000, 90_000];
   for (let i = 0; ; i++) {
     let status = 0;
@@ -106,13 +132,13 @@ async function main() {
   const deletes: Record<string, { jobs?: number[]; punches?: number[] }> =
     arg("delete") ? JSON.parse(readFileSync(arg("delete")!, "utf8")) : {};
 
-  console.log(`${APPLY ? "APPLY" : "DRY-RUN"} ${FROM}..${TO} (${days.length} days) → ${BASE}\nreports: ${OUT}`);
+  console.log(`${APPLY ? "APPLY" : "DRY-RUN"} ${FROM}..${TO} (${days.length} days) → ${LOCAL ? "in-process" : BASE}\nreports: ${OUT}`);
 
   for (const date of days) {
     const p = (progress[date] ??= {});
     if (!APPLY) {
       if (p.dry && readJson(`${date}.dry.json`)) { console.log(`${date} dry-run done (${p.dry}), skip`); continue; }
-      const r = await post({ date });
+      const r = await post({ date, skip_cross_check: flag("no-cross-check") });
       if (!r.ok) { p.error = r.error; saveProgress(); console.log(`${date} FAILED: ${r.error}`); continue; }
       writeJson(`${date}.dry.json`, r);
       p.dry = r.digest; delete p.error; saveProgress();
@@ -127,7 +153,7 @@ async function main() {
     if (!existsSync(file(`${date}.backup.json`))) writeJson(`${date}.backup.json`, dry.backup);
 
     const r = await post({
-      date, apply: true, digest: dry.digest,
+      date, apply: true, digest: dry.digest, skip_cross_check: flag("no-cross-check"),
       delete_job_ids: deletes[date]?.jobs ?? [], delete_punch_ids: deletes[date]?.punches ?? [],
     });
     if (!r.ok) { p.error = r.error; saveProgress(); console.log(`${date} NOT applied: ${r.error}`); continue; }

@@ -193,8 +193,16 @@ export function diffPayDay(input: DayInput, proposedJobsIn: PayJob[], proposedPu
     else if (drv && timelineDriver.get(id) !== drv) exceptions.push({ kind: "driver_disagreement", job_id: id, driver_id: timelineDriver.get(id), detail: `timeline driver ≠ REST driver ${drv}` });
   }
   for (const id of timelineDriver.keys()) {
-    if (!restDriver.has(id)) exceptions.push({ kind: "timeline_only_job", job_id: id, driver_id: timelineDriver.get(id), detail: "paid from timeline, not in REST completed list for this scheduled day" });
+    if (restCompleted.length > 0 && !restDriver.has(id)) exceptions.push({ kind: "timeline_only_job", job_id: id, driver_id: timelineDriver.get(id), detail: "paid from timeline, not in REST completed list for this scheduled day" });
   }
+
+  // Only these need writing: a row identical to what is stored costs a PostgREST
+  // round trip and the CPU to serialise it, for no change. A whole-day rewrite was
+  // the bulk of an apply's work (~600 rows a day, nearly all unchanged).
+  const storedJobFacts = new Map(stored.jobs.map((j) => [Number(j.job_id), jobFacts(j)]));
+  const storedPunchFacts = new Map(stored.punches.map((p) => [Number(p.job_id), punchFacts(p)]));
+  const changedJobRows = jobs.filter((j) => storedJobFacts.get(j.job_id) !== jobFacts(j));
+  const changedPunchRows = punches.filter((p) => storedPunchFacts.get(p.job_id) !== punchFacts(p));
 
   const after = totalsByDriver(jobs, punches);
   for (const [driver_id, t] of Object.entries(after)) {
@@ -214,6 +222,8 @@ export function diffPayDay(input: DayInput, proposedJobsIn: PayJob[], proposedPu
   return {
     date, digest,
     write: { jobs, punches },
+    /** The subset an apply actually writes. */
+    writeDelta: { jobs: changedJobRows, punches: changedPunchRows },
     source_counts: {
       timeline_routes: input.routes.length, timeline_paid_jobs: srcJobIds.size, timeline_punches: srcPunchIds.size,
       rest_completed_pairs: restDriver.size, stored_jobs: stored.jobs.length, stored_punches: stored.punches.length,
@@ -230,6 +240,9 @@ export function diffPayDay(input: DayInput, proposedJobsIn: PayJob[], proposedPu
 
 export interface ReconcileOptions {
   apply?: boolean;
+  /** Skip the REST completed-jobs cross-check: a second full Cartrack fetch and
+   *  parse per day. Worth it on a first pass, waste on a re-verify. */
+  skip_cross_check?: boolean;
   /** Required with apply: the dry-run digest that was reviewed. */
   digest?: string;
   delete_job_ids?: number[];
@@ -238,7 +251,9 @@ export interface ReconcileOptions {
 
 export async function reconcilePayDay(date: string, opts: ReconcileOptions = {}, env: Env = "prod") {
   const routes = await retry("timeline fetch", () => getTimelineRoutes(date, env));
-  const restCompleted = await retry("REST completed fetch", () => getJobsByStatusAndDate(5, date, env));
+  const restCompleted = opts.skip_cross_check
+    ? []
+    : await retry("REST completed fetch", () => getJobsByStatusAndDate(5, date, env));
 
   const [storedJobs, storedPunches] = await Promise.all([
     sbSelectAll<StoredJob>("pay_jobs", `select=*&trip_date=eq.${date}`, "job_id.asc"),
@@ -276,7 +291,7 @@ export async function reconcilePayDay(date: string, opts: ReconcileOptions = {},
   }
 
   const report = diffPayDay({ date, routes, restCompleted, stored: { jobs: storedJobs, punches: storedPunches }, otherDates, ineligible }, jobs, punches, tracking);
-  const { write, ...rest } = report;
+  const { write, writeDelta, ...rest } = report;
   const base = { ok: true, mode: opts.apply ? "apply" : "dry-run", distances: { ...stats, reused_stored: reused }, ...rest, backup: { jobs: storedJobs, punches: storedPunches } };
 
   if (!opts.apply) return base;
@@ -285,8 +300,8 @@ export async function reconcilePayDay(date: string, opts: ReconcileOptions = {},
   }
 
   const stamp = new Date().toISOString();
-  await sbUpsert("pay_jobs", write.jobs.map((j) => ({ ...j, archived_at: stamp })) as unknown as Record<string, unknown>[], "trip_date,job_id");
-  await sbUpsert("pay_punches", write.punches.map((p) => ({ ...p, archived_at: stamp })) as unknown as Record<string, unknown>[], "trip_date,job_id");
+  await sbUpsert("pay_jobs", writeDelta.jobs.map((j) => ({ ...j, archived_at: stamp })) as unknown as Record<string, unknown>[], "trip_date,job_id");
+  await sbUpsert("pay_punches", writeDelta.punches.map((p) => ({ ...p, archived_at: stamp })) as unknown as Record<string, unknown>[], "trip_date,job_id");
 
   const extraJobIds = new Set(report.diff.extra_jobs.map((e) => e.job_id));
   const extraPunchIds = new Set(report.diff.extra_punches.map((e) => e.job_id));
@@ -300,7 +315,8 @@ export async function reconcilePayDay(date: string, opts: ReconcileOptions = {},
   return {
     ...base,
     applied: {
-      upserted_jobs: write.jobs.length, upserted_punches: write.punches.length,
+      upserted_jobs: writeDelta.jobs.length, upserted_punches: writeDelta.punches.length,
+      unchanged_jobs: write.jobs.length - writeDelta.jobs.length,
       deleted_job_ids: delJobs, deleted_punch_ids: delPunches,
       refused_deletes: [
         ...(opts.delete_job_ids ?? []).filter((id) => !extraJobIds.has(id)).map((id) => `job ${id}`),

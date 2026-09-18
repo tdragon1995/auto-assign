@@ -1,0 +1,85 @@
+# Payroll reconciliation, off Vercel.
+#
+# WHY THIS EXISTS. The reconciliation used to run by calling the deployment once
+# per day of the period — 250+ invocations in an afternoon, each fetching a day of
+# Cartrack routes and rewriting payroll rows. That is billed Active CPU on every
+# pass, for work with no deadline. Here it runs on a GitHub runner instead and
+# Vercel does nothing.
+#
+# MANUAL ONLY (workflow_dispatch). There is no schedule: a reconciliation is
+# something a person decides to run, and the daily archive already keeps new days
+# current.
+#
+# DRY RUN BY DEFAULT. `apply: true` writes, and only the days whose dry-run
+# digest still matches. The reports (which contain pay data) are uploaded as a
+# private artifact, never committed.
+#
+# SECRETS THIS NEEDS (Settings → Secrets → Actions). SUPABASE_URL and
+# SUPABASE_SERVICE_ROLE_KEY already exist for misa-shifts; the rest must be added
+# once, copied from the Vercel project's environment variables:
+#   CARTRACK_AUTH, CARTRACK_COOKIE, CARTRACK_WEB_PASS   — job + route fetches
+#   KV_REST_API_URL, KV_REST_API_TOKEN                  — the distance cache
+#   VIETMAP_API_KEY, GOONG_API_KEY, GOONG_API_KEY_2     — only for unseen pairs
+name: Payroll reconcile
+
+on:
+  workflow_dispatch:
+    inputs:
+      from:
+        description: First day (YYYY-MM-DD)
+        required: true
+      to:
+        description: Last day (YYYY-MM-DD)
+        required: true
+      apply:
+        description: Write the reviewed changes (otherwise dry-run only)
+        type: boolean
+        default: false
+      cross_check:
+        description: Also cross-check Cartrack's completed-jobs list (slower)
+        type: boolean
+        default: true
+
+concurrency: pay-reconcile          # one at a time; two runs would race the same days
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci --no-audit --no-fund
+
+      - name: Reconcile
+        run: >
+          npx tsx scripts/pay-reconcile.mts --local
+          --from ${{ inputs.from }} --to ${{ inputs.to }}
+          ${{ inputs.apply && '--apply' || '' }}
+          ${{ inputs.cross_check && '' || '--no-cross-check' }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          CARTRACK_AUTH: ${{ secrets.CARTRACK_AUTH }}
+          CARTRACK_COOKIE: ${{ secrets.CARTRACK_COOKIE }}
+          CARTRACK_WEB_PASS: ${{ secrets.CARTRACK_WEB_PASS }}
+          KV_REST_API_URL: ${{ secrets.KV_REST_API_URL }}
+          KV_REST_API_TOKEN: ${{ secrets.KV_REST_API_TOKEN }}
+          VIETMAP_API_KEY: ${{ secrets.VIETMAP_API_KEY }}
+          GOONG_API_KEY: ${{ secrets.GOONG_API_KEY }}
+          GOONG_API_KEY_2: ${{ secrets.GOONG_API_KEY_2 }}
+
+      # Pay data: a private artifact for whoever ran it, kept briefly, never in git.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pay-reconcile-${{ inputs.from }}_${{ inputs.to }}
+          path: dashboard/reports/pay-reconcile/
+          retention-days: 14

@@ -119,6 +119,7 @@ export async function POST(req: NextRequest) {
           digest: body.digest,
           delete_job_ids: body.delete_job_ids,
           delete_punch_ids: body.delete_punch_ids,
+          skip_cross_check: body.skip_cross_check === true,
         });
     return NextResponse.json(result, { status: result.ok ? 200 : 409 });
   } catch (e) {

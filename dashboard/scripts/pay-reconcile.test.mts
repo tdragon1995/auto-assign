@@ -117,6 +117,30 @@ console.log("\n6b. Jobs excluded by the pay rule are not cross-check misses");
   check("a genuinely unpaid job still is", flagged.includes(503), JSON.stringify(flagged));
 }
 
+console.log("\n6c. An apply writes only the rows that differ");
+{
+  const same = job(1);
+  const moved = job(2, TUAN, TUAN_NAME, 9.9);
+  const stored = {
+    jobs: [{ ...same }, { ...job(2) }],   // job 2 stored with the OLD distance
+    punches: [] as never[],
+  };
+  const r = diffPayDay(input({ stored, restCompleted: [rest(1), rest(2), rest(3)] }), [same, moved, job(3)], [], new Map());
+  const delta = r.writeDelta.jobs.map((j) => j.job_id).sort();
+  check("unchanged row is not rewritten", !delta.includes(1));
+  check("changed row is written", delta.includes(2));
+  check("missing row is written", delta.includes(3), JSON.stringify(delta));
+  check("the full set still reports 3", r.write.jobs.length === 3);
+}
+
+console.log("\n6d. Without the cross-check there are no REST exceptions");
+{
+  const r = diffPayDay(input({ restCompleted: [] }), [job(1)], [], new Map());
+  check("no timeline-only noise when REST was not fetched",
+    !r.exceptions.some((e) => e.kind === "timeline_only_job"), JSON.stringify(r.exceptions));
+  check("the job is still proposed", r.write.jobs.length === 1);
+}
+
 console.log("\n7. Extras are reported, not deleted");
 {
   const r = diffPayDay(input({ stored: { jobs: [job(99)], punches: [punch(98, "in", "07:00")] } }), [], [], new Map());
