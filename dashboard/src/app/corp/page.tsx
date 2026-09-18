@@ -60,7 +60,6 @@ export default function CorpPage() {
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200 w-full max-w-md p-6 space-y-5">
         <div>
           <h1 className="text-xl font-bold text-gray-900">Yêu cầu lấy mẫu</h1>
-          <p className="text-sm text-gray-500 mt-1">Giao về Diag D001</p>
         </div>
 
         <fieldset className="space-y-2">
@@ -92,7 +91,6 @@ export default function CorpPage() {
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
             />
-            <p className="text-xs text-gray-500">Có thể sửa cho lần gửi này.</p>
           </div>
         )}
 

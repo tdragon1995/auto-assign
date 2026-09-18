@@ -58,8 +58,8 @@ function Stepper({ trip, state }: { trip: PickupTrip; state: TripState }) {
   );
 }
 
-/** Same status display as a /qr trip card, without its actions. */
-function TripCard({ trip, showPickup }: { trip: PickupTrip; showPickup: boolean }) {
+/** Same status display as a /qr trip card; "Huỷ chuyến" is its only action. */
+function TripCard({ trip, showPickup, url, onCancelled }: { trip: PickupTrip; showPickup: boolean; url: string; onCancelled: (jobId: number) => void }) {
   const state = tripStateFromStops(trip.pickup_status_id, trip.dropoff_status_id, !!trip.driver_name, trip.job_status_id, trip.parked);
   return (
     <div className="rounded-2xl bg-white shadow-sm border border-slate-100 p-4">
@@ -93,6 +93,8 @@ function TripCard({ trip, showPickup }: { trip: PickupTrip; showPickup: boolean 
           <span className="flex-1 min-w-0 text-sm font-bold text-slate-800 break-words">{trip.driver_name}</span>
         </div>
       )}
+
+      {canCancel(trip) && <CancelTripButton url={url} jobId={trip.job_id} onCancelled={onCancelled} />}
     </div>
   );
 }
@@ -107,6 +109,8 @@ export function PickupTripFeed({ url, sent, showPickup = false }: { url: string;
   const [trips, setTrips] = useState<PickupTrip[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  // Cancelled here: the published day can still list them for a few minutes.
+  const [cancelled, setCancelled] = useState<Set<number>>(() => new Set());
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -127,8 +131,8 @@ export function PickupTripFeed({ url, sent, showPickup = false }: { url: string;
 
   const shown = useMemo(() => {
     const known = new Set(trips.map((t) => t.job_id));
-    return [...sent.filter((t) => !known.has(t.job_id)), ...trips];
-  }, [trips, sent]);
+    return [...sent.filter((t) => !known.has(t.job_id)), ...trips].filter((t) => !cancelled.has(t.job_id));
+  }, [trips, sent, cancelled]);
 
   return (
     <section className="w-full max-w-md space-y-3">
@@ -152,7 +156,66 @@ export function PickupTripFeed({ url, sent, showPickup = false }: { url: string;
       {!loading && !error && !shown.length && (
         <p className="text-center text-sm text-gray-500 py-6">Chưa có chuyến nào hôm nay.</p>
       )}
-      {shown.map((t) => <TripCard key={t.job_id} trip={t} showPickup={showPickup} />)}
+      {shown.map((t) => (
+        <TripCard key={t.job_id} trip={t} showPickup={showPickup} url={url}
+          onCancelled={(id) => setCancelled((prev) => new Set(prev).add(id))} />
+      ))}
     </section>
+  );
+}
+
+/** Offered only while the pickup is untouched and the trip is still open; the server
+ *  re-checks both live before deleting anything. */
+export function canCancel(t: { pickup_status_id: number | null; pickup_completed_ts: string | null; job_status_id: number | null }): boolean {
+  return t.pickup_status_id === 1 && !t.pickup_completed_ts && (t.job_status_id === 2 || t.job_status_id === 4);
+}
+
+/** "Huỷ chuyến" with a confirm step. `url` is the page's API (DELETE ?job_id=). */
+export function CancelTripButton({ url, jobId, onCancelled }: { url: string; jobId: number; onCancelled: (jobId: number) => void }) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function cancel() {
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch(`${url}?job_id=${jobId}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? "Huỷ thất bại");
+      onCancelled(jobId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Không thể kết nối. Vui lòng thử lại.");
+      setBusy(false);
+    }
+  }
+
+  if (!confirming) {
+    return (
+      <button
+        onClick={() => setConfirming(true)}
+        className="w-full mt-3 py-2.5 rounded-xl text-xs font-bold text-red-600 border border-red-200 active:bg-red-50"
+      >
+        Huỷ chuyến
+      </button>
+    );
+  }
+  return (
+    <div className="mt-3 space-y-2">
+      <p className="text-xs font-semibold text-slate-700">Huỷ chuyến #{jobId}? Hành động này không thể hoàn tác.</p>
+      {error && <p role="alert" className="text-xs font-medium text-red-600">{error}</p>}
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          onClick={() => { setConfirming(false); setError(""); }}
+          disabled={busy}
+          className="py-2.5 rounded-xl text-xs font-semibold border border-slate-200 text-slate-600 disabled:opacity-40"
+        >
+          Quay lại
+        </button>
+        <button onClick={cancel} disabled={busy} className="py-2.5 rounded-xl text-xs font-bold bg-red-600 text-white disabled:opacity-40">
+          {busy ? "Đang huỷ…" : "Xác nhận huỷ"}
+        </button>
+      </div>
+    </div>
   );
 }

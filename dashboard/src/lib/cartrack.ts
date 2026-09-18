@@ -185,12 +185,16 @@ export async function deleteJob(jobId: number, env: Env = "prod"): Promise<boole
   // deletes jobs created by either path. deletedJobIds echoes the ids actually
   // removed; anything else (error, id absent) falls through to REST for the
   // authoritative answer.
-  const out = await jsonRpc<{ deletedJobIds?: Record<string, number> }>(
+  const out = await jsonRpc<{ deletedJobIds?: Record<string, number> | number[] }>(
     "delivery_delete_job",
     { data: { jobIds: [jobId] } },
     { env }
   );
-  if (out.ok && out.result?.deletedJobIds?.[jobId] !== undefined) return true;
+  // The echo was a map keyed by id; by 2026-09-18 it is a plain array ([34456949]).
+  // Indexing the array by job id read undefined, so every successful delete fell
+  // through to REST, which 404s on the job just removed — and reported failure.
+  const echo = out.ok ? out.result?.deletedJobIds : undefined;
+  if (Array.isArray(echo) ? echo.map(Number).includes(jobId) : echo?.[jobId] !== undefined) return true;
   const res = await fetch(`${BASE_URL}/jobs/${jobId}?force=true`, {
     method: "DELETE",
     headers: getHeaders(env),

@@ -7,12 +7,13 @@ import { foldName } from "@/lib/driver-cell";
 import { placeLabel } from "@/lib/place-label";
 import { TripSteps, TRIP_STATE_STYLE, tripStateText, tripStateFromStops } from "@/components/trip-steps";
 import type { NdtpTrip } from "@/app/api/ndtp/route";
+import { CancelTripButton, canCancel } from "@/components/pickup-trip-feed";
 
 const shortName = (name: string) => name.replace(/^NDTP - /, "");
 // A scheduled run with no set time reads midnight, which is not when anyone asked.
 const hm = (ts?: string | null) => (ts && !ts.endsWith("00:00:00") ? ts.slice(11, 16) : null);
 
-function TripCard({ trip }: { trip: NdtpTrip }) {
+function TripCard({ trip, onCancelled }: { trip: NdtpTrip; onCancelled: (jobId: number) => void }) {
   const state = tripStateFromStops(trip.pickup_status_id, trip.dropoff_status_id, !!trip.driver_name, trip.job_status_id, trip.parked);
   const dest = placeLabel(trip.dropoff_name);
   return (
@@ -34,6 +35,7 @@ function TripCard({ trip }: { trip: NdtpTrip }) {
         times={[hm(trip.requested_ts), hm(trip.pickup_completed_ts), hm(trip.dropoff_started_ts), hm(trip.dropoff_completed_ts)]}
         state={state}
       />
+      {trip.own && canCancel(trip) && <CancelTripButton url="/api/ndtp" jobId={trip.job_id} onCancelled={onCancelled} />}
     </div>
   );
 }
@@ -53,6 +55,8 @@ export default function NdtpPage() {
   const [sent, setSent] = useState<NdtpTrip[]>([]);
   const [tripsLoading, setTripsLoading] = useState(false);
   const [tripsError, setTripsError] = useState("");
+  // Cancelled here: the published day can still list them for a few minutes.
+  const [cancelled, setCancelled] = useState<Set<number>>(() => new Set());
 
   const loadTrips = useCallback(async () => {
     setTripsLoading(true);
@@ -73,8 +77,8 @@ export default function NdtpPage() {
 
   const shown = useMemo(() => {
     const known = new Set(trips.map((t) => t.job_id));
-    return [...sent.filter((t) => !known.has(t.job_id)), ...trips];
-  }, [trips, sent]);
+    return [...sent.filter((t) => !known.has(t.job_id)), ...trips].filter((t) => !cancelled.has(t.job_id));
+  }, [trips, sent, cancelled]);
 
   const matches = useMemo(() => {
     const q = foldName(search.trim());
@@ -112,7 +116,7 @@ export default function NdtpPage() {
         setSent((prev) => [{
           job_id: data.job_id, dropoff_name: dropoff.name, job_status_id: 2, pickup_status_id: 1,
           dropoff_status_id: 1, driver_name: null, parked: false, requested_ts: now,
-          pickup_completed_ts: null, dropoff_started_ts: null, dropoff_completed_ts: null,
+          pickup_completed_ts: null, dropoff_started_ts: null, dropoff_completed_ts: null, own: true,
         }, ...prev]);
       }
       setDropoffId("");
@@ -240,7 +244,9 @@ export default function NdtpPage() {
         {!tripsLoading && !tripsError && !shown.length && (
           <p className="text-center text-sm text-gray-500 py-6">Chưa có chuyến nào hôm nay.</p>
         )}
-        {shown.map((t) => <TripCard key={t.job_id} trip={t} />)}
+        {shown.map((t) => (
+          <TripCard key={t.job_id} trip={t} onCancelled={(id) => setCancelled((prev) => new Set(prev).add(id))} />
+        ))}
       </section>
     </div>
   );

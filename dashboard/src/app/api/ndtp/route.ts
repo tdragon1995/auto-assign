@@ -7,6 +7,7 @@ import { notifyAdminGroup } from "@/lib/zalo";
 import { NDTP_DROPOFFS, NDTP_PICKUP } from "@/lib/ndtp";
 import { locationJobs } from "@/lib/day-snapshot";
 import { proxyKind } from "@/lib/proxy-drivers";
+import { cancelOwnTrip } from "@/lib/pickup-trips";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -23,6 +24,8 @@ export interface NdtpTrip {
   pickup_completed_ts: string | null;
   dropoff_started_ts: string | null;
   dropoff_completed_ts: string | null;
+  /** Booked from /ndtp — the only trips the page may cancel. */
+  own: boolean;
 }
 
 // GET /api/ndtp — today's trips picked up at NĐTP, whoever booked them. Reads the day
@@ -57,6 +60,7 @@ export async function GET(req: NextRequest) {
       pickup_completed_ts: pickup.activity_completed_ts,
       dropoff_started_ts: dropoff?.activity_started_ts ?? null,
       dropoff_completed_ts: dropoff?.activity_completed_ts ?? null,
+      own: isNdtpBooking(j),
     });
   }
   trips.sort((a, b) => (b.requested_ts ?? "").localeCompare(a.requested_ts ?? ""));
@@ -154,5 +158,25 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     // Thrown after the create was sent: unknown whether it exists, so the lock stays.
     return NextResponse.json({ error: "Chưa xác nhận được yêu cầu. Vui lòng liên hệ điều phối trước khi gửi lại.", details: String(e) }, { status: 502 });
+  }
+}
+
+/** A trip this page booked — its reference is written by POST above. Anything else at
+ *  the NĐTP pickup (Labcenter, dispatch, scheduled runs) is not the page's to cancel. */
+const isNdtpBooking = (j: { reference_number?: string | null }) => (j.reference_number ?? "").startsWith("NDTP→");
+
+// DELETE /api/ndtp?job_id=123 — cancel a trip booked from /ndtp while its pickup is untouched.
+export async function DELETE(req: NextRequest) {
+  const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
+  const jobId = Number(req.nextUrl.searchParams.get("job_id"));
+  if (!Number.isInteger(jobId) || jobId <= 0) return NextResponse.json({ error: "Job ID không hợp lệ" }, { status: 400 });
+  try {
+    const out = await cancelOwnTrip(jobId, env, isNdtpBooking);
+    if (!out.ok) return NextResponse.json({ error: out.error }, { status: out.status });
+    // Free the double-tap guard so a corrected request can go straight in.
+    void releaseCreateLock(`ndtp:${out.dropoffId}-${vnDate()}`);
+    return NextResponse.json({ success: true, job_id: jobId });
+  } catch (e) {
+    return NextResponse.json({ error: String(e) }, { status: 500 });
   }
 }

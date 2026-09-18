@@ -3,7 +3,7 @@ import { createJob, type Env } from "@/lib/cartrack";
 import { vnDate, vnHoursMinutes } from "@/lib/time";
 import { acquireCreateLock, releaseCreateLock } from "@/lib/smart-log-kv";
 import { CORP_CLINICS, CORP_DROPOFF_ID, CORP_LABEL, normalizeVnPhone } from "@/lib/corp";
-import { pickupTripsToday } from "@/lib/pickup-trips";
+import { cancelOwnTrip, pickupTripsToday } from "@/lib/pickup-trips";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -85,5 +85,21 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     // Thrown after the create was sent: unknown whether it exists, so the lock stays.
     return NextResponse.json({ error: "Chưa xác nhận được yêu cầu. Vui lòng liên hệ điều phối trước khi gửi lại.", details: String(e) }, { status: 502 });
+  }
+}
+
+// DELETE /api/corp?job_id=123 — cancel a /corp trip while its pickup is untouched.
+export async function DELETE(req: NextRequest) {
+  const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
+  const jobId = Number(req.nextUrl.searchParams.get("job_id"));
+  if (!Number.isInteger(jobId) || jobId <= 0) return NextResponse.json({ error: "Job ID không hợp lệ" }, { status: 400 });
+  try {
+    const out = await cancelOwnTrip(jobId, env, (j) => Array.isArray(j.labels) && j.labels.includes(CORP_LABEL));
+    if (!out.ok) return NextResponse.json({ error: out.error }, { status: out.status });
+    // Free the double-tap guard so a corrected request can go straight in.
+    void releaseCreateLock(`corp:${out.pickupId}-${vnDate()}`);
+    return NextResponse.json({ success: true, job_id: jobId });
+  } catch (e) {
+    return NextResponse.json({ error: String(e) }, { status: 500 });
   }
 }
