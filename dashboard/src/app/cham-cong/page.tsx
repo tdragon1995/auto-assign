@@ -347,19 +347,6 @@ function fmtMonth(m: string): string {
   return `Tháng ${Number(mm)}/${y}`;
 }
 
-/** One line of the pay breakdown: what was counted, at what rate, for how much. */
-function PayLine({ label, detail, amount }: { label: string; detail: string; amount: number }) {
-  return (
-    <div className="flex items-baseline justify-between gap-2">
-      <div className="min-w-0">
-        <p className="text-sm font-medium text-gray-700">{label}</p>
-        <p className="text-[11px] text-gray-400">{detail}</p>
-      </div>
-      <p className="text-sm font-bold text-gray-800 shrink-0 tabular-nums">{fmtVnd(amount)}</p>
-    </div>
-  );
-}
-
 // ── Hiệu Suất presentation ──────────────────────────────────────────────────
 //
 // The audience is a driver on a phone who does not read dashboards. Three rules
@@ -662,6 +649,13 @@ function vnWeekday(dateStr: string): string {
   const days = ["Chủ Nhật", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7"];
   return days[dt.getDay()];
 }
+
+/** Day/month only — "15/8". The long form ("Ngày 15 tháng 8, 2026") wrapped to two
+ *  lines above the headline number and pushed the money down the screen. */
+const fmtDayMonth = (dateStr: string) => {
+  const [, mo, d] = dateStr.split("-").map(Number);
+  return `${d}/${mo}`;
+};
 
 function fmtDate(dateStr: string): string {
   if (!dateStr) return "";
@@ -2494,24 +2488,23 @@ export default function ChamCongPage() {
                       {/* The headline. */}
                       <div className="rounded-2xl border border-gray-200 overflow-hidden">
                         <div className="px-4 pt-4 pb-3">
-                          <p className="text-xs text-gray-500">Tiền km {fmtMonth(payReport.month)}</p>
-                          <p className="text-xs text-gray-500">Từ {fmtDate(payReport.from)} đến {fmtDate(payReport.to)}</p>
+                          <p className="text-xs text-gray-500">
+                            Tiền km {fmtMonth(payReport.month)} · Từ {fmtDayMonth(payReport.from)} tới {fmtDayMonth(payReport.to)}
+                          </p>
                           <p className="text-3xl font-bold text-gray-900 leading-tight mt-0.5 tabular-nums">
                             {/* Hours are hidden for now (supervisor, 2026-09-17), so this
                                 is NOT the month's pay and must not be labelled as it.
                                 An unlabelled partial number reads as the whole. */}
                             {fmtVnd(payReport.summary.km_pay)}
                           </p>
-                          <p className="text-xs text-amber-700 mt-1.5">
-                            Chưa gồm tiền giờ chấm công — đang chốt cách tính, sẽ cộng sau.
+                          {/* The working, once. It used to repeat as a PayLine whose amount
+                              WAS the headline, and again as a stat tile. */}
+                          <p className="text-xs text-gray-600 mt-0.5 tabular-nums">
+                            {fmtKm(payReport.summary.km)} km × {vndFmt.format(payReport.rates.per_km)}đ/km
                           </p>
-                        </div>
-                        <div className="px-4 pb-4 space-y-2.5 border-t border-gray-100 pt-3">
-                          <PayLine
-                            label="Quãng đường"
-                            detail={`${fmtKm(payReport.summary.km)} km × ${vndFmt.format(payReport.rates.per_km)}đ/km`}
-                            amount={payReport.summary.km_pay}
-                          />
+                          <p className="text-xs text-amber-700 mt-1.5">
+                            Chưa gồm tiền giờ chấm công.
+                          </p>
                         </div>
                       </div>
 
@@ -2526,10 +2519,9 @@ export default function ChamCongPage() {
                         </div>
                       )}
 
-                      <div className="grid grid-cols-3 gap-2">
-                        <TatStat label="Ngày làm" value={String(payReport.days.filter((d) => d.jobs > 0).length)} />
+                      <div className="grid grid-cols-2 gap-2">
+                        <TatStat label="Ngày công" value={String(payReport.days.filter((d) => d.jobs > 0).length)} />
                         <TatStat label="Chuyến" value={String(payReport.summary.jobs)} />
-                        <TatStat label="Quãng đường" value={`${fmtKm(payReport.summary.km)} km`} />
                       </div>
 
                       {/* The days. Each is tappable; only the one you open costs a
@@ -2610,9 +2602,6 @@ export default function ChamCongPage() {
                                                       ? <span className="text-amber-700">⚠ chưa đo được</span>
                                                       : `${fmtKm(j.km)} km`}
                                                   </p>
-                                                  {j.reference_number && (
-                                                    <p className="text-xs text-gray-500 break-all">{j.reference_number}</p>
-                                                  )}
                                                 </div>
                                                 <p className="text-xs font-semibold text-gray-700 shrink-0 tabular-nums">
                                                   {j.pay == null ? "—" : fmtVnd(j.pay)}
