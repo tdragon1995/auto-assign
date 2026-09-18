@@ -119,7 +119,7 @@ function HandoverList({ title, groups }: { title: string; groups: Group[] }) {
     <section className="bg-white rounded-2xl shadow-sm p-4 space-y-3 min-w-0">
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-[15px] font-bold text-slate-800">
-          {title} <span className="text-slate-500">({total})</span>
+          {title} <span className="text-slate-500">· {total} hồ sơ</span>
         </h2>
         <div className="flex gap-2">
           <button
@@ -142,11 +142,11 @@ function HandoverList({ title, groups }: { title: string; groups: Group[] }) {
       {groups.map((g) => (
         <div key={g.dest}>
           <p className="text-sm font-extrabold text-slate-900 bg-slate-100 rounded-lg px-2.5 py-1.5">
-            Gửi về {g.dest} · {g.count}
+            Gửi về {g.dest} · {g.count} hồ sơ
           </p>
           {g.clients.map((c) => (
             <div key={c.name} className="mt-2 px-1">
-              <p className="text-xs font-bold text-slate-700">{c.name} · {c.rows.length}</p>
+              <p className="text-xs font-bold text-slate-700">{c.name} · {c.rows.length} hồ sơ</p>
               <ul className="mt-1 divide-y divide-slate-100">
                 {c.rows.map((r) => {
                   const note = unreadRemark(r);
