@@ -281,6 +281,7 @@ export async function createScheduleJob(
 export async function runScheduleJobCycle(
   env: Env,
 ): Promise<{ date: string; weekday: number; results: ScheduleJobResult[] }> {
+  const start = Date.now();
   const date = vnDate();
   const weekday = vnWeekdayIndex();
 
@@ -290,10 +291,48 @@ export async function runScheduleJobCycle(
   const allRows = await loadScheduleJobRows();
   const targets = filterRowsForToday(allRows, weekday);
 
-  const results: ScheduleJobResult[] = [];
-  for (const row of targets) {
-    results.push(await createScheduleJob(row, date, env));
+  // Batched, not one-at-a-time: each row is a lookup + create + park (three REST
+  // calls), and on a slow Cartrack morning 13 rows in sequence overran the 60s
+  // function limit — the kill (2026-09-18 05:41) left the last 4 rows uncreated
+  // and saved no run record. Rows have distinct references, so they are
+  // independent. Ten matches the rollover and proxy-release batches.
+  const BATCH = 10;
+  // Don't stop until every row has its job: rows that failed without a job being
+  // made are tried again (createScheduleJob looks the reference up first, so a
+  // create that landed despite an error comes back SKIPPED, not duplicated).
+  // Bounded by a deadline under the 60s limit so the run always reaches its own
+  // end and saves a record — a kill saves nothing and says nothing.
+  const deadline = start + 45_000;
+  const byRow = new Map<number, ScheduleJobResult>();
+  const needsRun = (r: ScheduleJobRow) => {
+    const res = byRow.get(r.rowIndex);
+    // A job_id means it exists (e.g. park failed) — re-running would only
+    // find it and report SKIPPED, hiding the real error.
+    return !res || (res.status === "ERROR" && !res.job_id);
+  };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const pending = targets.filter(needsRun);
+    if (!pending.length) break;
+    for (let i = 0; i < pending.length && Date.now() < deadline; i += BATCH) {
+      const batch = await Promise.all(
+        pending.slice(i, i + BATCH).map((row) => createScheduleJob(row, date, env)),
+      );
+      for (const r of batch) byRow.set(r.rowIndex, r);
+    }
+    if (Date.now() >= deadline) break;
   }
+
+  const results = targets.map((row) => byRow.get(row.rowIndex) ?? {
+    rowIndex: row.rowIndex,
+    pickup_id: row.pickup_id,
+    pickup_name: row.pickup_name,
+    dropoff_id: row.dropoff_id,
+    dropoff_name: row.dropoff_name,
+    delivery_window: row.delivery_window,
+    reference_number: buildReferenceNumber(row, date),
+    status: "ERROR" as const,
+    message: "Not attempted — out of time this run; use Retry",
+  });
 
   return { date, weekday, results };
 }
