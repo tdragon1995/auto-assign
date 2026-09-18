@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { RefreshCw, Loader2, CheckCircle2, AlertCircle, Check, ChevronDown, Clock, Package, ArrowRight } from "lucide-react";
 import { placeLabel } from "@/lib/place-label";
+import { HardCopyHandover } from "@/components/hard-copy-handover";
 import { TripSteps, TRIP_STATE_STYLE, tripStateText, tripStateFromStops, type TripState } from "@/components/trip-steps";
 
 const VENDORS = [
@@ -31,94 +32,6 @@ interface Order {
   dropoff_started_ts: string | null;
   dropoff_completed_ts: string | null;
   create_ts: string | null;
-}
-
-interface VidRow {
-  vid: string;
-  branch_code?: string | null;
-  client_id?: string | null;
-  client_name?: string | null;
-  error?: string;
-}
-
-function VidLookup() {
-  const [text, setText] = useState("");
-  const [rows, setRows] = useState<VidRow[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  const lookup = async () => {
-    const vids = text.split(/\D+/).filter(Boolean);
-    if (!vids.length || loading) return;
-    setLoading(true);
-    setError("");
-    try {
-      const res = await fetch("/api/labcenter/orders", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ vids }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) { setError(data.error ?? "Tra cứu thất bại"); setRows([]); }
-      else setRows(data.results ?? []);
-    } catch {
-      setError("Không thể kết nối. Vui lòng thử lại.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="bg-white rounded-2xl shadow-sm p-4 mt-5 space-y-3">
-      <p className="text-[15px] font-bold text-slate-800">Tra cứu VID</p>
-      <textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder="Dán danh sách VID, mỗi dòng một số"
-        rows={4}
-        aria-label="Danh sách VID"
-        className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm text-slate-700 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
-      />
-      <button
-        onClick={lookup}
-        disabled={loading || !/\d/.test(text)}
-        className="w-full rounded-xl py-3 text-white text-sm font-bold flex items-center justify-center gap-2 bg-blue-700 active:scale-[.97] transition disabled:opacity-40"
-      >
-        {loading ? <><Loader2 aria-hidden className="w-4 h-4 animate-spin" />Đang tra cứu…</> : "Tra cứu"}
-      </button>
-      {error && <p role="alert" className="text-xs text-red-600 font-medium">{error}</p>}
-      {rows.length > 0 && (
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-left text-slate-500">
-                <th className="py-1.5 pr-2 font-semibold">VID</th>
-                <th className="py-1.5 pr-2 font-semibold">Chi nhánh</th>
-                <th className="py-1.5 pr-2 font-semibold">Client ID</th>
-                <th className="py-1.5 font-semibold">Khách hàng</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.vid} className="border-t border-slate-100 align-top">
-                  <td className="py-1.5 pr-2 font-mono text-slate-700">{r.vid}</td>
-                  {r.error ? (
-                    <td colSpan={3} className="py-1.5 text-red-600">{r.error}</td>
-                  ) : (
-                    <>
-                      <td className="py-1.5 pr-2 font-semibold text-slate-800">{r.branch_code ?? "—"}</td>
-                      <td className="py-1.5 pr-2 text-slate-700">{r.client_id ?? "—"}</td>
-                      <td className="py-1.5 text-slate-700">{r.client_name ?? "—"}</td>
-                    </>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
 }
 
 const hm = (ts?: string | null) => (ts ? ts.slice(11, 16) : null);
@@ -166,7 +79,7 @@ function OrderCard({ order, onCancel }: { order: Order; onCancel: (o: Order) => 
   );
 }
 
-export default function AoPage() {
+function VendorRequests() {
   const [selectedUuid, setSelectedUuid] = useState("");
   const [note, setNote] = useState("");
   const [loading, setLoading] = useState(false);
@@ -247,7 +160,7 @@ export default function AoPage() {
   const done = orders.filter((o) => stateOf(o) === 3);
 
   return (
-    <div className="min-h-screen bg-slate-100 flex justify-center">
+    <div className="flex justify-center">
       <div className="w-full max-w-[430px] px-4 pb-12">
 
         <header className="pt-5 pb-3.5 px-1">
@@ -372,7 +285,6 @@ export default function AoPage() {
           )}
         </div>
 
-        <VidLookup />
       </div>
 
       {/* Cancel confirm overlay */}
@@ -407,6 +319,39 @@ export default function AoPage() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+const TABS = [
+  { id: "requests", label: "Lấy kết quả giấy" },
+  { id: "hardcopy", label: "Kết Quả Bản Cứng" },
+] as const;
+
+export default function AoPage() {
+  const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("requests");
+  return (
+    <div className="min-h-screen bg-slate-100">
+      <nav role="tablist" className="flex justify-center gap-1 pt-4 px-4">
+        <div className="inline-flex rounded-xl bg-white shadow-sm p-1">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              role="tab"
+              aria-selected={tab === t.id}
+              onClick={() => setTab(t.id)}
+              className={`px-4 py-2 rounded-lg text-sm font-bold transition-colors ${
+                tab === t.id ? "bg-blue-700 text-white" : "text-slate-600 active:bg-slate-100"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </nav>
+      {/* Both stay mounted so switching tabs keeps pasted VIDs and doesn't refetch the request feed. */}
+      <div hidden={tab !== "requests"}><VendorRequests /></div>
+      <div hidden={tab !== "hardcopy"} className="max-w-5xl mx-auto px-4 pt-5 pb-12"><HardCopyHandover /></div>
     </div>
   );
 }
