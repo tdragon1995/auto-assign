@@ -2,13 +2,22 @@ import { NextRequest, NextResponse } from "next/server";
 import { createJob, type Env } from "@/lib/cartrack";
 import { vnDate, vnHoursMinutes } from "@/lib/time";
 import { acquireCreateLock, releaseCreateLock } from "@/lib/smart-log-kv";
-import { CORP_CLINICS, CORP_DROPOFF_ID, normalizeVnPhone } from "@/lib/corp";
+import { CORP_CLINICS, CORP_DROPOFF_ID, CORP_LABEL, normalizeVnPhone } from "@/lib/corp";
+import { pickupTripsToday } from "@/lib/pickup-trips";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
-// The pickup phone keeps this off the fast RPC create (unverified there), so it takes
-// the REST path, which has been measured at ~11s.
+// The pickup phone (and the new label, which has no RPC id) keep this off the fast RPC
+// create, so it takes the REST path, which has been measured at ~11s.
 export const maxDuration = 60;
+
+// GET /api/corp — today's trips booked from /corp (label "Mẫu Corp").
+export async function GET(req: NextRequest) {
+  const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
+  const trips = await pickupTripsToday(env, CORP_CLINICS.map((c) => c.customer_id), CORP_LABEL);
+  if (!trips) return NextResponse.json({ error: "Chưa tải được danh sách chuyến" }, { status: 503 });
+  return NextResponse.json({ trips });
+}
 
 // POST /api/corp — { clinic_id, phone }. Creates an unassigned clinic → D001 pickup the
 // assign cycle places by config. `phone` is set on THIS trip's pickup stop only; the
@@ -40,6 +49,7 @@ export async function POST(req: NextRequest) {
         job_type_id: 1,
         schedule_type_id: 1,
         reference_number: reference,
+        labels: [CORP_LABEL],
         stops: [
           {
             stop_type_id: 1,
@@ -47,13 +57,19 @@ export async function POST(req: NextRequest) {
             duration: 5,
             contact_code: "84",
             contact_number: phone,
-            todos: [{ todo_type_id: 2, description: "📦 Chụp rõ số lượng và thông tin mẫu nhận" }],
+            todos: [
+              { todo_type_id: 2, description: "📦 Chụp rõ số lượng và thông tin mẫu nhận" },
+              { todo_type_id: 5, description: "Ghi chú" },
+            ],
           },
           {
             stop_type_id: 2,
             customer_id: CORP_DROPOFF_ID,
             duration: 5,
-            todos: [{ todo_type_id: 2, description: "🤝 Chụp rõ mẫu tại khu vực bàn giao" }],
+            todos: [
+              { todo_type_id: 2, description: "🤝 Chụp rõ mẫu tại khu vực bàn giao" },
+              { todo_type_id: 5, description: "Ghi chú" },
+            ],
           },
         ],
       },

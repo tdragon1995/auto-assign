@@ -1,6 +1,9 @@
 // /corp — corporate clinics that send samples to D001. Shared by the page and the API
 // (whitelist: the client never picks a customer_id the server has not listed).
 
+/** Marks a trip as booked from /corp; the page lists only trips carrying it. */
+export const CORP_LABEL = "Mẫu Corp";
+
 export const CORP_DROPOFF_ID = "3927b076-3af9-11ed-b939-506b8dbc8dfb"; // BRA - D001
 
 export const CORP_CLINICS: { customer_id: string; name: string; short: string; phone: string }[] = [

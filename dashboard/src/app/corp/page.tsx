@@ -2,12 +2,15 @@
 
 import { useState } from "react";
 import { CORP_CLINICS, normalizeVnPhone } from "@/lib/corp";
+import { PickupTripFeed, justSentTrip } from "@/components/pickup-trip-feed";
+import type { PickupTrip } from "@/lib/pickup-trips";
 
 export default function CorpPage() {
   const [clinicId, setClinicId] = useState("");
   const [phone, setPhone] = useState("");
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [message, setMessage] = useState("");
+  const [sent, setSent] = useState<PickupTrip[]>([]);
 
   function pick(id: string) {
     setClinicId(id);
@@ -42,6 +45,8 @@ export default function CorpPage() {
       }
       setStatus("success");
       setMessage(`Đã gửi yêu cầu lấy mẫu (Job #${data.job_id ?? "?"}).`);
+      const clinic = CORP_CLINICS.find((c) => c.customer_id === clinicId);
+      if (data.job_id && clinic) setSent((prev) => [justSentTrip(data.job_id, clinic.name, "BRA - D001"), ...prev]);
       setClinicId("");
       setPhone("");
     } catch {
@@ -51,7 +56,7 @@ export default function CorpPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 flex items-start justify-center p-4 pt-8">
+    <div className="min-h-screen bg-gray-50 flex flex-col items-center gap-5 p-4 pt-8 pb-12">
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200 w-full max-w-md p-6 space-y-5">
         <div>
           <h1 className="text-xl font-bold text-gray-900">Yêu cầu lấy mẫu</h1>
@@ -110,6 +115,8 @@ export default function CorpPage() {
           </div>
         )}
       </div>
+
+      <PickupTripFeed url="/api/corp" sent={sent} showPickup />
     </div>
   );
 }
