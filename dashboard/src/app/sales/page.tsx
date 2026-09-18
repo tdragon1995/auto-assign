@@ -1168,6 +1168,7 @@ export default function SalesPage() {
                 <button
                   type="button"
                   onClick={() => setShowClientNameModal(true)}
+                  aria-label={`Tên Khách Hàng: ${tenKh || "chưa có"} — bấm để sửa`}
                   className={`w-full flex items-center justify-between gap-2 border rounded-xl px-3 py-3 bg-slate-50 text-left hover:bg-slate-100 transition-colors ${
                     nameValid ? "" : "border-red-300"
                   }`}
