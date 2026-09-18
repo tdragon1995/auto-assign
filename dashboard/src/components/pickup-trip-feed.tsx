@@ -1,9 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { RefreshCw, Loader2, ArrowRight } from "lucide-react";
+import { RefreshCw, Loader2, ArrowRight, Clock } from "lucide-react";
 import { placeLabel } from "@/lib/place-label";
-import { TripSteps, TRIP_STATE_STYLE, tripStateText, tripStateFromStops } from "@/components/trip-steps";
+import { TRIP_STATE_STYLE, tripStateText, tripStateFromStops, isTripWaiting, type TripState } from "@/components/trip-steps";
 import type { PickupTrip } from "@/lib/pickup-trips";
 
 // A scheduled run with no set time reads midnight, which is not when anyone asked.
@@ -19,29 +19,80 @@ export function justSentTrip(jobId: number, pickupName: string, dropoffName: str
   };
 }
 
+const STEPS = ["Lấy mẫu", "Đã giao"] as const;
+
+function initial(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1][0].toUpperCase() : "?";
+}
+
+/** The /qr two-step bar: collected, handed over; the current step pulses. */
+function Stepper({ trip, state }: { trip: PickupTrip; state: TripState }) {
+  const times = [hm(trip.pickup_completed_ts), hm(trip.dropoff_completed_ts)];
+  const doneUpto = state === 3 ? 1 : state === 2 ? 0 : -1;
+  const nowIdx = state === 3 ? -1 : state === 2 ? 1 : 0;
+  return (
+    <div className="flex items-start mt-2 mb-1">
+      {STEPS.map((label, i) => {
+        const done = i <= doneUpto;
+        const current = i === nowIdx;
+        return (
+          <div key={label} className="flex-1 flex flex-col items-center relative">
+            {i > 0 && (
+              <span aria-hidden className={`absolute top-[5px] -left-1/2 w-full h-[3px] ${done || current ? "bg-green-600" : "bg-slate-200"}`} />
+            )}
+            <span
+              aria-hidden
+              className={`relative z-10 w-3.5 h-3.5 rounded-full border-[3px] ${
+                done ? "bg-green-600 border-green-600" : current ? "bg-white border-blue-600 animate-pulse" : "bg-slate-200 border-slate-200"
+              }`}
+            />
+            <span className={`mt-1.5 text-[10px] font-semibold leading-tight text-center ${done ? "text-green-700" : current ? "text-blue-700" : "text-slate-500"}`}>
+              {label}
+            </span>
+            {times[i] && <span className="text-[10px] font-bold tabular-nums text-slate-500">{times[i]}</span>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Same status display as a /qr trip card, without its actions. */
 function TripCard({ trip, showPickup }: { trip: PickupTrip; showPickup: boolean }) {
   const state = tripStateFromStops(trip.pickup_status_id, trip.dropoff_status_id, !!trip.driver_name, trip.job_status_id, trip.parked);
-  const dest = placeLabel(trip.dropoff_name);
   return (
-    <div className="rounded-2xl bg-white shadow-sm border border-gray-200 p-4">
+    <div className="rounded-2xl bg-white shadow-sm border border-slate-100 p-4">
       <div className="flex items-start justify-between gap-2.5">
         <div className="min-w-0">
-          <p className="text-sm font-bold text-gray-800">
+          <p className="text-base font-extrabold tracking-tight text-slate-800">
             {showPickup && placeLabel(trip.pickup_name)}
-            <ArrowRight aria-hidden className="inline w-4 h-4 text-gray-500 mx-1" />{dest}
+            <ArrowRight aria-hidden className="inline w-4 h-4 text-slate-500 mx-0.5 shrink-0" /> {placeLabel(trip.dropoff_name)}
           </p>
-          <p className="text-[11px] font-semibold text-gray-500 mt-0.5">
-            {hm(trip.requested_ts) ?? "—"} · #{trip.job_id}{trip.driver_name ? ` · ${trip.driver_name}` : ""}
+          <p className="text-[11px] font-semibold text-slate-500 mt-1">
+            Yêu cầu lúc {hm(trip.requested_ts) ?? "—"} · #{trip.job_id}
           </p>
         </div>
         <span className={`flex-none text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${TRIP_STATE_STYLE[state]}`}>
-          {tripStateText(state, dest)}
+          {tripStateText(state)}
         </span>
       </div>
-      <TripSteps
-        times={[hm(trip.requested_ts), hm(trip.pickup_completed_ts), hm(trip.dropoff_started_ts), hm(trip.dropoff_completed_ts)]}
-        state={state}
-      />
+
+      {state !== 4 && <Stepper trip={trip} state={state} />}
+
+      {isTripWaiting(state) ? (
+        <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100 text-[13px] font-semibold text-amber-700">
+          <Clock aria-hidden className="w-4 h-4 shrink-0" />
+          {state === 5 ? "Đã đặt lịch, chờ tới giờ hẹn lấy mẫu" : "Đang chờ điều phối Giao Nhận Mẫu"}
+        </div>
+      ) : state !== 4 && trip.driver_name && (
+        <div className="flex items-center gap-2.5 mt-3 pt-3 border-t border-slate-100">
+          <span aria-hidden className="w-8 h-8 flex-none rounded-full bg-blue-100 text-blue-700 font-extrabold text-xs flex items-center justify-center">
+            {initial(trip.driver_name)}
+          </span>
+          <span className="flex-1 min-w-0 text-sm font-bold text-slate-800 break-words">{trip.driver_name}</span>
+        </div>
+      )}
     </div>
   );
 }
