@@ -794,20 +794,13 @@ export default function SalesPage() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [duplicates, setDuplicates] = useState<{ customer_id: string; customer_name: string; address_line_1?: string; distance_m?: number }[] | null>(null);
-  // A blocked duplicate sits within 100m of an existing location — same place.
-  // Unlike the plain warning, there is no force path out of it.
-  const [duplicateBlocked, setDuplicateBlocked] = useState(false);
-  // Snapshot of what was submitted, kept visible after submit for troubleshooting.
-  const [lastSubmitted, setLastSubmitted] = useState<{
-    name: string; maKh: string; quanCu: string; tenDuong: string; abbr: string;
-    tenKh: string; phone: string; diaChi: string; coords: string;
-  } | null>(null);
 
   const maKhValid = /^\d{5,8}$/.test(maKh);
   const hasCoords = !Number.isNaN(parseFloat(lat)) && !Number.isNaN(parseFloat(lon));
   // Customer name is mandatory and must not be a bare number — it has to carry a
   // real Phòng Khám/Bác Sĩ name so drivers can hand over samples.
   const nameValid = hasLetters(tenKh);
+  const phoneValid = phone.length >= 9 && phone.length <= 11;
   // 5+ consonants before the abbreviation's first vowel reads as gibberish (initials
   // mashed into a word) — block the confirm popup until the user retypes it by hand.
   const streetAbbrTooLong = consonantsBeforeFirstVowel(abbrStreet(tenDuong)) >= 5;
@@ -831,7 +824,7 @@ export default function SalesPage() {
     !hasCoords && "address",
     addressPicked && !quanCu.trim() && "quan",
     addressPicked && !tenDuong.trim() && "street",
-    !phone.trim() && "phone",
+    !phoneValid && "phone",
   ].filter((k): k is string => !!k);
   const isMissing = (k: string) => showMissing && missingFields.includes(k);
   const hl = (k: string) => (isMissing(k) ? " rounded-xl ring-2 ring-red-400 bg-red-50/60 -mx-3 px-3 py-2.5" : "");
@@ -845,11 +838,6 @@ export default function SalesPage() {
     const name = forceName ?? customerName;
     setLoading(true);
     setResult(null);
-    setLastSubmitted({
-      name, maKh, quanCu, tenDuong, abbr: abbrStreet(tenDuong),
-      tenKh, phone, diaChi: diaChi.trim(),
-      coords: hasCoords ? `${parseFloat(lat)}, ${parseFloat(lon)}` : "(chưa có)",
-    });
     try {
       const payload: Record<string, unknown> = {
         customer_name: name,
@@ -872,17 +860,18 @@ export default function SalesPage() {
       });
       const data = await res.json();
       if (!res.ok) {
-        if (res.status === 409 && data.matches?.length > 0) {
+        if (data.blocked) {
+          // Same client already has a location within 100m — unforceable, so no list.
+          setDuplicates(null);
+          setResult({ ok: false, msg: "Địa điểm này đã có sẵn cho khách hàng. Cần tạo cho nhiều khoa? Liên hệ điều phối Logistics." });
+        } else if (res.status === 409 && data.matches?.length > 0) {
           setDuplicates(data.matches);
-          setDuplicateBlocked(!!data.blocked);
-          if (data.blocked) setResult({ ok: false, msg: data.error });
         } else {
           setResult({ ok: false, msg: data.error ?? "Lỗi không xác định" });
         }
       } else {
-        setResult({ ok: true, msg: `Tạo địa điểm lấy mẫu thành công: ${data.customer?.customer_name ?? name}` });
+        setResult({ ok: true, msg: "Đã tạo địa điểm lấy mẫu thành công." });
         setDuplicates(null);
-        setDuplicateBlocked(false);
         setMaKh(""); setQuanCu(""); setTenDuong(""); setTenKh(""); setDiaChi(""); setLat(""); setLon(""); setPhone("");
         setClientSearch(""); setClientSelected(false); setClientSearchKey((k) => k + 1);
         setQuanSearch(""); setQuanSelected(false);
@@ -1409,7 +1398,9 @@ export default function SalesPage() {
                   className="w-full border rounded-xl pl-9 pr-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
                 />
               </div>
-              {missingMsg("phone")}
+              {phone && !phoneValid
+                ? <p className="text-xs text-red-600 mt-1">Số điện thoại phải có 9–11 chữ số.</p>
+                : missingMsg("phone")}
             </div>
 
             {customerName && (
@@ -1430,7 +1421,7 @@ export default function SalesPage() {
               disabled={loading}
               className="w-full py-3.5 rounded-xl font-bold text-white text-base bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
             >
-              {loading ? "Đang kiểm tra & tạo..." : "Tạo địa điểm lấy mẫu cho khách hàng mới"}
+              {loading ? "Đang kiểm tra & tạo..." : "Tạo địa điểm"}
             </button>
 
             {result && (
@@ -1443,49 +1434,7 @@ export default function SalesPage() {
               </div>
             )}
 
-            {lastSubmitted && (
-              <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-xs text-slate-600 space-y-0.5">
-                <p className="font-semibold text-slate-500 mb-1">Dữ liệu đã nhập</p>
-                <p>• Tên tạo: <span className="font-medium text-slate-800 break-words">{lastSubmitted.name}</span></p>
-                <p>• Mã KH: <span className="font-medium text-slate-800">{lastSubmitted.maKh || "(trống)"}</span></p>
-                <p>• Quận Cũ: <span className="font-medium text-slate-800">{lastSubmitted.quanCu || "(trống)"}</span></p>
-                <p>• Tên đường: <span className="font-medium text-slate-800">{lastSubmitted.tenDuong || "(trống)"}</span> → {lastSubmitted.abbr || "(trống)"}</p>
-                <p>• Tên KH: <span className="font-medium text-slate-800">{lastSubmitted.tenKh || "(trống)"}</span></p>
-                <p>• SĐT: <span className="font-medium text-slate-800">{lastSubmitted.phone || "(trống)"}</span></p>
-                <p>• Địa chỉ: <span className="font-medium text-slate-800 break-words">{lastSubmitted.diaChi || "(trống)"}</span></p>
-                <p>• Toạ độ: <span className="font-medium text-slate-800">{lastSubmitted.coords}</span></p>
-              </div>
-            )}
-
             {duplicates && duplicates.length > 0 && (
-              duplicateBlocked ? (
-                // Within 100m of an existing location — no force button, because
-                // the server rejects the force path for this case too.
-                <div className="rounded-xl bg-red-50 border border-red-200 p-3.5 space-y-3">
-                  <p className="text-sm font-semibold text-red-800">
-                    Không thể tạo — đã có địa điểm ở ngay vị trí này:
-                  </p>
-                  <ul className="space-y-2">
-                    {duplicates.map((d) => (
-                      <li key={d.customer_id} className="text-xs text-red-700">
-                        <span className="font-mono break-all">{d.customer_name}</span>
-                        {d.distance_m != null && (
-                          <span className="block font-semibold text-red-800 mt-0.5">
-                            Cách {d.distance_m}m
-                          </span>
-                        )}
-                        {d.address_line_1 && (
-                          <span className="block text-red-600 mt-0.5">{d.address_line_1}</span>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                  <p className="text-[11px] text-red-600 leading-relaxed">
-                    Nếu đây thật sự là địa điểm khác, hãy kiểm tra lại toạ độ trên bản đồ.
-                    Để đổi số điện thoại của địa điểm đã có, dùng tab <span className="font-semibold">Cập Nhật SĐT & Địa Chỉ</span>.
-                  </p>
-                </div>
-              ) : (
                 <div className="rounded-xl bg-amber-50 border border-amber-200 p-3.5 space-y-3">
                   <p className="text-sm font-semibold text-amber-800">
                     Tìm thấy {duplicates.length} khách hàng có thể trùng:
@@ -1508,7 +1457,6 @@ export default function SalesPage() {
                     {loading ? "Đang tạo..." : "Khách hàng có nhiều địa điểm trên cùng đường"}
                   </button>
                 </div>
-              )
             )}
           </div>
         )}
