@@ -324,12 +324,14 @@ function VendorRequests() {
 }
 
 const TABS = [
-  { id: "requests", label: "Lấy kết quả giấy" },
   { id: "hardcopy", label: "Kết Quả Bản Cứng" },
+  { id: "requests", label: "Lấy kết quả giấy" },
 ] as const;
 
 export default function AoPage() {
-  const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("requests");
+  const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("hardcopy");
+  // The trip feed is fetched only once its tab is first opened.
+  const [requestsOpened, setRequestsOpened] = useState(false);
   return (
     <div className="min-h-screen bg-slate-100">
       <nav role="tablist" className="flex justify-center gap-1 pt-4 px-4">
@@ -339,7 +341,7 @@ export default function AoPage() {
               key={t.id}
               role="tab"
               aria-selected={tab === t.id}
-              onClick={() => setTab(t.id)}
+              onClick={() => { setTab(t.id); if (t.id === "requests") setRequestsOpened(true); }}
               className={`px-4 py-2 rounded-lg text-sm font-bold transition-colors ${
                 tab === t.id ? "bg-blue-700 text-white" : "text-slate-600 active:bg-slate-100"
               }`}
@@ -349,8 +351,8 @@ export default function AoPage() {
           ))}
         </div>
       </nav>
-      {/* Both stay mounted so switching tabs keeps pasted VIDs and doesn't refetch the request feed. */}
-      <div hidden={tab !== "requests"}><VendorRequests /></div>
+      {/* Once opened, both stay mounted so switching tabs keeps pasted VIDs and doesn't refetch the trip feed. */}
+      <div hidden={tab !== "requests"}>{requestsOpened && <VendorRequests />}</div>
       <div hidden={tab !== "hardcopy"} className="max-w-5xl mx-auto px-4 pt-5 pb-12"><HardCopyHandover /></div>
     </div>
   );

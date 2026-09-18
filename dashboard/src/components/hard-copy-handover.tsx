@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Loader2, Download, AlertCircle } from "lucide-react";
+import { Loader2, Download, AlertCircle, Printer } from "lucide-react";
 
 interface VidRow {
   vid: string;
@@ -43,30 +43,74 @@ function groupRows(rows: VidRow[]): Group[] {
   }));
 }
 
-/** Why a row's destination is the order's branch rather than the remark — null when the remark decided. */
-const fallbackReason = (r: VidRow) =>
-  r.dest_from_remark ? null : r.remark ? `Ghi chú không rõ nơi gửi: “${r.remark}”` : "Không có ghi chú bản cứng";
+/** Only a remark that exists but names no clear branch is worth flagging; no remark just means "use the branch". */
+const unreadRemark = (r: VidRow) => (!r.dest_from_remark && r.remark ? `Ghi chú không rõ nơi gửi: “${r.remark}”` : null);
 
-async function downloadList(title: string, groups: Group[]) {
-  const XLSX = await import("xlsx");
-  const day = new Date().toLocaleDateString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" });
-  const aoa: (string | number)[][] = [
-    [`BÀN GIAO KẾT QUẢ BẢN CỨNG — ${title} — ${day}`],
-    [],
-    ["STT", "Gửi về", "Khách hàng", "VID", "Bệnh nhân", "Ghi chú", "Đã nhận"],
-  ];
+const today = (locale: string) => new Date().toLocaleDateString(locale, { timeZone: "Asia/Ho_Chi_Minh" });
+const fileStem = (title: string) => `ban-giao-ban-cung_${title.replace(/\s+/g, "-")}_${today("sv-SE")}`;
+const HEAD = ["STT", "Gửi về", "Khách hàng", "VID", "Bệnh nhân", "Ghi chú", "Đã nhận"];
+
+function flatRows(groups: Group[]) {
   let n = 0;
-  for (const g of groups) for (const c of g.clients) for (const r of c.rows) {
-    const reason = fallbackReason(r);
-    aoa.push([++n, g.dest, c.name, r.vid, r.patient_name ?? "", reason ? `Theo chi nhánh ${r.branch_code ?? "?"} — ${reason}` : "", "☐"]);
-  }
-  aoa.push([], [`Tổng: ${n} hồ sơ`], [], ["Người giao:", "", "", "Người nhận:", "", "Thời gian:"]);
+  return groups.flatMap((g) => g.clients.flatMap((c) => c.rows.map((r) => {
+    const note = unreadRemark(r);
+    return [++n, g.dest, c.name, r.vid, r.patient_name ?? "", note ? `Theo chi nhánh ${r.branch_code ?? "?"} — ${note}` : ""];
+  })));
+}
+
+async function downloadExcel(title: string, groups: Group[]) {
+  const XLSX = await import("xlsx");
+  const rows = flatRows(groups);
+  const aoa: (string | number)[][] = [
+    [`BÀN GIAO KẾT QUẢ BẢN CỨNG — ${title} — ${today("vi-VN")}`], [], HEAD,
+    ...rows.map((r) => [...r, "☐"]),
+    [], [`Tổng: ${rows.length} hồ sơ`], [], ["Người giao:", "", "", "Người nhận:", "", "Thời gian:"],
+  ];
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws["!cols"] = [{ wch: 5 }, { wch: 8 }, { wch: 36 }, { wch: 14 }, { wch: 26 }, { wch: 30 }, { wch: 8 }];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Bàn giao");
-  const stamp = new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Ho_Chi_Minh" });
-  XLSX.writeFile(wb, `ban-giao-ban-cung_${title.replace(/\s+/g, "-")}_${stamp}.xlsx`);
+  XLSX.writeFile(wb, `${fileStem(title)}.xlsx`);
+}
+
+const esc = (v: unknown) => String(v).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]!);
+
+/** A4 portrait checklist in a new window; the print dialog also offers "Save as PDF". */
+function printA4(title: string, groups: Group[]) {
+  const rows = flatRows(groups);
+  // The note column is almost always empty — print it only when something is in it.
+  const keep = (_: unknown, i: number) => i !== 5 || rows.some((r) => r[5]);
+  const body = rows.map((r) => `<tr>${r.map((v, i) => keep(v, i) ? `<td class="c${i}">${esc(v)}</td>` : "").join("")}<td class="box">☐</td></tr>`).join("");
+  const html = `<!doctype html><html lang="vi"><head><meta charset="utf-8"><title>${esc(fileStem(title))}</title><style>
+@page { size: A4 portrait; margin: 12mm 10mm; }
+* { box-sizing: border-box; }
+body { font: 10.5pt/1.35 Arial, sans-serif; color: #000; margin: 0; }
+h1 { font-size: 14pt; margin: 0 0 2mm; }
+.meta { font-size: 10pt; margin-bottom: 4mm; }
+table { width: 100%; border-collapse: collapse; }
+thead { display: table-header-group; }
+tr { page-break-inside: avoid; }
+th, td { border: 0.6pt solid #000; padding: 1.5mm 1.8mm; text-align: left; vertical-align: top; }
+th { background: #eee; font-size: 9.5pt; }
+.c0, .box { text-align: center; width: 9mm; }
+.c1 { width: 14mm; font-weight: bold; }
+.c3 { width: 26mm; font-family: Consolas, monospace; }
+.c5 { font-size: 8.5pt; }
+.box { font-size: 13pt; width: 15mm; }
+.sign { display: flex; justify-content: space-between; margin-top: 10mm; page-break-inside: avoid; }
+.sign div { width: 30%; text-align: center; }
+.sign p { margin: 0 0 18mm; font-weight: bold; }
+</style></head><body>
+<h1>BÀN GIAO KẾT QUẢ BẢN CỨNG — ${esc(title)}</h1>
+<div class="meta">Ngày ${esc(today("vi-VN"))} · Tổng: ${rows.length} hồ sơ</div>
+<table><thead><tr>${HEAD.filter(keep).map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table>
+<div class="sign"><div><p>Người giao</p>(Ký, ghi rõ họ tên)</div><div><p>Người nhận</p>(Ký, ghi rõ họ tên)</div><div><p>Thời gian</p>____:____ ngày ____/____</div></div>
+</body></html>`;
+  const w = window.open("", "_blank");
+  if (!w) return alert("Trình duyệt đã chặn cửa sổ in — hãy cho phép cửa sổ bật lên.");
+  w.document.write(html);
+  w.document.close();
+  w.onload = () => w.print();
 }
 
 function HandoverList({ title, groups }: { title: string; groups: Group[] }) {
@@ -77,13 +121,22 @@ function HandoverList({ title, groups }: { title: string; groups: Group[] }) {
         <h2 className="text-[15px] font-bold text-slate-800">
           {title} <span className="text-slate-500">({total})</span>
         </h2>
-        <button
-          onClick={() => downloadList(title, groups)}
-          disabled={!total}
-          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-semibold text-blue-700 border border-blue-200 active:bg-blue-50 disabled:opacity-40"
-        >
-          <Download aria-hidden className="w-4 h-4" />Tải về
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => printA4(title, groups)}
+            disabled={!total}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-semibold text-white bg-blue-700 active:scale-[.97] disabled:opacity-40"
+          >
+            <Printer aria-hidden className="w-4 h-4" />In A4
+          </button>
+          <button
+            onClick={() => downloadExcel(title, groups)}
+            disabled={!total}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-semibold text-blue-700 border border-blue-200 active:bg-blue-50 disabled:opacity-40"
+          >
+            <Download aria-hidden className="w-4 h-4" />Excel
+          </button>
+        </div>
       </div>
       {!total && <p className="text-sm text-slate-500 text-center py-4">Không có hồ sơ.</p>}
       {groups.map((g) => (
@@ -96,16 +149,16 @@ function HandoverList({ title, groups }: { title: string; groups: Group[] }) {
               <p className="text-xs font-bold text-slate-700">{c.name} · {c.rows.length}</p>
               <ul className="mt-1 divide-y divide-slate-100">
                 {c.rows.map((r) => {
-                  const reason = fallbackReason(r);
+                  const note = unreadRemark(r);
                   return (
                     <li key={r.vid} className="py-1.5 text-xs flex gap-2">
                       <span className="font-mono text-slate-700 shrink-0">{r.vid}</span>
                       <span className="flex-1 min-w-0 text-slate-800">
                         {r.patient_name ?? "—"}
-                        {reason && (
+                        {note && (
                           <span className="flex items-start gap-1 text-amber-700 mt-0.5">
                             <AlertCircle aria-hidden className="w-3.5 h-3.5 shrink-0" />
-                            <span>{reason} — tạm theo chi nhánh {r.branch_code ?? "?"}</span>
+                            <span>{note} — tạm theo chi nhánh {r.branch_code ?? "?"}</span>
                           </span>
                         )}
                       </span>
