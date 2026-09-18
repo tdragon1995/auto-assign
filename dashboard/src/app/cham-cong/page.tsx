@@ -287,6 +287,7 @@ interface PayDay {
   jobs: number;
   km: number;
   worked_mins: number;
+  unpriced: number;
   spans: PaySpanRow[];
   /** Check-ins with no check-out after them. These pay NOTHING, so they are the
    *  one thing on this screen a driver must act on. */
@@ -310,6 +311,7 @@ interface PayReport {
   summary: {
     days: number; jobs: number; km: number; worked_mins: number;
     hour_pay: number; km_pay: number; total_pay: number; open_in_days: number;
+    unpriced_jobs: number;
   };
   days: PayDay[];
 }
@@ -371,6 +373,12 @@ function PayLine({ label, detail, amount }: { label: string; detail: string; amo
 
 /** "95 phút" → "1 giờ 35 phút". Minutes alone stop being legible somewhere past
  *  an hour, and a driver's daily total is always past it. */
+/** Kilometres in Vietnamese notation: 1.633,55 not 1633.55. Two decimals at
+ *  most — a driver checks their pay against their own count, and a raw
+ *  four-digit number is the hardest thing on the screen to read back. */
+const kmFmt = new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 2 });
+const fmtKm = (km: number | null | undefined) => (km == null ? "—" : kmFmt.format(km));
+
 function fmtMins(mins: number | null | undefined): string {
   if (mins == null || !Number.isFinite(mins)) return "—";
   if (mins < 60) return `${mins} phút`;
@@ -2142,7 +2150,7 @@ export default function ChamCongPage() {
                       <button
                         onClick={() => nvLoadJobs()}
                         disabled={nvJobsLoading}
-                        className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-50"
+                        className="size-11 grid place-items-center rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-50"
                         title="Tải lại"
                       >
                         <RefreshCw size={16} className={nvJobsLoading ? "animate-spin" : ""} />
@@ -2205,7 +2213,7 @@ export default function ChamCongPage() {
                     <button
                       onClick={() => tatLoad()}
                       disabled={tatLoading}
-                      className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-50"
+                      className="size-11 grid place-items-center rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-50"
                       title="Tải lại"
                     >
                       <RefreshCw size={16} className={tatLoading ? "animate-spin" : ""} />
@@ -2440,7 +2448,7 @@ export default function ChamCongPage() {
                     <button
                       onClick={() => payLoad(payMonth)}
                       disabled={payLoading}
-                      className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-50"
+                      className="size-11 grid place-items-center rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-50"
                       title="Tải lại"
                     >
                       <RefreshCw size={16} className={payLoading ? "animate-spin" : ""} />
@@ -2455,7 +2463,7 @@ export default function ChamCongPage() {
                       <button
                         onClick={() => payLoad(payReport.prev_month)}
                         disabled={payLoading}
-                        className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-40"
+                        className="size-11 grid place-items-center rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-40"
                         aria-label="Tháng trước"
                       >
                         <ChevronLeft size={18} />
@@ -2464,7 +2472,7 @@ export default function ChamCongPage() {
                       <button
                         onClick={() => payReport.next_month && payLoad(payReport.next_month)}
                         disabled={payLoading || !payReport.next_month}
-                        className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-40"
+                        className="size-11 grid place-items-center rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-40"
                         aria-label="Tháng sau"
                       >
                         <ChevronRight size={18} />
@@ -2486,27 +2494,42 @@ export default function ChamCongPage() {
                       {/* The headline. */}
                       <div className="rounded-2xl border border-gray-200 overflow-hidden">
                         <div className="px-4 pt-4 pb-3">
-                          <p className="text-xs text-gray-500">{fmtMonth(payReport.month)} bạn được</p>
+                          <p className="text-xs text-gray-500">Tiền km {fmtMonth(payReport.month)}</p>
                           <p className="text-xs text-gray-500">Từ {fmtDate(payReport.from)} đến {fmtDate(payReport.to)}</p>
                           <p className="text-3xl font-bold text-gray-900 leading-tight mt-0.5 tabular-nums">
-                            {/* Hours are hidden for now (supervisor, 2026-09-17): the
-                                driver sees mileage pay only until the hours rule is set. */}
+                            {/* Hours are hidden for now (supervisor, 2026-09-17), so this
+                                is NOT the month's pay and must not be labelled as it.
+                                An unlabelled partial number reads as the whole. */}
                             {fmtVnd(payReport.summary.km_pay)}
+                          </p>
+                          <p className="text-xs text-amber-700 mt-1.5">
+                            Chưa gồm tiền giờ chấm công — đang chốt cách tính, sẽ cộng sau.
                           </p>
                         </div>
                         <div className="px-4 pb-4 space-y-2.5 border-t border-gray-100 pt-3">
                           <PayLine
                             label="Quãng đường"
-                            detail={`${payReport.summary.km} km × ${vndFmt.format(payReport.rates.per_km)}đ/km`}
+                            detail={`${fmtKm(payReport.summary.km)} km × ${vndFmt.format(payReport.rates.per_km)}đ/km`}
                             amount={payReport.summary.km_pay}
                           />
                         </div>
                       </div>
 
+                      {payReport.summary.unpriced_jobs > 0 && (
+                        <div className="flex items-start gap-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+                          <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                          <span>
+                            {payReport.summary.unpriced_jobs} chuyến chưa có quãng đường nên
+                            <span className="font-semibold"> chưa được tính tiền</span>. Xem các ngày có dấu ⚠ bên dưới
+                            và báo điều phối.
+                          </span>
+                        </div>
+                      )}
+
                       <div className="grid grid-cols-3 gap-2">
                         <TatStat label="Ngày làm" value={String(payReport.days.filter((d) => d.jobs > 0).length)} />
                         <TatStat label="Chuyến" value={String(payReport.summary.jobs)} />
-                        <TatStat label="Quãng đường" value={`${payReport.summary.km} km`} />
+                        <TatStat label="Quãng đường" value={`${fmtKm(payReport.summary.km)} km`} />
                       </div>
 
                       {/* The days. Each is tappable; only the one you open costs a
@@ -2532,9 +2555,10 @@ export default function ChamCongPage() {
                                   <div className="min-w-0 flex-1">
                                     <p className="text-xs font-semibold text-gray-700">
                                       {vnWeekday(d.date)}, {fmtDate(d.date)}
+                                      {d.unpriced > 0 && <span className="ml-1 text-amber-600">⚠</span>}
                                     </p>
-                                    <p className="text-[11px] text-gray-400">
-                                      {d.km} km · {d.jobs} chuyến
+                                    <p className="text-xs text-gray-500">
+                                      {fmtKm(d.km)} km · {d.jobs} chuyến
                                     </p>
                                   </div>
                                   <p className="text-xs font-bold text-gray-800 shrink-0 tabular-nums">
@@ -2571,17 +2595,26 @@ export default function ChamCongPage() {
                                                       truncated line hid the dropoff entirely on a phone —
                                                       "PHÒNG KHÁM ĐA KHOA ÁI NGHĨA N…" and the driver could
                                                       not tell which trip it was. */}
-                                                  <p className="text-[11px] text-gray-700 leading-snug break-words">
+                                                  <p className="text-xs text-gray-700 leading-snug break-words">
                                                     {placeName(j.pickup) || "—"}
                                                   </p>
-                                                  <p className="text-[11px] text-gray-700 leading-snug break-words">
+                                                  <p className="text-xs text-gray-700 leading-snug break-words">
                                                     → {placeName(j.dropoff) || "—"}
                                                   </p>
-                                                  <p className="text-[11px] text-gray-400 tabular-nums">
-                                                    {j.dropped_at ?? "—"} · {j.km == null ? "chưa đo được" : `${j.km} km`}
+                                                  {/* Both stamps and the reference: four trips finished in
+                                                      one tap at the lab share a dropoff minute, and without
+                                                      the pickup time or the code they cannot be told apart. */}
+                                                  <p className="text-xs text-gray-500 tabular-nums">
+                                                    {j.picked_at ?? "—"} → {j.dropped_at ?? "—"} ·{" "}
+                                                    {j.km == null
+                                                      ? <span className="text-amber-700">⚠ chưa đo được</span>
+                                                      : `${fmtKm(j.km)} km`}
                                                   </p>
+                                                  {j.reference_number && (
+                                                    <p className="text-xs text-gray-500 break-all">{j.reference_number}</p>
+                                                  )}
                                                 </div>
-                                                <p className="text-[11px] font-semibold text-gray-700 shrink-0 tabular-nums">
+                                                <p className="text-xs font-semibold text-gray-700 shrink-0 tabular-nums">
                                                   {j.pay == null ? "—" : fmtVnd(j.pay)}
                                                 </p>
                                               </div>
@@ -2594,7 +2627,7 @@ export default function ChamCongPage() {
                                             summed kilometres once. Said plainly
                                             rather than left to be discovered. */}
                                         {payDayDetail.jobs.some((j) => j.km == null) && (
-                                          <p className="text-[11px] text-gray-400">
+                                          <p className="text-xs text-gray-500">
                                             Chuyến &quot;chưa đo được&quot; là chuyến hệ thống chưa lấy được quãng đường —
                                             báo điều phối để được bổ sung.
                                           </p>
@@ -2613,18 +2646,20 @@ export default function ChamCongPage() {
                           same principle the performance tab follows. The km line
                           says WHICH distance it pays for, because the Hiệu Suất
                           tab shows a different one and the two will not match. */}
-                      <div className="rounded-xl bg-gray-50 border border-gray-200 px-3 py-2.5 space-y-1">
-                        <p className="text-[11px] text-gray-600">
-                          <span className="font-semibold">Cách tính:</span>{" "}
-                          {vndFmt.format(payReport.rates.per_km)}đ mỗi km.
+                      <div className="rounded-xl bg-gray-50 border border-gray-200 px-3 py-2.5 space-y-1.5">
+                        {/* The cutoff leads: "your number will still go up" is the one
+                            reassuring fact here, and it used to sit last and faintest. */}
+                        <p className="text-xs text-gray-700">
+                          Số liệu tính đến hết ngày {fmtDate(payReport.latest)} —{" "}
+                          <span className="font-semibold">ngày hôm nay chưa được tính.</span>
                         </p>
-                        <p className="text-[11px] text-gray-500">{payReport.rates.km_basis}.</p>
-                        <p className="text-[11px] text-gray-400">
+                        <p className="text-xs text-gray-600">
+                          <span className="font-semibold">Cách tính:</span>{" "}
+                          {vndFmt.format(payReport.rates.per_km)}đ mỗi km. {payReport.rates.km_basis}.
+                        </p>
+                        <p className="text-xs text-gray-500">
                           Số km ở đây khác với &quot;quãng đường&quot; ở tab Hiệu Suất: tab đó tính từng chặng
                           giữa hai điểm liên tiếp, còn ở đây tính từ điểm lấy đến điểm giao của mỗi chuyến.
-                        </p>
-                        <p className="text-[11px] text-gray-400">
-                          Số liệu tính đến hết ngày {fmtDate(payReport.latest)}. Ngày hôm nay chưa được tính.
                         </p>
                       </div>
                     </>

@@ -16,7 +16,8 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, AlertCircle, Download, ChevronLeft, ChevronRight } from "lucide-react";
+import { Loader2, AlertCircle, Download, ChevronLeft, ChevronRight, Search, X } from "lucide-react";
+import { foldName } from "@/lib/driver-cell";
 import { DriverName } from "./driver-name";
 
 interface DriverRow {
@@ -65,14 +66,16 @@ const hhmm = (iso: string | null) => (iso ? hhmmFmt.format(new Date(iso)) : "");
 const vnd = new Intl.NumberFormat("vi-VN");
 const fmtVnd = (v: number) => `${vnd.format(Math.round(v))}đ`;
 
-/** Money at a glance, in the unit a payables list is read in. A month's pay runs
- *  to seven digits, and seven digits in a table column is a wall — so anything
- *  past a million is shown in millions to one decimal and the exact figure lives
- *  in the CSV, which is where it gets acted on anyway. */
-const fmtCompact = (v: number) =>
-  v >= 1_000_000 ? `${(v / 1_000_000).toFixed(1)}tr` : vnd.format(Math.round(v));
+/** ONE scale for the money column, and the exact figure. It used to switch to
+ *  "17.2tr" above a million and print grouped đồng below it, with no unit either
+ *  way — two conventions in the column an approval is read off, and the exact
+ *  number reachable only through a hover tooltip. tabular-nums keeps it aligned. */
 
 const fmtHours = (mins: number) => `${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, "0")}`;
+
+/** Kilometres in Vietnamese notation: 2.199 not 2199. Whole km in the table —
+ *  the decimals live in the CSV, which is what a figure gets paid from. */
+const fmtKm = (km: number) => vnd.format(Math.round(km));
 
 const monthLabel = (m: string) => `Tháng ${Number(m.slice(5, 7))}/${m.slice(0, 4)}`;
 
@@ -117,6 +120,11 @@ export function PayTeamPanel() {
    *  from, and the two must not be confused. The per-rate columns travel too, so
    *  a disputed total can be re-derived without opening the dashboard. */
   const [exporting, setExporting] = useState(false);
+  /** Free-text driver filter. Accent-insensitive, and it searches the staff code
+   *  too ("pt1015", "quynh") because that is what payroll keys on. */
+  const [q, setQ] = useState("");
+  /** Set from the amber banner: show only the drivers with an unclosed shift. */
+  const [onlyFlagged, setOnlyFlagged] = useState(false);
 
   async function exportCsv() {
     if (!data) return;
@@ -169,6 +177,11 @@ export function PayTeamPanel() {
     }
   }
 
+  const needle = foldName(q.trim());
+  const shown = !data ? [] : data.drivers
+    .filter((d) => (needle ? foldName(d.driver_name).includes(needle) : true))
+    .filter((d) => (onlyFlagged ? d.open_in_days > 0 : true));
+
   return (
     <div className="h-full flex flex-col rounded-xl border border-slate-200 bg-white overflow-hidden">
       {/* Month navigator */}
@@ -176,7 +189,7 @@ export function PayTeamPanel() {
         <div className="flex items-center gap-1">
           <button
             onClick={() => setMonth(shiftMonth(month, -1))}
-            className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100"
+            className="size-11 grid place-items-center rounded-lg text-slate-600 hover:bg-slate-100"
             title="Tháng trước"
           >
             <ChevronLeft className="size-4" />
@@ -187,16 +200,38 @@ export function PayTeamPanel() {
           <button
             onClick={() => setMonth(shiftMonth(month, 1))}
             disabled={month >= defaultMonth()}
-            className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 disabled:opacity-40"
+            className="size-11 grid place-items-center rounded-lg text-slate-600 hover:bg-slate-100 disabled:opacity-40"
             title="Tháng sau"
           >
             <ChevronRight className="size-4" />
           </button>
         </div>
+        {/* Driver search. 80+ PT drivers is more than a screen, and the list is
+            sorted by money owed, so finding one person means scrolling and
+            reading. Typing beats scrolling; the code works as well as the name. */}
+        <div className="relative flex-1 min-w-0 max-w-[220px]">
+          <Search className="size-3.5 text-slate-400 absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Tìm tài xế..."
+            aria-label="Tìm tài xế"
+            className="w-full min-h-11 text-xs border border-slate-300 rounded-lg pl-7 pr-7 py-1.5 text-slate-700 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-slate-300"
+          />
+          {q && (
+            <button
+              onClick={() => setQ("")}
+              aria-label="Xoá tìm kiếm"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+            >
+              <X className="size-3.5" />
+            </button>
+          )}
+        </div>
         <button
           onClick={exportCsv}
           disabled={!data || data.drivers.length === 0 || exporting}
-          className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 border border-slate-300 rounded-lg px-2.5 py-1.5 hover:bg-slate-50 disabled:opacity-40"
+          className="flex items-center gap-1.5 min-h-11 text-xs font-semibold text-slate-700 border border-slate-300 rounded-lg px-3 hover:bg-slate-50 disabled:opacity-40"
         >
           <Download className="size-3.5" />
           CSV
@@ -216,7 +251,7 @@ export function PayTeamPanel() {
             ["Tổng chi", fmtVnd(data.totals.total_pay)],
             ["Tài xế PT", String(data.driver_count)],
             ["Giờ", fmtHours(data.totals.worked_mins)],
-            ["Km", Math.round(data.totals.km).toLocaleString("vi-VN")],
+            ["Km", fmtKm(data.totals.km)],
           ].map(([label, value]) => (
             <div key={label} className="bg-white px-2 py-2 text-center">
               <p className="text-base font-bold text-slate-800 leading-tight">{value}</p>
@@ -242,11 +277,21 @@ export function PayTeamPanel() {
 
       {/* The one thing here that is a to-do rather than a report. */}
       {data && data.totals.open_in_days > 0 && (
-        <div className="flex items-start gap-2 text-[11px] text-amber-800 bg-amber-50 border-b border-amber-200 px-3 py-2 shrink-0">
+        <div className="flex items-start gap-2 text-xs text-amber-900 bg-amber-50 border-b border-amber-200 px-3 py-2 shrink-0">
           <AlertCircle className="size-3.5 mt-0.5 shrink-0" />
           <span>
             {data.totals.open_in_days} ngày có chấm công vào nhưng không có chấm công ra —
-            những ca đó <strong>chưa được tính giờ</strong>. Xem cột ⚠ và bổ sung trước kỳ lương.
+            những ca đó <strong>chưa được tính giờ</strong>.{" "}
+            {/* The banner IS the filter. Telling a supervisor to eye-scan 82 rows for
+                a low-contrast digit is not a to-do, it is a search task. */}
+            <button
+              onClick={() => setOnlyFlagged((v) => !v)}
+              className="font-semibold underline underline-offset-2 hover:text-amber-950"
+            >
+              {onlyFlagged
+                ? "Hiện tất cả tài xế"
+                : `Chỉ hiện ${data.drivers.filter((d) => d.open_in_days > 0).length} tài xế cần bổ sung`}
+            </button>
           </span>
         </div>
       )}
@@ -265,6 +310,10 @@ export function PayTeamPanel() {
           <p className="text-center text-sm text-slate-400 py-16">
             Chưa có dữ liệu cho {monthLabel(month)}.
           </p>
+        ) : shown.length === 0 ? (
+          <p className="text-center text-sm text-slate-500 py-16">
+            {q ? `Không có tài xế nào khớp "${q}".` : "Không có tài xế nào cần bổ sung chấm công."}
+          </p>
         ) : (
           <table className="w-full text-sm">
             <thead className="sticky top-0 bg-slate-50 text-slate-600 text-[11px] uppercase tracking-wide">
@@ -273,15 +322,18 @@ export function PayTeamPanel() {
                 <th className="text-right font-semibold px-2 py-2">Ngày</th>
                 <th className="text-right font-semibold px-2 py-2">Giờ</th>
                 <th className="text-right font-semibold px-2 py-2">Km</th>
-                <th className="text-right font-semibold px-3 py-2">Tổng</th>
-                <th className="text-right font-semibold px-2 py-2" title="Ngày thiếu chấm công ra">⚠</th>
+                <th className="text-right font-semibold px-3 py-2">Tổng (đ)</th>
+                {/* A word, not a glyph: the column is a task list and screen readers
+                    got nothing from "⚠". */}
+                <th className="text-right font-semibold px-2 py-2">Thiếu ra</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {data.drivers.map((d, i) => (
-                <tr key={d.driver_id} className="hover:bg-slate-50">
+              {shown.map((d, i) => (
+                // No hover highlight: it promised a row click that does not exist.
+                <tr key={d.driver_id}>
                   <td className="px-3 py-2">
-                    <span className="text-slate-400 text-xs mr-1.5">{i + 1}</span>
+                    <span className="text-slate-500 text-xs mr-1.5">{i + 1}</span>
                     {/* The staff code and the FT/PT chip both stay: about a dozen
                         drivers hold a part-time and a full-time account under one
                         personal name, and pay is filed against the ACCOUNT. */}
@@ -289,17 +341,17 @@ export function PayTeamPanel() {
                   </td>
                   <td className="text-right px-2 py-2 text-slate-600">{d.days_worked}</td>
                   <td className="text-right px-2 py-2 text-slate-600 tabular-nums">{fmtHours(d.worked_mins)}</td>
-                  <td className="text-right px-2 py-2 text-slate-600 tabular-nums">{Math.round(d.km)}</td>
+                  <td className="text-right px-2 py-2 text-slate-600 tabular-nums">{fmtKm(d.km)}</td>
                   <td
                     className="text-right px-3 py-2 font-semibold text-slate-800 tabular-nums"
                     title={`${fmtVnd(d.hour_pay)} giờ + ${fmtVnd(d.km_pay)} km = ${fmtVnd(d.total_pay)}`}
                   >
-                    {fmtCompact(d.total_pay)}
+                    {vnd.format(Math.round(d.total_pay))}
                   </td>
                   <td className="text-right px-2 py-2 tabular-nums">
                     {d.open_in_days > 0
-                      ? <span className="text-amber-600 font-semibold">{d.open_in_days}</span>
-                      : <span className="text-slate-300">—</span>}
+                      ? <span className="text-amber-700 font-semibold">{d.open_in_days}</span>
+                      : <span className="text-slate-500">—</span>}
                   </td>
                 </tr>
               ))}

@@ -79,11 +79,14 @@ function addMonths(m: string, n: number): string {
 /** One day's line on the month view. The hours are derived HERE, from the stored
  *  taps, rather than read from a column — that is what makes the payroll formula
  *  replaceable without re-archiving anything. See pay.ts/workedMinutes. */
-function dayLine(date: string, km: number, jobs: number, punches: PayPunch[]) {
+function dayLine(date: string, km: number, jobs: number, punches: PayPunch[], unpriced = 0) {
   const worked = workedMinutes(punches);
   return {
     date,
     jobs,
+    /** Completed trips with no distance yet: they pay NOTHING and the driver can
+     *  only find them by opening every day, so the count travels with the day. */
+    unpriced,
     km: Math.round(km * 100) / 100,
     worked_mins: worked.minutes,
     spans: worked.spans.map((s) => ({ from: hhmm(s.from), to: hhmm(s.to), minutes: s.minutes })),
@@ -161,7 +164,7 @@ export async function GET(req: NextRequest) {
         ok: true,
         date: askedDate,
         rates,
-        day: dayLine(askedDate, km, jobs.length, punches),
+        day: dayLine(askedDate, km, jobs.length, punches, jobs.filter((j) => j.distance_km == null).length),
         jobs: jobs.map((j) => ({
           job_id: j.job_id,
           reference_number: j.reference_number,
@@ -202,7 +205,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({
         ok: true, driver_name: session.driver_name, month: askedMonth, from, to: from,
         rates, latest, days: [],
-        summary: { days: 0, jobs: 0, km: 0, worked_mins: 0, hour_pay: 0, km_pay: 0, total_pay: 0, open_in_days: 0 },
+        summary: { days: 0, jobs: 0, km: 0, worked_mins: 0, hour_pay: 0, km_pay: 0, total_pay: 0, open_in_days: 0, unpriced_jobs: 0 },
       });
     }
 
@@ -231,9 +234,10 @@ export async function GET(req: NextRequest) {
     const dates = [...new Set([...daily.map((d) => d.trip_date), ...punchesByDay.keys()])].sort();
     const kmByDay = new Map(daily.map((d) => [d.trip_date, num(d.total_km)]));
     const jobsByDay = new Map(daily.map((d) => [d.trip_date, d.jobs_total]));
+    const unpricedByDay = new Map(daily.map((d) => [d.trip_date, d.jobs_total - d.jobs_priced]));
 
     const days = dates.map((d) =>
-      dayLine(d, kmByDay.get(d) ?? 0, jobsByDay.get(d) ?? 0, punchesByDay.get(d) ?? []),
+      dayLine(d, kmByDay.get(d) ?? 0, jobsByDay.get(d) ?? 0, punchesByDay.get(d) ?? [], unpricedByDay.get(d) ?? 0),
     );
 
     // Totals are built from the month's own sums, not from adding up the day
@@ -261,6 +265,8 @@ export async function GET(req: NextRequest) {
         km_pay: kmPayFor(roundedKm),
         total_pay: hourPayFor(totalMins) + kmPayFor(roundedKm),
         open_in_days: days.filter((d) => d.open_in.length > 0).length,
+        // One number the driver can act on without opening thirty days.
+        unpriced_jobs: days.reduce((s, d) => s + d.unpriced, 0),
       },
       days,
     });
