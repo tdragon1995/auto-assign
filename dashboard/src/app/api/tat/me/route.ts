@@ -155,6 +155,21 @@ async function legsForDay(driverId: string, date: string) {
   );
 }
 
+/**
+ * Whether ANY driver has legs on this day — i.e. whether the day was archived.
+ *
+ * The on-demand archive below used to key off THIS driver's legs. A driver who
+ * simply had the day off has none, so every time they opened Hiệu Suất (or tapped
+ * a day off) the server re-archived the entire fleet's day: a full Cartrack day
+ * fetch, ~900 legs priced, and the payroll rows rewritten — for a day that was
+ * already sealed. With part-timers now opening /cham-cong to check Thu Nhập, that
+ * became a steady Active-CPU drain. One indexed row answers the real question.
+ */
+async function dayArchived(date: string): Promise<boolean> {
+  const rows = await sbSelect<{ trip_date: string }>("tat_legs", `select=trip_date&trip_date=eq.${date}&limit=1`);
+  return rows.length > 0;
+}
+
 /** The legs a driver is shown. Unscored ones (lab -> branch repositioning) are
  *  left out of the list, exactly as they are left out of the counts — but they
  *  are still fetched, because summarizeLegs needs their distance for mileage. */
@@ -206,7 +221,7 @@ export async function GET(req: NextRequest) {
       // a moment later finds it, rather than showing a permanent blank.
       // Only a day with NO rows is fetched on demand. Nothing else can go stale
       // now that the report ends at yesterday: a sealed day never changes again.
-      const stale = legs.length === 0;
+      const stale = legs.length === 0 && !(await dayArchived(askedDate));
       if (stale) {
         after(async () => {
           try { await archiveDay(askedDate, env); }
@@ -257,7 +272,7 @@ export async function GET(req: NextRequest) {
     // the morning seal never ran or failed. Rare, self-healing, and it fires once
     // — the moment the rows exist this stops being true. Everything else is read
     // straight from sealed rows.
-    const missing = latestLegs.length === 0;
+    const missing = latestLegs.length === 0 && !(await dayArchived(latest));
     if (missing) {
       after(async () => {
         try { await archiveDay(latest, env); }
