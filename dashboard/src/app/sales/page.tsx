@@ -705,10 +705,12 @@ export default function SalesPage() {
   // Bumped on a successful submit to remount ClientSearch with an empty query.
   const [clientSearchKey, setClientSearchKey] = useState(0);
 
+  // "-" is the Cartrack name separator (mã - quận - đường - tên), so a dash inside
+  // the name would split it; it becomes "|" as it is typed or prefilled.
   const selectClient = (r: ClientResult) => {
     const name = CLIENT_OVERRIDES[r.code] ?? r.client_legal_name;
     setMaKh(r.code);
-    setTenKh(name);
+    setTenKh(name.replace(/-/g, "|"));
     setClientSearch(`${r.code} — ${r.client_legal_name}`);
     setClientSelected(true);
     // Only force the confirm/override prompt when Labcenter has no real name on
@@ -1325,7 +1327,7 @@ export default function SalesPage() {
                   </p>
                   <input
                     value={tenKh}
-                    onChange={(e) => setTenKh(e.target.value)}
+                    onChange={(e) => setTenKh(e.target.value.replace(/-/g, "|"))}
                     onKeyDown={(e) => { if (e.key === "Enter" && nameValid) setShowClientNameModal(false); }}
                     autoFocus
                     placeholder="VD: PK Đa Khoa Sài Gòn"
