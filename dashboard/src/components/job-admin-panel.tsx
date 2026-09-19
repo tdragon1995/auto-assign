@@ -172,14 +172,18 @@ export function JobAdminPanel({ env }: { env: Env }) {
         return;
       }
       toast.success(`Đã hoàn thành Job ${job.job_id}`);
-      setJob((prev) => (prev ? { ...prev, job_status_id: 5 } : prev));
-      setHitStatus(job.job_id, 5);
+      // Drop the row outright rather than leaving it sitting there as a finished job you
+      // can still click into — the list is a work queue, not a history.
+      const doneId = job.job_id;
+      setResults((prev) => prev.filter((h) => h.job_id !== doneId));
+      setActiveId(null);
+      setJob(null);
     } catch {
       toast.error("Lỗi kết nối, vui lòng thử lại");
     } finally {
       setCompleting(false);
     }
-  }, [job, env, setHitStatus]);
+  }, [job, env]);
 
   const [unlocking, setUnlocking] = useState(false);
   // driver_id → when their geofence locks again, so the button shows it is already open.

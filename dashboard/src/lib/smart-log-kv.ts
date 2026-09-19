@@ -1434,3 +1434,38 @@ export async function clearCoverageGaps(fields: { customer_id: string; at: strin
     }
   } catch { /* it will be retried on the next parse */ }
 }
+
+// ── Jobs completed by hand from the admin panel ────────────────
+// The admin search reads the day SNAPSHOT, which is up to FEED_MAX_AGE_MS (5 min) old —
+// so a job force-completed through "Hoàn thành job" kept coming back in the very next
+// search, still labelled "Đã phân công". This is the same write-through overlay trick
+// markPscPair uses: record the id the moment we complete it, and let the search subtract
+// it until the snapshot catches up. One SADD+EXPIRE per completion, one SMEMBERS per
+// manual search — both rare, so the command budget above is untouched.
+const ADMIN_DONE_PREFIX = "admin:completed:";
+const ADMIN_DONE_TTL_SEC = 86_400; // one day; the snapshot is authoritative long before this
+
+const adminDoneKey = (dateVn: string) => `${ADMIN_DONE_PREFIX}${dateVn}`;
+
+export async function markJobCompleted(jobId: number, dateVn: string = vnDate()): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    const key = adminDoneKey(dateVn);
+    await redis.sadd(key, String(jobId));
+    await redis.expire(key, ADMIN_DONE_TTL_SEC);
+  } catch { /* best-effort: the snapshot still drops the job once it republishes */ }
+}
+
+/** Job ids completed by hand today. Empty on any failure — an unreadable overlay must
+ *  never empty the search results. */
+export async function getCompletedJobIds(dateVn: string = vnDate()): Promise<Set<number>> {
+  const redis = getRedis();
+  if (!redis) return new Set();
+  try {
+    const ids = await redis.smembers(adminDoneKey(dateVn));
+    return new Set((ids ?? []).map((v) => Number(v)).filter((n) => Number.isInteger(n)));
+  } catch {
+    return new Set();
+  }
+}

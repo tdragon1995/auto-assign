@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getRunLog, getFailedJobs, getHeldJobs } from "@/lib/smart-log-kv";
+import { getRunLog, getFailedJobs, getHeldJobs, getCompletedJobIds } from "@/lib/smart-log-kv";
 import { loadDriversFromSheet } from "@/lib/config";
 import type { Env } from "@/lib/cartrack";
 import { driverJobs, FEED_MAX_AGE_MS, type SnapJob } from "@/lib/day-snapshot";
@@ -50,11 +50,12 @@ export async function GET(req: NextRequest) {
 
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
   const needle = foldName(q);
-  const [logs, failed, held, drivers] = await Promise.all([
+  const [logs, failed, held, drivers, doneByHand] = await Promise.all([
     getRunLog(500),
     getFailedJobs(),
     getHeldJobs(),
     loadDriversFromSheet().catch(() => []),
+    getCompletedJobIds(),
   ]);
   // Driver-name match → that driver's unfinished jobs TODAY, from the day snapshot the
   // cron publishes every ~3 min (no Cartrack call when it is fresh). Capped: a two-letter
@@ -64,7 +65,7 @@ export async function GET(req: NextRequest) {
   const byDriver = await Promise.all(
     matchedDrivers.map((d) =>
       driverJobs(today, env, d.driver_id, { maxAgeMs: FEED_MAX_AGE_MS })
-        .then((jobs) => ({ d, jobs: (jobs ?? []).filter((j) => !isFinished(j)) }))
+        .then((jobs) => ({ d, jobs: (jobs ?? []).filter((j) => !isFinished(j) && !doneByHand.has(j.job_id)) }))
         .catch(() => ({ d, jobs: [] })),
     ),
   );
@@ -72,7 +73,7 @@ export async function GET(req: NextRequest) {
   // Dedupe by job_id, keeping the newest (most relevant) line.
   const found = new Map<number, JobSearchHit>();
   const add = (id: number, label: string, ts?: string) => {
-    if (Number.isInteger(id) && id > 0 && !found.has(id)) found.set(id, { job_id: id, label, ts });
+    if (Number.isInteger(id) && id > 0 && !found.has(id) && !doneByHand.has(id)) found.set(id, { job_id: id, label, ts });
   };
 
   for (const { d, jobs } of byDriver) {
