@@ -217,7 +217,7 @@ function Icon({ paths, className }: { paths: string[]; className?: string }) {
 }
 
 function Req() {
-  return <span className="text-red-500 ml-0.5" aria-hidden>*</span>;
+  return <span className="text-red-500 ml-0.5 text-[10px] font-normal align-super leading-none" aria-hidden>*</span>;
 }
 
 // Shown under a mandatory field once "Tạo" was pressed with it still empty.
