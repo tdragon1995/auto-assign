@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getRunLog, getFailedJobs, getHeldJobs, getCompletedJobIds } from "@/lib/smart-log-kv";
 import { loadDriversFromSheet } from "@/lib/config";
 import type { Env } from "@/lib/cartrack";
-import { driverJobs, FEED_MAX_AGE_MS, type SnapJob } from "@/lib/day-snapshot";
+import { driverJobs, jobsByIds, FEED_MAX_AGE_MS, type SnapJob } from "@/lib/day-snapshot";
 import { vnDate } from "@/lib/time";
 import { isCompletedOrRejectedStop } from "@/lib/job-filters";
 import { foldName } from "@/lib/driver-cell";
@@ -101,6 +101,21 @@ export async function GET(req: NextRequest) {
     if (j.customer.toLowerCase().includes(q)) add(j.job_id, j.customer);
   }
 
-  const results = [...found.values()].slice(0, 60);
+  // The log path matches on the customer NAME, and a branch's finished trips keep their
+  // log lines all day — so without this every completed job of that branch came back in
+  // the list. Resolve the ids against the stored day in one HMGET (no Cartrack call) and
+  // drop the finished ones. A job the day has never seen is kept: unknown is not done.
+  const hits = [...found.values()];
+  const snap = await jobsByIds(today, env, hits.map((h) => h.job_id));
+  const results = hits
+    .filter((h) => {
+      const j = snap.get(h.job_id);
+      return !j || !isFinished(j);
+    })
+    .map((h) => {
+      const j = snap.get(h.job_id);
+      return j ? { ...h, statusId: Number(j.job_status_id) || null } : h;
+    })
+    .slice(0, 60);
   return NextResponse.json({ results });
 }
