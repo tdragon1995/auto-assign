@@ -709,22 +709,15 @@ export async function jobIsDone(date: string, env: Env, jobId: number): Promise<
   }
 }
 
-/** Read specific jobs out of the stored day, by id, in ONE HMGET.
- *
- *  For readers that already know which jobs they care about and only need each one's
- *  current state — the admin search resolves a list of ids scraped from the activity log
- *  this way. Ids the day has never seen are simply absent from the map, so a caller can
- *  tell "finished" from "unknown" and leave the unknown one alone.
- *
- *  Like jobIsDone, this deliberately ignores the freshness stamp: it never rebuilds and
- *  never calls Cartrack, so the worst case is a picture a few minutes old rather than a
- *  billed fetch on a manual search.
- */
+/** Read specific jobs out of the stored day, by id, in ONE HMGET — for a reader that
+ *  already knows which jobs it cares about and only needs each one's state. Ids the day
+ *  has never seen are absent from the map, so "finished" and "unknown" stay distinct.
+ *  Like jobIsDone it ignores the freshness stamp: it never rebuilds and never calls
+ *  Cartrack. */
 export async function jobsByIds(date: string, env: Env, jobIds: number[]): Promise<Map<number, SnapJob>> {
   const out = new Map<number, SnapJob>();
   const ids = [...new Set(jobIds)].filter((n) => Number.isInteger(n) && n > 0);
-  if (!ids.length) return out;
-  const redis = getRedis();
+  const redis = ids.length ? getRedis() : null;
   if (!redis) return out;
   try {
     const rows = await redis.hmget<Record<string, unknown>>(key(env, date), ...ids.map(jobField));

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getRunLog, getFailedJobs, getHeldJobs, getCompletedJobIds } from "@/lib/smart-log-kv";
+import { getRunLog, getFailedJobs, getHeldJobs } from "@/lib/smart-log-kv";
 import { loadDriversFromSheet } from "@/lib/config";
 import type { Env } from "@/lib/cartrack";
 import { driverJobs, jobsByIds, FEED_MAX_AGE_MS, type SnapJob } from "@/lib/day-snapshot";
@@ -50,12 +50,11 @@ export async function GET(req: NextRequest) {
 
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
   const needle = foldName(q);
-  const [logs, failed, held, drivers, doneByHand] = await Promise.all([
+  const [logs, failed, held, drivers] = await Promise.all([
     getRunLog(500),
     getFailedJobs(),
     getHeldJobs(),
     loadDriversFromSheet().catch(() => []),
-    getCompletedJobIds(),
   ]);
   // Driver-name match → that driver's unfinished jobs TODAY, from the day snapshot the
   // cron publishes every ~3 min (no Cartrack call when it is fresh). Capped: a two-letter
@@ -65,7 +64,7 @@ export async function GET(req: NextRequest) {
   const byDriver = await Promise.all(
     matchedDrivers.map((d) =>
       driverJobs(today, env, d.driver_id, { maxAgeMs: FEED_MAX_AGE_MS })
-        .then((jobs) => ({ d, jobs: (jobs ?? []).filter((j) => !isFinished(j) && !doneByHand.has(j.job_id)) }))
+        .then((jobs) => ({ d, jobs: (jobs ?? []).filter((j) => !isFinished(j)) }))
         .catch(() => ({ d, jobs: [] })),
     ),
   );
@@ -73,7 +72,7 @@ export async function GET(req: NextRequest) {
   // Dedupe by job_id, keeping the newest (most relevant) line.
   const found = new Map<number, JobSearchHit>();
   const add = (id: number, label: string, ts?: string) => {
-    if (Number.isInteger(id) && id > 0 && !found.has(id) && !doneByHand.has(id)) found.set(id, { job_id: id, label, ts });
+    if (Number.isInteger(id) && id > 0 && !found.has(id)) found.set(id, { job_id: id, label, ts });
   };
 
   for (const { d, jobs } of byDriver) {
@@ -101,10 +100,10 @@ export async function GET(req: NextRequest) {
     if (j.customer.toLowerCase().includes(q)) add(j.job_id, j.customer);
   }
 
-  // The log path matches on the customer NAME, and a branch's finished trips keep their
-  // log lines all day — so without this every completed job of that branch came back in
-  // the list. Resolve the ids against the stored day in one HMGET (no Cartrack call) and
-  // drop the finished ones. A job the day has never seen is kept: unknown is not done.
+  // The log path matches on the customer NAME, and a branch's log lines survive all day —
+  // so without this every trip it ran came back, finished ones included. One HMGET
+  // resolves the scraped ids against the stored day; no Cartrack call. A job the day has
+  // never seen is KEPT — unknown is not done.
   const hits = [...found.values()];
   const snap = await jobsByIds(today, env, hits.map((h) => h.job_id));
   const results = hits

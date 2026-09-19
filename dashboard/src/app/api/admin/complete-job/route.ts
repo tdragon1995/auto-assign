@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getJobDetails, completeJob, type Env } from "@/lib/cartrack";
 import { JOB_STATUS } from "@/lib/job-filters";
-import { markJobCompleted } from "@/lib/smart-log-kv";
 
 // ── POST /api/admin/complete-job — force-complete a job by ID ──────────────
 // Body: { job_id }. Guards against jobs already completed/cancelled/failed.
@@ -47,10 +46,6 @@ export async function POST(req: NextRequest) {
         { status: 502 }
       );
     }
-
-    // Write-through so the admin search stops listing it while the day snapshot (up to
-    // 5 min old) still shows it assigned.
-    await markJobCompleted(jobId);
 
     return NextResponse.json({ success: true, job_id: jobId });
   } catch (e) {
