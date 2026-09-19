@@ -1804,6 +1804,148 @@ export function mergePeople(groups: DriverGroup[]): PersonCell[] {
  * narrow has room for one name and one symbol, so the name had better be a
  * person and the symbol had better mean something without being hovered.
  */
+/** One rostered Sunday row as `/api/sunday-schedule` returns it, narrowed to
+ *  what this panel draws. */
+interface SundayRow {
+  name: string;
+  addr: string;
+  ca: string;
+  leave?: {
+    status: "leave" | "unmatched";
+    timeLabel: string | null;
+    loaiNghi: string;
+    subs: string[];
+  };
+}
+
+/**
+ * The Sunday roster, cross-checked against leave.
+ *
+ * The Sunday tab is typed by ops a week ahead and leave is filed afterwards, so
+ * the two drift apart silently and the drift only ever surfaces on the Sunday
+ * morning itself. This is the same cross-check the driver-facing schedule now
+ * shows, put where the person who can act on it is already looking.
+ *
+ * READ-ONLY on purpose. The fix is an edit to the roster tab — a rostered row
+ * carries a location and a shift that only ops can reassign — so offering a
+ * button here would be offering to make half the change.
+ *
+ * It loads ONCE, when opened, and is collapsed by default: the answer changes
+ * weekly, most days it is empty, and the panel already issues a fetch of its
+ * own on every refresh.
+ */
+function SundayConflicts() {
+  const [open, setOpen] = useState(false);
+  const [state, setState] = useState<{
+    loading: boolean;
+    error: string | null;
+    dateLabel: string;
+    rows: SundayRow[];
+  }>({ loading: false, error: null, dateLabel: "", rows: [] });
+  const loaded = useRef(false);
+
+  const load = useCallback(async () => {
+    setState((v) => ({ ...v, loading: true, error: null }));
+    try {
+      const res = await fetch("/api/sunday-schedule", { cache: "no-store" });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || d.error) throw new Error(d.error || `Lỗi ${res.status}`);
+      const rows: SundayRow[] = [...(d.morning ?? []), ...(d.afternoon ?? [])].filter(
+        (x: SundayRow) => x.leave,
+      );
+      setState({ loading: false, error: null, dateLabel: String(d.dateLabel ?? ""), rows });
+    } catch (e) {
+      // Retryable: the once-only flag is released so re-opening asks again,
+      // rather than leaving the section stuck on one bad read for the session.
+      loaded.current = false;
+      setState((v) => ({ ...v, loading: false, error: e instanceof Error ? e.message : String(e) }));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!open || loaded.current) return;
+    loaded.current = true;
+    void load();
+  }, [open, load]);
+
+  const conflicts = state.rows.filter((r) => r.leave?.status === "leave");
+  const unmatched = state.rows.filter((r) => r.leave?.status === "unmatched");
+
+  return (
+    <div className="mt-2 overflow-hidden rounded-md border border-slate-300 bg-slate-50">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls="sunday-leave-conflicts"
+        onClick={() => setOpen((v) => !v)}
+        className="flex min-h-9 w-full items-center gap-1.5 px-2 py-1.5 text-left text-[11px] font-semibold text-slate-800 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset"
+      >
+        <ChevronRight
+          aria-hidden="true"
+          className={`size-3.5 shrink-0 transition-transform duration-200 motion-reduce:transition-none ${open ? "rotate-90" : ""}`}
+          strokeWidth={2}
+        />
+        <span>Lịch Chủ Nhật đối chiếu với đơn nghỉ</span>
+        {open && conflicts.length > 0 && (
+          <span className="ml-auto shrink-0 rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-red-700">
+            {conflicts.length}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div id="sunday-leave-conflicts" className="border-t border-slate-200 px-2 pb-1.5 pt-1">
+          {state.loading && <p className="text-[11px] text-slate-600">Đang tải lịch Chủ Nhật…</p>}
+          {state.error && (
+            <p role="alert" className="text-[11px] text-red-700">
+              Không đọc được lịch Chủ Nhật: {state.error}
+            </p>
+          )}
+          {!state.loading && !state.error && (
+            <>
+              <p className="text-[11px] leading-snug text-slate-700">
+                Lịch Chủ Nhật {state.dateLabel ? `ngày ${state.dateLabel} ` : ""}do điều phối gõ tay
+                trước cả tuần, còn đơn nghỉ nộp sau — nên hai bên lệch nhau mà không ai biết. Sửa ở
+                tab lịch Chủ Nhật trong workbook; ở đây chỉ đối chiếu.
+              </p>
+              {conflicts.length === 0 && unmatched.length === 0 ? (
+                <p className="mt-1 text-[11px] text-slate-500">Không có ai vừa xếp lịch vừa có đơn nghỉ.</p>
+              ) : (
+                <ul className="mt-1 space-y-0.5">
+                  {conflicts.map((r, i) => (
+                    <li
+                      key={`sun-${r.name}-${i}`}
+                      className="rounded border border-red-200 bg-red-50 px-1.5 py-1 text-[11px] text-slate-800"
+                    >
+                      <span className="font-semibold">{r.name}</span>
+                      {r.addr && <span className="text-slate-600"> · {r.addr}</span>}
+                      {r.ca && <span className="text-slate-600"> · {r.ca}</span>}
+                      <span className="ml-1 font-semibold text-red-700">
+                        nghỉ {r.leave?.timeLabel ?? "cả ngày"}
+                      </span>
+                      {r.leave?.subs.length
+                        ? <span className="text-slate-700"> — thay: {r.leave.subs.join(", ")}</span>
+                        : <span className="font-semibold text-red-700"> — chưa có người thay</span>}
+                    </li>
+                  ))}
+                  {unmatched.map((r, i) => (
+                    <li
+                      key={`sun-unmatched-${r.name}-${i}`}
+                      className="rounded border border-slate-200 bg-white px-1.5 py-1 text-[11px] text-slate-700"
+                    >
+                      <span className="font-semibold">{r.name}</span> — tên không khớp tài khoản nào
+                      đang hoạt động, chưa đối chiếu được đơn nghỉ.
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function WeekSection({
   today,
   drivers,
@@ -2361,6 +2503,11 @@ export function LeaveStatusPanel({
               registerReload={registerOtherDayReload}
               refreshKey={refreshKey}
             />
+            {/* Below the week, above the deleted-days reference list: this is a
+                task — a Sunday shift with a hole in it — but one for NEXT
+                Sunday rather than today, so it sits under the days that are
+                already in front of you. */}
+            <SundayConflicts />
             {/* LAST, below the week. This is a reference list, not a task: every
                 line on it is already handled — a day someone deliberately
                 removed, held down so the sync cannot undo it. Reading it is how

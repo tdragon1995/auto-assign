@@ -150,6 +150,13 @@ interface TatDayDetail {
   refreshing?: boolean;
 }
 
+interface SundayLeaveFlag {
+  status: "leave" | "unmatched";
+  timeLabel: string | null;
+  loaiNghi: string;
+  subs: string[];
+}
+
 interface ScheduleEntry {
   stt: string;
   name: string;
@@ -157,12 +164,49 @@ interface ScheduleEntry {
   ca: string;
   note: string;
   phone: string;
+  /** Present only when the leave sheet contradicts this rostered row. */
+  leave?: SundayLeaveFlag;
 }
 
 interface ScheduleData {
   morning: ScheduleEntry[];
   afternoon: ScheduleEntry[];
   dateLabel: string;
+  conflicts?: { leave: number; unmatched: number };
+}
+
+/**
+ * The leave sheet's disagreement with this rostered row, said in the roster's
+ * own language.
+ *
+ * It is a WARNING, not a correction: the roster is what ops typed and the shift
+ * still belongs to whoever appears here. A driver seeing this is meant to ask,
+ * which is the whole point — the alternative, and what happened until now, is a
+ * Sunday shift starting without the person on it.
+ *
+ * A covered absence is said in amber rather than red: a substitute is named, so
+ * the shift is handed over rather than empty.
+ */
+function LeaveBadge({ f }: { f: SundayLeaveFlag }) {
+  if (f.status === "unmatched") {
+    return (
+      <span className="inline-block text-xs text-slate-700 bg-slate-100 border border-slate-300 rounded px-1.5 py-0.5">
+        ⚠ Không khớp tên trong danh sách tài xế
+      </span>
+    );
+  }
+  const covered = f.subs.length > 0;
+  const cls = covered
+    ? "text-amber-900 bg-amber-50 border-amber-300"
+    : "text-red-700 bg-red-50 border-red-300";
+  const when = f.timeLabel ? ` ${f.timeLabel}` : " cả ngày";
+  return (
+    <span className={`inline-block text-xs font-semibold border rounded px-1.5 py-0.5 ${cls}`}>
+      🌴 Đang nghỉ{when}
+      {f.loaiNghi ? ` (${f.loaiNghi})` : ""}
+      {covered ? ` — thay: ${f.subs.join(", ")}` : " — CHƯA CÓ NGƯỜI THAY"}
+    </span>
+  );
 }
 
 function ShiftSection({ title, accent, rows }: { title: string; accent: "amber" | "blue"; rows: ScheduleEntry[] }) {
@@ -194,6 +238,7 @@ function ShiftSection({ title, accent, rows }: { title: string; accent: "amber" 
                     {r.note}
                   </span>
                 )}
+                {r.leave && <LeaveBadge f={r.leave} />}
               </div>
             </div>
           </li>
@@ -858,7 +903,12 @@ export default function ChamCongPage() {
       .then((r) => r.json())
       .then((sd) => {
         if (sd.error) { setScheduleStatus("error"); return; }
-        setSchedule({ morning: sd.morning ?? [], afternoon: sd.afternoon ?? [], dateLabel: sd.dateLabel ?? "" });
+        setSchedule({
+          morning: sd.morning ?? [],
+          afternoon: sd.afternoon ?? [],
+          dateLabel: sd.dateLabel ?? "",
+          conflicts: sd.conflicts,
+        });
         setScheduleStatus("success");
       })
       .catch(() => setScheduleStatus("error"));
@@ -2028,6 +2078,16 @@ export default function ChamCongPage() {
                     </p>
                     {schedule.dateLabel && (
                       <p className="text-base font-bold text-gray-800">Ngày {schedule.dateLabel}</p>
+                    )}
+                    {/* Said once at the top as well as on each row: the search
+                        box filters the list, so a driver looking for their own
+                        name can be shown a page with no badges on it while the
+                        roster still has a hole in it. */}
+                    {!!schedule.conflicts?.leave && (
+                      <p className="mt-1 text-xs font-semibold text-red-700">
+                        ⚠ {schedule.conflicts.leave} người trong lịch đang có đơn nghỉ ngày này —
+                        báo điều phối để sắp lại.
+                      </p>
                     )}
                   </div>
 

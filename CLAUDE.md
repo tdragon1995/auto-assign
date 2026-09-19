@@ -213,6 +213,48 @@ ever named, which is how a warning stops being read.
   must match by name to exactly one active PT account or the day is left alone
   and reported. `misa-fetcher/scripts/pt-companion.test.mjs`.
 
+### The Sunday roster is cross-checked against leave, never corrected by it
+
+`(Edit weekly) PUBLIC SUNDAY SCHEDULE` is typed by ops a week ahead; leave is
+filed afterwards, by MISA or the panel. Nothing connected the two, so a driver
+could be rostered for Sunday and approved off for that same day, and the first
+anyone learned of it was the shift starting without them — and because
+`(NO edit) CONFIG SUNDAY` derives its Driver column from that roster by formula,
+the engine inherited the same wrong belief.
+
+`sunday-leave.ts` lays the leave sheet over the roster and flags the
+disagreements. `/api/sunday-schedule` returns the flag on each row plus a
+`conflicts` count; the chấm-công Sunday tab badges the row, and the leave panel
+carries a collapsed "Lịch Chủ Nhật đối chiếu với đơn nghỉ" section for điều phối.
+
+**It only reports.** Repair is an edit to the roster tab, because a rostered row
+carries a location and a shift that only ops can reassign — writing a name there
+would be making half the change.
+
+Four rules, all about neither crying wolf nor going quiet:
+
+- **The DATE turns the check off when it cannot be read.** The tab writes
+  `dd/MM/yyyy`; a leave lookup against a guessed day answers "nobody is off"
+  with complete confidence, which is the one wrong answer this must never give.
+- **The name is matched WITH its staff code** (`matchDriverByName`). The roster
+  cell is `PT101225 Đoàn Văn Thảo`, and the code is what separates the twin
+  accounts — a bare name matching both is reported as `unmatched`, never
+  resolved to whichever came first.
+- **A half day must meet the rostered shift**, compared BY THE HOUR like
+  `companionNeeded` and for the same reason: both sides are hand-typed. An
+  unreadable `Ca` falls back to the day alone, which is the forgiving direction.
+- **It fails soft.** An unreadable leave sheet or roster returns the schedule
+  UNFLAGGED rather than an error — this endpoint's first job is telling drivers
+  where to be on Sunday, and no flags means "not checked", exactly what it meant
+  before the feature existed.
+
+Costs nothing upstream: both loaders are already cached (leave 5 min and shared
+through Redis, roster 5 min), and no billed API is involved. The endpoint's
+day-long cache holds the ROSTER AS TYPED only — the flags are recomputed per
+request, because leave is filed during the day and a frozen morning answer would
+show a driver as fine hours after they were marked off.
+`dashboard/scripts/sunday-leave.test.mts`.
+
 ## Architecture
 
 ### Data Flow
@@ -259,6 +301,7 @@ ever named, which is how a warning stops being read.
 | `PUT /api/sales/address` | Updates a location's address + GPS in **both** Cartrack and Labcenter. Cartrack needs a full-record PUT (`address_line_1` is ignored by a partial PUT); Labcenter takes a direct address PUT. Both use read-back guards (the APIs 200 on writes they discard). Body must be proper UTF-8 — a Windows `curl` with inline Vietnamese mangles it and the write no-ops |
 | `POST /api/sales/reject-job` | Rejects a sales job by reference number via JSON-RPC (guards against started jobs) |
 | `GET /api/sales/search-trips` | Searches today's B2B trips by `?ma_kh=` (matches reference_number suffix); returns status 2+4 jobs only |
+| `GET /api/sunday-schedule` | The hand-typed Sunday roster, display-only, **cross-checked against leave** — each rostered row carries a `leave` flag where the Nghỉ phép sheet disagrees. `?fresh=1` re-reads the tab |
 | `GET /api/tat/archive` | Manual/backfill archive of route **legs** into Supabase `tat_legs`; `?date=`, `?days=N`, `CRON_SECRET` auth. Idempotent (replaces the day). Routine archiving needs no cron — see footgun 8 |
 | `GET /api/tat/me` | The signed-in driver's TAT report (today + week + month). Driver id from the `nv_session` cookie only |
 | `GET /api/pay/me` | The signed-in driver's part-time earnings. `?month=YYYY-MM` for the month, `?date=` for one day. Driver id from the `nv_session` cookie only; refuses any account that is not `PT…` |
@@ -272,6 +315,7 @@ ever named, which is how a warning stops being read.
 | `src/lib/labcenter.ts` | `getAdminToken` / `getReceptionistToken` (cached JWT logins — admin for `spc-delivery`, receptionist for `spc-pos`), `listLocationsByClientCode`, `getCartrackCustomerId`, `updateLocationPhone`, `updateLocationAddress` |
 | `src/lib/distance.ts` | `haversineKm`, `goongDistanceKm` (1→1), `goongMatrix` (1→N batch), `goongMatrixMultiOrigin` (N→1, one request — undocumented-but-verified Goong behavior, shape-checked with null-fill fallback); `roadMatrixOneToMany`/`roadMatrixManyToOne` walk the **provider chain: VietMap → Goong → second Goong account** (footgun 12) |
 | `src/lib/distance-cache.ts` | `roadDistancesToPoint` (N→1), `roadDistancesFromPoint` (1→N) — resolve pairs cheapest-first: self-pair = 0 km free, then a non-expiring Redis cache (`dist:v1:` keys **truncated to 5 dp** — read, don't round, mirrors Excel `TRUNC`; value `{distance_km, eta_mins, from, to}` keeps the exact coords), then ONE matrix call for misses (write-behind; nulls never cached). Each result carries `source: "self"\|"cache"\|"api"`. `exportCachedDistances()` dumps all pairs (read-only SCAN+MGET) for download |
+| `src/lib/sunday-leave.ts` | `sundayDateToIso`, `caWindow`, `leaveFlagFor` — the Sunday roster ↔ leave cross-check. Pure, no fetching |
 | `src/lib/job-filters.ts` | `JOB_STATUS`, `STOP_STATUS` maps; `isActiveStop`, `isCompletedOrRejectedStop`, `isStopStarted` |
 | `src/lib/smart-rank.ts` | `RefStop`, `RefLabel`, `selectReferenceStop`, `computeStopStats`, `rankingComparator`; anchor honesty: `isUnreachedAnchor`, `liveGpsRef`, `lastRealPositionRef` (see footgun 9) |
 | `src/lib/time.ts` | `vnDate`, `vnTimestamp`, `vnHoursMinutes`, `vnMinutesSinceMidnight`, `vnDayWindow`, `parseVnTimestamp` |
