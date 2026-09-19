@@ -98,16 +98,24 @@ eq("a morning absence DOES flag a morning shift",
   leaveFlagFor("DC100001 Lý Chánh Hùng", "07:00 - 15:00", roster,
     [leave({ driver_id: "id-hung", loai_nghi: "Nghỉ nửa buổi", timeLabel: "06:00–10:00" })])?.status,
   "leave");
-// Shared boundary: "off until 15:00" against a shift starting 15:00. Flagged,
-// on purpose — an absence ending exactly where a shift begins is worth a glance,
-// and both numbers are typed by hand so neither is precise enough to bet on.
-eq("an absence ending where the shift starts still flags",
+// A SHARED BOUNDARY IS NOT A CLASH — the case that made this rule strict.
+// Live on Sunday 20/09: PT101732 Lê Hồng Thái rostered 06:00–15:00, leave
+// 15:00–20:00. That is the handover, and flagging it was the only thing the
+// cross-check said all day, which is how a warning stops being read.
+eq("leave starting exactly when the shift ends is a handover, not a hole",
+  leaveFlagFor("DC100001 Lý Chánh Hùng", "06:00 - 15:00", roster,
+    [leave({ driver_id: "id-hung", loai_nghi: "Nghỉ nửa buổi", timeLabel: "15:00–20:00" })]),
+  null);
+eq("and the mirror image: leave ending exactly when the shift starts",
   leaveFlagFor("DC100001 Lý Chánh Hùng", "15:00 - 20:00", roster,
-    [leave({ driver_id: "id-hung", loai_nghi: "Nghỉ nửa buổi", timeLabel: "06:00–15:00" })])?.status,
+    [leave({ driver_id: "id-hung", loai_nghi: "Nghỉ nửa buổi", timeLabel: "06:00–15:00" })]),
+  null);
+// But half an hour INTO the shift is a real hole, not a boundary.
+eq("leave beginning before the shift ends does flag",
+  leaveFlagFor("DC100001 Lý Chánh Hùng", "06:00 - 15:00", roster,
+    [leave({ driver_id: "id-hung", loai_nghi: "Nghỉ nửa buổi", timeLabel: "14:30–20:00" })])?.status,
   "leave");
-// And the converse: the hours are floored on both sides, so an absence that
-// ends inside the hour BEFORE the shift does not reach it.
-eq("an absence ending the hour before does not",
+eq("an absence ending the hour before the shift does not",
   leaveFlagFor("DC100001 Lý Chánh Hùng", "15:00 - 20:00", roster,
     [leave({ driver_id: "id-hung", loai_nghi: "Nghỉ nửa buổi", timeLabel: "06:00–14:30" })]),
   null);

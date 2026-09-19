@@ -83,17 +83,21 @@ function labelWindow(label: string | null): { from: number; to: number } | null 
 }
 
 /**
- * Whether a windowed leave actually touches the shift the person is rostered
+ * Whether a windowed leave actually eats into the shift the person is rostered
  * for. Compared BY THE HOUR, the same way `companionNeeded` compares them and
  * for the same reason: both sides are hand-typed and drift by a few minutes,
- * and a rule that answers differently for 14:59 and 15:00 is one nobody can
- * predict from looking at a roster. Erring towards showing the flag is the
- * cheap direction — a flag that turns out to be a near miss costs a glance, a
- * missing one costs the shift.
+ * so a rule that answers differently for 14:59 and 15:00 is one nobody can
+ * predict from looking at a roster.
+ *
+ * They must share a WHOLE HOUR (`<`, not `<=`). Merely touching at a boundary
+ * is not a clash, and saying it is cost the feature its credibility on the
+ * first real day it ran: on Sunday 20/09 the only flag it raised was a driver
+ * rostered 06:00–15:00 whose leave began at 15:00 — the handover, reported as a
+ * hole. That is also how the engine reads a shift end, which is exclusive.
  */
 function touches(leave: { from: number; to: number }, shift: { from: number; to: number }): boolean {
   const h = (n: number) => Math.floor(n / 60);
-  return Math.max(h(leave.from), h(shift.from)) <= Math.min(h(leave.to), h(shift.to));
+  return Math.max(h(leave.from), h(shift.from)) < Math.min(h(leave.to), h(shift.to));
 }
 
 /**

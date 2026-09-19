@@ -241,8 +241,12 @@ Four rules, all about neither crying wolf nor going quiet:
   accounts — a bare name matching both is reported as `unmatched`, never
   resolved to whichever came first.
 - **A half day must meet the rostered shift**, compared BY THE HOUR like
-  `companionNeeded` and for the same reason: both sides are hand-typed. An
-  unreadable `Ca` falls back to the day alone, which is the forgiving direction.
+  `companionNeeded` and for the same reason: both sides are hand-typed. They
+  must share a WHOLE hour — a shared boundary is a handover, not a hole. The
+  first live run flagged exactly one row, `PT101732 Lê Hồng Thái` rostered
+  06:00–15:00 against leave starting 15:00, and a cross-check whose only output
+  is a false alarm is one nobody reads again. An unreadable `Ca` falls back to
+  the day alone, which is the forgiving direction.
 - **It fails soft.** An unreadable leave sheet or roster returns the schedule
   UNFLAGGED rather than an error — this endpoint's first job is telling drivers
   where to be on Sunday, and no flags means "not checked", exactly what it meant
