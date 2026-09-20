@@ -26,6 +26,8 @@ interface DriverRow {
   days_worked: number;
   jobs: number;
   km: number;
+  /** Km actually ridden (every leg, paid or not) — the Hiệu Suất measure. */
+  real_km: number;
   worked_mins: number;
   hour_pay: number;
   km_pay: number;
@@ -76,6 +78,22 @@ const fmtHours = (mins: number) => `${Math.floor(mins / 60)}h${String(mins % 60)
 /** Kilometres in Vietnamese notation: 2.199 not 2199. Whole km in the table —
  *  the decimals live in the CSV, which is what a figure gets paid from. */
 const fmtKm = (km: number) => vnd.format(Math.round(km));
+
+/** What a kilometre actually earns: the KM money over every kilometre ridden.
+ *  Km money and not total pay, so the figure stays comparable to the 2.000đ
+ *  rate — mixing the hourly component in would answer a different question, and
+ *  the hours are not settled yet.
+ *
+ *  It is usually BELOW 2.000đ, because the ride to the next pickup and the run
+ *  home are distance nobody is paid for. It goes ABOVE where a driver collects
+ *  at several clinics on one loop: each job is paid its own pickup→lab distance
+ *  while the loop is ridden once.
+ *
+ *  Null where the day's legs are missing: dividing by an unarchived zero would
+ *  print a number nobody could defend. */
+const realRate = (kmPay: number, realKm: number): number | null =>
+  realKm > 0 ? Math.round(kmPay / realKm) : null;
+const fmtRate = (r: number | null) => (r == null ? "—" : vnd.format(r));
 
 const monthLabel = (m: string) => `Tháng ${Number(m.slice(5, 7))}/${m.slice(0, 4)}`;
 
@@ -136,14 +154,16 @@ export function PayTeamPanel() {
       if (!res.ok || !j.ok) { setError(j.error ?? "Không tải được chi tiết chuyến."); return; }
       const jobs = j.jobs as DetailJob[];
 
-      const head = ["Tài xế", "Số ngày", "Số chuyến", "Tổng km", "Giờ chấm công (phút)",
-                    "Tiền giờ (đ)", "Tiền km (đ)", "Tổng (đ)", "Ngày thiếu chấm công ra", "Chuyến chưa có km"];
+      const head = ["Tài xế", "Số ngày", "Số chuyến", "Km tính tiền", "Km thực chạy", "Giờ chấm công (phút)",
+                    "Tiền giờ (đ)", "Tiền km (đ)", "Tổng (đ)", "Tiền km / km thực (đ)",
+                    "Ngày thiếu chấm công ra", "Chuyến chưa có km"];
       const rows: (string | number)[][] = data.drivers.map((d) => [
         // FULL name here, staff code and all, unlike the table on screen. This file
         // gets matched against attendance and leave in a spreadsheet, and the code
         // is what those are keyed on — two drivers share a display name today.
-        d.driver_name, d.days_worked, d.jobs, d.km, d.worked_mins,
-        d.hour_pay, d.km_pay, d.total_pay, d.open_in_days, d.unpriced_jobs,
+        d.driver_name, d.days_worked, d.jobs, d.km, d.real_km, d.worked_mins,
+        d.hour_pay, d.km_pay, d.total_pay, realRate(d.km_pay, d.real_km) ?? "",
+        d.open_in_days, d.unpriced_jobs,
       ]);
       // An incomplete payroll must not leave this screen looking final.
       if (!data.coverage.ready) {
@@ -246,14 +266,19 @@ export function PayTeamPanel() {
 
       {/* Fleet totals. The money leads, because that is what this panel is for. */}
       {data && data.drivers.length > 0 && (
-        <div className="grid grid-cols-4 gap-px bg-slate-200 border-b border-slate-200 shrink-0">
+        <div className="grid grid-cols-5 gap-px bg-slate-200 border-b border-slate-200 shrink-0">
           {[
-            ["Tổng chi", fmtVnd(data.totals.total_pay)],
-            ["Tài xế PT", String(data.driver_count)],
-            ["Giờ", fmtHours(data.totals.worked_mins)],
-            ["Km", fmtKm(data.totals.km)],
-          ].map(([label, value]) => (
-            <div key={label} className="bg-white px-2 py-2 text-center">
+            ["Tổng chi", fmtVnd(data.totals.total_pay), `${fmtVnd(data.totals.hour_pay)} giờ + ${fmtVnd(data.totals.km_pay)} km`],
+            ["Tài xế PT", String(data.driver_count), ""],
+            ["Giờ", fmtHours(data.totals.worked_mins), ""],
+            ["Km tính tiền", fmtKm(data.totals.km), "Quãng đường lấy mẫu → giao mẫu của các chuyến được tính tiền"],
+            // The fleet average, and the point of the two columns below: it is the
+            // whole wage bill over every kilometre actually ridden, so it answers
+            // "what do we pay per kilometre" rather than "what is the rate".
+            ["đ/km thực", fmtRate(realRate(data.totals.km_pay, data.totals.real_km)),
+             `Tổng chi ÷ ${fmtKm(data.totals.real_km)} km thực chạy (gồm cả chuyến không tính tiền)`],
+          ].map(([label, value, hint]) => (
+            <div key={label} className="bg-white px-2 py-2 text-center" title={hint || undefined}>
               <p className="text-base font-bold text-slate-800 leading-tight">{value}</p>
               <p className="text-[11px] text-slate-500">{label}</p>
             </div>
@@ -321,8 +346,10 @@ export function PayTeamPanel() {
                 <th className="text-left font-semibold px-3 py-2">Tài xế</th>
                 <th className="text-right font-semibold px-2 py-2">Ngày</th>
                 <th className="text-right font-semibold px-2 py-2">Giờ</th>
-                <th className="text-right font-semibold px-2 py-2">Km</th>
+                <th className="text-right font-semibold px-2 py-2" title="Quãng đường lấy mẫu → giao mẫu của các chuyến được tính tiền">Km tính tiền</th>
+                <th className="text-right font-semibold px-2 py-2" title="Quãng đường thực tế đã chạy, gồm cả đoạn di chuyển giữa các chuyến và chuyến không tính tiền (theo Hiệu Suất)">Km thực</th>
                 <th className="text-right font-semibold px-3 py-2">Tổng (đ)</th>
+                <th className="text-right font-semibold px-2 py-2" title="Tổng tiền ÷ km thực chạy">đ/km thực</th>
                 {/* A word, not a glyph: the column is a task list and screen readers
                     got nothing from "⚠". */}
                 <th className="text-right font-semibold px-2 py-2">Thiếu ra</th>
@@ -342,11 +369,18 @@ export function PayTeamPanel() {
                   <td className="text-right px-2 py-2 text-slate-600">{d.days_worked}</td>
                   <td className="text-right px-2 py-2 text-slate-600 tabular-nums">{fmtHours(d.worked_mins)}</td>
                   <td className="text-right px-2 py-2 text-slate-600 tabular-nums">{fmtKm(d.km)}</td>
+                  <td className="text-right px-2 py-2 text-slate-600 tabular-nums">{fmtKm(d.real_km)}</td>
                   <td
                     className="text-right px-3 py-2 font-semibold text-slate-800 tabular-nums"
                     title={`${fmtVnd(d.hour_pay)} giờ + ${fmtVnd(d.km_pay)} km = ${fmtVnd(d.total_pay)}`}
                   >
                     {vnd.format(Math.round(d.total_pay))}
+                  </td>
+                  <td
+                    className="text-right px-2 py-2 text-slate-600 tabular-nums"
+                    title={d.real_km > 0 ? `${fmtVnd(d.total_pay)} ÷ ${fmtKm(d.real_km)} km thực` : "Chưa có dữ liệu km thực"}
+                  >
+                    {fmtRate(realRate(d.km_pay, d.real_km))}
                   </td>
                   <td className="text-right px-2 py-2 tabular-nums">
                     {d.open_in_days > 0
@@ -365,7 +399,9 @@ export function PayTeamPanel() {
         <div className="px-3 py-2 border-t border-slate-200 shrink-0">
           <p className="text-[11px] text-slate-500">
             {vnd.format(data.rates.per_hour)}đ/giờ chấm công (tính theo phút) +{" "}
-            {vnd.format(data.rates.per_km)}đ/km lấy mẫu → giao mẫu của mỗi chuyến đã hoàn thành.
+            {vnd.format(data.rates.per_km)}đ/km lấy mẫu → giao mẫu của mỗi chuyến đã hoàn thành.{" "}
+            <em>đ/km thực</em> = tổng tiền ÷ quãng đường thực chạy (gồm cả đoạn giữa các chuyến và
+            chuyến không tính tiền), nên luôn thấp hơn {vnd.format(data.rates.per_km)}đ.
             Kỳ lương từ {data.from} đến {data.to}. Tải CSV để lấy số chính xác.
           </p>
         </div>

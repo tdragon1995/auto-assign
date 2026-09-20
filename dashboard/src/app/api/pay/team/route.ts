@@ -76,7 +76,7 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const [daily, punches, sealed] = await Promise.all([
+    const [daily, punches, sealed, legsDaily] = await Promise.all([
       sbSelectAll<DailyRow>(
         "v_pay_daily",
         `select=*&trip_date=gte.${from}&trip_date=lte.${to}`,
@@ -92,7 +92,21 @@ export async function GET(req: NextRequest) {
         `select=trip_date&trip_date=gte.${from}&trip_date=lte.${to}`,
         "trip_date.asc",
       ),
+      // REAL DISTANCE — what the driver actually rode, from the same daily
+      // rollup Hiệu Suất is scored on. It counts EVERY leg: the ride to the next
+      // pickup, the run home, the trips that pay nothing. Paid km only counts a
+      // job's pickup→dropoff, so the two differ by design (footgun 11) — and the
+      // gap between them is exactly what "what do we really pay per kilometre"
+      // asks about. Rolled up per driver-day, so a month is ~1,500 rows, not the
+      // ~28,000 legs behind them.
+      sbSelectAll<{ driver_id: string; total_km: number | string | null }>(
+        "v_tat_daily",
+        `select=driver_id,total_km&trip_date=gte.${from}&trip_date=lte.${to}`,
+        "trip_date.asc,driver_id.asc",
+      ),
     ]);
+    const realKm = new Map<string, number>();
+    for (const r of legsDaily) realKm.set(r.driver_id, (realKm.get(r.driver_id) ?? 0) + num(r.total_km));
 
     // COVERAGE. A day only counts once its payroll rows were written (pay_days);
     // zero rows otherwise looks exactly like a day nobody worked. Days up to
@@ -159,6 +173,10 @@ export async function GET(req: NextRequest) {
           days_worked: e.days.size,
           jobs: e.jobs,
           km,
+          /** Every kilometre ridden, paid or not — see the fetch above. 0 means
+           *  the day's legs are not archived, NOT that they stood still, so the
+           *  screen must not divide by it blind. */
+          real_km: Math.round((realKm.get(driver_id) ?? 0) * 100) / 100,
           worked_mins: mins,
           hour_pay: hourPayFor(mins),
           km_pay: kmPayFor(km),
@@ -191,6 +209,7 @@ export async function GET(req: NextRequest) {
         days_worked: drivers.reduce((s, d) => s + d.days_worked, 0),
         jobs: drivers.reduce((s, d) => s + d.jobs, 0),
         km: Math.round(drivers.reduce((s, d) => s + d.km, 0) * 100) / 100,
+        real_km: Math.round(drivers.reduce((s, d) => s + d.real_km, 0) * 100) / 100,
         worked_mins: drivers.reduce((s, d) => s + d.worked_mins, 0),
         hour_pay: drivers.reduce((s, d) => s + d.hour_pay, 0),
         km_pay: drivers.reduce((s, d) => s + d.km_pay, 0),
