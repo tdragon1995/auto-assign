@@ -79,20 +79,22 @@ const fmtHours = (mins: number) => `${Math.floor(mins / 60)}h${String(mins % 60)
  *  the decimals live in the CSV, which is what a figure gets paid from. */
 const fmtKm = (km: number) => vnd.format(Math.round(km));
 
-/** What a kilometre actually earns: the KM money over every kilometre ridden.
- *  Km money and not total pay, so the figure stays comparable to the 2.000đ
- *  rate — mixing the hourly component in would answer a different question, and
- *  the hours are not settled yet.
+/** What a kilometre actually costs: EVERYTHING a driver earns — hours and km
+ *  together — over every kilometre they rode. Deliberately not comparable to the
+ *  2.000đ rate, which prices distance alone; this is the whole wage bill per
+ *  kilometre, and it sits well above the rate wherever attendance hours are long
+ *  against the distance covered.
  *
- *  It is usually BELOW 2.000đ, because the ride to the next pickup and the run
- *  home are distance nobody is paid for. It goes ABOVE where a driver collects
- *  at several clinics on one loop: each job is paid its own pickup→lab distance
- *  while the loop is ridden once.
+ *  Three things move it, and a reader should know which one they are seeing:
+ *  unpaid riding (to the next pickup, the run home) pushes it down per km of
+ *  paid work, a multi-clinic loop pushes it up (each job pays its own
+ *  pickup→lab distance while the loop is ridden once), and the hourly component
+ *  pushes it up wherever a driver was on the clock without covering ground.
  *
  *  Null where the day's legs are missing: dividing by an unarchived zero would
  *  print a number nobody could defend. */
-const realRate = (kmPay: number, realKm: number): number | null =>
-  realKm > 0 ? Math.round(kmPay / realKm) : null;
+const realRate = (totalPay: number, realKm: number): number | null =>
+  realKm > 0 ? Math.round(totalPay / realKm) : null;
 const fmtRate = (r: number | null) => (r == null ? "—" : vnd.format(r));
 
 const monthLabel = (m: string) => `Tháng ${Number(m.slice(5, 7))}/${m.slice(0, 4)}`;
@@ -155,14 +157,14 @@ export function PayTeamPanel() {
       const jobs = j.jobs as DetailJob[];
 
       const head = ["Tài xế", "Số ngày", "Số chuyến", "Km tính tiền", "Km thực chạy", "Giờ chấm công (phút)",
-                    "Tiền giờ (đ)", "Tiền km (đ)", "Tổng (đ)", "Tiền km / km thực (đ)",
+                    "Tiền giờ (đ)", "Tiền km (đ)", "Tổng (đ)", "Tổng tiền / km thực (đ)",
                     "Ngày thiếu chấm công ra", "Chuyến chưa có km"];
       const rows: (string | number)[][] = data.drivers.map((d) => [
         // FULL name here, staff code and all, unlike the table on screen. This file
         // gets matched against attendance and leave in a spreadsheet, and the code
         // is what those are keyed on — two drivers share a display name today.
         d.driver_name, d.days_worked, d.jobs, d.km, d.real_km, d.worked_mins,
-        d.hour_pay, d.km_pay, d.total_pay, realRate(d.km_pay, d.real_km) ?? "",
+        d.hour_pay, d.km_pay, d.total_pay, realRate(d.total_pay, d.real_km) ?? "",
         d.open_in_days, d.unpriced_jobs,
       ]);
       // An incomplete payroll must not leave this screen looking final.
@@ -275,8 +277,8 @@ export function PayTeamPanel() {
             // The fleet average, and the point of the two columns below: it is the
             // whole wage bill over every kilometre actually ridden, so it answers
             // "what do we pay per kilometre" rather than "what is the rate".
-            ["đ/km thực", fmtRate(realRate(data.totals.km_pay, data.totals.real_km)),
-             `Tổng chi ÷ ${fmtKm(data.totals.real_km)} km thực chạy (gồm cả chuyến không tính tiền)`],
+            ["đ/km thực", fmtRate(realRate(data.totals.total_pay, data.totals.real_km)),
+             `Tổng chi (giờ + km) ÷ ${fmtKm(data.totals.real_km)} km thực chạy`],
           ].map(([label, value, hint]) => (
             <div key={label} className="bg-white px-2 py-2 text-center" title={hint || undefined}>
               <p className="text-base font-bold text-slate-800 leading-tight">{value}</p>
@@ -349,7 +351,7 @@ export function PayTeamPanel() {
                 <th className="text-right font-semibold px-2 py-2" title="Quãng đường lấy mẫu → giao mẫu của các chuyến được tính tiền">Km tính tiền</th>
                 <th className="text-right font-semibold px-2 py-2" title="Quãng đường thực tế đã chạy, gồm cả đoạn di chuyển giữa các chuyến và chuyến không tính tiền (theo Hiệu Suất)">Km thực</th>
                 <th className="text-right font-semibold px-3 py-2">Tổng (đ)</th>
-                <th className="text-right font-semibold px-2 py-2" title="Tổng tiền ÷ km thực chạy">đ/km thực</th>
+                <th className="text-right font-semibold px-2 py-2" title="(Tiền giờ + tiền km) ÷ km thực chạy">đ/km thực</th>
                 {/* A word, not a glyph: the column is a task list and screen readers
                     got nothing from "⚠". */}
                 <th className="text-right font-semibold px-2 py-2">Thiếu ra</th>
@@ -380,7 +382,7 @@ export function PayTeamPanel() {
                     className="text-right px-2 py-2 text-slate-600 tabular-nums"
                     title={d.real_km > 0 ? `${fmtVnd(d.total_pay)} ÷ ${fmtKm(d.real_km)} km thực` : "Chưa có dữ liệu km thực"}
                   >
-                    {fmtRate(realRate(d.km_pay, d.real_km))}
+                    {fmtRate(realRate(d.total_pay, d.real_km))}
                   </td>
                   <td className="text-right px-2 py-2 tabular-nums">
                     {d.open_in_days > 0
@@ -400,8 +402,9 @@ export function PayTeamPanel() {
           <p className="text-[11px] text-slate-500">
             {vnd.format(data.rates.per_hour)}đ/giờ chấm công (tính theo phút) +{" "}
             {vnd.format(data.rates.per_km)}đ/km lấy mẫu → giao mẫu của mỗi chuyến đã hoàn thành.{" "}
-            <em>đ/km thực</em> = tổng tiền ÷ quãng đường thực chạy (gồm cả đoạn giữa các chuyến và
-            chuyến không tính tiền), nên luôn thấp hơn {vnd.format(data.rates.per_km)}đ.
+            <em>đ/km thực</em> = (tiền giờ + tiền km) ÷ quãng đường thực chạy — gồm cả đoạn di chuyển
+            giữa các chuyến, đường về và chuyến không tính tiền. Đây là chi phí thật cho mỗi km,
+            không so trực tiếp được với mức {vnd.format(data.rates.per_km)}đ/km.
             Kỳ lương từ {data.from} đến {data.to}. Tải CSV để lấy số chính xác.
           </p>
         </div>
