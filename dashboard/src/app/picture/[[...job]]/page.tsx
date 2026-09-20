@@ -120,6 +120,16 @@ export default function PictureReviewPage() {
     else { setDetail(null); router.replace("/picture"); }
   }, [jobId, nextJobId, router]);
 
+  // Fetch the NEXT job's photos while this one is being looked at. One job's detail is
+  // ~2.8 s from Cartrack and is cached for the day once fetched, so by the time a verdict
+  // is filed the next job is already in the cache and arrives instantly. Only the first
+  // job of a session waits. Fire-and-forget: a failed prefetch just means the normal
+  // load happens on arrival.
+  useEffect(() => {
+    if (!nextJobId || loading || !photos.length) return;
+    fetch(`/api/location-jobs?job_id=${nextJobId}`).catch(() => {});
+  }, [nextJobId, loading, photos.length]);
+
   // A job with no photos has nothing to review — skip it rather than record a verdict
   // about pictures that do not exist.
   useEffect(() => {

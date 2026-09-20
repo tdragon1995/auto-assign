@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { Redis } from "@upstash/redis";
 import { getJobsByStatusAndDate, type Env } from "@/lib/cartrack";
 import { driverDisplayName } from "@/lib/job-detail";
 import { sbSelect, sbUpsert, supabaseConfigured, missingSupabaseEnv } from "@/lib/supabase-rest";
@@ -11,6 +12,60 @@ export const runtime = "nodejs";
 export const preferredRegion = "sin1";
 
 interface ReviewRow { job_id: number }
+
+interface QueueJob {
+  job_id: number;
+  reference_number: string | null;
+  completed_ts: string | null;
+  driver: string | null;
+  pickup: string;
+  dropoff: string;
+}
+
+/**
+ * The day's completed jobs cost 5.2 s and 5.2 MB from Cartrack — measured, one page,
+ * 543 jobs — and every load of /picture was paying it again. Two minutes of staleness
+ * costs a reviewer nothing: they work newest-first and will not reach the end of the
+ * day in that time, and a job finishing in the gap simply appears on the next load.
+ *
+ * The REVIEWED set is deliberately applied AFTER this cache, against Supabase, so a
+ * verdict removes its job from the queue immediately rather than two minutes later.
+ */
+const QUEUE_TTL_S = 120;
+
+function getRedis(): Redis | null {
+  const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) return null;
+  return new Redis({ url, token });
+}
+
+async function dayQueue(date: string, env: Env): Promise<{ jobs: QueueJob[]; cached: boolean }> {
+  const redis = getRedis();
+  const cacheKey = `picture:queue:v1:${env}:${date}`;
+  if (redis) {
+    try {
+      const hit = await redis.get<QueueJob[]>(cacheKey);
+      if (hit) return { jobs: hit, cached: true };
+    } catch { /* fall through to a live fetch */ }
+  }
+
+  const jobs = (await getJobsByStatusAndDate(5, date, env))
+    .map((j) => ({
+      job_id: j.job_id,
+      reference_number: j.reference_number ?? null,
+      completed_ts: completedTs(j),
+      driver: driverDisplayName(j.driver),
+      pickup: (j.stops ?? []).find((s: Stop) => s.stop_type_id === 1)?.customer_name ?? "",
+      dropoff: (j.stops ?? []).find((s: Stop) => s.stop_type_id !== 1)?.customer_name ?? "",
+    }))
+    .sort((a, b) => (b.completed_ts ?? "").localeCompare(a.completed_ts ?? ""));
+
+  if (redis) {
+    try { await redis.set(cacheKey, jobs, { ex: QUEUE_TTL_S }); } catch { /* best-effort */ }
+  }
+  return { jobs, cached: false };
+}
 
 /** The job's finishing time = the last stop it completed. Jobs are offered newest-first
  *  off this, not off scheduled_delivery_ts: the reviewer wants what the drivers just
@@ -43,25 +98,14 @@ export async function GET(req: NextRequest) {
   const date = req.nextUrl.searchParams.get("date") || vnDate();
 
   try {
-    const [jobs, reviewed] = await Promise.all([
-      getJobsByStatusAndDate(5, date, env),
+    const [day, reviewed] = await Promise.all([
+      dayQueue(date, env),
       sbSelect<ReviewRow>("photo_reviews", `select=job_id&review_date=eq.${date}`),
     ]);
     const done = new Set(reviewed.map((r) => Number(r.job_id)));
+    const queue = day.jobs.filter((j) => !done.has(Number(j.job_id)));
 
-    const queue = jobs
-      .filter((j) => !done.has(Number(j.job_id)))
-      .map((j) => ({
-        job_id: j.job_id,
-        reference_number: j.reference_number ?? null,
-        completed_ts: completedTs(j),
-        driver: driverDisplayName(j.driver),
-        pickup: (j.stops ?? []).find((s: Stop) => s.stop_type_id === 1)?.customer_name ?? "",
-        dropoff: (j.stops ?? []).find((s: Stop) => s.stop_type_id !== 1)?.customer_name ?? "",
-      }))
-      .sort((a, b) => (b.completed_ts ?? "").localeCompare(a.completed_ts ?? ""));
-
-    return NextResponse.json({ email, date, queue, total: jobs.length });
+    return NextResponse.json({ email, date, queue, total: day.jobs.length, cached: day.cached });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
