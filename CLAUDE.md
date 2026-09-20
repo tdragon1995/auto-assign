@@ -8,6 +8,16 @@ This is a **Fleet Auto-Assign** service for Cartrack (a Telematics fleet managem
 
 The active codebase is `dashboard/` — a Next.js 15 (React 19, TypeScript) web app deployed to **Vercel**.
 
+## Answering in chat: no inline code spans
+
+Backtick spans render as red monospace blocks in the user's terminal, and a
+paragraph naming three files and two functions becomes unreadable. So in chat
+replies, write file paths, function names, identifiers and line references as
+plain prose -- dashboard/src/lib/job-filters.ts:231, isBlockingPickupStop,
+GUARD_MAX_AGE_MS. Fenced code blocks are fine: those are for commands and code
+the user will copy, which is what a block is for. This is about prose only and
+changes nothing about how code, commits or documentation are written.
+
 ## Dashboard Commands
 
 All commands run from `dashboard/`:
