@@ -273,6 +273,7 @@ ever named, which is how a warning stops being read.
 | `GET /api/tat/me` | The signed-in driver's TAT report (today + week + month). Driver id from the `nv_session` cookie only |
 | `GET /api/pay/me` | The signed-in driver's part-time earnings. `?month=YYYY-MM` for the month, `?date=` for one day. Driver id from the `nv_session` cookie only; refuses any account that is not `PT…` |
 | `GET /api/pay/team` | Every PT driver's month, for điều phối's "Lương PT" tab. Defaults to LAST month (payroll runs on the 25th) |
+| `GET /api/picture` | The photo-review queue: today's COMPLETED jobs, newest finish first, minus everything already in Supabase `photo_reviews`. `POST` files one verdict (pass/fail + a fixed reason code), stamped with the reviewer's email from the signed cookie — never from the body. `POST /api/picture/auth` logs a supervisor in against their own Labcenter account |
 
 ### Shared Libraries
 

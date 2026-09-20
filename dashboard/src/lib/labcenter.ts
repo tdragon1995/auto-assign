@@ -49,6 +49,22 @@ async function login(kind: "admin" | "receptionist"): Promise<string | null> {
 export const getAdminToken = () => login("admin");
 export const getReceptionistToken = () => login("receptionist");
 
+/** Sign a PERSON in with their own Labcenter credentials — the photo-review screen's
+ *  login, where the point is proving who is filing the verdict rather than getting a
+ *  token to call Labcenter with. Deliberately uncached (the env logins above are shared
+ *  service accounts; this one is one human's password) and the token is discarded: the
+ *  only thing kept is that the password was accepted. Never logs the password. */
+export async function labcenterSignIn(email: string, password: string): Promise<boolean> {
+  const res = await fetch(LOGIN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password, "g-recaptcha-response": "randString" }),
+  });
+  if (!res.ok) return false;
+  const data = await res.json().catch(() => ({}));
+  return typeof data?.token === "string" && data.token.length > 0;
+}
+
 // --- Delivery requests (the SPC queue Labcenter shows its dispatchers) ---
 
 /** One row of GET /api/delivery-requests. Only the fields the ETA sync reads are
