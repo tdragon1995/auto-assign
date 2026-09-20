@@ -33,6 +33,9 @@ export interface PickupEtaRow {
   arrived_ts: string;
   arrived_basis: "arrived" | "completed";
   has_window: boolean;
+  /** The day the job's DROPOFF finished, or null when it did not finish that day.
+   *  The view keeps only rows where this is the pickup's own day. */
+  dropoff_date: string | null;
 }
 
 /** Cartrack's zone-less VN wall time -> an explicit +07:00 instant (same rule as
@@ -45,7 +48,25 @@ function toIso(ts: string | null | undefined): string | null {
 /** Branch and 3PL pickups are internal transport, not a client asking. */
 const INTERNAL_PICKUP = /^(BRA\s*-|3PL\b)/i;
 const PICKUP_STOP = 1;
+const DROPOFF_STOP = 2;
 const COMPLETED = 5;
+
+/** When each job's dropoff finished, across EVERY route of the day — a job's two
+ *  stops are often worked by two drivers (collection, then the lab run), so a
+ *  per-route pairing would call half of them next-day deliveries. A job missing
+ *  here did not finish today at all, which is the case being excluded. */
+function dropoffDayByJob(routes: TimelineRoute[]): Map<number, string> {
+  const out = new Map<number, string>();
+  for (const route of routes) {
+    for (const s of (route.orderedStops ?? []) as TimelineStop[]) {
+      if (Number(s.stopTypeId) !== DROPOFF_STOP) continue;
+      const done = toIso(s.activityCompletedTs);
+      const jobId = Number(s.jobId);
+      if (done && Number.isFinite(jobId)) out.set(jobId, done.slice(0, 10));
+    }
+  }
+  return out;
+}
 
 /**
  * One row per completed ad-hoc client pickup, off the SAME routes the leg and pay
@@ -62,10 +83,14 @@ const COMPLETED = 5;
  *
  * Skipped: plan stops (a recurring slot laid out overnight, not a request), chấm
  * công taps, and anything whose arrival is not on the scheduled day, which is a
- * parked job rather than a measurement. Windowed pickups are KEPT with has_window
- * set — the view filters them, so that rule can change without re-archiving.
+ * parked job rather than a measurement.
+ *
+ * Windowed pickups and overnight jobs are KEPT, flagged by has_window and by a
+ * dropoff_date that is not the pickup's day. The view drops both, so either rule
+ * can be retuned without re-archiving.
  */
 export function pickupEtaRows(routes: TimelineRoute[]): PickupEtaRow[] {
+  const dropoffDay = dropoffDayByJob(routes);
   const out = new Map<number, PickupEtaRow>();
   for (const route of routes) {
     for (const s of (route.orderedStops ?? []) as TimelineStop[]) {
@@ -86,6 +111,7 @@ export function pickupEtaRows(routes: TimelineRoute[]): PickupEtaRow[] {
         arrived_ts: arrived,
         arrived_basis: s.activityArrivedTs ? "arrived" : "completed",
         has_window: (s.deliveryWindows?.length ?? 0) > 0,
+        dropoff_date: dropoffDay.get(jobId) ?? null,
       });
     }
   }

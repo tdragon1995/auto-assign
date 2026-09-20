@@ -27,6 +27,12 @@ const stop = (over: Partial<TimelineStop> & { jobId: number }): TimelineStop => 
 
 const route = (stops: TimelineStop[]): TimelineRoute => ({ orderedStops: stops } as unknown as TimelineRoute);
 
+/** The matching dropoff, which may be worked by a DIFFERENT driver — that is why
+ *  the day's dropoffs are collected across every route, not per route. */
+const dropoff = (jobId: number, completed: string | null) => ({
+  stopTypeId: 2, jobId, activityCompletedTs: completed,
+} as unknown as TimelineStop);
+
 const rows = pickupEtaRows([
   route([
     stop({ jobId: 1 }),
@@ -41,8 +47,19 @@ const rows = pickupEtaRows([
   ]),
   // The same job seen on a second route must not be counted twice.
   route([stop({ jobId: 1 })]),
+  // Another driver's route: it carries the deliveries for the day.
+  route([
+    dropoff(1, "2026-09-17 11:00:00"),
+    dropoff(8, "2026-09-17 11:10:00"),
+    dropoff(9, "2026-09-17 11:20:00"),
+    dropoff(10, "2026-09-18 07:00:00"),  // delivered the NEXT day
+    dropoff(11, null),                    // never finished
+  ]),
+  route([stop({ jobId: 10 }), stop({ jobId: 11 })]),
 ]);
-assert.deepEqual(rows.map((r) => r.job_id), [1, 8, 9]);
+assert.deepEqual(rows.map((r) => r.job_id), [1, 8, 9, 10, 11]);
+// Kept with the day recorded; the view scores only dropoff_date = trip_date.
+assert.deepEqual(rows.map((r) => r.dropoff_date), ["2026-09-17", "2026-09-17", "2026-09-17", "2026-09-18", null]);
 assert.equal(rows[0].scheduled_ts, "2026-09-17T09:00:00+07:00");
 assert.equal(rows[0].arrived_ts, "2026-09-17T09:40:00+07:00");
 assert.equal(rows[0].trip_date, "2026-09-17");

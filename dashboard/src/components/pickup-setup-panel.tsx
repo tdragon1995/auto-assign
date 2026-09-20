@@ -77,7 +77,7 @@ export function PickupSetupPanel() {
           <>
             <section>
               <h3 className="text-xs font-semibold text-slate-700 mb-1">
-                ETA lệch thực tế — tính từ giờ hẹn lấy mẫu tới lúc tài xế đến · đề xuất theo mốc 80% chuyến · 30 ngày, trên 5 chuyến, bỏ chuyến có khung giờ ({data.proposals.length})
+                ETA lệch thực tế — tính từ giờ hẹn lấy mẫu tới lúc tài xế đến · đề xuất theo mốc 80% chuyến · 30 ngày, trên 5 chuyến, bỏ chuyến có khung giờ, chuyến hẹn trước 06:00 và chuyến giao khác ngày ({data.proposals.length})
               </h3>
               {data.proposals.length === 0 ? (
                 <p className="text-xs text-slate-500">Không có địa điểm nào lệch quá 10%.</p>

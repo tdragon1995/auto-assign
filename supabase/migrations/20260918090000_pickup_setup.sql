@@ -23,6 +23,10 @@ create table if not exists public.pickup_eta (
   arrived_ts          timestamptz not null,
   arrived_basis       text        not null check (arrived_basis in ('arrived', 'completed')),
   has_window          boolean     not null default false,
+  -- The day this job's DROPOFF finished, across every route of that day. Null =
+  -- it did not finish that day. An overnight job is not an ordinary same-day
+  -- pickup, so only rows whose dropoff landed on the pickup's own day score.
+  dropoff_date        date,
   archived_at         timestamptz not null default now()
 );
 create index if not exists pickup_eta_customer_date on public.pickup_eta (pickup_customer_id, trip_date);
@@ -81,6 +85,16 @@ select
 from public.pickup_eta
 where not has_window
   and arrived_ts > scheduled_ts
+  -- Before the shift starts nobody can go, and the wait is not the fleet's to
+  -- answer for: measured over 30 days, a pickup due at 00:00 (requested the day
+  -- before, or rolled over) waits 509 minutes at the median and one due at 05:00
+  -- waits 179, against 26-40 from 08:00 on. 131 rows of 6,201; it moves 38
+  -- clients' numbers, one of them by 337 minutes. Filtered HERE rather than at
+  -- capture so the rows stay and the hour can be retuned without re-archiving.
+  and (scheduled_ts at time zone 'Asia/Ho_Chi_Minh')::time >= '06:00'
+  -- Pickup and delivery on different days: 3 rows in 10 days, but they are trips
+  -- of a different shape and the ETA does not describe them.
+  and dropoff_date = trip_date
   and trip_date >= (now() at time zone 'Asia/Ho_Chi_Minh')::date - 30
 group by pickup_customer_id
 having count(*) > 5;
