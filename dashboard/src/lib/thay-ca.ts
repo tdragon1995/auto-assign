@@ -184,6 +184,10 @@ export function parseSwapNote(note: string | null | undefined): SwapMeta | null 
   }
 }
 
+/** The rules governing one date, or one set for every date. See `day-config.ts`
+ *  for why a date has to choose. */
+export type MappingsForDate = readonly Mapping[] | ((date: string) => readonly Mapping[]);
+
 /** Pure overlap calculation used by the reconciler and its offline tests. */
 export function deriveThayCaRows(
   entries: readonly {
@@ -197,8 +201,14 @@ export function deriveThayCaRows(
     subs: readonly { id: string; name: string; from: string | null; to: string | null }[];
     note?: string | null;
   }[],
-  mappings: readonly Mapping[],
+  mappings: MappingsForDate,
 ): ThayCaDesired[] {
+  // A function, because WHICH RULES APPLY DEPENDS ON THE DATE: the workbook has
+  // a separate Sunday config, and a leave row carries its own date rather than
+  // today's. An array still works and means "these rules on every date" — what
+  // the offline tests want, and what every caller meant before Sunday got its
+  // own tab.
+  const rulesOn = typeof mappings === "function" ? mappings : () => mappings;
   const desired: ThayCaDesired[] = [];
   for (const entry of entries) {
     if (!entry.driver_id || entry.loai_nghi === "Nghỉ việc" || entry.subs.length === 0) continue;
@@ -214,7 +224,7 @@ export function deriveThayCaRows(
         const coverage = windows(sub.from ?? entry.gio_bat_dau, sub.to ?? entry.gio_ket_thuc);
         // Overnight windows are split before intersection so each generated
         // row remains a normal same-day leave row.
-        const allHits = merge(coverage.flatMap((a) => sharedDutyWindows(entry.driver_id, sub.id, mappings).flatMap((b) =>
+        const allHits = merge(coverage.flatMap((a) => sharedDutyWindows(entry.driver_id, sub.id, rulesOn(date)).flatMap((b) =>
           parentWindow.flatMap((p) => {
             const dutyHit = intersection(b, p);
             const hit = dutyHit ? intersection(a, dutyHit) : null;

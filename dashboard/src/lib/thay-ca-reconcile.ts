@@ -1,4 +1,4 @@
-import { loadConfigFromSheets } from "./config";
+import { loadDayMappings } from "./day-config";
 import { invalidateLeaveCache, loadLeaveEntriesStrict } from "./leave-config";
 import { loadLeaveSuppressions, suppressedThayCaRecordKeys } from "./leave-suppression";
 import { syncThayCaRows } from "./sheets-writer";
@@ -9,11 +9,15 @@ import {
 
 /** Rebuild generated duty-transfer rows while honoring explicit deletions. */
 export async function reconcileThayCa(): Promise<{ created: number; updated: number; deleted: number }> {
-  const [config, suppressions] = await Promise.all([
-    loadConfigFromSheets(),
+  // BOTH config tabs, because a leave row carries its own date and Sunday has
+  // its own rules. Judging every row against today's tab generated a Thay ca
+  // for a Sunday-only driver's Monday leave, and missed real Sunday conflicts
+  // on every other day of the week. See `day-config.ts`.
+  const [mappingsFor, suppressions] = await Promise.all([
+    loadDayMappings(),
     loadLeaveSuppressions(),
   ]);
-  if (!config) throw new Error("Chưa đọc được config để tạo dòng Thay ca");
+  if (!mappingsFor) throw new Error("Chưa đọc được config để tạo dòng Thay ca");
   if (!suppressions.trusted) {
     throw new Error("Chưa đọc được danh sách Thay ca đã xoá — không tạo lại để tránh mất lựa chọn của quản trị viên");
   }
@@ -38,7 +42,7 @@ export async function reconcileThayCa(): Promise<{ created: number; updated: num
         originalNote: previous?.originalNote ?? source.note ?? "",
       });
     }
-    const desired = deriveThayCaRows(entries, config.mappings)
+    const desired = deriveThayCaRows(entries, (date) => mappingsFor.forDate(date))
       .filter((row) => !suppressedKeys.has(row.recordKey));
     const result = await syncThayCaRows(desired, swaps);
     total = {

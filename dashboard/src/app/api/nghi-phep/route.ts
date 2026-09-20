@@ -11,7 +11,7 @@ import {
   type InvalidLeaveRow,
 } from "@/lib/leave-config";
 import { loadLeaveSuppressions, findSuppression } from "@/lib/leave-suppression";
-import { loadConfigFromSheets } from "@/lib/config";
+import { mappingsForDate } from "@/lib/day-config";
 import { configDutyBlocks, companionNeeded } from "@/lib/pt-companion";
 
 /** Short human label for a clashing existing leave, for the reject message. */
@@ -74,8 +74,12 @@ export async function POST(req: NextRequest) {
     // off, and a companion's own "until the end of the day" hours would overlap
     // every evening rule and let everything through.
     if (pt_companion === true) {
-      const config = await loadConfigFromSheets();
-      if (!config) {
+      // The rules for THE DAY BEING FILED, which is not always today's tab:
+      // Sunday has its own config, so a Sunday-only account judged on a weekday
+      // reads as rostered nowhere, and a weekday account judged on a Sunday
+      // reads as rostered when it is not. See `day-config.ts`.
+      const mappings = await mappingsForDate(String(ngay_bat_dau));
+      if (!mappings) {
         return NextResponse.json(
           { error: "Chưa đọc được config nên chưa biết tài khoản PT có cần nghỉ không." },
           { status: 503 },
@@ -85,7 +89,7 @@ export async function POST(req: NextRequest) {
         loai_nghi === "nua_buoi" && gio_bat_dau && gio_ket_thuc
           ? { start: String(gio_bat_dau), end: String(gio_ket_thuc) }
           : null;
-      if (!companionNeeded(askedWindow, configDutyBlocks(driver_id, config.mappings))) {
+      if (!companionNeeded(askedWindow, configDutyBlocks(driver_id, mappings))) {
         // Not an error: nothing was wrong with the request, the twin simply has
         // no work to miss. Answered 200 so the MISA sync does not record a
         // correct decision as a failed day.
