@@ -15,6 +15,7 @@ import type { StopNotes } from "@/lib/stop-notes";
 import { proxyKind, driverLabel, THREE_PL_LABEL } from "@/lib/proxy-drivers";
 import { driverDisplayName } from "@/lib/display-names";
 import type { PickerDriver } from "@/lib/psc-driver-choices";
+import { retirePending, type PendingReq } from "@/lib/pending-cards";
 
 interface Stop {
   stop_id: number;
@@ -52,16 +53,6 @@ interface Job {
 // A request this device created that hasn't surfaced on a driver's route yet.
 // Cartrack's route feed only contains jobs already handed to a driver, so a job
 // we created and can't find there is still waiting for dispatch.
-interface PendingReq {
-  job_id: number;
-  reference: string;
-  created_ts: string; // "HH:mm"
-  date: string;       // YYYY-MM-DD it was created on
-  /** Comes back on the booking response — the trip is created with its driver already
-   *  attached. The published day will not carry this trip for minutes, so the response is
-   *  the only place the name can arrive from in time to be worth showing. */
-  driver_name?: string;
-}
 
 type Status = "idle" | "loading" | "success" | "error";
 
@@ -794,11 +785,11 @@ export default function QrPage() {
   }, [date, loadJobs]);
 
   // A pending request that now appears on a driver's route has been dispatched —
-  // the fetched job takes over and the local placeholder retires.
+  // the fetched job takes over and the local placeholder retires. retirePending owns the
+  // id comparison; see there for why it is not a plain === .
   useEffect(() => {
     if (!pending.length || !jobs.length) return;
-    const known = new Set(jobs.map((j) => j.job_id));
-    const still = pending.filter((p) => !known.has(p.job_id));
+    const still = retirePending(pending, jobs.map((j) => j.job_id));
     if (still.length !== pending.length) persistPending(still);
   }, [jobs, pending, persistPending]);
 
@@ -827,7 +818,7 @@ export default function QrPage() {
           persistPending([
             // driver_name rides in on the booking response — the trip was created with its
             // driver already on it, so there is nothing to wait for and nothing to poll.
-            { job_id: data.job_id, reference: data.reference, created_ts: nowHm(), date: todayVN(), driver_name: data.driver_name ?? undefined },
+            { job_id: Number(data.job_id), reference: data.reference, created_ts: nowHm(), date: todayVN(), driver_name: data.driver_name ?? undefined },
             ...pending,
           ]);
         }
@@ -869,7 +860,7 @@ export default function QrPage() {
         return;
       }
       const cancelledId = cancelTarget.job_id;
-      persistPending(pending.filter((p) => p.job_id !== cancelledId));
+      persistPending(retirePending(pending, [cancelledId]));
       // Drop it locally instead of reloading. A cancelled job (status 7) is not one of the
       // statuses this feed shows, so removing it here produces exactly the list a reload
       // would have returned — for the cost of a state update rather than a day rebuild.
@@ -966,7 +957,7 @@ export default function QrPage() {
         return;
       }
       const handedId = via3plTarget.job_id;
-      persistPending(pending.filter((p) => p.job_id !== handedId));
+      persistPending(retirePending(pending, [handedId]));
       // The response carries the trip as it now stands — 3PL driver attached, completed,
       // with the real completion time the "Đã gửi qua…" line prints. Patch it in rather
       // than rebuilding the day to learn about one job. If the server's read-back failed

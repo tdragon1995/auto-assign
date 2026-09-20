@@ -141,7 +141,12 @@ check("a just-booked pair is absent from the published day",
 await markPscPair(DATE, NEW_PAIR, { job_id: 900003, reference_number: "D007→D001_10:00" });
 const overlay = await lookupPscPair(DATE, NEW_PAIR);
 check("overlay covers it immediately", overlay?.job_id === 900003, `job ${overlay?.job_id}`);
-await unmarkPscPair(DATE, NEW_PAIR);
+// Cancelling a DIFFERENT trip must not release this pair — the overlay is keyed by the
+// pair but owned by one job. See unmarkPscPair.
+await unmarkPscPair(DATE, NEW_PAIR, 900004);
+check("another job's cancel leaves the overlay alone",
+  (await lookupPscPair(DATE, NEW_PAIR))?.job_id === 900003);
+await unmarkPscPair(DATE, NEW_PAIR, 900003);
 check("overlay releases it on cancel", (await lookupPscPair(DATE, NEW_PAIR)) === null);
 check("yesterday's overlay cannot block today",
   (await lookupPscPair("2026-08-10", NEW_PAIR)) === null);

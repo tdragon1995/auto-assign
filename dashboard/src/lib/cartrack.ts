@@ -855,7 +855,12 @@ async function performLogin(env: Env, force: boolean): Promise<string | null> {
 
 export type RpcOutcome<T> =
   | { ok: true; result: T }
-  | { ok: false; error: string; status: number | null };
+  /** `sent` means the request LEFT — the connection died or timed out before an answer
+   *  came back, so Cartrack may or may not have acted on it. Distinct from an answered
+   *  refusal (a real `status`) and from never leaving at all (missing auth, failed
+   *  fleetweb login), both of which provably changed nothing. Only a creating caller
+   *  needs the difference, and for it the difference is a duplicate job. */
+  | { ok: false; error: string; status: number | null; sent?: boolean };
 
 /** True when a response looks like "your session is gone", i.e. worth one
  *  re-login + retry. Deliberately narrow: a false positive replays the call, and
@@ -948,7 +953,8 @@ export async function jsonRpc<T = unknown>(
       }
       return { ok: true, result: body.result as T };
     } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : String(e), status: null };
+      // The fetch threw: the request was already on the wire. See RpcOutcome.sent.
+      return { ok: false, error: e instanceof Error ? e.message : String(e), status: null, sent: true };
     }
   };
 
@@ -974,8 +980,10 @@ export async function jsonRpc<T = unknown>(
 // It is the browser UI's own endpoint: camelCase fields, integer label ids,
 // strict `Y-m-d\TH:i:sP` timestamps, and it rejects shapes it doesn't know.
 // `restJobToRpc` therefore converts on a whitelist and anything unrecognised
-// routes to plain REST unchanged. A failed RPC create leaves no job behind
-// (verified), so the REST fallback after an RPC error cannot double-create.
+// routes to plain REST unchanged. An ANSWERED RPC refusal leaves no job behind
+// (verified 2026-08-12 against rejected payloads), so the REST fallback after one
+// cannot double-create. A request that was sent and never answered proves nothing
+// and does NOT fall back — see RpcOutcome.sent.
 
 /** fleetweb label ids for this account — the RPC only accepts integers here.
  *  Discovered by REST-creating a job with the string label and reading
@@ -1329,6 +1337,17 @@ export async function createJob(
           `NOT falling back to REST, because the job may already exist. Check the response shape.`,
         );
         return { ok: false, status: 502, body: { error: { message: "RPC create returned an unrecognised shape" } }, via: "rpc" };
+      }
+      // Same rule, the other way a create goes uncertain: a request that was SENT and
+      // never answered is not a refusal. The probe that cleared this fallback tested
+      // REJECTED payloads — Cartrack answered them, and answered "no". A timeout
+      // answers nothing, so the job may exist and posting again guarantees its twin.
+      if (out.sent) {
+        console.error(
+          `[createJob] RPC create was sent but never answered (${out.error}) — ` +
+          `NOT falling back to REST, because the job may already exist.`,
+        );
+        return { ok: false, status: 502, body: { error: { message: `RPC create unconfirmed: ${out.error}` } }, via: "rpc" };
       }
       console.warn(`[createJob] RPC create failed (${out.error}); using REST`);
     }

@@ -726,7 +726,12 @@ export async function blockedPair(
       }
     } catch { /* fall through */ }
   }
-  const built = (await rebuild(redis, date, env)) ?? (await buildSnapshot(date, env));
+  // No unlocked buildSnapshot behind this. `rebuild` answers null when ANOTHER caller
+  // already holds the day's lock, and a second fleet-wide fetch alongside theirs is the
+  // one thing the lock exists to prevent — it was costing the duplicate guard a ~3s
+  // network rebuild precisely when the fleet was busiest. Null is a complete answer
+  // here: the guard's own live per-pair check is two status fetches, not a whole day.
+  const built = await rebuild(redis, date, env);
   if (!built) return null;
   return { hit: built.pairs[pairKey] ?? null, ageMs: 0 };
 }

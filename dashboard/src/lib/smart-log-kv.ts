@@ -703,12 +703,35 @@ export async function markPscPair(dateVn: string, pairKey: string, hit: PscDupHi
   } catch { /* best-effort: the snapshot still covers this pair once it publishes */ }
 }
 
+/** Compare-and-delete: drop the pair only while it still names THIS job.
+ *
+ *  The pattern, rather than cjson: the value is written by JSON.stringify with job_id
+ *  first, so `"job_id":<id>` followed by a non-digit is an exact match on the whole
+ *  number — `"job_id":12,` is not matched by an id of 1 — and it costs no assumption
+ *  about which Lua libraries the provider ships. */
+const PAIR_CAS_DEL_SCRIPT = `-- psc-pair-cas-del-v1
+local raw = redis.call("GET", KEYS[1])
+if not raw then return 0 end
+if not string.find(raw, '"job_id":' .. ARGV[1] .. '[^0-9]') then return 0 end
+redis.call("DEL", KEYS[1])
+return 1
+`;
+
 /** Drop a pair — the trip was cancelled, handed to a 3PL, or its pickup is already done.
- *  Without this the branch is made to wait for a live re-check on every later booking. */
-export async function unmarkPscPair(dateVn: string, pairKey: string): Promise<void> {
+ *  Without this the branch is made to wait for a live re-check on every later booking.
+ *
+ *  Conditional on `jobId`, and that is the whole point. The key is the PAIR, but the
+ *  thing being retired is one TRIP: an unconditional delete let cancelling this
+ *  morning's run remove the entry naming the afternoon's, leaving the guard blind to it
+ *  for as long as the published day takes to catch up — which is exactly the window
+ *  this overlay exists to cover. A mismatch is a no-op, not an error: it means someone
+ *  else's trip owns the pair now, and it is not ours to clear. */
+export async function unmarkPscPair(dateVn: string, pairKey: string, jobId: number): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
-  try { await redis.del(pscPairRedisKey(dateVn, pairKey)); } catch { /* best-effort */ }
+  try {
+    await redis.eval(PAIR_CAS_DEL_SCRIPT, [pscPairRedisKey(dateVn, pairKey)], [String(jobId)]);
+  } catch { /* best-effort */ }
 }
 
 /** The job this pair was last booked for, or null. One GET. */

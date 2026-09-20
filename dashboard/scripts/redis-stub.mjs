@@ -166,6 +166,16 @@ function run(args) {
         return 1;
       }
 
+      // Compare-and-delete on the PSC pair overlay: drop it only while it still names
+      // this job id. Mirrors the Lua pattern exactly, including that a miss is a no-op.
+      if (script.includes("psc-pair-cas-del-v1")) {
+        const rec = alive(key);
+        if (!rec) return 0;
+        if (!new RegExp(`"job_id":${argv[0]}(?![0-9])`).test(String(rec.value))) return 0;
+        store.delete(key);
+        return 1;
+      }
+
       if (script.includes("day-snapshot-invalidate-v1")) {
         if (!alive(key)) return 0;
         run(["HDEL", key, "__built__"]);
