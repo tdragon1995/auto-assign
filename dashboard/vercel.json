@@ -8,5 +8,5 @@
       "schedule": "0 22 * * *"
     }
   ],
-  "ignoreCommand": "if [ -n \"$VERCEL_GIT_COMMIT_REF\" ] && [ \"$VERCEL_GIT_COMMIT_REF\" != \"master\" ]; then exit 0; else exit 1; fi"
+  "ignoreCommand": "if [ -n \"$VERCEL_GIT_COMMIT_REF\" ] && [ \"$VERCEL_GIT_COMMIT_REF\" != \"master\" ] && [ \"$VERCEL_GIT_COMMIT_REF\" != \"claude/job-photo-review-ui-c0d026\" ]; then exit 0; else exit 1; fi"
 }
