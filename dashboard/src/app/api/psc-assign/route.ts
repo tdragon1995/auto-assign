@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, completeJob, createJob, getJobDetails, getLiveDrivers, type Env } from "@/lib/cartrack";
 import { driverDisplayName, stripDriverCode } from "@/lib/job-detail";
 import { vnDate, vnHoursMinutes, vnTimestamp } from "@/lib/time";
-import { isBlockingPickupStop, isStopStarted, isCompletedOrRejectedStop, pscPairKey } from "@/lib/job-filters";
+import { isBlockingPickupStop, isPlanJob, isStopStarted, isCompletedOrRejectedStop, pscPairKey } from "@/lib/job-filters";
 import { PSC_VIA_LABEL } from "@/lib/via-legs";
 import { acquireCreateLock, releaseCreateLock, markPscPair, unmarkPscPair, lookupPscPair, type PscDupHit } from "@/lib/smart-log-kv";
 import { blockedPair, jobIsDone, slimJob } from "@/lib/day-snapshot";
@@ -81,6 +81,8 @@ async function liveDuplicateCheck(
   const duplicate = [...unassignedJobs, ...assignedJobs].find((job) => {
     if (job.job_status_id === 7 || job.job_status_id === 3) return false;
     if ((job.labels ?? []).includes(PSC_VIA_LABEL)) return false;
+    // A Cartrack plan slot is not a batch waiting to leave — see isPlanJob.
+    if (isPlanJob(job)) return false;
     const stops: Stop[] = job.stops ?? [];
     const hasActivePickup = stops.some((s) =>
       s.stop_type_id === 1 && s.customer_id === pickup && isBlockingPickupStop(s),
@@ -98,8 +100,9 @@ async function liveDuplicateCheck(
 
 /**
  * Re-read one job live and re-test the blocking predicate. Returns false when the job
- * no longer blocks — its pickup has been collected, it was cancelled, or the pair no
- * longer matches — in which case the branch is free to send its next batch.
+ * no longer blocks — its pickup has been collected, it was cancelled, it is a plan slot
+ * rather than a real request, or the pair no longer matches — in which case the branch
+ * is free to send its next batch.
  *
  * A fetch failure returns true (keep blocking): a request we cannot verify is safer
  * refused than allowed, since the cost of a wrong "no" is a phone call and the cost of
@@ -117,6 +120,7 @@ async function stillBlocking(hit: PscDupHit, pickup: string, dropoff: string, en
     const job = (await res.json())?.data;
     if (!job) return true;
     if (job.job_status_id === 7 || job.job_status_id === 3) return false;
+    if (isPlanJob(job)) return false;
     const stops: Stop[] = job.stops ?? [];
     const blockingPickup = stops.some(
       (s) => s.stop_type_id === 1 && s.customer_id === pickup && isBlockingPickupStop(s),

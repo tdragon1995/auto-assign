@@ -490,6 +490,28 @@ These are the things most likely to burn a future agent working on this codebase
       lookups, and a pair once answered keeps its original provider's figure forever
       — which is exactly why no archived number moves when the chain is reordered.
 
+13. **A Cartrack PLAN SLOT is not a batch waiting to leave.** The plan materialises a
+    branch's whole day at 05:00, so an 18:30 shuttle exists from dawn at status 4 with
+    its pickup untouched — which is precisely the shape the PSC duplicate guard reads as
+    "a request that has not left the branch". The branch was refused its own ad-hoc
+    bookings all day with *"vẫn chưa rời chi nhánh"* over a trip due nine hours later,
+    and the /qr feed hides uncollected plan jobs, so nothing on screen explained it. The
+    message degrades to "tạo lúc **trước đó**" in that case, which is the tell: every
+    booking the app creates has a reference ending `_HH:MM`, so a refusal naming no time
+    was never an app booking.
+
+    `isPlanJob` (job-filters.ts) is the one predicate; `buildPairs`, `jobIsDone`,
+    `liveDuplicateCheck` and `stillBlocking` all skip it, and `assign.ts`'s
+    `hasPlanAttached` is now an alias of it. Measured on 2026-09-19: 226 uncollected plan
+    pickups across the network, **203 of them carrying no pickup window at all** — so
+    `buildActiveRouteMap`'s "due more than an hour out → don't block" escape hatch cannot
+    reach them, which is why the exemption is the plan itself rather than a clock.
+
+    NOT covered: the fixed-schedule jobs this app creates itself (`SCHEDULE_JOB_LABEL`,
+    `schedule-job.ts`). Same daily-slot shape, same all-day block, but no plan id — e.g.
+    `D003→An Sinh 18:30`, created 05:33 and uncollected until evening.
+    `scripts/psc-pair-plan.test.mts`.
+
 See `docs/business-rules.md` for deeper detail, `docs/cartrack-api.md` for API reference,
 `docs/driver-tat.md` for the TAT module, and `docs/driver-pay.md` for part-time pay.
 

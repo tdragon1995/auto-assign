@@ -236,6 +236,32 @@ export function isBlockingPickupStop(stop: {
   return stop.stop_status_id != null && isActiveStop(stop.stop_status_id);
 }
 
+/**
+ * True if this job was released from a recurring CARTRACK ROUTE PLAN.
+ *
+ * A plan lays a branch's whole day out before it starts: the 05:00 cycle materialises
+ * every slot at once, so an 18:30 shuttle exists — status 4, pickup untouched — from
+ * dawn. Nothing about that untouched pickup says a batch is sitting at the branch
+ * waiting to go; it says the run has not come round yet.
+ *
+ * The PSC dedup guards therefore skip these. Reading one as "a request that has not
+ * left" refused the branch its own ad-hoc bookings for the whole day, with the message
+ * "vẫn chưa rời chi nhánh" about a trip due nine hours later — and the /qr feed hides
+ * uncollected plan jobs (`last_assigned_plan_id == null || status 5`), so the branch
+ * could not even see what it was being told to wait for.
+ *
+ * `plans` is the REST list's shape and `last_assigned_plan_id` the timeline's; a caller
+ * may carry either, so both count. Fixed-schedule jobs this app creates itself
+ * (SCHEDULE_JOB_LABEL) have the same daily-slot shape but no plan id, and are NOT
+ * covered here.
+ */
+export function isPlanJob(job: {
+  last_assigned_plan_id?: number | null;
+  plans?: unknown;
+}): boolean {
+  return job.last_assigned_plan_id != null || (Array.isArray(job.plans) && job.plans.length > 0);
+}
+
 /** Canonical key for the PSC active-pickup dedup index: a `pickup|dropoff` customer
  *  pair. Shared by the assign cycle (which writes the index) and /api/psc-assign
  *  (which reads it), so the two never disagree on format. Dependency-free on purpose

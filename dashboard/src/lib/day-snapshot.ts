@@ -1,6 +1,6 @@
 import { Redis } from "@upstash/redis";
 import { getTimelineJobs, getUnroutedJobs, type Env } from "./cartrack";
-import { isBlockingPickupStop, isLabWatchedClient, LAB_CUSTOMER_ID, pscPairKey, PSC_VIA_LABEL } from "./job-filters";
+import { isBlockingPickupStop, isLabWatchedClient, isPlanJob, LAB_CUSTOMER_ID, pscPairKey, PSC_VIA_LABEL } from "./job-filters";
 import { driverDisplayName } from "./job-detail";
 import type { Job, Stop } from "./types";
 
@@ -306,7 +306,10 @@ function slimUnrouted(j: any): SnapJob {
     job_status_id: j.jobStatusId,
     scheduled_delivery_ts: t19(j.scheduledTs),
     create_ts: t19(j.createTs) ?? t19(j.scheduledTs),
-    last_assigned_plan_id: null,
+    // Same spelling the timeline uses (rpcDataToRestShape). A plan slot is normally
+    // assigned to its route's driver and so arrives on the timeline, but one whose driver
+    // was taken off lands here instead — and the pair guard's plan exemption has to see it.
+    last_assigned_plan_id: j.lastAssignedPlanId ?? null,
     labels: (j.jobLabels ?? [])
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .map((l: any) => (typeof l === "string" ? l : l?.label))
@@ -342,6 +345,8 @@ function buildPairs(jobs: SnapJob[]): Record<string, PairHit> {
   for (const j of jobs) {
     if (j.job_status_id === 7 || j.job_status_id === 3) continue;
     if (j.labels.includes(PSC_VIA_LABEL)) continue;
+    // A plan slot sits untouched from 05:00 until its own hour — see isPlanJob.
+    if (isPlanJob(j)) continue;
     const pickups = j.stops.filter((s) => s.stop_type_id === 1 && s.customer_id && isBlockingPickupStop(s));
     if (!pickups.length) continue;
     const dropoffs = j.stops.filter((s) => s.stop_type_id === 2 && s.customer_id);
@@ -699,6 +704,8 @@ export async function jobIsDone(date: string, env: Env, jobId: number): Promise<
     const j = parse<SnapJob | null>(row?.[jobField(jobId)], null);
     if (!j) return null;
     if (j.job_status_id === 7 || j.job_status_id === 3) return true;
+    // Same exemption the pair index is built with, so the two can never disagree.
+    if (isPlanJob(j)) return true;
     const pickups = j.stops.filter((st) => st.stop_type_id === 1);
     if (!pickups.length) return null;
     // Same predicate the pair index is built from, so the two can never disagree about

@@ -26,7 +26,7 @@ import {
 } from "./time";
 import { haversineKm } from "./distance";
 import { roadDistancesToPoint } from "./distance-cache";
-import { blockingNotes, isChamCong, isCompletedOrRejectedStop, isNoteApproved, DAYTIME_NON_BLOCKING } from "./job-filters";
+import { blockingNotes, isChamCong, isCompletedOrRejectedStop, isNoteApproved, isPlanJob, DAYTIME_NON_BLOCKING } from "./job-filters";
 import { placeLabel } from "./place-label";
 import { stripDriverCode } from "./job-detail";
 import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, idleBand, isUnreachedAnchor, liveGpsRef, lastRealPositionRef, type RefStop, type RefLabel } from "./smart-rank";
@@ -192,10 +192,14 @@ function buildActiveRouteMap(jobs: any[]): Map<string, number> {
  * recurring provincial pickups), not an ad-hoc ASAP request. The plan
  * regenerates a fresh copy each day, so a plan job must never be rolled to the
  * next day — that would duplicate it.
+ *
+ * The predicate lives in job-filters.ts (dependency-free, so the edge-side PSC guards
+ * can read the same rule); this is the local alias the rollover and late-pickup rules
+ * below are written in terms of.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function hasPlanAttached(job: any): boolean {
-  return job.last_assigned_plan_id != null || (Array.isArray(job.plans) && job.plans.length > 0);
+  return isPlanJob(job);
 }
 
 /**
