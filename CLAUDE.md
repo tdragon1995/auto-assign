@@ -273,6 +273,7 @@ ever named, which is how a warning stops being read.
 | `GET /api/tat/me` | The signed-in driver's TAT report (today + week + month). Driver id from the `nv_session` cookie only |
 | `GET /api/pay/me` | The signed-in driver's part-time earnings. `?month=YYYY-MM` for the month, `?date=` for one day. Driver id from the `nv_session` cookie only; refuses any account that is not `PT…` |
 | `GET /api/pay/team` | Every PT driver's month, for điều phối's "Lương PT" tab. Defaults to LAST month (payroll runs on the 25th) |
+| `GET /api/pickup-setup` | Config tab's portal-ETA check: measured **scheduled→arrival** (Supabase view `pickup_eta_stats_30d`; >5 pickups, windowed trips out) vs the master `pickup_setup`, plus places Labcenter changed behind the master. The proposal is the p80 capped at 2× the median (`targetMins`) — the ETA is a promise, and some clients are bimodal. `POST` applies one admin decision (`approve_eta` / `repush` / `accept_lc`) — Labcenter first with read-back, master second, logged to `pickup_setup_changes`. No Redis, no cache, on demand only. `pickup_eta` rides `archiveDay` off the routes it already fetched (no Cartrack call of its own); one-off history: `GET /api/tat/archive?only=pickup&date=<yesterday>&days=30`. The first panel open adopts every Labcenter place (no seed) and looks up Cartrack ids for the measured ones first |
 
 ### Shared Libraries
 

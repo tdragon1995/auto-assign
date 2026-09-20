@@ -23,6 +23,7 @@ import type { DeploymentBeat } from "@/lib/smart-log-kv";
 import type { ShiftOverlap } from "@/lib/types";
 import { overlapKey } from "@/lib/config-shift";
 import { ConfigBrowserPanel } from "./config-browser-panel";
+import { PickupSetupPanel } from "./pickup-setup-panel";
 import type { LeaveOnDate, InvalidLeaveRow, SpanningLeaveRow } from "@/lib/leave-config";
 import type { LeaveSuppression } from "@/lib/leave-suppression";
 
@@ -695,6 +696,7 @@ export function Dashboard() {
                 <div className="min-h-[28rem]">
                   <ConfigBrowserPanel drivers={drivers} />
                 </div>
+                <PickupSetupPanel />
               </div>
             ) : rightTab === "live" ? (
               <div className="h-[72vh] lg:h-full">

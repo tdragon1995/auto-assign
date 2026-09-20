@@ -12,7 +12,7 @@
  * header, and open when the variable is unset.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { archiveDay, getRedis, LOCK_TTL_S, type ArchiveResult } from "@/lib/tat-archive";
+import { archiveDay, archivePickupEtaForDate, getRedis, LOCK_TTL_S, type ArchiveResult } from "@/lib/tat-archive";
 import { reconcilePayDay, restorePayDay } from "@/lib/pay-reconcile";
 import { supabaseConfigured, sbUpsert } from "@/lib/supabase-rest";
 import { shortenCachedDistances } from "@/lib/distance-cache";
@@ -40,6 +40,9 @@ function authorized(req: NextRequest): boolean {
  *   ?date=YYYY-MM-DD   one day (defaults to today VN)
  *   ?days=N            that day and the N-1 days before it, for backfill
  *   ?env=prod|uat
+ *   ?only=pickup       just the portal-ETA pickups (pickup_eta), no legs or pay —
+ *                      the one-off 30-day backfill for that table. One route
+ *                      fetch per day, 5 at a time so 30 fit in maxDuration.
  *
  * Backfill runs sequentially: a burst of parallel Cartrack day-fetches is the one
  * thing most likely to get this throttled, and nothing here is urgent.
@@ -54,6 +57,21 @@ export async function GET(req: NextRequest) {
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) {
     return NextResponse.json({ ok: false, error: "date phải có dạng YYYY-MM-DD" }, { status: 400 });
+  }
+
+  if (sp.get("only") === "pickup") {
+    const dates = Array.from({ length: days }, (_, i) => {
+      const d = new Date(`${start}T00:00:00Z`);
+      d.setUTCDate(d.getUTCDate() - i);
+      return d.toISOString().slice(0, 10);
+    });
+    const out: { date: string; rows?: number; error?: string }[] = [];
+    for (let i = 0; i < dates.length; i += 5) {
+      out.push(...await Promise.all(dates.slice(i, i + 5).map((date) =>
+        archivePickupEtaForDate(date).then((rows) => ({ date, rows }), (e) => ({ date, error: e instanceof Error ? e.message : String(e) })))));
+    }
+    const ok = out.every((r) => !r.error);
+    return NextResponse.json({ ok, results: out }, { status: ok ? 200 : 502 });
   }
 
   const results: ArchiveResult[] = [];

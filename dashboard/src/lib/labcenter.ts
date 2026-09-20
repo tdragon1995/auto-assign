@@ -246,3 +246,80 @@ export async function updateLocationAddress(
   }
   return { ok: true };
 }
+
+// --- Pick-drop setup (default drop-off + portal ETA per pickup place) ---
+
+/** One row of the pick-drop setup, flattened. Keyed by LABCENTER location ids —
+ *  the write endpoint below takes Cartrack UUIDs instead, and
+ *  getCartrackCustomerId is the bridge between the two. */
+export interface PickDropRow {
+  lc_location_id: number;
+  pick_name: string | null;
+  drop_location_id: number;
+  drop_name: string | null;
+  eta_mins: number;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function toPickDropRow(r: any): PickDropRow | null {
+  const pick = Number(r?.pick_location_id);
+  const drop = Number(r?.drop_location_id);
+  if (!Number.isFinite(pick) || !Number.isFinite(drop)) return null;
+  return {
+    lc_location_id: pick,
+    pick_name: r?.pick_location?.name ?? null,
+    drop_location_id: drop,
+    drop_name: r?.drop_location?.name ?? null,
+    eta_mins: Number(r?.estimate_pick_up) || 0,
+  };
+}
+
+/** GET /api/pick-drop-locations, every page (~2,100 rows = 5 pages at 500). The
+ *  response carries no total, so a short page is the last one. */
+export async function listPickDropLocations(token: string): Promise<PickDropRow[]> {
+  const out: PickDropRow[] = [];
+  for (let page = 1; page <= 20; page++) {
+    const res = await fetch(`${DELIVERY_BASE}/api/pick-drop-locations?page=${page}&perPage=500`, {
+      headers: { Authorization: `Bearer ${token}`, accept: "application/json" },
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error(`Labcenter pick-drop-locations ${res.status}`);
+    const rows: unknown[] = (await res.json().catch(() => ({})))?.data ?? [];
+    for (const r of rows) {
+      const row = toPickDropRow(r);
+      if (row) out.push(row);
+    }
+    if (rows.length < 500) break;
+  }
+  return out;
+}
+
+/** POST /api/locations/update-pick-drop-location — sets a place's default drop-off
+ *  and portal ETA. Takes CARTRACK ids. Labcenter answers 200 to writes it discards
+ *  (see updateLocationAddress), so the row is read back by its Labcenter pick id
+ *  (`?pick_location_id=` does filter — verified) before this reports success. */
+export async function updatePickDropLocation(
+  w: { pickId: string; dropId: string; etaMins: number; lcLocationId: number; dropLocationId: number },
+  token: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`${DELIVERY_BASE}/api/locations/update-pick-drop-location`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ pick_id: w.pickId, drop_id: w.dropId, estimate_pick_up: w.etaMins }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    return { ok: false, error: `HTTP ${res.status}: ${text.slice(0, 200)}` };
+  }
+  const check = await fetch(`${DELIVERY_BASE}/api/pick-drop-locations?pick_location_id=${w.lcLocationId}&perPage=5`, {
+    headers: { Authorization: `Bearer ${token}`, accept: "application/json" },
+    cache: "no-store",
+  });
+  if (!check.ok) return { ok: false, error: `Không đọc lại được Labcenter (HTTP ${check.status})` };
+  const rows: unknown[] = (await check.json().catch(() => ({})))?.data ?? [];
+  const now = rows.map(toPickDropRow).find((r) => r?.lc_location_id === w.lcLocationId);
+  if (!now || now.eta_mins !== w.etaMins || now.drop_location_id !== w.dropLocationId) {
+    return { ok: false, error: "Labcenter nhận yêu cầu nhưng không cập nhật" };
+  }
+  return { ok: true };
+}

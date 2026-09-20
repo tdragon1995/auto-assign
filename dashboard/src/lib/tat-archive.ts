@@ -9,6 +9,7 @@
  */
 import { Redis } from "@upstash/redis";
 import { getTimelineRoutes, type Env } from "./cartrack";
+import { pickupEtaRows, writePickupEta } from "./pickup-setup";
 import { buildDayLegs } from "./tat";
 import { buildDayPay } from "./pay";
 import { sbDelete, sbUpsert, sbSelectAll, supabaseConfigured, missingSupabaseEnv } from "./supabase-rest";
@@ -113,6 +114,19 @@ async function archivePay(
   }
 }
 
+/** One day's completed ad-hoc client pickups → pickup_eta, off routes already in
+ *  hand. Idempotent (upsert on job_id). */
+export async function archivePickupEta(routes: TimelineRoute[]): Promise<number> {
+  return writePickupEta(pickupEtaRows(routes));
+}
+
+/** The same for a day this process has not fetched — the one-off backfill. */
+export async function archivePickupEtaForDate(date: string): Promise<number> {
+  const routes = await getTimelineRoutes(date, "prod");
+  if (!routes) throw new Error(`Không lấy được lộ trình ${date}`);
+  return archivePickupEta(routes);
+}
+
 /**
  * Fetch one day's routes, cut them into legs, price them, and replace that day in
  * tat_legs.
@@ -173,6 +187,14 @@ export async function archiveDay(date: string, env: Env = "prod"): Promise<Archi
     // written and inside its own try/catch, so a pay failure can never cost the day
     // its legs. It does fail the day, though (below), so the seal is retried.
     const pay = await archivePay(routes, date);
+
+    // Measured pickups for the portal-ETA check. Logged, never returned as a
+    // failure: a missing day only thins a 30-day percentile, and it must not cost
+    // the day its seal (and so a re-fetch of everything above).
+    if (env === "prod") {
+      await archivePickupEta(routes).catch((e) =>
+        console.error("[tat-archive] pickup eta failed:", e instanceof Error ? e.message : String(e)));
+    }
 
     // A pay failure does not undo the legs (already written), but it must NOT let
     // the day seal: ok:false releases the seal so the next ping retries the day.
