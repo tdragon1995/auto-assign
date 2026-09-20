@@ -248,11 +248,16 @@ export async function POST(req: NextRequest) {
     // branch is told to retry rather than given a trip nobody checked. Both locks come
     // off because nothing was created, so that retry can proceed at once. The sentence
     // goes in `error`: the branch's page prints that verbatim for anything but a 409.
+    //
+    // 20 giây is the day-rebuild lock (LOCK_TTL_S): when another request is building the
+    // day, that is genuinely how long until the answer exists. The other two ways to get
+    // here — Cartrack refusing the job fetch, Redis unreachable — have no such clock, so
+    // the second half sends them to a person rather than round the loop again.
     const unverified = () => {
       releaseLock(lockKey!);
       void releaseCreateLock(lockKey!);
       return NextResponse.json(
-        { error: "Chưa kiểm tra được chuyến trùng. Vui lòng thử lại sau giây lát.", code: "unverified" },
+        { error: "Vui lòng thử lại sau 20 giây — nếu vẫn báo lỗi, liên hệ đội điều phối.", code: "unverified" },
         { status: 503 },
       );
     };
