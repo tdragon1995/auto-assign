@@ -21,7 +21,8 @@ interface Group {
   clients: { name: string; rows: VidRow[] }[];
 }
 
-const MAX_VIDS = 100;
+// The route takes at most 100 per request (it has 60s to answer); longer lists go in chunks.
+const CHUNK = 100;
 const HUB = "D001";
 
 function groupRows(rows: VidRow[]): Group[] {
@@ -178,29 +179,35 @@ export function HardCopyHandover() {
   const [text, setText] = useState("");
   const [rows, setRows] = useState<VidRow[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [done, setDone] = useState(0);
 
   const vids = [...new Set(text.split(/\D+/).filter(Boolean))];
-  const tooMany = vids.length > MAX_VIDS;
 
   const lookup = async () => {
-    if (!vids.length || tooMany || loading) return;
+    if (!vids.length || loading) return;
     setLoading(true);
-    setError("");
-    try {
-      const res = await fetch("/api/labcenter/orders", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ vids }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) { setError(data.error ?? "Tra cứu thất bại"); setRows([]); }
-      else setRows(data.results ?? []);
-    } catch {
-      setError("Không thể kết nối. Vui lòng thử lại.");
-    } finally {
-      setLoading(false);
+    setRows([]);
+    setDone(0);
+    // Chunks run one after another so a long paste never has more than 10 Labcenter calls in flight.
+    // A chunk that fails marks its own VIDs and the rest carry on.
+    for (let i = 0; i < vids.length; i += CHUNK) {
+      const chunk = vids.slice(i, i + CHUNK);
+      let got: VidRow[];
+      try {
+        const res = await fetch("/api/labcenter/orders", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ vids: chunk }),
+        });
+        const data = await res.json().catch(() => ({}));
+        got = res.ok ? data.results ?? [] : chunk.map((vid) => ({ vid, error: data.error ?? "Tra cứu thất bại" }));
+      } catch {
+        got = chunk.map((vid) => ({ vid, error: "Không thể kết nối" }));
+      }
+      setRows((prev) => [...prev, ...got]);
+      setDone(i + chunk.length);
     }
+    setLoading(false);
   };
 
   const found = rows.filter((r) => !r.error);
@@ -217,17 +224,14 @@ export function HardCopyHandover() {
           aria-label="Danh sách VID"
           className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm text-slate-700 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
         />
-        <p className={`text-xs ${tooMany ? "text-red-600 font-semibold" : "text-slate-500"}`}>
-          {vids.length} VID{tooMany ? ` — tối đa ${MAX_VIDS} mỗi lần` : ""}
-        </p>
+        <p className="text-xs text-slate-500">{vids.length} VID</p>
         <button
           onClick={lookup}
-          disabled={loading || !vids.length || tooMany}
+          disabled={loading || !vids.length}
           className="w-full rounded-xl py-3 text-white text-sm font-bold flex items-center justify-center gap-2 bg-blue-700 active:scale-[.97] transition disabled:opacity-40"
         >
-          {loading ? <><Loader2 aria-hidden className="w-4 h-4 animate-spin" />Đang tra cứu {vids.length} VID…</> : "Tra cứu"}
+          {loading ? <><Loader2 aria-hidden className="w-4 h-4 animate-spin" />Đang tra cứu {done}/{vids.length} VID…</> : "Tra cứu"}
         </button>
-        {error && <p role="alert" className="text-xs text-red-600 font-medium">{error}</p>}
       </div>
 
       {failed.length > 0 && (
