@@ -52,8 +52,19 @@ export function parsePaste(text: string): PasteLine[] {
 const norm = (s: string) =>
   s.normalize("NFD").replace(/\p{M}/gu, "").replace(/đ/gi, "d").toLowerCase().replace(/\s+/g, " ").trim();
 
-/** True when the pasted text appears in one of the order's test names — billing_name, test_name or test_name_vi (case, accents and spacing ignored). */
+/** Spacing is not meaningful in a test name: "Carrier Screening 18 **" is "…Screening 18**". */
+const squash = (s: string) => norm(s).replace(/ /g, "");
+
+/** Staff paste whole Excel rows, so the patient's own name often sits beside the test name — drop it. */
+export function stripPatient(pasted: string, patient: string | null | undefined): string {
+  const words = (patient ?? "").trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return pasted;
+  const re = new RegExp(words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"), "iu");
+  return pasted.replace(re, " ").replace(/^[\s,;|]+|[\s,;|]+$/g, "").replace(/\s+/g, " ");
+}
+
+/** True when the pasted text appears in one of the order's test names — billing_name, test_name or test_name_vi (case, accents and all spaces ignored). */
 export function billingFound(pasted: string, names: string[]): boolean {
-  const p = norm(pasted);
-  return !!p && names.some((n) => norm(n).includes(p));
+  const p = squash(pasted);
+  return !!p && names.some((n) => squash(n).includes(p));
 }

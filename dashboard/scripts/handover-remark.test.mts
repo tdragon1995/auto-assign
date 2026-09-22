@@ -49,3 +49,21 @@ assert.equal(billingFound("d201", names), true);                 // part of a na
 assert.equal(billingFound("HbA1c", names), false);
 assert.equal(billingFound("", names), false);
 console.log("ok — paste + billing");
+
+// ── Real paste from 22/09: VID, patient name, test name — three Excel columns ──
+import { stripPatient } from "../src/lib/handover";
+const nipt = ["NIPT 7* + Carrier Screening 18**", "NIPT 7* + Sàng Lọc 18 Gen Lặn**"];
+for (const [line, patient] of [
+  ["26050623282\tĐẶNG PHƯƠNG LAN\tCarrier Screening 18 **", "ĐẶNG PHƯƠNG LAN"],
+  ["26050626506\tLÊ THỊ HOÀNG PHI\tCarrier Screening 18 **", "LÊ THỊ HOÀNG PHI"],
+  ["26050626521 Nguyễn Vũ Thảo Nguyên  Carrier Screening 18 **", "NGUYỄN VŨ THẢO NGUYÊN"], // typed case, spaces
+]) {
+  const [{ billing }] = parsePaste(line);
+  const cleaned = stripPatient(billing, patient);
+  assert.equal(cleaned, "Carrier Screening 18 **", line);
+  assert.equal(billingFound(cleaned, nipt), true, line);   // space before ** ignored
+}
+assert.equal(stripPatient("HbA1c", "ĐẶNG PHƯƠNG LAN"), "HbA1c");  // no patient name → untouched
+assert.equal(stripPatient("HbA1c", null), "HbA1c");
+assert.equal(billingFound("Carrier Screening 19 **", nipt), false);
+console.log("ok — patient name stripped, spacing ignored");

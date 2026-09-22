@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Loader2, Download, AlertCircle, Printer, Check, X } from "lucide-react";
-import { parsePaste, billingFound, type PasteLine } from "@/lib/handover";
+import { parsePaste, billingFound, stripPatient, type PasteLine } from "@/lib/handover";
 
 /** One order as the lookup route returns it. */
 interface Order {
@@ -241,7 +241,8 @@ export function HardCopyHandover() {
   const rows: Row[] = lines.flatMap((l, i) => {
     const o = orders[l.vid];
     if (!o || o.error) return [];
-    return [{ ...o, key: `${i}`, billing: l.billing, billing_ok: l.billing ? billingFound(l.billing, o.test_names ?? []) : null }];
+    const billing = stripPatient(l.billing, o.patient_name);
+    return [{ ...o, key: `${i}`, billing, billing_ok: billing ? billingFound(billing, o.test_names ?? []) : null }];
   });
   const failed = Object.values(orders).filter((o) => o.error);
 
