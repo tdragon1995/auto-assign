@@ -41,9 +41,11 @@ async function lookup(vid: string, token: string) {
       client_id: o.client_id != null ? String(o.client_id) : null,
       client_name: o.client_name?.trim() || null,
       patient_name: o.patient_full_name?.trim() || null,
-      // Every name a test goes by — a pasted name is checked against all of them.
+      // Every name a test goes by — a pasted name is checked against all of them. A package also
+      // lists its parts (group_component), and staff paste those one per line, so they count too.
       test_names: [...new Set(
         (Array.isArray(o.order_test_details) ? o.order_test_details : [])
+          .flatMap((t: Record<string, unknown>) => [t, ...(Array.isArray(t.group_component) ? t.group_component : [])])
           .flatMap((t: Record<string, unknown>) => [t.billing_name, t.test_name, t.test_name_vi])
           .map((v: unknown) => String(v ?? "").trim()).filter(Boolean),
       )],

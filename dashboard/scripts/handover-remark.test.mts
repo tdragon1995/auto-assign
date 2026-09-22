@@ -45,7 +45,7 @@ assert.deepEqual(parsePaste("Cholesterol, toàn phần 26020669640"), [{ vid: "2
 const names = ["Blomia Tropicalis - Bt (d201)", "Định lượng Glucose"];
 assert.equal(billingFound("blomia tropicalis - bt (d201)", names), true);
 assert.equal(billingFound("dinh luong glucose", names), true);   // accents ignored
-assert.equal(billingFound("d201", names), true);                 // part of a name
+assert.equal(billingFound("d201", names), false);                // part of a name is not enough
 assert.equal(billingFound("HbA1c", names), false);
 assert.equal(billingFound("", names), false);
 console.log("ok — paste + billing");
@@ -61,9 +61,17 @@ for (const [line, patient] of [
   const [{ billing }] = parsePaste(line);
   const cleaned = stripPatient(billing, patient);
   assert.equal(cleaned, "Carrier Screening 18 **", line);
-  assert.equal(billingFound(cleaned, nipt), true, line);   // space before ** ignored
+  assert.equal(billingFound(cleaned, nipt), false, line);  // only part of "NIPT 7* + Carrier Screening 18**"
 }
 assert.equal(stripPatient("HbA1c", "ĐẶNG PHƯƠNG LAN"), "HbA1c");  // no patient name → untouched
 assert.equal(stripPatient("HbA1c", null), "HbA1c");
 assert.equal(billingFound("Carrier Screening 19 **", nipt), false);
 console.log("ok — patient name stripped, spacing ignored");
+
+// Exact whole-name match: case, accents and spacing ignored, nothing else.
+assert.equal(billingFound("NIPT 7* + Carrier Screening 18 **", nipt), true);  // space before ** ignored
+assert.equal(billingFound("nipt 7* + sang loc 18 gen lan**", nipt), true);    // no accents, lower case
+assert.equal(billingFound("NIPT 7* + Carrier Screening", nipt), false);       // end missing
+assert.equal(billingFound("NIPT 7* + Carier Screening 18**", nipt), false);   // typo
+assert.equal(billingFound("Rubella IgG", ["Rubella IgG miễn dịch tự động", "Rubella IgG"]), true); // test_name
+console.log("ok — exact match");

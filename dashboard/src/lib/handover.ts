@@ -63,8 +63,9 @@ export function stripPatient(pasted: string, patient: string | null | undefined)
   return pasted.replace(re, " ").replace(/^[\s,;|]+|[\s,;|]+$/g, "").replace(/\s+/g, " ");
 }
 
-/** True when the pasted text appears in one of the order's test names — billing_name, test_name or test_name_vi (case, accents and all spaces ignored). */
+/** True when the pasted text IS one of the order's test names — billing_name, test_name or test_name_vi.
+ *  Whole-name match only; case, accents and spaces are ignored, nothing else is. */
 export function billingFound(pasted: string, names: string[]): boolean {
   const p = squash(pasted);
-  return !!p && names.some((n) => squash(n).includes(p));
+  return !!p && names.some((n) => squash(n) === p);
 }
