@@ -75,3 +75,24 @@ assert.equal(billingFound("NIPT 7* + Carrier Screening", nipt), false);       //
 assert.equal(billingFound("NIPT 7* + Carier Screening 18**", nipt), false);   // typo
 assert.equal(billingFound("Rubella IgG", ["Rubella IgG miễn dịch tự động", "Rubella IgG"]), true); // test_name
 console.log("ok — exact match");
+
+// ── Result status: which pending tests a row stands for ──
+import { pendingFor, isPending } from "../src/lib/handover";
+const entries = [
+  { names: ["NIPT 7* + Carrier Screening 18**"], codes: ["CS18-TV", "NIPT7-DD"] },   // package → its parts
+  { names: ["Carrier Screening 18 **"], codes: ["CS18-TV"] },
+  { names: ["NIPT 7*"], codes: ["NIPT7-DD"] },
+  { names: ["Rubella IgG", "Rubella IgG miễn dịch tự động"], codes: ["5334-8"] },
+];
+const pend = [{ code: "NIPT7-DD", name: "NIPT 7*", status: "sample_received" }];
+assert.deepEqual(pendingFor("NIPT 7*", entries, pend), pend);
+assert.deepEqual(pendingFor("NIPT 7* + Carrier Screening 18**", entries, pend), pend); // package covers its part
+assert.deepEqual(pendingFor("Carrier Screening 18 **", entries, pend), []);             // this part is done
+assert.deepEqual(pendingFor("Rubella IgG", entries, pend), []);
+assert.deepEqual(pendingFor("", entries, pend), pend);                                   // nothing pasted → whole order
+assert.deepEqual(pendingFor("HbA1c", entries, pend), []);                                // not on the order → ✗ says so already
+assert.equal(pendingFor("NIPT 7*", entries, null), null);                                // status unreadable
+assert.equal(isPending("approved"), false);
+assert.equal(isPending("sample_received"), true);
+assert.equal(isPending("cancelled"), false);
+console.log("ok — result status");

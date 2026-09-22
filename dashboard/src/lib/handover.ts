@@ -69,3 +69,29 @@ export function billingFound(pasted: string, names: string[]): boolean {
   const p = squash(pasted);
   return !!p && names.some((n) => squash(n) === p);
 }
+
+// ── Result status (LIS list-tests) ───────────────────────────────────────────
+// A test is ready for hard-copy handover once its status is "approved". Seen so
+// far: approved, sample_collected, sample_received. Cancelled tests are skipped.
+
+/** A name a test goes by, and the LIS test codes behind it (a package → all its parts). */
+export interface TestEntry { names: string[]; codes: string[] }
+export interface PendingTest { code: string; name: string; status: string }
+
+const STATUS_VI: Record<string, string> = { sample_collected: "đã lấy mẫu", sample_received: "đã nhận mẫu" };
+export const statusLabel = (s: string) => STATUS_VI[s] ?? s;
+
+export const isPending = (status: string) => status !== "approved" && !/cancel/i.test(status);
+
+/** Pending tests that a row stands for: the pasted test (every part if it's a package), or the whole
+ *  order when nothing was pasted. null = the status could not be read. */
+export function pendingFor(
+  billing: string,
+  entries: TestEntry[],
+  pending: PendingTest[] | null,
+): PendingTest[] | null {
+  if (pending === null) return null;
+  if (!billing) return pending;
+  const codes = new Set(entries.filter((e) => billingFound(billing, e.names)).flatMap((e) => e.codes));
+  return pending.filter((p) => codes.has(p.code));
+}

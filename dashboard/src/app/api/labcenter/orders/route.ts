@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getReceptionistToken } from "@/lib/labcenter";
-import { destFromRemark } from "@/lib/handover";
+import { destFromRemark, isPending, type TestEntry, type PendingTest } from "@/lib/handover";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -8,6 +8,8 @@ export const maxDuration = 60;
 
 // Needs the receptionist-nurse-phlebotomist role — the delivery-admin account 403s here.
 const ORDERS_URL = "https://api.labcenter.vn/spc-pos/api/orders";
+// The LIS view of the same order: one line per test (a package already split into parts) with its result status.
+const TESTS_URL = "https://api.labcenter.vn/spc-lis/api/v1/test-results/list-tests";
 const MAX_VIDS = 100;
 const CONCURRENCY = 10;
 
@@ -22,9 +24,42 @@ async function fetchOrder(vid: string, token: string, retry = true): Promise<Res
   return res;
 }
 
+/** Tests whose result is not approved yet; null when the LIS could not be read (never guessed as "all done"). */
+async function fetchPending(vid: string, token: string): Promise<PendingTest[] | null> {
+  try {
+    const res = await fetch(`${TESTS_URL}?order_id=${vid}`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+    });
+    if (!res.ok) return null;
+    const data = (await res.json())?.data;
+    if (!Array.isArray(data)) return null;
+    return data
+      .filter((t: { test_status?: string }) => isPending(String(t.test_status ?? "")))
+      .map((t: { test_code?: string; test_name_en?: string; test_status?: string }) => ({
+        code: String(t.test_code ?? ""), name: String(t.test_name_en ?? t.test_code ?? ""), status: String(t.test_status ?? ""),
+      }));
+  } catch {
+    return null;
+  }
+}
+
+const namesOf = (t: Record<string, unknown>) =>
+  [...new Set([t.billing_name, t.test_name, t.test_name_vi].map((v) => String(v ?? "").trim()).filter(Boolean))];
+
+/** Each name a test goes by with the LIS codes behind it. A package also lists its parts
+ *  (group_component), and staff paste those one per line, so each part is an entry too. */
+function testEntries(details: unknown): TestEntry[] {
+  return (Array.isArray(details) ? details : []).flatMap((t: Record<string, unknown>) => {
+    const parts = (Array.isArray(t.group_component) ? t.group_component : []) as Record<string, unknown>[];
+    const own = { names: namesOf(t), codes: parts.length ? parts.map((p) => String(p.test_code ?? "")) : [String(t.test_code ?? "")] };
+    return [own, ...parts.map((p) => ({ names: namesOf(p), codes: [String(p.test_code ?? "")] }))];
+  });
+}
+
 async function lookup(vid: string, token: string) {
   try {
-    const res = await fetchOrder(vid, token);
+    // Both calls at once: the status call is the faster of the two, so it adds almost no wait.
+    const [res, pending] = await Promise.all([fetchOrder(vid, token), fetchPending(vid, token)]);
     if (res.status === 403) return { vid, error: "Tài khoản chưa có quyền xem đơn" };
     if (res.status === 404) return { vid, error: "Không tìm thấy" };
     if (!res.ok) return { vid, error: `Labcenter ${res.status}` };
@@ -41,14 +76,8 @@ async function lookup(vid: string, token: string) {
       client_id: o.client_id != null ? String(o.client_id) : null,
       client_name: o.client_name?.trim() || null,
       patient_name: o.patient_full_name?.trim() || null,
-      // Every name a test goes by — a pasted name is checked against all of them. A package also
-      // lists its parts (group_component), and staff paste those one per line, so they count too.
-      test_names: [...new Set(
-        (Array.isArray(o.order_test_details) ? o.order_test_details : [])
-          .flatMap((t: Record<string, unknown>) => [t, ...(Array.isArray(t.group_component) ? t.group_component : [])])
-          .flatMap((t: Record<string, unknown>) => [t.billing_name, t.test_name, t.test_name_vi])
-          .map((v: unknown) => String(v ?? "").trim()).filter(Boolean),
-      )],
+      test_entries: testEntries(o.order_test_details),
+      pending,
       remark,
       // Where the paper result goes: for HBC, the branch its remark names; otherwise the order's branch.
       dest: fromRemark ?? o.branch_code ?? null,

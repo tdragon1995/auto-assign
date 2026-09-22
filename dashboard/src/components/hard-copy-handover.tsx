@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Loader2, Download, AlertCircle, Printer, Check, X } from "lucide-react";
-import { parsePaste, billingFound, stripPatient, type PasteLine } from "@/lib/handover";
+import { Loader2, Download, AlertCircle, Printer, Check, X, Clock } from "lucide-react";
+import { parsePaste, billingFound, stripPatient, pendingFor, statusLabel, type PasteLine, type TestEntry, type PendingTest } from "@/lib/handover";
 
 /** One order as the lookup route returns it. */
 interface Order {
@@ -11,7 +11,8 @@ interface Order {
   client_id?: string | null;
   client_name?: string | null;
   patient_name?: string | null;
-  test_names?: string[]; // billing_name, test_name and test_name_vi of every test
+  test_entries?: TestEntry[]; // every name a test (or a package part) goes by, with its LIS codes
+  pending?: PendingTest[] | null; // tests without an approved result; null = status unreadable
   remark?: string | null;
   dest?: string | null;
   dest_from_remark?: boolean;
@@ -23,6 +24,8 @@ interface Row extends Order {
   key: string;
   billing: string;
   billing_ok: boolean | null;
+  /** Pending results this row stands for; null = the status could not be checked. */
+  row_pending: PendingTest[] | null;
 }
 
 interface Group {
@@ -182,6 +185,17 @@ function HandoverList({ title, groups }: { title: string; groups: Group[] }) {
                             <span>{r.billing}{!r.billing_ok && " — không có trong đơn"}</span>
                           </span>
                         )}
+                        {r.row_pending === null ? (
+                          <span className="flex items-start gap-1 text-slate-500 mt-0.5">
+                            <AlertCircle aria-hidden className="w-3.5 h-3.5 shrink-0" />
+                            <span>Không kiểm tra được trạng thái kết quả</span>
+                          </span>
+                        ) : r.row_pending.length > 0 && (
+                          <span className="flex items-start gap-1 text-amber-700 mt-0.5">
+                            <Clock aria-hidden className="w-3.5 h-3.5 shrink-0" />
+                            <span>Chưa có kết quả: {r.row_pending.map((p) => `${p.name} (${statusLabel(p.status)})`).join(", ")}</span>
+                          </span>
+                        )}
                         {note && (
                           <span className="flex items-start gap-1 text-amber-700 mt-0.5">
                             <AlertCircle aria-hidden className="w-3.5 h-3.5 shrink-0" />
@@ -243,7 +257,11 @@ export function HardCopyHandover() {
     const o = orders[l.vid];
     if (!o || o.error) return [];
     const billing = stripPatient(l.billing, o.patient_name);
-    return [{ ...o, key: `${i}`, billing, billing_ok: billing ? billingFound(billing, o.test_names ?? []) : null }];
+    const entries = o.test_entries ?? [];
+    const billing_ok = billing ? billingFound(billing, entries.flatMap((e) => e.names)) : null;
+    // A name that isn't on the order already shows ✗; its status would say nothing more.
+    const row_pending = billing_ok === false ? [] : pendingFor(billing, entries, o.pending ?? null);
+    return [{ ...o, key: `${i}`, billing, billing_ok, row_pending }];
   });
   const failed = Object.values(orders).filter((o) => o.error);
 
