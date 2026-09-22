@@ -1,36 +1,47 @@
 "use client";
 
 import { useState } from "react";
-import { Loader2, Download, AlertCircle, Printer } from "lucide-react";
+import { Loader2, Download, AlertCircle, Printer, Check, X } from "lucide-react";
+import { parsePaste, billingFound, type PasteLine } from "@/lib/handover";
 
-interface VidRow {
+/** One order as the lookup route returns it. */
+interface Order {
   vid: string;
   branch_code?: string | null;
   client_id?: string | null;
   client_name?: string | null;
   patient_name?: string | null;
+  test_names?: string[]; // billing_name, test_name and test_name_vi of every test
   remark?: string | null;
   dest?: string | null;
   dest_from_remark?: boolean;
   error?: string;
 }
 
+/** One pasted line joined to its order. `billing_ok` is null when nothing was pasted for it. */
+interface Row extends Order {
+  key: string;
+  billing: string;
+  billing_ok: boolean | null;
+}
+
 interface Group {
   dest: string;
   count: number;
-  clients: { name: string; rows: VidRow[] }[];
+  clients: { name: string; rows: Row[] }[];
 }
 
 // The route takes at most 100 per request (it has 60s to answer); longer lists go in chunks.
 const CHUNK = 100;
 const HUB = "D001";
 
-function groupRows(rows: VidRow[]): Group[] {
+function groupRows(rows: Row[]): Group[] {
   const sorted = [...rows].sort((a, b) =>
     (a.dest ?? "").localeCompare(b.dest ?? "")
     || (a.client_name ?? "").localeCompare(b.client_name ?? "", "vi")
-    || a.vid.localeCompare(b.vid));
-  const byDest = new Map<string, Map<string, VidRow[]>>();
+    || a.vid.localeCompare(b.vid)
+    || a.billing.localeCompare(b.billing, "vi"));
+  const byDest = new Map<string, Map<string, Row[]>>();
   for (const r of sorted) {
     const dest = r.dest ?? "—";
     const client = r.client_name ?? `Client ${r.client_id ?? "?"}`;
@@ -45,30 +56,38 @@ function groupRows(rows: VidRow[]): Group[] {
 }
 
 /** Only a remark that exists but names no clear branch is worth flagging; no remark just means "use the branch". */
-const unreadRemark = (r: VidRow) => (!r.dest_from_remark && r.remark ? `Ghi chú không rõ nơi gửi: “${r.remark}”` : null);
+const unreadRemark = (r: Row) => (!r.dest_from_remark && r.remark ? `Ghi chú không rõ nơi gửi: “${r.remark}”` : null);
+
+const billingText = (r: Row) => (r.billing ? `${r.billing} ${r.billing_ok ? "✓" : "✗ Không có trong đơn"}` : "");
 
 const today = (locale: string) => new Date().toLocaleDateString(locale, { timeZone: "Asia/Ho_Chi_Minh" });
 const fileStem = (title: string) => `ban-giao-ban-cung_${title.replace(/\s+/g, "-")}_${today("sv-SE")}`;
-const HEAD = ["STT", "Gửi về", "Khách hàng", "VID", "Bệnh nhân", "Ghi chú", "Đã nhận"];
 
-function flatRows(groups: Group[]) {
+const HEAD = ["STT", "Gửi về", "Khách hàng", "VID", "Bệnh nhân", "Xét nghiệm", "Ghi chú"];
+const OPTIONAL = [5, 6]; // Xét nghiệm, Ghi chú — dropped when every row leaves them blank
+
+/** The checklist table shared by print and Excel, minus optional columns nobody filled. */
+function checklist(groups: Group[]) {
   let n = 0;
-  return groups.flatMap((g) => g.clients.flatMap((c) => c.rows.map((r) => {
+  const rows = groups.flatMap((g) => g.clients.flatMap((c) => c.rows.map((r) => {
     const note = unreadRemark(r);
-    return [++n, g.dest, c.name, r.vid, r.patient_name ?? "", note ? `Theo chi nhánh ${r.branch_code ?? "?"} — ${note}` : ""];
+    return [++n, g.dest, c.name, r.vid, r.patient_name ?? "", billingText(r), note ? `Theo chi nhánh ${r.branch_code ?? "?"} — ${note}` : ""];
   })));
+  const cols = HEAD.map((_, i) => i).filter((i) => !OPTIONAL.includes(i) || rows.some((r) => r[i]));
+  return { cols, head: cols.map((i) => HEAD[i]), rows: rows.map((r) => cols.map((i) => r[i])) };
 }
 
 async function downloadExcel(title: string, groups: Group[]) {
   const XLSX = await import("xlsx");
-  const rows = flatRows(groups);
+  const { cols, head, rows } = checklist(groups);
   const aoa: (string | number)[][] = [
-    [`BÀN GIAO KẾT QUẢ BẢN CỨNG — ${title}`], [`Ngày in: ${today("vi-VN")}`], [], HEAD,
+    [`BÀN GIAO KẾT QUẢ BẢN CỨNG — ${title}`], [`Ngày in: ${today("vi-VN")}`], [], [...head, "Đã nhận"],
     ...rows.map((r) => [...r, "☐"]),
     [], [`Tổng: ${rows.length} hồ sơ`], [], ["Người giao:", "", "", "Người nhận:", "", "Thời gian:"],
   ];
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws["!cols"] = [{ wch: 5 }, { wch: 8 }, { wch: 36 }, { wch: 14 }, { wch: 26 }, { wch: 30 }, { wch: 8 }];
+  const widths = [5, 8, 36, 14, 26, 30, 30];
+  ws["!cols"] = [...cols.map((i) => ({ wch: widths[i] })), { wch: 8 }];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Bàn giao");
   XLSX.writeFile(wb, `${fileStem(title)}.xlsx`);
@@ -78,10 +97,8 @@ const esc = (v: unknown) => String(v).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;"
 
 /** A4 portrait checklist in a new window; the print dialog also offers "Save as PDF". */
 function printA4(title: string, groups: Group[]) {
-  const rows = flatRows(groups);
-  // The note column is almost always empty — print it only when something is in it.
-  const keep = (_: unknown, i: number) => i !== 5 || rows.some((r) => r[5]);
-  const body = rows.map((r) => `<tr>${r.map((v, i) => keep(v, i) ? `<td class="c${i}">${esc(v)}</td>` : "").join("")}<td class="box">☐</td></tr>`).join("");
+  const { cols, head, rows } = checklist(groups);
+  const body = rows.map((r) => `<tr>${r.map((v, j) => `<td class="c${cols[j]}">${esc(v)}</td>`).join("")}<td class="box">☐</td></tr>`).join("");
   const html = `<!doctype html><html lang="vi"><head><meta charset="utf-8"><title>${esc(fileStem(title))}</title><style>
 @page { size: A4 portrait; margin: 12mm 10mm; }
 * { box-sizing: border-box; }
@@ -96,7 +113,7 @@ th { background: #eee; font-size: 9.5pt; }
 .c0, .box { text-align: center; width: 9mm; }
 .c1 { width: 14mm; font-weight: bold; }
 .c3 { width: 26mm; font-family: Consolas, monospace; }
-.c5 { font-size: 8.5pt; }
+.c5, .c6 { font-size: 8.5pt; }
 .box { font-size: 13pt; width: 15mm; }
 .sign { display: flex; justify-content: space-between; margin-top: 10mm; page-break-inside: avoid; }
 .sign div { width: 30%; text-align: center; }
@@ -104,7 +121,7 @@ th { background: #eee; font-size: 9.5pt; }
 </style></head><body>
 <h1>BÀN GIAO KẾT QUẢ BẢN CỨNG — ${esc(title)}</h1>
 <div class="meta">Ngày in: ${esc(today("vi-VN"))} · Tổng: ${rows.length} hồ sơ</div>
-<table><thead><tr>${HEAD.filter(keep).map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table>
+<table><thead><tr>${[...head, "Đã nhận"].map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table>
 <div class="sign"><div><p>Người giao</p>(Ký, ghi rõ họ tên)</div><div><p>Người nhận</p>(Ký, ghi rõ họ tên)</div><div><p>Thời gian</p>____:____ ngày ____/____</div></div>
 </body></html>`;
   const w = window.open("", "_blank");
@@ -152,10 +169,18 @@ function HandoverList({ title, groups }: { title: string; groups: Group[] }) {
                 {c.rows.map((r) => {
                   const note = unreadRemark(r);
                   return (
-                    <li key={r.vid} className="py-1.5 text-xs flex gap-2">
+                    <li key={r.key} className="py-1.5 text-xs flex gap-2">
                       <span className="font-mono text-slate-700 shrink-0">{r.vid}</span>
                       <span className="flex-1 min-w-0 text-slate-800">
                         {r.patient_name ?? "—"}
+                        {r.billing && (
+                          <span className={`flex items-start gap-1 mt-0.5 ${r.billing_ok ? "text-green-700" : "text-red-600"}`}>
+                            {r.billing_ok
+                              ? <Check aria-label="Có trong đơn" className="w-3.5 h-3.5 shrink-0" />
+                              : <X aria-label="Không có trong đơn" className="w-3.5 h-3.5 shrink-0" />}
+                            <span>{r.billing}{!r.billing_ok && " — không có trong đơn"}</span>
+                          </span>
+                        )}
                         {note && (
                           <span className="flex items-start gap-1 text-amber-700 mt-0.5">
                             <AlertCircle aria-hidden className="w-3.5 h-3.5 shrink-0" />
@@ -177,22 +202,25 @@ function HandoverList({ title, groups }: { title: string; groups: Group[] }) {
 
 export function HardCopyHandover() {
   const [text, setText] = useState("");
-  const [rows, setRows] = useState<VidRow[]>([]);
+  const [lines, setLines] = useState<PasteLine[]>([]); // what was pasted when "Tra cứu" was pressed
+  const [orders, setOrders] = useState<Record<string, Order>>({});
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(0);
 
-  const vids = [...new Set(text.split(/\D+/).filter(Boolean))];
+  const pasted = parsePaste(text);
+  const vids = [...new Set(pasted.map((l) => l.vid))];
 
   const lookup = async () => {
     if (!vids.length || loading) return;
     setLoading(true);
-    setRows([]);
+    setLines(pasted);
+    setOrders({});
     setDone(0);
-    // Chunks run one after another so a long paste never has more than 10 Labcenter calls in flight.
-    // A chunk that fails marks its own VIDs and the rest carry on.
+    // One lookup per distinct VID, however many billing lines it has. Chunks run one after another so a
+    // long paste never has more than 10 Labcenter calls in flight; a failed chunk marks only its own VIDs.
     for (let i = 0; i < vids.length; i += CHUNK) {
       const chunk = vids.slice(i, i + CHUNK);
-      let got: VidRow[];
+      let got: Order[];
       try {
         const res = await fetch("/api/labcenter/orders", {
           method: "POST",
@@ -204,14 +232,18 @@ export function HardCopyHandover() {
       } catch {
         got = chunk.map((vid) => ({ vid, error: "Không thể kết nối" }));
       }
-      setRows((prev) => [...prev, ...got]);
+      setOrders((prev) => ({ ...prev, ...Object.fromEntries(got.map((o) => [o.vid, o])) }));
       setDone(i + chunk.length);
     }
     setLoading(false);
   };
 
-  const found = rows.filter((r) => !r.error);
-  const failed = rows.filter((r) => r.error);
+  const rows: Row[] = lines.flatMap((l, i) => {
+    const o = orders[l.vid];
+    if (!o || o.error) return [];
+    return [{ ...o, key: `${i}`, billing: l.billing, billing_ok: l.billing ? billingFound(l.billing, o.test_names ?? []) : null }];
+  });
+  const failed = Object.values(orders).filter((o) => o.error);
 
   return (
     <div className="space-y-4">
@@ -219,12 +251,14 @@ export function HardCopyHandover() {
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder="Dán danh sách VID, mỗi dòng một số"
+          placeholder={"Dán VID, mỗi dòng một hồ sơ.\nCó thể dán kèm tên xét nghiệm (billing name) sau VID."}
           rows={5}
           aria-label="Danh sách VID"
           className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm text-slate-700 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
         />
-        <p className="text-xs text-slate-500">{vids.length} VID</p>
+        <p className="text-xs text-slate-500">
+          {pasted.length} dòng · {vids.length} VID
+        </p>
         <button
           onClick={lookup}
           disabled={loading || !vids.length}
@@ -245,10 +279,10 @@ export function HardCopyHandover() {
         </div>
       )}
 
-      {rows.length > 0 && (
+      {lines.length > 0 && Object.keys(orders).length > 0 && (
         <div className="grid gap-4 md:grid-cols-2 items-start">
-          <HandoverList title={HUB} groups={groupRows(found.filter((r) => r.dest === HUB))} />
-          <HandoverList title={`Ngoài ${HUB}`} groups={groupRows(found.filter((r) => r.dest !== HUB))} />
+          <HandoverList title={HUB} groups={groupRows(rows.filter((r) => r.dest === HUB))} />
+          <HandoverList title={`Ngoài ${HUB}`} groups={groupRows(rows.filter((r) => r.dest !== HUB))} />
         </div>
       )}
     </div>

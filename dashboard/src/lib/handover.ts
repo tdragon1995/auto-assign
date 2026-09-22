@@ -23,3 +23,37 @@ export function destFromRemark(remark: string | null | undefined): string | null
   const tail = codesIn(after);
   return tail.length === 1 ? tail[0] : null;
 }
+
+// ── Pasted rows ───────────────────────────────────────────────────────────────
+// One line per row: a VID, optionally followed by a billing name (two columns
+// copied from Excel arrive tab-separated). The same VID with two billing names
+// is two rows. A line of bare VIDs ("a, b c") is one row per VID, blank billing.
+
+export interface PasteLine { vid: string; billing: string }
+
+const VID_RE = /\d{8,}/g;
+
+export function parsePaste(text: string): PasteLine[] {
+  const out: PasteLine[] = [];
+  const seen = new Set<string>();
+  for (const line of text.split(/\r?\n/)) {
+    const ids = line.match(VID_RE);
+    if (!ids) continue;
+    const rest = line.replace(VID_RE, "").replace(/^[\s,;|]+|[\s,;|]+$/g, "").replace(/\s+/g, " ");
+    const entries = /\p{L}/u.test(rest) ? [{ vid: ids[0], billing: rest }] : ids.map((vid) => ({ vid, billing: "" }));
+    for (const e of entries) {
+      const key = `${e.vid}|${norm(e.billing)}`;
+      if (!seen.has(key)) { seen.add(key); out.push(e); }
+    }
+  }
+  return out;
+}
+
+const norm = (s: string) =>
+  s.normalize("NFD").replace(/\p{M}/gu, "").replace(/đ/gi, "d").toLowerCase().replace(/\s+/g, " ").trim();
+
+/** True when the pasted text appears in one of the order's test names — billing_name, test_name or test_name_vi (case, accents and spacing ignored). */
+export function billingFound(pasted: string, names: string[]): boolean {
+  const p = norm(pasted);
+  return !!p && names.some((n) => norm(n).includes(p));
+}

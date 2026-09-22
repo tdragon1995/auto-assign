@@ -27,3 +27,25 @@ console.log(`ok — ${cases.length} cases`);
 assert.equal(destFromRemark("Thời gian lấy mẫu 12:04 ngày 17/9/2026 | Bản cứng kết quả gửi về D015"), "D015");
 assert.equal(destFromRemark("Bản cứng gửi về D015 | Thời gian lấy mẫu 12:04"), "D015");
 console.log("ok — joined notes");
+
+// ── Pasted rows + billing match ──
+import { parsePaste, billingFound } from "../src/lib/handover";
+
+assert.deepEqual(parsePaste("26020669640\tBlomia Tropicalis - Bt (d201)\n26020669640\tHbA1c\n26020669641"), [
+  { vid: "26020669640", billing: "Blomia Tropicalis - Bt (d201)" },
+  { vid: "26020669640", billing: "HbA1c" },           // same VID, second billing → its own row
+  { vid: "26020669641", billing: "" },                 // no billing pasted → blank
+]);
+assert.deepEqual(parsePaste("26020669640, 26020669641 26020669642"), [
+  { vid: "26020669640", billing: "" }, { vid: "26020669641", billing: "" }, { vid: "26020669642", billing: "" },
+]);
+assert.deepEqual(parsePaste("26020669640 hba1c\n26020669640   HbA1c "), [{ vid: "26020669640", billing: "hba1c" }]); // duplicate line
+assert.deepEqual(parsePaste("Cholesterol, toàn phần 26020669640"), [{ vid: "26020669640", billing: "Cholesterol, toàn phần" }]);
+
+const names = ["Blomia Tropicalis - Bt (d201)", "Định lượng Glucose"];
+assert.equal(billingFound("blomia tropicalis - bt (d201)", names), true);
+assert.equal(billingFound("dinh luong glucose", names), true);   // accents ignored
+assert.equal(billingFound("d201", names), true);                 // part of a name
+assert.equal(billingFound("HbA1c", names), false);
+assert.equal(billingFound("", names), false);
+console.log("ok — paste + billing");

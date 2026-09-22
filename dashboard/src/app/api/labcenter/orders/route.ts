@@ -41,6 +41,12 @@ async function lookup(vid: string, token: string) {
       client_id: o.client_id != null ? String(o.client_id) : null,
       client_name: o.client_name?.trim() || null,
       patient_name: o.patient_full_name?.trim() || null,
+      // Every name a test goes by — a pasted name is checked against all of them.
+      test_names: [...new Set(
+        (Array.isArray(o.order_test_details) ? o.order_test_details : [])
+          .flatMap((t: Record<string, unknown>) => [t.billing_name, t.test_name, t.test_name_vi])
+          .map((v: unknown) => String(v ?? "").trim()).filter(Boolean),
+      )],
       remark,
       // Where the paper result goes: for HBC, the branch its remark names; otherwise the order's branch.
       dest: fromRemark ?? o.branch_code ?? null,
