@@ -58,7 +58,8 @@ function groupRows(rows: Row[]): Group[] {
 /** Only a remark that exists but names no clear branch is worth flagging; no remark just means "use the branch". */
 const unreadRemark = (r: Row) => (!r.dest_from_remark && r.remark ? `Ghi chú không rõ nơi gửi: “${r.remark}”` : null);
 
-const billingText = (r: Row) => (r.billing ? `${r.billing} ${r.billing_ok ? "✓" : "✗ Không có trong đơn"}` : "");
+// Print and Excel carry the name only; the ✓/✗ check is for the screen.
+const billingText = (r: Row) => r.billing;
 
 const today = (locale: string) => new Date().toLocaleDateString(locale, { timeZone: "Asia/Ho_Chi_Minh" });
 const fileStem = (title: string) => `ban-giao-ban-cung_${title.replace(/\s+/g, "-")}_${today("sv-SE")}`;
