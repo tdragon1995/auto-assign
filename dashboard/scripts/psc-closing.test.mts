@@ -86,6 +86,7 @@ console.log("\nthe real table (PSC_CLOSING)");
   ok("19:00 D026 → D002", go("D026", "19:00") === "D002");
   ok("19:00 D022 → D003", go("D022", "19:00") === "D003");
   ok("19:00 D046 → D029", go("D046", "19:00") === "D029");
+  ok("19:00 D018 → D029", go("D018", "19:00") === "D029");
   ok("19:00 D014 has no next best → left alone", go("D014", "19:00") === null);
   ok("19:00 D001 still open", go("D001", "19:00") === "D001");
   ok("21:00 D026 → D002 closed too, nothing after → left alone", go("D026", "21:00") === null);

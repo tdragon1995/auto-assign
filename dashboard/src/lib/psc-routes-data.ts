@@ -123,7 +123,7 @@ export const PSC_CLOSING: Readonly<Record<string, { close: string; next?: string
   D015: { close: "19:00" },
   D016: { close: "19:00" },
   D017: { close: "21:00" },
-  D018: { close: "19:00" },
+  D018: { close: "19:00", next: "D029" },
   D019: { close: "21:00" },
   D020: { close: "19:00", next: "D003" },
   D021: { close: "19:00" },
