@@ -216,56 +216,40 @@ async function postJson(url: string, body: unknown) {
 }
 
 /**
- * One bulk write, row by row.
+ * One bulk write, as ONE request.
  *
- * SEQUENTIAL, never parallel: these all land on one sheet, and the delete path
- * additionally SHIFTS every row below the one it removes — two in flight would
- * be reading each other's aftermath.
- *
- * It runs to the END rather than stopping at the first failure, and says what
- * landed. Carrying on is safe because it is not this loop that protects the
- * sheet: every route re-reads its row and refuses when the branch sitting
- * there is not the one being addressed, so a row that drifted is skipped
- * rather than overwritten. Stopping instead would leave a partial write with
- * no account of which rows were still pending.
+ * This used to loop the per-row routes, which spend two or three Sheets reads a
+ * row: past ~25 rows (~15 for a delete) Google's 60-reads-a-minute quota
+ * answered 429 and every remaining row failed, leaving a partial write. The bulk
+ * routes read once, check every row against that read, and write once — see
+ * bulkUpdateConfigRows. Rows whose branch moved are skipped and listed rather
+ * than written.
  */
-async function runBulk(
-  targets: readonly ConfigRowView[],
-  step: (r: ConfigRowView) => Promise<void>,
-  onProgress: (done: number) => void,
-): Promise<{ ok: number; errors: string[] }> {
-  let ok = 0;
-  const errors: string[] = [];
-  for (let i = 0; i < targets.length; i++) {
-    const r = targets[i];
-    try {
-      await step(r);
-      ok++;
-    } catch (e) {
-      errors.push(`Dòng ${r.row} (${r.pickup}): ${e instanceof Error ? e.message : String(e)}`);
-    }
-    onProgress(i + 1);
-  }
-  return { ok, errors };
+type BulkResult = { done: { row: number }[]; skipped: { row: number; pickup: string; reason: string }[] };
+
+function reportBulk(label: string, res: BulkResult) {
+  const first = res.skipped[0];
+  const why = first ? `Dòng ${first.row} (${first.pickup}): ${first.reason}` : "";
+  if (res.skipped.length === 0) toast.success(`${label}: ${res.done.length} dòng`);
+  else if (res.done.length > 0) toast.warning(`${label}: ${res.done.length} dòng — bỏ qua ${res.skipped.length}. ${why}`);
+  else toast.error(`Không ghi được dòng nào. ${why}`);
 }
+
+const targetBody = (rows: readonly ConfigRowView[]) => rows.map((r) => ({ row: r.row, pickup_name: r.pickup }));
 
 type BulkMode = "driver" | "hours" | "delete";
 
 /**
  * The same three edits the single-row editor makes, applied to every ticked row.
  *
- * It writes through the EXISTING guarded routes — `complete-row` for a driver
- * or a window, `delete-row` for a removal — one call per row, rather than a
- * bulk endpoint of its own. That is what keeps the roster check, the
- * re-read-before-write and the Sunday refusal identical to what a single edit
- * gets: bulk here means "do this repeatedly", not "do this a second way".
+ * One request per action, to the bulk routes (bulk-update, bulk-delete). They
+ * apply the single-row routes' checks — roster names, a window with two
+ * different ends, the Sunday refusal, the branch re-read per row — against ONE
+ * read of the sheet, then write once.
  *
- * Two things the shape of those routes decides for us:
- *   - a window change also sends the row's EXISTING driver, because the route
- *     always writes the driver cell — so a row with no driver cannot take one
- *     and is counted out before the run rather than failing inside it;
- *   - a driver change sends NO window, which leaves each row's own hours
- *     alone. Rows on different shifts keep them.
+ * A driver change sends no window and a window change sends no driver, so each
+ * leaves the other column of every row as it was. Rows on different shifts keep
+ * them.
  */
 function BulkBar({
   targets,
@@ -285,67 +269,42 @@ function BulkBar({
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(0);
   const [armed, setArmed] = useState(false);
 
-  // A window write carries the driver cell with it, so a driverless row has
-  // nothing to send. Named up front — "2 dòng chưa có tài xế sẽ bị bỏ qua" is
-  // something to see before pressing, not to read in the error list after.
-  const driverless = targets.filter((r) => !r.driver.trim());
-  const hourTargets = targets.filter((r) => r.driver.trim());
-
-  const finish = (label: string, res: { ok: number; errors: string[] }) => {
-    if (res.errors.length === 0) toast.success(`${label}: ${res.ok} dòng`);
-    else if (res.ok > 0) toast.warning(`${label}: ${res.ok} dòng — ${res.errors.length} lỗi. ${res.errors[0]}`);
-    else toast.error(`Không ghi được dòng nào. ${res.errors[0] ?? ""}`);
-    setMode(null);
-    setArmed(false);
-    setDone(0);
-    onDone();
-  };
-
-  const run = async (label: string, rows: readonly ConfigRowView[], step: (r: ConfigRowView) => Promise<void>) => {
+  const run = async (label: string, url: string, body: object) => {
     setBusy(true);
-    setDone(0);
-    const res = await runBulk(rows, step, setDone);
-    setBusy(false);
-    finish(label, res);
+    try {
+      reportBulk(label, await postJson(url, { ...body, rows: targetBody(targets) }));
+      setMode(null);
+      setArmed(false);
+      onDone();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const applyDriver = () => {
     const cell = splitDriverNames(driverCell).join(DRIVER_SEP);
     if (!cell) return toast.error("Chọn tài xế trước");
-    return run("Đã đổi tài xế", targets, (r) =>
-      postJson("/api/config/complete-row", {
-        row: r.row, pickup_name: r.pickup, driver_name: cell,
-      }).then(() => undefined),
-    );
+    return run("Đã đổi tài xế", "/api/config/bulk-update", { driver_name: cell });
   };
 
   const applyHours = () => {
     if (!start || !end) return toast.error("Ca phải đủ cả từ và đến");
     if (start === end) return toast.error("Giờ bắt đầu và kết thúc trùng nhau — dòng sẽ không bao giờ trực");
-    if (hourTargets.length === 0) return toast.error("Các dòng đã chọn đều chưa có tài xế");
-    return run("Đã đổi ca", hourTargets, (r) =>
-      postJson("/api/config/complete-row", {
-        row: r.row, pickup_name: r.pickup, driver_name: r.driver,
-        shift_start: start, shift_end: end,
-      }).then(() => undefined),
-    );
+    return run("Đã đổi ca", "/api/config/bulk-update", { shift_start: start, shift_end: end });
   };
 
-  const applyDelete = () =>
-    // HIGHEST ROW FIRST. Removing a row shifts every row below it up by one,
-    // so descending order leaves the rows still to go untouched above the
-    // cut. Ascending would walk into numbers that had all moved.
-    run("Đã xoá", [...targets].sort((a, b) => b.row - a.row), (r) =>
-      postJson("/api/config/delete-row", { row: r.row, pickup_name: r.pickup }).then(() => undefined),
-    );
+  // The server deletes highest row first in one atomic batch, so the order
+  // the rows are ticked in does not matter.
+  const applyDelete = () => run("Đã xoá", "/api/config/bulk-delete", {});
 
   return (
     <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-indigo-300 bg-indigo-50/70 px-2 py-1.5">
       <span className="text-[11px] font-semibold text-indigo-900" aria-live="polite">
-        {busy ? `Đang ghi ${done}/${targets.length}…` : `${targets.length} dòng đã chọn`}
+        {busy ? `Đang ghi ${targets.length} dòng…` : `${targets.length} dòng đã chọn`}
       </span>
 
       {!busy && mode === null && (
@@ -403,11 +362,6 @@ function BulkBar({
           <TimeSelect label="Từ giờ" value={start} onChange={setStart} />
           <span className="text-[11px] text-slate-500">→</span>
           <TimeSelect label="Đến giờ" value={end} onChange={setEnd} />
-          {driverless.length > 0 && (
-            <span className="text-[11px] font-semibold text-amber-700">
-              bỏ qua {driverless.length} dòng chưa có tài xế
-            </span>
-          )}
           <div className="ml-auto flex gap-1">
             <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => setMode(null)} disabled={busy}>
               Hủy
@@ -418,7 +372,7 @@ function BulkBar({
               onClick={applyHours}
               disabled={busy}
             >
-              Áp dụng {hourTargets.length} dòng
+              Áp dụng {targets.length} dòng
             </Button>
           </div>
         </>

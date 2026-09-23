@@ -1716,83 +1716,213 @@ export async function completeConfigRow(opts: {
   });
 }
 
+/**
+ * Bulk config writes: ONE read, ONE write, whatever the row count.
+ *
+ * The per-row routes (`completeConfigRow`, `deleteConfigRow`) each spend two or
+ * three reads on a header and a row check before their write. Looped over a
+ * selection from the Config tab that is 120–180 reads a minute against Google's
+ * 60-reads-per-minute-per-user quota — so a bulk edit of more than ~25 rows (a
+ * delete of more than ~15) started answering 429 partway through, and every row
+ * after that failed while the ones before it had landed. The writers below read
+ * the header and the columns they need ONCE, check every row against that one
+ * read, and send one batch.
+ *
+ * The guard is the same one every per-row writer applies, just done in memory:
+ * the row must still hold the branch the dashboard showed. A row that does not is
+ * SKIPPED and reported — never written — because row numbers move whenever
+ * anyone deletes above them.
+ */
+export interface BulkConfigResult {
+  done: { row: number; pickup: string }[];
+  skipped: { row: number; pickup: string; reason: string }[];
+}
+
+type ConfigTarget = { row: number; expectPickup: string };
+
+/** The weekday tab, its header as column letters, and the named columns read
+ *  down to the lowest target row — in two requests. */
+async function readTargetColumns(
+  targets: readonly ConfigTarget[],
+  columns: readonly string[],
+  sundayMsg: string,
+) {
+  const tab = currentConfigTab();
+  if (tab.gid !== CONFIG_TABS.weekday.gid) throw new Error(sundayMsg);
+  if (targets.length === 0) throw new Error("Chưa chọn dòng nào");
+  const sheets = getSheetsClient();
+  const q = a1(tab);
+
+  const head = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${q}!1:1` });
+  const header = (head.data.values?.[0] ?? []).map((h) => String(h ?? "").trim());
+  const letter = (name: string) => {
+    const i = header.indexOf(name);
+    return i < 0 ? null : colLetter(i);
+  };
+  const need = (name: string) => {
+    const l = letter(name);
+    if (!l) throw new Error(`"${tab.title}" không có cột ${name}`);
+    return l;
+  };
+  const pickupCol = need(WRITE_COLS.pickup);
+  const cols = columns.map(need);
+
+  const last = Math.max(...targets.map((t) => t.row));
+  const read = await sheets.spreadsheets.values.batchGet({
+    spreadsheetId: SHEET_ID,
+    ranges: [pickupCol, ...cols].map((c) => `${q}!${c}1:${c}${last}`),
+  });
+  /** Column i (0 = pickup, then `columns` in order) at a 1-based sheet row. */
+  const cell = (i: number, row: number) =>
+    String(read.data.valueRanges?.[i]?.values?.[row - 1]?.[0] ?? "").trim();
+
+  /** Targets whose pickup still matches, deduped; the rest go to `skipped`. */
+  const skipped: BulkConfigResult["skipped"] = [];
+  const live: ConfigTarget[] = [];
+  const seen = new Set<number>();
+  for (const t of targets) {
+    if (seen.has(t.row)) continue;
+    seen.add(t.row);
+    const found = cell(0, t.row);
+    if (found !== t.expectPickup.trim()) {
+      skipped.push({ row: t.row, pickup: t.expectPickup, reason: `dòng giờ là "${found || "(trống)"}" — sheet đã thay đổi` });
+    } else {
+      live.push(t);
+    }
+  }
+  return { sheets, tab, q, letter, cols, cell, live, skipped };
+}
+
+const SUNDAY_DRIVER_MSG =
+  "Chủ nhật: tài xế được suy ra từ lịch trực công khai, không chọn trong config — sửa trên tab lịch Chủ nhật";
+
+/**
+ * Set the driver cell and/or the window on every target row, in one write.
+ *
+ * Only the columns asked for are addressed, one range per cell — the same rule
+ * `configWriteRanges` follows, so nothing between two columns can be touched.
+ * The caller validates the names against the roster and the window's shape.
+ */
+export async function bulkUpdateConfigRows(opts: {
+  targets: ConfigTarget[];
+  driverName?: string;
+  start?: string;
+  end?: string;
+}): Promise<BulkConfigResult> {
+  const withDriver = opts.driverName !== undefined;
+  const withHours = opts.start !== undefined && opts.end !== undefined;
+  if (!withDriver && !withHours) throw new Error("Không có gì để ghi");
+  const columns = [
+    ...(withDriver ? ["Driver"] : []),
+    ...(withHours ? [WRITE_COLS.start, WRITE_COLS.end] : []),
+  ];
+  const { sheets, q, cols, live, skipped } = await readTargetColumns(opts.targets, columns, SUNDAY_DRIVER_MSG);
+
+  const data: { range: string; values: string[][] }[] = [];
+  for (const t of live) {
+    let i = 0;
+    if (withDriver) data.push({ range: `${q}!${cols[i++]}${t.row}`, values: [[opts.driverName!]] });
+    if (withHours) {
+      data.push({ range: `${q}!${cols[i++]}${t.row}`, values: [[opts.start!]] });
+      data.push({ range: `${q}!${cols[i++]}${t.row}`, values: [[opts.end!]] });
+    }
+  }
+  if (data.length > 0) {
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: SHEET_ID,
+      requestBody: { valueInputOption: "USER_ENTERED", data },
+    });
+  }
+  return { done: live.map((t) => ({ row: t.row, pickup: t.expectPickup })), skipped };
+}
+
+/**
+ * Delete every target row, in one batchUpdate.
+ *
+ * The deletes are sent HIGHEST ROW FIRST. Requests in one batch apply in order,
+ * and removing a row shifts everything below it up by one — so descending order
+ * leaves every row still to go exactly where the check found it. The batch is
+ * also atomic: Google applies all of it or none.
+ *
+ * Row 2 is refused like the single delete refuses it (the id ARRAYFORMULA
+ * anchor), and the same read-back runs once at the end. See `deleteConfigRow`.
+ */
+export async function bulkDeleteConfigRows(opts: { targets: ConfigTarget[] }): Promise<BulkConfigResult> {
+  const ANCHOR = "dòng 2 giữ công thức id của cả cột — không xoá";
+  const anchor = opts.targets
+    .filter((t) => t.row <= 2)
+    .map((t) => ({ row: t.row, pickup: t.expectPickup, reason: ANCHOR }));
+  const rest = opts.targets.filter((t) => t.row > 2);
+  if (rest.length === 0) return { done: [], skipped: anchor };
+
+  const { sheets, tab, q, letter, live, skipped } = await readTargetColumns(
+    rest, [], "Chủ nhật: dòng được suy ra từ lịch trực công khai — sửa trên tab lịch Chủ nhật",
+  );
+  skipped.push(...anchor);
+  const doomed = [...live].sort((a, b) => b.row - a.row);
+  if (doomed.length === 0) return { done: [], skipped };
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SHEET_ID,
+    requestBody: {
+      requests: doomed.map((t) => ({
+        deleteDimension: {
+          range: { sheetId: Number(tab.gid), dimension: "ROWS", startIndex: t.row - 1, endIndex: t.row },
+        },
+      })),
+    },
+  });
+
+  try {
+    const idCol = letter("customer_id");
+    if (idCol) {
+      const back = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${q}!${idCol}2:${idCol}12` });
+      if ((back.data.values ?? []).some((r) => String(r?.[0] ?? "").includes("#REF!"))) {
+        console.error(
+          `[config] BULK DELETE of ${doomed.length} rows COLLAPSED THE customer_id ARRAYFORMULA on ` +
+          `"${tab.title}" — every branch id is now #REF!. Undo it in the sheet's version history immediately.`,
+        );
+      }
+    }
+  } catch (e) {
+    console.error("[config] post-delete id-column check failed", e);
+  }
+  return { done: doomed.map((t) => ({ row: t.row, pickup: t.expectPickup })), skipped };
+}
+
 export interface DriverReplaceResult {
   replaced: { row: number; pickup: string; before: string; after: string }[];
   skipped: { row: number; pickup: string; reason: string }[];
 }
 
 /**
- * Put driver `to` wherever driver `from` stands, on the rows named.
+ * Put driver `to` wherever driver `from` stands, on the rows named — one read,
+ * one write, like the bulk writers above.
  *
- * ONE read and ONE write for the whole set, rather than a `completeConfigRow`
- * per row. That route costs three reads, a write, a roster load and a cache bump
- * per row; a driver on forty rows would be ~200 Sheets calls against the
- * 60-per-minute write quota and forty engine cache flushes. Here it is the
- * header, the two columns, one batchUpdate — whatever the count.
- *
- * The same guard as every other writer, per row, against the LIVE sheet: the
- * pickup must still be the branch the dashboard showed, and the driver cell must
- * still hold `from`. A row failing either is skipped and reported, never
- * written — row numbers move when anyone deletes above them, and a cell someone
- * already changed is not this call's to overwrite.
- *
- * The new cell is computed from what the sheet holds NOW (`replaceDriverInCell`),
- * not from the dashboard's copy, so a smart row edited in the meantime keeps
- * the edit.
- *
- * WEEKDAY ONLY: the Sunday tab's Driver column is a formula.
+ * On top of the branch check, the driver cell must still hold `from`; a cell
+ * someone already changed is not this call's to overwrite. The new cell is
+ * computed from what the sheet holds NOW (`replaceDriverInCell`), not from the
+ * dashboard's copy, so a smart row edited in the meantime keeps the edit.
  */
 export async function replaceConfigDriver(opts: {
   from: string;
   to: string;
-  targets: { row: number; expectPickup: string }[];
+  targets: ConfigTarget[];
 }): Promise<DriverReplaceResult> {
-  const tab = currentConfigTab();
-  if (tab.gid !== CONFIG_TABS.weekday.gid) {
-    throw new Error(
-      "Chủ nhật: tài xế được suy ra từ lịch trực công khai, không chọn trong config — sửa trên tab lịch Chủ nhật",
-    );
-  }
-  const sheets = getSheetsClient();
-  const q = a1(tab);
+  const { sheets, q, cols, cell, live, skipped } =
+    await readTargetColumns(opts.targets, ["Driver"], SUNDAY_DRIVER_MSG);
 
-  const head = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${q}!1:1` });
-  const header = (head.data.values?.[0] ?? []).map((h) => String(h ?? "").trim());
-  const at = (name: string) => {
-    const i = header.indexOf(name);
-    if (i < 0) throw new Error(`"${tab.title}" không có cột ${name}`);
-    return colLetter(i);
-  };
-  const pickupCol = at(WRITE_COLS.pickup);
-  const driverCol = at("Driver");
-
-  const last = Math.max(...opts.targets.map((t) => t.row));
-  const cols = await sheets.spreadsheets.values.batchGet({
-    spreadsheetId: SHEET_ID,
-    ranges: [`${q}!${pickupCol}1:${pickupCol}${last}`, `${q}!${driverCol}1:${driverCol}${last}`],
-  });
-  const cellAt = (i: number, row: number) =>
-    String(cols.data.valueRanges?.[i]?.values?.[row - 1]?.[0] ?? "").trim();
-
-  const result: DriverReplaceResult = { replaced: [], skipped: [] };
+  const result: DriverReplaceResult = { replaced: [], skipped };
   const data: { range: string; values: string[][] }[] = [];
-  for (const t of opts.targets) {
-    const pickup = cellAt(0, t.row);
-    if (pickup !== t.expectPickup.trim()) {
-      result.skipped.push({
-        row: t.row, pickup: t.expectPickup,
-        reason: `dòng giờ là "${pickup || "(trống)"}" — sheet đã thay đổi`,
-      });
-      continue;
-    }
-    const before = cellAt(1, t.row);
+  for (const t of live) {
+    const before = cell(1, t.row);
     const after = replaceDriverInCell(before, opts.from, opts.to);
     if (after === null) {
-      result.skipped.push({ row: t.row, pickup, reason: "dòng không còn tài xế này" });
+      result.skipped.push({ row: t.row, pickup: t.expectPickup, reason: "dòng không còn tài xế này" });
       continue;
     }
-    data.push({ range: `${q}!${driverCol}${t.row}`, values: [[after]] });
-    result.replaced.push({ row: t.row, pickup, before, after });
+    data.push({ range: `${q}!${cols[0]}${t.row}`, values: [[after]] });
+    result.replaced.push({ row: t.row, pickup: t.expectPickup, before, after });
   }
 
   if (data.length > 0) {
