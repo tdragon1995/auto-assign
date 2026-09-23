@@ -5,7 +5,7 @@ import { Pencil, Search } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { foldName, splitDriverNames, DRIVER_SEP } from "@/lib/driver-cell";
+import { foldName, replaceDriverInCell, splitDriverNames, DRIVER_SEP } from "@/lib/driver-cell";
 import { displayDriverCell, splitDriverName } from "@/lib/driver-label";
 import { configFilterOptions, EMPTY_CONFIG_FILTERS, filterConfigRows } from "@/lib/config-filters";
 import { BranchEditor, TimeSelect } from "./config-todo-panel";
@@ -461,6 +461,191 @@ function BulkBar({
   );
 }
 
+/**
+ * Replace one driver with another wherever they stand in the config.
+ *
+ * Different from the bulk "Đổi tài xế" in the one way that matters: that one
+ * OVERWRITES the cell, which on a smart row throws away every other candidate.
+ * This swaps the one name and leaves the rest of the cell — and the hours, and
+ * the destination — alone.
+ *
+ * It reaches every row that names the driver, not just the ones on screen: the
+ * table is capped at a render batch and filtered, and a replacement that
+ * quietly missed row 151 would leave the old driver assigned somewhere nobody
+ * looked. The preview lists every row before anything is written, each can be
+ * unticked, and the write is one server call that re-checks each row against
+ * the live sheet.
+ */
+function ReplaceDriverPanel({
+  rows,
+  drivers,
+  fromOptions,
+  onDone,
+  onClose,
+}: {
+  rows: readonly ConfigRowView[];
+  /** The roster — the only names a replacement may be. */
+  drivers: ConfigDriver[];
+  /** Every name the loaded config mentions, roster or not: a driver who has
+   *  left may already be off the roster, and those rows are the ones to move. */
+  fromOptions: readonly string[];
+  onDone: () => void;
+  onClose: () => void;
+}) {
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [excluded, setExcluded] = useState<ReadonlySet<number>>(new Set());
+  const [busy, setBusy] = useState(false);
+
+  const fromDrivers = useMemo<ConfigDriver[]>(
+    () => fromOptions.map((name) => ({ driver_id: name, name })),
+    [fromOptions],
+  );
+  const affected = useMemo(
+    () => (from ? sortConfigRows(rows.filter((r) => splitDriverNames(r.driver).includes(from))) : []),
+    [rows, from],
+  );
+  const writable = affected.filter(isWritable);
+  const unwritable = affected.length - writable.length;
+  const picked = writable.filter((r) => !excluded.has(r.row));
+
+  const pickFrom = (names: string[]) => {
+    setFrom(names[0] ?? "");
+    setExcluded(new Set());
+  };
+  const toggle = (row: number) =>
+    setExcluded((s) => {
+      const next = new Set(s);
+      if (!next.delete(row)) next.add(row);
+      return next;
+    });
+
+  const apply = async () => {
+    if (!from || !to) return toast.error("Chọn đủ hai tài xế");
+    if (picked.length === 0) return toast.error("Chưa chọn dòng nào");
+    setBusy(true);
+    try {
+      const j = await postJson("/api/config/replace-driver", {
+        from, to, rows: picked.map((r) => ({ row: r.row, pickup_name: r.pickup })),
+      });
+      const done = (j.replaced ?? []).length as number;
+      const skipped = (j.skipped ?? []) as { row: number; pickup: string; reason: string }[];
+      if (skipped.length === 0) toast.success(`Đã thay tài xế trên ${done} dòng`);
+      else if (done > 0) {
+        toast.warning(`Đã thay ${done} dòng — bỏ qua ${skipped.length}. Dòng ${skipped[0].row} (${skipped[0].pickup}): ${skipped[0].reason}`);
+      } else {
+        toast.error(`Không thay được dòng nào. Dòng ${skipped[0]?.row} (${skipped[0]?.pickup}): ${skipped[0]?.reason}`);
+      }
+      onDone();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const comboClass =
+    "flex min-w-[200px] flex-1 flex-wrap items-center gap-1 rounded border border-slate-300 bg-white px-1 py-0.5 focus-within:ring-2 focus-within:ring-indigo-400/50";
+
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-indigo-300 bg-indigo-50/70 px-2 py-2">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-[11px] font-semibold text-indigo-900">Thay</span>
+        <DriverCombobox
+          names={from ? [from] : []}
+          onChange={pickFrom}
+          drivers={fromDrivers}
+          max={1}
+          placeholder="Tài xế đang có trong config…"
+          ariaLabel="Tài xế cần thay"
+          className={comboClass}
+        />
+        <span className="text-[11px] font-semibold text-indigo-900">bằng</span>
+        <DriverCombobox
+          names={to ? [to] : []}
+          onChange={(names) => setTo(names[0] ?? "")}
+          drivers={drivers.filter((d) => d.name !== from)}
+          max={1}
+          placeholder="Tài xế thay thế…"
+          ariaLabel="Tài xế thay thế"
+          className={comboClass}
+        />
+      </div>
+
+      {from && (
+        <>
+          <p className="text-[11px] text-indigo-900">
+            {writable.length === 0
+              ? "Tài xế này không có dòng nào sửa được."
+              : <>
+                  <span className="font-semibold tabular-nums">{picked.length}</span>/{writable.length} dòng sẽ đổi ·
+                  chỉ đổi tên tài xế, giữ nguyên ca, điểm giao và các tài xế khác trên dòng smart
+                </>}
+            {unwritable > 0 && (
+              <span className="ml-1 font-semibold text-amber-700">
+                · {unwritable} dòng không có điểm lấy — sửa từng dòng bằng nút Sửa
+              </span>
+            )}
+          </p>
+          {writable.length > 0 && (
+            <ul className="max-h-60 overflow-y-auto rounded border border-indigo-200 bg-white text-xs">
+              {writable.map((r) => {
+                const after = to ? replaceDriverInCell(r.driver, from, to) : null;
+                return (
+                  <li key={r.row} className="flex items-start gap-2 border-b border-slate-100 px-2 py-1 last:border-b-0">
+                    <input
+                      type="checkbox"
+                      checked={!excluded.has(r.row)}
+                      onChange={() => toggle(r.row)}
+                      aria-label={`Đổi dòng ${r.row} — ${r.pickup}`}
+                      className="mt-0.5 size-3.5 accent-indigo-600"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-x-2">
+                        <span className="font-medium text-slate-900">{r.pickup.replace(INACTIVE_PREFIX, "")}</span>
+                        <span className="tabular-nums text-slate-600">{r.start && r.end ? `${r.start}–${r.end}` : "cả ngày"}</span>
+                        {r.dropoff && <span className="text-slate-600">→ {r.dropoff}</span>}
+                        {r.smart && (
+                          <span className="rounded-full border border-sky-200 bg-sky-50 px-1 text-[10px] font-semibold text-sky-700">smart</span>
+                        )}
+                      </div>
+                      {/* Before → after only where it says more than the two
+                          pickers above: a smart row, where the rest of the cell
+                          is what the reader needs to see survive. */}
+                      {r.smart && after && (
+                        <div className="text-[11px] text-slate-600">
+                          <span className="line-through">{displayDriverCell(r.driver)}</span>
+                          <span className="mx-1">→</span>
+                          <span className="text-slate-800">{displayDriverCell(after)}</span>
+                        </div>
+                      )}
+                    </div>
+                    <span className="font-mono text-[10px] text-slate-500">{r.row}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </>
+      )}
+
+      <div className="flex justify-end gap-1">
+        <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={onClose} disabled={busy}>
+          Đóng
+        </Button>
+        <Button
+          size="sm"
+          className="h-6 px-2 text-[11px] bg-indigo-600 hover:bg-indigo-700"
+          onClick={() => void apply()}
+          disabled={busy || !from || !to || picked.length === 0}
+        >
+          {busy ? "Đang ghi…" : `Thay ${picked.length} dòng`}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /** A free-text filter, labelled and sized like the FilterMultiSelect beside it. */
 function ContainsInput({ label, value, onChange, placeholder }: {
   label: string;
@@ -491,6 +676,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [meta, setMeta] = useState<{ tab: string; fetchedAt: string } | null>(null);
+  const [replacing, setReplacing] = useState(false);
   const loadedRef = useRef(false);
 
   /** `fresh` is the Tải lại button: it bypasses the route's own cache as well as
@@ -639,6 +825,15 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
             </span>
           )}
           <Button
+            size="sm" variant={replacing ? "default" : "outline"}
+            className={`h-7 px-2 text-[11px] ${replacing ? "bg-indigo-600 hover:bg-indigo-700" : ""}`}
+            aria-expanded={replacing}
+            onClick={() => setReplacing((v) => !v)}
+            disabled={rows.length === 0}
+          >
+            Thay tài xế
+          </Button>
+          <Button
             size="sm" variant="outline"
             className="h-7 px-2 text-[11px]"
             onClick={() => void load(true)}
@@ -707,6 +902,16 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
         </div>
 
         {err && <div role="alert" className="text-[11px] text-red-600">{err}</div>}
+
+        {replacing && (
+          <ReplaceDriverPanel
+            rows={rows}
+            drivers={drivers}
+            fromOptions={optionValues.drivers}
+            onDone={() => { setReplacing(false); clearSelection(); void load(true); }}
+            onClose={() => setReplacing(false)}
+          />
+        )}
 
         {selectedRows.length > 0 && (
           <BulkBar

@@ -254,6 +254,7 @@ ever named, which is how a warning stops being read.
 | `GET /api/config` | Returns mapping/PSC route counts from sheets |
 | `GET /api/config/rows` | The config table itself, for the dashboard's Config tab and the copy-a-branch picker. NOT on the status poll — ~1,700 rows, fetched on demand behind a 5-min in-process cache |
 | `POST /api/config/delete-row` | Deletes one config row. Weekday only; refuses row 2 (the id ARRAYFORMULA anchor) and read-back-checks the spill afterwards |
+| `POST /api/config/replace-driver` | Config tab's "Thay tài xế": swaps driver A for B on the ticked rows, NAME BY NAME (a smart row keeps its other candidates; hours and destination untouched). Weekday only; `to` must be on the roster, `from` need not be (a driver who left). One header read + one column read + one batchUpdate + one cache bump for the whole set, each row re-checked against the live sheet |
 | `GET /api/drivers` | Proxy to Cartrack drivers list |
 | `POST /api/psc-assign` | PSC sample-transport job creation (creates unassigned job; auto-assign picks it up) |
 | `GET /api/psc-routes` | Load PSC routes from sheet (pickup→dropoff pairs with GPS coords) |

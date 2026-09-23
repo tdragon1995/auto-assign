@@ -13,7 +13,7 @@
  *   npx tsx scripts/driver-cell.test.mts
  */
 import type { ConfigDriver } from "../src/lib/types";
-const { resolveDriverCell, splitDriverNames } = await import("../src/lib/driver-cell");
+const { resolveDriverCell, splitDriverNames, replaceDriverInCell } = await import("../src/lib/driver-cell");
 
 let failed = 0;
 function ok(label: string, cond: boolean, detail?: string) {
@@ -64,6 +64,17 @@ ok("a lone comma is an empty cell", err(resolveDriverCell(" , ", roster)) === "C
   ok("the cell splits into its names", parts.length === 2, `got ${JSON.stringify(parts)}`);
   ok("...trimmed", parts[1] === DUC);
 }
+
+// ── replacing one driver with another ─────────────────────────────────────────
+// Name by name: a smart row keeps its other candidates, in their order.
+ok("fixed row: the one name is swapped", replaceDriverInCell(NHAT, NHAT, DUC) === DUC);
+ok("smart row: only the named driver moves, order kept",
+  replaceDriverInCell(`${DUC}, ${NHAT}, ${THANH}`, NHAT, DUC.replace("Đức", "X")) === `${DUC}, ${DUC.replace("Đức", "X")}, ${THANH}`);
+ok("a row without the driver is left alone (null)", replaceDriverInCell(`${DUC}, ${THANH}`, NHAT, DUC) === null);
+ok("the replacement already on the row: dropped, never listed twice",
+  replaceDriverInCell(`${NHAT}, ${DUC}, ${THANH}`, NHAT, DUC) === `${DUC}, ${THANH}`);
+ok("whole-name match only — a prefix is not the driver",
+  replaceDriverInCell("F - P - DC101569 Nguyễn Minh Nhật Anh", NHAT, DUC) === null);
 
 console.log(failed === 0 ? "\nAll checks passed." : `\n${failed} check(s) FAILED.`);
 process.exit(failed === 0 ? 0 : 1);

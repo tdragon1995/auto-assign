@@ -4,6 +4,7 @@ import { vnIsSunday, vnTimestamp } from "./time";
 import { LEAVE_DELETED_SHEET, LEAVE_DELETED_HEADERS } from "./leave-suppression";
 import type { ConfigCells } from "./unmapped-row";
 import { timeToMins } from "./time";
+import { replaceDriverInCell } from "./driver-cell";
 import {
   encodeSwapNote, parseSwapNote, parseThayCaNote, sourceKey, THAY_CA_NOTE_PREFIX,
   type ThayCaDesired,
@@ -1713,6 +1714,94 @@ export async function completeConfigRow(opts: {
     spreadsheetId: SHEET_ID,
     requestBody: { valueInputOption: "USER_ENTERED", data },
   });
+}
+
+export interface DriverReplaceResult {
+  replaced: { row: number; pickup: string; before: string; after: string }[];
+  skipped: { row: number; pickup: string; reason: string }[];
+}
+
+/**
+ * Put driver `to` wherever driver `from` stands, on the rows named.
+ *
+ * ONE read and ONE write for the whole set, rather than a `completeConfigRow`
+ * per row. That route costs three reads, a write, a roster load and a cache bump
+ * per row; a driver on forty rows would be ~200 Sheets calls against the
+ * 60-per-minute write quota and forty engine cache flushes. Here it is the
+ * header, the two columns, one batchUpdate — whatever the count.
+ *
+ * The same guard as every other writer, per row, against the LIVE sheet: the
+ * pickup must still be the branch the dashboard showed, and the driver cell must
+ * still hold `from`. A row failing either is skipped and reported, never
+ * written — row numbers move when anyone deletes above them, and a cell someone
+ * already changed is not this call's to overwrite.
+ *
+ * The new cell is computed from what the sheet holds NOW (`replaceDriverInCell`),
+ * not from the dashboard's copy, so a smart row edited in the meantime keeps
+ * the edit.
+ *
+ * WEEKDAY ONLY: the Sunday tab's Driver column is a formula.
+ */
+export async function replaceConfigDriver(opts: {
+  from: string;
+  to: string;
+  targets: { row: number; expectPickup: string }[];
+}): Promise<DriverReplaceResult> {
+  const tab = currentConfigTab();
+  if (tab.gid !== CONFIG_TABS.weekday.gid) {
+    throw new Error(
+      "Chủ nhật: tài xế được suy ra từ lịch trực công khai, không chọn trong config — sửa trên tab lịch Chủ nhật",
+    );
+  }
+  const sheets = getSheetsClient();
+  const q = a1(tab);
+
+  const head = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${q}!1:1` });
+  const header = (head.data.values?.[0] ?? []).map((h) => String(h ?? "").trim());
+  const at = (name: string) => {
+    const i = header.indexOf(name);
+    if (i < 0) throw new Error(`"${tab.title}" không có cột ${name}`);
+    return colLetter(i);
+  };
+  const pickupCol = at(WRITE_COLS.pickup);
+  const driverCol = at("Driver");
+
+  const last = Math.max(...opts.targets.map((t) => t.row));
+  const cols = await sheets.spreadsheets.values.batchGet({
+    spreadsheetId: SHEET_ID,
+    ranges: [`${q}!${pickupCol}1:${pickupCol}${last}`, `${q}!${driverCol}1:${driverCol}${last}`],
+  });
+  const cellAt = (i: number, row: number) =>
+    String(cols.data.valueRanges?.[i]?.values?.[row - 1]?.[0] ?? "").trim();
+
+  const result: DriverReplaceResult = { replaced: [], skipped: [] };
+  const data: { range: string; values: string[][] }[] = [];
+  for (const t of opts.targets) {
+    const pickup = cellAt(0, t.row);
+    if (pickup !== t.expectPickup.trim()) {
+      result.skipped.push({
+        row: t.row, pickup: t.expectPickup,
+        reason: `dòng giờ là "${pickup || "(trống)"}" — sheet đã thay đổi`,
+      });
+      continue;
+    }
+    const before = cellAt(1, t.row);
+    const after = replaceDriverInCell(before, opts.from, opts.to);
+    if (after === null) {
+      result.skipped.push({ row: t.row, pickup, reason: "dòng không còn tài xế này" });
+      continue;
+    }
+    data.push({ range: `${q}!${driverCol}${t.row}`, values: [[after]] });
+    result.replaced.push({ row: t.row, pickup, before, after });
+  }
+
+  if (data.length > 0) {
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: SHEET_ID,
+      requestBody: { valueInputOption: "USER_ENTERED", data },
+    });
+  }
+  return result;
 }
 
 /**

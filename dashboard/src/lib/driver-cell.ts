@@ -67,3 +67,26 @@ export function resolveDriverCell(
   }
   return { name: names.join(DRIVER_SEP) };
 }
+
+/**
+ * The cell with one driver swapped for another, or null when `from` is not in it.
+ *
+ * Name by name, never the whole cell: on a smart row `from` is one of several
+ * candidates, and the others are the point of the row. Overwriting the cell —
+ * which is what the bulk "Đổi tài xế" does — would turn a five-driver smart row
+ * into a fixed rule for one person.
+ *
+ * Position is kept, so the cell still reads in the order someone typed it. When
+ * `to` is ALREADY on the row the swap just drops `from`: listing one person twice
+ * is the one shape `resolveDriverCell` refuses, and they are ranked once anyway.
+ */
+export function replaceDriverInCell(cell: string, from: string, to: string): string | null {
+  const names = splitDriverNames(cell);
+  if (!names.includes(from)) return null;
+  const out: string[] = [];
+  for (const n of names) {
+    const next = n === from ? to : n;
+    if (!out.includes(next)) out.push(next);
+  }
+  return out.join(DRIVER_SEP);
+}
