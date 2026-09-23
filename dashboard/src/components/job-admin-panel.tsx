@@ -240,6 +240,11 @@ export function JobAdminPanel({
       if (seq !== searchSeq.current) return;
       if (!res.ok) throw new Error();
       const hits: SearchHit[] = Array.isArray(data.results) ? data.results : [];
+      // Cartrack did not answer: the list came from the day snapshot + activity log,
+      // which is NOT limited to jobs on the road. Say so rather than pass it off.
+      const fallbackNote: Notice = data.source === "fallback" && hits.length
+        ? { tone: "hint", text: "Cartrack chưa trả lời — danh sách lấy từ nhật ký, có thể gồm job đã xong." }
+        : null;
       if (digits) {
         const id = Number(q);
         const own = hits.find((h) => h.job_id === id);
@@ -252,12 +257,14 @@ export function JobAdminPanel({
           // A customer code. The number still gets a row, unopened, in case it was
           // meant as a job — opening it is the one Cartrack call, and only on demand.
           setResults([{ job_id: id, label: PROBE_LABEL }, ...hits]);
+          setNotice(fallbackNote);
         } else {
           lookupById(id);
         }
         return;
       }
       setResults(hits);
+      setNotice(fallbackNote);
     } catch {
       if (seq !== searchSeq.current) return;
       setResults([]);
@@ -406,7 +413,7 @@ export function JobAdminPanel({
             </Button>
           </div>
           <p id={hintId} className="text-[11px] leading-snug text-slate-600">
-            Tìm job hôm nay theo tên hoặc mã khách, tên tài xế, hoặc số job. Job đang chạy hiện trước.
+            Tìm job chưa xong hôm nay theo tên hoặc mã khách, PSC, tên tài xế hoặc số job. Job đang chạy hiện trước, rồi job chưa bắt đầu.
           </p>
         </form>
 
@@ -421,7 +428,7 @@ export function JobAdminPanel({
           )}
           {searched && !searching && !notice && results.length === 0 && (
             <p className="text-xs text-slate-700">
-              Không tìm thấy job nào khớp hôm nay. Có số job thì nhập số để tra thẳng.
+              Không có job chưa xong nào khớp hôm nay. Job đã xong thì nhập số job để tra thẳng.
             </p>
           )}
           {searching && <p className="text-xs text-slate-600">Đang tìm…</p>}
