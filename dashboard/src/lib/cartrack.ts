@@ -1537,10 +1537,10 @@ export async function getStopsByLabels(dateVn: string, labels: string[], env: En
 /** Stop statuses that mean a trip is ON THE ROAD, in the RPC's own words — the set the
  *  fleetweb delivery table's status filter sends for "đang chạy". */
 const ACTIVE_STOP_STATUSES = ["picked_up", "arrived", "started"];
-/** A stop not started yet (stop_status_id 1). Its RPC name was never seen in a captured
- *  request, only inferred from Cartrack's status ids, so a request carrying it that
- *  Cartrack refuses is retried without it rather than failing the search. */
-const NOT_STARTED_STOP_STATUS = "pending";
+/** A stop not started yet (stop_status_id 1), as the delivery table's status filter
+ *  sends it — captured from a real request. NOT "pending": that name was tried first,
+ *  and Cartrack answered as if the filter did not contain it. */
+const NOT_STARTED_STOP_STATUS = "not_started";
 
 /** Today's unfinished stops matching free text — not started, on the way, arrived or
  *  picked up — through the same search box as Cartrack's delivery table
@@ -1548,8 +1548,7 @@ const NOT_STARTED_STOP_STATUS = "pending";
  *  lists is found however it was created — by the engine, by hand or by a plan —
  *  which the activity log cannot promise.
  *
- *  One RPC per call (two only if Cartrack refuses the not-started status), made only
- *  when someone presses Tìm in Điều chỉnh job. Stops come back flat in the REST
+ *  One RPC per call, made only when someone presses Tìm in Điều chỉnh job. Stops come back flat in the REST
  *  spelling (see getStopsByLabels); the caller groups by job_id. prod-only like every
  *  fleetweb read; null on any failure so the caller keeps its own fallbacks. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1572,11 +1571,7 @@ export async function searchActiveStops(dateVn: string, text: string, env: Env =
     },
     { env }
   );
-  let out = await call([NOT_STARTED_STOP_STATUS, ...ACTIVE_STOP_STATUSES]);
-  if (!out.ok) {
-    console.warn(`[searchActiveStops] Cartrack refused the not-started filter (${out.error}); retrying without it`);
-    out = await call(ACTIVE_STOP_STATUSES);
-  }
+  const out = await call([NOT_STARTED_STOP_STATUS, ...ACTIVE_STOP_STATUSES]);
   if (!out.ok) return null;
   const stops = out.result?.stops;
   if (!Array.isArray(stops)) return null;
