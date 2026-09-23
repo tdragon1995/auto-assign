@@ -569,6 +569,21 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
    * thing to keep on screen.
    */
   const selectable = useMemo(() => shown.filter(isWritable), [shown]);
+
+  /** For each drawn row, the index of the first row of its branch run. A
+   *  branch's rows are adjacent (sortConfigRows), so the run is the branch as
+   *  far as the current filters show it. */
+  const { runStart, runSize } = useMemo(() => {
+    const starts: number[] = [];
+    const sizes = new Map<number, number>();
+    shown.forEach((r, i) => {
+      const prev = shown[i - 1];
+      const start = i > 0 && branchKey(prev) === branchKey(r) && prev.pickup === r.pickup ? starts[i - 1] : i;
+      starts.push(start);
+      sizes.set(start, (sizes.get(start) ?? 0) + 1);
+    });
+    return { runStart: starts, runSize: sizes };
+  }, [shown]);
   const selectedRows = useMemo(
     () => rows.filter((r) => selected.has(r.row) && isWritable(r)),
     [rows, selected],
@@ -745,16 +760,17 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                   // is printed once and the rest of the run reads as that
                   // branch's day. Repeating it on every line made four rows of
                   // one clinic look like four clinics.
-                  const firstOfBranch = i === 0 || branchKey(shown[i - 1]) !== branch
-                    || shown[i - 1].pickup !== r.pickup;
+                  const first = shown[runStart[i]];
+                  const firstOfBranch = runStart[i] === i;
+                  const lastOfBranch = i === shown.length - 1 || runStart[i + 1] !== runStart[i];
+                  const runLength = runSize.get(runStart[i]) ?? 1;
                   const inactive = isInactive(r.pickup);
-                  // Every row of the branch being edited is marked, not just the
-                  // one clicked: the editor holds the branch's WHOLE day, so the
-                  // other rows are the very things it is about to rewrite, and
-                  // leaving them looking untouched invited a second Sửa on a row
-                  // already open in the form above.
+                  // Every row of the branch being edited is marked: the editor
+                  // holds the branch's WHOLE day, so these rows are the very
+                  // things it is about to rewrite.
                   const inBranch = !!editing && editing.branch === branch;
-                  const openHere = !!editing && editing.row === r.row;
+                  // Keyed to the run's first row, which carries the one button.
+                  const runOpen = !!editing && editing.row === first.row;
                   return [(
                   <tr
                     key={r.row}
@@ -774,22 +790,28 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                       />
                     </td>
                     <td className="px-2 py-1">
-                      {/* Ghost, not outlined: 150 bordered buttons in one column
-                          were the loudest thing in the table. Still a real,
-                          always-visible button — a hover-only one would be
+                      {/* ONE button per branch, on the row that names it. Every
+                          row's Sửa opened the same editor — the branch's whole
+                          day — so a column of identical buttons promised a
+                          per-row edit that did not exist. Ghost, not outlined,
+                          but always visible: a hover-only button would be
                           invisible on the tablets dispatch also uses. */}
-                      <Button
-                        size="sm" variant={openHere ? "default" : "ghost"}
-                        className={`h-6 gap-1 px-1.5 text-[11px] font-normal ${
-                          openHere ? "bg-indigo-600 hover:bg-indigo-700" : "text-indigo-700 hover:bg-indigo-50 hover:text-indigo-800"
-                        }`}
-                        aria-expanded={openHere}
-                        onClick={() => setEditing(openHere ? null : { branch, row: r.row })}
-                        disabled={!r.customer_id && !r.pickup}
-                      >
-                        {!openHere && <Pencil aria-hidden className="size-3" />}
-                        {openHere ? "Đóng" : "Sửa"}
-                      </Button>
+                      {firstOfBranch && (
+                        <Button
+                          size="sm" variant={runOpen ? "default" : "ghost"}
+                          className={`h-6 gap-1 px-1.5 text-[11px] font-normal ${
+                            runOpen ? "bg-indigo-600 hover:bg-indigo-700" : "text-indigo-700 hover:bg-indigo-50 hover:text-indigo-800"
+                          }`}
+                          aria-expanded={runOpen}
+                          aria-label={runOpen ? "Đóng" : `Sửa ${r.pickup || branch}${runLength > 1 ? ` (${runLength} dòng)` : ""}`}
+                          title={runLength > 1 ? `Sửa cả ${runLength} dòng của điểm này` : undefined}
+                          onClick={() => setEditing(runOpen ? null : { branch, row: r.row })}
+                          disabled={!r.customer_id && !r.pickup}
+                        >
+                          {!runOpen && <Pencil aria-hidden className="size-3" />}
+                          {runOpen ? "Đóng" : "Sửa"}
+                        </Button>
+                      )}
                     </td>
                     <td className="px-2 py-1">
                       {firstOfBranch ? (
@@ -834,17 +856,13 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                     <td className="px-2 py-1 text-right font-mono text-[10px] text-slate-500">{r.row}</td>
                   </tr>
                   ),
-                  // Directly beneath the row it was opened from, which is the
-                  // whole point. It used to render in its own box ABOVE the
-                  // table, on the reasoning that expanding a row inside a
-                  // 150-row scroller pushes the reader's place off screen — but
-                  // the form then appeared somewhere the reader was not looking,
-                  // often scrolled out of view entirely, with nothing tying it to
-                  // the row whose button had just been pressed. An expander that
-                  // opens where it was asked for is what the "Cần xử lý" rows
-                  // already do with this same editor; the config tab was the one
-                  // place that did something else.
-                  openHere && editingRows.length > 0 ? (
+                  // Directly beneath the branch it was opened from — under its
+                  // LAST row, so the run stays in one piece above the form that
+                  // rewrites it. It used to render in its own box ABOVE the
+                  // table, where the reader was not looking and often scrolled
+                  // out of view; an expander that opens where it was asked for
+                  // is what the "Cần xử lý" rows already do with this editor.
+                  runOpen && lastOfBranch && editingRows.length > 0 ? (
                     <tr key={`${r.row}-edit`} className="bg-indigo-50/60">
                       <td colSpan={7} className="px-2 pb-2">
                         <BranchEditor
