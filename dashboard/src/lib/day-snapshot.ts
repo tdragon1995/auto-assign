@@ -705,6 +705,29 @@ export async function driversJobs(
   return direct ? fromSnap(direct) : null;
 }
 
+/**
+ * Whole jobs by id, straight off the stored day in ONE HMGET — for LABELS only.
+ *
+ * The job-admin search asks Cartrack for stops on the road, and Cartrack returns only
+ * the stop in progress, so a hit for "D007" read "… | BRA - D001" (the pickup under
+ * way) with the D007 it matched nowhere in sight. The stored day has every stop.
+ * No freshness or revision check: a label a few minutes old is still the right route,
+ * and a job missing here just keeps Cartrack's partial one. Never a rebuild.
+ */
+export async function snapJobsByIds(date: string, env: Env, ids: number[]): Promise<Map<number, SnapJob>> {
+  const out = new Map<number, SnapJob>();
+  const redis = getRedis();
+  if (!redis || ids.length === 0) return out;
+  try {
+    const rows = await redis.hmget<Record<string, unknown>>(key(env, date), ...ids.map(jobField));
+    for (const id of ids) {
+      const j = parse<SnapJob | null>(rows?.[jobField(id)], null);
+      if (j) out.set(id, j);
+    }
+  } catch { /* labels fall back to what Cartrack returned */ }
+  return out;
+}
+
 /** `readSlice` for many drivers: same revision check, one row fetch for all of them. */
 async function readDriversSlice(
   redis: Redis, env: Env, date: string, driverIds: string[],
