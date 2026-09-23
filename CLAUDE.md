@@ -260,7 +260,7 @@ ever named, which is how a warning stops being read.
 | `GET /api/psc-tinh` | Provincial PSC route lookup; `?psc=D021` for 3PL options, `?psc=D021&mode=orders` for today's orders; `DELETE` cancels a job |
 | `POST /api/smart-assign` | Smart-assign dry-run — returns ranked driver suggestions without assigning |
 | `GET /api/audit` | List locations for weekly audit job creation; `POST` creates the audit job and assigns it |
-| `GET /api/cham-cong` | Attendance (chấm công) — lists today's check-in/out jobs for a driver (`?driver_id=`); `POST` creates a check-in or check-out job |
+| `GET /api/cham-cong` | Attendance (chấm công) — lists today's check-in/out jobs for a driver (`?driver_id=`); `POST` creates a check-in or check-out job and, when the phone's `position` puts the driver within 200 m of the branch (±100 m accuracy or better, straight-line vs the branch's Cartrack coordinates — `cham-cong-geo.ts`), completes it in the same tap. Anything short of that leaves it open for the Cartrack app, as before. `scripts/cham-cong-geo.test.mts` |
 | `POST /api/distance-checking` | Batch Goong road-distance queries (`{ rows: DistanceRow[] }`); sequential with 1s gaps |
 | `GET /api/location-jobs` | Fetch all jobs for a date+status (`?date=YYYY-MM-DD&status=4`), paginating to exhaustion |
 | `GET /api/customers` | Check for duplicate customer name in Cartrack; `POST` creates a new customer and syncs pick/drop location to Labcenter |

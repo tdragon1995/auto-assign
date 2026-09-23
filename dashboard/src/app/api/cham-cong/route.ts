@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createJob, deleteJob, getJobDetails, updateJobStops, BASE_URL, getHeaders, isDriverUnavailableError, type Env } from "@/lib/cartrack";
+import { createJob, completeJob, deleteJob, getJobDetails, updateJobStops, BASE_URL, getHeaders, isDriverUnavailableError, type Env } from "@/lib/cartrack";
 import { driverJobs, invalidateSnapshot } from "@/lib/day-snapshot";
 import { vnDate } from "@/lib/time";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 import { isStopStarted, CHAM_CONG_PREFIX } from "@/lib/job-filters";
 import { acquireCreateLock, releaseCreateLock } from "@/lib/smart-log-kv";
+import { branchCoords, checkPresence, type Presence } from "@/lib/cham-cong-geo";
 
 interface OngoingChamCong {
   job_id: number;
@@ -284,13 +285,16 @@ export async function PATCH(req: NextRequest) {
 }
 
 // ── POST /api/cham-cong — create check-in or check-out job ────────────────
+// With a `position` ({ lat, lng, accuracy } from the phone) placing the driver within
+// CHAM_CONG_RADIUS_M of the branch, the job is also completed on the spot — one tap,
+// no second step in the Cartrack app. Without one it is created open, as it always was.
 
 export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
   let lockKey: string | null = null;
 
   try {
-    const { driver_id, psc_customer_id, type } = await req.json();
+    const { driver_id, psc_customer_id, type, position } = await req.json();
 
     if (!driver_id || !psc_customer_id || (type !== "check-in" && type !== "check-out")) {
       return NextResponse.json({ error: "Missing or invalid fields" }, { status: 400 });
@@ -306,6 +310,12 @@ export async function POST(req: NextRequest) {
         { status: 409 }
       );
     }
+
+    // Started now so the branch lookup overlaps the job creation rather than queueing
+    // behind it. Never rejects — every failure is a verdict that leaves the job open.
+    const presenceP: Promise<Presence> = position
+      ? branchCoords(psc_customer_id, env).then((b) => checkPresence(position, b))
+      : Promise.resolve(checkPresence(null, null));
 
     const isCheckin = type === "check-in";
     const jobPayload = {
@@ -356,6 +366,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // At the branch → complete it now. A failed completion is NOT a failed check-in: the
+    // job exists and is the driver's, so they finish it in the app exactly as before.
+    const presence = await presenceP;
+    let completed = false;
+    if (presence.verdict === "near") {
+      const done = await completeJob(jobId, env).catch(() => null);
+      completed = !!done?.ok;
+      if (!completed) console.warn(`[cham-cong] complete failed job=${jobId} status=${done?.status ?? "throw"}`);
+    }
+    console.log(
+      `[cham-cong] ${type} job=${jobId} presence=${presence.verdict} d=${presence.distance_m ?? "-"}m acc=${presence.accuracy_m ?? "-"}m completed=${completed}`
+    );
+
     // The driver's list is rendered from the day snapshot, so mark it stale — their very
     // next action is reloading that list to see the check-in they just made. Previously
     // the day was usually stale anyway and the reload rebuilt by accident; now the assign
@@ -363,7 +386,7 @@ export async function POST(req: NextRequest) {
     // failed and get repeated. Awaited (~10ms) — a dropped invalidation is the bug.
     await invalidateSnapshot(vnDate(), env).catch(() => {});
 
-    return NextResponse.json({ success: true, job_id: jobId });
+    return NextResponse.json({ success: true, job_id: jobId, completed, presence });
   } catch (e) {
     if (lockKey) void releaseCreateLock(lockKey);
     return NextResponse.json({ error: String(e) }, { status: 500 });

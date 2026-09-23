@@ -218,6 +218,46 @@ const CC_STATE_BADGE: Record<ChamCongState, { label: string; cls: string }> = {
   pending: { label: "Chưa hoàn thành", cls: "text-amber-800 bg-amber-50 border-amber-200" },
 };
 
+// One-tap chấm công: the phone's position goes with the tap, and the server completes
+// the task when it puts the driver at the branch (lib/cham-cong-geo). Null on anything
+// short of a reading — no geolocation, permission refused, no fix in time — and the
+// task is then created open, as before. Never throws; never blocks the check-in.
+type PhonePosition = { lat: number; lng: number; accuracy: number };
+const POSITION_TIMEOUT_MS = 10_000;
+
+function getPhonePosition(): Promise<PhonePosition | null> {
+  if (typeof navigator === "undefined" || !navigator.geolocation) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    // Belt and braces: some browsers never call either callback when the permission
+    // prompt is dismissed rather than answered, so the tap would hang for good.
+    const guard = setTimeout(() => resolve(null), POSITION_TIMEOUT_MS + 2_000);
+    navigator.geolocation.getCurrentPosition(
+      (p) => {
+        clearTimeout(guard);
+        resolve({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy });
+      },
+      () => { clearTimeout(guard); resolve(null); },
+      { enableHighAccuracy: true, timeout: POSITION_TIMEOUT_MS, maximumAge: 30_000 }
+    );
+  });
+}
+
+type PresenceVerdict = "near" | "far" | "inaccurate" | "no_position" | "no_branch";
+
+/** Why a tap was NOT completed on the spot, in the driver's words. */
+function presenceHint(p: { verdict: PresenceVerdict; distance_m?: number; accuracy_m?: number } | undefined, place: string): string {
+  switch (p?.verdict) {
+    case "far":
+      return `Bạn đang cách ${place} khoảng ${p.distance_m}m (cần trong 200m) — kiểm tra lại địa điểm đã chọn.`;
+    case "inaccurate":
+      return `Vị trí điện thoại chưa đủ chính xác${p.accuracy_m != null ? ` (±${p.accuracy_m}m)` : ""}.`;
+    case "no_position":
+      return "Không lấy được vị trí — hãy cho phép trình duyệt truy cập vị trí để chấm công 1 chạm.";
+    default:
+      return "Chưa tự hoàn thành được task.";
+  }
+}
+
 // Nhận Việc: badge colour by Cartrack pickup stop_status_id (1 Chờ lấy, 2 Đang đến, 3 Đã đến).
 function nvStatusClasses(id: number | null): string {
   switch (id) {
@@ -1321,7 +1361,9 @@ export default function ChamCongPage() {
     setCcMessage("");
     setPendingNames([]);
 
-    const shift = await getShiftState(did);
+    // Ask for the position alongside the shift state rather than after it: the fix is
+    // the slow part (a few seconds outdoors, up to the timeout indoors).
+    const [shift, position] = await Promise.all([getShiftState(did), getPhonePosition()]);
     if (shift) {
       const hasOpenShift = shift.checkInCount > shift.completedCheckOuts;
       if (type === "check-in" && hasOpenShift) {
@@ -1340,7 +1382,7 @@ export default function ChamCongPage() {
       const res = await fetch("/api/cham-cong", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ driver_id: did, driver_name: dname, psc_customer_id: lid, psc_name: lname, type }),
+        body: JSON.stringify({ driver_id: did, driver_name: dname, psc_customer_id: lid, psc_name: lname, type, position }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -1359,7 +1401,11 @@ export default function ChamCongPage() {
           ? prev
           : [
               ...prev,
-              { job_id: data.job_id, type, customer_id: lid, location_name: lname, time: vnNow, state: "pending" as const, switchable: true },
+              {
+                job_id: data.job_id, type, customer_id: lid, location_name: lname, time: vnNow,
+                state: data.completed ? ("done" as const) : ("pending" as const),
+                switchable: !data.completed,
+              },
             ].sort((a, b) => a.job_id - b.job_id)
       );
       shiftStateRef.current = null;
@@ -1368,12 +1414,15 @@ export default function ChamCongPage() {
       // would contradict the địa điểm the switch panel reports as authoritative.
       clearLocation();
       setCcStatus("success");
-      if (type === "check-in") {
-        setCcMessage(`Đã tạo task vào ca (Job #${data.job_id}). Vui lòng mở app Cartrack và hoàn thành task để chấm công vào ca!`);
+      const label = type === "check-in" ? "vào ca" : "ra ca";
+      if (type === "check-out") setPendingNames(shift?.pendingJobNames ?? []);
+      if (data.completed) {
+        setCcMessage(`Đã chấm công ${label} lúc ${vnNow} tại ${lname} (Job #${data.job_id}).`);
       } else {
-        const names = shift?.pendingJobNames ?? [];
-        setPendingNames(names);
-        setCcMessage(`Đã tạo task ra ca (Job #${data.job_id}). Vui lòng mở app Cartrack và hoàn thành task để chấm công ra ca!`);
+        setCcMessage(
+          `Đã tạo task ${label} (Job #${data.job_id}). ${presenceHint(data.presence, lname)} ` +
+          `Vui lòng mở app Cartrack và hoàn thành task để chấm công ${label}!`
+        );
       }
     } catch {
       setCcStatus("error");
@@ -1713,21 +1762,23 @@ export default function ChamCongPage() {
                   not hide Ra Ca: a driver who checked in, forgot to finish the task in
                   Cartrack, and returns at end of shift still needs to check out. The
                   shift-state guard in submitChamCong already blocks re-submitting the
-                  SAME type with a clear message; only that case is actually dead. */}
+                  SAME type with a clear message; only that case is actually dead.
+                  One tap: within 200m of the branch the task is completed on the spot;
+                  otherwise it is created open and finished in the app as before. */}
               <div className="grid grid-cols-2 gap-3 pt-1">
                 <button
                   disabled={ccStatus === "loading"}
                   onClick={() => submitChamCong("check-in")}
                   className="bg-green-700 hover:bg-green-800 disabled:opacity-50 text-white font-semibold rounded-xl py-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-green-600"
                 >
-                  {ccStatus === "loading" ? "Đang xử lý..." : "Tạo Task Vào Ca"}
+                  {ccStatus === "loading" ? "Đang xử lý..." : "Chấm Công Vào Ca"}
                 </button>
                 <button
                   disabled={ccStatus === "loading"}
                   onClick={() => submitChamCong("check-out")}
                   className="bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-semibold rounded-xl py-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-red-500"
                 >
-                  {ccStatus === "loading" ? "Đang xử lý..." : "Tạo Task Ra Ca"}
+                  {ccStatus === "loading" ? "Đang xử lý..." : "Chấm Công Ra Ca"}
                 </button>
               </div>
 
