@@ -1534,6 +1534,49 @@ export async function getStopsByLabels(dateVn: string, labels: string[], env: En
   return mapped;
 }
 
+/** Stop statuses that mean a trip is ON THE ROAD, in the RPC's own words — the set the
+ *  fleetweb delivery table's status filter sends for "đang chạy". */
+const ACTIVE_STOP_STATUSES = ["picked_up", "arrived", "started"];
+
+/** Today's in-progress stops matching free text, through the same search box as
+ *  Cartrack's delivery table (delivery_get_stops_list `searchInput`). Cartrack does the
+ *  matching, so a job it lists is found however it was created — by the engine, by hand
+ *  or by a plan — which the activity log cannot promise.
+ *
+ *  One RPC per call, made only when someone presses Tìm in Điều chỉnh job. Stops come
+ *  back flat in the REST spelling (see getStopsByLabels); the caller groups by job_id.
+ *  prod-only like every fleetweb read; null on any failure so the caller keeps its own
+ *  fallbacks. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function searchActiveStops(dateVn: string, text: string, env: Env = "prod"): Promise<any[] | null> {
+  if (env !== "prod") return null;
+  const out = await jsonRpc<{ stops?: unknown }>(
+    "delivery_get_stops_list",
+    {
+      data: {
+        filters: {
+          scheduledDeliveryTs: vnDayWindow(dateVn),
+          groupStops: true,
+          assignment: "all",
+          stopStatus: ACTIVE_STOP_STATUSES,
+          searchInput: text,
+        },
+        sort: {},
+        pagination: { page: 1, perPage: 100 },
+      },
+    },
+    { env }
+  );
+  if (!out.ok) return null;
+  const stops = out.result?.stops;
+  if (!Array.isArray(stops)) return null;
+  const mapped = stops.map((s) => stopToRestShape(s as Record<string, unknown>));
+  // Same guard as getStopsByLabels: stops without a job_id mean the shape changed, not
+  // that nothing matched.
+  if (mapped.length && !mapped.some((s) => s.job_id != null)) return null;
+  return mapped;
+}
+
 /** One RPC stop (delivery_get_stops_list, delivery_get_job_details) in the REST spelling
  *  its callers read. Delivery windows are translated too — rpcDataToRestShape aliases the
  *  top level only, and both the PSC-tỉnh appointment time and the cycle's hold gate read
