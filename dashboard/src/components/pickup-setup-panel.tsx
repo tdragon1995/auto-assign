@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Timer } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
@@ -12,12 +12,17 @@ type Report = { proposals: EtaProposal[]; drift: Drift[]; adopted: number; place
 /**
  * ETA shown on the customer portal vs what pickups actually take, and places
  * where Labcenter was changed behind our master copy. Nothing reaches Labcenter
- * until someone clicks. Fetched once when the Config tab opens.
+ * until someone clicks.
+ *
+ * Collapsed by default and fetched the first time it is opened, not when the
+ * Config tab opens: the comparison reads Supabase and Labcenter, and most visits
+ * to the tab are to edit a rule, not to review ETAs.
  */
 export function PickupSetupPanel() {
   const [data, setData] = useState<Report | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
+  const [open, setOpen] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
@@ -31,7 +36,13 @@ export function PickupSetupPanel() {
     }
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  // First open only; "Tải lại" is the way to ask again.
+  const requested = useRef(false);
+  useEffect(() => {
+    if (!open || requested.current) return;
+    requested.current = true;
+    void load();
+  }, [open, load]);
 
   async function act(id: number, body: Record<string, unknown>, done: string) {
     setBusy(id);
@@ -62,18 +73,32 @@ export function PickupSetupPanel() {
     <Card>
       <CardContent className="p-3 space-y-3">
         <div className="flex items-center gap-2">
-          <Timer className="size-4 text-indigo-600" strokeWidth={2} />
-          <span className="text-sm font-semibold text-slate-800">ETA lấy mẫu trên cổng khách hàng</span>
-          {data && <span className="text-[11px] text-slate-500">{data.places} địa điểm</span>}
-          <Button size="sm" variant="outline" className="ml-auto h-7" onClick={() => { setData(null); void load(); }}>
-            Tải lại
-          </Button>
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            className="flex min-w-0 flex-1 items-center gap-2 rounded py-0.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+            aria-expanded={open}
+          >
+            <Timer className="size-4 shrink-0 text-indigo-600" strokeWidth={2} />
+            <span className="text-sm font-semibold text-slate-800">ETA lấy mẫu trên cổng khách hàng</span>
+            {data && (
+              <span className="text-[11px] text-slate-500">
+                {data.places} địa điểm · {data.proposals.length} lệch · {data.drift.length} Labcenter đổi
+              </span>
+            )}
+            <span aria-hidden className="ml-auto shrink-0 text-xs text-slate-500">{open ? "▾" : "▸"}</span>
+          </button>
+          {open && (
+            <Button size="sm" variant="outline" className="h-7" onClick={() => { setData(null); void load(); }}>
+              Tải lại
+            </Button>
+          )}
         </div>
 
-        {error && <p className="text-sm text-rose-700">Không tải được: {error}</p>}
-        {!data && !error && <p className="text-sm text-slate-500">Đang so sánh với Labcenter…</p>}
+        {open && error && <p className="text-sm text-rose-700">Không tải được: {error}</p>}
+        {open && !data && !error && <p className="text-sm text-slate-500">Đang so sánh với Labcenter…</p>}
 
-        {data && (
+        {open && data && (
           <>
             <section>
               <h3 className="text-xs font-semibold text-slate-700 mb-1">
