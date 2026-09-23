@@ -406,6 +406,49 @@ export async function updateCustomerAddress(
   return { ok: true };
 }
 
+// Rename a customer. The ONE deliberate write of customer_name in this codebase
+// (see the name-corruption note in docs/cartrack-api.md — that is about names
+// written by ACCIDENT through a stop payload). Full-record PUT for the same
+// reason as updateCustomerAddress: every other field is echoed back from a fresh
+// read, so only the name moves. Read back, because a 200 proves nothing here.
+export async function renameCustomer(
+  customerId: string,
+  name: string,
+  env: Env = "prod"
+): Promise<{ ok: boolean; error?: string }> {
+  const current = await getCustomerById(customerId, env);
+  if (!current?.data) return { ok: false, error: "Không đọc được địa điểm hiện tại từ Cartrack" };
+  const c = current.data;
+  if (c.customer_name === name) return { ok: true };
+
+  const res = await fetch(`${BASE_URL}/customers/${customerId}`, {
+    method: "PUT",
+    headers: getHeaders(env),
+    body: JSON.stringify({
+      customer_name: name,
+      email: c.email,
+      contact_code: c.contact_code,
+      contact_number: c.contact_number,
+      address_line_1: c.address_line_1,
+      address_line_2: c.address_line_2,
+      postal_code: c.postal_code,
+      country_id: c.country_id,
+      latitude: c.latitude,
+      longitude: c.longitude,
+      client_reference: c.client_reference,
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    return { ok: false, error: `Cartrack HTTP ${res.status}: ${text.slice(0, 200)}` };
+  }
+  const after = await getCustomerById(customerId, env);
+  if (after?.data && after.data.customer_name !== name) {
+    return { ok: false, error: "Cartrack nhận yêu cầu nhưng không đổi tên" };
+  }
+  return { ok: true };
+}
+
 /** PUT a job's stops. Pass `jobTypeId` for any job whose stop count doesn't match the
  *  default 2-stop pickup+dropoff shape: Cartrack validates the stops array against the
  *  job type, and without job_type_id in the body it assumes the default and rejects a

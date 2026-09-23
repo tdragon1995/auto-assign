@@ -156,17 +156,19 @@ type IntegrationLink = {
   delivery_integration_location_id: string;
 };
 
-// GET /api/locations?client_code=… — active locations for one client.
+// GET /api/locations?client_code=… — active locations for one client, or every
+// location of it when `activeOnly` is false (re-enabling needs the inactive ones).
 export async function listLocationsByClientCode(
   clientCode: string,
   token: string,
+  activeOnly = true,
 ): Promise<LabcenterLocation[]> {
   const params = new URLSearchParams({
     client_code: clientCode,
-    is_active: "true",
     page: "1",
     perPage: "100",
   });
+  if (activeOnly) params.set("is_active", "true");
   const res = await fetch(`${DELIVERY_BASE}/api/locations?${params}`, {
     headers: { Authorization: `Bearer ${token}` },
     cache: "no-store",
@@ -211,6 +213,34 @@ export async function updateLocationPhone(
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     return { ok: false, error: `HTTP ${res.status}: ${text.slice(0, 200)}` };
+  }
+  return { ok: true };
+}
+
+// PUT /api/locations/{id} — { is_active }. Partial, like the phone write. Read
+// back, because this API answers 200 to writes it discards (see below).
+export async function setLocationActive(
+  locationId: number,
+  active: boolean,
+  token: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`${DELIVERY_BASE}/api/locations/${locationId}`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ is_active: active }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    return { ok: false, error: `Labcenter HTTP ${res.status}: ${text.slice(0, 200)}` };
+  }
+  const check = await fetch(`${DELIVERY_BASE}/api/locations/${locationId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  if (!check.ok) return { ok: false, error: `Không đọc lại được Labcenter (HTTP ${check.status})` };
+  const d = (await check.json().catch(() => ({})))?.data;
+  if (!d || Boolean(d.is_active) !== active) {
+    return { ok: false, error: "Labcenter nhận yêu cầu nhưng không đổi trạng thái" };
   }
   return { ok: true };
 }

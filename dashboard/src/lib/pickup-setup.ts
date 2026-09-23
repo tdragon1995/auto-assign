@@ -262,12 +262,14 @@ async function inBatches<T>(items: T[], fn: (t: T) => Promise<void>): Promise<vo
  * ponytail: a failed HTTP call is also marked "" — the push path re-resolves
  * anything falsy, so the cost is that place missing from proposals.
  */
-async function resolveIds(setup: SetupRow[], stats: StatsRow[], token: string): Promise<void> {
+async function resolveIds(
+  setup: SetupRow[], stats: StatsRow[], token: string, extraBudget = RESOLVE_EXTRA_PER_OPEN,
+): Promise<void> {
   const measured = new Set(stats.map((s) => s.pickup_name).filter(Boolean));
   const unresolved = setup.filter((s) => s.pick_id == null);
   const todo = [
     ...unresolved.filter((s) => measured.has(s.pick_name)),
-    ...unresolved.filter((s) => !measured.has(s.pick_name)).slice(0, RESOLVE_EXTRA_PER_OPEN),
+    ...unresolved.filter((s) => !measured.has(s.pick_name)).slice(0, extraBudget),
   ];
   const changed = new Set<SetupRow>();
   await inBatches(todo, async (s) => {
@@ -311,6 +313,40 @@ export async function pickupSetupReport(): Promise<{ proposals: EtaProposal[]; d
   const all = [...setup, ...adopt.map((a) => ({ ...a, pick_id: null, drop_id: null }))];
   await resolveIds(all, stats, token);
   return { proposals: etaProposals(all, stats), drift, adopted: adopt.length, places: all.length };
+}
+
+/**
+ * Labcenter place id → Cartrack customer id, for the pickups AND the drop-offs
+ * of the given live rows. Built on the same master table and the same
+ * trickle-resolution as the ETA panel, so the two share one pairing and every
+ * lookup either of them pays for is kept. New places are adopted exactly as an
+ * ETA-panel open would adopt them.
+ *
+ * `extraBudget` caps the one-call-per-place lookups for pickups never resolved;
+ * the rest arrive on later runs. Drop-offs are few (~46) and always resolved.
+ */
+export async function labcenterCartrackIds(
+  lc: PickDropRow[], token: string, extraBudget: number,
+): Promise<{ pickIds: Map<number, string>; dropIds: Map<number, string>; unresolved: number }> {
+  const setup = await loadSetup();
+  const { adopt } = compareWithLabcenter(setup, lc);
+  await adoptNew(adopt);
+  const all = [...setup, ...adopt.map((a) => ({ ...a, pick_id: null, drop_id: null }))];
+  await resolveIds(all, [], token, extraBudget);
+
+  const pickIds = new Map<number, string>();
+  const dropIds = new Map<number, string>();
+  for (const s of all) {
+    if (s.pick_id) pickIds.set(s.lc_location_id, s.pick_id);
+    if (s.drop_id) dropIds.set(s.drop_location_id, s.drop_id);
+  }
+  // A live drop-off can differ from the master's (that is what drift means).
+  const missingDrops = [...new Set(lc.map((l) => l.drop_location_id))].filter((d) => !dropIds.has(d));
+  await inBatches(missingDrops, async (d) => {
+    const id = await getCartrackCustomerId(d, token);
+    if (id) dropIds.set(d, id);
+  });
+  return { pickIds, dropIds, unresolved: all.filter((s) => s.pick_id == null).length };
 }
 
 export type SetupAction =
