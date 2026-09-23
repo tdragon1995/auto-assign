@@ -10,7 +10,7 @@ import { detectAndCreateReturnTrips, PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
 import { cleanupStaleTrips } from "./cleanup-trips";
 import { setCycleSnapshot, recordCoverageGap, claimMorningPass, deferMorningPass, confirmMorningPass, pushRunLog, runDailyMaintenance, claimLateAlert, getAcceptedNotes, getResolvedCreateTs, saveResolvedCreateTs, readDropoffSwaps, writeDropoffSwap, deleteDropoffSwap, type HeldJob } from "./smart-log-kv";
-import { loadPscTable, isClosingWindow, planDropoff, resolveOpenDropoff, fmtMin, pscCode, type PscTable, type DropoffSwapRecord } from "./psc-closing";
+import { PSC_TABLE, isClosingWindow, planDropoff, resolveOpenDropoff, fmtMin, pscCode, type PscTable, type DropoffSwapRecord } from "./psc-closing";
 import { isValidDriverId, invalidateConfigCache, loadConfigFromSheets } from "./config";
 import { drainSheetAlarms } from "./sheets";
 // Driver labels carry a routing prefix and a payroll code ("F - C - DC100993
@@ -928,8 +928,8 @@ async function applyAltDropoff(
 }
 
 interface DropoffCtx {
-  /** Null = the PSC tab could not be read in the closing window → check nothing.
-   *  Empty outside the window: nothing is closed, but a carried job can still go home. */
+  /** Empty outside the closing window: nothing is closed, but a carried job can
+   *  still go home. Null only before the cycle has jobs to look at. */
   table: PscTable | null;
   swaps: Map<number, DropoffSwapRecord>;
   today: string;
@@ -2016,17 +2016,15 @@ export async function autoAssignCycle(
     if (!activeRouteMap.has(key)) activeRouteMap.set(key, -hj.job_id);  // negative = held → skip, not reject
   }
 
-  // PSC closing hours. The PSC tab is read only inside the closing window (19:00,
-  // Mon–Sat); outside it every PSC counts as open, so an EMPTY table is passed — that
-  // still lets a job diverted last night go back to its own PSC this morning. The
-  // swap records are read only for jobs created before today, once per job per
-  // instance per day. Both here once, never per job.
+  // PSC closing hours (hard-coded, nothing to fetch). Only inside the closing window
+  // (19:00, Mon–Sat) does any PSC count as closed; outside it an EMPTY table is
+  // passed — that still lets a job diverted last night go back to its own PSC this
+  // morning. The swap records are read only for jobs created before today, once per
+  // job per instance per day, here once and never per job.
   let dropoffCtx: DropoffCtx = { table: null, swaps: new Map(), today };
   if (jobs.length > 0) {
-    const table: PscTable | null = isClosingWindow() ? await loadPscTable() : new Map();
-    const carried = table
-      ? jobs.filter((j) => !!j.create_ts && j.create_ts.slice(0, 10) < today).map((j) => j.job_id)
-      : [];
+    const table: PscTable = isClosingWindow() ? PSC_TABLE : new Map();
+    const carried = jobs.filter((j) => !!j.create_ts && j.create_ts.slice(0, 10) < today).map((j) => j.job_id);
     const swaps = carried.length > 0 ? await readDropoffSwaps(carried, env, today) : new Map<number, DropoffSwapRecord>();
     dropoffCtx = { table, swaps, today };
   }

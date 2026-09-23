@@ -11,7 +11,8 @@
  *
  * Run: npx tsx scripts/psc-closing.test.mts
  */
-import { buildPscTable, isClosingWindow, parseClosingTime, planDropoff, resolveOpenDropoff, type DropoffSwapRecord } from "../src/lib/psc-closing";
+import { buildPscTable, isClosingWindow, parseClosingTime, planDropoff, resolveOpenDropoff, PSC_TABLE, type DropoffSwapRecord } from "../src/lib/psc-closing";
+import { PSC_CLOSING, PSC_ROUTES } from "../src/lib/psc-routes-data";
 
 let failures = 0;
 function ok(label: string, cond: boolean) {
@@ -23,20 +24,26 @@ const uid = (n: number) => `00000000-0000-0000-0000-${String(n).padStart(12, "0"
 const D001 = uid(1), D004 = uid(4), D007 = uid(7), D014 = uid(14), D015 = uid(15), D021 = uid(21), D036 = uid(36);
 const CLINIC = uid(99999);
 
-// Shaped like the live PSC mapping tab: psc_pickup / pickup, plus the two new columns.
-const psc = (name: string, id: string, closing_time: string, next_best_psc: string) =>
-  ({ psc_pickup: name, pickup: id, dropoff_location: "BRA - D001", dropoff: D001, closing_time, next_best_psc });
-const { table, unresolved } = buildPscTable([
-  psc("BRA - D001", D001, "", ""),
-  psc("BRA - D004", D004, "20:00", "D001"),
-  psc("BRA - D007", D007, "21h", "BRA - D001"),
-  psc("BRA - D014", D014, "19:30", "D007"),
-  psc("BRA - D015", D015, "19h30", "d004"),
-  psc("BRA - D021", D021, "19:00", ""),
-  psc("BRA - D036", D036, "", ""),              // D036's first route row, hours left blank…
-  psc("BRA - D036", D036, "19:45", "D099"),     // …typed on its second row; D099 is no PSC
-  { psc_pickup: "", pickup: "", closing_time: "", next_best_psc: "" },
-]);
+// Shaped like the real inputs: the PSC list (psc_pickup / pickup) and PSC_CLOSING.
+const pscs = [
+  { psc_pickup: "BRA - D001", pickup: D001 },
+  { psc_pickup: "BRA - D004", pickup: D004 },
+  { psc_pickup: "BRA - D007", pickup: D007 },
+  { psc_pickup: "BRA - D014", pickup: D014 },
+  { psc_pickup: "BRA - D015", pickup: D015 },
+  { psc_pickup: "BRA - D021", pickup: D021 },
+  { psc_pickup: "BRA - D036", pickup: D036 },
+  { psc_pickup: "BRA - D036", pickup: D036 },   // D036 has two routes
+];
+const { table, unresolved } = buildPscTable(pscs, {
+  D004: { close: "20:00", next: "D001" },
+  D007: { close: "21h", next: "D001" },
+  D014: { close: "19:30", next: "D007" },
+  D015: { close: "19h30", next: "d004" },
+  D021: { close: "19:00" },
+  D036: { close: "19:45", next: "D099" },       // D099 is no PSC
+  D098: { close: "19:00" },                     // nor is D098
+});
 const at = (hhmm: string) => parseClosingTime(hhmm)!;
 const base = { table, altId: "", record: null, pickupId: CLINIC, today: "2026-09-23", exempt: false };
 
@@ -59,11 +66,31 @@ ok("Sun 21:30 → off all day", !isClosingWindow(vn("2026-09-27T21:30:00")));
 ok("Mon 07:00 → off", !isClosingWindow(vn("2026-09-28T07:00:00")));
 
 console.log("\ntable");
-ok("blank rows skipped", table.size === 7);
-ok("next best by code, full name, any case", table.get(D004)!.hubId === D001 && table.get(D007)!.hubId === D001 && table.get(D015)!.hubId === D004);
-ok("a PSC on two rows merges: hours from whichever row has them", table.get(D036)!.closeMin === parseClosingTime("19:45"));
-ok("a next best naming no PSC is reported", unresolved.length === 1 && unresolved[0].includes("D099"));
-ok("…and counts as none", table.get(D036)!.hubId === "");
+ok("unlisted PSC (D001) never closes", !table.has(D001));
+ok("a PSC on two routes appears once", table.size === 6);
+ok("next best by code, any case", table.get(D004)!.hubId === D001 && table.get(D015)!.hubId === D004);
+ok("unknown codes are reported", unresolved.length === 2 && unresolved.some((u) => u.includes("D099")) && unresolved.includes("D098"));
+ok("…and an unknown next best counts as none", table.get(D036)!.hubId === "");
+
+console.log("\nthe real table (PSC_CLOSING)");
+{
+  const real = buildPscTable(PSC_ROUTES, PSC_CLOSING);
+  ok(`every code and next best is a real PSC${real.unresolved.length ? ` — ${real.unresolved.join(", ")}` : ""}`, real.unresolved.length === 0);
+  ok("every listed PSC made it into the table", PSC_TABLE.size === Object.keys(PSC_CLOSING).length);
+  const id = (code: string) => PSC_ROUTES.find((r) => r.psc_pickup === `BRA - ${code}`)!.pickup;
+  const go = (code: string, hhmm: string) => {
+    const r = resolveOpenDropoff(PSC_TABLE, id(code), at(hhmm), CLINIC).id;
+    return r ? PSC_ROUTES.find((x) => x.pickup === r)!.psc_pickup.slice(6) : null;
+  };
+  ok("18:59 D026 stays", go("D026", "18:59") === "D026");
+  ok("19:00 D026 → D002", go("D026", "19:00") === "D002");
+  ok("19:00 D022 → D003", go("D022", "19:00") === "D003");
+  ok("19:00 D046 → D029", go("D046", "19:00") === "D029");
+  ok("19:00 D014 has no next best → left alone", go("D014", "19:00") === null);
+  ok("19:00 D001 still open", go("D001", "19:00") === "D001");
+  ok("21:00 D026 → D002 closed too, nothing after → left alone", go("D026", "21:00") === null);
+  ok("D030 / D052 never close", go("D030", "21:30") === "D030" && go("D052", "21:30") === "D052");
+}
 
 console.log("\nresolveOpenDropoff");
 ok("open PSC is its own answer", resolveOpenDropoff(table, D014, at("19:29"), CLINIC).id === D014);
@@ -124,11 +151,11 @@ console.log("\nplanDropoff — nothing open");
 }
 {
   // Hypothetical: D001 gets a closing time too, and everything on D014's chain is shut.
-  const shut = buildPscTable([
-    psc("BRA - D001", D001, "22:00", ""),
-    psc("BRA - D007", D007, "21:00", "D001"),
-    psc("BRA - D014", D014, "19:30", "D007"),
-  ]).table;
+  const shut = buildPscTable(pscs, {
+    D001: { close: "22:00" },
+    D007: { close: "21:00", next: "D001" },
+    D014: { close: "19:30", next: "D007" },
+  }).table;
   const p = planDropoff({ ...base, table: shut, currentId: D007, record: rec, nowMin: at("22:30") });
   ok("a diverted job is NOT sent back to a PSC that is itself closed", p.targetId === D007 && p.reason === "all_closed");
   ok("…and keeps its record for tomorrow", p.record === null);

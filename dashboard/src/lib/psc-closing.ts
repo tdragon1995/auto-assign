@@ -2,15 +2,16 @@
  * PSC closing hours: send a job somewhere open, and send it home again once it can go.
  *
  * WHEN. Only from 19:00, Monday to Saturday (`isClosingWindow`). Before that, and all
- * day Sunday, every PSC counts as open: the sheet is not even read, and nothing is
- * moved. The one thing that still happens outside the window is the way BACK (below),
- * because the job carried over from last night comes up in the morning.
+ * day Sunday, every PSC counts as open and nothing is moved. The one thing that still
+ * happens outside the window is the way BACK (below), because the job carried over
+ * from last night comes up in the morning.
  *
  * THE RULE. When a job is about to be assigned and its drop-off PSC has passed its
- * `closing_time`, the drop-off moves to that PSC's `next_best_psc`. Both columns are
- * on the PSC mapping tab (SHEET_GID.psc), one row per PSC, typed by a person. If the
- * next best has closed too, ITS next best is tried, and so on. Nothing open → the job
- * is left alone.
+ * closing time, the drop-off moves to that PSC's next best. Both are hard-coded in
+ * `PSC_CLOSING` (psc-routes-data.ts) beside the PSC routes, which have been the source
+ * of truth since the sheet tab was retired — so this reads nothing at runtime. If the
+ * next best has closed too, ITS next best is tried, and so on. Nothing open (or no
+ * next best given) → the job is left alone.
  *
  * THE WAY BACK. A job moved because its PSC had closed is carrying a destination it
  * was never booked for. If it does not finish that evening — the morning rollover
@@ -29,11 +30,10 @@
  * assign, so a job whose alt target had closed is put back by the next assign on its
  * own — the configured destination is re-derived, not remembered.
  *
- * Everything but `loadPscTable` is pure, so the decision can be pinned offline
- * (scripts/psc-closing.test.mts).
+ * All of it is pure, so the decision is pinned offline (scripts/psc-closing.test.mts).
  */
 
-import { SHEET_CONTRACT, SHEET_GID, fetchSheetRows, isSheetShapeError, noteSheetLoad, noteSheetWarning } from "./sheets";
+import { PSC_CLOSING, PSC_ROUTES } from "./psc-routes-data";
 import { vnIsSunday, vnMinutesSinceMidnight } from "./time";
 
 export interface PscInfo {
@@ -41,7 +41,7 @@ export interface PscInfo {
   name: string;
   /** Minutes since VN midnight the PSC stops receiving, or null = never closes. */
   closeMin: number | null;
-  /** The PSC's `next_best_psc`, resolved to a customer id. "" = none. */
+  /** The PSC's next best, resolved to a customer id. "" = none. */
   hubId: string;
 }
 
@@ -84,43 +84,39 @@ export function isClosingWindow(now: Date = new Date()): boolean {
   return !vnIsSunday(now) && vnMinutesSinceMidnight(now) >= CLOSING_CHECK_FROM_MIN;
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 /**
- * The PSC mapping tab, keyed by the PSC's Cartrack customer id (`pickup`).
+ * Join the hours onto the PSC list, keyed by the PSC's Cartrack customer id.
  *
- * `next_best_psc` is typed as a person would say it — "D001", "BRA - D001" — or as a
- * customer id, and resolved against the tab's own PSCs. One that names no PSC on the
- * tab is listed in `unresolved` so it can be reported, and counts as "none".
- *
- * A PSC on two rows (D036 has two routes) is merged: the first filled value of each
- * column wins, so the hours only have to be typed once.
+ * Both sides are keyed by PSC code ("D014"). A code in `closing` that matches no PSC,
+ * or a `next` that does, is listed in `unresolved` — the test fails on any, so a typo
+ * is caught before deploy rather than quietly never diverting anything.
  */
-export function buildPscTable(rows: Record<string, string>[]): { table: Map<string, PscInfo>; unresolved: string[] } {
-  const byCode = new Map<string, string>();
-  const raw = new Map<string, { name: string; close: string; next: string }>();
-  for (const r of rows) {
-    const name = (r["psc_pickup"] ?? "").trim();
-    const id = (r["pickup"] ?? "").trim();
-    if (!name || !UUID_RE.test(id)) continue;
-    if (!byCode.has(pscCode(name).toUpperCase())) byCode.set(pscCode(name).toUpperCase(), id);
-    const prev = raw.get(id);
-    const close = (r["closing_time"] ?? "").trim();
-    const next = (r["next_best_psc"] ?? "").trim();
-    raw.set(id, { name: prev?.name || name, close: prev?.close || close, next: prev?.next || next });
+export function buildPscTable(
+  pscs: readonly { psc_pickup: string; pickup: string }[],
+  closing: Readonly<Record<string, { close: string; next?: string }>>,
+): { table: Map<string, PscInfo>; unresolved: string[] } {
+  const idByCode = new Map<string, { id: string; name: string }>();
+  for (const p of pscs) {
+    const code = pscCode(p.psc_pickup).toUpperCase();
+    if (p.pickup && !idByCode.has(code)) idByCode.set(code, { id: p.pickup, name: p.psc_pickup });
   }
   const table = new Map<string, PscInfo>();
   const unresolved: string[] = [];
-  for (const [id, r] of raw) {
+  for (const [code, h] of Object.entries(closing)) {
+    const psc = idByCode.get(code.toUpperCase());
+    if (!psc) { unresolved.push(code); continue; }
     let hub = "";
-    if (r.next) {
-      hub = UUID_RE.test(r.next) ? r.next : byCode.get(pscCode(r.next).toUpperCase()) ?? "";
-      if (!hub) unresolved.push(`${pscCode(r.name)} → "${r.next}"`);
+    if (h.next) {
+      hub = idByCode.get(h.next.toUpperCase())?.id ?? "";
+      if (!hub) unresolved.push(`${code} → ${h.next}`);
     }
-    table.set(id, { customer_id: id, name: r.name, closeMin: parseClosingTime(r.close), hubId: hub === id ? "" : hub });
+    table.set(psc.id, { customer_id: psc.id, name: psc.name, closeMin: parseClosingTime(h.close), hubId: hub === psc.id ? "" : hub });
   }
   return { table, unresolved };
 }
+
+/** The live table. Built once at load; nothing to fetch, nothing to go stale. */
+export const PSC_TABLE: PscTable = buildPscTable(PSC_ROUTES, PSC_CLOSING).table;
 
 export function isClosed(psc: PscInfo | undefined, nowMin: number): boolean {
   return !!psc && psc.closeMin != null && nowMin >= psc.closeMin;
@@ -238,51 +234,4 @@ export function fmtMin(min: number | null): string {
 /** "D014" out of "BRA - D014" — the code people actually say. */
 export function pscCode(name: string): string {
   return name.match(/D\d+/i)?.[0] ?? name;
-}
-
-// ── The sheet read ────────────────────────────────────────────────────────────
-//
-// Only ever called inside the closing window, so the tab is read in the evening and
-// never during the day. Cached ten minutes per instance: it is ~50 rows, and an edit
-// to tonight's hours should land within one or two cycles.
-//
-// FAILS OPEN. An unreadable tab returns the last good copy, or null when there has
-// never been one — and null means "check nothing", which is the behaviour before
-// this feature. A job is never diverted on a guess.
-
-const TABLE_TTL_MS = 10 * 60 * 1000;
-const A_NEXT_BEST = "PSC mapping — next_best_psc không ra PSC";
-let cachedTable: Map<string, PscInfo> | null = null;
-let cachedAt = 0;
-let inflight: Promise<Map<string, PscInfo> | null> | null = null;
-
-export async function loadPscTable(): Promise<PscTable | null> {
-  if (cachedTable && Date.now() - cachedAt < TABLE_TTL_MS) return cachedTable;
-  if (inflight) return inflight;
-  inflight = (async () => {
-    try {
-      const rows = await fetchSheetRows(SHEET_GID.psc, SHEET_CONTRACT.psc);
-      noteSheetLoad(SHEET_CONTRACT.psc.label, null);
-      const { table, unresolved } = buildPscTable(rows);
-      noteSheetWarning(A_NEXT_BEST, unresolved.length ? unresolved.join(", ") : null);
-      // A PSC-less parse is a wrong read, not a network with no PSCs in it.
-      if (table.size === 0) return cachedTable;
-      cachedTable = table;
-      cachedAt = Date.now();
-      return table;
-    } catch (e) {
-      if (isSheetShapeError(e)) noteSheetLoad(e.sheetLabel, e);
-      console.error("PSC closing hours: PSC mapping tab unreadable —", e);
-      return cachedTable;
-    } finally {
-      inflight = null;
-    }
-  })();
-  return inflight;
-}
-
-/** Dashboard Refresh: the next assign re-reads the tab. */
-export function invalidatePscTable(): void {
-  cachedTable = null;
-  cachedAt = 0;
 }

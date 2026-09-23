@@ -87,14 +87,6 @@ export const SHEET_CONTRACT = {
     label: "Location Table",
     require: ["customer_name", "customer_id"],
   },
-  // One row per PSC. Read by psc-closing.ts only, and only from 19:00 Mon–Sat.
-  // `closing_time` / `next_best_psc` do not exist yet on 2026-09-23 — expected, so
-  // the banner says they are missing instead of the feature quietly doing nothing.
-  psc: {
-    label: "PSC mapping",
-    require: ["psc_pickup", "pickup"],
-    expect: ["closing_time", "next_best_psc"],
-  },
 } as const satisfies Record<string, { label: string; require: readonly string[]; expect?: readonly string[] }>;
 
 export function sheetCsvUrl(gid: string): string {

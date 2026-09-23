@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { loadConfigFromSheets, invalidateConfigCache, loadDriversFromSheet, invalidateDriversCache } from "@/lib/config";
 import { loadPscRoutes, invalidatePscCache } from "@/lib/psc-config";
 import { invalidateStartLocCache } from "@/lib/assign";
-import { invalidatePscTable } from "@/lib/psc-closing";
 
 export async function GET() {
   try {
@@ -13,7 +12,6 @@ export async function GET() {
     invalidateDriversCache();
     invalidatePscCache();
     invalidateStartLocCache();
-    invalidatePscTable();
 
     const [config, drivers, pscRoutes] = await Promise.all([
       loadConfigFromSheets(),

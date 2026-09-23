@@ -537,20 +537,21 @@ safe to deploy before the column exists — every row simply reads blank.
 
 ### PSC closing hours move a job to its next best PSC, and back
 
-Two columns on the **PSC mapping** tab (`SHEET_GID.psc`, one row per PSC):
-`closing_time` (blank / `00:00` / `24:00` = never closes) and `next_best_psc` ("D001",
-"BRA - D001" or a customer id). The check runs **only from 19:00, Monday–Saturday**
-(`isClosingWindow`); outside that the tab is not read and nothing is moved. Inside it,
-a job whose drop-off PSC has passed `closing_time` goes to its `next_best_psc` — and on
-to THAT one's next best if it has closed too; nothing open → left alone. The original
-is kept in Redis (`dropoff_swap:<env>:<job>`, 7 days, written only on a swap) and read
-— one MGET per cycle, memoised per instance per day — only for jobs **created before
-today**; when such a job comes up again (rollover, "Hẹn giờ", re-dated in Cartrack)
-its own PSC is tried first, so it goes home in the morning. A hand-edited drop-off
-wins over the record. `alt_drop_off_id` needs no record: it re-derives itself on every
-assign. PSC tỉnh and engine legs are exempt. The duplicate check also looks under the
-post-closing pair, or two after-hours bookings would both pass.
-`src/lib/psc-closing.ts`, `scripts/psc-closing.test.mts`.
+Hard-coded in `PSC_CLOSING` (`psc-routes-data.ts`, beside the PSC routes — the source
+of truth since the sheet tab was retired): each PSC's closing time and, optionally,
+its next best PSC. Unlisted PSCs never close; nothing is read at runtime. The check
+runs **only from 19:00, Monday–Saturday** (`isClosingWindow`); outside that nothing is
+moved. Inside it, a job whose drop-off PSC has passed its closing time goes to its
+next best — and on to THAT one's next best if it has closed too; no next best, or
+nothing open → left alone. The original is kept in Redis
+(`dropoff_swap:<env>:<job>`, 7 days, written only on a swap) and read — one MGET per
+cycle, memoised per instance per day — only for jobs **created before today**; when
+such a job comes up again (rollover, "Hẹn giờ", re-dated in Cartrack) its own PSC is
+tried first, so it goes home in the morning. A hand-edited drop-off wins over the
+record. `alt_drop_off_id` needs no record: it re-derives itself on every assign. PSC
+tỉnh and engine legs are exempt. The duplicate check also looks under the
+post-closing pair, or two after-hours bookings would both pass. Changing an hour is
+an edit + deploy; `scripts/psc-closing.test.mts` fails on any code that is not a PSC.
 
 ### A gap and an overlap are the same fault, so both are to-dos
 
