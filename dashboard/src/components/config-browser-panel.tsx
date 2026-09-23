@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Search } from "lucide-react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Pencil, Search } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -41,11 +41,58 @@ import type { BranchRule, ConfigDriver } from "@/lib/types";
  * only which branches they can reach.
  */
 
-/** How many matches to draw. A blank search matches all 1,700 rows, and drawing
- *  them costs a visibly janky scroll for a list nobody reads to the end — the
- *  count below the box always states the true total, so the cap never hides that
- *  there is more. */
+/** How many matches to draw at a time. A blank search matches all 1,700 rows,
+ *  and drawing them costs a visibly janky scroll for a list nobody reads to the
+ *  end. The count states the true total and "Hiện thêm" at the foot of the
+ *  table draws the next batch — the cap used to be a wall, and the only way
+ *  past row 150 was to know to narrow the search. */
 const RENDER_CAP = 150;
+
+/** Cartrack's marker for a retired location, written into the name itself. */
+const INACTIVE_PREFIX = /^\{inactive\}\s*/i;
+const isInactive = (pickup: string) => INACTIVE_PREFIX.test(pickup);
+
+/** The unit rows are grouped and edited by. */
+const branchKey = (r: ConfigRowView) => r.customer_id || r.pickup;
+
+const clockMin = (t: string) => {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(t.trim());
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+};
+
+/**
+ * The row's window on a 24-hour strip.
+ *
+ * A branch's rows sit together (see sortConfigRows), so these strips stack into
+ * a column where a handover, a hole or an overlap between consecutive rules is
+ * something you SEE rather than work out from two pairs of digits. The digits
+ * stay beside it; the strip is the shape, not the value.
+ *
+ * Read the way the rest of the table reads a window: both ends or it is all
+ * day, and an end before the start wraps past midnight.
+ */
+function ShiftStrip({ start, end }: { start: string; end: string }) {
+  const s = start && end ? clockMin(start) : null;
+  const e = start && end ? clockMin(end) : null;
+  const allDay = s === null || e === null;
+  const spans: [number, number][] = allDay ? [[0, 1440]]
+    : e > s ? [[s, e]]
+    : e < s ? [[s, 1440], [0, e]]
+    : [];
+  return (
+    <span aria-hidden className="relative inline-block h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-slate-100">
+      {/* noon, so a morning and an afternoon strip can be told apart at a glance */}
+      <span className="absolute inset-y-0 left-1/2 w-px bg-slate-300" />
+      {spans.map(([a, b]) => (
+        <span
+          key={a}
+          className={`absolute inset-y-0 ${allDay ? "bg-indigo-200" : "bg-indigo-500"}`}
+          style={{ left: `${(a / 1440) * 100}%`, width: `${((b - a) / 1440) * 100}%` }}
+        />
+      ))}
+    </span>
+  );
+}
 
 /** Accent-folded, split on spaces and punctuation. */
 const pieces = (s: string) => foldName(s).split(/[^a-z0-9]+/).filter(Boolean);
@@ -120,17 +167,19 @@ export function searchConfigRows(rows: readonly ConfigRowView[], query: string):
  * An all-day rule (no window) sorts FIRST within its branch: it is the branch's
  * general rule, and the scoped or timed ones read as exceptions beneath it.
  *
+ * Retired branches ("{inactive} …") sort LAST. Collation puts the brace ahead
+ * of every letter, so they used to open the table — the first screen anyone saw
+ * was rules for places that no longer send work.
+ *
  * Vietnamese collation, so accented names land where a Vietnamese reader looks
  * for them rather than after Z. The sheet row stays on every line, so the order
  * shown here never costs anyone the ability to find the row itself.
  */
 export function sortConfigRows(rows: readonly ConfigRowView[]): ConfigRowView[] {
   const vi = new Intl.Collator("vi", { sensitivity: "base", numeric: true });
-  const startMin = (r: ConfigRowView) => {
-    const m = /^(\d{1,2}):(\d{2})$/.exec(r.start.trim());
-    return m ? Number(m[1]) * 60 + Number(m[2]) : -1;   // no window sorts first
-  };
+  const startMin = (r: ConfigRowView) => clockMin(r.start) ?? -1;   // no window sorts first
   return [...rows].sort((a, b) =>
+    Number(isInactive(a.pickup)) - Number(isInactive(b.pickup)) ||
     vi.compare(a.pickup, b.pickup) ||
     startMin(a) - startMin(b) ||
     vi.compare(a.driver, b.driver) ||
@@ -412,6 +461,29 @@ function BulkBar({
   );
 }
 
+/** A free-text filter, labelled and sized like the FilterMultiSelect beside it. */
+function ContainsInput({ label, value, onChange, placeholder }: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+}) {
+  const id = useId();
+  return (
+    <div className="min-w-0">
+      <label htmlFor={id} className="mb-1 block text-[11px] font-medium text-slate-700">{label}</label>
+      <input
+        id={id}
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="h-8 w-full rounded border border-slate-300 bg-white px-2 text-xs text-slate-900 outline-none placeholder:text-slate-500 focus:ring-2 focus:ring-indigo-400/50"
+      />
+    </div>
+  );
+}
+
 export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
   const [rows, setRows] = useState<ConfigRowView[]>([]);
   const [filters, setFilters] = useState(EMPTY_CONFIG_FILTERS);
@@ -470,7 +542,8 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
   // rather than an arbitrary slice of the sheet. Which rows get cut is then
   // something the reader can predict, and narrowing the search is a way to
   // reach the rest rather than a lottery.
-  const shown = matches.slice(0, RENDER_CAP);
+  const [limit, setLimit] = useState(RENDER_CAP);
+  const shown = matches.slice(0, limit);
 
   /** One branch at a time: the editor writes, and two open on the same branch
    *  would each hold a baseline taken before the other's writes landed.
@@ -520,16 +593,17 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
   const clearSelection = useCallback(() => setSelected(new Set()), []);
   const updateFilters = (next: typeof filters) => {
     setFilters(next);
+    setLimit(RENDER_CAP);
     clearSelection();
   };
-  const hasFilters = Boolean(
-    filters.query.trim() || filters.drivers.length || filters.pickups.length ||
-    filters.pickupContains.trim() || filters.dropoffs.length || filters.dropoffContains.trim(),
-  );
+  const activeFilters = [
+    filters.query.trim(), filters.pickupContains.trim(), filters.dropoffContains.trim(),
+  ].filter(Boolean).length + filters.drivers.length + filters.pickups.length + filters.dropoffs.length;
+  const hasFilters = activeFilters > 0;
 
   return (
-    <Card className="py-2 h-full flex flex-col border-slate-200">
-      <CardContent className="px-3 flex flex-col min-h-0 gap-2">
+    <Card className="gap-0 py-2 h-full flex flex-col border-slate-200">
+      <CardContent className="px-3 flex flex-1 flex-col min-h-0 gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative flex-1 min-w-[200px]">
             <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
@@ -539,9 +613,16 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
               onChange={(e) => updateFilters({ ...filters, query: e.target.value })}
               placeholder="Tìm chính xác điểm, mã, tài xế…"
               aria-label="Tìm trong config"
-              className="w-full rounded border border-slate-300 bg-white py-1 pl-7 pr-2 text-xs text-slate-900 outline-none placeholder:text-slate-500 focus:ring-2 focus:ring-indigo-400/50"
+              className="h-7 w-full rounded border border-slate-300 bg-white py-1 pl-7 pr-2 text-xs text-slate-900 outline-none placeholder:text-slate-500 focus:ring-2 focus:ring-indigo-400/50"
             />
           </div>
+          {/* Freshness beside the button that renews it, rather than on a
+              status line below the filters where nothing could be done about it. */}
+          {(meta?.tab || meta?.fetchedAt) && (
+            <span className="text-[11px] text-slate-500">
+              {meta?.tab}{meta?.tab && meta?.fetchedAt && " · "}{meta?.fetchedAt && `đọc ${meta.fetchedAt.slice(11, 16)}`}
+            </span>
+          )}
           <Button
             size="sm" variant="outline"
             className="h-7 px-2 text-[11px]"
@@ -552,7 +633,10 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
           </Button>
         </div>
 
-        <div className="grid grid-cols-1 gap-2 lg:grid-cols-3">
+        {/* One row of five on a wide screen. The two "chứa chữ" boxes used to
+            hang under their pickers with nothing under the driver picker, which
+            left a hole in the grid and cost a whole row above the table. */}
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-5">
           <FilterMultiSelect
             label="Tài xế là một trong"
             values={[...filters.drivers]}
@@ -560,60 +644,51 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
             onChange={(values) => updateFilters({ ...filters, drivers: values })}
             placeholder="Chọn tài xế…"
           />
-          <div className="min-w-0 space-y-1.5">
-            <FilterMultiSelect
-              label="Điểm lấy là một trong"
-              values={[...filters.pickups]}
-              options={pickupOptions}
-              onChange={(values) => updateFilters({ ...filters, pickups: values })}
-              placeholder="Chọn điểm lấy…"
-            />
-            <input
-              type="text"
-              value={filters.pickupContains}
-              onChange={(e) => updateFilters({ ...filters, pickupContains: e.target.value })}
-              placeholder="Điểm lấy chứa chữ…"
-              aria-label="Điểm lấy chứa chữ"
-              className="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 outline-none placeholder:text-slate-500 focus:ring-2 focus:ring-indigo-400/50"
-            />
-          </div>
-          <div className="min-w-0 space-y-1.5">
-            <FilterMultiSelect
-              label="Điểm giao là một trong"
-              values={[...filters.dropoffs]}
-              options={dropoffOptions}
-              onChange={(values) => updateFilters({ ...filters, dropoffs: values })}
-              placeholder="Chọn điểm giao…"
-            />
-            <input
-              type="text"
-              value={filters.dropoffContains}
-              onChange={(e) => updateFilters({ ...filters, dropoffContains: e.target.value })}
-              placeholder="Điểm giao chứa chữ…"
-              aria-label="Điểm giao chứa chữ"
-              className="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 outline-none placeholder:text-slate-500 focus:ring-2 focus:ring-indigo-400/50"
-            />
-          </div>
+          <FilterMultiSelect
+            label="Điểm lấy là một trong"
+            values={[...filters.pickups]}
+            options={pickupOptions}
+            onChange={(values) => updateFilters({ ...filters, pickups: values })}
+            placeholder="Chọn điểm lấy…"
+          />
+          <ContainsInput
+            label="Điểm lấy chứa chữ"
+            value={filters.pickupContains}
+            onChange={(v) => updateFilters({ ...filters, pickupContains: v })}
+            placeholder="vd. Bàu Cát"
+          />
+          <FilterMultiSelect
+            label="Điểm giao là một trong"
+            values={[...filters.dropoffs]}
+            options={dropoffOptions}
+            onChange={(values) => updateFilters({ ...filters, dropoffs: values })}
+            placeholder="Chọn điểm giao…"
+          />
+          <ContainsInput
+            label="Điểm giao chứa chữ"
+            value={filters.dropoffContains}
+            onChange={(v) => updateFilters({ ...filters, dropoffContains: v })}
+            placeholder="vd. D001"
+          />
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap items-baseline gap-x-2 text-[11px] text-slate-500">
-            <span>
-              {matches.length}/{rows.length} dòng
-              {matches.length > shown.length && ` · hiện ${shown.length} đầu tiên`}
-            </span>
-            {meta?.tab && <span className="text-slate-400">{meta.tab}</span>}
-            {meta?.fetchedAt && <span className="text-slate-400">đọc {meta.fetchedAt.slice(11, 16)}</span>}
-          </div>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-7 px-2 text-[11px] text-slate-600"
-            disabled={!hasFilters}
-            onClick={() => updateFilters(EMPTY_CONFIG_FILTERS)}
-          >
-            Xoá bộ lọc
-          </Button>
+          <p className="text-[11px] text-slate-600" aria-live="polite">
+            {hasFilters
+              ? <><span className="font-semibold tabular-nums text-slate-800">{matches.length}</span> / {rows.length} dòng khớp</>
+              : <><span className="font-semibold tabular-nums text-slate-800">{rows.length}</span> dòng</>}
+            {matches.length > shown.length && <span className="text-slate-500"> · đang hiện {shown.length}</span>}
+          </p>
+          {hasFilters && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-[11px] text-slate-600"
+              onClick={() => updateFilters(EMPTY_CONFIG_FILTERS)}
+            >
+              Xoá {activeFilters} bộ lọc
+            </Button>
+          )}
         </div>
 
         {err && <div role="alert" className="text-[11px] text-red-600">{err}</div>}
@@ -634,9 +709,11 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
             </p>
           ) : (
             <table className="w-full text-xs">
-              <thead className="sticky top-0 bg-slate-50 text-[11px] text-slate-600">
+              {/* z-10: the shift strips are positioned, and without a stacking
+                  order of its own the sticky header scrolled UNDER them. */}
+              <thead className="sticky top-0 z-10 bg-slate-50 text-[11px] text-slate-600">
                 <tr>
-                  <th className="px-2 py-1 text-left font-medium">
+                  <th className="w-8 px-2 py-1 text-left font-medium">
                     <input
                       type="checkbox"
                       checked={allShownPicked}
@@ -653,17 +730,24 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                       className="size-3.5 accent-indigo-600"
                     />
                   </th>
-                  <th className="px-2 py-1 text-left font-medium sr-only">Sửa</th>
+                  <th className="w-14 px-2 py-1 text-left font-medium"><span className="sr-only">Sửa</span></th>
                   <th className="px-2 py-1 text-left font-medium">Điểm lấy</th>
                   <th className="px-2 py-1 text-left font-medium">Tài xế</th>
-                  <th className="px-2 py-1 text-left font-medium">Ca</th>
-                  <th className="px-2 py-1 text-left font-medium">Điểm giao</th>
-                  <th className="px-2 py-1 text-right font-medium">Dòng</th>
+                  <th className="px-2 py-1 text-left font-medium whitespace-nowrap">Ca</th>
+                  <th className="px-2 py-1 text-left font-medium whitespace-nowrap">Điểm giao</th>
+                  <th className="px-2 py-1 text-right font-medium" title="Số dòng trên sheet">Dòng</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
-                {shown.flatMap((r) => {
-                  const branch = r.customer_id || r.pickup;
+              <tbody>
+                {shown.flatMap((r, i) => {
+                  const branch = branchKey(r);
+                  // A branch's rows are adjacent (sortConfigRows), so its name
+                  // is printed once and the rest of the run reads as that
+                  // branch's day. Repeating it on every line made four rows of
+                  // one clinic look like four clinics.
+                  const firstOfBranch = i === 0 || branchKey(shown[i - 1]) !== branch
+                    || shown[i - 1].pickup !== r.pickup;
+                  const inactive = isInactive(r.pickup);
                   // Every row of the branch being edited is marked, not just the
                   // one clicked: the editor holds the branch's WHOLE day, so the
                   // other rows are the very things it is about to rewrite, and
@@ -674,7 +758,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                   return [(
                   <tr
                     key={r.row}
-                    className={`align-top ${
+                    className={`align-top ${firstOfBranch ? "border-t border-slate-200" : ""} ${
                       selected.has(r.row) ? "bg-indigo-50" : inBranch ? "bg-indigo-50/60" : "hover:bg-slate-50"
                     }`}
                   >
@@ -690,20 +774,42 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                       />
                     </td>
                     <td className="px-2 py-1">
+                      {/* Ghost, not outlined: 150 bordered buttons in one column
+                          were the loudest thing in the table. Still a real,
+                          always-visible button — a hover-only one would be
+                          invisible on the tablets dispatch also uses. */}
                       <Button
-                        size="sm" variant={openHere ? "default" : "outline"}
-                        className={`h-6 px-2 text-[11px] font-normal ${openHere ? "bg-indigo-600 hover:bg-indigo-700" : ""}`}
+                        size="sm" variant={openHere ? "default" : "ghost"}
+                        className={`h-6 gap-1 px-1.5 text-[11px] font-normal ${
+                          openHere ? "bg-indigo-600 hover:bg-indigo-700" : "text-indigo-700 hover:bg-indigo-50 hover:text-indigo-800"
+                        }`}
                         aria-expanded={openHere}
                         onClick={() => setEditing(openHere ? null : { branch, row: r.row })}
                         disabled={!r.customer_id && !r.pickup}
                       >
+                        {!openHere && <Pencil aria-hidden className="size-3" />}
                         {openHere ? "Đóng" : "Sửa"}
                       </Button>
                     </td>
                     <td className="px-2 py-1">
-                      <span className="text-slate-800">{r.pickup || <span className="text-slate-400">—</span>}</span>
-                      {r.customer_id && (
-                        <span className="ml-1.5 font-mono text-[10px] text-slate-400">{r.customer_id}</span>
+                      {firstOfBranch ? (
+                        <>
+                          {inactive && (
+                            <span className="mr-1.5 rounded border border-slate-200 bg-slate-100 px-1 text-[10px] font-medium text-slate-600">
+                              ngưng
+                            </span>
+                          )}
+                          <span className={inactive ? "text-slate-500" : "font-medium text-slate-900"}>
+                            {r.pickup ? r.pickup.replace(INACTIVE_PREFIX, "") : <span className="text-slate-500">—</span>}
+                          </span>
+                          {r.customer_id && (
+                            <span className="ml-1.5 select-all font-mono text-[10px] text-slate-500">{r.customer_id}</span>
+                          )}
+                        </>
+                      ) : (
+                        // Still named for a screen reader, which reads a row
+                        // on its own and has no run above it to lean on.
+                        <span className="sr-only">{r.pickup}</span>
                       )}
                     </td>
                     <td className="px-2 py-1 text-slate-700">
@@ -714,13 +820,18 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                         </span>
                       )}
                     </td>
-                    <td className="px-2 py-1 tabular-nums text-slate-600">
-                      {r.start && r.end ? `${r.start}–${r.end}` : <span className="text-slate-400">cả ngày</span>}
+                    <td className="px-2 py-1 whitespace-nowrap">
+                      <span className="inline-flex items-center gap-2">
+                        <ShiftStrip start={r.start} end={r.end} />
+                        {r.start && r.end
+                          ? <span className="tabular-nums text-slate-700">{r.start}–{r.end}</span>
+                          : <span className="text-slate-500">cả ngày</span>}
+                      </span>
                     </td>
-                    <td className="px-2 py-1 text-slate-500">
-                      {r.dropoff || <span className="text-slate-400">mọi điểm</span>}
+                    <td className="px-2 py-1 text-slate-700">
+                      {r.dropoff || <span className="whitespace-nowrap text-slate-500">mọi điểm</span>}
                     </td>
-                    <td className="px-2 py-1 text-right font-mono text-[10px] text-slate-400">{r.row}</td>
+                    <td className="px-2 py-1 text-right font-mono text-[10px] text-slate-500">{r.row}</td>
                   </tr>
                   ),
                   // Directly beneath the row it was opened from, which is the
@@ -751,6 +862,17 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                 })}
               </tbody>
             </table>
+          )}
+          {matches.length > shown.length && (
+            <div className="flex items-center justify-center gap-2 border-t border-slate-200 px-2 py-2 text-[11px] text-slate-600">
+              <span>Đang hiện {shown.length}/{matches.length} dòng</span>
+              <Button
+                size="sm" variant="outline" className="h-6 px-2 text-[11px]"
+                onClick={() => setLimit((n) => n + RENDER_CAP)}
+              >
+                Hiện thêm {Math.min(RENDER_CAP, matches.length - shown.length)}
+              </Button>
+            </div>
           )}
         </div>
       </CardContent>

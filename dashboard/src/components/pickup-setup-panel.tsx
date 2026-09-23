@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Timer } from "lucide-react";
+import { ChevronRight, Timer } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -70,8 +70,11 @@ export function PickupSetupPanel() {
   const pct = (d: number) => (Number.isFinite(d) ? `${d > 0 ? "+" : ""}${Math.round(d * 100)}%` : "—");
 
   return (
-    <Card>
-      <CardContent className="p-3 space-y-3">
+    // py-2 / gap-0 overrides the Card defaults (py-6, gap-6), which stacked on
+    // top of the content's own padding and made the COLLAPSED card ~100px of
+    // white space around one line — twice the height of the panel below it.
+    <Card className="gap-0 py-2 shrink-0 border-slate-200">
+      <CardContent className="px-3 space-y-3">
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -79,6 +82,10 @@ export function PickupSetupPanel() {
             className="flex min-w-0 flex-1 items-center gap-2 rounded py-0.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
             aria-expanded={open}
           >
+            <ChevronRight
+              aria-hidden
+              className={`size-4 shrink-0 text-slate-500 transition-transform duration-150 motion-reduce:transition-none ${open ? "rotate-90" : ""}`}
+            />
             <Timer className="size-4 shrink-0 text-indigo-600" strokeWidth={2} />
             <span className="text-sm font-semibold text-slate-800">ETA lấy mẫu trên cổng khách hàng</span>
             {data && (
@@ -86,24 +93,29 @@ export function PickupSetupPanel() {
                 {data.places} địa điểm · {data.proposals.length} lệch · {data.drift.length} Labcenter đổi
               </span>
             )}
-            <span aria-hidden className="ml-auto shrink-0 text-xs text-slate-500">{open ? "▾" : "▸"}</span>
           </button>
           {open && (
-            <Button size="sm" variant="outline" className="h-7" onClick={() => { setData(null); void load(); }}>
+            <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => { setData(null); void load(); }}>
               Tải lại
             </Button>
           )}
         </div>
 
-        {open && error && <p className="text-sm text-rose-700">Không tải được: {error}</p>}
-        {open && !data && !error && <p className="text-sm text-slate-500">Đang so sánh với Labcenter…</p>}
+        {open && error && <p role="alert" className="text-xs text-rose-700">Không tải được: {error}</p>}
+        {open && !data && !error && <p className="text-xs text-slate-500">Đang so sánh với Labcenter…</p>}
 
         {open && data && (
           <>
             <section>
-              <h3 className="text-xs font-semibold text-slate-700 mb-1">
-                ETA lệch thực tế — tính từ giờ hẹn lấy mẫu tới lúc tài xế đến · đề xuất theo mốc 80% chuyến · 30 ngày, trên 5 chuyến, bỏ chuyến có khung giờ, chuyến hẹn trước 06:00 và chuyến giao khác ngày ({data.proposals.length})
+              {/* Title and method split: the method is a paragraph, and set
+                  as one bold heading it buried the count at the end of it. */}
+              <h3 className="text-xs font-semibold text-slate-700">
+                ETA lệch thực tế <span className="font-normal tabular-nums text-slate-500">{data.proposals.length}</span>
               </h3>
+              <p className="mb-1 max-w-[75ch] text-[11px] text-slate-500">
+                Tính từ giờ hẹn lấy mẫu tới lúc tài xế đến · đề xuất theo mốc 80% chuyến · 30 ngày, trên 5 chuyến,
+                bỏ chuyến có khung giờ, chuyến hẹn trước 06:00 và chuyến giao khác ngày.
+              </p>
               {data.proposals.length === 0 ? (
                 <p className="text-xs text-slate-500">Không có địa điểm nào lệch quá 10%.</p>
               ) : (

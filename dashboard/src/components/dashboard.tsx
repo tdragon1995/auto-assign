@@ -686,9 +686,15 @@ export function Dashboard() {
             ) : rightTab === "config" ? (
               /* Mounted only while the tab is open, so the ~1,700-row fetch
                  happens when someone asks for it and not before. */
-              <div className="h-[72vh] lg:h-full overflow-y-auto space-y-2">
+              <div className="h-[72vh] lg:h-full overflow-y-auto flex flex-col gap-2">
                 {/* ETA review first but collapsed (it fetches on first open),
-                    then the to-dos, then the table they are edits to. */}
+                    then the to-dos, then the table they are edits to.
+                    A column, so the table takes whatever height the two panels
+                    above leave: it has its own scroller with a sticky header,
+                    and a fixed 28rem box inside an outer scroller was two
+                    scrollbars for one list. The min-height keeps it usable
+                    when the to-do list is open, at the cost of an outer
+                    scroll only then. */}
                 <PickupSetupPanel />
                 <ConfigTodoPanel
                   gaps={visibleGaps}
@@ -699,7 +705,7 @@ export function Dashboard() {
                   parsedAt={parsedAt}
                   onSaved={(key?: string) => { if (key) markDone(key); void handleRefresh(); }}
                 />
-                <div className="min-h-[28rem]">
+                <div className="min-h-[28rem] flex-1">
                   <ConfigBrowserPanel drivers={drivers} />
                 </div>
               </div>

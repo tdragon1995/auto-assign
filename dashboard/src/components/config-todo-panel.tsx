@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { ClipboardList, Search } from "lucide-react";
+import { ChevronRight, ClipboardList, Search } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -1189,7 +1189,7 @@ export function ConfigTodoPanel({
   );
 
   return (
-    <Card className="py-2 shrink-0 border-slate-200">
+    <Card className="gap-0 py-2 shrink-0 border-slate-200">
       <CardContent className="space-y-1.5 px-3">
         <button
           type="button"
@@ -1198,6 +1198,12 @@ export function ConfigTodoPanel({
           aria-expanded={open}
           aria-controls={LIST_ID}
         >
+          {/* The chevron LEADS, beside the label it opens — a lone ▸ at the far
+              right edge sat a screen-width away from anything it belonged to. */}
+          <ChevronRight
+            aria-hidden
+            className={`size-4 shrink-0 text-slate-500 transition-transform duration-150 motion-reduce:transition-none ${open ? "rotate-90" : ""}`}
+          />
           <span className="flex items-center gap-1.5 text-sm font-semibold text-slate-800">
             <ClipboardList className="size-4 text-amber-600" strokeWidth={2} />
             Cần tạo config
@@ -1230,7 +1236,6 @@ export function ConfigTodoPanel({
               đọc sheet {parsedAt.slice(11, 16)}
             </span>
           )}
-          <span aria-hidden className="ml-auto shrink-0 text-xs text-slate-500">{open ? "▾" : "▸"}</span>
         </button>
 
         {/* Capped and scrolled, exactly as the leave panel caps itself.
