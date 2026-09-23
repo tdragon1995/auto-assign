@@ -86,6 +86,11 @@ export const SHEET_CONTRACT = {
   locations: {
     label: "Location Table",
     require: ["customer_name", "customer_id"],
+    // PSC closing hours (psc-closing.ts). `closing_time` is filled on the PSC
+    // ("BRA - Dxxx") rows only and does not exist yet on 2026-09-23 — expected, so
+    // the banner says it is missing instead of the feature quietly doing nothing.
+    // `dropoff_id` on a PSC's row is the next PSC in its chain; present today.
+    expect: ["closing_time", "dropoff_id"],
   },
 } as const satisfies Record<string, { label: string; require: readonly string[]; expect?: readonly string[] }>;
 

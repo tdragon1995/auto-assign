@@ -3,6 +3,7 @@ import { vnDate, vnMinutesSinceMidnight, vnTimestamp } from "./time";
 import { isNoteReleaseHour } from "./job-filters";
 import type { LogEntry, PickupWarning, FailedJob, SheetAlarm, UnfinishedConfigRow, CoverageGap, BranchRule, ShiftOverlap } from "./types";
 import { scopedDropoffName } from "./unmapped-row";
+import type { DropoffSwapRecord } from "./psc-closing";
 
 /**
  * COMMAND BUDGET — read this before adding a Redis call to a per-cycle path.
@@ -1456,4 +1457,74 @@ export async function clearCoverageGaps(fields: { customer_id: string; at: strin
       seenGaps.delete(gapField(f.customer_id, f.at));
     }
   } catch { /* it will be retried on the next parse */ }
+}
+
+// ── PSC closing: where a diverted job was originally going ───────────────────
+//
+// One key per job the engine moved off a closed PSC (psc-closing.ts), so the job
+// can go back to its own PSC if it is carried into another day. Written only on a
+// swap — a handful of evening jobs a day — and READ only for jobs created before
+// today, once per job per instance per day (`swapChecked`), in ONE MGET per cycle
+// that has any such job. A normal cycle touches none of this.
+//
+// Seven days covers every way a job moves forward: the rollover (+1), "Hẹn giờ"
+// (+1/+2) and a parked multi-day schedule.
+const DROPOFF_SWAP_PREFIX = "dropoff_swap:";
+const DROPOFF_SWAP_TTL_S = 7 * 86_400;
+const dropoffSwapKey = (env: string, jobId: number) => `${DROPOFF_SWAP_PREFIX}${env}:${jobId}`;
+
+// jobId → the VN day it was last looked up, and what was found. Per instance on
+// purpose: a stuck job (no driver, no mapping) is re-offered every cycle all day,
+// and without this it would cost a command every time.
+const swapChecked = new Map<number, { day: string; rec: DropoffSwapRecord | null }>();
+
+/** Swap records for these jobs, from memory where this instance already looked
+ *  today and one MGET for the rest. Never throws: an unreadable record means the
+ *  job is judged on where it points now, which is the pre-feature behaviour. */
+export async function readDropoffSwaps(
+  jobIds: number[],
+  env: string,
+  today: string,
+): Promise<Map<number, DropoffSwapRecord>> {
+  const out = new Map<number, DropoffSwapRecord>();
+  const unknown: number[] = [];
+  for (const id of jobIds) {
+    const hit = swapChecked.get(id);
+    if (hit && hit.day === today) { if (hit.rec) out.set(id, hit.rec); }
+    else unknown.push(id);
+  }
+  if (unknown.length === 0) return out;
+  const redis = getRedis();
+  if (!redis) return out;
+  try {
+    const raw = await redis.mget<(DropoffSwapRecord | string | null)[]>(...unknown.map((id) => dropoffSwapKey(env, id)));
+    unknown.forEach((id, i) => {
+      const v = raw[i];
+      const rec = v ? (typeof v === "string" ? (JSON.parse(v) as DropoffSwapRecord) : v) : null;
+      const ok = rec && rec.from && rec.to ? rec : null;
+      swapChecked.set(id, { day: today, rec: ok });
+      if (ok) out.set(id, ok);
+    });
+  } catch { /* retried next cycle: nothing was memoised */ }
+  // Keep the memo from growing for the life of a warm instance.
+  if (swapChecked.size > 2_000) for (const [id, v] of swapChecked) if (v.day !== today) swapChecked.delete(id);
+  return out;
+}
+
+export async function writeDropoffSwap(jobId: number, env: string, rec: DropoffSwapRecord, today: string): Promise<void> {
+  swapChecked.set(jobId, { day: today, rec });
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    await redis.set(dropoffSwapKey(env, jobId), JSON.stringify(rec), { ex: DROPOFF_SWAP_TTL_S });
+  } catch { /* best-effort: without it the job keeps the fallback if carried over */ }
+}
+
+export async function deleteDropoffSwap(jobId: number, env: string, today: string): Promise<void> {
+  swapChecked.set(jobId, { day: today, rec: null });
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    await redis.del(dropoffSwapKey(env, jobId));
+  } catch { /* expires on its own */ }
 }
