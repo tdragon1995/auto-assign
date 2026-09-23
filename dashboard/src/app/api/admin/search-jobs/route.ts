@@ -89,15 +89,15 @@ export async function GET(req: NextRequest) {
   // getRunLog is oldest-first; walk newest-first so the freshest line wins.
   for (let i = logs.length - 1; i >= 0; i--) {
     const l = logs[i];
-    if (!l.msg.toLowerCase().includes(q)) continue;
+    if (!foldName(l.msg).includes(needle)) continue;
     const customer = extractCustomer(l.msg);
     for (const m of l.msg.matchAll(JOB_ID_RE)) add(Number(m[1]), customer, l.ts);
   }
   for (const j of failed) {
-    if (j.customer.toLowerCase().includes(q)) add(j.job_id, j.customer, j.ts);
+    if (foldName(j.customer).includes(needle)) add(j.job_id, j.customer, j.ts);
   }
   for (const j of held) {
-    if (j.customer.toLowerCase().includes(q)) add(j.job_id, j.customer);
+    if (foldName(j.customer).includes(needle)) add(j.job_id, j.customer);
   }
 
   const results = [...found.values()].slice(0, 60);

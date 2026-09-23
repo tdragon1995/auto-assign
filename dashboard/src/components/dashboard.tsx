@@ -8,7 +8,7 @@ import { ServiceStatus } from "./stats-sidebar";
 import { ActivityLog } from "./activity-log";
 import { ScheduleListPanel } from "./schedule-list-panel";
 import { type HeldJob } from "./note-review-panel";
-import { JobAdminPanel } from "./job-admin-panel";
+import { JobAdminPanel, type JobAdminRequest } from "./job-admin-panel";
 import { DistanceTab } from "./distance-tab";
 import { FailedJobsPanel, type ScheduleErrorRow } from "./failed-jobs-panel";
 import { LeaveStatusPanel } from "./leave-status-panel";
@@ -38,6 +38,12 @@ export function Dashboard() {
   const [lastChecked, setLastChecked] = useState<string | null>(null);
   const [deployments, setDeployments] = useState<DeploymentBeat[]>([]);
   const [held, setHeld] = useState<HeldJob[]>([]);
+  // "Điều chỉnh" on a Cần xử lý row → open that job in the Điều chỉnh job panel.
+  const [adminRequest, setAdminRequest] = useState<JobAdminRequest | null>(null);
+  const openInAdmin = useCallback(
+    (jobId: number) => setAdminRequest((prev) => ({ jobId, seq: (prev?.seq ?? 0) + 1 })),
+    [],
+  );
   const [warnings, setWarnings] = useState<PickupWarning[]>([]);
   const [warningsAt, setWarningsAt] = useState<string | null>(null);
   /** Counts explicit leave refreshes, so the leave panel's week grid — which
@@ -628,60 +634,68 @@ export function Dashboard() {
               each panel's ScrollArea renders); on lg it's a fixed flex-fill. */}
           <div className="lg:flex-1 lg:min-h-0">
             {rightTab === "attention" ? (
-              <div className="flex flex-col gap-1.5 h-[72vh] lg:h-full">
-                {/* Above the job list on purpose: a refused tab means the engine
-                    is running on an older copy of the config than the sheet
-                    shows, which changes how you read everything below it. */}
-                <SheetAlarmBanner alarms={sheetAlarms} />
-                {/* Cần xử lý tab — note tasks + unassignable + late + schedule errors */}
-                <div className="flex-1 min-h-0">
-                  <FailedJobsPanel
-                    held={held}
-                    env={env}
-                    onNoteRefresh={syncStatus}
-                    onNoteAssigned={(jobId) => {
-                      dismissedHeldRef.current.set(jobId, Date.now() + HELD_DISMISS_MS);
-                      setHeld((prev) => prev.filter((j) => j.job_id !== jobId));
-                      // After the background-write window, re-check the server so a
-                      // failed job (which the server puts back) reappears promptly.
-                      setTimeout(() => syncStatus(), HELD_DISMISS_MS + 500);
-                    }}
-                    onNoteManualAssign={handleHeldManualAssign}
-                    failed={failed}
-                    warnings={warnings}
-                    warningsAt={warningsAt}
-                    scheduleErrors={scheduleErrors}
+              // Two columns on a wide screen: the list on the left, the Điều chỉnh
+              // job panel beside it (the list is capped at max-w-5xl, so this
+              // used to be empty space). On a phone the panel stacks below.
+              <div className="flex flex-col gap-1.5 lg:flex-row lg:h-full">
+                <div className="flex flex-col gap-1.5 h-[72vh] lg:h-full lg:min-w-0 lg:flex-1">
+                  {/* Above the job list on purpose: a refused tab means the engine
+                      is running on an older copy of the config than the sheet
+                      shows, which changes how you read everything below it. */}
+                  <SheetAlarmBanner alarms={sheetAlarms} />
+                  {/* Cần xử lý tab — note tasks + unassignable + late + schedule errors */}
+                  <div className="flex-1 min-h-0">
+                    <FailedJobsPanel
+                      held={held}
+                      env={env}
+                      onNoteRefresh={syncStatus}
+                      onNoteAssigned={(jobId) => {
+                        dismissedHeldRef.current.set(jobId, Date.now() + HELD_DISMISS_MS);
+                        setHeld((prev) => prev.filter((j) => j.job_id !== jobId));
+                        // After the background-write window, re-check the server so a
+                        // failed job (which the server puts back) reappears promptly.
+                        setTimeout(() => syncStatus(), HELD_DISMISS_MS + 500);
+                      }}
+                      onNoteManualAssign={handleHeldManualAssign}
+                      failed={failed}
+                      warnings={warnings}
+                      warningsAt={warningsAt}
+                      scheduleErrors={scheduleErrors}
+                      drivers={drivers}
+                      onAssign={handleManualAssign}
+                      onScheduleFailed={handleScheduleFailed}
+                      leaveToday={leave.today}
+                      leaveTomorrow={leave.tomorrow}
+                      onLeaveRefresh={() => loadLeaveStatus(true)}
+                      onRetrySchedule={retrySchedule}
+                      retryingSchedule={retryingSchedule}
+                      onOpenJob={openInAdmin}
+                    />
+                  </div>
+
+                  {/* Leave status — reference, below the actionable list; collapsed
+                      to counts by default but flags uncovered drivers in amber. */}
+                  <LeaveStatusPanel
+                    today={leave.today}
+                    tomorrow={leave.tomorrow}
+                    invalid={leave.invalid}
+                    spanning={leave.spanning}
+                    suppressed={leave.suppressed}
+                    suppressedUnreadable={leave.suppressedUnreadable}
+                    error={leave.error}
                     drivers={drivers}
-                    onAssign={handleManualAssign}
-                    onScheduleFailed={handleScheduleFailed}
-                    leaveToday={leave.today}
-                    leaveTomorrow={leave.tomorrow}
-                    onLeaveRefresh={() => loadLeaveStatus(true)}
-                    onRetrySchedule={retrySchedule}
-                    retryingSchedule={retryingSchedule}
+                    onRefresh={() => loadLeaveStatus(true)}
+                    refreshKey={leaveRefreshKey}
                   />
                 </div>
-
-                {/* Leave status — reference, below the actionable list; collapsed
-                    to counts by default but flags uncovered drivers in amber. */}
-                <LeaveStatusPanel
-                  today={leave.today}
-                  tomorrow={leave.tomorrow}
-                  invalid={leave.invalid}
-                  spanning={leave.spanning}
-                  suppressed={leave.suppressed}
-                  suppressedUnreadable={leave.suppressedUnreadable}
-                  error={leave.error}
-                  drivers={drivers}
-                  onRefresh={() => loadLeaveStatus(true)}
-                  refreshKey={leaveRefreshKey}
-                />
-
                 {/* Job admin (complete / geofence bypass / change dropoff) —
-                    the tool you reach for when fixing a row above. It fetches
-                    nothing until someone searches, so living on the landing
-                    tab costs no requests. */}
-                <JobAdminPanel env={env} />
+                    the tool you reach for when fixing a row in the list. It
+                    fetches nothing until someone searches or presses
+                    "Điều chỉnh" on a row, so living on the landing tab costs no
+                    requests. */}
+                <div className="lg:h-full lg:w-[26rem] lg:shrink-0">
+                  <JobAdminPanel env={env} drivers={drivers} openRequest={adminRequest} />
+                </div>
               </div>
             ) : rightTab === "config" ? (
               /* Mounted only while the tab is open, so the ~1,700-row fetch

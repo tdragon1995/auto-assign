@@ -10,6 +10,7 @@ import { DayTimePicker, DAY_LABELS, vnNowLabel, vnDateOffset } from "./day-time-
 import type { ConfigDriver } from "@/lib/types";
 import { DriverName } from "./driver-name";
 import { driverDisplayName } from "@/lib/display-names";
+import { OpenInAdminButton } from "./job-admin-panel";
 
 export interface HeldJob {
   job_id: number;
@@ -71,6 +72,7 @@ export function NoteReviewPanel({
   onAssigned,
   drivers,
   onManualAssign,
+  onOpenJob,
   embedded = false,
 }: {
   held: HeldJob[];
@@ -79,6 +81,8 @@ export function NoteReviewPanel({
   onAssigned: (jobId: number) => void;
   drivers: ConfigDriver[];
   onManualAssign: (job: HeldJob, driverId: string) => void;
+  /** Open a job in the Điều chỉnh job panel. */
+  onOpenJob?: (jobId: number) => void;
   // When true, render as a bare section (no Card) so it can sit inside the
   // unified "Cần xử lý" block alongside the unassignable + late sections.
   embedded?: boolean;
@@ -297,6 +301,11 @@ export function NoteReviewPanel({
             >
               Job {job.job_id} · mở bản đồ ↗
             </a>
+            {onOpenJob && (
+              <span className="ml-2 inline-flex align-middle">
+                <OpenInAdminButton jobId={job.job_id} onOpen={onOpenJob} />
+              </span>
+            )}
           </div>
         </div>
 

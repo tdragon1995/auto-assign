@@ -120,7 +120,7 @@ export default function SmartAssignPage() {
     }
   };
 
-  // Same convention as Quản trị job: all digits → direct Job ID, otherwise
+  // Same convention as Điều chỉnh job: all digits → direct Job ID, otherwise
   // search today's unassigned jobs by pickup/dropoff name.
   const runSearch = async () => {
     const q = query.trim();
