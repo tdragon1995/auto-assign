@@ -39,21 +39,18 @@ function extractCustomer(msg: string): string {
 /**
  * GET /api/admin/search-jobs?q=<customer, code, driver, PSC or job number>&env=
  *
- * JOBS ON THE ROAD ONLY. The answer is Cartrack's own search over today's stops that
- * are picked up / arrived / started (searchActiveStops — the fleetweb delivery table's
- * search box), one RPC per search. It finds a job however it was created, and it does
- * NOT pad the list with finished jobs: the log scan used to, and a search for "d007"
- * came back as 31 rows of which two were running.
+ * UNFINISHED JOBS ONLY — on the road first, then not started. The answer is
+ * Cartrack's own search over today's stops that are not started / started / arrived /
+ * picked up (searchActiveStops — the fleetweb delivery table's search box), one RPC per
+ * search. It finds a job however it was created, and it does NOT pad the list with
+ * finished jobs: the log scan used to, and "d007" came back as 31 rows, two running.
  *
  * Cartrack returns only the stop in progress, so each row's route is filled in from
  * the stored day (one HMGET) — otherwise a "d007" hit read "… | BRA - D001".
  *
  * FALLBACK, only when Cartrack does not answer (`source: "fallback"`): every matching
  * driver's unfinished jobs from the day snapshot, then the activity log. The panel
- * says so, because that list is not limited to jobs on the road.
- *
- * A job that is not on the road (unassigned, not started) is opened by its number, or
- * with the "Điều chỉnh" chip on its Cần xử lý row.
+ * says so, because that list can include finished jobs.
  */
 export async function GET(req: NextRequest) {
   const raw = (req.nextUrl.searchParams.get("q") ?? "").trim();
@@ -64,13 +61,14 @@ export async function GET(req: NextRequest) {
   const today = vnDate();
   // Sent as typed: Cartrack matches accents the way its own search box does.
   const active = await searchActiveStops(today, raw, env).catch(() => null);
-  if (active) return NextResponse.json({ results: await onTheRoad(active, today, env), source: "cartrack" });
+  if (active) return NextResponse.json({ results: await unfinishedJobs(active, today, env), source: "cartrack" });
   return NextResponse.json({ results: await fallback(q, today, env), source: "fallback" });
 }
 
-/** Cartrack's flat stops → one row per job, labelled with the whole route. */
+/** Cartrack's flat stops → one row per job, labelled with the whole route; jobs with
+ *  a stop under way first, jobs not started yet after them. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function onTheRoad(stops: any[], today: string, env: Env): Promise<JobSearchHit[]> {
+async function unfinishedJobs(stops: any[], today: string, env: Env): Promise<JobSearchHit[]> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const byJob = new Map<number, any[]>();
   for (const st of stops) {
@@ -78,7 +76,11 @@ async function onTheRoad(stops: any[], today: string, env: Env): Promise<JobSear
     if (!Number.isInteger(id) || id <= 0) continue;
     (byJob.get(id) ?? byJob.set(id, []).get(id)!).push(st);
   }
-  const ids = [...byJob.keys()].slice(0, 60);
+  // stop_status_id 1 = not started; anything else Cartrack returned here is under way.
+  const underWay = (id: number) => byJob.get(id)!.some((st) => Number(st.stop_status_id) !== 1);
+  const ids = [...byJob.keys()]
+    .sort((a, b) => Number(underWay(b)) - Number(underWay(a)))
+    .slice(0, 60);
   const [stored, drivers] = await Promise.all([
     snapJobsByIds(today, env, ids),
     loadDriversFromSheet().catch(() => []),

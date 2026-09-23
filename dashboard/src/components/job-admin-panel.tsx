@@ -413,7 +413,7 @@ export function JobAdminPanel({
             </Button>
           </div>
           <p id={hintId} className="text-[11px] leading-snug text-slate-600">
-            Tìm job đang chạy hôm nay theo tên hoặc mã khách, PSC, tên tài xế. Job chưa giao hoặc chưa chạy: nhập số job.
+            Tìm job chưa xong hôm nay theo tên hoặc mã khách, PSC, tên tài xế hoặc số job. Job đang chạy hiện trước, rồi job chưa bắt đầu.
           </p>
         </form>
 
@@ -428,7 +428,7 @@ export function JobAdminPanel({
           )}
           {searched && !searching && !notice && results.length === 0 && (
             <p className="text-xs text-slate-700">
-              Không có job đang chạy nào khớp. Job chưa giao hoặc chưa chạy thì nhập số job, hoặc bấm Điều chỉnh ở dòng trong Cần xử lý.
+              Không có job chưa xong nào khớp hôm nay. Job đã xong thì nhập số job để tra thẳng.
             </p>
           )}
           {searching && <p className="text-xs text-slate-600">Đang tìm…</p>}
