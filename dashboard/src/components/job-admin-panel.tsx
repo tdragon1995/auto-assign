@@ -66,6 +66,9 @@ const withDropoff = (label: string, name: string) => {
   return i === -1 ? label : label.slice(0, i + 3) + name;
 };
 
+/** The row a number gets when it also matched customers: "maybe you meant a job". */
+const PROBE_LABEL = "Tra số này như Job ID trên Cartrack";
+
 const routeOf = (j: JobSummary) =>
   `${j.pickup?.customer_name ?? "—"} → ${j.dropoff?.customer_name ?? "—"}`;
 
@@ -147,14 +150,17 @@ export function JobAdminPanel({
             // row that failed to open.
             setResults([]);
             setActiveId(null);
-            setNotice({ tone: "error", text: `Không có Job ${id} trên Cartrack. Kiểm tra lại số job.` });
+            setNotice({ tone: "error", text: `Không có job hay mã khách nào khớp ${id} hôm nay.` });
           } else {
             setLookupError(data.error ?? "Không tải được job.");
           }
           return;
         }
         setJob(data);
-        setHit(id, (h) => ({ statusId: data.job_status_id ?? null, label: h.label || routeOf(data) }));
+        setHit(id, (h) => ({
+          statusId: data.job_status_id ?? null,
+          label: h.label && h.label !== PROBE_LABEL ? h.label : routeOf(data),
+        }));
       } catch {
         if (seq !== lookupSeq.current) return;
         setJob(null);
@@ -204,7 +210,11 @@ export function JobAdminPanel({
   const runSearch = useCallback(async () => {
     const q = query.trim();
     if (!q) return;
-    if (/^\d+$/.test(q)) {
+    // Digits are EITHER a job number or a customer code ("21362 - D11 - ACo - …"), so a
+    // number is searched like a name first — that costs no Cartrack call — and only a
+    // number nothing matches goes straight to Cartrack as a Job ID.
+    const digits = /^\d+$/.test(q);
+    if (digits && q.length < 2) {
       lookupById(Number(q));
       return;
     }
@@ -229,7 +239,25 @@ export function JobAdminPanel({
       const data = await res.json();
       if (seq !== searchSeq.current) return;
       if (!res.ok) throw new Error();
-      setResults(Array.isArray(data.results) ? data.results : []);
+      const hits: SearchHit[] = Array.isArray(data.results) ? data.results : [];
+      if (digits) {
+        const id = Number(q);
+        const own = hits.find((h) => h.job_id === id);
+        if (own) {
+          // It IS a job number: that job first, opened, like a direct lookup.
+          setResults([own, ...hits.filter((h) => h !== own)]);
+          setActiveId(id);
+          fetchJob(id);
+        } else if (hits.length) {
+          // A customer code. The number still gets a row, unopened, in case it was
+          // meant as a job — opening it is the one Cartrack call, and only on demand.
+          setResults([{ job_id: id, label: PROBE_LABEL }, ...hits]);
+        } else {
+          lookupById(id);
+        }
+        return;
+      }
+      setResults(hits);
     } catch {
       if (seq !== searchSeq.current) return;
       setResults([]);
@@ -237,7 +265,7 @@ export function JobAdminPanel({
     } finally {
       if (seq === searchSeq.current) setSearching(false);
     }
-  }, [query, env, lookupById, resetEditor]);
+  }, [query, env, lookupById, resetEditor, fetchJob]);
 
   // "Điều chỉnh" on a Cần xử lý row: put the job here without retyping its number.
   useEffect(() => {
@@ -378,7 +406,7 @@ export function JobAdminPanel({
             </Button>
           </div>
           <p id={hintId} className="text-[11px] leading-snug text-slate-600">
-            Số job tra thẳng trên Cartrack. Tên khách tìm trong nhật ký hôm nay; tên tài xế liệt kê job chưa xong hôm nay.
+            Tìm job hôm nay theo tên hoặc mã khách, tên tài xế, hoặc số job. Job đang chạy hiện trước.
           </p>
         </form>
 
@@ -401,9 +429,10 @@ export function JobAdminPanel({
 
         {results.length > 0 && (
           <div className="flex flex-col gap-1.5 lg:min-h-0 lg:flex-1">
-            {results.length > 1 && (
-              <p className="text-[11px] font-medium text-slate-600">{results.length} job</p>
-            )}
+            {(() => {
+              const n = results.filter((h) => h.label !== PROBE_LABEL).length;
+              return n > 1 ? <p className="text-[11px] font-medium text-slate-600">{n} job</p> : null;
+            })()}
             <ul className="divide-y divide-slate-100 rounded-md border border-slate-200 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
               {results.map((hit) => {
                 const isActive = activeId === hit.job_id;
