@@ -56,6 +56,10 @@ function testEntries(details: unknown): TestEntry[] {
   });
 }
 
+// Location 999 has no paper-result desk of its own; its hard copies travel with the D001 list.
+const HUB_BRANCHES: Record<string, string> = { "999": "D001" };
+const hubFor = (branch: unknown) => HUB_BRANCHES[String(branch ?? "").trim()] ?? null;
+
 async function lookup(vid: string, token: string) {
   try {
     // Both calls at once: the status call is the faster of the two, so it adds almost no wait.
@@ -80,7 +84,7 @@ async function lookup(vid: string, token: string) {
       pending,
       remark,
       // Where the paper result goes: for HBC, the branch its remark names; otherwise the order's branch.
-      dest: fromRemark ?? o.branch_code ?? null,
+      dest: fromRemark ?? hubFor(o.branch_code) ?? o.branch_code ?? null,
       dest_from_remark: !!fromRemark,
     };
   } catch {
