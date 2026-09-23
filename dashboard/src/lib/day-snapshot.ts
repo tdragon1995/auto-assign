@@ -669,6 +669,96 @@ export async function driverJobs(
   return s?.jobs ?? null;
 }
 
+/**
+ * Several drivers' jobs in ONE read: the driver index once, then every matching
+ * job row in a single HMGET — two commands whatever the number of drivers.
+ *
+ * For the job-admin name search, where a query matches many drivers at once
+ * ("nguyen" is 60 of them). Calling driverJobs per driver costs two commands
+ * EACH, which is why that search used to stop at the first five matches in
+ * roster order — and so missed the driver who was actually on the road.
+ * Same staleness rules and rebuild fallback as `slice`.
+ */
+export async function driversJobs(
+  date: string, env: Env, driverIds: string[], opts: ReadOpts = {},
+): Promise<Map<string, SnapJob[]> | null> {
+  const fromSnap = (s: Snapshot) => new Map(driverIds.map((id) => [
+    id, (s.byDriver[id] ?? []).map((j) => s.jobs.get(j)!).filter(Boolean),
+  ]));
+  const redis = getRedis();
+  if (!redis) {
+    const s = await buildSnapshot(date, env);
+    return s ? fromSnap(s) : null;
+  }
+  if (!opts.fresh) {
+    try {
+      const hit = await readDriversSlice(redis, env, date, driverIds);
+      if (hit && Date.now() - hit.builtAt < (opts.maxAgeMs ?? MAX_AGE_MS)) return hit.byDriver;
+      const built = await rebuild(redis, date, env);
+      if (built) return fromSnap(built);
+      if (hit) return hit.byDriver;
+    } catch { /* fall through to a direct build */ }
+  }
+  const built = await rebuild(redis, date, env);
+  if (built) return fromSnap(built);
+  const direct = await buildSnapshot(date, env);
+  return direct ? fromSnap(direct) : null;
+}
+
+/**
+ * Whole jobs by id, straight off the stored day in ONE HMGET — for LABELS only.
+ *
+ * The job-admin search asks Cartrack for stops on the road, and Cartrack returns only
+ * the stop in progress, so a hit for "D007" read "… | BRA - D001" (the pickup under
+ * way) with the D007 it matched nowhere in sight. The stored day has every stop.
+ * No freshness or revision check: a label a few minutes old is still the right route,
+ * and a job missing here just keeps Cartrack's partial one. Never a rebuild.
+ */
+export async function snapJobsByIds(date: string, env: Env, ids: number[]): Promise<Map<number, SnapJob>> {
+  const out = new Map<number, SnapJob>();
+  const redis = getRedis();
+  if (!redis || ids.length === 0) return out;
+  try {
+    const rows = await redis.hmget<Record<string, unknown>>(key(env, date), ...ids.map(jobField));
+    for (const id of ids) {
+      const j = parse<SnapJob | null>(rows?.[jobField(id)], null);
+      if (j) out.set(id, j);
+    }
+  } catch { /* labels fall back to what Cartrack returned */ }
+  return out;
+}
+
+/** `readSlice` for many drivers: same revision check, one row fetch for all of them. */
+async function readDriversSlice(
+  redis: Redis, env: Env, date: string, driverIds: string[],
+): Promise<{ byDriver: Map<string, SnapJob[]>; builtAt: number } | null> {
+  const cacheKey = key(env, date);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const head = await redis.hmget<Record<string, unknown>>(cacheKey, REVISION, BUILT, IDX_DRV);
+    const builtAt = Number(head?.[BUILT] ?? 0);
+    if (!builtAt) return null;
+    const revision = head?.[REVISION] == null ? "" : String(head[REVISION]);
+    const index = parse<Record<string, number[]>>(head?.[IDX_DRV], {});
+    const ids = [...new Set(driverIds.flatMap((d) => index[d] ?? []))];
+    if (ids.length === 0) return { byDriver: new Map(driverIds.map((d) => [d, []])), builtAt };
+    const rows = await redis.hmget<Record<string, unknown>>(cacheKey, REVISION, ...ids.map(jobField));
+    const rowRevision = rows?.[REVISION] == null ? "" : String(rows[REVISION]);
+    if (rowRevision !== revision) continue;
+
+    const byDriver = new Map<string, SnapJob[]>();
+    for (const d of driverIds) {
+      const jobs: SnapJob[] = [];
+      for (const id of index[d] ?? []) {
+        const j = parse<SnapJob | null>(rows?.[jobField(id)], null);
+        if (j) jobs.push(j);
+      }
+      byDriver.set(d, jobs);
+    }
+    return { byDriver, builtAt };
+  }
+  return null;
+}
+
 /** The blocking job for one pickup→dropoff pair, or null when nothing blocks it.
  *  `stale` reports the snapshot's age so a caller about to REFUSE a user can decide to
  *  confirm against live data first — a refusal issued from a cached reading is how a

@@ -98,6 +98,63 @@ export const PSC_ROUTES: PscRoute[] = [
 ];
 
 /**
+ * PSC closing hours, for moving a job off a PSC that has closed (psc-closing.ts).
+ *
+ * `close` is when the PSC stops receiving; `next` is where its jobs go instead. A PSC
+ * with no `next` keeps its jobs after closing — the rule never guesses a fallback. A
+ * PSC not listed (D030, D052) never closes. Every PSC opens at 05:30; that is not
+ * used, because the check only runs from 19:00 (Mon–Sat).
+ *
+ * Keys are PSC codes and must match a `psc_pickup` above — scripts/psc-closing.test.mts
+ * fails on one that does not, so a typo cannot ship. Supplied by operations 2026-09-23.
+ */
+export const PSC_CLOSING: Readonly<Record<string, { close: string; next?: string }>> = {
+  D001: { close: "21:00" },
+  D002: { close: "21:00" },
+  D003: { close: "21:00" },
+  D004: { close: "21:00" },
+  D005: { close: "21:00" },
+  D006: { close: "21:00" },
+  D007: { close: "21:00" },
+  D009: { close: "19:00" },
+  D010: { close: "19:00", next: "D005" },
+  D011: { close: "21:00" },
+  D014: { close: "19:00" },
+  D015: { close: "19:00" },
+  D016: { close: "19:00" },
+  D017: { close: "21:00" },
+  D018: { close: "19:00", next: "D029" },
+  D019: { close: "21:00" },
+  D020: { close: "19:00", next: "D003" },
+  D021: { close: "19:00" },
+  D022: { close: "19:00", next: "D003" },
+  D023: { close: "19:00" },
+  D026: { close: "19:00", next: "D002" },
+  D027: { close: "19:00", next: "D002" },
+  D028: { close: "19:00" },
+  D029: { close: "21:00" },
+  D032: { close: "19:00" },
+  D033: { close: "19:00" },
+  D035: { close: "19:00", next: "D006" },
+  D036: { close: "16:00" },
+  D037: { close: "19:00", next: "D019" },
+  D038: { close: "19:00", next: "D011" },
+  D039: { close: "19:00", next: "D005" },
+  D040: { close: "19:00", next: "D003" },
+  D041: { close: "19:00", next: "D005" },
+  D042: { close: "19:00", next: "D019" },
+  D043: { close: "19:00", next: "D005" },
+  D044: { close: "19:00", next: "D002" },
+  D045: { close: "21:00" },
+  D046: { close: "19:00", next: "D029" },
+  D047: { close: "21:00" },
+  D048: { close: "19:00", next: "D011" },
+  D049: { close: "19:00", next: "D005" },
+  D050: { close: "19:00", next: "D045" },
+  D051: { close: "19:00", next: "D019" },
+};
+
+/**
  * Every Diag location customer_id appearing in the PSC routes (pickup, dropoff,
  * via, incl. 3PL handoff points). A job whose PICKUP stop is one of these is an
  * internal branch→branch transport (outbound / via / return leg, bag or

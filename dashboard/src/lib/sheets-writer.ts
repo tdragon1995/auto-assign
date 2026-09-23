@@ -1312,7 +1312,7 @@ export async function appendNhanViecLog(row: (string | number | null)[]): Promis
   await appendLogRows(NV_LOG_SHEET, NV_LOG_HEADERS, [row]);
 }
 
-// ── Geofence bypass log ("Mở geofence 5 phút" in Quản trị công việc) ──────────
+// ── Geofence bypass log ("Mở geofence 5 phút" in Điều chỉnh job) ──────────
 // "Loại" is Lấy mẫu while the pickup stop is not yet completed, Giao mẫu once it is;
 // "Điểm mở" is the stop that stage points at.
 

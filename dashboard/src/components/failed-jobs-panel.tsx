@@ -15,6 +15,7 @@ import { UncoveredLeaveSection, uncoveredLeaveCount } from "./leave-status-panel
 import { DriverName } from "./driver-name";
 import type { FailedJob, FailedReason, PickupWarning, ConfigDriver } from "@/lib/types";
 import type { LeaveOnDate } from "@/lib/leave-config";
+import { OpenInAdminButton } from "./job-admin-panel";
 
 export interface ScheduleErrorRow {
   pickup_id: string;
@@ -129,11 +130,13 @@ function FailedRow({
   drivers,
   onAssign,
   onSchedule,
+  onOpenJob,
 }: {
   job: FailedJob;
   drivers: ConfigDriver[];
   onAssign: (job: FailedJob, driverId: string) => void;
   onSchedule: (job: FailedJob, scheduledAt: string, label: string) => void;
+  onOpenJob?: (jobId: number) => void;
 }) {
   const [showDriverSelect, setShowDriverSelect] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
@@ -196,6 +199,7 @@ function FailedRow({
             Cartrack
           </a>
         )}
+        {onOpenJob && <OpenInAdminButton jobId={job.job_id} onOpen={onOpenJob} />}
         {/* Mobile has no hover for the title tooltip, so wrap there; truncate from md up. */}
         <span className="min-w-0 flex-1 break-words md:truncate text-sm font-medium text-slate-800" title={job.customer}>
           {job.customer}
@@ -332,6 +336,7 @@ export function FailedJobsPanel({
   leaveToday,
   leaveTomorrow,
   onLeaveRefresh,
+  onOpenJob,
 }: {
   held: HeldJob[];
   env: "prod" | "uat";
@@ -352,6 +357,8 @@ export function FailedJobsPanel({
   leaveToday: LeaveOnDate[];
   leaveTomorrow: LeaveOnDate[];
   onLeaveRefresh: () => void;
+  /** Open a job in the Điều chỉnh job panel (the "Điều chỉnh" chip on each row). */
+  onOpenJob?: (jobId: number) => void;
 }) {
   // Today's uncovered leave counts toward the tab's total: it is a section of
   // this list now, so an otherwise-clear day with an unfilled substitute must
@@ -436,6 +443,7 @@ export function FailedJobsPanel({
                         >
                           Job {w.job_id}
                         </a>
+                        {onOpenJob && <OpenInAdminButton jobId={w.job_id} onOpen={onOpenJob} />}
                         <span
                           className="min-w-0 flex-1 break-words md:truncate text-sm font-medium text-slate-800"
                           title={`${w.pickup_customer_name ?? "—"} → ${w.dropoff_customer_name ?? "—"}`}
@@ -480,6 +488,7 @@ export function FailedJobsPanel({
                 onAssigned={onNoteAssigned}
                 drivers={drivers}
                 onManualAssign={onNoteManualAssign}
+                onOpenJob={onOpenJob}
                 embedded
               />
             )}
@@ -496,6 +505,7 @@ export function FailedJobsPanel({
                       drivers={drivers}
                       onAssign={onAssign}
                       onSchedule={onScheduleFailed}
+                      onOpenJob={onOpenJob}
                     />
                   ))}
                 </div>

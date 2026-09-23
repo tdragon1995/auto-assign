@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRunLog, getFailedJobs, getHeldJobs } from "@/lib/smart-log-kv";
 import { loadDriversFromSheet } from "@/lib/config";
-import type { Env } from "@/lib/cartrack";
-import { driverJobs, FEED_MAX_AGE_MS, type SnapJob } from "@/lib/day-snapshot";
+import { searchActiveStops, type Env } from "@/lib/cartrack";
+import { driversJobs, snapJobsByIds, FEED_MAX_AGE_MS, type SnapJob } from "@/lib/day-snapshot";
 import { vnDate } from "@/lib/time";
 import { isCompletedOrRejectedStop } from "@/lib/job-filters";
 import { foldName } from "@/lib/driver-cell";
@@ -37,18 +37,73 @@ function extractCustomer(msg: string): string {
 }
 
 /**
- * GET /api/admin/search-jobs?q=<customer or driver name>&env=
+ * GET /api/admin/search-jobs?q=<customer, code, driver, PSC or job number>&env=
  *
- * A driver-name match lists that driver's unfinished jobs today from the day snapshot (up to 5 drivers).
- * Otherwise a log scan — no Cartrack call. The activity log + held/failed snapshots
- * carry the customer name next to the Job ID. Coverage is whatever logged recently
- * (~today, last 500 entries).
+ * UNFINISHED JOBS ONLY — on the road first, then not started. The answer is
+ * Cartrack's own search over today's stops that are not started / started / arrived /
+ * picked up (searchActiveStops — the fleetweb delivery table's search box), one RPC per
+ * search. It finds a job however it was created, and it does NOT pad the list with
+ * finished jobs: the log scan used to, and "d007" came back as 31 rows, two running.
+ *
+ * Cartrack returns only the stop in progress, so each row's route is filled in from
+ * the stored day (one HMGET) — otherwise a "d007" hit read "… | BRA - D001".
+ *
+ * FALLBACK, only when Cartrack does not answer (`source: "fallback"`): every matching
+ * driver's unfinished jobs from the day snapshot, then the activity log. The panel
+ * says so, because that list can include finished jobs.
  */
 export async function GET(req: NextRequest) {
-  const q = (req.nextUrl.searchParams.get("q") ?? "").trim().toLowerCase();
-  if (q.length < 2) return NextResponse.json({ results: [] });
+  const raw = (req.nextUrl.searchParams.get("q") ?? "").trim();
+  const q = raw.toLowerCase();
+  if (q.length < 2) return NextResponse.json({ results: [], source: "cartrack" });
 
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
+  const today = vnDate();
+  // Sent as typed: Cartrack matches accents the way its own search box does.
+  const active = await searchActiveStops(today, raw, env).catch(() => null);
+  if (active) return NextResponse.json({ results: await unfinishedJobs(active, today, env), source: "cartrack" });
+  return NextResponse.json({ results: await fallback(q, today, env), source: "fallback" });
+}
+
+/** Cartrack's flat stops → one row per job, labelled with the whole route; jobs with
+ *  a stop under way first, jobs not started yet after them. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function unfinishedJobs(stops: any[], today: string, env: Env): Promise<JobSearchHit[]> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const byJob = new Map<number, any[]>();
+  for (const st of stops) {
+    const id = Number(st.job_id);
+    if (!Number.isInteger(id) || id <= 0) continue;
+    (byJob.get(id) ?? byJob.set(id, []).get(id)!).push(st);
+  }
+  // stop_status_id 1 = not started; anything else Cartrack returned here is under way.
+  const underWay = (id: number) => byJob.get(id)!.some((st) => Number(st.stop_status_id) !== 1);
+  const ids = [...byJob.keys()]
+    .sort((a, b) => Number(underWay(b)) - Number(underWay(a)))
+    .slice(0, 60);
+  const [stored, drivers] = await Promise.all([
+    snapJobsByIds(today, env, ids),
+    loadDriversFromSheet().catch(() => []),
+  ]);
+  const nameOf = new Map(drivers.map((d) => [d.driver_id, d.name]));
+
+  return ids.map((id) => {
+    const own = byJob.get(id)!;
+    const full = stored.get(id);
+    const routeStops = full?.stops?.length ? full.stops : [...own].sort((a, b) => (a.stop_type_id ?? 9) - (b.stop_type_id ?? 9));
+    const route = routeStops.map((st: { customer_name?: string }) => st.customer_name).filter(Boolean).join(" → ");
+    const driverId = full?.delivery_driver_id ?? own[0]?.delivery_driver_id ?? null;
+    const driver = (driverId && nameOf.get(driverId)) || own.find((st) => st.driver_name)?.driver_name || null;
+    return {
+      job_id: id,
+      label: [driver, route].filter(Boolean).join(" | ") || `Job ${id}`,
+      statusId: Number(full?.job_status_id ?? own[0]?.job_status_id) || null,
+    };
+  });
+}
+
+/** Cartrack unavailable: driver names from the day snapshot, then the activity log. */
+async function fallback(q: string, today: string, env: Env): Promise<JobSearchHit[]> {
   const needle = foldName(q);
   const [logs, failed, held, drivers] = await Promise.all([
     getRunLog(500),
@@ -56,50 +111,45 @@ export async function GET(req: NextRequest) {
     getHeldJobs(),
     loadDriversFromSheet().catch(() => []),
   ]);
-  // Driver-name match → that driver's unfinished jobs TODAY, from the day snapshot the
-  // cron publishes every ~3 min (no Cartrack call when it is fresh). Capped: a two-letter
-  // query matches half the roster.
-  const today = vnDate();
-  const matchedDrivers = drivers.filter((d) => foldName(d.name).includes(needle)).slice(0, 5);
-  const byDriver = await Promise.all(
-    matchedDrivers.map((d) =>
-      driverJobs(today, env, d.driver_id, { maxAgeMs: FEED_MAX_AGE_MS })
-        .then((jobs) => ({ d, jobs: (jobs ?? []).filter((j) => !isFinished(j)) }))
-        .catch(() => ({ d, jobs: [] })),
-    ),
-  );
 
-  // Dedupe by job_id, keeping the newest (most relevant) line.
   const found = new Map<number, JobSearchHit>();
   const add = (id: number, label: string, ts?: string) => {
     if (Number.isInteger(id) && id > 0 && !found.has(id)) found.set(id, { job_id: id, label, ts });
   };
 
-  for (const { d, jobs } of byDriver) {
-    for (const j of jobs) {
+  // Every matching driver at once (driversJobs: two Redis reads however many match) —
+  // not the first five in roster order, which missed whoever was on the road.
+  const matchedDrivers = drivers.filter((d) => foldName(d.name).includes(needle));
+  const jobsOf = matchedDrivers.length
+    ? await driversJobs(today, env, matchedDrivers.map((d) => d.driver_id), { maxAgeMs: FEED_MAX_AGE_MS })
+        .catch(() => null)
+    : null;
+  let driverHit = false;
+  for (const d of matchedDrivers) {
+    for (const j of (jobsOf?.get(d.driver_id) ?? []).filter((x) => !isFinished(x))) {
+      driverHit = true;
+      if (found.has(j.job_id)) continue;
       const route = j.stops?.map((st) => st.customer_name).filter(Boolean).join(" → ");
-      if (!found.has(j.job_id)) found.set(j.job_id, { job_id: j.job_id, label: `${d.name}${route ? ` | ${route}` : ""}`, statusId: Number(j.job_status_id) || null });
+      found.set(j.job_id, { job_id: j.job_id, label: `${d.name}${route ? ` | ${route}` : ""}`, statusId: Number(j.job_status_id) || null });
     }
   }
-
-  // A driver query stops here: log lines name the driver too, and would pull back every
-  // job they touched today, finished or not.
-  if (matchedDrivers.length) return NextResponse.json({ results: [...found.values()].slice(0, 60) });
+  // A driver query stops here — log lines name the driver too, and would pull back every
+  // job they touched today, finished or not. Only when it FOUND something, though: a
+  // name matching only drivers with nothing open (a test account "… D001") falls through.
+  if (driverHit) return [...found.values()].slice(0, 60);
 
   // getRunLog is oldest-first; walk newest-first so the freshest line wins.
   for (let i = logs.length - 1; i >= 0; i--) {
     const l = logs[i];
-    if (!l.msg.toLowerCase().includes(q)) continue;
+    if (!foldName(l.msg).includes(needle)) continue;
     const customer = extractCustomer(l.msg);
     for (const m of l.msg.matchAll(JOB_ID_RE)) add(Number(m[1]), customer, l.ts);
   }
   for (const j of failed) {
-    if (j.customer.toLowerCase().includes(q)) add(j.job_id, j.customer, j.ts);
+    if (foldName(j.customer).includes(needle)) add(j.job_id, j.customer, j.ts);
   }
   for (const j of held) {
-    if (j.customer.toLowerCase().includes(q)) add(j.job_id, j.customer);
+    if (foldName(j.customer).includes(needle)) add(j.job_id, j.customer);
   }
-
-  const results = [...found.values()].slice(0, 60);
-  return NextResponse.json({ results });
+  return [...found.values()].slice(0, 60);
 }

@@ -536,6 +536,24 @@ A branch whose rows all name other destinations fails as `NO_DROPOFF_RULE`, not
 It is deliberately absent from `SHEET_CONTRACT` (see footgun 3), so the code is
 safe to deploy before the column exists — every row simply reads blank.
 
+### PSC closing hours move a job to its next best PSC, and back
+
+Hard-coded in `PSC_CLOSING` (`psc-routes-data.ts`, beside the PSC routes — the source
+of truth since the sheet tab was retired): each PSC's closing time and, optionally,
+its next best PSC. Unlisted PSCs never close; nothing is read at runtime. The check
+runs **only from 19:00, Monday–Saturday** (`isClosingWindow`); outside that nothing is
+moved. Inside it, a job whose drop-off PSC has passed its closing time goes to its
+next best — and on to THAT one's next best if it has closed too; no next best, or
+nothing open → left alone. The original is kept in Redis
+(`dropoff_swap:<env>:<job>`, 7 days, written only on a swap) and read — one MGET per
+cycle, memoised per instance per day — only for jobs **created before today**; when
+such a job comes up again (rollover, "Hẹn giờ", re-dated in Cartrack) its own PSC is
+tried first, so it goes home in the morning. A hand-edited drop-off wins over the
+record. `alt_drop_off_id` needs no record: it re-derives itself on every assign. PSC
+tỉnh and engine legs are exempt. The duplicate check also looks under the
+post-closing pair, or two after-hours bookings would both pass. Changing an hour is
+an edit + deploy; `scripts/psc-closing.test.mts` fails on any code that is not a PSC.
+
 ### A gap and an overlap are the same fault, so both are to-dos
 
 Two fixed rules covering one branch at the same minute fail the job as `CLASH`,

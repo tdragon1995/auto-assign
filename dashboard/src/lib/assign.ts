@@ -9,7 +9,8 @@ import { DIAG_LOCATION_CUSTOMER_IDS } from "./psc-routes-data";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from "./return-trips";
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
 import { cleanupStaleTrips } from "./cleanup-trips";
-import { setCycleSnapshot, recordCoverageGap, claimMorningPass, deferMorningPass, confirmMorningPass, pushRunLog, runDailyMaintenance, claimLateAlert, getAcceptedNotes, getResolvedCreateTs, saveResolvedCreateTs, type HeldJob } from "./smart-log-kv";
+import { setCycleSnapshot, recordCoverageGap, claimMorningPass, deferMorningPass, confirmMorningPass, pushRunLog, runDailyMaintenance, claimLateAlert, getAcceptedNotes, getResolvedCreateTs, saveResolvedCreateTs, readDropoffSwaps, writeDropoffSwap, deleteDropoffSwap, type HeldJob } from "./smart-log-kv";
+import { PSC_TABLE, isClosingWindow, planDropoff, resolveOpenDropoff, fmtMin, pscCode, type PscTable, type DropoffSwapRecord } from "./psc-closing";
 import { isValidDriverId, invalidateConfigCache, loadConfigFromSheets } from "./config";
 import { drainSheetAlarms } from "./sheets";
 // Driver labels carry a routing prefix and a payroll code ("F - C - DC100993
@@ -41,6 +42,11 @@ const DUPLICATE_REJECT_REASON =
 // PSC tỉnh jobs are multi-leg provincial routes — the same pickup→dropoff pair
 // is expected to repeat across different legs and should never be blocked.
 const DUPLICATE_EXEMPT_LABELS = [PSC_TINH_LABEL, PSC_RETURN_LABEL];
+
+// Jobs whose drop-off is never moved off a closed PSC (psc-closing.ts). PSC tỉnh and
+// the engine's own legs are routes designed end to end, and the return-trip and via
+// logic find them again by their exact pickup→dropoff pair.
+const CLOSING_EXEMPT_LABELS = [PSC_TINH_LABEL, PSC_OUTBOUND_LABEL, PSC_VIA_LABEL, PSC_RETURN_LABEL];
 
 // Grace before a still-unstarted pickup is flagged overdue on the dashboard —
 // measured from scheduled_delivery_ts (ASAP) or the window start (windowed).
@@ -855,7 +861,9 @@ async function applyAltDropoff(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   jobStops: any[],
   env: Env,
-  log: (msg: string, level?: LogLevel) => void
+  log: (msg: string, level?: LogLevel) => void,
+  // False when the caller logs its own, more specific line (a closed PSC, a revert).
+  announce = true,
 ): Promise<AltDropoffResult> {
   let altCustomerName = altDropOffId;
   let altLat: number | null | undefined;
@@ -906,7 +914,7 @@ async function applyAltDropoff(
     if (updatedStops.length >= 2 && !alreadyAlt) {
       const putRes = await updateJobStops(jobId, updatedStops, env);
       if (putRes.ok) {
-        log(`Job ${jobId} - dropoff swapped to ${altCustomerName}`, "INFO");
+        if (announce) log(`Job ${jobId} - dropoff swapped to ${altCustomerName}`, "INFO");
       } else {
         log(`Job ${jobId} - dropoff swap failed (${putRes.status})`, "ERROR");
         return { ok: false };
@@ -917,6 +925,70 @@ async function applyAltDropoff(
     log(`Job ${jobId} - dropoff swap error: ${e}`, "ERROR");
     return { ok: false };
   }
+}
+
+interface DropoffCtx {
+  /** Empty outside the closing window: nothing is closed, but a carried job can
+   *  still go home. Null only before the cycle has jobs to look at. */
+  table: PscTable | null;
+  swaps: Map<number, DropoffSwapRecord>;
+  today: string;
+}
+
+/**
+ * Put the job's drop-off where it should be at THIS minute, right before assigning:
+ * alt_drop_off_id as before, then off a closed PSC (or back onto its own PSC after
+ * being carried into another day). See psc-closing.ts for the rule.
+ *
+ * Returns null when nothing changed and no alt applies — the caller then reads the
+ * drop-off off the job as it always has. `ok: false` → skip the job this cycle,
+ * exactly like a failed alt swap.
+ */
+async function settleDropoff(
+  job: Job,
+  altId: string,
+  ctx: DropoffCtx,
+  env: Env,
+  log: (msg: string, level?: LogLevel) => void,
+  route: string,
+): Promise<AltDropoffResult | null> {
+  const stops = job.stops ?? [];
+  const currentId = stops.find((s) => s.stop_type_id === 2)?.customer_id ?? "";
+  if (!ctx.table || !currentId) {
+    return altId ? applyAltDropoff(job.job_id, altId, stops, env, log) : null;
+  }
+  const record = ctx.swaps.get(job.job_id) ?? null;
+  const plan = planDropoff({
+    table: ctx.table,
+    currentId,
+    altId,
+    record,
+    pickupId: getCustomerIdFromJob(job),
+    nowMin: vnMinutesSinceMidnight(),
+    today: ctx.today,
+    exempt: (job.labels ?? []).some((l) => CLOSING_EXEMPT_LABELS.includes(l)),
+  });
+
+  let result: AltDropoffResult | null = null;
+  if (plan.targetId !== currentId || altId) {
+    const quiet = plan.reason === "closed" || plan.reason === "revert";
+    result = await applyAltDropoff(job.job_id, plan.targetId, stops, env, log, !quiet);
+    if (!result.ok) return result;
+  }
+
+  const code = (id: string) => pscCode(ctx.table!.get(id)?.name ?? result?.dropoffName ?? id);
+  const shut = plan.closed.map((p) => `${pscCode(p.name)} đóng ${fmtMin(p.closeMin)}`).join(", ");
+  if (plan.reason === "closed") {
+    log(`Job ${job.job_id} - PSC ĐÃ ĐÓNG CỬA (${shut}) → chuyển drop sang ${code(plan.targetId)} | ${route}`, "WARN");
+  } else if (plan.reason === "all_closed") {
+    log(`Job ${job.job_id} - PSC ĐÃ ĐÓNG CỬA (${shut}), không còn PSC nào mở phía sau — giữ nguyên drop | ${route}`, "WARN");
+  } else if (plan.reason === "revert" && record) {
+    log(`Job ${job.job_id} - Trả drop về ${code(plan.targetId)} (mặc định; đã chuyển sang ${code(currentId)} ngày ${record.on} vì PSC đóng cửa) | ${route}`, "INFO");
+  }
+
+  if (plan.record === "delete") await deleteDropoffSwap(job.job_id, env, ctx.today);
+  else if (plan.record) await writeDropoffSwap(job.job_id, env, plan.record.set, ctx.today);
+  return result;
 }
 
 export function buildGmapsRouteLink(
@@ -1944,6 +2016,19 @@ export async function autoAssignCycle(
     if (!activeRouteMap.has(key)) activeRouteMap.set(key, -hj.job_id);  // negative = held → skip, not reject
   }
 
+  // PSC closing hours (hard-coded, nothing to fetch). Only inside the closing window
+  // (19:00, Mon–Sat) does any PSC count as closed; outside it an EMPTY table is
+  // passed — that still lets a job diverted last night go back to its own PSC this
+  // morning. The swap records are read only for jobs created before today, once per
+  // job per instance per day, here once and never per job.
+  let dropoffCtx: DropoffCtx = { table: null, swaps: new Map(), today };
+  if (jobs.length > 0) {
+    const table: PscTable = isClosingWindow() ? PSC_TABLE : new Map();
+    const carried = jobs.filter((j) => !!j.create_ts && j.create_ts.slice(0, 10) < today).map((j) => j.job_id);
+    const swaps = carried.length > 0 ? await readDropoffSwaps(carried, env, today) : new Map<number, DropoffSwapRecord>();
+    dropoffCtx = { table, swaps, today };
+  }
+
   const processJob = async (job: Job): Promise<void> => {
     const jobId = job.job_id;
     clog(`[loop] job ${++_jobIdx}/${jobs.length} jobId=${jobId} (t=${Date.now() - tStart}ms)`);
@@ -2044,7 +2129,16 @@ export async function autoAssignCycle(
     const jobLabels: string[] = (job as any).labels ?? [];
     const isDuplicateExempt = jobLabels.some((l) => DUPLICATE_EXEMPT_LABELS.includes(l));
     const routeKey = dropoffId && !isDuplicateExempt ? `${customerId}:${dropoffId}` : null;
-    const blockingJobId = routeKey ? activeRouteMap.get(routeKey) : undefined;
+    // Past a PSC's closing time the job will actually go to the next PSC on its chain,
+    // and its twin — booked a minute earlier and already moved — is filed under THAT
+    // pair. Look there too, or two after-hours bookings both pass and both run.
+    const closedTo = routeKey && dropoffCtx.table && !jobLabels.some((l) => CLOSING_EXEMPT_LABELS.includes(l))
+      ? resolveOpenDropoff(dropoffCtx.table, dropoffId!, vnMinutesSinceMidnight(), customerId).id
+      : null;
+    const closedKey = closedTo && closedTo !== dropoffId ? `${customerId}:${closedTo}` : null;
+    const blockingJobId = routeKey
+      ? activeRouteMap.get(routeKey) ?? (closedKey ? activeRouteMap.get(closedKey) : undefined)
+      : undefined;
     if (blockingJobId != null && Math.abs(blockingJobId) !== jobId) {
       if (blockingJobId < 0) {
         // Negative = a note-held twin awaiting review owns this route. Hold this job
@@ -2070,6 +2164,7 @@ export async function autoAssignCycle(
       continue;
     }
     if (routeKey) activeRouteMap.set(routeKey, jobId);
+    if (closedKey) activeRouteMap.set(closedKey, jobId);
 
     // ── Delivery window gate: park jobs whose window is >60 min away ─────────
     const pickupStop = job.stops?.find((s) => s.stop_type_id === 1);
@@ -2148,11 +2243,11 @@ export async function autoAssignCycle(
             subFor = lc1.driverName ?? driverId;
             driverId = sub.subId;
           }
-          if (smartMapping.alt_drop_off_id) {
+          {
             const _tAlt = Date.now();
-            const alt = await applyAltDropoff(jobId, smartMapping.alt_drop_off_id, job.stops ?? [], env, log);
+            const alt = await settleDropoff(job, smartMapping.alt_drop_off_id, dropoffCtx, env, log, route);
             altMs += Date.now() - _tAlt;
-            if (!alt.ok) continue;
+            if (alt && !alt.ok) continue;
           }
           try {
             // Assign via the update endpoint — it returns the driver, so the name comes
@@ -2353,11 +2448,11 @@ export async function autoAssignCycle(
         const rankStr    = withGoong.slice(0, 3)
           .map((x, i) => `${i + 1}. ${x.d.first_name} ${x.d.last_name} (${x.distLabel})`)
           .join(" | ");
-        if (smartMapping.alt_drop_off_id) {
+        {
           const _tAlt = Date.now();
-          const alt = await applyAltDropoff(jobId, smartMapping.alt_drop_off_id, job.stops ?? [], env, log);
+          const alt = await settleDropoff(job, smartMapping.alt_drop_off_id, dropoffCtx, env, log, route);
           altMs += Date.now() - _tAlt;
-          if (!alt.ok) continue;
+          if (alt && !alt.ok) continue;
         }
         // Try candidates in ranked order; fall through to next if on-break/offline.
         let assigned = false;
@@ -2584,15 +2679,12 @@ export async function autoAssignCycle(
       continue;
     }
 
-    // Alt drop-off: swap the dropoff customer before assigning. Keep the result so the
-    // post-assign block can read the new dropoff name + coords without a getJobDetails.
-    let altResult: AltDropoffResult | null = null;
-    if (mapping.alt_drop_off_id) {
-      const _tAlt = Date.now();
-      altResult = await applyAltDropoff(jobId, mapping.alt_drop_off_id, job.stops ?? [], env, log);
-      altMs += Date.now() - _tAlt;
-      if (!altResult.ok) continue;
-    }
+    // Alt drop-off / closed PSC: settle the dropoff before assigning. Keep the result so
+    // the post-assign block can read the new dropoff name + coords without a getJobDetails.
+    const _tAlt = Date.now();
+    const altResult = await settleDropoff(job, mapping.alt_drop_off_id, dropoffCtx, env, log, route);
+    altMs += Date.now() - _tAlt;
+    if (altResult && !altResult.ok) continue;
 
     try {
       // Assign via the update endpoint — returns the driver, so the name comes from
