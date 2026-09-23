@@ -39,3 +39,7 @@ dashboard/dist-export-*.csv
 dashboard/scripts/_audit-*
 # graphify knowledge-graph build (local only — graph.json runs ~15MB; rebuild with /graphify)
 graphify-out/
+
+# Impeccable engine binaries (16MB per platform, per provider folder). The
+# launcher falls back to a cached/downloaded copy, so they need not be in git.
+**/skills/impeccable/scripts/bin/
