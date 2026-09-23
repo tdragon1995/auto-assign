@@ -1237,10 +1237,10 @@ export function ConfigTodoPanel({
             These are the least urgent things on the tab — they wait on a person
             editing a sheet — and the card is shrink-0 inside a fixed-height
             column, so an uncapped list of a dozen open to-dos pushed the stuck
-            jobs and late pickups above it down to nothing. That list is the one
+            jobs and late pickups beside it down to nothing. That list is the one
             thing here getting worse while you read it; it does not lose its
             space to this one. */}
-        {/* max-w-5xl to match FailedJobsPanel's own scroll container above it.
+        {/* max-w-5xl to match FailedJobsPanel's own scroll container below it.
             Without it these rows ran the full width of the card while every row
             in the panel above stopped short, so this panel's button sat alone
             out at the right edge instead of in the column the others share. */}

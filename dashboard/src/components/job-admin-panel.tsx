@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { toast } from "sonner";
 import { JOB_STATUS } from "@/lib/job-filters";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
@@ -255,8 +254,11 @@ export function JobAdminPanel({ env }: { env: Env }) {
   const isTerminal = statusId != null && TERMINAL.has(statusId);
 
   return (
-    <Card className="flex flex-col h-full py-4">
-      <CardHeader className="pb-2 shrink-0 space-y-2">
+    // Lives in the "Cần xử lý" tab now, under the stuck-job list, so it sizes to
+    // its content: just the search box until someone searches, then a capped,
+    // scrolled result list — it must not take the list above's space.
+    <Card className="shrink-0 py-3 gap-2">
+      <CardHeader className="pb-0 space-y-2">
         <CardTitle className="text-sm">Quản trị job</CardTitle>
         <div className="flex gap-2">
           <input
@@ -273,8 +275,9 @@ export function JobAdminPanel({ env }: { env: Env }) {
         </div>
       </CardHeader>
 
-      <CardContent className="flex-1 min-h-0">
-        <ScrollArea className="h-full">
+      {searched && (
+      <CardContent>
+        <div className="max-h-[30vh] overflow-y-auto">
           <div className="space-y-1.5 pr-3">
             {searchError && <p className="text-xs text-red-600">{searchError}</p>}
             {searched && !searching && results.length === 0 && !searchError && (
@@ -443,8 +446,9 @@ export function JobAdminPanel({ env }: { env: Env }) {
               );
             })}
           </div>
-        </ScrollArea>
+        </div>
       </CardContent>
+      )}
     </Card>
   );
 }

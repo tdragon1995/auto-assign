@@ -28,7 +28,7 @@ import type { LeaveOnDate, InvalidLeaveRow, SpanningLeaveRow } from "@/lib/leave
 import type { LeaveSuppression } from "@/lib/leave-suppression";
 
 type Env = "prod" | "uat";
-type RightTab = "attention" | "live" | "admin" | "config" | "schedule" | "distance" | "tat" | "pay" | "locations";
+type RightTab = "attention" | "live" | "config" | "schedule" | "distance" | "tat" | "pay" | "locations";
 
 export function Dashboard() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -604,9 +604,6 @@ export function Dashboard() {
             <button onClick={() => setRightTab("live")} className={tabBtn(rightTab === "live")}>
               Nhật ký
             </button>
-            <button onClick={() => setRightTab("admin")} className={tabBtn(rightTab === "admin")}>
-              Quản trị công việc
-            </button>
             <button onClick={() => setRightTab("config")} className={tabBtn(rightTab === "config")}>
               Config
             </button>
@@ -636,6 +633,20 @@ export function Dashboard() {
                     is running on an older copy of the config than the sheet
                     shows, which changes how you read everything below it. */}
                 <SheetAlarmBanner alarms={sheetAlarms} />
+                {/* Config to-dos first: a missing or clashing rule is WHY jobs
+                    land in the list below, so the cause reads before the
+                    symptoms. Collapsed to its counts by default and capped when
+                    open, so it never takes the stuck-job list's space. Its data
+                    rides the status poll — no fetch of its own. */}
+                <ConfigTodoPanel
+                  gaps={visibleGaps}
+                  overlaps={visibleOverlaps}
+                  unfinished={visibleUnfinished}
+                  branchRules={branchRules}
+                  drivers={drivers}
+                  parsedAt={parsedAt}
+                  onSaved={(key?: string) => { if (key) markDone(key); void handleRefresh(); }}
+                />
                 {/* Cần xử lý tab — note tasks + unassignable + late + schedule errors */}
                 <div className="flex-1 min-h-0">
                   <FailedJobsPanel
@@ -679,20 +690,17 @@ export function Dashboard() {
                   onRefresh={() => loadLeaveStatus(true)}
                   refreshKey={leaveRefreshKey}
                 />
+
+                {/* Job admin (complete / geofence bypass / change dropoff) —
+                    the tool you reach for when fixing a row above. It fetches
+                    nothing until someone searches, so living on the landing
+                    tab costs no requests. */}
+                <JobAdminPanel env={env} />
               </div>
             ) : rightTab === "config" ? (
               /* Mounted only while the tab is open, so the ~1,700-row fetch
                  happens when someone asks for it and not before. */
               <div className="h-[72vh] lg:h-full overflow-y-auto space-y-2">
-                <ConfigTodoPanel
-                  gaps={visibleGaps}
-                  overlaps={visibleOverlaps}
-                  unfinished={visibleUnfinished}
-                  branchRules={branchRules}
-                  drivers={drivers}
-                  parsedAt={parsedAt}
-                  onSaved={(key?: string) => { if (key) markDone(key); void handleRefresh(); }}
-                />
                 <div className="min-h-[28rem]">
                   <ConfigBrowserPanel drivers={drivers} />
                 </div>
@@ -705,10 +713,6 @@ export function Dashboard() {
             ) : rightTab === "schedule" ? (
               <div className="h-[72vh] lg:h-full">
                 <ScheduleListPanel env={env} />
-              </div>
-            ) : rightTab === "admin" ? (
-              <div className="h-[72vh] lg:h-full">
-                <JobAdminPanel env={env} />
               </div>
             ) : rightTab === "tat" ? (
               <div className="h-[72vh] lg:h-full">
