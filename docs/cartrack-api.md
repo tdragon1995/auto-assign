@@ -224,6 +224,32 @@ leaving any recurring setup alone.
 Cleanup falls back to `delivery_reject_job` when a delete is refused (a started or
 hung job can be) — better a rejection record than a live stale trip.
 
+### `delivery_timeline_cancel_jobs`
+
+The fleetweb map/timeline screen's "Huỷ". Same params as
+`delivery_timeline_delete_jobs`, but the job is kept as status **7 (Canceled)** instead
+of removed, so a cancelled trip stays traceable. Every user-facing "Huỷ" button (QR,
+PSC-tỉnh, AO, Sales, /ndtp, /corp) uses it through `cancelJob` in `cartrack.ts`; deletes
+stay for rolling back our own failed creates and for the stale-trip cleanup.
+
+The response shape is unverified, so `cancelJobFromTimeline` accepts an id echo if one
+is present and otherwise reads the job back and requires status 7. If Cartrack refuses
+the cancel, `cancelJob` falls back to a delete (Sales falls back to proxy-assign +
+`delivery_reject_job` instead, which keeps a record). The cancel carries no reason
+field — Sales' reason is kept in the run log line.
+
+```json
+{
+  "method": "delivery_timeline_cancel_jobs",
+  "params": { "data": {
+    "jobIds": [12345],
+    "scheduleType": "scheduled",
+    "filter": { "from": "YYYY-MM-DDT00:00:00+07:00", "to": "YYYY-MM-DDT23:59:59+07:00" },
+    "updateRecurringSetup": false
+  }}
+}
+```
+
 ## Status enums
 
 ### Job status

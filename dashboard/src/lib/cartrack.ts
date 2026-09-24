@@ -1,6 +1,6 @@
 import { Redis } from "@upstash/redis";
 import type { Driver, Job, Stop, TimelineRoute } from "./types";
-import { vnDayWindow } from "./time";
+import { vnDate, vnDayWindow } from "./time";
 
 export type Env = "prod" | "uat";
 
@@ -237,6 +237,60 @@ export async function deleteJobsFromTimeline(
   const echo = out.result?.deletedJobIds;
   if (echo && typeof echo === "object") return jobIds.every((id) => echo[id] !== undefined);
   return true;
+}
+
+/**
+ * CANCEL a job the way the fleetweb map/timeline screen does ("Huỷ"): the job stays in
+ * Cartrack as status 7 (Canceled) — a trace of who booked what and that it was called
+ * off — where `deleteJob` removes it outright. Every user-facing "Huỷ" button goes
+ * through here; deletes are for rolling back our own failed creates and for the
+ * stale-trip cleanup, where leaving nothing behind is the point.
+ *
+ * Same params as `delivery_timeline_delete_jobs`: `date` must be the VN day the job sits
+ * on (its scheduled_delivery_ts), not necessarily today.
+ *
+ * The response shape is not documented, so success is proven rather than assumed: an
+ * echo listing the id is accepted, otherwise the job is read back and must show 7 —
+ * the codebase's standing rule that Cartrack 200s writes it discards.
+ */
+export async function cancelJobFromTimeline(jobId: number, date: string, env: Env = "prod"): Promise<boolean> {
+  const out = await jsonRpc<Record<string, unknown>>(
+    "delivery_timeline_cancel_jobs",
+    {
+      data: {
+        jobIds: [jobId],
+        scheduleType: "scheduled",
+        filter: vnDayWindow(date),
+        updateRecurringSetup: false,
+      },
+    },
+    { env }
+  );
+  if (!out.ok) return false;
+  const echo = out.result?.cancelledJobIds ?? out.result?.canceledJobIds;
+  if (Array.isArray(echo) && echo.map(Number).includes(jobId)) return true;
+  if (echo && typeof echo === "object" && (echo as Record<string, unknown>)[jobId] !== undefined) return true;
+  const after = await getJobDetails(jobId, env).catch(() => null);
+  return after?.data?.job_status_id === 7;
+}
+
+/** VN day a job sits on, for the timeline RPCs' `filter`. Today when the job carries none. */
+export function jobVnDate(job: { scheduled_delivery_ts?: string | null } | null | undefined): string {
+  const d = job?.scheduled_delivery_ts?.slice(0, 10);
+  return d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : vnDate();
+}
+
+/**
+ * A user's "Huỷ": cancel (leaves a status-7 trace), and only if Cartrack refuses that,
+ * fall back to deleting so the trip is at least off the road. "deleted" is returned
+ * separately so a caller can say the trace was lost.
+ */
+export async function cancelJob(
+  jobId: number, date: string, env: Env = "prod"
+): Promise<"cancelled" | "deleted" | false> {
+  if (await cancelJobFromTimeline(jobId, date, env).catch(() => false)) return "cancelled";
+  console.warn(`[cancelJob] timeline cancel of ${jobId} (${date}) refused — deleting instead`);
+  return (await deleteJob(jobId, env).catch(() => false)) ? "deleted" : false;
 }
 
 export async function assignJob(

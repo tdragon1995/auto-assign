@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { BASE_URL, getHeaders, assignJob, jsonRpc, completeJob, createJob, getJobDetails, getJobsByStatusAndDate, getLiveDrivers, type Env } from "@/lib/cartrack";
+import { BASE_URL, getHeaders, cancelJob, jobVnDate, completeJob, createJob, getJobDetails, getJobsByStatusAndDate, getLiveDrivers, type Env } from "@/lib/cartrack";
 import { driverDisplayName, stripDriverCode } from "@/lib/job-detail";
 import { vnDate, vnHoursMinutes, vnTimestamp } from "@/lib/time";
 import { isBlockingPickupStop, isStopStarted, isCompletedOrRejectedStop, pscPairKey } from "@/lib/job-filters";
@@ -498,34 +498,9 @@ export async function POST(req: NextRequest) {
 }
 
 // ── DELETE /api/psc-assign?job_id=123 — cancel a PSC trip (only if pickup not started) ──
-// Refuse once the driver has touched the pickup; otherwise REJECT the trip with a reason
-// and clear the dedup index so the same pickup→dropoff can be re-requested.
-//
-// Rejected, not deleted: a force-delete left nothing behind in Cartrack, so a branch
-// cancelling a trip was indistinguishable from the trip never having existed. A rejection
-// stays in the job list as status 3 carrying QR_CANCEL_REASON. Same two steps as the sales
-// cancel (/api/sales/reject-job): delivery_reject_job only works on an assigned job, so the
-// reject proxy is assigned first. The branch's own feed already hides status 3
-// (qr-client), so their list reads exactly as it did after a delete.
-//
-// If either step fails the old force-delete still runs. A trip stranded on the proxy
-// driver is the worst outcome available here: it reads as assigned (footgun 1), so the
-// engine never offers it again and nobody collects the samples.
-const QR_CANCEL_REASON = "Chi nhánh huỷ chuyến trên trang QR";
-
-async function rejectAsCancel(jobId: number, env: Env): Promise<boolean> {
-  const proxyDriverId = process.env.CARTRACK_REJECT_PROXY_DRIVER_ID ?? "";
-  if (!proxyDriverId) return false;
-  const { status } = await assignJob(proxyDriverId, jobId, env);
-  if (status !== 200) return false;
-  const out = await jsonRpc(
-    "delivery_reject_job",
-    { data: { jobIds: [jobId], rejectReason: QR_CANCEL_REASON } },
-    { env }
-  );
-  return out.ok;
-}
-
+// Refuse once the driver has touched the pickup; otherwise CANCEL the trip (status 7, it
+// stays in Cartrack — see cancelJob) and clear the dedup index so the same
+// pickup→dropoff can be re-requested.
 export async function DELETE(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
   const jobId = req.nextUrl.searchParams.get("job_id");
@@ -552,14 +527,8 @@ export async function DELETE(req: NextRequest) {
     // branch's list should drop it just the same.
     const statusId: number | null = jobData.data?.job_status_id ?? null;
     if (statusId !== 3 && statusId !== 7) {
-      const rejected = await rejectAsCancel(Number(jobId), env).catch(() => false);
-      if (!rejected) {
-        console.warn(`[VN ${vnTimestamp()}] [psc-assign] reject of ${jobId} failed — force-deleting instead`);
-        const res = await fetch(`${BASE_URL}/jobs/${jobId}?force=true`, { method: "DELETE", headers });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          return NextResponse.json({ error: "Failed to cancel job", details: err }, { status: res.status });
-        }
+      if (!(await cancelJob(Number(jobId), jobVnDate(jobData.data), env))) {
+        return NextResponse.json({ error: "Huỷ thất bại, vui lòng thử lại" }, { status: 502 });
       }
     }
 
@@ -573,9 +542,9 @@ export async function DELETE(req: NextRequest) {
       void releaseCreateLock(`psc:${pickup.customer_id}-${dropoff.customer_id}-${vnDate()}`);
     }
 
-    // job_id echoed back so the branch's list can drop this trip locally. A rejected job
-    // is filtered out of the branch feed (and a deleted one is simply gone), so removing
-    // it client-side produces exactly what a reload would have — without the reload.
+    // job_id echoed back so the branch's list can drop this trip locally. A cancelled job
+    // leaves the feed entirely (status 7 is not in ALL_STATUSES), so removing it client-
+    // side produces exactly what a reload would have — without the reload.
     return NextResponse.json({ success: true, job_id: Number(jobId) });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });

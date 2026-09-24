@@ -861,8 +861,8 @@ export default function QrPage() {
       }
       const cancelledId = cancelTarget.job_id;
       persistPending(retirePending(pending, [cancelledId]));
-      // Drop it locally instead of reloading. A cancelled trip is rejected (status 3), which
-      // this feed filters out, so removing it here produces exactly the list a reload
+      // Drop it locally instead of reloading. A cancelled job (status 7) is not one of the
+      // statuses this feed shows, so removing it here produces exactly the list a reload
       // would have returned — for the cost of a state update rather than a day rebuild.
       setJobs((js) => js.filter((j) => j.job_id !== cancelledId));
       setCancelTarget(null);

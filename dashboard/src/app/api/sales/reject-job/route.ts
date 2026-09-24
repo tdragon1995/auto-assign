@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { BASE_URL, jsonRpc, getHeaders, assignJob, type Env } from "@/lib/cartrack";
+import { BASE_URL, jsonRpc, getHeaders, assignJob, cancelJobFromTimeline, jobVnDate, type Env } from "@/lib/cartrack";
 import { isStopStarted } from "@/lib/job-filters";
 import { pushRunLog } from "@/lib/smart-log-kv";
 import { vnTimestamp } from "@/lib/time";
@@ -66,28 +66,36 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Always assign to proxy driver first, then reject via JSON-RPC
-    const proxyDriverId = process.env.CARTRACK_REJECT_PROXY_DRIVER_ID ?? "";
-    if (!proxyDriverId) {
-      return NextResponse.json({ error: "CARTRACK_REJECT_PROXY_DRIVER_ID not configured" }, { status: 500 });
-    }
-    // assignJob, not a hand-rolled REST PUT: it tries the fleetweb RPC first
-    // (~2.0s vs ~7.3s REST, measured 2026-07-18) and falls back to REST on its own.
-    // isProxyDriver() exempts the reject proxy from the driver-state gate, so the
-    // RPC path costs no extra drivers fetch. This is the same call the duplicate
-    // rejection in assign.ts already makes.
-    const { status: assignStatus } = await assignJob(proxyDriverId, job.job_id, env);
-    if (assignStatus !== 200) {
-      return NextResponse.json({ error: "Không thể giao job cho proxy driver trước khi huỷ" }, { status: 500 });
-    }
+    // CANCEL first (status 7, the trip stays in Cartrack — see cancelJob), the same as
+    // every other "Huỷ" button. Cartrack's cancel carries no reason, so the reason lives
+    // in the run log line below. Only if the cancel is refused does the old path run:
+    // proxy-assign then delivery_reject_job, which still leaves a record (status 3, with
+    // the reason) — never a delete.
+    const cancelled = await cancelJobFromTimeline(job.job_id, jobVnDate(job), env).catch(() => false);
+    if (!cancelled) {
+      // Always assign to proxy driver first, then reject via JSON-RPC
+      const proxyDriverId = process.env.CARTRACK_REJECT_PROXY_DRIVER_ID ?? "";
+      if (!proxyDriverId) {
+        return NextResponse.json({ error: "CARTRACK_REJECT_PROXY_DRIVER_ID not configured" }, { status: 500 });
+      }
+      // assignJob, not a hand-rolled REST PUT: it tries the fleetweb RPC first
+      // (~2.0s vs ~7.3s REST, measured 2026-07-18) and falls back to REST on its own.
+      // isProxyDriver() exempts the reject proxy from the driver-state gate, so the
+      // RPC path costs no extra drivers fetch. This is the same call the duplicate
+      // rejection in assign.ts already makes.
+      const { status: assignStatus } = await assignJob(proxyDriverId, job.job_id, env);
+      if (assignStatus !== 200) {
+        return NextResponse.json({ error: "Không thể giao job cho proxy driver trước khi huỷ" }, { status: 500 });
+      }
 
-    const out = await jsonRpc(
-      "delivery_reject_job",
-      { data: { jobIds: [job.job_id], rejectReason: reject_reason } },
-      { env, id: 10 }
-    );
-    if (!out.ok) {
-      return NextResponse.json({ error: `Từ chối thất bại: ${out.error}` }, { status: 500 });
+      const out = await jsonRpc(
+        "delivery_reject_job",
+        { data: { jobIds: [job.job_id], rejectReason: reject_reason } },
+        { env, id: 10 }
+      );
+      if (!out.ok) {
+        return NextResponse.json({ error: `Từ chối thất bại: ${out.error}` }, { status: 500 });
+      }
     }
 
     // AWAITED, not fired and forgotten: on the edge runtime an unawaited promise

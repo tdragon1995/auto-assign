@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadTplEntries, PSC_TINH_LABEL } from "@/lib/psc-config";
-import { BASE_URL, getHeaders, getStopsByLabels, createJob, type Env } from "@/lib/cartrack";
+import { cancelJob, jobVnDate, BASE_URL, getHeaders, getStopsByLabels, createJob, type Env } from "@/lib/cartrack";
 import { addDays, vnDate, vnTimestamp } from "@/lib/time";
 import { pscTinhSchedule } from "@/lib/psc-tinh-time";
 import { parkScheduledJob } from "@/lib/scheduled-dispatch";
@@ -381,10 +381,10 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: "Không thể huỷ: Giao Nhận Mẫu đã bắt đầu công việc." }, { status: 409 });
     }
 
-    const res = await fetch(`${BASE_URL}/jobs/${jobId}?force=true`, { method: "DELETE", headers });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      return NextResponse.json({ error: "Failed to cancel job", details: err }, { status: res.status });
+    // Cancelled, not deleted: the trip stays in Cartrack as status 7 (see cancelJob).
+    const cancelled = await cancelJob(Number(jobId), jobVnDate(jobData.data), env);
+    if (!cancelled) {
+      return NextResponse.json({ error: "Huỷ thất bại, vui lòng thử lại" }, { status: 502 });
     }
     void pushRunLog([{
       ts: vnTimestamp(),

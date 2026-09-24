@@ -1,4 +1,4 @@
-import { BASE_URL, deleteJob, getHeaders, type Env } from "./cartrack";
+import { BASE_URL, cancelJob, getHeaders, jobVnDate, type Env } from "./cartrack";
 import { isStopStarted } from "./job-filters";
 import { locationJobs } from "./day-snapshot";
 import { proxyKind } from "./proxy-drivers";
@@ -82,7 +82,8 @@ export async function cancelOwnTrip(
   if (pickup && isStopStarted(pickup)) {
     return { ok: false, status: 409, error: "Không thể huỷ: Giao Nhận Mẫu đã bắt đầu công việc." };
   }
-  if (!(await deleteJob(jobId, env))) return { ok: false, status: 502, error: "Huỷ thất bại, vui lòng thử lại" };
+  // Cancelled, not deleted: the trip stays in Cartrack as status 7 (see cancelJob).
+  if (!(await cancelJob(jobId, jobVnDate(job), env))) return { ok: false, status: 502, error: "Huỷ thất bại, vui lòng thử lại" };
   return {
     ok: true,
     pickupId: pickup?.customer_id ?? "",
