@@ -2030,32 +2030,32 @@ function WeekSection({
                   }`}
                 >
                   <div className={`px-1.5 py-1 ${isToday ? "bg-indigo-100/70" : "bg-slate-50"}`}>
-                    <div className="flex items-baseline justify-between gap-1">
+                    <div className="flex min-h-4 items-center justify-between gap-1">
                       {/* Short in the head, spelled out for a screen reader —
                           "T5" is a label a sighted reader decodes from position
                           and a screen reader cannot decode at all. */}
-                      <span className="text-[11px] font-semibold text-slate-800">
-                        <span aria-label={weekdayLong(d.date)}>
+                      <span className="flex min-w-0 items-center gap-1">
+                        <span className="shrink-0 text-[11px] font-semibold text-slate-800" aria-label={weekdayLong(d.date)}>
                           {weekdayShort(d.date)}
                         </span>
-                      </span>
-                      <span className="font-mono text-[10px] text-slate-600">{ddmm(d.date)}</span>
-                    </div>
-                    {(uncovered > 0 || d.ignored > 0) && (
-                      <div className="mt-0.5 flex flex-wrap gap-1">
                         {uncovered > 0 && (
-                          <span className="inline-flex items-center gap-0.5 rounded-full border border-amber-300 bg-amber-100 px-1 py-0 text-[10px] font-semibold text-amber-800">
-                            <AlertTriangle className="size-2.5" strokeWidth={2} />
+                          <span
+                            className="inline-flex shrink-0 items-center gap-0.5 rounded-full border border-amber-300 bg-amber-100 px-1 py-0 text-[10px] font-semibold text-amber-800"
+                            aria-label={`${uncovered} chưa có người thay`}
+                            title={`${uncovered} chưa có người thay`}
+                          >
+                            <AlertTriangle className="size-2.5" strokeWidth={2} aria-hidden />
                             {uncovered}
                           </span>
                         )}
                         {d.ignored > 0 && (
-                          <span className="rounded-full border border-red-200 bg-red-50 px-1 py-0 text-[10px] font-semibold text-red-700">
+                          <span className="shrink-0 rounded-full border border-red-200 bg-red-50 px-1 py-0 text-[10px] font-semibold text-red-700">
                             {d.ignored} lỗi
                           </span>
                         )}
-                      </div>
-                    )}
+                      </span>
+                      <span className="shrink-0 font-mono text-[10px] text-slate-600">{ddmm(d.date)}</span>
+                    </div>
                   </div>
                   {d.people.length === 0 ? (
                     // Named, not dashed. A day with nobody off is an ANSWER —
