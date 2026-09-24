@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback, useId } from "react";
+import { useEffect, useMemo, useState, useCallback, useId, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Copy, Search } from "lucide-react";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
+import { foldName } from "@/lib/driver-cell";
 import type { ConfigDriver } from "@/lib/types";
 import { toast } from "sonner";
 
@@ -86,6 +88,11 @@ function minusMinutes(hhmm: string, mins: number): string {
 
 function activeDays(days: boolean[]): number[] {
   return WEEK_ORDER.filter((i) => days[i]);
+}
+
+function suggestedReference(pickup: string, dropoff: string, window: string): string {
+  const short = (name: string) => name.split(" - ").pop()?.trim() ?? "";
+  return pickup && dropoff && window ? `${short(pickup)}→${short(dropoff)} ${window}` : "";
 }
 
 const INPUT_CLS =
@@ -180,22 +187,118 @@ function DriverField({
   );
 }
 
+/** Copy one existing schedule into the new form; saving remains a separate action. */
+function CopyFromSchedule({
+  rows,
+  panelId,
+  onCopy,
+  onClose,
+}: {
+  rows: ScheduleRow[];
+  panelId: string;
+  onCopy: (row: ScheduleRow) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [active, setActive] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listId = useId();
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const matches = useMemo(() => {
+    const terms = foldName(query).split(/[^a-z0-9]+/).filter(Boolean);
+    if (!terms.length) return [];
+    return rows.filter((r) => {
+      if (!r.pickup_id || !r.pickup_name || !r.dropoff_id || !r.dropoff_name || !r.delivery_window) return false;
+      const haystack = foldName(`${r.pickup_name} ${r.dropoff_name} ${r.reference} ${r.driver_name} ${r.delivery_window}`);
+      return terms.every((term) => haystack.includes(term));
+    });
+  }, [rows, query]);
+  const shown = matches.slice(0, 8);
+  const activeIndex = Math.min(active, shown.length - 1);
+  const take = (row: ScheduleRow) => {
+    onCopy(row);
+    onClose();
+  };
+
+  return (
+    <div id={panelId} className="rounded-md border border-slate-300 bg-slate-50 p-2">
+      <div className="flex items-center gap-1.5">
+        <div className="relative min-w-0 flex-1">
+          <Search aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-slate-500" />
+          <input
+            ref={inputRef}
+            type="text"
+            role="combobox"
+            aria-label="Tìm lịch để copy"
+            aria-autocomplete="list"
+            aria-controls={listId}
+            aria-expanded={shown.length > 0}
+            aria-activedescendant={shown.length ? `${listId}-o${activeIndex}` : undefined}
+            value={query}
+            onChange={(e) => { setQuery(e.target.value); setActive(0); }}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") { e.preventDefault(); onClose(); }
+              else if (e.key === "ArrowDown" && shown.length) { e.preventDefault(); setActive((activeIndex + 1) % shown.length); }
+              else if (e.key === "ArrowUp" && shown.length) { e.preventDefault(); setActive((activeIndex - 1 + shown.length) % shown.length); }
+              else if (e.key === "Enter" && shown[activeIndex]) { e.preventDefault(); take(shown[activeIndex]); }
+            }}
+            placeholder="Tìm điểm lấy, điểm giao, reference hoặc tài xế…"
+            className={`${INPUT_CLS} pl-7`}
+          />
+        </div>
+        <Button size="sm" variant="outline" className="h-6 shrink-0 px-2 text-[11px]" onClick={onClose}>Đóng</Button>
+      </div>
+      <p className="mt-1 text-[11px] text-slate-600">Copy vào form, xem lại rồi bấm Lưu để tạo lịch mới.</p>
+      {query.trim() && shown.length === 0 && <p className="mt-1.5 text-[11px] text-slate-600">Không có lịch nào khớp.</p>}
+      {shown.length > 0 && (
+        <ul id={listId} role="listbox" aria-label="Lịch để copy" className="mt-1.5 space-y-1">
+          {shown.map((r, i) => (
+            <li key={r.rowIndex}>
+              <button
+                type="button"
+                id={`${listId}-o${i}`}
+                role="option"
+                aria-selected={i === activeIndex}
+                tabIndex={-1}
+                onMouseEnter={() => setActive(i)}
+                onClick={() => take(r)}
+                className={`w-full rounded border p-1.5 text-left text-[11px] transition-colors ${i === activeIndex ? "border-indigo-400 bg-indigo-50" : "border-slate-200 bg-white hover:border-indigo-300"}`}
+              >
+                <span className="block font-medium text-slate-800">{r.pickup_name} → {r.dropoff_name}</span>
+                <span className="block text-slate-600">{r.delivery_window} · {activeDays(r.days).map((day) => DAY_SHORT[day]).join(", ")} · {r.driver_name || "gán tự động"}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {matches.length > shown.length && <p className="mt-1 text-[11px] text-slate-600">Còn {matches.length - shown.length} lịch nữa — gõ thêm để thu hẹp.</p>}
+    </div>
+  );
+}
+
 function ScheduleForm({
   initial,
   drivers,
   locations,
+  sourceRows,
   onSaved,
   onCancel,
 }: {
   initial: Draft;
   drivers: ConfigDriver[];
   locations: LocOption[];
+  sourceRows: ScheduleRow[];
   onSaved: () => void;
   onCancel: () => void;
 }) {
   const [d, setD] = useState<Draft>(initial);
   const [refTouched, setRefTouched] = useState(initial.rowIndex !== null);
   const [saving, setSaving] = useState(false);
+  const [copyOpen, setCopyOpen] = useState(false);
+  const [copyVersion, setCopyVersion] = useState(0);
+  const copyBtnRef = useRef<HTMLButtonElement>(null);
+  const copyPanelId = useId();
   const isNew = d.rowIndex === null;
 
   const set = (patch: Partial<Draft>) =>
@@ -204,10 +307,7 @@ function ScheduleForm({
       // New rows: suggest a reference in the sheet's own style
       // ("Bệnh Viện X→D028 14:30") until the user types one.
       if (!refTouched) {
-        const short = (n: string) => n.split(" - ").pop()?.trim() ?? "";
-        const p = short(next.pickup_name);
-        const q = short(next.dropoff_name);
-        next.reference = p && q && next.delivery_window ? `${p}→${q} ${next.delivery_window}` : "";
+        next.reference = suggestedReference(next.pickup_name, next.dropoff_name, next.delivery_window);
       }
       return next;
     });
@@ -286,8 +386,60 @@ function ScheduleForm({
       <div className="text-[11px] font-semibold text-indigo-800">
         {isNew ? "➕ Thêm lịch cố định" : `✏️ Sửa lịch — dòng ${d.rowIndex}`}
       </div>
+      {isNew && (
+        <>
+          <div className="border-b border-slate-200 pb-1.5">
+            <Button
+              ref={copyBtnRef}
+              size="sm"
+              variant="outline"
+              className="h-7 px-2.5 text-[11px] font-semibold border-indigo-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
+              aria-expanded={copyOpen}
+              aria-controls={copyPanelId}
+              onClick={() => setCopyOpen((open) => !open)}
+              disabled={saving}
+            >
+              <Copy className="size-3.5" aria-hidden />
+              Copy từ lịch khác
+            </Button>
+          </div>
+          {copyOpen && (
+            <CopyFromSchedule
+              rows={sourceRows}
+              panelId={copyPanelId}
+              onClose={() => { setCopyOpen(false); copyBtnRef.current?.focus(); }}
+              onCopy={(source) => {
+                setD((prev) => {
+                  const pickup = prev.pickup_id && prev.pickup_name
+                    ? { id: prev.pickup_id, name: prev.pickup_name }
+                    : { id: source.pickup_id, name: source.pickup_name };
+                  const dropoff = prev.dropoff_id && prev.dropoff_name
+                    ? { id: prev.dropoff_id, name: prev.dropoff_name }
+                    : { id: source.dropoff_id, name: source.dropoff_name };
+                  const window = source.delivery_window.padStart(5, "0");
+                  return {
+                    ...prev,
+                    pickup_id: pickup.id,
+                    pickup_name: pickup.name,
+                    dropoff_id: dropoff.id,
+                    dropoff_name: dropoff.name,
+                    delivery_window: window,
+                    sent_to_driver_before: source.sent_to_driver_before,
+                    days: [...source.days],
+                    driver_id: source.driver_id,
+                    reference: refTouched ? prev.reference : suggestedReference(pickup.name, dropoff.name, window),
+                  };
+                });
+                setCopyVersion((version) => version + 1);
+                toast.success("Đã copy vào form — xem lại rồi bấm Lưu");
+              }}
+            />
+          )}
+        </>
+      )}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
         <LocationField
+          key={`pickup-${copyVersion}`}
           label="Điểm lấy"
           id={d.pickup_id}
           name={d.pickup_name}
@@ -295,6 +447,7 @@ function ScheduleForm({
           onChange={(id, name) => set({ pickup_id: id, pickup_name: name })}
         />
         <LocationField
+          key={`dropoff-${copyVersion}`}
           label="Điểm giao"
           id={d.dropoff_id}
           name={d.dropoff_name}
@@ -330,7 +483,7 @@ function ScheduleForm({
           )}
         </label>
         <div className="sm:col-span-2">
-          <DriverField drivers={drivers} driverId={d.driver_id} onChange={(id) => set({ driver_id: id })} />
+          <DriverField key={`driver-${copyVersion}`} drivers={drivers} driverId={d.driver_id} onChange={(id) => set({ driver_id: id })} />
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-1">
@@ -556,6 +709,7 @@ export function ScheduleListPanel({ env, drivers }: { env: Env; drivers: ConfigD
                 initial={EMPTY_DRAFT}
                 drivers={drivers}
                 locations={locations}
+                sourceRows={rows}
                 onSaved={onSaved}
                 onCancel={() => setEditing(null)}
               />
@@ -572,6 +726,7 @@ export function ScheduleListPanel({ env, drivers }: { env: Env; drivers: ConfigD
                     initial={draftFor(r)}
                     drivers={drivers}
                     locations={locations}
+                    sourceRows={rows}
                     onSaved={onSaved}
                     onCancel={() => setEditing(null)}
                   />
