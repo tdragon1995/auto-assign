@@ -123,7 +123,11 @@ export function configFilterOptions(rows: readonly ConfigRowView[]): ConfigFilte
 
   return {
     drivers: [...drivers].sort(compareDriverNames),
-    pickups: [...pickups].sort(vi.compare),
+    pickups: [...pickups].sort((a, b) => {
+      const aInactive = /^\{inactive\}\s*/i.test(a);
+      const bInactive = /^\{inactive\}\s*/i.test(b);
+      return Number(aInactive) - Number(bInactive) || vi.compare(a, b);
+    }),
     dropoffs: [...dropoffs].sort((a, b) => {
       if (!a) return -1;
       if (!b) return 1;

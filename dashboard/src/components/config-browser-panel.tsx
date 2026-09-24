@@ -843,7 +843,11 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
             text={filters.driverText}
             values={[...filters.drivers]}
             options={driverOptions}
-            onOperatorChange={(operator) => updateFilters({ ...filters, driverOperator: operator })}
+            onOperatorChange={(operator) => updateFilters({
+              ...filters,
+              driverOperator: operator,
+              ...(usesTextInput(operator) !== usesTextInput(filters.driverOperator) ? { driverText: "", drivers: [] } : {}),
+            })}
             onTextChange={(value) => updateFilters({ ...filters, driverText: value })}
             onValuesChange={(values) => updateFilters({ ...filters, drivers: values })}
             textPlaceholder="Nhập tài xế…"
@@ -855,7 +859,11 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
             text={filters.pickupText}
             values={[...filters.pickups]}
             options={pickupOptions}
-            onOperatorChange={(operator) => updateFilters({ ...filters, pickupOperator: operator })}
+            onOperatorChange={(operator) => updateFilters({
+              ...filters,
+              pickupOperator: operator,
+              ...(usesTextInput(operator) !== usesTextInput(filters.pickupOperator) ? { pickupText: "", pickups: [] } : {}),
+            })}
             onTextChange={(value) => updateFilters({ ...filters, pickupText: value })}
             onValuesChange={(values) => updateFilters({ ...filters, pickups: values })}
             textPlaceholder="vd. Bàu Cát"
@@ -867,7 +875,11 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
             text={filters.dropoffText}
             values={[...filters.dropoffs]}
             options={dropoffOptions}
-            onOperatorChange={(operator) => updateFilters({ ...filters, dropoffOperator: operator })}
+            onOperatorChange={(operator) => updateFilters({
+              ...filters,
+              dropoffOperator: operator,
+              ...(usesTextInput(operator) !== usesTextInput(filters.dropoffOperator) ? { dropoffText: "", dropoffs: [] } : {}),
+            })}
             onTextChange={(value) => updateFilters({ ...filters, dropoffText: value })}
             onValuesChange={(values) => updateFilters({ ...filters, dropoffs: values })}
             textPlaceholder="vd. D001"

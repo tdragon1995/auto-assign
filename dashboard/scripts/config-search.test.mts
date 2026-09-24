@@ -151,6 +151,14 @@ console.log("dashboard phrase and facet filters");
   const options = configFilterOptions(FILTER_ROWS);
   eq("driver options split and deduplicate smart cells", options.drivers.length, 3);
   eq("pickup options are deduplicated", options.pickups.length, 4);
+  const pickupOrder = configFilterOptions([
+    row({ pickup: "{inactive} Bệnh viện cũ" }),
+    row({ pickup: "Bệnh viện mới" }),
+    row({ pickup: "{inactive} Phòng khám cũ" }),
+  ]).pickups;
+  eq("active pickups appear before inactive ones", pickupOrder, [
+    "Bệnh viện mới", "{inactive} Bệnh viện cũ", "{inactive} Phòng khám cũ",
+  ]);
   eq("all destinations is the first drop-off option", options.dropoffs[0], "");
   eq("option ordering is stable", options, configFilterOptions(FILTER_ROWS));
 }

@@ -96,7 +96,7 @@ export function FilterMultiSelect({
 
   return (
     <div className="min-w-0">
-      <label htmlFor={inputId} className="mb-1 block text-[11px] font-medium text-slate-700">
+      <label htmlFor={inputId} className="sr-only">
         {label}
       </label>
       <div
