@@ -7,7 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { foldName, replaceDriverInCell, splitDriverNames, DRIVER_SEP } from "@/lib/driver-cell";
 import { displayDriverCell, splitDriverName } from "@/lib/driver-label";
-import { configFilterOptions, EMPTY_CONFIG_FILTERS, filterConfigRows } from "@/lib/config-filters";
+import { configFilterOptions, EMPTY_CONFIG_FILTERS, filterConfigRows, usesTextInput } from "@/lib/config-filters";
 import type { ConfigTextOperator } from "@/lib/config-filters";
 import { BranchEditor, TimeSelect } from "./config-todo-panel";
 import { DriverCombobox } from "./driver-combobox";
@@ -603,42 +603,60 @@ function ReplaceDriverPanel({
   );
 }
 
-/** Text comparisons for one config column. */
-function ConfigTextFilter({ label, operator, value, onOperatorChange, onChange, placeholder }: {
+/** One operator and the value control it requires. */
+function ConfigColumnFilter({
+  label, operator, text, values, options, onOperatorChange, onTextChange, onValuesChange, textPlaceholder, selectPlaceholder,
+}: {
   label: string;
   operator: ConfigTextOperator;
-  value: string;
+  text: string;
+  values: string[];
+  options: readonly { value: string; label: string }[];
   onOperatorChange: (operator: ConfigTextOperator) => void;
-  onChange: (v: string) => void;
-  placeholder: string;
+  onTextChange: (value: string) => void;
+  onValuesChange: (values: string[]) => void;
+  textPlaceholder: string;
+  selectPlaceholder: string;
 }) {
   const id = useId();
   return (
-    <div className="min-w-0">
+    <div className="min-w-0 space-y-1.5">
       <label htmlFor={id} className="mb-1 block text-[11px] font-medium text-slate-700">{label}</label>
-      <div className="flex min-w-0 gap-1.5">
-        <select
-          aria-label={`${label}: phép lọc`}
-          value={operator}
-          onChange={(e) => onOperatorChange(e.target.value as ConfigTextOperator)}
-          className="h-8 w-[136px] shrink-0 rounded border border-slate-300 bg-white px-1.5 text-xs text-slate-900 outline-none focus:ring-2 focus:ring-indigo-400/50"
-        >
-          <option value="contains">contains...</option>
-          <option value="not_contains">does not contain...</option>
-          <option value="is">is...</option>
-          <option value="is_not">is not...</option>
-        </select>
+      <select
+        id={id}
+        value={operator}
+        onChange={(e) => onOperatorChange(e.target.value as ConfigTextOperator)}
+        className="h-8 w-full rounded border border-slate-300 bg-white px-2 text-xs text-slate-900 outline-none focus:ring-2 focus:ring-indigo-400/50"
+      >
+        <option value="contains">contains...</option>
+        <option value="not_contains">does not contain...</option>
+        <option value="is">is...</option>
+        <option value="is_not">is not...</option>
+      </select>
+      {usesTextInput(operator) ? (
         <input
-          id={id}
           type="text"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={placeholder}
-          className="h-8 min-w-0 flex-1 rounded border border-slate-300 bg-white px-2 text-xs text-slate-900 outline-none placeholder:text-slate-500 focus:ring-2 focus:ring-indigo-400/50"
+          value={text}
+          onChange={(e) => onTextChange(e.target.value)}
+          placeholder={textPlaceholder}
+          aria-label={`${label}: giá trị lọc`}
+          className="h-8 w-full rounded border border-slate-300 bg-white px-2 text-xs text-slate-900 outline-none placeholder:text-slate-500 focus:ring-2 focus:ring-indigo-400/50"
         />
-      </div>
+      ) : (
+        <FilterMultiSelect
+          label={`${label}: ${operator === "is" ? "chọn giá trị" : "loại trừ giá trị"}`}
+          values={values}
+          options={options}
+          onChange={onValuesChange}
+          placeholder={selectPlaceholder}
+        />
+      )}
     </div>
   );
+}
+
+function activeColumnFilterCount(operator: ConfigTextOperator, text: string, values: readonly string[]): number {
+  return usesTextInput(operator) ? Number(Boolean(text.trim())) : values.length;
 }
 
 export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
@@ -771,9 +789,10 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
     setLimit(RENDER_CAP);
     clearSelection();
   };
-  const activeFilters = [
-    filters.query.trim(), filters.driverText.trim(), filters.pickupText.trim(), filters.dropoffText.trim(),
-  ].filter(Boolean).length + filters.drivers.length + filters.pickups.length + filters.dropoffs.length;
+  const activeFilters = Number(Boolean(filters.query.trim()))
+    + activeColumnFilterCount(filters.driverOperator, filters.driverText, filters.drivers)
+    + activeColumnFilterCount(filters.pickupOperator, filters.pickupText, filters.pickups)
+    + activeColumnFilterCount(filters.dropoffOperator, filters.dropoffText, filters.dropoffs);
   const hasFilters = activeFilters > 0;
 
   return (
@@ -818,57 +837,42 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
         </div>
 
         <div className="grid grid-cols-1 gap-2 lg:grid-cols-3">
-          <div className="min-w-0 space-y-1.5">
-            <FilterMultiSelect
-              label="Tài xế là một trong"
-              values={[...filters.drivers]}
-              options={driverOptions}
-              onChange={(values) => updateFilters({ ...filters, drivers: values })}
-              placeholder="Chọn tài xế…"
-            />
-            <ConfigTextFilter
-              label="Tài xế"
-              operator={filters.driverOperator}
-              value={filters.driverText}
-              onOperatorChange={(operator) => updateFilters({ ...filters, driverOperator: operator })}
-              onChange={(value) => updateFilters({ ...filters, driverText: value })}
-              placeholder="Nhập tài xế…"
-            />
-          </div>
-          <div className="min-w-0 space-y-1.5">
-            <FilterMultiSelect
-              label="Điểm lấy là một trong"
-              values={[...filters.pickups]}
-              options={pickupOptions}
-              onChange={(values) => updateFilters({ ...filters, pickups: values })}
-              placeholder="Chọn điểm lấy…"
-            />
-            <ConfigTextFilter
-              label="Điểm lấy"
-              operator={filters.pickupOperator}
-              value={filters.pickupText}
-              onOperatorChange={(operator) => updateFilters({ ...filters, pickupOperator: operator })}
-              onChange={(value) => updateFilters({ ...filters, pickupText: value })}
-              placeholder="vd. Bàu Cát"
-            />
-          </div>
-          <div className="min-w-0 space-y-1.5">
-            <FilterMultiSelect
-              label="Điểm giao là một trong"
-              values={[...filters.dropoffs]}
-              options={dropoffOptions}
-              onChange={(values) => updateFilters({ ...filters, dropoffs: values })}
-              placeholder="Chọn điểm giao…"
-            />
-            <ConfigTextFilter
-              label="Điểm giao"
-              operator={filters.dropoffOperator}
-              value={filters.dropoffText}
-              onOperatorChange={(operator) => updateFilters({ ...filters, dropoffOperator: operator })}
-              onChange={(value) => updateFilters({ ...filters, dropoffText: value })}
-              placeholder="vd. D001"
-            />
-          </div>
+          <ConfigColumnFilter
+            label="Tài xế"
+            operator={filters.driverOperator}
+            text={filters.driverText}
+            values={[...filters.drivers]}
+            options={driverOptions}
+            onOperatorChange={(operator) => updateFilters({ ...filters, driverOperator: operator })}
+            onTextChange={(value) => updateFilters({ ...filters, driverText: value })}
+            onValuesChange={(values) => updateFilters({ ...filters, drivers: values })}
+            textPlaceholder="Nhập tài xế…"
+            selectPlaceholder="Chọn tài xế…"
+          />
+          <ConfigColumnFilter
+            label="Điểm lấy"
+            operator={filters.pickupOperator}
+            text={filters.pickupText}
+            values={[...filters.pickups]}
+            options={pickupOptions}
+            onOperatorChange={(operator) => updateFilters({ ...filters, pickupOperator: operator })}
+            onTextChange={(value) => updateFilters({ ...filters, pickupText: value })}
+            onValuesChange={(values) => updateFilters({ ...filters, pickups: values })}
+            textPlaceholder="vd. Bàu Cát"
+            selectPlaceholder="Chọn điểm lấy…"
+          />
+          <ConfigColumnFilter
+            label="Điểm giao"
+            operator={filters.dropoffOperator}
+            text={filters.dropoffText}
+            values={[...filters.dropoffs]}
+            options={dropoffOptions}
+            onOperatorChange={(operator) => updateFilters({ ...filters, dropoffOperator: operator })}
+            onTextChange={(value) => updateFilters({ ...filters, dropoffText: value })}
+            onValuesChange={(values) => updateFilters({ ...filters, dropoffs: values })}
+            textPlaceholder="vd. D001"
+            selectPlaceholder="Chọn điểm giao…"
+          />
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-2">

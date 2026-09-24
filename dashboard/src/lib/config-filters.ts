@@ -41,14 +41,20 @@ export function normalizeConfigText(value: string): string {
   return foldName(value).trim().replace(/\s+/g, " ");
 }
 
+export function usesTextInput(operator: ConfigTextOperator): boolean {
+  return operator === "contains" || operator === "not_contains";
+}
+
 function matchesText(values: readonly string[], operator: ConfigTextOperator, query: string): boolean {
   if (!query) return true;
-  const equal = operator === "is" || operator === "is_not";
-  const found = values.some((value) => {
-    const normalized = normalizeConfigText(value);
-    return equal ? normalized === query : normalized.includes(query);
-  });
-  return operator === "not_contains" || operator === "is_not" ? !found : found;
+  const found = values.some((value) => normalizeConfigText(value).includes(query));
+  return operator === "not_contains" ? !found : found;
+}
+
+function matchesSelection(values: readonly string[], selected: ReadonlySet<string>, operator: ConfigTextOperator): boolean {
+  if (selected.size === 0) return true;
+  const found = values.some((value) => selected.has(value));
+  return operator === "is_not" ? !found : found;
 }
 
 /**
@@ -83,17 +89,21 @@ export function filterConfigRows(
       if (!fields.some((field) => normalizeConfigText(field).includes(query))) return false;
     }
 
-    if (selectedDrivers.size && !rowDrivers.some((name) => selectedDrivers.has(name))) return false;
-    // The table shows personal names, while the sheet stores routing prefixes.
-    // Accept either spelling for exact driver comparisons.
-    if (driverText) {
-      const driverLabels = rowDrivers.flatMap((name) => [name, splitDriverName(name).name]);
-      if (!matchesText(driverLabels, filters.driverOperator, driverText)) return false;
+    if (usesTextInput(filters.driverOperator)) {
+      if (driverText) {
+        // The table shows personal names, while the sheet stores routing prefixes.
+        const driverLabels = rowDrivers.flatMap((name) => [name, splitDriverName(name).name]);
+        if (!matchesText(driverLabels, filters.driverOperator, driverText)) return false;
+      }
+    } else if (!matchesSelection(rowDrivers, selectedDrivers, filters.driverOperator)) {
+      return false;
     }
-    if (selectedPickups.size && !selectedPickups.has(row.pickup)) return false;
-    if (!matchesText([row.pickup], filters.pickupOperator, pickupText)) return false;
-    if (selectedDropoffs.size && !selectedDropoffs.has(row.dropoff)) return false;
-    if (!matchesText([row.dropoff], filters.dropoffOperator, dropoffText)) return false;
+    if (usesTextInput(filters.pickupOperator)
+      ? !matchesText([row.pickup], filters.pickupOperator, pickupText)
+      : !matchesSelection([row.pickup], selectedPickups, filters.pickupOperator)) return false;
+    if (usesTextInput(filters.dropoffOperator)
+      ? !matchesText([row.dropoff], filters.dropoffOperator, dropoffText)
+      : !matchesSelection([row.dropoff], selectedDropoffs, filters.dropoffOperator)) return false;
     return true;
   });
 }
