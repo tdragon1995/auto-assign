@@ -178,8 +178,12 @@ ever named, which is how a warning stops being read.
   A column is ~150px, which fits a name and nothing else — the substitute editor
   alone is a name field plus two time selects plus two buttons. So the grid
   carries the week's SHAPE, which is what seven columns are uniquely good at,
-  and picking a name opens that driver's day BELOW the grid at full width in the
-  same `DriverCard` the rest of the panel uses.
+  and HOVERING a name floats that driver's day beside it (`HoverPanel`) in the
+  same `DriverCard` the rest of the panel uses — who is off, which hours, who
+  covers them. A click, or any use of the panel, pins it for editing, and a
+  pinned panel is never swapped out by hovering another name. It is hand-placed
+  (top/left) rather than a Radix popover, because Radix positions with a
+  `transform`, which would re-anchor `DriverCombobox`'s `position: fixed` menu.
 
   One line per PERSON, not per account (`mergePeople`): the grid shows no staff
   code, so a twin pair arrived as the same name twice with nothing to say why.

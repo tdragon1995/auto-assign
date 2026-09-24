@@ -119,11 +119,14 @@ export function PickupSetupPanel() {
               {data.proposals.length === 0 ? (
                 <p className="text-xs text-slate-500">Không có địa điểm nào lệch quá 10%.</p>
               ) : (
-                <div className="overflow-x-auto">
+                // Scrolls inside its own box so the header can stay frozen: the
+                // list runs to dozens of places, and "which column was 80%?"
+                // should not need a scroll back to the top.
+                <div className="max-h-[60vh] overflow-auto rounded border border-slate-200">
                   <table className="w-full text-xs">
-                    <thead className="text-slate-500 text-left">
+                    <thead className="sticky top-0 z-10 bg-slate-50 text-slate-500 text-left shadow-[0_1px_0_#e2e8f0]">
                       <tr>
-                        <th className="py-1 pr-2 font-medium">Địa điểm</th>
+                        <th className="py-1 pl-2 pr-2 font-medium">Địa điểm</th>
                         <th className="py-1 px-2 font-medium text-right">Số chuyến</th>
                         <th className="py-1 px-2 font-medium text-right">Trung vị</th>
                         <th className="py-1 px-2 font-medium text-right" title="8/10 chuyến tới trước mốc này">80% chuyến</th>
@@ -136,7 +139,7 @@ export function PickupSetupPanel() {
                     <tbody>
                       {data.proposals.map((p) => (
                         <tr key={p.lc_location_id} className="border-t border-slate-100">
-                          <td className="py-1 pr-2">
+                          <td className="py-1 pl-2 pr-2">
                             <div className="text-slate-800">{p.pick_name}</div>
                             <div className="text-[11px] text-slate-500">→ {p.drop_name}</div>
                           </td>
@@ -148,7 +151,7 @@ export function PickupSetupPanel() {
                             {pct(p.deviation)}
                           </td>
                           <td className="py-1 px-2 text-right tabular-nums font-semibold">{p.proposed_mins}′</td>
-                          <td className="py-1 pl-2 text-right">
+                          <td className="py-1 pl-2 pr-2 text-right">
                             <Button
                               size="sm" className="h-7" disabled={busy === p.lc_location_id}
                               onClick={() => {
@@ -169,21 +172,45 @@ export function PickupSetupPanel() {
 
             {data.drift.length > 0 && (
               <section>
-                <h3 className="text-xs font-semibold text-slate-700 mb-1">
+                <h3 className="text-xs font-semibold text-slate-700">
                   Labcenter khác bản gốc — có người sửa trực tiếp trên Labcenter ({data.drift.length})
                 </h3>
+                {/* What this list IS, in words: the bare heading left readers
+                    asking. Bản gốc is our Supabase copy of each place's portal
+                    setup (default drop-off + ETA); these rows are places where
+                    Labcenter now says something else, because someone changed
+                    it there rather than through this panel. */}
+                <p className="mb-1 max-w-[75ch] text-[11px] text-slate-500">
+                  Mỗi địa điểm có điểm giao mặc định và ETA trên cổng khách hàng. Bản gốc là bản hệ thống lưu;
+                  các dòng dưới đây đã bị sửa thẳng trên Labcenter nên hai bên không khớp. Chọn bên đúng:
+                  <span className="font-medium text-slate-600"> Đẩy lại</span> ghi bản gốc đè lên Labcenter,
+                  <span className="font-medium text-slate-600"> Nhận theo Labcenter</span> lấy giá trị Labcenter làm bản gốc mới.
+                </p>
                 <ul className="space-y-1">
                   {data.drift.map((d) => (
                     <li key={d.lc_location_id} className="flex flex-wrap items-center gap-2 text-xs border-t border-slate-100 pt-1">
                       <span className="text-slate-800 min-w-0 flex-1">{d.pick_name}</span>
+                      {/* Only what differs, so the change reads at a glance
+                          instead of being found by comparing two strings. */}
                       <span className="text-slate-600">
-                        Bản gốc: {d.master.drop_name} · {d.master.eta_mins}′ — Labcenter: {d.labcenter.drop_name} · {d.labcenter.eta_mins}′
+                        {d.master.drop_name !== d.labcenter.drop_name && (
+                          <>Điểm giao: <span className="text-slate-800">{d.master.drop_name}</span> → <span className="font-semibold text-amber-800">{d.labcenter.drop_name}</span></>
+                        )}
+                        {d.master.drop_name !== d.labcenter.drop_name && d.master.eta_mins !== d.labcenter.eta_mins && " · "}
+                        {d.master.eta_mins !== d.labcenter.eta_mins && (
+                          <>ETA: <span className="text-slate-800">{d.master.eta_mins}′</span> → <span className="font-semibold text-amber-800">{d.labcenter.eta_mins}′</span></>
+                        )}
+                        {d.master.drop_name === d.labcenter.drop_name && d.master.eta_mins === d.labcenter.eta_mins && (
+                          <>Điểm giao đổi mã, cùng tên {d.labcenter.drop_name}</>
+                        )}
                       </span>
                       <Button size="sm" variant="outline" className="h-7" disabled={busy === d.lc_location_id}
+                        title={`Ghi lại bản gốc lên Labcenter: ${d.master.drop_name} · ${d.master.eta_mins}′`}
                         onClick={() => void act(d.lc_location_id, { action: "repush" }, "Đã đẩy lại bản gốc")}>
                         Đẩy lại
                       </Button>
                       <Button size="sm" variant="outline" className="h-7" disabled={busy === d.lc_location_id}
+                        title={`Giữ giá trị Labcenter làm bản gốc mới: ${d.labcenter.drop_name} · ${d.labcenter.eta_mins}′`}
                         onClick={() => void act(d.lc_location_id, { action: "accept_lc" }, "Đã nhận theo Labcenter")}>
                         Nhận theo Labcenter
                       </Button>

@@ -17,6 +17,7 @@ import {
 import { normalizeDriverName } from "@/lib/driver-match";
 import { DriverName } from "./driver-name";
 import { DriverCombobox } from "./driver-combobox";
+import { HoverPanel } from "./hover-panel";
 
 const TYPE_LABEL: Record<string, string> = {
   "Nghỉ nguyên buổi": "Cả ngày",
@@ -558,11 +559,21 @@ function twinEffect(f: NewLeaveForm): { copies: boolean; text: string } {
  * than it is written to, and an always-open form pushes the week grid down the
  * page for everyone who came here to look rather than to type.
  */
-function AddLeaveForm({ drivers, onSaved }: { drivers: ConfigDriver[]; onSaved: RefreshFn }) {
-  const [open, setOpen] = useState(false);
+function AddLeaveForm({
+  drivers, onSaved, open, setOpen,
+}: {
+  drivers: ConfigDriver[];
+  onSaved: RefreshFn;
+  /** Owned by the panel: the button that opens this sits in the panel's header
+   *  line, beside "Nghỉ phép", so it is visible without expanding anything. */
+  open: boolean;
+  setOpen: (v: boolean) => void;
+}) {
   const [form, setForm] = useState<NewLeaveForm>(EMPTY_LEAVE_FORM);
   /** The two inputs that ADD to the set — not the set itself. */
-  const [pickFrom, setPickFrom] = useState("");
+  // Today by default. Every close resets back to this (below), so each opening
+  // starts from a clean form without an effect watching `open`.
+  const [pickFrom, setPickFrom] = useState(() => vnDate());
   const [pickTo, setPickTo] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
@@ -575,7 +586,7 @@ function AddLeaveForm({ drivers, onSaved }: { drivers: ConfigDriver[]; onSaved: 
   const twinWill = twinEffect(form);
   const reset = () => {
     setForm(EMPTY_LEAVE_FORM);
-    setPickFrom(""); setPickTo(""); setError(""); setBusy("");
+    setPickFrom(vnDate()); setPickTo(""); setError(""); setBusy("");
   };
   const close = () => { setOpen(false); reset(); };
 
@@ -697,18 +708,7 @@ function AddLeaveForm({ drivers, onSaved }: { drivers: ConfigDriver[]; onSaved: 
     close();
   }
 
-  if (!open) {
-    return (
-      <Button
-        size="sm" variant="outline"
-        className="mt-2 h-6 px-2 text-[11px]"
-        onClick={() => { reset(); setPickFrom(vnDate()); setOpen(true); }}
-      >
-        <Plus className="size-3" strokeWidth={2} />
-        Thêm ngày nghỉ
-      </Button>
-    );
-  }
+  if (!open) return null;
 
   const isResign = form.loai_nghi === "nghi_viec";
 
@@ -1327,7 +1327,12 @@ function DriverCard({
                   <span
                     className="text-emerald-700 break-words"
                   >
-                    ✓ {r.subs.map((s) => splitDriverName(s.name || s.id).name).join(", ")}
+                    ✓ Người thay: {r.subs
+                      .map((s) => {
+                        const n = splitDriverName(s.name || s.id).name;
+                        return s.from && s.to ? `${n} (${s.from}–${s.to})` : n;
+                      })
+                      .join(", ")}
                   </span>
                   {editRow !== i && (
                     <button
@@ -1652,7 +1657,8 @@ function weekdayLong(date: string): string {
 
 /** Which person, on which day, is open in the detail strip. Keyed by both
  *  because one person is off on several days of a week. */
-interface Picked { date: string; personKey: string }
+/** `anchor` is the name button itself, taken from the event that opened it. */
+interface Picked { date: string; personKey: string; pinned: boolean; anchor: HTMLElement }
 
 /**
  * The three things a name in the grid can be saying, in ONE vocabulary.
@@ -1789,8 +1795,11 @@ export function mergePeople(groups: DriverGroup[]): PersonCell[] {
  * which is what seven columns are uniquely good at: "Thursday is the problem"
  * is one glance here and a scroll through seven headings in a list.
  *
- * Picking a name opens that driver's day below the grid at full width, in the
- * SAME DriverCard the rest of the panel uses. That is the whole trick: the
+ * Hovering a name floats that driver's day beside it (`HoverPanel`) — who is
+ * off, which hours, who covers them — and clicking it, or starting to use the
+ * panel, keeps it open for editing. The panel is the SAME DriverCard the rest
+ * of the panel uses. It used to open below the grid on click only, which made
+ * "who covers Thursday?" a click and a scroll per name. That is the whole trick: the
  * compact view is new, the acting view is the one that already works, so there
  * is no second copy of the substitute editor or the delete guard to drift.
  *
@@ -1831,6 +1840,39 @@ function WeekSection({
 }) {
   const [weekStart, setWeekStart] = useState(() => today);
   const [picked, setPicked] = useState<Picked | null>(null);
+  const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearTimers = () => {
+    if (openTimer.current) clearTimeout(openTimer.current);
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    openTimer.current = closeTimer.current = null;
+  };
+  useEffect(() => clearTimers, []);
+  const isOpen = (a: Picked | null, date: string, key: string) => a?.date === date && a.personKey === key;
+  // Hover PREVIEWS a person's day; a click, or any use of the panel, PINS it.
+  // A pinned panel is never replaced by hovering another name — that would
+  // throw away a substitute half typed in.
+  const hoverIn = (date: string, personKey: string, anchor: HTMLElement) => {
+    if (closeTimer.current) { clearTimeout(closeTimer.current); closeTimer.current = null; }
+    if (openTimer.current) clearTimeout(openTimer.current);
+    openTimer.current = setTimeout(() => {
+      setPicked((a) => (a?.pinned || isOpen(a, date, personKey) ? a : { date, personKey, pinned: false, anchor }));
+    }, 250);
+  };
+  const hoverOut = () => {
+    if (openTimer.current) { clearTimeout(openTimer.current); openTimer.current = null; }
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    closeTimer.current = setTimeout(() => setPicked((a) => (a && !a.pinned ? null : a)), 200);
+  };
+  const panelEnter = () => {
+    if (closeTimer.current) { clearTimeout(closeTimer.current); closeTimer.current = null; }
+  };
+  const togglePin = (date: string, personKey: string, anchor: HTMLElement) => {
+    clearTimers();
+    setPicked((a) => (isOpen(a, date, personKey) && a!.pinned ? null : { date, personKey, pinned: true, anchor }));
+  };
+  const pin = useCallback(() => setPicked((a) => (a && !a.pinned ? { ...a, pinned: true } : a)), []);
+  const closePanel = useCallback(() => { clearTimers(); setPicked(null); }, []);
   const [state, setState] = useState<{
     loading: boolean;
     error: string | null;
@@ -2015,17 +2057,18 @@ function WeekSection({
                   ) : (
                     <ul className="divide-y divide-slate-100">
                       {d.people.map((p) => {
-                        const sel = picked?.date === d.date && picked?.personKey === p.key;
+                        const sel = isOpen(picked, d.date, p.key);
                         const both = p.groups.length > 1;
                         const pt = p.employments.includes("part-time");
                         return (
                           <li key={p.key}>
                             <button
                               type="button"
-                              aria-pressed={sel}
-                              onClick={() =>
-                                setPicked(sel ? null : { date: d.date, personKey: p.key })
-                              }
+                              aria-haspopup="dialog"
+                              aria-expanded={sel}
+                              onPointerEnter={(e) => { if (e.pointerType === "mouse") hoverIn(d.date, p.key, e.currentTarget); }}
+                              onPointerLeave={(e) => { if (e.pointerType === "mouse") hoverOut(); }}
+                              onClick={(e) => togglePin(d.date, p.key, e.currentTarget)}
                               className={`flex w-full items-center gap-1 px-1.5 py-1 text-left transition-colors duration-150 ${
                                 sel ? "bg-indigo-100" : "hover:bg-slate-50"
                               }`}
@@ -2076,50 +2119,58 @@ function WeekSection({
             </li>
           </ul>
 
-          {/* The day being worked on, full width, in the card the rest of the
-              panel already uses — so the substitute editor and the delete guard
-              have exactly one implementation. */}
-          {openCell && picked && (
-            <div
-              className="mt-1.5 rounded-md border border-indigo-300 bg-indigo-50/40 p-1.5"
-              role="region"
-              aria-label={`${openCell.name} — ${weekdayLong(picked.date)} ${ddmm(picked.date)}`}
-            >
-              <div className="mb-1 flex flex-wrap items-baseline gap-x-1.5">
-                <span className="text-[11px] font-semibold text-slate-800">
-                  {weekdayLong(picked.date)} {ddmm(picked.date)}
-                </span>
-                {openCell.groups.length > 1 && (
-                  <span className="text-[11px] text-slate-600">
-                    hai tài khoản — người thay điền riêng cho từng cái
+          {/* The person's day, floating beside the name: hover to read who
+              covers whom, click (or start typing in it) to keep it open and
+              edit. Same DriverCard as the rest of the panel — the substitute
+              editor and the delete guard still have exactly one
+              implementation. */}
+          <HoverPanel
+            anchor={picked?.anchor ?? null}
+            open={!!(openCell && picked)}
+            label={openCell && picked ? `${openCell.name} — ${weekdayLong(picked.date)} ${ddmm(picked.date)}` : ""}
+            onClose={closePanel}
+            onEngage={pin}
+            onPointerEnter={panelEnter}
+            onPointerLeave={hoverOut}
+          >
+            {openCell && picked && (
+              <>
+                <div className="mb-1 flex flex-wrap items-baseline gap-x-1.5">
+                  <span className="text-[11px] font-semibold text-slate-800">
+                    {weekdayLong(picked.date)} {ddmm(picked.date)}
                   </span>
-                )}
-                <Button
-                  size="sm" variant="ghost"
-                  className="ml-auto h-6 px-2 text-[11px]"
-                  onClick={() => setPicked(null)}
-                >
-                  Đóng
-                </Button>
-              </div>
-              {/* One card per ACCOUNT. The grid merged the twin pair into a
-                  single name because it only had to say who is off; here the
-                  substitute is actually written, and a substitute covers one
-                  account — so the two come back apart, each with its FT/PT
-                  chip. */}
-              <div className="divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200 bg-white">
-                {openCell.groups.map((g) => (
-                  <DriverCard
-                    key={g.driver_id}
-                    g={g}
-                    drivers={drivers}
-                    onFill={onFill}
-                    onDelete={onDelete}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
+                  {openCell.groups.length > 1 && (
+                    <span className="text-[11px] text-slate-600">
+                      hai tài khoản — người thay điền riêng cho từng cái
+                    </span>
+                  )}
+                  <Button
+                    size="sm" variant="ghost"
+                    className="ml-auto h-6 px-2 text-[11px]"
+                    onClick={closePanel}
+                  >
+                    Đóng
+                  </Button>
+                </div>
+                {/* One card per ACCOUNT. The grid merged the twin pair into a
+                    single name because it only had to say who is off; here the
+                    substitute is actually written, and a substitute covers one
+                    account — so the two come back apart, each with its FT/PT
+                    chip. */}
+                <div className="divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200 bg-white">
+                  {openCell.groups.map((g) => (
+                    <DriverCard
+                      key={g.driver_id}
+                      g={g}
+                      drivers={drivers}
+                      onFill={onFill}
+                      onDelete={onDelete}
+                    />
+                  ))}
+                </div>
+              </>
+            )}
+          </HoverPanel>
         </>
       )}
     </div>
@@ -2170,6 +2221,7 @@ export function LeaveStatusPanel({
   refreshKey?: number;
 }) {
   const [open, setOpen] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
   const [suppressionOpen, setSuppressionOpen] = useState(false);
   const noData = today.length === 0 && tomorrow.length === 0;
   const todayGroups = groupByDriver(today);
@@ -2229,23 +2281,39 @@ export function LeaveStatusPanel({
 
         {/* Keep the collapsed summary focused on the one action supervisors
             need to see without opening the leave panel. */}
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          className="flex w-full items-center gap-2 text-left"
-        >
-          <span className="flex items-center gap-1.5 text-sm font-semibold">
-            <Palmtree className="size-4 text-emerald-600" strokeWidth={2} />
-            Nghỉ phép
-          </span>
-          {totalUncovered > 0 && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-700 border border-amber-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
-              <AlertTriangle className="size-3" strokeWidth={2} />
-              {totalUncovered} chưa có người thay
+        {/* The one action that CREATES a row sits on the header line, filled
+            in the panel's own green, so it can be reached without expanding
+            the panel first — pressing it expands the panel with the form open. */}
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            aria-expanded={open}
+            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          >
+            <span className="flex items-center gap-1.5 text-sm font-semibold">
+              <Palmtree className="size-4 text-emerald-600" strokeWidth={2} />
+              Nghỉ phép
             </span>
+            {totalUncovered > 0 && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-700 border border-amber-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
+                <AlertTriangle className="size-3" strokeWidth={2} />
+                {totalUncovered} chưa có người thay
+              </span>
+            )}
+            <span className="ml-auto text-slate-400 text-xs">{open ? "▾" : "▸"}</span>
+          </button>
+          {!(open && addOpen) && (
+            <Button
+              size="sm"
+              className="h-7 shrink-0 bg-emerald-600 px-2.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700"
+              onClick={() => { setOpen(true); setAddOpen(true); }}
+            >
+              <Plus className="size-3.5" strokeWidth={2.5} />
+              Thêm ngày nghỉ
+            </Button>
           )}
-          <span className="ml-auto text-slate-400 text-xs">{open ? "▾" : "▸"}</span>
-        </button>
+        </div>
 
         {open && (
           <div className="mt-2 max-h-[60vh] overflow-y-auto">
@@ -2352,7 +2420,7 @@ export function LeaveStatusPanel({
             {/* Above the week, because it is the one thing here that CREATES a
                 row rather than repairing one — and after the alarms, which say
                 whether the sheet can be trusted at all right now. */}
-            <AddLeaveForm drivers={drivers} onSaved={refreshBoth} />
+            <AddLeaveForm drivers={drivers} onSaved={refreshBoth} open={addOpen} setOpen={setAddOpen} />
             <WeekSection
               today={vnDate()}
               drivers={drivers}
