@@ -5,6 +5,7 @@ import { LEAVE_DELETED_SHEET, LEAVE_DELETED_HEADERS } from "./leave-suppression"
 import type { ConfigCells } from "./unmapped-row";
 import { timeToMins } from "./time";
 import { replaceDriverInCell } from "./driver-cell";
+import { shiftFormulaRows } from "./formula-shift";
 import {
   encodeSwapNote, parseSwapNote, parseThayCaNote, sourceKey, THAY_CA_NOTE_PREFIX,
   type ThayCaDesired,
@@ -1534,36 +1535,82 @@ export function configWriteRanges(
   return data;
 }
 
-/** Copy only the reusable row presentation and derived formulas. */
+/**
+ * Copy only the reusable row presentation and derived formulas, for every
+ * (source → destination) pair in ONE read and ONE write.
+ *
+ * NOT `copyPaste`. Sheets refuses copyPaste on any range containing a row a
+ * filter hides ("not supported on a range with a filtered out row"), and the
+ * config tab is filtered by hand much of the day — the blank rows new lines land
+ * in are exactly what a filter hides. So the source row is READ (format, data
+ * validation, K's formula) and written back with `updateCells`, which does not
+ * care about filters. K's relative references are shifted by `shiftFormulaRows`,
+ * as the paste used to do; it refuses a formula it cannot shift with certainty.
+ */
 async function copyConfigRowParts(
   sheets: ReturnType<typeof google.sheets>,
   tab: ConfigTabSpec,
-  sourceRow: number,
-  destinationRow: number,
+  pairs: { sourceRow: number; destinationRow: number }[],
   lastTableRow: number,
 ): Promise<void> {
-  if (!Number.isInteger(sourceRow) || sourceRow < 2 || sourceRow > lastTableRow || sourceRow === destinationRow) {
-    throw new Error(`Dòng nguồn copy không hợp lệ: ${sourceRow}`);
+  if (pairs.length === 0) return;
+  for (const { sourceRow, destinationRow } of pairs) {
+    if (!Number.isInteger(sourceRow) || sourceRow < 2 || sourceRow > lastTableRow || sourceRow === destinationRow) {
+      throw new Error(`Dòng nguồn copy không hợp lệ: ${sourceRow}`);
+    }
   }
-  const source = (startColumnIndex: number, endColumnIndex: number) => ({
-    sheetId: Number(tab.gid), startRowIndex: sourceRow - 1, endRowIndex: sourceRow,
-    startColumnIndex, endColumnIndex,
-  });
-  const destination = (startColumnIndex: number, endColumnIndex: number) => ({
-    sheetId: Number(tab.gid), startRowIndex: destinationRow - 1, endRowIndex: destinationRow,
-    startColumnIndex, endColumnIndex,
-  });
-  await sheets.spreadsheets.batchUpdate({
+  const sources = [...new Set(pairs.map((p) => p.sourceRow))];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const res: any = await sheets.spreadsheets.get({
     spreadsheetId: SHEET_ID,
-    requestBody: {
-      requests: [
-        // A:N is the complete config row. PASTE_FORMAT leaves all target values alone.
-        { copyPaste: { source: source(0, 14), destination: destination(0, 14), pasteType: "PASTE_FORMAT" } },
-        // K is the per-row smart_driver_id formula; relative references become the destination row.
-        { copyPaste: { source: source(10, 11), destination: destination(10, 11), pasteType: "PASTE_FORMULA" } },
-      ],
-    },
+    ranges: sources.map((r) => `${a1(tab)}!A${r}:N${r}`),
+    includeGridData: true,
+    fields: "sheets(properties(sheetId),data(startRow,rowData(values(userEnteredFormat,dataValidation,userEnteredValue))))",
   });
+  const sheet = res.data.sheets?.find(
+    (x: { properties?: { sheetId?: number } }) => String(x.properties?.sheetId) === String(tab.gid),
+  );
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const bySource = new Map<number, any[]>();
+  for (const d of sheet?.data ?? []) {
+    bySource.set(Number(d.startRow ?? 0) + 1, d.rowData?.[0]?.values ?? []);
+  }
+
+  const range = (row: number, startColumnIndex: number, endColumnIndex: number) => ({
+    sheetId: Number(tab.gid), startRowIndex: row - 1, endRowIndex: row, startColumnIndex, endColumnIndex,
+  });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const requests: any[] = [];
+  for (const { sourceRow, destinationRow } of pairs) {
+    const cells = bySource.get(sourceRow);
+    if (!cells) throw new Error(`Không đọc được dòng nguồn ${sourceRow}`);
+    const at = (i: number) => cells[i] ?? {};
+    // A:N is the complete config row: format and validation only, values untouched
+    // (A:D and L:M are ARRAYFORMULA columns a written value would break).
+    requests.push({
+      updateCells: {
+        range: range(destinationRow, 0, 14),
+        rows: [{ values: Array.from({ length: 14 }, (_, i) => ({
+          userEnteredFormat: at(i).userEnteredFormat,
+          dataValidation: at(i).dataValidation,
+        })) }],
+        fields: "userEnteredFormat,dataValidation",
+      },
+    });
+    // K is the per-row smart_driver_id formula; relative references move to the destination row.
+    const k = at(10).userEnteredValue;
+    const kValue = k?.formulaValue !== undefined
+      ? { formulaValue: shiftFormulaRows(String(k.formulaValue), destinationRow - sourceRow) }
+      : k;
+    requests.push({
+      updateCells: {
+        range: range(destinationRow, 10, 11),
+        rows: [{ values: [{ userEnteredValue: kValue }] }],
+        fields: "userEnteredValue",
+      },
+    });
+  }
+  await sheets.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests } });
 }
 
 /**
@@ -1604,8 +1651,8 @@ export async function writeConfigRows(cells: ConfigCells[]): Promise<number[]> {
   // when they are filled through the API. Restore those parts from the source
   // row selected by the copy picker. Keep this deliberately scoped:
   //   - A:N gets formatting, so every column in the config row matches its source;
-  //   - K gets its per-row smart_driver_id formula, with Sheets' normal
-  //     relative-reference adjustment;
+  //   - K gets its per-row smart_driver_id formula, relative rows shifted to the
+  //     destination (read + updateCells, not copyPaste — see copyConfigRowParts);
   //   - L:M are ARRAYFORMULA columns anchored in row 2 and must never be touched;
   //   - A:D are weekday ARRAYFORMULA spill columns and receive formatting only;
   //   - values in E/F/H/I/J are written below, while G/N remain the target row's
@@ -1615,11 +1662,9 @@ export async function writeConfigRows(cells: ConfigCells[]): Promise<number[]> {
     if (tab.gid !== CONFIG_TABS.weekday.gid) {
       throw new Error("Cấu hình copy công thức chỉ hỗ trợ tab config ngày thường");
     }
-    for (const [i, c] of cells.entries()) {
-      if (c.copyFromRow !== undefined) {
-        await copyConfigRowParts(sheets, tab, c.copyFromRow, firstFreeRow + i, lastTableRow);
-      }
-    }
+    const pairs = cells.flatMap((c, i) =>
+      c.copyFromRow === undefined ? [] : [{ sourceRow: c.copyFromRow, destinationRow: firstFreeRow + i }]);
+    await copyConfigRowParts(sheets, tab, pairs, lastTableRow);
   }
 
   await sheets.spreadsheets.values.batchUpdate({
@@ -1694,7 +1739,7 @@ export async function completeConfigRow(opts: {
 
   if (opts.copyFromRow !== undefined) {
     const lastTableRow = await configTableEnd(sheets, tab);
-    await copyConfigRowParts(sheets, tab, opts.copyFromRow, opts.row, lastTableRow);
+    await copyConfigRowParts(sheets, tab, [{ sourceRow: opts.copyFromRow, destinationRow: opts.row }], lastTableRow);
   }
 
   const q = a1(tab);
