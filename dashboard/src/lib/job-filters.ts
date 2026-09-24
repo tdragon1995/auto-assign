@@ -268,6 +268,33 @@ export function isStopStarted(stop: {
   );
 }
 
+/**
+ * True if a driver may still take this job over through "Nhận việc".
+ *
+ * An open pickup status is not enough: the job must not be IN PROCESS with its
+ * current driver. Refused when
+ *  - the pickup is arrived or completed — the driver is on site taking PODs, or
+ *    has already collected (the status lags the timestamps, see
+ *    `isBlockingPickupStop`, so both are read);
+ *  - any other stop has been touched at all — a dropoff finished, arrived or on
+ *    its way means the samples are already with that driver.
+ * En route to the pickup stays claimable: that is the hand-over this feature is
+ * for, a nearer driver taking a job the assignee has not reached yet.
+ */
+export function isClaimableJob(stops: {
+  stop_type_id?: number | null;
+  stop_status_id?: number | null;
+  activity_started_ts?: string | null;
+  activity_arrived_ts?: string | null;
+  activity_completed_ts?: string | null;
+}[]): boolean {
+  const pickup = stops.find((s) => s.stop_type_id === 1);
+  if (!pickup || pickup.stop_status_id == null) return false;
+  if (pickup.stop_status_id !== 1 && pickup.stop_status_id !== 2) return false;
+  if (pickup.activity_arrived_ts || pickup.activity_completed_ts) return false;
+  return !stops.some((s) => s !== pickup && isStopStarted(s));
+}
+
 /** D001 — the central lab. Every branch in the network delivers to it, so its own /qr
  *  feed is the whole day's shuttle traffic: 488 jobs touched it on 2026-09-08 against
  *  54 client pickups. The lab watches that page for CLIENT samples arriving, which the

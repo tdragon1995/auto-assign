@@ -3,14 +3,15 @@ import {
   getTimelineRoutes, getDrivers, getJobDetails, assignJobViaUpdate, type Env,
 } from "@/lib/cartrack";
 import { loadConfigFromSheets, isValidDriverId } from "@/lib/config";
-import { isCompletedOrRejectedStop, STOP_STATUS } from "@/lib/job-filters";
+import { isClaimableJob, STOP_STATUS } from "@/lib/job-filters";
 import { verifySession, NV_COOKIE } from "@/lib/driver-session";
 import { appendNhanViecLog } from "@/lib/sheets-writer";
 import { vnDate, vnTimestamp } from "@/lib/time";
 import type { Job, Stop, TimelineStop } from "@/lib/types";
 
-// Jobs a driver may claim: mapped to their smart_driver_id, pickup still open.
-// "Open pickup" = pickup stop status is NOT 4 (Hoàn thành) or 5 (Từ chối).
+// Jobs a driver may claim: mapped to their smart_driver_id and not yet in process
+// with the current driver — see isClaimableJob (no arrival/POD or completion at the
+// pickup, no dropoff touched). En route to the pickup is still claimable.
 //
 // The job LIST is fetched via the JSON-RPC timeline route API
 // (delivery_timeline_route_list) — the same source smart-assign and the main
@@ -29,6 +30,15 @@ async function fetchTimelineStops(dateVn: string, env: Env = "prod"): Promise<Ti
   for (const r of routes) for (const s of r.orderedStops ?? []) stops.push(s);
   return stops;
 }
+
+/** Timeline (camelCase) stop → the REST stop shape isClaimableJob reads. */
+const toClaimStop = (s: TimelineStop) => ({
+  stop_type_id: s.stopTypeId,
+  stop_status_id: s.stopStatusId,
+  activity_started_ts: s.activityStartedTs,
+  activity_arrived_ts: s.activityArrivedTs,
+  activity_completed_ts: s.activityCompletedTs,
+});
 
 /** customer_ids whose config mapping lists this driver in smart_driver_id[]. */
 async function customerIdsForDriver(driverId: string): Promise<Set<string>> {
@@ -86,7 +96,7 @@ export async function GET(req: NextRequest) {
       const pickup = js.find((s) => s.stopTypeId === PICKUP);
       if (!pickup?.customerId || pickup.stopStatusId == null) continue;
       if (!customerIds.has(pickup.customerId)) continue;
-      if (isCompletedOrRejectedStop(pickup.stopStatusId)) continue;
+      if (!isClaimableJob(js.map(toClaimStop))) continue;
 
       const dropoff = js.find((s) => s.stopTypeId === DROPOFF) ?? js.find((s) => s.stopTypeId === DELIVERY);
       const currentDriverId = pickup.deliveryDriverId || null;
@@ -145,7 +155,8 @@ export async function POST(req: NextRequest) {
 
   try {
     // Re-verify claimability server-side against the single job: pickup customer
-    // must map to this driver's smart_driver_id AND pickup must still be open.
+    // must map to this driver's smart_driver_id AND the job must not be in process
+    // (the list may be minutes old — the driver could have arrived since).
     // Targeted single-job lookup (getJobDetails) — cheap; the LIST uses JSON-RPC.
     const customerIds = await customerIdsForDriver(driverId);
     const details = await getJobDetails(jobId, env);
@@ -156,12 +167,11 @@ export async function POST(req: NextRequest) {
     const pickup = claimPickupStop(job);
     const claimable =
       !!pickup?.customer_id &&
-      pickup.stop_status_id != null &&
       customerIds.has(pickup.customer_id) &&
-      !isCompletedOrRejectedStop(pickup.stop_status_id);
+      isClaimableJob(job.stops ?? []);
     if (!claimable) {
       return NextResponse.json(
-        { ok: false, error: "Công việc này không thuộc tuyến của bạn hoặc đã lấy hàng xong." },
+        { ok: false, error: "Công việc này không thuộc tuyến của bạn hoặc tài xế khác đang thực hiện (đã đến điểm lấy / đang chụp POD / đã giao)." },
         { status: 403 }
       );
     }
