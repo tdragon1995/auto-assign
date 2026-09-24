@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, useCallback, useId, useRef } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Copy, Search } from "lucide-react";
+import { Check, ChevronDown, Copy, Search } from "lucide-react";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 import { foldName } from "@/lib/driver-cell";
 import type { ConfigDriver } from "@/lib/types";
@@ -113,12 +113,13 @@ function LocationField({
   onChange: (id: string, name: string) => void;
 }) {
   const listId = useId();
+  const inputRef = useRef<HTMLInputElement>(null);
   const [text, setText] = useState(name || id);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
   const matches = useMemo(() => {
     const terms = foldName(text.trim()).split(/[^a-z0-9]+/).filter(Boolean);
-    if (!terms.length) return [];
+    if (!terms.length) return options.slice(0, 20);
     return options.filter((o) => {
       const haystack = foldName(`${o.name} ${o.id}`);
       return terms.every((term) => haystack.includes(term));
@@ -128,6 +129,7 @@ function LocationField({
     setText(o.name);
     setOpen(false);
     onChange(o.id, o.name);
+    inputRef.current?.setSelectionRange(0, 0);
   };
   const resolve = (t: string) => {
     setText(t);
@@ -150,43 +152,69 @@ function LocationField({
       if (!e.currentTarget.contains(e.relatedTarget)) setOpen(false);
     }}>
       <label htmlFor={`${listId}-input`} className="block text-[10px] font-bold uppercase tracking-wide text-slate-400">{label}</label>
-      <input
-        id={`${listId}-input`}
-        role="combobox"
-        aria-autocomplete="list"
-        aria-controls={listId}
-        aria-expanded={open && matches.length > 0}
-        aria-activedescendant={open && active >= 0 && matches.length ? `${listId}-${active}` : undefined}
-        value={text}
-        onChange={(e) => resolve(e.target.value)}
-        onFocus={() => setOpen(true)}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") { setOpen(false); return; }
-          if (!matches.length) return;
-          if (e.key === "ArrowDown") { e.preventDefault(); setOpen(true); setActive((n) => (n + 1) % matches.length); }
-          if (e.key === "ArrowUp") { e.preventDefault(); setOpen(true); setActive((n) => (n <= 0 ? matches.length : n) - 1); }
-          if (e.key === "Enter" && open) { e.preventDefault(); select(matches[Math.max(active, 0)]); }
-        }}
-        className={INPUT_CLS}
-        placeholder="Tên / mã / UUID"
-      />
-      {open && matches.length > 0 && (
-        <div id={listId} role="listbox" className="absolute z-30 mt-1 max-h-52 w-full overflow-y-auto rounded border border-slate-300 bg-white shadow-lg">
-          {matches.map((o, i) => (
-            <button
-              key={`${o.id}|${o.name}`}
-              id={`${listId}-${i}`}
-              type="button"
-              role="option"
-              aria-selected={i === active}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => select(o)}
-              className={`block w-full px-2 py-1.5 text-left text-xs hover:bg-indigo-50 ${i === active ? "bg-indigo-50" : ""}`}
-            >{o.name}</button>
-          ))}
+      <div className="relative flex min-h-8 items-center rounded-md border border-slate-300 bg-white shadow-sm focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-400/30">
+        <Search aria-hidden className="pointer-events-none absolute left-2.5 size-3.5 text-slate-400" />
+        <input
+          ref={inputRef}
+          id={`${listId}-input`}
+          role="combobox"
+          aria-autocomplete="list"
+          aria-controls={listId}
+          aria-expanded={open}
+          aria-activedescendant={open && active >= 0 && matches.length ? `${listId}-${active}` : undefined}
+          value={text}
+          title={name || undefined}
+          onChange={(e) => resolve(e.target.value)}
+          onFocus={() => setOpen(true)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") { setOpen(false); return; }
+            if (!matches.length) return;
+            if (e.key === "ArrowDown") { e.preventDefault(); setOpen(true); setActive((n) => (n + 1) % matches.length); }
+            if (e.key === "ArrowUp") { e.preventDefault(); setOpen(true); setActive((n) => (n <= 0 ? matches.length : n) - 1); }
+            if (e.key === "Enter" && open) { e.preventDefault(); select(matches[Math.max(active, 0)]); }
+          }}
+          className="min-w-0 flex-1 bg-transparent py-1.5 pl-8 pr-1 text-xs text-slate-900 outline-none placeholder:text-slate-500"
+          placeholder="Tìm tên, mã hoặc UUID…"
+        />
+        <button
+          type="button"
+          aria-label={`${open ? "Đóng" : "Mở"} danh sách ${label.toLowerCase()}`}
+          aria-expanded={open}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => { if (open) setOpen(false); else { inputRef.current?.focus(); setOpen(true); } }}
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-r-md text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+        >
+          <ChevronDown aria-hidden className={`size-4 transition-transform ${open ? "rotate-180" : ""}`} />
+        </button>
+      </div>
+      {open && (
+        <div className="absolute z-30 mt-1 w-full overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg">
+          <div className="border-b border-slate-100 px-3 py-1.5 text-[11px] text-slate-500">
+            {text.trim() ? `Kết quả cho “${text.trim()}”` : `Tìm trong ${options.length} địa điểm`}
+          </div>
+          <div id={listId} role="listbox" aria-label={label} className="max-h-56 overflow-y-auto p-1">
+            {matches.length ? matches.map((o, i) => (
+              <button
+                key={`${o.id}|${o.name}`}
+                id={`${listId}-${i}`}
+                type="button"
+                role="option"
+                aria-selected={o.id === id}
+                tabIndex={-1}
+                onMouseDown={(e) => e.preventDefault()}
+                onMouseEnter={() => setActive(i)}
+                onClick={() => select(o)}
+                className={`flex min-h-8 w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-800 hover:bg-indigo-50 ${i === active ? "bg-indigo-50" : ""}`}
+              >
+                <span className="min-w-0 flex-1 truncate" title={o.name}>{o.name}</span>
+                {o.id === id && <Check aria-hidden className="size-3.5 shrink-0 text-indigo-600" />}
+              </button>
+            )) : <p className="px-2 py-2 text-xs text-slate-500">Không tìm thấy địa điểm</p>}
+          </div>
+          {matches.length === 20 && <div className="border-t border-slate-100 px-3 py-1.5 text-[11px] text-slate-500">Gõ thêm để thu hẹp danh sách</div>}
         </div>
       )}
-      <span className={`block text-[10px] font-mono truncate ${id && name ? "text-slate-400" : "text-red-500"}`}>
+      <span className={`block text-[10px] font-mono truncate ${open ? "invisible" : id && name ? "text-slate-500" : "text-red-600"}`}>
         {!id ? "chưa khớp địa điểm" : !name ? "UUID chưa có tên khách hàng — chọn từ danh sách" : id}
       </span>
     </div>
@@ -259,11 +287,17 @@ function CopyFromSchedule({
   const matches = useMemo(() => {
     const terms = foldName(query).split(/[^a-z0-9]+/).filter(Boolean);
     if (!terms.length) return [];
-    return rows.filter((r) => {
+    const hit = rows.filter((r) => {
       if (!r.pickup_id || !r.pickup_name || !r.dropoff_id || !r.dropoff_name || !r.delivery_window) return false;
       const haystack = foldName(`${r.pickup_name} ${r.dropoff_name} ${r.reference} ${r.driver_name} ${r.delivery_window}`);
       return terms.every((term) => haystack.includes(term));
     });
+    const pickupScore = (r: ScheduleRow) => {
+      const pickup = foldName(r.pickup_name);
+      const q = foldName(query.trim());
+      return pickup.startsWith(q) ? 2 : pickup.includes(q) ? 1 : 0;
+    };
+    return hit.sort((a, b) => pickupScore(b) - pickupScore(a));
   }, [rows, query]);
   const shown = matches.slice(0, 8);
   const activeIndex = Math.min(active, shown.length - 1);
@@ -273,7 +307,7 @@ function CopyFromSchedule({
   };
 
   return (
-    <div id={panelId} className="rounded-md border border-slate-300 bg-slate-50 p-2">
+    <div id={panelId} className="rounded-md border border-slate-200 bg-white p-2">
       <div className="flex items-center gap-1.5">
         <div className="relative min-w-0 flex-1">
           <Search aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-slate-500" />
@@ -295,15 +329,18 @@ function CopyFromSchedule({
               else if (e.key === "Enter" && shown[activeIndex]) { e.preventDefault(); take(shown[activeIndex]); }
             }}
             placeholder="Tìm điểm lấy, điểm giao, reference hoặc tài xế…"
-            className={`${INPUT_CLS} pl-7`}
+            className="w-full rounded-md border border-slate-300 bg-white py-1.5 pl-7 pr-2 text-xs text-slate-900 outline-none placeholder:text-slate-500 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/30"
           />
         </div>
         <Button size="sm" variant="outline" className="h-6 shrink-0 px-2 text-[11px]" onClick={onClose}>Đóng</Button>
       </div>
       <p className="mt-1 text-[11px] text-slate-600">Copy vào form, xem lại rồi bấm Lưu để tạo lịch mới.</p>
-      {query.trim() && shown.length === 0 && <p className="mt-1.5 text-[11px] text-slate-600">Không có lịch nào khớp.</p>}
-      {shown.length > 0 && (
-        <ul id={listId} role="listbox" aria-label="Lịch để copy" className="mt-1.5 space-y-1">
+      {query.trim() && (
+        <div className="mt-1.5 overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
+          <div className="border-b border-slate-100 px-3 py-1.5 text-[11px] text-slate-500">
+            {shown.length ? `${matches.length} lịch phù hợp` : "Không có lịch nào khớp"}
+          </div>
+        <ul id={listId} role="listbox" aria-label="Lịch để copy" className="max-h-56 divide-y divide-slate-100 overflow-y-auto">
           {shown.map((r, i) => (
             <li key={r.rowIndex}>
               <button
@@ -314,7 +351,7 @@ function CopyFromSchedule({
                 tabIndex={-1}
                 onMouseEnter={() => setActive(i)}
                 onClick={() => take(r)}
-                className={`w-full rounded border p-1.5 text-left text-[11px] transition-colors ${i === activeIndex ? "border-indigo-400 bg-indigo-50" : "border-slate-200 bg-white hover:border-indigo-300"}`}
+                className={`w-full px-3 py-2 text-left text-[11px] transition-colors hover:bg-indigo-50 ${i === activeIndex ? "bg-indigo-50" : "bg-white"}`}
               >
                 <span className="block font-medium text-slate-800">{r.pickup_name} → {r.dropoff_name}</span>
                 <span className="block text-slate-600">{r.delivery_window} · {activeDays(r.days).map((day) => DAY_SHORT[day]).join(", ")} · {r.driver_name || "gán tự động"}</span>
@@ -322,8 +359,9 @@ function CopyFromSchedule({
             </li>
           ))}
         </ul>
+        {matches.length > shown.length && <p className="border-t border-slate-100 px-3 py-1.5 text-[11px] text-slate-500">Còn {matches.length - shown.length} lịch nữa — gõ thêm để thu hẹp.</p>}
+        </div>
       )}
-      {matches.length > shown.length && <p className="mt-1 text-[11px] text-slate-600">Còn {matches.length - shown.length} lịch nữa — gõ thêm để thu hẹp.</p>}
     </div>
   );
 }
