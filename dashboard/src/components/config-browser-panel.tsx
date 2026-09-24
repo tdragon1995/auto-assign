@@ -52,8 +52,10 @@ const RENDER_CAP = 150;
 const INACTIVE_PREFIX = /^\{inactive\}\s*/i;
 const isInactive = (pickup: string) => INACTIVE_PREFIX.test(pickup);
 
-/** The unit rows are grouped and edited by. */
+/** Pickup identity; the destination also belongs to an editable group. */
 const branchKey = (r: ConfigRowView) => r.customer_id || r.pickup;
+const sameSchedule = (a: ConfigRowView, b: ConfigRowView) =>
+  branchKey(a) === branchKey(b) && a.pickup === b.pickup && a.dropoff === b.dropoff;
 
 const clockMin = (t: string) => {
   const m = /^(\d{1,2}):(\d{2})$/.exec(t.trim());
@@ -158,10 +160,9 @@ export function searchConfigRows(rows: readonly ConfigRowView[], query: string):
  * hundreds of rows apart. That is the order a spreadsheet needs and the worst
  * possible one for reading a roster.
  *
- * Grouping by pickup puts a branch's whole day together, which is the unit every
- * other part of this feature already works in (the editor, the copy picker, the
- * overlap audit). Within a branch, time — because a day is read forwards, and a
- * gap or an overlap between consecutive rules becomes visible as two adjacent
+ * Grouping by pickup and destination puts each route's whole day together, as
+ * the editor and copy picker do. Within a route, time comes next: a day is read
+ * forwards, and a gap or an overlap becomes visible as two adjacent
  * lines rather than something to hunt for. Driver last, to settle the rest.
  *
  * An all-day rule (no window) sorts FIRST within its branch: it is the branch's
@@ -181,6 +182,7 @@ export function sortConfigRows(rows: readonly ConfigRowView[]): ConfigRowView[] 
   return [...rows].sort((a, b) =>
     Number(isInactive(a.pickup)) - Number(isInactive(b.pickup)) ||
     vi.compare(a.pickup, b.pickup) ||
+    vi.compare(a.dropoff, b.dropoff) ||
     startMin(a) - startMin(b) ||
     vi.compare(a.driver, b.driver) ||
     a.row - b.row                                        // never an arbitrary tie
@@ -685,17 +687,19 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
   const [limit, setLimit] = useState(RENDER_CAP);
   const shown = matches.slice(0, limit);
 
-  /** One branch at a time: the editor writes, and two open on the same branch
+  /** One route at a time: the editor writes, and two open on the same route
    *  would each hold a baseline taken before the other's writes landed.
    *
-   *  The branch open in the editor, and the row whose Sửa was clicked.
+   *  The route open in the editor, and the row whose Sửa was clicked.
    *
    *  The row is carried as well as the branch because the editor renders under
    *  THAT row: a branch has several, and opening under the first of them would
    *  still move the form away from the button that summoned it. */
-  const [editing, setEditing] = useState<{ branch: string; row: number } | null>(null);
+  const [editing, setEditing] = useState<{ branch: string; pickup: string; dropoff: string; row: number } | null>(null);
   const editingRows = useMemo(
-    () => (editing ? rows.filter((r) => (r.customer_id || r.pickup) === editing.branch) : []),
+    () => (editing ? rows.filter((r) =>
+      branchKey(r) === editing.branch && r.pickup === editing.pickup && r.dropoff === editing.dropoff
+    ) : []),
     [rows, editing],
   );
 
@@ -710,15 +714,15 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
    */
   const selectable = useMemo(() => shown.filter(isWritable), [shown]);
 
-  /** For each drawn row, the index of the first row of its branch run. A
-   *  branch's rows are adjacent (sortConfigRows), so the run is the branch as
+  /** For each drawn row, the index of the first row of its route run. A
+   *  route's rows are adjacent (sortConfigRows), so the run is the route as
    *  far as the current filters show it. */
   const { runStart, runSize } = useMemo(() => {
     const starts: number[] = [];
     const sizes = new Map<number, number>();
     shown.forEach((r, i) => {
       const prev = shown[i - 1];
-      const start = i > 0 && branchKey(prev) === branchKey(r) && prev.pickup === r.pickup ? starts[i - 1] : i;
+      const start = i > 0 && sameSchedule(prev, r) ? starts[i - 1] : i;
       starts.push(start);
       sizes.set(start, (sizes.get(start) ?? 0) + 1);
     });
@@ -924,10 +928,10 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                   const lastOfBranch = i === shown.length - 1 || runStart[i + 1] !== runStart[i];
                   const runLength = runSize.get(runStart[i]) ?? 1;
                   const inactive = isInactive(r.pickup);
-                  // Every row of the branch being edited is marked: the editor
-                  // holds the branch's WHOLE day, so these rows are the very
+                  // Every row of the route being edited is marked: the editor
+                  // holds the route's WHOLE day, so these rows are the very
                   // things it is about to rewrite.
-                  const inBranch = !!editing && editing.branch === branch;
+                  const inBranch = !!editing && editing.branch === branch && editing.pickup === r.pickup && editing.dropoff === r.dropoff;
                   // Keyed to the run's first row, which carries the one button.
                   const runOpen = !!editing && editing.row === first.row;
                   return [(
@@ -962,9 +966,9 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                             runOpen ? "bg-indigo-600 hover:bg-indigo-700" : "text-indigo-700 hover:bg-indigo-50 hover:text-indigo-800"
                           }`}
                           aria-expanded={runOpen}
-                          aria-label={runOpen ? "Đóng" : `Sửa ${r.pickup || branch}${runLength > 1 ? ` (${runLength} dòng)` : ""}`}
-                          title={runLength > 1 ? `Sửa cả ${runLength} dòng của điểm này` : undefined}
-                          onClick={() => setEditing(runOpen ? null : { branch, row: r.row })}
+                          aria-label={runOpen ? "Đóng" : `Sửa ${r.pickup || branch} → ${r.dropoff || "mọi điểm"}${runLength > 1 ? ` (${runLength} dòng)` : ""}`}
+                          title={runLength > 1 ? `Sửa ${runLength} dòng cho ${r.dropoff || "mọi điểm giao"}` : undefined}
+                          onClick={() => setEditing(runOpen ? null : { branch, pickup: r.pickup, dropoff: r.dropoff, row: r.row })}
                           disabled={!r.customer_id && !r.pickup}
                         >
                           {!runOpen && <Pencil aria-hidden className="size-3" />}
