@@ -121,6 +121,16 @@ async function stillBlocking(hit: PscDupHit, pickup: string, dropoff: string, en
   }
 }
 
+// Every handler here is reached only from the branch QR page, so each write is a PERSON's
+// action and is logged as one: "[QR] Chi nhánh …", the same origin-prefix convention as
+// [AO], [PSC-tỉnh] and [Sales]. Engine lines never carry a prefix, so the two cannot be
+// confused. The trailing " | ref" is what the admin job search reads as the label.
+// Awaited by every caller: one Redis LPUSH (~10ms), and a line dropped when the function
+// freezes after the response is exactly the trace this exists to keep.
+function qrLog(msg: string): Promise<void> {
+  return pushRunLog([{ ts: vnTimestamp(), level: "OK", msg: `[QR] ${msg}` }]).catch(() => {});
+}
+
 export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
   let lockKey: string | null = null;
@@ -453,13 +463,13 @@ export async function POST(req: NextRequest) {
     // the day. This replaces the old invalidateSnapshot call: that made the NEXT reader --
     // any of 40-odd branches -- pay a ~3s fleet-wide rebuild because one branch booked a
     // trip they cannot see. Awaited: dropping it reopens exactly the window it closes.
-    if (newJobId && assignTo) {
-      // The supervisor's log should show who it went to at the moment it was made.
-      pushRunLog([{
-        ts: vnTimestamp(),
-        level: "OK",
-        msg: `Job ${newJobId} - Giao ngay cho ${assignTo.name ?? assignTo.driverId} | ${refLabel}`,
-      }]).catch(() => {});
+    // A branch pressed the button, so the log says a branch did it -- with or without an
+    // instant driver. Without this line an unattached booking only surfaced later as the
+    // engine's own SMART line, reading as if the system had invented the trip.
+    if (newJobId) {
+      await qrLog(assignTo
+        ? `Chi nhánh tạo chuyến: Job ${newJobId}, giao cho ${assignTo.name ?? assignTo.driverId} | ${refLabel}`
+        : `Chi nhánh tạo chuyến: Job ${newJobId}, chờ engine giao | ${refLabel}`);
     }
 
     if (newJobId) {
@@ -537,6 +547,8 @@ export async function DELETE(req: NextRequest) {
       await unmarkPscPair(vnDate(), pscPairKey(pickup.customer_id, dropoff.customer_id), Number(jobId)).catch(() => {});
       void releaseCreateLock(`psc:${pickup.customer_id}-${dropoff.customer_id}-${vnDate()}`);
     }
+
+    await qrLog(`Chi nhánh huỷ chuyến: Job ${jobId} | ${jobData.data?.reference_number ?? ""}`);
 
     // job_id echoed back so the branch's list can drop this trip locally. A cancelled job
     // leaves the feed entirely (status 7 is not in ALL_STATUSES), so removing it client-
@@ -642,6 +654,8 @@ export async function PUT(req: NextRequest) {
       await unmarkPscPair(vnDate(), pscPairKey(pickup.customer_id, dropoff.customer_id), jobId).catch(() => {});
       void releaseCreateLock(`psc:${pickup.customer_id}-${dropoff.customer_id}-${vnDate()}`);
     }
+
+    await qrLog(`Chi nhánh gửi qua 3PL: Job ${jobId}, Batch ${batchIds.join(", ")} | ${jobData.data?.reference_number ?? ""}`);
 
     // Hand back the trip as it now stands, so the branch's list can be updated from this
     // response instead of re-reading the whole network's day to learn about one job. One

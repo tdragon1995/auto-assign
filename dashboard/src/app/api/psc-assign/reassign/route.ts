@@ -131,10 +131,11 @@ export async function POST(req: NextRequest) {
     // A hand-change should read as a hand-change in the supervisor's log. The engine did
     // not decide this, a branch did — and a location that keeps overruling the roster is
     // the roster telling you something.
-    pushRunLog([{
+    // Same "[QR] Chi nhánh …" shape as every other branch action (see qrLog in ../route.ts).
+    await pushRunLog([{
       ts: vnTimestamp(),
       level: "OK",
-      msg: `Job ${jobId} - Chi nhánh đổi Giao Nhận Mẫu sang ${pick.name} | ${out.job.data.reference_number ?? ""}`,
+      msg: `[QR] Chi nhánh đổi Giao Nhận Mẫu: Job ${jobId} → ${pick.name} | ${out.job.data.reference_number ?? ""}`,
     }]).catch(() => {});
 
     return NextResponse.json({ success: true, job_id: jobId, driver_id: driverId, driver_name: pick.name });
