@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, useCallback, useId, useRef } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Check, ChevronDown, Copy, Search } from "lucide-react";
+import { Check, ChevronDown, Copy, Search, X } from "lucide-react";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 import { foldName } from "@/lib/driver-cell";
 import type { ConfigDriver } from "@/lib/types";
@@ -232,37 +232,115 @@ function DriverField({
   onChange: (id: string) => void;
 }) {
   const listId = useId();
+  const inputRef = useRef<HTMLInputElement>(null);
   const [text, setText] = useState(drivers.find((d) => d.driver_id === driverId)?.name ?? driverId);
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(-1);
   const matched = drivers.find((d) => d.driver_id === driverId);
+  const choices = useMemo(() => {
+    const terms = foldName(text.trim()).split(/[^a-z0-9]+/).filter(Boolean);
+    const found = terms.length
+      ? drivers.filter((d) => terms.every((term) => foldName(`${d.name} ${d.driver_id}`).includes(term)))
+      : drivers;
+    return terms.length
+      ? found.slice(0, 20)
+      : [{ driver_id: "", name: "Gán theo mapping / smart" }, ...found.slice(0, 19)];
+  }, [drivers, text]);
+  const select = (driver: ConfigDriver) => {
+    setText(driver.driver_id ? driver.name : "");
+    setOpen(false);
+    onChange(driver.driver_id);
+  };
+  const clear = () => {
+    setText("");
+    setActive(-1);
+    onChange("");
+    inputRef.current?.focus();
+    setOpen(true);
+  };
   return (
-    <label className="block space-y-0.5">
-      <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Tài xế gán trước</span>
-      <div className="flex gap-1">
+    <div className="relative block space-y-0.5" onBlur={(e) => {
+      if (!e.currentTarget.contains(e.relatedTarget)) setOpen(false);
+    }}>
+      <label htmlFor={`${listId}-input`} className="block text-[10px] font-bold uppercase tracking-wide text-slate-400">Tài xế gán trước</label>
+      <div className="relative flex min-h-8 items-center rounded-md border border-slate-300 bg-white shadow-sm focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-400/30">
+        <Search aria-hidden className="pointer-events-none absolute left-2.5 size-3.5 text-slate-400" />
         <input
-          list={listId}
+          ref={inputRef}
+          id={`${listId}-input`}
+          role="combobox"
+          aria-autocomplete="list"
+          aria-controls={listId}
+          aria-expanded={open}
+          aria-activedescendant={open && active >= 0 && choices.length ? `${listId}-${active}` : undefined}
           value={text}
           onChange={(e) => {
             const t = e.target.value;
             setText(t);
+            setOpen(true);
+            setActive(-1);
             const hit = drivers.find((d) => d.name === t.trim() || d.driver_id === t.trim());
-            onChange(hit?.driver_id ?? (t.trim() ? "?" : ""));
+            if (hit) select(hit);
+            else onChange(t.trim() ? "?" : "");
           }}
-          className={INPUT_CLS}
-          placeholder="Để trống = gán tự động"
+          onFocus={() => setOpen(true)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") { setOpen(false); return; }
+            if (!choices.length) return;
+            if (e.key === "ArrowDown") { e.preventDefault(); setOpen(true); setActive((n) => (n + 1) % choices.length); }
+            if (e.key === "ArrowUp") { e.preventDefault(); setOpen(true); setActive((n) => (n <= 0 ? choices.length : n) - 1); }
+            if (e.key === "Enter" && open) { e.preventDefault(); select(choices[Math.max(active, 0)]); }
+          }}
+          className="min-w-0 flex-1 bg-transparent py-1.5 pl-8 pr-1 text-xs text-slate-900 outline-none placeholder:text-slate-500"
+          placeholder="Chọn tài xế hoặc gán tự động…"
         />
         {text && (
-          <button type="button" onClick={() => { setText(""); onChange(""); }} className="px-1.5 text-slate-400 hover:text-slate-600">
-            ✕
+          <button type="button" aria-label="Xoá tài xế đã chọn" onMouseDown={(e) => e.preventDefault()} onClick={clear} className="flex size-7 shrink-0 items-center justify-center rounded text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400">
+            <X aria-hidden className="size-3.5" />
           </button>
         )}
+        <button
+          type="button"
+          aria-label={`${open ? "Đóng" : "Mở"} danh sách tài xế`}
+          aria-expanded={open}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => { if (open) setOpen(false); else { inputRef.current?.focus(); setOpen(true); } }}
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-r-md text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+        >
+          <ChevronDown aria-hidden className={`size-4 transition-transform ${open ? "rotate-180" : ""}`} />
+        </button>
       </div>
-      <datalist id={listId}>
-        {drivers.map((d) => <option key={d.driver_id} value={d.name} />)}
-      </datalist>
-      <span className={`block text-[10px] ${driverId === "?" ? "text-red-500" : "text-slate-400"}`}>
+      {open && (
+        <div className="absolute z-30 mt-1 w-full overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg">
+          <div className="border-b border-slate-100 px-3 py-1.5 text-[11px] text-slate-500">
+            {text.trim() ? `Kết quả cho “${text.trim()}”` : `Chọn trong ${drivers.length} tài xế`}
+          </div>
+          <div id={listId} role="listbox" aria-label="Tài xế gán trước" className="max-h-56 overflow-y-auto p-1">
+            {choices.length ? choices.map((driver, i) => (
+              <button
+                key={driver.driver_id || "auto"}
+                id={`${listId}-${i}`}
+                type="button"
+                role="option"
+                aria-selected={driver.driver_id === driverId}
+                tabIndex={-1}
+                onMouseDown={(e) => e.preventDefault()}
+                onMouseEnter={() => setActive(i)}
+                onClick={() => select(driver)}
+                className={`flex min-h-8 w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-800 hover:bg-indigo-50 ${i === active ? "bg-indigo-50" : ""}`}
+              >
+                <span className="min-w-0 flex-1 truncate" title={driver.name}>{driver.name}</span>
+                {driver.driver_id === driverId && <Check aria-hidden className="size-3.5 shrink-0 text-indigo-600" />}
+              </button>
+            )) : <p className="px-2 py-2 text-xs text-slate-500">Không tìm thấy tài xế</p>}
+          </div>
+          {choices.length === 20 && <div className="border-t border-slate-100 px-3 py-1.5 text-[11px] text-slate-500">Gõ thêm để thu hẹp danh sách</div>}
+        </div>
+      )}
+      <span className={`block text-[10px] ${open ? "invisible" : driverId === "?" ? "text-red-600" : "text-slate-500"}`}>
         {driverId === "?" ? "chưa khớp tài xế nào" : matched ? `Gán thẳng cho ${matched.name} khi tới giờ gửi` : "Gán theo mapping / smart như thường"}
       </span>
-    </label>
+    </div>
   );
 }
 
