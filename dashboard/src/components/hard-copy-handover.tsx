@@ -102,18 +102,30 @@ const esc = (v: unknown) => String(v).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;"
 /** A4 portrait checklist in a new window; the print dialog also offers "Save as PDF". */
 function printA4(title: string, groups: Group[]) {
   const { cols, head, rows } = checklist(groups);
-  const body = rows.map((r) => `<tr>${r.map((v, j) => `<td class="c${cols[j]}">${esc(v)}</td>`).join("")}<td class="box">☐</td></tr>`).join("");
+  let offset = 0;
+  const body = groups.map((g) => {
+    const groupRows = rows.slice(offset, offset + g.count);
+    offset += g.count;
+    return `<tbody class="psc">${groupRows.map((r, i) => `<tr>${r.map((v, j) => `<td class="c${cols[j]}">${esc(j === 0 ? i + 1 : v)}</td>`).join("")}<td class="box">☐</td></tr>`).join("")}</tbody>`;
+  }).join("");
   const html = `<!doctype html><html lang="vi"><head><meta charset="utf-8"><title>${esc(fileStem(title))}</title><style>
 @page { size: A4 portrait; margin: 12mm 10mm; }
 * { box-sizing: border-box; }
 body { font: 10.5pt/1.35 Arial, sans-serif; color: #000; margin: 0; }
 h1 { font-size: 14pt; margin: 0 0 2mm; }
 .meta { font-size: 10pt; margin-bottom: 4mm; }
-table { width: 100%; border-collapse: collapse; }
+table { width: 100%; border-collapse: collapse; border-left: 2pt solid #000; border-right: 2pt solid #000; }
 thead { display: table-header-group; }
+tbody.psc { page-break-inside: auto; }
 tr { page-break-inside: avoid; }
 th, td { border: 0.6pt solid #000; padding: 1.5mm 1.8mm; text-align: left; vertical-align: top; }
+tbody.psc td { border-style: dotted; }
+tbody.psc td:first-child { border-left: 2pt solid #000; }
+tbody.psc td:last-child { border-right: 2pt solid #000; }
+tbody.psc tr:first-child td { border-top: 2pt solid #000; }
+tbody.psc tr:last-child td { border-bottom: 2pt solid #000; }
 th { background: #eee; font-size: 9.5pt; }
+thead th { border-top: 2pt solid #000; border-bottom: 2pt solid #000; font-weight: 700; }
 .c0, .box { text-align: center; width: 9mm; }
 .c1 { width: 14mm; font-weight: bold; }
 .c3 { width: 26mm; font-family: Consolas, monospace; }
@@ -125,7 +137,7 @@ th { background: #eee; font-size: 9.5pt; }
 </style></head><body>
 <h1>BÀN GIAO KẾT QUẢ BẢN CỨNG — ${esc(title)}</h1>
 <div class="meta">Ngày in: ${esc(today("vi-VN"))} · Tổng: ${rows.length} hồ sơ</div>
-<table><thead><tr>${[...head, "Đã nhận"].map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table>
+<table><thead><tr>${[...head, "Đã nhận"].map((h) => `<th>${h}</th>`).join("")}</tr></thead>${body}</table>
 <div class="sign"><div><p>Người giao</p>(Ký, ghi rõ họ tên)</div><div><p>Người nhận</p>(Ký, ghi rõ họ tên)</div><div><p>Thời gian</p>____:____ ngày ____/____</div></div>
 </body></html>`;
   const w = window.open("", "_blank");
