@@ -98,11 +98,7 @@ function suggestedReference(pickup: string, dropoff: string, window: string): st
 const INPUT_CLS =
   "w-full border border-slate-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-slate-400";
 
-/**
- * Pickup / dropoff chooser: type a name (from the branch list or any location
- * already used on the sheet) or paste a Cartrack customer UUID. Shows which id
- * it resolved to, so a half-typed name can't be saved silently.
- */
+/** Search the sheet's locations and explicitly select the matching customer. */
 function LocationField({
   label,
   id,
@@ -118,27 +114,82 @@ function LocationField({
 }) {
   const listId = useId();
   const [text, setText] = useState(name || id);
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(-1);
+  const matches = useMemo(() => {
+    const terms = foldName(text.trim()).split(/[^a-z0-9]+/).filter(Boolean);
+    if (!terms.length) return [];
+    return options.filter((o) => {
+      const haystack = foldName(`${o.name} ${o.id}`);
+      return terms.every((term) => haystack.includes(term));
+    }).slice(0, 20);
+  }, [options, text]);
+  const select = (o: LocOption) => {
+    setText(o.name);
+    setOpen(false);
+    onChange(o.id, o.name);
+  };
   const resolve = (t: string) => {
     setText(t);
+    setOpen(true);
+    setActive(-1);
     const v = t.trim();
     const hit = options.find((o) => o.name === v);
-    if (hit) return onChange(hit.id, hit.name);
+    if (hit) return select(hit);
     // A pasted UUID still needs its full customer name: the sheet's *_id
     // columns are formulas that look the id up FROM the name.
-    if (UUID_RE.test(v)) return onChange(v, options.find((o) => o.id === v)?.name ?? "");
+    if (UUID_RE.test(v)) {
+      const byId = options.find((o) => o.id === v);
+      if (byId) return select(byId);
+      return onChange(v, "");
+    }
     onChange("", v);
   };
   return (
-    <label className="block space-y-0.5">
-      <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400">{label}</span>
-      <input list={listId} value={text} onChange={(e) => resolve(e.target.value)} className={INPUT_CLS} placeholder="Tên / mã / UUID" />
-      <datalist id={listId}>
-        {options.map((o) => <option key={`${o.id}|${o.name}`} value={o.name} />)}
-      </datalist>
+    <div className="relative block space-y-0.5" onBlur={(e) => {
+      if (!e.currentTarget.contains(e.relatedTarget)) setOpen(false);
+    }}>
+      <label htmlFor={`${listId}-input`} className="block text-[10px] font-bold uppercase tracking-wide text-slate-400">{label}</label>
+      <input
+        id={`${listId}-input`}
+        role="combobox"
+        aria-autocomplete="list"
+        aria-controls={listId}
+        aria-expanded={open && matches.length > 0}
+        aria-activedescendant={open && active >= 0 && matches.length ? `${listId}-${active}` : undefined}
+        value={text}
+        onChange={(e) => resolve(e.target.value)}
+        onFocus={() => setOpen(true)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") { setOpen(false); return; }
+          if (!matches.length) return;
+          if (e.key === "ArrowDown") { e.preventDefault(); setOpen(true); setActive((n) => (n + 1) % matches.length); }
+          if (e.key === "ArrowUp") { e.preventDefault(); setOpen(true); setActive((n) => (n <= 0 ? matches.length : n) - 1); }
+          if (e.key === "Enter" && open) { e.preventDefault(); select(matches[Math.max(active, 0)]); }
+        }}
+        className={INPUT_CLS}
+        placeholder="Tên / mã / UUID"
+      />
+      {open && matches.length > 0 && (
+        <div id={listId} role="listbox" className="absolute z-30 mt-1 max-h-52 w-full overflow-y-auto rounded border border-slate-300 bg-white shadow-lg">
+          {matches.map((o, i) => (
+            <button
+              key={`${o.id}|${o.name}`}
+              id={`${listId}-${i}`}
+              type="button"
+              role="option"
+              aria-selected={i === active}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => select(o)}
+              className={`block w-full px-2 py-1.5 text-left text-xs hover:bg-indigo-50 ${i === active ? "bg-indigo-50" : ""}`}
+            >{o.name}</button>
+          ))}
+        </div>
+      )}
       <span className={`block text-[10px] font-mono truncate ${id && name ? "text-slate-400" : "text-red-500"}`}>
         {!id ? "chưa khớp địa điểm" : !name ? "UUID chưa có tên khách hàng — chọn từ danh sách" : id}
       </span>
-    </label>
+    </div>
   );
 }
 
