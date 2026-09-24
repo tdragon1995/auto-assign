@@ -1,15 +1,21 @@
 import type { ConfigRowView } from "@/app/api/config/rows/route";
 import { foldName, splitDriverNames } from "./driver-cell";
-import { compareDriverNames } from "./driver-label";
+import { compareDriverNames, splitDriverName } from "./driver-label";
 
 export interface ConfigFilters {
   query: string;
   drivers: readonly string[];
+  driverOperator: ConfigTextOperator;
+  driverText: string;
   pickups: readonly string[];
-  pickupContains: string;
+  pickupOperator: ConfigTextOperator;
+  pickupText: string;
   dropoffs: readonly string[];
-  dropoffContains: string;
+  dropoffOperator: ConfigTextOperator;
+  dropoffText: string;
 }
+
+export type ConfigTextOperator = "contains" | "not_contains" | "is" | "is_not";
 
 export interface ConfigFilterOptions {
   drivers: string[];
@@ -20,10 +26,14 @@ export interface ConfigFilterOptions {
 export const EMPTY_CONFIG_FILTERS: ConfigFilters = {
   query: "",
   drivers: [],
+  driverOperator: "contains",
+  driverText: "",
   pickups: [],
-  pickupContains: "",
+  pickupOperator: "contains",
+  pickupText: "",
   dropoffs: [],
-  dropoffContains: "",
+  dropoffOperator: "contains",
+  dropoffText: "",
 };
 
 /** Keep punctuation literal while making names and uneven typing comparable. */
@@ -31,8 +41,15 @@ export function normalizeConfigText(value: string): string {
   return foldName(value).trim().replace(/\s+/g, " ");
 }
 
-const includesText = (value: string, query: string) =>
-  normalizeConfigText(value).includes(normalizeConfigText(query));
+function matchesText(values: readonly string[], operator: ConfigTextOperator, query: string): boolean {
+  if (!query) return true;
+  const equal = operator === "is" || operator === "is_not";
+  const found = values.some((value) => {
+    const normalized = normalizeConfigText(value);
+    return equal ? normalized === query : normalized.includes(query);
+  });
+  return operator === "not_contains" || operator === "is_not" ? !found : found;
+}
 
 /**
  * Dashboard-only filtering. The general query must occur as one consecutive
@@ -44,8 +61,9 @@ export function filterConfigRows(
   filters: ConfigFilters,
 ): ConfigRowView[] {
   const query = normalizeConfigText(filters.query);
-  const pickupContains = normalizeConfigText(filters.pickupContains);
-  const dropoffContains = normalizeConfigText(filters.dropoffContains);
+  const driverText = normalizeConfigText(filters.driverText);
+  const pickupText = normalizeConfigText(filters.pickupText);
+  const dropoffText = normalizeConfigText(filters.dropoffText);
   const selectedDrivers = new Set(filters.drivers);
   const selectedPickups = new Set(filters.pickups);
   const selectedDropoffs = new Set(filters.dropoffs);
@@ -66,10 +84,16 @@ export function filterConfigRows(
     }
 
     if (selectedDrivers.size && !rowDrivers.some((name) => selectedDrivers.has(name))) return false;
+    // The table shows personal names, while the sheet stores routing prefixes.
+    // Accept either spelling for exact driver comparisons.
+    if (driverText) {
+      const driverLabels = rowDrivers.flatMap((name) => [name, splitDriverName(name).name]);
+      if (!matchesText(driverLabels, filters.driverOperator, driverText)) return false;
+    }
     if (selectedPickups.size && !selectedPickups.has(row.pickup)) return false;
-    if (pickupContains && !includesText(row.pickup, pickupContains)) return false;
+    if (!matchesText([row.pickup], filters.pickupOperator, pickupText)) return false;
     if (selectedDropoffs.size && !selectedDropoffs.has(row.dropoff)) return false;
-    if (dropoffContains && !includesText(row.dropoff, dropoffContains)) return false;
+    if (!matchesText([row.dropoff], filters.dropoffOperator, dropoffText)) return false;
     return true;
   });
 }
