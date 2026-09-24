@@ -28,6 +28,10 @@ export interface ScheduleJobRow {
   reference: string;
   sent_to_driver_before: number;
   days: boolean[];
+  /** Pre-assigned driver (sheet `driver` / `driver_id`). Empty = no pre-assign:
+   *  the released job goes through the normal assign cycle (mapping / smart). */
+  driver_name: string;
+  driver_id: string;
 }
 
 export interface ScheduleJobResult {
@@ -71,7 +75,30 @@ export async function loadScheduleJobRows(): Promise<ScheduleJobRow[]> {
     reference: (r.reference ?? "").trim(),
     sent_to_driver_before: parseInt(r.sent_to_driver_before ?? "", 10) || 60,
     days: WEEKDAY_COLUMNS.map((col) => parseBool(r[col])),
+    driver_name: (r.driver ?? "").trim(),
+    driver_id: (r.driver_id ?? "").trim(),
   }));
+}
+
+/** Strip the `_YYYY-MM-DD` suffix buildReferenceNumber appends, giving back the
+ *  sheet's `reference` value. Null when the job wasn't created by this module. */
+export function scheduleReferenceBase(referenceNumber: string | null | undefined): string | null {
+  const m = /^(.+)_\d{4}-\d{2}-\d{2}$/.exec(referenceNumber ?? "");
+  return m ? m[1] : null;
+}
+
+/** sheet `reference` → pre-assigned driver, for rows that have one. Read live at
+ *  release time, so editing the driver in the sheet/dashboard applies to jobs
+ *  already parked today. */
+export async function loadSchedulePreassignments(): Promise<Map<string, { driver_id: string; driver_name: string }>> {
+  const rows = await loadScheduleJobRows();
+  const out = new Map<string, { driver_id: string; driver_name: string }>();
+  for (const r of rows) {
+    if (r.reference && r.driver_id && !out.has(r.reference)) {
+      out.set(r.reference, { driver_id: r.driver_id, driver_name: r.driver_name });
+    }
+  }
+  return out;
 }
 
 export function filterRowsForToday(
@@ -252,7 +279,10 @@ export async function createScheduleJob(
       return { ...base, status: "ERROR", message: "Job created but no job_id returned" };
     }
 
-    // Park in proxy driver — driver receives it at send_to_driver_at
+    // Park in proxy driver — driver receives it at send_to_driver_at. A
+    // pre-assigned driver is applied at release (releaseDueProxyJobs), not here:
+    // Cartrack re-stamps send_to_driver_at on reassignment, so assigning the real
+    // driver now would push the job to their app hours early.
     const parkRes = await assignJob(PROXY_DRIVER_ID, jobId, env);
     if (parkRes.status !== 200) {
       return {
@@ -266,7 +296,7 @@ export async function createScheduleJob(
     return {
       ...base,
       status: "OK",
-      message: `Created Job #${jobId} · parked until ${sendToDriverAt}`,
+      message: `Created Job #${jobId} · parked until ${sendToDriverAt}${row.driver_id ? ` · pre-assigned ${row.driver_name || row.driver_id}` : ""}`,
       job_id: jobId,
     };
   } catch (e) {

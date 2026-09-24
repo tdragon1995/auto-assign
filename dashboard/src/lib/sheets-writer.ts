@@ -1263,6 +1263,277 @@ export async function removeLeaveSuppression(match: LeaveRowMatch): Promise<{ ro
   return { row: rowNo, loai_nghi: leaveType };
 }
 
+// ── Lịch cố định (schedule_job tab) add / edit ───────────────────────────────
+
+/** A rejected schedule write the *user* can fix (duplicate reference, row moved,
+ *  missing column) — the route maps it to 400 with the message verbatim. */
+export class ScheduleWriteError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ScheduleWriteError";
+  }
+}
+
+const SCHEDULE_DAY_KEYS = [
+  "sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+] as const;
+
+/** Columns the engine reads — must already exist on the sheet. */
+const SCHEDULE_CORE_KEYS = [
+  "pickup_id", "pickup", "dropoff_id", "dropoff", "delivery_windows",
+  "reference", "sent_to_driver_before", ...SCHEDULE_DAY_KEYS,
+] as const;
+
+/** Pre-assign columns — appended to the header row on first write if missing. */
+const SCHEDULE_DRIVER_KEYS = ["driver", "driver_id"] as const;
+
+export interface ScheduleRowWrite {
+  pickup_id: string;
+  pickup: string;
+  dropoff_id: string;
+  dropoff: string;
+  delivery_windows: string; // "HH:MM"
+  reference: string;
+  sent_to_driver_before: number;
+  days: boolean[]; // index 0=Sun .. 6=Sat
+  driver: string; // Driver tab name, "" = no pre-assign
+  driver_id: string; // Cartrack UUID, "" = no pre-assign
+}
+
+/** Identity of the row being edited, as the dashboard last saw it. */
+export interface ScheduleRowMatch {
+  rowIndex: number; // 1-based sheet row
+  reference: string;
+  pickup_id: string;
+}
+
+function scheduleCellValues(w: ScheduleRowWrite): Record<string, string | number | boolean> {
+  const out: Record<string, string | number | boolean> = {
+    pickup_id: w.pickup_id,
+    pickup: w.pickup,
+    dropoff_id: w.dropoff_id,
+    dropoff: w.dropoff,
+    delivery_windows: w.delivery_windows,
+    reference: w.reference,
+    sent_to_driver_before: w.sent_to_driver_before,
+    driver: w.driver,
+    driver_id: w.driver_id,
+  };
+  SCHEDULE_DAY_KEYS.forEach((k, i) => { out[k] = !!w.days[i]; });
+  return out;
+}
+
+interface ScheduleSheetState {
+  sheets: ReturnType<typeof google.sheets>;
+  quotedName: string;
+  sheetId: number;
+  /** Formatted values, row 0 = header. */
+  all: string[][];
+  /** Same range rendered as FORMULA — a cell starting with "=" is a formula. */
+  formulas: unknown[][];
+  /** Header key → 0-based column (first occurrence wins, like parseCSV). */
+  col: Record<string, number>;
+}
+
+/** Load the schedule tab and make sure every column we write exists, adding the
+ *  driver / driver_id headers (and grid columns) when the sheet predates them. */
+async function loadScheduleSheet(): Promise<ScheduleSheetState> {
+  const sheets = getSheetsClient();
+  const meta = await sheets.spreadsheets.get({
+    spreadsheetId: SHEET_ID,
+    fields: "sheets.properties",
+  });
+  const props = meta.data.sheets?.find(
+    (s) => String(s.properties?.sheetId) === SHEET_GID.schedule_job,
+  )?.properties;
+  if (!props?.title) throw new Error(`Sheet GID ${SHEET_GID.schedule_job} not found in spreadsheet`);
+  const quotedName = `'${props.title.replace(/'/g, "''")}'`;
+  const sheetId = Number(SHEET_GID.schedule_job);
+
+  const read = async () => {
+    const [vals, forms] = await Promise.all([
+      sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: quotedName }),
+      sheets.spreadsheets.values.get({
+        spreadsheetId: SHEET_ID,
+        range: quotedName,
+        valueRenderOption: "FORMULA",
+      }),
+    ]);
+    const all = (vals.data.values ?? []).map((r) => r.map((v) => String(v ?? "")));
+    const formulas = forms.data.values ?? [];
+    const col: Record<string, number> = {};
+    (all[0] ?? []).forEach((h, i) => {
+      const k = h.trim();
+      if (k && !(k in col)) col[k] = i;
+    });
+    return { all, formulas, col };
+  };
+
+  let { all, formulas, col } = await read();
+  if (all.length < 1) throw new ScheduleWriteError("Tab Lịch cố định trống (không có dòng tiêu đề)");
+  for (const k of SCHEDULE_CORE_KEYS) {
+    if (!(k in col)) throw new ScheduleWriteError(`Thiếu cột "${k}" trong tab Lịch cố định`);
+  }
+
+  const missing = SCHEDULE_DRIVER_KEYS.filter((k) => !(k in col));
+  if (missing.length) {
+    const start = all[0].length;
+    const needCols = start + missing.length;
+    const columnCount = props.gridProperties?.columnCount ?? 0;
+    if (needCols > columnCount) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: SHEET_ID,
+        requestBody: {
+          requests: [{ appendDimension: { sheetId, dimension: "COLUMNS", length: needCols - columnCount } }],
+        },
+      });
+    }
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `${quotedName}!${colA1(start)}1`,
+      valueInputOption: "RAW",
+      requestBody: { values: [missing as unknown as string[]] },
+    });
+    ({ all, formulas, col } = await read());
+  }
+
+  return { sheets, quotedName, sheetId, all, formulas, col };
+}
+
+function isFormula(v: unknown): boolean {
+  return typeof v === "string" && v.startsWith("=");
+}
+
+function assertUniqueReference(st: ScheduleSheetState, reference: string, exceptRow?: number): void {
+  const c = st.col.reference;
+  for (let r = 1; r < st.all.length; r++) {
+    if (r + 1 === exceptRow) continue;
+    if ((st.all[r][c] ?? "").trim() === reference) {
+      throw new ScheduleWriteError(`Reference "${reference}" đã tồn tại ở dòng ${r + 1}`);
+    }
+  }
+}
+
+/** Write `w` into sheet row `rowNo`, skipping any cell that holds a formula
+ *  (e.g. a pickup-name or driver_id xlookup) so the sheet's formula layout
+ *  survives. Returns a warning when a formula driver_id didn't resolve. */
+async function writeScheduleRow(
+  st: ScheduleSheetState,
+  rowNo: number,
+  w: ScheduleRowWrite,
+): Promise<string | undefined> {
+  const rowFormulas = st.formulas[rowNo - 1] ?? [];
+  const values = scheduleCellValues(w);
+  const data = Object.entries(values)
+    .filter(([k]) => k in st.col && !isFormula(rowFormulas[st.col[k]]))
+    .map(([k, v]) => ({ range: `${st.quotedName}!${colA1(st.col[k])}${rowNo}`, values: [[v]] }));
+  await st.sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: SHEET_ID,
+    requestBody: { valueInputOption: "RAW", data },
+  });
+
+  // driver_id as a formula (xlookup on the driver name): a name that doesn't
+  // resolve leaves the id blank, and the job silently falls back to the normal
+  // assign flow — worth telling the user.
+  if (w.driver && isFormula(rowFormulas[st.col.driver_id])) {
+    const v = await st.sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: `${st.quotedName}!${colA1(st.col.driver_id)}${rowNo}`,
+    });
+    if (!String(v.data.values?.[0]?.[0] ?? "").trim()) {
+      return "Đã lưu nhưng driver_id trên sheet chưa resolve — kiểm tra tên trong tab Driver";
+    }
+  }
+  return undefined;
+}
+
+/** Add a new fixed schedule below the last filled row. Formula columns on the
+ *  new row are filled from the nearest template row (copy-paste FORMULA, so
+ *  relative refs adjust) when the row doesn't already carry them. */
+export async function appendScheduleRow(w: ScheduleRowWrite): Promise<{ row: number; warning?: string }> {
+  const st = await loadScheduleSheet();
+  assertUniqueReference(st, w.reference);
+
+  // Last row with any engine-owned value — formula columns pre-filled far down
+  // the sheet must not push the new row past them.
+  const keyCols = ["pickup_id", "dropoff_id", "delivery_windows", "reference"].map((k) => st.col[k]);
+  let last = 1;
+  for (let r = 1; r < st.all.length; r++) {
+    if (keyCols.some((c) => (st.all[r][c] ?? "").trim())) last = r + 1;
+  }
+  const rowNo = last + 1;
+
+  const meta = await st.sheets.spreadsheets.get({ spreadsheetId: SHEET_ID, fields: "sheets.properties" });
+  const rowCount = meta.data.sheets?.find((s) => s.properties?.sheetId === st.sheetId)
+    ?.properties?.gridProperties?.rowCount ?? 0;
+  if (rowNo > rowCount) {
+    await st.sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SHEET_ID,
+      requestBody: {
+        requests: [{ appendDimension: { sheetId: st.sheetId, dimension: "ROWS", length: rowNo - rowCount } }],
+      },
+    });
+  }
+
+  // Formula columns: find a template row per column among the data rows; copy
+  // into the new row wherever it doesn't already hold a formula.
+  const width = st.formulas.reduce((m, r) => Math.max(m, r?.length ?? 0), 0);
+  const target = st.formulas[rowNo - 1] ?? [];
+  const requests = [];
+  for (let c = 0; c < width; c++) {
+    if (isFormula(target[c])) continue;
+    for (let r = 1; r < st.formulas.length; r++) {
+      if (r + 1 === rowNo) continue;
+      if (isFormula(st.formulas[r]?.[c])) {
+        requests.push({
+          copyPaste: {
+            source:      { sheetId: st.sheetId, startRowIndex: r,         endRowIndex: r + 1, startColumnIndex: c, endColumnIndex: c + 1 },
+            destination: { sheetId: st.sheetId, startRowIndex: rowNo - 1, endRowIndex: rowNo, startColumnIndex: c, endColumnIndex: c + 1 },
+            pasteType: "PASTE_FORMULA",
+          },
+        });
+        break;
+      }
+    }
+  }
+  if (requests.length) {
+    await st.sheets.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests } });
+    // Reflect the pasted formulas so writeScheduleRow leaves those cells alone.
+    const f = await st.sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: `${st.quotedName}!${rowNo}:${rowNo}`,
+      valueRenderOption: "FORMULA",
+    });
+    st.formulas[rowNo - 1] = f.data.values?.[0] ?? [];
+  }
+
+  const warning = await writeScheduleRow(st, rowNo, w);
+  return { row: rowNo, warning };
+}
+
+/** Overwrite an existing schedule row. The row is re-checked against what the
+ *  dashboard saw (reference + pickup_id), so an edit can't land on the wrong
+ *  line after someone inserted/sorted rows in the sheet. */
+export async function updateScheduleRow(
+  match: ScheduleRowMatch,
+  w: ScheduleRowWrite,
+): Promise<{ row: number; warning?: string }> {
+  const st = await loadScheduleSheet();
+  const row = st.all[match.rowIndex - 1];
+  const cell = (k: string) => (row?.[st.col[k]] ?? "").trim();
+  if (
+    match.rowIndex < 2 ||
+    !row ||
+    cell("reference") !== match.reference.trim() ||
+    cell("pickup_id") !== match.pickup_id.trim()
+  ) {
+    throw new ScheduleWriteError("Dòng lịch đã thay đổi trên sheet — tải lại danh sách rồi thử lại");
+  }
+  assertUniqueReference(st, w.reference, match.rowIndex);
+  const warning = await writeScheduleRow(st, match.rowIndex, w);
+  return { row: match.rowIndex, warning };
+}
+
 // ── Nhận Việc (driver self-claim) audit log ──────────────────────────────────
 
 const NV_LOG_SHEET = "Nhận Việc Log";

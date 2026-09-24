@@ -729,7 +729,7 @@ export function Dashboard() {
               </div>
             ) : rightTab === "schedule" ? (
               <div className="h-[72vh] lg:h-full">
-                <ScheduleListPanel env={env} />
+                <ScheduleListPanel env={env} drivers={drivers} />
               </div>
             ) : rightTab === "tat" ? (
               <div className="h-[72vh] lg:h-full">

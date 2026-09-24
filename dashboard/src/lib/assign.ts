@@ -2,7 +2,7 @@ import type { Config, Driver, FailedJob, Job, LogEntry, LogLevel, Mapping, Picku
 import { getDrivers, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, parkOnProxy, updateJobSendToDriverAt, updateJobScheduledDeliveryTs, unassignJob, optimizeDriverRoute, getJobsByStatusAndDate, getUnassignedJobsFast, getJobsByDate, getTimelineRoutes, timelineRoutesToJobs, getJobDetails, jsonRpc, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { publishSnapshot } from "./day-snapshot";
 import { getDueTomorrowJobs } from "./scheduled-dispatch";
-import { SCHEDULE_JOB_LABEL } from "./schedule-job";
+import { SCHEDULE_JOB_LABEL, loadSchedulePreassignments, scheduleReferenceBase } from "./schedule-job";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
 import { DIAG_LOCATION_CUSTOMER_IDS } from "./psc-routes-data";
@@ -1142,12 +1142,19 @@ async function repairBlankReleaseTimes(
  * passed, e.g. a release missed during an outage).
  *
  * Blank release times are repaired first — see repairBlankReleaseTimes.
+ *
+ * Lịch cố định jobs whose sheet row names a pre-assigned driver (`driver_id`)
+ * are handed straight to that driver instead of being unassigned. If the driver
+ * is on leave or Cartrack rejects the assign, the job is released as usual so
+ * the cycle's mapping / substitute logic covers it. Pre-assigned jobs are NOT
+ * in `releasedIds` — they're assigned, not back in the unassigned pool.
  */
 async function releaseDueProxyJobs(
   dateVn: string,
   env: Env,
   log: (msg: string, level?: LogLevel) => void,
   proxyJobs?: Job[],
+  leaveEntries: LeaveEntry[] = [],
 ): Promise<{ listMs: number; releaseMs: number; releasedIds: number[] }> {
   const _t0 = Date.now();
   const parked = proxyJobs ?? await getAllAssignedDriverJobs(PROXY_DRIVER_ID, env);
@@ -1161,13 +1168,38 @@ async function releaseDueProxyJobs(
     const sendAt = repaired.get(job.job_id) ?? parseSendToDriverAt(job.send_to_driver_at);
     return sendAt !== null && sendAt.getTime() <= now;
   });
+  // Only read the schedule sheet when a due job is actually a Lịch cố định job.
+  const isScheduleJob = (job: Job) =>
+    (job.labels ?? []).includes(SCHEDULE_JOB_LABEL) && scheduleReferenceBase(job.reference_number) !== null;
+  let preassign = new Map<string, { driver_id: string; driver_name: string }>();
+  if (due.some(isScheduleJob)) {
+    preassign = await loadSchedulePreassignments().catch((e) => {
+      log(`⚠️  Lịch cố định sheet failed to load for pre-assign: ${String(e).slice(0, 80)} — releasing normally`, "WARN");
+      return preassign;
+    });
+  }
   // Release concurrently (bounded 10) — each unassign is independent.
   const _t1 = Date.now();
   const releasedIds: number[] = [];
   for (let i = 0; i < due.length; i += 10) {
     await Promise.all(due.slice(i, i + 10).map(async (job) => {
-      const { ok, status } = await unassignJob(job.job_id, env, PROXY_DRIVER_ID);
       const relRoute = `${job.stops?.find((s) => s.stop_type_id === 1)?.customer_name ?? "—"} → ${job.stops?.find((s) => s.stop_type_id === 2)?.customer_name ?? "—"}`;
+      const pre = isScheduleJob(job) ? preassign.get(scheduleReferenceBase(job.reference_number)!) : undefined;
+      if (pre) {
+        const who = pre.driver_name || pre.driver_id;
+        const lc = isDriverOnLeave(pre.driver_id, leaveEntries);
+        if (lc.onLeave) {
+          log(`Job ${job.job_id} - Lịch cố định: ${who} đang nghỉ (${lc.reason ?? "leave"}) — releasing to normal assign | ${relRoute}`, "INFO");
+        } else {
+          const res = await assignJob(pre.driver_id, job.job_id, env);
+          if (res.status === 200) {
+            log(`Job ${job.job_id} - Lịch cố định → ${who} (pre-assigned, released from proxy) | ${relRoute}`, "OK");
+            return;
+          }
+          log(`Job ${job.job_id} - Lịch cố định pre-assign to ${who} failed (HTTP ${res.status}) — releasing to normal assign | ${relRoute}`, "WARN");
+        }
+      }
+      const { ok, status } = await unassignJob(job.job_id, env, PROXY_DRIVER_ID);
       if (ok) {
         releasedIds.push(job.job_id);
         const parkedUntil = job.send_to_driver_at ?? vnTimestamp(repaired.get(job.job_id)!);
@@ -1675,6 +1707,7 @@ export async function autoAssignCycle(
         const rel = await releaseDueProxyJobs(
           today, env, log,
           sweep ? undefined : s4Jobs.filter((j) => j.delivery_driver_id === PROXY_DRIVER_ID),
+          leaveEntries,
         );
         clog(`[fetch] proxy-release (${sweep ? "REST sweep" : "timeline"}): list ${rel.listMs}ms + release ${rel.releaseMs}ms (${rel.releasedIds.length} released)`);
         if (rel.releasedIds.length > 0) {
@@ -1698,7 +1731,7 @@ export async function autoAssignCycle(
       // The setup phase deferred the proxy release; the timeline fetch failed, so
       // run it the old way (full REST list) before fetching — released jobs then
       // surface as status 2 in getJobsByDate below.
-      if (!onlyJobIds) await releaseDueProxyJobs(today, env, log);
+      if (!onlyJobIds) await releaseDueProxyJobs(today, env, log, undefined, leaveEntries);
       const _tFetch = Date.now();
       const allToday = await getJobsByDate(today, env);
       fetchMs = Date.now() - _tFetch;
