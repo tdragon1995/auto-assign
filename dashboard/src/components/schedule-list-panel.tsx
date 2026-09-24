@@ -387,6 +387,8 @@ export function ScheduleListPanel({ env, drivers }: { env: Env; drivers: ConfigD
   const [running, setRunning] = useState(false);
   // Open form: "new" or the rowIndex being edited.
   const [editing, setEditing] = useState<number | "new" | null>(null);
+  const [sheetLocations, setSheetLocations] = useState<LocOption[] | null>(null);
+  const [loadingLocations, setLoadingLocations] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
@@ -405,18 +407,37 @@ export function ScheduleListPanel({ env, drivers }: { env: Env; drivers: ConfigD
     setReloadKey((k) => k + 1);
   }, []);
 
-  // Location choices: the branch list plus every pickup/dropoff already on the
-  // sheet — always by FULL Cartrack customer name ("BRA - D001"), because the
-  // sheet's pickup_id / dropoff_id formulas look the id up from that name.
+  const openForm = async (target: number | "new") => {
+    if (!sheetLocations) {
+      setLoadingLocations(true);
+      try {
+        const res = await fetch("/api/schedule-job/locations", { cache: "no-store" });
+        const data = await res.json();
+        if (!res.ok || !Array.isArray(data.locations) || data.locations.length === 0)
+          throw new Error(data.error ?? "Danh sách địa điểm trống");
+        setSheetLocations(data.locations as LocOption[]);
+      } catch (e) {
+        toast.error(`Không tải được địa điểm: ${String(e)}`);
+        return;
+      } finally {
+        setLoadingLocations(false);
+      }
+    }
+    setEditing(target);
+  };
+
+  // Use the same Location Table as the sheet's name-to-id formulas. Keep the
+  // existing schedule rows as fallbacks for names removed from that table.
   const locations = useMemo<LocOption[]>(() => {
     const byName = new Map<string, LocOption>();
     const add = (id: string, name: string) => {
       if (id && name && !byName.has(name)) byName.set(name, { id, name });
     };
+    sheetLocations?.forEach((l) => add(l.id, l.name));
     DIAG_LOCATIONS.forEach((l) => add(l.customer_id, l.customer_name));
     rows.forEach((r) => { add(r.pickup_id, r.pickup_name); add(r.dropoff_id, r.dropoff_name); });
     return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
-  }, [rows]);
+  }, [rows, sheetLocations]);
 
   const draftFor = (r: ScheduleRow): Draft => ({
     rowIndex: r.rowIndex,
@@ -482,10 +503,10 @@ export function ScheduleListPanel({ env, drivers }: { env: Env; drivers: ConfigD
             <Button
               size="sm"
               className="h-7 text-xs bg-indigo-600 hover:bg-indigo-700"
-              disabled={editing !== null}
-              onClick={() => setEditing("new")}
+              disabled={editing !== null || loadingLocations}
+              onClick={() => void openForm("new")}
             >
-              + Thêm
+              {loadingLocations ? "Đang tải địa điểm…" : "+ Thêm"}
             </Button>
             <Button size="sm" variant="outline" className="h-7 text-xs" disabled={running} onClick={runNow}>
               {running ? "Đang chạy…" : "Chạy thủ công"}
@@ -570,8 +591,8 @@ export function ScheduleListPanel({ env, drivers }: { env: Env; drivers: ConfigD
                       </span>
                       <button
                         type="button"
-                        disabled={editing !== null}
-                        onClick={() => setEditing(r.rowIndex)}
+                        disabled={editing !== null || loadingLocations}
+                        onClick={() => void openForm(r.rowIndex)}
                         className="rounded px-1.5 py-0.5 text-[10px] font-semibold text-slate-500 hover:bg-slate-100 disabled:opacity-40"
                       >
                         Sửa
