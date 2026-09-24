@@ -574,6 +574,9 @@ function AddLeaveForm({
   // Today by default. Every close resets back to this (below), so each opening
   // starts from a clean form without an effect watching `open`.
   const [pickFrom, setPickFrom] = useState(() => vnDate());
+  // "" = same as the start. The end field SHOWS the start date until a
+  // different end is picked, so it opens on today like the start does and a
+  // one-day leave needs no second pick.
   const [pickTo, setPickTo] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
@@ -788,20 +791,25 @@ function AddLeaveForm({
           onChange={(e) =>
             isResign
               ? set("days", e.target.value ? [e.target.value] : [])
-              : setPickFrom(e.target.value)
+              : (() => {
+                  setPickFrom(e.target.value);
+                  // An end now before the start is no longer a range; fall back
+                  // to following the start.
+                  if (pickTo && e.target.value && pickTo < e.target.value) setPickTo("");
+                })()
           }
           aria-label={isResign ? "Ngày làm việc cuối cùng" : "Ngày nghỉ"}
           className="rounded border border-slate-300 bg-white px-1 py-1 text-xs"
         />
         {!isResign && (
           <>
-            <span className="text-[11px] text-slate-600">đến (tuỳ chọn)</span>
+            <span className="text-[11px] text-slate-600">đến</span>
             <input
               type="date"
-              value={pickTo}
+              value={pickTo || pickFrom}
               min={pickFrom || undefined}
-              onChange={(e) => setPickTo(e.target.value)}
-              aria-label="Đến ngày (tuỳ chọn)"
+              onChange={(e) => setPickTo(e.target.value === pickFrom ? "" : e.target.value)}
+              aria-label="Đến ngày"
               className="rounded border border-slate-300 bg-white px-1 py-1 text-xs"
             />
             <Button
