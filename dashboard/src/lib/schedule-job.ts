@@ -75,7 +75,8 @@ export async function loadScheduleJobRows(): Promise<ScheduleJobRow[]> {
     reference: (r.reference ?? "").trim(),
     sent_to_driver_before: parseInt(r.sent_to_driver_before ?? "", 10) || 60,
     days: WEEKDAY_COLUMNS.map((col) => parseBool(r[col])),
-    driver_name: (r.driver ?? "").trim(),
+    // The sheet's header is "Driver"; a lowercase "driver" is accepted too.
+    driver_name: (r.Driver || r.driver || "").trim(),
     driver_id: (r.driver_id ?? "").trim(),
   }));
 }

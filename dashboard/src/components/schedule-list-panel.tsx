@@ -63,6 +63,9 @@ interface LocOption {
 // customer_id → short name ("D001"), used only as a fallback when the sheet has
 // no name for a row.
 const NAME_BY_ID = new Map(DIAG_LOCATIONS.map((l) => [l.customer_id, l.name]));
+// customer_id → full Cartrack customer name ("BRA - D001") — what the sheet's
+// pickup/dropoff columns must hold for their *_id formulas to resolve.
+const FULL_NAME_BY_ID = new Map(DIAG_LOCATIONS.map((l) => [l.customer_id, l.customer_name]));
 // Prefer the sheet's own pickup/dropoff name column; fall back to the branch
 // list, then the raw id.
 const labelFor = (name: string, id: string) => name || NAME_BY_ID.get(id) || id;
@@ -113,7 +116,9 @@ function LocationField({
     const v = t.trim();
     const hit = options.find((o) => o.name === v);
     if (hit) return onChange(hit.id, hit.name);
-    if (UUID_RE.test(v)) return onChange(v, NAME_BY_ID.get(v) ?? "");
+    // A pasted UUID still needs its full customer name: the sheet's *_id
+    // columns are formulas that look the id up FROM the name.
+    if (UUID_RE.test(v)) return onChange(v, options.find((o) => o.id === v)?.name ?? "");
     onChange("", v);
   };
   return (
@@ -123,8 +128,8 @@ function LocationField({
       <datalist id={listId}>
         {options.map((o) => <option key={`${o.id}|${o.name}`} value={o.name} />)}
       </datalist>
-      <span className={`block text-[10px] font-mono truncate ${id ? "text-slate-400" : "text-red-500"}`}>
-        {id || "chưa khớp địa điểm"}
+      <span className={`block text-[10px] font-mono truncate ${id && name ? "text-slate-400" : "text-red-500"}`}>
+        {!id ? "chưa khớp địa điểm" : !name ? "UUID chưa có tên khách hàng — chọn từ danh sách" : id}
       </span>
     </label>
   );
@@ -196,20 +201,20 @@ function ScheduleForm({
   const set = (patch: Partial<Draft>) =>
     setD((prev) => {
       const next = { ...prev, ...patch };
-      // New rows: suggest a reference from route + time until the user types one.
+      // New rows: suggest a reference in the sheet's own style
+      // ("Bệnh Viện X→D028 14:30") until the user types one.
       if (!refTouched) {
-        const p = next.pickup_name || next.pickup_id.slice(0, 8);
-        const q = next.dropoff_name || next.dropoff_id.slice(0, 8);
-        next.reference = p && q && next.delivery_window
-          ? `${p}_${q}_${next.delivery_window.replace(":", "")}`.replace(/\s+/g, "")
-          : "";
+        const short = (n: string) => n.split(" - ").pop()?.trim() ?? "";
+        const p = short(next.pickup_name);
+        const q = short(next.dropoff_name);
+        next.reference = p && q && next.delivery_window ? `${p}→${q} ${next.delivery_window}` : "";
       }
       return next;
     });
 
   const problem =
-    !d.pickup_id ? "Chưa chọn điểm lấy"
-    : !d.dropoff_id ? "Chưa chọn điểm giao"
+    !d.pickup_id || !d.pickup_name ? "Chưa chọn điểm lấy"
+    : !d.dropoff_id || !d.dropoff_name ? "Chưa chọn điểm giao"
     : !/^\d{2}:\d{2}$/.test(d.delivery_window) ? "Chưa nhập giờ lấy"
     : !d.reference.trim() ? "Thiếu reference"
     : d.driver_id === "?" ? "Tài xế chưa khớp"
@@ -247,6 +252,30 @@ function ScheduleForm({
       onSaved();
     } catch (e) {
       toast.error(`Lưu lịch lỗi: ${String(e)}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async () => {
+    if (isNew || !d.original) return;
+    if (!window.confirm(`Xoá lịch "${d.original.reference}" (dòng ${d.rowIndex}) khỏi sheet?`)) return;
+    setSaving(true);
+    try {
+      const res = await fetch("/api/schedule-job/row", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rowIndex: d.rowIndex, original: d.original }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        toast.error(`Xoá lịch lỗi: ${data.error ?? `HTTP ${res.status}`}`);
+        return;
+      }
+      toast.success(`Đã xoá lịch (dòng ${data.row})`);
+      onSaved();
+    } catch (e) {
+      toast.error(`Xoá lịch lỗi: ${String(e)}`);
     } finally {
       setSaving(false);
     }
@@ -327,6 +356,17 @@ function ScheduleForm({
           Huỷ
         </Button>
         {problem && <span className="text-[10px] text-slate-500">{problem}</span>}
+        {!isNew && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="ml-auto h-7 text-xs text-red-600 border-red-200 hover:bg-red-50"
+            disabled={saving}
+            onClick={remove}
+          >
+            Xoá
+          </Button>
+        )}
       </div>
     </div>
   );
@@ -334,8 +374,8 @@ function ScheduleForm({
 
 /**
  * The "Lịch cố định" tab: every fixed schedule, with live filtering by
- * pickup/dropoff (name or code), weekday and driver, plus add / edit (written
- * straight to the sheet). A row may name a pre-assigned driver: the job then
+ * pickup/dropoff (name or code), weekday and driver, plus add / edit / delete
+ * (written straight to the sheet). A row may name a pre-assigned driver: the job then
  * goes to that driver when it's released from the proxy. Run incidents are
  * surfaced separately in the "Cần xử lý" tab, not here.
  */
@@ -365,13 +405,15 @@ export function ScheduleListPanel({ env, drivers }: { env: Env; drivers: ConfigD
     setReloadKey((k) => k + 1);
   }, []);
 
-  // Location choices: the branch list plus every pickup/dropoff already on the sheet.
+  // Location choices: the branch list plus every pickup/dropoff already on the
+  // sheet — always by FULL Cartrack customer name ("BRA - D001"), because the
+  // sheet's pickup_id / dropoff_id formulas look the id up from that name.
   const locations = useMemo<LocOption[]>(() => {
     const byName = new Map<string, LocOption>();
     const add = (id: string, name: string) => {
       if (id && name && !byName.has(name)) byName.set(name, { id, name });
     };
-    DIAG_LOCATIONS.forEach((l) => add(l.customer_id, l.name));
+    DIAG_LOCATIONS.forEach((l) => add(l.customer_id, l.customer_name));
     rows.forEach((r) => { add(r.pickup_id, r.pickup_name); add(r.dropoff_id, r.dropoff_name); });
     return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
   }, [rows]);
@@ -380,9 +422,9 @@ export function ScheduleListPanel({ env, drivers }: { env: Env; drivers: ConfigD
     rowIndex: r.rowIndex,
     original: { reference: r.reference, pickup_id: r.pickup_id },
     pickup_id: r.pickup_id,
-    pickup_name: r.pickup_name || NAME_BY_ID.get(r.pickup_id) || "",
+    pickup_name: r.pickup_name || FULL_NAME_BY_ID.get(r.pickup_id) || "",
     dropoff_id: r.dropoff_id,
-    dropoff_name: r.dropoff_name || NAME_BY_ID.get(r.dropoff_id) || "",
+    dropoff_name: r.dropoff_name || FULL_NAME_BY_ID.get(r.dropoff_id) || "",
     delivery_window: /^\d:\d{2}$/.test(r.delivery_window) ? `0${r.delivery_window}` : r.delivery_window,
     reference: r.reference,
     sent_to_driver_before: r.sent_to_driver_before,

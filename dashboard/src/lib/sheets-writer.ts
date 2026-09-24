@@ -1284,8 +1284,11 @@ const SCHEDULE_CORE_KEYS = [
   "reference", "sent_to_driver_before", ...SCHEDULE_DAY_KEYS,
 ] as const;
 
-/** Pre-assign columns — appended to the header row on first write if missing. */
-const SCHEDULE_DRIVER_KEYS = ["driver", "driver_id"] as const;
+/** Pre-assign columns — appended to the header row on first write if missing.
+ *  The sheet's own layout is `driver_id` (an xlookup on the name) + `Driver`
+ *  (the Driver-tab name); header matching is case-insensitive so a lowercase
+ *  "driver" column is reused rather than duplicated. */
+const SCHEDULE_DRIVER_KEYS = ["Driver", "driver_id"] as const;
 
 export interface ScheduleRowWrite {
   pickup_id: string;
@@ -1316,7 +1319,7 @@ function scheduleCellValues(w: ScheduleRowWrite): Record<string, string | number
     delivery_windows: w.delivery_windows,
     reference: w.reference,
     sent_to_driver_before: w.sent_to_driver_before,
-    driver: w.driver,
+    Driver: w.driver,
     driver_id: w.driver_id,
   };
   SCHEDULE_DAY_KEYS.forEach((k, i) => { out[k] = !!w.days[i]; });
@@ -1366,6 +1369,12 @@ async function loadScheduleSheet(): Promise<ScheduleSheetState> {
       const k = h.trim();
       if (k && !(k in col)) col[k] = i;
     });
+    // Driver columns: exact header first, else any case variant.
+    for (const k of SCHEDULE_DRIVER_KEYS) {
+      if (k in col) continue;
+      const i = (all[0] ?? []).findIndex((h) => h.trim().toLowerCase() === k.toLowerCase());
+      if (i >= 0) col[k] = i;
+    }
     return { all, formulas, col };
   };
 
@@ -1415,8 +1424,11 @@ function assertUniqueReference(st: ScheduleSheetState, reference: string, except
 }
 
 /** Write `w` into sheet row `rowNo`, skipping any cell that holds a formula
- *  (e.g. a pickup-name or driver_id xlookup) so the sheet's formula layout
- *  survives. Returns a warning when a formula driver_id didn't resolve. */
+ *  (the pickup_id / dropoff_id / driver_id xlookups) so the sheet's formula
+ *  layout survives. Those ids are then derived from the NAMES written, so the
+ *  row is read back and any id that didn't come out as requested is reported —
+ *  a blank pickup_id silently drops the schedule, a blank driver_id silently
+ *  drops the pre-assign. */
 async function writeScheduleRow(
   st: ScheduleSheetState,
   rowNo: number,
@@ -1432,19 +1444,23 @@ async function writeScheduleRow(
     requestBody: { valueInputOption: "RAW", data },
   });
 
-  // driver_id as a formula (xlookup on the driver name): a name that doesn't
-  // resolve leaves the id blank, and the job silently falls back to the normal
-  // assign flow — worth telling the user.
-  if (w.driver && isFormula(rowFormulas[st.col.driver_id])) {
-    const v = await st.sheets.spreadsheets.values.get({
-      spreadsheetId: SHEET_ID,
-      range: `${st.quotedName}!${colA1(st.col.driver_id)}${rowNo}`,
-    });
-    if (!String(v.data.values?.[0]?.[0] ?? "").trim()) {
-      return "Đã lưu nhưng driver_id trên sheet chưa resolve — kiểm tra tên trong tab Driver";
-    }
-  }
-  return undefined;
+  const derived = (["pickup_id", "dropoff_id", "driver_id"] as const).filter(
+    (k) => k in st.col && isFormula(rowFormulas[st.col[k]]) && w[k],
+  );
+  if (!derived.length) return undefined;
+  const v = await st.sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: `${st.quotedName}!${rowNo}:${rowNo}`,
+  });
+  const got = v.data.values?.[0] ?? [];
+  const what: Record<(typeof derived)[number], string> = {
+    pickup_id: `điểm lấy "${w.pickup}"`,
+    dropoff_id: `điểm giao "${w.dropoff}"`,
+    driver_id: `tài xế "${w.driver}"`,
+  };
+  const bad = derived.filter((k) => String(got[st.col[k]] ?? "").trim() !== w[k]);
+  if (!bad.length) return undefined;
+  return `Đã lưu nhưng công thức trên sheet không ra đúng id cho ${bad.map((k) => what[k]).join(", ")} — kiểm tra tên trên sheet`;
 }
 
 /** Add a new fixed schedule below the last filled row. Formula columns on the
@@ -1519,6 +1535,32 @@ export async function updateScheduleRow(
   w: ScheduleRowWrite,
 ): Promise<{ row: number; warning?: string }> {
   const st = await loadScheduleSheet();
+  assertRowMatches(st, match);
+  assertUniqueReference(st, w.reference, match.rowIndex);
+  const warning = await writeScheduleRow(st, match.rowIndex, w);
+  return { row: match.rowIndex, warning };
+}
+
+/** Delete a schedule row outright (the whole sheet row, so later rows shift up
+ *  and relative formulas adjust). Same identity re-check as an edit. A job
+ *  already created from it today is not touched. */
+export async function deleteScheduleRow(match: ScheduleRowMatch): Promise<{ row: number }> {
+  const st = await loadScheduleSheet();
+  assertRowMatches(st, match);
+  await st.sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SHEET_ID,
+    requestBody: {
+      requests: [{
+        deleteDimension: {
+          range: { sheetId: st.sheetId, dimension: "ROWS", startIndex: match.rowIndex - 1, endIndex: match.rowIndex },
+        },
+      }],
+    },
+  });
+  return { row: match.rowIndex };
+}
+
+function assertRowMatches(st: ScheduleSheetState, match: ScheduleRowMatch): void {
   const row = st.all[match.rowIndex - 1];
   const cell = (k: string) => (row?.[st.col[k]] ?? "").trim();
   if (
@@ -1529,9 +1571,6 @@ export async function updateScheduleRow(
   ) {
     throw new ScheduleWriteError("Dòng lịch đã thay đổi trên sheet — tải lại danh sách rồi thử lại");
   }
-  assertUniqueReference(st, w.reference, match.rowIndex);
-  const warning = await writeScheduleRow(st, match.rowIndex, w);
-  return { row: match.rowIndex, warning };
 }
 
 // ── Nhận Việc (driver self-claim) audit log ──────────────────────────────────
