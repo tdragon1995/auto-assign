@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ChevronRight, ClipboardList, Copy, Search } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
@@ -350,10 +351,8 @@ type CopySource = {
  * It is a LISTBOX, not a stack of buttons. The roster picker two components up
  * is already a keyboard combobox, and this asks the same question inside the
  * same editor; typing a name and then reaching for the arrow keys is what a
- * supervisor does next, and it used to do nothing here. Same reason the panel
- * renders BELOW the editor's action row rather than inside it: opening it used
- * to widen a flex row and push Hủy/Lưu onto a second line, so the two buttons
- * that matter moved under the cursor at the moment the picker appeared.
+ * supervisor does next, and it used to do nothing here. The picker lives in a
+ * dialog because the to-do list has a short scroll area that clips its choices.
  *
  * The count on each row is the count that will ARRIVE, not the count the source
  * happens to have. The caller drops lines the editor already holds, so a branch
@@ -381,6 +380,7 @@ function CopyFromBranch({
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [active, setActive] = useState(0);
+  const dialogRef = useRef<HTMLDialogElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listId = useId();
   const hintId = useId();
@@ -408,7 +408,10 @@ function CopyFromBranch({
   }, [open, rows, loading, err, load]);
 
   useEffect(() => {
-    if (open) inputRef.current?.focus();
+    if (open) {
+      dialogRef.current?.showModal();
+      inputRef.current?.focus();
+    }
   }, [open]);
 
   const existing = useMemo(() => new Set(existingKeys), [existingKeys]);
@@ -470,8 +473,19 @@ function CopyFromBranch({
 
   const optionId = (i: number) => `${listId}-o${i}`;
 
-  return (
-    <div id={panelId} className="mt-1 mb-1.5 rounded-md border border-slate-300 bg-slate-50 p-2">
+  return createPortal(
+    <dialog
+      ref={dialogRef}
+      id={panelId}
+      aria-labelledby={`${panelId}-title`}
+      onCancel={(e) => { e.preventDefault(); onClose(); }}
+      className="w-[min(95vw,42rem)] max-h-[85dvh] rounded-lg border border-slate-300 bg-slate-50 p-0 text-slate-900 shadow-xl backdrop:bg-slate-900/35"
+    >
+    <div className="flex max-h-[85dvh] flex-col p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h2 id={`${panelId}-title`} className="text-sm font-semibold text-slate-800">Copy ca từ điểm khác</h2>
+        <Button size="sm" variant="outline" className="h-7 shrink-0 px-2 text-xs" onClick={onClose}>Đóng</Button>
+      </div>
       <div className="flex items-center gap-1.5">
         <div className="relative min-w-0 flex-1">
           <Search aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-slate-500" />
@@ -492,19 +506,13 @@ function CopyFromBranch({
             className="w-full rounded border border-slate-300 bg-white py-1 pl-7 pr-2 text-xs text-slate-900 outline-none placeholder:text-slate-500 focus:ring-2 focus:ring-indigo-400/50"
           />
         </div>
-        <Button
-          size="sm" variant="outline"
-          className="h-6 shrink-0 px-2 text-[11px]"
-          onClick={onClose}
-        >
-          Đóng
-        </Button>
       </div>
 
       <p id={hintId} className="mt-1 text-[11px] text-slate-600">
         Copy cả ngày của một điểm khác vào form này. Chưa ghi vào sheet — vẫn phải bấm Lưu.
       </p>
 
+      <div className="min-h-0 overflow-y-auto">
       {err && (
         <div role="alert" className="mt-1.5 flex flex-wrap items-center gap-1.5 rounded border border-red-200 bg-red-50 px-2 py-1.5 text-[11px] text-red-700">
           <span className="min-w-0 break-words">Không tải được config: {err}</span>
@@ -612,7 +620,10 @@ function CopyFromBranch({
           Còn {hidden} điểm nữa — gõ thêm để thu hẹp.
         </p>
       )}
+      </div>
     </div>
+    </dialog>,
+    document.body,
   );
 }
 
