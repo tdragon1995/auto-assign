@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { BASE_URL, getHeaders, completeJob, createJob, getJobDetails, getJobsByStatusAndDate, getLiveDrivers, type Env } from "@/lib/cartrack";
+import { BASE_URL, getHeaders, assignJob, jsonRpc, completeJob, createJob, getJobDetails, getJobsByStatusAndDate, getLiveDrivers, type Env } from "@/lib/cartrack";
 import { driverDisplayName, stripDriverCode } from "@/lib/job-detail";
 import { vnDate, vnHoursMinutes, vnTimestamp } from "@/lib/time";
 import { isBlockingPickupStop, isStopStarted, isCompletedOrRejectedStop, pscPairKey } from "@/lib/job-filters";
@@ -119,16 +119,6 @@ async function stillBlocking(hit: PscDupHit, pickup: string, dropoff: string, en
   } catch {
     return true;
   }
-}
-
-// Every handler here is reached only from the branch QR page, so each write is a PERSON's
-// action and is logged as one: "[QR] Chi nhánh …", the same origin-prefix convention as
-// [AO], [PSC-tỉnh] and [Sales]. Engine lines never carry a prefix, so the two cannot be
-// confused. The trailing " | ref" is what the admin job search reads as the label.
-// Awaited by every caller: one Redis LPUSH (~10ms), and a line dropped when the function
-// freezes after the response is exactly the trace this exists to keep.
-function qrLog(msg: string): Promise<void> {
-  return pushRunLog([{ ts: vnTimestamp(), level: "OK", msg: `[QR] ${msg}` }]).catch(() => {});
 }
 
 export async function POST(req: NextRequest) {
@@ -463,13 +453,13 @@ export async function POST(req: NextRequest) {
     // the day. This replaces the old invalidateSnapshot call: that made the NEXT reader --
     // any of 40-odd branches -- pay a ~3s fleet-wide rebuild because one branch booked a
     // trip they cannot see. Awaited: dropping it reopens exactly the window it closes.
-    // A branch pressed the button, so the log says a branch did it -- with or without an
-    // instant driver. Without this line an unattached booking only surfaced later as the
-    // engine's own SMART line, reading as if the system had invented the trip.
-    if (newJobId) {
-      await qrLog(assignTo
-        ? `Chi nhánh tạo chuyến: Job ${newJobId}, giao cho ${assignTo.name ?? assignTo.driverId} | ${refLabel}`
-        : `Chi nhánh tạo chuyến: Job ${newJobId}, chờ engine giao | ${refLabel}`);
+    if (newJobId && assignTo) {
+      // The supervisor's log should show who it went to at the moment it was made.
+      pushRunLog([{
+        ts: vnTimestamp(),
+        level: "OK",
+        msg: `Job ${newJobId} - Giao ngay cho ${assignTo.name ?? assignTo.driverId} | ${refLabel}`,
+      }]).catch(() => {});
     }
 
     if (newJobId) {
@@ -508,8 +498,34 @@ export async function POST(req: NextRequest) {
 }
 
 // ── DELETE /api/psc-assign?job_id=123 — cancel a PSC trip (only if pickup not started) ──
-// Mirrors the PSC-tỉnh cancel: refuse once the driver has touched the pickup, otherwise
-// force-cancel and clear the dedup index so the same pickup→dropoff can be re-requested.
+// Refuse once the driver has touched the pickup; otherwise REJECT the trip with a reason
+// and clear the dedup index so the same pickup→dropoff can be re-requested.
+//
+// Rejected, not deleted: a force-delete left nothing behind in Cartrack, so a branch
+// cancelling a trip was indistinguishable from the trip never having existed. A rejection
+// stays in the job list as status 3 carrying QR_CANCEL_REASON. Same two steps as the sales
+// cancel (/api/sales/reject-job): delivery_reject_job only works on an assigned job, so the
+// reject proxy is assigned first. The branch's own feed already hides status 3
+// (qr-client), so their list reads exactly as it did after a delete.
+//
+// If either step fails the old force-delete still runs. A trip stranded on the proxy
+// driver is the worst outcome available here: it reads as assigned (footgun 1), so the
+// engine never offers it again and nobody collects the samples.
+const QR_CANCEL_REASON = "Chi nhánh huỷ chuyến trên trang QR";
+
+async function rejectAsCancel(jobId: number, env: Env): Promise<boolean> {
+  const proxyDriverId = process.env.CARTRACK_REJECT_PROXY_DRIVER_ID ?? "";
+  if (!proxyDriverId) return false;
+  const { status } = await assignJob(proxyDriverId, jobId, env);
+  if (status !== 200) return false;
+  const out = await jsonRpc(
+    "delivery_reject_job",
+    { data: { jobIds: [jobId], rejectReason: QR_CANCEL_REASON } },
+    { env }
+  );
+  return out.ok;
+}
+
 export async function DELETE(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
   const jobId = req.nextUrl.searchParams.get("job_id");
@@ -532,10 +548,19 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: "Không thể huỷ: Giao Nhận Mẫu đã bắt đầu công việc." }, { status: 409 });
     }
 
-    const res = await fetch(`${BASE_URL}/jobs/${jobId}?force=true`, { method: "DELETE", headers });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      return NextResponse.json({ error: "Failed to cancel job", details: err }, { status: res.status });
+    // Already closed (a double tap, or dispatch got there first): nothing to do, and the
+    // branch's list should drop it just the same.
+    const statusId: number | null = jobData.data?.job_status_id ?? null;
+    if (statusId !== 3 && statusId !== 7) {
+      const rejected = await rejectAsCancel(Number(jobId), env).catch(() => false);
+      if (!rejected) {
+        console.warn(`[VN ${vnTimestamp()}] [psc-assign] reject of ${jobId} failed — force-deleting instead`);
+        const res = await fetch(`${BASE_URL}/jobs/${jobId}?force=true`, { method: "DELETE", headers });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          return NextResponse.json({ error: "Failed to cancel job", details: err }, { status: res.status });
+        }
+      }
     }
 
     // Clear both dedup guards so the same pickup→dropoff can be re-requested at once
@@ -548,11 +573,9 @@ export async function DELETE(req: NextRequest) {
       void releaseCreateLock(`psc:${pickup.customer_id}-${dropoff.customer_id}-${vnDate()}`);
     }
 
-    await qrLog(`Chi nhánh huỷ chuyến: Job ${jobId} | ${jobData.data?.reference_number ?? ""}`);
-
-    // job_id echoed back so the branch's list can drop this trip locally. A cancelled job
-    // leaves the feed entirely (status 7 is not in ALL_STATUSES), so removing it client-
-    // side produces exactly what a reload would have — without the reload.
+    // job_id echoed back so the branch's list can drop this trip locally. A rejected job
+    // is filtered out of the branch feed (and a deleted one is simply gone), so removing
+    // it client-side produces exactly what a reload would have — without the reload.
     return NextResponse.json({ success: true, job_id: Number(jobId) });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
@@ -654,8 +677,6 @@ export async function PUT(req: NextRequest) {
       await unmarkPscPair(vnDate(), pscPairKey(pickup.customer_id, dropoff.customer_id), jobId).catch(() => {});
       void releaseCreateLock(`psc:${pickup.customer_id}-${dropoff.customer_id}-${vnDate()}`);
     }
-
-    await qrLog(`Chi nhánh gửi qua 3PL: Job ${jobId}, Batch ${batchIds.join(", ")} | ${jobData.data?.reference_number ?? ""}`);
 
     // Hand back the trip as it now stands, so the branch's list can be updated from this
     // response instead of re-reading the whole network's day to learn about one job. One
