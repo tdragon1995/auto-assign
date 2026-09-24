@@ -7,7 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 import { DriverPicker } from "./driver-picker";
-import { DayTimePicker, DAY_LABELS, vnNowLabel, scheduledAtFor, isTimePast } from "./day-time-picker";
+import { DayTimePicker, DAY_LABELS, vnNowLabel, scheduledAtFor, isTimePast, defaultSchedule } from "./day-time-picker";
 import { NoteReviewPanel, type HeldJob } from "./note-review-panel";
 import { NoteSuggestionPanel } from "./note-suggestion-panel";
 import { SectionHeader } from "./section-header";
@@ -231,6 +231,11 @@ function FailedRow({
                 variant="outline"
                 className="text-[11px] h-6 px-2 shrink-0"
                 onClick={() => {
+                  // Computed on open, not at mount: a row mounted at 07:50 and
+                  // opened at 08:10 must not start on a slot already gone by.
+                  const d = defaultSchedule();
+                  setDayOffset(d.dayOffset);
+                  setTimeLabel(d.timeLabel);
                   setShowDriverSelect(false);
                   setShowSchedule(true);
                 }}

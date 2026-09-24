@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { ChevronRight, ClipboardList, Search } from "lucide-react";
+import { ChevronRight, ClipboardList, Copy, Search } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -471,7 +471,7 @@ function CopyFromBranch({
   const optionId = (i: number) => `${listId}-o${i}`;
 
   return (
-    <div id={panelId} className="mt-1 rounded-md border border-slate-300 bg-slate-50 p-2">
+    <div id={panelId} className="mt-1 mb-1.5 rounded-md border border-slate-300 bg-slate-50 p-2">
       <div className="flex items-center gap-1.5">
         <div className="relative min-w-0 flex-1">
           <Search aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-slate-500" />
@@ -571,9 +571,6 @@ function CopyFromBranch({
                 >
                   <span className="flex flex-wrap items-center gap-x-1.5">
                     <span className="text-xs font-medium text-slate-800">{b.pickup} → {b.rules[0]?.dropoff || "Mọi điểm giao"}</span>
-                    {b.customer_id && (
-                      <span className="font-mono text-[10px] text-slate-500">{b.customer_id}</span>
-                    )}
                     <span
                       className={`ml-auto shrink-0 rounded px-1.5 py-0.5 text-[11px] font-semibold ${
                         none ? "bg-slate-100 text-slate-700" : "bg-indigo-600 text-white"
@@ -838,18 +835,28 @@ export function BranchEditor({
 
   return (
     <div className="mt-1 space-y-1 rounded border border-slate-300 bg-white p-1.5">
-      <div className="flex items-center gap-1">
+      {/* Two different answers to "who covers this branch", kept visibly apart.
+          The copy button used to sit 4px above the first line's driver field,
+          both left-aligned and both outlined, so a click aimed at one regularly
+          landed on the other. Now copy is its own bar, set off by a rule and
+          coloured as the whole-day action it is, and says in words that the
+          field below is the OTHER way to do it. */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-slate-200 pb-1.5 mb-1.5">
         <Button
           ref={copyBtnRef}
           size="sm" variant="outline"
-          className="h-6 px-2 text-[11px]"
+          className="h-7 px-2.5 text-[11px] font-semibold border-indigo-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 hover:text-indigo-800"
           aria-expanded={copyOpen}
           aria-controls={copyPanelId}
           onClick={() => setCopyOpen((v) => !v)}
           disabled={busy}
         >
-          Copy từ config khác
+          <Copy className="size-3.5" strokeWidth={2} aria-hidden />
+          Copy ca từ điểm khác
         </Button>
+        {!copyOpen && (
+          <span className="text-[11px] text-slate-500">hoặc chọn tài xế cho từng ca bên dưới</span>
+        )}
       </div>
       <CopyFromBranch
         open={copyOpen}

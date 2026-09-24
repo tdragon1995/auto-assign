@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { DriverPicker } from "./driver-picker";
-import { DayTimePicker, DAY_LABELS, vnNowLabel, vnDateOffset } from "./day-time-picker";
+import { DayTimePicker, DAY_LABELS, vnNowLabel, vnDateOffset, isTimePast, defaultSchedule } from "./day-time-picker";
 import type { ConfigDriver } from "@/lib/types";
 import { DriverName } from "./driver-name";
 import { driverDisplayName } from "@/lib/display-names";
@@ -347,7 +347,12 @@ export function NoteReviewPanel({
               className="text-xs"
               disabled={isBusy}
               onClick={() => {
-                if (!schedules[job.job_id]) patchSched(job.job_id, { dayOffset: 0, timeLabel: null });
+                // Start on the default slot unless a still-valid pick is kept
+                // from an earlier open of this row.
+                const kept = schedules[job.job_id];
+                if (!kept?.timeLabel || isTimePast(kept.dayOffset, kept.timeLabel)) {
+                  patchSched(job.job_id, defaultSchedule());
+                }
                 setPickId(null);
                 setOpenId(job.job_id);
               }}
@@ -468,7 +473,10 @@ export function NoteReviewPanel({
                 className="text-xs"
                 disabled={bulkBusy}
                 aria-expanded={bulkOpen}
-                onClick={() => setBulkOpen((o) => !o)}
+                onClick={() => {
+                  if (!bulkOpen && (!bulkSched.timeLabel || bulkTimeIsPast)) setBulkSched(defaultSchedule());
+                  setBulkOpen((o) => !o);
+                }}
               >
                 <Clock className="size-3.5" strokeWidth={2} />
                 Hẹn giờ

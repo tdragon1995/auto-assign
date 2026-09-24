@@ -39,6 +39,14 @@ export function isTimePast(dayOffset: number, timeLabel: string | null): boolean
   return dayOffset === 0 && !!timeLabel && timeLabel <= vnNowLabel();
 }
 
+/** The slot every scheduler opens on. Most parked jobs are collected in the
+ *  morning run, so 08:00 is the usual answer; today if it is still ahead,
+ *  otherwise tomorrow, so the default is never a time already gone by. */
+export const DEFAULT_SCHEDULE_TIME = "08:00";
+export function defaultSchedule(): { dayOffset: number; timeLabel: string } {
+  return { dayOffset: isTimePast(0, DEFAULT_SCHEDULE_TIME) ? 1 : 0, timeLabel: DEFAULT_SCHEDULE_TIME };
+}
+
 // Schedule times are offered on a 30-minute grid via an explicit dropdown. A
 // native <input type=time step=1800> ignores the step in its clock popup and
 // still lists every minute, so our own option list is the only way to actually

@@ -983,9 +983,6 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                           <span className={inactive ? "text-slate-500" : "font-medium text-slate-900"}>
                             {r.pickup ? r.pickup.replace(INACTIVE_PREFIX, "") : <span className="text-slate-500">—</span>}
                           </span>
-                          {r.customer_id && (
-                            <span className="ml-1.5 select-all font-mono text-[10px] text-slate-500">{r.customer_id}</span>
-                          )}
                         </>
                       ) : (
                         // Still named for a screen reader, which reads a row
