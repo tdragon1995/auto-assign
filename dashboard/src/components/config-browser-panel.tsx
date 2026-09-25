@@ -713,6 +713,14 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
     () => optionValues.dropoffs.map((value) => ({ value, label: value || "mọi điểm" })),
     [optionValues.dropoffs],
   );
+  const startOptions = useMemo(
+    () => optionValues.starts.map((value) => ({ value, label: value || "trống / cả ngày" })),
+    [optionValues.starts],
+  );
+  const endOptions = useMemo(
+    () => optionValues.ends.map((value) => ({ value, label: value || "trống / cả ngày" })),
+    [optionValues.ends],
+  );
   const matches = useMemo(() => sortConfigRows(filterConfigRows(rows, filters)), [rows, filters]);
   // The cap applies AFTER the sort, so it is the first N of a stable ordering
   // rather than an arbitrary slice of the sheet. Which rows get cut is then
@@ -792,7 +800,9 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
   const activeFilters = Number(Boolean(filters.query.trim()))
     + activeColumnFilterCount(filters.driverOperator, filters.driverText, filters.drivers)
     + activeColumnFilterCount(filters.pickupOperator, filters.pickupText, filters.pickups)
-    + activeColumnFilterCount(filters.dropoffOperator, filters.dropoffText, filters.dropoffs);
+    + activeColumnFilterCount(filters.dropoffOperator, filters.dropoffText, filters.dropoffs)
+    + activeColumnFilterCount(filters.startOperator, filters.startText, filters.starts)
+    + activeColumnFilterCount(filters.endOperator, filters.endText, filters.ends);
   const hasFilters = activeFilters > 0;
 
   return (
@@ -884,6 +894,38 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
             onValuesChange={(values) => updateFilters({ ...filters, dropoffs: values })}
             textPlaceholder="vd. D001"
             selectPlaceholder="Chọn điểm giao…"
+          />
+          <ConfigColumnFilter
+            label="Giờ bắt đầu (shift_start)"
+            operator={filters.startOperator}
+            text={filters.startText}
+            values={[...filters.starts]}
+            options={startOptions}
+            onOperatorChange={(operator) => updateFilters({
+              ...filters,
+              startOperator: operator,
+              ...(usesTextInput(operator) !== usesTextInput(filters.startOperator) ? { startText: "", starts: [] } : {}),
+            })}
+            onTextChange={(value) => updateFilters({ ...filters, startText: value })}
+            onValuesChange={(values) => updateFilters({ ...filters, starts: values })}
+            textPlaceholder="vd. 07:00"
+            selectPlaceholder="Chọn giờ bắt đầu…"
+          />
+          <ConfigColumnFilter
+            label="Giờ kết thúc (shift_end)"
+            operator={filters.endOperator}
+            text={filters.endText}
+            values={[...filters.ends]}
+            options={endOptions}
+            onOperatorChange={(operator) => updateFilters({
+              ...filters,
+              endOperator: operator,
+              ...(usesTextInput(operator) !== usesTextInput(filters.endOperator) ? { endText: "", ends: [] } : {}),
+            })}
+            onTextChange={(value) => updateFilters({ ...filters, endText: value })}
+            onValuesChange={(values) => updateFilters({ ...filters, ends: values })}
+            textPlaceholder="vd. 17:00"
+            selectPlaceholder="Chọn giờ kết thúc…"
           />
         </div>
 

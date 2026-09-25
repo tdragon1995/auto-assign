@@ -142,6 +142,13 @@ console.log("dashboard phrase and facet filters");
   eq("drop-off does not contain", hits({ dropoffOperator: "not_contains", dropoffText: "bệnh viện" }), [32, 33]);
   eq("driver contains one name in a smart row", hits({ driverText: "viết phi" }), [31, 32]);
   eq("driver does not contain excludes a smart row if any name matches", hits({ driverOperator: "not_contains", driverText: "viết phi" }), [30, 33]);
+  eq("shift start contains narrows to one time", hits({ startText: "13:00" }), [31]);
+  eq("shift start is matches selected times", hits({ startOperator: "is", starts: ["05:00", "07:00"] }), [30, 32]);
+  eq("shift end is not excludes a selected time", hits({ endOperator: "is_not", ends: ["16:00"] }), [30, 31, 33]);
+  eq("start and end filters combine", hits({ startOperator: "is", starts: ["07:00"], endOperator: "is", ends: ["16:00"] }), [32]);
+  eq("blank shift times can be selected", filterConfigRows([...FILTER_ROWS, row({ row: 34 })], {
+    ...EMPTY_CONFIG_FILTERS, startOperator: "is", starts: [""], endOperator: "is", ends: [""],
+  }).map((r) => r.row), [34]);
   eq("empty text does not activate a negative operator", hits({ driverOperator: "not_contains" }), [30, 31, 32, 33]);
   eq("is not without selections is inactive", hits({ driverOperator: "is_not" }), [30, 31, 32, 33]);
   eq("selected values are inactive in contains mode", hits({ drivers: [HOANG_PHI], driverText: "viết phi" }), [31, 32]);
@@ -160,6 +167,8 @@ console.log("dashboard phrase and facet filters");
     "Bệnh viện mới", "{inactive} Bệnh viện cũ", "{inactive} Phòng khám cũ",
   ]);
   eq("all destinations is the first drop-off option", options.dropoffs[0], "");
+  eq("shift start options are in clock order", options.starts, ["05:00", "07:00", "08:00", "13:00"]);
+  eq("shift end options are in clock order", options.ends, ["13:00", "16:00", "17:00", "21:00"]);
   eq("option ordering is stable", options, configFilterOptions(FILTER_ROWS));
 }
 
