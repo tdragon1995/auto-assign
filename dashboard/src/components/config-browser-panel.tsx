@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { Pencil, Search } from "lucide-react";
+import { Search } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -605,7 +605,7 @@ function ReplaceDriverPanel({
 
 /** One operator and the value control it requires. */
 function ConfigColumnFilter({
-  label, operator, text, values, options, onOperatorChange, onTextChange, onValuesChange, textPlaceholder, selectPlaceholder,
+  label, operator, text, values, options, onOperatorChange, onTextChange, onValuesChange, textPlaceholder, selectPlaceholder, showOperator = true,
 }: {
   label: string;
   operator: ConfigTextOperator;
@@ -617,22 +617,31 @@ function ConfigColumnFilter({
   onValuesChange: (values: string[]) => void;
   textPlaceholder: string;
   selectPlaceholder: string;
+  showOperator?: boolean;
 }) {
   const id = useId();
+  const operatorLabel = {
+    contains: "có chứa",
+    not_contains: "không chứa",
+    is: "là",
+    is_not: "không phải",
+  }[operator];
   return (
-    <div className="min-w-0 space-y-1.5">
-      <label htmlFor={id} className="mb-1 block text-[11px] font-medium text-slate-700">{label}</label>
-      <select
+    <div className="min-w-0 space-y-1">
+      <label htmlFor={showOperator ? id : undefined} className="block text-xs font-medium text-slate-700">
+        {label}{!showOperator && operator !== "is" && <span className="font-normal text-slate-500"> · {operatorLabel}</span>}
+      </label>
+      {showOperator && <select
         id={id}
         value={operator}
         onChange={(e) => onOperatorChange(e.target.value as ConfigTextOperator)}
         className="h-8 w-full rounded border border-slate-300 bg-white px-2 text-xs text-slate-900 outline-none focus:ring-2 focus:ring-indigo-400/50"
       >
-        <option value="contains">contains...</option>
-        <option value="not_contains">does not contain...</option>
-        <option value="is">is...</option>
-        <option value="is_not">is not...</option>
-      </select>
+        <option value="contains">Có chứa</option>
+        <option value="not_contains">Không chứa</option>
+        <option value="is">Là</option>
+        <option value="is_not">Không phải</option>
+      </select>}
       {usesTextInput(operator) ? (
         <input
           type="text"
@@ -656,12 +665,13 @@ function ConfigColumnFilter({
 }
 
 function activeColumnFilterCount(operator: ConfigTextOperator, text: string, values: readonly string[]): number {
-  return usesTextInput(operator) ? Number(Boolean(text.trim())) : values.length;
+  return usesTextInput(operator) ? Number(Boolean(text.trim())) : Number(values.length > 0);
 }
 
 export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
   const [rows, setRows] = useState<ConfigRowView[]>([]);
   const [filters, setFilters] = useState(EMPTY_CONFIG_FILTERS);
+  const [advancedFilters, setAdvancedFilters] = useState(false);
   const [selected, setSelected] = useState<ReadonlySet<number>>(new Set());
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -759,16 +769,14 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
   /** For each drawn row, the index of the first row of its route run. A
    *  route's rows are adjacent (sortConfigRows), so the run is the route as
    *  far as the current filters show it. */
-  const { runStart, runSize } = useMemo(() => {
+  const runStart = useMemo(() => {
     const starts: number[] = [];
-    const sizes = new Map<number, number>();
     shown.forEach((r, i) => {
       const prev = shown[i - 1];
       const start = i > 0 && sameSchedule(prev, r) ? starts[i - 1] : i;
       starts.push(start);
-      sizes.set(start, (sizes.get(start) ?? 0) + 1);
     });
-    return { runStart: starts, runSize: sizes };
+    return starts;
   }, [shown]);
   const selectedRows = useMemo(
     () => rows.filter((r) => selected.has(r.row) && isWritable(r)),
@@ -804,6 +812,10 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
     + activeColumnFilterCount(filters.startOperator, filters.startText, filters.starts)
     + activeColumnFilterCount(filters.endOperator, filters.endText, filters.ends);
   const hasFilters = activeFilters > 0;
+  const timeSummary = [
+    filters.starts.length && `Bắt đầu: ${filters.starts.slice(0, 2).map((time) => time || "trống").join(", ")}${filters.starts.length > 2 ? ` +${filters.starts.length - 2}` : ""}`,
+    filters.ends.length && `Kết thúc: ${filters.ends.slice(0, 2).map((time) => time || "trống").join(", ")}${filters.ends.length > 2 ? ` +${filters.ends.length - 2}` : ""}`,
+  ].filter(Boolean).join(" · ");
 
   return (
     <Card className="gap-0 py-2 h-full flex flex-col border-slate-200">
@@ -846,9 +858,10 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
           </Button>
         </div>
 
-        <div className="grid grid-cols-1 gap-2 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
           <ConfigColumnFilter
             label="Tài xế"
+            showOperator={advancedFilters}
             operator={filters.driverOperator}
             text={filters.driverText}
             values={[...filters.drivers]}
@@ -865,6 +878,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
           />
           <ConfigColumnFilter
             label="Điểm lấy"
+            showOperator={advancedFilters}
             operator={filters.pickupOperator}
             text={filters.pickupText}
             values={[...filters.pickups]}
@@ -881,6 +895,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
           />
           <ConfigColumnFilter
             label="Điểm giao"
+            showOperator={advancedFilters}
             operator={filters.dropoffOperator}
             text={filters.dropoffText}
             values={[...filters.dropoffs]}
@@ -895,8 +910,23 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
             textPlaceholder="vd. D001"
             selectPlaceholder="Chọn điểm giao…"
           />
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm" variant="ghost" type="button"
+            className="h-7 px-2 text-xs text-indigo-700"
+            aria-expanded={advancedFilters}
+            onClick={() => setAdvancedFilters((open) => !open)}
+          >
+            {advancedFilters ? "Ẩn bộ lọc thêm" : "Thêm bộ lọc"}
+            {!advancedFilters && timeSummary && " · đang dùng"}
+          </Button>
+          {!advancedFilters && <span className="truncate text-xs text-slate-500">{timeSummary || "Lọc theo giờ bắt đầu, giờ kết thúc"}</span>}
+        </div>
+        {advancedFilters && <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
           <ConfigColumnFilter
-            label="Giờ bắt đầu (shift_start)"
+            label="Giờ bắt đầu"
+            showOperator={false}
             operator={filters.startOperator}
             text={filters.startText}
             values={[...filters.starts]}
@@ -912,7 +942,8 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
             selectPlaceholder="Chọn giờ bắt đầu…"
           />
           <ConfigColumnFilter
-            label="Giờ kết thúc (shift_end)"
+            label="Giờ kết thúc"
+            showOperator={false}
             operator={filters.endOperator}
             text={filters.endText}
             values={[...filters.ends]}
@@ -927,7 +958,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
             textPlaceholder="vd. 17:00"
             selectPlaceholder="Chọn giờ kết thúc…"
           />
-        </div>
+        </div>}
 
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-[11px] text-slate-600" aria-live="polite">
@@ -969,18 +1000,27 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
           />
         )}
 
-        <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-slate-200">
+        <div className="min-h-0 flex-1 overflow-auto rounded-md border border-slate-200">
           {shown.length === 0 ? (
             <p className="px-2 py-3 text-xs text-slate-500">
               {loading ? "Đang tải config…" : rows.length === 0 ? "Chưa đọc được config." : "Không tìm thấy dòng nào."}
             </p>
           ) : (
-            <table className="w-full text-xs">
+            <table className="w-full min-w-[880px] table-fixed text-[13px]">
+              <colgroup>
+                <col className="w-[3%]" />
+                <col className="w-[7%]" />
+                <col className="w-[25%]" />
+                <col className="w-[31%]" />
+                <col className="w-[17%]" />
+                <col className="w-[13%]" />
+                <col className="w-[4%]" />
+              </colgroup>
               {/* z-10: the shift strips are positioned, and without a stacking
                   order of its own the sticky header scrolled UNDER them. */}
               <thead className="sticky top-0 z-10 bg-slate-50 text-[11px] text-slate-600">
                 <tr>
-                  <th className="w-8 px-2 py-1 text-left font-medium">
+                  <th className="px-1 py-1 text-left font-medium">
                     <input
                       type="checkbox"
                       checked={allShownPicked}
@@ -994,13 +1034,15 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                       disabled={selectable.length === 0}
                       aria-label={`Chọn ${selectable.length} dòng đang hiện`}
                       title={`Chọn tất cả ${selectable.length} dòng đang hiện`}
-                      className="size-3.5 accent-indigo-600"
+                      className="size-4 accent-indigo-600"
                     />
                   </th>
-                  <th className="w-14 px-2 py-1 text-left font-medium"><span className="sr-only">Sửa</span></th>
+                  <th className="px-1 py-1 text-left font-medium"><span className="sr-only">Sửa lịch</span></th>
                   <th className="px-2 py-1 text-left font-medium">Điểm lấy</th>
                   <th className="px-2 py-1 text-left font-medium">Tài xế</th>
-                  <th className="px-2 py-1 text-left font-medium whitespace-nowrap">Ca</th>
+                  <th className="px-2 py-1 text-left font-medium whitespace-nowrap">
+                    Ca <span className="ml-1 font-normal text-slate-500">(0–12–24h)</span>
+                  </th>
                   <th className="px-2 py-1 text-left font-medium whitespace-nowrap">Điểm giao</th>
                   <th className="px-2 py-1 text-right font-medium" title="Số dòng trên sheet">Dòng</th>
                 </tr>
@@ -1015,7 +1057,6 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                   const first = shown[runStart[i]];
                   const firstOfBranch = runStart[i] === i;
                   const lastOfBranch = i === shown.length - 1 || runStart[i + 1] !== runStart[i];
-                  const runLength = runSize.get(runStart[i]) ?? 1;
                   const inactive = isInactive(r.pickup);
                   // Every row of the route being edited is marked: the editor
                   // holds the route's WHOLE day, so these rows are the very
@@ -1030,7 +1071,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                       selected.has(r.row) ? "bg-indigo-50" : inBranch ? "bg-indigo-50/60" : "hover:bg-slate-50"
                     }`}
                   >
-                    <td className="px-2 py-1">
+                    <td className="px-1 py-1">
                       <input
                         type="checkbox"
                         checked={selected.has(r.row)}
@@ -1038,10 +1079,10 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                         disabled={!isWritable(r)}
                         aria-label={`Chọn dòng ${r.row}${r.pickup ? ` — ${r.pickup}` : ""}`}
                         title={isWritable(r) ? undefined : "Dòng không có điểm lấy — sửa từng dòng bằng nút Sửa"}
-                        className="size-3.5 accent-indigo-600"
+                        className="size-4 accent-indigo-600"
                       />
                     </td>
-                    <td className="px-2 py-1">
+                    <td className="px-1 py-1">
                       {/* ONE button per branch, on the row that names it. Every
                           row's Sửa opened the same editor — the branch's whole
                           day — so a column of identical buttons promised a
@@ -1051,17 +1092,15 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                       {firstOfBranch && (
                         <Button
                           size="sm" variant={runOpen ? "default" : "ghost"}
-                          className={`h-6 gap-1 px-1.5 text-[11px] font-normal ${
+                          className={`h-7 px-1.5 text-xs font-normal whitespace-nowrap ${
                             runOpen ? "bg-indigo-600 hover:bg-indigo-700" : "text-indigo-700 hover:bg-indigo-50 hover:text-indigo-800"
                           }`}
                           aria-expanded={runOpen}
-                          aria-label={runOpen ? "Đóng" : `Sửa ${r.pickup || branch} → ${r.dropoff || "mọi điểm"}${runLength > 1 ? ` (${runLength} dòng)` : ""}`}
-                          title={runLength > 1 ? `Sửa ${runLength} dòng cho ${r.dropoff || "mọi điểm giao"}` : undefined}
+                          aria-label={runOpen ? "Đóng" : `Sửa lịch ${r.pickup || branch} → ${r.dropoff || "mọi điểm"}`}
                           onClick={() => setEditing(runOpen ? null : { branch, pickup: r.pickup, dropoff: r.dropoff, row: r.row })}
                           disabled={!r.customer_id && !r.pickup}
                         >
-                          {!runOpen && <Pencil aria-hidden className="size-3" />}
-                          {runOpen ? "Đóng" : "Sửa"}
+                          {runOpen ? "Đóng" : "Sửa lịch"}
                         </Button>
                       )}
                     </td>
@@ -1083,10 +1122,10 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                         <span className="sr-only">{r.pickup}</span>
                       )}
                     </td>
-                    <td className="px-2 py-1 text-slate-700">
+                    <td className="px-2 py-1 text-slate-700 break-words">
                       {r.driver ? displayDriverCell(r.driver) : <span className="text-amber-700">chưa có tài xế</span>}
                       {r.smart && (
-                        <span className="ml-1.5 rounded-full border border-sky-200 bg-sky-50 px-1 py-0 text-[10px] font-semibold text-sky-700">
+                        <span className="ml-1.5 rounded-full border border-sky-200 bg-sky-50 px-1 py-0 text-[10px] font-semibold text-sky-700" title="Hệ thống chọn tài xế gần điểm lấy nhất trong danh sách">
                           smart
                         </span>
                       )}
@@ -1099,7 +1138,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                           : <span className="text-slate-500">cả ngày</span>}
                       </span>
                     </td>
-                    <td className="px-2 py-1 text-slate-700">
+                    <td className="truncate px-2 py-1 text-slate-700" title={r.dropoff || undefined}>
                       {r.dropoff || <span className="whitespace-nowrap text-slate-500">mọi điểm</span>}
                     </td>
                     <td className="px-2 py-1 text-right font-mono text-[10px] text-slate-500">{r.row}</td>
@@ -1114,6 +1153,9 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                   runOpen && lastOfBranch && editingRows.length > 0 ? (
                     <tr key={`${r.row}-edit`} className="bg-indigo-50/60">
                       <td colSpan={7} className="px-2 pb-2">
+                        <div className="py-1 text-xs font-medium text-indigo-900">
+                          Sửa toàn bộ lịch {editingRows[0].pickup} → {editingRows[0].dropoff || "mọi điểm giao"} · {editingRows.length} ca
+                        </div>
                         <BranchEditor
                           pickupName={editingRows[0].pickup}
                           dropoffName={editingRows[0].dropoff}
