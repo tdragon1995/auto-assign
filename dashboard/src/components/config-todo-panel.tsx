@@ -16,7 +16,7 @@ import type { ConfigRowView } from "@/app/api/config/rows/route";
 import { DriverCombobox } from "./driver-combobox";
 import {
   type Line, type CopiedLine, toMin, newLineKey, asLine, sig, findClash, servesDropoff,
-  applyCopiedLines, copyKey, availableTime,
+  applyCopiedLines, availableTime,
 } from "@/lib/config-shift";
 
 /**
@@ -326,8 +326,6 @@ type CopySource = {
   pickup: string;
   customer_id: string;
   rules: ConfigRowView[];
-  /** Rules not already sitting in the editor — what pressing Copy actually adds. */
-  fresh: ConfigRowView[];
 };
 
 /**
@@ -354,25 +352,18 @@ type CopySource = {
  * supervisor does next, and it used to do nothing here. The picker lives in a
  * dialog because the to-do list has a short scroll area that clips its choices.
  *
- * The count on each row is the count that will ARRIVE, not the count the source
- * happens to have. The caller drops lines the editor already holds, so a branch
- * whose three shifts are all present offers nothing — and now says so, instead
- * of promising three and adding none.
+ * Copy replaces the shifts currently in the editor. The picker shows the full
+ * source pattern so the supervisor can review it before saving.
  */
 function CopyFromBranch({
   open,
   onClose,
   onCopy,
-  existingKeys,
-  targetDropoff,
   panelId,
 }: {
   open: boolean;
   onClose: () => void;
   onCopy: (lines: CopiedLine[]) => void;
-  /** `copyKey` of every line already in the editor. */
-  existingKeys: readonly string[];
-  targetDropoff: string;
   panelId: string;
 }) {
   const [q, setQ] = useState("");
@@ -414,30 +405,29 @@ function CopyFromBranch({
     }
   }, [open]);
 
-  const existing = useMemo(() => new Set(existingKeys), [existingKeys]);
-
   // Grouped by branch, because a branch's DAY is the useful unit — copying one
   // of its three shifts would leave the other two to be typed by hand, which is
   // the work this exists to remove.
   const all = useMemo<CopySource[]>(() => {
     if (!rows || !q.trim()) return [];
+    const branchKey = (r: ConfigRowView) => `${r.customer_id || r.pickup}|${r.dropoff.trim()}`;
     const hit = searchConfigRows(rows, q).filter((r) => r.driver.trim() && r.pickup.trim());
+    const matchingBranches = new Set(hit.map(branchKey));
     const byBranch = new Map<string, { pickup: string; customer_id: string; rules: ConfigRowView[] }>();
-    for (const r of hit) {
-      const key = `${r.customer_id || r.pickup}|${r.dropoff.trim()}`;
+    // A driver search may match only one shift. Copy the whole branch pattern.
+    for (const r of rows) {
+      if (!r.driver.trim() || !r.pickup.trim()) continue;
+      const key = branchKey(r);
+      if (!matchingBranches.has(key)) continue;
       const g = byBranch.get(key);
       if (g) g.rules.push(r);
       else byBranch.set(key, { pickup: r.pickup, customer_id: r.customer_id, rules: [r] });
     }
-    return [...byBranch.values()].map((g) => {
-      const rules = [...g.rules].sort((a, b) => toMin(a.start) - toMin(b.start));
-      return {
-        ...g,
-        rules,
-        fresh: rules.filter((r) => !existing.has(copyKey(r.driver, r.start, r.end, targetDropoff))),
-      };
-    });
-  }, [rows, q, existing, targetDropoff]);
+    return [...byBranch.values()].map((g) => ({
+      ...g,
+      rules: [...g.rules].sort((a, b) => toMin(a.start) - toMin(b.start)),
+    }));
+  }, [rows, q]);
 
   const branches = all.slice(0, 8);
   const hidden = all.length - branches.length;
@@ -447,8 +437,7 @@ function CopyFromBranch({
   useEffect(() => { setActive(0); }, [q]);
 
   const take = (b: CopySource) => {
-    if (b.fresh.length === 0) return;
-    onCopy(b.fresh.map((r) => ({ driver: r.driver, start: r.start, end: r.end, sourceRow: r.row })));
+    onCopy(b.rules.map((r) => ({ driver: r.driver, start: r.start, end: r.end, sourceRow: r.row })));
     setQ("");
     onClose();
   };
@@ -509,7 +498,7 @@ function CopyFromBranch({
       </div>
 
       <p id={hintId} className="mt-1 text-[11px] text-slate-600">
-        Copy cả ngày của một điểm khác vào form này. Chưa ghi vào sheet — vẫn phải bấm Lưu.
+        Copy cả ngày của một điểm khác sẽ thay ca hiện có trong form. Chưa ghi vào sheet — vẫn phải bấm Lưu.
       </p>
 
       <div className="min-h-0 overflow-y-auto">
@@ -556,7 +545,6 @@ function CopyFromBranch({
       {branches.length > 0 && (
         <ul id={listId} role="listbox" aria-label="Điểm để copy ca" className="mt-1.5 space-y-1">
           {branches.map((b, i) => {
-            const none = b.fresh.length === 0;
             const isActive = i === activeIndex;
             return (
               <li key={`${b.customer_id || b.pickup}|${b.rules[0]?.dropoff}`}>
@@ -565,33 +553,22 @@ function CopyFromBranch({
                   id={optionId(i)}
                   role="option"
                   aria-selected={isActive}
-                  aria-disabled={none}
                   tabIndex={-1}
                   onMouseEnter={() => setActive(i)}
                   onClick={() => take(b)}
                   className={`w-full rounded border p-1.5 text-left transition-colors duration-150 ${
-                    none
-                      ? "cursor-not-allowed border-slate-200 bg-white opacity-70"
-                      : isActive
-                        ? "border-indigo-400 bg-indigo-50"
-                        : "border-slate-200 bg-white hover:border-indigo-300 hover:bg-indigo-50/60"
+                    isActive ? "border-indigo-400 bg-indigo-50" : "border-slate-200 bg-white hover:border-indigo-300 hover:bg-indigo-50/60"
                   }`}
                 >
                   <span className="flex flex-wrap items-center gap-x-1.5">
                     <span className="text-xs font-medium text-slate-800">{b.pickup} → {b.rules[0]?.dropoff || "Mọi điểm giao"}</span>
-                    <span
-                      className={`ml-auto shrink-0 rounded px-1.5 py-0.5 text-[11px] font-semibold ${
-                        none ? "bg-slate-100 text-slate-700" : "bg-indigo-600 text-white"
-                      }`}
-                    >
-                      {none ? "Đã có đủ" : `Copy ${b.fresh.length} ca`}
+                    <span className="ml-auto shrink-0 rounded bg-indigo-600 px-1.5 py-0.5 text-[11px] font-semibold text-white">
+                      Thay bằng {b.rules.length} ca
                     </span>
                   </span>
                   <span className="mt-0.5 block space-y-0.5">
-                    {b.rules.map((r) => {
-                      const dup = existing.has(copyKey(r.driver, r.start, r.end, targetDropoff));
-                      return (
-                        <span key={r.row} className={`block text-[11px] ${dup ? "text-slate-500" : "text-slate-700"}`}>
+                    {b.rules.map((r) => (
+                        <span key={r.row} className="block text-[11px] text-slate-700">
                           <span className="tabular-nums">
                             {r.start && r.end ? `${r.start}–${r.end}` : "cả ngày"}
                           </span>
@@ -603,10 +580,8 @@ function CopyFromBranch({
                               difference is visible before the copy, rather than
                               discovered by a job that assigns somewhere else. */}
                           {r.dropoff && <span className="text-slate-500"> → chỉ {r.dropoff}</span>}
-                          {dup && <span className="text-slate-500"> · đã có</span>}
                         </span>
-                      );
-                    })}
+                    ))}
                   </span>
                 </button>
               </li>
@@ -710,9 +685,7 @@ export function BranchEditor({
 
   const patch = (i: number, v: Partial<Line>) =>
     setLines((ls) => ls.map((l, j) => (j === i ? { ...l, ...v } : l)));
-  // A line added by hand inherits the BRANCH's destination — which is what every
-  // added line used to get, so this is the unchanged path. Only a copied line
-  // brings a scope of its own.
+  // New lines inherit the destination of the branch being edited.
   const addLine = () =>
     setLines((ls) => [...ls, { key: newLineKey(), driver: "", start: "", end: "", dropoff: dropoffName }]);
   const dropLine = (key: string) => {
@@ -872,22 +845,13 @@ export function BranchEditor({
       <CopyFromBranch
         open={copyOpen}
         panelId={copyPanelId}
-        existingKeys={lines.map((l) => copyKey(l.driver, l.start, l.end, l.dropoff))}
-        targetDropoff={dropoffName}
         onClose={() => { setCopyOpen(false); copyBtnRef.current?.focus(); }}
         onCopy={(copied) => {
-          let touched: string[] = [];
-          setLines((ls) => {
-            const next = applyCopiedLines(ls, copied, dropoffName);
-            touched = next.touched;
-            return next.lines;
-          });
-          setJustAdded(new Set(touched));
-          toast.success(
-            touched.length
-              ? `Đã copy ${touched.length} ca vào form — bấm Lưu để ghi`
-              : "Các ca này đã có trong form",
-          );
+          const next = applyCopiedLines(lines, copied, dropoffName);
+          setLines(next.lines);
+          setPendingDeletes((prev) => [...prev, ...next.removed]);
+          setJustAdded(new Set(next.touched));
+          toast.success(`Đã thay ca trong form bằng ${copied.length} ca — bấm Lưu để ghi`);
         }}
       />
       {pendingDeletes.length > 0 && <div className="text-xs text-slate-600">Sẽ xoá {pendingDeletes.length} dòng khi bấm Lưu.</div>}

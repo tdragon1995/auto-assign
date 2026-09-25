@@ -296,22 +296,6 @@ export function coverageLostWithout(rules: BranchRule[], row: number): string | 
   return `${fromMin(lost[0] - 1)}–${fromMin(lost[lost.length - 1])}`;
 }
 
-/**
- * How a copied rule is matched against what the editor already holds.
- *
- * Shared with the picker rather than written twice: the picker uses it to say
- * how many rules a branch would actually ADD, and `applyCopiedLines` uses it to
- * decide which ones to add. Two spellings of that question would eventually
- * disagree, and the disagreement would show as a button promising a number the
- * copy then did not deliver — the exact defect the count was added to fix.
- *
- * The destination is part of the identity: the same driver on the same hours
- * answering for a different place is a different rule, not a duplicate. Folded
- * for case, like `sameScope`, so the two agree about what one place is.
- */
-export const copyKey = (driver: string, start: string, end: string, dropoff: string) =>
-  `${driver.trim()}|${start.trim()}|${end.trim()}|${dropoff.trim().toLowerCase()}`;
-
 /** A boundary is available if it can form a nonempty shift without overlapping peers. */
 export function availableTime(lines: readonly Line[], index: number, edge: "start" | "end", value: string): boolean {
   const own = lines[index];
@@ -336,74 +320,36 @@ export interface CopiedLine {
 }
 
 /**
- * Fold copied rules into the branch being edited, filling EMPTY SHEET ROWS first.
- *
- * The copy used to append, always, beside whatever the editor already held. That
- * is wrong in the one place the button matters most. The editor is usually
- * opened FROM an unfinished row — a row this system created, carrying a window
- * and no driver, which is the whole reason the branch is in the to-do list — and
- * appending beside it leaves that row exactly as it was. The save then refuses
- * on it ("Chưa chọn tài xế") and the copy cannot be written at all; name a
- * driver on it by hand and its old window usually sits inside the copied one, so
- * it becomes a CLASH instead. Either way the button did not work on the row it
- * was built for.
- *
- * An empty row is not something to preserve. It is reserved capacity — the sheet
- * is finite, and `writeConfigRows` refuses once the table is full — so the first
- * copied rule takes it over, driver and hours together, and only what is left
- * over is appended as new. The row number rides along, which is what makes the
- * save an UPDATE of that row rather than an append beside it, so the to-do row
- * that opened the editor is the row that gets answered.
- *
- * What an adopted row does NOT take from the copy is its DESTINATION. The write
- * that fills an existing row (`completeConfigRow`) names no destination column,
- * deliberately, so the row keeps the scope the sheet already has for it —
- * showing the copied one would be the form claiming a write it cannot make, and
- * would put the clash check on the wrong footing too. A rule appended as new is
- * free to carry the copied scope, because that one is genuinely being created.
- *
- * Lines that already name a driver are never touched: they are real rules, and
- * one the supervisor has half-filled is work in progress, not free space.
+ * Replace the editor's current shifts with the copied pattern. Reuse sheet rows
+ * first so saving updates them in place; surplus sheet rows must be deleted.
+ * Every copied shift takes the destination of the branch being edited.
  */
 export function applyCopiedLines(
   lines: readonly Line[],
   copied: readonly CopiedLine[],
   dropoff: string,
-): { lines: Line[]; touched: string[] } {
-  // A blank line nobody has touched is a placeholder, not a rule — drop it
-  // rather than saving an empty row beside the copy. One with a sheet row stays:
-  // it exists in the sheet whether or not this editor keeps it on screen.
-  const kept = lines.filter((l) => l.driver.trim() || l.start.trim() || l.end.trim() || l.row);
-
-  // Deduped against the rules that are actually THERE. A slot waiting to be
-  // filled names no driver, so it can never match a copied rule anyway.
-  const have = new Set(
-    kept.filter((l) => l.driver.trim()).map((l) => copyKey(l.driver, l.start, l.end, l.dropoff)),
-  );
-  const incoming = copied
-    .map((c) => ({ ...c, dropoff }))
-    .filter((c) => !have.has(copyKey(c.driver, c.start, c.end, c.dropoff)));
-
-  const slots = kept.filter((l) => l.row && !l.driver.trim()).map((l) => l.key);
-  const adopt = new Map<string, CopiedLine>();
-  let next = 0;
-  for (const c of incoming) {
-    if (next < slots.length) adopt.set(slots[next++], c);
-  }
-  const appended = incoming.slice(next);
-
+): { lines: Line[]; touched: string[]; removed: Line[] } {
+  // Row 2 holds array formulas and cannot be deleted, so always reuse it.
+  const sheetRows = lines.filter((l) => l.row)
+    .sort((a, b) => Number(b.row === 2) - Number(a.row === 2));
+  const reusable = [
+    ...sheetRows,
+    ...lines.filter((l) => !l.row && (l.driver.trim() || l.start.trim() || l.end.trim())),
+  ];
   const touched: string[] = [];
-  const out = kept.map((l) => {
-    const c = adopt.get(l.key);
-    if (!c) return l;
-    touched.push(l.key);
-    // Scope stays the ROW's — see above. Everything else comes from the copy.
-    return { ...l, driver: c.driver, start: c.start, end: c.end, copyFromRow: c.sourceRow };
+  const out = copied.map((c, i) => {
+    const current = reusable[i];
+    if (!current) {
+      const key = newLineKey();
+      touched.push(key);
+      return { key, driver: c.driver, start: c.start, end: c.end, dropoff, copyFromRow: c.sourceRow };
+    }
+    const next = {
+      ...current, driver: c.driver, start: c.start, end: c.end, dropoff,
+      copyFromRow: c.sourceRow === current.row ? undefined : c.sourceRow,
+    };
+    if (sig(current) !== sig(next)) touched.push(current.key);
+    return next;
   });
-  for (const c of appended) {
-    const key = newLineKey();
-    touched.push(key);
-    out.push({ key, driver: c.driver, start: c.start, end: c.end, dropoff: c.dropoff, copyFromRow: c.sourceRow });
-  }
-  return { lines: out, touched };
+  return { lines: out, touched, removed: reusable.slice(copied.length).filter((l) => l.row) };
 }

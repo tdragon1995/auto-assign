@@ -262,15 +262,13 @@ console.log("\na copy fills the empty sheet row it was opened from");
       [["A", 9], ["B", null]]);
   }
 
-  // An adopted row keeps the destination the SHEET has for it: completeConfigRow
-  // writes no destination column, so taking the copy's would be the form
-  // claiming a write it cannot make.
+  // Existing rows take the destination of the branch being copied into.
   {
-    const before = [line("row:9", "", "13:00", "14:00", "BRA - D001", 9)];
+    const before = [line("row:9", "", "13:00", "14:00", "Old destination", 9)];
     const { lines } = applyCopiedLines(before, [
       { driver: "A", start: "05:00", end: "13:25" },
     ], "BRA - D001");
-    eq("the row's own scope survives the copy", lines[0].dropoff, "BRA - D001");
+    eq("the existing row takes the target scope", lines[0].dropoff, "BRA - D001");
   }
   // A rule genuinely being created uses the destination of the branch being edited.
   {
@@ -280,22 +278,46 @@ console.log("\na copy fills the empty sheet row it was opened from");
     eq("an appended rule carries the target scope", lines[0].dropoff, "BRA - D001");
   }
 
-  // A line already naming a driver is a rule, or work in progress. Never free space.
+  // A copy replaces populated rows too, keeping their sheet row for an update.
   {
     const before = [line("row:9", "Nam", "05:00", "13:25", "", 9)];
-    const { lines } = applyCopiedLines(before, [
+    const { lines, touched, removed } = applyCopiedLines(before, [
       { driver: "B", start: "13:25", end: "19:00" },
     ], "");
-    eq("an existing rule is untouched and the copy is appended",
-      lines.map((l) => l.driver), ["Nam", "B"]);
+    eq("the existing rule is overwritten in place", lines.map((l) => [l.driver, l.row]), [["B", 9]]);
+    eq("the overwritten row is highlighted", touched, ["row:9"]);
+    eq("the reused row is not deleted", removed, []);
   }
   {
     const before = [line("new:x", "Nam", "", "")];
     const { lines } = applyCopiedLines(before, [
       { driver: "B", start: "13:25", end: "19:00" },
     ], "");
-    eq("a half-filled line is work in progress, not a slot",
-      lines.map((l) => l.driver), ["Nam", "B"]);
+    eq("a half-filled unsaved line is replaced", lines.map((l) => l.driver), ["B"]);
+  }
+
+  // Copying a shorter day removes surplus sheet rules on Save.
+  {
+    const before = [
+      line("row:9", "Nam", "05:00", "13:25", "", 9),
+      line("row:10", "Hùng", "13:25", "19:00", "", 10),
+    ];
+    const { lines, removed } = applyCopiedLines(before, [
+      { driver: "B", start: "08:00", end: "17:00" },
+    ], "");
+    eq("the shorter copy leaves one rule", lines.map((l) => l.driver), ["B"]);
+    eq("the surplus sheet row is queued for deletion", removed.map((l) => l.row), [10]);
+  }
+  {
+    const before = [
+      line("row:9", "Nam", "05:00", "13:25", "", 9),
+      line("row:2", "Hùng", "13:25", "19:00", "", 2),
+    ];
+    const { lines, removed } = applyCopiedLines(before, [
+      { driver: "B", start: "08:00", end: "17:00" },
+    ], "");
+    eq("the formula anchor row is kept", lines[0].row, 2);
+    eq("the other row is deleted instead", removed.map((l) => l.row), [9]);
   }
 
   // The untouched placeholder "+ Thêm ca" leaves behind still goes.
@@ -307,8 +329,7 @@ console.log("\na copy fills the empty sheet row it was opened from");
     eq("a blank placeholder with no row is dropped", lines.map((l) => l.driver), ["B"]);
   }
 
-  // Same rule already present: nothing added, and nothing highlighted, so the
-  // toast and the picker's count agree.
+  // Copying the same rule does not cause a needless sheet write.
   {
     const before = [line("row:9", "Nam", "05:00", "13:25", "", 9)];
     const { lines, touched } = applyCopiedLines(before, [
@@ -316,6 +337,13 @@ console.log("\na copy fills the empty sheet row it was opened from");
     ], "");
     eq("a duplicate is not added twice", lines.length, 1);
     eq("…and nothing is reported as copied", touched, []);
+  }
+  {
+    const before = [line("row:9", "Other", "13:00", "19:00", "", 9)];
+    const { lines } = applyCopiedLines(before, [
+      { driver: "Nam", start: "05:00", end: "13:25", sourceRow: 9 },
+    ], "");
+    eq("copying from the same sheet row needs no format copy", lines[0].copyFromRow, undefined);
   }
 }
 
