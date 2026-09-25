@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
-import { CheckCircle2, ClipboardList, Clock } from "lucide-react";
+import { CheckCircle2, ClipboardList, Clock, MapPin } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
@@ -79,7 +79,8 @@ export function gmapsRoute(routeGps: string | undefined): string | null {
   return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(from)}&destination=${encodeURIComponent(to)}&travelmode=driving`;
 }
 
-const cartrackJob = (jobId: number) => `https://fleetweb-vn.cartrack.com/delivery/map?job=${jobId}`;
+const cartrackJob = (jobId: number) => `https://fleetweb-vn.cartrack.com/delivery/map?job=${jobId}&view=grid`;
+const SAPOCHE_DELIVERY_URL = "https://labcenter.vn/admin-delivery-management";
 
 
 function metaFor(reason: FailedReason) {
@@ -142,6 +143,8 @@ function FailedRow({
   const [showSchedule, setShowSchedule] = useState(false);
   const [dayOffset, setDayOffset] = useState(0);
   const [timeLabel, setTimeLabel] = useState<string | null>(null);
+  const mapUrl = gmapsRoute(job.route_gps);
+  const labcenterCode = job.reference_number?.trim();
 
   // Three reasons get the scheduler as well as the manual pick, because for all
   // three the right answer is often "not now":
@@ -175,28 +178,47 @@ function FailedRow({
     <div className="px-2 py-1.5 hover:bg-slate-50">
       {/* Line 1: job link · route (reason lives in the section header) */}
       <div className="flex items-center gap-2 min-w-0">
-        {/* The job number opens the ROUTE — the question being asked here is
-            "where does this trip run", which Cartrack's own map answers slowly
-            and only for someone already signed in. Cartrack stays one click
-            away for the job's actual record. */}
+        {/* Each destination has its own link; the job number opens its Cartrack record. */}
         <a
-          href={gmapsRoute(job.route_gps) ?? cartrackJob(job.job_id)}
+          href={cartrackJob(job.job_id)}
           target="_blank"
           rel="noopener noreferrer"
           className="shrink-0 font-mono font-semibold text-indigo-600 underline hover:text-indigo-800"
-          title={gmapsRoute(job.route_gps) ? "Mở đường đi trên Google Maps" : "Mở trên Cartrack (job này chưa có toạ độ)"}
+          title="Mở job trên Cartrack"
         >
           Job {job.job_id}
         </a>
-        {gmapsRoute(job.route_gps) && (
+        {mapUrl && (
           <a
-            href={cartrackJob(job.job_id)}
+            href={mapUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="shrink-0 rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[11px] font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-800"
-            title="Mở job trên Cartrack"
+            className="inline-flex size-6 shrink-0 items-center justify-center rounded-sm bg-blue-600 text-white hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+            aria-label={`Mở đường đi trên Google Maps cho job ${job.job_id}`}
+            title="Mở đường đi trên Google Maps"
           >
-            Cartrack
+            <MapPin className="size-4" aria-hidden />
+          </a>
+        )}
+        {labcenterCode && (
+          <a
+            href={SAPOCHE_DELIVERY_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex size-6 shrink-0 items-center justify-center rounded-sm bg-blue-600 text-sm font-bold text-white hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+            aria-label={`Mở Sapoche và sao chép mã yêu cầu ${labcenterCode}`}
+            title={`Mở Sapoche và sao chép mã ${labcenterCode} để dán vào ô Mã yêu cầu`}
+            onClick={() => {
+              if (!navigator.clipboard?.writeText) {
+                toast.error(`Hãy sao chép mã Labcenter ${labcenterCode} thủ công`);
+                return;
+              }
+              void navigator.clipboard.writeText(labcenterCode)
+                .then(() => toast.success(`Đã sao chép mã Labcenter ${labcenterCode} — dán vào ô Mã yêu cầu`))
+                .catch(() => toast.error(`Hãy sao chép mã Labcenter ${labcenterCode} thủ công`));
+            }}
+          >
+            S
           </a>
         )}
         {onOpenJob && <OpenInAdminButton jobId={job.job_id} onOpen={onOpenJob} />}
