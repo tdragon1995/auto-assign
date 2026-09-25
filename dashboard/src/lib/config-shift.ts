@@ -99,9 +99,9 @@ export const asLine = (r: BranchRule): Line => ({
 export const sameScope = (a: Line, b: Line) =>
   a.dropoff.trim().toLowerCase() === b.dropoff.trim().toLowerCase();
 
-/** What a line would WRITE. Two lines with the same signature put the same
- *  content in the sheet, which is what makes "already written" answerable. */
-export const sig = (l: Line) => [l.driver, l.start, l.end, l.dropoff].join("\u0000");
+/** What a line would write, including a requested copy of the source row's
+ * smart_driver_id cell. Visible fields can match while that cell differs. */
+export const sig = (l: Line) => [l.driver, l.start, l.end, l.dropoff, l.copyFromRow ?? ""].join("\u0000");
 
 /**
  * The branch's day AS THIS DESTINATION SEES IT.

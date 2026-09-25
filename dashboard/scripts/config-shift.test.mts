@@ -16,7 +16,7 @@
  */
 import type { BranchRule, CoverageGap } from "../src/lib/types";
 const { servesDropoff, shrinkOptions, overlapKey, coverageLostWithout, findClash, blocks, toMin, fromMin,
-  applyCopiedLines, availableTime } = await import("../src/lib/config-shift");
+  applyCopiedLines, availableTime, sig } = await import("../src/lib/config-shift");
 
 let failed = 0;
 function ok(label: string, cond: boolean, detail?: string) {
@@ -337,6 +337,15 @@ console.log("\na copy fills the empty sheet row it was opened from");
     ], "");
     eq("a duplicate is not added twice", lines.length, 1);
     eq("…and nothing is reported as copied", touched, []);
+  }
+  {
+    const before = [line("row:9", "Nam", "05:00", "13:25", "", 9)];
+    const { lines, touched } = applyCopiedLines(before, [
+      { driver: "Nam", start: "05:00", end: "13:25", sourceRow: 20 },
+    ], "");
+    eq("an identical visible rule still copies smart_driver_id", lines[0].copyFromRow, 20);
+    eq("the copy is marked for Save", touched, ["row:9"]);
+    ok("Save sees the source-cell copy as a change", sig(lines[0]) !== sig(before[0]));
   }
   {
     const before = [line("row:9", "Other", "13:00", "19:00", "", 9)];
