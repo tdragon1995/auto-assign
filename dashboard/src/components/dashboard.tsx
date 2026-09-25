@@ -47,8 +47,10 @@ export function Dashboard() {
   const [warnings, setWarnings] = useState<PickupWarning[]>([]);
   const [warningsAt, setWarningsAt] = useState<string | null>(null);
   /** Counts explicit leave refreshes, so the leave panel's week grid — which
-   *  owns a fetch of its own — re-reads when Làm mới is pressed. */
+   *  owns a fetch of its own — re-reads when Đồng bộ cài đặt is pressed. */
   const [leaveRefreshKey, setLeaveRefreshKey] = useState(0);
+  const [syncingSettings, setSyncingSettings] = useState(false);
+  const [syncingMisa, setSyncingMisa] = useState(false);
   const [failed, setFailed] = useState<FailedJob[]>([]);
   const [sheetAlarms, setSheetAlarms] = useState<SheetAlarm[]>([]);
   const [unfinished, setUnfinished] = useState<UnfinishedConfigRow[]>([]);
@@ -215,7 +217,7 @@ export function Dashboard() {
   // Leave status (today + tomorrow) for the Cần xử lý tab. Backed by a 5-min
   // sheet cache server-side, so loading on mount + manual refresh is enough —
   // no need to poll it on the 90s status cadence.
-  // `fresh` (used by Refresh) busts the server-side 5-min sheet cache so a
+  // `fresh` (used by Đồng bộ cài đặt) busts the server-side 5-min sheet cache so a
   // supervisor's edit shows at once. On failure we flag an error but keep the
   // last-known lists — the panel shows an error line only when it has nothing,
   // so a transient blip never renders as a false "nobody's on leave".
@@ -230,17 +232,17 @@ export function Dashboard() {
     // every visibility resume, and loadLeaveEntries holds a 5-minute Redis copy — so
     // inside that window the response is identical by construction, and 255 calls in 12h
     // bought 30s of CPU re-parsing an unchanged value. Two things still always go through:
-    // `fresh` (the Refresh button, which busts the server cache), and a change of VN date,
+    // `fresh` (the settings sync button, which busts the server cache), and a change of VN date,
     // so a tab left open past midnight still drops yesterday's roster from "Hôm nay".
     const today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Ho_Chi_Minh" }).format(new Date()).slice(0, 10);
-    if (!fresh && today === lastLeaveDayRef.current && Date.now() - lastLeaveAtRef.current < LEAVE_CACHE_MS) return;
+    if (!fresh && today === lastLeaveDayRef.current && Date.now() - lastLeaveAtRef.current < LEAVE_CACHE_MS) return true;
     lastLeaveAtRef.current = Date.now();
     lastLeaveDayRef.current = today;
     try {
       const res = await fetch(`/api/leave-status${fresh ? "?fresh=1" : ""}`, { cache: "no-store" });
       if (!res.ok) {
         setLeave((prev) => ({ ...prev, error: true }));
-        return;
+        return false;
       }
       const data = await res.json();
       setLeave({
@@ -256,11 +258,13 @@ export function Dashboard() {
       // fetch that nothing else re-issues, so before this a refresh re-read
       // today and tomorrow and left the rest of the week on screen unchanged —
       // which is what a row added straight into the workbook looked like:
-      // absent, however many times Làm mới was pressed. Bumped only on an
+      // absent, however many times Đồng bộ cài đặt was pressed. Bumped only on an
       // explicit refresh, so the ordinary poll does not force a sheet read.
       if (fresh) setLeaveRefreshKey((k) => k + 1);
+      return true;
     } catch {
       setLeave((prev) => ({ ...prev, error: true }));
+      return false;
     }
   }, []);
 
@@ -480,54 +484,81 @@ export function Dashboard() {
     if (next) arm(); else disarm();
   }, [arm, disarm]);
 
-  // Refresh handler with toast
-  const handleRefresh = useCallback(async () => {
-    try {
-      const configRes = await fetch("/api/config");
-      if (!configRes.ok) throw new Error(`Config returned ${configRes.status}`);
-      const configData = await configRes.json();
-      if (configData.status === "error") throw new Error(configData.error);
-      setMappingCount(configData.mappingCount ?? 0);
-      setPscRouteCount(configData.pscRouteCount ?? 0);
-      setDrivers(configData.drivers ?? []);
-      await syncStatus();
-      toast.success(`Google Sheet reloaded: ${configData.mappingCount} mapping(s), ${configData.pscRouteCount} PSC route(s) fetched`);
-    } catch (err) {
-      toast.error(`Refresh failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
+  const syncSettings = useCallback(async () => {
+    const configRes = await fetch("/api/config", { cache: "no-store" });
+    if (!configRes.ok) throw new Error(`Config returned ${configRes.status}`);
+    const configData = await configRes.json();
+    if (configData.status === "error") throw new Error(configData.error);
+    setMappingCount(configData.mappingCount ?? 0);
+    setPscRouteCount(configData.pscRouteCount ?? 0);
+    setDrivers(configData.drivers ?? []);
+    const [leaveLoaded] = await Promise.all([loadLeaveStatus(true), syncStatus()]);
+    if (!leaveLoaded) throw new Error("Không tải được lịch nghỉ phép");
+  }, [loadLeaveStatus, syncStatus]);
 
-  }, [syncStatus]);
+  const handleRefresh = useCallback(async () => {
+    setSyncingSettings(true);
+    try {
+      await syncSettings();
+      toast.success("Đã đồng bộ cài đặt auto-assign và lịch nghỉ phép");
+    } catch (err) {
+      toast.error(`Đồng bộ cài đặt thất bại: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setSyncingSettings(false);
+    }
+  }, [syncSettings]);
 
   const handleMisaRefresh = useCallback(async () => {
-    // Shift/leave sync from MISA. It can't run in this app — the login needs a
-    // real browser — so this only dispatches the GitHub Actions run that does,
-    // and the sheet updates a couple of minutes later. Reported separately from
-    // the cache reload above because it completes long after this click.
+    // MISA needs a real browser in GitHub Actions. Wait for its sheet writes to
+    // finish before reading those sheets through the settings refresh.
+    setSyncingMisa(true);
     try {
       const res = await fetch("/api/misa-sync", { method: "POST" });
       const data = await res.json();
-      if (data.status === "dispatched") {
-        toast.success("Đang đồng bộ ca làm việc từ MISA — bảng cập nhật sau ~2 phút");
-      } else if (data.status === "already_running") {
-        toast.success("Đồng bộ MISA đang chạy…");
-      } else if (data.status === "cooldown") {
+      if (!res.ok || data.status === "error") throw new Error(data.error ?? `HTTP ${res.status}`);
+      if (data.status === "disabled") throw new Error("Chưa cấu hình kết nối GitHub Actions");
+      if (data.status === "cooldown") {
         // Not an error and not silence: the click was deliberately skipped, so
-        // say when it will go again. A MISA run drives a browser and re-submits
-        // every upcoming leave day — one per Refresh click is how the same day
-        // off ended up on the sheet 21 times.
+        // say when it will go again, while still loading the last synced sheets.
         toast.info(
           `Đồng bộ MISA vừa chạy — chờ thêm ${data.cooldown_remaining} phút ` +
             `(giãn cách ${data.cooldown_minutes} phút)`,
         );
-      } else if (data.status === "error") {
-        toast.error(`Đồng bộ MISA thất bại: ${data.error}`);
+        if (data.conclusion !== "success") throw new Error("Lần chạy MISA gần nhất chưa thành công");
+      } else if (data.status === "dispatched" || data.status === "already_running") {
+        toast.info("Đang lấy dữ liệu MISA; cài đặt sẽ tự đồng bộ khi hoàn tất");
+        const previousRunId = data.status === "dispatched" ? data.previous_run_id : null;
+        const targetRunId = data.status === "already_running" ? data.id : null;
+        const deadline = Date.now() + 20 * 60_000;
+        let completed = false;
+        while (Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 15_000));
+          let status: { id?: number; status?: string; conclusion?: string | null };
+          try {
+            const statusRes = await fetch("/api/misa-sync", { cache: "no-store" });
+            if (!statusRes.ok) continue;
+            status = await statusRes.json();
+          } catch {
+            // A transient status check should not discard a still-running workflow.
+            continue;
+          }
+          if (!status.id || status.id === previousRunId || (targetRunId && status.id !== targetRunId) || status.status !== "completed") continue;
+          if (status.conclusion !== "success") throw new Error(`Lần chạy MISA kết thúc: ${status.conclusion ?? "không rõ"}`);
+          completed = true;
+          break;
+        }
+        if (!completed) throw new Error("Quá thời gian chờ MISA; hãy bấm Đồng bộ cài đặt sau khi workflow hoàn tất");
+      } else {
+        throw new Error(`Trạng thái MISA không rõ: ${data.status ?? "trống"}`);
       }
-      // status "disabled" (no GitHub token configured) stays silent.
+      await syncSettings();
+      toast.success("Đã đồng bộ MISA, cài đặt auto-assign và lịch nghỉ phép");
     } catch (err) {
       toast.error(`Đồng bộ MISA thất bại: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setSyncingMisa(false);
     }
-    await loadLeaveStatus(true);
-  }, [loadLeaveStatus]);
+  }, [syncSettings]);
 
   const visibleUnfinished = unfinished.filter((u) => !doneKeys.has(`u:${u.row}`));
   const visibleGaps = gaps.filter((g) => !doneKeys.has(`g:${g.customer_id}|${g.dropoff_name ?? ""}|${g.at}`));
@@ -583,11 +614,11 @@ export function Dashboard() {
             <Switch checked={isRunning} onCheckedChange={toggleService} />
           </div>
 
-          <Button variant="outline" size="sm" className="text-slate-900" onClick={handleRefresh}>
-            Làm mới config auto-assign
+          <Button variant="outline" size="sm" className="text-slate-900" onClick={handleRefresh} disabled={syncingSettings}>
+            {syncingSettings ? "Đang đồng bộ…" : "Đồng bộ cài đặt"}
           </Button>
-          <Button variant="outline" size="sm" className="text-slate-900" onClick={handleMisaRefresh}>
-            Đồng bộ MISA
+          <Button variant="outline" size="sm" className="text-slate-900" onClick={handleMisaRefresh} disabled={syncingMisa}>
+            {syncingMisa ? "Đang đồng bộ MISA…" : "Đồng bộ MISA"}
           </Button>
         </div>
       </header>
@@ -666,7 +697,7 @@ export function Dashboard() {
                       onScheduleFailed={handleScheduleFailed}
                       leaveToday={leave.today}
                       leaveTomorrow={leave.tomorrow}
-                      onLeaveRefresh={() => loadLeaveStatus(true)}
+                      onLeaveRefresh={async () => { await loadLeaveStatus(true); }}
                       onRetrySchedule={retrySchedule}
                       retryingSchedule={retryingSchedule}
                       onOpenJob={openInAdmin}
@@ -684,7 +715,7 @@ export function Dashboard() {
                     suppressedUnreadable={leave.suppressedUnreadable}
                     error={leave.error}
                     drivers={drivers}
-                    onRefresh={() => loadLeaveStatus(true)}
+                    onRefresh={async () => { await loadLeaveStatus(true); }}
                     refreshKey={leaveRefreshKey}
                   />
                 </div>

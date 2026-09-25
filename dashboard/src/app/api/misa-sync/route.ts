@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 /**
- * Kick off the MISA shift sync from the dashboard's Refresh button.
+ * Kick off the MISA shift/leave sync from the dashboard's Đồng bộ MISA button.
  *
  * The sync itself can't run here: logging into MISA needs a real browser
  * (Playwright), because the TimeSheet APIs sit behind Cloudflare + reCAPTCHA
@@ -79,6 +79,7 @@ export async function GET() {
   if (!run) return NextResponse.json({ status: "unknown", cooldown_minutes: COOLDOWN_MINUTES });
   const wait = cooldownLeft(run);
   return NextResponse.json({
+    id: run.id,
     status: run.status,
     conclusion: run.conclusion,
     started: run.created_at,
@@ -101,7 +102,7 @@ export async function POST(req: NextRequest) {
     // the same sheet writes, and the whole tab is cleared and rewritten.
     const running = await latestRun(token);
     if (running && (running.status === "queued" || running.status === "in_progress")) {
-      return NextResponse.json({ status: "already_running", url: running.html_url });
+      return NextResponse.json({ status: "already_running", id: running.id, url: running.html_url });
     }
 
     // Ran recently enough — say so rather than starting another one. The caller
@@ -110,6 +111,7 @@ export async function POST(req: NextRequest) {
     if (wait > 0) {
       return NextResponse.json({
         status: "cooldown",
+        conclusion: running!.conclusion,
         cooldown_minutes: COOLDOWN_MINUTES,
         cooldown_remaining: wait,
         started: running!.created_at,
@@ -140,7 +142,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    return NextResponse.json({ status: "dispatched" });
+    return NextResponse.json({ status: "dispatched", previous_run_id: running?.id ?? null });
   } catch (e) {
     console.error("[misa-sync]", e);
     return NextResponse.json({ status: "error", error: String(e) }, { status: 500 });

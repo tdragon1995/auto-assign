@@ -2100,7 +2100,7 @@ export async function autoAssignCycle(
       detail: string,
       level: "ERROR" | "WARN" = "ERROR",
     ) => {
-      if (!onlyJobIds) failedJobs.push({ job_id: jobIdArg, reference_number: job.reference_number, customer: route || customer, reason, detail, level, ts: vnTimestamp(), delivery_window: failWindow, route_gps: failGps });
+      if (!onlyJobIds) failedJobs.push({ job_id: jobIdArg, reference_number: job.reference_number, scheduled_delivery_ts: job.scheduled_delivery_ts, customer: route || customer, reason, detail, level, ts: vnTimestamp(), delivery_window: failWindow, route_gps: failGps });
     };
     // Single-pass block: the body's many top-level `continue`s mean "skip this job"
     // (continue → while(false) → exit). The nested candidate-retry `for` loop's own

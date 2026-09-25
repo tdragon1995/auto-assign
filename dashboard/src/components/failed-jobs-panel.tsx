@@ -80,7 +80,7 @@ export function gmapsRoute(routeGps: string | undefined): string | null {
 }
 
 const cartrackJob = (jobId: number) => `https://fleetweb-vn.cartrack.com/delivery/map?job=${jobId}&view=grid`;
-const SAPOCHE_DELIVERY_URL = "https://labcenter.vn/admin-delivery-management";
+const SAPOCHE_DELIVERY_URL = "https://labcenter.vn/delivery-admin/admin-delivery-management";
 
 
 function metaFor(reason: FailedReason) {
@@ -239,12 +239,16 @@ function FailedRow({
           </span>
         )}
       </div>
-      {/* Line 2: detail · last-seen · manual-assign trigger */}
+      {/* Line 2: detail · scheduled delivery time · manual-assign trigger */}
       <div className="mt-0.5 flex items-center gap-2 min-w-0">
         <span className="min-w-0 flex-1 break-words md:truncate text-[11px] text-slate-500" title={job.detail}>
           {job.detail}
         </span>
-        <span className="shrink-0 text-[11px] text-slate-500">{job.ts.slice(11, 19)}</span>
+        {job.scheduled_delivery_ts && (
+          <span className="shrink-0 text-[11px] tabular-nums text-slate-500" title={`Giờ giao dự kiến: ${job.scheduled_delivery_ts}`}>
+            {job.scheduled_delivery_ts.slice(11, 19)}
+          </span>
+        )}
         {!showDriverSelect && !showSchedule && (
           <>
             {canSchedule && (

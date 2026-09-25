@@ -25,7 +25,7 @@ export const preferredRegion = "sin1";
 
 /** GET — drivers on leave today and tomorrow (Saigon dates), from the Leave
  *  Status sheet. Powers the dashboard "Cần xử lý" leave-status panel.
- *  `?fresh=1` busts the 5-min sheet cache first (dashboard Refresh button).
+ *  `?fresh=1` busts the 5-min sheet cache first (dashboard settings sync button).
  *
  *  `?date=YYYY-MM-DD[&days=N]` adds those days under `picked`, for the panel's
  *  week view. It costs nothing: `loadLeaveEntries` already returns the whole

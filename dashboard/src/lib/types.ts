@@ -389,6 +389,8 @@ export interface FailedJob {
   job_id: number;
   /** Cartrack reference; for Labcenter jobs this is the delivery-request code. */
   reference_number?: string;
+  /** Cartrack's scheduled delivery time, shown in Cần xử lý instead of the failure-log time. */
+  scheduled_delivery_ts?: string | null;
   // Full route label "<pickup> → <dropoff>" (matches the log-line convention in
   // api/admin/search-jobs). Falls back to the pickup customer when no route.
   customer: string;

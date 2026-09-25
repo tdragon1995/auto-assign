@@ -83,7 +83,6 @@ export function JobAdminPanel({
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const inputId = useId();
-  const hintId = useId();
 
   // ── Search ────────────────────────────────────────────────────────────────
   const [query, setQuery] = useState("");
@@ -404,7 +403,6 @@ export function JobAdminPanel({
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              aria-describedby={hintId}
               placeholder="VD: 34464285 hoặc Thuỷ Tâm"
               className="min-w-0 flex-1 rounded-md border border-slate-300 px-3 py-1.5 text-sm placeholder:text-slate-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
             />
@@ -412,9 +410,6 @@ export function JobAdminPanel({
               {searching ? "Đang tìm…" : "Tìm"}
             </Button>
           </div>
-          <p id={hintId} className="text-[11px] leading-snug text-slate-600">
-            Tìm job chưa xong hôm nay theo tên hoặc mã khách, PSC, tên tài xế hoặc số job. Job đang chạy hiện trước, rồi job chưa bắt đầu.
-          </p>
         </form>
 
         <div aria-live="polite" className="empty:hidden">

@@ -1,6 +1,6 @@
 name: MISA Driver Shifts
 
-# On demand only — no `schedule:`. The dashboard's "Làm mới" button dispatches
+# On demand only — no `schedule:`. The dashboard's "Đồng bộ MISA" button dispatches
 # this run via POST /api/misa-sync, so shifts refresh when a supervisor asks for
 # them rather than on a timer. Also runnable by hand from the Actions tab.
 on:
@@ -55,6 +55,13 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SHEET_WEBAPP_URL: ${{ secrets.SHEET_WEBAPP_URL }}
           SHEET_WEBAPP_TOKEN: ${{ secrets.SHEET_WEBAPP_TOKEN }}
+
+      # The sheet writes above must finish before either cache is invalidated.
+      # This also updates the assign engine if the dashboard tab was closed.
+      - name: Refresh dashboard config and leave caches
+        run: |
+          curl --fail --silent --show-error --retry 3 --output /dev/null https://diag-logistics.vercel.app/api/config
+          curl --fail --silent --show-error --retry 3 --output /dev/null 'https://diag-logistics.vercel.app/api/leave-status?fresh=1'
 
       - name: Save session state
         if: always()
