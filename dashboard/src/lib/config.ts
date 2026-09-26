@@ -47,7 +47,7 @@ const readGen = readConfigGen;
 // freshness mechanism — that is the gen stamp, deliberately, after a clock-based cache
 // was measured at an 87% miss rate.
 const L2_TTL_S = 48 * 60 * 60;
-//   version — the `v11` below is NOT decoration. This blob is PARSED config, so a change to
+//   version — the `v12` below is NOT decoration. This blob is PARSED config, so a change to
 //          how it is parsed (a renamed column, a new field) leaves every server reading a
 //          blob built by the old code until someone presses Refresh. That is exactly how
 //          the "Driver" column fix shipped and did nothing: correct code, stale parse.
@@ -59,7 +59,7 @@ const L2_TTL_S = 48 * 60 * 60;
 //          exactly what happened on 2026-08-31: two fixes to this wording shipped
 //          and neither reached the screen. Hence the audit inputs now ride the blob
 //          and the sentences are rebuilt on every load, cached or not.
-const l2Key = (gen: string, date: string) => `config:v11:${gen}:${date}`;
+const l2Key = (gen: string, date: string) => `config:v12:${gen}:${date}`;
 
 
 let cachedConfig: Config | null = null;
@@ -405,6 +405,7 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
       auditRows.push({
         customer_id,
         driver_id,
+        smart_driver_id,
         first_name_last_name: driverName,
         shift_start: thisRule.start,
         shift_end: thisRule.end,
@@ -483,7 +484,7 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
       console.error("Coverage-gap resolve skipped:", e);
     }
 
-    // Two fixed rules live at the same minute for one branch. Derived on every
+    // Two routing rules live at the same minute for one branch. Derived on every
     // parse rather than recorded at runtime the way a gap is: unlike a hole, an
     // overlap is fully visible in the sheet, so nothing has to fall into it
     // first. It used to be reported only as a sentence in the sheet-alarm

@@ -64,7 +64,7 @@ for (const row of rows) {
     continue;
   }
   mappings.push({
-    customer_id, driver_id,
+    customer_id, driver_id, smart_driver_id: smart,
     first_name_last_name: driverName,
     shift_start: parseTime(row["shift_start"]),
     shift_end: parseTime(row["shift_end"]),

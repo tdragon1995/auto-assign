@@ -40,7 +40,7 @@ const bundle: StatusBundle = {
   sheetAlarms: [],
   unfinished: [],
   gaps: [{ customer_id: "C1", pickup_name: "BRA - D015", at: "05:32", also: [], before: null, after: null }],
-  overlaps: [{ customer_id: "C1", pickup_name: "BRA - D015", drivers: ["An", "Bình"], window: "15:00–16:00" }],
+  overlaps: [{ customer_id: "C1", kind: "fixed", pickup_name: "BRA - D015", drivers: ["An", "Bình"], window: "15:00–16:00" }],
   parsedAt: "2026-09-01 05:30:00",
   branchRules: { C1: [{ row: 900, driver: "An", start: "05:45", end: "07:30" }] },
 };

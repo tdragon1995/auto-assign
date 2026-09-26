@@ -34,10 +34,10 @@ const uid = (k: string) => k ? (IDS[k] ??= `00000000-0000-0000-0000-${String(++i
 
 const row = (
   customer_id: string, driver_id: string, name: string,
-  start: string | null, end: string | null, dropoff_id = "",
+  start: string | null, end: string | null, dropoff_id = "", smartIds: string[] = [],
 ): AuditableRow => {
   const t = (v: string | null) => v ? { hours: +v.split(":")[0], minutes: +v.split(":")[1] } : null;
-  return { customer_id, driver_id: uid(driver_id), first_name_last_name: name, shift_start: t(start), shift_end: t(end), dropoff_id };
+  return { customer_id, driver_id: uid(driver_id), smart_driver_id: smartIds.map(uid), first_name_last_name: name, shift_start: t(start), shift_end: t(end), dropoff_id };
 };
 
 section("destination-scoped coverage gaps");
@@ -103,6 +103,29 @@ section("two rules for one branch, live at the same minute");
   eq("different branches never clash with each other", o, []);
 }
 {
+  const o = findShiftOverlaps([
+    row("C1", "", "An, Bình", "09:00", "15:00", "", ["d1", "d2"]),
+    row("C1", "", "Bình, Chi", "14:45", "16:45", "", ["d2", "d3"]),
+  ]);
+  eq("overlapping smart pools for one branch are reported", o.length, 1);
+  eq("the smart overlap names the shadowed period", o[0].window, "14:45–15:00");
+  eq("the smart overlap is distinct from a fixed CLASH", o[0].kind, "smart");
+}
+{
+  const o = findShiftOverlaps([
+    row("C1", "d1", "An", "09:00", "15:00"),
+    row("C1", "", "Bình, Chi", "14:45", "16:45", "", ["d2", "d3"]),
+  ]);
+  eq("a smart pool also shadows a fixed rule", o[0].kind, "smart");
+}
+{
+  const o = findShiftOverlaps([
+    row("C1", "", "An, Bình", "09:00", "15:00", "", ["d1", "d2"]),
+    row("C2", "", "An, Bình", "09:00", "15:00", "", ["d1", "d2"]),
+  ]);
+  eq("shared smart candidates across branches are allowed", o, []);
+}
+{
   // The engine counts ROWS, not drivers: getDriversOnDuty returns "clash" as soon
   // as more than one row is on duty, whoever they name. So two overlapping rows
   // for one person block the branch's jobs exactly like two people do — this was
@@ -128,7 +151,7 @@ section("two rules for one branch, live at the same minute");
 }
 {
   const o = findShiftOverlaps([row("C1", "", "An", "06:00", "12:00"), row("C1", "", "Bình", "06:00", "12:00")]);
-  eq("smart-assign rows (no fixed driver) are not counted", o, []);
+  eq("rows with no usable fixed or smart driver are not counted", o, []);
 }
 {
   const o = findShiftOverlaps([row("C1", "d1", "", "06:00", "12:00"), row("C1", "d2", "", "06:00", "12:00")]);

@@ -119,12 +119,12 @@ export interface Config {
   /** Hours a job needed and no rule covered, still uncovered as of this parse. */
   gaps: CoverageGap[];
   /**
-   * Pairs of fixed rules covering one branch at the same minute.
+   * Pairs of rules covering one branch at the same minute.
    *
    * The other half of the same fault as a gap, and it was reported for a long
    * time only as a sentence in the sheet-alarm banner — while a gap got a row
-   * with a one-click fix. Both end the same way at assign time: a gap fails the
-   * job as NO_DRIVER, an overlap as CLASH, and neither gets assigned.
+   * with a one-click fix. Two fixed rules cause CLASH; an overlapping smart
+   * rule shadows the later row, so its intended driver pool is ignored.
    *
    * Unlike a gap this needs no runtime record: an overlap is fully visible in
    * the sheet, so it is derived on every parse rather than learned from a job

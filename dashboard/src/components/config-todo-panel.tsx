@@ -158,6 +158,11 @@ function OverlapRow({
         <span className="shrink-0 rounded border border-rose-300 bg-rose-50 px-1.5 py-0.5 font-mono text-[11px] text-rose-800">
           {o.window}
         </span>
+        {o.kind === "smart" && (
+          <span className="shrink-0 rounded border border-sky-200 bg-sky-50 px-1.5 text-[10px] text-sky-800" title="Trong giờ trùng, hệ thống chỉ dùng một quy tắc smart; quy tắc còn lại bị bỏ qua">
+            smart · một ca bị bỏ qua
+          </span>
+        )}
         <span className="min-w-0 flex-1 truncate text-xs font-medium text-slate-800" title={o.pickup_name}>
           {o.pickup_name}
         </span>
@@ -172,9 +177,8 @@ function OverlapRow({
         )}
       </div>
       <div className="mt-0.5 text-[11px] text-slate-600">
-        {/* Both sides named, with their hours: the supervisor is deciding which
-            of two real people keeps the stretch, and cannot do that from the
-            branch and the window alone. */}
+        {/* Both rules named with their hours, so the supervisor can identify the
+            exact rows even when each smart rule contains several candidates. */}
         {displayDriverCell(o.drivers[0])}
         {o.rules && <span className="tabular-nums"> {o.rules[0].window}</span>}
         {" · "}

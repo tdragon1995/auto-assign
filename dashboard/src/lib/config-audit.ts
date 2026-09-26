@@ -17,6 +17,8 @@
 export interface AuditableRow {
   customer_id: string;
   driver_id: string;
+  /** Valid candidates on a smart row; its fixed driver lookup is normally blank. */
+  smart_driver_id?: string[];
   first_name_last_name: string;
   shift_start: { hours: number; minutes: number } | null;
   shift_end: { hours: number; minutes: number } | null;
@@ -118,9 +120,11 @@ export function findDuplicateBranches(
 // pair has usually been sitting there for weeks. Overlap is decidable from the
 // sheet alone.
 //
-// Only pairs where BOTH rows name a fixed driver: smart-assign rows RANK their
-// candidates rather than competing, so a pool of them on one branch is the
-// feature working, not a fault.
+// Smart rows rank candidates within ONE row. Two live rows for the same branch
+// and destination do not combine their pools: findSmartMapping takes the first
+// one, leaving the other rule ignored until the earlier shift ends. A smart row
+// also takes precedence over a fixed row. Both cases need the same overlap
+// warning that the editor already gives before saving.
 //
 // Two rows naming the SAME driver used to be skipped here as "redundant, not
 // ambiguous". That was wrong, and it hid the most common real case. The engine
@@ -138,6 +142,8 @@ export function findDuplicateBranches(
 
 export interface ShiftOverlap {
   customer_id: string;
+  /** Smart or mixed pairs shadow a rule; two fixed rows cause CLASH. */
+  kind: "fixed" | "smart";
   /** The branch as it is written in the sheet. A supervisor reading this needs
    *  the place, not the id — the id is only what the rows are keyed by. */
   pickup_name: string;
@@ -206,7 +212,7 @@ function intersect(a: [number, number], b: [number, number]): [number, number] |
   return from <= to ? [from, to] : null;
 }
 
-/** Pairs of fixed-driver rules for the same branch that are both live at some
+/** Pairs of routing rules for the same branch that are both live at some
  *  minute of the day. One entry per offending pair. */
 export function findShiftOverlaps(
   rows: readonly AuditableRow[],
@@ -217,10 +223,10 @@ export function findShiftOverlaps(
 ): ShiftOverlap[] {
   const byCustomer = new Map<string, AuditableRow[]>();
   for (const r of rows) {
-    // Fixed-driver rules only, and only rules that actually name a driver: a cell
-    // holding a failed-lookup string is a broken row, not a competing one, and is
-    // reported separately rather than as an ambiguity.
-    if (!r.customer_id || !looksLikeDriverId(r.driver_id)) continue;
+    // A row must have a usable fixed driver or at least one smart candidate.
+    // A failed fixed lookup with no smart fallback is reported separately.
+    if (!r.customer_id || (!looksLikeDriverId(r.driver_id) &&
+        !r.smart_driver_id?.some(looksLikeDriverId))) continue;
     const list = byCustomer.get(r.customer_id);
     if (list) list.push(r); else byCustomer.set(r.customer_id, [r]);
   }
@@ -258,6 +264,7 @@ export function findShiftOverlaps(
             : "";
         out.push({
           customer_id,
+          kind: first.smart_driver_id?.length || second.smart_driver_id?.length ? "smart" : "fixed",
           pickup_name: nameByCustomer?.get(customer_id) ?? customer_id,
           drivers: [first.first_name_last_name || first.driver_id, second.first_name_last_name || second.driver_id],
           // Reported back in the sheet's own half-open terms, so the window
@@ -340,11 +347,11 @@ export function duplicateBranchWarning(dupes: readonly DuplicateBranch[]): strin
 export function shiftOverlapWarning(overlaps: readonly ShiftOverlap[]): string | null {
   if (overlaps.length === 0) return null;
   const lines = overlaps.map(
-    (o) => `• ${o.pickup_name} — ${o.drivers[0]} / ${o.drivers[1]} · ${o.window}`,
+    (o) => `• ${o.pickup_name} — ${o.drivers[0]} / ${o.drivers[1]} · ${o.window} (${o.kind === "smart" ? "smart: một dòng bị bỏ qua" : "CLASH"})`,
   );
   return (
-    `${overlaps.length} cặp dòng TRÙNG GIỜ cho cùng một điểm — hai tài xế cố định cùng trực, ` +
-    `job rơi vào khoảng này sẽ báo CLASH và không được gán:\n${lines.join("\n")}`
+    `${overlaps.length} cặp dòng TRÙNG GIỜ cho cùng một điểm — ` +
+    `quy tắc smart có thể bị bỏ qua, hoặc job cố định báo CLASH:\n${lines.join("\n")}`
   );
 }
 
