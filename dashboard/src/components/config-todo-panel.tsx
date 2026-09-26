@@ -11,6 +11,7 @@ import type { CoverageGap, UnfinishedConfigRow, ConfigDriver, BranchRule, ShiftO
 import { DRIVER_SEP, resolveDriverCell, splitDriverNames } from "@/lib/driver-cell";
 import { displayDriverCell } from "@/lib/driver-label";
 import { coverageLostWithout, overlapKey } from "@/lib/config-shift";
+import type { ConfigRowSnapshot } from "@/lib/config-row-match";
 import { searchConfigRows } from "./config-browser-panel";
 import type { ConfigRowView } from "@/app/api/config/rows/route";
 import { DriverCombobox } from "./driver-combobox";
@@ -135,14 +136,17 @@ function OverlapRow({
     setErr(null);
     setBusy(`clear${row}`);
     try {
+      const rule = rules.find((r) => r.row === row);
+      if (!rule) { onSaved(); return; }
       const res = await fetch("/api/config/delete-row", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ row, pickup_name: o.pickup_name }),
+        body: JSON.stringify({ row, pickup_name: o.pickup_name, expected_row: { driver: rule.driver, start: rule.start, end: rule.end, dropoff: rule.dropoff } }),
       });
       const j = await res.json().catch(() => ({}));
+      if (j.code === "CONFIG_ROW_CHANGED") { toast.warning(j.error); onSaved(); return; }
       if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
-      toast.success(`Đã xoá dòng #${row} — ${o.pickup_name}`);
+      toast.success(`Đã xoá dòng #${j.row ?? row} — ${o.pickup_name}`);
       onSaved(key);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -263,6 +267,7 @@ function OverlapRow({
           onCancel={() => setOpen(false)}
           onDone={() => { setOpen(false); onSaved(key); }}
           onRemoved={() => { setOpen(false); onSaved(); }}
+          onStale={() => { setOpen(false); onSaved(); }}
         />
       )}
     </div>
@@ -616,7 +621,7 @@ function CopyFromBranch({
  * way in" would be a second set of those, and they would drift.
  */
 export function BranchEditor({
-  pickupName, dropoffName, rules, extraLines = [], drivers, onDone, onRemoved, onCancel,
+  pickupName, dropoffName, rules, extraLines = [], drivers, onDone, onRemoved, onStale, onCancel,
 }: {
   pickupName: string;
   dropoffName: string;
@@ -637,6 +642,7 @@ export function BranchEditor({
    * the config browser, which dismisses nothing.
    */
   onRemoved?: () => void;
+  onStale: () => void;
   onCancel: () => void;
 }) {
   /**
@@ -652,6 +658,8 @@ export function BranchEditor({
       .sort((x, y) => (toMin(x.start) - toMin(y.start)) || x.row! - y.row!)
   );
   const [lines, setLines] = useState<Line[]>(initial);
+  const snapshot = (line: Line): ConfigRowSnapshot => ({ driver: line.driver, start: line.start, end: line.end, dropoff: line.dropoff });
+  const expectedRows = useRef(new Map(initial.map((line) => [line.key, snapshot(line)])));
   const [pendingDeletes, setPendingDeletes] = useState<Line[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -758,13 +766,14 @@ export function BranchEditor({
 
     setBusy(true);
     let written = 0;
+    let relocated = 0;
     try {
       const post = async (url: string, body: unknown) => {
         const res = await fetch(url, {
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
         });
         const j = await res.json().catch(() => ({}));
-        if (!res.ok || !j.ok) throw new Error(j.error || `Lỗi ${res.status}`);
+        if (!res.ok || !j.ok) { const error = new Error(j.error || `Lỗi ${res.status}`) as Error & { code?: string }; error.code = j.code; throw error; }
         return j;
       };
       // Sequential: a failure part way then leaves a clear picture rather than an
@@ -773,11 +782,14 @@ export function BranchEditor({
       for (const l of resolved) {
         if (!changed(l)) continue;
         if (l.row) {
-          await post("/api/config/complete-row", {
+          const res = await post("/api/config/complete-row", {
             row: l.row, pickup_name: pickupName, driver_name: l.driver,
             shift_start: l.start, shift_end: l.end, dropoff_name: l.dropoff,
             copy_from_row: l.copyFromRow,
+            expected_row: expectedRows.current.get(l.key),
           });
+          if (typeof res.row === "number") l.row = res.row;
+          if (res.moved) relocated++;
         } else {
           const res = await post("/api/config/add-rule", {
             pickup_name: pickupName, dropoff_name: l.dropoff,
@@ -793,6 +805,7 @@ export function BranchEditor({
         // signature still matches on a later pass — otherwise a name typed as
         // "nam" and saved as "D001 - Nguyễn Văn Nam" reads as changed again.
         const done = { ...l };
+        expectedRows.current.set(done.key, snapshot(done));
         setLines((ls) => ls.map((x) => (x.key === done.key ? { ...x, row: done.row, driver: done.driver } : x)));
         setCommitted((c) => ({ ...c, [done.key]: sig(done) }));
         written++;
@@ -800,16 +813,20 @@ export function BranchEditor({
       // Finish updates first; descending deletes preserve pending row addresses.
       const removed = [...pendingDeletes].sort((a, b) => b.row! - a.row!);
       for (const l of removed) {
-        await post("/api/config/delete-row", { row: l.row, pickup_name: pickupName });
-        setPendingDeletes((prev) => prev.filter((x) => x.key !== l.key).map((x) => x.row! > l.row! ? { ...x, row: x.row! - 1 } : x));
-        setLines((prev) => prev.map((x) => x.row && x.row > l.row! ? { ...x, row: x.row - 1 } : x));
+        const res = await post("/api/config/delete-row", { row: l.row, pickup_name: pickupName, expected_row: expectedRows.current.get(l.key) });
+        const removedRow = typeof res.row === "number" ? res.row : l.row!;
+        if (res.moved) relocated++;
+        expectedRows.current.delete(l.key);
+        setPendingDeletes((prev) => prev.filter((x) => x.key !== l.key).map((x) => x.row! > removedRow ? { ...x, row: x.row! - 1 } : x));
+        setLines((prev) => prev.map((x) => x.row && x.row > removedRow ? { ...x, row: x.row - 1 } : x));
         written++;
       }
-      toast.success(written ? `Đã lưu ${written} dòng — ${pickupName}` : "Không có thay đổi nào");
+      toast.success(written ? `Đã lưu ${written} dòng — ${pickupName}${relocated ? ` (đã tìm lại ${relocated} dòng bị dời)` : ""}` : "Không có thay đổi nào");
       if (removed.length) (onRemoved ?? onDone)();
       else onDone();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      if ((e as Error & { code?: string }).code === "CONFIG_ROW_CHANGED") { toast.warning(written ? `Đã lưu ${written} dòng. ${msg}` : msg); onStale(); return; }
       // Say what landed. Without it the supervisor cannot tell a total failure
       // from a partial one, and the obvious recovery — press Lưu again — was the
       // move that used to duplicate rules.
@@ -980,6 +997,7 @@ function UnfinishedRow({
           onCancel={() => setOpen(false)}
           onDone={() => { setOpen(false); onSaved(); }}
           onRemoved={() => { setOpen(false); onSaved(); }}
+          onStale={() => { setOpen(false); onSaved(); }}
         />
       )}
     </div>
@@ -1121,6 +1139,7 @@ function GapRow({
           onCancel={() => setOpen(false)}
           onDone={() => { setOpen(false); onSaved(`g:${g.customer_id}|${g.dropoff_name ?? ""}|${g.at}`); }}
           onRemoved={() => { setOpen(false); onSaved(); }}
+          onStale={() => { setOpen(false); onSaved(); }}
         />
       )}
     </div>

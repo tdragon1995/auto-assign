@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { deleteConfigRow } from "@/lib/sheets-writer";
+import { deleteConfigRow, ConfigRowChangedError } from "@/lib/sheets-writer";
+import { parseConfigRowSnapshot } from "@/lib/config-row-match";
 import { invalidateConfigCache } from "@/lib/config";
 
 /**
@@ -21,14 +22,19 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== "object") return bad("Body không hợp lệ");
-    const { row, pickup_name } = body as { row?: number; pickup_name?: string };
+    const { row, pickup_name, expected_row } = body as { row?: number; pickup_name?: string; expected_row?: unknown };
     if (!Number.isInteger(row) || (row as number) < 2) return bad("Thiếu số dòng hợp lệ");
     if (!pickup_name?.trim()) return bad("Thiếu tên điểm lấy mẫu");
+    const expected = expected_row === undefined ? undefined : parseConfigRowSnapshot(expected_row);
+    if (expected_row !== undefined && !expected) return bad("Thông tin dòng cũ không hợp lệ");
 
-    await deleteConfigRow({ row: row as number, expectPickup: pickup_name });
+    const result = await deleteConfigRow({ row: row as number, expectPickup: pickup_name, expected: expected ?? undefined });
     await invalidateConfigCache();
-    return NextResponse.json({ ok: true, row });
+    return NextResponse.json({ ok: true, ...result });
   } catch (e) {
+    if (e instanceof ConfigRowChangedError) {
+      return NextResponse.json({ ok: false, code: e.code, error: e.message }, { status: 409 });
+    }
     // A moved row, row 2, or a Sunday attempt is the caller's to resolve.
     return bad(e instanceof Error ? e.message : String(e), 409);
   }

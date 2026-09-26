@@ -238,7 +238,7 @@ function reportBulk(label: string, res: BulkResult) {
   else toast.error(`Không ghi được dòng nào. ${why}`);
 }
 
-const targetBody = (rows: readonly ConfigRowView[]) => rows.map((r) => ({ row: r.row, pickup_name: r.pickup }));
+const targetBody = (rows: readonly ConfigRowView[]) => rows.map((r) => ({ row: r.row, pickup_name: r.pickup, expected_row: { driver: r.driver, start: r.start, end: r.end, dropoff: r.dropoff } }));
 
 type BulkMode = "driver" | "hours" | "delete";
 
@@ -1163,6 +1163,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                           drivers={drivers}
                           onCancel={() => setEditing(null)}
                           onDone={() => { setEditing(null); void load(); }}
+                          onStale={() => { setEditing(null); void load(true); }}
                         />
                       </td>
                     </tr>

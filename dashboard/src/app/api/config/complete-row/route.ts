@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { completeConfigRow } from "@/lib/sheets-writer";
+import { completeConfigRow, ConfigRowChangedError } from "@/lib/sheets-writer";
+import { parseConfigRowSnapshot } from "@/lib/config-row-match";
 import { splitDriverNames, DRIVER_SEP } from "@/lib/driver-cell";
 import { loadDriversFromSheet, invalidateConfigCache } from "@/lib/config";
 import { timeToMins } from "@/lib/time";
@@ -24,13 +25,15 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== "object") return bad("Body không hợp lệ");
-    const { row, pickup_name, driver_name, shift_start, shift_end, dropoff_name, copy_from_row } = body as {
+    const { row, pickup_name, driver_name, shift_start, shift_end, dropoff_name, copy_from_row, expected_row } = body as {
       row?: number; pickup_name?: string; driver_name?: string;
-      shift_start?: string; shift_end?: string; dropoff_name?: string; copy_from_row?: number;
+      shift_start?: string; shift_end?: string; dropoff_name?: string; copy_from_row?: number; expected_row?: unknown;
     };
 
     if (!Number.isInteger(row) || (row as number) < 2) return bad("Thiếu số dòng hợp lệ");
     if (!pickup_name?.trim()) return bad("Thiếu tên điểm lấy mẫu");
+    const expected = expected_row === undefined ? undefined : parseConfigRowSnapshot(expected_row);
+    if (expected_row !== undefined && !expected) return bad("Thông tin dòng cũ không hợp lệ");
     const name = (driver_name ?? "").trim();
     if (!name) return bad("Chưa chọn tài xế");
 
@@ -57,9 +60,10 @@ export async function POST(req: NextRequest) {
     const unknown = names.find((n) => !drivers.some((d) => d.name === n));
     if (unknown) return bad(`"${unknown}" không có trong tab Driver — chọn từ danh sách`);
 
-    await completeConfigRow({
+    const result = await completeConfigRow({
       row: row as number,
       expectPickup: pickup_name,
+      expected: expected ?? undefined,
       // Rejoined on the one separator the id formula beside it splits on.
       driverName: names.join(DRIVER_SEP),
       start: start || undefined,
@@ -71,9 +75,12 @@ export async function POST(req: NextRequest) {
     // someone to press Refresh.
     await invalidateConfigCache();
 
-    return NextResponse.json({ ok: true, row });
+    return NextResponse.json({ ok: true, ...result });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    if (e instanceof ConfigRowChangedError) {
+      return NextResponse.json({ ok: false, code: e.code, error: msg }, { status: 409 });
+    }
     // A stale row number or a Sunday attempt is the caller's to resolve, not a
     // server fault — say what happened rather than returning a bare 500.
     return bad(msg, 409);

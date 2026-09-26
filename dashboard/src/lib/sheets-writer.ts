@@ -4,6 +4,7 @@ import { vnIsSunday, vnTimestamp } from "./time";
 import { LEAVE_DELETED_SHEET, LEAVE_DELETED_HEADERS } from "./leave-suppression";
 import type { ConfigCells } from "./unmapped-row";
 import { timeToMins } from "./time";
+import { findUniqueConfigRow, type ConfigRowAt, type ConfigRowSnapshot } from "./config-row-match";
 import { replaceDriverInCell } from "./driver-cell";
 import { shiftFormulaRows } from "./formula-shift";
 import {
@@ -1985,6 +1986,67 @@ export async function writeConfigRows(cells: ConfigCells[]): Promise<number[]> {
   return cells.map((_, i) => firstFreeRow + i);
 }
 
+export class ConfigRowChangedError extends Error {
+  readonly code = "CONFIG_ROW_CHANGED";
+}
+
+/** Resolve a stale row hint against the live sheet before touching any cells. */
+async function resolveConfigTargetRow(
+  sheets: ReturnType<typeof google.sheets>,
+  tab: ConfigTabSpec,
+  header: string[],
+  hint: number,
+  expectPickup: string,
+  expected?: ConfigRowSnapshot,
+): Promise<{ row: number; moved: boolean }> {
+  const col = (name: string, required = true) => {
+    const index = header.indexOf(name);
+    if (index < 0 && required) throw new Error(`"${tab.title}" không có cột ${name}`);
+    return index;
+  };
+  const pickup = col(WRITE_COLS.pickup);
+  const driver = col("Driver");
+  const start = col(WRITE_COLS.start);
+  const end = col(WRITE_COLS.end);
+  const dropoff = col(WRITE_COLS.dropoff, false);
+  const last = Math.max(pickup, driver, start, end, dropoff);
+  const asRow = (values: unknown[], row: number): ConfigRowAt => ({
+    row,
+    pickup: String(values[pickup] ?? "").trim(),
+    driver: String(values[driver] ?? "").trim(),
+    start: String(values[start] ?? "").trim(),
+    end: String(values[end] ?? "").trim(),
+    dropoff: dropoff < 0 ? "" : String(values[dropoff] ?? "").trim(),
+  });
+  const range = (first: number, lastRow?: number) =>
+    `${a1(tab)}!A${first}:${colLetter(last)}${lastRow ?? ""}`;
+  if (!expected) {
+    const current = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: range(hint, hint),
+    });
+    const atHint = asRow(current.data.values?.[0] ?? [], hint);
+    if (atHint.pickup === expectPickup.trim()) return { row: hint, moved: false };
+    throw new ConfigRowChangedError(
+      `Dòng ${hint} giờ là "${atHint.pickup || "(trống)"}", không phải "${expectPickup}" — sheet đã thay đổi`,
+    );
+  }
+
+  const all = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: range(2),
+  });
+  const match = findUniqueConfigRow(
+    (all.data.values ?? []).map((values, index) => asRow(values, index + 2)),
+    expectPickup,
+    expected,
+  );
+  if ("row" in match) return { row: match.row, moved: match.row !== hint };
+  throw new ConfigRowChangedError(match.reason === "ambiguous"
+    ? `Ca của ${expectPickup} xuất hiện ở nhiều dòng — đã làm mới, kiểm tra lại trước khi sửa`
+    : `Ca của ${expectPickup} đã thay đổi hoặc bị xoá — đã làm mới, kiểm tra lại trước khi sửa`);
+}
+
 /**
  * Fill in the driver (and optionally the hours) on a row this system created.
  *
@@ -2002,6 +2064,7 @@ export async function writeConfigRows(cells: ConfigCells[]): Promise<number[]> {
 export async function completeConfigRow(opts: {
   row: number;
   expectPickup: string;
+  expected?: ConfigRowSnapshot;
   driverName: string;
   start?: string;
   end?: string;
@@ -2009,7 +2072,7 @@ export async function completeConfigRow(opts: {
   dropoff?: string;
   /** Optional source row used to restore formulas and formatting after a copy. */
   copyFromRow?: number;
-}): Promise<void> {
+}): Promise<{ row: number; moved: boolean }> {
   const tab = currentConfigTab();
   if (tab.gid !== CONFIG_TABS.weekday.gid) {
     throw new Error(
@@ -2028,47 +2091,36 @@ export async function completeConfigRow(opts: {
     if (i < 0) throw new Error(`"${tab.title}" không có cột ${name}`);
     return colLetter(i);
   };
-  const pickupCol = at(WRITE_COLS.pickup);
   const driverCol = at("Driver");
   const startCol = at(WRITE_COLS.start);
   const endCol = at(WRITE_COLS.end);
   const dropoffCol = header.includes(WRITE_COLS.dropoff) ? at(WRITE_COLS.dropoff) : null;
 
-  // Confirm the row still holds the branch the dashboard was looking at.
-  const check = await sheets.spreadsheets.values.get({
-    spreadsheetId: SHEET_ID,
-    range: `${a1(tab)}!${pickupCol}${opts.row}`,
-  });
-  const found = String(check.data.values?.[0]?.[0] ?? "").trim();
-  if (found !== opts.expectPickup.trim()) {
-    throw new Error(
-      `Dòng ${opts.row} giờ là "${found || "(trống)"}", không phải "${opts.expectPickup}" — ` +
-      `sheet đã thay đổi, bấm Refresh rồi thử lại`,
-    );
-  }
+  const target = await resolveConfigTargetRow(sheets, tab, header, opts.row, opts.expectPickup, opts.expected);
 
   if (opts.copyFromRow !== undefined) {
     const lastTableRow = await configTableEnd(sheets, tab);
-    await copyConfigRowParts(sheets, tab, [{ sourceRow: opts.copyFromRow, destinationRow: opts.row }], lastTableRow);
+    await copyConfigRowParts(sheets, tab, [{ sourceRow: opts.copyFromRow, destinationRow: target.row }], lastTableRow);
   }
 
   const q = a1(tab);
   const data: { range: string; values: string[][] }[] = [
-    { range: `${q}!${driverCol}${opts.row}`, values: [[opts.driverName]] },
+    { range: `${q}!${driverCol}${target.row}`, values: [[opts.driverName]] },
   ];
   if (opts.start && opts.end) {
-    data.push({ range: `${q}!${startCol}${opts.row}:${endCol}${opts.row}`, values: [[opts.start, opts.end]] });
+    data.push({ range: `${q}!${startCol}${target.row}:${endCol}${target.row}`, values: [[opts.start, opts.end]] });
   }
   if (opts.dropoff !== undefined) {
     if (!dropoffCol && opts.dropoff.trim()) {
       throw new Error(`"${tab.title}" không có cột ${WRITE_COLS.dropoff}`);
     }
-    if (dropoffCol) data.push({ range: `${q}!${dropoffCol}${opts.row}`, values: [[opts.dropoff]] });
+    if (dropoffCol) data.push({ range: `${q}!${dropoffCol}${target.row}`, values: [[opts.dropoff]] });
   }
   await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: SHEET_ID,
     requestBody: { valueInputOption: "USER_ENTERED", data },
   });
+  return target;
 }
 
 /**
@@ -2093,7 +2145,7 @@ export interface BulkConfigResult {
   skipped: { row: number; pickup: string; reason: string }[];
 }
 
-type ConfigTarget = { row: number; expectPickup: string };
+type ConfigTarget = { row: number; expectPickup: string; expected?: ConfigRowSnapshot };
 
 /** The weekday tab, its header as column letters, and the named columns read
  *  down to the lowest target row — in two requests. */
@@ -2119,31 +2171,60 @@ async function readTargetColumns(
     if (!l) throw new Error(`"${tab.title}" không có cột ${name}`);
     return l;
   };
-  const pickupCol = need(WRITE_COLS.pickup);
+  need(WRITE_COLS.pickup);
   const cols = columns.map(need);
-
+  const hasSnapshots = targets.some((t) => t.expected);
+  const names = [...new Set([
+    WRITE_COLS.pickup, ...columns,
+    ...(hasSnapshots ? ["Driver", WRITE_COLS.start, WRITE_COLS.end, WRITE_COLS.dropoff] : []),
+  ])].filter((name) => name !== WRITE_COLS.dropoff || letter(name));
   const last = Math.max(...targets.map((t) => t.row));
   const read = await sheets.spreadsheets.values.batchGet({
     spreadsheetId: SHEET_ID,
-    ranges: [pickupCol, ...cols].map((c) => `${q}!${c}1:${c}${last}`),
+    ranges: names.map((name) => {
+      const col = need(name);
+      return `${q}!${col}1:${col}${hasSnapshots ? "" : last}`;
+    }),
   });
+  const rawCell = (name: string, row: number) =>
+    String(read.data.valueRanges?.[names.indexOf(name)]?.values?.[row - 1]?.[0] ?? "").trim();
   /** Column i (0 = pickup, then `columns` in order) at a 1-based sheet row. */
-  const cell = (i: number, row: number) =>
-    String(read.data.valueRanges?.[i]?.values?.[row - 1]?.[0] ?? "").trim();
+  const cell = (i: number, row: number) => rawCell(i === 0 ? WRITE_COLS.pickup : columns[i - 1], row);
+  const maxRow = Math.max(last, ...((read.data.valueRanges ?? []).map((range) => range.values?.length ?? 0)));
+  const allRows: ConfigRowAt[] = hasSnapshots
+    ? Array.from({ length: Math.max(0, maxRow - 1) }, (_, index) => {
+      const row = index + 2;
+      return {
+        row, pickup: rawCell(WRITE_COLS.pickup, row), driver: rawCell("Driver", row),
+        start: rawCell(WRITE_COLS.start, row), end: rawCell(WRITE_COLS.end, row),
+        dropoff: names.includes(WRITE_COLS.dropoff) ? rawCell(WRITE_COLS.dropoff, row) : "",
+      };
+    })
+    : [];
 
-  /** Targets whose pickup still matches, deduped; the rest go to `skipped`. */
   const skipped: BulkConfigResult["skipped"] = [];
   const live: ConfigTarget[] = [];
   const seen = new Set<number>();
   for (const t of targets) {
-    if (seen.has(t.row)) continue;
-    seen.add(t.row);
-    const found = cell(0, t.row);
-    if (found !== t.expectPickup.trim()) {
-      skipped.push({ row: t.row, pickup: t.expectPickup, reason: `dòng giờ là "${found || "(trống)"}" — sheet đã thay đổi` });
+    let row = t.row;
+    if (t.expected) {
+      const match = findUniqueConfigRow(allRows, t.expectPickup, t.expected);
+      if (!("row" in match)) {
+        skipped.push({ row: t.row, pickup: t.expectPickup,
+          reason: match.reason === "ambiguous" ? "có nhiều ca giống hệt — tải lại để kiểm tra" : "ca đã thay đổi hoặc bị xoá — tải lại để kiểm tra" });
+        continue;
+      }
+      row = match.row;
     } else {
-      live.push(t);
+      const found = cell(0, row);
+      if (found !== t.expectPickup.trim()) {
+        skipped.push({ row, pickup: t.expectPickup, reason: `dòng giờ là "${found || "(trống)"}" — sheet đã thay đổi` });
+        continue;
+      }
     }
+    if (seen.has(row)) continue;
+    seen.add(row);
+    live.push({ ...t, row });
   }
   return { sheets, tab, q, letter, cols, cell, live, skipped };
 }
@@ -2214,7 +2295,8 @@ export async function bulkDeleteConfigRows(opts: { targets: ConfigTarget[] }): P
     rest, [], "Chủ nhật: dòng được suy ra từ lịch trực công khai — sửa trên tab lịch Chủ nhật",
   );
   skipped.push(...anchor);
-  const doomed = [...live].sort((a, b) => b.row - a.row);
+  skipped.push(...live.filter((t) => t.row <= 2).map((t) => ({ row: t.row, pickup: t.expectPickup, reason: ANCHOR })));
+  const doomed = live.filter((t) => t.row > 2).sort((a, b) => b.row - a.row);
   if (doomed.length === 0) return { done: [], skipped };
 
   await sheets.spreadsheets.batchUpdate({
@@ -2320,7 +2402,8 @@ export async function replaceConfigDriver(opts: {
 export async function deleteConfigRow(opts: {
   row: number;
   expectPickup: string;
-}): Promise<void> {
+  expected?: ConfigRowSnapshot;
+}): Promise<{ row: number; moved: boolean }> {
   const tab = currentConfigTab();
   if (tab.gid !== CONFIG_TABS.weekday.gid) {
     throw new Error(
@@ -2344,23 +2427,8 @@ export async function deleteConfigRow(opts: {
     const i = header.indexOf(name);
     return i < 0 ? null : colLetter(i);
   };
-  const pickupCol = at(WRITE_COLS.pickup);
-  if (!pickupCol) throw new Error(`"${tab.title}" không có cột ${WRITE_COLS.pickup}`);
-
-  // The row number came from a parse that may be minutes old, and rows shift
-  // whenever anyone inserts or deletes above them — so confirm the row still
-  // holds the branch the dashboard was looking at before removing anything.
-  const check = await sheets.spreadsheets.values.get({
-    spreadsheetId: SHEET_ID,
-    range: `${a1(tab)}!${pickupCol}${opts.row}`,
-  });
-  const found = String(check.data.values?.[0]?.[0] ?? "").trim();
-  if (found !== opts.expectPickup.trim()) {
-    throw new Error(
-      `Dòng ${opts.row} giờ là "${found || "(trống)"}", không phải "${opts.expectPickup}" — ` +
-      `sheet đã thay đổi, bấm Refresh rồi thử lại`,
-    );
-  }
+  const target = await resolveConfigTargetRow(sheets, tab, header, opts.row, opts.expectPickup, opts.expected);
+  if (target.row <= 2) throw new Error("Dòng 2 giữ công thức id của cả cột — không thể xoá");
 
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId: SHEET_ID,
@@ -2370,8 +2438,8 @@ export async function deleteConfigRow(opts: {
           range: {
             sheetId: Number(tab.gid),
             dimension: "ROWS",
-            startIndex: opts.row - 1, // 0-based, inclusive
-            endIndex: opts.row,       // exclusive
+            startIndex: target.row - 1, // 0-based, inclusive
+            endIndex: target.row,       // exclusive
           },
         },
       }],
@@ -2394,7 +2462,7 @@ export async function deleteConfigRow(opts: {
       );
       if (broken) {
         console.error(
-          `[config] DELETING ROW ${opts.row} COLLAPSED THE customer_id ARRAYFORMULA on ` +
+          `[config] DELETING ROW ${target.row} COLLAPSED THE customer_id ARRAYFORMULA on ` +
           `"${tab.title}" — every branch id is now #REF! and the engine can map nothing. ` +
           `Undo it in the sheet's version history immediately.`,
         );
@@ -2403,6 +2471,7 @@ export async function deleteConfigRow(opts: {
   } catch (e) {
     console.error("[config] post-delete id-column check failed", e);
   }
+  return target;
 }
 
 /**
@@ -2421,9 +2490,10 @@ export async function deleteConfigRow(opts: {
 export async function adjustConfigRowWindow(opts: {
   row: number;
   expectPickup: string;
+  expected?: ConfigRowSnapshot;
   edge: "start" | "end";
   value: string;
-}): Promise<void> {
+}): Promise<{ row: number; moved: boolean }> {
   const tab = currentConfigTab();
   if (tab.gid !== CONFIG_TABS.weekday.gid) {
     throw new Error("Chủ nhật: ca được suy ra từ lịch trực công khai — sửa trên tab lịch Chủ nhật");
@@ -2437,25 +2507,14 @@ export async function adjustConfigRowWindow(opts: {
     if (i < 0) throw new Error(`"${tab.title}" không có cột ${name}`);
     return colLetter(i);
   };
-  const pickupCol = at(WRITE_COLS.pickup);
   const target = at(opts.edge === "start" ? WRITE_COLS.start : WRITE_COLS.end);
-
-  const check = await sheets.spreadsheets.values.get({
-    spreadsheetId: SHEET_ID,
-    range: `${a1(tab)}!${pickupCol}${opts.row}`,
-  });
-  const found = String(check.data.values?.[0]?.[0] ?? "").trim();
-  if (found !== opts.expectPickup.trim()) {
-    throw new Error(
-      `Dòng ${opts.row} giờ là "${found || "(trống)"}", không phải "${opts.expectPickup}" — ` +
-      `sheet đã thay đổi, bấm Refresh rồi thử lại`,
-    );
-  }
+  const resolved = await resolveConfigTargetRow(sheets, tab, header, opts.row, opts.expectPickup, opts.expected);
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: SHEET_ID,
-    range: `${a1(tab)}!${target}${opts.row}`,
+    range: `${a1(tab)}!${target}${resolved.row}`,
     valueInputOption: "USER_ENTERED",
     requestBody: { values: [[opts.value]] },
   });
+  return resolved;
 }
