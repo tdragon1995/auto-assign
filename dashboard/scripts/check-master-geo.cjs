@@ -27,5 +27,11 @@ assert.equal(geoExports.newWard(1.5, 1.5), null);
 assert.equal(geoExports.newWard(5, 5), null);
 geoExports.nearestPsc(0, 0).then((result) => {
   assert.equal(result.name, "D021");
-  console.log("Master geo self-check passed");
+  const syncSource = fs.readFileSync(path.join(__dirname, "../src/lib/master-sync.ts"), "utf8");
+  const syncJs = ts.transpileModule(syncSource, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+  const syncExports = {};
+  vm.runInNewContext(syncJs, { exports: syncExports, require: () => ({}) });
+  assert.equal(syncExports.stableJson({ a: 1, b: { x: 2, y: 3 } }), syncExports.stableJson({ b: { y: 3, x: 2 }, a: 1 }));
+  assert.notEqual(syncExports.stableJson({ a: 1 }), syncExports.stableJson({ a: 2 }));
+  console.log("Master Client Info self-check passed");
 });

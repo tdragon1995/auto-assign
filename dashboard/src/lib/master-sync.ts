@@ -29,6 +29,14 @@ function coordinate(value: unknown): number | null {
   return value === null || value === "" || !Number.isFinite(n) || n === 0 ? null : n;
 }
 
+// Postgres jsonb sorts object keys; Cartrack does not. Compare normalized JSON
+// so a daily read does not rewrite every profile and burn Supabase egress.
+export function stableJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item)
+    ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b)))
+    : item);
+}
+
 // Import is one-time. Once cut over, Supabase rows are the editable master and
 // the daily Cartrack sync never overwrites them with the old workbook.
 export async function importCurrentConfig(): Promise<{ weekday: number; sunday: number; driverSettings: number }> {
@@ -87,9 +95,9 @@ export async function syncCartrackProfiles(): Promise<{ clients: number; drivers
     const id = String(c.customer_id ?? "");
     const code = String(c.customer_name ?? "").split(/\s*-\s*/, 1)[0].trim();
     if (/^\d+$/.test(code) && oldClients.get(id)?.client_code !== code) newClientCodes.add(code);
-    return JSON.stringify(oldClients.get(id)?.cartrack) !== JSON.stringify(c);
+    return stableJson(oldClients.get(id)?.cartrack) !== stableJson(c);
   });
-  const changedDrivers = drivers.filter((d) => JSON.stringify(oldDrivers.get(String(d.delivery_driver_id ?? ""))?.cartrack) !== JSON.stringify(d));
+  const changedDrivers = drivers.filter((d) => stableJson(oldDrivers.get(String(d.delivery_driver_id ?? ""))?.cartrack) !== stableJson(d));
   const clientRows = await Promise.all(changedClients.map(async (c) => {
     const latitude = coordinate(c.latitude), longitude = coordinate(c.longitude);
     const psc = latitude !== null && longitude !== null ? await nearestPsc(latitude, longitude) : null;
