@@ -73,11 +73,12 @@ async function sendHeldOffEmail(apiKey: string): Promise<void> {
   }
 }
 
-export async function sendResendEmail(apiKey: string, input: { to: string; from: string; subject: string; html: string }): Promise<void> {
+export async function sendResendEmail(apiKey: string, input: { to: string; from: string; subject: string; html: string }, idempotencyKey?: string): Promise<void> {
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}) },
     body: JSON.stringify(input),
+    signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) throw new Error(`Resend ${res.status}: ${await res.text().catch(() => "")}`);
 }

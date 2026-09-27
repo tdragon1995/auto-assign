@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { Env } from "@/lib/cartrack";
 import { runScheduleJobCycle } from "@/lib/schedule-job";
-import { getLastRun, saveLastRun } from "@/lib/schedule-job-kv";
+import { saveLastRun } from "@/lib/schedule-job-kv";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
       results,
     };
 
-    await saveLastRun(record);
+    await saveLastRun(record, env);
 
     const counts = {
       ok: record.results.filter((r) => r.status === "OK").length,

@@ -11,6 +11,7 @@ import { maybeAlertHeldOff } from "@/lib/disarm-alert";
 import { archiveSealedDays } from "@/lib/tat-archive";
 import { restoreExpiredGeofences } from "@/lib/geofence-bypass";
 import { createMorningReads } from "@/lib/morning-reads";
+import { recoverMorning } from "@/lib/morning-recovery";
 
 // The cycle (Cartrack + Goong calls) can take a while; give it headroom.
 export const maxDuration = 60;
@@ -36,11 +37,13 @@ export async function GET(req: NextRequest) {
 
   const reads = createMorningReads();
   const archive = async () => {
+    const recovery = recoverMorning().catch((e) => console.error("[cron] morning recovery:", e));
     const res = await archiveSealedDays("prod", new Date(), reads).catch((e) => {
       console.error("[cron] archive failed:", e);
       return null;
     });
     if (res) console.log("[cron] TAT seal:", JSON.stringify(res));
+    await recovery;
   };
 
   // Temporary geofence bypasses — before the arm check, so a disarmed engine never

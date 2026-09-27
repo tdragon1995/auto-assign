@@ -1408,7 +1408,7 @@ export function isRollable(j: Job): boolean {
  *     right after this pass, then finds it as today's status-2 and assigns it.
  * Runs before the fetch, so bumped jobs are picked up the same cycle.
  */
-async function rolloverUnfinishedJobs(
+export async function rolloverUnfinishedJobs(
   candidates: Job[],
   toDate: string,
   env: Env,
@@ -1417,7 +1417,6 @@ async function rolloverUnfinishedJobs(
 ): Promise<{ bumped: Set<number>; remaining: number }> {
   const eligible = candidates.filter(isRollable);
   const bumped = new Set<number>();
-  let remaining = 0;
 
   // Batched, not one-at-a-time. Each job costs up to two REST writes and the
   // date-move alone measures ~6s against prod, so five eligible jobs — an
@@ -1432,32 +1431,36 @@ async function rolloverUnfinishedJobs(
     // the day's claim while `remaining > 0`. Half a roll finished cleanly beats a
     // kill: a kill also destroys the log of what it had already done.
     if (Date.now() > deadlineMs) {
-      remaining = eligible.length - i;
-      log(`Morning rollover paused: ${remaining} job(s) left, out of time this cycle`, "WARN");
+      log(`Morning rollover paused: ${eligible.length - bumped.size} job(s) left, out of time this cycle`, "WARN");
       break;
     }
     await Promise.all(eligible.slice(i, i + BATCH).map(async (job) => {
-      const route = `${job.stops?.find((s) => s.stop_type_id === 1)?.customer_name ?? "—"} → ${
-        job.stops?.find((s) => s.stop_type_id === 2)?.customer_name ?? "—"
-      }`;
-      // Pull the stale driver first so the job re-enters the unassigned pool.
-      if (job.delivery_driver_id) {
-        const { ok, status } = await unassignJob(job.job_id, env, job.delivery_driver_id);
-        if (!ok) {
-          log(`Job ${job.job_id} - Rollover unassign failed (HTTP ${status}) | ${route}`, "WARN");
-          return;
+      try {
+        const route = `${job.stops?.find((s) => s.stop_type_id === 1)?.customer_name ?? "—"} → ${
+          job.stops?.find((s) => s.stop_type_id === 2)?.customer_name ?? "—"
+        }`;
+        // Pull the stale driver first so the job re-enters the unassigned pool.
+        if (job.delivery_driver_id) {
+          const { ok, status } = await unassignJob(job.job_id, env, job.delivery_driver_id);
+          if (!ok) {
+            log(`Job ${job.job_id} - Rollover unassign failed (HTTP ${status}) | ${route}`, "WARN");
+            return;
+          }
         }
-      }
-      const { ok, status } = await updateJobScheduledDeliveryTs(job.job_id, `${toDate} 00:00:00`, env);
-      if (ok) {
-        bumped.add(job.job_id);
-        log(`Job ${job.job_id} - ROLLED OVER to ${toDate} (chưa xử lý xong hôm qua) | ${route}`, "INFO");
-      } else {
-        log(`Job ${job.job_id} - Rollover to ${toDate} failed (HTTP ${status}) | ${route}`, "WARN");
+        const { ok, status } = await updateJobScheduledDeliveryTs(job.job_id, `${toDate} 00:00:00`, env);
+        if (ok) {
+          bumped.add(job.job_id);
+          log(`Job ${job.job_id} - ROLLED OVER to ${toDate} (chưa xử lý xong hôm qua) | ${route}`, "INFO");
+        } else {
+          log(`Job ${job.job_id} - Rollover to ${toDate} failed (HTTP ${status}) | ${route}`, "WARN");
+        }
+      } catch {
+        log(`Job ${job.job_id} - Rollover request failed; retry next cycle`, "WARN");
       }
     }));
   }
-  return { bumped, remaining };
+  // Failed writes count too. Previously only unattempted rows prevented sealing.
+  return { bumped, remaining: eligible.length - bumped.size };
 }
 
 export async function autoAssignCycle(
@@ -1536,11 +1539,13 @@ export async function autoAssignCycle(
   // of making a second identical delivery_timeline_route_list call.
   let timelineRoutesForSmart: TimelineRoute[] | null = null;
   let rolloverCleanupPool: Job[] | null = null;
+  let isMorningPass = false;
+  let rolloverComplete = false;
+  const today = vnDate();
 
   try {
   // ── Release parked proxy jobs whose send_to_driver_at has passed ──────────
   // Skipped on a targeted manual assign — that's not a full cycle.
-  const today = vnDate();
   const leaveEntries = await loadLeaveEntries().catch((e) => {
     log(`⚠️  Leave sheet failed to load: ${String(e).slice(0, 80)}`, "WARN");
     return [];
@@ -1573,7 +1578,7 @@ export async function autoAssignCycle(
   // Claimed ONCE here and reused by the proxy sweep further down — both are "the
   // first armed cycle of the day does this", and a second gate would just be a
   // second write asking the same question. A targeted manual assign never claims it.
-  const isMorningPass = !onlyJobIds && (await claimMorningPass(today, env));
+  isMorningPass = !onlyJobIds && (await claimMorningPass(today, env));
 
   if (isMorningPass) {
     // Rides the claim above rather than buying its own: trims the run log and
@@ -1617,13 +1622,11 @@ export async function autoAssignCycle(
     // before, never rolled, found by hand the next morning.)
     if (!complete) {
       await deferMorningPass(today, env);
-      log("Morning rollover incomplete — retrying in ~10 minutes", "WARN");
+      log("Morning rollover incomplete — retrying on the next cron ping", "WARN");
     } else {
-      // Only now is the day's work genuinely done, so only now does the claim
-      // become a full-day one. Until this line runs the claim is a short lease
-      // that lapses by itself — which is what makes a timeout-killed pass retry
-      // instead of silently costing the day. Do NOT hoist this to the claim.
-      await confirmMorningPass(today, env);
+      // Keep the short lease until cleanup finishes too. A kill in the rest of
+      // this cycle then retries both from a shared fresh read on the next ping.
+      rolloverComplete = true;
     }
     phase("morning-rollover");
   }
@@ -2962,10 +2965,15 @@ export async function autoAssignCycle(
     // Cleanup runs last: it acts on via-legs/returns the steps above may have just
     // created, and reuses the same prefetch. No-op unless CLEANUP_STALE_TRIPS=1.
     clog(`[follow-ups] cleanup start (t=${Date.now() - tStart}ms)`);
+    let cleanupComplete = false;
     try {
-      await cleanupStaleTrips(config, env, log, shared, followLeave, rolloverCleanupPool);
+      cleanupComplete = await cleanupStaleTrips(config, env, log, shared, followLeave, rolloverCleanupPool);
     } catch (e) {
       log(`Cleanup hook failed: ${e}`, "ERROR");
+    }
+    if (isMorningPass && rolloverComplete) {
+      if (cleanupComplete) await confirmMorningPass(today, env);
+      else await deferMorningPass(today, env);
     }
     // Settle the overlapped route-optimise batch before the lambda returns.
     // Usually resolved long ago (follow-ups ran meanwhile); the wait shows how

@@ -76,6 +76,7 @@ test('cron starts assignment while archive write is still pending and archives w
     '@/lib/tat-archive': { archiveSealedDays: async () => { await archiveWait; return null; } },
     '@/lib/geofence-bypass': { restoreExpiredGeofences: async () => 0 },
     '@/lib/morning-reads': { createMorningReads: () => ({}) },
+    '@/lib/morning-recovery': { recoverMorning: async () => {} },
   });
   await route.GET({ headers: { get: () => null } });
   const cycle = callbacks.at(-1)();
@@ -88,4 +89,137 @@ test('cron starts assignment while archive write is still pending and archives w
   await route.GET({ headers: { get: () => null } });
   assert.ok(callbacks.length >= 1);
   await Promise.all(callbacks.map(cb => cb()));
+});
+
+function redisMemory() {
+  const values = new Map();
+  let clock = 0;
+  const get = (key) => {
+    const r = values.get(key);
+    if (!r || r.expires <= clock) { values.delete(key); return null; }
+    return r;
+  };
+  return {
+    advance: (ms) => { clock += ms; },
+    async get(key) { return structuredClone(get(key)?.value ?? null); },
+    async ttl(key) { const r = get(key); return r ? Math.ceil((r.expires - clock) / 1000) : -2; },
+    async set(key, value, opts = {}) {
+      if (opts.nx && get(key) || opts.xx && !get(key)) return null;
+      values.set(key, { value: structuredClone(value), expires: clock + (opts.ex ?? 86400) * 1000 });
+      return 'OK';
+    },
+    async del(key) { values.delete(key); },
+  };
+}
+
+test('a killed archive resumes after its last completed output', async () => {
+  const redis = redisMemory();
+  const oldUrl = process.env.KV_REST_API_URL, oldToken = process.env.KV_REST_API_TOKEN;
+  process.env.KV_REST_API_URL = 'http://stub'; process.env.KV_REST_API_TOKEN = 'stub';
+  let tatCalls = 0, payCalls = 0, etaCalls = 0, reachedPay;
+  const payStarted = new Promise(resolve => { reachedPay = resolve; });
+  let killed = true;
+  const deps = {
+    '@upstash/redis': { Redis: class { constructor() { return redis; } } },
+    './cartrack': { getTimelineRoutes: async () => [] },
+    './pickup-setup': { pickupEtaRows: () => [], writePickupEta: async () => { etaCalls++; return 0; } },
+    './tat': { buildDayLegs: async () => { tatCalls++; return { legs: [], stats: {} }; } },
+    './pay': { buildDayPay: async () => { payCalls++; if (killed) { reachedPay(); return new Promise(() => {}); } return { jobs: [], punches: [], stats: {} }; } },
+    './supabase-rest': { sbDelete: async () => {}, sbUpsert: async () => {}, sbSelectAll: async () => [], supabaseConfigured: () => true, missingSupabaseEnv: () => [] },
+    './pay-reconcile': { keepStoredDistances: () => {}, markPayDay: async () => {} },
+    './time': load('src/lib/time.ts', {}),
+  };
+  try {
+    const first = load('src/lib/tat-archive.ts', deps);
+    void first.archiveSealedDays('prod', new Date('2026-09-27T05:35:00+07:00'));
+    await payStarted; // simulate process death here: neither finally nor seal promotion runs
+    assert.ok(await redis.ttl('tat:sealed:prod:2026-09-26') <= 90);
+    redis.advance(91_000);
+    killed = false;
+    const restarted = load('src/lib/tat-archive.ts', deps);
+    const out = await restarted.archiveSealedDays('prod', new Date('2026-09-27T05:38:00+07:00'));
+    assert.equal(out.ok, true);
+    assert.deepEqual([tatCalls, payCalls, etaCalls], [1, 2, 1]);
+    assert.ok(await redis.ttl('tat:sealed:prod:2026-09-26') > 90);
+  } finally {
+    if (oldUrl === undefined) delete process.env.KV_REST_API_URL; else process.env.KV_REST_API_URL = oldUrl;
+    if (oldToken === undefined) delete process.env.KV_REST_API_TOKEN; else process.env.KV_REST_API_TOKEN = oldToken;
+  }
+});
+
+test('consecutive pings recover a killed schedule run, then email only unresolved work', async () => {
+  const redis = redisMemory();
+  let saved = null, runs = 0, sends = 0, refuseEmail = true;
+  const keys = [];
+  const payloads = [];
+  const module = load('src/lib/morning-recovery.ts', {
+    './tat-archive': { getRedis: () => redis, LOCK_TTL_S: 90, TAT_LOOKBACK_DAYS: 3 },
+    './schedule-job-kv': { getLastRun: async () => saved, saveLastRun: async (r) => { saved = r; } },
+    './schedule-job': { runScheduleJobCycle: async () => { runs++; return { date: '2026-09-27', weekday: 0, results: [{ status: 'OK', job_id: 1 }] }; } },
+    './smart-log-kv': { getArmState: async () => ({ env: 'prod' }) },
+    './disarm-alert': { sendResendEmail: async (_key, body, idempotency) => { sends++; keys.push(idempotency); payloads.push(body); assert.match(body.html, /Archive/); if (refuseEmail) throw new Error('email service unavailable'); } },
+    './time': load('src/lib/time.ts', {}),
+  });
+  const at = (time) => new Date(`2026-09-27T${time}:00+07:00`);
+  const oldKey = process.env.RESEND_API_KEY;
+  process.env.RESEND_API_KEY = 'stub';
+  try {
+    await module.recoverMorning(at('05:02'));
+    await redis.set('schedule_job:retry:prod:2026-09-27', 'killed', { ex: 90 });
+    await module.recoverMorning(at('05:05')); // prior invocation still leased
+    assert.equal(runs, 0);
+    redis.advance(91_000);
+    await module.recoverMorning(at('05:07'));
+    await module.recoverMorning(at('05:10')); // successful schedule is not read again
+    assert.equal(runs, 1);
+    await module.recoverMorning(at('06:04'));
+    assert.equal(sends, 0);
+    await assert.rejects(module.recoverMorning(at('06:05')), /email service unavailable/);
+    await redis.set('tat:sealed:prod:2026-09-26', 'done', { ex: 604800 });
+    refuseEmail = false;
+    await module.recoverMorning(at('06:08'));
+    await module.recoverMorning(at('06:11'));
+    assert.equal(sends, 2); // one failed delivery, one accepted; no third email
+    assert.equal(keys[0], keys[1]);
+    assert.deepEqual(payloads[0], payloads[1]); // status changes cannot change a retry's payload
+  } finally {
+    if (oldKey === undefined) delete process.env.RESEND_API_KEY; else process.env.RESEND_API_KEY = oldKey;
+  }
+});
+
+test('completed mornings stay quiet; disarmed operation still checks the archive', async () => {
+  const redis = redisMemory();
+  for (const date of ['2026-09-26','2026-09-25','2026-09-24']) await redis.set(`tat:sealed:prod:${date}`, 'done', { ex: 604800 });
+  const { recoverMorning } = load('src/lib/morning-recovery.ts', {
+    './tat-archive': { getRedis: () => redis, LOCK_TTL_S: 90, TAT_LOOKBACK_DAYS: 3 },
+    './schedule-job-kv': { getLastRun: async () => ({ date: '2026-09-27', results: [] }) },
+    './schedule-job': { runScheduleJobCycle: async () => { throw new Error('completed schedule must not run'); } },
+    './smart-log-kv': { getArmState: async () => null },
+    './disarm-alert': { sendResendEmail: async () => { throw new Error('healthy morning must not email'); } },
+    './time': load('src/lib/time.ts', {}),
+  });
+  await recoverMorning(new Date('2026-09-27T05:02:00+07:00'));
+  await recoverMorning(new Date('2026-09-27T06:05:00+07:00'));
+  assert.equal(await redis.get('morning:checked:2026-09-27'), 'done');
+});
+
+test('rollover failures remain unfinished and a later pass resumes them', async () => {
+  let failing = true;
+  const deps = new Proxy({
+    './cartrack': {
+      unassignJob: async (id) => ({ ok: !failing || id !== 4, status: 500 }),
+      updateJobScheduledDeliveryTs: async (id) => { if (failing && id === 3) throw new Error('connection lost'); return { ok: !failing || id !== 2, status: 500 }; },
+    },
+    './job-filters': { isChamCong: () => false, isCompletedOrRejectedStop: () => false },
+  }, { has: () => true, get: (target, key) => target[key] ?? {} });
+  const { rolloverUnfinishedJobs } = load('src/lib/assign.ts', deps);
+  const candidates = [1,2,3,4].map(job_id => ({ job_id, delivery_driver_id: job_id === 4 ? 'driver' : null, stops: [] }));
+  const first = await rolloverUnfinishedJobs(candidates, '2026-09-27', 'prod', () => {}, Date.now() + 1000);
+  assert.deepEqual([...first.bumped], [1]);
+  assert.equal(first.remaining, 3);
+  failing = false;
+  const second = await rolloverUnfinishedJobs(candidates.filter(j => !first.bumped.has(j.job_id)), '2026-09-27', 'prod', () => {}, Date.now() + 1000);
+  assert.equal(second.remaining, 0);
+  const timedOut = await rolloverUnfinishedJobs(candidates, '2026-09-27', 'prod', () => {}, Date.now() - 1);
+  assert.equal(timedOut.remaining, 4);
 });

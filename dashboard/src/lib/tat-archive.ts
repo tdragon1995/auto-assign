@@ -152,7 +152,7 @@ export async function archivePickupEtaForDate(date: string): Promise<number> {
  * because on an upsert the default does not re-fire — and that stamp is exactly
  * what separates "written by this pass" from "left over from the last one".
  */
-export async function archiveDay(date: string, env: Env = "prod", reads?: MorningReads): Promise<ArchiveResult> {
+export async function archiveDay(date: string, env: Env = "prod", reads?: MorningReads, resume = false): Promise<ArchiveResult> {
   if (!supabaseConfigured()) {
     return { ok: false, date, error: "Supabase chưa được cấu hình (thiếu SUPABASE_SERVICE_ROLE_KEY)." };
   }
@@ -164,59 +164,72 @@ export async function archiveDay(date: string, env: Env = "prod", reads?: Mornin
     if (got !== "OK") return { ok: true, date, skipped: "another archive run holds the lock" };
   }
 
+  const progressKey = `tat:outputs:${env}:${date}`;
+  let progress: ArchiveResult = { ok: false, date };
+  const checkpoint = async () => {
+    if (resume && redis) await redis.set(progressKey, progress, { ex: SEAL_TTL_S });
+  };
   try {
+    if (resume && redis) progress = await redis.get<ArchiveResult>(progressKey) ?? progress;
+    const complete = () => progress.legs !== undefined && !!progress.pay && !progress.pay.error &&
+      (env !== "prod" || progress.pickupEta?.rows !== undefined);
+    if (complete()) return { ...progress, ok: true, error: undefined };
     const routes = await (reads ? reads.timeline(date, env) : getTimelineRoutes(date, env));
     // null means the fleetweb login or the RPC failed. An empty day written over a
     // good one would erase it, so a failed fetch must never reach the delete.
     if (!routes) return { ok: false, date, error: "Không lấy được lộ trình từ Cartrack." };
 
-    const { legs, stats } = await buildDayLegs(routes, date);
+    // Successful outputs survive a killed invocation. Manual/backfill calls
+    // still rebuild all outputs. No raw timeline is kept between invocations.
+    if (progress.legs === undefined) {
+      const { legs, stats } = await buildDayLegs(routes, date);
 
-    const stamp = new Date().toISOString();
-    if (legs.length > 0) {
-      const rows = legs.map((l) => ({ ...l, archived_at: stamp }));
-      await sbUpsert("tat_legs", rows as unknown as Record<string, unknown>[], "from_stop_id,to_stop_id");
-      // Only now, once the day is safely written, clear what this pass did not
-      // touch. Legs whose stop pairing changed since last time land here.
-      await sbDelete("tat_legs", `trip_date=eq.${date}&archived_at=lt.${encodeURIComponent(stamp)}`);
-    } else {
-      // A genuinely empty day still has to clear whatever was there before.
-      await sbDelete("tat_legs", `trip_date=eq.${date}`);
+      const stamp = new Date().toISOString();
+      if (legs.length > 0) {
+        const rows = legs.map((l) => ({ ...l, archived_at: stamp }));
+        await sbUpsert("tat_legs", rows as unknown as Record<string, unknown>[], "from_stop_id,to_stop_id");
+        // Clear stale legs only after the replacement rows are safely written.
+        await sbDelete("tat_legs", `trip_date=eq.${date}&archived_at=lt.${encodeURIComponent(stamp)}`);
+      } else {
+        await sbDelete("tat_legs", `trip_date=eq.${date}`);
+      }
+
+      Object.assign(progress, {
+        legs: legs.length, measured: legs.filter((l) => l.tat_mins != null).length,
+        graded: legs.filter((l) => l.on_time != null).length,
+        longGaps: legs.filter((l) => l.long_gap).length, distances: stats,
+      });
+      await checkpoint();
     }
 
     // The pay half of the same day, off the SAME routes — no second Cartrack
     // fetch, no second cron, no second seal. It runs AFTER the legs are safely
     // written and inside its own try/catch, so a pay failure can never cost the day
     // its legs. It does fail the day, though (below), so the seal is retried.
-    const pay = await archivePay(routes, date);
+    if (!progress.pay || progress.pay.error) {
+      progress.pay = await archivePay(routes, date);
+      if (!progress.pay.error) await checkpoint();
+    }
 
     // Portal pickup ETA is the third archive output. A failed write leaves the
     // day retryable, while the successful TAT/pay upserts remain intact.
-    let pickupEta: ArchiveResult["pickupEta"];
-    if (env === "prod") {
-      try { pickupEta = { rows: await archivePickupEta(routes) }; }
-      catch (e) { pickupEta = { error: e instanceof Error ? e.message : String(e) }; }
+    if (env === "prod" && progress.pickupEta?.rows === undefined) {
+      try {
+        progress.pickupEta = { rows: await archivePickupEta(routes) };
+        await checkpoint();
+      } catch (e) { progress.pickupEta = { error: e instanceof Error ? e.message : String(e) }; }
     }
 
     // A pay failure does not undo the legs (already written), but it must NOT let
     // the day seal: ok:false releases the seal so the next ping retries the day.
     // Re-running the legs is harmless — they upsert on the same keys.
-    return {
-      ok: !pay.error && !pickupEta?.error,
-      ...((pay.error || pickupEta?.error) ? { error: [pay.error && `pay archive failed: ${pay.error}`, pickupEta?.error && `pickup ETA archive failed: ${pickupEta.error}`].filter(Boolean).join("; ") } : {}),
-      date,
-      legs: legs.length,
-      measured: legs.filter((l) => l.tat_mins != null).length,
-      graded: legs.filter((l) => l.on_time != null).length,
-      longGaps: legs.filter((l) => l.long_gap).length,
-      distances: stats,
-      pay,
-      pickupEta,
-    };
+    const error = [progress.pay.error && `pay archive failed: ${progress.pay.error}`,
+      progress.pickupEta?.error && `pickup ETA archive failed: ${progress.pickupEta.error}`].filter(Boolean).join("; ");
+    return { ...progress, ok: complete(), ...(error ? { error } : {}) };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[tat-archive] failed:", msg);
-    return { ok: false, date, error: msg };
+    return { ...progress, ok: false, date, error: msg };
   } finally {
     if (redis) await redis.del(lockKey).catch(() => {});
   }
@@ -320,7 +333,7 @@ export async function archiveSealedDays(
         .catch(() => null);
       if (claimed !== "OK") continue; // already sealed (or Redis hiccup) — try the next day
 
-      const res = await archiveDay(date, env, reads);
+      const res = await archiveDay(date, env, reads, true);
       // Release the claim so the next ping retries. `skipped` means the day lock
       // was held by a concurrent run, which is also not a completed seal.
       if (!res.ok || res.skipped) await redis.del(sealKey(env, date)).catch(() => {});

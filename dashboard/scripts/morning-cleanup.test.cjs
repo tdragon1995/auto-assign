@@ -77,10 +77,10 @@ test('failed cleanup remains retryable and missing shared fields use label looku
     assert.equal(f.calls.labels, 3);
     const g = fixture();
     g.failDelete();
-    await g.mod.cleanupStaleTrips({}, 'prod', () => {}, { s2: [], s4: [], s5: [] }, [], [job]);
+    assert.equal(await g.mod.cleanupStaleTrips({}, 'prod', () => {}, { s2: [], s4: [], s5: [] }, [], [job]), false);
     assert.equal(g.records.size, 0);
     g.allowDelete();
-    await g.mod.cleanupStaleTrips({}, 'prod', () => {}, { s2: [], s4: [], s5: [] }, [], [job]);
+    assert.equal(await g.mod.cleanupStaleTrips({}, 'prod', () => {}, { s2: [], s4: [], s5: [] }, [], [job]), true);
     assert.ok(g.records.has('cleanup:rollover:complete:prod:2026-09-27'));
   } finally {
     global.setTimeout = oldTimer;

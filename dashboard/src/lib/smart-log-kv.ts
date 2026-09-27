@@ -939,7 +939,7 @@ const rolloverKey = (env: string, dateVn: string) => `assign:rollover_morning:${
 // So the question only reaches Redis while the answer could still be no:
 //
 //   * before MORNING_CLAIM_WINDOW_END_MIN — the window the pass belongs to, wide
-//     enough that deferMorningPass's ten-minute retries all land inside it;
+//     enough that consecutive-ping retries all land inside it;
 //   * after it, ONCE per instance per day. That second clause is what keeps a
 //     late recovery alive: if the pings were down or the engine sat disarmed all
 //     morning, the first cycle on any fresh lambda still asks, still claims the
@@ -950,10 +950,9 @@ const rolloverKey = (env: string, dateVn: string) => `assign:rollover_morning:${
 const MORNING_CLAIM_WINDOW_END_MIN = 9 * 60; // 09:00 VN
 
 // How long a morning-pass claim is held before it lapses of its own accord.
-// Long enough that concurrent cycles (two accounts, ~90s apart) cannot both
-// take the pass, short enough that a timeout-killed pass is retried within the
+// Longer than one invocation, short enough that a timeout-killed pass retries within the
 // pre-09:00 window where every cycle still asks. See claimMorningPass.
-const MORNING_LEASE_S = 900; // 15 minutes
+const MORNING_LEASE_S = 90; // longer than the 60s invocation, retry on a later ping
 
 let morningClaimAskedOn: string | null = null;
 
@@ -1025,17 +1024,8 @@ export async function confirmMorningPass(dateVn: string, env = "prod"): Promise<
   await redis.set(rolloverKey(env, dateVn), new Date().toISOString(), { ex: 172_800 }).catch(() => {});
 }
 
-/** Hand the day's rollover slot back after a failed attempt, so a later cycle
- *  retries instead of leaving yesterday's leftovers stranded until tomorrow.
- *
- *  Claiming the slot before the work and releasing it on failure mirrors the TAT
- *  seal (`archiveSealedDays`). The difference: this SHORTENS the gate to
- *  `retrySec` rather than deleting it. A plain delete would retry on the very
- *  next 3-minute cycle, and the thing that fails here is a Cartrack list call
- *  that is already unwell (measured 2026-08-16: ~1 call in 3 returning HTTP 500)
- *  — hammering it every 3 minutes all morning would add two slow list fetches to
- *  every cycle. Ten minutes is still ~6 more attempts before the morning peak.  */
-export async function deferMorningPass(dateVn: string, env = "prod", retrySec = 600): Promise<void> {
+/** Keep a short lease after failure; a later cron ping resumes unfinished work. */
+export async function deferMorningPass(dateVn: string, env = "prod", retrySec = MORNING_LEASE_S): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
   await redis.set(rolloverKey(env, dateVn), new Date().toISOString(), { ex: retrySec }).catch(() => {});

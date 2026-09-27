@@ -151,11 +151,11 @@ async function rejectJob(jobId: number, reason: string, env: Env): Promise<boole
  * Reuse a complete rollover pool; retain the three single-label reads if that
  * pool was unavailable. A completed scan is remembered across instances.
  */
-async function collectRolloverTasks(env: Env, shared?: Job[] | null): Promise<{ tasks: CleanupTask[]; complete: boolean; day: string }> {
+async function collectRolloverTasks(env: Env, shared?: Job[] | null): Promise<{ tasks: CleanupTask[]; complete: boolean; day: string; alreadyComplete?: boolean }> {
   const today = vnDate();
-  if (env !== "prod") return { tasks: [], complete: false, day: today }; // label RPC is prod-only
+  if (env !== "prod") return { tasks: [], complete: true, day: today, alreadyComplete: true }; // label RPC is prod-only
   const redis = cleanupRedis();
-  if (await redis?.get(cleanupKey(env, today)).catch(() => null)) return { tasks: [], complete: false, day: today };
+  if (await redis?.get(cleanupKey(env, today)).catch(() => null)) return { tasks: [], complete: true, day: today, alreadyComplete: true };
   const yesterday = vnDate(new Date(Date.now() - 24 * 3600e3));
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const byJob = new Map<number, any[]>();
@@ -238,8 +238,8 @@ export async function cleanupStaleTrips(
   // ON-LEAVE driver's shift, matching the creator. Omitted → no sub mapping.
   leaveEntries: LeaveEntry[] = [],
   rolloverPool?: Job[] | null,
-): Promise<void> {
-  if (process.env.CLEANUP_STALE_TRIPS !== "1") return;
+): Promise<boolean> {
+  if (process.env.CLEANUP_STALE_TRIPS !== "1") return true;
 
   const subCovers = subToCoveredDriver(config, leaveEntries); // subId → on-leave pool driver
   const today = vnDate();
@@ -277,12 +277,15 @@ export async function cleanupStaleTrips(
 
   // Rule C first: yesterday's rolled-over leftovers (own fetch, disjoint from s2/s4).
   const rollover = await collectRolloverTasks(env, rolloverPool);
-  const tasks: CleanupTask[] = rollover.tasks;
+  const tasks: CleanupTask[] = [...rollover.tasks];
   let rolloverComplete = rollover.complete;
   const markRolloverComplete = async () => {
-    if (!rolloverComplete) return;
-    await cleanupRedis()?.set(cleanupKey(env, rollover.day), "1", { ex: 48 * 3600 }).catch(() => null);
+    if (!rolloverComplete) return false;
+    if (rollover.alreadyComplete) return true;
+    const redis = cleanupRedis();
+    if (redis && await redis.set(cleanupKey(env, rollover.day), "1", { ex: 48 * 3600 }).catch(() => null) !== "OK") return false;
     log(`Cleanup: yesterday scan complete (${rollover.tasks.length} eligible)`, "INFO");
+    return true;
   };
 
   // Candidates: untouched via-legs and return trips (created already-assigned, so
@@ -355,13 +358,13 @@ export async function cleanupStaleTrips(
     }
   }
 
-  if (tasks.length === 0) { await markRolloverComplete(); return; }
+  if (tasks.length === 0) return markRolloverComplete();
 
   // Pre-flight the login (cached, so this is the same session removeTrip will use):
   // no session means every delete below would fail — say so once, not N times.
   if (!(await getFleetwebCookie(env))) {
     log(`Cleanup: ${tasks.length} stale job(s) found but no fleetweb cookie to delete them`, "WARN");
-    return;
+    return rollover.tasks.length === 0 ? markRolloverComplete() : false;
   }
 
   // Claim all guards before any POST so overlapping cycles don't double-delete.
@@ -375,7 +378,7 @@ export async function cleanupStaleTrips(
     setTimeout(() => inFlightCleanup.delete(t.jobId), IN_FLIGHT_TTL_MS);
     claimed.push(t);
   }
-  if (claimed.length === 0) return;
+  if (claimed.length === 0) return rollover.tasks.length === 0 ? markRolloverComplete() : false;
   if (rollover.tasks.some((t) => !claimed.includes(t))) rolloverComplete = false;
 
   // Routes actually cancelled this pass — remembered so the creator doesn't remake
@@ -412,5 +415,5 @@ export async function cleanupStaleTrips(
   await recordCleanedReturns(cleaned).catch((e) =>
     log(`Cleanup: could not record cancelled returns (they may be recreated): ${e}`, "WARN"),
   );
-  await markRolloverComplete();
+  return markRolloverComplete();
 }
