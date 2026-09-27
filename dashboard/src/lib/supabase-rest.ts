@@ -120,6 +120,17 @@ export async function sbDelete(table: string, filter: string): Promise<void> {
   await request(`${table}?${filter}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
 }
 
+/** Conditional update. A zero-row result means the editor's version was stale. */
+export async function sbPatch<T>(table: string, filter: string, values: Record<string, unknown>): Promise<T[]> {
+  if (!filter.trim()) throw new Error("sbPatch requires a filter");
+  const res = await request(`${table}?${filter}`, {
+    method: "PATCH",
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify(values),
+  });
+  return (await res.json()) as T[];
+}
+
 /** INSERT rows, batched. */
 export async function sbInsert(
   table: string,

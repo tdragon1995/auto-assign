@@ -48,6 +48,7 @@
  *   Every caller must handle `unknown` explicitly; none may default it.
  */
 import { Redis } from "@upstash/redis";
+import { masterDrivers, masterEnabled } from "./master-store";
 import {
   SHEET_GID,
   SHEET_CONTRACT,
@@ -131,7 +132,7 @@ const EMPTY: ShiftIndex = {
 
 const MEM_TTL_MS = 10 * 60 * 1000;
 const REDIS_TTL_S = 60 * 60;
-const REDIS_KEY = "shifts:v1";
+const REDIS_KEY = masterEnabled() ? "shifts:v2" : "shifts:v1";
 
 let mem: { at: number; index: ShiftIndex } | null = null;
 
@@ -192,6 +193,16 @@ function fromWire(w: Wire): ShiftIndex {
  * being worked out.
  */
 async function loadRosterCodes(): Promise<Map<string, string>> {
+  if (masterEnabled()) {
+    const drivers = await masterDrivers();
+    const out = new Map<string, string>();
+    for (const driver of drivers) {
+      const code = driver.roster?.employee_code?.trim();
+      if (code) out.set(driver.driver_id, code);
+    }
+    if (out.size < 100) throw new Error("Master driver employee-code roster is suspiciously short");
+    return out;
+  }
   const rows = await fetchSheetRows(SHEET_GID.drivers, {
     label: SHEET_CONTRACT.drivers.label,
     require: SHEET_CONTRACT.drivers.require,

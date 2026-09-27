@@ -10,6 +10,7 @@ import {
 import { vnDate, vnIsSunday, vnTimestamp } from "./time";
 import { looksAutoCreated, scopedDropoffName } from "./unmapped-row";
 import { GEN_KEY, readConfigGen } from "./config-gen";
+import { masterEnabled, masterRuleRows, masterDrivers } from "./master-store";
 
 function getRedis(): Redis | null {
   const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
@@ -59,7 +60,7 @@ const L2_TTL_S = 48 * 60 * 60;
 //          exactly what happened on 2026-08-31: two fixes to this wording shipped
 //          and neither reached the screen. Hence the audit inputs now ride the blob
 //          and the sentences are rebuilt on every load, cached or not.
-const l2Key = (gen: string, date: string) => `config:v12:${gen}:${date}`;
+const l2Key = (gen: string, date: string) => `config:${masterEnabled() ? "v13" : "v12"}:${gen}:${date}`;
 
 
 let cachedConfig: Config | null = null;
@@ -146,6 +147,22 @@ function isDeactivatedRow(row: Record<string, string>): boolean {
 
 export async function loadDriversFromSheet(): Promise<ConfigDriver[]> {
   if (cachedDrivers && Date.now() - cachedDriversAt < DRIVERS_TTL_MS) return cachedDrivers;
+  if (masterEnabled()) {
+    try {
+      const rows = await masterDrivers();
+      const drivers = rows.filter((r) => r.cartrack.is_active !== false).map((r) => ({
+        driver_id: r.driver_id,
+        name: `${r.cartrack.first_name ?? ""} ${r.cartrack.last_name ?? ""}`.trim() || r.driver_id,
+      }));
+      if (drivers.length < 100) throw new Error("Master driver roster is suspiciously short");
+      cachedDrivers = drivers.sort((a, b) => a.name.localeCompare(b.name));
+      cachedDriversAt = Date.now();
+      return cachedDrivers;
+    } catch (e) {
+      console.error("Master driver roster load failed:", e);
+      return cachedDrivers ?? [];
+    }
+  }
   try {
     const rows = await fetchSheetRows(SHEET_GID.drivers, SHEET_CONTRACT.drivers);
     const drivers: ConfigDriver[] = [];
@@ -309,7 +326,9 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
 
   const tab = sunday ? "sunday" : "mapping";
   try {
-    const rows = await fetchSheetRows(SHEET_GID[tab], SHEET_CONTRACT[tab]);
+    const rows = masterEnabled() && !sunday
+      ? await masterRuleRows("weekday")
+      : await fetchSheetRows(SHEET_GID[tab], SHEET_CONTRACT[tab]);
 
     const mappings: Mapping[] = [];
     // Rows the parser is about to throw away, and the pickup names it saw. Both

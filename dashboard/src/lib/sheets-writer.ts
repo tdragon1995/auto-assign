@@ -7,6 +7,7 @@ import { timeToMins } from "./time";
 import { findUniqueConfigRow, type ConfigRowAt, type ConfigRowSnapshot } from "./config-row-match";
 import { replaceDriverInCell } from "./driver-cell";
 import { shiftFormulaRows } from "./formula-shift";
+import { createMasterConfigRows, masterEnabled } from "./master-store";
 import {
   encodeSwapNote, parseSwapNote, parseThayCaNote, sourceKey, THAY_CA_NOTE_PREFIX,
   type ThayCaDesired,
@@ -1930,6 +1931,7 @@ async function copyConfigRowParts(
  */
 export async function writeConfigRows(cells: ConfigCells[]): Promise<number[]> {
   if (cells.length === 0) return [];
+  if (masterEnabled() && !vnIsSunday()) return createMasterConfigRows(cells);
   const tab = currentConfigTab();
   const sheets = getSheetsClient();
   // WEEKDAY ONLY for a named driver, exactly as completeConfigRow refuses: the
@@ -2073,6 +2075,7 @@ export async function completeConfigRow(opts: {
   /** Optional source row used to restore formulas and formatting after a copy. */
   copyFromRow?: number;
 }): Promise<{ row: number; moved: boolean }> {
+  if (masterEnabled() && !vnIsSunday()) throw new Error("Dùng Master Client Info để sửa quy tắc");
   const tab = currentConfigTab();
   if (tab.gid !== CONFIG_TABS.weekday.gid) {
     throw new Error(
@@ -2245,6 +2248,7 @@ export async function bulkUpdateConfigRows(opts: {
   start?: string;
   end?: string;
 }): Promise<BulkConfigResult> {
+  if (masterEnabled() && !vnIsSunday()) throw new Error("Dùng Master Client Info để sửa quy tắc");
   const withDriver = opts.driverName !== undefined;
   const withHours = opts.start !== undefined && opts.end !== undefined;
   if (!withDriver && !withHours) throw new Error("Không có gì để ghi");
@@ -2284,6 +2288,7 @@ export async function bulkUpdateConfigRows(opts: {
  * anchor), and the same read-back runs once at the end. See `deleteConfigRow`.
  */
 export async function bulkDeleteConfigRows(opts: { targets: ConfigTarget[] }): Promise<BulkConfigResult> {
+  if (masterEnabled() && !vnIsSunday()) throw new Error("Dùng Master Client Info để sửa quy tắc");
   const ANCHOR = "dòng 2 giữ công thức id của cả cột — không xoá";
   const anchor = opts.targets
     .filter((t) => t.row <= 2)
@@ -2346,6 +2351,7 @@ export async function replaceConfigDriver(opts: {
   to: string;
   targets: ConfigTarget[];
 }): Promise<DriverReplaceResult> {
+  if (masterEnabled() && !vnIsSunday()) throw new Error("Dùng Master Client Info để sửa quy tắc");
   const { sheets, q, cols, cell, live, skipped } =
     await readTargetColumns(opts.targets, ["Driver"], SUNDAY_DRIVER_MSG);
 
@@ -2404,6 +2410,7 @@ export async function deleteConfigRow(opts: {
   expectPickup: string;
   expected?: ConfigRowSnapshot;
 }): Promise<{ row: number; moved: boolean }> {
+  if (masterEnabled() && !vnIsSunday()) throw new Error("Dùng Master Client Info để sửa quy tắc");
   const tab = currentConfigTab();
   if (tab.gid !== CONFIG_TABS.weekday.gid) {
     throw new Error(
@@ -2494,6 +2501,7 @@ export async function adjustConfigRowWindow(opts: {
   edge: "start" | "end";
   value: string;
 }): Promise<{ row: number; moved: boolean }> {
+  if (masterEnabled() && !vnIsSunday()) throw new Error("Dùng Master Client Info để sửa quy tắc");
   const tab = currentConfigTab();
   if (tab.gid !== CONFIG_TABS.weekday.gid) {
     throw new Error("Chủ nhật: ca được suy ra từ lịch trực công khai — sửa trên tab lịch Chủ nhật");

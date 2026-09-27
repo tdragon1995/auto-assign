@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { fetchSheetRows, SHEET_CONTRACT, SHEET_GID } from "@/lib/sheets";
 import { readConfigGen } from "@/lib/config-gen";
 import { vnIsSunday, vnTimestamp } from "@/lib/time";
+import { masterEnabled, masterRuleRows } from "@/lib/master-store";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -80,7 +81,9 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ rows: cache.rows, tab: cache.tab, fetchedAt: cache.fetchedAt, cached: true });
     }
 
-    const raw = await fetchSheetRows(gid, { label: contract.label, require: contract.require });
+    const raw = masterEnabled() && !sunday
+      ? await masterRuleRows("weekday")
+      : await fetchSheetRows(gid, { label: contract.label, require: contract.require });
     const rows: ConfigRowView[] = [];
     raw.forEach((r, idx) => {
       const pickup = (r["Điểm Pick-up"] ?? "").trim();
