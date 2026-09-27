@@ -65,7 +65,11 @@ function routeFixture(rest = false, schedulingFails = false) {
         return true;
       },
     },
-    '@/lib/psc-config': { PSC_TINH_LABEL: 'test-label', loadTplEntries: async () => [] },
+    '@/lib/psc-config': {
+      PSC_TINH_LABEL: 'test-label',
+      DANANG_PICKUP_UUID: '43cc0fee-b9a9-11f1-9378-fa163ee8d8ac',
+      loadTplEntries: async () => [],
+    },
     '@/lib/job-filters': { STOP_STATUS: {}, JOB_STATUS: { 2: 'Unassigned' } },
     '@/lib/job-detail': { fetchJobDetail: async () => null },
     '@/lib/cartrack': {
@@ -84,6 +88,27 @@ function routeFixture(rest = false, schedulingFails = false) {
   });
   return { route, calls };
 }
+
+test('Đà Nẵng offers and enforces its fixed pickup location', async () => {
+  const pickupId = '43cc0fee-b9a9-11f1-9378-fa163ee8d8ac';
+  const deliveryDate = time.addDays(time.vnDate(), 1);
+  const { route, calls } = routeFixture();
+  const optionsResponse = await route.GET({ nextUrl: new URL('https://test.invalid?psc=DANANG') });
+  assert.equal(optionsResponse.status, 200);
+  assert.deepEqual((await optionsResponse.json()).options.map(o => o.tpl_uuid), [pickupId]);
+
+  const invalidResponse = await route.POST({ nextUrl: new URL('https://test.invalid'), json: async () => ({
+    psc_code: 'DANANG', tpl_uuid: 'wrong-pickup', eta: '08:00',
+  }) });
+  assert.equal(invalidResponse.status, 400);
+  assert.equal(calls.length, 0);
+
+  const validResponse = await route.POST({ nextUrl: new URL('https://test.invalid'), json: async () => ({
+    psc_code: 'DANANG', tpl_uuid: pickupId, eta: '08:00', delivery_date: deliveryDate,
+  }) });
+  assert.equal(validResponse.status, 200);
+  assert.equal(calls.find(c => c[0] === 'create')[1].stops[0].customer_id, pickupId);
+});
 
 test('tomorrow POST schedules, locks, and numbers on tomorrow without writing real jobs', async () => {
   const date = time.addDays(time.vnDate(), 1);

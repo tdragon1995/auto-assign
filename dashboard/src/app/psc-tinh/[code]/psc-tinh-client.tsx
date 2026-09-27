@@ -50,6 +50,7 @@ const PSC_META: Record<string, { label: string; psc_code: string }> = {
   D030: { label: "BRA - D030", psc_code: "D030" },
   D036: { label: "BRA - D036 (Tân An)", psc_code: "D036" },
   KGIANG: { label: "BRA - KGiang", psc_code: "KGIANG" },
+  DANANG: { label: "Đà Nẵng", psc_code: "DANANG" },
 };
 
 const hm = (ts?: string | null) => (ts ? ts.slice(11, 16) : null);
@@ -159,7 +160,7 @@ function PscJobSheet({ order, onClose }: { order: Order; onClose: () => void }) 
       body: (
         <>
           <p className="text-xs text-slate-500 mt-0.5">Từ {pickupName}</p>
-          {win && <p className="text-xs font-semibold text-amber-700 mt-0.5">Hẹn tới nhà xe: {win}{order.delivery_date && ` — ${pscTinhDayLabel(order.delivery_date)}`}</p>}
+          {win && <p className="text-xs font-semibold text-amber-700 mt-0.5">Hẹn lấy mẫu: {win}{order.delivery_date && ` — ${pscTinhDayLabel(order.delivery_date)}`}</p>}
         </>
       ),
     },
@@ -230,9 +231,9 @@ function PscJobSheet({ order, onClose }: { order: Order; onClose: () => void }) 
   );
 }
 
-export default function PscTinhPage() {
+export default function PscTinhPage({ pscCode }: { pscCode?: string }) {
   const params = useParams();
-  const code = (params.code as string)?.toUpperCase();
+  const code = (pscCode ?? params.code as string)?.toUpperCase();
   const meta = PSC_META[code];
 
   // Completed trips open by default: it's the record staff come here to check.
@@ -479,7 +480,7 @@ export default function PscTinhPage() {
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                  Điểm lấy mẫu (3PL)
+                  {code === "DANANG" ? "Điểm lấy mẫu" : "Điểm lấy mẫu (3PL)"}
                 </label>
                 <div className="space-y-2">
                   {options.length === 0 ? (
@@ -506,7 +507,7 @@ export default function PscTinhPage() {
 
               <div>
                 <label htmlFor="psc-tinh-eta" className="block text-sm font-semibold text-slate-700 mb-1.5">
-                  Thời gian tới nhà xe
+                  {code === "DANANG" ? "Thời gian lấy mẫu" : "Thời gian tới nhà xe"}
                 </label>
                 <select
                   id="psc-tinh-eta"

@@ -2,6 +2,7 @@ import { fetchSheetRows, isSheetShapeError, noteSheetLoad, SHEET_CONTRACT, SHEET
 import { PSC_ROUTES } from "./psc-routes-data";
 
 export const PSC_TINH_LABEL = "🛵 Vận chuyển mẫu tỉnh";
+export const DANANG_PICKUP_UUID = "43cc0fee-b9a9-11f1-9378-fa163ee8d8ac";
 
 export interface PscRoute {
   psc_pickup: string;

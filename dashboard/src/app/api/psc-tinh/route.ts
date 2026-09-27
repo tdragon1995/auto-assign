@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { loadTplEntries, PSC_TINH_LABEL } from "@/lib/psc-config";
+import { DANANG_PICKUP_UUID, loadTplEntries, PSC_TINH_LABEL } from "@/lib/psc-config";
 import { cancelJob, jobVnDate, BASE_URL, getHeaders, getStopsByLabels, createJob, type Env } from "@/lib/cartrack";
 import { addDays, vnDate, vnTimestamp } from "@/lib/time";
 import { pscTinhSchedule } from "@/lib/psc-tinh-time";
@@ -127,7 +127,9 @@ export async function GET(req: NextRequest) {
           `${BASE_URL}/jobs?filter[scheduled_delivery_ts_from]=${deliveryDate} 00:00:00&filter[scheduled_delivery_ts_to]=${deliveryDate} 23:59:59&limit=1000`,
           { headers, cache: "no-store" }
         ),
-        loadTplEntries(),
+        psc === "DANANG"
+          ? Promise.resolve([{ tpl_uuid: DANANG_PICKUP_UUID, address: "" }])
+          : loadTplEntries(),
       ]);
       if (!jobsRes.ok) return NextResponse.json({ orders: [] });
 
@@ -177,6 +179,13 @@ export async function GET(req: NextRequest) {
 
   // ── default: 3PL options ──────────────────────────────────────────────────
   try {
+    if (psc === "DANANG") {
+      return NextResponse.json({ options: [{
+        tpl_uuid: DANANG_PICKUP_UUID,
+        tpl_name: "Đà Nẵng",
+        address: "",
+      }] });
+    }
     const entries = await loadTplEntries();
     const options = entries
       .filter((e) => e.psc_tinh.toUpperCase().includes(psc))
@@ -203,6 +212,9 @@ export async function POST(req: NextRequest) {
 
     if (!psc_code || !tpl_uuid || !eta) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
+    }
+    if (psc_code === "DANANG" && tpl_uuid !== DANANG_PICKUP_UUID) {
+      return NextResponse.json({ error: "Invalid Đà Nẵng pickup location" }, { status: 400 });
     }
 
     let schedule: ReturnType<typeof pscTinhSchedule>;
