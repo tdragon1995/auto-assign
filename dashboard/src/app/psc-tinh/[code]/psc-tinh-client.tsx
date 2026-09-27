@@ -160,7 +160,7 @@ function PscJobSheet({ order, onClose }: { order: Order; onClose: () => void }) 
       body: (
         <>
           <p className="text-xs text-slate-500 mt-0.5">Từ {pickupName}</p>
-          {win && <p className="text-xs font-semibold text-amber-700 mt-0.5">Hẹn lấy mẫu: {win}{order.delivery_date && ` — ${pscTinhDayLabel(order.delivery_date)}`}</p>}
+          {win && <p className="text-xs font-semibold text-amber-700 mt-0.5">Hẹn tới nhà xe: {win}{order.delivery_date && ` — ${pscTinhDayLabel(order.delivery_date)}`}</p>}
         </>
       ),
     },
