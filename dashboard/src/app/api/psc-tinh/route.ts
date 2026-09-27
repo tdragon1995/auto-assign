@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { DANANG_PICKUP_UUID, loadTplEntries, PSC_TINH_LABEL } from "@/lib/psc-config";
+import { DANANG_PICKUP_ADDRESS, DANANG_PICKUP_UUID, loadTplEntries, PSC_TINH_LABEL } from "@/lib/psc-config";
 import { cancelJob, jobVnDate, BASE_URL, getHeaders, getStopsByLabels, createJob, type Env } from "@/lib/cartrack";
 import { addDays, vnDate, vnTimestamp } from "@/lib/time";
 import { pscTinhSchedule } from "@/lib/psc-tinh-time";
@@ -128,7 +128,7 @@ export async function GET(req: NextRequest) {
           { headers, cache: "no-store" }
         ),
         psc === "DANANG"
-          ? Promise.resolve([{ tpl_uuid: DANANG_PICKUP_UUID, address: "" }])
+          ? Promise.resolve([{ tpl_uuid: DANANG_PICKUP_UUID, address: DANANG_PICKUP_ADDRESS }])
           : loadTplEntries(),
       ]);
       if (!jobsRes.ok) return NextResponse.json({ orders: [] });
@@ -182,8 +182,8 @@ export async function GET(req: NextRequest) {
     if (psc === "DANANG") {
       return NextResponse.json({ options: [{
         tpl_uuid: DANANG_PICKUP_UUID,
-        tpl_name: "Đà Nẵng",
-        address: "",
+        tpl_name: "Hồ Chí Minh",
+        address: DANANG_PICKUP_ADDRESS,
       }] });
     }
     const entries = await loadTplEntries();

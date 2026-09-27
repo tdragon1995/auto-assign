@@ -68,6 +68,7 @@ function routeFixture(rest = false, schedulingFails = false) {
     '@/lib/psc-config': {
       PSC_TINH_LABEL: 'test-label',
       DANANG_PICKUP_UUID: '43cc0fee-b9a9-11f1-9378-fa163ee8d8ac',
+      DANANG_PICKUP_ADDRESS: '306a Đ. Hồng Lạc, Bảy Hiền',
       loadTplEntries: async () => [],
     },
     '@/lib/job-filters': { STOP_STATUS: {}, JOB_STATUS: { 2: 'Unassigned' } },
@@ -95,7 +96,11 @@ test('Đà Nẵng offers and enforces its fixed pickup location', async () => {
   const { route, calls } = routeFixture();
   const optionsResponse = await route.GET({ nextUrl: new URL('https://test.invalid?psc=DANANG') });
   assert.equal(optionsResponse.status, 200);
-  assert.deepEqual((await optionsResponse.json()).options.map(o => o.tpl_uuid), [pickupId]);
+  assert.deepEqual((await optionsResponse.json()).options, [{
+    tpl_uuid: pickupId,
+    tpl_name: 'Hồ Chí Minh',
+    address: '306a Đ. Hồng Lạc, Bảy Hiền',
+  }]);
 
   const invalidResponse = await route.POST({ nextUrl: new URL('https://test.invalid'), json: async () => ({
     psc_code: 'DANANG', tpl_uuid: 'wrong-pickup', eta: '08:00',
