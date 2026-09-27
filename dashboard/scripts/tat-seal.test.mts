@@ -1,5 +1,5 @@
 /**
- * The TAT seal gate: once per day, oldest first, and released again when the
+ * The TAT seal gate: once per day, yesterday first, and released again when the
  * archive fails.
  *
  * Why this is worth a test. The gate hangs off the assign cron, which fires every
@@ -44,10 +44,11 @@ const today = vnDate();
 // so it must be given a clock inside that window — otherwise the "did nothing"
 // checks pass for the wrong reason and the suite is green ~99% of the day while
 // testing nothing at all.
-const INSIDE_WINDOW = new Date(`${today}T05:05:00+07:00`);
+const INSIDE_WINDOW = new Date(`${today}T05:35:00+07:00`);
 const OUTSIDE_WINDOW = new Date(`${today}T12:00:00+07:00`);
 const sealKey = (d: string) => `tat:sealed:prod:${d}`;
 const days = Array.from({ length: TAT_LOOKBACK_DAYS }, (_, i) => addDays(today, -(i + 1)));
+const yesterday = addDays(today, -1);
 const oldest = addDays(today, -TAT_LOOKBACK_DAYS);
 
 let failures = 0;
@@ -60,14 +61,14 @@ async function clearSeals() {
   for (const d of days) await redis.del(sealKey(d));
 }
 
-// ── 1. Oldest first, and a failed archive releases its seal ──────────────────
+// ── 1. Yesterday first, and a failed archive releases its seal ────────────────
 await clearSeals();
 const first = await archiveSealedDays("prod", INSIDE_WINDOW);
-check("targets the OLDEST unsealed day", first?.date === oldest, `got ${first?.date}, want ${oldest}`);
+check("targets yesterday first", first?.date === yesterday, `got ${first?.date}, want ${yesterday}`);
 check("reports the fetch failure rather than writing", first?.ok === false, JSON.stringify(first));
 check(
   "releases the seal after a failed archive (so the next ping retries)",
-  (await redis.get(sealKey(oldest))) === null,
+  (await redis.get(sealKey(yesterday))) === null,
 );
 
 // ── 2. A sealed day is never revisited ───────────────────────────────────────
@@ -77,7 +78,7 @@ const none = await archiveSealedDays("prod", INSIDE_WINDOW);
 check("no-ops when every day in the window is already sealed", none === null, JSON.stringify(none));
 
 // ── 3. Only ONE day per call — the catch-up is paced, not a burst ────────────
-// Seal everything, then re-open the two oldest. One call must take exactly one.
+// Seal everything, then re-open two older days. One call must take exactly one.
 await clearSeals();
 for (const d of days) await redis.set(sealKey(d), Date.now());
 await redis.del(sealKey(oldest));
@@ -85,10 +86,10 @@ const secondOldest = addDays(today, -(TAT_LOOKBACK_DAYS - 1));
 await redis.del(sealKey(secondOldest));
 
 const one = await archiveSealedDays("prod", INSIDE_WINDOW);
-check("with two gaps open, handles exactly one", one?.date === oldest, `got ${one?.date}`);
+check("with two gaps open, handles the newer gap first", one?.date === secondOldest, `got ${one?.date}`);
 check(
   "leaves the newer gap for the next ping",
-  (await redis.get(sealKey(secondOldest))) === null,
+  (await redis.get(sealKey(oldest))) === null,
 );
 
 // ── 4. Outside the window it does nothing at all ────────────────────────────
@@ -96,7 +97,7 @@ check(
 // would otherwise each spend writes re-asking a question that changes once.
 await clearSeals();
 const outside = await archiveSealedDays("prod", OUTSIDE_WINDOW);
-check("outside 05:00-05:10 VN it is a no-op", outside === null, JSON.stringify(outside));
+check("outside 05:30-06:00 VN it is a no-op", outside === null, JSON.stringify(outside));
 check("and claims no seal while gated", (await redis.get(sealKey(oldest))) === null);
 
 // ── 5. Today is never sealed by this pass ────────────────────────────────────

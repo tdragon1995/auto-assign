@@ -15,6 +15,7 @@ import { PSC_VIA_LABEL } from "./via-legs";
 import { claimTripAction, releaseTripClaim } from "./smart-log-kv";
 import type { LeaveEntry } from "./leave-config";
 import { recordCleanedReturns } from "./return-suppress";
+import { Redis } from "@upstash/redis";
 
 // Reasons for removing a trip. Deleted trips keep no record, so these now read
 // as the log's explanation — and still fill Cartrack's rejection record on the
@@ -47,10 +48,14 @@ type CleanupTask = {
   suppress?: { returnKey: string; createTs: string };
 };
 
-// VN date on which the yesterday-sweep last came back clean — skip re-sweeping
-// until the date changes. Not set while leftovers exist, so failed rejects retry
-// every cycle until yesterday's slate is actually clear.
-let sweptCleanOn: string | null = null;
+// Shared completion marker replaces the process-local clean slate. Failed or
+// claimed leftovers keep the date retryable across server instances.
+function cleanupRedis(): Redis | null {
+  const url = process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
+  return url && token ? new Redis({ url, token }) : null;
+}
+const cleanupKey = (env: Env, day: string) => `cleanup:rollover:complete:${env}:${day}`;
 
 // Race guard across overlapping cycles, keyed by the job_id being rejected.
 // L1 only — claimTripAction (Redis NX, same 60s) is the cross-instance half.
@@ -143,39 +148,44 @@ async function rejectJob(jobId: number, reason: string, env: Env): Promise<boole
  * lose is the record of that collection, so a part-worked leftover is logged as
  * such (see the LEFT-OVER lines below) rather than removed in silence.
  *
- * One label-filtered JSON-RPC call per label (prod-only); skipped for the rest
- * of the day once a sweep finds nothing to clean.
+ * Reuse a complete rollover pool; retain the three single-label reads if that
+ * pool was unavailable. A completed scan is remembered across instances.
  */
-async function collectRolloverTasks(env: Env): Promise<CleanupTask[]> {
-  if (env !== "prod") return []; // getStopsByLabels is prod-only
+async function collectRolloverTasks(env: Env, shared?: Job[] | null): Promise<{ tasks: CleanupTask[]; complete: boolean; day: string }> {
   const today = vnDate();
-  if (sweptCleanOn === today) return [];
+  if (env !== "prod") return { tasks: [], complete: false, day: today }; // label RPC is prod-only
+  const redis = cleanupRedis();
+  if (await redis?.get(cleanupKey(env, today)).catch(() => null)) return { tasks: [], complete: false, day: today };
   const yesterday = vnDate(new Date(Date.now() - 24 * 3600e3));
-
-  // One single-label call each — the multi-label filter semantics are unverified.
-  const [retStops, viaStops, outStops] = await Promise.all([
-    getStopsByLabels(yesterday, [PSC_RETURN_LABEL], env),
-    getStopsByLabels(yesterday, [PSC_VIA_LABEL], env),
-    getStopsByLabels(yesterday, [PSC_OUTBOUND_LABEL], env),
-  ]);
-  // Any one failing aborts the pass: a partial sweep would set sweptCleanOn for
-  // the day if the labels that DID answer were clean, and the missing label's
-  // leftovers would then sit untouched until tomorrow.
-  if (!retStops || !viaStops || !outStops) return []; // fetch failed — retry next cycle
-
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const byJob = new Map<number, any[]>();
-  for (const s of [...retStops, ...viaStops, ...outStops]) {
-    const arr = byJob.get(s.job_id);
-    if (arr) arr.push(s);
-    else byJob.set(s.job_id, [s]);
+  const labels = [PSC_RETURN_LABEL, PSC_VIA_LABEL, PSC_OUTBOUND_LABEL];
+  // The complete, unfiltered status-2/4 rollover pool has the same live jobs
+  // as the three label searches. If a field is missing, retain those searches.
+  const eligible = shared?.filter((j) => j.labels?.some((l) => labels.includes(l)) && (j.job_status_id === 2 || j.job_status_id === 4));
+  const usable = !!shared && eligible!.every((j) => Number.isSafeInteger(j.job_id) && Array.isArray(j.stops) &&
+    j.stops.some((s) => s.stop_type_id === 1) && j.stops.some((s) => s.stop_type_id === 2) &&
+    j.stops.every((s) => Number.isSafeInteger(s.stop_type_id) && Number.isSafeInteger(s.stop_status_id)));
+  if (usable) {
+    for (const j of eligible!) byJob.set(j.job_id, j.stops.map((s) => ({ ...s, job_status_id: j.job_status_id })));
+    console.log(`[cleanup] reused rollover pool for ${yesterday}; eligible=${byJob.size}`);
+  } else {
+    const [retStops, viaStops, outStops] = await Promise.all(labels.map((label) => getStopsByLabels(yesterday, [label], env)));
+    if (!retStops || !viaStops || !outStops) return { tasks: [], complete: false, day: today };
+    for (const s of [...retStops, ...viaStops, ...outStops]) {
+      const arr = byJob.get(s.job_id);
+      if (arr) arr.push(s);
+      else byJob.set(s.job_id, [s]);
+    }
+    console.log(`[cleanup] label fallback for ${yesterday}; candidates=${byJob.size}`);
   }
 
   const tasks: CleanupTask[] = [];
+  let complete = true;
   for (const [jobId, stops] of byJob) {
     const statusId = stops[0]?.job_status_id;
     if (statusId !== 2 && statusId !== 4) continue; // only live leftovers
-    if (inFlightCleanup.has(jobId)) continue;
+    if (inFlightCleanup.has(jobId)) { complete = false; continue; }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pickup  = stops.find((s: any) => s.stop_type_id === 1);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -195,10 +205,7 @@ async function collectRolloverTasks(env: Env): Promise<CleanupTask[]> {
     });
   }
 
-  // Clean slate → don't re-sweep until tomorrow. (Left unset while leftovers
-  // exist, so a failed reject is retried next cycle until yesterday is clear.)
-  if (tasks.length === 0) sweptCleanOn = today;
-  return tasks;
+  return { tasks, complete, day: today };
 }
 
 /**
@@ -230,6 +237,7 @@ export async function cleanupStaleTrips(
   // Today's leave entries — lets Rule B gate a substitute's return on the
   // ON-LEAVE driver's shift, matching the creator. Omitted → no sub mapping.
   leaveEntries: LeaveEntry[] = [],
+  rolloverPool?: Job[] | null,
 ): Promise<void> {
   if (process.env.CLEANUP_STALE_TRIPS !== "1") return;
 
@@ -268,7 +276,14 @@ export async function cleanupStaleTrips(
   }
 
   // Rule C first: yesterday's rolled-over leftovers (own fetch, disjoint from s2/s4).
-  const tasks: CleanupTask[] = await collectRolloverTasks(env);
+  const rollover = await collectRolloverTasks(env, rolloverPool);
+  const tasks: CleanupTask[] = rollover.tasks;
+  let rolloverComplete = rollover.complete;
+  const markRolloverComplete = async () => {
+    if (!rolloverComplete) return;
+    await cleanupRedis()?.set(cleanupKey(env, rollover.day), "1", { ex: 48 * 3600 }).catch(() => null);
+    log(`Cleanup: yesterday scan complete (${rollover.tasks.length} eligible)`, "INFO");
+  };
 
   // Candidates: untouched via-legs and return trips (created already-assigned, so
   // normally status 4; scan s2∪s4 to be safe). s5 jobs are done — never candidates.
@@ -340,7 +355,7 @@ export async function cleanupStaleTrips(
     }
   }
 
-  if (tasks.length === 0) return;
+  if (tasks.length === 0) { await markRolloverComplete(); return; }
 
   // Pre-flight the login (cached, so this is the same session removeTrip will use):
   // no session means every delete below would fail — say so once, not N times.
@@ -361,6 +376,7 @@ export async function cleanupStaleTrips(
     claimed.push(t);
   }
   if (claimed.length === 0) return;
+  if (rollover.tasks.some((t) => !claimed.includes(t))) rolloverComplete = false;
 
   // Routes actually cancelled this pass — remembered so the creator doesn't remake
   // them when the driver's shift re-opens later today.
@@ -378,10 +394,12 @@ export async function cleanupStaleTrips(
           if (outcome) {
             if (t.suppress) cleaned.push(t.suppress);
           } else {
+            if (t.reason === ROLLOVER_REASON) rolloverComplete = false;
             inFlightCleanup.delete(t.jobId); // allow retry next cycle
             await releaseTripClaim("cleanup", t.jobId, env);
           }
         } catch (e) {
+          if (t.reason === ROLLOVER_REASON) rolloverComplete = false;
           log(`Cleanup failed for ${t.label}: ${e}`, "ERROR");
           inFlightCleanup.delete(t.jobId);
           await releaseTripClaim("cleanup", t.jobId, env);
@@ -394,4 +412,5 @@ export async function cleanupStaleTrips(
   await recordCleanedReturns(cleaned).catch((e) =>
     log(`Cleanup: could not record cancelled returns (they may be recreated): ${e}`, "WARN"),
   );
+  await markRolloverComplete();
 }

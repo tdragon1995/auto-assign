@@ -9,6 +9,7 @@ import { DIAG_LOCATION_CUSTOMER_IDS } from "./psc-routes-data";
 import { detectAndCreateReturnTrips, PSC_RETURN_LABEL, PSC_OUTBOUND_LABEL } from "./return-trips";
 import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
 import { cleanupStaleTrips } from "./cleanup-trips";
+import type { MorningReads } from "./morning-reads";
 import { setCycleSnapshot, recordCoverageGap, claimMorningPass, deferMorningPass, confirmMorningPass, pushRunLog, runDailyMaintenance, claimLateAlert, getAcceptedNotes, getResolvedCreateTs, saveResolvedCreateTs, readDropoffSwaps, writeDropoffSwap, deleteDropoffSwap, type HeldJob } from "./smart-log-kv";
 import { PSC_TABLE, isClosingWindow, planDropoff, resolveOpenDropoff, fmtMin, pscCode, type PscTable, type DropoffSwapRecord } from "./psc-closing";
 import { isValidDriverId, invalidateConfigCache, loadConfigFromSheets } from "./config";
@@ -1274,6 +1275,7 @@ async function fetchRolloverCandidates(
   yesterday: string,
   env: Env,
   log: (msg: string, level?: LogLevel) => void,
+  reads?: MorningReads,
 ): Promise<{ candidates: Job[]; complete: boolean; source: string }> {
   const candidates: Job[] = [];
   const source: string[] = [];
@@ -1300,7 +1302,7 @@ async function fetchRolloverCandidates(
   // ── status 4: assigned but unfinished ─────────────────────────────────────
   let s4: Job[] | null = null;
   try {
-    const routes = await getTimelineRoutes(yesterday, env);
+    const routes = await (reads ? reads.timeline(yesterday, env) : getTimelineRoutes(yesterday, env));
     if (routes) {
       // The timeline is the whole day — finished (5) and cancelled work included.
       // Narrow to 4 so this matches what the REST status-4 filter returned.
@@ -1465,6 +1467,7 @@ export async function autoAssignCycle(
   // Targeted manual assign: process only these job(s) and bypass their note
   // gate. Used by the "assign anyway" action on note-held jobs.
   onlyJobIds?: Set<number>,
+  reads?: MorningReads,
 ): Promise<LogEntry[]> {
   const logs: LogEntry[] = [];
   const log = (msg: string, level: LogLevel = "INFO") => {
@@ -1532,6 +1535,7 @@ export async function autoAssignCycle(
   // smart-prep can derive its per-driver route data from the same payload instead
   // of making a second identical delivery_timeline_route_list call.
   let timelineRoutesForSmart: TimelineRoute[] | null = null;
+  let rolloverCleanupPool: Job[] | null = null;
 
   try {
   // ── Release parked proxy jobs whose send_to_driver_at has passed ──────────
@@ -1577,8 +1581,9 @@ export async function autoAssignCycle(
     await runDailyMaintenance();
 
     const yesterday = vnDate(new Date(Date.now() - 86_400_000));
-    const fetched = await fetchRolloverCandidates(yesterday, env, log);
+    const fetched = await fetchRolloverCandidates(yesterday, env, log, reads);
     const candidates = fetched.candidates;
+    if (fetched.complete) rolloverCleanupPool = candidates;
     let complete = fetched.complete;
     clog(`[rollover] candidates via ${fetched.source}: ${candidates.length}`);
     try {
@@ -2958,7 +2963,7 @@ export async function autoAssignCycle(
     // created, and reuses the same prefetch. No-op unless CLEANUP_STALE_TRIPS=1.
     clog(`[follow-ups] cleanup start (t=${Date.now() - tStart}ms)`);
     try {
-      await cleanupStaleTrips(config, env, log, shared, followLeave);
+      await cleanupStaleTrips(config, env, log, shared, followLeave, rolloverCleanupPool);
     } catch (e) {
       log(`Cleanup hook failed: ${e}`, "ERROR");
     }

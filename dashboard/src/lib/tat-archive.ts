@@ -17,6 +17,7 @@ import { keepStoredDistances, markPayDay } from "./pay-reconcile";
 import type { PayJob } from "./pay";
 import { vnDate, addDays, vnHoursMinutes } from "./time";
 import type { TimelineRoute } from "./types";
+import type { MorningReads } from "./morning-reads";
 
 /** Stops two overlapping cron pings — or a ping racing the report endpoint's
  *  stale-refresh — from both fetching the day and both rewriting it. Sized above
@@ -41,6 +42,7 @@ export interface ArchiveResult {
     distances?: { pairs: number; cache: number; api: number; self: number; failed: number; noCoords: number };
     error?: string;
   };
+  pickupEta?: { rows?: number; error?: string };
   skipped?: string;
   error?: string;
 }
@@ -150,7 +152,7 @@ export async function archivePickupEtaForDate(date: string): Promise<number> {
  * because on an upsert the default does not re-fire — and that stamp is exactly
  * what separates "written by this pass" from "left over from the last one".
  */
-export async function archiveDay(date: string, env: Env = "prod"): Promise<ArchiveResult> {
+export async function archiveDay(date: string, env: Env = "prod", reads?: MorningReads): Promise<ArchiveResult> {
   if (!supabaseConfigured()) {
     return { ok: false, date, error: "Supabase chưa được cấu hình (thiếu SUPABASE_SERVICE_ROLE_KEY)." };
   }
@@ -163,7 +165,7 @@ export async function archiveDay(date: string, env: Env = "prod"): Promise<Archi
   }
 
   try {
-    const routes = await getTimelineRoutes(date, env);
+    const routes = await (reads ? reads.timeline(date, env) : getTimelineRoutes(date, env));
     // null means the fleetweb login or the RPC failed. An empty day written over a
     // good one would erase it, so a failed fetch must never reach the delete.
     if (!routes) return { ok: false, date, error: "Không lấy được lộ trình từ Cartrack." };
@@ -188,20 +190,20 @@ export async function archiveDay(date: string, env: Env = "prod"): Promise<Archi
     // its legs. It does fail the day, though (below), so the seal is retried.
     const pay = await archivePay(routes, date);
 
-    // Measured pickups for the portal-ETA check. Logged, never returned as a
-    // failure: a missing day only thins a 30-day percentile, and it must not cost
-    // the day its seal (and so a re-fetch of everything above).
+    // Portal pickup ETA is the third archive output. A failed write leaves the
+    // day retryable, while the successful TAT/pay upserts remain intact.
+    let pickupEta: ArchiveResult["pickupEta"];
     if (env === "prod") {
-      await archivePickupEta(routes).catch((e) =>
-        console.error("[tat-archive] pickup eta failed:", e instanceof Error ? e.message : String(e)));
+      try { pickupEta = { rows: await archivePickupEta(routes) }; }
+      catch (e) { pickupEta = { error: e instanceof Error ? e.message : String(e) }; }
     }
 
     // A pay failure does not undo the legs (already written), but it must NOT let
     // the day seal: ok:false releases the seal so the next ping retries the day.
     // Re-running the legs is harmless — they upsert on the same keys.
     return {
-      ok: !pay.error,
-      ...(pay.error ? { error: `pay archive failed: ${pay.error}` } : {}),
+      ok: !pay.error && !pickupEta?.error,
+      ...((pay.error || pickupEta?.error) ? { error: [pay.error && `pay archive failed: ${pay.error}`, pickupEta?.error && `pickup ETA archive failed: ${pickupEta.error}`].filter(Boolean).join("; ") } : {}),
       date,
       legs: legs.length,
       measured: legs.filter((l) => l.tat_mins != null).length,
@@ -209,6 +211,7 @@ export async function archiveDay(date: string, env: Env = "prod"): Promise<Archi
       longGaps: legs.filter((l) => l.long_gap).length,
       distances: stats,
       pay,
+      pickupEta,
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -239,18 +242,15 @@ const SEAL_TTL_S = 7 * 24 * 60 * 60;
  *  largest write source in the whole system (measured 2026-08-18). Confining the ask
  *  to the window costs ~21 writes a day instead.
  *
- *  WHY 05:00–05:10 SPECIFICALLY, and why it is NOT midnight. The cron only pings
+ *  WHY 05:30–06:00 SPECIFICALLY, and why it is NOT midnight. The cron only pings
  *  during UTC 0–14 and 22–23, i.e. VN 05:00–21:59 — there is no such thing as an
- *  overnight ping here, and a midnight gate would silently never fire. VN 05:00 is
- *  the first ping of the day and lands in the UTC-22 block, before the 05:30
- *  auto-arm, so these pings return "disarmed" and this pass has the invocation to
- *  itself. Yesterday is genuinely finished by then. (Older comments in this file say
- *  "overnight disarmed pings" — this window is what they mean.)
+ *  overnight ping here, and a midnight gate would silently never fire. At
+ *  05:30 the archive can share the first assignment cycle's pre-rollover timeline.
  *
- *  Ten minutes is ~7 pings across both cron schedules, and the pass seals at most
+ *  Thirty minutes spans several pings, and the pass seals at most
  *  one day per call, so a three-day backlog still clears in a single morning. */
-const SEAL_WINDOW_START_MIN = 5 * 60;      // 05:00 VN
-const SEAL_WINDOW_END_MIN = 5 * 60 + 10;   // 05:10 VN
+const SEAL_WINDOW_START_MIN = 5 * 60 + 30; // 05:30 VN
+const SEAL_WINDOW_END_MIN = 6 * 60;        // 06:00 VN
 
 function insideSealWindow(d = new Date()): boolean {
   const { hours, minutes } = vnHoursMinutes(d);
@@ -275,8 +275,8 @@ function insideSealWindow(d = new Date()): boolean {
  * TODAY IS NOT THIS FUNCTION'S JOB. Today is still moving, and /api/tat/me
  * refreshes it on demand when a driver looks. This seals what is finished.
  *
- * Self-healing: the loop walks OLDEST first, so a stretch of missed days fills in
- * order, one per ping. Claiming the seal before the work and releasing it on
+ * Self-healing: yesterday runs first, then older gaps, one per ping. Claiming
+ * a short lease before the work and promoting it after success, or releasing it on
  * failure means a failed day is retried on the next ping rather than silently
  * skipped forever.
  *
@@ -287,8 +287,9 @@ export async function archiveSealedDays(
   env: Env = "prod",
   /** Injectable clock. Production never passes it; the tests must, because the
    *  window below means every assertion about what this pass DOES would otherwise
-   *  only hold for ten minutes a day and pass vacuously the rest of the time. */
+   *  only hold during the morning window and pass vacuously the rest of the time. */
   now: Date = new Date(),
+  reads?: MorningReads,
 ): Promise<ArchiveResult | null> {
   // Cheapest check first, and free: no Redis call at all outside the window. This is
   // the whole saving — see SEAL_WINDOW_START_MIN.
@@ -312,17 +313,20 @@ export async function archiveSealedDays(
   const today = vnDate(now);
 
   try {
-    for (let back = TAT_LOOKBACK_DAYS; back >= 1; back--) {
+    for (let back = 1; back <= TAT_LOOKBACK_DAYS; back++) {
       const date = addDays(today, -back);
       const claimed = await redis
-        .set(sealKey(env, date), Date.now(), { nx: true, ex: SEAL_TTL_S })
+        .set(sealKey(env, date), Date.now(), { nx: true, ex: LOCK_TTL_S })
         .catch(() => null);
       if (claimed !== "OK") continue; // already sealed (or Redis hiccup) — try the next day
 
-      const res = await archiveDay(date, env);
+      const res = await archiveDay(date, env, reads);
       // Release the claim so the next ping retries. `skipped` means the day lock
       // was held by a concurrent run, which is also not a completed seal.
       if (!res.ok || res.skipped) await redis.del(sealKey(env, date)).catch(() => {});
+      else await redis.set(sealKey(env, date), Date.now(), { xx: true, ex: SEAL_TTL_S }).catch((e) =>
+        console.error("[tat-archive] seal promotion failed:", e));
+      console.log(`[tat-archive] ${date} TAT=${res.legs ?? "failed"} pay=${res.pay?.error ? "failed" : res.pay?.jobs ?? "skipped"} pickupETA=${res.pickupEta?.error ? "failed" : res.pickupEta?.rows ?? "skipped"} ok=${res.ok}`);
       return res;
     }
   } catch (e) {

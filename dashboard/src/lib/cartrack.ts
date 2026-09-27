@@ -1750,6 +1750,8 @@ export async function getUnassignedJobsFast(dateVn: string, env: Env = "prod"): 
     { env }
   );
   if (!det.ok || !Array.isArray(det.result?.jobs)) return null;
+  if (det.result.jobs.length !== ids.length ||
+      new Set(det.result.jobs.map((j) => Number(j.jobId ?? j.job_id))).size !== ids.length) return null;
 
   const out: Job[] = [];
   for (const raw of det.result.jobs) {

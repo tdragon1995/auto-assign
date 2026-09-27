@@ -10,6 +10,7 @@ import { autoArmIfDue } from "@/lib/auto-arm";
 import { maybeAlertHeldOff } from "@/lib/disarm-alert";
 import { archiveSealedDays } from "@/lib/tat-archive";
 import { restoreExpiredGeofences } from "@/lib/geofence-bypass";
+import { createMorningReads } from "@/lib/morning-reads";
 
 // The cycle (Cartrack + Goong calls) can take a while; give it headroom.
 export const maxDuration = 60;
@@ -33,19 +34,14 @@ export async function GET(req: NextRequest) {
   // is alive even when nothing gets logged.
   await setCronHeartbeat().catch(() => {});
 
-  // Driver TAT: seal yesterday into Supabase. Registered HERE — before the arm
-  // check — on purpose, so it still runs on the overnight pings that return
-  // "disarmed" a line below. Those pings do almost nothing, which makes them the
-  // cheapest moment of the day to spend on a day-fetch, and by then the day being
-  // sealed is genuinely finished.
-  //
-  // Redis-gated to once per day per date (archiveSealedDays), so this is a no-op
-  // on all but one ping. In after(), and internally non-throwing, so a reporting
-  // failure can never delay or break an assign cycle.
-  after(async () => {
-    const res = await archiveSealedDays().catch(() => null);
+  const reads = createMorningReads();
+  const archive = async () => {
+    const res = await archiveSealedDays("prod", new Date(), reads).catch((e) => {
+      console.error("[cron] archive failed:", e);
+      return null;
+    });
     if (res) console.log("[cron] TAT seal:", JSON.stringify(res));
-  });
+  };
 
   // Temporary geofence bypasses — before the arm check, so a disarmed engine never
   // leaves a driver's geofence open.
@@ -62,9 +58,11 @@ export async function GET(req: NextRequest) {
   if (!arm) {
     const auto = await autoArmIfDue();
     if (!auto) {
+      after(archive);
       return NextResponse.json({ ran: false, skipped: "disarmed" });
     }
     if (auto.kind === "held") {
+      after(archive);
       after(() => maybeAlertHeldOff().catch(() => {}));
       return NextResponse.json({ ran: false, skipped: "held-off", by: auto.hold.by });
     }
@@ -75,19 +73,24 @@ export async function GET(req: NextRequest) {
   //    is still running.
   const gotLock = await acquireCycleLock();
   if (!gotLock) {
+    after(archive);
     return NextResponse.json({ ran: false, skipped: "locked" });
   }
 
   // Respond immediately so cron-job.org (30s max) doesn't time out.
   // The cycle continues in after() for up to maxDuration (60s).
   after(async () => {
+    // Start both immediately. The archive's Supabase writes cannot delay the
+    // assignment cycle, and both paths share the pre-rollover timeline promise.
+    const archiveWork = archive();
     try {
-      await runArmedCycle(arm);
+      await runArmedCycle(arm, reads);
     } catch (e) {
       console.error("[cron] runArmedCycle failed:", e);
     } finally {
       await releaseCycleLock().catch(() => {});
     }
+    await archiveWork;
   });
 
   return NextResponse.json({ ran: true, env: arm.env });

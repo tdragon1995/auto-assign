@@ -1,4 +1,4 @@
-import { BASE_URL, PROXY_DRIVER_ID, assignJob, createJob, getHeaders, type Env } from "./cartrack";
+import { BASE_URL, PROXY_DRIVER_ID, assignJob, createJob, getHeaders, getStopsByLabels, type Env } from "./cartrack";
 import { SHEET_GID, SHEET_CONTRACT, fetchSheetRows, isSheetShapeError, noteSheetLoad } from "./sheets";
 import { vnDate, vnTimestamp } from "./time";
 
@@ -135,30 +135,51 @@ export function buildReferenceNumber(
   return `${base}_${dateStr}`;
 }
 
-/** Look for an existing job with the same reference_number created today. */
-async function findExistingJob(
-  referenceNumber: string,
-  dateStr: string,
-  env: Env,
-): Promise<number | null> {
-  const params = new URLSearchParams({
-    "filter[create_ts_from]": `${dateStr} 00:00:00`,
-    "filter[create_ts_to]": `${dateStr} 23:59:59`,
-    "filter[reference_number]": referenceNumber,
-    limit: "10",
-  });
-  const res = await fetch(`${BASE_URL}/jobs?${params}`, {
-    headers: getHeaders(env),
-    cache: "no-store",
-  });
-  if (!res.ok) return null;
-  const data = await res.json().catch(() => ({}));
-  const jobs = data.data ?? [];
-  const match = jobs.find(
-    (j: { reference_number?: string; job_id?: number }) =>
-      j.reference_number === referenceNumber,
-  );
-  return match?.job_id ?? null;
+type ScheduleLookup = {
+  known: Map<string, number>;
+  pending: Map<string, Promise<ScheduleJobResult>>;
+  restSearches: number;
+};
+
+/** A positive RPC hit is sufficient; a miss is checked against REST because the
+ * stop list is scoped to today's schedule and can omit a re-dated job. */
+async function loadScheduleLookup(date: string, env: Env): Promise<ScheduleLookup> {
+  const known = new Map<string, number>();
+  const stops = await getStopsByLabels(date, [SCHEDULE_JOB_LABEL], env).catch(() => null);
+  if (stops) for (const stop of stops) {
+    if (typeof stop.reference_number === "string" && Number.isSafeInteger(stop.job_id) && stop.job_id > 0)
+      known.set(stop.reference_number, stop.job_id);
+  }
+  console.log(`[schedule-job] shared RPC ${stops ? "ready" : "unavailable"}; positive references=${known.size}`);
+  return { known, pending: new Map(), restSearches: 0 };
+}
+
+/** Cartrack's filter may return similar references; equality is checked locally.
+ * A failed or incomplete search must never authorize creating another job. */
+export async function findScheduledJobByReference(referenceNumber: string, env: Env): Promise<number | null> {
+  const limit = 100;
+  for (let page = 1; page <= 100; page++) {
+    const params = new URLSearchParams({ "filter[reference_number]": referenceNumber, page: String(page), limit: String(limit), per_page: String(limit) });
+    const res = await fetch(`${BASE_URL}/jobs?${params}`, { headers: getHeaders(env), cache: "no-store" });
+    if (!res.ok) throw new Error(`Reference search failed (HTTP ${res.status})`);
+    const body = await res.json();
+    if (!body || !Array.isArray(body.data)) throw new Error("Malformed reference search response");
+    for (const job of body.data) {
+      if (!job || typeof job.reference_number !== "string") throw new Error("Malformed reference search job");
+      if (job.reference_number === referenceNumber) {
+        if (!Number.isSafeInteger(job.job_id) || job.job_id <= 0) throw new Error("Reference match has no valid job ID");
+        return job.job_id;
+      }
+    }
+    const rawLastPage = body.meta?.last_page ?? body.pagination?.last_page;
+    if (rawLastPage != null) {
+      const lastPage = Number(rawLastPage);
+      if (!Number.isSafeInteger(lastPage) || lastPage < 0 || (lastPage === 0 && body.data.length > 0) || (lastPage > 0 && lastPage < page))
+        throw new Error("Malformed reference search pagination");
+      if (page >= lastPage) return null;
+    } else if (body.data.length < limit) return null;
+  }
+  throw new Error("Reference search exceeded pagination limit");
 }
 
 function buildJobPayload(
@@ -217,6 +238,7 @@ export async function createScheduleJob(
   row: ScheduleJobRow,
   dateStr: string,
   env: Env,
+  lookup?: ScheduleLookup,
 ): Promise<ScheduleJobResult> {
   const refNumber = buildReferenceNumber(row, dateStr);
   const base: Omit<ScheduleJobResult, "status" | "message"> = {
@@ -246,7 +268,11 @@ export async function createScheduleJob(
   }
 
   try {
-    const existingId = await findExistingJob(refNumber, dateStr, env);
+    let existingId = lookup?.known.get(refNumber);
+    if (!existingId) {
+      if (lookup) lookup.restSearches++;
+      existingId = await findScheduledJobByReference(refNumber, env) ?? undefined;
+    }
     if (existingId) {
       return {
         ...base,
@@ -279,6 +305,9 @@ export async function createScheduleJob(
     if (!jobId) {
       return { ...base, status: "ERROR", message: "Job created but no job_id returned" };
     }
+
+    // Record the create before parking; a park failure still means the job exists.
+    lookup?.known.set(refNumber, jobId);
 
     // Park in proxy driver — driver receives it at send_to_driver_at. A
     // pre-assigned driver is applied at release (releaseDueProxyJobs), not here:
@@ -321,6 +350,7 @@ export async function runScheduleJobCycle(
   // returns SKIPPED for jobs already created, so only true failures get retried.
   const allRows = await loadScheduleJobRows();
   const targets = filterRowsForToday(allRows, weekday);
+  const lookup = await loadScheduleLookup(date, env);
 
   // Batched, not one-at-a-time: each row is a lookup + create + park (three REST
   // calls), and on a slow Cartrack morning 13 rows in sequence overran the 60s
@@ -346,7 +376,17 @@ export async function runScheduleJobCycle(
     if (!pending.length) break;
     for (let i = 0; i < pending.length && Date.now() < deadline; i += BATCH) {
       const batch = await Promise.all(
-        pending.slice(i, i + BATCH).map((row) => createScheduleJob(row, date, env)),
+        pending.slice(i, i + BATCH).map(async (row) => {
+          const ref = buildReferenceNumber(row, date);
+          const existing = lookup.pending.get(ref);
+          if (existing) {
+            const result = await existing;
+            return { ...result, rowIndex: row.rowIndex, status: result.job_id ? "SKIPPED" as const : result.status };
+          }
+          const task = createScheduleJob(row, date, env, lookup);
+          lookup.pending.set(ref, task);
+          try { return await task; } finally { lookup.pending.delete(ref); }
+        }),
       );
       for (const r of batch) byRow.set(r.rowIndex, r);
     }
@@ -364,6 +404,8 @@ export async function runScheduleJobCycle(
     status: "ERROR" as const,
     message: "Not attempted — out of time this run; use Retry",
   });
+
+  console.log(`[schedule-job] rows=${targets.length} REST reference searches=${lookup.restSearches}`);
 
   return { date, weekday, results };
 }
