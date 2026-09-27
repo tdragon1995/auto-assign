@@ -2,6 +2,14 @@
 
 Non-obvious logic in the assign engine. Start here when debugging a missed or wrong assignment.
 
+## Master Client Info
+
+Weekday assignment rules, all Cartrack client profiles, and all driver profiles are stored in the existing TAT/payroll Supabase project (`odbmfkzkipklepmghjwj`). The public Sunday roster and weekly shift schedule remain on Google Sheets. Driver Zalo IDs, bot tokens, and employee codes were imported from the old Driver sheet; daily Cartrack updates do not overwrite them.
+
+The existing 05:00 VN Vercel cron refreshes Cartrack profiles and writes only changed records. Sapoche metadata is fetched only for new numeric-only client codes or when **Làm mới Sapoche** is pressed for a client. The general **Tải lại** button reads saved Supabase data. No separate cron-job.org job or Redis key is needed.
+
+`MASTER_CLIENT_INFO_EDIT_KEY` protects the editor API. A customer address edit keeps the existing GPS unless the editor clears **Giữ nguyên GPS khi sửa địa chỉ**. For a bounded repair, `GET /api/master-client-info/sync?phase=metadata&offset=N&limit=50` requires `Authorization: Bearer $CRON_SECRET`.
+
 ## Assign cycle overview
 
 Entry point: `autoAssignCycle()` in `dashboard/src/lib/assign.ts`  
