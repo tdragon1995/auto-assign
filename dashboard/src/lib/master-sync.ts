@@ -131,8 +131,8 @@ export async function syncLabcenterMetadata(offset = 0, limit = 200, onlyCodes?:
   }
   let matched = 0, owners = 0, errors = 0;
   const codes = onlyCodes ? [...new Set(onlyCodes)].filter((c) => byCode.has(c)) : [...byCode.keys()].sort().slice(offset, offset + limit);
-  for (let i = 0; i < codes.length; i += 12) {
-    await Promise.all(codes.slice(i, i + 12).map(async (code) => {
+  for (let i = 0; i < codes.length; i += 4) {
+    await Promise.all(codes.slice(i, i + 4).map(async (code) => {
       try {
       const locations = await listLocationsByClientCode(code, admin);
       const clientIds = new Set(byCode.get(code)!.map((c) => c.customer_id));

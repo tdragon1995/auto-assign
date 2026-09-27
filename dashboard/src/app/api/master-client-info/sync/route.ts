@@ -15,11 +15,13 @@ export async function GET(req: NextRequest) {
     if (!["all", "profiles", "metadata", "bootstrap"].includes(phase)) throw new Error("Invalid sync phase");
     const offset = Number(req.nextUrl.searchParams.get("offset") ?? "0");
     if (!Number.isInteger(offset) || offset < 0) throw new Error("Invalid offset");
+    const limit = Number(req.nextUrl.searchParams.get("limit") ?? "200");
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error("Invalid limit");
     const profiles = phase === "all" || phase === "profiles" || phase === "bootstrap" ? await syncCartrackProfiles() : null;
     const imported = phase === "bootstrap" ? await importCurrentConfig() : null;
-    const labcenter = phase === "metadata" ? await syncLabcenterMetadata(offset)
+    const labcenter = phase === "metadata" ? await syncLabcenterMetadata(offset, limit)
       : phase === "all" && profiles?.newClientCodes.length ? await syncLabcenterMetadata(0, 200, profiles.newClientCodes) : null;
-    return NextResponse.json({ ok: true, profiles, imported, labcenter });
+    return NextResponse.json({ ok: true, profiles: profiles && { ...profiles, newClientCodes: profiles.newClientCodes.length }, imported, labcenter });
   } catch (e) {
     console.error("Master Client Info sync failed:", e);
     return NextResponse.json({ ok: false, error: String(e) }, { status: 502 });
