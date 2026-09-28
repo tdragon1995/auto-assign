@@ -6,7 +6,7 @@ import { nearestPsc, newWard } from "./master-geo";
 import type { MasterClient } from "./master-store";
 
 type CartrackRow = Record<string, unknown>;
-type MasterDriver = { driver_id: string; cartrack: CartrackRow };
+type MasterDriver = { driver_id: string; cartrack: CartrackRow; detail_synced_at?: string | null };
 
 async function cartrackDetail(kind: "customers" | "drivers", id: string): Promise<CartrackRow> {
   const res = await fetch(`${BASE_URL}/${kind}/${id}`, { headers: getHeaders(), cache: "no-store" });
@@ -118,7 +118,7 @@ export async function syncCartrackProfiles(): Promise<{ clients: number; drivers
   if (clients.length < 100 || drivers.length < 100) throw new Error("Refusing to replace profiles with an incomplete Cartrack response");
   const [storedClients, storedDrivers] = await Promise.all([
     sbSelectAll<MasterClient>("master_clients", "select=customer_id,cartrack,client_code", "customer_id.asc"),
-    sbSelectAll<MasterDriver>("master_drivers", "select=driver_id,cartrack", "driver_id.asc"),
+    sbSelectAll<MasterDriver>("master_drivers", "select=driver_id,cartrack,detail_synced_at", "driver_id.asc"),
   ]);
   const oldClients = new Map(storedClients.map((c) => [c.customer_id, c]));
   const oldDrivers = new Map(storedDrivers.map((d) => [d.driver_id, d]));
@@ -130,7 +130,10 @@ export async function syncCartrackProfiles(): Promise<{ clients: number; drivers
     if (/^\d+$/.test(code) && oldClients.get(id)?.client_code !== code) newClientCodes.add(code);
     return listedChanged(oldClients.get(id)?.cartrack, c);
   });
-  const changedDrivers = drivers.filter((d) => listedChanged(oldDrivers.get(String(d.delivery_driver_id ?? ""))?.cartrack, d));
+  const changedDrivers = drivers.filter((d) => {
+    const previous = oldDrivers.get(String(d.delivery_driver_id ?? ""));
+    return !previous?.detail_synced_at || listedChanged(previous.cartrack, d);
+  });
   const clientRows = await Promise.all(changedClients.map(async (c) => {
     const id = String(c.customer_id ?? "");
     const previous = oldClients.get(id);
@@ -155,7 +158,7 @@ export async function syncCartrackProfiles(): Promise<{ clients: number; drivers
   const driverRows = await Promise.all(changedDrivers.map(async (d) => {
     const id = String(d.delivery_driver_id ?? "");
     const previous = oldDrivers.get(id);
-    const detail = !previous && oldDrivers.size > 100 ? await cartrackDetail("drivers", id).catch((e) => { console.error(e); return null; }) : null;
+    const detail = !previous?.detail_synced_at && oldDrivers.size > 100 ? await cartrackDetail("drivers", id).catch((e) => { console.error(e); return null; }) : null;
     return { driver_id: id, cartrack: mergeCartrack(previous?.cartrack, d, detail),
       ...(detail ? { detail_synced_at: now } : {}), synced_at: now };
   }));
