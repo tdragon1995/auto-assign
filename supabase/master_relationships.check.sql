@@ -1,12 +1,19 @@
 -- Run after the migration or any config import. Raises if the smart-driver
--- bridge differs from the valid IDs in the original Sheet-shaped rows.
+-- bridge differs from the effective formula/manual result.
 do $$
 begin
+  if exists (
+    select 1 from public.master_config_rules r
+    where r.smart_driver_id is distinct from
+      public.master_smart_driver_id(r.row_data->>'Driver', r.smart_driver_id_manual)
+  ) then
+    raise exception 'master_config_rules smart_driver_id is out of sync';
+  end if;
   if exists (
     with expected as (
       select distinct r.id rule_id, d.driver_id
       from public.master_config_rules r
-      cross join lateral regexp_split_to_table(coalesce(r.row_data->>'smart_driver_id', ''), ',') as ids(value)
+      cross join lateral regexp_split_to_table(coalesce(r.smart_driver_id, ''), ',') as ids(value)
       join public.master_drivers d on d.driver_id = public.master_uuid_or_null(ids.value)
     ), difference as (
       (select rule_id, driver_id from expected except select rule_id, driver_id from public.master_rule_smart_drivers)

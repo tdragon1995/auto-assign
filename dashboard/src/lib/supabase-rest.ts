@@ -96,6 +96,11 @@ export async function sbSelect<T>(table: string, query: string): Promise<T[]> {
   return (await res.json()) as T[];
 }
 
+export async function sbRpc<T>(name: string): Promise<T> {
+  const res = await request(`rpc/${name}`, { method: "POST", body: "{}" });
+  return (await res.json()) as T;
+}
+
 /** SELECT every row, paged. PostgREST caps a response at 1,000 rows and says so
  *  only by returning exactly that many — a silent truncation that on the payroll
  *  reads means somebody not getting paid. `order` is REQUIRED, and must end on a

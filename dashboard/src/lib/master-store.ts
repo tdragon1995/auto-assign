@@ -6,6 +6,8 @@ export type MasterRule = {
   id: number;
   source_row: number;
   row_data: Record<string, string>;
+  smart_driver_id: string | null;
+  smart_driver_id_manual: string | null;
   updated_at: string;
 };
 export type MasterClient = { customer_id: string; cartrack: Record<string, unknown>; client_code: string | null; new_ward: string | null; nearest_psc_id: string | null; nearest_psc_name: string | null; nearest_psc_km: number | null; labcenter_location_id: number | null; default_dropoff_id: string | null; default_dropoff_name: string | null; eta_minutes: number | null; sales_name: string | null; sales_email: string | null; supervisor_name: string | null; supervisor_email: string | null };
@@ -14,14 +16,14 @@ export type MasterDriver = { driver_id: string; cartrack: Record<string, unknown
 export const masterEnabled = () => process.env.MASTER_CLIENT_INFO_SOURCE === "supabase";
 
 export async function masterRules(day: "weekday" | "sunday"): Promise<MasterRule[]> {
-  return sbSelectAll<MasterRule>("master_config_rules", `select=id,source_row,row_data,updated_at&day_type=eq.${day}`, "source_row.asc");
+  return sbSelectAll<MasterRule>("master_config_rules", `select=id,source_row,row_data,smart_driver_id,smart_driver_id_manual,updated_at&day_type=eq.${day}`, "source_row.asc");
 }
 
 /** Keep the old parser's row +2 accounting while Supabase row ids stay stable. */
 export async function masterRuleRows(day: "weekday" | "sunday"): Promise<Record<string, string>[]> {
   const rules = await masterRules(day);
   const out: Record<string, string>[] = [];
-  for (const rule of rules) out[rule.source_row - 2] = rule.row_data;
+  for (const rule of rules) out[rule.source_row - 2] = { ...rule.row_data, smart_driver_id: rule.smart_driver_id ?? "" };
   for (let i = 0; i < out.length; i++) out[i] ??= {};
   return out;
 }
@@ -72,15 +74,20 @@ export async function saveMasterRule(input: RuleInput, row?: number, version?: s
     if (!d || d.cartrack.is_active === false) throw new Error(`Tài xế ${id} không hoạt động`);
     return `${d.cartrack.first_name ?? ""} ${d.cartrack.last_name ?? ""}`.trim();
   });
+  const rosterNames = input.driver_ids.map((id, index) => byDriver.get(id)?.roster?.Driver || names[index]);
   const old = row === undefined ? undefined : rules.find((r) => r.source_row === row);
   if (row !== undefined && (!old || old.updated_at !== version)) throw new Error("Dòng đã thay đổi — tải lại trước khi lưu");
+  const useSmart = input.driver_ids.length > 1 || (!!old?.smart_driver_id && input.driver_ids.length > 0);
+  const selectedSmart = useSmart ? input.driver_ids.join(",") : null;
+  const manualSmart = old?.smart_driver_id === selectedSmart
+    ? old.smart_driver_id_manual : selectedSmart;
   const data: Record<string, string> = {
     ...(old?.row_data ?? {}),
     customer_id: input.customer_id,
     "Điểm Pick-up": String(pickup.cartrack.customer_name ?? ""),
-    driver_id: input.driver_ids.length === 1 ? input.driver_ids[0] : "",
-    smart_driver_id: input.driver_ids.length > 1 ? input.driver_ids.join(",") : "",
-    Driver: names.join(", "),
+    driver_id: useSmart ? "" : (input.driver_ids[0] ?? ""),
+    smart_driver_id: selectedSmart ?? "",
+    Driver: rosterNames.join(", "),
     first_name_last_name: names.join(", "),
     dropoff_id: input.dropoff_id,
     "Điểm Drop-off": String(dropoff?.cartrack.customer_name ?? ""),
@@ -92,12 +99,14 @@ export async function saveMasterRule(input: RuleInput, row?: number, version?: s
   if (input.alt_drop_off_id !== undefined) data.alt_drop_off_id = input.alt_drop_off_id;
   if (old) {
     const filter = `id=eq.${old.id}&updated_at=eq.${encodeURIComponent(old.updated_at)}`;
-    const changed = await sbPatch<MasterRule>("master_config_rules", filter, { row_data: data, updated_at: new Date().toISOString() });
+    const changed = await sbPatch<MasterRule>("master_config_rules", filter, {
+      row_data: data, smart_driver_id_manual: manualSmart, updated_at: new Date().toISOString(),
+    });
     if (changed.length !== 1) throw new Error("Dòng đã thay đổi — tải lại trước khi lưu");
     return old.source_row;
   }
   const nextRow = Math.max(1, ...rules.map((r) => r.source_row)) + 1;
-  await sbInsert("master_config_rules", [{ day_type: "weekday", source_row: nextRow, row_data: data }]);
+  await sbInsert("master_config_rules", [{ day_type: "weekday", source_row: nextRow, row_data: data, smart_driver_id_manual: manualSmart }]);
   return nextRow;
 }
 
@@ -140,6 +149,7 @@ export async function createMasterConfigRows(cells: ConfigCells[]): Promise<numb
     const copied = rules.find((r) => r.source_row === c.copyFromRow)?.row_data ?? {};
     return {
       day_type: "weekday", source_row: ++nextRow,
+      smart_driver_id_manual: driverIds.length > 1 ? driverIds.join(",") : null,
       row_data: {
         ...copied,
         customer_id: pickupIds[0], "Điểm Pick-up": c.pickup,

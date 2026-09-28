@@ -1,7 +1,7 @@
 import { parseLeaveCsv, PROXY_3PL_DRIVER_ID } from "./leave-config";
 import { assertCsvResponse, assertHeaders, sheetCsvUrl, SHEET_CONTRACT, SHEET_GID } from "./sheets";
 import { stableJson } from "./master-sync";
-import { sbDelete, sbSelectAll, sbUpsert } from "./supabase-rest";
+import { sbDelete, sbPatch, sbRpc, sbSelectAll, sbUpsert } from "./supabase-rest";
 
 type SheetRow = { source_row: number; row_data: Record<string, string> };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -29,9 +29,10 @@ const ids = (value: string) => value.split(",").map((id) => id.trim().toLowerCas
 
 /** Explicit Sheet → Supabase review refresh. The assignment source does not change. */
 export async function syncConfigSheet(dryRun = false) {
-  const [weekday, sunday] = await Promise.all([
+  const [weekday, sunday, roster] = await Promise.all([
     sheetRows(SHEET_GID.mapping, SHEET_CONTRACT.mapping.label, SHEET_CONTRACT.mapping.require),
     sheetRows(SHEET_GID.sunday, SHEET_CONTRACT.sunday.label, SHEET_CONTRACT.sunday.require),
+    sheetRows(SHEET_GID.drivers, SHEET_CONTRACT.drivers.label, SHEET_CONTRACT.drivers.require),
   ]);
   const desired = ([...weekday.map((r) => ({ ...r, day_type: "weekday" })),
     ...sunday.map((r) => ({ ...r, day_type: "sunday" }))])
@@ -40,7 +41,8 @@ export async function syncConfigSheet(dryRun = false) {
     sbSelectAll<{ id: number; day_type: string; source_row: number; row_data: Record<string, string> }>(
       "master_config_rules", "select=id,day_type,source_row,row_data", "id.asc"),
     sbSelectAll<{ customer_id: string }>("master_clients", "select=customer_id", "customer_id.asc"),
-    sbSelectAll<{ driver_id: string }>("master_drivers", "select=driver_id", "driver_id.asc"),
+    sbSelectAll<{ driver_id: string; roster: Record<string, string> | null; roster_source_row: number | null }>(
+      "master_drivers", "select=driver_id,roster,roster_source_row", "driver_id.asc"),
   ]);
   if (desired.length < 100 || (stored.length && desired.length < stored.length * 0.8)) {
     throw new Error("Config sheet unexpectedly short; refusing to remove mirrored rules");
@@ -55,6 +57,18 @@ export async function syncConfigSheet(dryRun = false) {
       if (!driverIds.has(id)) throw new Error(`Cartrack driver ${id} must be refreshed before config sync`);
     }
   }
+  const rosterRows = roster.filter((r) => r.row_data.Driver && r.row_data.delivery_driver_id);
+  if (rosterRows.length < 100) throw new Error("Driver sheet unexpectedly short");
+  if (new Set(rosterRows.map((r) => r.row_data.delivery_driver_id.toLowerCase())).size !== rosterRows.length) {
+    throw new Error("Driver sheet contains duplicate driver IDs");
+  }
+  const oldDrivers = new Map(drivers.map((d) => [d.driver_id, d]));
+  const rosterChanged = rosterRows.filter((r) => {
+    const id = r.row_data.delivery_driver_id.toLowerCase();
+    if (!UUID.test(id) || !oldDrivers.has(id)) throw new Error(`Cartrack driver ${id} must be refreshed before roster sync`);
+    const old = oldDrivers.get(id)!;
+    return old.roster_source_row !== r.source_row || stableJson(old.roster) !== stableJson(r.row_data);
+  });
   const key = (r: { day_type: string; source_row: number }) => `${r.day_type}:${r.source_row}`;
   const old = new Map(stored.map((r) => [key(r), r]));
   const wanted = new Set(desired.map(key));
@@ -62,12 +76,19 @@ export async function syncConfigSheet(dryRun = false) {
   const removed = stored.filter((r) => !wanted.has(key(r)));
   if (!dryRun) {
     const now = new Date().toISOString();
+    for (let i = 0; i < rosterChanged.length; i += 4) {
+      await Promise.all(rosterChanged.slice(i, i + 4).map((r) => sbPatch(
+        "master_drivers", `driver_id=eq.${r.row_data.delivery_driver_id.toLowerCase()}`,
+        { roster: r.row_data, roster_source_row: r.source_row },
+      )));
+    }
     await sbUpsert("master_config_rules", changed.map((r) => ({ ...r, updated_at: now })), "day_type,source_row", 100);
     for (let i = 0; i < removed.length; i += 100) {
       await sbDelete("master_config_rules", `id=in.(${removed.slice(i, i + 100).map((r) => r.id).join(",")})`);
     }
+    if (rosterChanged.length) await sbRpc<number>("refresh_master_smart_driver_ids");
   }
-  return { total: desired.length, changed: changed.length, removed: removed.length };
+  return { total: desired.length, changed: changed.length, removed: removed.length, rosterChanged: rosterChanged.length };
 }
 
 /** Mirrors all meaningful leave rows, including rows with broken driver lookups. */

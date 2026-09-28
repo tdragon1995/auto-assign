@@ -81,7 +81,7 @@ export function MasterClientInfoPanel() {
     } else {
       const r = rules.find((r) => String(r.source_row) === next.id);
       setDraft({ customer_id: r?.row_data.customer_id ?? "", dropoff_id: r?.row_data.dropoff_id ?? "", shift_start: r?.row_data.shift_start ?? "", shift_end: r?.row_data.shift_end ?? "", bot_token: r?.row_data.bot_token ?? "", chat_id: r?.row_data.chat_id ?? "", alt_drop_off_id: r?.row_data.alt_drop_off_id ?? "" });
-      setDriverIds(r ? (r.row_data.smart_driver_id || r.row_data.driver_id || "").split(",").map((s) => s.trim()).filter(Boolean) : []);
+      setDriverIds(r ? (r.smart_driver_id || r.row_data.driver_id || "").split(",").map((s) => s.trim()).filter(Boolean) : []);
     }
   }
 
