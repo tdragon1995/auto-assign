@@ -33,5 +33,8 @@ geoExports.nearestPsc(0, 0).then((result) => {
   vm.runInNewContext(syncJs, { exports: syncExports, require: () => ({}) });
   assert.equal(syncExports.stableJson({ a: 1, b: { x: 2, y: 3 } }), syncExports.stableJson({ b: { y: 3, x: 2 }, a: 1 }));
   assert.notEqual(syncExports.stableJson({ a: 1 }), syncExports.stableJson({ a: 2 }));
+  assert.equal(syncExports.listedChanged({ name: "old", detailOnly: 7 }, { name: "old" }), false);
+  assert.equal(syncExports.listedChanged({ name: "old", detailOnly: 7 }, { name: "new" }), true);
+  assert.equal(syncExports.mergeCartrack({ name: "old", detailOnly: 7 }, { name: "new" }).detailOnly, 7);
   console.log("Master Client Info self-check passed");
 });

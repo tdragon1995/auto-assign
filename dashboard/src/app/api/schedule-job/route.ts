@@ -2,8 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import type { Env } from "@/lib/cartrack";
 import { runScheduleJobCycle } from "@/lib/schedule-job";
 import { saveLastRun } from "@/lib/schedule-job-kv";
-import { after } from "next/server";
-import { masterEnabled } from "@/lib/master-store";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -24,17 +22,6 @@ export async function POST(req: NextRequest) {
 
   // Vercel Cron sets this header; we accept either it OR no header (manual call).
   const fromVercelCron = req.headers.get("user-agent")?.includes("vercel-cron") ?? false;
-  if (fromVercelCron && env === "prod" && !isRetry && masterEnabled() &&
-      process.env.CRON_SECRET && req.headers.get("authorization") === `Bearer ${process.env.CRON_SECRET}`) {
-    after(async () => {
-      try {
-        const { syncCartrackProfiles, syncLabcenterMetadata } = await import("@/lib/master-sync");
-        const profiles = await syncCartrackProfiles();
-        if (profiles.newClientCodes.length) await syncLabcenterMetadata(0, 200, profiles.newClientCodes);
-        console.info("Master Client Info daily sync:", { clients: profiles.clients, drivers: profiles.drivers, newClientCodes: profiles.newClientCodes.length });
-      } catch (e) { console.error("Master Client Info daily sync failed:", e); }
-    });
-  }
   const trigger: "cron" | "manual" | "retry" = isRetry
     ? "retry"
     : fromVercelCron

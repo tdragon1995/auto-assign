@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { DELIVERY_BASE, getAdminToken } from "@/lib/labcenter";
 import { loadPscRoutes } from "@/lib/psc-config";
@@ -9,6 +9,7 @@ import { notifyAdminGroup } from "@/lib/zalo";
 // Node modules. It cannot run in Vercel's Edge runtime.
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
+export const maxDuration = 60;
 const COUNTRY_ID = 235;
 const DEFAULT_CONTACT_CODE = "84";
 const LABCENTER_URL = `${DELIVERY_BASE}/api/locations/update-pick-drop-location`;
@@ -234,6 +235,16 @@ export async function POST(req: NextRequest) {
     await notifyAdminGroup(
       `🆕 Sales tạo khách hàng mới\n${customer_name}\n${address_line_1 || "(không có địa chỉ)"}`,
     );
+
+    if (env === "prod" && customer?.customer_id) {
+      after(async () => {
+        try {
+          const { syncCartrackClient, syncLabcenterMetadata } = await import("@/lib/master-sync");
+          const code = await syncCartrackClient(customer.customer_id);
+          if (code) await syncLabcenterMetadata(0, 200, [code]);
+        } catch (e) { console.error("New client profile sync:", e); }
+      });
+    }
 
     return NextResponse.json({ success: true, customer, labcenter });
   } catch (e) {

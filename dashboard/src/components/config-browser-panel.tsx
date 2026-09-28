@@ -703,6 +703,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
   const [showKeyInput, setShowKeyInput] = useState(false);
   const [keyInput, setKeyInput] = useState("");
   const [metaBusy, setMetaBusy] = useState(false);
+  const [syncingCartrack, setSyncingCartrack] = useState(false);
   const [metaError, setMetaError] = useState("");
   const [infoOpenRow, setInfoOpenRow] = useState<number | null>(null);
   const [replacing, setReplacing] = useState(false);
@@ -743,6 +744,21 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
     } catch (e) { setMetaError(e instanceof Error ? e.message : String(e)); }
     finally { setMetaBusy(false); }
   }, []);
+
+  const refreshCartrack = useCallback(async () => {
+    if (!sessionMetaKey) return;
+    setSyncingCartrack(true);
+    try {
+      const res = await fetch("/api/master-client-info/sync", {
+        method: "POST", headers: { "x-master-edit-key": sessionMetaKey }, cache: "no-store",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Cartrack HTTP ${res.status}`);
+      await loadClientMetadata(sessionMetaKey);
+      toast.success(`Đã đồng bộ ${data.profiles.clients} khách hàng, ${data.profiles.drivers} tài xế`);
+    } catch (e) { toast.error(e instanceof Error ? e.message : String(e)); }
+    finally { setSyncingCartrack(false); }
+  }, [loadClientMetadata]);
 
   const clientMetaById = useMemo(() => new Map((clientMetadata ?? []).map((c) => [c.customer_id, c])), [clientMetadata]);
   const clientMetaByName = useMemo(() => {
@@ -906,6 +922,9 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
           {clientMetadata && <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => {
             sessionMetaKey = ""; sessionMetadata = null; setClientMetadata(null); setInfoOpenRow(null); setOnlyUnmapped(false); setMetaError("");
           }}>Khoá thông tin</Button>}
+          {clientMetadata && <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={syncingCartrack} onClick={() => void refreshCartrack()}>
+            {syncingCartrack ? "Đang đồng bộ…" : "Đồng bộ Cartrack"}
+          </Button>}
           {showKeyInput && !clientMetadata && <label className="flex items-center gap-1 text-[11px] text-slate-600">
             <span>Mã truy cập</span>
             <input type="password" autoComplete="off" value={keyInput} onChange={(e) => setKeyInput(e.target.value)}

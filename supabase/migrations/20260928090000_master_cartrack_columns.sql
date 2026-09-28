@@ -1,0 +1,63 @@
+-- Keep the raw Cartrack response for future fields, but expose every field
+-- observed in the customer/driver list and detail responses as a real column.
+-- Generated columns stay in sync after either the list or a detail refresh.
+alter table public.master_clients
+  add column if not exists customer_name text generated always as (cartrack->>'customer_name') stored,
+  add column if not exists address_line_1 text generated always as (cartrack->>'address_line_1') stored,
+  add column if not exists address_line_2 text generated always as (cartrack->>'address_line_2') stored,
+  add column if not exists client_reference text generated always as (cartrack->>'client_reference') stored,
+  add column if not exists contact_code text generated always as (cartrack->>'contact_code') stored,
+  add column if not exists contact_number text generated always as (cartrack->>'contact_number') stored,
+  add column if not exists country_id integer generated always as ((cartrack->>'country_id')::integer) stored,
+  add column if not exists create_ts text generated always as (cartrack->>'create_ts') stored,
+  add column if not exists email text generated always as (cartrack->>'email') stored,
+  add column if not exists is_address_locked boolean generated always as ((cartrack->>'is_address_locked')::boolean) stored,
+  add column if not exists latitude double precision generated always as ((cartrack->>'latitude')::double precision) stored,
+  add column if not exists longitude double precision generated always as ((cartrack->>'longitude')::double precision) stored,
+  add column if not exists postal_code text generated always as (cartrack->>'postal_code') stored,
+  add column if not exists subuser_id text generated always as (cartrack->>'subuser_id') stored,
+  add column if not exists update_ts text generated always as (cartrack->>'update_ts') stored,
+  add column if not exists user_id bigint generated always as ((cartrack->>'user_id')::bigint) stored,
+  add column if not exists detail_synced_at timestamptz;
+
+alter table public.master_drivers
+  add column if not exists delivery_driver_id uuid generated always as ((cartrack->>'delivery_driver_id')::uuid) stored,
+  add column if not exists create_ts text generated always as (cartrack->>'create_ts') stored,
+  add column if not exists current_device_id bigint generated always as ((cartrack->>'current_device_id')::bigint) stored,
+  add column if not exists device_description text generated always as (cartrack->>'device_description') stored,
+  add column if not exists device_os text generated always as (cartrack->>'device_os') stored,
+  add column if not exists driver_status_id integer generated always as ((cartrack->>'driver_status_id')::integer) stored,
+  add column if not exists email text generated always as (cartrack->>'email') stored,
+  add column if not exists end_location_customer_id text generated always as (cartrack->>'end_location_customer_id') stored,
+  add column if not exists first_name text generated always as (cartrack->>'first_name') stored,
+  add column if not exists fleet_driver_id text generated always as (cartrack->>'fleet_driver_id') stored,
+  add column if not exists is_active boolean generated always as ((cartrack->>'is_active')::boolean) stored,
+  add column if not exists is_online boolean generated always as ((cartrack->>'is_online')::boolean) stored,
+  add column if not exists is_planning boolean generated always as ((cartrack->>'is_planning')::boolean) stored,
+  add column if not exists last_login_ts text generated always as (cartrack->>'last_login_ts') stored,
+  add column if not exists last_name text generated always as (cartrack->>'last_name') stored,
+  add column if not exists latitude double precision generated always as ((cartrack->>'latitude')::double precision) stored,
+  add column if not exists logged_in boolean generated always as ((cartrack->>'logged_in')::boolean) stored,
+  add column if not exists login_type text generated always as (cartrack->>'login_type') stored,
+  add column if not exists login_username text generated always as (cartrack->>'login_username') stored,
+  add column if not exists longitude double precision generated always as ((cartrack->>'longitude')::double precision) stored,
+  add column if not exists max_volume double precision generated always as ((cartrack->>'max_volume')::double precision) stored,
+  add column if not exists max_weight double precision generated always as ((cartrack->>'max_weight')::double precision) stored,
+  add column if not exists offline_mode_since_ts text generated always as (cartrack->>'offline_mode_since_ts') stored,
+  add column if not exists on_break_since_ts text generated always as (cartrack->>'on_break_since_ts') stored,
+  add column if not exists phone_code text generated always as (cartrack->>'phone_code') stored,
+  add column if not exists phone_number text generated always as (cartrack->>'phone_number') stored,
+  add column if not exists registration text generated always as (cartrack->>'registration') stored,
+  add column if not exists remember_token text generated always as (cartrack->>'remember_token') stored,
+  add column if not exists shift_time_end text generated always as (cartrack->>'shift_time_end') stored,
+  add column if not exists shift_time_start text generated always as (cartrack->>'shift_time_start') stored,
+  add column if not exists special_equipment jsonb generated always as (cartrack->'special_equipment') stored,
+  add column if not exists start_location_customer_id text generated always as (cartrack->>'start_location_customer_id') stored,
+  add column if not exists subuser_id text generated always as (cartrack->>'subuser_id') stored,
+  add column if not exists token text generated always as (cartrack->>'token') stored,
+  add column if not exists update_ts text generated always as (cartrack->>'update_ts') stored,
+  add column if not exists user_id bigint generated always as ((cartrack->>'user_id')::bigint) stored,
+  add column if not exists detail_synced_at timestamptz;
+
+update public.master_clients set detail_synced_at = synced_at where cartrack ? 'user_id';
+update public.master_drivers set detail_synced_at = synced_at where cartrack ? 'user_id';
