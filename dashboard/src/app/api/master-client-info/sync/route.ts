@@ -7,11 +7,14 @@ export const maxDuration = 300;
 
 export async function GET(req: NextRequest) {
   const secret = process.env.CRON_SECRET;
-  if (!secret || req.headers.get("authorization") !== `Bearer ${secret}`) {
+  const phase = req.nextUrl.searchParams.get("phase") ?? "all";
+  const editKey = process.env.MASTER_CLIENT_INFO_EDIT_KEY;
+  const cronAuthorized = !!secret && req.headers.get("authorization") === `Bearer ${secret}`;
+  const detailAuthorized = phase === "details" && !!editKey && req.headers.get("x-master-edit-key") === editKey;
+  if (!cronAuthorized && !detailAuthorized) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
   try {
-    const phase = req.nextUrl.searchParams.get("phase") ?? "all";
     if (!["all", "profiles", "metadata", "bootstrap", "details"].includes(phase)) throw new Error("Invalid sync phase");
     const offset = Number(req.nextUrl.searchParams.get("offset") ?? "0");
     if (!Number.isInteger(offset) || offset < 0) throw new Error("Invalid offset");
