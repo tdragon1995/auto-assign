@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { importCurrentConfig, syncCartrackDetailPage, syncCartrackProfiles, syncLabcenterMetadata } from "@/lib/master-sync";
+import { syncConfigSheet, syncLeaveSheet } from "@/lib/master-sheet-sync";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -43,6 +44,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Master Client Info access denied" }, { status: 401 });
   }
   try {
+    const phase = req.nextUrl.searchParams.get("phase") ?? "profiles";
+    if (phase === "sheet") {
+      const dryRun = req.nextUrl.searchParams.get("dryRun") === "1";
+      const leave = await syncLeaveSheet(dryRun);
+      const config = await syncConfigSheet(dryRun);
+      return NextResponse.json({ ok: true, dryRun, leave, config });
+    }
+    if (phase !== "profiles") throw new Error("Invalid sync phase");
     const profiles = await syncCartrackProfiles();
     const labcenter = profiles.newClientCodes.length
       ? await syncLabcenterMetadata(0, 200, profiles.newClientCodes) : null;

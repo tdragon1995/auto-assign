@@ -124,7 +124,7 @@ function parseField(f: string | undefined): string {
 // escaped quotes ("") AND embedded newlines. A line-by-line parser is unsafe
 // here because scheduled_trips/note cells span multiple lines — and they sit
 // BEFORE the substitute columns, so a naive split would shift every sub field.
-function parseCsv(text: string): string[][] {
+export function parseLeaveCsv(text: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];
   let cur = "";
@@ -670,7 +670,7 @@ async function loadLeaveSheet(
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     assertCsvResponse(SHEET_CONTRACT.nghi_phep.label, res);
 
-    const rows = parseCsv(await res.text());
+    const rows = parseLeaveCsv(await res.text());
     if (rows.length < 2) {
       // Do NOT cache this. An empty answer is never real — the tab is a rolling
       // log of hundreds of rows — so caching it held "nobody is on leave" for a

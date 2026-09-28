@@ -19,3 +19,18 @@ begin
   end if;
 end;
 $$;
+
+do $$
+begin
+  if not exists (select 1 from public.master_leave_rows) then
+    raise exception 'master_leave_rows has not been imported';
+  end if;
+  if exists (
+    select 1 from public.master_leave_rows
+    where (linked_driver_id is not null and linked_driver_id::text <> lower(btrim(driver_id)))
+       or (linked_sub1_driver_id is not null and linked_sub1_driver_id::text <> lower(btrim(sub1_id)))
+  ) then
+    raise exception 'a leave row links to the wrong driver';
+  end if;
+end;
+$$;
