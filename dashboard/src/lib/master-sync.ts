@@ -8,7 +8,7 @@ import type { MasterClient } from "./master-store";
 type CartrackRow = Record<string, unknown>;
 type MasterDriver = { driver_id: string; cartrack: CartrackRow };
 
-async function cartrackList(kind: "customers" | "drivers"): Promise<CartrackRow[]> {
+export async function cartrackList(kind: "customers" | "drivers"): Promise<CartrackRow[]> {
   const all: CartrackRow[] = [];
   for (let page = 1; page <= 20; page++) {
     const res = await fetch(`${BASE_URL}/${kind}?page=${page}&limit=1000`, {

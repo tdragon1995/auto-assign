@@ -42,6 +42,8 @@ export interface ConfigRowView {
   /** True when the cell names several drivers: the engine ranks them by
    *  distance rather than treating them as competing rules. */
   smart: boolean;
+  /** Display-only Cartrack client without a weekday Google Sheet mapping. */
+  unmapped?: boolean;
 }
 
 /**

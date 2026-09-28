@@ -23,7 +23,6 @@ import type { DeploymentBeat } from "@/lib/smart-log-kv";
 import type { ShiftOverlap } from "@/lib/types";
 import { overlapKey } from "@/lib/config-shift";
 import { ConfigBrowserPanel } from "./config-browser-panel";
-import { MasterClientInfoPanel } from "./master-client-info-panel";
 import { PickupSetupPanel } from "./pickup-setup-panel";
 import type { LeaveOnDate, InvalidLeaveRow, SpanningLeaveRow } from "@/lib/leave-config";
 import type { LeaveSuppression } from "@/lib/leave-suppression";
@@ -643,7 +642,7 @@ export function Dashboard() {
               Nhật ký
             </button>
             <button onClick={() => setRightTab("config")} className={tabBtn(rightTab === "config")}>
-              {process.env.NEXT_PUBLIC_MASTER_CLIENT_INFO_ENABLED === "true" ? "Master Client Info" : "Config"}
+              Master Client Info
             </button>
             <button onClick={() => setRightTab("schedule")} className={tabBtn(rightTab === "schedule")}>
               Lịch cố định
@@ -730,9 +729,6 @@ export function Dashboard() {
                 </div>
               </div>
             ) : rightTab === "config" ? (
-              process.env.NEXT_PUBLIC_MASTER_CLIENT_INFO_ENABLED === "true" ? (
-                <div className="h-[72vh] lg:h-full"><MasterClientInfoPanel /></div>
-              ) : (
               /* Mounted only while the tab is open, so the ~1,700-row fetch
                  happens when someone asks for it and not before. */
               <div className="h-[72vh] lg:h-full overflow-y-auto flex flex-col gap-2">
@@ -758,7 +754,6 @@ export function Dashboard() {
                   <ConfigBrowserPanel drivers={drivers} />
                 </div>
               </div>
-              )
             ) : rightTab === "live" ? (
               <div className="h-[72vh] lg:h-full">
                 <ActivityLog logs={logs} />

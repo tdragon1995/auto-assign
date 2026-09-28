@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { Search } from "lucide-react";
+import { Info, Search } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -48,6 +48,28 @@ import type { BranchRule, ConfigDriver } from "@/lib/types";
  *  table draws the next batch — the cap used to be a wall, and the only way
  *  past row 150 was to know to narrow the search. */
 const RENDER_CAP = 150;
+type ClientMeta = {
+  customer_id: string; customer_name: string | null; mapped: boolean;
+  client_code: string | null; new_ward: string | null;
+  nearest_psc_name: string | null; nearest_psc_km: number | null;
+  default_dropoff_name: string | null; eta_minutes: number | null;
+  sales_name: string | null; sales_email: string | null;
+  supervisor_name: string | null; supervisor_email: string | null;
+};
+let sessionMetaKey = "";
+let sessionMetadata: ClientMeta[] | null = null;
+
+function clientTooltip(meta: ClientMeta): string {
+  return [
+    `Mã KH: ${meta.client_code ?? "—"}`,
+    `Phường mới: ${meta.new_ward ?? "—"}`,
+    `PSC gần nhất: ${meta.nearest_psc_name ?? "—"}${meta.nearest_psc_km == null ? "" : ` (${meta.nearest_psc_km.toFixed(1)} km)`}`,
+    `Điểm giao mặc định: ${meta.default_dropoff_name ?? "—"}`,
+    `ETA: ${meta.eta_minutes == null ? "—" : `${meta.eta_minutes} phút`}`,
+    `Sales: ${meta.sales_name ?? "—"} · ${meta.sales_email ?? "—"}`,
+    `Supervisor: ${meta.supervisor_name ?? "—"} · ${meta.supervisor_email ?? "—"}`,
+  ].join("\n");
+}
 
 /** Cartrack's marker for a retired location, written into the name itself. */
 const INACTIVE_PREFIX = /^\{inactive\}\s*/i;
@@ -193,7 +215,7 @@ export function sortConfigRows(rows: readonly ConfigRowView[]): ConfigRowView[] 
 /** One branch's rows, in the shape the editor takes. Only rows that carry a
  *  sheet row can be edited — every writer addresses them by number. */
 function rulesOf(rows: readonly ConfigRowView[]): BranchRule[] {
-  return rows.map((r) => ({ row: r.row, driver: r.driver, start: r.start, end: r.end, dropoff: r.dropoff }));
+  return rows.filter((r) => !r.unmapped).map((r) => ({ row: r.row, driver: r.driver, start: r.start, end: r.end, dropoff: r.dropoff }));
 }
 
 /**
@@ -205,7 +227,7 @@ function rulesOf(rows: readonly ConfigRowView[]): BranchRule[] {
  * bulk write and the wrong line does nothing for it — those rows stay
  * single-edit only, where a human is looking at the one row they mean.
  */
-const isWritable = (r: ConfigRowView) => r.pickup.trim().length > 0;
+const isWritable = (r: ConfigRowView) => !r.unmapped && r.pickup.trim().length > 0;
 
 async function postJson(url: string, body: unknown) {
   const res = await fetch(url, {
@@ -669,13 +691,20 @@ function activeColumnFilterCount(operator: ConfigTextOperator, text: string, val
 }
 
 export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
-  const [rows, setRows] = useState<ConfigRowView[]>([]);
+  const [sheetRows, setSheetRows] = useState<ConfigRowView[]>([]);
   const [filters, setFilters] = useState(EMPTY_CONFIG_FILTERS);
   const [advancedFilters, setAdvancedFilters] = useState(false);
+  const [onlyUnmapped, setOnlyUnmapped] = useState(false);
   const [selected, setSelected] = useState<ReadonlySet<number>>(new Set());
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [meta, setMeta] = useState<{ tab: string; fetchedAt: string } | null>(null);
+  const [clientMetadata, setClientMetadata] = useState<ClientMeta[] | null>(sessionMetadata);
+  const [showKeyInput, setShowKeyInput] = useState(false);
+  const [keyInput, setKeyInput] = useState("");
+  const [metaBusy, setMetaBusy] = useState(false);
+  const [metaError, setMetaError] = useState("");
+  const [infoOpenRow, setInfoOpenRow] = useState<number | null>(null);
   const [replacing, setReplacing] = useState(false);
   const loadedRef = useRef(false);
 
@@ -692,7 +721,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
       const res = await fetch(`/api/config/rows${fresh ? "?fresh=1" : ""}`, { cache: "no-store" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok && !Array.isArray(data.rows)) throw new Error(data.error || `Lỗi ${res.status}`);
-      setRows(Array.isArray(data.rows) ? data.rows : []);
+      setSheetRows(Array.isArray(data.rows) ? data.rows : []);
       setSelected(new Set());
       setMeta({ tab: data.tab ?? "", fetchedAt: data.fetchedAt ?? "" });
       if (data.error) setErr(String(data.error));
@@ -702,6 +731,36 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
       setLoading(false);
     }
   }, []);
+
+  const loadClientMetadata = useCallback(async (key: string) => {
+    setMetaBusy(true); setMetaError("");
+    try {
+      const res = await fetch("/api/master-client-info?view=summary", { headers: { "x-master-edit-key": key }, cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !Array.isArray(data.rows)) throw new Error(data.error || "Không tải được thông tin khách hàng");
+      sessionMetaKey = key; sessionMetadata = data.rows;
+      setClientMetadata(data.rows); setShowKeyInput(false); setKeyInput("");
+    } catch (e) { setMetaError(e instanceof Error ? e.message : String(e)); }
+    finally { setMetaBusy(false); }
+  }, []);
+
+  const clientMetaById = useMemo(() => new Map((clientMetadata ?? []).map((c) => [c.customer_id, c])), [clientMetadata]);
+  const clientMetaByName = useMemo(() => {
+    const byName = new Map<string, ClientMeta | null>();
+    for (const client of clientMetadata ?? []) {
+      const name = client.customer_name?.trim().toLocaleLowerCase("vi");
+      if (!name) continue;
+      byName.set(name, byName.has(name) ? null : client);
+    }
+    return byName;
+  }, [clientMetadata]);
+  const rows = useMemo<ConfigRowView[]>(() => [
+    ...sheetRows,
+    ...(clientMetadata ?? []).flatMap((client, index) => client.mapped ? [] : [{
+      row: -index - 1, customer_id: client.customer_id, pickup: client.customer_name?.trim() || client.customer_id,
+      driver: "", start: "", end: "", dropoff: "", smart: false, unmapped: true,
+    }]),
+  ], [sheetRows, clientMetadata]);
 
   // Once, when the tab is first shown — not on every mount of a hidden panel.
   useEffect(() => {
@@ -731,7 +790,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
     () => optionValues.ends.map((value) => ({ value, label: value || "trống / cả ngày" })),
     [optionValues.ends],
   );
-  const matches = useMemo(() => sortConfigRows(filterConfigRows(rows, filters)), [rows, filters]);
+  const matches = useMemo(() => sortConfigRows(filterConfigRows(onlyUnmapped ? rows.filter((r) => r.unmapped) : rows, filters)), [rows, filters, onlyUnmapped]);
   // The cap applies AFTER the sort, so it is the first N of a stable ordering
   // rather than an arbitrary slice of the sheet. Which rows get cut is then
   // something the reader can predict, and narrowing the search is a way to
@@ -811,7 +870,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
     + activeColumnFilterCount(filters.dropoffOperator, filters.dropoffText, filters.dropoffs)
     + activeColumnFilterCount(filters.startOperator, filters.startText, filters.starts)
     + activeColumnFilterCount(filters.endOperator, filters.endText, filters.ends);
-  const hasFilters = activeFilters > 0;
+  const hasFilters = activeFilters > 0 || onlyUnmapped;
   const timeSummary = [
     filters.starts.length && `Bắt đầu: ${filters.starts.slice(0, 2).map((time) => time || "trống").join(", ")}${filters.starts.length > 2 ? ` +${filters.starts.length - 2}` : ""}`,
     filters.ends.length && `Kết thúc: ${filters.ends.slice(0, 2).map((time) => time || "trống").join(", ")}${filters.ends.length > 2 ? ` +${filters.ends.length - 2}` : ""}`,
@@ -839,6 +898,21 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
               {meta?.tab}{meta?.tab && meta?.fetchedAt && " · "}{meta?.fetchedAt && `đọc ${meta.fetchedAt.slice(11, 16)}`}
             </span>
           )}
+          {clientMetadata ? <span className="text-[11px] text-emerald-700">Thông tin KH đã mở · di chuột lên điểm lấy</span> : (
+            <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => setShowKeyInput((v) => !v)}>
+              Mở thông tin KH và điểm chưa có config
+            </Button>
+          )}
+          {clientMetadata && <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => {
+            sessionMetaKey = ""; sessionMetadata = null; setClientMetadata(null); setInfoOpenRow(null); setOnlyUnmapped(false); setMetaError("");
+          }}>Khoá thông tin</Button>}
+          {showKeyInput && !clientMetadata && <label className="flex items-center gap-1 text-[11px] text-slate-600">
+            <span>Mã truy cập</span>
+            <input type="password" autoComplete="off" value={keyInput} onChange={(e) => setKeyInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && keyInput) void loadClientMetadata(keyInput); }}
+              className="h-7 w-36 rounded border border-slate-300 px-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500" />
+            <Button size="sm" className="h-7 px-2 text-[11px]" disabled={!keyInput || metaBusy} onClick={() => void loadClientMetadata(keyInput)}>{metaBusy ? "Đang tải…" : "Mở"}</Button>
+          </label>}
           <Button
             size="sm" variant={replacing ? "default" : "outline"}
             className={`h-7 px-2 text-[11px] ${replacing ? "bg-indigo-600 hover:bg-indigo-700" : ""}`}
@@ -848,10 +922,14 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
           >
             Thay tài xế
           </Button>
+          <Button size="sm" variant={onlyUnmapped ? "default" : "outline"} className={`h-7 px-2 text-[11px] ${onlyUnmapped ? "bg-amber-700 hover:bg-amber-800" : ""}`}
+            aria-pressed={onlyUnmapped} onClick={() => { setOnlyUnmapped((v) => !v); setLimit(RENDER_CAP); clearSelection(); }}>
+            Chưa có config ({rows.filter((r) => r.unmapped).length})
+          </Button>
           <Button
             size="sm" variant="outline"
             className="h-7 px-2 text-[11px]"
-            onClick={() => void load(true)}
+            onClick={() => { void load(true); if (sessionMetaKey) void loadClientMetadata(sessionMetaKey); }}
             disabled={loading}
           >
             {loading ? "Đang tải…" : "Tải lại"}
@@ -964,7 +1042,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
           <p className="text-[11px] text-slate-600" aria-live="polite">
             {hasFilters
               ? <><span className="font-semibold tabular-nums text-slate-800">{matches.length}</span> / {rows.length} dòng khớp</>
-              : <><span className="font-semibold tabular-nums text-slate-800">{rows.length}</span> dòng</>}
+              : <><span className="font-semibold tabular-nums text-slate-800">{rows.length}</span> dòng · {rows.filter((r) => r.unmapped).length} chưa có config</>}
             {matches.length > shown.length && <span className="text-slate-500"> · đang hiện {shown.length}</span>}
           </p>
           {hasFilters && (
@@ -972,14 +1050,15 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
               size="sm"
               variant="ghost"
               className="h-7 px-2 text-[11px] text-slate-600"
-              onClick={() => updateFilters(EMPTY_CONFIG_FILTERS)}
+              onClick={() => { updateFilters(EMPTY_CONFIG_FILTERS); setOnlyUnmapped(false); }}
             >
-              Xoá {activeFilters} bộ lọc
+              Xoá bộ lọc
             </Button>
           )}
         </div>
 
         {err && <div role="alert" className="text-[11px] text-red-600">{err}</div>}
+        {metaError && <div role="alert" className="text-[11px] text-red-600">{metaError}</div>}
 
         {replacing && (
           <ReplaceDriverPanel
@@ -1058,6 +1137,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                   const firstOfBranch = runStart[i] === i;
                   const lastOfBranch = i === shown.length - 1 || runStart[i + 1] !== runStart[i];
                   const inactive = isInactive(r.pickup);
+                  const locationInfo = clientMetaById.get(r.customer_id) ?? clientMetaByName.get(r.pickup.trim().toLocaleLowerCase("vi"));
                   // Every row of the route being edited is marked: the editor
                   // holds the route's WHOLE day, so these rows are the very
                   // things it is about to rewrite.
@@ -1066,9 +1146,10 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                   const runOpen = !!editing && editing.row === first.row;
                   return [(
                   <tr
-                    key={r.row}
+                    key={r.unmapped ? r.customer_id : r.row}
+                    title={locationInfo ? clientTooltip(locationInfo) : undefined}
                     className={`align-top ${firstOfBranch ? "border-t border-slate-200" : ""} ${
-                      selected.has(r.row) ? "bg-indigo-50" : inBranch ? "bg-indigo-50/60" : "hover:bg-slate-50"
+                      r.unmapped ? "bg-amber-50/70 hover:bg-amber-100/70" : selected.has(r.row) ? "bg-indigo-50" : inBranch ? "bg-indigo-50/60" : "hover:bg-slate-50"
                     }`}
                   >
                     <td className="px-1 py-1">
@@ -1096,11 +1177,11 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                             runOpen ? "bg-indigo-600 hover:bg-indigo-700" : "text-indigo-700 hover:bg-indigo-50 hover:text-indigo-800"
                           }`}
                           aria-expanded={runOpen}
-                          aria-label={runOpen ? "Đóng" : `Sửa lịch ${r.pickup || branch} → ${r.dropoff || "mọi điểm"}`}
+                          aria-label={runOpen ? "Đóng" : r.unmapped ? `Thiết lập config cho ${r.pickup}` : `Sửa lịch ${r.pickup || branch} → ${r.dropoff || "mọi điểm"}`}
                           onClick={() => setEditing(runOpen ? null : { branch, pickup: r.pickup, dropoff: r.dropoff, row: r.row })}
                           disabled={!r.customer_id && !r.pickup}
                         >
-                          {runOpen ? "Đóng" : "Sửa lịch"}
+                          {runOpen ? "Đóng" : r.unmapped ? "Thiết lập" : "Sửa lịch"}
                         </Button>
                       )}
                     </td>
@@ -1112,9 +1193,15 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                               ngưng
                             </span>
                           )}
+                          {r.unmapped && <span className="mr-1.5 rounded border border-amber-300 bg-amber-100 px-1 text-[10px] font-semibold text-amber-900">Chưa có config</span>}
                           <span className={inactive ? "text-slate-500" : "font-medium text-slate-900"}>
                             {r.pickup ? r.pickup.replace(INACTIVE_PREFIX, "") : <span className="text-slate-500">—</span>}
                           </span>
+                          {locationInfo && <button type="button" aria-label={`Xem thông tin ${r.pickup}`} aria-expanded={infoOpenRow === r.row}
+                            title={clientTooltip(locationInfo)} onClick={() => setInfoOpenRow(infoOpenRow === r.row ? null : r.row)}
+                            className="ml-1 inline-flex align-middle text-slate-500 hover:text-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">
+                            <Info className="size-3.5" aria-hidden />
+                          </button>}
                         </>
                       ) : (
                         // Still named for a screen reader, which reads a row
@@ -1123,7 +1210,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                       )}
                     </td>
                     <td className="px-2 py-1 text-slate-700 break-words">
-                      {r.driver ? displayDriverCell(r.driver) : <span className="text-amber-700">chưa có tài xế</span>}
+                      {r.driver ? displayDriverCell(r.driver) : <span className="text-amber-700">{r.unmapped ? "cần thiết lập" : "chưa có tài xế"}</span>}
                       {r.smart && (
                         <span className="ml-1.5 rounded-full border border-sky-200 bg-sky-50 px-1 py-0 text-[10px] font-semibold text-sky-700" title="Hệ thống chọn tài xế gần điểm lấy nhất trong danh sách">
                           smart
@@ -1141,9 +1228,14 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                     <td className="truncate px-2 py-1 text-slate-700" title={r.dropoff || undefined}>
                       {r.dropoff || <span className="whitespace-nowrap text-slate-500">mọi điểm</span>}
                     </td>
-                    <td className="px-2 py-1 text-right font-mono text-[10px] text-slate-500">{r.row}</td>
+                    <td className="px-2 py-1 text-right font-mono text-[10px] text-slate-500">{r.unmapped ? "—" : r.row}</td>
                   </tr>
                   ),
+                  infoOpenRow === r.row && locationInfo ? (
+                    <tr key={`${r.row}-info`} className="bg-slate-50 text-xs text-slate-700">
+                      <td colSpan={7} className="px-3 py-2 whitespace-pre-line">{clientTooltip(locationInfo)}</td>
+                    </tr>
+                  ) : null,
                   // Directly beneath the branch it was opened from — under its
                   // LAST row, so the run stays in one piece above the form that
                   // rewrites it. It used to render in its own box ABOVE the
@@ -1154,15 +1246,20 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                     <tr key={`${r.row}-edit`} className="bg-indigo-50/60">
                       <td colSpan={7} className="px-2 pb-2">
                         <div className="py-1 text-xs font-medium text-indigo-900">
-                          Sửa toàn bộ lịch {editingRows[0].pickup} → {editingRows[0].dropoff || "mọi điểm giao"} · {editingRows.length} ca
+                          {editingRows[0].unmapped ? `Thiết lập config ${editingRows[0].pickup}` : `Sửa toàn bộ lịch ${editingRows[0].pickup} → ${editingRows[0].dropoff || "mọi điểm giao"} · ${editingRows.length} ca`}
                         </div>
                         <BranchEditor
                           pickupName={editingRows[0].pickup}
                           dropoffName={editingRows[0].dropoff}
                           rules={rulesOf(editingRows)}
+                          extraLines={editingRows[0].unmapped ? [{
+                            driver: "", start: "", end: "", dropoff: "",
+                            copyFromRow: rows.find((row) => !row.unmapped && row.smart && row.row > 2)?.row
+                              ?? rows.find((row) => !row.unmapped && row.row > 2)?.row,
+                          }] : []}
                           drivers={drivers}
                           onCancel={() => setEditing(null)}
-                          onDone={() => { setEditing(null); void load(); }}
+                          onDone={() => { setEditing(null); void load(); if (editingRows[0].unmapped && sessionMetaKey) void loadClientMetadata(sessionMetaKey); }}
                           onStale={() => { setEditing(null); void load(true); }}
                         />
                       </td>
