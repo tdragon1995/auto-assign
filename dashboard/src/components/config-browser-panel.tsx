@@ -922,10 +922,10 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
           >
             Thay tài xế
           </Button>
-          <Button size="sm" variant={onlyUnmapped ? "default" : "outline"} className={`h-7 px-2 text-[11px] ${onlyUnmapped ? "bg-amber-700 hover:bg-amber-800" : ""}`}
+          {clientMetadata && <Button size="sm" variant={onlyUnmapped ? "default" : "outline"} className={`h-7 px-2 text-[11px] ${onlyUnmapped ? "bg-amber-700 hover:bg-amber-800" : ""}`}
             aria-pressed={onlyUnmapped} onClick={() => { setOnlyUnmapped((v) => !v); setLimit(RENDER_CAP); clearSelection(); }}>
             Chưa có config ({rows.filter((r) => r.unmapped).length})
-          </Button>
+          </Button>}
           <Button
             size="sm" variant="outline"
             className="h-7 px-2 text-[11px]"
@@ -1042,7 +1042,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
           <p className="text-[11px] text-slate-600" aria-live="polite">
             {hasFilters
               ? <><span className="font-semibold tabular-nums text-slate-800">{matches.length}</span> / {rows.length} dòng khớp</>
-              : <><span className="font-semibold tabular-nums text-slate-800">{rows.length}</span> dòng · {rows.filter((r) => r.unmapped).length} chưa có config</>}
+              : <><span className="font-semibold tabular-nums text-slate-800">{rows.length}</span> dòng{clientMetadata && ` · ${rows.filter((r) => r.unmapped).length} chưa có config`}</>}
             {matches.length > shown.length && <span className="text-slate-500"> · đang hiện {shown.length}</span>}
           </p>
           {hasFilters && (
