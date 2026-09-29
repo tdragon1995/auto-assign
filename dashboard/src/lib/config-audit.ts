@@ -15,6 +15,8 @@
 
 /** Just enough of a parsed mapping row to audit it. */
 export interface AuditableRow {
+  rule_id?: number;
+  revision?: number;
   customer_id: string;
   driver_id: string;
   /** Valid candidates on a smart row; its fixed driver lookup is normally blank. */
@@ -163,6 +165,8 @@ export interface ShiftOverlap {
 
 /** One side of an overlapping pair, in the shape the boundary-mover takes. */
 export interface OverlapSide {
+  rule_id?: number;
+  revision?: number;
   row: number;
   driver: string;
   /** "HH:MM–HH:MM", or "" for a rule with no window (on duty all day). */
@@ -273,8 +277,8 @@ export function findShiftOverlaps(
           ...(first.row != null && second.row != null
             ? {
                 rules: [
-                  { row: first.row, driver: first.first_name_last_name, window: sideWindow(first) },
-                  { row: second.row, driver: second.first_name_last_name, window: sideWindow(second) },
+                  { rule_id:first.rule_id, revision:first.revision, row: first.row, driver: first.first_name_last_name, window: sideWindow(first) },
+                  { rule_id:second.rule_id, revision:second.revision, row: second.row, driver: second.first_name_last_name, window: sideWindow(second) },
                 ] as [OverlapSide, OverlapSide],
               }
             : {}),
@@ -384,6 +388,9 @@ export function unresolvedWarning(u: UnresolvedRows): string | null {
 
 /** A rule as the parse saw it, with the sheet row so a boundary can be moved. */
 export interface RuleRow {
+  rule_id?: number;
+  revision?: number;
+  assignment_mode?: "fixed" | "smart";
   row: number;
   driver: string;
   start: { hours: number; minutes: number } | null;
@@ -491,8 +498,8 @@ export function resolveGaps(
       dropoff_name: g.dropoff_name ?? "",
       at: g.at,
       also: [],
-      before: before ? { row: before.row, driver: before.driver, window: win(before) } : null,
-      after: after ? { row: after.row, driver: after.driver, window: win(after) } : null,
+      before: before ? { rule_id:before.rule_id, revision:before.revision, row: before.row, driver: before.driver, window: win(before) } : null,
+      after: after ? { rule_id:after.rule_id, revision:after.revision, row: after.row, driver: after.driver, window: win(after) } : null,
     };
     byHole.set(hole, entry);
     open.push(entry);
@@ -510,8 +517,8 @@ export interface CoverageGapOut {
   at: string;
   /** Other minutes recorded against this same hole, earliest first. */
   also: string[];
-  before: { row: number; driver: string; window: string } | null;
-  after: { row: number; driver: string; window: string } | null;
+  before: { rule_id?:number; revision?:number; row: number; driver: string; window: string } | null;
+  after: { rule_id?:number; revision?:number; row: number; driver: string; window: string } | null;
 }
 
 

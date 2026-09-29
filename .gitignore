@@ -11,6 +11,7 @@ _run_dashboard.py
 *.xlsx
 .vercel
 .env*.local
+dashboard/.state/
 
 # Claude Code machine-local files (never deploy these)
 .claude/settings.local.json

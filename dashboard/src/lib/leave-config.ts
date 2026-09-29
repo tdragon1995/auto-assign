@@ -1,4 +1,6 @@
 import { Redis } from "@upstash/redis";
+import { masterEnabled } from "./master-store";
+import { masterLeaveGrid } from "./master-leave";
 import {
   assertCsvResponse, assertHeaders, isSheetShapeError, noteSheetLoad,
   sheetCsvUrl, SHEET_CONTRACT, SHEET_GID,
@@ -25,6 +27,8 @@ export interface SubEntry {
 }
 
 export interface LeaveEntry {
+  leave_id?: number;
+  revision?: number;
   driver_id: string;
   driver_name: string;
   loai_nghi: string;
@@ -63,7 +67,8 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 // blob built by the old code — recovery doing nothing, and every broken row
 // reported as urgent — with nothing to show anything was wrong. Bump this
 // whenever the shape or the meaning of what is stored changes.
-const REDIS_KEY = "leave:v3:entries";
+const redisKey = () => masterEnabled() ? "leave:master:v1:entries" : "leave:v3:entries";
+let cacheSource = "";
 
 /**
  * 4 hours, up from 5 minutes — a BACKSTOP, not the freshness mechanism.
@@ -113,7 +118,7 @@ export async function invalidateLeaveCache(): Promise<void> {
   cache = null;
   const redis = getRedis();
   if (!redis) return;
-  try { await redis.del(REDIS_KEY); } catch { /* best-effort; the TTL is the backstop */ }
+  try { await redis.del(redisKey()); } catch { /* best-effort; the TTL is the backstop */ }
 }
 
 function parseField(f: string | undefined): string {
@@ -156,6 +161,8 @@ export function parseLeaveCsv(text: string): string[][] {
  *  (dashboard "Cần xử lý" leave-status panel) — not tied to the current clock
  *  the way `isDriverOnLeave` is, so "on leave tomorrow" can be listed today. */
 export interface LeaveOnDate {
+  leave_id?: number;
+  revision?: number;
   driver_id: string;
   driver_name: string;
   loai_nghi: string;
@@ -389,6 +396,7 @@ export function leaveEntriesOnDate(date: string, entries: LeaveEntry[]): LeaveOn
         raw.push({
           driver_id: e.driver_id, driver_name: e.driver_name, loai_nghi: e.loai_nghi,
           leave_from: e.leave_from, timeLabel: null, subs: e.subs, duplicate: false,
+          leave_id: e.leave_id, revision: e.revision,
         });
       }
       continue;
@@ -401,6 +409,7 @@ export function leaveEntriesOnDate(date: string, entries: LeaveEntry[]): LeaveOn
       loai_nghi: e.loai_nghi,
       leave_from: e.leave_from,
       timeLabel: cov.timeLabel,
+      leave_id: e.leave_id, revision: e.revision,
       subs: e.subs,
       duplicate: false,
     });
@@ -608,7 +617,7 @@ async function recoverOrphanRows(
 
   if (orphans.length === 0) return { recovered: [], invalid: [] };
   const noneRecovered = () => ({ recovered: [], invalid: orphans.map((e) => report(e, false)) });
-  if (!nameRecoveryEnabled()) return noneRecovered();
+  if (masterEnabled() || !nameRecoveryEnabled()) return noneRecovered();
 
   // Only rows that could still affect someone's day are worth resolving. The tab
   // is a rolling log, so most orphans are months old and belong to staff who have
@@ -642,6 +651,8 @@ async function recoverOrphanRows(
 async function loadLeaveSheet(
   force = false,
 ): Promise<{ entries: LeaveEntry[]; invalid: InvalidLeaveRow[]; trusted: boolean }> {
+  const key = redisKey();
+  if (cacheSource !== key) { cache = null; cacheSource = key; }
   if (!force && cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS) {
     return { entries: cache.entries, invalid: cache.invalid, trusted: true };
   }
@@ -654,7 +665,7 @@ async function loadLeaveSheet(
         // Values written before the invalid-row split are a bare array; read
         // them as "entries, nothing discarded" rather than throwing the cache
         // away on the deploy that changes the shape.
-        const hit = await redis.get<LeaveEntry[] | { entries: LeaveEntry[]; invalid: InvalidLeaveRow[] }>(REDIS_KEY);
+        const hit = await redis.get<LeaveEntry[] | { entries: LeaveEntry[]; invalid: InvalidLeaveRow[] }>(key);
         if (hit) {
           const shaped = Array.isArray(hit) ? { entries: hit, invalid: [] } : hit;
           cache = { ...shaped, invalid: shaped.invalid ?? [], fetchedAt: Date.now() };
@@ -665,12 +676,15 @@ async function loadLeaveSheet(
   }
 
   try {
-    const url = `${sheetCsvUrl(SHEET_GID.nghi_phep)}&_cb=${Date.now()}`;
-    const res = await fetch(url, { cache: "no-store" });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    assertCsvResponse(SHEET_CONTRACT.nghi_phep.label, res);
-
-    const rows = parseLeaveCsv(await res.text());
+    let rows: string[][];
+    if (masterEnabled()) rows = (await masterLeaveGrid()).all;
+    else {
+      const url = `${sheetCsvUrl(SHEET_GID.nghi_phep)}&_cb=${Date.now()}`;
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      assertCsvResponse(SHEET_CONTRACT.nghi_phep.label, res);
+      rows = parseLeaveCsv(await res.text());
+    }
     if (rows.length < 2) {
       // Do NOT cache this. An empty answer is never real — the tab is a rolling
       // log of hundreds of rows — so caching it held "nobody is on leave" for a
@@ -708,6 +722,8 @@ async function loadLeaveSheet(
       for (let n = 1; n <= 4; n++) { const s = buildSub(f, n); if (s) subs.push(s); }
       return {
         driver_id:    get(f, "driver_id"),
+        leave_id: Number(get(f, "_leave_id")) || undefined,
+        revision: Number(get(f, "_revision")) || undefined,
         driver_name:  get(f, "driver"),
         loai_nghi:    get(f, "Loại Nghỉ"),
         leave_from:   get(f, "leave_from"),
@@ -751,7 +767,7 @@ async function loadLeaveSheet(
     if (entries.length) {
       const redis = getRedis();
       if (redis) {
-        try { await redis.set(REDIS_KEY, { entries, invalid }, { ex: REDIS_TTL_S }); } catch { /* cache write is best-effort */ }
+        try { await redis.set(key, { entries, invalid }, { ex: REDIS_TTL_S }); } catch { /* cache write is best-effort */ }
       }
     }
     return { entries, invalid, trusted: true };

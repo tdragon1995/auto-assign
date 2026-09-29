@@ -52,6 +52,8 @@ function ddmm(date: string): string {
 
 
 interface LeaveRowView {
+  leave_id?: number;
+  revision?: number;
   loai_nghi?: string;
   timeLabel: string | null;
   subs: LeaveOnDate["subs"];
@@ -73,7 +75,7 @@ function groupByDriver(drivers: LeaveOnDate[]): DriverGroup[] {
   const map = new Map<string, DriverGroup>();
   for (const d of drivers) {
     const g = map.get(d.driver_id);
-    const row = { loai_nghi: d.loai_nghi, timeLabel: d.timeLabel, subs: d.subs, leave_from: d.leave_from, duplicate: d.duplicate };
+    const row = { leave_id: d.leave_id, revision: d.revision, loai_nghi: d.loai_nghi, timeLabel: d.timeLabel, subs: d.subs, leave_from: d.leave_from, duplicate: d.duplicate };
     if (!g) {
       map.set(d.driver_id, {
         driver_id: d.driver_id,
@@ -953,7 +955,7 @@ function makeFillSubs(onRefresh: RefreshFn): FillSubsFn {
 }
 
 export type FillSubsFn = (
-  identity: { driver_id: string; leave_from: string; timeLabel: string | null },
+  identity: LeaveRowIdentity,
   subs: { name: string; from: string | null; to: string | null }[],
   options?: {
     /** EDIT one existing row. */
@@ -968,6 +970,8 @@ export type FillSubsFn = (
 /** The identity of one leave row, as the sheet writers re-resolve it: driver +
  *  start date + window. Never a row number — the sheet moves under us. */
 export type LeaveRowIdentity = {
+  leave_id?: number;
+  revision?: number;
   driver_id: string;
   leave_from: string;
   timeLabel: string | null;
@@ -1378,6 +1382,7 @@ function DriverCard({
                 <DeleteRowButton
                   identity={{
                     driver_id: g.driver_id,
+                    leave_id: r.leave_id, revision: r.revision,
                     leave_from: r.leave_from,
                     timeLabel: r.timeLabel,
                     loai_nghi: r.loai_nghi ?? g.loai_nghi,
@@ -1398,7 +1403,7 @@ function DriverCard({
                 onCancel={() => setEditRow(null)}
                 onSave={(subs, split) =>
                   onFill(
-                    { driver_id: g.driver_id, leave_from: r.leave_from, timeLabel: r.timeLabel },
+                    { driver_id: g.driver_id, leave_from: r.leave_from, timeLabel: r.timeLabel, leave_id: r.leave_id, revision: r.revision },
                     subs,
                     {
                       split,
@@ -1502,6 +1507,7 @@ function UncoveredRowItem({
             <DeleteRowButton
               identity={{
                 driver_id: item.driver_id,
+                leave_id: item.row.leave_id, revision: item.row.revision,
                 leave_from: item.row.leave_from,
                 timeLabel: item.row.timeLabel,
                 loai_nghi: item.row.loai_nghi ?? item.loai_nghi,
@@ -1517,7 +1523,7 @@ function UncoveredRowItem({
           drivers={drivers}
           onSave={(subs, split) =>
             onFill(
-              { driver_id: item.driver_id, leave_from: item.row.leave_from, timeLabel: item.row.timeLabel },
+              { driver_id: item.driver_id, leave_from: item.row.leave_from, timeLabel: item.row.timeLabel, leave_id: item.row.leave_id, revision: item.row.revision },
               subs,
               { split, expectedSubs: [] },
             )

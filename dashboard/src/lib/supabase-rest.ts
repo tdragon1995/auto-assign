@@ -63,7 +63,7 @@ function headers(key: string, extra: Record<string, string> = {}): Record<string
   };
 }
 
-async function request(path: string, init: RequestInit): Promise<Response> {
+async function request(path: string, init: RequestInit, timeout = REST_TIMEOUT_MS): Promise<Response> {
   const c = creds();
   if (!c) throw new Error("Supabase not configured (NEXT_PUBLIC_SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY)");
 
@@ -71,7 +71,7 @@ async function request(path: string, init: RequestInit): Promise<Response> {
   // query would otherwise hold a serverless invocation open until the platform
   // kills it — billed the whole time.
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), REST_TIMEOUT_MS);
+  const timer = setTimeout(() => ac.abort(), timeout);
   try {
     const res = await fetch(`${c.url}/rest/v1/${path}`, {
       ...init,
@@ -96,8 +96,8 @@ export async function sbSelect<T>(table: string, query: string): Promise<T[]> {
   return (await res.json()) as T[];
 }
 
-export async function sbRpc<T>(name: string): Promise<T> {
-  const res = await request(`rpc/${name}`, { method: "POST", body: "{}" });
+export async function sbRpc<T>(name: string, args: Record<string, unknown> = {}): Promise<T> {
+  const res = await request(`rpc/${name}`, { method: "POST", body: JSON.stringify(args) }, name === "master_commit_import" ? 60_000 : REST_TIMEOUT_MS);
   return (await res.json()) as T;
 }
 

@@ -34,6 +34,10 @@ export function insideBusy(t: string, busy: readonly [string, string][]): boolea
 
 /** A line as the editor holds it while being worked on. */
 export interface Line {
+  rule_id?: number;
+  revision?: number;
+  assignment_mode?: "fixed" | "smart";
+  copyFromRuleId?: number;
   /**
    * Stable identity for one line within a single editing session.
    *
@@ -68,6 +72,7 @@ let newLineSeq = 0;
 export const newLineKey = () => `new:${++newLineSeq}`;
 
 export const asLine = (r: BranchRule): Line => ({
+  rule_id:r.rule_id,revision:r.revision,assignment_mode:r.assignment_mode,
   key: `row:${r.row}`, row: r.row, driver: r.driver, start: r.start, end: r.end,
   dropoff: r.dropoff ?? "",
 });
@@ -101,7 +106,7 @@ export const sameScope = (a: Line, b: Line) =>
 
 /** What a line would write, including a requested copy of the source row's
  * smart_driver_id cell. Visible fields can match while that cell differs. */
-export const sig = (l: Line) => [l.driver, l.start, l.end, l.dropoff, l.copyFromRow ?? ""].join("\u0000");
+export const sig = (l: Line) => [l.driver, l.start, l.end, l.dropoff, l.copyFromRow ?? "",l.assignment_mode??""].join("\u0000");
 
 /**
  * The branch's day AS THIS DESTINATION SEES IT.
@@ -312,6 +317,8 @@ export function availableTime(lines: readonly Line[], index: number, edge: "star
 
 /** A rule as the copy picker hands it over: what to write, with no row yet. */
 export interface CopiedLine {
+  sourceRuleId?: number;
+  assignment_mode?: "fixed" | "smart";
   driver: string;
   start: string;
   end: string;
@@ -342,11 +349,13 @@ export function applyCopiedLines(
     if (!current) {
       const key = newLineKey();
       touched.push(key);
-      return { key, driver: c.driver, start: c.start, end: c.end, dropoff, copyFromRow: c.sourceRow };
+      return { key, driver: c.driver, start: c.start, end: c.end, dropoff, copyFromRow: c.sourceRow,
+        ...(c.sourceRuleId ? {copyFromRuleId:c.sourceRuleId,assignment_mode:c.assignment_mode} : {}) };
     }
     const next = {
       ...current, driver: c.driver, start: c.start, end: c.end, dropoff,
       copyFromRow: c.sourceRow === current.row ? undefined : c.sourceRow,
+      ...(c.sourceRuleId ? {copyFromRuleId:c.sourceRuleId,assignment_mode:c.assignment_mode} : {}),
     };
     if (sig(current) !== sig(next)) touched.push(current.key);
     return next;

@@ -29,6 +29,9 @@ export const preferredRegion = "sin1";
  */
 
 export interface ConfigRowView {
+  rule_id?: number;
+  revision?: number;
+  assignment_mode?: "fixed" | "smart";
   /** 1-based sheet row, so an edit elsewhere can address it. */
   row: number;
   customer_id: string;
@@ -95,6 +98,7 @@ export async function GET(req: NextRequest) {
       if (!pickup && !customer_id) return;
       const driver = (r["Driver"] ?? "").trim();
       rows.push({
+        ...(r._rule_id ? {rule_id:Number(r._rule_id),revision:Number(r._revision),assignment_mode:r.assignment_mode as "fixed"|"smart"} : {}),
         row: idx + 2,
         customer_id,
         pickup,
@@ -102,7 +106,7 @@ export async function GET(req: NextRequest) {
         start: (r["shift_start"] ?? "").trim(),
         end: (r["shift_end"] ?? "").trim(),
         dropoff: (r["Điểm Drop-off"] ?? "").trim(),
-        smart: driver.includes(","),
+        smart: r.assignment_mode === "smart" || !!r.smart_driver_id?.trim(),
       });
     });
 

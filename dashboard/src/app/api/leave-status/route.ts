@@ -175,7 +175,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const identity = { driver_id, leave_from, timeLabel: timeLabel ?? null };
+    const identity = { driver_id, leave_from, timeLabel: timeLabel ?? null, leave_id: body.leave_id, revision: body.revision };
     const split = mode === "split";
     let result: { row: number; warning?: string; rows?: number[]; created?: number };
     if (split) {
@@ -255,6 +255,7 @@ export async function DELETE(req: NextRequest) {
     if (!driver_id || !leave_from) return bad("Thiếu driver_id / leave_from");
 
     const deleted = await deleteLeaveRow({
+      leave_id: body.leave_id, revision: body.revision,
       driver_id,
       leave_from,
       timeLabel: timeLabel ?? null,

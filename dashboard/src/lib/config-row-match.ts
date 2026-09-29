@@ -2,6 +2,8 @@ import { timeToMins } from "./time";
 
 /** Values as they were when the supervisor opened a config rule. */
 export interface ConfigRowSnapshot {
+  rule_id?: number;
+  revision?: number;
   driver: string;
   start: string;
   end: string;
@@ -17,7 +19,10 @@ export function parseConfigRowSnapshot(value: unknown): ConfigRowSnapshot | null
   if (!value || typeof value !== "object") return null;
   const row = value as Record<string, unknown>;
   if ([row.driver, row.start, row.end, row.dropoff].some((cell) => typeof cell !== "string")) return null;
-  return { driver: row.driver as string, start: row.start as string, end: row.end as string, dropoff: row.dropoff as string };
+  if ((row.rule_id !== undefined || row.revision !== undefined) &&
+      (!Number.isSafeInteger(row.rule_id) || !Number.isSafeInteger(row.revision))) return null;
+  return { driver: row.driver as string, start: row.start as string, end: row.end as string, dropoff: row.dropoff as string,
+    ...(row.rule_id !== undefined ? {rule_id:row.rule_id as number,revision:row.revision as number} : {}) };
 }
 
 const text = (value: string) => value.trim();

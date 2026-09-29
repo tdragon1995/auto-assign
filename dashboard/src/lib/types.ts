@@ -39,6 +39,9 @@ export interface Mapping {
  * remember to go and look at.
  */
 export interface UnfinishedConfigRow {
+  rule_id?: number;
+  revision?: number;
+  assignment_mode?: "fixed" | "smart";
   missingTimes?: string[];
   /** 1-based row in the tab, so a save can go back to the same line. Treated as
    *  a hint and re-checked before writing, never trusted on its own. */
@@ -65,6 +68,9 @@ export interface UnfinishedConfigRow {
  */
 /** One rule as it stands in the sheet, with the row so it can be edited back. */
 export interface BranchRule {
+  rule_id?: number;
+  revision?: number;
+  assignment_mode?: "fixed" | "smart";
   row: number;
   driver: string;
   /** "HH:MM", or "" for a rule with no window (covers the whole day). */
@@ -108,8 +114,8 @@ export interface CoverageGap {
   /** The rule whose cover ENDS before the hole, and the one that starts after.
    *  Either can be absent at the ends of the day. Each carries its sheet row so
    *  the boundary can be moved from the dashboard. */
-  before: { row: number; driver: string; window: string } | null;
-  after: { row: number; driver: string; window: string } | null;
+  before: { rule_id?:number; revision?:number; row: number; driver: string; window: string } | null;
+  after: { rule_id?:number; revision?:number; row: number; driver: string; window: string } | null;
 }
 
 export interface Config {

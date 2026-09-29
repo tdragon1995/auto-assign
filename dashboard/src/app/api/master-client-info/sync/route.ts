@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { importCurrentConfig, syncCartrackDetailPage, syncCartrackProfiles, syncLabcenterMetadata } from "@/lib/master-sync";
-import { syncConfigSheet, syncLeaveSheet } from "@/lib/master-sheet-sync";
+import { syncCartrackDetailPage, syncCartrackProfiles, syncLabcenterMetadata } from "@/lib/master-sync";
+import { syncMasterSheet } from "@/lib/master-sheet-sync";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -27,7 +27,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: true, details: await syncCartrackDetailPage(kind, offset, limit) });
     }
     const profiles = phase === "all" || phase === "profiles" || phase === "bootstrap" ? await syncCartrackProfiles() : null;
-    const imported = phase === "bootstrap" ? await importCurrentConfig() : null;
+    const imported = phase === "bootstrap" ? await syncMasterSheet() : null;
     const labcenter = phase === "metadata" ? await syncLabcenterMetadata(offset, limit)
       : phase === "all" && profiles?.newClientCodes.length ? await syncLabcenterMetadata(0, 200, profiles.newClientCodes) : null;
     return NextResponse.json({ ok: true, profiles: profiles && { ...profiles, newClientCodes: profiles.newClientCodes.length }, imported, labcenter });
@@ -47,9 +47,8 @@ export async function POST(req: NextRequest) {
     const phase = req.nextUrl.searchParams.get("phase") ?? "profiles";
     if (phase === "sheet") {
       const dryRun = req.nextUrl.searchParams.get("dryRun") === "1";
-      const leave = await syncLeaveSheet(dryRun);
-      const config = await syncConfigSheet(dryRun);
-      return NextResponse.json({ ok: true, dryRun, leave, config });
+      const result = await syncMasterSheet(dryRun);
+      return NextResponse.json({ ok: !result.blocked, ...result });
     }
     if (phase !== "profiles") throw new Error("Invalid sync phase");
     const profiles = await syncCartrackProfiles();

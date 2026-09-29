@@ -4,6 +4,7 @@ import { parseConfigRowSnapshot } from "@/lib/config-row-match";
 import { splitDriverNames, DRIVER_SEP } from "@/lib/driver-cell";
 import { loadDriversFromSheet, invalidateConfigCache } from "@/lib/config";
 import { timeToMins } from "@/lib/time";
+import { masterEnabled } from "@/lib/master-store";
 
 /**
  * Finish a config line the engine created for an unconfigured branch: put a
@@ -66,10 +67,12 @@ export async function POST(req: NextRequest) {
       expected: expected ?? undefined,
       // Rejoined on the one separator the id formula beside it splits on.
       driverName: names.join(DRIVER_SEP),
-      start: start || undefined,
-      end: end || undefined,
+      start: masterEnabled() ? start : start || undefined,
+      end: masterEnabled() ? end : end || undefined,
       dropoff: typeof dropoff_name === "string" ? dropoff_name.trim() : undefined,
       copyFromRow: copy_from_row,
+      assignment_mode:body.assignment_mode,
+      driver_ids:body.driver_ids,
     });
     // Now it is a real rule; make every server see it rather than waiting for
     // someone to press Refresh.

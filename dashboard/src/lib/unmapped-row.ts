@@ -108,6 +108,11 @@ function safeCell(v: string): string {
  * be. The writer maps these four facts onto whichever tab it is writing to.
  */
 export interface ConfigCells {
+  customer_id?: string;
+  dropoff_id?: string;
+  driver_ids?: string[];
+  assignment_mode?: "fixed" | "smart";
+  copyFromRuleId?: number;
   pickup: string;
   /** Where the trip was going. Written only on a tab that has a column MATCHING
    *  a destination. Never written into an alternate-destination column, which
@@ -123,7 +128,7 @@ export interface ConfigCells {
 }
 
 export function configCellsFor(b: UnmappedBranch): ConfigCells {
-  return { pickup: safeCell(b.pickup_name), dropoff: safeCell(scopedDropoffName(b.customer_id, b.dropoff_name)), start: "", end: "" };
+  return { customer_id:b.customer_id, pickup: safeCell(b.pickup_name), dropoff: safeCell(scopedDropoffName(b.customer_id, b.dropoff_name)), start: "", end: "" };
 }
 
 /**

@@ -1,12 +1,33 @@
 import { BASE_URL, getHeaders } from "./cartrack";
-import { fetchSheetRows, SHEET_CONTRACT, SHEET_GID } from "./sheets";
 import { getAdminToken, getReceptionistToken, listLocationsByClientCode, getCartrackCustomerId, listPickDropLocations } from "./labcenter";
-import { sbSelect, sbSelectAll, sbUpsert } from "./supabase-rest";
-import { nearestPsc, newWard } from "./master-geo";
+import { sbSelect, sbSelectAll, sbUpsert, sbRpc } from "./supabase-rest";
+import { nearestPsc, newWard, GEO_DATASET_VERSION } from "./master-geo";
 import type { MasterClient } from "./master-store";
+import { UUID, type SourceRow } from "./master-reconcile";
 
 type CartrackRow = Record<string, unknown>;
 type MasterDriver = { driver_id: string; cartrack: CartrackRow; detail_synced_at?: string | null };
+
+/** Fetch only unknown UUIDs referenced by this import; never scan all profiles here. */
+export async function syncMissingProfiles(rows:SourceRow[], clients:Set<string>, drivers:Set<string>) {
+  const wantedClients=new Set<string>(),wantedDrivers=new Set<string>();
+  for(const {row_data:r} of rows) {
+    for(const field of ["customer_id","dropoff_id","alt_drop_off_id"]) if(UUID.test(r[field]??"") && !clients.has(r[field])) wantedClients.add(r[field]);
+    for(const field of ["driver_id","smart_driver_id","sub1_id","sub2_id","sub3_id","sub4_id"]) for(const id of (r[field]??"").split(",").map(s=>s.trim()))
+      if(UUID.test(id) && !drivers.has(id)) wantedDrivers.add(id);
+  }
+  if(wantedClients.size+wantedDrivers.size>200) throw new Error("More than 200 unknown profiles; refresh profiles before importing");
+  for(const id of wantedClients) {await syncCartrackClient(id);clients.add(id);}
+  for(const id of wantedDrivers) {
+    const cartrack=await cartrackDetail("drivers",id);
+    for(const key of ["start_location_customer_id","end_location_customer_id"]) {
+      const location=String(cartrack[key]??"");
+      if(UUID.test(location) && !clients.has(location)) {await syncCartrackClient(location);clients.add(location);}
+    }
+    await sbUpsert("master_drivers",[{driver_id:id,cartrack,detail_synced_at:new Date().toISOString()}],"driver_id");
+    drivers.add(id);
+  }
+}
 
 async function cartrackDetail(kind: "customers" | "drivers", id: string): Promise<CartrackRow> {
   const res = await fetch(`${BASE_URL}/${kind}/${id}`, { headers: getHeaders(), cache: "no-store" });
@@ -36,7 +57,7 @@ export async function syncCartrackClient(id: string): Promise<string | null> {
     customer_id: id, cartrack, client_code: clientCode,
     new_ward: lat !== null && lon !== null ? newWard(lat, lon) : null,
     nearest_psc_id: psc?.id ?? null, nearest_psc_name: psc?.name ?? null,
-    nearest_psc_km: psc?.km ?? null, detail_synced_at: new Date().toISOString(),
+    nearest_psc_km: psc?.km ?? null, geo_calculated_at: new Date().toISOString(), geo_dataset_version: GEO_DATASET_VERSION, detail_synced_at: new Date().toISOString(),
   }], "customer_id");
   return clientCode;
 }
@@ -70,49 +91,6 @@ export function stableJson(value: unknown): string {
     : item);
 }
 
-// Import is one-time. The Google Sheet remains the assignment source until
-// the migration is reviewed; a manual Cartrack refresh never overwrites it.
-export async function importCurrentConfig(): Promise<{ weekday: number; sunday: number; driverSettings: number }> {
-  const [weekday, sunday, driverSheet] = await Promise.all([
-    fetchSheetRows(SHEET_GID.mapping, SHEET_CONTRACT.mapping),
-    fetchSheetRows(SHEET_GID.sunday, SHEET_CONTRACT.sunday),
-    fetchSheetRows(SHEET_GID.drivers, SHEET_CONTRACT.drivers),
-  ]);
-  if (weekday.length < 100 || sunday.length === 0 || driverSheet.length < 100) {
-    throw new Error("Refusing to import suspiciously short Sheet data");
-  }
-  const existing = await sbSelectAll<{ day_type: string; source_row: number; row_data: Record<string, string> }>(
-    "master_config_rules", "select=day_type,source_row,row_data", "id.asc",
-  );
-  const used = (rows: Record<string, string>[], day_type: "weekday" | "sunday") => rows.flatMap((r, i) =>
-    r.customer_id?.trim() || r["Điểm Pick-up"]?.trim() ? [{ day_type, source_row: i + 2, row_data: r }] : []);
-  const desired = [...used(weekday, "weekday"), ...used(sunday, "sunday")];
-  const imported = new Map(existing.map((r) => [`${r.day_type}:${r.source_row}`, r.row_data]));
-  const desiredByRow = new Map(desired.map((r) => [`${r.day_type}:${r.source_row}`, r.row_data]));
-  if (existing.some((r) => {
-    const expected = desiredByRow.get(`${r.day_type}:${r.source_row}`);
-    return !expected || Object.keys(expected).length !== Object.keys(r.row_data).length ||
-      Object.entries(expected).some(([key, value]) => r.row_data[key] !== value);
-  })) {
-    throw new Error("Master config has changed since import; refusing to overwrite edits");
-  }
-  if (existing.length === desired.length) throw new Error("Master config already imported");
-  const missing = desired.filter((r) => !imported.has(`${r.day_type}:${r.source_row}`));
-  const profiles = await sbSelectAll<MasterDriver>("master_drivers", "select=driver_id,cartrack", "driver_id.asc");
-  const byId = new Map(profiles.map((p) => [p.driver_id, p.cartrack]));
-  const settings = driverSheet.filter((r) => r.delivery_driver_id && byId.has(r.delivery_driver_id)).map((r) => ({
-    driver_id: r.delivery_driver_id,
-    cartrack: byId.get(r.delivery_driver_id),
-    roster: r,
-    driver_zalo_id: r.driver_zalo_id || null,
-    bot_token: r.bot_token || null,
-    phone_number_update: r.phone_number_update || null,
-  }));
-  await sbUpsert("master_config_rules", missing, "day_type,source_row");
-  await sbUpsert("master_drivers", settings, "driver_id");
-  return { weekday: weekday.length, sunday: sunday.length, driverSettings: settings.length };
-}
-
 export async function syncCartrackProfiles(): Promise<{ clients: number; drivers: number; changedClients: number; changedDrivers: number; newClientCodes: string[] }> {
   const [clients, drivers] = await Promise.all([cartrackList("customers"), cartrackList("drivers")]);
   if (clients.length < 100 || drivers.length < 100) throw new Error("Refusing to replace profiles with an incomplete Cartrack response");
@@ -144,13 +122,14 @@ export async function syncCartrackProfiles(): Promise<{ clients: number; drivers
     const candidate = name.split(/\s*-\s*/, 1)[0].trim();
     return {
       customer_id: c.customer_id,
+      ...(previous?.client_code !== (/^\d+$/.test(candidate) ? candidate : null) ? {account_id:null} : {}),
       cartrack: mergeCartrack(previous?.cartrack, c, detail),
       ...(detail ? { detail_synced_at: now } : {}),
       client_code: /^\d+$/.test(candidate) ? candidate : null,
       new_ward: latitude !== null && longitude !== null ? newWard(latitude, longitude) : null,
       nearest_psc_id: psc?.id ?? null,
       nearest_psc_name: psc?.name ?? null,
-      nearest_psc_km: psc?.km ?? null,
+      nearest_psc_km: psc?.km ?? null, geo_calculated_at: new Date().toISOString(), geo_dataset_version: GEO_DATASET_VERSION,
       synced_at: now,
     };
   }));
@@ -207,7 +186,8 @@ export async function syncLabcenterMetadata(offset = 0, limit = 200, onlyCodes?:
   ]);
   if (pickDrops.length < 1000) throw new Error("Refusing incomplete Labcenter pick-drop list");
   const byPick = new Map(pickDrops.map((r) => [r.lc_location_id, r]));
-  const changed = new Map<string, MasterClient>();
+  const changed = new Map<string, Record<string,unknown>>();
+  const accounts:Record<string,unknown>[]=[];
   const byCode = new Map<string, MasterClient[]>();
   for (const c of clients) {
     const code = c.client_code ?? "";
@@ -226,13 +206,11 @@ export async function syncLabcenterMetadata(offset = 0, limit = 200, onlyCodes?:
         const cartrackId = known?.customer_id ?? await getCartrackCustomerId(loc.id, admin);
         if (!cartrackId || !clientIds.has(cartrackId)) continue;
         const setup = byPick.get(loc.id);
-        const client = byCode.get(code)!.find((c) => c.customer_id === cartrackId)!;
         const dropoffId = setup ? await getCartrackCustomerId(setup.drop_location_id, admin) : null;
-        Object.assign(client, {
+        changed.set(cartrackId, {...changed.get(cartrackId), customer_id:cartrackId,
           labcenter_location_id: loc.id, default_dropoff_id: dropoffId,
           default_dropoff_name: setup?.drop_name ?? null, eta_minutes: setup?.eta_mins ?? null,
         });
-        changed.set(cartrackId, client);
         matched++;
       }
       const res = await fetch(`https://api.labcenter.vn/spc-pos/api/client?q=${encodeURIComponent(code)}`, {
@@ -242,12 +220,13 @@ export async function syncLabcenterMetadata(offset = 0, limit = 200, onlyCodes?:
       const rows = (await res.json().catch(() => ({})))?.data;
       const owner = Array.isArray(rows) ? rows.find((r) => String(r.code) === code) : null;
       if (!owner) return;
+      accounts.push({client_code:code,verified_at:new Date().toISOString(),
+        sales_name:owner.owner_name??null,sales_email:owner.owner??null,supervisor_name:owner.supervisor??null,supervisor_email:owner.supervisor_email??null});
       for (const c of byCode.get(code)!) {
-        Object.assign(c, {
+        changed.set(c.customer_id, {...changed.get(c.customer_id), customer_id:c.customer_id,
           sales_name: owner.owner_name ?? null, sales_email: owner.owner ?? null,
           supervisor_name: owner.supervisor ?? null, supervisor_email: owner.supervisor_email ?? null,
         });
-        changed.set(c.customer_id, c);
       }
       owners += byCode.get(code)!.length;
       } catch (e) {
@@ -256,6 +235,7 @@ export async function syncLabcenterMetadata(offset = 0, limit = 200, onlyCodes?:
       }
     }));
   }
+  if(accounts.length) await sbRpc("master_sync_accounts",{accounts});
   if (changed.size) await sbUpsert("master_clients", [...changed.values()], "customer_id", 200);
   return { matched, owners, errors, totalCodes: byCode.size };
 }

@@ -55,8 +55,8 @@ for (const t of ["00:00", "00:01", "06:30", "09:15", "10:00", "12:00", "17:59", 
 section("what the row says");
 {
   const c = configCellsFor(branch("c1", "20079 - TUyen - BS Danh Vinh", "D001 - Lab", "09:15"));
-  eq("the four facts, no column positions",
-     c, { pickup: "20079 - TUyen - BS Danh Vinh", dropoff: "", start: "", end: "" });
+  eq("stable pickup ID and the four editable facts, no column positions",
+     c, { customer_id:"c1", pickup: "20079 - TUyen - BS Danh Vinh", dropoff: "", start: "", end: "" });
   ok("no driver is carried — that is the decision being asked for", !("driver" in c));
 }
 {

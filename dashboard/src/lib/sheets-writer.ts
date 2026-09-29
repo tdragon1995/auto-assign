@@ -1,4 +1,5 @@
 import { google } from "googleapis";
+import { randomUUID } from "node:crypto";
 import { SHEET_ID, SHEET_GID } from "./sheets";
 import { vnIsSunday, vnTimestamp } from "./time";
 import { LEAVE_DELETED_SHEET, LEAVE_DELETED_HEADERS } from "./leave-suppression";
@@ -8,6 +9,9 @@ import { findUniqueConfigRow, type ConfigRowAt, type ConfigRowSnapshot } from ".
 import { replaceDriverInCell } from "./driver-cell";
 import { shiftFormulaRows } from "./formula-shift";
 import { createMasterConfigRows, masterEnabled } from "./master-store";
+import { editMasterConfig,bulkMasterConfig,replaceMasterConfig } from "./master-config-actions";
+import { appendMasterLeave,updateMasterLeave,deleteMasterLeaves,masterLeaveRows,leaveLegacyRow,
+  editMasterLeaveSubs,deleteMasterLeave,splitMasterLeave } from "./master-leave";
 import {
   encodeSwapNote, parseSwapNote, parseThayCaNote, sourceKey, THAY_CA_NOTE_PREFIX,
   type ThayCaDesired,
@@ -25,7 +29,7 @@ let cachedSheets: ReturnType<typeof google.sheets> | null = null;
 /** Memoised per process. A fresh GoogleAuth caches its access token on ITSELF,
  *  so building one per call bought a signed-JWT exchange with Google — ~100 ms
  *  before the request that wanted it, on every write in this file. */
-function getSheetsClient(): ReturnType<typeof google.sheets> {
+export function getSheetsClient(): ReturnType<typeof google.sheets> {
   if (cachedSheets) return cachedSheets;
   const keyJson = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
   if (!keyJson) throw new Error("GOOGLE_SERVICE_ACCOUNT_KEY is not set");
@@ -129,6 +133,8 @@ export function leaveWriteRanges(
   }
   const last = firstRow + rows.length - 1;
   const data: { range: string; values: string[][] }[] = [];
+  const identityColumn = colOf("_master_record_id");
+  if (identityColumn) data.push({range:`${quotedName}!${identityColumn}${firstRow}:${identityColumn}${last}`,values:rows.map(()=>[randomUUID()])});
   for (const field of Object.keys(LEAVE_WRITE_COLS) as (keyof typeof LEAVE_WRITE_COLS)[]) {
     const c = colOf(LEAVE_WRITE_COLS[field]);
     if (!c) continue;   // an optional column this tab does not have
@@ -163,6 +169,7 @@ export function leaveWriteRanges(
  */
 export async function appendNghiPhep(rows: LeaveCells[]): Promise<void> {
   if (rows.length === 0) return;
+  if(masterEnabled()) return appendMasterLeave(rows);
   const sheets = getSheetsClient();
   const sheetName = await getNghiPhepSheetName(sheets);
   const quotedName = `'${sheetName.replace(/'/g, "''")}'`;
@@ -202,12 +209,19 @@ export async function appendNghiPhep(rows: LeaveCells[]): Promise<void> {
     // ponytail: last resort, and it is the pre-existing behaviour — append picks
     // a poor row but never loses the submission. Reached when the tab is full,
     // the lock could not be taken, or the header no longer names the columns.
+    const fallbackHeader=await sheets.spreadsheets.values.get({spreadsheetId:SHEET_ID,range:`${quotedName}!1:1`});
+    const identityIndex=(fallbackHeader.data.values?.[0]??[]).indexOf("_master_record_id");
+    const fallbackRows=appendShape(rows);
+    if(identityIndex>=0) for(const row of fallbackRows) {
+      while(row.length<=identityIndex) row.push(null);
+      row[identityIndex]=randomUUID();
+    }
     await sheets.spreadsheets.values.append({
       spreadsheetId: SHEET_ID,
       range: `${quotedName}!A1`,
       valueInputOption: "RAW",
       insertDataOption: "INSERT_ROWS",
-      requestBody: { values: appendShape(rows) },
+      requestBody: { values: fallbackRows },
     });
   } finally {
     if (locked) await kv.releaseSheetWriteLock(LEAVE_LOCK);
@@ -229,12 +243,14 @@ export function appendShape(rows: LeaveCells[]): (string | null)[][] {
 }
 
 export interface LeaveSheetDataRow {
+  revision?: number;
   row: number;
   values: Record<string, string>;
 }
 
 /** Read the leave tab once for reconciliation jobs that need stable row numbers. */
 export async function readLeaveSheetData(): Promise<LeaveSheetDataRow[]> {
+  if(masterEnabled()) return (await masterLeaveRows()).map(r=>({row:r.id,revision:r.revision,values:leaveLegacyRow(r)}));
   const sheets = getSheetsClient();
   const sheetName = await getNghiPhepSheetName(sheets);
   const res = await sheets.spreadsheets.values.get({
@@ -252,7 +268,8 @@ export async function readLeaveSheetData(): Promise<LeaveSheetDataRow[]> {
 }
 
 /** Update only named leave columns, preserving derived ids and substitute slots. */
-export async function updateLeaveSheetRow(row: number, values: LeaveCells): Promise<void> {
+export async function updateLeaveSheetRow(row: number, values: LeaveCells, revision?:number): Promise<void> {
+  if(masterEnabled()) return updateMasterLeave(row,values,revision);
   const sheets = getSheetsClient();
   const sheetName = await getNghiPhepSheetName(sheets);
   const header = await sheets.spreadsheets.values.get({
@@ -276,7 +293,8 @@ export async function updateLeaveSheetRow(row: number, values: LeaveCells): Prom
   });
 }
 
-export async function deleteLeaveSheetRows(rows: number[]): Promise<void> {
+export async function deleteLeaveSheetRows(rows: number[], versions=new Map<number,number>()): Promise<void> {
+  if(masterEnabled()) return deleteMasterLeaves(rows,versions);
   if (!rows.length) return;
   const sheets = getSheetsClient();
   const requests = [...new Set(rows)]
@@ -337,7 +355,7 @@ export async function syncThayCaRows(
       row.values.leave_to_hr !== next.leave_to_hr,
       row.values.note !== next.note,
     ].some(Boolean);
-    if (changed) { updated++; updates.push(updateLeaveSheetRow(row.row, next)); }
+    if (changed) { updated++; updates.push(updateLeaveSheetRow(row.row, next,row.revision)); }
   }
   await Promise.all(updates);
 
@@ -371,7 +389,7 @@ export async function syncThayCaRows(
       leave_from_hr: row.values.leave_from_hr || null,
       leave_to_hr: row.values.leave_to_hr || null,
       note: nextNote,
-    }));
+    }, row.revision));
   }
   await Promise.all(swapUpdates);
 
@@ -382,7 +400,7 @@ export async function syncThayCaRows(
       return !key || !used.has(key) || !desiredByKey.has(key);
     })
     .map((row) => row.row);
-  await deleteLeaveSheetRows(obsolete);
+  await deleteLeaveSheetRows(obsolete,new Map(rows.map(r=>[r.row,r.revision??0])));
 
   const missing = desired.filter((row) => !used.has(row.recordKey)).map((row): LeaveCells => ({
     submitted_at: new Date().toISOString(), driver_name: row.driver_name, loai_nghi: "Thay ca",
@@ -463,6 +481,8 @@ export interface LeaveSubWrite {
 }
 
 export interface LeaveRowMatch {
+  leave_id?: number;
+  revision?: number;
   driver_id: string;
   leave_from: string; // YYYY-MM-DD as served by /api/leave-status
   /** "HH:MM–HH:MM" for a windowed row, null for full-day — same derivation as
@@ -474,7 +494,7 @@ export interface LeaveRowMatch {
 }
 
 /** "2026-07-13" and "13/07/2026" both → "2026-07-13"; anything else verbatim. */
-function normDate(s: string): string {
+export function normDate(s: string): string {
   const t = (s ?? "").trim();
   let m = t.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (m) return `${m[1]}-${m[2]}-${m[3]}`;
@@ -519,6 +539,7 @@ export async function updateLeaveSubs(
   match: LeaveRowMatch,
   subs: LeaveSubWrite[],
 ): Promise<{ row: number; warning?: string }> {
+  if(masterEnabled()) return editMasterLeaveSubs(match,subs,false);
   if (subs.length < 1 || subs.length > 3) throw new LeaveWriteError("1–3 người thay mỗi lần");
   const sheets = getSheetsClient();
   const sheetName = await getNghiPhepSheetName(sheets);
@@ -666,6 +687,7 @@ export async function replaceLeaveSubs(
   match: LeaveRowMatch,
   subs: LeaveSubWrite[],
 ): Promise<{ row: number; warning?: string }> {
+  if(masterEnabled()) return editMasterLeaveSubs(match,subs,true);
   if (subs.length > 3) throw new LeaveWriteError("Tối đa 3 người thay");
   const sheets = getSheetsClient();
   const sheetName = await getNghiPhepSheetName(sheets);
@@ -729,7 +751,7 @@ function splitPartKey(part: LeaveSplitPart): string {
   return `${part.from}-${part.to}`;
 }
 
-function rowSubs(row: unknown[], col: Record<string, number>): LeaveSubWrite[] {
+export function rowSubs(row: unknown[], col: Record<string, number>): LeaveSubWrite[] {
   const cell = (name: string) => col[name] == null ? "" : String(row[col[name]] ?? "").trim();
   return SUB_SLOTS.flatMap((n) => {
     const name = cell(`sub${n}_name`);
@@ -739,7 +761,7 @@ function rowSubs(row: unknown[], col: Record<string, number>): LeaveSubWrite[] {
   });
 }
 
-function sameSubs(a: readonly LeaveSubWrite[], b: readonly LeaveSubWrite[]): boolean {
+export function sameSubs(a: readonly LeaveSubWrite[], b: readonly LeaveSubWrite[]): boolean {
   const normalized = (subs: readonly LeaveSubWrite[]) => subs.map((sub) => ({
     name: sub.name.trim(),
     from: sub.from ? timeToMins(sub.from) : null,
@@ -759,6 +781,7 @@ export async function splitLeaveRow(
   parts: readonly LeaveSplitPart[],
   expectedSubs: readonly LeaveSubWrite[],
 ): Promise<LeaveSplitResult> {
+  if(masterEnabled()) return splitMasterLeave(match,parts,expectedSubs);
   if (parts.length < 2) throw new LeaveWriteError("Chia ca phải tạo ít nhất 2 dòng nghỉ");
   const [sourceFrom = "", sourceTo = ""] = (match.timeLabel ?? "").split("–");
   const operationKey = leaveSplitOperationKey(
@@ -876,6 +899,10 @@ export async function splitLeaveRow(
 
     parts.forEach((part, index) => {
       const rowNo = targetRows[index];
+      const identityColumn=colOf("_master_record_id");
+      if(identityColumn && rowNo!==sourceRow.row && !operationRows.some(r=>r.row===rowNo)) {
+        data.push({range:`${quotedName}!${identityColumn}${rowNo}`,values:[[randomUUID()]]});
+      }
       const values: LeaveCells = {
         submitted_at: submittedAt,
         driver_name: driverName,
@@ -930,7 +957,7 @@ export async function splitLeaveRow(
  *  now. Opposite of {@link pickLeaveRowToDelete}, and for the opposite reason:
  *  a delete wants to drop the redundant empty copy, an edit wants to change
  *  the one substitute actually on the record. Ties go to the earliest row. */
-function pickLeaveRowToEdit(candidates: LeaveRowCandidate[]): number | null {
+export function pickLeaveRowToEdit(candidates: LeaveRowCandidate[]): number | null {
   let best: LeaveRowCandidate | null = null;
   for (const c of candidates) {
     if (!best || c.subCount > best.subCount || (c.subCount === best.subCount && c.row < best.row)) {
@@ -1072,6 +1099,7 @@ export interface LeaveRowDeletion {
  *     exactly that mistake (see the header of the config writers below).
  */
 export async function deleteLeaveRow(match: LeaveRowMatch): Promise<LeaveRowDeletion> {
+  if (masterEnabled()) return deleteMasterLeave(match);
   const sheets = getSheetsClient();
   const sheetName = await getNghiPhepSheetName(sheets);
   const quotedName = `'${sheetName.replace(/'/g, "''")}'`;
@@ -1729,7 +1757,7 @@ async function writableColumns(
   sheets: ReturnType<typeof google.sheets>,
   tab: ConfigTabSpec,
   withDriver = false,
-): Promise<{ pickup: string; dropoff: string | null; start: string; end: string; driver: string | null }> {
+): Promise<{ pickup: string; dropoff: string | null; start: string; end: string; driver: string | null; identity: string | null }> {
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
     range: `${a1(tab)}!1:1`,
@@ -1748,6 +1776,7 @@ async function writableColumns(
   }
   return {
     pickup: pickup!, dropoff: at(WRITE_COLS.dropoff), start: start!, end: end!,
+    identity: tab.gid === SHEET_GID.mapping ? at("_master_record_id") : null,
     // Kept out of WRITE_COLS on purpose: unlike the four above, Driver is
     // writable only where a caller has already cleared the Sunday-formula rule.
     driver: withDriver ? at("Driver") : null,
@@ -1808,7 +1837,7 @@ async function firstFreeConfigRow(
  */
 export function configWriteRanges(
   tabTitle: string,
-  cols: { pickup: string; dropoff: string | null; start: string; end: string; driver?: string | null },
+  cols: { pickup: string; dropoff: string | null; start: string; end: string; driver?: string | null; identity?: string | null },
   cells: ConfigCells[],
   firstFreeRow: number,
 ): { range: string; values: string[][] }[] {
@@ -1820,6 +1849,7 @@ export function configWriteRanges(
     { range: range(cols.start),  values: cells.map((c) => [c.start]) },
     { range: range(cols.end),    values: cells.map((c) => [c.end]) },
   ];
+  if(cols.identity) data.push({range:range(cols.identity),values:cells.map(()=>[randomUUID()])});
   // Only when the tab actually has a destination column to match on. Without one
   // the row covers every destination, which is the correct and safe default.
   if (cols.dropoff) {
@@ -2064,6 +2094,8 @@ async function resolveConfigTargetRow(
  * driver onto whatever happens to live there now.
  */
 export async function completeConfigRow(opts: {
+  assignment_mode?: "fixed" | "smart";
+  driver_ids?: string[];
   row: number;
   expectPickup: string;
   expected?: ConfigRowSnapshot;
@@ -2075,7 +2107,7 @@ export async function completeConfigRow(opts: {
   /** Optional source row used to restore formulas and formatting after a copy. */
   copyFromRow?: number;
 }): Promise<{ row: number; moved: boolean }> {
-  if (masterEnabled() && !vnIsSunday()) throw new Error("Dùng Master Client Info để sửa quy tắc");
+  if (masterEnabled() && !vnIsSunday()) return editMasterConfig(opts, opts);
   const tab = currentConfigTab();
   if (tab.gid !== CONFIG_TABS.weekday.gid) {
     throw new Error(
@@ -2248,7 +2280,7 @@ export async function bulkUpdateConfigRows(opts: {
   start?: string;
   end?: string;
 }): Promise<BulkConfigResult> {
-  if (masterEnabled() && !vnIsSunday()) throw new Error("Dùng Master Client Info để sửa quy tắc");
+  if (masterEnabled() && !vnIsSunday()) return bulkMasterConfig(opts.targets, opts);
   const withDriver = opts.driverName !== undefined;
   const withHours = opts.start !== undefined && opts.end !== undefined;
   if (!withDriver && !withHours) throw new Error("Không có gì để ghi");
@@ -2288,7 +2320,7 @@ export async function bulkUpdateConfigRows(opts: {
  * anchor), and the same read-back runs once at the end. See `deleteConfigRow`.
  */
 export async function bulkDeleteConfigRows(opts: { targets: ConfigTarget[] }): Promise<BulkConfigResult> {
-  if (masterEnabled() && !vnIsSunday()) throw new Error("Dùng Master Client Info để sửa quy tắc");
+  if (masterEnabled() && !vnIsSunday()) return bulkMasterConfig(opts.targets, {delete:true});
   const ANCHOR = "dòng 2 giữ công thức id của cả cột — không xoá";
   const anchor = opts.targets
     .filter((t) => t.row <= 2)
@@ -2351,7 +2383,7 @@ export async function replaceConfigDriver(opts: {
   to: string;
   targets: ConfigTarget[];
 }): Promise<DriverReplaceResult> {
-  if (masterEnabled() && !vnIsSunday()) throw new Error("Dùng Master Client Info để sửa quy tắc");
+  if (masterEnabled() && !vnIsSunday()) return replaceMasterConfig(opts);
   const { sheets, q, cols, cell, live, skipped } =
     await readTargetColumns(opts.targets, ["Driver"], SUNDAY_DRIVER_MSG);
 
@@ -2410,7 +2442,7 @@ export async function deleteConfigRow(opts: {
   expectPickup: string;
   expected?: ConfigRowSnapshot;
 }): Promise<{ row: number; moved: boolean }> {
-  if (masterEnabled() && !vnIsSunday()) throw new Error("Dùng Master Client Info để sửa quy tắc");
+  if (masterEnabled() && !vnIsSunday()) return editMasterConfig(opts, {delete:true});
   const tab = currentConfigTab();
   if (tab.gid !== CONFIG_TABS.weekday.gid) {
     throw new Error(
@@ -2501,7 +2533,7 @@ export async function adjustConfigRowWindow(opts: {
   edge: "start" | "end";
   value: string;
 }): Promise<{ row: number; moved: boolean }> {
-  if (masterEnabled() && !vnIsSunday()) throw new Error("Dùng Master Client Info để sửa quy tắc");
+  if (masterEnabled() && !vnIsSunday()) return editMasterConfig(opts, {[opts.edge]:opts.value});
   const tab = currentConfigTab();
   if (tab.gid !== CONFIG_TABS.weekday.gid) {
     throw new Error("Chủ nhật: ca được suy ra từ lịch trực công khai — sửa trên tab lịch Chủ nhật");

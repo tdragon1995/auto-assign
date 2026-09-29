@@ -3,6 +3,9 @@ import { writeConfigRows } from "@/lib/sheets-writer";
 import { splitDriverNames, DRIVER_SEP } from "@/lib/driver-cell";
 import { loadDriversFromSheet, invalidateConfigCache } from "@/lib/config";
 import { timeToMins } from "@/lib/time";
+import { masterEnabled } from "@/lib/master-store";
+import { sbSelect } from "@/lib/supabase-rest";
+import { vnIsSunday } from "@/lib/time";
 
 /**
  * Close an uncovered hour by SPLITTING it out into its own rule, rather than
@@ -71,11 +74,13 @@ export async function POST(req: NextRequest) {
     if (unknown) return bad(`"${unknown}" không có trong tab Driver — chọn từ danh sách`);
 
     const [row] = await writeConfigRows([
-      { pickup, dropoff: (dropoff_name ?? "").trim(), start, end, driver: names.join(DRIVER_SEP), copyFromRow: copy_from_row },
+      { pickup, dropoff: (dropoff_name ?? "").trim(), start, end, driver: names.join(DRIVER_SEP), copyFromRow: copy_from_row,
+        copyFromRuleId:body.copy_from_rule_id,assignment_mode:body.assignment_mode,driver_ids:body.driver_ids },
     ]);
     await invalidateConfigCache();
 
-    return NextResponse.json({ ok: true, row });
+    const meta=masterEnabled() && !vnIsSunday() ? (await sbSelect<{id:number;revision:number}>("master_config_rules",`select=id,revision&day_type=eq.weekday&active=eq.true&source_row=eq.${row}`))[0] : null;
+    return NextResponse.json({ ok: true, row, ...(meta?{rule_id:meta.id,revision:meta.revision}:{}) });
   } catch (e) {
     return bad(e instanceof Error ? e.message : String(e), 409);
   }

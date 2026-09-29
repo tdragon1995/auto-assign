@@ -1,133 +1,96 @@
-import { parseLeaveCsv, PROXY_3PL_DRIVER_ID } from "./leave-config";
-import { assertCsvResponse, assertHeaders, sheetCsvUrl, SHEET_CONTRACT, SHEET_GID } from "./sheets";
-import { stableJson } from "./master-sync";
-import { sbDelete, sbPatch, sbRpc, sbSelectAll, sbUpsert } from "./supabase-rest";
+import { getSheetsClient } from "./sheets-writer";
+import type { sheets_v4 } from "googleapis";
+import { masterEnabled } from "./master-store";
+import { SHEET_ID, SHEET_GID, SHEET_CONTRACT, assertHeaders } from "./sheets";
+import { sbRpc, sbSelectAll } from "./supabase-rest";
+import { syncMissingProfiles } from "./master-sync";
+import { RECORD_ID, reconcile, normalizeLeave, normalizeRule, sourceHash, type SourceRow, type StoredRow } from "./master-reconcile";
 
-type SheetRow = { source_row: number; row_data: Record<string, string> };
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const LEAVE_HEADERS = [
-  "Ngày Nộp Đơn", "driver_id", "driver", "Loại Nghỉ", "leave_from", "leave_to",
-  "leave_from_hr", "leave_to_hr", "day", "sub1_name", "sub1_id", "sub1_from",
-  "sub1_to", "note", "Vị trí",
-] as const;
-
-async function sheetRows(gid: string, label: string, required: readonly string[]): Promise<SheetRow[]> {
-  const res = await fetch(`${sheetCsvUrl(gid)}&_cb=${Date.now()}`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`${label}: HTTP ${res.status}`);
-  assertCsvResponse(label, res);
-  const [header, ...cells] = parseLeaveCsv(await res.text());
-  if (!header || cells.length < 100) throw new Error(`${label}: suspiciously short export`);
-  assertHeaders(label, header, required);
-  const names = header.map((name) => name.trim());
-  return cells.map((values, index) => ({
-    source_row: index + 2,
-    row_data: Object.fromEntries(names.flatMap((name, i) => name ? [[name, (values[i] ?? "").trim()]] : [])),
+type Sheet = { gid: string; title: string; columns: number; header: string[]; rows: SourceRow[]; tables:sheets_v4.Schema$Table[] };
+type State = { rules: (StoredRow & { day_type: string })[]; leave: StoredRow[] };
+const quote = (title: string) => `'${title.replace(/'/g, "''")}'`;
+export function sheetColumn(index: number): string {
+  let result = "";
+  for (let n=index+1;n>0;n=Math.floor((n-1)/26)) result=String.fromCharCode(65+(n-1)%26)+result;
+  return result;
+}
+export async function readMasterSheets(): Promise<Sheet[]> {
+  const sheets = getSheetsClient();
+  const meta = await sheets.spreadsheets.get({ spreadsheetId:SHEET_ID, fields:"sheets(properties,tables)" });
+  return Promise.all([SHEET_GID.mapping,SHEET_GID.nghi_phep].map(async gid => {
+    const p = meta.data.sheets?.find(s => String(s.properties?.sheetId)===gid)?.properties;
+    if (!p?.title || !p.gridProperties?.columnCount) throw new Error(`Missing Sheet ${gid}`);
+    const response = await sheets.spreadsheets.values.get({ spreadsheetId:SHEET_ID, range:quote(p.title), valueRenderOption:"FORMATTED_VALUE" });
+    const [head,...values] = response.data.values ?? [];
+    const header = (head ?? []).map(v => String(v).trim());
+    const contract = gid === SHEET_GID.mapping ? SHEET_CONTRACT.mapping : SHEET_CONTRACT.nghi_phep;
+    assertHeaders(contract.label,header,contract.require);
+    if (header.filter(h => h===RECORD_ID).length>1) throw new Error(`Duplicate ${RECORD_ID} header`);
+    const rows = values.map((cells,i) => ({ source_row:i+2,row_data:Object.fromEntries(header.flatMap((key,j) => key ? [[key,String(cells[j]??"").trim()]] : [])) }))
+      .filter(r => gid === SHEET_GID.mapping ? !!(r.row_data.customer_id || r.row_data["Điểm Pick-up"])
+        : Object.entries(r.row_data).some(([k,v]) => k!==RECORD_ID && !!v));
+    if (rows.length<100) throw new Error(`${p.title}: suspiciously short source`);
+    return { gid,title:p.title,columns:p.gridProperties.columnCount,header,rows,
+      tables:meta.data.sheets?.find(s=>String(s.properties?.sheetId)===gid)?.tables??[] };
   }));
 }
 
-const ids = (value: string) => value.split(",").map((id) => id.trim().toLowerCase()).filter((id) => UUID.test(id));
-
-/** Explicit Sheet → Supabase review refresh. The assignment source does not change. */
-export async function syncConfigSheet(dryRun = false) {
-  const [weekday, sunday, roster] = await Promise.all([
-    sheetRows(SHEET_GID.mapping, SHEET_CONTRACT.mapping.label, SHEET_CONTRACT.mapping.require),
-    sheetRows(SHEET_GID.sunday, SHEET_CONTRACT.sunday.label, SHEET_CONTRACT.sunday.require),
-    sheetRows(SHEET_GID.drivers, SHEET_CONTRACT.drivers.label, SHEET_CONTRACT.drivers.require),
-  ]);
-  const desired = ([...weekday.map((r) => ({ ...r, day_type: "weekday" })),
-    ...sunday.map((r) => ({ ...r, day_type: "sunday" }))])
-    .filter((r) => r.row_data.customer_id || r.row_data["Điểm Pick-up"]);
-  const [stored, clients, drivers] = await Promise.all([
-    sbSelectAll<{ id: number; day_type: string; source_row: number; row_data: Record<string, string> }>(
-      "master_config_rules", "select=id,day_type,source_row,row_data", "id.asc"),
-    sbSelectAll<{ customer_id: string }>("master_clients", "select=customer_id", "customer_id.asc"),
-    sbSelectAll<{ driver_id: string; roster: Record<string, string> | null; roster_source_row: number | null }>(
-      "master_drivers", "select=driver_id,roster,roster_source_row", "driver_id.asc"),
-  ]);
-  if (desired.length < 100 || (stored.length && desired.length < stored.length * 0.8)) {
-    throw new Error("Config sheet unexpectedly short; refusing to remove mirrored rules");
+/** Only this explicit action stamps IDs. Never changes formula or business cells. */
+export async function stampMasterIds(sheet: Sheet, rows: { source_row:number; source_uid:string }[]) {
+  const sheets=getSheetsClient();
+  let column=sheet.header.indexOf(RECORD_ID);
+  if (column<0) {
+    if (sheet.header.length!==sheet.columns) throw new Error("Review the last used column before appending the record ID");
+    column=sheet.columns; // Outside the existing grid and its formula spill ranges.
+    await sheets.spreadsheets.batchUpdate({ spreadsheetId:SHEET_ID,requestBody:{ requests:[
+      { appendDimension:{ sheetId:Number(sheet.gid),dimension:"COLUMNS",length:1 } },
+      { updateCells:{ start:{sheetId:Number(sheet.gid),rowIndex:0,columnIndex:column},rows:[{values:[{userEnteredValue:{stringValue:RECORD_ID}}]}],fields:"userEnteredValue" } },
+      { updateDimensionProperties:{ range:{sheetId:Number(sheet.gid),dimension:"COLUMNS",startIndex:column,endIndex:column+1},properties:{hiddenByUser:true},fields:"hiddenByUser" } },
+      ...sheet.tables.filter(t=>(t.range?.startRowIndex??0)===0 && t.range?.endColumnIndex===column).map(t=>({
+        updateTable:{table:{tableId:t.tableId,range:{...t.range,endColumnIndex:column+1}},fields:"range"},
+      })),
+    ] } });
   }
-  const clientIds = new Set(clients.map((c) => c.customer_id));
-  const driverIds = new Set(drivers.map((d) => d.driver_id));
-  for (const { row_data: row } of desired) {
-    for (const id of [row.customer_id, row.dropoff_id, row.alt_drop_off_id].flatMap((v) => ids(v ?? ""))) {
-      if (!clientIds.has(id)) throw new Error(`Cartrack client ${id} must be refreshed before config sync`);
-    }
-    for (const id of [row.driver_id, row.smart_driver_id].flatMap((v) => ids(v ?? ""))) {
-      if (!driverIds.has(id)) throw new Error(`Cartrack driver ${id} must be refreshed before config sync`);
-    }
-  }
-  const rosterRows = roster.filter((r) => r.row_data.Driver && r.row_data.delivery_driver_id);
-  if (rosterRows.length < 100) throw new Error("Driver sheet unexpectedly short");
-  if (new Set(rosterRows.map((r) => r.row_data.delivery_driver_id.toLowerCase())).size !== rosterRows.length) {
-    throw new Error("Driver sheet contains duplicate driver IDs");
-  }
-  const oldDrivers = new Map(drivers.map((d) => [d.driver_id, d]));
-  const rosterChanged = rosterRows.filter((r) => {
-    const id = r.row_data.delivery_driver_id.toLowerCase();
-    if (!UUID.test(id) || !oldDrivers.has(id)) throw new Error(`Cartrack driver ${id} must be refreshed before roster sync`);
-    const old = oldDrivers.get(id)!;
-    return old.roster_source_row !== r.source_row || stableJson(old.roster) !== stableJson(r.row_data);
-  });
-  const key = (r: { day_type: string; source_row: number }) => `${r.day_type}:${r.source_row}`;
-  const old = new Map(stored.map((r) => [key(r), r]));
-  const wanted = new Set(desired.map(key));
-  const changed = desired.filter((r) => stableJson(old.get(key(r))?.row_data) !== stableJson(r.row_data));
-  const removed = stored.filter((r) => !wanted.has(key(r)));
-  if (!dryRun) {
-    const now = new Date().toISOString();
-    for (let i = 0; i < rosterChanged.length; i += 4) {
-      await Promise.all(rosterChanged.slice(i, i + 4).map((r) => sbPatch(
-        "master_drivers", `driver_id=eq.${r.row_data.delivery_driver_id.toLowerCase()}`,
-        { roster: r.row_data, roster_source_row: r.source_row },
-      )));
-    }
-    await sbUpsert("master_config_rules", changed.map((r) => ({ ...r, updated_at: now })), "day_type,source_row", 100);
-    for (let i = 0; i < removed.length; i += 100) {
-      await sbDelete("master_config_rules", `id=in.(${removed.slice(i, i + 100).map((r) => r.id).join(",")})`);
-    }
-    if (rosterChanged.length) await sbRpc<number>("refresh_master_smart_driver_ids");
-  }
-  return { total: desired.length, changed: changed.length, removed: removed.length, rosterChanged: rosterChanged.length };
+  const byRow=new Map(sheet.rows.map(r=>[r.source_row,r]));
+  const data=rows.filter(r => byRow.get(r.source_row)?.row_data[RECORD_ID]!==r.source_uid)
+    .map(r=>({range:`${quote(sheet.title)}!${sheetColumn(column)}${r.source_row}`,values:[[r.source_uid]]}));
+  if (data.length) await sheets.spreadsheets.values.batchUpdate({ spreadsheetId:SHEET_ID,requestBody:{valueInputOption:"RAW",data} });
 }
 
-/** Mirrors all meaningful leave rows, including rows with broken driver lookups. */
-export async function syncLeaveSheet(dryRun = false) {
-  const rows = (await sheetRows(SHEET_GID.nghi_phep, SHEET_CONTRACT.nghi_phep.label, LEAVE_HEADERS))
-    .filter((r) => Object.values(r.row_data).some(Boolean));
-  const [stored, drivers] = await Promise.all([
-    sbSelectAll<{ source_row: number; row_data: Record<string, string>; linked_driver_id: string | null; linked_sub1_driver_id: string | null }>(
-      "master_leave_rows", "select=source_row,row_data,linked_driver_id,linked_sub1_driver_id", "source_row.asc"),
-    sbSelectAll<{ driver_id: string }>("master_drivers", "select=driver_id", "driver_id.asc"),
+/** One manual catch-up, one DB transaction for rules and leave. Sunday stays on Sheet. */
+export async function syncMasterSheet(dryRun = false) {
+  if(masterEnabled() && !dryRun) throw new Error("Google Sheet import is disabled after operational cutover");
+  const [sheets,state,clients,drivers]=await Promise.all([
+    readMasterSheets(),sbRpc<State>("master_review_state"),
+    sbSelectAll<{customer_id:string}>("master_clients","select=customer_id","customer_id.asc"),
+    sbSelectAll<{driver_id:string}>("master_drivers","select=driver_id","driver_id.asc"),
   ]);
-  if (rows.length < 100 || (stored.length && rows.length < stored.length * 0.8)) {
-    throw new Error("Leave sheet unexpectedly short; refusing to remove mirrored rows");
+  const weekday=state.rules.filter(r=>r.day_type==="weekday");
+  if (sheets[0].rows.length<weekday.filter(r=>r.active).length*.8 || sheets[1].rows.length<state.leave.filter(r=>r.active).length*.8) {
+    throw new Error("Source unexpectedly short; import refused");
   }
-  const driverIds = new Set(drivers.map((d) => d.driver_id));
-  const link = (value: string | undefined) => {
-    const id = value?.toLowerCase();
-    return id && UUID.test(id) && driverIds.has(id) ? id : null;
-  };
-  const desired = rows.map((r) => ({ ...r,
-    linked_driver_id: link(r.row_data.driver_id),
-    linked_sub1_driver_id: r.row_data.sub1_id === PROXY_3PL_DRIVER_ID ? null : link(r.row_data.sub1_id),
-  }));
-  const old = new Map(stored.map((r) => [r.source_row, r]));
-  const wanted = new Set(desired.map((r) => r.source_row));
-  const changed = desired.filter((r) => {
-    const before = old.get(r.source_row);
-    return stableJson(before?.row_data) !== stableJson(r.row_data) ||
-      before?.linked_driver_id !== r.linked_driver_id || before?.linked_sub1_driver_id !== r.linked_sub1_driver_id;
-  });
-  const removed = stored.filter((r) => !wanted.has(r.source_row));
-  if (!dryRun) {
-    const now = new Date().toISOString();
-    await sbUpsert("master_leave_rows", changed.map((r) => ({ ...r, synced_at: now })), "source_row", 100);
-    for (let i = 0; i < removed.length; i += 100) {
-      await sbDelete("master_leave_rows", `source_row=in.(${removed.slice(i, i + 100).map((r) => r.source_row).join(",")})`);
-    }
+  const config=reconcile(sheets[0].rows,weekday), leave=reconcile(sheets[1].rows,state.leave,true);
+  const clientIds=new Set(clients.map(c=>c.customer_id)), driverIds=new Set(drivers.map(d=>d.driver_id));
+  if(!dryRun) await syncMissingProfiles(sheets.flatMap(s=>s.rows),clientIds,driverIds);
+  const payload={ rules:config.rows.map(r=>normalizeRule(r,clientIds,driverIds)),leave:leave.rows.map(r=>normalizeLeave(r,driverIds)) };
+  const report={ config:{total:config.rows.length,...config.report},leave:{total:leave.rows.length,...leave.report},
+    issues: [...payload.rules.map(r=>({kind:"rule",row:r.source_row,issues:r.review_issues})),
+      ...payload.leave.map(r=>({kind:"leave",row:r.source_row,issues:r.review_issues}))].filter(r=>r.issues.length),
+    sunday:"Google Sheet; unchanged", operationalSource:"Google Sheet" };
+  const blocked=config.report.ambiguous.length+leave.report.ambiguous.length+config.report.overrideConflicts.length+leave.report.overrideConflicts.length>0;
+  if (dryRun || blocked) return {dryRun,blocked,...report};
+  const hash=sourceHash(sheets.flatMap(s=>s.rows));
+  const run_id=await sbRpc<string>("master_begin_import",{ source_hash:hash,source_snapshot:sheets,expected_state:state,report });
+  const beforeStamp=await readMasterSheets();
+  if (sourceHash(beforeStamp.flatMap(s=>s.rows))!==hash) throw new Error("Sheet changed before ID stamping; retry");
+  for (let i=0;i<sheets.length;i++) await stampMasterIds(beforeStamp[i],i===0?config.rows:leave.rows);
+  const verified=await readMasterSheets();
+  if (sourceHash(verified.flatMap(s=>s.rows))!==hash) throw new Error("Sheet changed during ID stamping; retry");
+  for (let i=0;i<verified.length;i++) {
+    const expected=new Map((i===0?config.rows:leave.rows).map(r=>[r.source_row,r.source_uid]));
+    if (verified[i].rows.some(r=>r.row_data[RECORD_ID]!==expected.get(r.source_row))) throw new Error("Sheet ID read-back mismatch; retry");
   }
-  return { total: desired.length, changed: changed.length, removed: removed.length,
-    unlinkedDrivers: desired.filter((r) => r.row_data.driver_id && !r.linked_driver_id).length,
-    blankDriverIds: desired.filter((r) => !r.row_data.driver_id).length };
+  for (const row of [...payload.rules,...payload.leave]) row.row_data[RECORD_ID]=row.source_uid;
+  await sbRpc("master_commit_import",{run_id,payload,verified_source_hash:hash});
+  return {dryRun,blocked:false,run_id,...report};
 }

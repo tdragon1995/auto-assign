@@ -2,6 +2,8 @@ import wards from "@/data/wards.json";
 import { haversineKm } from "./distance";
 import { PSC_ROUTES } from "./psc-routes-data";
 
+export const GEO_DATASET_VERSION = "wards-2026-09-28/psc-v1";
+
 type Point = [number, number];
 type Ward = { n: string; p: string; c: Point[][][] };
 const indexed = (wards as Ward[]).flatMap((ward) => ward.c.map((polygon) => {

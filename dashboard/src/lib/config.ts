@@ -1,3 +1,4 @@
+import { invalidateDayConfigCache } from "./day-config";
 import { Redis } from "@upstash/redis";
 import type { Config, ConfigDriver, Mapping, UnfinishedConfigRow, CoverageGap, BranchRule } from "./types";
 import { fetchSheetRows, isSheetShapeError, noteSheetLoad, noteSheetWarning, SHEET_CONTRACT, SHEET_GID } from "./sheets";
@@ -93,6 +94,7 @@ const DRIVERS_TTL_MS = 5 * 60 * 1000;
  *  copy on its next load. Best-effort on the Redis write: a failure degrades to the old
  *  behaviour (this instance only), never to an error. */
 export async function invalidateConfigCache(): Promise<void> {
+  invalidateDayConfigCache();
   cachedConfig = null;
   cachedDay = "";
   cachedGen = null;
@@ -404,7 +406,8 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
             .filter((g) => g.customer_id === customer_id && (!todoDropoff || g.dropoff_name === todoDropoff))
             .map((g) => g.at);
           if (looksAutoCreated(window) || missingTimes.length > 0) {
-            unfinished.push({ row: idx + 2, customer_id, pickup_name: pickupName, dropoff_name: todoDropoff, window, missingTimes });
+            unfinished.push({ row: idx + 2, customer_id, pickup_name: pickupName, dropoff_name: todoDropoff, window, missingTimes,
+              ...(row._rule_id ? {rule_id:Number(row._rule_id),revision:Number(row._revision),assignment_mode:row.assignment_mode as "fixed"|"smart"} : {}) });
           }
         }
         continue;
@@ -412,6 +415,7 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
 
       const rules = rulesByCustomer.get(customer_id);
       const thisRule: RuleRow = {
+        ...(row._rule_id ? {rule_id:Number(row._rule_id),revision:Number(row._revision),assignment_mode:row.assignment_mode as "fixed"|"smart"} : {}),
         row: idx + 2, driver: driverName,
         start: parseTime(row["shift_start"]), end: parseTime(row["shift_end"]),
         dropoff: dropoffName,
@@ -422,6 +426,7 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
       // Kept beside the mapping rather than on it: this array is derived and
       // dropped, while a row number on every Mapping would be cached forever.
       auditRows.push({
+        rule_id:thisRule.rule_id, revision:thisRule.revision,
         customer_id,
         driver_id,
         smart_driver_id,
@@ -527,6 +532,7 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
       ])) {
         branchRules[cid] = (rulesByCustomer.get(cid) ?? []).map((r) => ({
           row: r.row, driver: r.driver, start: hhmm(r.start), end: hhmm(r.end),
+          rule_id:r.rule_id,revision:r.revision,assignment_mode:r.assignment_mode,
           dropoff: r.dropoff,
         }));
       }

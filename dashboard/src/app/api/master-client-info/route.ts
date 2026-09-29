@@ -5,6 +5,8 @@ import { invalidateConfigCache, invalidateDriversCache } from "@/lib/config";
 import { cartrackList, syncLabcenterMetadata } from "@/lib/master-sync";
 import { sbSelectAll } from "@/lib/supabase-rest";
 import { fetchSheetRows, SHEET_CONTRACT, SHEET_GID } from "@/lib/sheets";
+import { publicClient, publicDriver, publicRule } from "@/lib/master-public";
+import { masterEnabled } from "@/lib/master-store";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -46,9 +48,9 @@ export async function GET(req: NextRequest) {
         };
       }) });
     }
-    if (view === "clients") return NextResponse.json({ rows: await masterClients() });
-    if (view === "drivers") return NextResponse.json({ rows: await masterDrivers() });
-    if (view === "rules") return NextResponse.json({ rows: await masterRules("weekday") });
+    if (view === "clients") return NextResponse.json({ rows: (await masterClients()).map(publicClient) });
+    if (view === "drivers") return NextResponse.json({ rows: (await masterDrivers()).map(publicDriver) });
+    if (view === "rules") return NextResponse.json({ rows: (await masterRules("weekday")).map(publicRule), readOnly:!masterEnabled() });
     return NextResponse.json({ error: "Unknown view" }, { status: 400 });
   } catch (e) { return error(e); }
 }
@@ -81,8 +83,8 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ ok: true, result });
     }
     if (body.kind === "rule") {
-      if (!Number.isInteger(body.row) || typeof body.version !== "string") throw new Error("Invalid rule version");
-      const row = await saveMasterRule(body.input as RuleInput, body.row, body.version);
+      if (!Number.isSafeInteger(body.rule_id) || !Number.isSafeInteger(body.revision)) throw new Error("Invalid rule ID/revision");
+      const row = await saveMasterRule(body.input as RuleInput, body.rule_id, body.revision);
       await invalidateConfigCache();
       return NextResponse.json({ ok: true, row });
     }
@@ -94,8 +96,8 @@ export async function DELETE(req: NextRequest) {
   if (!authorized(req)) return deny();
   try {
     const body = await req.json();
-    if (body?.kind !== "rule" || !Number.isInteger(body.row) || typeof body.version !== "string") throw new Error("Invalid rule");
-    await deleteMasterRule(body.row, body.version);
+    if (body?.kind !== "rule" || !Number.isSafeInteger(body.rule_id) || !Number.isSafeInteger(body.revision)) throw new Error("Invalid rule ID/revision");
+    await deleteMasterRule(body.rule_id, body.revision);
     await invalidateConfigCache();
     return NextResponse.json({ ok: true });
   } catch (e) { return error(e); }

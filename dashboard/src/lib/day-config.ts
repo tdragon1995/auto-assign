@@ -32,6 +32,8 @@ import type { Mapping } from "./types";
 import { isValidDriverId, parseTime } from "./config";
 import { SHEET_CONTRACT, SHEET_GID, fetchSheetRows } from "./sheets";
 import { vnDate } from "./time";
+import { masterEnabled,masterRuleRows } from "./master-store";
+import { readConfigGen } from "./config-gen";
 
 export type ConfigTab = "mapping" | "sunday";
 
@@ -86,12 +88,14 @@ function dutyRows(rows: readonly Record<string, string>[]): Mapping[] {
 // path taken a handful of times, buys the question being unaskable.
 const tabs: Partial<Record<ConfigTab, { day: string; mappings: Mapping[] }>> = {};
 
+export function invalidateDayConfigCache() { delete tabs.mapping; delete tabs.sunday; }
+
 async function loadTab(tab: ConfigTab): Promise<Mapping[] | null> {
-  const today = vnDate();
+  const today = `${vnDate()}:${masterEnabled()?"master":"sheet"}:${await readConfigGen()}`;
   const hit = tabs[tab];
   if (hit && hit.day === today) return hit.mappings;
   try {
-    const mappings = dutyRows(await fetchSheetRows(SHEET_GID[tab], SHEET_CONTRACT[tab]));
+    const mappings = dutyRows(masterEnabled() && tab==="mapping" ? await masterRuleRows("weekday") : await fetchSheetRows(SHEET_GID[tab], SHEET_CONTRACT[tab]));
     // The same zero-length suspicion the config loader has: a tab that parses to
     // nothing is a bad read, not an empty roster, and adopting it would answer
     // "nobody is on duty" to every question for the rest of the day.

@@ -1,165 +1,120 @@
-import { sbDelete, sbInsert, sbPatch, sbSelect, sbSelectAll } from "./supabase-rest";
+import { sbRpc, sbSelect, sbSelectAll } from "./supabase-rest";
 import type { ConfigCells } from "./unmapped-row";
 import { timeToMins } from "./time";
+import { PROXY_ID, UUID } from "./master-reconcile";
 
+export type AssignmentMode = "fixed" | "smart";
 export type MasterRule = {
-  id: number;
-  source_row: number;
-  row_data: Record<string, string>;
-  smart_driver_id: string | null;
-  smart_driver_id_manual: string | null;
-  updated_at: string;
+  id:number; source_uid:string; source_row:number; revision:number; assignment_mode:AssignmentMode;
+  row_data:Record<string,string>; driver_ids:string[]; smart_driver_id:string|null; updated_at:string;
+  pickup_customer_id:string|null; dropoff_customer_id:string|null; alternate_dropoff_customer_id:string|null;
+  shift_start:string|null; shift_end:string|null; review_issues:string[];
 };
 export type MasterClient = { customer_id: string; cartrack: Record<string, unknown>; client_code: string | null; new_ward: string | null; nearest_psc_id: string | null; nearest_psc_name: string | null; nearest_psc_km: number | null; labcenter_location_id: number | null; default_dropoff_id: string | null; default_dropoff_name: string | null; eta_minutes: number | null; sales_name: string | null; sales_email: string | null; supervisor_name: string | null; supervisor_email: string | null };
-export type MasterDriver = { driver_id: string; cartrack: Record<string, unknown>; roster: Record<string, string>; driver_zalo_id: string | null; bot_token: string | null; phone_number_update: string | null };
-
+export type MasterDriver = { driver_id: string; cartrack: Record<string, unknown>; roster: Record<string, string>; driver_zalo_id: string | null; bot_token: string | null; has_bot_token?:boolean; phone_number_update: string | null };
 export const masterEnabled = () => process.env.MASTER_CLIENT_INFO_SOURCE === "supabase";
-
-export async function masterRules(day: "weekday" | "sunday"): Promise<MasterRule[]> {
-  return sbSelectAll<MasterRule>("master_config_rules", `select=id,source_row,row_data,smart_driver_id,smart_driver_id_manual,updated_at&day_type=eq.${day}`, "source_row.asc");
+export function assertMasterWritable() {
+  if (!masterEnabled()) throw new Error("Supabase đang là bản đối chiếu. Hãy sửa cấu hình trên Google Sheet trong thời gian kiểm tra.");
 }
 
-/** Keep the old parser's row +2 accounting while Supabase row ids stay stable. */
-export async function masterRuleRows(day: "weekday" | "sunday"): Promise<Record<string, string>[]> {
-  const rules = await masterRules(day);
-  const out: Record<string, string>[] = [];
-  for (const rule of rules) out[rule.source_row - 2] = { ...rule.row_data, smart_driver_id: rule.smart_driver_id ?? "" };
-  for (let i = 0; i < out.length; i++) out[i] ??= {};
+export async function masterRules(day:"weekday"|"sunday"):Promise<MasterRule[]> {
+  type Linked = MasterRule & { master_rule_drivers:{driver_id:string;selection_order:number}[] };
+  const [rows,clients,drivers]=await Promise.all([sbSelectAll<Linked>("master_config_rules",
+    `select=id,source_uid,source_row,revision,row_data,assignment_mode,pickup_customer_id,dropoff_customer_id,alternate_dropoff_customer_id,shift_start,shift_end,review_issues,updated_at,master_rule_drivers(driver_id,selection_order)&active=eq.true&day_type=eq.${day}`,"source_row.asc,id.asc"),
+    sbSelectAll<{customer_id:string;customer_name:string}>("master_clients","select=customer_id,customer_name","customer_id.asc"),
+    sbSelectAll<{driver_id:string;first_name:string;last_name:string}>("master_drivers","select=driver_id,first_name,last_name","driver_id.asc")]);
+  const names=new Map(clients.map(c=>[c.customer_id,c.customer_name]));
+  const driverNames=new Map(drivers.map(d=>[d.driver_id,`${d.first_name??""} ${d.last_name??""}`.trim()]));
+  return rows.map(({master_rule_drivers,...r})=>{
+    const driver_ids=master_rule_drivers.sort((a,b)=>a.selection_order-b.selection_order).map(d=>d.driver_id);
+    const smart_driver_id=r.assignment_mode==="smart" ? driver_ids.join(",")||null : null;
+    const row_data={...r.row_data,customer_id:r.pickup_customer_id??"",dropoff_id:r.dropoff_customer_id??"",
+      alt_drop_off_id:r.alternate_dropoff_customer_id??"",shift_start:r.shift_start?.slice(0,5)??"",shift_end:r.shift_end?.slice(0,5)??"",
+      driver_id:r.assignment_mode==="fixed" ? driver_ids[0]??"" : "",smart_driver_id:smart_driver_id??"",
+      _rule_id:String(r.id),_revision:String(r.revision),assignment_mode:r.assignment_mode,
+      "Điểm Pick-up":names.get(r.pickup_customer_id??"")??r.row_data["Điểm Pick-up"]??"",
+      "Điểm Drop-off":names.get(r.dropoff_customer_id??"")??r.row_data["Điểm Drop-off"]??"",
+      Driver:driver_ids.map(id=>driverNames.get(id)??id).join(", ")};
+    return {...r,row_data,driver_ids,smart_driver_id};
+  });
+}
+
+/** Only this boundary derives legacy fields for the unchanged assignment engine. */
+export async function masterRuleRows(day:"weekday"|"sunday"):Promise<Record<string,string>[]> {
+  const rules=await masterRules(day);
+  const out:Record<string,string>[]=[];
+  for (const r of rules) {
+    const row={...r.row_data};
+    if (r.review_issues.length) {row.driver_id="";row.smart_driver_id="";}
+    out[r.source_row-2]=row;
+  }
+  for(let i=0;i<out.length;i++) out[i]??={};
   return out;
 }
-
-export async function masterClients(): Promise<MasterClient[]> {
-  return sbSelectAll<MasterClient>("master_clients", "select=*", "customer_id.asc");
+export const masterClients=()=>sbSelectAll<MasterClient>("master_clients","select=customer_id,cartrack,client_code,new_ward,nearest_psc_id,nearest_psc_name,nearest_psc_km,labcenter_location_id,default_dropoff_id,default_dropoff_name,eta_minutes,sales_name,sales_email,supervisor_name,supervisor_email","customer_id.asc");
+export const masterDrivers=()=>sbSelectAll<MasterDriver>("master_drivers","select=driver_id,cartrack,roster,driver_zalo_id,bot_token,phone_number_update","driver_id.asc");
+export async function masterClient(id:string):Promise<MasterClient|null> {
+  if(!UUID.test(id)) throw new Error("Invalid customer ID");
+  return (await sbSelect<MasterClient>("master_clients",`select=*&customer_id=eq.${id}`))[0]??null;
 }
-
-export async function masterDrivers(): Promise<MasterDriver[]> {
-  return sbSelectAll<MasterDriver>("master_drivers", "select=*", "driver_id.asc");
+export async function masterDriver(id:string):Promise<MasterDriver|null> {
+  if(!UUID.test(id)) throw new Error("Invalid driver ID");
+  return (await sbSelect<MasterDriver>("master_drivers",`select=*&driver_id=eq.${id}`))[0]??null;
 }
-
-export type RuleInput = {
-  customer_id: string;
-  driver_ids: string[];
-  dropoff_id: string;
-  shift_start: string;
-  shift_end: string;
-  bot_token?: string;
-  chat_id?: string;
-  alt_drop_off_id?: string;
-};
-
-export async function saveMasterRule(input: RuleInput, row?: number, version?: string): Promise<number> {
-  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!input || !uuid.test(input.customer_id) || !Array.isArray(input.driver_ids) ||
-      input.driver_ids.some((id) => typeof id !== "string" || !uuid.test(id)) ||
-      (input.dropoff_id && !uuid.test(input.dropoff_id)) ||
-      (input.alt_drop_off_id && !uuid.test(input.alt_drop_off_id)) ||
-      typeof input.shift_start !== "string" || typeof input.shift_end !== "string" ||
-      (!!input.shift_start !== !!input.shift_end) ||
-      (input.shift_start && (!/^([01]\d|2[0-3]):[0-5]\d$/.test(input.shift_start) ||
-        !/^([01]\d|2[0-3]):[0-5]\d$/.test(input.shift_end) ||
-        timeToMins(input.shift_start) === timeToMins(input.shift_end)))) {
-    throw new Error("Quy tắc không hợp lệ");
+export type RuleInput={customer_id:string;driver_ids:string[];assignment_mode?:AssignmentMode;dropoff_id:string;
+  shift_start:string;shift_end:string;bot_token?:string;chat_id?:string;alt_drop_off_id?:string};
+export function ruleChange(input:RuleInput,old?:MasterRule) {
+  if(!input || !UUID.test(input.customer_id) || !Array.isArray(input.driver_ids) || input.driver_ids.length>20 ||
+    input.driver_ids.some(id=>typeof id!=="string" || !UUID.test(id) || id===PROXY_ID) || new Set(input.driver_ids).size!==input.driver_ids.length ||
+    (input.dropoff_id && !UUID.test(input.dropoff_id)) || (input.alt_drop_off_id && !UUID.test(input.alt_drop_off_id))) throw new Error("Quy tắc không hợp lệ");
+  const mode=input.assignment_mode??(input.driver_ids.length>1?"smart":old?.assignment_mode??"fixed");
+  if(!["fixed","smart"].includes(mode) || (mode==="fixed" && input.driver_ids.length>1)) throw new Error("Chế độ phân công không hợp lệ");
+  const start=input.shift_start,end=input.shift_end;
+  if(typeof start!=="string" || typeof end!=="string" || (!!start!==!!end) ||
+    (start && (!/^([01]\d|2[0-3]):[0-5]\d$/.test(start) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(end) || timeToMins(start)===timeToMins(end)))) throw new Error("Ca làm việc không hợp lệ");
+  const row_data:Record<string,string>={};
+  for(const key of ["bot_token","chat_id"] as const) {
+    if(input[key]!==undefined) {
+      if(typeof input[key]!=="string") throw new Error("Invalid notification setting");
+      row_data[key]=input[key];
+    }
   }
-  if ([input.bot_token, input.chat_id, input.alt_drop_off_id].some((v) => v !== undefined && typeof v !== "string")) throw new Error("Trường quy tắc không hợp lệ");
-  const [customers, drivers, rules] = await Promise.all([masterClients(), masterDrivers(), masterRules("weekday")]);
-  const byClient = new Map(customers.map((c) => [c.customer_id, c]));
-  const byDriver = new Map(drivers.map((d) => [d.driver_id, d]));
-  const pickup = byClient.get(input.customer_id);
-  if (!pickup) throw new Error("Điểm lấy mẫu không có trong Master Client Info");
-  const dropoff = input.dropoff_id ? byClient.get(input.dropoff_id) : null;
-  if (input.dropoff_id && !dropoff) throw new Error("Điểm giao không có trong Master Client Info");
-  if (input.driver_ids.length > 20 || new Set(input.driver_ids).size !== input.driver_ids.length) throw new Error("Danh sách tài xế không hợp lệ");
-  const names = input.driver_ids.map((id) => {
-    const d = byDriver.get(id);
-    if (!d || d.cartrack.is_active === false) throw new Error(`Tài xế ${id} không hoạt động`);
-    return `${d.cartrack.first_name ?? ""} ${d.cartrack.last_name ?? ""}`.trim();
+  return {id:old?.id,revision:old?.revision,assignment_mode:mode,driver_ids:input.driver_ids,
+    pickup_customer_id:input.customer_id,dropoff_customer_id:input.dropoff_id||null,
+    alternate_dropoff_customer_id:input.alt_drop_off_id===undefined?old?.alternate_dropoff_customer_id??null:input.alt_drop_off_id||null,
+    shift_start:start||null,shift_end:end||null,row_data};
+}
+export async function writeMasterRules(changes:Record<string,unknown>[]) {
+  assertMasterWritable();
+  return sbRpc<{id:number;revision:number;source_row:number}[]>("master_write_rules",{changes});
+}
+export async function saveMasterRule(input:RuleInput,id?:number,revision?:number):Promise<number> {
+  const old=id===undefined?undefined:(await masterRules("weekday")).find(r=>r.id===id);
+  if(id!==undefined && (!old || old.revision!==revision)) throw new Error("Dòng đã thay đổi — tải lại trước khi lưu");
+  return (await writeMasterRules([ruleChange(input,old)]))[0].source_row;
+}
+export async function deleteMasterRule(id:number,revision:number):Promise<void> {
+  await writeMasterRules([{id,revision,active:false}]);
+}
+export function uniqueNameId(name:string,items:{id:string;names:string[]}[]):string {
+  const matches=items.filter(item=>item.names.some(n=>n.trim()===name.trim()));
+  if(matches.length!==1) throw new Error(`Không xác định duy nhất: ${name}`);
+  return matches[0].id;
+}
+export async function createMasterConfigRows(cells:ConfigCells[]):Promise<number[]> {
+  assertMasterWritable();
+  const [clients,drivers,rules]=await Promise.all([masterClients(),masterDrivers(),masterRules("weekday")]);
+  const c=clients.map(c=>({id:c.customer_id,names:[String(c.cartrack.customer_name??"")]}));
+  const d=drivers.map(d=>({id:d.driver_id,names:[d.roster?.Driver??"",`${d.cartrack.first_name??""} ${d.cartrack.last_name??""}`.trim()]}));
+  const changes=cells.map(cell=>{
+    const copied=rules.find(r=>r.id===cell.copyFromRuleId);
+    if(cell.copyFromRow!==undefined && !copied) throw new Error("Chọn lại quy tắc cần sao chép bằng ID");
+    const driver_ids=cell.driver_ids??(cell.driver??"").split(",").map(s=>s.trim()).filter(Boolean).map(n=>uniqueNameId(n,d));
+    const change=ruleChange({customer_id:cell.customer_id??uniqueNameId(cell.pickup,c),driver_ids,
+      assignment_mode:cell.assignment_mode??(driver_ids.length>1?"smart":copied?.assignment_mode??"fixed"),
+      dropoff_id:cell.dropoff_id??(cell.dropoff?uniqueNameId(cell.dropoff,c):""),shift_start:cell.start,shift_end:cell.end});
+    if(copied) change.row_data={...copied.row_data,...change.row_data};
+    return change;
   });
-  const rosterNames = input.driver_ids.map((id, index) => byDriver.get(id)?.roster?.Driver || names[index]);
-  const old = row === undefined ? undefined : rules.find((r) => r.source_row === row);
-  if (row !== undefined && (!old || old.updated_at !== version)) throw new Error("Dòng đã thay đổi — tải lại trước khi lưu");
-  const useSmart = input.driver_ids.length > 1 || (!!old?.smart_driver_id && input.driver_ids.length > 0);
-  const selectedSmart = useSmart ? input.driver_ids.join(",") : null;
-  const manualSmart = old?.smart_driver_id === selectedSmart
-    ? old.smart_driver_id_manual : selectedSmart;
-  const data: Record<string, string> = {
-    ...(old?.row_data ?? {}),
-    customer_id: input.customer_id,
-    "Điểm Pick-up": String(pickup.cartrack.customer_name ?? ""),
-    driver_id: useSmart ? "" : (input.driver_ids[0] ?? ""),
-    smart_driver_id: selectedSmart ?? "",
-    Driver: rosterNames.join(", "),
-    first_name_last_name: names.join(", "),
-    dropoff_id: input.dropoff_id,
-    "Điểm Drop-off": String(dropoff?.cartrack.customer_name ?? ""),
-    shift_start: input.shift_start,
-    shift_end: input.shift_end,
-  };
-  if (input.bot_token !== undefined) data.bot_token = input.bot_token;
-  if (input.chat_id !== undefined) data.chat_id = input.chat_id;
-  if (input.alt_drop_off_id !== undefined) data.alt_drop_off_id = input.alt_drop_off_id;
-  if (old) {
-    const filter = `id=eq.${old.id}&updated_at=eq.${encodeURIComponent(old.updated_at)}`;
-    const changed = await sbPatch<MasterRule>("master_config_rules", filter, {
-      row_data: data, smart_driver_id_manual: manualSmart, updated_at: new Date().toISOString(),
-    });
-    if (changed.length !== 1) throw new Error("Dòng đã thay đổi — tải lại trước khi lưu");
-    return old.source_row;
-  }
-  const nextRow = Math.max(1, ...rules.map((r) => r.source_row)) + 1;
-  await sbInsert("master_config_rules", [{ day_type: "weekday", source_row: nextRow, row_data: data, smart_driver_id_manual: manualSmart }]);
-  return nextRow;
-}
-
-export async function deleteMasterRule(row: number, version: string): Promise<void> {
-  const rules = await masterRules("weekday");
-  const target = rules.find((r) => r.source_row === row);
-  if (!target || target.updated_at !== version) throw new Error("Dòng đã thay đổi — tải lại trước khi xoá");
-  await sbDelete("master_config_rules", `id=eq.${target.id}&updated_at=eq.${encodeURIComponent(version)}`);
-}
-
-export async function masterClient(id: string): Promise<MasterClient | null> {
-  return (await sbSelect<MasterClient>("master_clients", `select=*&customer_id=eq.${id}`))[0] ?? null;
-}
-
-export async function masterDriver(id: string): Promise<MasterDriver | null> {
-  return (await sbSelect<MasterDriver>("master_drivers", `select=*&driver_id=eq.${id}`))[0] ?? null;
-}
-
-export async function createMasterConfigRows(cells: ConfigCells[]): Promise<number[]> {
-  if (!cells.length) return [];
-  const [clients, drivers, rules] = await Promise.all([masterClients(), masterDrivers(), masterRules("weekday")]);
-  const idsByName = new Map<string, string[]>();
-  for (const c of clients) {
-    const name = String(c.cartrack.customer_name ?? "").trim();
-    idsByName.set(name, [...(idsByName.get(name) ?? []), c.customer_id]);
-  }
-  const driverByName = new Map(drivers.map((d) => [`${d.cartrack.first_name ?? ""} ${d.cartrack.last_name ?? ""}`.trim(), d.driver_id]));
-  let nextRow = Math.max(1, ...rules.map((r) => r.source_row));
-  const inserts = cells.map((c) => {
-    const pickupIds = idsByName.get(c.pickup.trim()) ?? [];
-    if (pickupIds.length !== 1) throw new Error(`Điểm lấy mẫu "${c.pickup}" không xác định duy nhất trong Master Client Info`);
-    const dropoffIds = c.dropoff ? idsByName.get(c.dropoff.trim()) ?? [] : [];
-    if (c.dropoff && dropoffIds.length !== 1) throw new Error(`Điểm giao "${c.dropoff}" không xác định duy nhất`);
-    const driverNames = c.driver?.split(",").map((s) => s.trim()).filter(Boolean) ?? [];
-    const driverIds = driverNames.map((name) => {
-      const id = driverByName.get(name);
-      if (!id) throw new Error(`Tài xế "${name}" không có trong Master Client Info`);
-      return id;
-    });
-    const copied = rules.find((r) => r.source_row === c.copyFromRow)?.row_data ?? {};
-    return {
-      day_type: "weekday", source_row: ++nextRow,
-      smart_driver_id_manual: driverIds.length > 1 ? driverIds.join(",") : null,
-      row_data: {
-        ...copied,
-        customer_id: pickupIds[0], "Điểm Pick-up": c.pickup,
-        dropoff_id: dropoffIds[0] ?? "", "Điểm Drop-off": c.dropoff,
-        driver_id: driverIds.length === 1 ? driverIds[0] : "",
-        smart_driver_id: driverIds.length > 1 ? driverIds.join(",") : "",
-        Driver: c.driver ?? "", shift_start: c.start, shift_end: c.end,
-      },
-    };
-  });
-  await sbInsert("master_config_rules", inserts);
-  return inserts.map((r) => r.source_row);
+  return (await writeMasterRules(changes)).map(r=>r.source_row);
 }

@@ -215,7 +215,7 @@ export function sortConfigRows(rows: readonly ConfigRowView[]): ConfigRowView[] 
 /** One branch's rows, in the shape the editor takes. Only rows that carry a
  *  sheet row can be edited — every writer addresses them by number. */
 function rulesOf(rows: readonly ConfigRowView[]): BranchRule[] {
-  return rows.filter((r) => !r.unmapped).map((r) => ({ row: r.row, driver: r.driver, start: r.start, end: r.end, dropoff: r.dropoff }));
+  return rows.filter((r) => !r.unmapped).map((r) => ({ row: r.row, rule_id:r.rule_id, revision:r.revision, assignment_mode:r.assignment_mode, driver: r.driver, start: r.start, end: r.end, dropoff: r.dropoff }));
 }
 
 /**
@@ -260,7 +260,7 @@ function reportBulk(label: string, res: BulkResult) {
   else toast.error(`Không ghi được dòng nào. ${why}`);
 }
 
-const targetBody = (rows: readonly ConfigRowView[]) => rows.map((r) => ({ row: r.row, pickup_name: r.pickup, expected_row: { driver: r.driver, start: r.start, end: r.end, dropoff: r.dropoff } }));
+const targetBody = (rows: readonly ConfigRowView[]) => rows.map((r) => ({ row: r.row, pickup_name: r.pickup, expected_row: { rule_id:r.rule_id, revision:r.revision, driver: r.driver, start: r.start, end: r.end, dropoff: r.dropoff } }));
 
 type BulkMode = "driver" | "hours" | "delete";
 
@@ -1292,6 +1292,8 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                           rules={rulesOf(editingRows)}
                           extraLines={editingRows[0].unmapped ? [{
                             driver: "", start: "", end: "", dropoff: "",
+                            assignment_mode: rows.some(row=>row.assignment_mode) ? "fixed" : undefined,
+                            copyFromRuleId: (rows.find(row=>!row.unmapped && row.smart && row.row>2) ?? rows.find(row=>!row.unmapped && row.row>2))?.rule_id,
                             copyFromRow: rows.find((row) => !row.unmapped && row.smart && row.row > 2)?.row
                               ?? rows.find((row) => !row.unmapped && row.row > 2)?.row,
                           }] : []}

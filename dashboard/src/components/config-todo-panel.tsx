@@ -141,7 +141,7 @@ function OverlapRow({
       const res = await fetch("/api/config/delete-row", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ row, pickup_name: o.pickup_name, expected_row: { driver: rule.driver, start: rule.start, end: rule.end, dropoff: rule.dropoff } }),
+        body: JSON.stringify({ row, pickup_name: o.pickup_name, expected_row: { rule_id: rule.rule_id, revision: rule.revision, driver: rule.driver, start: rule.start, end: rule.end, dropoff: rule.dropoff } }),
       });
       const j = await res.json().catch(() => ({}));
       if (j.code === "CONFIG_ROW_CHANGED") { toast.warning(j.error); onSaved(); return; }
@@ -446,7 +446,7 @@ function CopyFromBranch({
   useEffect(() => { setActive(0); }, [q]);
 
   const take = (b: CopySource) => {
-    onCopy(b.rules.map((r) => ({ driver: r.driver, start: r.start, end: r.end, sourceRow: r.row })));
+    onCopy(b.rules.map((r) => ({ driver: r.driver, start: r.start, end: r.end, sourceRow: r.row, sourceRuleId:r.rule_id, assignment_mode:r.assignment_mode })));
     setQ("");
     onClose();
   };
@@ -658,7 +658,7 @@ export function BranchEditor({
       .sort((x, y) => (toMin(x.start) - toMin(y.start)) || x.row! - y.row!)
   );
   const [lines, setLines] = useState<Line[]>(initial);
-  const snapshot = (line: Line): ConfigRowSnapshot => ({ driver: line.driver, start: line.start, end: line.end, dropoff: line.dropoff });
+  const snapshot = (line: Line): ConfigRowSnapshot => ({ rule_id:line.rule_id, revision:line.revision, driver: line.driver, start: line.start, end: line.end, dropoff: line.dropoff });
   const expectedRows = useRef(new Map(initial.map((line) => [line.key, snapshot(line)])));
   const [pendingDeletes, setPendingDeletes] = useState<Line[]>([]);
   const [busy, setBusy] = useState(false);
@@ -699,7 +699,7 @@ export function BranchEditor({
     setLines((ls) => ls.map((l, j) => (j === i ? { ...l, ...v } : l)));
   // New lines inherit the destination of the branch being edited.
   const addLine = () =>
-    setLines((ls) => [...ls, { key: newLineKey(), driver: "", start: "", end: "", dropoff: dropoffName }]);
+    setLines((ls) => [...ls, { key: newLineKey(), assignment_mode: rules.some(r=>r.assignment_mode) ? "fixed" : undefined, driver: "", start: "", end: "", dropoff: dropoffName }]);
   const dropLine = (key: string) => {
     const line = lines.find((l) => l.key === key);
     if (line?.row) setPendingDeletes((prev) => [...prev, line]);
@@ -785,28 +785,30 @@ export function BranchEditor({
           const res = await post("/api/config/complete-row", {
             row: l.row, pickup_name: pickupName, driver_name: l.driver,
             shift_start: l.start, shift_end: l.end, dropoff_name: l.dropoff,
-            copy_from_row: l.copyFromRow,
+            copy_from_row: l.copyFromRow, copy_from_rule_id:l.copyFromRuleId, assignment_mode:l.assignment_mode,
             expected_row: expectedRows.current.get(l.key),
           });
           if (typeof res.row === "number") l.row = res.row;
+          if (typeof res.rule_id === "number") { l.rule_id=res.rule_id; l.revision=res.revision; }
           if (res.moved) relocated++;
         } else {
           const res = await post("/api/config/add-rule", {
             pickup_name: pickupName, dropoff_name: l.dropoff,
             driver_name: l.driver, shift_start: l.start, shift_end: l.end,
-            copy_from_row: l.copyFromRow,
+            copy_from_row: l.copyFromRow, copy_from_rule_id:l.copyFromRuleId, assignment_mode:l.assignment_mode,
           });
           // Adopt the row the sheet just gave it. This line is an existing row
           // from here on, so a retry updates it in place instead of adding a
           // second one beside it.
           if (typeof res.row === "number") l.row = res.row;
+          if (typeof res.rule_id === "number") { l.rule_id=res.rule_id; l.revision=res.revision; }
         }
         // Record the RESOLVED driver name, and normalise the field to it, so the
         // signature still matches on a later pass — otherwise a name typed as
         // "nam" and saved as "D001 - Nguyễn Văn Nam" reads as changed again.
         const done = { ...l };
         expectedRows.current.set(done.key, snapshot(done));
-        setLines((ls) => ls.map((x) => (x.key === done.key ? { ...x, row: done.row, driver: done.driver } : x)));
+        setLines((ls) => ls.map((x) => (x.key === done.key ? { ...x, row: done.row, driver: done.driver, rule_id:done.rule_id,revision:done.revision } : x)));
         setCommitted((c) => ({ ...c, [done.key]: sig(done) }));
         written++;
       }
@@ -817,8 +819,8 @@ export function BranchEditor({
         const removedRow = typeof res.row === "number" ? res.row : l.row!;
         if (res.moved) relocated++;
         expectedRows.current.delete(l.key);
-        setPendingDeletes((prev) => prev.filter((x) => x.key !== l.key).map((x) => x.row! > removedRow ? { ...x, row: x.row! - 1 } : x));
-        setLines((prev) => prev.map((x) => x.row && x.row > removedRow ? { ...x, row: x.row - 1 } : x));
+        setPendingDeletes((prev) => prev.filter((x) => x.key !== l.key).map((x) => !l.rule_id && x.row! > removedRow ? { ...x, row: x.row! - 1 } : x));
+        setLines((prev) => prev.map((x) => !l.rule_id && x.row && x.row > removedRow ? { ...x, row: x.row - 1 } : x));
         written++;
       }
       toast.success(written ? `Đã lưu ${written} dòng — ${pickupName}${relocated ? ` (đã tìm lại ${relocated} dòng bị dời)` : ""}` : "Không có thay đổi nào");
@@ -883,7 +885,8 @@ export function BranchEditor({
             justAdded.has(l.key) ? "bg-indigo-50 ring-1 ring-indigo-300" : ""
           }`}
         >
-          <DriverPicker value={l.driver} onChange={(v) => patch(i, { driver: v })} drivers={drivers} />
+          <DriverPicker value={l.driver} onChange={(v) => patch(i, { driver: v, ...(l.assignment_mode ? {assignment_mode:splitDriverNames(v).length>1 ? "smart" : l.assignment_mode} : {}) })} drivers={drivers} />
+          {l.assignment_mode && <label className="text-xs"><span className="sr-only">Chế độ phân công</span><select value={l.assignment_mode} onChange={e=>patch(i,{assignment_mode:e.target.value as "fixed"|"smart"})} className="h-7 rounded border border-slate-300 bg-white px-1 text-slate-900"><option value="fixed" disabled={splitDriverNames(l.driver).length>1}>Cố định</option><option value="smart">Thông minh</option></select></label>}
           <TimeSelect label="Từ giờ" value={l.start} onChange={(v) => patch(i, { start: v })} disabled={(t) => !availableTime(lines, i, "start", t)} />
           <span aria-hidden className="text-slate-500 text-[11px]">→</span>
           <TimeSelect label="Đến giờ" value={l.end} onChange={(v) => patch(i, { end: v })} disabled={(t) => !availableTime(lines, i, "end", t)} />
@@ -917,8 +920,8 @@ export function BranchEditor({
           <span className="w-10 shrink-0 text-right font-mono text-[10px] text-slate-600">
             {l.row ? `#${l.row}` : "mới"}
           </span>
-          <button type="button" onClick={() => dropLine(l.key)} disabled={busy || l.row === 2}
-            aria-label="Bỏ dòng này" title={l.row === 2 ? "Dòng 2 giữ công thức của bảng" : "Bỏ dòng này — bấm Lưu để xác nhận"}
+          <button type="button" onClick={() => dropLine(l.key)} disabled={busy || (l.row === 2 && !l.rule_id)}
+            aria-label="Bỏ dòng này" title={l.row === 2 && !l.rule_id ? "Dòng 2 giữ công thức của bảng" : "Bỏ dòng này — bấm Lưu để xác nhận"}
             className="rounded px-1 py-0.5 text-[11px] text-slate-600 hover:text-red-600 disabled:opacity-40">✕</button>
         </div>
       ))}
@@ -991,7 +994,7 @@ function UnfinishedRow({
           rules={servesDropoff(rules, u.dropoff_name)}
           extraLines={rows.map((row) => {
             const [start, end] = (row.window ?? "–").split("–");
-            return { row: row.row, driver: "", start: start ?? "", end: end ?? "", dropoff: row.dropoff_name };
+            return { row: row.row, rule_id:row.rule_id, revision:row.revision, assignment_mode:row.assignment_mode, driver: "", start: start ?? "", end: end ?? "", dropoff: row.dropoff_name };
           })}
           drivers={drivers}
           onCancel={() => setOpen(false)}
