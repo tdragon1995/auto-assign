@@ -38,7 +38,7 @@
 
 import {
   buildLeaveSubmission, groupConsecutive, expandRange, normalizeDays,
-  findPtTwin, ptCompanionOf, EMPTY_LEAVE_FORM, MAX_LEAVE_DAYS,
+  findPtTwin, ptCompanionOf, pendingLeaveSubmission, EMPTY_LEAVE_FORM, MAX_LEAVE_DAYS,
   type NewLeaveForm, type LeavePayload, type SubWrite,
 } from "../src/components/leave-status-panel";
 import type { ConfigDriver } from "../src/lib/types";
@@ -317,6 +317,15 @@ eq("a full-timer with no twin still files exactly one row",
 // counting rows would halve how much leave a twin-holder could file at once.
 eq("the twin's rows do not count against the day cap",
   errored({ name: HUNG_FT.name, loai_nghi: "nguyen_buoi", days: run("2026-09-01", MAX_LEAVE_DAYS) }), false);
+
+const partial = buildLeaveSubmission(form({
+  name: HUNG_FT.name, loai_nghi: "nguyen_buoi",
+  days: ["2026-09-25", "2026-09-27", "2026-09-28"],
+}), DRIVERS);
+if ("error" in partial) throw Error(partial.error);
+eq("retry after three saves sends only the missing PT range",
+  pendingLeaveSubmission(partial, 3).payloads.map((p) => [p.driver_id, p.ngay_bat_dau, p.ngay_ket_thuc]),
+  [["uuid-hung-pt", "2026-09-27", "2026-09-28"]]);
 
 
 // --- 9. the substitute filed with the leave ----------------------------------

@@ -461,6 +461,14 @@ export function buildLeaveSubmission(
   return { payloads: [...built.payloads, ...companions], subWrites };
 }
 
+/** Resume by request, since one date can be saved for FT but still missing for PT. */
+export function pendingLeaveSubmission(
+  submission: { payloads: LeavePayload[]; subWrites: SubWrite[] },
+  failedIndex: number,
+) {
+  return { ...submission, payloads: submission.payloads.slice(failedIndex) };
+}
+
 /** The rows for the account actually picked, before any twin is considered. */
 function buildOwnSubmission(
   f: NewLeaveForm,
@@ -572,6 +580,7 @@ function AddLeaveForm({
   setOpen: (v: boolean) => void;
 }) {
   const [form, setForm] = useState<NewLeaveForm>(EMPTY_LEAVE_FORM);
+  const [retry, setRetry] = useState<{ payloads: LeavePayload[]; subWrites: SubWrite[] } | null>(null);
   /** The two inputs that ADD to the set — not the set itself. */
   // Today by default. Every close resets back to this (below), so each opening
   // starts from a clean form without an effect watching `open`.
@@ -591,6 +600,7 @@ function AddLeaveForm({
   const twinWill = twinEffect(form);
   const reset = () => {
     setForm(EMPTY_LEAVE_FORM);
+    setRetry(null);
     setPickFrom(vnDate()); setPickTo(""); setError(""); setBusy("");
   };
   const close = () => { setOpen(false); reset(); };
@@ -604,13 +614,14 @@ function AddLeaveForm({
 
   async function save() {
     setError("");
-    const built = buildLeaveSubmission(form, drivers);
+    const built = retry ?? buildLeaveSubmission(form, drivers);
     if ("error" in built) { setError(built.error); return; }
     const { payloads, subWrites } = built;
 
     let written = 0;
     let skippedPt = 0;
     let failure = "";
+    let failedIndex = -1;
     // Both phases counted in one progress line: from where the button is
     // pressed they are one action, and a bar that reaches the end and then
     // keeps working is worse than no bar.
@@ -628,6 +639,7 @@ function AddLeaveForm({
           // The route's own messages name the clashing row / the unreadable
           // sheet, so they are shown as-is rather than flattened into "lỗi".
           failure = `${submissionLabel(payload)}: ${data.error ?? `Lỗi ${res.status}`}`;
+          failedIndex = i;
           break;
         }
         // A companion the config said was unnecessary. Counted apart from the
@@ -638,6 +650,7 @@ function AddLeaveForm({
         else written++;
       } catch (e) {
         failure = `${submissionLabel(payload)}: ${e instanceof Error ? e.message : String(e)}`;
+        failedIndex = i;
         break;
       }
     }
@@ -700,14 +713,10 @@ function AddLeaveForm({
         close();
         return;
       }
-      setError(written > 0 ? `Đã ghi ${written} đợt, dừng ở — ${failure}` : failure);
-      // Whatever landed is gone from the set, so a retry re-sends only the rest.
-      if (written > 0) {
-        const done = new Set(
-          payloads.slice(0, written).flatMap((p) => expandRange(p.ngay_bat_dau, p.ngay_ket_thuc ?? p.ngay_bat_dau)),
-        );
-        set("days", form.days.filter((d) => !done.has(d)));
-      }
+      setError(`${written > 0 ? `Đã ghi ${written} đợt, ` : ""}dừng ở — ${failure}. Thử lại chỉ gửi các đợt chưa ghi.`);
+      // A day can be saved for FT but still missing for PT. Keep the exact
+      // remaining requests, not just dates, so retry never re-sends FT first.
+      setRetry(pendingLeaveSubmission({ payloads, subWrites }, failedIndex));
       return;
     }
     close();
@@ -727,6 +736,7 @@ function AddLeaveForm({
         Thêm ngày nghỉ — ghi thẳng vào sheet, engine thấy ở chu kỳ kế tiếp
       </div>
 
+      <fieldset disabled={!!retry}>
       <div className="flex flex-wrap items-center gap-1.5">
         <DriverCombobox
           names={form.name ? [form.name] : []}
@@ -885,10 +895,11 @@ function AddLeaveForm({
           <DriverName tooltip={false} full={twinInfo.twin.name} className="font-semibold" />: {twinWill.text}
         </p>
       )}
+      </fieldset>
 
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
         <Button size="sm" className="h-6 px-2 text-[11px]" disabled={!!busy} onClick={() => void save()}>
-          {busy || "Lưu"}
+          {busy || (retry ? "Thử lại phần chưa ghi" : "Lưu")}
         </Button>
         <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" disabled={!!busy} onClick={close}>
           Hủy
