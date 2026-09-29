@@ -1039,10 +1039,11 @@ export async function deferMorningPass(dateVn: string, env = "prod", retrySec = 
  *  Without Redis ⇒ false: no debounce store means we must not send at all (better
  *  silent than spamming the group every 3-min cycle). Env-scoped so a UAT cycle
  *  can't consume prod's slot — though alerts are prod-gated at the call site too. */
-export async function claimLateAlert(jobId: number, env = "prod", ttlSec = 86400): Promise<boolean> {
+export async function claimLateAlert(jobId: number, env = "prod", ttlSec = 86400, kind = ""): Promise<boolean> {
   const redis = getRedis();
   if (!redis) return false;
-  const res = await redis.set(`assign:late_alert:${env}:${jobId}`, new Date().toISOString(), { nx: true, ex: ttlSec });
+  const key = `assign:late_alert:${env}:${jobId}${kind ? `:${kind}` : ""}`;
+  const res = await redis.set(key, new Date().toISOString(), { nx: true, ex: ttlSec });
   return res === "OK";
 }
 

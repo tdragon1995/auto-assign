@@ -1,0 +1,143 @@
+import assert from "node:assert/strict";
+import type { Job } from "../src/lib/types";
+
+process.env.CARTRACK_AUTH = "Basic mocked";
+process.env.CARTRACK_AUTH_UAT = "Basic mocked";
+process.env.CARTRACK_WEB_PASS = ""; // unassignJob falls back to a mocked REST PUT
+process.env.CARTRACK_WEB_PASS_UAT = "";
+process.env.KV_REST_API_URL = "https://redis.test";
+process.env.KV_REST_API_TOKEN = "mocked";
+process.env.ZALO_KIOT_BOT_TOKEN = "pharmacy-token";
+process.env.ZALO_ADMIN_BOT_TOKEN = "admin-token";
+
+const { PROXY_DRIVER_ID } = await import("../src/lib/cartrack");
+const { releaseDueProxyJobs } = await import("../src/lib/assign");
+const { getDueTomorrowJobs } = await import("../src/lib/scheduled-dispatch");
+const labels = ["📅 Lịch cố định"];
+const customer = "51bfb168-446f-11ed-888f-506b8dbc8dfb";
+const chat = "zgr-1c7aa981bbcf52910bde";
+const message = "Dạ, sắp đến giờ lấy mẫu cố định của bên mình rồi ạ. Bên mình hôm nay có mẫu không ạ, cho Diag xin xác nhận với ạ?";
+const now = new Date("2026-09-29T23:35:00+07:00");
+
+function job(id: number, change: Partial<Job> = {}): Job {
+  return {
+    job_id: id,
+    job_status_id: 4,
+    delivery_driver_id: PROXY_DRIVER_ID,
+    send_to_driver_at: "2020-09-29 23:10:00",
+    labels,
+    stops: [
+      { stop_type_id: 1, stop_status_id: 1, customer_id: customer, delivery_windows: [{ time_from: "00:10:00+07:00" }] },
+      { stop_type_id: 2, customer_id: "dropoff" },
+    ],
+    ...change,
+  };
+}
+
+const otherCustomer = job(102, { stops: [{ ...job(102).stops[0], customer_id: "other" }] });
+const oneOff = job(103, { labels: [] });
+const started = job(104, { stops: [{ ...job(104).stops[0], activity_started_ts: "2026-09-29 22:00:00" }] });
+const failed = job(105);
+const tomorrowFailed = job(202);
+const sends: { url: string; body: { chat_id: string; text: string } }[] = [];
+const claims = new Set<string>();
+const events: string[] = [];
+const logs: string[] = [];
+let tomorrowJobs: Job[] = [];
+let failSend = false;
+let failStorage = false;
+const originalFetch = globalThis.fetch;
+
+globalThis.fetch = async (input, init) => {
+  const url = String(input);
+  if (url.startsWith("https://redis.test")) {
+    if (failStorage) throw new Error("Redis unavailable");
+    const commands = JSON.parse(String(init?.body)) as (string | number)[][];
+    if (commands[0]?.[0] === "set") {
+      const key = String(commands[0][1]);
+      assert.match(key, /^assign:late_alert:prod:\d+:fixed-pickup-reminder$/);
+      const result = claims.has(key) ? null : "OK";
+      claims.add(key);
+      return Response.json([{ result }]);
+    }
+    if (commands[0]?.[0] === "mget") return Response.json([{ result: [null, null] }]);
+    throw new Error(`Unexpected Redis command: ${commands[0]?.[0]}`);
+  }
+  if (url.includes("/drivers/") && url.includes("/jobs?")) return Response.json({ data: [] });
+  if (url.includes("/jobs?") && init?.method !== "PUT") return Response.json({ data: tomorrowJobs });
+  if (url.includes("/jobs/assign/preassigned-driver") && init?.method === "PUT") {
+    events.push("preassign:301");
+    return Response.json({ data: { job_id: 301, delivery_driver_id: "preassigned-driver" } });
+  }
+  if (url.includes("/jobs/") && init?.method === "PUT") {
+    const id = Number(url.match(/\/jobs\/(\d+)/)?.[1]);
+    events.push(`release:${id}`);
+    return new Response(null, { status: [failed.job_id, tomorrowFailed.job_id].includes(id) ? 500 : 200 });
+  }
+  if (url.startsWith("https://docs.google.com/spreadsheets/")) {
+    return new Response("pickup_id,dropoff_id,delivery_windows,reference,driver_id,Driver\n" +
+      `${customer},dropoff,00:10,scheduled-301,preassigned-driver,Pharmacy Driver\n`);
+  }
+  if (url.startsWith("https://bot-api.zaloplatforms.com/")) {
+    const body = JSON.parse(String(init?.body)) as { chat_id: string; text: string };
+    sends.push({ url, body });
+    events.push(`send:${body.chat_id}`);
+    return new Response(null, { status: failSend ? 500 : 200 });
+  }
+  throw new Error(`Unexpected mocked request: ${url}`);
+};
+
+const log = (text: string) => { logs.push(text); };
+try {
+  const normal = await releaseDueProxyJobs("2026-09-29", "prod", log, [job(101), otherCustomer, oneOff, started, failed]);
+  assert.deepEqual(normal.releasedIds.sort(), [101, 102, 103, 104]);
+  assert.equal(sends.length, 1, JSON.stringify({ logs, events }));
+  assert.deepEqual(sends[0], { url: "https://bot-api.zaloplatforms.com/botpharmacy-token/sendMessage", body: { chat_id: chat, text: message } });
+  assert.ok(events.indexOf("release:101") < events.indexOf(`send:${chat}`));
+
+  await releaseDueProxyJobs("2026-09-29", "prod", log, [job(101)]);
+  assert.equal(sends.length, 1, "stale queue list must not repeat a reminder");
+  await releaseDueProxyJobs("2026-09-29", "uat", log, [job(106)]);
+  assert.equal(sends.length, 1, "UAT must not send");
+
+  tomorrowJobs = [job(201, { send_to_driver_at: "2026-09-29 23:10:00" }), job(202, { send_to_driver_at: "2026-09-29 23:10:00" }), job(203, { job_status_id: 2, delivery_driver_id: null })];
+  const due = await getDueTomorrowJobs("prod", log, now);
+  assert.deepEqual(due.map((j) => j.job_id), [201, 203]);
+  assert.equal(sends.length, 2);
+  assert.deepEqual(sends[1], sends[0]);
+  await releaseDueProxyJobs("2026-09-29", "prod", log, [job(201)]);
+  assert.equal(sends.length, 2, "both release paths must share the same claim");
+
+  failSend = true;
+  const sendFailure = await releaseDueProxyJobs("2026-09-29", "prod", log, [job(107)]);
+  assert.deepEqual(sendFailure.releasedIds, [107], "Zalo failure must not undo a release");
+  assert.ok(logs.some((line) => line.includes("Job 107 - Fixed-pickup Zalo reminder failed")));
+  tomorrowJobs = [job(204, { send_to_driver_at: "2026-09-29 23:10:00" })];
+  const dueAfterSendFailure = await getDueTomorrowJobs("prod", log, now);
+  assert.deepEqual(dueAfterSendFailure.map((j) => j.job_id), [204], "Zalo failure must not hide a released job from assignment");
+
+  failStorage = true;
+  const storageFailure = await releaseDueProxyJobs("2026-09-29", "prod", log, [job(108)]);
+  assert.deepEqual(storageFailure.releasedIds, [108], "Redis failure must not undo a release");
+  assert.equal(sends.length, 4, "do not send without a deduplication claim");
+  assert.ok(logs.some((line) => line.includes("Job 108 - Fixed-pickup Zalo reminder failed")));
+
+  failStorage = false;
+  delete process.env.ZALO_KIOT_BOT_TOKEN;
+  delete process.env.ZALO_ADMIN_BOT_TOKEN;
+  const noBot = await releaseDueProxyJobs("2026-09-29", "prod", log, [job(109)]);
+  assert.deepEqual(noBot.releasedIds, [109]);
+  assert.equal(sends.length, 4);
+  assert.ok(logs.some((line) => line.includes("Job 109 - Fixed-pickup Zalo reminder skipped: Pharmacy bot token missing")));
+
+  process.env.ZALO_KIOT_BOT_TOKEN = "pharmacy-token";
+  const preassigned = await releaseDueProxyJobs("2026-09-29", "prod", log, [job(301, { reference_number: "scheduled-301_2026-09-29" })]);
+  assert.deepEqual(preassigned.releasedIds, [], "direct preassignment never enters the unassigned pool");
+  assert.ok(events.includes("preassign:301"));
+  assert.equal(sends.length, 5, "direct preassignment also sends one reminder");
+  assert.ok(events.indexOf("preassign:301") < events.lastIndexOf(`send:${chat}`));
+
+  console.log("Scheduled pickup reminder checks passed.");
+} finally {
+  globalThis.fetch = originalFetch;
+}

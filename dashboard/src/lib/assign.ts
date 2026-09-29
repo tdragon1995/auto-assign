@@ -2,6 +2,7 @@ import type { Config, Driver, FailedJob, Job, LogEntry, LogLevel, Mapping, Picku
 import { getDrivers, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, parkOnProxy, updateJobSendToDriverAt, updateJobScheduledDeliveryTs, unassignJob, optimizeDriverRoute, getJobsByStatusAndDate, getUnassignedJobsFast, getJobsByDate, getTimelineRoutes, timelineRoutesToJobs, getJobDetails, jsonRpc, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { publishSnapshot } from "./day-snapshot";
 import { getDueTomorrowJobs } from "./scheduled-dispatch";
+import { remindScheduledPickup } from "./scheduled-pickup-reminder";
 import { SCHEDULE_JOB_LABEL, loadSchedulePreassignments, scheduleReferenceBase } from "./schedule-job";
 import { sendZaloMessage } from "./zalo";
 import { PSC_TINH_LABEL } from "./psc-config";
@@ -1158,7 +1159,7 @@ async function repairBlankReleaseTimes(
  * the cycle's mapping / substitute logic covers it. Pre-assigned jobs are NOT
  * in `releasedIds` — they're assigned, not back in the unassigned pool.
  */
-async function releaseDueProxyJobs(
+export async function releaseDueProxyJobs(
   dateVn: string,
   env: Env,
   log: (msg: string, level?: LogLevel) => void,
@@ -1203,6 +1204,7 @@ async function releaseDueProxyJobs(
           const res = await assignJob(pre.driver_id, job.job_id, env);
           if (res.status === 200) {
             log(`Job ${job.job_id} - Lịch cố định → ${who} (pre-assigned, released from proxy) | ${relRoute}`, "OK");
+            await remindScheduledPickup(job, env, log);
             return;
           }
           log(`Job ${job.job_id} - Lịch cố định pre-assign to ${who} failed (HTTP ${res.status}) — releasing to normal assign | ${relRoute}`, "WARN");
@@ -1213,6 +1215,7 @@ async function releaseDueProxyJobs(
         releasedIds.push(job.job_id);
         const parkedUntil = job.send_to_driver_at ?? vnTimestamp(repaired.get(job.job_id)!);
         log(`Job ${job.job_id} - RELEASED from proxy driver (was parked until ${parkedUntil}) | ${relRoute}`, "INFO");
+        await remindScheduledPickup(job, env, log);
       } else {
         log(`Job ${job.job_id} - Release failed (HTTP ${status}) | ${relRoute}`, "WARN");
       }

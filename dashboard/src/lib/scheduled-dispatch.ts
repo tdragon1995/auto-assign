@@ -1,5 +1,6 @@
 import { getJobsByDate, parkOnProxy, PROXY_DRIVER_ID, unassignJob, updateJobScheduledDeliveryTs, type Env } from "./cartrack";
 import { addDays, parseVnTimestamp, vnDate, vnMinutesSinceMidnight, vnTimestamp } from "./time";
+import { remindScheduledPickup } from "./scheduled-pickup-reminder";
 import type { Job, LogLevel } from "./types";
 
 const LEAD_MS = 60 * 60 * 1000;
@@ -56,6 +57,7 @@ export async function getDueTomorrowJobs(
         continue;
       }
       log(`Job ${job.job_id} - RELEASED from proxy driver for ${tomorrow} ${time}`, "INFO");
+      await remindScheduledPickup(job, env, log);
     }
     // The successful unassign is authoritative even while the list's driver field lags.
     due.push({ ...job, job_status_id: 2, delivery_driver_id: null, driver: null });
