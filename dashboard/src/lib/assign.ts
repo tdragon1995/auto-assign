@@ -2495,7 +2495,7 @@ export async function autoAssignCycle(
 
         const top        = withGoong[0];
         const driverName = `${top.d.first_name} ${top.d.last_name}`.trim();
-        const rankStr    = withGoong.slice(0, 3)
+        const rankStr    = withGoong
           .map((x, i) => `${i + 1}. ${x.d.first_name} ${x.d.last_name} (${x.distLabel})`)
           .join(" | ");
         {
@@ -2560,7 +2560,7 @@ export async function autoAssignCycle(
             }
             if (apiStatus === 200) {
               const tag = attempt > 0 ? `[#${attempt + 1}] ` : "";
-              const who = subFor ? `${ctName || targetId} (sub for ${subFor})` : rankStr;
+              const who = subFor ? `${ctName || targetId} (sub for ${subFor}) | ${rankStr}` : rankStr;
               log(`Job ${jobId} - SMART ${tag}: ${who}${noteTag} | ${route}`, "OK");
               assigned = true;
               break;
