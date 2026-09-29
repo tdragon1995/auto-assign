@@ -145,7 +145,7 @@ export function invalidateStartLocCache(): void {
 
 // Returns Map<"pickup_id:dropoff_id", blocking_job_id> for assigned jobs today
 // where the pickup stop is not yet completed/rejected and window is not >1h away.
-function buildActiveRouteMap(jobs: any[]): Map<string, number> {
+export function buildActiveRouteMap(jobs: any[]): Map<string, number> {
   const result = new Map<string, number>();
 
   // Current VN time in minutes-since-midnight
@@ -161,6 +161,7 @@ function buildActiveRouteMap(jobs: any[]): Map<string, number> {
   for (const job of jobs) {
     if (job.job_status_id === 7 || job.job_status_id === 3) continue;
     if (rejectProxyId && job.delivery_driver_id === rejectProxyId) continue;
+    if (isDuplicateExemptJob(job)) continue;
     // Via-legs are supplementary pickups (intentional double-coverage) — they must not
     // block a location's own request, so keep them out of the active-route map.
     if ((job.labels ?? []).includes(PSC_VIA_LABEL)) continue;
@@ -203,6 +204,13 @@ function buildActiveRouteMap(jobs: any[]): Map<string, number> {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function hasPlanAttached(job: any): boolean {
   return job.last_assigned_plan_id != null || (Array.isArray(job.plans) && job.plans.length > 0);
+}
+
+// Fixed-schedule jobs from /api/schedule-job may intentionally share a route.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function isDuplicateExemptJob(job: any): boolean {
+  return (job.labels ?? []).some((label: string) =>
+    label === SCHEDULE_JOB_LABEL || DUPLICATE_EXEMPT_LABELS.includes(label));
 }
 
 /**
@@ -2045,14 +2053,12 @@ export async function autoAssignCycle(
   // a window, the route resolves through the normal positive path.
   for (const hj of jobs) {
     if (onlyJobIds?.has(hj.job_id)) continue;            // override-forced jobs aren't held
+    if (isDuplicateExemptJob(hj)) continue;
     if (!jobHasNotes(hj, new Date(), safeNotes) || isNoteApproved(hj)) continue;
     if (hj.stops?.find((s) => s.stop_type_id === 1)?.delivery_windows?.[0]?.time_from) continue; // windowed → parked, not held
     const pid = getCustomerIdFromJob(hj);
     const did = hj.stops?.find((s) => s.stop_type_id === 2)?.customer_id ?? null;
     if (!pid || !did) continue;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const labels: string[] = (hj as any).labels ?? [];
-    if (labels.some((l) => DUPLICATE_EXEMPT_LABELS.includes(l))) continue;
     const key = `${pid}:${did}`;
     if (!activeRouteMap.has(key)) activeRouteMap.set(key, -hj.job_id);  // negative = held → skip, not reject
   }
@@ -2168,7 +2174,7 @@ export async function autoAssignCycle(
     // ── Duplicate check: assign to proxy driver then JSONRPC-reject ──────────
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const jobLabels: string[] = (job as any).labels ?? [];
-    const isDuplicateExempt = jobLabels.some((l) => DUPLICATE_EXEMPT_LABELS.includes(l));
+    const isDuplicateExempt = isDuplicateExemptJob(job);
     const routeKey = dropoffId && !isDuplicateExempt ? `${customerId}:${dropoffId}` : null;
     // Past a PSC's closing time the job will actually go to the next PSC on its chain,
     // and its twin — booked a minute earlier and already moved — is filed under THAT
