@@ -7,6 +7,8 @@ import { parkScheduledJob } from "@/lib/scheduled-dispatch";
 import { STOP_STATUS, JOB_STATUS } from "@/lib/job-filters";
 import { pushRunLog, acquireCreateLock, releaseCreateLock, nextOrderNumber } from "@/lib/smart-log-kv";
 import { fetchJobDetail } from "@/lib/job-detail";
+import { danangPickupNote, validDanangPhone } from "@/lib/danang";
+import { notifyAdminGroup } from "@/lib/zalo";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -144,8 +146,8 @@ export async function GET(req: NextRequest) {
         .map((j) => {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const stops: any[] = j.stops ?? [];
-          const pickup  = stops.find((s: any) => s.stop_type_id === 1);
-          const dropoff = stops.find((s: any) => s.stop_type_id === 2);
+          const pickup  = stops.find((s) => s.stop_type_id === 1);
+          const dropoff = stops.find((s) => s.stop_type_id === 2);
           return {
             job_id:    j.job_id,
             reference: j.reference_number,
@@ -208,7 +210,7 @@ export async function POST(req: NextRequest) {
   let lockKey: string | null = null;
 
   try {
-    const { psc_code, tpl_uuid, eta, note, delivery_date } = await req.json();
+    const { psc_code, tpl_uuid, eta, note, delivery_date, recipient, recipient_phone } = await req.json();
 
     if (!psc_code || !tpl_uuid || !eta) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
@@ -216,6 +218,15 @@ export async function POST(req: NextRequest) {
     if (psc_code === "DANANG" && tpl_uuid !== DANANG_PICKUP_UUID) {
       return NextResponse.json({ error: "Invalid Đà Nẵng pickup location" }, { status: 400 });
     }
+    if (psc_code === "DANANG" && (typeof recipient !== "string" || !recipient.trim() || recipient.trim().length > 100 || /[\r\n]/.test(recipient) || typeof recipient_phone !== "string" || !validDanangPhone(recipient_phone))) {
+      return NextResponse.json({ error: "Vui lòng nhập người nhận và số điện thoại Việt Nam hợp lệ (10 số, bắt đầu bằng 0)." }, { status: 400 });
+    }
+    if (psc_code === "DANANG" && ((typeof note !== "string" && note != null) || (typeof note === "string" && note.length > 1000))) {
+      return NextResponse.json({ error: "Ghi chú không hợp lệ hoặc quá 1000 ký tự." }, { status: 400 });
+    }
+    const pickupNote = psc_code === "DANANG"
+      ? danangPickupNote(note ?? "", recipient, recipient_phone)
+      : note || null;
 
     let schedule: ReturnType<typeof pscTinhSchedule>;
     try {
@@ -306,7 +317,7 @@ export async function POST(req: NextRequest) {
           stop_type_id: 1,
           customer_id: tpl_uuid,
           duration: 5,
-          note: note || null,
+          note: pickupNote,
           delivery_windows: [{ time_from: etaFrom, time_to: etaTo }],
           todos: [
             { todo_type_id: 2, description: "" },
@@ -346,6 +357,16 @@ export async function POST(req: NextRequest) {
           msg: `[PSC-tỉnh] Job ${jobId} - Lên lịch THẤT BẠI: ${e} | ${psc_code}, ETA ${deliveryDate} ${eta}`,
         }]).catch(() => {});
       }
+    }
+    if (psc_code === "DANANG") {
+      await notifyAdminGroup(
+        `🧪 Yêu cầu lấy mẫu Đà Nẵng (${deliveryDate} ${eta})\n` +
+        `Từ: Hồ Chí Minh — ${DANANG_PICKUP_ADDRESS}\n` +
+        `Đến: D001 — Cao Thắng\n` +
+        `Ghi chú:\n${pickupNote}\n` +
+        `Job #${jobId ?? "?"}` +
+        (schedulingWarning ? "\n⚠️ Chưa hẹn giờ được — cần xử lý tay" : "")
+      );
     }
     void pushRunLog([{
       ts: vnTimestamp(),

@@ -12,6 +12,7 @@ import { proxyKind, driverLabel } from "@/lib/proxy-drivers";
 import { useParams } from "next/navigation";
 import { addDays, vnDate } from "@/lib/time";
 import { buildPscTinhTimeSlots, pscTinhDayLabel } from "@/lib/psc-tinh-time";
+import { validDanangPhone } from "@/lib/danang";
 
 interface TplOption {
   tpl_uuid: string;
@@ -261,6 +262,8 @@ export default function PscTinhPage({ pscCode }: { pscCode?: string }) {
   const [eta, setEta] = useState("");
   const [slotNow, setSlotNow] = useState<Date | null>(null);
   const [note, setNote] = useState("");
+  const [recipient, setRecipient] = useState("");
+  const [recipientPhone, setRecipientPhone] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
@@ -363,7 +366,7 @@ export default function PscTinhPage({ pscCode }: { pscCode?: string }) {
   };
 
   const submit = async () => {
-    if (!selectedUuid || !eta) return;
+    if (!selectedUuid || !eta || (code === "DANANG" && (!recipient.trim() || !validDanangPhone(recipientPhone)))) return;
     const [deliveryDate, etaTime] = eta.split("T");
     setLoading(true);
     setResult(null);
@@ -379,6 +382,7 @@ export default function PscTinhPage({ pscCode }: { pscCode?: string }) {
           eta: etaTime,
           delivery_date: deliveryDate,
           note,
+          ...(code === "DANANG" ? { recipient: recipient.trim(), recipient_phone: recipientPhone.trim() } : {}),
         }),
       });
       const data = await res.json();
@@ -412,6 +416,11 @@ export default function PscTinhPage({ pscCode }: { pscCode?: string }) {
           }, ...prev]);
         }
         setEta("");
+        if (code === "DANANG") {
+          setRecipient("");
+          setRecipientPhone("");
+          setNote("");
+        }
         if (options.length > 1) clearTpl();
       }
     } catch (e) {
@@ -450,7 +459,8 @@ export default function PscTinhPage({ pscCode }: { pscCode?: string }) {
   const done = orders.filter((o) => stateOf(o) === 3 && o.delivery_date === today);
   const timeSlots = slotNow ? buildPscTinhTimeSlots(slotNow) : [];
   const selectedTime = timeSlots.flatMap((day) => day.slots).some((slot) => slot.value === eta);
-  const canSubmit = selectedUuid && selectedTime && !loading;
+  const canSubmit = selectedUuid && selectedTime && !loading &&
+    (code !== "DANANG" || (recipient.trim() && validDanangPhone(recipientPhone)));
 
   return (
     <div className="min-h-screen bg-slate-100 flex justify-center">
@@ -527,6 +537,26 @@ export default function PscTinhPage({ pscCode }: { pscCode?: string }) {
                 <p id="psc-tinh-eta-hint" className="mt-1.5 text-xs text-slate-600">Cuộn qua 23:55 để chọn giờ ngày mai.</p>
               </div>
 
+              {code === "DANANG" && (
+                <>
+                  <div>
+                    <label htmlFor="danang-recipient" className="block text-sm font-semibold text-slate-700 mb-1.5">Người nhận *</label>
+                    <input id="danang-recipient" type="text" required maxLength={100} value={recipient} onChange={(e) => setRecipient(e.target.value)}
+                      className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                  </div>
+                  <div>
+                    <label htmlFor="danang-phone" className="block text-sm font-semibold text-slate-700 mb-1.5">Số điện thoại người nhận *</label>
+                    <input id="danang-phone" type="tel" inputMode="tel" autoComplete="tel" required maxLength={10}
+                      value={recipientPhone} onChange={(e) => setRecipientPhone(e.target.value)}
+                      aria-invalid={!!recipientPhone && !validDanangPhone(recipientPhone)} aria-describedby="danang-phone-hint"
+                      className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    <p id="danang-phone-hint" className={`mt-1.5 text-xs ${recipientPhone && !validDanangPhone(recipientPhone) ? "text-red-600" : "text-slate-500"}`}>
+                      Số di động Việt Nam gồm 10 số, bắt đầu bằng 0.
+                    </p>
+                  </div>
+                </>
+              )}
+
               <div>
                 <label className="block text-sm font-semibold text-slate-700 mb-1.5">
                   Ghi chú đặc biệt
@@ -537,6 +567,7 @@ export default function PscTinhPage({ pscCode }: { pscCode?: string }) {
                 <textarea
                   value={note}
                   onChange={(e) => setNote(e.target.value)}
+                  maxLength={code === "DANANG" ? 1000 : undefined}
                   rows={2}
                   className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 resize-none"
                 />

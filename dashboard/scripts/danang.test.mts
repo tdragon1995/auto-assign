@@ -1,0 +1,16 @@
+import assert from "node:assert/strict";
+import { danangPickupNote, validDanangPhone } from "../src/lib/danang";
+
+assert.equal(validDanangPhone("0901234567"), true);
+assert.equal(validDanangPhone(" 0901234567 "), true);
+assert.equal(validDanangPhone("1234567890"), false);
+assert.equal(validDanangPhone("090123456"), false);
+assert.equal(validDanangPhone("090123456a"), false);
+assert.equal(
+  danangPickupNote("  Mẫu khẩn  ", "  Nguyễn Văn A  ", "0901234567"),
+  "Mẫu khẩn\nNgười nhận: Nguyễn Văn A\nSố điện thoại: 0901234567"
+);
+assert.equal(
+  danangPickupNote("", "Nguyễn Văn A", "0901234567"),
+  "Người nhận: Nguyễn Văn A\nSố điện thoại: 0901234567"
+);
