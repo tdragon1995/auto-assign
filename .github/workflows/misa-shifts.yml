@@ -1,8 +1,8 @@
 name: MISA Driver Shifts
 
-# On demand only — no `schedule:`. The dashboard's "Đồng bộ MISA" button dispatches
-# this run via POST /api/misa-sync, so shifts refresh when a supervisor asks for
-# them rather than on a timer. Also runnable by hand from the Actions tab.
+# Dispatched by the daily 05:00 VN Vercel cron (/api/schedule-job) and the
+# dashboard's "Đồng bộ MISA" button (/api/misa-sync). No separate schedule here.
+# Also runnable by hand from the Actions tab.
 on:
   workflow_dispatch:
     inputs:

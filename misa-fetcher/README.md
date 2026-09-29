@@ -11,8 +11,13 @@ page itself.
 
 ## How it runs
 
-- **Scheduled:** GitHub Actions ([misa-shifts.yml](../.github/workflows/misa-shifts.yml))
-  at 04:45 and 12:00 VN daily, plus manual runs from the Actions tab.
+- **Scheduled:** The first daily Vercel cron (`/api/schedule-job`, 05:00 VN)
+  dispatches GitHub Actions ([misa-shifts.yml](../.github/workflows/misa-shifts.yml)).
+  The fetch runs asynchronously; job scheduling continues if dispatch fails.
+- **Manual:** Dashboard **Đồng bộ MISA** button, or the GitHub Actions tab.
+  Dashboard and cron dispatches share the in-flight guard and a 15-minute
+  cooldown measured from the previous run's start. Requires `GITHUB_DISPATCH_TOKEN`
+  on Vercel. The config refresh button does not trigger MISA.
 - **Locally:** `npm install && npx playwright install chromium`, copy
   `.env.example` → `.env`, then `npm run fetch` (or `npm run dry-run` to fetch
   without writing anywhere — output lands in `out/`).
