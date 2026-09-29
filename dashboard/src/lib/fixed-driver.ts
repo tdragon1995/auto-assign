@@ -43,6 +43,11 @@ export function isDriverOnShift(
   return jobMinutes > startMin && jobMinutes <= endMin;
 }
 
+/** A windowed job may enter the queue before its selected CONFIG shift begins. */
+export function waitForMappingShift(mapping: Mapping, jobTime: Date, now: Date): boolean {
+  return jobTime.getTime() > now.getTime() && !isDriverOnShift(mapping, now);
+}
+
 /**
  * The rows for this pickup that are ALLOWED to serve this destination.
  *

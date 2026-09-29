@@ -34,7 +34,7 @@ import { placeLabel } from "./place-label";
 import { stripDriverCode } from "./job-detail";
 import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, idleBand, isUnreachedAnchor, liveGpsRef, lastRealPositionRef, type RefStop, type RefLabel } from "./smart-rank";
 import { loadLeaveEntries, isDriverOnLeave, resolveSubstitute, type LeaveEntry } from "./leave-config";
-import { getDriversOnDuty, resolveFixedDriver, findSmartMapping } from "./fixed-driver";
+import { getDriversOnDuty, resolveFixedDriver, findSmartMapping, waitForMappingShift } from "./fixed-driver";
 
 
 const DUPLICATE_REJECT_REASON =
@@ -2267,6 +2267,10 @@ export async function autoAssignCycle(
     const smartMapping = findSmartMapping(config, customerId, jobTime, dropoffId);
 
     if (smartMapping) {
+      if (windowTimeFrom && waitForMappingShift(smartMapping, jobTime, new Date())) {
+        log(`Job ${jobId} - SMART waiting for CONFIG shift to start | ${route}`, "INFO");
+        continue;
+      }
       // ── 1-driver: straight assign (like fixed auto-assign) ──────────────
         if (smartMapping.smart_driver_id.length === 1) {
           let driverId   = smartMapping.smart_driver_id[0];
