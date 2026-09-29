@@ -360,12 +360,13 @@ export async function POST(req: NextRequest) {
     }
     if (psc_code === "DANANG") {
       await notifyAdminGroup(
-        `🧪 Yêu cầu lấy mẫu Đà Nẵng (${deliveryDate} ${eta})\n` +
+        `🧪 **Yêu cầu lấy mẫu Đà Nẵng** (${deliveryDate} ${eta})\n` +
         `Từ: Hồ Chí Minh — ${DANANG_PICKUP_ADDRESS}\n` +
         `Đến: D001 — Cao Thắng\n` +
         `Ghi chú:\n${pickupNote}\n` +
         `Job #${jobId ?? "?"}` +
-        (schedulingWarning ? "\n⚠️ Chưa hẹn giờ được — cần xử lý tay" : "")
+        (schedulingWarning ? "\n⚠️ Chưa hẹn giờ được — cần xử lý tay" : ""),
+        "markdown"
       );
     }
     void pushRunLog([{

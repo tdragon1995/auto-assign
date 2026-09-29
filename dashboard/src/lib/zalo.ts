@@ -50,13 +50,13 @@ export async function sendZaloMessage(
 
 // Fire-and-forget notification to the admin Zalo group. The thing being reported
 // has already been saved, so a Zalo failure must never fail the request.
-export async function notifyAdminGroup(text: string): Promise<void> {
+export async function notifyAdminGroup(text: string, parseMode?: ZaloParseMode): Promise<void> {
   if (!text) return;
   const botToken = process.env.ZALO_ADMIN_BOT_TOKEN;
   const chatId = process.env.ZALO_ADMIN_CHAT_ID;
   if (!botToken || !chatId) return;
   try {
-    await sendZaloMessage(botToken, chatId, text);
+    await sendZaloMessage(botToken, chatId, text, parseMode);
   } catch (e) {
     console.error("[zalo] admin notify failed", e);
   }

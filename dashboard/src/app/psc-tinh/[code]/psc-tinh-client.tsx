@@ -517,7 +517,7 @@ export default function PscTinhPage({ pscCode }: { pscCode?: string }) {
 
               <div>
                 <label htmlFor="psc-tinh-eta" className="block text-sm font-semibold text-slate-700 mb-1.5">
-                  {code === "DANANG" ? "Thời gian lấy mẫu" : "Thời gian tới nhà xe"}
+                  {code === "DANANG" ? <>Thời gian lấy mẫu <span className="text-red-600">*</span></> : "Thời gian tới nhà xe"}
                 </label>
                 <select
                   id="psc-tinh-eta"
@@ -540,13 +540,14 @@ export default function PscTinhPage({ pscCode }: { pscCode?: string }) {
               {code === "DANANG" && (
                 <>
                   <div>
-                    <label htmlFor="danang-recipient" className="block text-sm font-semibold text-slate-700 mb-1.5">Người nhận *</label>
+                    <label htmlFor="danang-recipient" className="block text-sm font-semibold text-slate-700 mb-1.5">Tên nhân viên <span className="text-red-600">*</span></label>
                     <input id="danang-recipient" type="text" required maxLength={100} value={recipient} onChange={(e) => setRecipient(e.target.value)}
                       className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400" />
                   </div>
                   <div>
-                    <label htmlFor="danang-phone" className="block text-sm font-semibold text-slate-700 mb-1.5">Số điện thoại người nhận *</label>
+                    <label htmlFor="danang-phone" className="block text-sm font-semibold text-slate-700 mb-1.5">Số Điện Thoại Nhân Viên <span className="text-red-600">*</span></label>
                     <input id="danang-phone" type="tel" inputMode="tel" autoComplete="tel" required maxLength={10}
+                      placeholder="Số để grab liên hệ lấy hàng"
                       value={recipientPhone} onChange={(e) => setRecipientPhone(e.target.value)}
                       aria-invalid={!!recipientPhone && !validDanangPhone(recipientPhone)} aria-describedby="danang-phone-hint"
                       className="w-full border rounded-xl px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-slate-400" />

@@ -8,9 +8,9 @@ assert.equal(validDanangPhone("090123456"), false);
 assert.equal(validDanangPhone("090123456a"), false);
 assert.equal(
   danangPickupNote("  Mẫu khẩn  ", "  Nguyễn Văn A  ", "0901234567"),
-  "Mẫu khẩn\nNgười nhận: Nguyễn Văn A\nSố điện thoại: 0901234567"
+  "Mẫu khẩn\nTên nhân viên: Nguyễn Văn A\nSố Điện Thoại Nhân Viên: 0901234567"
 );
 assert.equal(
   danangPickupNote("", "Nguyễn Văn A", "0901234567"),
-  "Người nhận: Nguyễn Văn A\nSố điện thoại: 0901234567"
+  "Tên nhân viên: Nguyễn Văn A\nSố Điện Thoại Nhân Viên: 0901234567"
 );
