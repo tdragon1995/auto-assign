@@ -1,7 +1,7 @@
 import { BASE_URL, getCustomerById, getHeaders } from "./cartrack";
 import { DELIVERY_BASE, getAdminToken, updateLocationAddress, updateLocationPhone, updatePickDropLocation } from "./labcenter";
 import { nearestPsc, newWard, GEO_DATASET_VERSION } from "./master-geo";
-import { masterClient, masterDriver } from "./master-store";
+import { masterClient, masterDriver, masterEnabled } from "./master-store";
 import { sbPatch, sbUpsert } from "./supabase-rest";
 import { SHEET_GID, SHEET_ID } from "./sheets";
 import { getSheetsClient } from "./sheets-writer";
@@ -9,10 +9,11 @@ import { getSheetsClient } from "./sheets-writer";
 async function assertSheetRenameSafe(id:string,names:string[]) {
   const sheets=getSheetsClient();
   const meta=await sheets.spreadsheets.get({spreadsheetId:SHEET_ID,fields:"sheets.properties"});
-  const gids=new Set<string>([SHEET_GID.mapping,SHEET_GID.sunday,SHEET_GID.nghi_phep,SHEET_GID.drivers,SHEET_GID.locations]);
+  const gids=new Set<string>([SHEET_GID.sunday,SHEET_GID.drivers,SHEET_GID.locations,
+    ...(masterEnabled() ? [] : [SHEET_GID.mapping,SHEET_GID.nghi_phep])]);
   const relevant=meta.data.sheets?.filter(s=>gids.has(String(s.properties?.sheetId)) ||
     s.properties?.title?.startsWith("(Edit weekly) PUBLIC SUNDAY"))??[];
-  if(relevant.length<5) throw new Error("Không xác minh được các tab Google Sheet còn dùng tên");
+  if(relevant.length<gids.size) throw new Error("Không xác minh được các tab Google Sheet còn dùng tên");
   const ranges=relevant.map(s=>`'${s.properties!.title!.replace(/'/g,"''")}'`);
   const values=await sheets.spreadsheets.values.batchGet({spreadsheetId:SHEET_ID,ranges});
   if(values.data.valueRanges?.length!==ranges.length) throw new Error("Không đọc đủ tham chiếu Google Sheet");
@@ -36,8 +37,13 @@ export async function editClient(id: string, patch: Record<string, unknown>) {
   if (!row) throw new Error("Khách hàng không có trong Master Client Info");
   const token = row.labcenter_location_id ? await getAdminToken() : null;
   if (row.labcenter_location_id && !token) throw new Error("Không đăng nhập được Labcenter — chưa thay đổi Cartrack");
-  const allowed = new Set(["customer_name", "address_line_1", "latitude", "longitude", "contact_number", "default_dropoff_id", "eta_minutes"]);
+  const allowed = new Set(["customer_name", "address_line_1", "address_line_2", "email", "postal_code", "client_reference", "latitude", "longitude", "contact_number", "default_dropoff_id", "eta_minutes"]);
   if (Object.keys(patch).some((k) => !allowed.has(k))) throw new Error("Trường cập nhật không hợp lệ");
+  for (const [key, value] of Object.entries(patch)) {
+    if (["latitude", "longitude", "eta_minutes"].includes(key)) {
+      if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${key} không hợp lệ`);
+    } else if (typeof value !== "string") throw new Error(`${key} không hợp lệ`);
+  }
   const current = (await getCustomerById(id))?.data;
   if (!current) throw new Error("Không đọc được khách hàng từ Cartrack");
   const name = patch.customer_name === undefined ? current.customer_name : requiredText(patch.customer_name, "Tên");
@@ -47,7 +53,16 @@ export async function editClient(id: string, patch: Record<string, unknown>) {
   const lon = patch.longitude === undefined ? Number(current.longitude) : Number(patch.longitude);
   if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) throw new Error("GPS không hợp lệ");
   const contact = patch.contact_number === undefined ? current.contact_number : requiredText(patch.contact_number, "Số điện thoại");
-  const changeCartrack = ["customer_name", "address_line_1", "latitude", "longitude", "contact_number"].some((k) => k in patch);
+  const changeCartrack = ["customer_name", "address_line_1", "address_line_2", "email", "postal_code", "client_reference", "latitude", "longitude", "contact_number"].some((k) => k in patch);
+  const dropId = patch.default_dropoff_id === undefined ? row.default_dropoff_id : String(patch.default_dropoff_id);
+  const eta = patch.eta_minutes === undefined ? row.eta_minutes : Number(patch.eta_minutes);
+  const changeDropoff = patch.default_dropoff_id !== undefined || patch.eta_minutes !== undefined;
+  const drop = changeDropoff && dropId && uuid.test(dropId) ? await masterClient(dropId) : null;
+  if (changeDropoff) {
+    if (!row.labcenter_location_id || !token) throw new Error("Điểm này chưa liên kết Labcenter");
+    if (!dropId || !uuid.test(dropId) || !Number.isInteger(eta) || eta! < 0 || eta! > 1440) throw new Error("Điểm giao hoặc ETA không hợp lệ");
+    if (!drop?.labcenter_location_id) throw new Error("Điểm giao chưa liên kết Labcenter");
+  }
   let after = current;
   if (changeCartrack) {
     const payload = {
@@ -55,19 +70,23 @@ export async function editClient(id: string, patch: Record<string, unknown>) {
       contact_number: contact, address_line_1: address, address_line_2: current.address_line_2,
       postal_code: current.postal_code, country_id: current.country_id,
       latitude: lat, longitude: lon, client_reference: current.client_reference,
+      ...Object.fromEntries(["address_line_2", "email", "postal_code", "client_reference"].filter(k => k in patch).map(k => [k, patch[k]])),
     };
     const res = await fetch(`${BASE_URL}/customers/${id}`, { method: "PUT", headers: getHeaders(), body: JSON.stringify(payload) });
     if (!res.ok) throw new Error(`Cartrack HTTP ${res.status}: ${(await res.text()).slice(0, 180)}`);
     after = (await getCustomerById(id))?.data;
     if (!after || after.customer_name !== name || after.address_line_1 !== address ||
-        Number(after.latitude) !== lat || Number(after.longitude) !== lon || after.contact_number !== contact) {
+        Number(after.latitude) !== lat || Number(after.longitude) !== lon || String(after.contact_number ?? "") !== String(contact ?? "") ||
+        ["address_line_2", "email", "postal_code", "client_reference"].some(k => k in patch && String(after[k] ?? "") !== String(patch[k] ?? ""))) {
       throw new Error("Cartrack trả 200 nhưng dữ liệu không khớp khi đọc lại");
     }
-    const psc = await nearestPsc(lat, lon);
+    const gpsChanged = lat !== Number(current.latitude) || lon !== Number(current.longitude);
+    const psc = gpsChanged ? await nearestPsc(lat, lon) : null;
     await sbUpsert("master_clients", [{
-      customer_id: id, cartrack: after, new_ward: newWard(lat, lon),
-      nearest_psc_id: psc?.id ?? null, nearest_psc_name: psc?.name ?? null,
-      nearest_psc_km: psc?.km ?? null, geo_calculated_at:new Date().toISOString(),geo_dataset_version:GEO_DATASET_VERSION,
+      customer_id: id, cartrack: after,
+      ...(gpsChanged ? { new_ward: newWard(lat, lon), nearest_psc_id: psc?.id ?? null,
+        nearest_psc_name: psc?.name ?? null, nearest_psc_km: psc?.km ?? null,
+        geo_calculated_at:new Date().toISOString(),geo_dataset_version:GEO_DATASET_VERSION } : {}),
     }], "customer_id");
   }
   if (changeCartrack && token && row.labcenter_location_id) {
@@ -87,13 +106,7 @@ export async function editClient(id: string, patch: Record<string, unknown>) {
       if (!res.ok) throw new Error(`Cartrack đã lưu; Labcenter tên HTTP ${res.status}`);
     }
   }
-  if (patch.default_dropoff_id !== undefined || patch.eta_minutes !== undefined) {
-    if (!row.labcenter_location_id || !token) throw new Error("Điểm này chưa liên kết Labcenter");
-    const dropId = patch.default_dropoff_id === undefined ? row.default_dropoff_id : String(patch.default_dropoff_id);
-    const eta = patch.eta_minutes === undefined ? row.eta_minutes : Number(patch.eta_minutes);
-    if (!dropId || !uuid.test(dropId) || !Number.isInteger(eta) || eta! < 0 || eta! > 1440) throw new Error("Điểm giao hoặc ETA không hợp lệ");
-    const drop = await masterClient(dropId);
-    if (!drop?.labcenter_location_id) throw new Error("Điểm giao chưa liên kết Labcenter");
+  if (changeDropoff && row.labcenter_location_id && token && dropId && drop?.labcenter_location_id) {
     const result = await updatePickDropLocation({
       pickId: id, dropId, etaMins: eta!, lcLocationId: row.labcenter_location_id,
       dropLocationId: drop.labcenter_location_id,
@@ -124,6 +137,10 @@ export async function editDriver(id: string, patch: Record<string, unknown>) {
   }
   for (const [key, value] of Object.entries(patch)) {
     if (value !== null && typeof value !== "string") throw new Error(`${key} không hợp lệ`);
+    if (["start_location_customer_id", "end_location_customer_id"].includes(key) && value !== null &&
+        (typeof value !== "string" || !uuid.test(value) || !(await masterClient(value)))) throw new Error("Điểm tài xế không hợp lệ");
+    if (["shift_time_start", "shift_time_end"].includes(key) && value !== null &&
+        (typeof value !== "string" || !/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?(\+07:00)?$/.test(value))) throw new Error("Ca tài xế không hợp lệ");
   }
   let after = row.cartrack;
   if (Object.keys(cartrackPatch).length) {
@@ -132,7 +149,9 @@ export async function editDriver(id: string, patch: Record<string, unknown>) {
     const check = await fetch(`${BASE_URL}/drivers/${id}`, { headers: getHeaders(), cache: "no-store" });
     if (!check.ok) throw new Error(`Cartrack đã lưu nhưng không đọc lại được (HTTP ${check.status})`);
     after = (await check.json()).data;
-    if (Object.entries(cartrackPatch).some(([k, v]) => after?.[k] !== v)) throw new Error("Cartrack trả 200 nhưng dữ liệu không khớp khi đọc lại");
+    if (Object.entries(cartrackPatch).some(([k, v]) => ["shift_time_start", "shift_time_end"].includes(k)
+      ? String(after?.[k] ?? "").slice(0,5) !== String(v ?? "").slice(0,5)
+      : String(after?.[k] ?? "") !== String(v ?? ""))) throw new Error("Cartrack trả 200 nhưng dữ liệu không khớp khi đọc lại");
     await sbUpsert("master_drivers", [{ driver_id: id, cartrack: after }], "driver_id");
   }
   if (Object.keys(localPatch).length) await sbPatch("master_drivers", `driver_id=eq.${id}`, localPatch);

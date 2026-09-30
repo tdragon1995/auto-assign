@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { syncCartrackDetailPage, syncCartrackProfiles, syncLabcenterMetadata } from "@/lib/master-sync";
 import { syncMasterSheet } from "@/lib/master-sheet-sync";
+import { invalidateConfigCache, invalidateDriversCache } from "@/lib/config";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -27,6 +28,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: true, details: await syncCartrackDetailPage(kind, offset, limit) });
     }
     const profiles = phase === "all" || phase === "profiles" || phase === "bootstrap" ? await syncCartrackProfiles() : null;
+    if (profiles) { invalidateDriversCache(); await invalidateConfigCache(); }
     const imported = phase === "bootstrap" ? await syncMasterSheet() : null;
     const labcenter = phase === "metadata" ? await syncLabcenterMetadata(offset, limit)
       : phase === "all" && profiles?.newClientCodes.length ? await syncLabcenterMetadata(0, 200, profiles.newClientCodes) : null;
@@ -39,19 +41,19 @@ export async function GET(req: NextRequest) {
 
 /** An intentional refresh from the existing Config panel; no scheduled sync. */
 export async function POST(req: NextRequest) {
-  const key = process.env.MASTER_CLIENT_INFO_EDIT_KEY;
-  if (!key || req.headers.get("x-master-edit-key") !== key) {
-    return NextResponse.json({ error: "Master Client Info access denied" }, { status: 401 });
-  }
   try {
     const phase = req.nextUrl.searchParams.get("phase") ?? "profiles";
     if (phase === "sheet") {
+      const key = process.env.MASTER_CLIENT_INFO_EDIT_KEY;
+      if (!key || req.headers.get("x-master-edit-key") !== key) return NextResponse.json({ error: "Master Client Info access denied" }, { status: 401 });
       const dryRun = req.nextUrl.searchParams.get("dryRun") === "1";
       const result = await syncMasterSheet(dryRun);
       return NextResponse.json({ ok: !result.blocked, ...result });
     }
     if (phase !== "profiles") throw new Error("Invalid sync phase");
     const profiles = await syncCartrackProfiles();
+    invalidateDriversCache();
+    await invalidateConfigCache();
     const labcenter = profiles.newClientCodes.length
       ? await syncLabcenterMetadata(0, 200, profiles.newClientCodes) : null;
     return NextResponse.json({ ok: true, profiles: { ...profiles, newClientCodes: profiles.newClientCodes.length }, labcenter });

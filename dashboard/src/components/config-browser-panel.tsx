@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { Info, Search } from "lucide-react";
+import { Search } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,8 @@ import type { ConfigTextOperator } from "@/lib/config-filters";
 import { BranchEditor, TimeSelect } from "./config-todo-panel";
 import { DriverCombobox } from "./driver-combobox";
 import { FilterMultiSelect } from "./filter-multi-select";
+import { HoverPanel } from "./hover-panel";
+import { MasterProfileEditor } from "./master-profile-editor";
 import type { ConfigRowView } from "@/app/api/config/rows/route";
 import type { BranchRule, ConfigDriver } from "@/lib/types";
 
@@ -53,6 +55,7 @@ type ClientMeta = {
   client_code: string | null; new_ward: string | null;
   nearest_psc_name: string | null; nearest_psc_km: number | null;
   default_dropoff_name: string | null; eta_minutes: number | null;
+  default_dropoff_id: string | null; labcenter_location_id: number | null;
   sales_name: string | null; sales_email: string | null;
   supervisor_name: string | null; supervisor_email: string | null;
 };
@@ -61,7 +64,6 @@ type DriverMeta = {
   driver_zalo_id: string | null; phone_number_update: string | null; has_bot_token: boolean;
 };
 let sessionMetadata: { clients: ClientMeta[]; drivers: DriverMeta[] } | null = null;
-let sessionSyncKey = "";
 const value = (v: unknown) => v == null || v === "" ? "—" : String(v);
 const clientName = (c: ClientMeta) => String(c.cartrack.customer_name ?? c.customer_id);
 
@@ -435,7 +437,7 @@ function BulkBar({
               beside a stale selection reads the same whether it means two rows
               or a hundred and fifty. */}
           <span className="text-[11px] font-semibold text-red-800">
-            Xoá {targets.length} dòng khỏi sheet? Không hoàn tác được.
+            Xác nhận xoá {targets.length} dòng cấu hình đã chọn?
           </span>
           <label className="flex items-center gap-1 text-[11px] text-red-800">
             <input
@@ -500,7 +502,8 @@ function ReplaceDriverPanel({
   const [to, setTo] = useState("");
   const [excluded, setExcluded] = useState<ReadonlySet<number>>(new Set());
   const [busy, setBusy] = useState(false);
-  const [availableDrivers, setAvailableDrivers] = useState(drivers);
+  const [refreshedDrivers, setAvailableDrivers] = useState<ConfigDriver[] | null>(null);
+  const availableDrivers = refreshedDrivers ?? drivers;
   const [refreshingDrivers, setRefreshingDrivers] = useState(false);
 
   const fromDrivers = useMemo<ConfigDriver[]>(
@@ -644,7 +647,7 @@ function ReplaceDriverPanel({
                         </div>
                       )}
                     </div>
-                    <span className="font-mono text-[10px] text-slate-500">{r.row}</span>
+                    {!r.rule_id && <span className="font-mono text-[10px] text-slate-500">{r.row}</span>}
                   </li>
                 );
               })}
@@ -748,10 +751,32 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
   const [driverMetadata, setDriverMetadata] = useState<DriverMeta[] | null>(sessionMetadata?.drivers ?? null);
   const [metaBusy, setMetaBusy] = useState(false);
   const [syncingCartrack, setSyncingCartrack] = useState(false);
-  const [syncingSheet, setSyncingSheet] = useState(false);
   const [metaError, setMetaError] = useState("");
-  const [infoOpenRow, setInfoOpenRow] = useState<number | null>(null);
-  const [infoOpenDriver, setInfoOpenDriver] = useState<{ row: number; id: string } | null>(null);
+  const [profileHover, setProfileHover] = useState<{ kind: "client" | "driver"; id: string; anchor: HTMLElement; pinned: boolean } | null>(null);
+  const [profileEditing, setProfileEditing] = useState(false);
+  const profileOpenTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const profileCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearProfileTimers = () => {
+    if (profileOpenTimer.current) clearTimeout(profileOpenTimer.current);
+    if (profileCloseTimer.current) clearTimeout(profileCloseTimer.current);
+    profileOpenTimer.current = profileCloseTimer.current = null;
+  };
+  useEffect(() => () => {
+    if (profileOpenTimer.current) clearTimeout(profileOpenTimer.current);
+    if (profileCloseTimer.current) clearTimeout(profileCloseTimer.current);
+  }, []);
+  const openProfile = (kind: "client" | "driver", id: string, anchor: HTMLElement, pinned = false) => {
+    clearProfileTimers();
+    if (profileHover?.pinned && !pinned) return;
+    const open = () => { setProfileEditing(false); setProfileHover({ kind, id, anchor, pinned }); };
+    if (pinned) open(); else profileOpenTimer.current = setTimeout(open, 250);
+  };
+  const leaveProfile = () => {
+    clearProfileTimers();
+    profileCloseTimer.current = setTimeout(() => setProfileHover(p => p?.pinned ? p : null), 200);
+  };
+  const closeProfile = () => { clearProfileTimers(); setProfileHover(null); setProfileEditing(false); };
+  const pinProfile = () => setProfileHover(p => p ? { ...p, pinned: true } : p);
   const [replacing, setReplacing] = useState(false);
   const loadedRef = useRef(false);
 
@@ -791,28 +816,30 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
     finally { setMetaBusy(false); }
   }, []);
 
-  const syncProfiles = async (phase: "cartrack" | "sheet") => {
-    const key = sessionSyncKey || window.prompt("Mã truy cập để đồng bộ dữ liệu") || "";
-    if (!key) return;
-    sessionSyncKey = key;
-    const setBusy = phase === "cartrack" ? setSyncingCartrack : setSyncingSheet;
-    setBusy(true);
+  const syncProfiles = async () => {
+    setSyncingCartrack(true);
     try {
-      const res = await fetch(`/api/master-client-info/sync${phase === "sheet" ? "?phase=sheet&dryRun=1" : ""}`, {
-        method: "POST", headers: { "x-master-edit-key": key }, cache: "no-store",
+      const res = await fetch("/api/master-client-info/sync", {
+        method: "POST", cache: "no-store",
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      if (phase === "cartrack") await loadMetadata();
-      toast.success(phase === "sheet"
-        ? `Đối chiếu ${data.config.total} dòng config, ${data.leave.total} dòng nghỉ phép · ${data.issues.length} vấn đề`
-        : `Đã đồng bộ ${data.profiles.clients} khách hàng, ${data.profiles.drivers} tài xế`);
-    } catch (e) { sessionSyncKey = ""; toast.error(e instanceof Error ? e.message : String(e)); }
-    finally { setBusy(false); }
+      await loadMetadata();
+      toast.success(`Đã đồng bộ ${data.profiles.clients} khách hàng, ${data.profiles.drivers} tài xế`);
+    } catch (e) { toast.error(e instanceof Error ? e.message : String(e)); }
+    finally { setSyncingCartrack(false); }
   };
 
   const clientMetaById = useMemo(() => new Map((clientMetadata ?? []).map((c) => [c.customer_id, c])), [clientMetadata]);
   const driverMetaById = useMemo(() => new Map((driverMetadata ?? []).map((d) => [d.driver_id, d])), [driverMetadata]);
+  const rosterDrivers = useMemo(() => driverMetadata ? driverMetadata.filter(d => d.cartrack.is_active !== false).map(d => ({
+    driver_id: d.driver_id, name: `${d.cartrack.first_name ?? ""} ${d.cartrack.last_name ?? ""}`.trim() || d.driver_id,
+  })).sort((a, b) => a.name.localeCompare(b.name)) : drivers, [driverMetadata, drivers]);
+  const hoverClient = profileHover?.kind === "client" ? clientMetaById.get(profileHover.id) : null;
+  const hoverDriver = profileHover?.kind === "driver" ? driverMetaById.get(profileHover.id) : null;
+  const hoverName = hoverClient ? clientName(hoverClient) : hoverDriver ? displayDriverCell(`${hoverDriver.cartrack.first_name ?? ""} ${hoverDriver.cartrack.last_name ?? ""}`.trim()) : "";
+  const showSheetRow = sheetRows.length > 0 && !sheetRows.some(r => r.rule_id);
+  const tableColumns = showSheetRow ? 7 : 6;
   const clientMetaByName = useMemo(() => {
     const byName = new Map<string, ClientMeta | null>();
     for (const client of clientMetadata ?? []) {
@@ -980,11 +1007,8 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
             </span>
           )}
           {metaBusy && <span className="text-[11px] text-slate-500">Đang tải thông tin…</span>}
-          <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={syncingCartrack || syncingSheet} onClick={() => void syncProfiles("cartrack")}>
+          <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={syncingCartrack} onClick={() => void syncProfiles()}>
             {syncingCartrack ? "Đang đồng bộ…" : "Đồng bộ Cartrack"}
-          </Button>
-          <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={syncingCartrack || syncingSheet} onClick={() => void syncProfiles("sheet")}>
-            {syncingSheet ? "Đang đối chiếu…" : "Đối chiếu Google Sheet"}
           </Button>
           <Button
             size="sm" variant={replacing ? "default" : "outline"}
@@ -1136,7 +1160,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
         {replacing && (
           <ReplaceDriverPanel
             rows={rows}
-            drivers={drivers}
+            drivers={rosterDrivers}
             fromOptions={optionValues.drivers}
             onDone={() => { setReplacing(false); clearSelection(); void load(true); }}
             onClose={() => setReplacing(false)}
@@ -1146,7 +1170,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
         {selectedRows.length > 0 && (
           <BulkBar
             targets={selectedRows}
-            drivers={drivers}
+            drivers={rosterDrivers}
             onDone={() => { clearSelection(); void load(true); }}
             onClear={clearSelection}
           />
@@ -1165,8 +1189,8 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                 <col className="w-[25%]" />
                 <col className="w-[31%]" />
                 <col className="w-[17%]" />
-                <col className="w-[13%]" />
-                <col className="w-[4%]" />
+                <col className={showSheetRow ? "w-[13%]" : "w-[17%]"} />
+                {showSheetRow && <col className="w-[4%]" />}
               </colgroup>
               {/* z-10: the shift strips are positioned, and without a stacking
                   order of its own the sticky header scrolled UNDER them. */}
@@ -1196,7 +1220,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                     Ca <span className="ml-1 font-normal text-slate-500">(0–12–24h)</span>
                   </th>
                   <th className="px-2 py-1 text-left font-medium whitespace-nowrap">Điểm giao</th>
-                  <th className="px-2 py-1 text-right font-medium" title="Số dòng trên sheet">Dòng</th>
+                  {showSheetRow && <th className="px-2 py-1 text-right font-medium" title="Số dòng Google Sheet Chủ nhật">Dòng</th>}
                 </tr>
               </thead>
               <tbody>
@@ -1211,7 +1235,6 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                   const lastOfBranch = i === shown.length - 1 || runStart[i + 1] !== runStart[i];
                   const inactive = isInactive(r.pickup);
                   const locationInfo = clientMetaById.get(r.customer_id) ?? clientMetaByName.get(r.pickup.trim().toLocaleLowerCase("vi"));
-                  const driverInfo = infoOpenDriver?.row === r.row ? driverMetaById.get(infoOpenDriver.id) : null;
                   // Every row of the route being edited is marked: the editor
                   // holds the route's WHOLE day, so these rows are the very
                   // things it is about to rewrite.
@@ -1267,14 +1290,13 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                             </span>
                           )}
                           {r.unmapped && <span className="mr-1.5 rounded border border-amber-300 bg-amber-100 px-1 text-[10px] font-semibold text-amber-900">Chưa có config</span>}
-                          <span title={locationInfo ? clientTooltip(locationInfo) : undefined} className={inactive ? "text-slate-500" : "font-medium text-slate-900"}>
+                          <button type="button" disabled={!locationInfo} aria-haspopup="dialog" aria-expanded={profileHover?.kind === "client" && profileHover.id === locationInfo?.customer_id}
+                            onPointerEnter={e => { if (locationInfo && e.pointerType === "mouse") openProfile("client", locationInfo.customer_id, e.currentTarget); }}
+                            onPointerLeave={e => { if (e.pointerType === "mouse") leaveProfile(); }}
+                            onClick={e => { if (locationInfo) openProfile("client", locationInfo.customer_id, e.currentTarget, true); }}
+                            className={`text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${inactive ? "text-slate-500" : "font-medium text-slate-900"}`}>
                             {r.pickup ? r.pickup.replace(INACTIVE_PREFIX, "") : <span className="text-slate-500">—</span>}
-                          </span>
-                          {locationInfo && <button type="button" aria-label={`Xem thông tin ${r.pickup}`} aria-expanded={infoOpenRow === r.row}
-                            title={clientTooltip(locationInfo)} onClick={() => { setInfoOpenDriver(null); setInfoOpenRow(infoOpenRow === r.row ? null : r.row); }}
-                            className="ml-1 inline-flex align-middle text-slate-500 hover:text-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">
-                            <Info className="size-3.5" aria-hidden />
-                          </button>}
+                          </button>
                         </>
                       ) : (
                         // Still named for a screen reader, which reads a row
@@ -1288,10 +1310,12 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                         const detail = driverMetaById.get(id);
                         return <span key={`${id}-${index}`}>
                           {index > 0 && ", "}
-                          {detail ? <button type="button" title={driverTooltip(detail, clientMetaById)}
+                          {detail ? <button type="button" aria-haspopup="dialog"
                             aria-label={`Xem thông tin tài xế ${displayDriverCell(name)}`}
-                            aria-expanded={infoOpenDriver?.row === r.row && infoOpenDriver.id === id}
-                            onClick={() => { setInfoOpenRow(null); setInfoOpenDriver(infoOpenDriver?.row === r.row && infoOpenDriver.id === id ? null : { row: r.row, id }); }}
+                            aria-expanded={profileHover?.kind === "driver" && profileHover.id === id}
+                            onPointerEnter={e => { if (e.pointerType === "mouse") openProfile("driver", id, e.currentTarget); }}
+                            onPointerLeave={e => { if (e.pointerType === "mouse") leaveProfile(); }}
+                            onClick={e => openProfile("driver", id, e.currentTarget, true)}
                             className="text-left hover:text-indigo-700 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">
                             {displayDriverCell(name)}
                           </button> : displayDriverCell(name)}
@@ -1314,19 +1338,9 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                     <td className="truncate px-2 py-1 text-slate-700" title={r.dropoff || undefined}>
                       {r.dropoff || <span className="whitespace-nowrap text-slate-500">mọi điểm</span>}
                     </td>
-                    <td className="px-2 py-1 text-right font-mono text-[10px] text-slate-500">{r.unmapped ? "—" : r.row}</td>
+                    {showSheetRow && <td className="px-2 py-1 text-right font-mono text-[10px] text-slate-500">{r.unmapped ? "—" : r.row}</td>}
                   </tr>
                   ),
-                  infoOpenRow === r.row && locationInfo ? (
-                    <tr key={`${r.row}-info`} className="bg-slate-50 text-xs text-slate-700">
-                      <td colSpan={7} className="px-3 py-2 whitespace-pre-line">{clientTooltip(locationInfo)}</td>
-                    </tr>
-                  ) : null,
-                  driverInfo ? (
-                    <tr key={`${r.row}-driver-info`} className="bg-slate-50 text-xs text-slate-700">
-                      <td colSpan={7} className="px-3 py-2 whitespace-pre-line">{driverTooltip(driverInfo, clientMetaById)}</td>
-                    </tr>
-                  ) : null,
                   // Directly beneath the branch it was opened from — under its
                   // LAST row, so the run stays in one piece above the form that
                   // rewrites it. It used to render in its own box ABOVE the
@@ -1335,7 +1349,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                   // is what the "Cần xử lý" rows already do with this editor.
                   runOpen && lastOfBranch && editingRows.length > 0 ? (
                     <tr key={`${r.row}-edit`} className="bg-indigo-50/60">
-                      <td colSpan={7} className="px-2 pb-2">
+                      <td colSpan={tableColumns} className="px-2 pb-2">
                         <div className="py-1 text-xs font-medium text-indigo-900">
                           {editingRows[0].unmapped ? `Thiết lập config ${editingRows[0].pickup}` : `Sửa toàn bộ lịch ${editingRows[0].pickup} → ${editingRows[0].dropoff || "mọi điểm giao"} · ${editingRows.length} ca`}
                         </div>
@@ -1350,7 +1364,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                             copyFromRow: rows.find((row) => !row.unmapped && row.smart && row.row > 2)?.row
                               ?? rows.find((row) => !row.unmapped && row.row > 2)?.row,
                           }] : []}
-                          drivers={drivers}
+                          drivers={rosterDrivers}
                           onCancel={() => setEditing(null)}
                           onDone={() => { setEditing(null); void load(); }}
                           onStale={() => { setEditing(null); void load(true); }}
@@ -1376,6 +1390,23 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
           )}
         </div>
       </CardContent>
+      <HoverPanel anchor={profileHover?.anchor ?? null} open={!!(hoverClient || hoverDriver)} label={hoverName}
+        onClose={closeProfile} onEngage={pinProfile} onPointerEnter={clearProfileTimers} onPointerLeave={leaveProfile}>
+        <div className="space-y-3 p-2">
+          <div className="flex items-start justify-between gap-3"><h3 className="text-sm font-semibold text-slate-900">{hoverName}</h3>
+            <button type="button" onClick={closeProfile} className="text-xs text-slate-600 underline focus-visible:ring-2 focus-visible:ring-indigo-500">Đóng</button></div>
+          {profileEditing && profileHover && (hoverClient || hoverDriver) ? <MasterProfileEditor
+            key={`${profileHover.kind}-${profileHover.id}`} kind={profileHover.kind} id={profileHover.id}
+            initial={hoverClient ? { ...hoverClient.cartrack, default_dropoff_id: hoverClient.default_dropoff_id, eta_minutes: hoverClient.eta_minutes }
+              : { ...hoverDriver!.cartrack, ...hoverDriver!.roster, driver_zalo_id: hoverDriver!.driver_zalo_id, phone_number_update: hoverDriver!.phone_number_update }}
+            clients={clientMetadata ?? []} linkedLabcenter={!!hoverClient?.labcenter_location_id}
+            onCancel={() => setProfileEditing(false)} onSaved={async () => { await loadMetadata(); await load(true); closeProfile(); toast.success("Đã lưu và đồng bộ hồ sơ"); }}
+          /> : <>
+            <div className="whitespace-pre-line text-xs leading-5 text-slate-700">{hoverClient ? clientTooltip(hoverClient) : hoverDriver ? driverTooltip(hoverDriver, clientMetaById) : ""}</div>
+            <div className="flex justify-end"><Button size="sm" variant="outline" onClick={() => { pinProfile(); setProfileEditing(true); }}>Sửa hồ sơ</Button></div>
+          </>}
+        </div>
+      </HoverPanel>
     </Card>
   );
 }

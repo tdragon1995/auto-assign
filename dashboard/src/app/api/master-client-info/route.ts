@@ -1,10 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { editClient, editDriver } from "@/lib/master-profile";
-import { deleteMasterRule, masterClient, masterClients, masterDrivers, masterRules, saveMasterRule, type MasterClient, type RuleInput } from "@/lib/master-store";
+import { deleteMasterRule, masterClient, masterClients, masterDrivers, masterRules, saveMasterRule, type RuleInput } from "@/lib/master-store";
 import { invalidateConfigCache, invalidateDriversCache } from "@/lib/config";
-import { cartrackList, syncLabcenterMetadata } from "@/lib/master-sync";
-import { sbSelectAll } from "@/lib/supabase-rest";
-import { fetchSheetRows, SHEET_CONTRACT, SHEET_GID } from "@/lib/sheets";
+import { syncLabcenterMetadata } from "@/lib/master-sync";
 import { publicClient, publicDriver, publicRule } from "@/lib/master-public";
 import { masterEnabled } from "@/lib/master-store";
 
@@ -22,32 +20,6 @@ export async function GET(req: NextRequest) {
   if (!authorized(req)) return deny();
   try {
     const view = req.nextUrl.searchParams.get("view");
-    if (view === "summary") {
-      const [clients, sheet, live] = await Promise.all([
-        sbSelectAll<Pick<MasterClient, "customer_id" | "client_code"> & { customer_name: string | null }>(
-          "master_clients",
-          "select=customer_id,customer_name:cartrack->>customer_name,client_code,new_ward,nearest_psc_name,nearest_psc_km,default_dropoff_name,eta_minutes,sales_name,sales_email,supervisor_name,supervisor_email",
-          "customer_id.asc",
-        ),
-        fetchSheetRows(SHEET_GID.mapping, SHEET_CONTRACT.mapping),
-        cartrackList("customers").catch((e) => { console.error("Cartrack client list unavailable; using stored profiles", e); return []; }),
-      ]);
-      if (clients.length < 100 || sheet.length < 100) throw new Error("Danh sách khách hàng hoặc Google Sheet chưa tải đủ — thử lại");
-      const ids = new Set(sheet.map((r) => r.customer_id?.trim()).filter(Boolean));
-      const names = new Set(sheet.filter((r) => !r.customer_id?.trim()).map((r) => r["Điểm Pick-up"]?.trim().toLocaleLowerCase("vi")).filter(Boolean));
-      const stored = new Map(clients.map((c) => [c.customer_id, c]));
-      const current = live.length > 100 ? live.map((c) => ({
-        customer_id: String(c.customer_id ?? ""), customer_name: String(c.customer_name ?? ""),
-      })).filter((c) => c.customer_id) : clients;
-      return NextResponse.json({ rows: current.map((c) => {
-        const name = c.customer_name?.trim() ?? "";
-        const code = name.split(/\s*-\s*/, 1)[0].trim();
-        return { ...stored.get(c.customer_id), ...c,
-          client_code: stored.get(c.customer_id)?.client_code ?? (/^\d+$/.test(code) ? code : null),
-          mapped: ids.has(c.customer_id) || names.has(name.toLocaleLowerCase("vi")),
-        };
-      }) });
-    }
     if (view === "clients") return NextResponse.json({ rows: (await masterClients()).map(publicClient) });
     if (view === "drivers") return NextResponse.json({ rows: (await masterDrivers()).map(publicDriver) });
     if (view === "rules") return NextResponse.json({ rows: (await masterRules("weekday")).map(publicRule), readOnly:!masterEnabled() });
@@ -72,14 +44,23 @@ export async function POST(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
-  if (!authorized(req)) return deny();
   try {
     const body = await req.json();
     if (!body || typeof body !== "object") throw new Error("Invalid body");
-    if (body.kind === "client") return NextResponse.json({ ok: true, result: await editClient(body.id, body.patch) });
+    if (body.kind !== "client" && body.kind !== "driver" && !authorized(req)) return deny();
+    if (body.kind === "client" || body.kind === "driver") {
+      if (typeof body.id !== "string" || !body.patch || typeof body.patch !== "object" || Array.isArray(body.patch)) throw new Error("Invalid profile patch");
+      if ("bot_token" in body.patch && !authorized(req)) return deny();
+    }
+    if (body.kind === "client") {
+      const result = await editClient(body.id, body.patch);
+      await invalidateConfigCache();
+      return NextResponse.json({ ok: true, result });
+    }
     if (body.kind === "driver") {
       const result = await editDriver(body.id, body.patch);
       invalidateDriversCache();
+      await invalidateConfigCache();
       return NextResponse.json({ ok: true, result });
     }
     if (body.kind === "rule") {

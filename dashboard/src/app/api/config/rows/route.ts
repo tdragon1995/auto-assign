@@ -84,6 +84,7 @@ export async function GET(req: NextRequest) {
   const sunday = vnIsSunday();
   const contract = sunday ? SHEET_CONTRACT.sunday : SHEET_CONTRACT.mapping;
   const gid = sunday ? SHEET_GID.sunday : SHEET_GID.mapping;
+  const tab = masterEnabled() && !sunday ? "Supabase" : contract.label;
   // The explicit reload. Belt and braces beside the stamp: it also covers the
   // case where Redis is unconfigured or unreachable, where `readConfigGen`
   // deliberately reports "no reason to invalidate" and the stamp can never move.
@@ -92,7 +93,7 @@ export async function GET(req: NextRequest) {
 
   try {
     const gen = await readConfigGen();
-    if (!fresh && cache && cache.tab === contract.label && cache.gen === gen
+    if (!fresh && cache && cache.tab === tab && cache.gen === gen
         && Date.now() - cache.at < TTL_MS) {
       return NextResponse.json({ rows: cache.rows, tab: cache.tab, fetchedAt: cache.fetchedAt, cached: true });
     }
@@ -127,12 +128,12 @@ export async function GET(req: NextRequest) {
     // so it is not cached, the same discipline every other reader here follows.
     if (rows.length === 0) {
       return NextResponse.json(
-        { rows: cache?.rows ?? [], tab: contract.label, fetchedAt: cache?.fetchedAt ?? "", error: "Đọc được 0 dòng" },
+        { rows: cache?.rows ?? [], tab, fetchedAt: cache?.fetchedAt ?? "", error: "Đọc được 0 dòng" },
         { status: 502 },
       );
     }
 
-    cache = { rows, tab: contract.label, at: Date.now(), fetchedAt: vnTimestamp(), gen };
+    cache = { rows, tab, at: Date.now(), fetchedAt: vnTimestamp(), gen };
     return NextResponse.json({ rows, tab: cache.tab, fetchedAt: cache.fetchedAt, cached: false });
   } catch (e) {
     // Serve the stale copy rather than an empty table: a browser showing last
@@ -141,6 +142,6 @@ export async function GET(req: NextRequest) {
     if (cache) {
       return NextResponse.json({ rows: cache.rows, tab: cache.tab, fetchedAt: cache.fetchedAt, cached: true, stale: true });
     }
-    return NextResponse.json({ rows: [], tab: contract.label, error: String(e) }, { status: 500 });
+    return NextResponse.json({ rows: [], tab, error: String(e) }, { status: 500 });
   }
 }
