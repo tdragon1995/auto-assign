@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { X } from "lucide-react";
 import { foldName } from "@/lib/driver-cell";
 
 export interface FilterOption {
@@ -14,18 +16,23 @@ export function FilterMultiSelect({
   options,
   onChange,
   placeholder,
+  multiple = true,
+  disabled = false,
 }: {
   label: string;
   values: string[];
   options: readonly FilterOption[];
   onChange: (values: string[]) => void;
   placeholder: string;
+  multiple?: boolean;
+  disabled?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const boxRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const menuRef = useRef<HTMLUListElement>(null);
   const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(null);
   const inputId = useId();
   const listId = useId();
@@ -33,14 +40,20 @@ export function FilterMultiSelect({
   const labels = useMemo(() => new Map(options.map((option) => [option.value, option.label])), [options]);
   const matches = useMemo(() => {
     const q = foldName(query.trim());
-    return options.filter((option) =>
+    const filtered = options.filter((option) =>
       !selected.has(option.value) && (!q || foldName(`${option.label} ${option.value}`).includes(q)),
     );
-  }, [options, query, selected]);
+    // ponytail: show 150 single-picker suggestions; search reaches the full list.
+    return multiple ? filtered : filtered.slice(0, 150);
+  }, [options, query, selected, multiple]);
 
   const place = useCallback(() => {
     const box = boxRef.current?.getBoundingClientRect();
-    if (box) setRect({ left: box.left, top: box.bottom + 2, width: Math.min(Math.max(box.width, 240), 440) });
+    if (box) {
+      const width = Math.min(Math.max(box.width, 240), 440, window.innerWidth - 16);
+      const top = box.bottom + 234 <= window.innerHeight ? box.bottom + 2 : Math.max(8, box.top - 226);
+      setRect({ left: Math.max(8, Math.min(box.left, window.innerWidth - width - 8)), top, width });
+    }
   }, []);
 
   const openMenu = useCallback(() => {
@@ -51,7 +64,7 @@ export function FilterMultiSelect({
   useEffect(() => {
     if (!open) return;
     const closeOutside = (event: MouseEvent) => {
-      if (!boxRef.current?.contains(event.target as Node)) setOpen(false);
+      if (!boxRef.current?.contains(event.target as Node) && !menuRef.current?.contains(event.target as Node)) setOpen(false);
     };
     window.addEventListener("scroll", place, true);
     window.addEventListener("resize", place);
@@ -64,10 +77,10 @@ export function FilterMultiSelect({
   }, [open, place]);
 
   const add = (value: string) => {
-    onChange([...values, value]);
+    onChange(multiple ? [...values, value] : [value]);
     setQuery("");
     setActive(0);
-    inputRef.current?.focus();
+    if (multiple) inputRef.current?.focus(); else setOpen(false);
     requestAnimationFrame(place);
   };
 
@@ -108,14 +121,15 @@ export function FilterMultiSelect({
             key={value || "__blank__"}
             className="inline-flex max-w-full items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-800"
           >
-            <span className="truncate">{labels.get(value) ?? value}</span>
+            <span className={multiple ? "truncate" : "break-words"}>{labels.get(value) ?? value}</span>
             <button
               type="button"
+              disabled={disabled}
               onClick={() => remove(value)}
               aria-label={`Bỏ ${labels.get(value) ?? value}`}
               className="rounded text-slate-600 hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
             >
-              ✕
+              <X className="size-3" aria-hidden="true" />
             </button>
           </span>
         ))}
@@ -123,6 +137,7 @@ export function FilterMultiSelect({
           id={inputId}
           ref={inputRef}
           type="text"
+          disabled={disabled}
           role="combobox"
           aria-expanded={open}
           aria-controls={listId}
@@ -132,14 +147,15 @@ export function FilterMultiSelect({
           onChange={(event) => { setQuery(event.target.value); setActive(0); openMenu(); }}
           onFocus={openMenu}
           onKeyDown={onKeyDown}
-          placeholder={values.length ? "Thêm…" : placeholder}
+          placeholder={values.length ? multiple ? "Thêm…" : "Tìm / đổi điểm giao…" : placeholder}
           className="min-w-[88px] flex-1 bg-transparent px-0.5 py-0.5 text-xs text-slate-900 outline-none placeholder:text-slate-500"
         />
-        {open && rect && (
+        {open && rect && !disabled && createPortal(
           <ul
+            ref={menuRef}
             id={listId}
             role="listbox"
-            aria-multiselectable="true"
+            aria-multiselectable={multiple}
             style={{ position: "fixed", left: rect.left, top: rect.top, width: rect.width, zIndex: 50 }}
             className="max-h-56 overflow-y-auto rounded-md border border-slate-200 bg-white py-1 shadow-md"
           >
@@ -163,7 +179,7 @@ export function FilterMultiSelect({
                 </button>
               </li>
             ))}
-          </ul>
+          </ul>, document.body
         )}
       </div>
     </div>

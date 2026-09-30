@@ -769,7 +769,6 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
   const hoverDriver = profileHover?.kind === "driver" ? driverMetaById.get(profileHover.id) : null;
   const hoverName = hoverClient ? clientName(hoverClient) : hoverDriver ? displayDriverCell(`${hoverDriver.cartrack.first_name ?? ""} ${hoverDriver.cartrack.last_name ?? ""}`.trim()) : "";
   const showSheetRow = sheetRows.length > 0 && !sheetRows.some(r => r.rule_id);
-  const tableColumns = showSheetRow ? 7 : 6;
   const clientMetaByName = useMemo(() => {
     const byName = new Map<string, ClientMeta | null>();
     for (const client of clientMetadata ?? []) {
@@ -839,12 +838,16 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
   /** One route at a time: the editor writes, and two open on the same route
    *  would each hold a baseline taken before the other's writes landed.
    *
-   *  The route open in the editor, and the row whose Sửa was clicked.
-   *
-   *  The row is carried as well as the branch because the editor renders under
-   *  THAT row: a branch has several, and opening under the first of them would
-   *  still move the form away from the button that summoned it. */
+   *  Keep the initiating row so its pencil reflects the open route editor. */
   const [editing, setEditing] = useState<{ branch: string; pickup: string; dropoff: string; row: number } | null>(null);
+  const [editingBusy, setEditingBusy] = useState(false);
+  const editorRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (editing) {
+      editorRef.current?.scrollIntoView({ block: "start" });
+      editorRef.current?.focus({ preventScroll: true });
+    }
+  }, [editing]);
   const editingRows = useMemo(
     () => (editing ? rows.filter((r) =>
       branchKey(r) === editing.branch && r.pickup === editing.pickup && r.dropoff === editing.dropoff
@@ -910,7 +913,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
     + activeColumnFilterCount(filters.endOperator, filters.endText, filters.ends);
   const hasFilters = activeFilters > 0;
   const advancedCount = activeFilters - Number(Boolean(filters.query.trim()));
-  const expandedTools = advancedFilters || replacing || selectedRows.length > 0;
+  const expandedTools = advancedFilters || replacing || selectedRows.length > 0 || !!editing;
 
   return (
     <Card className={`gap-0 py-2 flex flex-col border-slate-200 ${expandedTools ? "h-auto min-h-full" : "h-full"}`}>
@@ -1095,6 +1098,32 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
           />
         )}
 
+        {editing && editingRows.length > 0 && <section ref={editorRef} tabIndex={-1} aria-label="Sửa cấu hình tuyến" className="max-h-[60vh] shrink-0 scroll-mt-3 overflow-y-auto rounded-md bg-indigo-50 px-3 pb-3 focus:outline-none">
+          <div className="sticky top-0 z-10 flex items-start justify-between gap-3 bg-indigo-50 py-3">
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-indigo-950">{editingRows[0].unmapped ? "Thiết lập config" : "Sửa lịch tuyến"}</h3>
+              <p className="break-words text-xs leading-relaxed text-indigo-900">{editing.pickup}{editing.dropoff && ` → ${editing.dropoff}`} · {editingRows.filter(r => !r.unmapped).length} ca</p>
+            </div>
+            <Button size="icon" variant="ghost" className="size-8 shrink-0 text-indigo-700" aria-label="Đóng trình sửa lịch" disabled={editingBusy} onClick={() => setEditing(null)}><X className="size-4" aria-hidden="true" /></Button>
+          </div>
+          <BranchEditor
+            key={`${editing.branch}|${editing.dropoff}`}
+            pickupName={editing.pickup} pickupId={editingRows[0].customer_id} dropoffName={editing.dropoff}
+            rules={rulesOf(editingRows)}
+            extraLines={editingRows[0].unmapped ? [{
+              driver: "", start: "", end: "", dropoff: "",
+              assignment_mode: rows.some(row => row.assignment_mode) ? "fixed" : undefined,
+              copyFromRuleId: (rows.find(row => !row.unmapped && row.smart && row.row > 2) ?? rows.find(row => !row.unmapped && row.row > 2))?.rule_id,
+              copyFromRow: rows.find(row => !row.unmapped && row.smart && row.row > 2)?.row ?? rows.find(row => !row.unmapped && row.row > 2)?.row,
+            }] : []}
+            drivers={rosterDrivers} locations={(clientMetadata ?? []).map(c => ({id:c.customer_id,name:clientName(c)}))}
+            onBusyChange={setEditingBusy}
+            onCancel={() => setEditing(null)}
+            onDone={() => { setEditing(null); void load(); }}
+            onStale={() => { setEditing(null); void load(true); }}
+          />
+        </section>}
+
         <div className={`overflow-auto rounded-md border border-slate-200 ${expandedTools ? "h-96 shrink-0" : "min-h-0 flex-1"}`}>
           {shown.length === 0 ? (
             <p className="px-2 py-3 text-xs text-slate-500">
@@ -1104,11 +1133,11 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
             <table className="w-full min-w-[880px] table-fixed text-[13px]">
               <colgroup>
                 <col className="w-[3%]" />
-                <col className="w-[7%]" />
-                <col className="w-[23%]" />
-                <col className="w-[27%]" />
-                <col className="w-[20%]" />
-                <col className={showSheetRow ? "w-[16%]" : "w-[20%]"} />
+                <col className="w-[4%]" />
+                <col className="w-[35%]" />
+                <col className="w-[14%]" />
+                <col className="w-[25%]" />
+                <col className={showSheetRow ? "w-[15%]" : "w-[19%]"} />
                 {showSheetRow && <col className="w-[4%]" />}
               </colgroup>
               <thead className="sticky top-0 z-10 bg-slate-50 text-[11px] text-slate-600">
@@ -1131,9 +1160,9 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
                     />
                   </th>
                   <th className="px-1 py-1 text-left font-medium"><span className="sr-only">Sửa lịch</span></th>
-                  <th className="px-2 py-1 text-left font-medium">Điểm lấy</th>
+                  <th className="px-2 py-1 text-left font-medium">Tuyến</th>
+                  <th className="px-2 py-1 text-left font-medium">Thời gian</th>
                   <th className="px-2 py-1 text-left font-medium">Tài xế</th>
-                  <th className="px-2 py-1 text-left font-medium whitespace-nowrap">Điểm giao</th>
                   <th className="px-2 py-1 text-left font-medium whitespace-nowrap">Điểm giao thay thế</th>
                   {showSheetRow && <th className="px-2 py-1 text-right font-medium" title="Số dòng Google Sheet Chủ nhật">Dòng</th>}
                 </tr>
@@ -1147,7 +1176,6 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
                   // one clinic look like four clinics.
                   const first = shown[runStart[i]];
                   const firstOfBranch = runStart[i] === i;
-                  const lastOfBranch = i === shown.length - 1 || runStart[i + 1] !== runStart[i];
                   const inactive = isInactive(r.pickup);
                   const locationInfo = clientMetaById.get(r.customer_id) ?? clientMetaByName.get(r.pickup.trim().toLocaleLowerCase("vi"));
                   const dropoffInfo = clientMetaByName.get(r.dropoff.trim().toLocaleLowerCase("vi"));
@@ -1185,20 +1213,18 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
                           invisible on the tablets dispatch also uses. */}
                       {firstOfBranch && (
                         <Button
-                          size="sm" variant={runOpen ? "default" : "ghost"}
-                          className={`h-7 px-1.5 text-xs font-normal whitespace-nowrap ${
-                            runOpen ? "bg-indigo-600 hover:bg-indigo-700" : "text-indigo-700 hover:bg-indigo-50 hover:text-indigo-800"
-                          }`}
+                          size="icon" variant="ghost"
+                          className="size-8 text-blue-700 hover:bg-blue-50 hover:text-blue-800"
                           aria-expanded={runOpen}
                           aria-label={runOpen ? "Đóng" : r.unmapped ? `Thiết lập config cho ${r.pickup}` : `Sửa lịch ${r.pickup || branch} → ${r.dropoff || "mọi điểm"}`}
-                          onClick={() => setEditing(runOpen ? null : { branch, pickup: r.pickup, dropoff: r.dropoff, row: r.row })}
-                          disabled={!r.customer_id && !r.pickup}
+                          onClick={() => { closeProfile(); setEditing(runOpen ? null : { branch, pickup: r.pickup, dropoff: r.dropoff, row: r.row }); }}
+                          disabled={editingBusy || (!r.customer_id && !r.pickup)}
                         >
-                          {runOpen ? "Đóng" : r.unmapped ? "Thiết lập" : "Sửa lịch"}
+                          {runOpen ? <X className="size-4" aria-hidden="true" /> : <Pencil className="size-4" aria-hidden="true" />}
                         </Button>
                       )}
                     </td>
-                    <td className="px-2 py-1">
+                    <td className="break-words whitespace-normal px-2 py-1 leading-relaxed">
                       {firstOfBranch ? (
                         <>
                           {inactive && (
@@ -1214,12 +1240,23 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
                             className={`text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${inactive ? "text-slate-500" : "font-medium text-slate-900"}`}>
                             {r.pickup ? r.pickup.replace(INACTIVE_PREFIX, "") : <span className="text-slate-500">—</span>}
                           </button>
+                          {r.dropoff && <>
+                            <span className="mx-1 text-slate-500" aria-hidden="true">→</span>
+                            {dropoffInfo ? <button type="button" aria-haspopup="dialog" aria-expanded={profileHover?.kind === "client" && profileHover.id === dropoffInfo.customer_id}
+                              onPointerEnter={e => { if (e.pointerType === "mouse") openProfile("client", dropoffInfo.customer_id, e.currentTarget); }}
+                              onPointerLeave={e => { if (e.pointerType === "mouse") leaveProfile(); }}
+                              onClick={e => openProfile("client", dropoffInfo.customer_id, e.currentTarget, true)}
+                              className="text-left text-slate-700 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">{r.dropoff}</button> : r.dropoff}
+                          </>}
                         </>
                       ) : (
                         // Still named for a screen reader, which reads a row
                         // on its own and has no run above it to lean on.
-                        <span className="sr-only">{r.pickup}</span>
+                        <span className="sr-only">{r.pickup}{r.dropoff && ` → ${r.dropoff}`}</span>
                       )}
+                    </td>
+                    <td className="px-2 py-1.5 tabular-nums whitespace-nowrap text-slate-700">
+                      {(r.start || r.end) ? [r.start, r.end].filter(Boolean).join(" – ") : !r.unmapped && "Cả ngày"}
                     </td>
                     <td className="px-2 py-1 text-slate-700 break-words">
                       {r.driver ? splitDriverNames(r.driver).map((name, index) => {
@@ -1244,58 +1281,17 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
                         </span>
                       )}
                     </td>
-                    <td className="truncate px-2 py-1 text-slate-700" title={r.dropoff || undefined}>
-                      {dropoffInfo ? <button type="button" aria-haspopup="dialog" aria-expanded={profileHover?.kind === "client" && profileHover.id === dropoffInfo.customer_id}
-                        onPointerEnter={e => { if (e.pointerType === "mouse") openProfile("client", dropoffInfo.customer_id, e.currentTarget); }}
-                        onPointerLeave={e => { if (e.pointerType === "mouse") leaveProfile(); }}
-                        onClick={e => openProfile("client", dropoffInfo.customer_id, e.currentTarget, true)}
-                        className="block max-w-full truncate text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">{r.dropoff}</button>
-                        : r.dropoff || <span className="whitespace-nowrap text-slate-500">mọi điểm</span>}
-                    </td>
                     <td className="break-words px-2 py-1 text-slate-700">
                       {alternativeInfo ? <button type="button" aria-haspopup="dialog" aria-expanded={profileHover?.kind === "client" && profileHover.id === alternativeInfo.customer_id}
                         onPointerEnter={e => { if (e.pointerType === "mouse") openProfile("client", alternativeInfo.customer_id, e.currentTarget); }}
                         onPointerLeave={e => { if (e.pointerType === "mouse") leaveProfile(); }}
                         onClick={e => openProfile("client", alternativeInfo.customer_id, e.currentTarget, true)}
                         className="text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">{clientName(alternativeInfo)}</button>
-                        : r.alt_drop_off_id || <span className="text-xs text-slate-500">{r.unmapped ? "Chưa thiết lập" : "Giữ điểm giao"}</span>}
+                        : r.alt_drop_off_id || null}
                     </td>
                     {showSheetRow && <td className="px-2 py-1 text-right font-mono text-[10px] text-slate-500">{r.unmapped ? "—" : r.row}</td>}
                   </tr>
                   ),
-                  // Directly beneath the branch it was opened from — under its
-                  // LAST row, so the run stays in one piece above the form that
-                  // rewrites it. It used to render in its own box ABOVE the
-                  // table, where the reader was not looking and often scrolled
-                  // out of view; an expander that opens where it was asked for
-                  // is what the "Cần xử lý" rows already do with this editor.
-                  runOpen && lastOfBranch && editingRows.length > 0 ? (
-                    <tr key={`${r.row}-edit`} className="bg-indigo-50/60">
-                      <td colSpan={tableColumns} className="px-2 pb-2">
-                        <div className="py-1 text-xs font-medium text-indigo-900">
-                          {editingRows[0].unmapped ? `Thiết lập config ${editingRows[0].pickup}` : `Sửa toàn bộ lịch ${editingRows[0].pickup} → ${editingRows[0].dropoff || "mọi điểm giao"} · ${editingRows.length} ca`}
-                        </div>
-                        <BranchEditor
-                          pickupName={editingRows[0].pickup}
-                          pickupId={editingRows[0].customer_id}
-                          dropoffName={editingRows[0].dropoff}
-                          rules={rulesOf(editingRows)}
-                          extraLines={editingRows[0].unmapped ? [{
-                            driver: "", start: "", end: "", dropoff: "",
-                            assignment_mode: rows.some(row=>row.assignment_mode) ? "fixed" : undefined,
-                            copyFromRuleId: (rows.find(row=>!row.unmapped && row.smart && row.row>2) ?? rows.find(row=>!row.unmapped && row.row>2))?.rule_id,
-                            copyFromRow: rows.find((row) => !row.unmapped && row.smart && row.row > 2)?.row
-                              ?? rows.find((row) => !row.unmapped && row.row > 2)?.row,
-                          }] : []}
-                          drivers={rosterDrivers}
-                          locations={(clientMetadata ?? []).map(c => ({id:c.customer_id,name:clientName(c)}))}
-                          onCancel={() => setEditing(null)}
-                          onDone={() => { setEditing(null); void load(); }}
-                          onStale={() => { setEditing(null); void load(true); }}
-                        />
-                      </td>
-                    </tr>
-                  ) : null,
                   ];
                 })}
               </tbody>

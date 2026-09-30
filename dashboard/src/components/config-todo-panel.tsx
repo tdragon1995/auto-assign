@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronRight, ClipboardList, Copy, Search } from "lucide-react";
+import { ChevronRight, ClipboardList, Copy, MapPin, Search, X } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,7 @@ import type { ConfigRowSnapshot } from "@/lib/config-row-match";
 import { searchConfigRows } from "./config-browser-panel";
 import type { ConfigRowView } from "@/app/api/config/rows/route";
 import { DriverCombobox } from "./driver-combobox";
+import { FilterMultiSelect } from "./filter-multi-select";
 import {
   type Line, type CopiedLine, toMin, newLineKey, asLine, sig, findClash, servesDropoff,
   applyCopiedLines, availableTime,
@@ -621,7 +622,7 @@ function CopyFromBranch({
  * way in" would be a second set of those, and they would drift.
  */
 export function BranchEditor({
-  pickupName, pickupId, dropoffName, rules, extraLines = [], drivers, locations, bulkSchedules, onDone, onRemoved, onStale, onCancel,
+  pickupName, pickupId, dropoffName, rules, extraLines = [], drivers, locations, bulkSchedules, onDone, onRemoved, onStale, onCancel, onBusyChange,
 }: {
   pickupName: string;
   pickupId?: string;
@@ -647,6 +648,7 @@ export function BranchEditor({
   onRemoved?: () => void;
   onStale: () => void;
   onCancel: () => void;
+  onBusyChange?: (busy: boolean) => void;
 }) {
   /**
    * Frozen at mount, exactly like `lines` itself.
@@ -661,11 +663,20 @@ export function BranchEditor({
       .sort((x, y) => (toMin(x.start) - toMin(y.start)) || x.row! - y.row!)
   );
   const [lines, setLines] = useState<Line[]>(initial);
+  const alternativeOptions = useMemo(() => [
+    ...(bulkSchedules ? [{value:"__keep__",label:"Giữ lựa chọn của từng dòng"}] : []),
+    {value:"",label:"Không thay thế điểm giao"},
+    ...(locations ?? []).map(c => ({value:c.id,label:c.name})),
+  ], [locations, bulkSchedules]);
   const snapshot = (line: Line): ConfigRowSnapshot => ({ rule_id:line.rule_id, revision:line.revision, driver: line.driver, start: line.start, end: line.end, dropoff: line.dropoff });
   const expectedRows = useRef(new Map(initial.map((line) => [line.key, snapshot(line)])));
   const [pendingDeletes, setPendingDeletes] = useState<Line[]>([]);
   const [saveUncertain, setSaveUncertain] = useState(false);
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    onBusyChange?.(busy);
+    return () => onBusyChange?.(false);
+  }, [busy, onBusyChange]);
   const [err, setErr] = useState<string | null>(null);
   /**
    * What each line looked like the last time it was successfully WRITTEN.
@@ -869,7 +880,7 @@ export function BranchEditor({
   }
 
   return (
-    <div className="mt-1 space-y-1 rounded border border-slate-300 bg-white p-1.5">
+    <div className="mt-1 rounded border border-slate-200 bg-white p-3">
       {/* Two different answers to "who covers this branch", kept visibly apart.
           The copy button used to sit 4px above the first line's driver field,
           both left-aligned and both outlined, so a click aimed at one regularly
@@ -909,10 +920,11 @@ export function BranchEditor({
       {lines.map((l, i) => (
         <div
           key={l.key}
-          className={`flex flex-wrap items-center gap-1 rounded transition-colors duration-200 ${
+          className={`grid grid-cols-1 gap-3 border-b border-slate-200 py-3 lg:grid-cols-[minmax(0,1fr)_minmax(14rem,20rem)] ${
             justAdded.has(l.key) ? "bg-indigo-50 ring-1 ring-indigo-300" : ""
           }`}
         >
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
           <DriverPicker value={l.driver} onChange={(v) => patch(i, { driver: v, ...(l.assignment_mode ? {assignment_mode:splitDriverNames(v).length>1 ? "smart" : l.assignment_mode} : {}) })} drivers={drivers} />
           {l.assignment_mode && <label className="text-xs"><span className="sr-only">Chế độ phân công</span><select value={l.assignment_mode} onChange={e=>patch(i,{assignment_mode:e.target.value as "fixed"|"smart"})} className="h-7 rounded border border-slate-300 bg-white px-1 text-slate-900"><option value="fixed" disabled={splitDriverNames(l.driver).length>1}>Cố định</option><option value="smart">Thông minh</option></select></label>}
           <TimeSelect label="Từ giờ" value={l.start} onChange={(v) => patch(i, { start: v })} disabled={(t) => !availableTime(lines, i, "start", t)} />
@@ -945,26 +957,24 @@ export function BranchEditor({
               → {l.dropoff.trim()}
             </span>
           )}
-          <span className="w-10 shrink-0 text-right font-mono text-[10px] text-slate-600">
-            {l.row ? `#${l.row}` : "mới"}
+          <span className="shrink-0 text-[10px] text-slate-600">
+            {l.row && !l.rule_id ? `#${l.row}` : `Ca ${i + 1}`}
           </span>
           <button type="button" onClick={() => dropLine(l.key)} disabled={busy || (l.row === 2 && !l.rule_id)}
             aria-label="Bỏ dòng này" title={l.row === 2 && !l.rule_id ? "Dòng 2 giữ công thức của bảng" : "Bỏ dòng này — bấm Lưu để xác nhận"}
-            className="rounded px-1 py-0.5 text-[11px] text-slate-600 hover:text-red-600 disabled:opacity-40">✕</button>
-          {locations && l.assignment_mode && <div className="w-full"><label className="flex w-full min-w-0 max-w-[min(40rem,calc(100vw-3rem))] flex-wrap items-center gap-x-2 gap-y-1 pb-2 text-xs text-slate-700">
-            <span>Điểm giao thay thế</span>
-            <select aria-label={`Điểm giao thay thế ${l.start && l.end ? `${l.start}–${l.end}` : "cả ngày"}`}
-              value={l.alt_drop_off_id ?? (bulkSchedules ? "__keep__" : "")} onChange={e=>patch(i,{alt_drop_off_id:e.target.value === "__keep__" ? undefined : e.target.value})} disabled={busy || !locations.length}
-              className="min-w-0 w-full max-w-lg rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:bg-slate-100 sm:flex-1">
-              {bulkSchedules && <option value="__keep__">Giữ điểm giao thay thế của từng dòng</option>}
-              <option value="">{locations.length ? "Giữ điểm giao của job" : "Đang tải điểm giao…"}</option>
-              {l.alt_drop_off_id && !locations.some(c=>c.id===l.alt_drop_off_id) && <option value={l.alt_drop_off_id}>{l.alt_drop_off_id}</option>}
-              {locations.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </label></div>}
+            className="rounded p-1 text-slate-600 hover:text-red-600 disabled:opacity-40"><X className="size-3.5" aria-hidden="true" /></button>
+          </div>
+          {locations && l.assignment_mode && <div className="min-w-0 space-y-1.5">
+            <span className="flex items-center gap-1 text-xs font-medium text-slate-600"><MapPin className="size-3.5" aria-hidden="true" />Điểm giao thay thế</span>
+            <FilterMultiSelect label={`Điểm giao thay thế ca ${i + 1}`} multiple={false}
+              values={l.alt_drop_off_id ? [l.alt_drop_off_id] : bulkSchedules && l.alt_drop_off_id === undefined ? ["__keep__"] : []}
+              options={l.alt_drop_off_id && !locations.some(c => c.id === l.alt_drop_off_id) ? [...alternativeOptions,{value:l.alt_drop_off_id,label:l.alt_drop_off_id}] : alternativeOptions}
+              onChange={values => patch(i,{alt_drop_off_id:values[0] === "__keep__" ? undefined : values[0] ?? ""})}
+              disabled={busy || !locations.length} placeholder={locations.length ? "Tìm điểm giao…" : "Đang tải điểm giao…"} />
+          </div>}
         </div>
       ))}
-      <div className="flex flex-wrap items-center gap-1">
+      <div className="sticky bottom-0 flex flex-wrap items-center gap-2 border-t border-slate-200 bg-white py-2">
         <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={addLine} disabled={busy}>
           + Thêm ca
         </Button>
