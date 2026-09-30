@@ -1,11 +1,12 @@
 import { Redis } from "@upstash/redis";
 import { roadMatrixOneToMany, roadMatrixManyToOne, type GoongResult, type QuotaSignal, type FallbackState } from "./distance";
+import { sbSelect, sbUpsert, supabaseConfigured } from "./supabase-rest";
 
 /**
- * Redis-backed cache for road distances between fixed locations (customer/PSC
+ * Supabase-backed road distances, cached in Redis, between fixed locations (customer/PSC
  * coordinates — never live GPS, which only feeds the free haversine pre-rank).
  * Road distances between fixed points change only with the road network, so
- * entries are stored WITHOUT a TTL — they persist until explicitly deleted.
+ * Redis entries have no TTL; Supabase preserves them across Redis migrations.
  * The pair set is bounded by the number of fixed locations, and re-fetching an
  * expired pair costs a Goong request for a distance that had not changed.
  */
@@ -19,6 +20,42 @@ type Pt = { lat: number; lon: number };
 interface StoredDistance extends GoongResult {
   from: Pt;
   to: Pt;
+}
+
+type DistanceEntry = { key: string; value: StoredDistance };
+const DISTANCE_TABLE = "road_distances";
+
+function isStoredDistance(v: unknown): v is StoredDistance {
+  const d = v as StoredDistance | null;
+  return !!d && Number.isFinite(d.distance_km) && d.distance_km >= 0 &&
+    Number.isFinite(d.eta_mins) && d.eta_mins >= 0 &&
+    Number.isFinite(d.from?.lat) && Math.abs(d.from.lat) <= 90 &&
+    Number.isFinite(d.from?.lon) && Math.abs(d.from.lon) <= 180 &&
+    Number.isFinite(d.to?.lat) && Math.abs(d.to.lat) <= 90 &&
+    Number.isFinite(d.to?.lon) && Math.abs(d.to.lon) <= 180;
+}
+
+async function getStoredDistances(keys: string[]): Promise<Map<string, StoredDistance>> {
+  const out = new Map<string, StoredDistance>();
+  if (!supabaseConfigured()) return out;
+  // ponytail: 50-key batches bound GET URLs; use an RPC if bulk reads dominate.
+  for (let i = 0; i < keys.length; i += 50) {
+    const filter = `in.(${keys.slice(i, i + 50).map(k => JSON.stringify(k)).join(",")})`;
+    const rows = await sbSelect<DistanceEntry>(DISTANCE_TABLE, `select=key,value&key=${encodeURIComponent(filter)}`);
+    for (const row of rows) if (isStoredDistance(row.value)) out.set(row.key, row.value);
+  }
+  return out;
+}
+
+/** Save new paid answers before caching. On a failed durable write, leave Redis
+ * empty so a later lookup retries persistence rather than hiding unsaved data. */
+async function saveDistances(entries: DistanceEntry[]): Promise<void> {
+  if (!entries.length) return;
+  if (supabaseConfigured()) {
+    try { await sbUpsert(DISTANCE_TABLE, entries, "key", 500, true); }
+    catch (e) { console.error("[distance-cache] Supabase write failed", e); return; }
+  }
+  await setCachedDistances(entries);
 }
 
 // How a resolved distance was obtained — lets callers flag which rows actually
@@ -56,22 +93,27 @@ function samePoint(a: { lat: number; lon: number }, b: { lat: number; lon: numbe
   return coord(a.lat) === coord(b.lat) && coord(a.lon) === coord(b.lon);
 }
 
-/** Batched cache read — one pipelined MGET. Null per miss (or everywhere without Redis). */
+/** One Redis MGET, then Supabase for misses; warm Redis without a mapping call. */
 async function getCachedDistances(keys: string[]): Promise<(GoongResult | null)[]> {
   if (keys.length === 0) return [];
+  const cached: (GoongResult | null)[] = keys.map(() => null);
   const redis = getRedis();
-  if (!redis) return keys.map(() => null);
-  try {
+  if (redis) try {
     const raw = await redis.mget<(GoongResult | string | null)[]>(...keys);
-    return keys.map((_, i) => {
+    keys.forEach((_, i) => {
       const r = raw[i];
-      if (!r) return null;
+      if (!r) return;
       const v = (typeof r === "string" ? JSON.parse(r) : r) as GoongResult;
-      return typeof v?.distance_km === "number" ? v : null;
+      if (typeof v?.distance_km === "number") cached[i] = v;
     });
-  } catch {
-    return keys.map(() => null);
-  }
+  } catch { /* Supabase is still available when Redis is down. */ }
+  const missing = keys.filter((_, i) => !cached[i]);
+  if (missing.length) try {
+    const stored = await getStoredDistances(missing);
+    keys.forEach((key, i) => { if (!cached[i]) cached[i] = stored.get(key) ?? null; });
+    await setCachedDistances([...stored].map(([key, value]) => ({ key, value })));
+  } catch (e) { console.error("[distance-cache] Supabase read failed", e); }
+  return cached;
 }
 
 /** Write-behind after a Goong fetch. Failed lookups (null) must never be cached.
@@ -80,7 +122,7 @@ async function getCachedDistances(keys: string[]): Promise<(GoongResult | null)[
  *  arose in the rare concurrent first-fill race (a cache hit already skips the
  *  write), and the collapsed coords are the same physical point, so the distance
  *  is unaffected. */
-async function setCachedDistances(entries: { key: string; value: StoredDistance }[]): Promise<void> {
+async function setCachedDistances(entries: DistanceEntry[]): Promise<void> {
   if (entries.length === 0) return;
   const redis = getRedis();
   if (!redis) return;
@@ -97,7 +139,8 @@ async function setCachedDistances(entries: { key: string; value: StoredDistance 
  * Shared resolve flow, cheapest source first:
  *   1. self-pair (origin == destination) → 0 km, no lookup at all
  *   2. Redis cache (one pipelined MGET)
- *   3. ONE Goong matrix call for the remaining misses, written back to cache
+ *   3. Supabase for Redis misses, warming the cache
+ *   4. Mapping API for remaining misses, saved to Supabase then Redis
  * `pairs` may contain duplicates — they're deduped before any lookup and each
  * input position still gets its result. Null = Goong failed for that pair
  * (callers fall back to haversine, exactly as before).
@@ -139,13 +182,15 @@ async function resolvePairs(
     const toStore: { key: string; value: StoredDistance }[] = [];
     fetched.forEach((f, j) => {
       if (!f) return;
-      results[misses[j]] = { ...f, source: "api" };
       // Persist the distance keyed by the truncated coords, but store the exact
       // coordinates that produced it (as sent from CT / distance-checking).
       const u = unique[misses[j]];
-      toStore.push({ key: keyOf(u), value: { ...f, from: u.from, to: u.to } });
+      const value = { ...f, from: u.from, to: u.to };
+      if (!isStoredDistance(value)) return;
+      results[misses[j]] = { ...f, source: "api" };
+      toStore.push({ key: keyOf(u), value });
     });
-    await setCachedDistances(toStore);
+    await saveDistances(toStore);
   }
 
   return pairs.map((p) => results[indexByKey.get(keyOf(p))!]);
@@ -350,23 +395,30 @@ export async function shortenCachedDistances(
   items: { key: string; distance_km: number; eta_mins: number | null }[],
 ): Promise<{ updated: number; skipped: number }> {
   const redis = getRedis();
-  if (!redis) throw new Error("Redis not configured");
+  if (!redis && !supabaseConfigured()) throw new Error("Distance storage not configured");
   let updated = 0, skipped = 0;
   for (let i = 0; i < items.length; i += 256) {
     const slice = items.slice(i, i + 256).filter((x) => x.key.startsWith("dist:v1:") && x.distance_km > 0);
     skipped += Math.min(256, items.length - i) - slice.length;
     if (!slice.length) continue;
-    const current = await redis.mget<(StoredDistance | string | null)[]>(...slice.map((x) => x.key));
-    const pipe = redis.pipeline();
+    const current = await getCachedDistances(slice.map((x) => x.key));
+    const pipe = redis?.pipeline();
+    const changed: DistanceEntry[] = [];
     let n = 0;
     slice.forEach((x, j) => {
-      const raw = current[j];
-      const v = (typeof raw === "string" ? safeParse(raw) : raw) as StoredDistance | null;
+      const v = current[j] as StoredDistance | null;
       if (!v || typeof v.distance_km !== "number" || x.distance_km >= v.distance_km) { skipped++; return; }
-      pipe.set(x.key, JSON.stringify({ ...v, distance_km: x.distance_km, eta_mins: x.eta_mins ?? v.eta_mins }));
+      const coords = keyCoords(x.key);
+      const value = { ...v, distance_km: x.distance_km, eta_mins: x.eta_mins ?? v.eta_mins,
+        from: v.from ?? { lat: coords.fromLat!, lon: coords.fromLon! },
+        to: v.to ?? { lat: coords.toLat!, lon: coords.toLon! } };
+      if (!isStoredDistance(value)) { skipped++; return; }
+      changed.push({ key: x.key, value });
+      pipe?.set(x.key, JSON.stringify(value));
       n++;
     });
-    if (n) await pipe.exec();
+    if (n && supabaseConfigured()) await sbUpsert(DISTANCE_TABLE, changed, "key");
+    if (n && pipe) await pipe.exec();
     updated += n;
   }
   return { updated, skipped };

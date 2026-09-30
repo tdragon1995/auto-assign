@@ -163,6 +163,7 @@ export async function sbUpsert(
   rows: Record<string, unknown>[],
   onConflict: string,
   batchSize = 500,
+  ignoreDuplicates = false,
 ): Promise<number> {
   if (rows.length === 0) return 0;
   if (!Number.isSafeInteger(batchSize) || batchSize < 1) throw new Error("Invalid upsert batch size");
@@ -176,7 +177,7 @@ export async function sbUpsert(
     await request(`${table}?on_conflict=${encodeURIComponent(onConflict)}`, {
       method: "POST",
       body: JSON.stringify(rows.slice(i, end)),
-      headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+      headers: { Prefer: `resolution=${ignoreDuplicates ? "ignore" : "merge"}-duplicates,return=minimal` },
     });
     i = end;
   }
