@@ -177,7 +177,7 @@ function FailedRow({
   return (
     <div className="px-2 py-1.5 hover:bg-slate-50">
       {/* Line 1: job link · route (reason lives in the section header) */}
-      <div className="flex items-center gap-2 min-w-0">
+      <div className="flex flex-wrap md:flex-nowrap items-center gap-x-2 gap-y-1 min-w-0">
         {/* Each destination has its own link; the job number opens its Cartrack record. */}
         <a
           href={cartrackJob(job.job_id)}
@@ -222,8 +222,8 @@ function FailedRow({
           </a>
         )}
         {onOpenJob && <OpenInAdminButton jobId={job.job_id} onOpen={onOpenJob} />}
-        {/* Mobile has no hover for the title tooltip, so wrap there; truncate from md up. */}
-        <span className="min-w-0 flex-1 break-words md:truncate text-sm font-medium text-slate-800" title={job.customer}>
+        {/* Give the route its own line on mobile so the controls cannot squeeze it out. */}
+        <span className="min-w-0 order-last basis-full md:order-none md:basis-auto md:flex-1 break-words md:truncate text-sm font-medium text-slate-800" title={job.customer}>
           {job.customer}
         </span>
         {/* Appointment time (pickup delivery window) when the job has one — a job
@@ -240,8 +240,8 @@ function FailedRow({
         )}
       </div>
       {/* Line 2: detail · scheduled delivery time · manual-assign trigger */}
-      <div className="mt-0.5 flex items-center gap-2 min-w-0">
-        <span className="min-w-0 flex-1 break-words md:truncate text-[11px] text-slate-500" title={job.detail}>
+      <div className="mt-0.5 flex flex-wrap md:flex-nowrap items-center gap-x-2 gap-y-1 min-w-0">
+        <span className="min-w-0 basis-full md:basis-auto md:flex-1 break-words md:truncate text-[11px] text-slate-500">
           {job.detail}
         </span>
         {job.scheduled_delivery_ts && (
@@ -465,7 +465,7 @@ export function FailedJobsPanel({
                       key={w.job_id}
                       className="px-2 py-1.5 hover:bg-slate-50"
                     >
-                      <div className="flex items-center gap-2 min-w-0">
+                      <div className="flex flex-wrap md:flex-nowrap items-center gap-x-2 gap-y-1 min-w-0">
                         <a
                           href={`https://fleetweb-vn.cartrack.com/delivery/map?job=${w.job_id}`}
                           target="_blank"
@@ -476,7 +476,7 @@ export function FailedJobsPanel({
                         </a>
                         {onOpenJob && <OpenInAdminButton jobId={w.job_id} onOpen={onOpenJob} />}
                         <span
-                          className="min-w-0 flex-1 break-words md:truncate text-sm font-medium text-slate-800"
+                          className="min-w-0 order-last basis-full md:order-none md:basis-auto md:flex-1 break-words md:truncate text-sm font-medium text-slate-800"
                           title={`${w.pickup_customer_name ?? "—"} → ${w.dropoff_customer_name ?? "—"}`}
                         >
                           {w.pickup_customer_name ?? "—"} <span className="text-slate-400">→</span> {w.dropoff_customer_name ?? "—"}
