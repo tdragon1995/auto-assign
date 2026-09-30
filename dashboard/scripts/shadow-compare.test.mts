@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { shadowDecision } from "../src/lib/shadow-compare";
+import { effectiveRuleKey, shadowDecision } from "../src/lib/shadow-compare";
 import { dutyRows } from "../src/lib/day-config";
 import type { Config, Job } from "../src/lib/types";
 
@@ -18,4 +18,6 @@ const smart = config([{ customer_id: pickup, smart_driver_id: `${driver1},${driv
 assert.deepEqual(shadowDecision(smart, [], job).driverIds, [driver1, driver2]);
 assert.equal(shadowDecision(smart, [], job).mode, "smart");
 assert.equal(shadowDecision(config([{ customer_id: pickup, smart_driver_id: driver1 }]), [], job).status, driver1);
+assert.equal(effectiveRuleKey(dutyRows([{ customer_id: pickup, driver_id: driver2, smart_driver_id: driver1 }])[0]),
+  effectiveRuleKey(dutyRows([{ customer_id: pickup, driver_id: "", smart_driver_id: driver1 }])[0]));
 console.log("shadow decisions: fixed, destination and Smart pool passed");

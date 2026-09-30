@@ -12,8 +12,8 @@ import { getRunLog } from "./smart-log-kv";
 import { parseVnTimestamp, vnDate, vnIsSunday } from "./time";
 
 const asConfig = (mappings: Mapping[]): Config => ({ mappings, unfinished: [], gaps: [], overlaps: [], branchRules: {}, parsedAt: "" });
-const ruleKey = (m: Mapping | undefined) => m && JSON.stringify([
-  m.customer_id, m.dropoff_id, m.driver_id, m.smart_driver_id,
+export const effectiveRuleKey = (m: Mapping | undefined) => m && JSON.stringify([
+  m.customer_id, m.dropoff_id, m.smart_driver_id.length ? "" : m.driver_id, m.smart_driver_id,
   m.shift_start, m.shift_end, m.alt_drop_off_id,
 ]);
 
@@ -89,7 +89,7 @@ export async function shadowSnapshot() {
   for (const key of leaveEntriesOnDate(date, masterLeaves).map(leaveKey)) leaveCounts.set(key, (leaveCounts.get(key) ?? 0) - 1);
   const ruleDifferences: number[] = [];
   for (let i = 0; i < Math.max(sheetRows.length, masterRows.length); i++) {
-    if (ruleKey(dutyRows([sheetRows[i] ?? {}])[0]) !== ruleKey(dutyRows([masterRows[i] ?? {}])[0])) ruleDifferences.push(i + 2);
+    if (effectiveRuleKey(dutyRows([sheetRows[i] ?? {}])[0]) !== effectiveRuleKey(dutyRows([masterRows[i] ?? {}])[0])) ruleDifferences.push(i + 2);
   }
   const sheetConfig = asConfig(sheetMappings), masterConfig = asConfig(masterMappings);
   const recentIds = new Set(productionLog.slice(-100).flatMap(line => {
