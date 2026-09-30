@@ -8,5 +8,5 @@
       "schedule": "0 22 * * *"
     }
   ],
-  "ignoreCommand": "if [ -n \"$VERCEL_GIT_COMMIT_REF\" ] && [ \"$VERCEL_GIT_COMMIT_REF\" != \"master\" ]; then exit 0; else exit 1; fi"
+  "ignoreCommand": "if [ \"$VERCEL_GIT_COMMIT_REF\" = \"master\" ]; then exit 1; fi; if [ \"$VERCEL_GIT_COMMIT_REF\" = \"codex/shadow-assignment\" ] && [ \"$SHADOW_PREVIEW_BUILD\" = \"1\" ]; then exit 1; fi; exit 0"
 }
