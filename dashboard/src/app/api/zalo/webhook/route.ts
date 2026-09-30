@@ -130,8 +130,8 @@ export async function POST(req: NextRequest) {
   const text = update.message?.text ?? "";
   const chatId = update.message?.chat?.id != null ? String(update.message.chat.id) : "";
   if (!chatId) return NextResponse.json({ ok: true });
-  // This group receives pickup reminders but never participates in revenue chat.
-  if (chatId === "zgr-1c7aa981bbcf52910bde") return NextResponse.json({ ok: true });
+  // These groups receive pickup reminders but never participate in revenue chat.
+  if (chatId === "zgr-1c7aa981bbcf52910bde" || chatId === "zgr-5f2b2b46331ada44830b") return NextResponse.json({ ok: true });
 
   // Gate 2 — chat allowlist. Unconfigured: hand back the id so setup is self-serve.
   const allowed = allowedChats();

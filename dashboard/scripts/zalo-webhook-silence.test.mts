@@ -19,9 +19,11 @@ const request = (chatId: string, text: string) => new NextRequest(
 );
 
 try {
-  for (const text of ["id", "doanh thu", "hello"]) {
-    const response = await POST(request("zgr-1c7aa981bbcf52910bde", text));
-    assert.equal(response.status, 200);
+  for (const chatId of ["zgr-1c7aa981bbcf52910bde", "zgr-5f2b2b46331ada44830b"]) {
+    for (const text of ["id", "doanh thu", "hello"]) {
+      const response = await POST(request(chatId, text));
+      assert.equal(response.status, 200);
+    }
   }
   assert.equal(sent.length, 0, "pickup group must receive no webhook reply");
 

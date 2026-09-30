@@ -137,6 +137,12 @@ try {
   assert.equal(sends.length, 5, "direct preassignment also sends one reminder");
   assert.ok(events.indexOf("preassign:301") < events.lastIndexOf(`send:${chat}`));
 
+  failSend = false;
+  const secondCustomer = job(401, { stops: [{ ...job(401).stops[0], customer_id: "f88dfab6-b522-11ee-bb52-506b8d9879b5" }] });
+  const secondRelease = await releaseDueProxyJobs("2026-09-29", "prod", log, [secondCustomer]);
+  assert.deepEqual(secondRelease.releasedIds, [401]);
+  assert.deepEqual(sends.at(-1)?.body, { chat_id: "zgr-5f2b2b46331ada44830b", text: message });
+
   console.log("Scheduled pickup reminder checks passed.");
 } finally {
   globalThis.fetch = originalFetch;
