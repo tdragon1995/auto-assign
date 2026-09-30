@@ -108,6 +108,7 @@ export async function splitMasterLeave(match:LeaveRowMatch,parts:readonly LeaveS
   const index=pickLeaveRowToEdit(matches(grid,match));
   if(!index || !sameSubs(rowSubs(grid.all[index-1],grid.col),expectedSubs)) throw new Error("Dòng nghỉ đã thay đổi — Refresh rồi chia ca lại");
   const old=grid.records[index-2],original=leaveLegacyRow(old);
+  if(original["Loại Nghỉ"]==="Nghỉ việc") throw new Error("Nghỉ việc không thể chia ca — chọn một người thay trên dòng này");
   const rows=parts.map((part,i)=>{
     const raw:Record<string,string>={...original,leave_from_hr:part.from,leave_to_hr:part.to,
       note:encodeLeaveSplitNote({operationKey,sourceKey:sourceKey(match.driver_id,date,from||null,to||null),

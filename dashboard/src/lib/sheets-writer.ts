@@ -845,6 +845,9 @@ export async function splitLeaveRow(
         );
       }
       const values = all[rowNo - 1] ?? [];
+      if (cell(values, "Loại Nghỉ") === "Nghỉ việc") {
+        throw new LeaveWriteError("Nghỉ việc không thể chia ca — chọn một người thay trên dòng này");
+      }
       if (!sameSubs(rowSubs(values, col), expectedSubs)) {
         throw new LeaveWriteError(
           "Người thay trên dòng nghỉ đã thay đổi — Refresh để tránh ghi đè dữ liệu mới",

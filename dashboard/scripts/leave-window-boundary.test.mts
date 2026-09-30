@@ -120,5 +120,12 @@ check("hourless full day collapses to one row", plainShown.length, 1);
 check("hourless full day has no window", plainShown[0]?.timeLabel, null);
 check("hourless duplicate still flagged", plainShown[0]?.duplicate, true);
 
+const mixedShown = leaveEntriesOnDate("2026-08-22", [
+  plain[0],
+  { ...plain[0], loai_nghi: "Nghỉ việc", subs: [] },
+]);
+check("full-day leave and resignation remain separate rows", mixedShown.length, 2);
+check("different leave types are not flagged duplicates", mixedShown.filter((r) => r.duplicate).length, 0);
+
 console.log(failures === 0 ? "\nPASS\n" : `\n${failures} FAILED\n`);
 process.exit(failures === 0 ? 0 : 1);

@@ -129,10 +129,11 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== "object") return bad("Body không hợp lệ");
-    const { driver_id, leave_from, timeLabel, subs, replace, mode, expectedSubs } = body as {
+    const { driver_id, leave_from, timeLabel, loai_nghi, subs, replace, mode, expectedSubs } = body as {
       driver_id?: string;
       leave_from?: string;
       timeLabel?: string | null;
+      loai_nghi?: string | null;
       subs?: { name?: string; from?: string | null; to?: string | null }[];
       replace?: boolean;
       mode?: "split";
@@ -175,7 +176,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const identity = { driver_id, leave_from, timeLabel: timeLabel ?? null, leave_id: body.leave_id, revision: body.revision };
+    const identity = { driver_id, leave_from, timeLabel: timeLabel ?? null, loai_nghi: loai_nghi ?? null, leave_id: body.leave_id, revision: body.revision };
     const split = mode === "split";
     let result: { row: number; warning?: string; rows?: number[]; created?: number };
     if (split) {

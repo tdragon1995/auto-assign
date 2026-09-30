@@ -86,7 +86,10 @@ function groupByDriver(drivers: LeaveOnDate[]): DriverGroup[] {
       });
     } else {
       // "Nghỉ việc" outranks day-leave labels for the card chip.
-      if (d.loai_nghi === "Nghỉ việc") g.loai_nghi = d.loai_nghi;
+      if (d.loai_nghi === "Nghỉ việc") {
+        g.loai_nghi = d.loai_nghi;
+        g.leave_from = d.leave_from;
+      }
       g.rows.push(row);
     }
   }
@@ -1102,6 +1105,7 @@ function SubEditor({
   row,
   drivers,
   initial,
+  allowSplit = true,
   onSave,
   onCancel,
 }: {
@@ -1111,6 +1115,7 @@ function SubEditor({
    *  (change a name or a window on a row that's already covered). Omitted for
    *  the original "+ Thêm" case, which starts from one empty block. */
   initial?: SubBlock[];
+  allowSplit?: boolean;
   onSave: (
     subs: { name: string; from: string | null; to: string | null }[],
     split: boolean,
@@ -1123,7 +1128,7 @@ function SubEditor({
     initial && initial.length > 0 ? initial : [{ name: "", from: "", to: "" }],
   );
   const [busy, setBusy] = useState(false);
-  const isSplit = blocks.length > 1;
+  const isSplit = allowSplit && blocks.length > 1;
 
   const patch = (i: number, p: Partial<SubBlock>) =>
     setBlocks((prev) => prev.map((b, j) => (j === i ? { ...b, ...p } : b)));
@@ -1190,7 +1195,7 @@ function SubEditor({
         </div>
       ))}
       <div className="flex items-center gap-1">
-        {blocks.length < 3 && (
+        {allowSplit && blocks.length < 3 && (
           <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={addBlock} disabled={busy}>
             + Chia ca
           </Button>
@@ -1297,8 +1302,8 @@ function makeRestoreRow(onRefresh: RefreshFn): DeleteRowFn {
  * Severity signalling: an on-leave driver with NO substitute is the actionable
  * case (the engine will fail their jobs with "Nghỉ, không người thay"), so the
  * card goes amber, says so, and offers to fill the sub in place. Covered
- * drivers stay quiet with a green check. Resigned drivers (permanent — routing
- * needs a re-plan, not a sub) get a red chip plus their first day off.
+ * drivers stay quiet with a green check. Resigned drivers get a red chip plus
+ * their first day off; a substitute on that row covers them from then onward.
  */
 
 
@@ -1331,13 +1336,12 @@ function DriverCard({
       </div>
       {/* Coverage rows: window → sub (sub shown by name only; the full sheet
           label is in the title attr). Wraps on mobile — nothing truncates. */}
-      {!resigned &&
-        g.rows.map((r, i) => (
+      {g.rows.map((r, i) => (
           // Stable, not the array index: a delete or an edit can shift what
           // sits at position i, and an index key would hand that row's local
           // state (SubEditor open, DeleteRowButton armed) to whatever row
           // lands there next.
-          <div key={`${r.leave_from}-${r.timeLabel ?? "full"}`}>
+          <div key={`${r.leave_id ?? r.leave_from}-${r.timeLabel ?? "full"}-${r.loai_nghi ?? ""}`}>
             <div className="mt-0.5 flex flex-wrap items-baseline gap-x-1.5 text-xs">
               {/* The header already carries the mark when Thay ca is all that is open. */}
               {status !== "thayca" && r.loai_nghi === "Thay ca" && r.subs.length === 0 && <ThayCaMark />}
@@ -1345,6 +1349,7 @@ function DriverCard({
                 <span className="font-semibold text-orange-700">{typeLabel(r.loai_nghi)}</span>
               )}
               {r.timeLabel && <span className="font-mono text-slate-500">{r.timeLabel}</span>}
+              {r.loai_nghi === "Nghỉ việc" && <span className="text-slate-500">người thay từ {ddmm(r.leave_from)} trở đi</span>}
               {r.subs.length > 0 ? (
                 <>
                   <span
@@ -1406,6 +1411,7 @@ function DriverCard({
               <SubEditor
                 row={r}
                 drivers={drivers}
+                allowSplit={r.loai_nghi !== "Nghỉ việc"}
                 initial={
                   r.subs.length > 0
                     ? r.subs.map((s) => ({ name: s.name, from: s.from ?? "", to: s.to ?? "" }))
@@ -1414,7 +1420,7 @@ function DriverCard({
                 onCancel={() => setEditRow(null)}
                 onSave={(subs, split) =>
                   onFill(
-                    { driver_id: g.driver_id, leave_from: r.leave_from, timeLabel: r.timeLabel, leave_id: r.leave_id, revision: r.revision },
+                    { driver_id: g.driver_id, leave_from: r.leave_from, timeLabel: r.timeLabel, loai_nghi: r.loai_nghi, leave_id: r.leave_id, revision: r.revision },
                     subs,
                     {
                       split,

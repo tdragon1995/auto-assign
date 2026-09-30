@@ -415,8 +415,8 @@ export function leaveEntriesOnDate(date: string, entries: LeaveEntry[]): LeaveOn
     });
   }
 
-  // Collapse per driver + window: the sheet can carry a duplicate row for the
-  // same driver+window (e.g. one filled with a sub, one left blank), which would
+  // Collapse per driver + type + start date + window: the sheet can carry a duplicate row for the
+  // same leave (e.g. one filled with a sub, one left blank), which would
   // otherwise show the same slot twice — once covered, once "Chưa có người
   // thay". Keep the most-covered row so the substitute wins; genuinely different
   // windows (split-shift: morning vs afternoon) keep distinct keys and survive.
@@ -427,7 +427,7 @@ export function leaveEntriesOnDate(date: string, entries: LeaveEntry[]): LeaveOn
   const byKey = new Map<string, LeaveOnDate>();
   const countByKey = new Map<string, number>();
   for (const r of raw) {
-    const key = `${r.driver_id}|${r.timeLabel ?? "full"}`;
+    const key = `${r.driver_id}|${r.loai_nghi}|${r.leave_from}|${r.timeLabel ?? "full"}`;
     countByKey.set(key, (countByKey.get(key) ?? 0) + 1);
     const kept = byKey.get(key);
     if (!kept || r.subs.length > kept.subs.length) byKey.set(key, r);

@@ -86,6 +86,20 @@ console.log("finding the row the dashboard means");
     }).map((candidate) => candidate.row), [4]);
 }
 
+// A resignation can share its first off-day with an ordinary full-day leave.
+{
+  const sheet = [
+    HEADER,
+    row({ driver_id: OTHER, driver: "Ai đó", leave_from: "2026-01-01" }),
+    row({ driver_id: SON, driver: "Sơn", "Loại Nghỉ": "Nghỉ nguyên buổi", leave_from: "2026-09-04" }),
+    row({ driver_id: SON, driver: "Sơn", "Loại Nghỉ": "Nghỉ việc", leave_from: "2026-09-04" }),
+  ];
+  eq("resignation delete selects only Nghỉ việc",
+    matchLeaveRows(sheet, col, {
+      driver_id: SON, leave_from: "2026-09-04", timeLabel: null, loai_nghi: "Nghỉ việc",
+    }).map((candidate) => candidate.row), [4]);
+}
+
 // The sheet's date cells come back in whatever the cell's locale formatting
 // gives — a d/m/yyyy row must still be findable from the ISO date the API serves.
 {
