@@ -8,7 +8,7 @@ import { masterRuleRows } from "./master-store";
 import { masterLeaveRows, leaveLegacyRow } from "./master-leave";
 import { fetchSheetRows, sheetCsvUrl, SHEET_CONTRACT, SHEET_GID } from "./sheets";
 import { getJobsByDate } from "./cartrack";
-import { getRunLog } from "./smart-log-kv";
+import type { LogEntry } from "./types";
 import { parseVnTimestamp, vnDate, vnIsSunday } from "./time";
 
 const asConfig = (mappings: Mapping[]): Config => ({ mappings, unfinished: [], gaps: [], overlaps: [], branchRules: {}, parsedAt: "" });
@@ -42,6 +42,14 @@ async function sheetLeave(): Promise<LeaveEntry[]> {
 function leaveKey(entry: ReturnType<typeof leaveEntriesOnDate>[number]) {
   return JSON.stringify([entry.driver_id, entry.loai_nghi, entry.leave_from, entry.timeLabel,
     entry.subs.map(sub => [sub.id, sub.from, sub.to])]);
+}
+
+async function mainProductionLog(): Promise<LogEntry[]> {
+  const response = await fetch("https://diag-logistics.vercel.app/api/assign/log?limit=100", { cache: "no-store" });
+  if (!response.ok) throw new Error(`Main production log read failed: ${response.status}`);
+  const body = await response.json() as { logs?: LogEntry[] };
+  if (!Array.isArray(body.logs)) throw new Error("Main production log response is invalid");
+  return body.logs;
 }
 
 export function shadowDecision(config: Config, leaves: LeaveEntry[], job: Job) {
@@ -79,7 +87,7 @@ export async function shadowSnapshot() {
   const [sheetRows, masterRows, sheetLeaves, dbLeaves, jobs, productionLog] = await Promise.all([
     fetchSheetRows(SHEET_GID[tab], SHEET_CONTRACT[tab]),
     sunday ? fetchSheetRows(SHEET_GID.sunday, SHEET_CONTRACT.sunday) : masterRuleRows("weekday"),
-    sheetLeave(), masterLeaveRows(), getJobsByDate(date), getRunLog(100),
+    sheetLeave(), masterLeaveRows(), getJobsByDate(date), mainProductionLog(),
   ]);
   if (sheetRows.length < 100 || masterRows.length < 100) throw new Error("Rule source returned too few rows");
   const sheetMappings = dutyRows(sheetRows), masterMappings = dutyRows(masterRows);
