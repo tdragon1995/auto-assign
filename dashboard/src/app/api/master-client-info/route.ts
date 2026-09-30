@@ -4,7 +4,7 @@ import { deleteMasterRule, masterClient, masterClients, masterDrivers, masterRul
 import { invalidateConfigCache, invalidateDriversCache } from "@/lib/config";
 import { syncLabcenterMetadata } from "@/lib/master-sync";
 import { publicClient, publicDriver, publicRule } from "@/lib/master-public";
-import { masterEnabled, alternateDropoffChanges, writeMasterRules } from "@/lib/master-store";
+import { masterEnabled } from "@/lib/master-store";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -47,14 +47,7 @@ export async function PATCH(req: NextRequest) {
   try {
     const body = await req.json();
     if (!body || typeof body !== "object") throw new Error("Invalid body");
-    if (!["client", "driver", "alternate_dropoffs"].includes(body.kind) && !authorized(req)) return deny();
-    if (body.kind === "alternate_dropoffs") {
-      if (typeof body.id !== "string") throw new Error("Invalid client ID");
-      const changes = alternateDropoffChanges(body.id, body.rows, await masterRules("weekday"));
-      const result = await writeMasterRules(changes);
-      await invalidateConfigCache();
-      return NextResponse.json({ ok: true, result });
-    }
+    if (!["client", "driver"].includes(body.kind) && !authorized(req)) return deny();
     if (body.kind === "client" || body.kind === "driver") {
       if (typeof body.id !== "string" || !body.patch || typeof body.patch !== "object" || Array.isArray(body.patch)) throw new Error("Invalid profile patch");
       if ("bot_token" in body.patch && !authorized(req)) return deny();

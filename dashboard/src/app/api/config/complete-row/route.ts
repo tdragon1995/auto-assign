@@ -26,6 +26,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== "object") return bad("Body không hợp lệ");
+    if (body.alt_drop_off_id !== undefined && typeof body.alt_drop_off_id !== "string") return bad("Điểm giao thay thế không hợp lệ");
     const { row, pickup_name, driver_name, shift_start, shift_end, dropoff_name, copy_from_row, expected_row } = body as {
       row?: number; pickup_name?: string; driver_name?: string;
       shift_start?: string; shift_end?: string; dropoff_name?: string; copy_from_row?: number; expected_row?: unknown;
@@ -73,6 +74,7 @@ export async function POST(req: NextRequest) {
       copyFromRow: copy_from_row,
       assignment_mode:body.assignment_mode,
       driver_ids:body.driver_ids,
+      alt_drop_off_id:body.alt_drop_off_id,
     });
     // Now it is a real rule; make every server see it rather than waiting for
     // someone to press Refresh.

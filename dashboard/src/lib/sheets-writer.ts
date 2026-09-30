@@ -2097,6 +2097,7 @@ async function resolveConfigTargetRow(
  * driver onto whatever happens to live there now.
  */
 export async function completeConfigRow(opts: {
+  alt_drop_off_id?: string;
   assignment_mode?: "fixed" | "smart";
   driver_ids?: string[];
   row: number;
@@ -2111,6 +2112,7 @@ export async function completeConfigRow(opts: {
   copyFromRow?: number;
 }): Promise<{ row: number; moved: boolean }> {
   if (masterEnabled() && !vnIsSunday()) return editMasterConfig(opts, opts);
+  if (opts.alt_drop_off_id !== undefined) throw new Error("Điểm giao thay thế chỉ sửa trong config Supabase");
   const tab = currentConfigTab();
   if (tab.gid !== CONFIG_TABS.weekday.gid) {
     throw new Error(

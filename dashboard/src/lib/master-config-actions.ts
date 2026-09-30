@@ -3,7 +3,7 @@ import type { ConfigRowSnapshot } from "./config-row-match";
 import { replaceDriverInCell } from "./driver-cell";
 
 type Target={row:number;expectPickup:string;expected?:ConfigRowSnapshot};
-type Patch={driverName?:string;driver_ids?:string[];assignment_mode?:AssignmentMode;start?:string;end?:string;dropoff?:string};
+type Patch={driverName?:string;driver_ids?:string[];assignment_mode?:AssignmentMode;start?:string;end?:string;dropoff?:string;alt_drop_off_id?:string};
 function targetRule(target:Target,rules:MasterRule[]) {
   const old=rules.find(r=>r.id===target.expected?.rule_id);
   if(!old || old.revision!==target.expected?.revision) throw new Error("Dòng đã thay đổi — tải lại trước khi lưu");
@@ -20,7 +20,7 @@ function change(old:MasterRule,patch:Patch,ctx:Awaited<ReturnType<typeof context
   return ruleChange({customer_id:old.pickup_customer_id??"",driver_ids,
     assignment_mode:patch.assignment_mode??(driver_ids.length>1?"smart":old.assignment_mode),
     dropoff_id:patch.dropoff===undefined?old.dropoff_customer_id??"":patch.dropoff?uniqueNameId(patch.dropoff,ctx.clients):"",
-    shift_start:patch.start??old.shift_start?.slice(0,5)??"",shift_end:patch.end??old.shift_end?.slice(0,5)??""},old);
+    shift_start:patch.start??old.shift_start?.slice(0,5)??"",shift_end:patch.end??old.shift_end?.slice(0,5)??"",alt_drop_off_id:patch.alt_drop_off_id},old);
 }
 export async function editMasterConfig(target:Target,patch:Patch|{delete:true}) {
   const ctx=await context(),old=targetRule(target,ctx.rules);

@@ -108,6 +108,7 @@ function safeCell(v: string): string {
  * be. The writer maps these four facts onto whichever tab it is writing to.
  */
 export interface ConfigCells {
+  alt_drop_off_id?: string;
   customer_id?: string;
   dropoff_id?: string;
   driver_ids?: string[];

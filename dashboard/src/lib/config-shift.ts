@@ -34,6 +34,7 @@ export function insideBusy(t: string, busy: readonly [string, string][]): boolea
 
 /** A line as the editor holds it while being worked on. */
 export interface Line {
+  alt_drop_off_id?: string;
   rule_id?: number;
   revision?: number;
   assignment_mode?: "fixed" | "smart";
@@ -72,6 +73,7 @@ let newLineSeq = 0;
 export const newLineKey = () => `new:${++newLineSeq}`;
 
 export const asLine = (r: BranchRule): Line => ({
+  alt_drop_off_id:r.alt_drop_off_id,
   rule_id:r.rule_id,revision:r.revision,assignment_mode:r.assignment_mode,
   key: `row:${r.row}`, row: r.row, driver: r.driver, start: r.start, end: r.end,
   dropoff: r.dropoff ?? "",
@@ -106,7 +108,7 @@ export const sameScope = (a: Line, b: Line) =>
 
 /** What a line would write, including a requested copy of the source row's
  * smart_driver_id cell. Visible fields can match while that cell differs. */
-export const sig = (l: Line) => [l.driver, l.start, l.end, l.dropoff, l.copyFromRow ?? "",l.assignment_mode??""].join("\u0000");
+export const sig = (l: Line) => [l.driver, l.start, l.end, l.dropoff, l.copyFromRow ?? "",l.assignment_mode??"",l.alt_drop_off_id??""].join("\u0000");
 
 /**
  * The branch's day AS THIS DESTINATION SEES IT.

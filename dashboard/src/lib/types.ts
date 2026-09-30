@@ -68,6 +68,7 @@ export interface UnfinishedConfigRow {
  */
 /** One rule as it stands in the sheet, with the row so it can be edited back. */
 export interface BranchRule {
+  alt_drop_off_id?: string;
   rule_id?: number;
   revision?: number;
   assignment_mode?: "fixed" | "smart";

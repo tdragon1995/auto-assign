@@ -242,7 +242,7 @@ export function sortConfigRows(rows: readonly ConfigRowView[]): ConfigRowView[] 
 /** One branch's rows, in the shape the editor takes. Only rows that carry a
  *  sheet row can be edited — every writer addresses them by number. */
 function rulesOf(rows: readonly ConfigRowView[]): BranchRule[] {
-  return rows.filter((r) => !r.unmapped).map((r) => ({ row: r.row, rule_id:r.rule_id, revision:r.revision, assignment_mode:r.assignment_mode, driver: r.driver, start: r.start, end: r.end, dropoff: r.dropoff }));
+  return rows.filter((r) => !r.unmapped).map((r) => ({ row: r.row, rule_id:r.rule_id, revision:r.revision, assignment_mode:r.assignment_mode, driver: r.driver, start: r.start, end: r.end, dropoff: r.dropoff, alt_drop_off_id:r.alt_drop_off_id }));
 }
 
 /**
@@ -1343,6 +1343,9 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                         onClick={e => openProfile("client", dropoffInfo.customer_id, e.currentTarget, true)}
                         className="block max-w-full truncate text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">{r.dropoff}</button>
                         : r.dropoff || <span className="whitespace-nowrap text-slate-500">mọi điểm</span>}
+                      {r.alt_drop_off_id && <span className="block truncate text-[11px] text-indigo-700" title={`Điểm giao thay thế: ${clientMetaById.get(r.alt_drop_off_id) ? clientName(clientMetaById.get(r.alt_drop_off_id)!) : r.alt_drop_off_id}`}>
+                        Thay thế: {clientMetaById.get(r.alt_drop_off_id) ? clientName(clientMetaById.get(r.alt_drop_off_id)!) : r.alt_drop_off_id}
+                      </span>}
                     </td>
                     {showSheetRow && <td className="px-2 py-1 text-right font-mono text-[10px] text-slate-500">{r.unmapped ? "—" : r.row}</td>}
                   </tr>
@@ -1371,6 +1374,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                               ?? rows.find((row) => !row.unmapped && row.row > 2)?.row,
                           }] : []}
                           drivers={rosterDrivers}
+                          locations={(clientMetadata ?? []).map(c => ({id:c.customer_id,name:clientName(c)}))}
                           onCancel={() => setEditing(null)}
                           onDone={() => { setEditing(null); void load(); }}
                           onStale={() => { setEditing(null); void load(true); }}
@@ -1406,9 +1410,6 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
             initial={hoverClient ? { ...hoverClient.cartrack, default_dropoff_id: hoverClient.default_dropoff_id, eta_minutes: hoverClient.eta_minutes }
               : { ...hoverDriver!.cartrack, ...hoverDriver!.roster, driver_zalo_id: hoverDriver!.driver_zalo_id, phone_number_update: hoverDriver!.phone_number_update }}
             clients={clientMetadata ?? []} linkedLabcenter={!!hoverClient?.labcenter_location_id}
-            rules={hoverClient ? sheetRows.filter(r => r.customer_id === hoverClient.customer_id && r.rule_id !== undefined && r.revision !== undefined).map(r => ({
-              rule_id: r.rule_id!, revision: r.revision!, start: r.start, end: r.end, dropoff: r.dropoff, alt_drop_off_id: r.alt_drop_off_id,
-            })) : []}
             onCancel={() => setProfileEditing(false)} onSaved={async () => { await loadMetadata(); await load(true); closeProfile(); toast.success("Đã lưu và đồng bộ hồ sơ"); }}
           /> : <>
             <div className="whitespace-pre-line break-words text-xs leading-5 text-slate-700">{hoverClient ? clientTooltip(hoverClient) : hoverDriver ? driverTooltip(hoverDriver, clientMetaById) : ""}</div>

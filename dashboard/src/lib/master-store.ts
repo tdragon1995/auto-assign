@@ -64,6 +64,7 @@ export async function masterDriver(id:string):Promise<MasterDriver|null> {
 export type RuleInput={customer_id:string;driver_ids:string[];assignment_mode?:AssignmentMode;dropoff_id:string;
   shift_start:string;shift_end:string;bot_token?:string;chat_id?:string;alt_drop_off_id?:string};
 export function ruleChange(input:RuleInput,old?:MasterRule) {
+  if(input?.alt_drop_off_id!==undefined && typeof input.alt_drop_off_id!=="string") throw new Error("Điểm giao thay thế không hợp lệ");
   if(!input || !UUID.test(input.customer_id) || !Array.isArray(input.driver_ids) || input.driver_ids.length>20 ||
     input.driver_ids.some(id=>typeof id!=="string" || !UUID.test(id) || id===PROXY_ID) || new Set(input.driver_ids).size!==input.driver_ids.length ||
     (input.dropoff_id && !UUID.test(input.dropoff_id)) || (input.alt_drop_off_id && !UUID.test(input.alt_drop_off_id))) throw new Error("Quy tắc không hợp lệ");
@@ -87,22 +88,6 @@ export function ruleChange(input:RuleInput,old?:MasterRule) {
 export async function writeMasterRules(changes:Record<string,unknown>[]) {
   assertMasterWritable();
   return sbRpc<{id:number;revision:number;source_row:number}[]>("master_write_rules",{changes});
-}
-export function alternateDropoffChanges(customerId: string, input: unknown, rules: MasterRule[]) {
-  if (!UUID.test(customerId) || !Array.isArray(input) || !input.length || input.length > 500) throw new Error("Điểm giao thay thế không hợp lệ");
-  const seen = new Set<number>();
-  return input.map(item => {
-    if (!item || !Number.isSafeInteger(item.rule_id) || !Number.isSafeInteger(item.revision) ||
-        typeof item.alt_drop_off_id !== "string" || (item.alt_drop_off_id && !UUID.test(item.alt_drop_off_id)) || seen.has(item.rule_id) ||
-        Object.keys(item).some(k => !["rule_id", "revision", "alt_drop_off_id"].includes(k))) throw new Error("Điểm giao thay thế không hợp lệ");
-    seen.add(item.rule_id);
-    const old = rules.find(r => r.id === item.rule_id && r.pickup_customer_id === customerId);
-    if (!old || old.revision !== item.revision) throw new Error("Dòng đã thay đổi — tải lại trước khi lưu");
-    if (old.review_issues.length) throw new Error("Cần xử lý vấn đề của dòng cấu hình trước khi sửa điểm giao thay thế");
-    return ruleChange({ customer_id: customerId, driver_ids: old.driver_ids, assignment_mode: old.assignment_mode,
-      dropoff_id: old.dropoff_customer_id ?? "", alt_drop_off_id: item.alt_drop_off_id,
-      shift_start: old.shift_start?.slice(0,5) ?? "", shift_end: old.shift_end?.slice(0,5) ?? "" }, old);
-  });
 }
 export async function saveMasterRule(input:RuleInput,id?:number,revision?:number):Promise<number> {
   const old=id===undefined?undefined:(await masterRules("weekday")).find(r=>r.id===id);
@@ -128,7 +113,7 @@ export async function createMasterConfigRows(cells:ConfigCells[]):Promise<number
     const driver_ids=cell.driver_ids??(cell.driver??"").split(",").map(s=>s.trim()).filter(Boolean).map(n=>uniqueNameId(n,d));
     const change=ruleChange({customer_id:cell.customer_id??uniqueNameId(cell.pickup,c),driver_ids,
       assignment_mode:cell.assignment_mode??(driver_ids.length>1?"smart":copied?.assignment_mode??"fixed"),
-      dropoff_id:cell.dropoff_id??(cell.dropoff?uniqueNameId(cell.dropoff,c):""),shift_start:cell.start,shift_end:cell.end});
+      dropoff_id:cell.dropoff_id??(cell.dropoff?uniqueNameId(cell.dropoff,c):""),shift_start:cell.start,shift_end:cell.end,alt_drop_off_id:cell.alt_drop_off_id});
     if(copied) change.row_data={...copied.row_data,...change.row_data};
     return change;
   });
