@@ -44,6 +44,7 @@ export interface ConfigRowView {
   end: string;
   /** Destination this rule is scoped to; blank means every destination. */
   dropoff: string;
+  alt_drop_off_id?: string;
   /** True when the cell names several drivers: the engine ranks them by
    *  distance rather than treating them as competing rules. */
   smart: boolean;
@@ -120,6 +121,7 @@ export async function GET(req: NextRequest) {
         start: (r["shift_start"] ?? "").trim(),
         end: (r["shift_end"] ?? "").trim(),
         dropoff: (r["Điểm Drop-off"] ?? "").trim(),
+        alt_drop_off_id: (r["alt_drop_off_id"] ?? "").trim(),
         smart: r.assignment_mode === "smart" || !!r.smart_driver_id?.trim(),
       });
     });

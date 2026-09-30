@@ -51,17 +51,16 @@ export async function editClient(id: string, patch: Record<string, unknown>) {
   const address = patch.address_line_1 === undefined ? current.address_line_1 : requiredText(patch.address_line_1, "Địa chỉ");
   const lat = patch.latitude === undefined ? Number(current.latitude) : Number(patch.latitude);
   const lon = patch.longitude === undefined ? Number(current.longitude) : Number(patch.longitude);
-  if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) throw new Error("GPS không hợp lệ");
-  const contact = patch.contact_number === undefined ? current.contact_number : requiredText(patch.contact_number, "Số điện thoại");
   const changeCartrack = ["customer_name", "address_line_1", "address_line_2", "email", "postal_code", "client_reference", "latitude", "longitude", "contact_number"].some((k) => k in patch);
+  if (changeCartrack && (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180)) throw new Error("GPS không hợp lệ");
+  const contact = patch.contact_number === undefined ? current.contact_number : requiredText(patch.contact_number, "Số điện thoại");
   const dropId = patch.default_dropoff_id === undefined ? row.default_dropoff_id : String(patch.default_dropoff_id);
   const eta = patch.eta_minutes === undefined ? row.eta_minutes : Number(patch.eta_minutes);
   const changeDropoff = patch.default_dropoff_id !== undefined || patch.eta_minutes !== undefined;
   const drop = changeDropoff && dropId && uuid.test(dropId) ? await masterClient(dropId) : null;
   if (changeDropoff) {
-    if (!row.labcenter_location_id || !token) throw new Error("Điểm này chưa liên kết Labcenter");
-    if (!dropId || !uuid.test(dropId) || !Number.isInteger(eta) || eta! < 0 || eta! > 1440) throw new Error("Điểm giao hoặc ETA không hợp lệ");
-    if (!drop?.labcenter_location_id) throw new Error("Điểm giao chưa liên kết Labcenter");
+    if ((dropId && (!uuid.test(dropId) || !drop)) || (eta !== null && (!Number.isInteger(eta) || eta < 0 || eta > 1440))) throw new Error("Điểm giao hoặc ETA không hợp lệ");
+    if (row.labcenter_location_id && (!drop?.labcenter_location_id || eta === null)) throw new Error("Chọn điểm giao đã liên kết Labcenter và nhập ETA");
   }
   let after = current;
   if (changeCartrack) {
@@ -112,10 +111,10 @@ export async function editClient(id: string, patch: Record<string, unknown>) {
       dropLocationId: drop.labcenter_location_id,
     }, token);
     if (!result.ok) throw new Error(result.error ?? "Labcenter không lưu điểm giao");
-    await sbPatch("master_clients", `customer_id=eq.${id}`, {
-      default_dropoff_id: dropId, default_dropoff_name: drop.cartrack.customer_name ?? "", eta_minutes: eta,
-    });
   }
+  if (changeDropoff) await sbPatch("master_clients", `customer_id=eq.${id}`, {
+    default_dropoff_id: dropId || null, default_dropoff_name: drop?.cartrack.customer_name ?? null, eta_minutes: eta,
+  });
   return { customer_id: id };
 }
 

@@ -1406,6 +1406,9 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
             initial={hoverClient ? { ...hoverClient.cartrack, default_dropoff_id: hoverClient.default_dropoff_id, eta_minutes: hoverClient.eta_minutes }
               : { ...hoverDriver!.cartrack, ...hoverDriver!.roster, driver_zalo_id: hoverDriver!.driver_zalo_id, phone_number_update: hoverDriver!.phone_number_update }}
             clients={clientMetadata ?? []} linkedLabcenter={!!hoverClient?.labcenter_location_id}
+            rules={hoverClient ? sheetRows.filter(r => r.customer_id === hoverClient.customer_id && r.rule_id !== undefined && r.revision !== undefined).map(r => ({
+              rule_id: r.rule_id!, revision: r.revision!, start: r.start, end: r.end, dropoff: r.dropoff, alt_drop_off_id: r.alt_drop_off_id,
+            })) : []}
             onCancel={() => setProfileEditing(false)} onSaved={async () => { await loadMetadata(); await load(true); closeProfile(); toast.success("Đã lưu và đồng bộ hồ sơ"); }}
           /> : <>
             <div className="whitespace-pre-line break-words text-xs leading-5 text-slate-700">{hoverClient ? clientTooltip(hoverClient) : hoverDriver ? driverTooltip(hoverDriver, clientMetaById) : ""}</div>

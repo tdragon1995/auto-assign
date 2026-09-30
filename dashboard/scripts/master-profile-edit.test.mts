@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { profilePatch } from "../src/components/master-profile-editor";
+import { alternateDropoffChanges, type MasterRule } from "../src/lib/master-store";
+import { editClient } from "../src/lib/master-profile";
 
 const client = { address_line_1: "Old", latitude: 10.5, longitude: 106.5 };
 const draft = { address_line_1: "New", latitude: "11", longitude: "107", bot_token: "not writable" };
@@ -9,4 +11,68 @@ assert.throws(() => profilePatch("client", client, { latitude: "invalid" }, fals
 assert.deepEqual(profilePatch("driver", { shift_time_start: "07:00:00+07:00" }, { shift_time_start: "07:00", bot_token: "not writable" }, true), {});
 assert.deepEqual(profilePatch("driver", {}, { shift_time_start: "08:30", end_location_customer_id: "" }, true), { shift_time_start: "08:30:00+07:00" });
 assert.deepEqual(profilePatch("driver", { end_location_customer_id: "old", shift_time_end: "18:00" }, { end_location_customer_id: "", shift_time_end: "" }, true), { end_location_customer_id: null, shift_time_end: null });
-console.log("Profile edit checks passed: locked GPS, credential exclusion, numeric validation and local shift times");
+const pickup = "11111111-1111-4111-8111-111111111111";
+const destination = "22222222-2222-4222-8222-222222222222";
+const alternate = "33333333-3333-4333-8333-333333333333";
+const driver = "44444444-4444-4444-8444-444444444444";
+const rule: MasterRule = { id: 1, source_uid: pickup, source_row: 2, revision: 7, assignment_mode: "smart",
+  row_data: { bot_token: "preserve", chat_id: "preserve" }, driver_ids: [driver], smart_driver_id: driver, updated_at: "",
+  pickup_customer_id: pickup, dropoff_customer_id: destination, alternate_dropoff_customer_id: null,
+  shift_start: "22:00:00", shift_end: "06:00:00", review_issues: [] };
+const change = { rule_id: 1, revision: 7, alt_drop_off_id: alternate };
+assert.deepEqual(alternateDropoffChanges(pickup, [change], [rule]), [{ id: 1, revision: 7, assignment_mode: "smart",
+  driver_ids: [driver], pickup_customer_id: pickup, dropoff_customer_id: destination,
+  alternate_dropoff_customer_id: alternate, shift_start: "22:00", shift_end: "06:00", row_data: {} }]);
+assert.equal(alternateDropoffChanges(pickup, [{ ...change, alt_drop_off_id: "" }], [rule])[0].alternate_dropoff_customer_id, null);
+for (const bad of [[{ ...change, revision: 6 }], [change, change], [{ ...change, alt_drop_off_id: "invalid" }], [{ ...change, bot_token: "overwrite" }]])
+  assert.throws(() => alternateDropoffChanges(pickup, bad, [rule]));
+assert.throws(() => alternateDropoffChanges(destination, [change], [rule]));
+assert.throws(() => alternateDropoffChanges(pickup, [change], [{ ...rule, review_issues: ["unresolved"] }]));
+assert.deepEqual(profilePatch("client", {}, { default_dropoff_id: destination, eta_minutes: "20" }, true), { default_dropoff_id: destination, eta_minutes: 20 });
+
+// No live writes: exercise both default-dropoff owners with a strict fetch stub.
+const oldFetch = globalThis.fetch;
+const testEnv = { SUPABASE_URL: "https://supabase.invalid", SUPABASE_SERVICE_ROLE_KEY: "test-only", CARTRACK_AUTH: "test-only", LABCENTER_EMAIL: "test-only", LABCENTER_PASSWORD: "test-only" };
+const previousEnv = Object.fromEntries(Object.keys(testEnv).map(k => [k, process.env[k]]));
+Object.assign(process.env, testEnv);
+let linked = false;
+let labcenterAccepts = true;
+const writes: { url: string; body: Record<string, unknown> }[] = [];
+globalThis.fetch = async (input, init) => {
+  const url = String(input);
+  const method = init?.method ?? "GET";
+  const json = (data: unknown) => Response.json(data);
+  if (url.startsWith("https://supabase.invalid/rest/v1/master_clients")) {
+    if (method === "PATCH") { writes.push({ url, body: JSON.parse(String(init?.body)) }); return json([]); }
+    assert.equal(method, "GET");
+    const id = new URL(url).searchParams.get("customer_id")?.slice(3);
+    return json([{ customer_id: id, cartrack: { customer_name: "Location" }, default_dropoff_id: null, eta_minutes: null,
+      labcenter_location_id: linked ? id === pickup ? 10 : 20 : null }]);
+  }
+  if (url.includes("fleetapi-vn.cartrack.com") && method === "GET") return json({ data: { customer_name: "Location", latitude: "invalid", longitude: "invalid" } });
+  if (url.endsWith("/api/v1/auth/login")) return json({ token: "test-only" });
+  if (url.endsWith("/api/locations/update-pick-drop-location")) { writes.push({ url, body: JSON.parse(String(init?.body)) }); return json({}); }
+  if (url.includes("/api/pick-drop-locations?")) return json({ data: [{ pick_location_id: 10, drop_location_id: labcenterAccepts ? 20 : 21, estimate_pick_up: 20 }] });
+  throw new Error(`Unexpected request: ${method} ${url}`);
+};
+try {
+  await editClient(pickup, { default_dropoff_id: destination });
+  assert.deepEqual(writes.map(w => w.body), [{ default_dropoff_id: destination, default_dropoff_name: "Location", eta_minutes: null }]);
+  writes.length = 0;
+  await editClient(pickup, { default_dropoff_id: "" });
+  assert.equal(writes[0].body.default_dropoff_id, null);
+  linked = true; writes.length = 0;
+  await editClient(pickup, { default_dropoff_id: destination, eta_minutes: 20 });
+  assert.deepEqual(writes.map(w => w.body), [{ pick_id: pickup, drop_id: destination, estimate_pick_up: 20 },
+    { default_dropoff_id: destination, default_dropoff_name: "Location", eta_minutes: 20 }]);
+  labcenterAccepts = false; writes.length = 0;
+  await assert.rejects(editClient(pickup, { default_dropoff_id: destination, eta_minutes: 20 }), /không cập nhật/);
+  assert.equal(writes.length, 1); // A failed Labcenter read-back must not update Supabase.
+  writes.length = 0;
+  await assert.rejects(editClient(pickup, { default_dropoff_id: "", eta_minutes: 20 }));
+  assert.equal(writes.length, 0);
+} finally {
+  globalThis.fetch = oldFetch;
+  for (const [key, value] of Object.entries(previousEnv)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+}
+console.log("Profile checks passed: GPS lock, secrets, shifts, rule revisions and separate default/alternative ownership");

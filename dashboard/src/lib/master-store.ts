@@ -88,6 +88,22 @@ export async function writeMasterRules(changes:Record<string,unknown>[]) {
   assertMasterWritable();
   return sbRpc<{id:number;revision:number;source_row:number}[]>("master_write_rules",{changes});
 }
+export function alternateDropoffChanges(customerId: string, input: unknown, rules: MasterRule[]) {
+  if (!UUID.test(customerId) || !Array.isArray(input) || !input.length || input.length > 500) throw new Error("Điểm giao thay thế không hợp lệ");
+  const seen = new Set<number>();
+  return input.map(item => {
+    if (!item || !Number.isSafeInteger(item.rule_id) || !Number.isSafeInteger(item.revision) ||
+        typeof item.alt_drop_off_id !== "string" || (item.alt_drop_off_id && !UUID.test(item.alt_drop_off_id)) || seen.has(item.rule_id) ||
+        Object.keys(item).some(k => !["rule_id", "revision", "alt_drop_off_id"].includes(k))) throw new Error("Điểm giao thay thế không hợp lệ");
+    seen.add(item.rule_id);
+    const old = rules.find(r => r.id === item.rule_id && r.pickup_customer_id === customerId);
+    if (!old || old.revision !== item.revision) throw new Error("Dòng đã thay đổi — tải lại trước khi lưu");
+    if (old.review_issues.length) throw new Error("Cần xử lý vấn đề của dòng cấu hình trước khi sửa điểm giao thay thế");
+    return ruleChange({ customer_id: customerId, driver_ids: old.driver_ids, assignment_mode: old.assignment_mode,
+      dropoff_id: old.dropoff_customer_id ?? "", alt_drop_off_id: item.alt_drop_off_id,
+      shift_start: old.shift_start?.slice(0,5) ?? "", shift_end: old.shift_end?.slice(0,5) ?? "" }, old);
+  });
+}
 export async function saveMasterRule(input:RuleInput,id?:number,revision?:number):Promise<number> {
   const old=id===undefined?undefined:(await masterRules("weekday")).find(r=>r.id===id);
   if(id!==undefined && (!old || old.revision!==revision)) throw new Error("Dòng đã thay đổi — tải lại trước khi lưu");
