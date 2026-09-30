@@ -1322,8 +1322,8 @@ function DriverCard({
   const [editRow, setEditRow] = useState<number | null>(null);
   // The SAME mark the week grid uses, so a row does not change language
   // between the glance and the work.
-  const status = resigned ? "resigned" : statusOf([g]);
-  const typeClass = resigned ? "text-red-700" : "text-amber-700";
+  const status = statusOf([g]);
+  const typeClass = status === "covered" ? "text-emerald-700" : resigned ? "text-red-700" : "text-amber-700";
   return (
     <div className="px-2 py-1.5 text-xs hover:bg-slate-50">
       <div className="flex items-center gap-1.5 flex-wrap">
@@ -1710,7 +1710,7 @@ const STATUS_MARK = {
   uncovered: { Icon: AlertTriangle, tone: "text-amber-600", label: "Chưa có người thay" },
   thayca: { Icon: ThayCaIcon, tone: "text-orange-600", label: "Thay ca chưa có người thay" },
   covered: { Icon: Check, tone: "text-emerald-600", label: "Đã có người thay" },
-  resigned: { Icon: Ban, tone: "text-red-600", label: "Nghỉ việc" },
+  resigned: { Icon: Ban, tone: "text-red-600", label: "Nghỉ việc chưa có người thay" },
 } as const;
 
 type LeaveStatus = keyof typeof STATUS_MARK;
@@ -1770,11 +1770,10 @@ function personNameOf(g: DriverGroup): string {
   return splitDriverName(g.driver_name || g.driver_id).name;
 }
 
-/** Worst-first: a resigned account outranks an uncovered one, which outranks a
- *  covered one — the line must show the thing that still needs doing. */
+/** Worst-first among rows still missing a substitute. */
 function statusOf(groups: DriverGroup[]): LeaveStatus {
-  if (groups.some((g) => g.loai_nghi === "Nghỉ việc")) return "resigned";
   const open = groups.flatMap((g) => g.rows.filter((r) => r.subs.length === 0));
+  if (open.some((r) => r.loai_nghi === "Nghỉ việc")) return "resigned";
   if (open.some((r) => r.loai_nghi !== "Thay ca")) return "uncovered";
   return open.length > 0 ? "thayca" : "covered";
 }

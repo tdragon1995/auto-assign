@@ -120,6 +120,13 @@ console.log("what the line says");
   eq("a resigned account outranks a covered one", cell?.status, "resigned");
 }
 {
+  const [cell] = mergePeople([
+    group("a", "F - C - DC100320 Lý Chánh Hùng", { subs: [someone] }),
+    group("b", "F - C - PT100320 Lý Chánh Hùng", { loai_nghi: "Nghỉ việc", subs: [someone] }),
+  ]);
+  eq("a resigned account with a substitute is resolved", cell?.status, "covered");
+}
+{
   const [cell] = mergePeople([group("a", "P - C - PT101275 Phan Thanh Phương", { loai_nghi: "Thay ca" })]);
   eq("an open Thay ca reads as thayca, not the warning", cell?.status, "thayca");
 }
