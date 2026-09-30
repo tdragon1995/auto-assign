@@ -1235,6 +1235,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                   const lastOfBranch = i === shown.length - 1 || runStart[i + 1] !== runStart[i];
                   const inactive = isInactive(r.pickup);
                   const locationInfo = clientMetaById.get(r.customer_id) ?? clientMetaByName.get(r.pickup.trim().toLocaleLowerCase("vi"));
+                  const dropoffInfo = clientMetaByName.get(r.dropoff.trim().toLocaleLowerCase("vi"));
                   // Every row of the route being edited is marked: the editor
                   // holds the route's WHOLE day, so these rows are the very
                   // things it is about to rewrite.
@@ -1336,7 +1337,12 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                       </span>
                     </td>
                     <td className="truncate px-2 py-1 text-slate-700" title={r.dropoff || undefined}>
-                      {r.dropoff || <span className="whitespace-nowrap text-slate-500">mọi điểm</span>}
+                      {dropoffInfo ? <button type="button" aria-haspopup="dialog" aria-expanded={profileHover?.kind === "client" && profileHover.id === dropoffInfo.customer_id}
+                        onPointerEnter={e => { if (e.pointerType === "mouse") openProfile("client", dropoffInfo.customer_id, e.currentTarget); }}
+                        onPointerLeave={e => { if (e.pointerType === "mouse") leaveProfile(); }}
+                        onClick={e => openProfile("client", dropoffInfo.customer_id, e.currentTarget, true)}
+                        className="block max-w-full truncate text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">{r.dropoff}</button>
+                        : r.dropoff || <span className="whitespace-nowrap text-slate-500">mọi điểm</span>}
                     </td>
                     {showSheetRow && <td className="px-2 py-1 text-right font-mono text-[10px] text-slate-500">{r.unmapped ? "—" : r.row}</td>}
                   </tr>
@@ -1393,7 +1399,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
       <HoverPanel anchor={profileHover?.anchor ?? null} open={!!(hoverClient || hoverDriver)} label={hoverName}
         onClose={closeProfile} onEngage={pinProfile} onPointerEnter={clearProfileTimers} onPointerLeave={leaveProfile}>
         <div className="space-y-3 p-2">
-          <div className="flex items-start justify-between gap-3"><h3 className="text-sm font-semibold text-slate-900">{hoverName}</h3>
+          <div className="flex items-start justify-between gap-3"><h3 className="min-w-0 break-words text-sm font-semibold text-slate-900">{hoverName}</h3>
             <button type="button" onClick={closeProfile} className="text-xs text-slate-600 underline focus-visible:ring-2 focus-visible:ring-indigo-500">Đóng</button></div>
           {profileEditing && profileHover && (hoverClient || hoverDriver) ? <MasterProfileEditor
             key={`${profileHover.kind}-${profileHover.id}`} kind={profileHover.kind} id={profileHover.id}
@@ -1402,7 +1408,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
             clients={clientMetadata ?? []} linkedLabcenter={!!hoverClient?.labcenter_location_id}
             onCancel={() => setProfileEditing(false)} onSaved={async () => { await loadMetadata(); await load(true); closeProfile(); toast.success("Đã lưu và đồng bộ hồ sơ"); }}
           /> : <>
-            <div className="whitespace-pre-line text-xs leading-5 text-slate-700">{hoverClient ? clientTooltip(hoverClient) : hoverDriver ? driverTooltip(hoverDriver, clientMetaById) : ""}</div>
+            <div className="whitespace-pre-line break-words text-xs leading-5 text-slate-700">{hoverClient ? clientTooltip(hoverClient) : hoverDriver ? driverTooltip(hoverDriver, clientMetaById) : ""}</div>
             <div className="flex justify-end"><Button size="sm" variant="outline" onClick={() => { pinProfile(); setProfileEditing(true); }}>Sửa hồ sơ</Button></div>
           </>}
         </div>

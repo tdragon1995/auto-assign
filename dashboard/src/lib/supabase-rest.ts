@@ -165,12 +165,20 @@ export async function sbUpsert(
   batchSize = 500,
 ): Promise<number> {
   if (rows.length === 0) return 0;
-  for (let i = 0; i < rows.length; i += batchSize) {
+  if (!Number.isSafeInteger(batchSize) || batchSize < 1) throw new Error("Invalid upsert batch size");
+  const shape = (row: Record<string, unknown>) => JSON.stringify(Object.keys(row).filter(k => row[k] !== undefined).sort());
+  // PostgREST requires matching keys. Keep omitted columns untouched and retain
+  // input order, including successive updates to the same conflict key.
+  for (let i = 0; i < rows.length;) {
+    const keys = shape(rows[i]);
+    let end = i + 1;
+    while (end < rows.length && end - i < batchSize && shape(rows[end]) === keys) end++;
     await request(`${table}?on_conflict=${encodeURIComponent(onConflict)}`, {
       method: "POST",
-      body: JSON.stringify(rows.slice(i, i + batchSize)),
+      body: JSON.stringify(rows.slice(i, end)),
       headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
     });
+    i = end;
   }
   return rows.length;
 }
