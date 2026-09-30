@@ -10,7 +10,7 @@ type Snapshot = { sampledAt: string; source: string; sheetRules: number; supabas
   comparisons: Comparison[]; productionLog: Log[]; assignmentsPerformed: number };
 
 const WINDOW_MS = 60 * 60 * 1000;
-const POLL_MS = 90 * 1000;
+const POLL_MS = 3 * 60 * 1000;
 
 export default function ShadowPage() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -73,6 +73,6 @@ export default function ShadowPage() {
         {line.ts} [{line.level}] {line.msg}
       </div>)}
     </>}
-    <p style={{ marginTop: 20, color: "#667" }}>Keep this tab open for the one-hour sample. It reads only while the comparison is running, every 90 seconds.</p>
+    <p style={{ marginTop: 20, color: "#667" }}>Keep this tab open for the one-hour sample. It reads only while the comparison is running, every three minutes.</p>
   </main>;
 }
