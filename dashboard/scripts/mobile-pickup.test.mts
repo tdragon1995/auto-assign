@@ -1,6 +1,7 @@
 // Run: node --import tsx scripts/mobile-pickup.test.mts
 // Open http://127.0.0.1:4321 at mobile and desktop widths; assertions run on resize.
 import { createElement } from "react";
+import assert from "node:assert/strict";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -20,7 +21,9 @@ const baseJob = {
 const html = renderToStaticMarkup(createElement(FailedJobsPanel, {
   held: [], env: "prod", onNoteRefresh: noop, onNoteAssigned: noop, onNoteManualAssign: noop,
   failed: [baseJob, {...baseJob, job_id: 34472761, customer: `${name} → BRA - D001`},
-    {...baseJob, job_id: 34472762, customer: `${"Pickup".repeat(30)} → BRA - D001`}],
+    {...baseJob, job_id: 34472762, customer: `${"Pickup".repeat(30)} → BRA - D001`},
+    {...baseJob, job_id: 34472764, reason: "NO_DROPOFF_RULE"},
+    {...baseJob, job_id: 34472765, reason: "NO_DRIVER", detail: "Tài xế chưa bắt đầu ca"}],
   warnings: [{job_id: 34472763, reference_number: null, pickup_customer_name: name,
     dropoff_customer_name: "BRA - D001", driver_id: "test", driver_name: null,
     reason: "overdue", minutes_late: 125, window_time_from: "14:00:00+07:00"}],
@@ -28,6 +31,9 @@ const html = renderToStaticMarkup(createElement(FailedJobsPanel, {
   onRetrySchedule: noop, retryingSchedule: false, leaveToday: [], leaveTomorrow: [],
   onLeaveRefresh: noop, onOpenJob: noop,
 }));
+assert(!html.includes("Chưa cấu hình tuyến tới"), "Config explanations must not appear anywhere");
+assert(html.includes(`title="${baseJob.customer}"`), "Route hover must show the full pickup and dropoff names");
+assert(html.includes("Tài xế chưa bắt đầu ca"), "Other failure details must remain visible");
 const cssPath = resolve("src/app/globals.css");
 const {css} = await postcss([tailwind({base: process.cwd()})]).process(readFileSync(cssPath, "utf8"), {from: cssPath});
 const assertions = `
@@ -42,10 +48,10 @@ function check() {
     if (mobile && r.top < e.parentElement.firstElementChild.getBoundingClientRect().bottom) failures.push('Route overlaps controls');
   }
   const details = [...document.querySelectorAll('span')].filter(e => e.textContent.startsWith('Chưa cấu hình tuyến'));
-  if (details.some(e => e.hasAttribute('title'))) failures.push('Unwanted detail tooltip');
+  if (routes.some(e => e.title !== e.textContent.trim())) failures.push('Hover must contain only full route names');
   if (mobile && details.some(e => e.scrollWidth > e.clientWidth + 1)) failures.push('Detail overflow');
   if (document.documentElement.scrollWidth > innerWidth) failures.push('Page overflow');
-  if (routes.length !== 4) failures.push('Missing route');
+  if (routes.length !== 6) failures.push('Missing route');
   document.body.dataset.result = JSON.stringify({width:innerWidth,routes:routes.length,failures});
   console.assert(failures.length === 0, failures);
 }

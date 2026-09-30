@@ -241,9 +241,11 @@ function FailedRow({
       </div>
       {/* Line 2: detail · scheduled delivery time · manual-assign trigger */}
       <div className="mt-0.5 flex flex-wrap md:flex-nowrap items-center gap-x-2 gap-y-1 min-w-0">
-        <span className="min-w-0 basis-full md:basis-auto md:flex-1 break-words md:truncate text-[11px] text-slate-500">
-          {job.detail}
-        </span>
+        {job.reason !== "NO_MAPPING" && job.reason !== "NO_DROPOFF_RULE" && (
+          <span className="min-w-0 basis-full md:basis-auto md:flex-1 break-words md:truncate text-[11px] text-slate-500">
+            {job.detail}
+          </span>
+        )}
         {job.scheduled_delivery_ts && (
           <span className="shrink-0 text-[11px] tabular-nums text-slate-500" title={`Giờ giao dự kiến: ${job.scheduled_delivery_ts}`}>
             {job.scheduled_delivery_ts.slice(11, 19)}
