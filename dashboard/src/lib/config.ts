@@ -11,7 +11,8 @@ import {
 import { vnDate, vnIsSunday, vnTimestamp } from "./time";
 import { looksAutoCreated, scopedDropoffName } from "./unmapped-row";
 import { GEN_KEY, readConfigGen } from "./config-gen";
-import { masterEnabled, masterRuleRows, masterDrivers } from "./master-store";
+import { masterEnabled, masterRuleRows } from "./master-store";
+import { sbSelectAll } from "./supabase-rest";
 
 function getRedis(): Redis | null {
   const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
@@ -151,10 +152,10 @@ export async function loadDriversFromSheet(): Promise<ConfigDriver[]> {
   if (cachedDrivers && Date.now() - cachedDriversAt < DRIVERS_TTL_MS) return cachedDrivers;
   if (masterEnabled()) {
     try {
-      const rows = await masterDrivers();
-      const drivers = rows.filter((r) => r.cartrack.is_active !== false).map((r) => ({
+      const rows = await sbSelectAll<{driver_id:string;first_name:string;last_name:string;is_active:boolean}>("master_drivers","select=driver_id,first_name,last_name,is_active","driver_id.asc");
+      const drivers = rows.filter((r) => r.is_active !== false).map((r) => ({
         driver_id: r.driver_id,
-        name: `${r.cartrack.first_name ?? ""} ${r.cartrack.last_name ?? ""}`.trim() || r.driver_id,
+        name: `${r.first_name ?? ""} ${r.last_name ?? ""}`.trim() || r.driver_id,
       }));
       if (drivers.length < 100) throw new Error("Master driver roster is suspiciously short");
       cachedDrivers = drivers.sort((a, b) => a.name.localeCompare(b.name));

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { Search } from "lucide-react";
+import { Building2, Pencil, Search, UserRound, X } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import { DriverCombobox } from "./driver-combobox";
 import { FilterMultiSelect } from "./filter-multi-select";
 import { HoverPanel } from "./hover-panel";
 import { MasterProfileEditor } from "./master-profile-editor";
+import { MasterProfileDetails, type ClientMeta, type DriverMeta } from "./master-profile-details";
 import type { ConfigRowView } from "@/app/api/config/rows/route";
 import type { BranchRule, ConfigDriver } from "@/lib/types";
 
@@ -50,52 +51,8 @@ import type { BranchRule, ConfigDriver } from "@/lib/types";
  *  table draws the next batch — the cap used to be a wall, and the only way
  *  past row 150 was to know to narrow the search. */
 const RENDER_CAP = 150;
-type ClientMeta = {
-  customer_id: string; cartrack: Record<string, unknown>;
-  client_code: string | null; new_ward: string | null;
-  nearest_psc_name: string | null; nearest_psc_km: number | null;
-  default_dropoff_name: string | null; eta_minutes: number | null;
-  default_dropoff_id: string | null; labcenter_location_id: number | null;
-  sales_name: string | null; sales_email: string | null;
-  supervisor_name: string | null; supervisor_email: string | null;
-};
-type DriverMeta = {
-  driver_id: string; cartrack: Record<string, unknown>; roster: Record<string, unknown>;
-  driver_zalo_id: string | null; phone_number_update: string | null; has_bot_token: boolean;
-};
 let sessionMetadata: { clients: ClientMeta[]; drivers: DriverMeta[] } | null = null;
-const value = (v: unknown) => v == null || v === "" ? "—" : String(v);
 const clientName = (c: ClientMeta) => String(c.cartrack.customer_name ?? c.customer_id);
-
-function clientTooltip(meta: ClientMeta): string {
-  return [
-    `Địa chỉ: ${value(meta.cartrack.address_line_1)}${meta.cartrack.address_line_2 ? `, ${meta.cartrack.address_line_2}` : ""}`,
-    `GPS: ${value(meta.cartrack.latitude)}, ${value(meta.cartrack.longitude)}`,
-    `Liên hệ: ${value(meta.cartrack.contact_number)} · ${value(meta.cartrack.email)}`,
-    `Mã KH: ${meta.client_code ?? "—"}`,
-    `Phường mới: ${meta.new_ward ?? "—"}`,
-    `PSC gần nhất: ${meta.nearest_psc_name ?? "—"}${meta.nearest_psc_km == null ? "" : ` (${meta.nearest_psc_km.toFixed(1)} km)`}`,
-    `Điểm giao mặc định: ${meta.default_dropoff_name ?? "—"}`,
-    `ETA: ${meta.eta_minutes == null ? "—" : `${meta.eta_minutes} phút`}`,
-    `Sales: ${meta.sales_name ?? "—"} · ${meta.sales_email ?? "—"}`,
-    `Supervisor: ${meta.supervisor_name ?? "—"} · ${meta.supervisor_email ?? "—"}`,
-  ].join("\n");
-}
-
-function driverTooltip(meta: DriverMeta, clients: Map<string, ClientMeta>): string {
-  const c = meta.cartrack;
-  const location = (id: unknown) => clients.get(String(id ?? ""))?.cartrack.customer_name ?? value(id);
-  return [
-    `Mã nhân viên: ${value(meta.roster.employee_code)}`,
-    `Điện thoại: ${value(c.phone_code)} ${value(c.phone_number)}`,
-    `Email: ${value(c.email)}`,
-    `Ca: ${value(c.shift_time_start)}–${value(c.shift_time_end)}`,
-    `Điểm xuất phát: ${location(c.start_location_customer_id)}`,
-    `Điểm kết thúc: ${location(c.end_location_customer_id)}`,
-    `Trạng thái: ${c.is_active === false ? "Ngừng hoạt động" : "Hoạt động"}`,
-    `Zalo ID: ${value(meta.driver_zalo_id)} · Bot token: ${meta.has_bot_token ? "Đã lưu" : "Chưa có"}`,
-  ].join("\n");
-}
 
 /** Cartrack's marker for a retired location, written into the name itself. */
 const INACTIVE_PREFIX = /^\{inactive\}\s*/i;
@@ -110,40 +67,6 @@ const clockMin = (t: string) => {
   const m = /^(\d{1,2}):(\d{2})$/.exec(t.trim());
   return m ? Number(m[1]) * 60 + Number(m[2]) : null;
 };
-
-/**
- * The row's window on a 24-hour strip.
- *
- * A branch's rows sit together (see sortConfigRows), so these strips stack into
- * a column where a handover, a hole or an overlap between consecutive rules is
- * something you SEE rather than work out from two pairs of digits. The digits
- * stay beside it; the strip is the shape, not the value.
- *
- * Read the way the rest of the table reads a window: both ends or it is all
- * day, and an end before the start wraps past midnight.
- */
-function ShiftStrip({ start, end }: { start: string; end: string }) {
-  const s = start && end ? clockMin(start) : null;
-  const e = start && end ? clockMin(end) : null;
-  const allDay = s === null || e === null;
-  const spans: [number, number][] = allDay ? [[0, 1440]]
-    : e > s ? [[s, e]]
-    : e < s ? [[s, 1440], [0, e]]
-    : [];
-  return (
-    <span aria-hidden className="relative inline-block h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-slate-100">
-      {/* noon, so a morning and an afternoon strip can be told apart at a glance */}
-      <span className="absolute inset-y-0 left-1/2 w-px bg-slate-300" />
-      {spans.map(([a, b]) => (
-        <span
-          key={a}
-          className={`absolute inset-y-0 ${allDay ? "bg-indigo-200" : "bg-indigo-500"}`}
-          style={{ left: `${(a / 1440) * 100}%`, width: `${((b - a) / 1440) * 100}%` }}
-        />
-      ))}
-    </span>
-  );
-}
 
 /** Accent-folded, split on spaces and punctuation. */
 const pieces = (s: string) => foldName(s).split(/[^a-z0-9]+/).filter(Boolean);
@@ -289,7 +212,7 @@ function reportBulk(label: string, res: BulkResult) {
 
 const targetBody = (rows: readonly ConfigRowView[]) => rows.map((r) => ({ row: r.row, pickup_name: r.pickup, expected_row: { rule_id:r.rule_id, revision:r.revision, driver: r.driver, start: r.start, end: r.end, dropoff: r.dropoff } }));
 
-type BulkMode = "driver" | "hours" | "delete";
+type BulkMode = "driver" | "hours" | "both" | "schedule" | "delete";
 
 /**
  * The same three edits the single-row editor makes, applied to every ticked row.
@@ -305,13 +228,17 @@ type BulkMode = "driver" | "hours" | "delete";
  */
 function BulkBar({
   targets,
+  allRows,
   drivers,
+  locations,
   onDone,
   onClear,
 }: {
   /** The ticked rows, already filtered to the writable ones. */
   targets: ConfigRowView[];
+  allRows: ConfigRowView[];
   drivers: ConfigDriver[];
+  locations: {id:string;name:string}[];
   /** A write landed: re-read the sheet (row numbers move after a delete). */
   onDone: () => void;
   onClear: () => void;
@@ -322,6 +249,7 @@ function BulkBar({
   const [end, setEnd] = useState("");
   const [busy, setBusy] = useState(false);
   const [armed, setArmed] = useState(false);
+  const [scheduleTargets, setScheduleTargets] = useState<{pickup:string;customer_id:string;dropoff:string;rules:BranchRule[]}[]>([]);
 
   const run = async (label: string, url: string, body: object) => {
     setBusy(true);
@@ -352,6 +280,14 @@ function BulkBar({
   // The server deletes highest row first in one atomic batch, so the order
   // the rows are ticked in does not matter.
   const applyDelete = () => run("Đã xoá", "/api/config/bulk-delete", {});
+  const applyBoth = () => {
+    const cell = splitDriverNames(driverCell).join(DRIVER_SEP);
+    if (!cell || !start || !end || start === end) return toast.error("Chọn tài xế và khung giờ hợp lệ");
+    return run("Đã đổi tài xế và ca", "/api/config/bulk-update", {driver_name:cell,shift_start:start,shift_end:end});
+  };
+  const schedules = targets.filter((r,i)=>targets.findIndex(t=>sameSchedule(t,r))===i).map(r=>({
+    pickup:r.pickup,customer_id:r.customer_id,dropoff:r.dropoff,rules:rulesOf(allRows.filter(t=>sameSchedule(t,r) && !t.unmapped)),
+  }));
 
   return (
     <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-indigo-300 bg-indigo-50/70 px-2 py-1.5">
@@ -361,6 +297,8 @@ function BulkBar({
 
       {!busy && mode === null && (
         <>
+          <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => setMode("both")}>Tài xế + ca</Button>
+          {targets.every(r=>r.rule_id) && <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => {setScheduleTargets(schedules);setMode("schedule");}}>Copy / thay lịch</Button>}
           <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => setMode("driver")}>
             Đổi tài xế
           </Button>
@@ -380,7 +318,7 @@ function BulkBar({
         </>
       )}
 
-      {mode === "driver" && (
+      {(mode === "driver" || mode === "both") && (
         <>
           <DriverCombobox
             names={splitDriverNames(driverCell)}
@@ -392,7 +330,7 @@ function BulkBar({
           {/* Said in full, because this is the part that surprises: the hours
               on each row are NOT touched, so a set of rows on different
               shifts keeps them. */}
-          <span className="text-[11px] text-indigo-900">giữ nguyên ca của từng dòng</span>
+          {mode === "both" ? <><TimeSelect label="Từ giờ" value={start} onChange={setStart} /><TimeSelect label="Đến giờ" value={end} onChange={setEnd} /></> : <span className="text-[11px] text-indigo-900">giữ nguyên ca của từng dòng</span>}
           <div className="ml-auto flex gap-1">
             <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => setMode(null)} disabled={busy}>
               Hủy
@@ -400,7 +338,7 @@ function BulkBar({
             <Button
               size="sm"
               className="h-6 px-2 text-[11px] bg-indigo-600 hover:bg-indigo-700"
-              onClick={applyDriver}
+              onClick={mode === "both" ? applyBoth : applyDriver}
               disabled={busy}
             >
               Áp dụng {targets.length} dòng
@@ -430,6 +368,13 @@ function BulkBar({
         </>
       )}
 
+      {mode === "schedule" && <div className="w-full">
+        <p className="text-xs leading-5 text-indigo-900">Thay toàn bộ lịch của {scheduleTargets.length} điểm / tuyến đã chọn ({scheduleTargets.reduce((n,s)=>n+s.rules.length,0)} dòng hiện có, gồm cả ca chưa tick). Điểm giao và thông báo của từng tuyến được giữ nguyên. Copy lịch, sửa tài xế / giờ hoặc thêm ca bên dưới; chỉ ghi khi bấm Lưu.</p>
+        <details className="py-1 text-xs text-indigo-900"><summary className="cursor-pointer">Xem điểm / tuyến sẽ thay lịch</summary><ul className="max-h-32 overflow-auto py-1">{scheduleTargets.map(s=><li key={`${s.pickup}|${s.dropoff}`}>{s.pickup} → {s.dropoff || "mọi điểm"} · {s.rules.length} ca</li>)}</ul></details>
+        <BranchEditor pickupName={`${scheduleTargets.length} điểm / tuyến`} dropoffName="" rules={[]}
+          extraLines={[{driver:"",start:"",end:"",dropoff:"",assignment_mode:"fixed"}]} drivers={drivers} locations={locations}
+          bulkSchedules={scheduleTargets} onDone={onDone} onCancel={()=>setMode(null)} onStale={onDone} />
+      </div>}
       {mode === "delete" && (
         <>
           {/* The count is IN the confirm, not only above it: this is the one
@@ -1170,7 +1115,9 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
         {selectedRows.length > 0 && (
           <BulkBar
             targets={selectedRows}
+            allRows={rows}
             drivers={rosterDrivers}
+            locations={(clientMetadata ?? []).map(c=>({id:c.customer_id,name:clientName(c)}))}
             onDone={() => { clearSelection(); void load(true); }}
             onClear={clearSelection}
           />
@@ -1186,14 +1133,12 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
               <colgroup>
                 <col className="w-[3%]" />
                 <col className="w-[7%]" />
-                <col className="w-[25%]" />
-                <col className="w-[31%]" />
-                <col className="w-[17%]" />
-                <col className={showSheetRow ? "w-[13%]" : "w-[17%]"} />
+                <col className="w-[23%]" />
+                <col className="w-[27%]" />
+                <col className="w-[20%]" />
+                <col className={showSheetRow ? "w-[16%]" : "w-[20%]"} />
                 {showSheetRow && <col className="w-[4%]" />}
               </colgroup>
-              {/* z-10: the shift strips are positioned, and without a stacking
-                  order of its own the sticky header scrolled UNDER them. */}
               <thead className="sticky top-0 z-10 bg-slate-50 text-[11px] text-slate-600">
                 <tr>
                   <th className="px-1 py-1 text-left font-medium">
@@ -1216,10 +1161,8 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                   <th className="px-1 py-1 text-left font-medium"><span className="sr-only">Sửa lịch</span></th>
                   <th className="px-2 py-1 text-left font-medium">Điểm lấy</th>
                   <th className="px-2 py-1 text-left font-medium">Tài xế</th>
-                  <th className="px-2 py-1 text-left font-medium whitespace-nowrap">
-                    Ca <span className="ml-1 font-normal text-slate-500">(0–12–24h)</span>
-                  </th>
                   <th className="px-2 py-1 text-left font-medium whitespace-nowrap">Điểm giao</th>
+                  <th className="px-2 py-1 text-left font-medium whitespace-nowrap">Điểm giao thay thế</th>
                   {showSheetRow && <th className="px-2 py-1 text-right font-medium" title="Số dòng Google Sheet Chủ nhật">Dòng</th>}
                 </tr>
               </thead>
@@ -1236,6 +1179,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                   const inactive = isInactive(r.pickup);
                   const locationInfo = clientMetaById.get(r.customer_id) ?? clientMetaByName.get(r.pickup.trim().toLocaleLowerCase("vi"));
                   const dropoffInfo = clientMetaByName.get(r.dropoff.trim().toLocaleLowerCase("vi"));
+                  const alternativeInfo = clientMetaById.get(r.alt_drop_off_id ?? "");
                   // Every row of the route being edited is marked: the editor
                   // holds the route's WHOLE day, so these rows are the very
                   // things it is about to rewrite.
@@ -1328,14 +1272,6 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                         </span>
                       )}
                     </td>
-                    <td className="px-2 py-1 whitespace-nowrap">
-                      <span className="inline-flex items-center gap-2">
-                        <ShiftStrip start={r.start} end={r.end} />
-                        {r.start && r.end
-                          ? <span className="tabular-nums text-slate-700">{r.start}–{r.end}</span>
-                          : <span className="text-slate-500">cả ngày</span>}
-                      </span>
-                    </td>
                     <td className="truncate px-2 py-1 text-slate-700" title={r.dropoff || undefined}>
                       {dropoffInfo ? <button type="button" aria-haspopup="dialog" aria-expanded={profileHover?.kind === "client" && profileHover.id === dropoffInfo.customer_id}
                         onPointerEnter={e => { if (e.pointerType === "mouse") openProfile("client", dropoffInfo.customer_id, e.currentTarget); }}
@@ -1343,9 +1279,14 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                         onClick={e => openProfile("client", dropoffInfo.customer_id, e.currentTarget, true)}
                         className="block max-w-full truncate text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">{r.dropoff}</button>
                         : r.dropoff || <span className="whitespace-nowrap text-slate-500">mọi điểm</span>}
-                      {r.alt_drop_off_id && <span className="block truncate text-[11px] text-indigo-700" title={`Điểm giao thay thế: ${clientMetaById.get(r.alt_drop_off_id) ? clientName(clientMetaById.get(r.alt_drop_off_id)!) : r.alt_drop_off_id}`}>
-                        Thay thế: {clientMetaById.get(r.alt_drop_off_id) ? clientName(clientMetaById.get(r.alt_drop_off_id)!) : r.alt_drop_off_id}
-                      </span>}
+                    </td>
+                    <td className="break-words px-2 py-1 text-slate-700">
+                      {alternativeInfo ? <button type="button" aria-haspopup="dialog" aria-expanded={profileHover?.kind === "client" && profileHover.id === alternativeInfo.customer_id}
+                        onPointerEnter={e => { if (e.pointerType === "mouse") openProfile("client", alternativeInfo.customer_id, e.currentTarget); }}
+                        onPointerLeave={e => { if (e.pointerType === "mouse") leaveProfile(); }}
+                        onClick={e => openProfile("client", alternativeInfo.customer_id, e.currentTarget, true)}
+                        className="text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">{clientName(alternativeInfo)}</button>
+                        : r.alt_drop_off_id || <span className="text-xs text-slate-500">{r.unmapped ? "Chưa thiết lập" : "Giữ điểm giao"}</span>}
                     </td>
                     {showSheetRow && <td className="px-2 py-1 text-right font-mono text-[10px] text-slate-500">{r.unmapped ? "—" : r.row}</td>}
                   </tr>
@@ -1364,6 +1305,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
                         </div>
                         <BranchEditor
                           pickupName={editingRows[0].pickup}
+                          pickupId={editingRows[0].customer_id}
                           dropoffName={editingRows[0].dropoff}
                           rules={rulesOf(editingRows)}
                           extraLines={editingRows[0].unmapped ? [{
@@ -1402,9 +1344,14 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
       </CardContent>
       <HoverPanel anchor={profileHover?.anchor ?? null} open={!!(hoverClient || hoverDriver)} label={hoverName}
         onClose={closeProfile} onEngage={pinProfile} onPointerEnter={clearProfileTimers} onPointerLeave={leaveProfile}>
-        <div className="space-y-3 p-2">
-          <div className="flex items-start justify-between gap-3"><h3 className="min-w-0 break-words text-sm font-semibold text-slate-900">{hoverName}</h3>
-            <button type="button" onClick={closeProfile} className="text-xs text-slate-600 underline focus-visible:ring-2 focus-visible:ring-indigo-500">Đóng</button></div>
+        <div className="space-y-4 p-3">
+          <div className="flex items-start gap-3">
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-indigo-50 text-indigo-700">
+              {hoverClient ? <Building2 aria-hidden="true" className="size-5" /> : <UserRound aria-hidden="true" className="size-5" />}
+            </span>
+            <h3 className="min-w-0 flex-1 self-center break-words text-sm font-semibold leading-5 text-slate-900">{hoverName}</h3>
+            <button type="button" aria-label="Đóng" title="Đóng" onClick={closeProfile} className="flex size-8 shrink-0 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"><X aria-hidden="true" className="size-4" /></button>
+          </div>
           {profileEditing && profileHover && (hoverClient || hoverDriver) ? <MasterProfileEditor
             key={`${profileHover.kind}-${profileHover.id}`} kind={profileHover.kind} id={profileHover.id}
             initial={hoverClient ? { ...hoverClient.cartrack, default_dropoff_id: hoverClient.default_dropoff_id, eta_minutes: hoverClient.eta_minutes }
@@ -1412,8 +1359,8 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
             clients={clientMetadata ?? []} linkedLabcenter={!!hoverClient?.labcenter_location_id}
             onCancel={() => setProfileEditing(false)} onSaved={async () => { await loadMetadata(); await load(true); closeProfile(); toast.success("Đã lưu và đồng bộ hồ sơ"); }}
           /> : <>
-            <div className="whitespace-pre-line break-words text-xs leading-5 text-slate-700">{hoverClient ? clientTooltip(hoverClient) : hoverDriver ? driverTooltip(hoverDriver, clientMetaById) : ""}</div>
-            <div className="flex justify-end"><Button size="sm" variant="outline" onClick={() => { pinProfile(); setProfileEditing(true); }}>Sửa hồ sơ</Button></div>
+            <MasterProfileDetails client={hoverClient} driver={hoverDriver} clients={clientMetaById} />
+            <div className="flex justify-end border-t border-slate-200 pt-3"><Button size="sm" variant="outline" onClick={() => { pinProfile(); setProfileEditing(true); }}><Pencil aria-hidden="true" className="size-3.5" />Sửa hồ sơ</Button></div>
           </>}
         </div>
       </HoverPanel>

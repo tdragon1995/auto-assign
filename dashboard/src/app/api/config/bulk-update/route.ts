@@ -5,6 +5,8 @@ import { loadDriversFromSheet, invalidateConfigCache } from "@/lib/config";
 import { parseConfigTargets } from "@/lib/config-targets";
 import { timeToMins } from "@/lib/time";
 
+export const preferredRegion = "sin1";
+
 /**
  * The Config tab's bulk "Đổi tài xế" / "Đổi ca": one driver cell or one window
  * written onto every ticked row, in one Sheets write.
@@ -15,6 +17,7 @@ import { timeToMins } from "@/lib/time";
  * equal. The cache is bumped once.
  */
 export async function POST(req: NextRequest) {
+  const started = performance.now();
   const bad = (msg: string, code = 400) => NextResponse.json({ ok: false, error: msg }, { status: code });
   try {
     const body = await req.json().catch(() => null);
@@ -52,7 +55,7 @@ export async function POST(req: NextRequest) {
       end: end || undefined,
     });
     if (result.done.length > 0) await invalidateConfigCache();
-    return NextResponse.json({ ok: true, ...result });
+    return NextResponse.json({ ok: true, ...result }, {headers:{"Server-Timing":`total;dur=${Math.round(performance.now()-started)}`}});
   } catch (e) {
     // A Sunday attempt or a renamed column is the caller's to resolve.
     return bad(e instanceof Error ? e.message : String(e), 409);

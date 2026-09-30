@@ -17,12 +17,12 @@ export function assertMasterWritable() {
   if (!masterEnabled()) throw new Error("Supabase đang là bản đối chiếu. Hãy sửa cấu hình trên Google Sheet trong thời gian kiểm tra.");
 }
 
-export async function masterRules(day:"weekday"|"sunday"):Promise<MasterRule[]> {
+export async function masterRules(day:"weekday"|"sunday", scope: { ids?: number[]; pickupIds?: string[]; copyIds?: number[]; resolveNames?: boolean } = {}):Promise<MasterRule[]> {
   type Linked = MasterRule & { master_rule_drivers:{driver_id:string;selection_order:number}[] };
   const [rows,clients,drivers]=await Promise.all([sbSelectAll<Linked>("master_config_rules",
-    `select=id,source_uid,source_row,revision,row_data,assignment_mode,pickup_customer_id,dropoff_customer_id,alternate_dropoff_customer_id,shift_start,shift_end,review_issues,updated_at,master_rule_drivers(driver_id,selection_order)&active=eq.true&day_type=eq.${day}`,"source_row.asc,id.asc"),
-    sbSelectAll<{customer_id:string;customer_name:string}>("master_clients","select=customer_id,customer_name","customer_id.asc"),
-    sbSelectAll<{driver_id:string;first_name:string;last_name:string}>("master_drivers","select=driver_id,first_name,last_name","driver_id.asc")]);
+    `select=id,source_uid,source_row,revision,row_data,assignment_mode,pickup_customer_id,dropoff_customer_id,alternate_dropoff_customer_id,shift_start,shift_end,review_issues,updated_at,master_rule_drivers(driver_id,selection_order)&active=eq.true&day_type=eq.${day}${scope.ids ? `&id=in.(${scope.ids.join(",")})` : ""}${scope.pickupIds ? `&or=(pickup_customer_id.in.(${scope.pickupIds.join(",")})${scope.copyIds?.length ? `,id.in.(${scope.copyIds.join(",")})` : ""})` : ""}`,"source_row.asc,id.asc"),
+    scope.resolveNames === false ? Promise.resolve([]) : sbSelectAll<{customer_id:string;customer_name:string}>("master_clients","select=customer_id,customer_name","customer_id.asc"),
+    scope.resolveNames === false ? Promise.resolve([]) : sbSelectAll<{driver_id:string;first_name:string;last_name:string}>("master_drivers","select=driver_id,first_name,last_name","driver_id.asc")]);
   const names=new Map(clients.map(c=>[c.customer_id,c.customer_name]));
   const driverNames=new Map(drivers.map(d=>[d.driver_id,`${d.first_name??""} ${d.last_name??""}`.trim()]));
   return rows.map(({master_rule_drivers,...r})=>{

@@ -621,9 +621,10 @@ function CopyFromBranch({
  * way in" would be a second set of those, and they would drift.
  */
 export function BranchEditor({
-  pickupName, dropoffName, rules, extraLines = [], drivers, locations, onDone, onRemoved, onStale, onCancel,
+  pickupName, pickupId, dropoffName, rules, extraLines = [], drivers, locations, bulkSchedules, onDone, onRemoved, onStale, onCancel,
 }: {
   pickupName: string;
+  pickupId?: string;
   dropoffName: string;
   rules: BranchRule[];
   /** Driverless rows for this pending config. They exist in the sheet but are
@@ -631,6 +632,7 @@ export function BranchEditor({
   extraLines?: Omit<Line, "key">[];
   drivers: ConfigDriver[];
   locations?: {id:string;name:string}[];
+  bulkSchedules?: {pickup:string;customer_id:string;dropoff:string;rules:BranchRule[]}[];
   onDone: () => void;
   /**
    * After a rule was REMOVED, as distinct from saved.
@@ -662,6 +664,7 @@ export function BranchEditor({
   const snapshot = (line: Line): ConfigRowSnapshot => ({ rule_id:line.rule_id, revision:line.revision, driver: line.driver, start: line.start, end: line.end, dropoff: line.dropoff });
   const expectedRows = useRef(new Map(initial.map((line) => [line.key, snapshot(line)])));
   const [pendingDeletes, setPendingDeletes] = useState<Line[]>([]);
+  const [saveUncertain, setSaveUncertain] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   /**
@@ -700,7 +703,7 @@ export function BranchEditor({
     setLines((ls) => ls.map((l, j) => (j === i ? { ...l, ...v } : l)));
   // New lines inherit the destination of the branch being edited.
   const addLine = () =>
-    setLines((ls) => [...ls, { key: newLineKey(), assignment_mode: rules.some(r=>r.assignment_mode) ? "fixed" : undefined, driver: "", start: "", end: "", dropoff: dropoffName }]);
+    setLines((ls) => [...ls, { key: newLineKey(), assignment_mode: bulkSchedules || rules.some(r=>r.assignment_mode) ? "fixed" : undefined, driver: "", start: "", end: "", dropoff: dropoffName }]);
   const dropLine = (key: string) => {
     const line = lines.find((l) => l.key === key);
     if (line?.row) setPendingDeletes((prev) => [...prev, line]);
@@ -774,9 +777,26 @@ export function BranchEditor({
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
         });
         const j = await res.json().catch(() => ({}));
-        if (!res.ok || !j.ok) { const error = new Error(j.error || `Lỗi ${res.status}`) as Error & { code?: string }; error.code = j.code; throw error; }
+        if (!res.ok || !j.ok) { const error = new Error(j.error || `Lỗi ${res.status}`) as Error & { code?: string }; error.code = j.code ?? (res.status >= 500 ? "CONFIG_SAVE_UNCERTAIN" : undefined); throw error; }
         return j;
       };
+      if (bulkSchedules || initial.some(l=>l.assignment_mode) || resolved.some(l=>l.assignment_mode)) {
+        const rows = resolved.filter(changed);
+        const wire = (l:Line,old?:Line) => ({row:old?.row ?? l.row,driver:l.driver,start:l.start,end:l.end,dropoff:l.dropoff,
+          assignment_mode:l.assignment_mode,alt_drop_off_id:l.alt_drop_off_id,copy_from_rule_id:old ? undefined : l.copyFromRuleId,
+          expected_row:old ? snapshot(old) : l.row ? expectedRows.current.get(l.key) : undefined});
+        const branches = bulkSchedules ? bulkSchedules.map(s=>({pickup_name:s.pickup,pickup_customer_id:s.customer_id,
+          rows:resolved.map((l,i)=>wire({...l,row:undefined,dropoff:s.dropoff,copyFromRuleId:s.rules[0]?.rule_id},s.rules[i] ? asLine(s.rules[i]) : undefined)),
+          removed:s.rules.slice(resolved.length).map(r=>({row:r.row,expected_row:snapshot(asLine(r))})),
+        })) : [{pickup_name:pickupName,pickup_customer_id:pickupId,rows:rows.map(l=>wire(l)),removed:pendingDeletes.map(l=>({row:l.row,expected_row:expectedRows.current.get(l.key)}))}];
+        if (branches.some(b=>b.rows.length || b.removed.length)) {
+          const started = performance.now();
+          const result = await post("/api/config/save-batch",{branches});
+          toast.success(`Đã lưu ${result.saved.length} dòng · ${((performance.now()-started)/1000).toFixed(1)} giây`);
+        } else toast.success("Không có thay đổi nào");
+        if (pendingDeletes.length) (onRemoved ?? onDone)(); else onDone();
+        return;
+      }
       // Sequential: a failure part way then leaves a clear picture rather than an
       // unknown number of half-written lines. Each line that lands is recorded
       // BEFORE the next is attempted, so that picture survives the throw.
@@ -831,6 +851,11 @@ export function BranchEditor({
       else onDone();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      if ((bulkSchedules || initial.some(l=>l.assignment_mode) || resolved.some(l=>l.assignment_mode)) && (e instanceof TypeError || (e as {code?:string}).code === "CONFIG_SAVE_UNCERTAIN")) {
+        setSaveUncertain(true);
+        setErr("Không xác định được kết quả lưu. Tải lại và kiểm tra config trước khi thử lại để tránh thêm trùng dòng.");
+        return;
+      }
       if ((e as Error & { code?: string }).code === "CONFIG_ROW_CHANGED") { toast.warning(written ? `Đã lưu ${written} dòng. ${msg}` : msg); onStale(); return; }
       // Say what landed. Without it the supervisor cannot tell a total failure
       // from a partial one, and the obvious recovery — press Lưu again — was the
@@ -929,8 +954,9 @@ export function BranchEditor({
           {locations && l.assignment_mode && <div className="w-full"><label className="flex w-full min-w-0 max-w-[min(40rem,calc(100vw-3rem))] flex-wrap items-center gap-x-2 gap-y-1 pb-2 text-xs text-slate-700">
             <span>Điểm giao thay thế</span>
             <select aria-label={`Điểm giao thay thế ${l.start && l.end ? `${l.start}–${l.end}` : "cả ngày"}`}
-              value={l.alt_drop_off_id ?? ""} onChange={e=>patch(i,{alt_drop_off_id:e.target.value})} disabled={busy || !locations.length}
+              value={l.alt_drop_off_id ?? (bulkSchedules ? "__keep__" : "")} onChange={e=>patch(i,{alt_drop_off_id:e.target.value === "__keep__" ? undefined : e.target.value})} disabled={busy || !locations.length}
               className="min-w-0 w-full max-w-lg rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:bg-slate-100 sm:flex-1">
+              {bulkSchedules && <option value="__keep__">Giữ điểm giao thay thế của từng dòng</option>}
               <option value="">{locations.length ? "Giữ điểm giao của job" : "Đang tải điểm giao…"}</option>
               {l.alt_drop_off_id && !locations.some(c=>c.id===l.alt_drop_off_id) && <option value={l.alt_drop_off_id}>{l.alt_drop_off_id}</option>}
               {locations.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
@@ -947,7 +973,7 @@ export function BranchEditor({
           <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={onCancel} disabled={busy}>
             Hủy
           </Button>
-          <Button size="sm" className="h-6 px-2 text-[11px] bg-indigo-600 hover:bg-indigo-700" onClick={save} disabled={busy}>
+          <Button size="sm" className="h-6 px-2 text-[11px] bg-indigo-600 hover:bg-indigo-700" onClick={save} disabled={busy || saveUncertain}>
             {busy ? "Đang lưu…" : "Lưu"}
           </Button>
         </div>
@@ -957,6 +983,7 @@ export function BranchEditor({
           miss, and it is the one that decides whether pressing Lưu again is
           safe — so it is announced, not just coloured. */}
       {err && <div role="alert" className="text-[11px] text-red-600">{err}</div>}
+      {saveUncertain && <Button size="sm" variant="outline" onClick={onStale}>Tải lại và kiểm tra</Button>}
     </div>
   );
 }
