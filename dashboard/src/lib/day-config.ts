@@ -48,7 +48,7 @@ export function configTabForDate(date: string): ConfigTab {
 }
 
 /** The duty fields, and only those — see the header. */
-function dutyRows(rows: readonly Record<string, string>[]): Mapping[] {
+export function dutyRows(rows: readonly Record<string, string>[]): Mapping[] {
   const out: Mapping[] = [];
   for (const row of rows) {
     const customer_id = row["customer_id"] ?? "";
@@ -67,7 +67,7 @@ function dutyRows(rows: readonly Record<string, string>[]): Mapping[] {
       // empty value the type calls for so nothing downstream reads a stale one.
       dropoff_id: (row["dropoff_id"] ?? "").trim(),
       first_name_last_name: (row["Driver"] ?? "").trim(),
-      bot_token: "", chat_id: "", alt_drop_off_id: "",
+      bot_token: "", chat_id: "", alt_drop_off_id: (row["alt_drop_off_id"] ?? "").trim(),
     });
   }
   return out;
