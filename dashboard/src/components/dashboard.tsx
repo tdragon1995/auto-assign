@@ -47,8 +47,9 @@ export function Dashboard() {
   const [warnings, setWarnings] = useState<PickupWarning[]>([]);
   const [warningsAt, setWarningsAt] = useState<string | null>(null);
   /** Counts explicit leave refreshes, so the leave panel's week grid — which
-   *  owns a fetch of its own — re-reads when Đồng bộ cài đặt is pressed. */
+   *  owns a fetch of its own — re-reads when Đồng bộ dữ liệu is pressed. */
   const [leaveRefreshKey, setLeaveRefreshKey] = useState(0);
+  const [configRefreshKey, setConfigRefreshKey] = useState(0);
   const [syncingSettings, setSyncingSettings] = useState(false);
   const [syncingMisa, setSyncingMisa] = useState(false);
   const [failed, setFailed] = useState<FailedJob[]>([]);
@@ -496,13 +497,19 @@ export function Dashboard() {
     if (!leaveLoaded) throw new Error("Không tải được lịch nghỉ phép");
   }, [loadLeaveStatus, syncStatus]);
 
-  const handleRefresh = useCallback(async () => {
+  const handleRefresh = useCallback(async (syncProfiles = false) => {
     setSyncingSettings(true);
     try {
+      if (syncProfiles) {
+        const res = await fetch("/api/master-client-info/sync", { method: "POST", cache: "no-store" });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok !== true) throw new Error(data.error || `Cartrack returned ${res.status}`);
+        setConfigRefreshKey(key => key + 1);
+      }
       await syncSettings();
-      toast.success("Đã đồng bộ cài đặt auto-assign và lịch nghỉ phép");
+      toast.success(syncProfiles ? "Đã đồng bộ dữ liệu Cartrack, config và lịch nghỉ phép" : "Đã tải lại config và lịch nghỉ phép");
     } catch (err) {
-      toast.error(`Đồng bộ cài đặt thất bại: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error(`Đồng bộ dữ liệu thất bại: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setSyncingSettings(false);
     }
@@ -614,8 +621,8 @@ export function Dashboard() {
             <Switch checked={isRunning} onCheckedChange={toggleService} />
           </div>
 
-          <Button variant="outline" size="sm" className="text-slate-900" onClick={handleRefresh} disabled={syncingSettings}>
-            {syncingSettings ? "Đang đồng bộ…" : "Đồng bộ cài đặt"}
+          <Button variant="outline" size="sm" className="text-slate-900" onClick={() => void handleRefresh(true)} disabled={syncingSettings}>
+            {syncingSettings ? "Đang đồng bộ…" : "Đồng bộ dữ liệu"}
           </Button>
           <Button variant="outline" size="sm" className="text-slate-900" onClick={handleMisaRefresh} disabled={syncingMisa}>
             {syncingMisa ? "Đang đồng bộ MISA…" : "Đồng bộ MISA"}
@@ -751,7 +758,7 @@ export function Dashboard() {
                   onSaved={(key?: string) => { if (key) markDone(key); void handleRefresh(); }}
                 />
                 <div className="min-h-[28rem] flex-1">
-                  <ConfigBrowserPanel drivers={drivers} />
+                  <ConfigBrowserPanel drivers={drivers} refreshKey={configRefreshKey} />
                 </div>
               </div>
             ) : rightTab === "live" ? (

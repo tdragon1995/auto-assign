@@ -507,7 +507,7 @@ function CopyFromBranch({
       </div>
 
       <p id={hintId} className="mt-1 text-[11px] text-slate-600">
-        Copy cả ngày của một điểm khác sẽ thay ca hiện có trong form. Chưa ghi vào sheet — vẫn phải bấm Lưu.
+        Copy cả ngày của một điểm khác sẽ thay ca hiện có trong form. Chưa ghi dữ liệu — vẫn phải bấm Lưu.
       </p>
 
       <div className="min-h-0 overflow-y-auto">
@@ -1281,7 +1281,7 @@ export function ConfigTodoPanel({
               bug rather than as a stale list. */}
           {parsedAt && (
             <span className="text-[11px] text-slate-500">
-              đọc sheet {parsedAt.slice(11, 16)}
+              đọc config {parsedAt.slice(11, 16)}
             </span>
           )}
         </button>

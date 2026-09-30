@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { Building2, Pencil, Search, UserRound, X } from "lucide-react";
+import { ArrowRightLeft, Building2, ChevronDown, Pencil, Search, SlidersHorizontal, UserRound, X } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -51,7 +51,7 @@ import type { BranchRule, ConfigDriver } from "@/lib/types";
  *  table draws the next batch — the cap used to be a wall, and the only way
  *  past row 150 was to know to narrow the search. */
 const RENDER_CAP = 150;
-let sessionMetadata: { clients: ClientMeta[]; drivers: DriverMeta[] } | null = null;
+let sessionMetadata: { clients: ClientMeta[]; drivers: DriverMeta[]; refreshKey: number } | null = null;
 const clientName = (c: ClientMeta) => String(c.cartrack.customer_name ?? c.customer_id);
 
 /** Cartrack's marker for a retired location, written into the name itself. */
@@ -683,19 +683,17 @@ function activeColumnFilterCount(operator: ConfigTextOperator, text: string, val
   return usesTextInput(operator) ? Number(Boolean(text.trim())) : Number(values.length > 0);
 }
 
-export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
+export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: ConfigDriver[]; refreshKey?: number }) {
   const [sheetRows, setSheetRows] = useState<ConfigRowView[]>([]);
   const [filters, setFilters] = useState(EMPTY_CONFIG_FILTERS);
   const [advancedFilters, setAdvancedFilters] = useState(false);
-  const [onlyUnmapped, setOnlyUnmapped] = useState(false);
   const [selected, setSelected] = useState<ReadonlySet<number>>(new Set());
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [meta, setMeta] = useState<{ tab: string; fetchedAt: string } | null>(null);
-  const [clientMetadata, setClientMetadata] = useState<ClientMeta[] | null>(sessionMetadata?.clients ?? null);
-  const [driverMetadata, setDriverMetadata] = useState<DriverMeta[] | null>(sessionMetadata?.drivers ?? null);
+  const [clientMetadata, setClientMetadata] = useState<ClientMeta[] | null>(sessionMetadata?.refreshKey === refreshKey ? sessionMetadata.clients : null);
+  const [driverMetadata, setDriverMetadata] = useState<DriverMeta[] | null>(sessionMetadata?.refreshKey === refreshKey ? sessionMetadata.drivers : null);
   const [metaBusy, setMetaBusy] = useState(false);
-  const [syncingCartrack, setSyncingCartrack] = useState(false);
   const [metaError, setMetaError] = useState("");
   const [profileHover, setProfileHover] = useState<{ kind: "client" | "driver"; id: string; anchor: HTMLElement; pinned: boolean } | null>(null);
   const [profileEditing, setProfileEditing] = useState(false);
@@ -723,7 +721,8 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
   const closeProfile = () => { clearProfileTimers(); setProfileHover(null); setProfileEditing(false); };
   const pinProfile = () => setProfileHover(p => p ? { ...p, pinned: true } : p);
   const [replacing, setReplacing] = useState(false);
-  const loadedRef = useRef(false);
+  const loadedRef = useRef<number | null>(null);
+  const filterId = useId();
 
   /** `fresh` is the Tải lại button: it bypasses the route's own cache as well as
    *  the browser's. Without it the button re-fetched a route that answered from
@@ -755,25 +754,11 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
       const res = await fetch("/api/config/rows?metadata=1", { cache: "no-store" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !Array.isArray(data.clients) || !Array.isArray(data.drivers)) throw new Error(data.error || "Không tải được thông tin khách hàng và tài xế");
-      sessionMetadata = { clients: data.clients, drivers: data.drivers };
+      sessionMetadata = { clients: data.clients, drivers: data.drivers, refreshKey };
       setClientMetadata(data.clients); setDriverMetadata(data.drivers);
     } catch (e) { setMetaError(e instanceof Error ? e.message : String(e)); }
     finally { setMetaBusy(false); }
-  }, []);
-
-  const syncProfiles = async () => {
-    setSyncingCartrack(true);
-    try {
-      const res = await fetch("/api/master-client-info/sync", {
-        method: "POST", cache: "no-store",
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      await loadMetadata();
-      toast.success(`Đã đồng bộ ${data.profiles.clients} khách hàng, ${data.profiles.drivers} tài xế`);
-    } catch (e) { toast.error(e instanceof Error ? e.message : String(e)); }
-    finally { setSyncingCartrack(false); }
-  };
+  }, [refreshKey]);
 
   const clientMetaById = useMemo(() => new Map((clientMetadata ?? []).map((c) => [c.customer_id, c])), [clientMetadata]);
   const driverMetaById = useMemo(() => new Map((driverMetadata ?? []).map((d) => [d.driver_id, d])), [driverMetadata]);
@@ -814,13 +799,13 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
     ];
   }, [sheetRows, clientMetadata]);
 
-  // Once, when the tab is first shown — not on every mount of a hidden panel.
+  // On opening or an explicit header sync; never on the status poll.
   useEffect(() => {
-    if (loadedRef.current) return;
-    loadedRef.current = true;
-    void load();
-    if (!sessionMetadata) void loadMetadata();
-  }, [load, loadMetadata]);
+    if (loadedRef.current === refreshKey) return;
+    void load(loadedRef.current !== null);
+    loadedRef.current = refreshKey;
+    if (sessionMetadata?.refreshKey !== refreshKey) void loadMetadata();
+  }, [load, loadMetadata, refreshKey]);
 
   const optionValues = useMemo(() => configFilterOptions(rows), [rows]);
   const driverOptions = useMemo(() => optionValues.drivers.map((value) => {
@@ -843,7 +828,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
     () => optionValues.ends.map((value) => ({ value, label: value || "trống / cả ngày" })),
     [optionValues.ends],
   );
-  const matches = useMemo(() => sortConfigRows(filterConfigRows(onlyUnmapped ? rows.filter((r) => r.unmapped) : rows, filters)), [rows, filters, onlyUnmapped]);
+  const matches = useMemo(() => sortConfigRows(filterConfigRows(rows, filters)), [rows, filters]);
   // The cap applies AFTER the sort, so it is the first N of a stable ordering
   // rather than an arbitrary slice of the sheet. Which rows get cut is then
   // something the reader can predict, and narrowing the search is a way to
@@ -923,14 +908,12 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
     + activeColumnFilterCount(filters.dropoffOperator, filters.dropoffText, filters.dropoffs)
     + activeColumnFilterCount(filters.startOperator, filters.startText, filters.starts)
     + activeColumnFilterCount(filters.endOperator, filters.endText, filters.ends);
-  const hasFilters = activeFilters > 0 || onlyUnmapped;
-  const timeSummary = [
-    filters.starts.length && `Bắt đầu: ${filters.starts.slice(0, 2).map((time) => time || "trống").join(", ")}${filters.starts.length > 2 ? ` +${filters.starts.length - 2}` : ""}`,
-    filters.ends.length && `Kết thúc: ${filters.ends.slice(0, 2).map((time) => time || "trống").join(", ")}${filters.ends.length > 2 ? ` +${filters.ends.length - 2}` : ""}`,
-  ].filter(Boolean).join(" · ");
+  const hasFilters = activeFilters > 0;
+  const advancedCount = activeFilters - Number(Boolean(filters.query.trim()));
+  const expandedTools = advancedFilters || replacing || selectedRows.length > 0;
 
   return (
-    <Card className="gap-0 py-2 h-full flex flex-col border-slate-200">
+    <Card className={`gap-0 py-2 flex flex-col border-slate-200 ${expandedTools ? "h-auto min-h-full" : "h-full"}`}>
       <CardContent className="px-3 flex flex-1 flex-col min-h-0 gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative flex-1 min-w-[200px]">
@@ -941,7 +924,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
               onChange={(e) => updateFilters({ ...filters, query: e.target.value })}
               placeholder="Tìm chính xác điểm, mã, tài xế…"
               aria-label="Tìm trong config"
-              className="h-7 w-full rounded border border-slate-300 bg-white py-1 pl-7 pr-2 text-xs text-slate-900 outline-none placeholder:text-slate-500 focus:ring-2 focus:ring-indigo-400/50"
+              className="h-9 w-full rounded border border-slate-300 bg-white py-1 pl-7 pr-2 text-xs text-slate-900 outline-none placeholder:text-slate-500 focus:ring-2 focus:ring-indigo-400/50"
             />
           </div>
           {/* Freshness beside the button that renews it, rather than on a
@@ -952,33 +935,36 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
             </span>
           )}
           {metaBusy && <span className="text-[11px] text-slate-500">Đang tải thông tin…</span>}
-          <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={syncingCartrack} onClick={() => void syncProfiles()}>
-            {syncingCartrack ? "Đang đồng bộ…" : "Đồng bộ Cartrack"}
-          </Button>
           <Button
-            size="sm" variant={replacing ? "default" : "outline"}
-            className={`h-7 px-2 text-[11px] ${replacing ? "bg-indigo-600 hover:bg-indigo-700" : ""}`}
+            size="sm" variant="default"
+            className="h-9 bg-indigo-600 px-3 text-xs font-semibold hover:bg-indigo-700"
             aria-expanded={replacing}
             onClick={() => setReplacing((v) => !v)}
             disabled={rows.length === 0}
           >
-            Thay tài xế
+            <ArrowRightLeft className="size-3.5" aria-hidden="true" /> Thay tài xế
           </Button>
-          {clientMetadata && <Button size="sm" variant={onlyUnmapped ? "default" : "outline"} className={`h-7 px-2 text-[11px] ${onlyUnmapped ? "bg-amber-700 hover:bg-amber-800" : ""}`}
-            aria-pressed={onlyUnmapped} onClick={() => { setOnlyUnmapped((v) => !v); setLimit(RENDER_CAP); clearSelection(); }}>
-            Chưa có config ({rows.filter((r) => r.unmapped).length})
-          </Button>}
           <Button
             size="sm" variant="outline"
-            className="h-7 px-2 text-[11px]"
+            className="h-9 px-3 text-xs"
+            title="Đọc lại config và hồ sơ đã lưu; không gọi Cartrack"
             onClick={() => { void load(true); void loadMetadata(); }}
-            disabled={loading}
+            disabled={loading || metaBusy}
           >
             {loading ? "Đang tải…" : "Tải lại"}
           </Button>
         </div>
 
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="ghost" type="button" className="h-8 px-2 text-xs text-indigo-700"
+            aria-expanded={advancedFilters} aria-controls={filterId}
+            onClick={() => setAdvancedFilters(open => !open)}>
+            <SlidersHorizontal className="size-3.5" aria-hidden="true" /> Tìm kiếm nâng cao
+            {advancedCount > 0 && <span className="rounded bg-indigo-100 px-1.5 tabular-nums">{advancedCount}</span>}
+            <ChevronDown className={`size-3.5 ${advancedFilters ? "rotate-180" : ""}`} aria-hidden="true" />
+          </Button>
+        </div>
+        {advancedFilters && <div id={filterId} className="grid grid-cols-1 gap-3 rounded-md bg-slate-50 p-3 sm:grid-cols-2 lg:grid-cols-3">
           <ConfigColumnFilter
             label="Tài xế"
             showOperator={advancedFilters}
@@ -1030,20 +1016,6 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
             textPlaceholder="vd. D001"
             selectPlaceholder="Chọn điểm giao…"
           />
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            size="sm" variant="ghost" type="button"
-            className="h-7 px-2 text-xs text-indigo-700"
-            aria-expanded={advancedFilters}
-            onClick={() => setAdvancedFilters((open) => !open)}
-          >
-            {advancedFilters ? "Ẩn bộ lọc thêm" : "Thêm bộ lọc"}
-            {!advancedFilters && timeSummary && " · đang dùng"}
-          </Button>
-          {!advancedFilters && <span className="truncate text-xs text-slate-500">{timeSummary || "Lọc theo giờ bắt đầu, giờ kết thúc"}</span>}
-        </div>
-        {advancedFilters && <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
           <ConfigColumnFilter
             label="Giờ bắt đầu"
             showOperator={false}
@@ -1092,7 +1064,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
               size="sm"
               variant="ghost"
               className="h-7 px-2 text-[11px] text-slate-600"
-              onClick={() => { updateFilters(EMPTY_CONFIG_FILTERS); setOnlyUnmapped(false); }}
+              onClick={() => updateFilters(EMPTY_CONFIG_FILTERS)}
             >
               Xoá bộ lọc
             </Button>
@@ -1123,7 +1095,7 @@ export function ConfigBrowserPanel({ drivers }: { drivers: ConfigDriver[] }) {
           />
         )}
 
-        <div className="min-h-0 flex-1 overflow-auto rounded-md border border-slate-200">
+        <div className={`overflow-auto rounded-md border border-slate-200 ${expandedTools ? "h-96 shrink-0" : "min-h-0 flex-1"}`}>
           {shown.length === 0 ? (
             <p className="px-2 py-3 text-xs text-slate-500">
               {loading ? "Đang tải config…" : rows.length === 0 ? "Chưa đọc được config." : "Không tìm thấy dòng nào."}
