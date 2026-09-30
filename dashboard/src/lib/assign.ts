@@ -1483,6 +1483,9 @@ export async function autoAssignCycle(
   onlyJobIds?: Set<number>,
   reads?: MorningReads,
 ): Promise<LogEntry[]> {
+  if (process.env.VERCEL_ENV === "preview" && process.env.VERCEL_GIT_COMMIT_REF === "codex/shadow-assignment") {
+    throw new Error("Shadow preview is read-only; assignment cycles are disabled");
+  }
   const logs: LogEntry[] = [];
   const log = (msg: string, level: LogLevel = "INFO") => {
     logs.push(makeLog(msg, level));
