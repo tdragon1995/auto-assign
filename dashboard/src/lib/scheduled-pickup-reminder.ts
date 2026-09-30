@@ -43,6 +43,8 @@ export async function remindScheduledPickup(
     if (!(await claimLateAlert(job.job_id, env, 86400, "fixed-pickup-reminder"))) return;
     if (!(await sendZaloMessage(token, chatId, MESSAGE))) {
       log(`Job ${job.job_id} - Fixed-pickup Zalo reminder failed`, "WARN");
+    } else {
+      log(`Job ${job.job_id} - Fixed-pickup Zalo reminder sent to ${chatId}`, "INFO");
     }
   } catch (error) {
     log(`Job ${job.job_id} - Fixed-pickup Zalo reminder failed: ${error}`, "WARN");

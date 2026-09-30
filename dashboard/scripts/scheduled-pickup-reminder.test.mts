@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type { Job } from "../src/lib/types";
 
+process.env.TZ = "UTC"; // Vercel parses timezone-less dates in UTC.
 process.env.CARTRACK_AUTH = "Basic mocked";
 process.env.CARTRACK_AUTH_UAT = "Basic mocked";
 process.env.CARTRACK_WEB_PASS = ""; // unassignJob falls back to a mocked REST PUT
@@ -11,7 +12,7 @@ process.env.ZALO_KIOT_BOT_TOKEN = "pharmacy-token";
 process.env.ZALO_ADMIN_BOT_TOKEN = "admin-token";
 
 const { PROXY_DRIVER_ID } = await import("../src/lib/cartrack");
-const { releaseDueProxyJobs } = await import("../src/lib/assign");
+const { releaseDueProxyJobs, remindDueUnassignedScheduledPickups } = await import("../src/lib/assign");
 const { getDueTomorrowJobs } = await import("../src/lib/scheduled-dispatch");
 const labels = ["📅 Lịch cố định"];
 const customer = "51bfb168-446f-11ed-888f-506b8dbc8dfb";
@@ -142,6 +143,26 @@ try {
   const secondRelease = await releaseDueProxyJobs("2026-09-29", "prod", log, [secondCustomer]);
   assert.deepEqual(secondRelease.releasedIds, [401]);
   assert.deepEqual(sends.at(-1)?.body, { chat_id: "zgr-5f2b2b46331ada44830b", text: message });
+
+  // Cartrack sometimes unassigns a parked job before the proxy scan sees it.
+  const unassigned = job(501, { job_status_id: 2, delivery_driver_id: null, send_to_driver_at: "2026-09-29 23:10:00" });
+  const beforeFallback = sends.length;
+  await remindDueUnassignedScheduledPickups([
+    unassigned,
+    job(502, { job_status_id: 2, delivery_driver_id: null, send_to_driver_at: "2030-09-29 23:10:00" }),
+    job(503, { job_status_id: 2, delivery_driver_id: null, labels: [] }),
+    job(504, { job_status_id: 2, delivery_driver_id: null, stops: [{ ...job(504).stops[0], activity_started_ts: "2026-09-29 22:00:00" }] }),
+    job(505),
+  ], "prod", log, now.getTime());
+  assert.equal(sends.length, beforeFallback + 1);
+  assert.deepEqual(sends.at(-1), { url: "https://bot-api.zaloplatforms.com/botpharmacy-token/sendMessage", body: { chat_id: chat, text: message } });
+  await releaseDueProxyJobs("2026-09-29", "prod", log, [job(501)]);
+  await remindDueUnassignedScheduledPickups([unassigned], "uat", log, now.getTime());
+  assert.equal(sends.length, beforeFallback + 1, "fallback and release share one claim; UAT stays silent");
+
+  failSend = true;
+  await remindDueUnassignedScheduledPickups([job(506, { job_status_id: 2, delivery_driver_id: null })], "prod", log, now.getTime());
+  assert.ok(logs.some((line) => line.includes("Job 506 - Fixed-pickup Zalo reminder failed")));
 
   console.log("Scheduled pickup reminder checks passed.");
 } finally {

@@ -1019,13 +1019,12 @@ export function buildGmapsRouteLink(
   );
 }
 
-/** Parse "YYYY-MM-DD HH:MM:SS+07" or "YYYY-MM-DD HH:MM:SS+07:00" to Date.
- *  ONLY for fields that actually carry the offset — send_to_driver_at does. The
- *  activity_* fields do NOT; use parseVnActivityTs for those. */
+/** Parse send_to_driver_at as Vietnam time. The fast unassigned-job feed strips
+ *  Cartrack's +07 suffix, while REST and timeline jobs still carry it. */
 function parseSendToDriverAt(ts: string | null | undefined): Date | null {
   if (!ts) return null;
   const normalized = ts.trim().replace(" ", "T").replace(/\+(\d{2})$/, "+$1:00");
-  const d = new Date(normalized);
+  const d = new Date(/[Zz]$|[+-]\d{2}:\d{2}$/.test(normalized) ? normalized : `${normalized}+07:00`);
   return isNaN(d.getTime()) ? null : d;
 }
 
@@ -1222,6 +1221,20 @@ export async function releaseDueProxyJobs(
     }));
   }
   return { listMs, releaseMs: Date.now() - _t1, releasedIds };
+}
+
+/** Cartrack can move a due parked job into the unassigned pool before our proxy
+ * scan sees it. Remind from that confirmed state too, before driver assignment. */
+export async function remindDueUnassignedScheduledPickups(
+  jobs: Job[],
+  env: Env,
+  log: (msg: string, level?: LogLevel) => void,
+  now = Date.now(),
+): Promise<void> {
+  await Promise.all(jobs
+    .filter((job) => job.job_status_id === 2 && !job.delivery_driver_id &&
+      (parseSendToDriverAt(job.send_to_driver_at)?.getTime() ?? Infinity) <= now)
+    .map((job) => remindScheduledPickup(job, env, log)));
 }
 
 /**
@@ -1796,6 +1809,8 @@ export async function autoAssignCycle(
 
   // Targeted manual assign: narrow to just the requested job(s).
   let jobs: Job[] = onlyJobIds ? s2Jobs.filter((j) => onlyJobIds.has(j.job_id)) : s2Jobs;
+
+  await remindDueUnassignedScheduledPickups(jobs, env, log);
 
   // Jobs held back this cycle because a stop has a note (full cycle only).
   const heldJobs: HeldJob[] = [];
