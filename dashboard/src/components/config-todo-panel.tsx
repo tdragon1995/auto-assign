@@ -926,7 +926,7 @@ export function BranchEditor({
           <button type="button" onClick={() => dropLine(l.key)} disabled={busy || (l.row === 2 && !l.rule_id)}
             aria-label="Bỏ dòng này" title={l.row === 2 && !l.rule_id ? "Dòng 2 giữ công thức của bảng" : "Bỏ dòng này — bấm Lưu để xác nhận"}
             className="rounded px-1 py-0.5 text-[11px] text-slate-600 hover:text-red-600 disabled:opacity-40">✕</button>
-          {locations && l.assignment_mode && <label className="flex w-full min-w-0 max-w-[min(40rem,calc(100vw-3rem))] flex-wrap items-center gap-x-2 gap-y-1 pb-2 text-xs text-slate-700">
+          {locations && l.assignment_mode && <div className="w-full"><label className="flex w-full min-w-0 max-w-[min(40rem,calc(100vw-3rem))] flex-wrap items-center gap-x-2 gap-y-1 pb-2 text-xs text-slate-700">
             <span>Điểm giao thay thế</span>
             <select aria-label={`Điểm giao thay thế ${l.start && l.end ? `${l.start}–${l.end}` : "cả ngày"}`}
               value={l.alt_drop_off_id ?? ""} onChange={e=>patch(i,{alt_drop_off_id:e.target.value})} disabled={busy || !locations.length}
@@ -935,7 +935,7 @@ export function BranchEditor({
               {l.alt_drop_off_id && !locations.some(c=>c.id===l.alt_drop_off_id) && <option value={l.alt_drop_off_id}>{l.alt_drop_off_id}</option>}
               {locations.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
-          </label>}
+          </label></div>}
         </div>
       ))}
       <div className="flex flex-wrap items-center gap-1">
