@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { fetchSheetRows, SHEET_CONTRACT, SHEET_GID } from "@/lib/sheets";
 import { readConfigGen } from "@/lib/config-gen";
 import { vnIsSunday, vnTimestamp } from "@/lib/time";
-import { masterEnabled, masterRuleRows } from "@/lib/master-store";
+import { masterClients, masterDrivers, masterEnabled, masterRuleRows } from "@/lib/master-store";
+import { publicClient, publicDriver } from "@/lib/master-public";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -38,6 +39,7 @@ export interface ConfigRowView {
   pickup: string;
   /** The Driver cell verbatim — one name, or several for a smart row. */
   driver: string;
+  driver_ids?: string[];
   start: string;
   end: string;
   /** Destination this rule is scoped to; blank means every destination. */
@@ -70,6 +72,15 @@ let cache: { rows: ConfigRowView[]; tab: string; at: number; fetchedAt: string; 
 const TTL_MS = 5 * 60 * 1000;
 
 export async function GET(req: NextRequest) {
+  if (req.nextUrl.searchParams.has("metadata")) {
+    try {
+      const [clients, drivers] = await Promise.all([masterClients(), masterDrivers()]);
+      return NextResponse.json({ clients: clients.map(publicClient), drivers: drivers.map(publicDriver) },
+        { headers: { "Cache-Control": "private, no-store" } });
+    } catch (e) {
+      return NextResponse.json({ error: String(e) }, { status: 502 });
+    }
+  }
   const sunday = vnIsSunday();
   const contract = sunday ? SHEET_CONTRACT.sunday : SHEET_CONTRACT.mapping;
   const gid = sunday ? SHEET_GID.sunday : SHEET_GID.mapping;
@@ -103,6 +114,8 @@ export async function GET(req: NextRequest) {
         customer_id,
         pickup,
         driver,
+        driver_ids: (r["smart_driver_id"]?.trim() || r["driver_id"]?.trim() || "")
+          .split(",").map((id) => id.trim()).filter(Boolean),
         start: (r["shift_start"] ?? "").trim(),
         end: (r["shift_end"] ?? "").trim(),
         dropoff: (r["Điểm Drop-off"] ?? "").trim(),

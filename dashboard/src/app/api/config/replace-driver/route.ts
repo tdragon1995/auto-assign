@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { replaceConfigDriver } from "@/lib/sheets-writer";
 import { loadDriversFromSheet, invalidateConfigCache } from "@/lib/config";
 import { parseConfigTargets } from "@/lib/config-targets";
+import { getDrivers } from "@/lib/cartrack";
+import { masterDriver, masterEnabled } from "@/lib/master-store";
+import { syncMissingProfiles } from "@/lib/master-sync";
+import { sbSelectAll } from "@/lib/supabase-rest";
+import { vnIsSunday } from "@/lib/time";
 
 /**
  * Replace one driver with another across the config — "Hùng nghỉ, từ nay Nam
@@ -38,10 +43,21 @@ export async function POST(req: NextRequest) {
     const parsed = parseConfigTargets(rows);
     if ("error" in parsed) return bad(parsed.error);
 
-    const drivers = await loadDriversFromSheet();
-    if (drivers.length === 0) return bad("Chưa đọc được danh sách tài xế — thử lại sau", 503);
-    if (!drivers.some((d) => d.name === toName)) {
-      return bad(`"${toName}" không có trong tab Driver — chọn từ danh sách`);
+    if (masterEnabled() && !vnIsSunday()) {
+      const drivers = await getDrivers();
+      if (drivers.length < 100) return bad("Chưa đọc đủ tài xế Cartrack — thử lại sau", 503);
+      const matches = drivers.filter((d) => d.is_active && `${d.first_name} ${d.last_name}`.trim() === toName);
+      if (matches.length !== 1) return bad(`"${toName}" không xác định duy nhất trong Cartrack`);
+      const id = matches[0].delivery_driver_id;
+      if (!(await masterDriver(id))) {
+        const clients = await sbSelectAll<{ customer_id: string }>("master_clients", "select=customer_id", "customer_id.asc");
+        await syncMissingProfiles([{ source_row: 0, row_data: { driver_id: id } }],
+          new Set(clients.map((c) => c.customer_id)), new Set());
+      }
+    } else {
+      const drivers = await loadDriversFromSheet();
+      if (drivers.length === 0) return bad("Chưa đọc được danh sách tài xế — thử lại sau", 503);
+      if (!drivers.some((d) => d.name === toName)) return bad(`"${toName}" không có trong tab Driver — chọn từ danh sách`);
     }
 
     const result = await replaceConfigDriver({ from: fromName, to: toName, targets: parsed.targets });
