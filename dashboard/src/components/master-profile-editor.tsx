@@ -44,7 +44,8 @@ export function MasterProfileEditor({ kind, id, initial, clients, linkedLabcente
     <span className="text-xs font-medium text-slate-700">{label}</span>
     <select className={fieldClass} value={draft[key]} onChange={e => set(key, e.target.value)}>
       <option value="" disabled={kind === "client" && linkedLabcenter}>—</option>
-      {clients.filter(c => kind === "driver" || !linkedLabcenter || c.labcenter_location_id).map(c => <option key={c.customer_id} value={c.customer_id}>{String(c.cartrack.customer_name ?? c.customer_id)}</option>)}
+      {draft[key] && !clients.some(c => c.customer_id === draft[key]) && <option value={draft[key]} disabled>{String(key === "default_dropoff_id" ? initial.default_dropoff_name || draft[key] : draft[key])}</option>}
+      {clients.filter(c => c.customer_id === draft[key] || kind === "driver" || !linkedLabcenter || c.labcenter_location_id).map(c => <option key={c.customer_id} value={c.customer_id} disabled={kind === "client" && linkedLabcenter && !c.labcenter_location_id}>{String(c.cartrack.customer_name ?? c.customer_id)}</option>)}
     </select>
   </label>;
   const save = async (e: React.FormEvent) => {
@@ -69,6 +70,7 @@ export function MasterProfileEditor({ kind, id, initial, clients, linkedLabcente
         <label className="flex items-center gap-2 text-xs text-slate-700"><input type="checkbox" checked={keepGps} onChange={e => setKeepGps(e.target.checked)} className="accent-indigo-600" />Giữ nguyên GPS khi sửa địa chỉ</label>
         {!keepGps && <div className="grid grid-cols-2 gap-3">{input("latitude", "Vĩ độ", "number")}{input("longitude", "Kinh độ", "number")}</div>}
         <div className="space-y-3">{location("default_dropoff_id", "Điểm giao mặc định")}{input("eta_minutes", "ETA (phút)", "number")}</div>
+        {linkedLabcenter && draft.default_dropoff_id && !clients.some(c => c.customer_id === draft.default_dropoff_id && c.labcenter_location_id) && <p className="text-xs text-slate-600">Điểm giao hiện tại chưa liên kết Labcenter; cần liên kết trước khi đồng bộ ETA.</p>}
         {!linkedLabcenter && <p className="text-xs text-slate-600">Chưa liên kết Labcenter: điểm giao mặc định và ETA chỉ lưu ở Supabase.</p>}
       </> : <>
         <div className="grid grid-cols-2 gap-3">{input("first_name", "Họ / mã")}{input("last_name", "Tên")}{input("email", "Email")}{input("phone_code", "Mã vùng")}{input("phone_number", "Điện thoại")}{input("phone_number_update", "Điện thoại thay thế")}{input("shift_time_start", "Bắt đầu ca (giờ VN)", "time")}{input("shift_time_end", "Kết thúc ca (giờ VN)", "time")}</div>

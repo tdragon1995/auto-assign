@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { profilePatch } from "../src/components/master-profile-editor";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { MasterProfileEditor, profilePatch } from "../src/components/master-profile-editor";
 import { createMasterConfigRows, ruleChange, type MasterRule } from "../src/lib/master-store";
 import { editMasterConfig } from "../src/lib/master-config-actions";
 import { asLine, sig, applyCopiedLines } from "../src/lib/config-shift";
@@ -17,6 +19,17 @@ const pickup = "11111111-1111-4111-8111-111111111111";
 const destination = "22222222-2222-4222-8222-222222222222";
 const alternate = "33333333-3333-4333-8333-333333333333";
 const driver = "44444444-4444-4444-8444-444444444444";
+// A saved dropoff without a Labcenter link must still be selected, never a different location.
+const editorProps = {kind:"client" as const,id:pickup,initial:{default_dropoff_id:destination,default_dropoff_name:"BRA - D015"},linkedLabcenter:true,
+  clients:[{customer_id:alternate,cartrack:{customer_name:"Other linked location"},labcenter_location_id:20},
+    {customer_id:destination,cartrack:{customer_name:"BRA - D015"},labcenter_location_id:null},
+    {customer_id:driver,cartrack:{customer_name:"Other unlinked location"},labcenter_location_id:null}],onCancel(){},async onSaved(){}};
+for (const clients of [editorProps.clients,editorProps.clients.filter(c=>c.customer_id!==destination)]) {
+  const html = renderToStaticMarkup(createElement(MasterProfileEditor,{...editorProps,clients}));
+  assert.match(html,new RegExp(`<option[^>]*value="${destination}"[^>]*selected=""[^>]*>BRA - D015</option>`));
+  assert.ok(!html.includes("Other unlinked location"));
+}
+assert.deepEqual(profilePatch("client",editorProps.initial,{default_dropoff_id:destination},true),{});
 const rule: MasterRule = { id: 1, source_uid: pickup, source_row: 2, revision: 7, assignment_mode: "smart",
   row_data: { bot_token: "preserve", chat_id: "preserve" }, driver_ids: [driver], smart_driver_id: driver, updated_at: "",
   pickup_customer_id: pickup, dropoff_customer_id: destination, alternate_dropoff_customer_id: null,
