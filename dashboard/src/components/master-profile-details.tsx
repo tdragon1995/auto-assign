@@ -39,6 +39,9 @@ export function MasterProfileDetails({ client, driver, clients }: {
       [[Hash, "Mã khách hàng", text(client.client_code)], [Hash, "Mã tham chiếu", text(c.client_reference)], [MapPin, "Mã bưu chính", text(c.postal_code)],
         [UserRound, "Sales phụ trách", join([client.sales_name, client.sales_email], "\n")],
         [Users, "Supervisor", join([client.supervisor_name, client.supervisor_email], "\n")]],
+      [[Hash, "Customer ID (Cartrack)", text(client.customer_id)],
+        [Clock3, "Ngày tạo (Cartrack)", text(c.create_ts)],
+        [Clock3, "Cập nhật (Cartrack)", text(c.update_ts)]],
     ];
   } else if (driver) {
     const c = driver.cartrack;

@@ -13,7 +13,7 @@ export function publicClient(c: MasterClient) {
   const fields=["customer_id","client_code","new_ward","nearest_psc_id","nearest_psc_name","nearest_psc_km",
     "labcenter_location_id","default_dropoff_id","default_dropoff_name","eta_minutes","sales_name","sales_email","supervisor_name","supervisor_email"];
   return { ...pick(c as unknown as Record<string,unknown>,fields),cartrack:pick(c.cartrack,["customer_name","address_line_1",
-    "address_line_2","latitude","longitude","contact_number","email","postal_code","client_reference","is_active"]) };
+    "address_line_2","latitude","longitude","contact_number","email","postal_code","client_reference","is_active","create_ts","update_ts"]) };
 }
 export function publicRule(r: MasterRule) {
   const {bot_token,chat_id,...row_data}=r.row_data;

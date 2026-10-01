@@ -3,11 +3,22 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MasterProfileDetails, type ClientMeta } from "../src/components/master-profile-details";
 import { saveMasterConfigBatch, bulkMasterConfig } from "../src/lib/master-config-actions";
+import { publicClient } from "../src/lib/master-public";
 
 const client: ClientMeta = {customer_id:"11111111-1111-4111-8111-111111111111",cartrack:{customer_name:"Pickup",address_line_1:"Address",address_line_2:"—"},client_code:null,new_ward:null,nearest_psc_name:null,nearest_psc_km:null,default_dropoff_name:null,eta_minutes:0,default_dropoff_id:null,labcenter_location_id:null,sales_name:null,sales_email:"sales@example.test",supervisor_name:null,supervisor_email:null};
 const html = renderToStaticMarkup(createElement(MasterProfileDetails,{client,clients:new Map()}));
 assert.ok(html.includes("0 phút") && html.includes("sales@example.test") && html.includes("<svg"));
 assert.ok(!html.includes("—") && !html.includes("Supervisor") && !html.includes("Phường mới"));
+assert.ok(html.includes(client.customer_id) && !html.includes("Ngày tạo (Cartrack)"));
+const published=publicClient({...client,nearest_psc_id:null,cartrack:{...client.cartrack,
+  create_ts:"2025-11-13 08:26:46",update_ts:"2026-06-24 11:34:28",bot_token:"not-public"}});
+assert.equal(published.customer_id,client.customer_id);
+assert.equal(published.cartrack.create_ts,"2025-11-13 08:26:46");
+assert.equal(published.cartrack.update_ts,"2026-06-24 11:34:28");
+assert.ok(!("bot_token" in published.cartrack));
+const timestampHtml=renderToStaticMarkup(createElement(MasterProfileDetails,{client:{...client,cartrack:published.cartrack},clients:new Map()}));
+assert.ok(timestampHtml.includes("Ngày tạo (Cartrack)") && timestampHtml.includes("2025-11-13 08:26:46")
+  && timestampHtml.includes("Cập nhật (Cartrack)") && timestampHtml.includes("2026-06-24 11:34:28"));
 assert.ok(!renderToStaticMarkup(createElement(MasterProfileDetails,{driver:{driver_id:"",cartrack:{},roster:{},has_bot_token:false,phone_number_update:null,driver_zalo_id:null},clients:new Map()})).includes("Hoạt động"));
 
 const driverId = "22222222-2222-4222-8222-222222222222";
