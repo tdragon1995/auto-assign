@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { FilterMultiSelect } from "./filter-multi-select";
 
 type Kind = "client" | "driver";
 const clientFields = ["customer_name", "address_line_1", "address_line_2", "contact_number", "email", "postal_code", "client_reference", "latitude", "longitude", "default_dropoff_id", "eta_minutes"];
@@ -40,14 +41,17 @@ export function MasterProfileEditor({ kind, id, initial, clients, linkedLabcente
     <span className="text-xs font-medium text-slate-700">{label}</span>
     <input className={fieldClass} type={type} step={type === "number" ? "any" : undefined} value={draft[key]} onChange={e => set(key, e.target.value)} />
   </label>;
-  const location = (key: string, label: string) => <label className="block min-w-0 space-y-1">
+  const location = (key: string, label: string) => <div className="block min-w-0 space-y-1">
     <span className="text-xs font-medium text-slate-700">{label}</span>
-    <select className={fieldClass} value={draft[key]} onChange={e => set(key, e.target.value)}>
-      <option value="" disabled={kind === "client" && linkedLabcenter}>—</option>
-      {draft[key] && !clients.some(c => c.customer_id === draft[key]) && <option value={draft[key]} disabled>{String(key === "default_dropoff_id" ? initial.default_dropoff_name || draft[key] : draft[key])}</option>}
-      {clients.filter(c => c.customer_id === draft[key] || kind === "driver" || !linkedLabcenter || c.labcenter_location_id).map(c => <option key={c.customer_id} value={c.customer_id} disabled={kind === "client" && linkedLabcenter && !c.labcenter_location_id}>{String(c.cartrack.customer_name ?? c.customer_id)}</option>)}
-    </select>
-  </label>;
+    <FilterMultiSelect label={label} multiple={false} portal={false} disabled={saving}
+      allowClear={kind === "driver" || !linkedLabcenter} values={draft[key] ? [draft[key]] : []}
+      options={[
+        ...(draft[key] && !clients.some(c => c.customer_id === draft[key]) ? [{value:draft[key],label:String(key === "default_dropoff_id" ? initial.default_dropoff_name || draft[key] : draft[key])}] : []),
+        ...clients.filter(c => c.customer_id === draft[key] || kind === "driver" || !linkedLabcenter || c.labcenter_location_id)
+          .map(c => ({value:c.customer_id,label:String(c.cartrack.customer_name ?? c.customer_id)})),
+      ]}
+      onChange={values => set(key,values[0] ?? "")} placeholder="Tìm tên hoặc mã điểm…" />
+  </div>;
   const save = async (e: React.FormEvent) => {
     e.preventDefault(); setSaving(true); setError("");
     try {

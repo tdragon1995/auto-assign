@@ -26,7 +26,8 @@ const editorProps = {kind:"client" as const,id:pickup,initial:{default_dropoff_i
     {customer_id:driver,cartrack:{customer_name:"Other unlinked location"},labcenter_location_id:null}],onCancel(){},async onSaved(){}};
 for (const clients of [editorProps.clients,editorProps.clients.filter(c=>c.customer_id!==destination)]) {
   const html = renderToStaticMarkup(createElement(MasterProfileEditor,{...editorProps,clients}));
-  assert.match(html,new RegExp(`<option[^>]*value="${destination}"[^>]*selected=""[^>]*>BRA - D015</option>`));
+  assert.ok(html.includes("BRA - D015") && html.includes('role="combobox"'));
+  assert.ok(!html.includes("<select") && !html.includes('aria-label="Bỏ BRA - D015"'));
   assert.ok(!html.includes("Other unlinked location"));
 }
 assert.deepEqual(profilePatch("client",editorProps.initial,{default_dropoff_id:destination},true),{});

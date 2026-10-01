@@ -18,6 +18,8 @@ export function FilterMultiSelect({
   placeholder,
   multiple = true,
   disabled = false,
+  allowClear = true,
+  portal = true,
 }: {
   label: string;
   values: string[];
@@ -26,6 +28,8 @@ export function FilterMultiSelect({
   placeholder: string;
   multiple?: boolean;
   disabled?: boolean;
+  allowClear?: boolean;
+  portal?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
@@ -101,11 +105,29 @@ export function FilterMultiSelect({
       event.preventDefault();
       if (open && matches[active]) add(matches[active].value);
     } else if (event.key === "Escape") {
+      if (open) event.stopPropagation();
       setOpen(false);
-    } else if (event.key === "Backspace" && !query && values.length) {
+    } else if (allowClear && event.key === "Backspace" && !query && values.length) {
       remove(values[values.length - 1]);
     }
   };
+
+  const menu = open && rect && !disabled ? (
+    <ul ref={menuRef} id={listId} role="listbox" aria-multiselectable={multiple}
+      style={{ position: "fixed", left: rect.left, top: rect.top, width: rect.width, zIndex: 50 }}
+      className="max-h-56 overflow-y-auto rounded-md border border-slate-200 bg-white py-1 shadow-md">
+      {matches.length === 0 && <li className="px-2 py-1.5 text-[11px] text-slate-600">Không tìm thấy lựa chọn</li>}
+      {matches.map((option, index) => (
+        <li key={option.value || "__blank__"}>
+          <button id={`${listId}-${index}`} type="button" role="option" aria-selected="false"
+            onMouseEnter={() => setActive(index)} onClick={() => add(option.value)}
+            className={`w-full px-2 py-1.5 text-left text-xs ${index === active ? "bg-indigo-50 text-slate-900" : "text-slate-700 hover:bg-slate-50"}`}>
+            {option.label}
+          </button>
+        </li>
+      ))}
+    </ul>
+  ) : null;
 
   return (
     <div className="min-w-0">
@@ -122,7 +144,7 @@ export function FilterMultiSelect({
             className="inline-flex max-w-full items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-800"
           >
             <span className={multiple ? "truncate" : "break-words"}>{labels.get(value) ?? value}</span>
-            <button
+            {allowClear && <button
               type="button"
               disabled={disabled}
               onClick={() => remove(value)}
@@ -130,7 +152,7 @@ export function FilterMultiSelect({
               className="rounded text-slate-600 hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
             >
               <X className="size-3" aria-hidden="true" />
-            </button>
+            </button>}
           </span>
         ))}
         <input
@@ -150,37 +172,7 @@ export function FilterMultiSelect({
           placeholder={values.length ? multiple ? "Thêm…" : "Tìm / đổi điểm giao…" : placeholder}
           className="min-w-[88px] flex-1 bg-transparent px-0.5 py-0.5 text-xs text-slate-900 outline-none placeholder:text-slate-500"
         />
-        {open && rect && !disabled && createPortal(
-          <ul
-            ref={menuRef}
-            id={listId}
-            role="listbox"
-            aria-multiselectable={multiple}
-            style={{ position: "fixed", left: rect.left, top: rect.top, width: rect.width, zIndex: 50 }}
-            className="max-h-56 overflow-y-auto rounded-md border border-slate-200 bg-white py-1 shadow-md"
-          >
-            {matches.length === 0 && (
-              <li className="px-2 py-1.5 text-[11px] text-slate-600">Không tìm thấy lựa chọn</li>
-            )}
-            {matches.map((option, index) => (
-              <li key={option.value || "__blank__"}>
-                <button
-                  id={`${listId}-${index}`}
-                  type="button"
-                  role="option"
-                  aria-selected="false"
-                  onMouseEnter={() => setActive(index)}
-                  onClick={() => add(option.value)}
-                  className={`w-full px-2 py-1.5 text-left text-xs ${
-                    index === active ? "bg-indigo-50 text-slate-900" : "text-slate-700 hover:bg-slate-50"
-                  }`}
-                >
-                  {option.label}
-                </button>
-              </li>
-            ))}
-          </ul>, document.body
-        )}
+        {menu && (portal ? createPortal(menu, document.body) : menu)}
       </div>
     </div>
   );
