@@ -57,6 +57,15 @@ export async function inactiveMasterClientIds():Promise<string[]> {
   return (await sbSelectAll<{customer_id:string;is_active:boolean}>("master_clients","select=customer_id,is_active&is_active=eq.false","customer_id.asc")).filter(c=>c.is_active===false).map(c=>c.customer_id);
 }
 export const masterDrivers=()=>sbSelectAll<MasterDriver>("master_drivers","select=driver_id,cartrack,roster,driver_zalo_id,bot_token,phone_number_update","driver_id.asc");
+/** Current report labels come from IDs; archived labels remain historical snapshots. */
+export async function masterDriverNames(driverIds:string[]):Promise<Map<string,string>> {
+  const ids=[...new Set(driverIds)];
+  if(ids.some(id=>!UUID.test(id))) throw new Error("Invalid driver ID");
+  if(!ids.length) return new Map();
+  const rows=await sbSelectAll<{driver_id:string;first_name:string|null;last_name:string|null}>(
+    "master_drivers",`select=driver_id,first_name,last_name&driver_id=in.(${ids.join(",")})`,"driver_id.asc");
+  return new Map(rows.map(d=>[d.driver_id,`${d.first_name??""} ${d.last_name??""}`.trim()]));
+}
 export async function masterClient(id:string):Promise<MasterClient|null> {
   if(!UUID.test(id)) throw new Error("Invalid customer ID");
   return (await sbSelect<MasterClient>("master_clients",`select=*&customer_id=eq.${id}`))[0]??null;

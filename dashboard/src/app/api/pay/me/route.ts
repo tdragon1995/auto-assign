@@ -28,6 +28,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifySession, NV_COOKIE } from "@/lib/driver-session";
 import { sbSelectAll, supabaseConfigured } from "@/lib/supabase-rest";
+import { masterDriverNames } from "@/lib/master-store";
 import { employmentOf } from "@/lib/driver-label";
 import {
   workedMinutes, hourPayFor, kmPayFor, punchAt,
@@ -203,13 +204,13 @@ export async function GET(req: NextRequest) {
     if (to < from) {
       // A month that has not started yet — the "next month" arrow can reach it.
       return NextResponse.json({
-        ok: true, driver_name: session.driver_name, month: askedMonth, from, to: from,
+        ok: true, driver_name: (await masterDriverNames([driverId])).get(driverId)||session.driver_name, month: askedMonth, from, to: from,
         rates, latest, days: [],
         summary: { days: 0, jobs: 0, km: 0, worked_mins: 0, hour_pay: 0, km_pay: 0, total_pay: 0, open_in_days: 0, unpriced_jobs: 0 },
       });
     }
 
-    const [daily, punches] = await Promise.all([
+    const [daily, punches, names] = await Promise.all([
       sbSelectAll<DailyRow>(
         "v_pay_daily",
         `select=*&driver_id=eq.${driverId}&trip_date=gte.${from}&trip_date=lte.${to}`,
@@ -220,6 +221,7 @@ export async function GET(req: NextRequest) {
         `select=*&driver_id=eq.${driverId}&trip_date=gte.${from}&trip_date=lte.${to}`,
         "id.asc",
       ),
+      masterDriverNames([driverId]),
     ]);
 
     const punchesByDay = new Map<string, PayPunch[]>();
@@ -249,7 +251,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       ok: true,
-      driver_name: session.driver_name,
+      driver_name: names.get(driverId) || session.driver_name,
       month: askedMonth,
       from, to, latest,
       rates,

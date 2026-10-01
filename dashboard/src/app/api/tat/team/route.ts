@@ -14,6 +14,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { sbSelect, supabaseConfigured } from "@/lib/supabase-rest";
+import { masterDriverNames } from "@/lib/master-store";
 import { summarize, MINS_PER_KM, type TatRollupRow } from "@/lib/tat";
 import { vnDate } from "@/lib/time";
 
@@ -89,6 +90,7 @@ export async function GET(req: NextRequest) {
       byDriver.set(r.driver_id, e);
     }
 
+    const names=await masterDriverNames([...byDriver.keys()]);
     const drivers = [...byDriver.entries()].map(([driver_id, { name, days }]) => {
       const s = summarize(days);
       return {
@@ -99,7 +101,7 @@ export async function GET(req: NextRequest) {
         // driver with both a part-time and a full-time account produces were
         // indistinguishable. Trimming happens once, on the way to the screen, so
         // the CSV can still carry the code that attendance and leave are keyed on.
-        driver_name: name || driver_id.slice(0, 8),
+        driver_name: names.get(driver_id) || name || driver_id.slice(0, 8),
         days_worked: days.length,
         ...s,
       };

@@ -23,6 +23,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { sbSelectAll, supabaseConfigured } from "@/lib/supabase-rest";
+import { masterDriverNames } from "@/lib/master-store";
 import { employmentOf } from "@/lib/driver-label";
 import {
   workedMinutes, hourPayFor, kmPayFor,
@@ -70,9 +71,11 @@ export async function GET(req: NextRequest) {
         `select=job_id,reference_number,driver_id,driver_name,trip_date,pickup_name,dropoff_name,pickup_completed_ts,dropoff_completed_ts,distance_km&trip_date=gte.${from}&trip_date=lte.${to}`,
         "trip_date.asc,driver_id.asc,dropoff_completed_ts.asc,job_id.asc",
       );
+      const eligible=jobs.filter((j)=>employmentOf(j.driver_name)==="part-time");
+      const names=await masterDriverNames(eligible.map(j=>j.driver_id));
       return NextResponse.json({
         ok: true, month, from, to,
-        jobs: jobs.filter((j) => employmentOf(j.driver_name) === "part-time"),
+        jobs: eligible.map(j=>({...j,driver_name:names.get(j.driver_id)||j.driver_name})),
       });
     }
 
@@ -151,6 +154,7 @@ export async function GET(req: NextRequest) {
       e.days.add(p.trip_date);
     }
 
+    const names=await masterDriverNames([...acc.keys()]);
     const drivers = [...acc.entries()]
       // Full-time accounts are recorded but not priced — see PART-TIME ONLY above.
       .filter(([, e]) => employmentOf(e.name) === "part-time")
@@ -169,7 +173,7 @@ export async function GET(req: NextRequest) {
           // the screen, so the CSV keeps the code that payroll is keyed on and the
           // two rows a person with both a PT and a DC account produces stay
           // distinguishable.
-          driver_name: e.name || driver_id.slice(0, 8),
+          driver_name: names.get(driver_id) || e.name || driver_id.slice(0, 8),
           days_worked: e.days.size,
           jobs: e.jobs,
           km,

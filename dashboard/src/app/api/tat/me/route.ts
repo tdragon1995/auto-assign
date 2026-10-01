@@ -22,6 +22,7 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { verifySession, NV_COOKIE } from "@/lib/driver-session";
 import { sbSelect, supabaseConfigured } from "@/lib/supabase-rest";
+import { masterDriverNames } from "@/lib/master-store";
 import {
   summarize, summarizeLegs, MINS_PER_KM, type TatRollupRow, type TatSummary, type TatLeg,
 } from "@/lib/tat";
@@ -252,12 +253,13 @@ export async function GET(req: NextRequest) {
   const rangeStart = pmStart < prevWStart ? pmStart : prevWStart;
 
   try {
-    const [latestLegs, daily] = await Promise.all([
+    const [latestLegs, daily, names] = await Promise.all([
       legsForDay(driverId, latest),
       sbSelect<DailyRow>(
         "v_tat_daily",
         `select=*&driver_id=eq.${driverId}&trip_date=gte.${rangeStart}&trip_date=lte.${latest}&order=trip_date.asc`,
       ),
+      masterDriverNames([driverId]),
     ]);
 
     const inRange = (from: string, to: string) => daily.filter((d) => d.trip_date >= from && d.trip_date <= to);
@@ -282,7 +284,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       ok: true,
-      driver_name: session.driver_name,
+      driver_name: names.get(driverId) || session.driver_name,
       mins_per_km: MINS_PER_KM,
       updated_at: archivedAt ? new Date(archivedAt).toISOString() : null,
       refreshing: missing,
