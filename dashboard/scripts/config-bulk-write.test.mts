@@ -104,6 +104,18 @@ reset();
 }
 reset();
 {
+  grid[4][4]="16:45";
+  await bulkUpdateConfigRows({ targets: [t(4),t(5)], end: "20:00" });
+  ok("end-only edit preserves each row's own start",grid[3][4]==="07:00" && grid[4][4]==="16:45" && grid[3][5]==="20:00" && grid[4][5]==="20:00");
+  ok("partial edits still use one batch write",calls.get===1 && calls.batchGet===1 && calls.write===1);
+  await bulkUpdateConfigRows({ targets: [t(4)], start: "08:00",driverName:B });
+  ok("driver + start-only edit keeps the end",grid[3][3]===B && grid[3][4]==="08:00" && grid[3][5]==="20:00");
+  grid[4][4]="";grid[4][5]="";
+  const res=await bulkUpdateConfigRows({ targets: [t(4),t(5)], end:"08:00" });
+  ok("incomplete and equal resulting windows are skipped",res.done.length===0 && res.skipped.length===2 && grid[4][5]==="");
+}
+reset();
+{
   const res = await bulkUpdateConfigRows({ targets: [t(4), { row: 5, expectPickup: "PK999" }], driverName: B });
   ok("a row whose branch moved is skipped, not written", grid[4][3] !== B && res.skipped[0]?.row === 5);
   ok("…and the others still land", grid[3][3] === B && res.done.length === 1);

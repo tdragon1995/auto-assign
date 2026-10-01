@@ -272,8 +272,8 @@ function BulkBar({
   };
 
   const applyHours = () => {
-    if (!start || !end) return toast.error("Ca phải đủ cả từ và đến");
-    if (start === end) return toast.error("Giờ bắt đầu và kết thúc trùng nhau — dòng sẽ không bao giờ trực");
+    if (!start && !end) return toast.error("Chọn giờ cần đổi; giờ trống sẽ giữ nguyên");
+    if (start && end && start === end) return toast.error("Giờ bắt đầu và kết thúc trùng nhau — dòng sẽ không bao giờ trực");
     return run("Đã đổi ca", "/api/config/bulk-update", { shift_start: start, shift_end: end });
   };
 
@@ -282,7 +282,7 @@ function BulkBar({
   const applyDelete = () => run("Đã xoá", "/api/config/bulk-delete", {});
   const applyBoth = () => {
     const cell = splitDriverNames(driverCell).join(DRIVER_SEP);
-    if (!cell || !start || !end || start === end) return toast.error("Chọn tài xế và khung giờ hợp lệ");
+    if (!cell || (!start && !end) || (start && end && start === end)) return toast.error("Chọn tài xế và giờ cần đổi; giờ trống sẽ giữ nguyên");
     return run("Đã đổi tài xế và ca", "/api/config/bulk-update", {driver_name:cell,shift_start:start,shift_end:end});
   };
   const schedules = targets.filter((r,i)=>targets.findIndex(t=>sameSchedule(t,r))===i).map(r=>({
@@ -330,7 +330,7 @@ function BulkBar({
           {/* Said in full, because this is the part that surprises: the hours
               on each row are NOT touched, so a set of rows on different
               shifts keeps them. */}
-          {mode === "both" ? <><TimeSelect label="Từ giờ" value={start} onChange={setStart} /><TimeSelect label="Đến giờ" value={end} onChange={setEnd} /></> : <span className="text-[11px] text-indigo-900">giữ nguyên ca của từng dòng</span>}
+          {mode === "both" ? <><TimeSelect label="Từ giờ" emptyLabel="Giữ giờ bắt đầu" value={start} onChange={setStart} /><TimeSelect label="Đến giờ" emptyLabel="Giữ giờ kết thúc" value={end} onChange={setEnd} /></> : <span className="text-[11px] text-indigo-900">giữ nguyên ca của từng dòng</span>}
           <div className="ml-auto flex gap-1">
             <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => setMode(null)} disabled={busy}>
               Hủy
@@ -349,9 +349,9 @@ function BulkBar({
 
       {mode === "hours" && (
         <>
-          <TimeSelect label="Từ giờ" value={start} onChange={setStart} />
+          <TimeSelect label="Từ giờ" emptyLabel="Giữ giờ bắt đầu" value={start} onChange={setStart} />
           <span className="text-[11px] text-slate-500">→</span>
-          <TimeSelect label="Đến giờ" value={end} onChange={setEnd} />
+          <TimeSelect label="Đến giờ" emptyLabel="Giữ giờ kết thúc" value={end} onChange={setEnd} />
           <div className="ml-auto flex gap-1">
             <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => setMode(null)} disabled={busy}>
               Hủy

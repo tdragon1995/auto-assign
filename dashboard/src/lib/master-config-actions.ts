@@ -51,7 +51,7 @@ export async function editMasterConfig(target:Target,patch:Patch|{delete:true}) 
   return {row:saved.source_row,rule_id:saved.id,revision:saved.revision,moved:saved.source_row!==target.row};
 }
 export async function bulkMasterConfig(targets:Target[],patch:Patch|{delete:true}) {
-  const withHours="start" in patch && patch.start!==undefined;
+  const withHours=!("delete" in patch) && (patch.start!==undefined || patch.end!==undefined);
   const ctx=await context(withHours ? undefined : targets.map(t=>t.expected?.rule_id ?? 0));
   const done:{row:number;pickup:string}[]=[],skipped:{row:number;pickup:string;reason:string}[]=[],changes:Record<string,unknown>[]=[];
   const seen=new Set<number>();

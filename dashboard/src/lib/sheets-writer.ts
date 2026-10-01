@@ -2287,22 +2287,32 @@ export async function bulkUpdateConfigRows(opts: {
 }): Promise<BulkConfigResult> {
   if (masterEnabled() && !vnIsSunday()) return bulkMasterConfig(opts.targets, opts);
   const withDriver = opts.driverName !== undefined;
-  const withHours = opts.start !== undefined && opts.end !== undefined;
+  const withHours = opts.start !== undefined || opts.end !== undefined;
   if (!withDriver && !withHours) throw new Error("Không có gì để ghi");
   const columns = [
     ...(withDriver ? ["Driver"] : []),
     ...(withHours ? [WRITE_COLS.start, WRITE_COLS.end] : []),
   ];
-  const { sheets, q, cols, live, skipped } = await readTargetColumns(opts.targets, columns, SUNDAY_DRIVER_MSG);
+  const { sheets, q, cols, cell, live, skipped } = await readTargetColumns(opts.targets, columns, SUNDAY_DRIVER_MSG);
 
   const data: { range: string; values: string[][] }[] = [];
+  const done: BulkConfigResult["done"] = [];
   for (const t of live) {
+    if (withHours) {
+      const start = opts.start ?? cell(withDriver ? 2 : 1, t.row);
+      const end = opts.end ?? cell(withDriver ? 3 : 2, t.row);
+      if (!!start !== !!end || (start && (!(timeToMins(start) >= 0 && timeToMins(end) >= 0) || timeToMins(start) === timeToMins(end)))) {
+        skipped.push({row:t.row,pickup:t.expectPickup,reason:"Ca làm việc không hợp lệ"});
+        continue;
+      }
+    }
     let i = 0;
     if (withDriver) data.push({ range: `${q}!${cols[i++]}${t.row}`, values: [[opts.driverName!]] });
     if (withHours) {
-      data.push({ range: `${q}!${cols[i++]}${t.row}`, values: [[opts.start!]] });
-      data.push({ range: `${q}!${cols[i++]}${t.row}`, values: [[opts.end!]] });
+      if (opts.start !== undefined) data.push({ range: `${q}!${cols[i]}${t.row}`, values: [[opts.start]] });
+      if (opts.end !== undefined) data.push({ range: `${q}!${cols[i+1]}${t.row}`, values: [[opts.end]] });
     }
+    done.push({row:t.row,pickup:t.expectPickup});
   }
   if (data.length > 0) {
     await sheets.spreadsheets.values.batchUpdate({
@@ -2310,7 +2320,7 @@ export async function bulkUpdateConfigRows(opts: {
       requestBody: { valueInputOption: "USER_ENTERED", data },
     });
   }
-  return { done: live.map((t) => ({ row: t.row, pickup: t.expectPickup })), skipped };
+  return { done, skipped };
 }
 
 /**

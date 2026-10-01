@@ -67,11 +67,12 @@ const TIME_SLOTS_5: string[] = (() => {
  * supervisor could not see what they were about to save.
  */
 export function TimeSelect({
-  value, onChange, label, disabled,
+  value, onChange, label, disabled, emptyLabel = "--:--",
 }: {
   value: string;
   onChange: (v: string) => void;
   label: string;
+  emptyLabel?: string;
   /** Times that would produce an invalid or overlapping rule. Greyed out rather
    *  than hidden, so the shape of what is already taken stays visible. */
   disabled?: (t: string) => boolean;
@@ -84,7 +85,7 @@ export function TimeSelect({
       aria-label={label}
       className="rounded border border-slate-300 bg-white px-1 py-1 text-xs font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
     >
-      <option value="">--:--</option>
+      <option value="">{emptyLabel}</option>
       {options.filter((t) => t === value || !disabled?.(t)).map((t) => (
         <option key={t} value={t} disabled={disabled?.(t) && t !== value}>{t}</option>
       ))}

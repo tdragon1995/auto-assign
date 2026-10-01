@@ -3,7 +3,6 @@ import { bulkUpdateConfigRows } from "@/lib/sheets-writer";
 import { splitDriverNames, DRIVER_SEP } from "@/lib/driver-cell";
 import { loadDriversFromSheet, invalidateConfigCache } from "@/lib/config";
 import { parseConfigTargets } from "@/lib/config-targets";
-import { timeToMins } from "@/lib/time";
 
 export const preferredRegion = "sin1";
 
@@ -13,8 +12,8 @@ export const preferredRegion = "sin1";
  *
  * It replaces a loop of complete-row calls that ran out of Google's per-minute
  * read quota after ~25 rows (see bulkUpdateConfigRows). The checks are
- * complete-row's: every name on the roster, a window with both ends that are not
- * equal. The cache is bumped once.
+ * complete-row's: every name on the roster and a valid resulting window.
+ * Omitted or blank boundaries keep each row's current time. The cache is bumped once.
  */
 export async function POST(req: NextRequest) {
   const started = performance.now();
@@ -28,13 +27,10 @@ export async function POST(req: NextRequest) {
     const parsed = parseConfigTargets(rows);
     if ("error" in parsed) return bad(parsed.error);
 
+    if ([shift_start, shift_end].some(t => t !== undefined && typeof t !== "string")) return bad("Giờ không hợp lệ");
     const start = (shift_start ?? "").trim(), end = (shift_end ?? "").trim();
-    if (!!start !== !!end) return bad("Khung giờ phải đủ cả từ và đến");
-    if (start) {
-      const a = timeToMins(start), b = timeToMins(end);
-      if (!(a >= 0 && b >= 0)) return bad(`Khung giờ không hợp lệ: ${start}–${end}`);
-      if (a === b) return bad("Giờ bắt đầu và kết thúc trùng nhau — dòng sẽ không bao giờ trực");
-    }
+    if ([start, end].some(t => t && !/^([01]\d|2[0-3]):[0-5]\d$/.test(t))) return bad(`Khung giờ không hợp lệ: ${start}–${end}`);
+    if (start && end && start === end) return bad("Giờ bắt đầu và kết thúc trùng nhau — dòng sẽ không bao giờ trực");
 
     let driverName: string | undefined;
     if (typeof driver_name === "string") {
@@ -46,7 +42,7 @@ export async function POST(req: NextRequest) {
       if (unknown) return bad(`"${unknown}" không có trong tab Driver — chọn từ danh sách`);
       driverName = names.join(DRIVER_SEP);
     }
-    if (driverName === undefined && !start) return bad("Không có gì để ghi");
+    if (driverName === undefined && !start && !end) return bad("Không có gì để ghi");
 
     const result = await bulkUpdateConfigRows({
       targets: parsed.targets,
