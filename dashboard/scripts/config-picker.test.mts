@@ -8,12 +8,22 @@ import { FilterMultiSelect } from "../src/components/filter-multi-select";
 const source = ts.createSourceFile("picker.tsx",readFileSync(new URL("../src/components/filter-multi-select.tsx",import.meta.url),"utf8"),ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
 let add: ts.Expression | undefined;
 let onKeyDown: ts.Expression | undefined;
+let place: ts.Expression | undefined;
 function visit(node: ts.Node) {
   if (ts.isVariableDeclaration(node) && node.name.getText(source) === "add") add=node.initializer;
   if (ts.isVariableDeclaration(node) && node.name.getText(source) === "onKeyDown") onKeyDown=node.initializer;
+  if (ts.isVariableDeclaration(node) && node.name.getText(source) === "place" && node.initializer && ts.isCallExpression(node.initializer)) place=node.initializer.arguments[0];
   ts.forEachChild(node,visit);
 }
-visit(source);assert.ok(add);assert.ok(onKeyDown);
+visit(source);assert.ok(add);assert.ok(onKeyDown);assert.ok(place);
+const placeCode=ts.transpile(`const position=${ts.createPrinter().printNode(ts.EmitHint.Expression,place,source)};`,{target:ts.ScriptTarget.ES2022});
+for (const [top,bottom,above,expectedTop] of [[530,564,true,528],[20,52,false,54]] as const) {
+  let rect: {top:number;above:boolean} | undefined;
+  new Function("boxRef","window","setRect",`${placeCode};position();`)(
+    {current:{getBoundingClientRect:()=>({top,bottom,left:20,width:300})}}, {innerWidth:1280,innerHeight:720}, (value:typeof rect)=>rect=value,
+  );
+  assert.deepEqual([rect?.top,rect?.above],[expectedTop,above],"suggestions must anchor immediately above or below the field");
+}
 const code=ts.transpile(`const add=${ts.createPrinter().printNode(ts.EmitHint.Expression,add,source)};`,{target:ts.ScriptTarget.ES2022});
 for(const multiple of [true,false]) {
   let selection: string[]=[];let opened=true;

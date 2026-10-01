@@ -37,7 +37,7 @@ export function FilterMultiSelect({
   const boxRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const menuRef = useRef<HTMLUListElement>(null);
-  const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(null);
+  const [rect, setRect] = useState<{ left: number; top: number; width: number; above: boolean } | null>(null);
   const inputId = useId();
   const listId = useId();
   const selected = useMemo(() => new Set(values), [values]);
@@ -55,8 +55,9 @@ export function FilterMultiSelect({
     const box = boxRef.current?.getBoundingClientRect();
     if (box) {
       const width = Math.min(Math.max(box.width, 240), 440, window.innerWidth - 16);
-      const top = box.bottom + 234 <= window.innerHeight ? box.bottom + 2 : Math.max(8, box.top - 226);
-      setRect({ left: Math.max(8, Math.min(box.left, window.innerWidth - width - 8)), top, width });
+      const above = box.bottom + 234 > window.innerHeight && box.top > window.innerHeight - box.bottom;
+      const top = above ? box.top - 2 : box.bottom + 2;
+      setRect({ left: Math.max(8, Math.min(box.left, window.innerWidth - width - 8)), top, width, above });
     }
   }, []);
 
@@ -114,7 +115,7 @@ export function FilterMultiSelect({
 
   const menu = open && rect && !disabled ? (
     <ul ref={menuRef} id={listId} role="listbox" aria-multiselectable={multiple}
-      style={{ position: "fixed", left: rect.left, top: rect.top, width: rect.width, zIndex: 50 }}
+      style={{ position: "fixed", left: rect.left, top: rect.top, width: rect.width, zIndex: 50, transform: rect.above ? "translateY(-100%)" : undefined }}
       className="max-h-56 overflow-y-auto rounded-md border border-slate-200 bg-white py-1 shadow-md">
       {matches.length === 0 && <li className="px-2 py-1.5 text-[11px] text-slate-600">Không tìm thấy lựa chọn</li>}
       {matches.map((option, index) => (
