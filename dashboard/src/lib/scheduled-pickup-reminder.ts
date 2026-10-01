@@ -5,6 +5,7 @@ import type { Env } from "./cartrack";
 import type { Job, LogLevel } from "./types";
 import { sendZaloMessage } from "./zalo";
 
+export const SAMPLE_PICKUP_CUSTOMER_ID = "81f0d4a6-acf9-11f1-9378-fa163ee8d8ac";
 const CHAT_BY_CUSTOMER_ID: Record<string, string> = {
   "51bfb168-446f-11ed-888f-506b8dbc8dfb": "zgr-1c7aa981bbcf52910bde",
   "f88dfab6-b522-11ee-bb52-506b8d9879b5": "zgr-5f2b2b46331ada44830b",
@@ -19,16 +20,19 @@ export async function remindScheduledPickup(
 ): Promise<void> {
   if (env !== "prod" || !job.labels?.includes(SCHEDULE_JOB_LABEL)) return;
   const pickup = job.stops?.find((stop) => stop.stop_type_id === 1);
-  const chatId = pickup?.customer_id ? CHAT_BY_CUSTOMER_ID[pickup.customer_id] : undefined;
+  const isSampleBot = pickup?.customer_id === SAMPLE_PICKUP_CUSTOMER_ID;
+  const chatId = isSampleBot
+    ? process.env.ZALO_SAMPLE_CHAT_ID
+    : pickup?.customer_id ? CHAT_BY_CUSTOMER_ID[pickup.customer_id] : undefined;
   if (
     !pickup || !chatId ||
     pickup.stop_status_id !== 1 ||
     pickup.activity_started_ts || pickup.activity_arrived_ts || pickup.activity_completed_ts
   ) return;
 
-  const token = botToken();
+  const token = isSampleBot ? process.env.ZALO_SAMPLE_BOT_TOKEN : botToken();
   if (!token) {
-    log(`Job ${job.job_id} - Fixed-pickup Zalo reminder skipped: Pharmacy bot token missing`, "WARN");
+    log(`Job ${job.job_id} - Fixed-pickup Zalo reminder skipped: bot token missing`, "WARN");
     return;
   }
   const redisUrl = process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
