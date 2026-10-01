@@ -1,6 +1,7 @@
 import type { ConfigRowView } from "@/app/api/config/rows/route";
 import { foldName, splitDriverNames } from "./driver-cell";
 import { compareDriverNames, splitDriverName } from "./driver-label";
+import { timeToMins } from "./time";
 
 export interface ConfigFilters {
   query: string;
@@ -14,14 +15,15 @@ export interface ConfigFilters {
   dropoffOperator: ConfigTextOperator;
   dropoffText: string;
   starts: readonly string[];
-  startOperator: ConfigTextOperator;
+  startOperator: ConfigTimeOperator;
   startText: string;
   ends: readonly string[];
-  endOperator: ConfigTextOperator;
+  endOperator: ConfigTimeOperator;
   endText: string;
 }
 
 export type ConfigTextOperator = "contains" | "not_contains" | "is" | "is_not";
+export type ConfigTimeOperator = ConfigTextOperator | "gt" | "lt";
 
 export interface ConfigFilterOptions {
   drivers: string[];
@@ -55,8 +57,8 @@ export function normalizeConfigText(value: string): string {
   return foldName(value).trim().replace(/\s+/g, " ");
 }
 
-export function usesTextInput(operator: ConfigTextOperator): boolean {
-  return operator === "contains" || operator === "not_contains";
+export function usesTextInput(operator: ConfigTimeOperator): boolean {
+  return operator === "contains" || operator === "not_contains" || operator === "gt" || operator === "lt";
 }
 
 function matchesText(values: readonly string[], operator: ConfigTextOperator, query: string): boolean {
@@ -69,6 +71,18 @@ function matchesSelection(values: readonly string[], selected: ReadonlySet<strin
   if (selected.size === 0) return true;
   const found = values.some((value) => selected.has(value));
   return operator === "is_not" ? !found : found;
+}
+
+function matchesTime(value: string, operator: ConfigTimeOperator, query: string, selected: ReadonlySet<string>): boolean {
+  if (operator === "gt" || operator === "lt") {
+    if (!query) return true;
+    // Compare clock values, not text. Blank/all-day and invalid times have no
+    // boundary to compare; 24:00 remains the end of the day, not midnight.
+    const clock = /^(?:(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?|24:00(?::00)?)$/;
+    if (!clock.test(value.trim()) || !clock.test(query)) return false;
+    return operator === "gt" ? timeToMins(value) > timeToMins(query) : timeToMins(value) < timeToMins(query);
+  }
+  return usesTextInput(operator) ? matchesText([value],operator,query) : matchesSelection([value],selected,operator);
 }
 
 /**
@@ -122,12 +136,8 @@ export function filterConfigRows(
     if (usesTextInput(filters.dropoffOperator)
       ? !matchesText([row.dropoff], filters.dropoffOperator, dropoffText)
       : !matchesSelection([row.dropoff], selectedDropoffs, filters.dropoffOperator)) return false;
-    if (usesTextInput(filters.startOperator)
-      ? !matchesText([row.start], filters.startOperator, startText)
-      : !matchesSelection([row.start], selectedStarts, filters.startOperator)) return false;
-    if (usesTextInput(filters.endOperator)
-      ? !matchesText([row.end], filters.endOperator, endText)
-      : !matchesSelection([row.end], selectedEnds, filters.endOperator)) return false;
+    if (!matchesTime(row.start, filters.startOperator, startText, selectedStarts)) return false;
+    if (!matchesTime(row.end, filters.endOperator, endText, selectedEnds)) return false;
     return true;
   });
 }

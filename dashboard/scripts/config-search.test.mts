@@ -148,6 +148,20 @@ console.log("dashboard phrase and facet filters");
   eq("shift start is matches selected times", hits({ startOperator: "is", starts: ["05:00", "07:00"] }), [30, 32]);
   eq("shift end is not excludes a selected time", hits({ endOperator: "is_not", ends: ["16:00"] }), [30, 31, 33]);
   eq("start and end filters combine", hits({ startOperator: "is", starts: ["07:00"], endOperator: "is", ends: ["16:00"] }), [32]);
+  eq("start > excludes the exact boundary", hits({startOperator:"gt",startText:"07:00"}),[31,33]);
+  eq("start < excludes the exact boundary", hits({startOperator:"lt",startText:"07:00"}),[30]);
+  eq("end > compares clock minutes", hits({endOperator:"gt",endText:"16:00"}),[31,33]);
+  eq("end < excludes the exact boundary", hits({endOperator:"lt",endText:"16:00"}),[30]);
+  eq("start and end comparisons combine with AND", hits({startOperator:"gt",startText:"06:00",endOperator:"lt",endText:"18:00"}),[32,33]);
+  eq("comparison without a time is inactive", hits({startOperator:"gt"}),[30,31,32,33]);
+  eq("comparison ignores previous multi-selections", hits({startOperator:"gt",startText:"07:00",starts:["05:00"]}),[31,33]);
+  eq("invalid comparison time matches nothing", hits({startOperator:"lt",startText:"99:00"}),[]);
+  eq("comparison excludes blank and malformed boundaries",filterConfigRows([
+    row({row:40}),row({row:41,start:"bad"}),row({row:42,start:"7:05"}),row({row:43,start:"24:01"}),
+  ],{...EMPTY_CONFIG_FILTERS,startOperator:"gt",startText:"07:00"}).map(r=>r.row),[42]);
+  eq("24:00 is later than 23:59",filterConfigRows([
+    row({row:44,end:"00:00"}),row({row:45,end:"24:00"}),row({row:46,end:"23:59"}),
+  ],{...EMPTY_CONFIG_FILTERS,endOperator:"gt",endText:"23:59"}).map(r=>r.row),[45]);
   eq("blank shift times can be selected", filterConfigRows([...FILTER_ROWS, row({ row: 34 })], {
     ...EMPTY_CONFIG_FILTERS, startOperator: "is", starts: [""], endOperator: "is", ends: [""],
   }).map((r) => r.row), [34]);

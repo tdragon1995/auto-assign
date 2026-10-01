@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { foldName, replaceDriverInCell, splitDriverNames, DRIVER_SEP } from "@/lib/driver-cell";
 import { displayDriverCell, splitDriverName } from "@/lib/driver-label";
 import { configFilterOptions, EMPTY_CONFIG_FILTERS, filterConfigRows, usesTextInput } from "@/lib/config-filters";
-import type { ConfigTextOperator } from "@/lib/config-filters";
+import type { ConfigTimeOperator } from "@/lib/config-filters";
 import { BranchEditor, TimeSelect } from "./config-todo-panel";
 import { DriverCombobox } from "./driver-combobox";
 import { FilterMultiSelect } from "./filter-multi-select";
@@ -616,20 +616,21 @@ function ReplaceDriverPanel({
 }
 
 /** One operator and the value control it requires. */
-function ConfigColumnFilter({
-  label, operator, text, values, options, onOperatorChange, onTextChange, onValuesChange, textPlaceholder, selectPlaceholder, showOperator = true,
+function ConfigColumnFilter<Operator extends ConfigTimeOperator>({
+  label, operator, text, values, options, onOperatorChange, onTextChange, onValuesChange, textPlaceholder, selectPlaceholder, showOperator = true, timeOperators = false,
 }: {
   label: string;
-  operator: ConfigTextOperator;
+  operator: Operator;
   text: string;
   values: string[];
   options: readonly { value: string; label: string }[];
-  onOperatorChange: (operator: ConfigTextOperator) => void;
+  onOperatorChange: (operator: Operator) => void;
   onTextChange: (value: string) => void;
   onValuesChange: (values: string[]) => void;
   textPlaceholder: string;
   selectPlaceholder: string;
   showOperator?: boolean;
+  timeOperators?: boolean;
 }) {
   const id = useId();
   const operatorLabel = {
@@ -637,6 +638,8 @@ function ConfigColumnFilter({
     not_contains: "không chứa",
     is: "là",
     is_not: "không phải",
+    gt: "sau",
+    lt: "trước",
   }[operator];
   return (
     <div className="min-w-0 space-y-1">
@@ -646,17 +649,17 @@ function ConfigColumnFilter({
       {showOperator && <select
         id={id}
         value={operator}
-        onChange={(e) => onOperatorChange(e.target.value as ConfigTextOperator)}
+        onChange={(e) => onOperatorChange(e.target.value as Operator)}
         className="h-8 w-full rounded border border-slate-300 bg-white px-2 text-xs text-slate-900 outline-none focus:ring-2 focus:ring-indigo-400/50"
       >
-        <option value="contains">Có chứa</option>
-        <option value="not_contains">Không chứa</option>
-        <option value="is">Là</option>
-        <option value="is_not">Không phải</option>
+        {!timeOperators && <><option value="contains">Có chứa</option><option value="not_contains">Không chứa</option></>}
+        <option value="is">{timeOperators ? "Bằng (=)" : "Là"}</option>
+        <option value="is_not">{timeOperators ? "Khác (≠)" : "Không phải"}</option>
+        {timeOperators && <><option value="gt">Sau (&gt;)</option><option value="lt">Trước (&lt;)</option></>}
       </select>}
       {usesTextInput(operator) ? (
         <input
-          type="text"
+          type={operator === "gt" || operator === "lt" ? "time" : "text"}
           value={text}
           onChange={(e) => onTextChange(e.target.value)}
           placeholder={textPlaceholder}
@@ -676,7 +679,7 @@ function ConfigColumnFilter({
   );
 }
 
-function activeColumnFilterCount(operator: ConfigTextOperator, text: string, values: readonly string[]): number {
+function activeColumnFilterCount(operator: ConfigTimeOperator, text: string, values: readonly string[]): number {
   return usesTextInput(operator) ? Number(Boolean(text.trim())) : Number(values.length > 0);
 }
 
@@ -1018,7 +1021,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
           />
           <ConfigColumnFilter
             label="Giờ bắt đầu"
-            showOperator={false}
+            timeOperators
             operator={filters.startOperator}
             text={filters.startText}
             values={[...filters.starts]}
@@ -1035,7 +1038,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
           />
           <ConfigColumnFilter
             label="Giờ kết thúc"
-            showOperator={false}
+            timeOperators
             operator={filters.endOperator}
             text={filters.endText}
             values={[...filters.ends]}
