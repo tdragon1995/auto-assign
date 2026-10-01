@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { JOB_STATUS } from "@/lib/job-filters";
-import { DIAG_LOCATIONS, type DiagLocation } from "@/lib/diag-locations";
+import type { DropoffLocation } from "@/app/api/admin/change-dropoff/route";
 import { foldName } from "@/lib/driver-cell";
 import { driverDisplayName } from "@/lib/display-names";
 import { DriverName } from "./driver-name";
@@ -108,7 +108,7 @@ export function JobAdminPanel({
   const [completing, setCompleting] = useState(false);
   const [changing, setChanging] = useState(false);
   const [unlocking, setUnlocking] = useState(false);
-  const [psc, setPsc] = useState<DiagLocation | null>(null);
+  const [location, setLocation] = useState<DropoffLocation | null>(null);
   // driver_id → when their geofence locks again, so the button shows it is already open.
   const [openUntil, setOpenUntil] = useState<Record<string, number>>({});
   // Re-rendered at the next expiry below, so "Đã mở đến" gives the button back
@@ -125,7 +125,7 @@ export function JobAdminPanel({
   const driverNames = useMemo(() => new Map(drivers.map((d) => [d.driver_id, d.name])), [drivers]);
 
   const resetEditor = useCallback(() => {
-    setPsc(null);
+    setLocation(null);
     setConfirming(null);
   }, []);
 
@@ -335,9 +335,9 @@ export function JobAdminPanel({
   }, [job, env]);
 
   const doChangeDropoff = useCallback(async () => {
-    if (!job || !psc) return;
+    if (!job || !location) return;
     const id = job.job_id;
-    const target = psc;
+    const target = location;
     setChanging(true);
     try {
       const res = await fetch(`/api/admin/change-dropoff?env=${env}`, {
@@ -371,7 +371,7 @@ export function JobAdminPanel({
     } finally {
       setChanging(false);
     }
-  }, [job, psc, env, resetEditor, setHit]);
+  }, [job, location, env, resetEditor, setHit]);
 
   const statusId = job?.job_status_id ?? null;
   const isTerminal = statusId != null && TERMINAL.has(statusId);
@@ -522,21 +522,22 @@ export function JobAdminPanel({
                                       Chuyến đã bắt đầu — đổi điểm giao sẽ đổi lộ trình giữa chuyến.
                                     </p>
                                   )}
-                                  <PscCombobox
-                                    value={psc}
-                                    onChange={(l) => { setPsc(l); setConfirming(null); }}
+                                  <LocationCombobox
+                                    env={env}
+                                    value={location}
+                                    onChange={(l) => { setLocation(l); setConfirming(null); }}
                                     excludeId={job.dropoff?.customer_id ?? null}
                                   />
-                                  {psc && confirming !== "dropoff" && (
+                                  {location && confirming !== "dropoff" && (
                                     <Button size="sm" variant="outline" onClick={() => setConfirming("dropoff")}>
-                                      Đổi sang {psc.customer_name}
+                                      Đổi sang {location.customer_name}
                                     </Button>
                                   )}
-                                  {psc && confirming === "dropoff" && (
+                                  {location && confirming === "dropoff" && (
                                     <ConfirmBox
                                       title={`Đổi điểm giao Job ${job.job_id}?`}
                                       lines={[
-                                        `${job.dropoff?.customer_name ?? "—"} → ${psc.customer_name}`,
+                                        `${job.dropoff?.customer_name ?? "—"} → ${location.customer_name}`,
                                         ...(job.started ? ["Tài xế đang chạy chuyến này."] : []),
                                       ]}
                                       confirmLabel={changing ? "Đang đổi…" : "Xác nhận đổi"}
@@ -668,21 +669,49 @@ function ConfirmBox({
 }
 
 /**
- * Pick a PSC. Same contract as DriverCombobox: picked, never typed, arrow keys
+ * Pick a Cartrack location. Same contract as DriverCombobox: picked, never typed, arrow keys
  * and Enter work, the search folds accents, and the menu is positioned FIXED so
  * the panel's own scroller cannot clip it — the old absolutely-positioned list
  * showed about ten pixels of itself inside a 30vh box.
  */
-function PscCombobox({
+function LocationCombobox({
+  env,
   value,
   onChange,
   excludeId,
 }: {
-  value: DiagLocation | null;
-  onChange: (l: DiagLocation | null) => void;
+  env: Env;
+  value: DropoffLocation | null;
+  onChange: (l: DropoffLocation | null) => void;
   /** The job's current dropoff — changing to it would be a no-op. */
   excludeId: string | null;
 }) {
+  const [locations, setLocations] = useState<DropoffLocation[]>([]);
+  const [locationsLoading, setLocationsLoading] = useState(true);
+  const [locationsError, setLocationsError] = useState("");
+  const [locationsRetry, setLocationsRetry] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLocations([]);
+    setLocationsLoading(true);
+    setLocationsError("");
+    async function loadLocations() {
+      try {
+        const res = await fetch(`/api/admin/change-dropoff?env=${env}`, { signal: controller.signal });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "Không tải được danh sách địa điểm");
+        if (!controller.signal.aborted) setLocations(data.locations);
+      } catch {
+        if (!controller.signal.aborted) setLocationsError("Không tải được địa điểm. Vui lòng thử lại.");
+      } finally {
+        if (!controller.signal.aborted) setLocationsLoading(false);
+      }
+    }
+    loadLocations();
+    return () => controller.abort();
+  }, [env, locationsRetry]);
+
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -693,13 +722,12 @@ function PscCombobox({
   const optId = (i: number) => `${listId}-o${i}`;
 
   const matches = useMemo(() => {
-    const needle = foldName(q.trim());
-    return DIAG_LOCATIONS.filter(
-      (l) =>
-        l.customer_id !== excludeId &&
-        (!needle || foldName(`${l.customer_name} ${l.address}`).includes(needle)),
-    );
-  }, [q, excludeId]);
+    const words = foldName(q).trim().split(/\s+/).filter(Boolean);
+    return locations.filter((l) => {
+      const text = foldName(`${l.customer_name} ${l.address_line_1 ?? ""} ${l.customer_id}`);
+      return l.customer_id !== excludeId && words.every((word) => text.includes(word));
+    }).slice(0, 100);
+  }, [q, excludeId, locations]);
 
   const place = useCallback(() => {
     const r = boxRef.current?.getBoundingClientRect();
@@ -730,13 +758,13 @@ function PscCombobox({
     };
   }, [open, place]);
 
-  // Keep the highlighted option in view while arrowing through ~45 places.
+  // Keep the highlighted option in view while using the arrow keys.
   useEffect(() => {
     if (open) document.getElementById(optId(active))?.scrollIntoView({ block: "nearest" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, open]);
 
-  const pick = (l: DiagLocation) => {
+  const pick = (l: DropoffLocation) => {
     onChange(l);
     setQ(""); setActive(0); setOpen(false);
   };
@@ -762,7 +790,7 @@ function PscCombobox({
       <div className="flex items-center gap-2 rounded-md border border-indigo-200 bg-indigo-50 px-2.5 py-1.5">
         <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold text-indigo-950">{value.customer_name}</div>
-          <div className="truncate text-[11px] text-indigo-900" title={value.address}>{value.address}</div>
+          <div className="truncate text-[11px] text-indigo-900" title={value.address_line_1 ?? undefined}>{value.address_line_1}</div>
         </div>
         <button
           type="button"
@@ -787,23 +815,32 @@ function PscCombobox({
         aria-autocomplete="list"
         aria-activedescendant={open && matches[active] ? optId(active) : undefined}
         aria-label="Điểm giao mới"
-        placeholder="Chọn PSC mới — gõ mã (D003) hoặc địa chỉ"
+        placeholder="Chọn điểm giao mới — gõ tên, địa chỉ hoặc mã"
         value={q}
         onChange={(e) => { setQ(e.target.value); setActive(0); openMenu(); }}
         onFocus={openMenu}
         onKeyDown={onKeyDown}
         className="w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm placeholder:text-slate-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
       />
-      {open && pos && (
+      {locationsLoading && <p role="status" className="mt-1 text-xs text-slate-600">Đang tải địa điểm…</p>}
+      {locationsError && (
+        <p role="alert" className="mt-1 text-xs text-red-700">
+          {locationsError} <button type="button" className="underline" onClick={() => setLocationsRetry((n) => n + 1)}>Thử lại</button>
+        </p>
+      )}
+      {open && pos && !locationsLoading && !locationsError && (
         <ul
           id={listId}
           role="listbox"
-          aria-label="Danh sách PSC"
+          aria-label="Danh sách điểm giao"
           style={{ position: "fixed", left: pos.left, width: pos.width, top: pos.top, bottom: pos.bottom, zIndex: 50 }}
           className="max-h-64 overflow-y-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg"
         >
           {matches.length === 0 && (
-            <li className="px-3 py-1.5 text-xs text-slate-700">Không có PSC nào khớp</li>
+            <li className="px-3 py-1.5 text-xs text-slate-700">Không có địa điểm nào khớp</li>
+          )}
+          {matches.length === 100 && (
+            <li className="px-3 py-1.5 text-xs text-slate-600">Hiển thị tối đa 100 địa điểm — gõ thêm để thu hẹp.</li>
           )}
           {matches.map((l, i) => (
             <li
@@ -818,7 +855,7 @@ function PscCombobox({
               className={`cursor-pointer px-3 py-1.5 ${i === active ? "bg-indigo-50" : ""}`}
             >
               <div className="text-sm font-medium text-slate-900">{l.customer_name}</div>
-              <div className="truncate text-[11px] text-slate-600">{l.address}</div>
+              <div className="truncate text-[11px] text-slate-600">{l.address_line_1}</div>
             </li>
           ))}
         </ul>
