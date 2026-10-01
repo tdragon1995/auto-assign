@@ -27,7 +27,7 @@ const editorProps = {kind:"client" as const,id:pickup,initial:{default_dropoff_i
 for (const clients of [editorProps.clients,editorProps.clients.filter(c=>c.customer_id!==destination)]) {
   const html = renderToStaticMarkup(createElement(MasterProfileEditor,{...editorProps,clients}));
   assert.ok(html.includes("BRA - D015") && html.includes('role="combobox"'));
-  assert.ok(!html.includes("<select") && !html.includes('aria-label="Bỏ BRA - D015"'));
+  assert.ok(html.includes("Trạng thái địa điểm") && !html.includes('aria-label="Bỏ BRA - D015"'));
   assert.ok(!html.includes("Other unlinked location"));
 }
 assert.deepEqual(profilePatch("client",editorProps.initial,{default_dropoff_id:destination},true),{});

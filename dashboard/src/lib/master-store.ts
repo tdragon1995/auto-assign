@@ -51,7 +51,11 @@ export async function masterRuleRows(day:"weekday"|"sunday"):Promise<Record<stri
   for(let i=0;i<out.length;i++) out[i]??={};
   return out;
 }
-export const masterClients=()=>sbSelectAll<MasterClient>("master_clients","select=customer_id,cartrack,client_code,new_ward,nearest_psc_id,nearest_psc_name,nearest_psc_km,labcenter_location_id,default_dropoff_id,default_dropoff_name,eta_minutes,sales_name,sales_email,supervisor_name,supervisor_email","customer_id.asc");
+export const masterClients=()=>sbSelectAll<MasterClient>("master_clients","select=customer_id,cartrack,is_active,client_code,new_ward,nearest_psc_id,nearest_psc_name,nearest_psc_km,labcenter_location_id,default_dropoff_id,default_dropoff_name,eta_minutes,sales_name,sales_email,supervisor_name,supervisor_email","customer_id.asc");
+export async function inactiveMasterClientIds():Promise<string[]> {
+  if (!masterEnabled()) return [];
+  return (await sbSelectAll<{customer_id:string;is_active:boolean}>("master_clients","select=customer_id,is_active&is_active=eq.false","customer_id.asc")).filter(c=>c.is_active===false).map(c=>c.customer_id);
+}
 export const masterDrivers=()=>sbSelectAll<MasterDriver>("master_drivers","select=driver_id,cartrack,roster,driver_zalo_id,bot_token,phone_number_update","driver_id.asc");
 export async function masterClient(id:string):Promise<MasterClient|null> {
   if(!UUID.test(id)) throw new Error("Invalid customer ID");
@@ -87,6 +91,8 @@ export function ruleChange(input:RuleInput,old?:MasterRule) {
 }
 export async function writeMasterRules(changes:Record<string,unknown>[]) {
   assertMasterWritable();
+  const references=new Set(changes.filter(c=>c.active!==false).flatMap(c=>[c.pickup_customer_id,c.dropoff_customer_id,c.alternate_dropoff_customer_id]));
+  if (references.size && (await inactiveMasterClientIds()).some(id=>references.has(id))) throw new Error("Không thể chọn địa điểm đã ngừng hoạt động");
   return sbRpc<{id:number;revision:number;source_row:number}[]>("master_write_rules",{changes});
 }
 export async function saveMasterRule(input:RuleInput,id?:number,revision?:number):Promise<number> {

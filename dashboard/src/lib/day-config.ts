@@ -32,7 +32,8 @@ import type { Mapping } from "./types";
 import { isValidDriverId, parseTime } from "./config";
 import { SHEET_CONTRACT, SHEET_GID, fetchSheetRows } from "./sheets";
 import { vnDate } from "./time";
-import { masterEnabled,masterRuleRows } from "./master-store";
+import { masterEnabled,masterRuleRows,inactiveMasterClientIds } from "./master-store";
+import { activeLocationRules } from "./location-status";
 import { readConfigGen } from "./config-gen";
 
 export type ConfigTab = "mapping" | "sunday";
@@ -95,7 +96,8 @@ async function loadTab(tab: ConfigTab): Promise<Mapping[] | null> {
   const hit = tabs[tab];
   if (hit && hit.day === today) return hit.mappings;
   try {
-    const mappings = dutyRows(masterEnabled() && tab==="mapping" ? await masterRuleRows("weekday") : await fetchSheetRows(SHEET_GID[tab], SHEET_CONTRACT[tab]));
+    const rows = masterEnabled() && tab==="mapping" ? await masterRuleRows("weekday") : await fetchSheetRows(SHEET_GID[tab], SHEET_CONTRACT[tab]);
+    const mappings = dutyRows(activeLocationRules(rows,await inactiveMasterClientIds()));
     // The same zero-length suspicion the config loader has: a tab that parses to
     // nothing is a bad read, not an empty roster, and adopting it would answer
     // "nobody is on duty" to every question for the rest of the day.

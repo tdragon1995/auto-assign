@@ -45,7 +45,7 @@ globalThis.fetch = async (input,init) => {
 };
 try {
   await saveMasterConfigBatch([{pickup_name:"Pickup",pickup_customer_id:client.customer_id,rows:[{...line,end:"11:00"},{driver:"Driver",start:"11:00",end:"12:00",dropoff:"",assignment_mode:"fixed",copy_from_rule_id:1}],removed:[]}]);
-  assert.equal(reads,3);assert.equal(writes.length,1);assert.equal(writes[0].changes.length,2);
+  assert.equal(reads,4);assert.equal(writes.length,1);assert.equal(writes[0].changes.length,2);
   assert.deepEqual(writes[0].changes[0].row_data,{});
   assert.deepEqual(writes[0].changes[1].row_data,{bot_token:"preserved",chat_id:"preserved"});
   assert.equal(writes[0].changes[0].assignment_mode,"smart");

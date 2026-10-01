@@ -121,6 +121,7 @@ export interface CoverageGap {
 
 export interface Config {
   mappings: Mapping[];
+  inactiveLocationIds?: string[];
   /** Branches with a line but no driver. Empty on a tab that has none. */
   unfinished: UnfinishedConfigRow[];
   /** Hours a job needed and no rule covered, still uncovered as of this parse. */

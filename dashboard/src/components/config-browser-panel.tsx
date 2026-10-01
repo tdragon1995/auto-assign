@@ -17,6 +17,7 @@ import { MasterProfileEditor } from "./master-profile-editor";
 import { MasterProfileDetails, type ClientMeta, type DriverMeta } from "./master-profile-details";
 import type { ConfigRowView } from "@/app/api/config/rows/route";
 import type { BranchRule, ConfigDriver } from "@/lib/types";
+import { isInactiveLocation as isInactive, locationName } from "@/lib/location-status";
 
 /**
  * The config table, readable and searchable from the dashboard.
@@ -55,8 +56,6 @@ let sessionMetadata: { clients: ClientMeta[]; drivers: DriverMeta[]; refreshKey:
 const clientName = (c: ClientMeta) => String(c.cartrack.customer_name ?? c.customer_id);
 
 /** Cartrack's marker for a retired location, written into the name itself. */
-const INACTIVE_PREFIX = /^\{inactive\}\s*/i;
-const isInactive = (pickup: string) => INACTIVE_PREFIX.test(pickup);
 
 /** Pickup identity; the destination also belongs to an editable group. */
 const branchKey = (r: ConfigRowView) => r.customer_id || r.pickup;
@@ -177,7 +176,7 @@ function rulesOf(rows: readonly ConfigRowView[]): BranchRule[] {
  * bulk write and the wrong line does nothing for it — those rows stay
  * single-edit only, where a human is looking at the one row they mean.
  */
-const isWritable = (r: ConfigRowView) => !r.unmapped && r.pickup.trim().length > 0;
+const isWritable = (r: ConfigRowView) => !r.unmapped && !isInactive(r.pickup) && r.pickup.trim().length > 0;
 
 async function postJson(url: string, body: unknown) {
   const res = await fetch(url, {
@@ -574,7 +573,7 @@ function ReplaceDriverPanel({
                     />
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-x-2">
-                        <span className="font-medium text-slate-900">{r.pickup.replace(INACTIVE_PREFIX, "")}</span>
+                        <span className="font-medium text-slate-900">{locationName(r.pickup,true)}</span>
                         <span className="tabular-nums text-slate-600">{r.start && r.end ? `${r.start}–${r.end}` : "cả ngày"}</span>
                         {r.dropoff && <span className="text-slate-600">→ {r.dropoff}</span>}
                       </div>
@@ -1092,7 +1091,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
             targets={selectedRows}
             allRows={rows}
             drivers={rosterDrivers}
-            locations={(clientMetadata ?? []).map(c=>({id:c.customer_id,name:clientName(c)}))}
+            locations={(clientMetadata ?? []).filter(c=>!isInactive(clientName(c))).map(c=>({id:c.customer_id,name:clientName(c)}))}
             onDone={() => { clearSelection(); void load(true); }}
             onClear={clearSelection}
           />
@@ -1116,7 +1115,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
               copyFromRuleId: (rows.find(row => !row.unmapped && row.smart && row.row > 2) ?? rows.find(row => !row.unmapped && row.row > 2))?.rule_id,
               copyFromRow: rows.find(row => !row.unmapped && row.smart && row.row > 2)?.row ?? rows.find(row => !row.unmapped && row.row > 2)?.row,
             }] : []}
-            drivers={rosterDrivers} locations={(clientMetadata ?? []).map(c => ({id:c.customer_id,name:clientName(c)}))}
+            drivers={rosterDrivers} locations={(clientMetadata ?? []).filter(c=>!isInactive(clientName(c))).map(c => ({id:c.customer_id,name:clientName(c)}))}
             onBusyChange={setEditingBusy}
             onCancel={() => setEditing(null)}
             onDone={() => { setEditing(null); void load(); }}
@@ -1218,7 +1217,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
                           aria-expanded={runOpen}
                           aria-label={runOpen ? "Đóng" : r.unmapped ? `Thiết lập config cho ${r.pickup}` : `Sửa lịch ${r.pickup || branch} → ${r.dropoff || "mọi điểm"}`}
                           onClick={() => { closeProfile(); setEditing(runOpen ? null : { branch, pickup: r.pickup, dropoff: r.dropoff, row: r.row }); }}
-                          disabled={editingBusy || (!r.customer_id && !r.pickup)}
+                          disabled={editingBusy || inactive || (!r.customer_id && !r.pickup)}
                         >
                           {runOpen ? <X className="size-4" aria-hidden="true" /> : <Pencil className="size-4" aria-hidden="true" />}
                         </Button>
@@ -1238,7 +1237,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
                             onPointerLeave={e => { if (e.pointerType === "mouse") leaveProfile(); }}
                             onClick={e => { if (locationInfo) openProfile("client", locationInfo.customer_id, e.currentTarget, true); }}
                             className={`text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${inactive ? "text-slate-500" : "font-medium text-slate-900"}`}>
-                            {r.pickup ? r.pickup.replace(INACTIVE_PREFIX, "") : <span className="text-slate-500">—</span>}
+                            {r.pickup ? locationName(r.pickup,true) : <span className="text-slate-500">—</span>}
                           </button>
                           {r.dropoff && <>
                             <span className="mx-1 text-slate-500" aria-hidden="true">→</span>

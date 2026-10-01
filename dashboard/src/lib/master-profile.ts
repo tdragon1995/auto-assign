@@ -5,6 +5,7 @@ import { masterClient, masterDriver, masterEnabled } from "./master-store";
 import { sbPatch, sbUpsert } from "./supabase-rest";
 import { SHEET_GID, SHEET_ID } from "./sheets";
 import { getSheetsClient } from "./sheets-writer";
+import { isInactiveLocation, locationName } from "./location-status";
 
 export async function assertSheetRenameSafe(id:string,names:string[]) {
   const sheets=getSheetsClient();
@@ -41,21 +42,26 @@ export async function editClient(id: string, patch: Record<string, unknown>) {
   if (!row) throw new Error("Khách hàng không có trong Master Client Info");
   const token = row.labcenter_location_id ? await getAdminToken() : null;
   if (row.labcenter_location_id && !token) throw new Error("Không đăng nhập được Labcenter — chưa thay đổi Cartrack");
-  const allowed = new Set(["customer_name", "address_line_1", "address_line_2", "email", "postal_code", "client_reference", "latitude", "longitude", "contact_number", "default_dropoff_id", "eta_minutes"]);
+  const allowed = new Set(["customer_name", "address_line_1", "address_line_2", "email", "postal_code", "client_reference", "latitude", "longitude", "contact_number", "default_dropoff_id", "eta_minutes", "is_active"]);
   if (Object.keys(patch).some((k) => !allowed.has(k))) throw new Error("Trường cập nhật không hợp lệ");
   for (const [key, value] of Object.entries(patch)) {
-    if (["latitude", "longitude", "eta_minutes"].includes(key)) {
+    if (key === "is_active") {
+      if (typeof value !== "boolean") throw new Error("Trạng thái không hợp lệ");
+    } else if (["latitude", "longitude", "eta_minutes"].includes(key)) {
       if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${key} không hợp lệ`);
     } else if (typeof value !== "string") throw new Error(`${key} không hợp lệ`);
   }
   const current = (await getCustomerById(id))?.data;
   if (!current) throw new Error("Không đọc được khách hàng từ Cartrack");
-  const name = patch.customer_name === undefined ? current.customer_name : requiredText(patch.customer_name, "Tên");
+  const requestedName = patch.customer_name === undefined ? String(current.customer_name ?? "") : requiredText(patch.customer_name, "Tên");
+  const active = patch.is_active === undefined ? !isInactiveLocation(current.customer_name) : patch.is_active as boolean;
+  const name = patch.is_active === undefined && patch.customer_name === undefined ? requestedName : locationName(requestedName, active);
+  if (!locationName(name,true)) throw new Error("Tên không hợp lệ");
   if (name !== current.customer_name) await assertSheetRenameSafe(id,[String(current.customer_name??"")]);
   const address = patch.address_line_1 === undefined ? current.address_line_1 : requiredText(patch.address_line_1, "Địa chỉ");
   const lat = patch.latitude === undefined ? Number(current.latitude) : Number(patch.latitude);
   const lon = patch.longitude === undefined ? Number(current.longitude) : Number(patch.longitude);
-  const changeCartrack = ["customer_name", "address_line_1", "address_line_2", "email", "postal_code", "client_reference", "latitude", "longitude", "contact_number"].some((k) => k in patch);
+  const changeCartrack = ["customer_name", "address_line_1", "address_line_2", "email", "postal_code", "client_reference", "latitude", "longitude", "contact_number"].some((k) => k in patch) || name !== current.customer_name;
   if (changeCartrack && (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180)) throw new Error("GPS không hợp lệ");
   const contact = patch.contact_number === undefined ? current.contact_number : requiredText(patch.contact_number, "Số điện thoại");
   const dropId = patch.default_dropoff_id === undefined ? row.default_dropoff_id : String(patch.default_dropoff_id);
@@ -64,6 +70,7 @@ export async function editClient(id: string, patch: Record<string, unknown>) {
   const drop = changeDropoff && dropId && uuid.test(dropId) ? await masterClient(dropId) : null;
   if (changeDropoff) {
     if ((dropId && (!uuid.test(dropId) || !drop)) || (eta !== null && (!Number.isInteger(eta) || eta < 0 || eta > 1440))) throw new Error("Điểm giao hoặc ETA không hợp lệ");
+    if (drop && isInactiveLocation(drop.cartrack.customer_name)) throw new Error("Điểm giao đã ngừng hoạt động");
     if (row.labcenter_location_id && (!drop?.labcenter_location_id || eta === null)) throw new Error("Chọn điểm giao đã liên kết Labcenter và nhập ETA");
   }
   let after = current;
@@ -101,7 +108,7 @@ export async function editClient(id: string, patch: Record<string, unknown>) {
       const result = await updateLocationPhone(row.labcenter_location_id, contact, token);
       if (!result.ok) throw new Error(`Cartrack đã lưu; Labcenter: ${result.error}`);
     }
-    if (patch.customer_name !== undefined) {
+    if (name !== current.customer_name) {
       const res = await fetch(`${DELIVERY_BASE}/api/locations/${row.labcenter_location_id}`, {
         method: "PUT", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ name }),
@@ -140,8 +147,11 @@ export async function editDriver(id: string, patch: Record<string, unknown>) {
   }
   for (const [key, value] of Object.entries(patch)) {
     if (value !== null && typeof value !== "string") throw new Error(`${key} không hợp lệ`);
-    if (["start_location_customer_id", "end_location_customer_id"].includes(key) && value !== null &&
-        (typeof value !== "string" || !uuid.test(value) || !(await masterClient(value)))) throw new Error("Điểm tài xế không hợp lệ");
+    if (["start_location_customer_id", "end_location_customer_id"].includes(key) && value !== null) {
+      const location = typeof value === "string" && uuid.test(value) ? await masterClient(value) : null;
+      if (!location) throw new Error("Điểm tài xế không hợp lệ");
+      if (isInactiveLocation(location.cartrack.customer_name)) throw new Error("Điểm tài xế đã ngừng hoạt động");
+    }
     if (["shift_time_start", "shift_time_end"].includes(key) && value !== null &&
         (typeof value !== "string" || !/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?(\+07:00)?$/.test(value))) throw new Error("Ca tài xế không hợp lệ");
   }
@@ -155,9 +165,12 @@ export async function editDriver(id: string, patch: Record<string, unknown>) {
     if (Object.entries(cartrackPatch).some(([k, v]) => ["shift_time_start", "shift_time_end"].includes(k)
       ? String(after?.[k] ?? "").slice(0,5) !== String(v ?? "").slice(0,5)
       : String(after?.[k] ?? "") !== String(v ?? ""))) throw new Error("Cartrack trả 200 nhưng dữ liệu không khớp khi đọc lại");
-    await sbUpsert("master_drivers", [{ driver_id: id, cartrack: after }], "driver_id");
   }
-  if (Object.keys(localPatch).length) await sbPatch("master_drivers", `driver_id=eq.${id}`, localPatch);
-  if (Object.keys(rosterPatch).length) await sbPatch("master_drivers", `driver_id=eq.${id}`, { roster: { ...row.roster, ...rosterPatch } });
+  const renamed = ["first_name", "last_name"].some(k => k in cartrackPatch);
+  const masterPatch = {...localPatch,
+    ...(renamed || Object.keys(rosterPatch).length ? {roster:{...row.roster,...rosterPatch,
+      ...(renamed ? {Driver:`${after.first_name ?? ""} ${after.last_name ?? ""}`.trim()} : {})}} : {})};
+  if (Object.keys(cartrackPatch).length) await sbUpsert("master_drivers", [{driver_id:id,cartrack:after,...masterPatch}],"driver_id");
+  else if (Object.keys(masterPatch).length) await sbPatch("master_drivers",`driver_id=eq.${id}`,masterPatch);
   return { driver_id: id };
 }

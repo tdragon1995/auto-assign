@@ -14,6 +14,7 @@ import type { MorningReads } from "./morning-reads";
 import { setCycleSnapshot, recordCoverageGap, claimMorningPass, deferMorningPass, confirmMorningPass, pushRunLog, runDailyMaintenance, claimLateAlert, getAcceptedNotes, getResolvedCreateTs, saveResolvedCreateTs, readDropoffSwaps, writeDropoffSwap, deleteDropoffSwap, type HeldJob } from "./smart-log-kv";
 import { PSC_TABLE, isClosingWindow, planDropoff, resolveOpenDropoff, fmtMin, pscCode, type PscTable, type DropoffSwapRecord } from "./psc-closing";
 import { isValidDriverId, invalidateConfigCache, loadConfigFromSheets } from "./config";
+import { hasInactiveStop } from "./location-status";
 import { drainSheetAlarms } from "./sheets";
 // Driver labels carry a routing prefix and a payroll code ("F - C - DC100993
 // Nguyễn Hồng Sơn"). Those identify the Cartrack RECORD; every message below is
@@ -1809,6 +1810,8 @@ export async function autoAssignCycle(
 
   // Targeted manual assign: narrow to just the requested job(s).
   let jobs: Job[] = onlyJobIds ? s2Jobs.filter((j) => onlyJobIds.has(j.job_id)) : s2Jobs;
+  const inactiveLocations = new Set(config?.inactiveLocationIds ?? []);
+  jobs = jobs.filter(job => !hasInactiveStop(job.stops ?? [],inactiveLocations));
 
   await remindDueUnassignedScheduledPickups(jobs, env, log);
 

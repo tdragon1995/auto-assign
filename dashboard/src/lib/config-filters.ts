@@ -2,6 +2,7 @@ import type { ConfigRowView } from "@/app/api/config/rows/route";
 import { foldName, splitDriverNames } from "./driver-cell";
 import { compareDriverNames, splitDriverName } from "./driver-label";
 import { timeToMins } from "./time";
+import { isInactiveLocation } from "./location-status";
 
 export interface ConfigFilters {
   query: string;
@@ -163,8 +164,8 @@ export function configFilterOptions(rows: readonly ConfigRowView[]): ConfigFilte
   return {
     drivers: [...drivers].sort(compareDriverNames),
     pickups: [...pickups].sort((a, b) => {
-      const aInactive = /^\{inactive\}\s*/i.test(a);
-      const bInactive = /^\{inactive\}\s*/i.test(b);
+      const aInactive = isInactiveLocation(a);
+      const bInactive = isInactiveLocation(b);
       return Number(aInactive) - Number(bInactive) || vi.compare(a, b);
     }),
     dropoffs: [...dropoffs].sort((a, b) => {

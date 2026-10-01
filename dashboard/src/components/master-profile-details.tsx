@@ -1,4 +1,5 @@
 import { BadgeCheck, Clock3, Hash, Mail, MapPin, MessageCircle, Navigation, Phone, Route, ShieldCheck, UserRound, Users, Warehouse, type LucideIcon } from "lucide-react";
+import { isInactiveLocation } from "@/lib/location-status";
 
 export type ClientMeta = {
   customer_id: string; cartrack: Record<string, unknown>;
@@ -40,6 +41,7 @@ export function MasterProfileDetails({ client, driver, clients }: {
         [UserRound, "Sales phụ trách", join([client.sales_name, client.sales_email], "\n")],
         [Users, "Supervisor", join([client.supervisor_name, client.supervisor_email], "\n")]],
       [[Hash, "Customer ID (Cartrack)", text(client.customer_id)],
+        [ShieldCheck, "Trạng thái", isInactiveLocation(c.customer_name) ? "Ngừng hoạt động" : "Hoạt động"],
         [Clock3, "Ngày tạo (Cartrack)", text(c.create_ts)],
         [Clock3, "Cập nhật (Cartrack)", text(c.update_ts)]],
     ];

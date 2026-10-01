@@ -3,9 +3,10 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { FilterMultiSelect } from "./filter-multi-select";
+import { isInactiveLocation } from "@/lib/location-status";
 
 type Kind = "client" | "driver";
-const clientFields = ["customer_name", "address_line_1", "address_line_2", "contact_number", "email", "postal_code", "client_reference", "latitude", "longitude", "default_dropoff_id", "eta_minutes"];
+const clientFields = ["customer_name", "address_line_1", "address_line_2", "contact_number", "email", "postal_code", "client_reference", "latitude", "longitude", "default_dropoff_id", "eta_minutes", "is_active"];
 const driverFields = ["first_name", "last_name", "email", "phone_code", "phone_number", "shift_time_start", "shift_time_end", "start_location_customer_id", "end_location_customer_id", "driver_zalo_id", "phone_number_update", "employee_code", "employee_full_name", "code_name"];
 const shiftFields = new Set(["shift_time_start", "shift_time_end"]);
 
@@ -13,9 +14,12 @@ export function profilePatch(kind: Kind, initial: Record<string, unknown>, draft
   const patch: Record<string, unknown> = {};
   for (const key of kind === "client" ? clientFields : driverFields) {
     if (!(key in draft) || (kind === "client" && keepGps && ["latitude", "longitude"].includes(key))) continue;
-    const before = shiftFields.has(key) ? String(initial[key] ?? "").slice(0, 5) : String(initial[key] ?? "");
+    const before = key === "is_active" ? String(!isInactiveLocation(initial.customer_name)) : shiftFields.has(key) ? String(initial[key] ?? "").slice(0, 5) : String(initial[key] ?? "");
     if (before === draft[key]) continue;
-    if (["latitude", "longitude", "eta_minutes"].includes(key)) {
+    if (key === "is_active") {
+      if (!["true","false"].includes(draft[key])) throw new Error("Trạng thái không hợp lệ");
+      patch[key] = draft[key] === "true";
+    } else if (["latitude", "longitude", "eta_minutes"].includes(key)) {
       if (!draft[key].trim() || !Number.isFinite(Number(draft[key]))) throw new Error("GPS hoặc ETA không hợp lệ");
       patch[key] = Number(draft[key]);
     } else if (shiftFields.has(key)) patch[key] = draft[key] ? `${draft[key]}:00+07:00` : null;
@@ -31,7 +35,7 @@ export function MasterProfileEditor({ kind, id, initial, clients, linkedLabcente
   linkedLabcenter?: boolean; onCancel: () => void; onSaved: () => Promise<void>;
 }) {
   const [draft, setDraft] = useState(() => Object.fromEntries((kind === "client" ? clientFields : driverFields)
-    .map(key => [key, shiftFields.has(key) ? String(initial[key] ?? "").slice(0, 5) : String(initial[key] ?? "")])));
+    .map(key => [key, key === "is_active" ? String(!isInactiveLocation(initial.customer_name)) : shiftFields.has(key) ? String(initial[key] ?? "").slice(0, 5) : String(initial[key] ?? "")])));
   const [keepGps, setKeepGps] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -47,7 +51,7 @@ export function MasterProfileEditor({ kind, id, initial, clients, linkedLabcente
       allowClear={kind === "driver" || !linkedLabcenter} values={draft[key] ? [draft[key]] : []}
       options={[
         ...(draft[key] && !clients.some(c => c.customer_id === draft[key]) ? [{value:draft[key],label:String(key === "default_dropoff_id" ? initial.default_dropoff_name || draft[key] : draft[key])}] : []),
-        ...clients.filter(c => c.customer_id === draft[key] || kind === "driver" || !linkedLabcenter || c.labcenter_location_id)
+        ...clients.filter(c => c.customer_id === draft[key] || (!isInactiveLocation(c.cartrack.customer_name) && (kind === "driver" || !linkedLabcenter || c.labcenter_location_id)))
           .map(c => ({value:c.customer_id,label:String(c.cartrack.customer_name ?? c.customer_id)})),
       ]}
       onChange={values => set(key,values[0] ?? "")} placeholder="Tìm tên hoặc mã điểm…" />
@@ -69,6 +73,8 @@ export function MasterProfileEditor({ kind, id, initial, clients, linkedLabcente
     <fieldset disabled={saving} className="space-y-3">
       {kind === "client" ? <>
         {input("customer_name", "Tên khách hàng")}
+        <label className="block space-y-1"><span className="text-xs font-medium text-slate-700">Trạng thái địa điểm</span><select className={fieldClass} value={draft.is_active} onChange={e=>set("is_active",e.target.value)}><option value="true">Hoạt động</option><option value="false">Ngừng hoạt động</option></select></label>
+        <p className="text-xs text-slate-600">Ngừng hoạt động sẽ thêm {"{inacttiv}"} vào tên và dừng tự động gán job tại điểm này. Lịch và lịch sử được giữ lại.</p>
         {input("address_line_1", "Địa chỉ")}{input("address_line_2", "Địa chỉ bổ sung")}
         <div className="grid grid-cols-2 gap-3">{input("contact_number", "Điện thoại")}{input("email", "Email")}{input("postal_code", "Mã bưu chính")}{input("client_reference", "Mã tham chiếu")}</div>
         <label className="flex items-center gap-2 text-xs text-slate-700"><input type="checkbox" checked={keepGps} onChange={e => setKeepGps(e.target.checked)} className="accent-indigo-600" />Giữ nguyên GPS khi sửa địa chỉ</label>

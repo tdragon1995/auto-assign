@@ -11,7 +11,8 @@ import {
 import { vnDate, vnIsSunday, vnTimestamp } from "./time";
 import { looksAutoCreated, scopedDropoffName } from "./unmapped-row";
 import { GEN_KEY, readConfigGen } from "./config-gen";
-import { masterEnabled, masterRuleRows } from "./master-store";
+import { masterEnabled, masterRuleRows, inactiveMasterClientIds } from "./master-store";
+import { activeLocationRules } from "./location-status";
 import { sbSelectAll } from "./supabase-rest";
 
 function getRedis(): Redis | null {
@@ -62,7 +63,7 @@ const L2_TTL_S = 48 * 60 * 60;
 //          exactly what happened on 2026-08-31: two fixes to this wording shipped
 //          and neither reached the screen. Hence the audit inputs now ride the blob
 //          and the sentences are rebuilt on every load, cached or not.
-const l2Key = (gen: string, date: string) => `config:${masterEnabled() ? "v13" : "v12"}:${gen}:${date}`;
+const l2Key = (gen: string, date: string) => `config:${masterEnabled() ? "v14" : "v12"}:${gen}:${date}`;
 
 
 let cachedConfig: Config | null = null;
@@ -301,7 +302,7 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
     const redis = getRedis();
     if (redis) {
       try {
-        const hit = await redis.get<{ mappings: Mapping[]; unfinished?: UnfinishedConfigRow[]; gaps?: CoverageGap[]; overlaps?: ShiftOverlap[]; branchRules?: Record<string, BranchRule[]>; parsedAt?: string; unresolved?: UnresolvedRows; names?: [string, string][] }>(l2Key(gen, today));
+        const hit = await redis.get<{ mappings: Mapping[]; inactiveLocationIds?:string[]; unfinished?: UnfinishedConfigRow[]; gaps?: CoverageGap[]; overlaps?: ShiftOverlap[]; branchRules?: Record<string, BranchRule[]>; parsedAt?: string; unresolved?: UnresolvedRows; names?: [string, string][] }>(l2Key(gen, today));
         // Same zero-length suspicion as the sheet path below: never adopt an empty
         // mapping, whatever it came from.
         if (hit && Array.isArray(hit.mappings) && hit.mappings.length > 0) {
@@ -309,7 +310,7 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
           // needs the sheet rows, which the cached mappings deliberately do not
           // carry. A blob written before this feature simply has none, and the
           // next full parse fills them in.
-          cachedConfig = { mappings: hit.mappings, unfinished: hit.unfinished ?? [], gaps: hit.gaps ?? [], overlaps: hit.overlaps ?? [], branchRules: hit.branchRules ?? {}, parsedAt: hit.parsedAt ?? "" };
+          cachedConfig = { mappings: hit.mappings, inactiveLocationIds:hit.inactiveLocationIds ?? [], unfinished: hit.unfinished ?? [], gaps: hit.gaps ?? [], overlaps: hit.overlaps ?? [], branchRules: hit.branchRules ?? {}, parsedAt: hit.parsedAt ?? "" };
           cachedDay = today;
           cachedGen = gen;
           // Rebuild the sentences from the cached inputs. Pure string work, and
@@ -329,9 +330,11 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
 
   const tab = sunday ? "sunday" : "mapping";
   try {
-    const rows = masterEnabled() && !sunday
+    const rawRows = masterEnabled() && !sunday
       ? await masterRuleRows("weekday")
       : await fetchSheetRows(SHEET_GID[tab], SHEET_CONTRACT[tab]);
+    const inactiveLocationIds = await inactiveMasterClientIds();
+    const rows = activeLocationRules(rawRows,inactiveLocationIds);
 
     const mappings: Mapping[] = [];
     // Rows the parser is about to throw away, and the pickup names it saw. Both
@@ -541,7 +544,7 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
 
     await auditParsedConfig(SHEET_CONTRACT[tab].label, mappings, unresolved, pickupNames, nameByCustomer, today);
     const parsedAt = vnTimestamp();
-    cachedConfig = { mappings, unfinished: isWeekday ? stillNeeded : [], gaps: isWeekday ? gaps : [], overlaps, branchRules, parsedAt };
+    cachedConfig = { mappings, inactiveLocationIds, unfinished: isWeekday ? stillNeeded : [], gaps: isWeekday ? gaps : [], overlaps, branchRules, parsedAt };
     cachedDay = today;
     cachedGen = gen;
 
@@ -552,7 +555,7 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
       const redis = getRedis();
       if (redis) {
         try {
-          await redis.set(l2Key(gen, today), { mappings, unfinished: isWeekday ? stillNeeded : [], gaps: isWeekday ? gaps : [], overlaps, branchRules, parsedAt, unresolved, names: [...nameByCustomer] }, { ex: L2_TTL_S });
+          await redis.set(l2Key(gen, today), { mappings, inactiveLocationIds, unfinished: isWeekday ? stillNeeded : [], gaps: isWeekday ? gaps : [], overlaps, branchRules, parsedAt, unresolved, names: [...nameByCustomer] }, { ex: L2_TTL_S });
         } catch { /* best-effort; the sheet is always the fallback */ }
       }
     }
