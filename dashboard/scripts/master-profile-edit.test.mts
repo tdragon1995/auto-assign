@@ -24,7 +24,7 @@ const rule: MasterRule = { id: 1, source_uid: pickup, source_row: 2, revision: 7
 const line = asLine({ row: 2, driver: "Driver", start: "22:00", end: "06:00", alt_drop_off_id: alternate });
 assert.equal(line.alt_drop_off_id, alternate);
 assert.notEqual(sig(line), sig({ ...line, alt_drop_off_id: "" }));
-assert.equal(applyCopiedLines([line], [{ driver: "New", start: "22:00", end: "06:00" }], "").lines[0].alt_drop_off_id, alternate);
+assert.equal(applyCopiedLines([line], [{ driver: "New", start: "22:00", end: "06:00" }], "").lines[0].alt_drop_off_id, "");
 for (const bad of ["invalid", 123, null]) assert.throws(() => ruleChange({customer_id:pickup,driver_ids:[driver],dropoff_id:"",shift_start:"",shift_end:"",alt_drop_off_id:bad as string}));
 assert.deepEqual(profilePatch("client", {}, { default_dropoff_id: destination, eta_minutes: "20" }, true), { default_dropoff_id: destination, eta_minutes: 20 });
 

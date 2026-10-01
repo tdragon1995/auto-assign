@@ -577,9 +577,6 @@ function ReplaceDriverPanel({
                         <span className="font-medium text-slate-900">{r.pickup.replace(INACTIVE_PREFIX, "")}</span>
                         <span className="tabular-nums text-slate-600">{r.start && r.end ? `${r.start}–${r.end}` : "cả ngày"}</span>
                         {r.dropoff && <span className="text-slate-600">→ {r.dropoff}</span>}
-                        {r.smart && (
-                          <span className="rounded-full border border-sky-200 bg-sky-50 px-1 text-[10px] font-semibold text-sky-700">smart</span>
-                        )}
                       </div>
                       {/* Before → after only where it says more than the two
                           pickers above: a smart row, where the rest of the cell
@@ -1275,11 +1272,6 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
                           </button> : displayDriverCell(name)}
                         </span>;
                       }) : <span className="text-amber-700">{r.unmapped ? "cần thiết lập" : "chưa có tài xế"}</span>}
-                      {r.smart && (
-                        <span className="ml-1.5 rounded-full border border-sky-200 bg-sky-50 px-1 py-0 text-[10px] font-semibold text-sky-700" title="Hệ thống chọn tài xế gần điểm lấy nhất trong danh sách">
-                          smart
-                        </span>
-                      )}
                     </td>
                     <td className="break-words px-2 py-1 text-slate-700">
                       {alternativeInfo ? <button type="button" aria-haspopup="dialog" aria-expanded={profileHover?.kind === "client" && profileHover.id === alternativeInfo.customer_id}

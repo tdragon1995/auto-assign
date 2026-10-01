@@ -321,6 +321,7 @@ export function availableTime(lines: readonly Line[], index: number, edge: "star
 export interface CopiedLine {
   sourceRuleId?: number;
   assignment_mode?: "fixed" | "smart";
+  alt_drop_off_id?: string;
   driver: string;
   start: string;
   end: string;
@@ -351,11 +352,11 @@ export function applyCopiedLines(
     if (!current) {
       const key = newLineKey();
       touched.push(key);
-      return { key, driver: c.driver, start: c.start, end: c.end, dropoff, copyFromRow: c.sourceRow,
+      return { key, driver: c.driver, start: c.start, end: c.end, dropoff, alt_drop_off_id: c.alt_drop_off_id ?? "", copyFromRow: c.sourceRow,
         ...(c.sourceRuleId ? {copyFromRuleId:c.sourceRuleId,assignment_mode:c.assignment_mode} : {}) };
     }
     const next = {
-      ...current, driver: c.driver, start: c.start, end: c.end, dropoff,
+      ...current, driver: c.driver, start: c.start, end: c.end, dropoff, alt_drop_off_id: c.alt_drop_off_id ?? "",
       copyFromRow: c.sourceRow === current.row ? undefined : c.sourceRow,
       ...(c.sourceRuleId ? {copyFromRuleId:c.sourceRuleId,assignment_mode:c.assignment_mode} : {}),
     };

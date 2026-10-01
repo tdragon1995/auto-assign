@@ -291,11 +291,12 @@ function OverlapRow({
  * sheet again — assembled on the way out, never typed.
  */
 function DriverPicker({
-  value, onChange, drivers,
+  value, onChange, drivers, className,
 }: {
   value: string;
   onChange: (v: string) => void;
   drivers: ConfigDriver[];
+  className?: string;
 }) {
   // The control itself is shared with the leave panel's substitute picker
   // (`DriverCombobox`); all that lives here is the sheet's own storage shape —
@@ -306,6 +307,7 @@ function DriverPicker({
       names={splitDriverNames(value)}
       onChange={(names) => onChange(names.join(DRIVER_SEP))}
       drivers={drivers}
+      className={className}
     />
   );
 }
@@ -447,7 +449,7 @@ function CopyFromBranch({
   useEffect(() => { setActive(0); }, [q]);
 
   const take = (b: CopySource) => {
-    onCopy(b.rules.map((r) => ({ driver: r.driver, start: r.start, end: r.end, sourceRow: r.row, sourceRuleId:r.rule_id, assignment_mode:r.assignment_mode })));
+    onCopy(b.rules.map((r) => ({ driver: r.driver, start: r.start, end: r.end, alt_drop_off_id:r.alt_drop_off_id ?? "", sourceRow: r.row, sourceRuleId:r.rule_id, assignment_mode:r.assignment_mode })));
     setQ("");
     onClose();
   };
@@ -663,6 +665,10 @@ export function BranchEditor({
       .sort((x, y) => (toMin(x.start) - toMin(y.start)) || x.row! - y.row!)
   );
   const [lines, setLines] = useState<Line[]>(initial);
+  const hasAlternatives = !!locations && lines.some(l => l.assignment_mode);
+  const editorColumns = hasAlternatives
+    ? "lg:grid-cols-[minmax(0,1fr)_7rem_11rem_12rem_3.5rem]"
+    : "lg:grid-cols-[minmax(0,1fr)_7rem_11rem_3.5rem]";
   const alternativeOptions = useMemo(() => [
     ...(bulkSchedules ? [{value:"__keep__",label:"Giữ lựa chọn của từng dòng"}] : []),
     {value:"",label:"Không thay thế điểm giao"},
@@ -917,61 +923,47 @@ export function BranchEditor({
         }}
       />
       {pendingDeletes.length > 0 && <div className="text-xs text-slate-600">Sẽ xoá {pendingDeletes.length} dòng khi bấm Lưu.</div>}
+      <div aria-hidden="true" className={`hidden gap-3 border-b border-slate-200 py-2 text-xs font-medium text-slate-600 lg:grid ${editorColumns}`}>
+        <span>Tài xế</span><span>Phân công</span><span>Thời gian</span>
+        {hasAlternatives && <span className="flex items-center gap-1"><MapPin className="size-3.5" />Điểm giao thay thế</span>}
+        <span />
+      </div>
       {lines.map((l, i) => (
         <div
           key={l.key}
-          className={`grid grid-cols-1 gap-3 border-b border-slate-200 py-3 lg:grid-cols-[minmax(0,1fr)_minmax(14rem,20rem)] ${
+          className={`grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 border-b border-slate-200 py-3 ${editorColumns} ${
             justAdded.has(l.key) ? "bg-indigo-50 ring-1 ring-indigo-300" : ""
           }`}
         >
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <DriverPicker value={l.driver} onChange={(v) => patch(i, { driver: v, ...(l.assignment_mode ? {assignment_mode:splitDriverNames(v).length>1 ? "smart" : l.assignment_mode} : {}) })} drivers={drivers} />
-          {l.assignment_mode && <label className="text-xs"><span className="sr-only">Chế độ phân công</span><select value={l.assignment_mode} onChange={e=>patch(i,{assignment_mode:e.target.value as "fixed"|"smart"})} className="h-7 rounded border border-slate-300 bg-white px-1 text-slate-900"><option value="fixed" disabled={splitDriverNames(l.driver).length>1}>Cố định</option><option value="smart">Thông minh</option></select></label>}
-          <TimeSelect label="Từ giờ" value={l.start} onChange={(v) => patch(i, { start: v })} disabled={(t) => !availableTime(lines, i, "start", t)} />
-          <span aria-hidden className="text-slate-500 text-[11px]">→</span>
-          <TimeSelect label="Đến giờ" value={l.end} onChange={(v) => patch(i, { end: v })} disabled={(t) => !availableTime(lines, i, "end", t)} />
-          {/* Two names or more and the engine ranks them by distance instead of
-              always sending one person. That used to be spelled out in a line of
-              instructions under the form, next to the comma the supervisor had
-              to type; now that the comma is gone, this says the same thing as a
-              STATE of the row rather than as a rule to remember. */}
-          {splitDriverNames(l.driver).length > 1 && (
-            <span
-              className="shrink-0 rounded-full border border-indigo-200 bg-indigo-50 px-1.5 py-0 text-[10px] font-semibold text-indigo-800"
-              title="Nhiều tài xế: hệ thống chọn người gần điểm lấy mẫu nhất"
-            >
-              smart
-            </span>
-          )}
-          {/* Only this destination. Shown because it changes what the rule
-              MEANS — and because a copied line can arrive carrying a scope the
-              branch's other lines do not have, which would otherwise be
-              invisible until a job went somewhere unexpected. Read-only: the
-              write that fills an existing row names no destination column, so a
-              rule's scope is fixed when it is created. */}
-          {l.dropoff.trim() && (
-            <span
-              className="min-w-0 shrink truncate rounded-full border border-slate-300 bg-slate-100 px-1.5 py-0 text-[10px] font-medium text-slate-700"
-              title={`Chỉ áp dụng cho job giao tới ${l.dropoff.trim()}`}
-            >
-              → {l.dropoff.trim()}
-            </span>
-          )}
-          <span className="shrink-0 text-[10px] text-slate-600">
-            {l.row && !l.rule_id ? `#${l.row}` : `Ca ${i + 1}`}
-          </span>
-          <button type="button" onClick={() => dropLine(l.key)} disabled={busy || (l.row === 2 && !l.rule_id)}
-            aria-label="Bỏ dòng này" title={l.row === 2 && !l.rule_id ? "Dòng 2 giữ công thức của bảng" : "Bỏ dòng này — bấm Lưu để xác nhận"}
-            className="rounded p-1 text-slate-600 hover:text-red-600 disabled:opacity-40"><X className="size-3.5" aria-hidden="true" /></button>
+          <div className="col-span-2 min-w-0 lg:col-span-1">
+            <DriverPicker value={l.driver} onChange={(v) => patch(i, { driver: v, ...(l.assignment_mode ? {assignment_mode:splitDriverNames(v).length>1 ? "smart" : l.assignment_mode} : {}) })} drivers={drivers}
+              className="flex min-h-8 min-w-0 flex-wrap items-center gap-1 rounded border border-slate-300 bg-white px-1 py-0.5 focus-within:ring-2 focus-within:ring-indigo-400/50" />
+            {l.dropoff.trim() && l.dropoff.trim() !== dropoffName.trim() && <span className="mt-1 block break-words text-[10px] text-slate-600" title={`Chỉ áp dụng cho job giao tới ${l.dropoff.trim()}`}>→ {l.dropoff.trim()}</span>}
           </div>
-          {locations && l.assignment_mode && <div className="min-w-0 space-y-1.5">
-            <span className="flex items-center gap-1 text-xs font-medium text-slate-600"><MapPin className="size-3.5" aria-hidden="true" />Điểm giao thay thế</span>
+          <div className="col-span-2 min-w-0 lg:col-span-1">
+            {l.assignment_mode && <label className="text-xs"><span className="sr-only">Chế độ phân công</span><select value={l.assignment_mode} onChange={e=>patch(i,{assignment_mode:e.target.value as "fixed"|"smart"})} className="h-8 w-full rounded border border-slate-300 bg-white px-1 text-slate-900"><option value="fixed" disabled={splitDriverNames(l.driver).length>1}>Cố định</option><option value="smart">Thông minh</option></select></label>}
+          </div>
+          <div className="col-span-2 grid min-h-8 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-1 [&_select]:h-8 [&_select]:w-full lg:col-span-1">
+            <TimeSelect label="Từ giờ" value={l.start} onChange={(v) => patch(i, { start: v })} disabled={(t) => !availableTime(lines, i, "start", t)} />
+            <span aria-hidden className="text-[11px] text-slate-500">→</span>
+            <TimeSelect label="Đến giờ" value={l.end} onChange={(v) => patch(i, { end: v })} disabled={(t) => !availableTime(lines, i, "end", t)} />
+          </div>
+          {hasAlternatives && <div className="min-w-0">
+            {locations && l.assignment_mode && <>
+            <span className="mb-1 flex items-center gap-1 text-xs font-medium text-slate-600 lg:hidden"><MapPin className="size-3.5" aria-hidden="true" />Điểm giao thay thế</span>
             <FilterMultiSelect label={`Điểm giao thay thế ca ${i + 1}`} multiple={false}
               values={l.alt_drop_off_id ? [l.alt_drop_off_id] : bulkSchedules && l.alt_drop_off_id === undefined ? ["__keep__"] : []}
               options={l.alt_drop_off_id && !locations.some(c => c.id === l.alt_drop_off_id) ? [...alternativeOptions,{value:l.alt_drop_off_id,label:l.alt_drop_off_id}] : alternativeOptions}
               onChange={values => patch(i,{alt_drop_off_id:values[0] === "__keep__" ? undefined : values[0] ?? ""})}
               disabled={busy || !locations.length} placeholder={locations.length ? "Tìm điểm giao…" : "Đang tải điểm giao…"} />
+            </>}
           </div>}
+          <div className="flex min-h-8 items-center justify-end gap-1">
+            <span className="whitespace-nowrap text-[10px] text-slate-600">{l.row && !l.rule_id ? `#${l.row}` : `Ca ${i + 1}`}</span>
+            <button type="button" onClick={() => dropLine(l.key)} disabled={busy || (l.row === 2 && !l.rule_id)}
+              aria-label={`Bỏ ca ${i + 1}`} title={l.row === 2 && !l.rule_id ? "Dòng 2 giữ công thức của bảng" : "Bỏ dòng này — bấm Lưu để xác nhận"}
+              className="rounded p-1 text-slate-600 hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:opacity-40"><X className="size-3.5" aria-hidden="true" /></button>
+          </div>
         </div>
       ))}
       <div className="sticky bottom-0 flex flex-wrap items-center gap-2 border-t border-slate-200 bg-white py-2">

@@ -331,6 +331,24 @@ console.log("\na copy fills the empty sheet row it was opened from");
 
   // Copying the same rule does not cause a needless sheet write.
   {
+    const before = [{ ...line("row:9", "Nam", "05:00", "13:25", "Target", 9),
+      rule_id: 91, revision: 7, alt_drop_off_id: "old" }];
+    const { lines, touched } = applyCopiedLines(before, [
+      { driver: "Nam", start: "05:00", end: "13:25", alt_drop_off_id: "new" },
+      { driver: "B", start: "13:25", end: "18:00", alt_drop_off_id: "second", sourceRuleId: 22, assignment_mode: "smart" },
+    ], "Target");
+    eq("copy replaces and appends alternative dropoffs", lines.map(l => l.alt_drop_off_id), ["new", "second"]);
+    eq("target identity and revision survive", [lines[0].rule_id, lines[0].revision], [91, 7]);
+    eq("target destination scope survives", lines.map(l => l.dropoff), ["Target", "Target"]);
+    eq("single-driver smart copy retains its mode", lines[1].assignment_mode, "smart");
+    ok("an alternative-only edit is marked for Save", touched.includes("row:9") && sig(lines[0]) !== sig(before[0]));
+    for (const alt_drop_off_id of ["", undefined]) {
+      eq("blank source clears the target alternative", applyCopiedLines(before, [
+        { driver: "Nam", start: "05:00", end: "13:25", alt_drop_off_id },
+      ], "Target").lines[0].alt_drop_off_id, "");
+    }
+  }
+  {
     const before = [line("row:9", "Nam", "05:00", "13:25", "", 9)];
     const { lines, touched } = applyCopiedLines(before, [
       { driver: "Nam", start: "05:00", end: "13:25" },
