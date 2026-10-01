@@ -181,12 +181,18 @@ export async function syncLabcenterMetadata(offset = 0, limit = 200, onlyCodes?:
   const [admin, receptionist] = await Promise.all([getAdminToken(), getReceptionistToken()]);
   if (!admin || !receptionist) throw new Error("Labcenter credentials unavailable");
   const [clients, pickDrops] = await Promise.all([
-    sbSelectAll<MasterClient>("master_clients", "select=*&client_code=not.is.null", "customer_id.asc"),
+    sbSelectAll<MasterClient>("master_clients", "select=customer_id,client_code,labcenter_location_id", "customer_id.asc"),
     listPickDropLocations(admin),
   ]);
   if (pickDrops.length < 1000) throw new Error("Refusing incomplete Labcenter pick-drop list");
   const byPick = new Map(pickDrops.map((r) => [r.lc_location_id, r]));
   const changed = new Map<string, Record<string,unknown>>();
+  const knownClients = new Map(clients.map(c=>[c.customer_id,c]));
+  const integrationIds = new Map<number,Promise<string|null>>();
+  const resolveId = (locationId:number) => {
+    if (!integrationIds.has(locationId)) integrationIds.set(locationId,getCartrackCustomerId(locationId,admin));
+    return integrationIds.get(locationId)!;
+  };
   const accounts:Record<string,unknown>[]=[];
   const byCode = new Map<string, MasterClient[]>();
   for (const c of clients) {
@@ -203,10 +209,15 @@ export async function syncLabcenterMetadata(offset = 0, limit = 200, onlyCodes?:
       const clientIds = new Set(byCode.get(code)!.map((c) => c.customer_id));
       for (const loc of locations) {
         const known = byCode.get(code)!.find((c) => c.labcenter_location_id === loc.id);
-        const cartrackId = known?.customer_id ?? await getCartrackCustomerId(loc.id, admin);
+        const cartrackId = known?.customer_id ?? await resolveId(loc.id);
         if (!cartrackId || !clientIds.has(cartrackId)) continue;
         const setup = byPick.get(loc.id);
-        const dropoffId = setup ? await getCartrackCustomerId(setup.drop_location_id, admin) : null;
+        const dropoffId = setup ? await resolveId(setup.drop_location_id) : null;
+        if (setup && dropoffId && knownClients.has(dropoffId)) {
+          const existingLink=changed.get(dropoffId)?.labcenter_location_id ?? knownClients.get(dropoffId)!.labcenter_location_id;
+          if (existingLink && existingLink!==setup.drop_location_id) throw new Error(`Conflicting Labcenter destination link: ${dropoffId}`);
+          changed.set(dropoffId,{...changed.get(dropoffId),customer_id:dropoffId,labcenter_location_id:setup.drop_location_id});
+        }
         changed.set(cartrackId, {...changed.get(cartrackId), customer_id:cartrackId,
           labcenter_location_id: loc.id, default_dropoff_id: dropoffId,
           default_dropoff_name: setup?.drop_name ?? null, eta_minutes: setup?.eta_mins ?? null,

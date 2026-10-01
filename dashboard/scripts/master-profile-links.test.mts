@@ -1,0 +1,71 @@
+import assert from 'node:assert/strict';
+import {assertSheetRenameSafe} from '../src/lib/master-profile';
+import {getSheetsClient} from '../src/lib/sheets-writer';
+import {SHEET_GID} from '../src/lib/sheets';
+import {syncLabcenterMetadata} from '../src/lib/master-sync';
+
+// Strict in-process stubs: no Sheet, Cartrack or Labcenter writes.
+Object.assign(process.env,{GOOGLE_SERVICE_ACCOUNT_KEY:'{}',MASTER_CLIENT_INFO_SOURCE:'supabase',
+  SUPABASE_URL:'https://supabase.invalid',SUPABASE_SERVICE_ROLE_KEY:'test-only',
+  LABCENTER_EMAIL:'test-only',LABCENTER_PASSWORD:'test-only',
+  LABCENTER_RECEPTIONIST_EMAIL:'test-only',LABCENTER_RECEPTIONIST_PASSWORD:'test-only'});
+const pickup='11111111-1111-4111-8111-111111111111';
+const other='22222222-2222-4222-8222-222222222222';
+const drop='33333333-3333-4333-8333-333333333333';
+const sheets=getSheetsClient();
+const tabs=[{gid:SHEET_GID.sunday,title:'Sunday'},{gid:SHEET_GID.drivers,title:'Driver'},{gid:SHEET_GID.locations,title:'Location Table'}];
+let sundayRows: string[][]=[[pickup,'Old name']];
+sheets.spreadsheets.get=(async()=>({data:{sheets:[...tabs.map(t=>({properties:{sheetId:Number(t.gid),title:t.title}})),
+  {properties:{sheetId:99,title:'(Edit weekly) PUBLIC SUNDAY SCHEDULE'}}]}})) as unknown as typeof sheets.spreadsheets.get;
+sheets.spreadsheets.values.batchGet=(async(params:{ranges:string[]})=>{
+  assert.ok(!params.ranges.some(r=>r.includes('PUBLIC SUNDAY'))); // Display-only names are harmless.
+  return {data:{valueRanges:[{range:'Sunday!A1:N10',values:sundayRows},
+    {range:'Driver!A1:P10',values:[[other,'Driver alias',pickup]]},
+    {range:'Location Table!A1:Z10',values:[['Old name',pickup]]}]}};
+}) as unknown as typeof sheets.spreadsheets.values.batchGet;
+await assertSheetRenameSafe(pickup,['Old name']); // Old aliases and resolved Sunday IDs survive rename.
+sundayRows=[['Old name','unresolved']];
+await assert.rejects(assertSheetRenameSafe(pickup,['Old name']),/Sunday.*dòng 1/);
+sundayRows=[[other,`${other},${pickup}`,'Old name']];
+await assertSheetRenameSafe(pickup,['Old name']); // Effective Smart selections use UUID lists.
+process.env.MASTER_CLIENT_INFO_SOURCE='sheet';
+await assert.rejects(assertSheetRenameSafe(pickup,['Old name']));
+process.env.MASTER_CLIENT_INFO_SOURCE='supabase';
+
+let destinationReads=0,existingLink:number|null=null;
+const writes:Record<string,unknown>[][]=[];
+globalThis.fetch=async(input,init)=>{
+  const url=new URL(String(input)),method=init?.method??'GET';
+  if(url.hostname==='supabase.invalid') {
+    if(url.pathname==='/rest/v1/master_clients' && method==='GET') return Response.json([
+      {customer_id:pickup,client_code:'1',labcenter_location_id:10},
+      {customer_id:other,client_code:'2',labcenter_location_id:11},
+      {customer_id:drop,client_code:null,labcenter_location_id:existingLink}]);
+    assert.equal(method,'POST');assert.equal(url.pathname,'/rest/v1/master_clients');
+    writes.push(JSON.parse(String(init?.body)));return new Response(null,{status:204});
+  }
+  if(url.pathname.endsWith('/auth/login')) return Response.json({token:'test-only'});
+  assert.equal(method,'GET');
+  if(url.pathname.endsWith('/pick-drop-locations')) {
+    const page=Number(url.searchParams.get('page'));
+    const rows=Array.from({length:page<3?500:1},(_,i)=>({pick_location_id:i%2?10:11,drop_location_id:20,
+      estimate_pick_up:90,drop_location:{name:'BRA - D032'}}));
+    return Response.json({data:rows});
+  }
+  if(url.pathname.endsWith('/locations')) return Response.json({data:[{id:url.searchParams.get('client_code')==='1'?10:11}]});
+  if(url.pathname.endsWith('/locations/20')) {destinationReads++;return Response.json({data:{delivery_integration_locations:[
+    {delivery_integration_code:'cartrack_vn',delivery_integration_location_id:drop}]}});}
+  if(url.pathname.endsWith('/client')) return Response.json({data:[]});
+  throw Error(`Unexpected request: ${method} ${url}`);
+};
+const result=await syncLabcenterMetadata(0,2);
+assert.equal(result.matched,2);assert.equal(result.errors,0);assert.equal(destinationReads,1);
+const updated=writes.flat();
+assert.deepEqual(updated.find(r=>r.customer_id===drop),{customer_id:drop,labcenter_location_id:20});
+assert.ok(updated.filter(r=>r.customer_id!==drop).every(r=>r.default_dropoff_id===drop && r.eta_minutes===90));
+assert.ok(updated.every(r=>!('cartrack' in r) && !('bot_token' in r)));
+existingLink=99;writes.length=0;
+const oldError=console.error;console.error=()=>{};
+try {assert.equal((await syncLabcenterMetadata(0,2)).errors,2);assert.equal(writes.length,0);}
+finally {console.error=oldError;}
+console.log('Profile rename aliases, unresolved Sunday guards, destination links, deduplicated reads and conflict checks passed.');

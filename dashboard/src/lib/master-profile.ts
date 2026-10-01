@@ -6,22 +6,26 @@ import { sbPatch, sbUpsert } from "./supabase-rest";
 import { SHEET_GID, SHEET_ID } from "./sheets";
 import { getSheetsClient } from "./sheets-writer";
 
-async function assertSheetRenameSafe(id:string,names:string[]) {
+export async function assertSheetRenameSafe(id:string,names:string[]) {
   const sheets=getSheetsClient();
   const meta=await sheets.spreadsheets.get({spreadsheetId:SHEET_ID,fields:"sheets.properties"});
   const gids=new Set<string>([SHEET_GID.sunday,SHEET_GID.drivers,SHEET_GID.locations,
     ...(masterEnabled() ? [] : [SHEET_GID.mapping,SHEET_GID.nghi_phep])]);
   const relevant=meta.data.sheets?.filter(s=>gids.has(String(s.properties?.sheetId)) ||
-    s.properties?.title?.startsWith("(Edit weekly) PUBLIC SUNDAY"))??[];
+    (!masterEnabled() && s.properties?.title?.startsWith("(Edit weekly) PUBLIC SUNDAY")))??[];
   if(relevant.length<gids.size) throw new Error("Không xác minh được các tab Google Sheet còn dùng tên");
   const ranges=relevant.map(s=>`'${s.properties!.title!.replace(/'/g,"''")}'`);
   const values=await sheets.spreadsheets.values.batchGet({spreadsheetId:SHEET_ID,ranges});
   if(values.data.valueRanges?.length!==ranges.length) throw new Error("Không đọc đủ tham chiếu Google Sheet");
   const oldNames=new Set(names.filter(Boolean).map(n=>n.trim()));
-  for(const sheet of values.data.valueRanges??[]) for(const row of sheet.values??[]) for(const value of row) {
-    const cell=String(value??"").trim();
-    if(cell===id || oldNames.has(cell) || cell.split(/[,;\n]/).some(v=>oldNames.has(v.trim())))
-      throw new Error(`Chưa thể đổi tên: ${sheet.range} còn tham chiếu tên hoặc ID cũ trong Google Sheet`);
+  for(const sheet of values.data.valueRanges??[]) for(const [index,row] of (sheet.values??[]).entries()) {
+    const cells=row.map(value=>String(value??"").trim());
+    const hasName=cells.some(cell=>oldNames.has(cell) || cell.split(/[,;\n]/).some(v=>oldNames.has(v.trim())));
+    // Retained Sheet directories are aliases for Sunday formulas. Renaming the
+    // profile does not change those aliases or the already-resolved UUIDs.
+    const hasId=cells.some(cell=>cell.split(/[,;\n]/).some(v=>v.trim()===id));
+    if (masterEnabled() ? hasName && !hasId : hasName || hasId)
+      throw new Error(`Chưa thể đổi tên: ${sheet.range}, dòng ${index+1} còn dùng tên chưa liên kết ID trong Google Sheet`);
   }
 }
 
