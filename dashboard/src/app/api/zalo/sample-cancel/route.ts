@@ -11,7 +11,7 @@ export const preferredRegion = "sin1";
 
 export function isNoSampleCommand(text: string): boolean {
   const plain = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
-  return /^(?:@.+?\s+)?\/(?:khong|k)\s+co\s+mau$/.test(plain);
+  return /^(?:@.+?\s+)?\/(?:khong|k)\s+co\s+mau(?:\s+@.+)?$/.test(plain);
 }
 
 export function cancelableScheduleJobs(jobs: Job[], today: string): Job[] {
@@ -41,8 +41,19 @@ export async function POST(req: NextRequest) {
   }
 
   let update: Update;
-  try { update = await req.json() as Update; }
+  try {
+    const body = await req.json();
+    if (!body || typeof body !== "object") return NextResponse.json({ ok: true });
+    update = body.result ?? body;
+    if (!update || typeof update !== "object") return NextResponse.json({ ok: true });
+  }
   catch { return NextResponse.json({ ok: true }); }
+
+  console.info("[zalo-sample] received", {
+    event: update.event_name,
+    chatId: update.message?.chat?.id,
+    chatType: update.message?.chat?.chat_type,
+  });
 
   if (update.event_name !== "message.text.received" || update.message?.from?.is_bot) {
     return NextResponse.json({ ok: true });
@@ -56,8 +67,9 @@ export async function POST(req: NextRequest) {
   const text = update.message?.text ?? "";
 
   // Setup command: the group can reveal its own chat ID before it is allowlisted.
-  if (!process.env.ZALO_SAMPLE_CHAT_ID && text.trim() === "/id") {
-    await sendZaloMessage(token, chatId, `Chat ID: ${chatId}`);
+  if (!process.env.ZALO_SAMPLE_CHAT_ID && /^(?:@.+?\s+)?\/id(?:\s+@.+)?$/i.test(text.trim())) {
+    const sent = await sendZaloMessage(token, chatId, `Chat ID: ${chatId}`);
+    if (!sent) console.error("[zalo-sample] chat ID reply failed", { chatId });
     return NextResponse.json({ ok: true });
   }
   if (chatId !== process.env.ZALO_SAMPLE_CHAT_ID || !isNoSampleCommand(text)) {
