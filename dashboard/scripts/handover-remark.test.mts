@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { destFromRemark, displayClientName } from "../src/lib/handover";
 
 assert.equal(displayClientName("CÔNG TY CỔ PHẦN y khoa Việt"), "Y khoa Việt");
+assert.equal(displayClientName("Công ty trách nhiệm hữu hạn y khoa Việt"), "Y khoa Việt");
 assert.equal(displayClientName("Công ty TNHH thiên an"), "Thiên an");
 assert.equal(displayClientName("Cty TNHH y tế An"), "Y tế An");
 assert.equal(displayClientName("CTCP dịch vụ Việt"), "Dịch vụ Việt");
