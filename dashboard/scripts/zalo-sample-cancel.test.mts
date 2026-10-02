@@ -4,10 +4,10 @@ import { cancelableScheduleJobs, isNoSampleCommand, POST } from "../src/app/api/
 import { SAMPLE_PICKUP_CUSTOMER_ID } from "../src/lib/scheduled-pickup-reminder";
 import type { Job } from "../src/lib/types";
 
-for (const text of ["/không có mẫu", "/k co mau", "/k có mẫu", "@Bot Giao nhận mẫu /không có mẫu", "/k co mau @Bot Giao nhận mẫu"]) {
+for (const text of ["/không có mẫu", "/k co mau", "/k có mẫu", "@Bot Giao nhận mẫu /không có mẫu", "/k co mau @Bot Giao nhận mẫu", "không có mẫu", "hôm nay không có mẫu", "k co mau", "hôm nay k có mẫu", "@Bot Giao nhận mẫu hôm nay không có mẫu", "không có mẫu @Bot Giao nhận mẫu"]) {
   assert.equal(isNoSampleCommand(text), true, text);
 }
-for (const text of ["/có mẫu", "không có mẫu", "/không có mẫu nữa"]) {
+for (const text of ["/có mẫu", "hôm nay có mẫu", "có mẫu", "không có mẫu?", "hôm nay không có mẫu nhưng chiều có", "/không có mẫu nữa"]) {
   assert.equal(isNoSampleCommand(text), false, text);
 }
 
@@ -34,7 +34,13 @@ try {
   process.env.ZALO_SAMPLE_BOT_TOKEN = "test-token";
   process.env.ZALO_SAMPLE_WEBHOOK_SECRET = "test-secret";
   delete process.env.ZALO_SAMPLE_CHAT_ID;
-  globalThis.fetch = async (_url, init) => {
+  let jobReads = 0;
+  process.env.CARTRACK_AUTH = "test-auth";
+  globalThis.fetch = async (url, init) => {
+    if (String(url).startsWith("https://fleetapi-vn.cartrack.com/rest/delivery/jobs?")) {
+      jobReads++;
+      return Response.json({ data: [] });
+    }
     sends.push(JSON.parse(String(init?.body)));
     return Response.json({ ok: true });
   };
@@ -58,6 +64,19 @@ try {
   await POST(request({ ok: true, result: message("/k co mau") }));
   await POST(request(null));
   assert.equal(sends.length, 4, "Unauthorized/private/cancellation messages must not act during setup");
+  assert.equal(jobReads, 0);
+  process.env.ZALO_SAMPLE_CHAT_ID = "test-group";
+  await POST(request(message("hôm nay có mẫu")));
+  process.env.ZALO_SAMPLE_CHAT_ID = "another-group";
+  await POST(request(message("hôm nay không có mẫu")));
+  assert.equal(jobReads, 0, "Positive replies and other groups cannot trigger a cancellation lookup");
+  process.env.ZALO_SAMPLE_CHAT_ID = "test-group";
+  for (const text of ["không có mẫu", "hôm nay không có mẫu"]) {
+    await POST(request({ ok: true, result: message(text) }));
+  }
+  assert.equal(jobReads, 2, "Natural replies must enter the cancellation handler");
+  assert.equal(sends.length, 6);
+  assert.ok(sends.slice(4).every((reply) => reply.text === "Hôm nay không có chuyến lấy mẫu cố định nào đang chờ huỷ."));
 } finally {
   globalThis.fetch = originalFetch;
   process.env = originalEnv;

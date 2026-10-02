@@ -11,7 +11,7 @@ export const preferredRegion = "sin1";
 
 export function isNoSampleCommand(text: string): boolean {
   const plain = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
-  return /^(?:@.+?\s+)?\/(?:khong|k)\s+co\s+mau(?:\s+@.+)?$/.test(plain);
+  return /^(?:@.+?\s+)?\/?(?:hom\s+nay\s+)?(?:khong|k)\s+co\s+mau(?:\s+@.+)?$/.test(plain);
 }
 
 export function cancelableScheduleJobs(jobs: Job[], today: string): Job[] {

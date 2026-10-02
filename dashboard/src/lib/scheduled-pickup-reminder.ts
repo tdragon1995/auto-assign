@@ -11,7 +11,7 @@ const CHAT_BY_CUSTOMER_ID: Record<string, string> = {
   "f88dfab6-b522-11ee-bb52-506b8d9879b5": "zgr-5f2b2b46331ada44830b",
 };
 const MESSAGE = "Dạ, sắp đến giờ lấy mẫu cố định của bên mình rồi ạ. Bên mình hôm nay có mẫu không ạ, cho Diag xin xác nhận với ạ?";
-const SAMPLE_MESSAGE = "Dạ, sắp đến giờ lấy mẫu cố định của bên mình rồi. Diag xin xác nhận hôm nay có mẫu không ạ? Nếu hôm nay không có mẫu, anh/chị vui lòng trả lời tin nhắn này hoặc tag bot với lệnh `/không có mẫu` để huỷ chuyến lấy mẫu hôm nay.";
+const SAMPLE_MESSAGE = "Dạ, sắp đến giờ lấy mẫu cố định của bên mình rồi. Diag xin xác nhận hôm nay có mẫu không ạ? Nếu hôm nay không có mẫu, anh/chị vui lòng trả lời tin nhắn này hoặc tag bot với nội dung “không có mẫu” để huỷ chuyến lấy mẫu hôm nay.";
 
 /** Call only after Cartrack confirms that a queue-driver job was released. */
 export async function remindScheduledPickup(
