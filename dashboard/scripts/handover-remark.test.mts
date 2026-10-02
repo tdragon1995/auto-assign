@@ -8,6 +8,8 @@ import { destFromRemark, displayClientName } from "../src/lib/handover";
 
 assert.equal(displayClientName("CÔNG TY CỔ PHẦN y khoa Việt"), "Y khoa Việt");
 assert.equal(displayClientName("Công ty TNHH thiên an"), "Thiên an");
+assert.equal(displayClientName("Cty TNHH y tế An"), "Y tế An");
+assert.equal(displayClientName("CTCP dịch vụ Việt"), "Dịch vụ Việt");
 assert.equal(displayClientName("123 - D5 - A - Công ty TNHH phòng khám An"), "123 - D5 - A - Phòng khám An");
 assert.equal(displayClientName("phòng khám An"), "Phòng khám An");
 
