@@ -143,8 +143,13 @@ function run(args) {
       const argv = rest.slice(keyCount);
       const key = keys[0];
 
-      // These two scripts are the only Lua used by the app. Implement their semantics
-      // directly so local tests exercise the same atomic revision protocol as Upstash.
+      // Implement the app's Lua semantics so local tests exercise the same guards.
+      if (script.includes("config-cache-write-v1")) {
+        if (run(["GET", key]) !== argv[0]) return 0;
+        run(["SET", keys[1], argv[1], "EX", argv[2]]);
+        return 1;
+      }
+
       if (script.includes("day-snapshot-cas-v1")) {
         const rec = alive(key);
         const current = rec?.value instanceof Map

@@ -40,18 +40,11 @@ const readGen = readConfigGen;
 // the engine from two Vercel projects makes cold starts more frequent, so that download
 // is the cost this closes. Mirrors the two-tier cache leave-config.ts already has.
 //
-// Keyed by gen AND date — both in the key, not compared after the read:
-//   gen  — a Refresh moves every instance to a NEW key, so the old blob is orphaned
-//          rather than overwritten. There is no window where the stamp reads "new" but
-//          the payload is still the old one.
-//   date — vnIsSunday() selects a different tab, so a Saturday blob served on Sunday
-//          would assign every job from the wrong sheet, silently, all day.
-//
-// The TTL only reaps orphans (each Refresh strands the previous key). It is never the
-// freshness mechanism — that is the gen stamp, deliberately, after a clock-based cache
-// was measured at an 87% miss rate.
+// One shared payload, replaced on refresh instead of retaining every generation.
+// Generation, VN date and parser/source version in the value decide freshness.
+// The TTL only cleans up the active payload.
 const L2_TTL_S = 48 * 60 * 60;
-//   version — the `v12` below is NOT decoration. This blob is PARSED config, so a change to
+//   version — the version below is NOT decoration. This blob is PARSED config, so a change to
 //          how it is parsed (a renamed column, a new field) leaves every server reading a
 //          blob built by the old code until someone presses Refresh. That is exactly how
 //          the "Driver" column fix shipped and did nothing: correct code, stale parse.
@@ -63,7 +56,12 @@ const L2_TTL_S = 48 * 60 * 60;
 //          exactly what happened on 2026-08-31: two fixes to this wording shipped
 //          and neither reached the screen. Hence the audit inputs now ride the blob
 //          and the sentences are rebuilt on every load, cached or not.
-const l2Key = (gen: string, date: string) => `config:${masterEnabled() ? "v14" : "v12"}:${gen}:${date}`;
+const L2_KEY = "config:parsed";
+// A parse started before Refresh must not overwrite the refreshed shared payload.
+export const CONFIG_CACHE_WRITE_SCRIPT = `-- config-cache-write-v1
+if redis.call("GET", KEYS[1]) ~= ARGV[1] then return 0 end
+redis.call("SET", KEYS[2], ARGV[2], "EX", ARGV[3])
+return 1`;
 
 
 let cachedConfig: Config | null = null;
@@ -289,6 +287,7 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
   // crossed midnight cache Saturday's tab under Sunday's date.
   const today = vnDate(now);
   const sunday = vnIsSunday(now);
+  const version = masterEnabled() ? 14 : 12;
   // Read once and reuse for the write below, so a hit costs exactly one Redis GET.
   const gen = await readGen();
   if (cachedConfig && cachedDay === today && (gen === null || gen === cachedGen)) {
@@ -302,10 +301,10 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
     const redis = getRedis();
     if (redis) {
       try {
-        const hit = await redis.get<{ mappings: Mapping[]; inactiveLocationIds?:string[]; unfinished?: UnfinishedConfigRow[]; gaps?: CoverageGap[]; overlaps?: ShiftOverlap[]; branchRules?: Record<string, BranchRule[]>; parsedAt?: string; unresolved?: UnresolvedRows; names?: [string, string][] }>(l2Key(gen, today));
+        const hit = await redis.get<{ version: number; gen: string; day: string; mappings: Mapping[]; inactiveLocationIds?:string[]; unfinished?: UnfinishedConfigRow[]; gaps?: CoverageGap[]; overlaps?: ShiftOverlap[]; branchRules?: Record<string, BranchRule[]>; parsedAt?: string; unresolved?: UnresolvedRows; names?: [string, string][] }>(L2_KEY);
         // Same zero-length suspicion as the sheet path below: never adopt an empty
         // mapping, whatever it came from.
-        if (hit && Array.isArray(hit.mappings) && hit.mappings.length > 0) {
+        if (hit?.version === version && hit.gen === gen && hit.day === today && Array.isArray(hit.mappings) && hit.mappings.length > 0) {
           // Overlaps are READ from the blob, never recomputed here: deriving them
           // needs the sheet rows, which the cached mappings deliberately do not
           // carry. A blob written before this feature simply has none, and the
@@ -551,11 +550,11 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
     // Write-behind, strictly AFTER the zero-mappings guard above. That ordering is the
     // whole safety story: a bad or partial parse cached here would poison every instance
     // on both deployments, where today it only poisons the one that fetched it.
-    if (gen !== null) {
+    if (gen !== null && today === vnDate()) {
       const redis = getRedis();
       if (redis) {
         try {
-          await redis.set(l2Key(gen, today), { mappings, inactiveLocationIds, unfinished: isWeekday ? stillNeeded : [], gaps: isWeekday ? gaps : [], overlaps, branchRules, parsedAt, unresolved, names: [...nameByCustomer] }, { ex: L2_TTL_S });
+          await redis.eval(CONFIG_CACHE_WRITE_SCRIPT, [GEN_KEY, L2_KEY], [gen, JSON.stringify({ version, gen, day: today, mappings, inactiveLocationIds, unfinished: isWeekday ? stillNeeded : [], gaps: isWeekday ? gaps : [], overlaps, branchRules, parsedAt, unresolved, names: [...nameByCustomer] }), String(L2_TTL_S)]);
         } catch { /* best-effort; the sheet is always the fallback */ }
       }
     }
