@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Loader2, Download, AlertCircle, Printer, Check, X, Clock } from "lucide-react";
-import { parsePaste, billingFound, stripPatient, pendingFor, statusLabel, type PasteLine, type TestEntry, type PendingTest } from "@/lib/handover";
+import { parsePaste, billingFound, stripPatient, pendingFor, statusLabel, displayClientName, type PasteLine, type TestEntry, type PendingTest } from "@/lib/handover";
 
 /** One order as the lookup route returns it. */
 interface Order {
@@ -31,7 +31,7 @@ interface Row extends Order {
 interface Group {
   dest: string;
   count: number;
-  clients: { name: string; rows: Row[] }[];
+  clients: { name: string; sourceName: string; rows: Row[] }[];
 }
 
 // The route takes at most 100 per request (it has 60s to answer); longer lists go in chunks.
@@ -54,7 +54,7 @@ function groupRows(rows: Row[]): Group[] {
   return [...byDest].map(([dest, clients]) => ({
     dest,
     count: [...clients.values()].reduce((n, rs) => n + rs.length, 0),
-    clients: [...clients].map(([name, rows]) => ({ name, rows })),
+    clients: [...clients].map(([sourceName, rows]) => ({ name: displayClientName(sourceName), sourceName, rows })),
   }));
 }
 
@@ -179,7 +179,7 @@ function HandoverList({ title, groups }: { title: string; groups: Group[] }) {
             Gửi về {g.dest} · {g.count} hồ sơ
           </p>
           {g.clients.map((c) => (
-            <div key={c.name} className="mt-2 px-1">
+            <div key={c.sourceName} className="mt-2 px-1">
               <p className="text-xs font-bold text-slate-700">{c.name} · {c.rows.length} hồ sơ</p>
               <ul className="mt-1 divide-y divide-slate-100">
                 {c.rows.map((r) => {

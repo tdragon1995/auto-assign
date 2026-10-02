@@ -4,7 +4,12 @@
  *   npx tsx scripts/handover-remark.test.mts
  */
 import assert from "node:assert/strict";
-import { destFromRemark } from "../src/lib/handover";
+import { destFromRemark, displayClientName } from "../src/lib/handover";
+
+assert.equal(displayClientName("CÔNG TY CỔ PHẦN y khoa Việt"), "Y khoa Việt");
+assert.equal(displayClientName("Công ty TNHH thiên an"), "Thiên an");
+assert.equal(displayClientName("123 - D5 - A - Công ty TNHH phòng khám An"), "123 - D5 - A - Phòng khám An");
+assert.equal(displayClientName("phòng khám An"), "Phòng khám An");
 
 const cases: [string | null, string | null][] = [
   ["Bản cứng kết quả gửi về D015", "D015"],   // the template

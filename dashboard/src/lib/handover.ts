@@ -8,6 +8,12 @@
 
 import { DIAG_LOCATIONS } from "./diag-locations";
 
+export function displayClientName(name: string): string {
+  const short = name.replace(/(^|[\s-])công ty\s+(?:cổ phần|tnhh)\s+(\S)/iu,
+    (_, lead: string, first: string) => lead + first.toLocaleUpperCase("vi")).trim();
+  return short.replace(/^\p{L}/u, (first) => first.toLocaleUpperCase("vi"));
+}
+
 const KNOWN = new Set(DIAG_LOCATIONS.map((l) => l.name));
 const CODE_RE = /(?<![\p{L}\d])[DĐ]\s*[-.]?\s*(\d{1,3})(?!\d)/giu;
 
