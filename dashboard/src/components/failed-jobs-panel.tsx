@@ -105,7 +105,7 @@ function hhmmVn(iso: string): string {
 
 /** Reference time the "+N'" delay is counted from: the start of the working day
  *  for pickups whose own anchor fell before it (clock_from), else the
- *  delivery-window start (the "arrive-at" time) for windowed pickups, else the
+ *  delivery-window end for windowed pickups, else the
  *  job's creation time. `time` is
  *  the compact HH:mm shown next to the delay badge; `full` is the labelled form for
  *  the tooltip (carries the window's end time too). Window times are raw
@@ -117,7 +117,7 @@ function refTime(w: PickupWarning): { time: string; full: string } | null {
   if (w.window_time_from) {
     const from = w.window_time_from.slice(0, 5);
     const to = w.window_time_to?.slice(0, 5);
-    return { time: from, full: `Khung giờ ${from}${to ? `–${to}` : ""}` };
+    return { time: to || from, full: `Khung giờ ${from}${to ? `–${to}` : ""}` };
   }
   if (w.create_ts) {
     const m = /[ T](\d{2}:\d{2})/.exec(w.create_ts);

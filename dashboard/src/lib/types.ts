@@ -365,7 +365,7 @@ export interface PickupWarning {
   driver_id: string;
   driver_name: string | null;
   reason: "overdue" | "window_expiring";
-  minutes_late?: number;    // overdue: minutes past 90
+  minutes_late?: number;    // past grace: 90 min ASAP, 5 min after window end
   window_time_to?: string;  // windowed pickup: raw window end "HH:mm:ss+07:00"
   window_time_from?: string; // windowed pickup: raw window start "HH:mm:ss+07:00"
   create_ts?: string | null; // ASAP pickup (no window): job creation time, raw Cartrack ts

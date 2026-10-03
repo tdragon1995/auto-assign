@@ -52,13 +52,14 @@ const DUPLICATE_EXEMPT_LABELS = [PSC_TINH_LABEL, PSC_RETURN_LABEL];
 const CLOSING_EXEMPT_LABELS = [PSC_TINH_LABEL, PSC_OUTBOUND_LABEL, PSC_VIA_LABEL, PSC_RETURN_LABEL];
 
 // Grace before a still-unstarted pickup is flagged overdue on the dashboard —
-// measured from scheduled_delivery_ts (ASAP) or the window start (windowed).
+// measured from scheduled_delivery_ts for ASAP pickups.
 // The dashboard "Cần xử lý" panel surfaces everything past this mark.
 const PICKUP_OVERDUE_MIN = 90;
+// Windowed pickups warn and notify five minutes after the window ends.
+const WINDOW_LATE_MIN = 5;
 // Higher escalation mark: once a pickup is this many minutes past its expected
 // start and STILL unstarted, a one-time Zalo alert is pushed to the supervisor
-// group (see alertLateJobs). Kept well above PICKUP_OVERDUE_MIN so the push is a
-// real "this is badly stuck" signal, not a duplicate of the dashboard warning.
+// group (see alertLateJobs). Windowed pickups use WINDOW_LATE_MIN instead.
 const LATE_ALERT_MIN = 120;
 // Hour after which the Zalo escalation stops for the day. The dashboard warning is
 // NOT affected — a supervisor still looking at the screen should still see the row;
@@ -67,7 +68,7 @@ const LATE_ALERT_MIN = 120;
 // 21:30, the same shape of rule as NOTE_RELEASE_CUTOFF_MIN (19:30) in job-filters:
 // the engine runs until 22:00, but nobody is going to dispatch a driver in the last
 // half hour, so a ping then is a notification with no action behind it. Combined
-// with the 07:00 clock floor and the two-hour mark, escalations live in 09:00-21:30.
+// with the 07:00 clock floor, ASAP escalations live in 09:00-21:30.
 const LATE_ALERT_CUTOFF_MIN = 21 * 60 + 30;
 
 /** True while a late pickup may still raise a Zalo push. Exported for
@@ -85,9 +86,8 @@ const ROLLOVER_BUDGET_MS = 25_000;
 // yesterday's leftovers, which rolloverUnfinishedJobs re-dates to 00:00:00) would
 // otherwise arrive at dawn already hours past the mark and alert on a driver who
 // has not started work yet — a warning nobody can act on, which trains staff to
-// ignore the panel. Both clocks (ASAP anchor and window start) are floored here,
-// so the earliest a pickup can be flagged is 07:00 + PICKUP_OVERDUE_MIN (08:30),
-// and the earliest Zalo escalation is 07:00 + LATE_ALERT_MIN (09:00).
+// ignore the panel. Pickup anchors are floored here; ASAP warnings start at
+// 08:30 and pushes at 09:00, while windowed pickups can notify from 07:05.
 const PICKUP_CLOCK_START = "07:00:00";
 // The same moment as it is shown to staff, on the dashboard badge and in the Zalo
 // alert, whenever a job's clock was floored to it.
@@ -259,8 +259,7 @@ export function computePickupWarnings(
   const THIRTY_MIN_MS  = 30 * 60 * 1000;
   const FIFTEEN_MIN_MS = 15 * 60 * 1000;
   // Overdue grace before a still-unstarted pickup is flagged late — measured from
-  // scheduled_delivery_ts for ASAP pickups, or from the window start (time_from)
-  // for windowed pickups, either one floored at PICKUP_CLOCK_START. Module const
+  // scheduled_delivery_ts for ASAP pickups, floored at PICKUP_CLOCK_START. Module const
   // so alertLateJobs can reconstruct the true
   // elapsed minutes from a warning's minutes_late (which is measured past this mark).
   const OVERDUE_MIN = PICKUP_OVERDUE_MIN;
@@ -388,21 +387,21 @@ export function computePickupWarnings(
         };
       }
     } else {
-      // Case 2 (delivery window): warn once the pickup is OVERDUE_MIN past the
-      // window START (time_from) and still hasn't started — mirrors the ASAP
-      // clock, which starts at the earliest expected pickup time.
+      // Case 2: the promised pickup window has ended. Use its start only when
+      // Cartrack supplies no end time.
       const timeFrom: string | undefined = pickup.delivery_windows[0]?.time_from;
       if (!timeFrom) continue;
-      const windowStart = parsePickupWindowTime(timeFrom, today);
-      if (!windowStart || isNaN(windowStart.getTime())) continue;
-      const elapsed = now - Math.max(windowStart.getTime(), clockStartMs);
-      if (elapsed < OVERDUE_MS) continue;
+      const timeTo: string | undefined = pickup.delivery_windows[0]?.time_to;
+      const windowEnd = parsePickupWindowTime(timeTo || timeFrom, today);
+      if (!windowEnd || isNaN(windowEnd.getTime())) continue;
+      const elapsed = now - Math.max(windowEnd.getTime(), clockStartMs);
+      if (elapsed < WINDOW_LATE_MIN * 60_000) continue;
       reason = "overdue";
       extra = {
-        minutes_late: Math.floor(elapsed / 60000) - OVERDUE_MIN,
+        minutes_late: Math.floor(elapsed / 60000) - WINDOW_LATE_MIN,
         window_time_from: timeFrom,
-        window_time_to: pickup.delivery_windows[0]?.time_to,
-        ...(windowStart.getTime() < clockStartMs ? { clock_from: CLOCK_START_HHMM } : {}),
+        window_time_to: timeTo,
+        ...(windowEnd.getTime() < clockStartMs ? { clock_from: CLOCK_START_HHMM } : {}),
       };
     }
 
@@ -412,13 +411,13 @@ export function computePickupWarnings(
     const inProgressIds = driverInProgressStopIds.get(driverId);
     const busyElsewhere =
       inProgressIds && [...inProgressIds].some((id) => id !== pickup.stop_id);
-    if (busyElsewhere) continue;
+    if (!hasWindow && busyElsewhere) continue;
 
     // Skip if driver completed any stop within the last 30 min — they may
     // still be in transit to this pickup after finishing their previous job.
     // Depends on `dayJobs` including status-5 jobs; see the lookup build above.
     const lastCompleted = driverLastCompletedMs.get(driverId) ?? 0;
-    if (lastCompleted && now - lastCompleted < THIRTY_MIN_MS) continue;
+    if (!hasWindow && lastCompleted && now - lastCompleted < THIRTY_MIN_MS) continue;
 
     // Driver name straight off the job's embedded `driver` object — Cartrack returns
     // it fully populated on every assigned job (incl. offline / no-GPS drivers), so no
@@ -480,9 +479,7 @@ export function isStaleWindow(
  * scheduledDeliveryTs (midnight), kept that way because the via-leg and return
  * dedup indexes are built on it. So we ask Cartrack for the real one.
  *
- * Gated to warnings that have already crossed LATE_ALERT_MIN — the only ones
- * that can cost a Zalo push, and the band a mis-dated window lands in
- * immediately. Genuine warnings below that mark never pay for a fetch. Anything
+ * Every windowed warning can now cost a Zalo push, so check it immediately. Anything
  * that fails to resolve is KEPT: a missed suppression is a noisy alert, a wrong
  * one is a pickup nobody is told about.
  */
@@ -492,7 +489,7 @@ async function dropStaleWindowWarnings(
   env: Env,
 ): Promise<PickupWarning[]> {
   const suspects = warnings.filter(
-    (w) => w.window_time_from && (w.minutes_late ?? 0) + PICKUP_OVERDUE_MIN >= LATE_ALERT_MIN,
+    (w) => w.window_time_from,
   );
   if (suspects.length === 0) return warnings;
 
@@ -539,22 +536,20 @@ async function dropStaleWindowWarnings(
 
 /**
  * Push a one-time Zalo alert to the supervisor group for any pickup that is now
- * LATE_ALERT_MIN (2 hours) past its expected start and still hasn't been picked
- * up. Piggybacks on the same admin group bot that receives leave submissions
+ * LATE_ALERT_MIN (2 hours) past its expected start, or WINDOW_LATE_MIN past its
+ * window end, and still hasn't been picked up. Uses the admin group bot
  * (ZALO_ADMIN_BOT_TOKEN / ZALO_ADMIN_CHAT_ID — see /api/nghi-phep).
  *
  * Reuses the already-computed overdue warnings, so every suppression there
- * (driver busy elsewhere, just finished a nearby stop, internal/plan/Diag-location
- * jobs excluded) applies to the alert too — we only escalate genuinely stuck
- * customer pickups. A warning's minutes_late is measured PAST PICKUP_OVERDUE_MIN,
- * so true elapsed = minutes_late + PICKUP_OVERDUE_MIN.
+ * (internal/plan/Diag-location jobs excluded) applies to the alert too. ASAP
+ * pickups also retain the busy-driver and recent-completion suppressions.
  *
  * "Once per job" is enforced by an NX Redis claim (claimLateAlert, 24h TTL): the
  * first cycle to see a job cross the mark sends and claims; later cycles skip it,
  * so a job that stays stuck never re-pings. Prod-only — a UAT cycle must never
  * spam the real supervisor group.
  */
-async function alertLateJobs(
+export async function alertLateJobs(
   warnings: PickupWarning[],
   env: Env,
   log: (msg: string, level?: LogLevel) => void,
@@ -572,8 +567,9 @@ async function alertLateJobs(
 
   for (const w of warnings) {
     if (w.reason !== "overdue") continue;
-    const elapsedMin = (w.minutes_late ?? 0) + PICKUP_OVERDUE_MIN;
-    if (elapsedMin < LATE_ALERT_MIN) continue;
+    const isWindow = !!w.window_time_from;
+    const elapsedMin = (w.minutes_late ?? 0) + (isWindow ? WINDOW_LATE_MIN : PICKUP_OVERDUE_MIN);
+    if (elapsedMin < (isWindow ? WINDOW_LATE_MIN : LATE_ALERT_MIN)) continue;
 
     // Claim before sending: guarantees a single ping even if two cycles overlap.
     // A transient send failure forfeits this job's alert (it still shows on the
@@ -589,7 +585,7 @@ async function alertLateJobs(
     // "2h30" / "2h" (clock form, no "phút" suffix — texty in a scan-first alert).
     const h = Math.floor(elapsedMin / 60);
     const m = elapsedMin % 60;
-    const dur = `${h}h${m ? String(m).padStart(2, "0") : ""}`;
+    const dur = h ? `${h}h${m ? String(m).padStart(2, "0") : ""}` : `${m} phút`;
     // Reference time rides in the header parenthetical rather than its own line, so
     // the supervisor sees the lateness AND what it's measured against in one glance:
     // a delivery window ("khung giờ") for windowed pickups, else the job's creation
@@ -1872,7 +1868,7 @@ export async function autoAssignCycle(
           branchRules: config?.branchRules ?? undefined,
         }),
         // The escalation belongs on this path too, or it stays half-broken in the
-        // same shape: a pickup crossing two hours during a quiet spell would wait
+        // same shape: a pickup crossing its alert threshold during a quiet spell would wait
         // for unrelated work before anyone was told. claimLateAlert still makes it
         // once-per-job, and isLateAlertHour keeps it out of the night.
         alertLateJobs(quietWarnings, env, log).catch((e) =>
@@ -2939,7 +2935,7 @@ export async function autoAssignCycle(
         branchRules: published?.branchRules ?? undefined,
       }),
       // Piggyback a one-time supervisor Zalo alert on the same overdue set for the
-      // worst cases (2h+ unstarted pickups). Never throws the cycle: fire-and-log.
+      // overdue pickups. Never throws the cycle: fire-and-log.
       alertLateJobs(pickupWarnings, env, log).catch((e) =>
         log(`Late-alert push failed: ${e}`, "WARN"),
       ),
