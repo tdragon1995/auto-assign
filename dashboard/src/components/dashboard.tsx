@@ -52,7 +52,7 @@ export function Dashboard() {
   const [leaveRefreshKey, setLeaveRefreshKey] = useState(0);
   const [configRefreshKey, setConfigRefreshKey] = useState(0);
   const [syncingSettings, setSyncingSettings] = useState(false);
-  const [metadataReport, setMetadataReport] = useState<(LabcenterMetadataReport & {state:"running"|"complete"|"failed"}) | null>(null);
+  const [metadataReport, setMetadataReport] = useState<(LabcenterMetadataReport & {state:"running"|"complete"|"failed"; error?:string}) | null>(null);
   const [syncingMisa, setSyncingMisa] = useState(false);
   const [failed, setFailed] = useState<FailedJob[]>([]);
   const [sheetAlarms, setSheetAlarms] = useState<SheetAlarm[]>([]);
@@ -528,7 +528,7 @@ export function Dashboard() {
       if (report?.issues.length) toast.warning(`Đã đồng bộ; ${report.issues.length} vấn đề Labcenter cần kiểm tra`);
       else toast.success(syncProfiles ? "Đã đồng bộ Cartrack, Labcenter, config và lịch nghỉ phép" : "Đã tải lại config và lịch nghỉ phép");
     } catch (err) {
-      if (report) {setMetadataReport({...report, state:"failed"}); setConfigRefreshKey(key => key + 1);}
+      if (report) {setMetadataReport({...report, state:"failed", error:err instanceof Error ? err.message : String(err)}); setConfigRefreshKey(key => key + 1);}
       toast.error(`Đồng bộ dữ liệu thất bại: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setSyncingSettings(false);
@@ -642,7 +642,7 @@ export function Dashboard() {
           </div>
 
           <Button variant="outline" size="sm" className="text-slate-900" onClick={() => void handleRefresh(true)} disabled={syncingSettings}>
-            {syncingSettings ? metadataReport?.state === "running" ? `Labcenter ${metadataReport.processed}/${metadataReport.totalCodes || "…"}` : "Đang đồng bộ…" : "Đồng bộ dữ liệu"}
+            {syncingSettings ? metadataReport?.state === "running" ? metadataReport.totalCodes > 0 ? `Labcenter: ${metadataReport.processed}/${metadataReport.totalCodes} mã KH` : "Đang lấy dữ liệu Labcenter…" : "Đang đồng bộ dữ liệu…" : "Đồng bộ dữ liệu"}
           </Button>
           <Button variant="outline" size="sm" className="text-slate-900" onClick={handleMisaRefresh} disabled={syncingMisa}>
             {syncingMisa ? "Đang đồng bộ MISA…" : "Đồng bộ MISA"}
@@ -655,12 +655,20 @@ export function Dashboard() {
       <div className="flex flex-col lg:flex-1 lg:min-h-0 p-2 sm:p-3">
         <div className="min-w-0 flex flex-col gap-1.5 lg:flex-1 lg:min-h-0">
           {metadataReport && (
-            <details className={`rounded-md border p-2 text-xs shrink-0 ${metadataReport.issues.length || metadataReport.state === "failed" ? "border-amber-200 bg-amber-50 text-amber-900" : "border-slate-200 bg-slate-50 text-slate-700"}`}>
-              <summary className="cursor-pointer font-medium">
-                Labcenter · {metadataReport.state === "running" ? "Đang đồng bộ" : metadataReport.state === "failed" ? "Đồng bộ chưa hoàn tất" : "Đã đồng bộ"} · {metadataReport.processed}/{metadataReport.totalCodes || "…"} mã · {metadataReport.matched} địa điểm · {metadataReport.owners} hồ sơ sales · {metadataReport.issues.length} vấn đề
+            <details className={`rounded-md border px-3 py-2 text-xs shrink-0 ${metadataReport.issues.length || metadataReport.state === "failed" ? "border-amber-200 bg-amber-50 text-amber-900" : "border-slate-200 bg-slate-50 text-slate-700"}`}>
+              <summary className="cursor-pointer leading-relaxed focus-visible:outline-2 focus-visible:outline-blue-600">
+                <span className="font-semibold">
+                  Labcenter · {metadataReport.state === "running" ? metadataReport.totalCodes > 0 ? `Đã kiểm tra ${metadataReport.processed}/${metadataReport.totalCodes} mã khách hàng` : "Đang lấy danh sách khách hàng và điểm giao…" : metadataReport.state === "failed" ? "Đồng bộ chưa hoàn tất" : `Đồng bộ hoàn tất · Đã kiểm tra ${metadataReport.processed} mã khách hàng`}
+                </span>
+                {(metadataReport.processed > 0 || metadataReport.state === "complete") && <span className="mt-1 flex flex-wrap gap-x-4 gap-y-1 font-normal">
+                  <span>{metadataReport.matched} địa điểm khớp liên kết</span>
+                  <span>{metadataReport.owners} địa điểm có thông tin sales / supervisor</span>
+                  {metadataReport.state !== "failed" || metadataReport.issues.length > 0 ? <span className="font-semibold">{metadataReport.issues.length > 0 ? `${metadataReport.issues.length} mục cần kiểm tra · Xem chi tiết` : metadataReport.state === "complete" ? "Không có vấn đề cần kiểm tra" : "Chưa phát hiện vấn đề"}</span> : null}
+                </span>}
+                {metadataReport.state === "failed" && <span className="mt-1 block font-normal">{metadataReport.error}. Nhấn Đồng bộ dữ liệu để thử lại.</span>}
               </summary>
-              <div className="mt-2 flex items-center justify-between gap-2">
-                <span>Giữ nguyên giá trị cũ khi không xác minh được liên kết. Báo cáo này hiển thị đến khi tải lại trang.</span>
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-current/15 pt-2">
+                <span className="max-w-prose leading-relaxed">Đối chiếu điểm giao mặc định, ETA và người phụ trách từ Labcenter. Các số trên là kết quả kiểm tra, không phải số hồ sơ thay đổi. Giá trị chưa xác minh được giữ nguyên. Báo cáo hiển thị đến khi tải lại trang.</span>
                 <button className="shrink-0 text-blue-700 underline" onClick={() => {
                   const url = URL.createObjectURL(new Blob([JSON.stringify(metadataReport,null,2)], {type:"application/json"}));
                   const link = document.createElement("a"); link.href=url; link.download="labcenter-refresh-report.json"; link.click(); URL.revokeObjectURL(url);
