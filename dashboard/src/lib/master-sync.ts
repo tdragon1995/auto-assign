@@ -232,7 +232,11 @@ export async function syncLabcenterMetadata(offset = 0, limit = 200, onlyCodes?:
         found.add(cartrackId);
         const setups = byPick.get(loc.id) ?? [];
         const setup = setups[0];
-        if (!setup) { flag(client, "missing_dropoff", `Labcenter #${loc.id} chưa có cấu hình điểm giao; giữ nguyên điểm giao/ETA`); continue; }
+        if (!setup) {
+          // Reviewed exception: #1706 intentionally keeps its current dropoff/ETA.
+          if (loc.id !== 1706) flag(client, "missing_dropoff", `Labcenter #${loc.id} chưa có cấu hình điểm giao; giữ nguyên điểm giao/ETA`);
+          continue;
+        }
         if (setups.some(s => s.drop_location_id !== setup.drop_location_id || s.eta_mins !== setup.eta_mins)) {
           errors++; flag(client, "conflicting_dropoff", `Labcenter #${loc.id} có nhiều điểm giao/ETA khác nhau; giữ nguyên dữ liệu`); continue;
         }
