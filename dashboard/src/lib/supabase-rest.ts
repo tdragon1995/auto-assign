@@ -98,7 +98,8 @@ export async function sbSelect<T>(table: string, query: string): Promise<T[]> {
 
 export async function sbRpc<T>(name: string, args: Record<string, unknown> = {}): Promise<T> {
   const res = await request(`rpc/${name}`, { method: "POST", body: JSON.stringify(args) }, name === "master_commit_import" ? 60_000 : REST_TIMEOUT_MS);
-  return (await res.json()) as T;
+  const body = await res.text();
+  return (body.trim() ? JSON.parse(body) : undefined) as T; // PostgreSQL void functions return no body.
 }
 
 /** SELECT every row, paged. PostgREST caps a response at 1,000 rows and says so

@@ -36,9 +36,14 @@ process.env.MASTER_CLIENT_INFO_SOURCE='supabase';
 
 let destinationReads=0,existingLink:number|null=null,scenario='linked';
 const writes:Record<string,unknown>[][]=[];
+const accountWrites:Record<string,unknown>[][]=[];
 globalThis.fetch=async(input,init)=>{
   const url=new URL(String(input)),method=init?.method??'GET';
   if(url.hostname==='supabase.invalid') {
+    if (url.pathname==='/rest/v1/rpc/master_sync_accounts') {
+      assert.equal(method,'POST');accountWrites.push(JSON.parse(String(init?.body)).accounts);
+      return new Response(null,{status:204}); // Real PostgREST response for RETURNS void.
+    }
     if(url.pathname==='/rest/v1/master_clients' && method==='GET') return Response.json([
       {customer_id:pickup,customer_name:'Client 1',client_code:'1',labcenter_location_id:10},
       {customer_id:other,customer_name:'Client 2',client_code:'2',labcenter_location_id:11},
@@ -60,7 +65,8 @@ globalThis.fetch=async(input,init)=>{
   if(url.pathname.endsWith('/locations')) return Response.json({data:[{id:url.searchParams.get('client_code')==='1'?10:11}]});
   if(url.pathname.endsWith('/locations/20')) {destinationReads++;return Response.json({data:{delivery_integration_locations:[
     {delivery_integration_code:'cartrack_vn',delivery_integration_location_id:scenario==='unresolved'?'unknown':drop}]}});}
-  if(url.pathname.endsWith('/client')) return scenario==='sales_failure' ? new Response('',{status:503}) : Response.json({data:[]});
+  if(url.pathname.endsWith('/client')) return scenario==='sales_failure' ? new Response('',{status:503}) : Response.json({data:scenario==='owners' ? [
+    {code:url.searchParams.get('q'),owner_name:'Sales',owner:'sales@example.test',supervisor:'Supervisor',supervisor_email:'sup@example.test'}] : []});
   throw Error(`Unexpected request: ${method} ${url}`);
 };
 const result=await syncLabcenterMetadata(0,2);
@@ -97,4 +103,8 @@ assert.equal(second.processed,1);assert.equal(second.nextCursor,null);assert.equ
 const response=await refresh(new NextRequest('https://dashboard.invalid/api/master-client-info/sync?phase=metadata&limit=1&after=1',{method:'POST'}));
 assert.equal(response.status,200);assert.equal((await response.json()).labcenter.issues[0].client_code,'2');
 assert.equal((await refresh(new NextRequest('https://dashboard.invalid/api/master-client-info/sync?phase=metadata&limit=201',{method:'POST'}))).status,400);
+scenario='owners';writes.length=0;
+const withOwners=await syncLabcenterMetadata(0,2);
+assert.equal(withOwners.owners,2);assert.equal(withOwners.issues.length,0);assert.equal(accountWrites.flat().length,2);
+assert.ok(writes.flat().filter(r=>r.customer_id!==drop).every(r=>r.sales_name==='Sales' && r.default_dropoff_id===drop));
 console.log('Profile aliases, verified metadata links, cursor pagination, public manual refresh, preserved unresolved values and case-by-case issue flags passed.');
