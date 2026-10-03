@@ -241,6 +241,8 @@ export async function POST(req: NextRequest) {
         try {
           const { syncCartrackClient, syncLabcenterMetadata } = await import("@/lib/master-sync");
           const code = await syncCartrackClient(customer.customer_id);
+          const { invalidateConfigCache } = await import("@/lib/config");
+          await invalidateConfigCache();
           if (code) await syncLabcenterMetadata(0, 200, [code]);
         } catch (e) { console.error("New client profile sync:", e); }
       });

@@ -1,6 +1,7 @@
 import { BASE_URL, PROXY_DRIVER_ID, assignJob, createJob, getHeaders, getStopsByLabels, type Env } from "./cartrack";
 import { SHEET_GID, SHEET_CONTRACT, fetchSheetRows, isSheetShapeError, noteSheetLoad } from "./sheets";
 import { vnDate, vnTimestamp } from "./time";
+import { masterScheduleEnabled,masterScheduleRows } from "./master-schedule";
 
 const WEEKDAY_COLUMNS = [
   "sunday",
@@ -19,6 +20,8 @@ export const SCHEDULE_JOB_LABEL = "📅 Lịch cố định";
 const TIME_RE = /^([01]?\d|2[0-3]):([0-5]\d)$/;
 
 export interface ScheduleJobRow {
+  schedule_id?:number;
+  revision?:number;
   rowIndex: number;
   pickup_id: string;
   pickup_name: string;
@@ -60,11 +63,17 @@ export function vnWeekdayIndex(d: Date = new Date()): number {
 }
 
 export async function loadScheduleJobRows(): Promise<ScheduleJobRow[]> {
+  if(masterScheduleEnabled()) return masterScheduleRows();
   const rows = await fetchSheetRows(SHEET_GID.schedule_job, SHEET_CONTRACT.schedule_job).catch((e) => {
     if (isSheetShapeError(e)) noteSheetLoad(e.sheetLabel, e);
     throw e;
   });
   noteSheetLoad(SHEET_CONTRACT.schedule_job.label, null);
+  return parseScheduleSheetRows(rows);
+}
+
+/** Shared by the read-only migration snapshot and the legacy engine. */
+export function parseScheduleSheetRows(rows:Record<string,string>[]):ScheduleJobRow[] {
   return rows.map((r, i) => ({
     rowIndex: i + 2,
     pickup_id: (r.master_pickup_id || r.pickup_id || "").trim(),

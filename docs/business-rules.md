@@ -4,6 +4,10 @@ Non-obvious logic in the assign engine. Start here when debugging a missed or wr
 
 ## Master Client Info
 
+Fixed schedule definitions (**Lịch cố định / Scheduled Setup**) now use `master_schedule_jobs` in Supabase when Master is active. Pickup, dropoff and pre-assigned driver are foreign keys to Master profiles; names resolve through those IDs. Edits/copies retain the existing UI, use permanent IDs and reject stale revisions. Deleted schedules are retained with `active=false`. Weekdays, reference suffixes, release timing and duplicate checks are unchanged. Sunday configuration and its weekly roster still use Google Sheet.
+
+Schedule picker names/IDs use a five-minute memory/Redis cache keyed to the existing `config:gen` stamp. Profile edits, newly created clients and manual refresh invalidate it; there is no new polling. Schedule definitions themselves are read directly from Supabase so direct database edits apply on the next load. The original Sheet and restricted import snapshot remain for rollback. `MASTER_SCHEDULE_SOURCE=sheet` is a compatibility switch only: reconcile any subsequent Supabase edits back to Sheet before using it.
+
 Weekday assignment rules, all Cartrack client profiles, and all driver profiles are stored in the existing TAT/payroll Supabase project (`odbmfkzkipklepmghjwj`). The public Sunday roster and weekly shift schedule remain on Google Sheets. Driver Zalo IDs, bot tokens, and employee codes were imported from the old Driver sheet; daily Cartrack updates do not overwrite them.
 
 The existing 05:00 VN Vercel cron refreshes Cartrack profiles and writes only changed records. Sapoche metadata is fetched only for new numeric-only client codes or when **Làm mới Sapoche** is pressed for a client. The general **Tải lại** button reads saved Supabase data. No separate cron-job.org job or Redis key is needed.

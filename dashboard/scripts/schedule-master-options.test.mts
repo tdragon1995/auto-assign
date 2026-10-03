@@ -8,7 +8,7 @@ import { loadScheduleJobRows, loadSchedulePreassignments } from "../src/lib/sche
 import { SHEET_GID } from "../src/lib/sheets";
 
 const pickup="11111111-1111-4111-8111-111111111111",dropoff="22222222-2222-4222-8222-222222222222",driver="33333333-3333-4333-8333-333333333333";
-Object.assign(process.env,{MASTER_CLIENT_INFO_SOURCE:"supabase",SUPABASE_URL:"https://supabase.invalid",SUPABASE_SERVICE_ROLE_KEY:"test-only",GOOGLE_SERVICE_ACCOUNT_KEY:"{}"});
+Object.assign(process.env,{MASTER_CLIENT_INFO_SOURCE:"supabase",MASTER_SCHEDULE_SOURCE:"sheet",SUPABASE_URL:"https://supabase.invalid",SUPABASE_SERVICE_ROLE_KEY:"test-only",GOOGLE_SERVICE_ACCOUNT_KEY:"{}"});
 const header=["pickup_id","pickup","dropoff_id","dropoff","delivery_windows","reference","sent_to_driver_before","sunday","monday","tuesday","wednesday","thursday","friday","saturday","Driver","driver_id"];
 const grid:string[][]=[header,[pickup,"Old pickup",dropoff,"Old dropoff","09:00","Old reference","60","false","true","true","true","true","true","true","Old driver",driver]];
 const formulas=grid.map(row=>[...row]);

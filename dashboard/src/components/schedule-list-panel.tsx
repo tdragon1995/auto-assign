@@ -13,6 +13,8 @@ import { toast } from "sonner";
 type Env = "prod" | "uat";
 
 interface ScheduleRow {
+  schedule_id?:number;
+  revision?:number;
   rowIndex: number;
   pickup_id: string;
   pickup_name: string;
@@ -28,6 +30,8 @@ interface ScheduleRow {
 
 /** Form state for add / edit. `rowIndex` null = new row. */
 interface Draft {
+  schedule_id?:number;
+  revision?:number;
   rowIndex: number | null;
   original: { reference: string; pickup_id: string } | null;
   pickup_id: string;
@@ -496,6 +500,8 @@ function ScheduleForm({
         method: isNew ? "POST" : "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          schedule_id:d.schedule_id,
+          revision:d.revision,
           rowIndex: d.rowIndex,
           original: d.original,
           pickup_id: d.pickup_id,
@@ -526,13 +532,13 @@ function ScheduleForm({
 
   const remove = async () => {
     if (isNew || !d.original) return;
-    if (!window.confirm(`Xoá lịch "${d.original.reference}" (dòng ${d.rowIndex}) khỏi sheet?`)) return;
+    if (!window.confirm(`Xoá lịch "${d.original.reference}"?`)) return;
     setSaving(true);
     try {
       const res = await fetch("/api/schedule-job/row", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rowIndex: d.rowIndex, original: d.original }),
+        body: JSON.stringify({ schedule_id:d.schedule_id,revision:d.revision,rowIndex: d.rowIndex, original: d.original }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
@@ -762,6 +768,8 @@ export function ScheduleListPanel({ env, drivers }: { env: Env; drivers: ConfigD
   }, [rows, sheetLocations, masterLocations]);
 
   const draftFor = (r: ScheduleRow): Draft => ({
+    schedule_id:r.schedule_id,
+    revision:r.revision,
     rowIndex: r.rowIndex,
     original: { reference: r.reference, pickup_id: r.pickup_id },
     pickup_id: r.pickup_id,

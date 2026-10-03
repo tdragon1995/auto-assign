@@ -3,6 +3,7 @@ import { loadDriversFromSheet } from "@/lib/config";
 import { masterEnabled } from "@/lib/master-store";
 import { UUID } from "@/lib/master-reconcile";
 import { sbSelect } from "@/lib/supabase-rest";
+import { masterScheduleEnabled,writeMasterSchedule } from "@/lib/master-schedule";
 import {
   appendScheduleRow,
   updateScheduleRow,
@@ -17,6 +18,8 @@ export const preferredRegion = "sin1";
 const TIME_RE = /^([01]?\d|2[0-3]):([0-5]\d)$/;
 
 type Body = {
+  schedule_id?:number;
+  revision?:number;
   rowIndex?: number;
   original?: { reference?: string; pickup_id?: string };
   pickup_id?: string;
@@ -96,6 +99,14 @@ async function handle(req: NextRequest, mode: "add" | "edit") {
     if (!body || typeof body !== "object") return bad("Body không hợp lệ");
     const row = await toRow(body);
     if (typeof row === "string") return bad(row);
+    if(masterScheduleEnabled()) {
+      if(mode==="edit" && (!Number.isSafeInteger(body.schedule_id)||Number(body.schedule_id)<1||!Number.isSafeInteger(body.revision)||Number(body.revision)<1))
+        return bad("Thiếu ID / phiên bản lịch — tải lại danh sách");
+      const saved=await writeMasterSchedule({...(mode==="edit"?{id:body.schedule_id,revision:body.revision}:{}),
+        pickup_id:row.pickup_id,dropoff_id:row.dropoff_id,driver_id:row.driver_id,delivery_window:row.delivery_windows,
+        reference:row.reference,sent_to_driver_before:row.sent_to_driver_before,days:row.days});
+      return NextResponse.json({ok:true,...saved,warning:null});
+    }
 
     if (mode === "add") {
       const res = await appendScheduleRow(row);
@@ -114,14 +125,8 @@ async function handle(req: NextRequest, mode: "add" | "edit") {
   }
 }
 
-/** POST — add a Lịch cố định row. PUT — edit one (`rowIndex` + `original`
- *  identity from the list, re-checked against the live sheet before writing).
- *  Body fields mirror ScheduleJobRow; `driver_id` (optional) pre-assigns the
- *  job to that driver when it's released from the proxy.
- *  In Sheet mode, pickup_id / dropoff_id / driver_id are derived by formula from
- *  NAMES, so names must be the exact Cartrack customer / Driver-tab names;
- *  a mismatch comes back as `warning`. Master mode stores validated UUIDs in
- *  separate columns, so new profiles do not depend on old Sheet lookups. */
+/** Supabase edits use schedule_id + revision; the retained Sheet backend uses
+ * rowIndex + original. Optional driver_id pre-assigns a job when released. */
 export async function POST(req: NextRequest) {
   return handle(req, "add");
 }
@@ -130,12 +135,17 @@ export async function PUT(req: NextRequest) {
   return handle(req, "edit");
 }
 
-/** DELETE — remove a row. Body: { rowIndex, original: { reference, pickup_id } },
- *  re-checked against the live sheet like an edit. */
+/** Soft-delete by ID/revision in Supabase; legacy Sheet edits retain their guard. */
 export async function DELETE(req: NextRequest) {
   const bad = (msg: string) => NextResponse.json({ ok: false, error: msg }, { status: 400 });
   try {
     const body = (await req.json().catch(() => null)) as Body | null;
+    if(masterScheduleEnabled()) {
+      if(!body||!Number.isSafeInteger(body.schedule_id)||Number(body.schedule_id)<1||!Number.isSafeInteger(body.revision)||Number(body.revision)<1)
+        return bad("Thiếu ID / phiên bản lịch — tải lại danh sách");
+      const saved=await writeMasterSchedule({id:body.schedule_id,revision:body.revision,active:false});
+      return NextResponse.json({ok:true,...saved});
+    }
     if (!body?.rowIndex || !body.original?.reference || body.original.pickup_id == null)
       return bad("Thiếu rowIndex / original");
     const res = await deleteScheduleRow({
