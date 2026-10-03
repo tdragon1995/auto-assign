@@ -40,16 +40,15 @@ const accountWrites:Record<string,unknown>[][]=[];
 globalThis.fetch=async(input,init)=>{
   const url=new URL(String(input)),method=init?.method??'GET';
   if(url.hostname==='supabase.invalid') {
-    if (url.pathname==='/rest/v1/rpc/master_sync_accounts') {
-      assert.equal(method,'POST');accountWrites.push(JSON.parse(String(init?.body)).accounts);
+    if (url.pathname==='/rest/v1/rpc/master_refresh_metadata') {
+      assert.equal(method,'POST');const body=JSON.parse(String(init?.body));accountWrites.push(body.accounts);writes.push(body.updates);
       return new Response(null,{status:204}); // Real PostgREST response for RETURNS void.
     }
     if(url.pathname==='/rest/v1/master_clients' && method==='GET') return Response.json([
       {customer_id:pickup,customer_name:'Client 1',client_code:'1',labcenter_location_id:10},
       {customer_id:other,customer_name:'Client 2',client_code:'2',labcenter_location_id:11},
       {customer_id:drop,client_code:null,labcenter_location_id:existingLink}]);
-    assert.equal(method,'POST');assert.equal(url.pathname,'/rest/v1/master_clients');
-    writes.push(JSON.parse(String(init?.body)));return new Response(null,{status:204});
+    throw Error(`Metadata must use a batch UPDATE, not incomplete profile upserts: ${method} ${url}`);
   }
   if(url.pathname.endsWith('/auth/login')) return Response.json({token:'test-only'});
   assert.equal(method,'GET');

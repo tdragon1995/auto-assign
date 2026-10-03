@@ -240,7 +240,7 @@ export async function syncLabcenterMetadata(offset = 0, limit = 200, onlyCodes?:
         if (!dropoffId || !UUID.test(dropoffId) || !knownClients.has(dropoffId)) {
           flag(client, "unresolved_dropoff", `Điểm giao Labcenter #${setup.drop_location_id} (${setup.drop_name ?? "chưa có tên"}) chưa có UUID hợp lệ trong Master; giữ nguyên điểm giao/ETA`); continue;
         }
-        if (setup.eta_valid === false || !Number.isFinite(setup.eta_mins) || setup.eta_mins < 0) {flag(client, "invalid_eta", "ETA không hợp lệ; giữ nguyên điểm giao/ETA"); continue;}
+        if (setup.eta_valid === false || !Number.isInteger(setup.eta_mins) || setup.eta_mins < 0 || setup.eta_mins > 2147483647) {flag(client, "invalid_eta", "ETA không hợp lệ; giữ nguyên điểm giao/ETA"); continue;}
         const existingLink=changed.get(dropoffId)?.labcenter_location_id ?? knownClients.get(dropoffId)!.labcenter_location_id;
         if (existingLink && existingLink!==setup.drop_location_id) {errors++; flag(client, "conflicting_link", `UUID điểm giao ${dropoffId} đã liên kết Labcenter #${existingLink}, nguồn trả về #${setup.drop_location_id}; giữ nguyên dữ liệu`); continue;}
         changed.set(dropoffId,{...changed.get(dropoffId),customer_id:dropoffId,labcenter_location_id:setup.drop_location_id});
@@ -276,9 +276,7 @@ export async function syncLabcenterMetadata(offset = 0, limit = 200, onlyCodes?:
       }
     }));
   }
-  if(accounts.length) await sbRpc("master_sync_accounts",{accounts});
-  // Group column sets so the existing upsert helper sends batches, not one request per location.
-  if (changed.size) await sbUpsert("master_clients", [...changed.values()].sort((a,b) => Object.keys(a).sort().join(",").localeCompare(Object.keys(b).sort().join(","))), "customer_id", 200);
+  if (changed.size || accounts.length) await sbRpc("master_refresh_metadata", {updates:[...changed.values()], accounts});
   issues.sort((a,b) => a.client_code.localeCompare(b.client_code) || a.customer_id.localeCompare(b.customer_id) || a.kind.localeCompare(b.kind));
   const hasMore = !onlyCodes && (after === undefined ? offset + codes.length < remaining.length : codes.length < remaining.length);
   return { matched, owners, errors, totalCodes: byCode.size, processed: codes.length, nextCursor: hasMore ? codes.at(-1) ?? null : null, issues };
