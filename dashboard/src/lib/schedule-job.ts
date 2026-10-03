@@ -67,9 +67,9 @@ export async function loadScheduleJobRows(): Promise<ScheduleJobRow[]> {
   noteSheetLoad(SHEET_CONTRACT.schedule_job.label, null);
   return rows.map((r, i) => ({
     rowIndex: i + 2,
-    pickup_id: (r.pickup_id ?? "").trim(),
+    pickup_id: (r.master_pickup_id || r.pickup_id || "").trim(),
     pickup_name: (r.pickup ?? "").trim(),
-    dropoff_id: (r.dropoff_id ?? "").trim(),
+    dropoff_id: (r.master_dropoff_id || r.dropoff_id || "").trim(),
     dropoff_name: (r.dropoff ?? "").trim(),
     delivery_window: (r.delivery_windows ?? "").trim(),
     reference: (r.reference ?? "").trim(),
@@ -77,7 +77,8 @@ export async function loadScheduleJobRows(): Promise<ScheduleJobRow[]> {
     days: WEEKDAY_COLUMNS.map((col) => parseBool(r[col])),
     // The sheet's header is "Driver"; a lowercase "driver" is accepted too.
     driver_name: (r.Driver || r.driver || "").trim(),
-    driver_id: (r.driver_id ?? "").trim(),
+    // A Master row may deliberately clear its pre-assignment; ignore stale formulas.
+    driver_id: (r.master_pickup_id ? r.master_driver_id ?? "" : r.driver_id ?? "").trim(),
   }));
 }
 

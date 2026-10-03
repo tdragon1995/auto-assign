@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadDriversFromSheet } from "@/lib/config";
+import { masterEnabled } from "@/lib/master-store";
+import { UUID } from "@/lib/master-reconcile";
+import { sbSelect } from "@/lib/supabase-rest";
 import {
   appendScheduleRow,
   updateScheduleRow,
@@ -44,22 +47,39 @@ async function toRow(body: Body): Promise<ScheduleRowWrite | string> {
   if (!Number.isInteger(before) || before < 0 || before > 720)
     return "Gửi trước (phút) phải là số nguyên 0–720";
   if (!Array.isArray(body.days) || body.days.length !== 7) return "Thiếu ngày trong tuần";
+  let pickup=(body.pickup_name??"").trim(),dropoff=(body.dropoff_name??"").trim();
+  if(masterEnabled()) {
+    if(!UUID.test(pickup_id)||!UUID.test(dropoff_id)) return "ID địa điểm không hợp lệ";
+    const locations=await sbSelect<{customer_id:string;customer_name:string;is_active:boolean}>("master_clients",
+      `select=customer_id,customer_name,is_active&customer_id=in.(${pickup_id},${dropoff_id})`);
+    const from=locations.find(l=>l.customer_id===pickup_id),to=locations.find(l=>l.customer_id===dropoff_id);
+    if(!from?.customer_name||!to?.customer_name) return "Địa điểm không có trong Master Client Info";
+    if(from.is_active===false||to.is_active===false) return "Không thể chọn địa điểm đã ngừng hoạt động";
+    pickup=from.customer_name;dropoff=to.customer_name;
+  }
 
-  // Pre-assign driver: must come from the Driver tab so the name/id pair on the
-  // sheet is one Cartrack accepts (deactivated accounts are already excluded).
+  // Validate against the active profile source, without a cached roster in Master mode.
   let driver = "";
   const driver_id = (body.driver_id ?? "").trim();
   if (driver_id) {
-    const found = (await loadDriversFromSheet()).find((d) => d.driver_id === driver_id);
-    if (!found) return "Tài xế không có trong tab Driver (hoặc đã ngưng hoạt động)";
-    driver = found.name;
+    if(masterEnabled()) {
+      if(!UUID.test(driver_id)) return "ID tài xế không hợp lệ";
+      const [found]=await sbSelect<{first_name:string|null;last_name:string|null;is_active:boolean}>("master_drivers",
+        `select=first_name,last_name,is_active&driver_id=eq.${driver_id}`);
+      if(!found||found.is_active===false) return "Tài xế không có trong Master Client Info (hoặc đã ngưng hoạt động)";
+      driver=`${found.first_name??""} ${found.last_name??""}`.trim()||driver_id;
+    } else {
+      const found = (await loadDriversFromSheet()).find((d) => d.driver_id === driver_id);
+      if (!found) return "Tài xế không có trong tab Driver (hoặc đã ngưng hoạt động)";
+      driver = found.name;
+    }
   }
 
   return {
     pickup_id,
-    pickup: (body.pickup_name ?? "").trim(),
+    pickup,
     dropoff_id,
-    dropoff: (body.dropoff_name ?? "").trim(),
+    dropoff,
     delivery_windows: `${m[1].padStart(2, "0")}:${m[2]}`,
     reference,
     sent_to_driver_before: before,
@@ -98,9 +118,10 @@ async function handle(req: NextRequest, mode: "add" | "edit") {
  *  identity from the list, re-checked against the live sheet before writing).
  *  Body fields mirror ScheduleJobRow; `driver_id` (optional) pre-assigns the
  *  job to that driver when it's released from the proxy.
- *  The sheet derives pickup_id / dropoff_id / driver_id by formula from the
+ *  In Sheet mode, pickup_id / dropoff_id / driver_id are derived by formula from
  *  NAMES, so names must be the exact Cartrack customer / Driver-tab names;
- *  a mismatch comes back as `warning`. */
+ *  a mismatch comes back as `warning`. Master mode stores validated UUIDs in
+ *  separate columns, so new profiles do not depend on old Sheet lookups. */
 export async function POST(req: NextRequest) {
   return handle(req, "add");
 }

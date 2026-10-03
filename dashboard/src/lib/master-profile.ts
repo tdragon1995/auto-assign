@@ -108,13 +108,17 @@ export async function editClient(id: string, patch: Record<string, unknown>) {
       const result = await updateLocationPhone(row.labcenter_location_id, contact, token);
       if (!result.ok) throw new Error(`Cartrack đã lưu; Labcenter: ${result.error}`);
     }
-    if (name !== current.customer_name) {
-      const res = await fetch(`${DELIVERY_BASE}/api/locations/${row.labcenter_location_id}`, {
-        method: "PUT", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
-      });
-      if (!res.ok) throw new Error(`Cartrack đã lưu; Labcenter tên HTTP ${res.status}`);
-    }
+  }
+  // A retry must reconcile Labcenter even when Cartrack already has the marker.
+  if(token && row.labcenter_location_id && (name!==current.customer_name || patch.is_active!==undefined)) {
+    const url=`${DELIVERY_BASE}/api/locations/${row.labcenter_location_id}`;
+    const headers={Authorization:`Bearer ${token}`,"Content-Type":"application/json"};
+    const res=await fetch(url,{method:"PUT",headers,body:JSON.stringify({name,is_active:active})});
+    if(!res.ok) throw new Error(`Cartrack/Supabase đã lưu; Labcenter trạng thái HTTP ${res.status}`);
+    const check=await fetch(url,{headers,cache:"no-store"});
+    if(!check.ok) throw new Error(`Không đọc lại được trạng thái Labcenter (HTTP ${check.status})`);
+    const saved=(await check.json()).data;
+    if(saved?.name!==name || saved?.is_active!==active) throw new Error("Labcenter nhận yêu cầu nhưng tên/trạng thái không khớp khi đọc lại");
   }
   if (changeDropoff && row.labcenter_location_id && token && dropId && drop?.labcenter_location_id) {
     const result = await updatePickDropLocation({

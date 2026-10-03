@@ -2,7 +2,7 @@
 export const isInactiveLocation = (name: unknown) => /\{(?:inactive|inacttiv)\}/i.test(String(name ?? ""));
 export function locationName(name: string, active: boolean): string {
   const clean = name.replace(/\{(?:inactive|inacttiv)\}/gi, "").trim();
-  return active ? clean : `${clean} {inacttiv}`;
+  return active ? clean : `{inactive} ${clean}`;
 }
 export function activeLocationRules(rows: readonly Record<string,string>[], inactiveIds: readonly string[]): Record<string,string>[] {
   const inactive = new Set(inactiveIds);

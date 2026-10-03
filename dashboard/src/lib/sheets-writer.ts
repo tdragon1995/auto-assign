@@ -1322,6 +1322,8 @@ const SCHEDULE_CORE_KEYS = [
  *  (the Driver-tab name); header matching is case-insensitive so a lowercase
  *  "driver" column is reused rather than duplicated. */
 const SCHEDULE_DRIVER_KEYS = ["Driver", "driver_id"] as const;
+const SCHEDULE_MASTER_KEYS = ["master_pickup_id", "master_dropoff_id", "master_driver_id"] as const;
+const SCHEDULE_ID_KEYS = ["pickup_id", "dropoff_id", "driver_id"] as const;
 
 export interface ScheduleRowWrite {
   pickup_id: string;
@@ -1356,6 +1358,7 @@ function scheduleCellValues(w: ScheduleRowWrite): Record<string, string | number
     driver_id: w.driver_id,
   };
   SCHEDULE_DAY_KEYS.forEach((k, i) => { out[k] = !!w.days[i]; });
+  Object.assign(out,{master_pickup_id:masterEnabled()?w.pickup_id:"",master_dropoff_id:masterEnabled()?w.dropoff_id:"",master_driver_id:masterEnabled()?w.driver_id:""});
   return out;
 }
 
@@ -1417,7 +1420,7 @@ async function loadScheduleSheet(): Promise<ScheduleSheetState> {
     if (!(k in col)) throw new ScheduleWriteError(`Thiếu cột "${k}" trong tab Lịch cố định`);
   }
 
-  const missing = SCHEDULE_DRIVER_KEYS.filter((k) => !(k in col));
+  const missing = [...SCHEDULE_DRIVER_KEYS,...(masterEnabled()?SCHEDULE_MASTER_KEYS:[])].filter((k) => !(k in col));
   if (missing.length) {
     const start = all[0].length;
     const needCols = start + missing.length;
@@ -1456,7 +1459,8 @@ function assertUniqueReference(st: ScheduleSheetState, reference: string, except
   }
 }
 
-/** Write `w` into sheet row `rowNo`, skipping any cell that holds a formula
+/** Master mode writes selected UUIDs outside formula columns; legacy mode still
+ *  verifies the Sheet name lookups. Write `w`, skipping any cell that holds a formula
  *  (the pickup_id / dropoff_id / driver_id xlookups) so the sheet's formula
  *  layout survives. Those ids are then derived from the NAMES written, so the
  *  row is read back and any id that didn't come out as requested is reported —
@@ -1470,14 +1474,16 @@ async function writeScheduleRow(
   const rowFormulas = st.formulas[rowNo - 1] ?? [];
   const values = scheduleCellValues(w);
   const data = Object.entries(values)
-    .filter(([k]) => k in st.col && !isFormula(rowFormulas[st.col[k]]))
+    .filter(([k]) => k in st.col && !isFormula(rowFormulas[st.col[k]]) &&
+      (!masterEnabled() || !SCHEDULE_ID_KEYS.some(id=>id===k)))
     .map(([k, v]) => ({ range: `${st.quotedName}!${colA1(st.col[k])}${rowNo}`, values: [[v]] }));
   await st.sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: SHEET_ID,
     requestBody: { valueInputOption: "RAW", data },
   });
 
-  const derived = (["pickup_id", "dropoff_id", "driver_id"] as const).filter(
+  if(masterEnabled()) return undefined; // The engine reads the validated Master IDs, not the formulas.
+  const derived = SCHEDULE_ID_KEYS.filter(
     (k) => k in st.col && isFormula(rowFormulas[st.col[k]]) && w[k],
   );
   if (!derived.length) return undefined;
@@ -1530,6 +1536,7 @@ export async function appendScheduleRow(w: ScheduleRowWrite): Promise<{ row: num
   const target = st.formulas[rowNo - 1] ?? [];
   const requests = [];
   for (let c = 0; c < width; c++) {
+    if(masterEnabled() && SCHEDULE_ID_KEYS.some(k=>st.col[k]===c)) continue;
     if (isFormula(target[c])) continue;
     for (let r = 1; r < st.formulas.length; r++) {
       if (r + 1 === rowNo) continue;
@@ -1600,7 +1607,7 @@ function assertRowMatches(st: ScheduleSheetState, match: ScheduleRowMatch): void
     match.rowIndex < 2 ||
     !row ||
     cell("reference") !== match.reference.trim() ||
-    cell("pickup_id") !== match.pickup_id.trim()
+    (cell("master_pickup_id") || cell("pickup_id")) !== match.pickup_id.trim()
   ) {
     throw new ScheduleWriteError("Dòng lịch đã thay đổi trên sheet — tải lại danh sách rồi thử lại");
   }

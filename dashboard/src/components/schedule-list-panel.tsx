@@ -708,6 +708,8 @@ export function ScheduleListPanel({ env, drivers }: { env: Env; drivers: ConfigD
   // Open form: "new" or the rowIndex being edited.
   const [editing, setEditing] = useState<number | "new" | null>(null);
   const [sheetLocations, setSheetLocations] = useState<LocOption[] | null>(null);
+  const [masterLocations, setMasterLocations] = useState(false);
+  const [scheduleDrivers, setScheduleDrivers] = useState<ConfigDriver[] | null>(null);
   const [loadingLocations, setLoadingLocations] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -728,27 +730,27 @@ export function ScheduleListPanel({ env, drivers }: { env: Env; drivers: ConfigD
   }, []);
 
   const openForm = async (target: number | "new") => {
-    if (!sheetLocations) {
-      setLoadingLocations(true);
-      try {
-        const res = await fetch("/api/schedule-job/locations", { cache: "no-store" });
-        const data = await res.json();
-        if (!res.ok || !Array.isArray(data.locations) || data.locations.length === 0)
-          throw new Error(data.error ?? "Danh sách địa điểm trống");
-        setSheetLocations(data.locations as LocOption[]);
-      } catch (e) {
-        toast.error(`Không tải được địa điểm: ${String(e)}`);
-        return;
-      } finally {
-        setLoadingLocations(false);
-      }
+    setLoadingLocations(true);
+    try {
+      const res = await fetch("/api/schedule-job/locations", { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok || !Array.isArray(data.locations) || data.locations.length === 0)
+        throw new Error(data.error ?? "Danh sách địa điểm trống");
+      setSheetLocations(data.locations as LocOption[]);
+      setMasterLocations(data.source==="supabase");
+      setScheduleDrivers(Array.isArray(data.drivers)?data.drivers:null);
+    } catch (e) {
+      toast.error(`Không tải được địa điểm: ${String(e)}`);
+      return;
+    } finally {
+      setLoadingLocations(false);
     }
     setEditing(target);
   };
 
-  // Use the same Location Table as the sheet's name-to-id formulas. Keep the
-  // existing schedule rows as fallbacks for names removed from that table.
+  // Master selections use current IDs; legacy Sheet mode keeps historical fallbacks.
   const locations = useMemo<LocOption[]>(() => {
+    if(masterLocations) return [...(sheetLocations??[])].sort((a,b)=>a.name.localeCompare(b.name));
     const byName = new Map<string, LocOption>();
     const add = (id: string, name: string) => {
       if (id && name && !byName.has(name)) byName.set(name, { id, name });
@@ -757,7 +759,7 @@ export function ScheduleListPanel({ env, drivers }: { env: Env; drivers: ConfigD
     DIAG_LOCATIONS.forEach((l) => add(l.customer_id, l.customer_name));
     rows.forEach((r) => { add(r.pickup_id, r.pickup_name); add(r.dropoff_id, r.dropoff_name); });
     return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
-  }, [rows, sheetLocations]);
+  }, [rows, sheetLocations, masterLocations]);
 
   const draftFor = (r: ScheduleRow): Draft => ({
     rowIndex: r.rowIndex,
@@ -874,7 +876,7 @@ export function ScheduleListPanel({ env, drivers }: { env: Env; drivers: ConfigD
             {editing === "new" && (
               <ScheduleForm
                 initial={EMPTY_DRAFT}
-                drivers={drivers}
+                drivers={scheduleDrivers??drivers}
                 locations={locations}
                 sourceRows={rows}
                 onSaved={onSaved}
@@ -891,7 +893,7 @@ export function ScheduleListPanel({ env, drivers }: { env: Env; drivers: ConfigD
                   <ScheduleForm
                     key={r.rowIndex}
                     initial={draftFor(r)}
-                    drivers={drivers}
+                    drivers={scheduleDrivers??drivers}
                     locations={locations}
                     sourceRows={rows}
                     onSaved={onSaved}
