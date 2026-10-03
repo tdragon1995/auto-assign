@@ -4,9 +4,14 @@ import { sbSelect, sbSelectAll, sbUpsert, sbRpc } from "./supabase-rest";
 import { nearestPsc, newWard, GEO_DATASET_VERSION } from "./master-geo";
 import type { MasterClient } from "./master-store";
 import { UUID, type SourceRow } from "./master-reconcile";
+import { locationName } from "./location-status";
 
 type CartrackRow = Record<string, unknown>;
 type MasterDriver = { driver_id: string; cartrack: CartrackRow; detail_synced_at?: string | null };
+export const labcenterClientCode = (name: string) => {
+  const code = locationName(name, true).split(/\s*-\s*/, 1)[0].trim();
+  return /^\d+$/.test(code) ? code : null;
+};
 
 /** Fetch only unknown UUIDs referenced by this import; never scan all profiles here. */
 export async function syncMissingProfiles(rows:SourceRow[], clients:Set<string>, drivers:Set<string>) {
@@ -51,8 +56,7 @@ export async function syncCartrackClient(id: string): Promise<string | null> {
   const cartrack = await cartrackDetail("customers", id);
   const lat = coordinate(cartrack.latitude), lon = coordinate(cartrack.longitude);
   const psc = lat !== null && lon !== null ? await nearestPsc(lat, lon) : null;
-  const code = String(cartrack.customer_name ?? "").split(/\s*-\s*/, 1)[0].trim();
-  const clientCode = /^\d+$/.test(code) ? code : null;
+  const clientCode = labcenterClientCode(String(cartrack.customer_name ?? ""));
   await sbUpsert("master_clients", [{
     customer_id: id, cartrack, client_code: clientCode,
     new_ward: lat !== null && lon !== null ? newWard(lat, lon) : null,
@@ -104,9 +108,9 @@ export async function syncCartrackProfiles(): Promise<{ clients: number; drivers
   const newClientCodes = new Set<string>();
   const changedClients = clients.filter((c) => {
     const id = String(c.customer_id ?? "");
-    const code = String(c.customer_name ?? "").split(/\s*-\s*/, 1)[0].trim();
-    if (/^\d+$/.test(code) && oldClients.get(id)?.client_code !== code) newClientCodes.add(code);
-    return listedChanged(oldClients.get(id)?.cartrack, c);
+    const code = labcenterClientCode(String(c.customer_name ?? ""));
+    if (code && oldClients.get(id)?.client_code !== code) newClientCodes.add(code);
+    return listedChanged(oldClients.get(id)?.cartrack, c) || oldClients.get(id)?.client_code !== code;
   });
   const changedDrivers = drivers.filter((d) => {
     const previous = oldDrivers.get(String(d.delivery_driver_id ?? ""));
@@ -119,13 +123,13 @@ export async function syncCartrackProfiles(): Promise<{ clients: number; drivers
     const latitude = coordinate(c.latitude), longitude = coordinate(c.longitude);
     const psc = latitude !== null && longitude !== null ? await nearestPsc(latitude, longitude) : null;
     const name = String(c.customer_name ?? "");
-    const candidate = name.split(/\s*-\s*/, 1)[0].trim();
+    const candidate = labcenterClientCode(name);
     return {
       customer_id: c.customer_id,
-      ...(previous?.client_code !== (/^\d+$/.test(candidate) ? candidate : null) ? {account_id:null} : {}),
+      ...(previous?.client_code !== candidate ? {account_id:null} : {}),
       cartrack: mergeCartrack(previous?.cartrack, c, detail),
       ...(detail ? { detail_synced_at: now } : {}),
-      client_code: /^\d+$/.test(candidate) ? candidate : null,
+      client_code: candidate,
       new_ward: latitude !== null && longitude !== null ? newWard(latitude, longitude) : null,
       nearest_psc_id: psc?.id ?? null,
       nearest_psc_name: psc?.name ?? null,
@@ -177,15 +181,18 @@ export async function syncCartrackDetailPage(kind: "customers" | "drivers", offs
   return { kind, offset, attempted: rows.length, updated: updates.length, failed };
 }
 
-export async function syncLabcenterMetadata(offset = 0, limit = 200, onlyCodes?: string[]): Promise<{ matched: number; owners: number; errors: number; totalCodes: number }> {
+export type LabcenterMetadataIssue = { client_code: string; customer_id: string; name: string; kind: string; detail: string };
+export type LabcenterMetadataReport = { matched: number; owners: number; errors: number; totalCodes: number; processed: number; nextCursor: string | null; issues: LabcenterMetadataIssue[] };
+export async function syncLabcenterMetadata(offset = 0, limit = 200, onlyCodes?: string[], after?: string): Promise<LabcenterMetadataReport> {
   const [admin, receptionist] = await Promise.all([getAdminToken(), getReceptionistToken()]);
   if (!admin || !receptionist) throw new Error("Labcenter credentials unavailable");
   const [clients, pickDrops] = await Promise.all([
-    sbSelectAll<MasterClient>("master_clients", "select=customer_id,client_code,labcenter_location_id", "customer_id.asc"),
+    sbSelectAll<MasterClient & {customer_name?: string; is_active?: boolean}>("master_clients", "select=customer_id,customer_name,is_active,client_code,labcenter_location_id", "customer_id.asc"),
     listPickDropLocations(admin),
   ]);
   if (pickDrops.length < 1000) throw new Error("Refusing incomplete Labcenter pick-drop list");
-  const byPick = new Map(pickDrops.map((r) => [r.lc_location_id, r]));
+  const byPick = new Map<number, typeof pickDrops>();
+  for (const row of pickDrops) byPick.set(row.lc_location_id, [...(byPick.get(row.lc_location_id) ?? []), row]);
   const changed = new Map<string, Record<string,unknown>>();
   const knownClients = new Map(clients.map(c=>[c.customer_id,c]));
   const integrationIds = new Map<number,Promise<string|null>>();
@@ -194,59 +201,85 @@ export async function syncLabcenterMetadata(offset = 0, limit = 200, onlyCodes?:
     return integrationIds.get(locationId)!;
   };
   const accounts:Record<string,unknown>[]=[];
-  const byCode = new Map<string, MasterClient[]>();
+  const byCode = new Map<string, typeof clients>();
   for (const c of clients) {
     const code = c.client_code ?? "";
     if (!/^\d+$/.test(code)) continue;
     byCode.set(code, [...(byCode.get(code) ?? []), c]);
   }
   let matched = 0, owners = 0, errors = 0;
-  const codes = onlyCodes ? [...new Set(onlyCodes)].filter((c) => byCode.has(c)) : [...byCode.keys()].sort().slice(offset, offset + limit);
+  const remaining = [...byCode.keys()].sort().filter(code => after === undefined || code > after);
+  const codes = onlyCodes ? [...new Set(onlyCodes)].filter((c) => byCode.has(c)) : remaining.slice(after === undefined ? offset : 0, (after === undefined ? offset : 0) + limit);
+  const issues: LabcenterMetadataIssue[] = [];
+  const flag = (c: (typeof clients)[number], kind: string, detail: string) => {
+    issues.push({client_code: c.client_code ?? "", customer_id: c.customer_id, name: c.customer_name ?? c.customer_id, kind, detail});
+  };
   for (let i = 0; i < codes.length; i += 4) {
     await Promise.all(codes.slice(i, i + 4).map(async (code) => {
+      const group = byCode.get(code)!;
       try {
       const locations = await listLocationsByClientCode(code, admin);
-      const clientIds = new Set(byCode.get(code)!.map((c) => c.customer_id));
+      const clientIds = new Set(group.map((c) => c.customer_id));
+      const found = new Set<string>();
       for (const loc of locations) {
-        const known = byCode.get(code)!.find((c) => c.labcenter_location_id === loc.id);
+        const links = group.filter(c => c.labcenter_location_id === loc.id);
+        if (links.length > 1) { errors++; for (const c of links) flag(c, "duplicate_link", `Nhiều địa điểm Master cùng liên kết Labcenter #${loc.id}; giữ nguyên dữ liệu`); continue; }
+        const known = links[0];
         const cartrackId = known?.customer_id ?? await resolveId(loc.id);
         if (!cartrackId || !clientIds.has(cartrackId)) continue;
-        const setup = byPick.get(loc.id);
-        const dropoffId = setup ? await resolveId(setup.drop_location_id) : null;
-        if (setup && dropoffId && knownClients.has(dropoffId)) {
-          const existingLink=changed.get(dropoffId)?.labcenter_location_id ?? knownClients.get(dropoffId)!.labcenter_location_id;
-          if (existingLink && existingLink!==setup.drop_location_id) throw new Error(`Conflicting Labcenter destination link: ${dropoffId}`);
-          changed.set(dropoffId,{...changed.get(dropoffId),customer_id:dropoffId,labcenter_location_id:setup.drop_location_id});
+        const client = knownClients.get(cartrackId)!;
+        if (found.has(cartrackId)) { errors++; flag(client, "duplicate_link", "Nhiều địa điểm Labcenter cùng liên kết UUID này; giữ nguyên dữ liệu"); changed.delete(cartrackId); continue; }
+        found.add(cartrackId);
+        const setups = byPick.get(loc.id) ?? [];
+        const setup = setups[0];
+        if (!setup) { flag(client, "missing_dropoff", `Labcenter #${loc.id} chưa có cấu hình điểm giao; giữ nguyên điểm giao/ETA`); continue; }
+        if (setups.some(s => s.drop_location_id !== setup.drop_location_id || s.eta_mins !== setup.eta_mins)) {
+          errors++; flag(client, "conflicting_dropoff", `Labcenter #${loc.id} có nhiều điểm giao/ETA khác nhau; giữ nguyên dữ liệu`); continue;
         }
+        const dropoffId = await resolveId(setup.drop_location_id);
+        if (!dropoffId || !UUID.test(dropoffId) || !knownClients.has(dropoffId)) {
+          flag(client, "unresolved_dropoff", `Điểm giao Labcenter #${setup.drop_location_id} (${setup.drop_name ?? "chưa có tên"}) chưa có UUID hợp lệ trong Master; giữ nguyên điểm giao/ETA`); continue;
+        }
+        if (setup.eta_valid === false || !Number.isFinite(setup.eta_mins) || setup.eta_mins < 0) {flag(client, "invalid_eta", "ETA không hợp lệ; giữ nguyên điểm giao/ETA"); continue;}
+        const existingLink=changed.get(dropoffId)?.labcenter_location_id ?? knownClients.get(dropoffId)!.labcenter_location_id;
+        if (existingLink && existingLink!==setup.drop_location_id) {errors++; flag(client, "conflicting_link", `UUID điểm giao ${dropoffId} đã liên kết Labcenter #${existingLink}, nguồn trả về #${setup.drop_location_id}; giữ nguyên dữ liệu`); continue;}
+        changed.set(dropoffId,{...changed.get(dropoffId),customer_id:dropoffId,labcenter_location_id:setup.drop_location_id});
         changed.set(cartrackId, {...changed.get(cartrackId), customer_id:cartrackId,
           labcenter_location_id: loc.id, default_dropoff_id: dropoffId,
           default_dropoff_name: setup?.drop_name ?? null, eta_minutes: setup?.eta_mins ?? null,
         });
         matched++;
       }
+      for (const c of group) if (!found.has(c.customer_id) && c.is_active !== false) flag(c, "missing_location", "Không tìm thấy địa điểm Labcenter đang hoạt động liên kết UUID này; giữ nguyên dữ liệu");
       const res = await fetch(`https://api.labcenter.vn/spc-pos/api/client?q=${encodeURIComponent(code)}`, {
-        headers: { Authorization: `Bearer ${receptionist}` }, cache: "no-store",
+        headers: { Authorization: `Bearer ${receptionist}` }, cache: "no-store", signal: AbortSignal.timeout(15_000),
       });
-      if (!res.ok) return;
+      if (!res.ok) throw new Error(`Labcenter sales HTTP ${res.status}`);
       const rows = (await res.json().catch(() => ({})))?.data;
-      const owner = Array.isArray(rows) ? rows.find((r) => String(r.code) === code) : null;
-      if (!owner) return;
+      if (!Array.isArray(rows)) throw new Error("Labcenter sales trả về dữ liệu không hợp lệ");
+      const exact = rows.filter(r => String(r.code) === code);
+      if (exact.length !== 1) {for (const c of group) flag(c, "missing_owner", exact.length ? "Nhiều hồ sơ sales cùng mã khách hàng; giữ nguyên sales/supervisor" : "Không tìm thấy hồ sơ sales đúng mã khách hàng; giữ nguyên sales/supervisor"); return;}
+      const owner = exact[0];
       accounts.push({client_code:code,verified_at:new Date().toISOString(),
         sales_name:owner.owner_name??null,sales_email:owner.owner??null,supervisor_name:owner.supervisor??null,supervisor_email:owner.supervisor_email??null});
-      for (const c of byCode.get(code)!) {
+      for (const c of group) {
         changed.set(c.customer_id, {...changed.get(c.customer_id), customer_id:c.customer_id,
           sales_name: owner.owner_name ?? null, sales_email: owner.owner ?? null,
           supervisor_name: owner.supervisor ?? null, supervisor_email: owner.supervisor_email ?? null,
         });
       }
-      owners += byCode.get(code)!.length;
+      owners += group.length;
       } catch (e) {
         errors++;
+        for (const c of group) flag(c, "request_failed", e instanceof Error ? e.message : "Labcenter request failed");
         console.error(`Master metadata ${code}:`, e);
       }
     }));
   }
   if(accounts.length) await sbRpc("master_sync_accounts",{accounts});
-  if (changed.size) await sbUpsert("master_clients", [...changed.values()], "customer_id", 200);
-  return { matched, owners, errors, totalCodes: byCode.size };
+  // Group column sets so the existing upsert helper sends batches, not one request per location.
+  if (changed.size) await sbUpsert("master_clients", [...changed.values()].sort((a,b) => Object.keys(a).sort().join(",").localeCompare(Object.keys(b).sort().join(","))), "customer_id", 200);
+  issues.sort((a,b) => a.client_code.localeCompare(b.client_code) || a.customer_id.localeCompare(b.customer_id) || a.kind.localeCompare(b.kind));
+  const hasMore = !onlyCodes && (after === undefined ? offset + codes.length < remaining.length : codes.length < remaining.length);
+  return { matched, owners, errors, totalCodes: byCode.size, processed: codes.length, nextCursor: hasMore ? codes.at(-1) ?? null : null, issues };
 }

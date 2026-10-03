@@ -170,6 +170,7 @@ export async function listLocationsByClientCode(
   const res = await fetch(`${DELIVERY_BASE}/api/locations?${params}`, {
     headers: { Authorization: `Bearer ${token}` },
     cache: "no-store",
+    signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) throw new Error(`Labcenter locations ${res.status}`);
   const data = await res.json().catch(() => ({}));
@@ -186,6 +187,7 @@ export async function getCartrackCustomerId(
   const res = await fetch(`${DELIVERY_BASE}/api/locations/${locationId}`, {
     headers: { Authorization: `Bearer ${token}` },
     cache: "no-store",
+    signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) return null;
   const data = await res.json().catch(() => ({}));
@@ -258,6 +260,7 @@ export interface PickDropRow {
   drop_location_id: number;
   drop_name: string | null;
   eta_mins: number;
+  eta_valid?: boolean;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -271,6 +274,7 @@ function toPickDropRow(r: any): PickDropRow | null {
     drop_location_id: drop,
     drop_name: r?.drop_location?.name ?? null,
     eta_mins: Number(r?.estimate_pick_up) || 0,
+    eta_valid: r?.estimate_pick_up != null && String(r.estimate_pick_up).trim() !== "" && Number.isFinite(Number(r.estimate_pick_up)),
   };
 }
 
@@ -282,6 +286,7 @@ export async function listPickDropLocations(token: string): Promise<PickDropRow[
     const res = await fetch(`${DELIVERY_BASE}/api/pick-drop-locations?page=${page}&perPage=500`, {
       headers: { Authorization: `Bearer ${token}`, accept: "application/json" },
       cache: "no-store",
+      signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) throw new Error(`Labcenter pick-drop-locations ${res.status}`);
     const rows: unknown[] = (await res.json().catch(() => ({})))?.data ?? [];

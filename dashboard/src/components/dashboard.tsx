@@ -26,6 +26,7 @@ import { ConfigBrowserPanel } from "./config-browser-panel";
 import { PickupSetupPanel } from "./pickup-setup-panel";
 import type { LeaveOnDate, InvalidLeaveRow, SpanningLeaveRow } from "@/lib/leave-config";
 import type { LeaveSuppression } from "@/lib/leave-suppression";
+import type { LabcenterMetadataReport } from "@/lib/master-sync";
 
 type Env = "prod" | "uat";
 type RightTab = "attention" | "live" | "config" | "schedule" | "distance" | "tat" | "pay" | "locations";
@@ -51,6 +52,7 @@ export function Dashboard() {
   const [leaveRefreshKey, setLeaveRefreshKey] = useState(0);
   const [configRefreshKey, setConfigRefreshKey] = useState(0);
   const [syncingSettings, setSyncingSettings] = useState(false);
+  const [metadataReport, setMetadataReport] = useState<(LabcenterMetadataReport & {state:"running"|"complete"|"failed"}) | null>(null);
   const [syncingMisa, setSyncingMisa] = useState(false);
   const [failed, setFailed] = useState<FailedJob[]>([]);
   const [sheetAlarms, setSheetAlarms] = useState<SheetAlarm[]>([]);
@@ -499,16 +501,34 @@ export function Dashboard() {
 
   const handleRefresh = useCallback(async (syncProfiles = false) => {
     setSyncingSettings(true);
+    let report: LabcenterMetadataReport | null = null;
     try {
       if (syncProfiles) {
+        setMetadataReport(null);
         const res = await fetch("/api/master-client-info/sync", { method: "POST", cache: "no-store" });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data.ok !== true) throw new Error(data.error || `Cartrack returned ${res.status}`);
+        report = {matched:0, owners:0, errors:0, totalCodes:0, processed:0, nextCursor:null, issues:[]};
+        let after = "";
+        do {
+          setMetadataReport({...report, state:"running"});
+          const res = await fetch(`/api/master-client-info/sync?phase=metadata&limit=100&after=${encodeURIComponent(after)}`, {method:"POST", cache:"no-store"});
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.ok !== true || !data.labcenter) throw new Error(data.error || `Labcenter returned ${res.status}`);
+          const batch = data.labcenter as LabcenterMetadataReport;
+          if (batch.nextCursor && batch.nextCursor <= after) throw new Error("Labcenter không chuyển sang trang tiếp theo");
+          report = {...batch, matched:report.matched+batch.matched, owners:report.owners+batch.owners, errors:report.errors+batch.errors,
+            processed:report.processed+batch.processed, issues:[...report.issues,...batch.issues]};
+          after = batch.nextCursor ?? "";
+        } while (after);
+        setMetadataReport({...report, state:"complete"});
         setConfigRefreshKey(key => key + 1);
       }
       await syncSettings();
-      toast.success(syncProfiles ? "Đã đồng bộ dữ liệu Cartrack, config và lịch nghỉ phép" : "Đã tải lại config và lịch nghỉ phép");
+      if (report?.issues.length) toast.warning(`Đã đồng bộ; ${report.issues.length} vấn đề Labcenter cần kiểm tra`);
+      else toast.success(syncProfiles ? "Đã đồng bộ Cartrack, Labcenter, config và lịch nghỉ phép" : "Đã tải lại config và lịch nghỉ phép");
     } catch (err) {
+      if (report) {setMetadataReport({...report, state:"failed"}); setConfigRefreshKey(key => key + 1);}
       toast.error(`Đồng bộ dữ liệu thất bại: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setSyncingSettings(false);
@@ -622,7 +642,7 @@ export function Dashboard() {
           </div>
 
           <Button variant="outline" size="sm" className="text-slate-900" onClick={() => void handleRefresh(true)} disabled={syncingSettings}>
-            {syncingSettings ? "Đang đồng bộ…" : "Đồng bộ dữ liệu"}
+            {syncingSettings ? metadataReport?.state === "running" ? `Labcenter ${metadataReport.processed}/${metadataReport.totalCodes || "…"}` : "Đang đồng bộ…" : "Đồng bộ dữ liệu"}
           </Button>
           <Button variant="outline" size="sm" className="text-slate-900" onClick={handleMisaRefresh} disabled={syncingMisa}>
             {syncingMisa ? "Đang đồng bộ MISA…" : "Đồng bộ MISA"}
@@ -634,6 +654,27 @@ export function Dashboard() {
           the landing tab, Live Log is just the log). */}
       <div className="flex flex-col lg:flex-1 lg:min-h-0 p-2 sm:p-3">
         <div className="min-w-0 flex flex-col gap-1.5 lg:flex-1 lg:min-h-0">
+          {metadataReport && (
+            <details className={`rounded-md border p-2 text-xs shrink-0 ${metadataReport.issues.length || metadataReport.state === "failed" ? "border-amber-200 bg-amber-50 text-amber-900" : "border-slate-200 bg-slate-50 text-slate-700"}`}>
+              <summary className="cursor-pointer font-medium">
+                Labcenter · {metadataReport.state === "running" ? "Đang đồng bộ" : metadataReport.state === "failed" ? "Đồng bộ chưa hoàn tất" : "Đã đồng bộ"} · {metadataReport.processed}/{metadataReport.totalCodes || "…"} mã · {metadataReport.matched} địa điểm · {metadataReport.owners} hồ sơ sales · {metadataReport.issues.length} vấn đề
+              </summary>
+              <div className="mt-2 flex items-center justify-between gap-2">
+                <span>Giữ nguyên giá trị cũ khi không xác minh được liên kết. Báo cáo này hiển thị đến khi tải lại trang.</span>
+                <button className="shrink-0 text-blue-700 underline" onClick={() => {
+                  const url = URL.createObjectURL(new Blob([JSON.stringify(metadataReport,null,2)], {type:"application/json"}));
+                  const link = document.createElement("a"); link.href=url; link.download="labcenter-refresh-report.json"; link.click(); URL.revokeObjectURL(url);
+                }}>Tải báo cáo</button>
+              </div>
+              {metadataReport.issues.length > 0 && <div className="mt-2 max-h-56 overflow-auto">
+                <table className="w-full text-left"><thead><tr><th className="p-1">Mã KH</th><th className="p-1">Địa điểm</th><th className="p-1">Cần kiểm tra</th></tr></thead>
+                  <tbody>{metadataReport.issues.map((issue,i) => <tr key={`${issue.customer_id}:${issue.kind}:${i}`} className="border-t border-amber-200/70">
+                    <td className="p-1 align-top">{issue.client_code}</td><td className="p-1 align-top"><span>{issue.name}</span><span className="block text-[10px] opacity-70">{issue.customer_id}</span></td><td className="p-1 align-top">{issue.detail}</td>
+                  </tr>)}</tbody>
+                </table>
+              </div>}
+            </details>
+          )}
           {/* Tab bar */}
           <div className="flex items-center gap-1 shrink-0 overflow-x-auto">
             <button onClick={() => setRightTab("attention")} className={tabBtn(rightTab === "attention")}>
