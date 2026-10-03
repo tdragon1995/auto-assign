@@ -34,7 +34,7 @@ process.env.MASTER_CLIENT_INFO_SOURCE='sheet';
 await assert.rejects(assertSheetRenameSafe(pickup,['Old name']));
 process.env.MASTER_CLIENT_INFO_SOURCE='supabase';
 
-let destinationReads=0,existingLink:number|null=null,scenario='linked',pickupLocationId=10;
+let destinationReads=0,existingLink:number|null=null,scenario='linked';
 const writes:Record<string,unknown>[][]=[];
 const accountWrites:Record<string,unknown>[][]=[];
 globalThis.fetch=async(input,init)=>{
@@ -45,7 +45,7 @@ globalThis.fetch=async(input,init)=>{
       return new Response(null,{status:204}); // Real PostgREST response for RETURNS void.
     }
     if(url.pathname==='/rest/v1/master_clients' && method==='GET') return Response.json([
-      {customer_id:pickup,customer_name:'Client 1',client_code:'1',labcenter_location_id:pickupLocationId},
+      {customer_id:pickup,customer_name:'Client 1',client_code:'1',labcenter_location_id:10},
       {customer_id:other,customer_name:'Client 2',client_code:'2',labcenter_location_id:11},
       {customer_id:drop,client_code:null,labcenter_location_id:existingLink}]);
     throw Error(`Metadata must use a batch UPDATE, not incomplete profile upserts: ${method} ${url}`);
@@ -54,7 +54,7 @@ globalThis.fetch=async(input,init)=>{
   assert.equal(method,'GET');
   if(url.pathname.endsWith('/pick-drop-locations')) {
     const page=Number(url.searchParams.get('page'));
-    const rows=Array.from({length:page<3?500:1},(_,i)=>({pick_location_id:i%2?pickupLocationId:11,drop_location_id:20,
+    const rows=Array.from({length:page<3?500:1},(_,i)=>({pick_location_id:i%2?10:11,drop_location_id:20,
       estimate_pick_up:90,drop_location:{name:'BRA - D032'}}));
     if (scenario==='missing_dropoff') for (const row of rows) row.pick_location_id=11;
     if (scenario==='ignored_missing_dropoff') for (const row of rows) row.pick_location_id=999;
@@ -62,7 +62,7 @@ globalThis.fetch=async(input,init)=>{
     if (scenario==='invalid_eta') for (const row of rows) row.estimate_pick_up=NaN;
     return Response.json({data:rows});
   }
-  if(url.pathname.endsWith('/locations')) return Response.json({data:[{id:url.searchParams.get('client_code')==='1'?pickupLocationId:11}]});
+  if(url.pathname.endsWith('/locations')) return Response.json({data:[{id:url.searchParams.get('client_code')==='1'?10:11}]});
   if(url.pathname.endsWith('/locations/20')) {destinationReads++;return Response.json({data:{delivery_integration_locations:[
     {delivery_integration_code:'cartrack_vn',delivery_integration_location_id:scenario==='unresolved'?'unknown':drop}]}});}
   if(url.pathname.endsWith('/client')) return scenario==='sales_failure' ? new Response('',{status:503}) : Response.json({data:scenario==='owners' ? [
@@ -90,21 +90,20 @@ for (const kind of ['missing_dropoff','conflicting_dropoff','unresolved','sales_
   console.error=()=>{};
   try {
     const report=await syncLabcenterMetadata(0,2);
-    assert.ok(report.issues.some(i=>i.kind===(kind==='sales_failure'?'request_failed':kind==='unresolved'?'unresolved_dropoff':kind)));
+    if(kind==='missing_dropoff') assert.ok(!report.issues.some(i=>i.kind==='missing_dropoff'));
+    else assert.ok(report.issues.some(i=>i.kind===(kind==='sales_failure'?'request_failed':kind==='unresolved'?'unresolved_dropoff':kind)));
     if(kind!=='sales_failure') assert.ok(!writes.flat().some(r=>r.customer_id===pickup),'Unresolved rows must retain previous metadata');
     else {assert.equal(report.errors,2);assert.equal(report.matched,2);}
   } finally {console.error=oldError;}
 }
-scenario='linked';writes.length=0;
-pickupLocationId=1706;scenario='ignored_missing_dropoff';
+scenario='ignored_missing_dropoff';writes.length=0;
 const ignored=await syncLabcenterMetadata(0,2);
-assert.ok(!ignored.issues.some(i=>i.customer_id===pickup && i.kind==='missing_dropoff'));
-assert.ok(ignored.issues.some(i=>i.customer_id===pickup && i.kind==='missing_owner'),'Other issues for #1706 remain visible');
-assert.ok(ignored.issues.some(i=>i.customer_id===other && i.kind==='missing_dropoff'),'Other missing dropoff warnings remain visible');
+assert.ok(!ignored.issues.some(i=>i.kind==='missing_dropoff'),'Missing dropoff setup is allowed for all Labcenter locations');
+assert.equal(ignored.issues.filter(i=>i.kind==='missing_owner').length,2,'Other issue types remain visible for both locations');
+assert.equal(ignored.matched,0);
+assert.equal(ignored.errors,0);
 assert.equal(writes.length,0,'Ignoring a warning must not overwrite existing metadata');
-scenario='linked';
-assert.equal((await syncLabcenterMetadata(0,2)).matched,2,'Valid setup for #1706 still syncs');
-pickupLocationId=10;writes.length=0;
+scenario='linked';writes.length=0;
 const first=await syncLabcenterMetadata(0,1,undefined,'');
 assert.equal(first.processed,1);assert.equal(first.nextCursor,'1');
 const second=await syncLabcenterMetadata(0,1,undefined,first.nextCursor!);
