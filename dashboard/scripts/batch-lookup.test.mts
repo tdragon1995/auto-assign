@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { lookupBatch, batchTimestamp, lookupTimestamp, buildLookupTimeline } from "../src/lib/batch-lookup";
 import { NextRequest } from "next/server";
 import { GET } from "../src/app/api/admin/batch-lookup/route";
+import { driverWindowJobs, isKeyLookupEvent } from "../src/components/batch-lookup-panel";
 
 const nativeFetch = globalThis.fetch;
 const oldEnv = { email: process.env.LABCENTER_RECEPTIONIST_EMAIL, password: process.env.LABCENTER_RECEPTIONIST_PASSWORD, auth: process.env.CARTRACK_AUTH, lookup: process.env.LABCENTER_LOOKUP_TOKEN };
@@ -101,6 +102,19 @@ try {
   assert.equal(result.timeline.find(e => e.label === "Sample collected")?.time, "2026-02-07 14:00:00");
   assert(!JSON.stringify(result).includes("PRIVATE FIELD"));
   assert(events.includes("doing") && events.includes("step"));
+  const keyEvents = result.timeline.filter(isKeyLookupEvent);
+  assert(keyEvents.length > 0 && keyEvents.length < result.timeline.length);
+  assert(keyEvents.some(event => event.kind === "due"));
+  assert(keyEvents.some(event => event.label.startsWith("Sample received")));
+  const leg = result.summary!.jobs[0];
+  const surrounding = [leg,
+    { ...leg, job_id: 9001, start: "2026-02-07 06:00:00", end: "2026-02-07 07:00:00" },
+    { ...leg, job_id: 9002, start: leg.start, end: leg.end, ours: false },
+    { ...leg, job_id: 9003, driver: "Other driver" },
+    { ...leg, job_id: 9004, start: "2026-02-07 20:00:00", end: "2026-02-07 21:00:00" },
+  ];
+  assert.deepEqual(driverWindowJobs(leg, surrounding).map(job => job.job_id), [leg.job_id, 9002], "driver preview excludes the rest of the day and other drivers");
+  assert.deepEqual(driverWindowJobs({ ...leg, start: "" }, surrounding), [{ ...leg, start: "" }]);
   assert(!requests.some(u => /gps|track|polyline/.test(u.pathname)), "no map or GPS fetches");
   assert(requests.some(u => u.pathname.endsWith("/jobs") && u.searchParams.get("page") === "2"), "honor pagination even on a short first page");
 

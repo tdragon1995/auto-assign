@@ -1,29 +1,58 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { HoverCard } from "radix-ui";
+import { ArrowRight, ChevronDown, Search, Truck } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { BatchLookupResult, LookupJobRow, LookupStep } from "@/lib/batch-lookup";
+import type { BatchLookupResult, LookupEvent, LookupJobRow, LookupStep } from "@/lib/batch-lookup";
 import { parseVnTimestamp } from "@/lib/time";
 
-const lookupTimestamp = (value?: string | null) => value ? parseVnTimestamp(value).getTime() : null;
+const timestamp = (value?: string | null) => value ? parseVnTimestamp(value).getTime() : null;
+const time = (value?: string | null) => value?.slice(11, 19) || "—";
+const date = (value?: string | null) => value ? value.slice(0, 10).split("-").reverse().join("/") : "—";
+const mins = (value: number | null) => {
+  if (value === null) return "—";
+  const n = Math.round(Math.abs(value) * 10) / 10;
+  return `${value < 0 ? "−" : ""}${n >= 60 ? `${Math.floor(n / 60)}h ` : ""}${Math.round(n % 60 * 10) / 10}m`;
+};
+const muted = "text-xs text-slate-600";
+const focus = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2";
 
-const mins = (m: number | null) => m === null ? "—" : `${m < 0 ? "−" : ""}${Math.abs(m) >= 60 ? `${Math.floor(Math.abs(m) / 60)}h ` : ""}${Math.round(Math.abs(m) % 60 * 10) / 10}m`;
-const card = "rounded-lg border border-slate-200 bg-white p-4 space-y-2";
-const muted = "text-xs text-slate-500";
-const kinds: Record<string, string> = { batch: "Batch run", home: "Home collection", other: "Other run", clock_in: "Clock in", clock_out: "Clock out" };
+export const isKeyLookupEvent = (event: LookupEvent) => event.kind === "due" || /^(Visit|Sample collected|Sample arrived|Sample received|Pickup completed|Delivery completed)|^Batch .* created|cancelled/i.test(event.label);
 
-function JobsTable({ jobs }: { jobs: LookupJobRow[] }) {
-  return <div className="overflow-x-auto"><table className="w-full text-xs text-left">
-    <thead className="text-slate-500"><tr><th className="py-2 pr-3">Time (VN)</th><th className="pr-3">Job / route</th><th>Status</th></tr></thead>
-    <tbody>{jobs.map(j => <tr key={j.job_id} className={`border-t ${j.ours ? "bg-indigo-50" : ""}`}>
-      <td className="py-2 pr-3 whitespace-nowrap font-mono">{j.start.slice(11, 16)}–{j.end.slice(11, 16)}</td>
-      <td className="py-2 pr-3"><div className="font-medium">{j.reference} <span className={muted}>· {kinds[j.kind]} · #{j.job_id}</span></div>
-        <div>{j.stops.map(s => s.place).join(" → ")}</div>
-        {j.ours && <div className="font-semibold text-indigo-700">This visit&apos;s delivery{j.match === "route+time" ? " · route + time only (lower confidence)" : " · confirmed batch code"}</div>}
-        {j.batches.map(b => <div key={b.code} className={b.ours ? "text-indigo-700 font-mono" : "text-slate-500 font-mono"}>{b.code} · {b.branch} · {b.created?.slice(11, 16)}</div>)}
-      </td><td className="py-2 whitespace-nowrap">{j.status}</td>
-    </tr>)}</tbody>
-  </table></div>;
+/** Context covers only the delivery leg carrying this visit, including overlapping work. */
+export function driverWindowJobs(job: LookupJobRow, jobs: LookupJobRow[]) {
+  const start = timestamp(job.start), end = timestamp(job.end);
+  if (start === null || end === null || !Number.isFinite(start) || !Number.isFinite(end)) return [job];
+  return jobs.filter(row => row.driver === job.driver && (timestamp(row.start) ?? Infinity) <= end && (timestamp(row.end) ?? -Infinity) >= start);
+}
+
+function Detail({ label, children, className = "", name }: { label: React.ReactNode; children: React.ReactNode; className?: string; name: string }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  return <HoverCard.Root open={open} onOpenChange={setOpen} openDelay={180} closeDelay={150}>
+    <HoverCard.Trigger asChild><button type="button" aria-label={name} aria-expanded={open} aria-describedby={open ? id : undefined} onClick={() => setOpen(!open)} className={`inline-flex max-w-full items-center gap-1.5 rounded text-left underline decoration-slate-300 decoration-dotted underline-offset-4 hover:text-indigo-700 hover:decoration-indigo-500 ${focus} ${className}`}>
+      {label}<ChevronDown aria-hidden="true" className="size-3 shrink-0" />
+    </button></HoverCard.Trigger>
+    <HoverCard.Portal><HoverCard.Content id={id} role="tooltip" sideOffset={8} collisionPadding={16} className="z-50 w-96 max-w-[calc(100vw-2rem)] max-h-[min(32rem,75dvh)] overflow-y-auto rounded-xl bg-white p-4 text-sm text-slate-800 shadow-lg shadow-slate-900/15 outline outline-1 outline-slate-200">
+      {children}
+    </HoverCard.Content></HoverCard.Portal>
+  </HoverCard.Root>;
+}
+
+function DriverRoute({ job, jobs }: { job: LookupJobRow; jobs: LookupJobRow[] }) {
+  const overlapping = driverWindowJobs(job, jobs).filter(row => row.job_id !== job.job_id);
+  return <Detail name={`Lộ trình liên quan của ${job.driver || "tài xế chưa được phân công"}`} label={<span className="truncate">{job.driver || "Chưa phân công"}</span>} className="min-h-8 text-xs font-medium">
+    <h4 className="font-semibold">{job.driver || "Chưa phân công"}</h4><p className={`${muted} mt-1`}>{date(job.start)} · {time(job.start)}–{time(job.end)}</p>
+    <p className="mt-3 text-xs font-medium">Chặng vận chuyển của VID này · #{job.job_id}</p><p className={`${muted} mt-1`}>{job.reference}</p>
+    <ol className="mt-2 space-y-3">{job.stops.map((stop, index) => <li key={index} className="grid grid-cols-[5rem_1fr] gap-3">
+      <div className="font-mono text-xs tabular-nums text-slate-600">{time(stop.arrived)}<br />{time(stop.completed)}</div>
+      <div><p className="text-sm font-medium">{stop.place}</p><p className={muted}>{stop.type} · đến / hoàn tất</p></div>
+    </li>)}</ol>
+    {!!overlapping.length && <div className="mt-4 border-t pt-3"><h4 className="text-xs font-semibold">Công việc trùng khoảng thời gian này</h4><ul className="mt-2 space-y-2">{overlapping.map(row => <li key={row.job_id} className="text-xs">
+      <p className="font-medium break-words">{row.reference}</p><p className={muted}>{time(row.start < job.start ? job.start : row.start)}–{time(row.end > job.end ? job.end : row.end)} · {row.stops.map(stop => stop.place).join(" → ")}</p>
+    </li>)}</ul></div>}
+  </Detail>;
 }
 
 export function BatchLookupPanel() {
@@ -33,97 +62,88 @@ export function BatchLookupPanel() {
   const [steps, setSteps] = useState<LookupStep[]>([]);
   const [result, setResult] = useState<BatchLookupResult | null>(null);
   const [error, setError] = useState("");
+  const [allEvents, setAllEvents] = useState(false);
+  const [mobileContext, setMobileContext] = useState(false);
   const source = useRef<EventSource | null>(null);
   useEffect(() => () => { source.current?.close(); }, []);
 
-  function lookup(e: React.FormEvent) {
-    e.preventDefault();
-    const q = vid.trim();
-    if (!/^\d{8,20}$/.test(q)) { setError("VID phải gồm 8–20 chữ số."); return; }
+  function lookup(event: React.FormEvent) {
+    event.preventDefault();
+    const query = vid.trim();
+    if (!/^\d{8,20}$/.test(query)) { setError("VID phải gồm 8–20 chữ số."); return; }
     source.current?.close();
-    setBusy(true); setProgress("Starting lookup…"); setSteps([]); setResult(null); setError("");
-    const events = new EventSource(`/api/admin/batch-lookup?vid=${encodeURIComponent(q)}`);
+    setBusy(true); setProgress("Đang tìm đơn và mẫu…"); setSteps([]); setResult(null); setError(""); setAllEvents(false); setMobileContext(false);
+    const events = new EventSource(`/api/admin/batch-lookup?vid=${encodeURIComponent(query)}`);
     source.current = events;
     const end = () => { events.close(); source.current = null; setBusy(false); setProgress(""); };
-    events.addEventListener("doing", e => setProgress(JSON.parse(e.data).msg));
-    events.addEventListener("step", e => setSteps(prev => [...prev, JSON.parse(e.data)]));
-    events.addEventListener("done", e => {
-      const data: BatchLookupResult = JSON.parse(e.data);
+    events.addEventListener("doing", event => setProgress(JSON.parse(event.data).msg));
+    events.addEventListener("step", event => setSteps(previous => [...previous, JSON.parse(event.data)]));
+    events.addEventListener("done", event => {
+      const data: BatchLookupResult = JSON.parse(event.data);
       setResult(data); setSteps(data.steps); setError(data.error ?? ""); end();
     });
-    events.onerror = () => { setError("Lookup connection interrupted. Please retry."); end(); };
+    events.onerror = () => { setError("Kết nối bị gián đoạn. Hãy tra cứu lại."); end(); };
   }
-  const s = result?.summary;
-  const collected = lookupTimestamp(result?.timeline.find(e => e.label === "Sample collected")?.time);
-  const previousBatch = collected === null ? null : result?.branch_batches.filter(b => !b.ours && b.created && lookupTimestamp(b.created)! < collected).sort((a, b) => (b.created ?? "").localeCompare(a.created ?? ""))[0]?.code;
 
-  return <div className="h-full overflow-y-auto space-y-4 rounded-lg bg-slate-50 p-3 sm:p-4 text-slate-800">
-    <div>
-      <h2 className="text-base font-semibold">Tra cứu VID / Batch</h2>
-      <p className="text-xs text-slate-500 mt-1">Order → samples → batch → delivery → lab receipt. All times are Vietnam time (UTC+7).</p>
-    </div>
-    <form onSubmit={lookup} className="flex flex-wrap items-end gap-2">
-      <div className="space-y-1"><label htmlFor="batch-lookup-vid" className="text-xs font-medium">VID</label>
-        <input id="batch-lookup-vid" inputMode="numeric" autoComplete="off" placeholder="26020720305" value={vid} onChange={e => setVid(e.target.value)} maxLength={20} pattern="[0-9]{8,20}" required disabled={busy} className="h-9 w-56 rounded-md border border-slate-300 bg-white px-3 text-sm focus-visible:outline-2 focus-visible:outline-indigo-500 disabled:opacity-60" />
-      </div>
-      <Button type="submit" disabled={busy}>{busy ? "Đang tra cứu…" : "Tra cứu"}</Button>
-      {busy && <Button type="button" variant="outline" onClick={() => { source.current?.close(); source.current = null; setBusy(false); setProgress(""); }}>Dừng</Button>}
-    </form>
-    {error && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}{s ? " — Showing the data retrieved so far." : ""}</p>}
-    {busy && <div role="status" aria-live="polite" className={card}><p className="text-sm font-medium">{progress}</p><p className={muted}>{steps.length} steps completed</p></div>}
-    {result && s && <>
-      {s.client && <section className={card} aria-label="Client">
-        <h3 className="text-xs font-semibold text-slate-500">Client</h3>
-        <div className="font-semibold">{s.client.code === "51222087" ? "WALKIN" : s.client.name ?? s.client.code}</div>
-        {s.client.code !== "51222087" && <p className={muted}>{[s.client.code, s.client.segment, s.client.type, s.client.owner && `owner ${s.client.owner}`, s.client.supervisor_email && `supervisor ${s.client.supervisor_email}`].filter(Boolean).join(" · ")}</p>}
-      </section>}
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <section className={card}><h3 className="text-sm font-semibold">Visit</h3><div className="font-mono text-lg">{s.order.vid}</div>
-          <p className={muted}>{s.order.branch} · {s.order.status} · {s.order.tests} tests</p><p className={muted}>Created {s.order.created}</p>
-          {s.order.route && <p className={muted}>{s.order.route} · expected {s.order.expected_transport ?? "—"}</p>}
-        </section>
-        <section className={card}><h3 className="text-sm font-semibold">Samples ({s.samples.length})</h3>
-          {!s.samples.length && <p className={muted}>No samples yet.</p>}
-          {s.samples.map(x => <div key={x.sample_id}><div className="font-mono text-sm">{x.sample_id}{x.stat && <span className="ml-2 font-semibold text-red-600">STAT</span>}</div><p className={muted}>{[x.status, x.name, x.container].filter(Boolean).join(" · ")}</p></div>)}
-        </section>
-        <section className={card}><h3 className="text-sm font-semibold">Confirmed batches ({s.batches.length})</h3>
-          {s.batches.map(b => <div key={b.code}><div className="font-mono text-sm font-semibold break-all">{b.code}</div><p className={muted}>{b.status} · {b.total_samples ?? "?"} samples · {b.orders_in_batch} visits</p>
-            <p className={muted}>{b.created}{b.created_by && ` · ${b.created_by}`}</p><p className={muted}>{b.destination && `To ${b.destination} · `}samples: {b.our_samples.join(", ")}</p>
-            {b.transferred && <p className={muted}>Transferred {b.transferred}</p>}{b.completed && <p className={muted}>Completed {b.completed}</p>}
-          </div>)}
-          {!!s.unbatched_samples.length && <p className="text-xs text-amber-700">Batch not confirmed for: {s.unbatched_samples.join(", ")}. The search is limited to 10 candidates.</p>}
-        </section>
-        <section className={card}><h3 className="text-sm font-semibold">Delivery ({s.jobs.length})</h3>
-          {!s.jobs.length && <p className={muted}>No delivery job found in the scanned days.</p>}
-          {s.jobs.map(j => <div key={j.job_id}><div className="text-sm font-semibold break-words">{j.reference}</div><p className={muted}>#{j.job_id} · {j.status} · {j.driver || "Unassigned"}</p><p className={muted}>{j.stops.map(st => st.place).join(" → ")}</p>
-            {j.match === "route+time" && <p className="text-xs font-medium text-amber-700">Route + time only — lower confidence</p>}
-          </div>)}
-        </section>
-      </div>
-      {!!result.phases.length && <section className={card}><h3 className="text-sm font-semibold">Durations</h3>
-        <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-2 text-xs max-w-xl">{result.phases.map(p => <div key={p.label} className="contents"><dt className={p.breach ? "text-red-700" : ""}>{p.label}</dt><dd className={`font-mono font-semibold ${p.breach ? "text-red-700" : ""}`}>{mins(p.minutes)}</dd></div>)}</dl>
-      </section>}
-      {!!result.driver_days.length && <section className={card}><h3 className="text-sm font-semibold">Drivers&apos; day</h3><p className={muted}>Highlighted rows carried this visit. Clock-in/out and other work provide context around the delivery.</p>
-        {result.driver_days.map(d => <details key={`${d.driver}-${d.jobs[0]?.job_id}`} open><summary className="cursor-pointer py-2 text-sm font-medium">{d.driver || "Driver"} · {d.days.join(", ")} · {d.jobs.length} jobs</summary><JobsTable jobs={d.jobs} /></details>)}
-      </section>}
-      {!!result.branch_batches.length && <details className={card}><summary className="cursor-pointer text-sm font-semibold">Branch batches ({result.branch_batches.length})</summary><p className={muted}>Shows batches around collection time, including the last batch created before collection.</p>
-        <div className="overflow-x-auto"><table className="w-full text-xs text-left"><thead className="text-slate-500"><tr><th className="py-2 pr-3">Created (VN)</th><th className="pr-3">Batch</th><th className="pr-3">Samples / status</th><th>Delivery</th></tr></thead><tbody>
-          {result.branch_batches.map(b => <tr key={b.code} className={`border-t ${b.ours ? "bg-indigo-50 text-indigo-800" : ""}`}><td className="py-2 pr-3 whitespace-nowrap font-mono">{b.created}</td><td className="py-2 pr-3 font-mono">{b.code}<div className={muted}>{b.branch}{b.ours ? " · This visit" : b.code === previousBatch ? " · Created just before collection" : ""}</div></td><td className="py-2 pr-3">{b.total_samples ?? "?"} · {b.status}</td><td>{b.cartrack_job ?? "No job found"}</td></tr>)}
-        </tbody></table></div>
-      </details>}
-      <section className={card}><h3 className="text-sm font-semibold">Timeline ({result.timeline.length} events)</h3>
-        <div className="overflow-x-auto"><table className="w-full text-xs text-left"><thead className="text-slate-500"><tr><th className="py-2 pr-3">Time (VN)</th><th className="pr-3">Since previous</th><th className="pr-3">Since collected</th><th>Event</th></tr></thead><tbody>
-          {result.timeline.map((e, i) => <tr key={i} className={`border-t align-top ${e.kind === "due" ? "bg-amber-50" : ""}`}>
-            <td className="py-2 pr-3 whitespace-nowrap font-mono">{e.time.slice(11)}<div className={muted}>{e.time.slice(0, 10)}</div></td>
-            <td className={`py-2 pr-3 whitespace-nowrap font-mono ${e.kind === "done" && (e.since_prev_min ?? 0) >= 15 ? "text-amber-700 font-semibold" : ""}`}>{mins(e.since_prev_min)}</td>
-            <td className="py-2 pr-3 whitespace-nowrap font-mono">{collected === null ? "—" : mins(Math.round((lookupTimestamp(e.time)! - collected) / 6000) / 10)}</td>
-            <td className="py-2"><span className="mr-2 rounded bg-slate-100 px-1.5 py-0.5 font-semibold">{e.source}</span>{e.label}
-              {e.who && <div className={muted}>{e.who}</div>}{e.detail && <div className={muted}>{e.detail}</div>}{!!e.samples.length && <div className="font-mono text-indigo-700">{e.samples.join(", ")}</div>}
-            </td>
-          </tr>)}
-        </tbody></table></div>
+  const summary = result?.summary;
+  const collected = timestamp(result?.timeline.find(event => event.label === "Sample collected")?.time);
+  const timeline = result?.timeline.filter(event => allEvents || isKeyLookupEvent(event)) ?? [];
+  const total = result?.phases.find(phase => phase.label === "Collected → last sample received");
+  const tat = result?.phases.find(phase => phase.label.startsWith("TAT"));
+  const driverJobs = result?.driver_days.flatMap(day => day.jobs) ?? [];
+  const warnings = steps.filter(step => step.step === "warning" || step.step === "error");
+
+  return <div className="flex h-full flex-col gap-3 overflow-y-auto bg-white p-3 text-slate-800 selection:bg-indigo-100 sm:p-4 lg:overflow-hidden">
+    <header className="flex shrink-0 flex-wrap items-center justify-between gap-3">
+      <div><h2 className="text-base font-semibold">Tra cứu VID / Batch</h2><p className={`${muted} mt-0.5`}>Hành trình mẫu từ điểm lấy đến phòng xét nghiệm.</p></div>
+      <form onSubmit={lookup} className="flex w-full items-center gap-2 sm:w-auto"><label htmlFor="batch-lookup-vid" className="sr-only">VID</label>
+        <div className="relative min-w-0 flex-1 sm:w-56"><Search aria-hidden="true" className="absolute left-3 top-3 size-4 text-slate-500" /><input id="batch-lookup-vid" inputMode="numeric" autoComplete="off" placeholder="Nhập VID…" value={vid} onChange={event => setVid(event.target.value)} maxLength={20} pattern="[0-9]{8,20}" required disabled={busy} aria-invalid={!!error && !result} className={`h-10 w-full rounded-md border border-slate-300 bg-white pl-9 pr-3 text-sm tabular-nums caret-indigo-600 placeholder:text-slate-500 disabled:opacity-60 ${focus}`} /></div>
+        <Button type="submit" disabled={busy} className="h-10">{busy ? "Đang tra…" : "Tra cứu"}</Button>
+        {busy && <Button type="button" variant="outline" className="h-10" onClick={() => { source.current?.close(); source.current = null; setBusy(false); setProgress("Đã dừng tra cứu. Nhấn Tra cứu để bắt đầu lại."); }}>Dừng</Button>}
+      </form>
+    </header>
+    {error && <p role="alert" className="shrink-0 rounded-md bg-red-50 px-3 py-2 text-sm text-red-800">{error}{summary ? " Dữ liệu đã tìm được vẫn hiển thị bên dưới." : ""}</p>}
+    {!!warnings.length && !busy && <p role="status" className="shrink-0 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900">{warnings.map(step => step.msg).join(" · ")}</p>}
+    {busy && <div role="status" aria-live="polite" className="space-y-3 border-t pt-4"><p className="text-sm font-medium">{progress}</p><p className={muted}>{steps.length} bước đã hoàn tất</p><div aria-hidden="true" className="space-y-3 motion-safe:animate-pulse"><div className="h-12 rounded bg-slate-100" /><div className="h-64 rounded bg-slate-50" /></div></div>}
+    {!busy && progress && <p role="status" className="text-sm text-slate-600">{progress}</p>}
+    {!result && !busy && !error && !progress && <div className="my-auto mx-auto max-w-md py-12 text-center"><Search aria-hidden="true" className="mx-auto mb-4 size-7 text-slate-400" /><h3 className="text-base font-medium">Mẫu đang ở đâu, chậm ở bước nào?</h3><p className="mt-2 text-sm leading-6 text-slate-600">Nhập VID để xem thời gian lấy mẫu, batch vận chuyển và tiếp nhận tại lab.</p><p className="mt-4 text-xs text-slate-600">POS <ArrowRight aria-hidden="true" className="mx-2 inline size-3" /> LIS <ArrowRight aria-hidden="true" className="mx-2 inline size-3" /> Cartrack · Giờ Việt Nam (UTC+7)</p></div>}
+
+    {result && summary && <>
+      <section aria-label="Thông tin lượt khám" className="flex shrink-0 flex-wrap items-center justify-between gap-x-6 gap-y-2 border-y border-slate-200 py-3">
+        <div><div className="flex flex-wrap items-center gap-x-3 gap-y-1"><h3 className="font-mono text-lg font-semibold tabular-nums">{summary.order.vid}</h3><span className="text-sm font-medium">{summary.order.branch || "—"}</span><span className={muted}>{summary.order.status} · {summary.order.tests} tests</span></div>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600"><span>{date(summary.order.created)} · {time(summary.order.created)}</span>
+            {summary.client && <Detail name="Thông tin khách hàng" label={summary.client.code === "51222087" ? "WALKIN" : summary.client.name || summary.client.code}><h4 className="font-semibold">{summary.client.name || summary.client.code}</h4><p className="mt-2 break-words text-xs leading-6 text-slate-600">{[summary.client.code, summary.client.segment, summary.client.type, summary.client.owner && `Owner: ${summary.client.owner}`, summary.client.supervisor_email && `Supervisor: ${summary.client.supervisor_email}`].filter(Boolean).join(" · ")}</p></Detail>}
+            {summary.order.route && <span>{summary.order.route} · dự kiến {summary.order.expected_transport || "—"}</span>}
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">{total && <span>Lấy mẫu → nhận: <strong className="tabular-nums">{mins(total.minutes)}</strong></span>}{tat && <span className={tat.breach ? "font-medium text-red-700" : "text-emerald-700"}>{tat.breach ? "Quá TAT" : "Còn trước TAT"}: <strong className="tabular-nums">{mins(tat.minutes)}</strong></span>}
+          {!!result.phases.length && <Detail name="Chi tiết thời gian từng bước" label="Thời gian từng bước"><h4 className="font-semibold">Thời gian từng bước</h4><dl className="mt-3 space-y-2 text-xs">{result.phases.map(phase => <div key={phase.label} className={`flex justify-between gap-4 ${phase.breach ? "text-red-700" : ""}`}><dt>{phase.label}</dt><dd className="shrink-0 font-semibold tabular-nums">{mins(phase.minutes)}</dd></div>)}</dl></Detail>}
+        </div>
       </section>
+      <div role="group" aria-label="Nội dung tra cứu" className="flex shrink-0 gap-1 rounded-md bg-slate-100 p-1 lg:hidden">
+        {[false, true].map(context => <button key={String(context)} type="button" aria-pressed={mobileContext === context} onClick={() => setMobileContext(context)} className={`min-h-9 flex-1 rounded px-3 text-xs font-medium ${focus} ${mobileContext === context ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:bg-slate-200"}`}>{context ? `Mẫu & chuyến (${summary.jobs.length})` : "Timeline"}</button>)}
+      </div>
+      <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
+        <section aria-label="Timeline" className={`${mobileContext ? "hidden lg:flex" : "flex"} min-h-0 flex-col`}>
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold">Timeline <span className="ml-1 font-normal text-slate-600">{timeline.length}/{result.timeline.length} sự kiện</span></h3><div role="group" aria-label="Sự kiện hiển thị" className="flex rounded-md bg-slate-100 p-0.5">{[false, true].map(all => <button key={String(all)} type="button" aria-pressed={allEvents === all} onClick={() => setAllEvents(all)} className={`min-h-8 rounded px-3 text-xs font-medium ${focus} ${allEvents === all ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:bg-slate-200"}`}>{all ? "Tất cả" : "Mốc chính"}</button>)}</div></div>
+          <div tabIndex={0} aria-label="Danh sách sự kiện theo thời gian" className={`min-h-0 max-h-[32rem] overflow-y-auto rounded-lg border border-slate-200 lg:max-h-none lg:flex-1 ${focus}`}>
+            <table className="w-full table-fixed text-left text-xs"><colgroup><col className="w-20 sm:w-24" /><col /><col className="w-20 sm:w-24" /></colgroup><thead className="sticky top-0 z-10 bg-slate-50 text-slate-600"><tr><th scope="col" className="px-3 py-2 font-medium">Giờ VN</th><th scope="col" className="px-2 py-2 font-medium">Sự kiện</th><th scope="col" className="px-3 py-2 text-right font-medium">Từ lấy mẫu</th></tr></thead>
+              <tbody>{timeline.map((event, index) => <tr key={`${event.time}-${event.label}-${index}`} className={`border-t border-slate-100 align-top hover:bg-slate-50 ${event.kind === "due" ? "bg-amber-50 text-amber-900" : ""}`}>
+                <td className="px-3 py-1.5 font-mono tabular-nums"><span>{time(event.time)}</span>{(index === 0 || timeline[index - 1].time.slice(0, 10) !== event.time.slice(0, 10)) && <div className="mt-0.5 text-[11px] text-slate-600">{date(event.time)}</div>}</td>
+                <td className="px-2 py-1"><Detail name={`Chi tiết: ${event.label}`} className="min-h-6 text-xs font-medium leading-5" label={event.label}><h4 className="font-semibold">{event.label}</h4><p className={`${muted} mt-1`}>{date(event.time)} · {time(event.time)} · {event.source}</p>{event.who && <p className="mt-3 break-words text-xs">{event.who}</p>}{event.detail && <p className="mt-2 text-xs text-slate-600">{event.detail}</p>}{!!event.samples.length && <p className="mt-2 break-all font-mono text-xs">{event.samples.join(", ")}</p>}<p className={`${muted} mt-3`}>Từ sự kiện trước trong timeline đầy đủ: {mins(event.since_prev_min)}</p></Detail><span className={`ml-2 whitespace-nowrap text-[11px] ${event.source === "LIS" ? "text-teal-700" : event.source === "Cartrack" ? "text-indigo-700" : "text-slate-600"}`}>{event.source}</span></td>
+                <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">{collected === null ? "—" : mins(Math.round((timestamp(event.time)! - collected) / 6000) / 10)}</td>
+              </tr>)}</tbody>
+            </table>{!timeline.length && <p className="p-4 text-sm text-slate-600">Chưa có sự kiện trong dữ liệu đã tìm được.</p>}
+          </div>
+          <div className="mt-2 flex shrink-0 flex-wrap justify-between gap-2 text-[11px] text-slate-600"><span>Rê chuột hoặc nhấn vào sự kiện để xem chi tiết.</span>{!!steps.length && <Detail name="Các bước tra cứu" label={`${steps.length} bước tra cứu`}><h4 className="font-semibold">Các bước tra cứu</h4><ol className="mt-3 space-y-2 text-xs">{steps.map((step, index) => <li key={index} className={step.step === "error" ? "text-red-700" : step.step === "warning" ? "text-amber-800" : "text-slate-600"}>{step.msg}</li>)}</ol></Detail>}</div>
+        </section>
+        <aside aria-label="Mẫu và vận chuyển" className={`${mobileContext ? "block" : "hidden lg:block"} min-h-0 space-y-3 overflow-y-auto lg:border-l lg:border-slate-200 lg:pl-4`}>
+          <section><h3 className="mb-2 text-sm font-semibold">Mẫu <span className="font-normal text-slate-600">({summary.samples.length})</span></h3>{!summary.samples.length && <p className={muted}>Chưa có mẫu.</p>}<ul className="space-y-2">{summary.samples.map(sample => <li key={sample.sample_id} className="text-xs"><div className="flex flex-wrap items-center gap-2"><Detail name={`Chi tiết mẫu ${sample.sample_id}`} label={<span className="font-mono">{sample.sample_id}</span>}><h4 className="font-mono font-semibold">{sample.sample_id}</h4><p className="mt-2 text-xs text-slate-600">{[sample.name, sample.container, sample.status].filter(Boolean).join(" · ")}</p></Detail><span className="text-slate-600">{sample.status}</span>{sample.stat && <span className="font-semibold text-red-700">STAT</span>}</div><p className={`${muted} mt-1`}>{sample.name}</p></li>)}</ul></section>
+          <section className="border-t border-slate-200 pt-3"><h3 className="mb-2 text-sm font-semibold">Batch xác nhận <span className="font-normal text-slate-600">({summary.batches.length})</span></h3><ul className="space-y-2">{summary.batches.map(batch => <li key={batch.code} className="text-xs"><Detail name={`Chi tiết batch ${batch.code}`} label={<span className="break-all font-mono font-medium">{batch.code}</span>}><h4 className="break-all font-mono font-semibold">{batch.code}</h4><p className={`${muted} mt-2`}>{batch.status} · {batch.total_samples ?? "?"} samples · {batch.orders_in_batch} visits</p><dl className="mt-3 space-y-2 text-xs"><div><dt className="text-slate-600">Tạo batch</dt><dd>{batch.created || "—"}</dd><dd className="break-words text-slate-600">{batch.created_by}</dd></div><div><dt className="text-slate-600">Chuyển / hoàn tất</dt><dd>{batch.transferred || "—"}<br />{batch.completed || "—"}</dd></div><div><dt className="text-slate-600">Mẫu của VID này</dt><dd className="break-all font-mono">{batch.our_samples.join(", ")}</dd></div></dl></Detail><p className={`${muted} mt-1`}>{batch.status} · {time(batch.created)} {batch.destination && `→ ${batch.destination}`}</p></li>)}</ul>{!!summary.unbatched_samples.length && <p className="mt-2 text-xs text-amber-800">Chưa xác nhận batch: {summary.unbatched_samples.join(", ")}. Đã giới hạn tìm trong 10 batch ứng viên.</p>}{!summary.batches.length && !summary.unbatched_samples.length && <p className={muted}>Chưa có batch xác nhận.</p>}</section>
+          <section className="border-t border-slate-200 pt-3"><h3 className="mb-1 text-sm font-semibold">Chặng vận chuyển <span className="font-normal text-slate-600">({summary.jobs.length})</span></h3><p className="mb-2 text-[11px] text-slate-600">Rê chuột / nhấn tên tài xế để xem khoảng liên quan.</p>{!summary.jobs.length && <p className={muted}>Chưa tìm được chuyến trong các ngày đã tra cứu.</p>}<ul className="divide-y divide-slate-100">{summary.jobs.map(job => <li key={job.job_id} className="py-2 text-xs"><div className="flex items-start gap-2"><Truck aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-slate-500" /><div className="min-w-0"><p className="font-medium leading-5">{job.stops.map(stop => stop.place).join(" → ")}</p><p className={`${muted} mt-0.5`}>{job.status} · {time(job.start)}–{time(job.end)}</p><DriverRoute job={job} jobs={driverJobs} /></div></div>{job.match === "route+time" && <p className="mt-1 text-xs font-medium text-amber-800">Khớp tuyến + thời gian · độ tin cậy thấp hơn</p>}</li>)}</ul></section>
+          {!!result.branch_batches.length && <section className="border-t border-slate-200 pt-3"><Detail name="Các batch tại điểm lấy mẫu" label={`Batch cùng điểm lấy (${result.branch_batches.length})`} className="text-xs"><h4 className="font-semibold">Batch cùng điểm lấy</h4><p className={`${muted} mt-1`}>Các batch quanh thời gian lấy mẫu.</p><ul className="mt-3 divide-y divide-slate-100">{result.branch_batches.map(batch => <li key={batch.code} className="py-2 text-xs"><p className={`break-all font-mono ${batch.ours ? "font-semibold text-indigo-700" : ""}`}>{batch.code}{batch.ours && " · VID này"}</p><p className={`${muted} mt-1`}>{date(batch.created)} · {time(batch.created)} · {batch.total_samples ?? "?"} mẫu · {batch.status}</p><p className={`${muted} mt-1`}>{batch.cartrack_job || "Chưa tìm được chuyến"}</p></li>)}</ul></Detail></section>}
+        </aside>
+      </div>
     </>}
-    {!!steps.length && <details className={card}><summary className="cursor-pointer text-xs font-semibold">Lookup steps ({steps.length})</summary><ol className="space-y-1 text-xs">{steps.map((s, i) => <li key={i} className={s.step === "error" ? "text-red-700" : s.step === "warning" ? "text-amber-700" : "text-slate-500"}>{s.msg}</li>)}</ol></details>}
   </div>;
 }
