@@ -12,6 +12,8 @@ assert.equal(displayClientName("Công ty TNHH thiên an"), "Thiên an");
 assert.equal(displayClientName("Cty TNHH y tế An"), "Y tế An");
 assert.equal(displayClientName("CTCP dịch vụ Việt"), "Dịch vụ Việt");
 assert.equal(displayClientName("Hộ kinh doanh phòng khám An"), "Phòng khám An");
+assert.equal(displayClientName("DOANH NGHIỆP TƯ NHÂN PHÒNG KHÁM BỆNH ĐA KHOA BÁC SĨ BẢNH"), "PHÒNG KHÁM BỆNH ĐA KHOA BÁC SĨ BẢNH");
+assert.equal(displayClientName("Công TNHH Phát Triển Công Nghệ Anapath"), "Phát Triển Công Nghệ Anapath");
 assert.equal(displayClientName("25372 - MTho - THDuc - HỘ KINH DOANH phòng khám An"), "25372 - MTho - THDuc - Phòng khám An");
 assert.equal(displayClientName("123 - D5 - A - Công ty TNHH phòng khám An"), "123 - D5 - A - Phòng khám An");
 assert.equal(displayClientName("phòng khám An"), "Phòng khám An");

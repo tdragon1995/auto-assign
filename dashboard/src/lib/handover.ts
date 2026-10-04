@@ -9,7 +9,7 @@
 import { DIAG_LOCATIONS } from "./diag-locations";
 
 export function displayClientName(name: string): string {
-  const short = name.replace(/(^|[\s-])(?:công ty\s+(?:cổ phần|tnhh|trách\s+nhiệm\s+hữu\s+hạn)|cty\s+tnhh|ctcp|hộ\s+kinh\s+doanh)\s+(\S)/iu,
+  const short = name.replace(/(^|[\s-])(?:công ty\s+(?:cổ phần|tnhh|trách\s+nhiệm\s+hữu\s+hạn)|cty\s+tnhh|ctcp|hộ\s+kinh\s+doanh|doanh\s+nghiệp\s+tư\s+nhân|công\s+tnhh)\s+(\S)/iu,
     (_, lead: string, first: string) => lead + first.toLocaleUpperCase("vi")).trim();
   return short.replace(/^\p{L}/u, (first) => first.toLocaleUpperCase("vi"));
 }
