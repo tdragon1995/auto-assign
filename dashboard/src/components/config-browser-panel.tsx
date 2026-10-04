@@ -1236,7 +1236,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
                             onClick={e => { if (locationInfo) openProfile("client", locationInfo.customer_id, e.currentTarget, true); }}
                             className={`text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${inactive ? "text-slate-500" : "font-medium text-slate-900"}`}>
                             {r.pickup ? locationName(r.pickup,true) : <span className="text-slate-500">—</span>}
-                            {inactive && <span title="Ngừng hoạt động" className="ml-1.5 inline-flex whitespace-nowrap rounded border border-slate-200 bg-slate-100 px-1.5 text-[10px] font-medium leading-4 text-slate-600 align-middle">Inactive</span>}
+                            {inactive && <>{"\u00a0"}<span title="Ngừng hoạt động" className="inline-flex whitespace-nowrap rounded border border-slate-200 bg-slate-100 px-1.5 text-[10px] font-medium leading-4 text-slate-600 align-middle">Inactive</span></>}
                           </button>
                           {r.dropoff && <>
                             <span className="mx-1 text-slate-500" aria-hidden="true">→</span>
