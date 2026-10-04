@@ -1,3 +1,4 @@
+import { resolveConfigDay } from "@/lib/config-day";
 import { NextRequest, NextResponse } from "next/server";
 import { completeConfigRow, ConfigRowChangedError } from "@/lib/sheets-writer";
 import { parseConfigRowSnapshot } from "@/lib/config-row-match";
@@ -26,6 +27,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== "object") return bad("Body không hợp lệ");
+    const configDay = resolveConfigDay(body.config_day);
     if (body.alt_drop_off_id !== undefined && typeof body.alt_drop_off_id !== "string") return bad("Điểm giao thay thế không hợp lệ");
     const { row, pickup_name, driver_name, shift_start, shift_end, dropoff_name, copy_from_row, expected_row } = body as {
       row?: number; pickup_name?: string; driver_name?: string;
@@ -62,7 +64,7 @@ export async function POST(req: NextRequest) {
     const unknown = names.find((n) => !drivers.some((d) => d.name === n));
     if (unknown) return bad(`"${unknown}" không có trong tab Driver — chọn từ danh sách`);
 
-    const result = await completeConfigRow({
+    const result = await completeConfigRow({ config_day: configDay,
       row: row as number,
       expectPickup: pickup_name,
       expected: expected ?? undefined,

@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchSheetRows, SHEET_CONTRACT, SHEET_GID } from "@/lib/sheets";
 import { readConfigGen } from "@/lib/config-gen";
-import { vnIsSunday, vnTimestamp } from "@/lib/time";
+import { vnTimestamp } from "@/lib/time";
 import { masterClients, masterDrivers, masterEnabled, masterRuleRows } from "@/lib/master-store";
 import { publicClient, publicDriver } from "@/lib/master-public";
+
+import { resolveConfigDay, type ConfigDay } from "@/lib/config-day";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -24,9 +26,8 @@ export const preferredRegion = "sin1";
  * needs exactly those two things, so this reads the tab on its own and keeps a
  * slim copy.
  *
- * Whichever tab the engine is reading TODAY, so what is shown is what is in
- * force — the Sunday tab is a different roster, and showing the weekday one on a
- * Sunday would be showing rules that are not running.
+ * Defaults to today; an explicit day browses the other roster without changing
+ * the operational engine.
  */
 
 export interface ConfigRowView {
@@ -69,7 +70,7 @@ export interface ConfigRowView {
  * closes that for every instance at once, and every existing writer already
  * bumps it — none of them need to know this reader exists.
  */
-let cache: { rows: ConfigRowView[]; tab: string; at: number; fetchedAt: string; gen: string | null } | null = null;
+const caches: Partial<Record<ConfigDay, { rows: ConfigRowView[]; tab: string; at: number; fetchedAt: string; gen: string | null }>> = {};
 const TTL_MS = 5 * 60 * 1000;
 
 export async function GET(req: NextRequest) {
@@ -82,10 +83,15 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: String(e) }, { status: 502 });
     }
   }
-  const sunday = vnIsSunday();
+  let day: ConfigDay;
+  try { day = resolveConfigDay(req.nextUrl.searchParams.get("day")); }
+  catch (e) { return NextResponse.json({error:String(e)}, {status:400}); }
+  const sunday = day === "sunday";
+  let cache = caches[day];
   const contract = sunday ? SHEET_CONTRACT.sunday : SHEET_CONTRACT.mapping;
   const gid = sunday ? SHEET_GID.sunday : SHEET_GID.mapping;
   const tab = masterEnabled() && !sunday ? "Supabase" : contract.label;
+  if (cache?.tab !== tab) cache = undefined;
   // The explicit reload. Belt and braces beside the stamp: it also covers the
   // case where Redis is unconfigured or unreachable, where `readConfigGen`
   // deliberately reports "no reason to invalidate" and the stamp can never move.
@@ -96,7 +102,7 @@ export async function GET(req: NextRequest) {
     const gen = await readConfigGen();
     if (!fresh && cache && cache.tab === tab && cache.gen === gen
         && Date.now() - cache.at < TTL_MS) {
-      return NextResponse.json({ rows: cache.rows, tab: cache.tab, fetchedAt: cache.fetchedAt, cached: true });
+      return NextResponse.json({ day, rows: cache.rows, tab: cache.tab, fetchedAt: cache.fetchedAt, cached: true });
     }
 
     const raw = masterEnabled() && !sunday
@@ -130,20 +136,20 @@ export async function GET(req: NextRequest) {
     // so it is not cached, the same discipline every other reader here follows.
     if (rows.length === 0) {
       return NextResponse.json(
-        { rows: cache?.rows ?? [], tab, fetchedAt: cache?.fetchedAt ?? "", error: "Đọc được 0 dòng" },
+        { day, rows: cache?.rows ?? [], tab, fetchedAt: cache?.fetchedAt ?? "", error: "Đọc được 0 dòng" },
         { status: 502 },
       );
     }
 
-    cache = { rows, tab, at: Date.now(), fetchedAt: vnTimestamp(), gen };
-    return NextResponse.json({ rows, tab: cache.tab, fetchedAt: cache.fetchedAt, cached: false });
+    cache = caches[day] = { rows, tab, at: Date.now(), fetchedAt: vnTimestamp(), gen };
+    return NextResponse.json({ day, rows, tab: cache.tab, fetchedAt: cache.fetchedAt, cached: false });
   } catch (e) {
     // Serve the stale copy rather than an empty table: a browser showing last
     // hour's config is useful, a browser showing nothing looks like the config
     // is gone.
     if (cache) {
-      return NextResponse.json({ rows: cache.rows, tab: cache.tab, fetchedAt: cache.fetchedAt, cached: true, stale: true });
+      return NextResponse.json({ day, rows: cache.rows, tab: cache.tab, fetchedAt: cache.fetchedAt, cached: true, stale: true });
     }
-    return NextResponse.json({ rows: [], tab, error: String(e) }, { status: 500 });
+    return NextResponse.json({ day, rows: [], tab, error: String(e) }, { status: 500 });
   }
 }

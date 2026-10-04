@@ -17,34 +17,10 @@ import { MasterProfileEditor } from "./master-profile-editor";
 import { MasterProfileDetails, type ClientMeta, type DriverMeta } from "./master-profile-details";
 import type { ConfigRowView } from "@/app/api/config/rows/route";
 import type { BranchRule, ConfigDriver } from "@/lib/types";
+import { resolveConfigDay, type ConfigDay } from "@/lib/config-day";
 import { isInactiveLocation as isInactive, locationName } from "@/lib/location-status";
 
-/**
- * The config table, readable and searchable from the dashboard.
- *
- * Until now the only way to answer "who covers this branch, and when?" was to
- * open the workbook — which is also the only way to answer it WRONGLY, because
- * the sheet shows every row while the engine reads one tab and applies its own
- * rules to it. This shows the tab in force today, parsed the way the engine
- * parses it.
- *
- * Loaded ON DEMAND. The table is ~1,700 rows; fetching it on the dashboard's
- * 90-second poll would be paying for it continuously to answer a question asked
- * a few times a day. It loads when the panel is first opened and can be
- * refreshed by hand.
- *
- * It reads the SHEET rather than the engine's parsed config, and that is what
- * makes it useful for admin work rather than only for inspection: the parse
- * drops every row that names a branch but no driver, which is exactly the set
- * someone comes here to fix. It also keeps the sheet row, which every write path
- * addresses rows by.
- *
- * Editing opens the SAME BranchEditor the "Cần xử lý" rows use — so a branch
- * reached by searching for it is edited through the same four guarded routes,
- * the same clash check and the same re-read-before-write as one reached by the
- * engine complaining about it. The difference between the two entry points is
- * only which branches they can reach.
- */
+/** Browse either roster on demand, reusing the to-do editor for weekday rules. */
 
 /** How many matches to draw at a time. A blank search matches all 1,700 rows,
  *  and drawing them costs a visibly janky scroll for a list nobody reads to the
@@ -226,6 +202,7 @@ type BulkMode = "driver" | "hours" | "both" | "schedule" | "delete";
  * them.
  */
 function BulkBar({
+  configDay,
   targets,
   allRows,
   drivers,
@@ -233,6 +210,7 @@ function BulkBar({
   onDone,
   onClear,
 }: {
+  configDay: ConfigDay;
   /** The ticked rows, already filtered to the writable ones. */
   targets: ConfigRowView[];
   allRows: ConfigRowView[];
@@ -253,7 +231,7 @@ function BulkBar({
   const run = async (label: string, url: string, body: object) => {
     setBusy(true);
     try {
-      reportBulk(label, await postJson(url, { ...body, rows: targetBody(targets) }));
+      reportBulk(label, await postJson(url, { ...body, config_day: configDay, rows: targetBody(targets) }));
       setMode(null);
       setArmed(false);
       onDone();
@@ -370,7 +348,7 @@ function BulkBar({
       {mode === "schedule" && <div className="w-full">
         <p className="text-xs leading-5 text-indigo-900">Thay toàn bộ lịch của {scheduleTargets.length} điểm / tuyến đã chọn ({scheduleTargets.reduce((n,s)=>n+s.rules.length,0)} dòng hiện có, gồm cả ca chưa tick). Điểm giao và thông báo của từng tuyến được giữ nguyên. Copy lịch, sửa tài xế / giờ hoặc thêm ca bên dưới; chỉ ghi khi bấm Lưu.</p>
         <details className="py-1 text-xs text-indigo-900"><summary className="cursor-pointer">Xem điểm / tuyến sẽ thay lịch</summary><ul className="max-h-32 overflow-auto py-1">{scheduleTargets.map(s=><li key={`${s.pickup}|${s.dropoff}`}>{s.pickup} → {s.dropoff || "mọi điểm"} · {s.rules.length} ca</li>)}</ul></details>
-        <BranchEditor pickupName={`${scheduleTargets.length} điểm / tuyến`} dropoffName="" rules={[]}
+        <BranchEditor configDay={configDay} pickupName={`${scheduleTargets.length} điểm / tuyến`} dropoffName="" rules={[]}
           extraLines={[{driver:"",start:"",end:"",dropoff:"",assignment_mode:"fixed"}]} drivers={drivers} locations={locations}
           bulkSchedules={scheduleTargets} onDone={onDone} onCancel={()=>setMode(null)} onStale={onDone} />
       </div>}
@@ -427,12 +405,14 @@ function BulkBar({
  * the live sheet.
  */
 function ReplaceDriverPanel({
+  configDay,
   rows,
   drivers,
   fromOptions,
   onDone,
   onClose,
 }: {
+  configDay: ConfigDay;
   rows: readonly ConfigRowView[];
   /** The roster — the only names a replacement may be. */
   drivers: ConfigDriver[];
@@ -479,7 +459,7 @@ function ReplaceDriverPanel({
     setBusy(true);
     try {
       const j = await postJson("/api/config/replace-driver", {
-        from, to, rows: targetBody(picked),
+        from, to, config_day: configDay, rows: targetBody(picked),
       });
       const done = (j.replaced ?? []).length as number;
       const skipped = (j.skipped ?? []) as { row: number; pickup: string; reason: string }[];
@@ -683,6 +663,11 @@ function activeColumnFilterCount(operator: ConfigTimeOperator, text: string, val
 }
 
 export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: ConfigDriver[]; refreshKey?: number }) {
+  const [configDay, setConfigDay] = useState<ConfigDay>(() => resolveConfigDay());
+  const readOnly = configDay === "sunday";
+  const dayRef = useRef(configDay);
+  dayRef.current = configDay;
+  const loadSequence = useRef(0);
   const [sheetRows, setSheetRows] = useState<ConfigRowView[]>([]);
   const [filters, setFilters] = useState(EMPTY_CONFIG_FILTERS);
   const [advancedFilters, setAdvancedFilters] = useState(false);
@@ -720,7 +705,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
   const closeProfile = () => { clearProfileTimers(); setProfileHover(null); setProfileEditing(false); };
   const pinProfile = () => setProfileHover(p => p ? { ...p, pinned: true } : p);
   const [replacing, setReplacing] = useState(false);
-  const loadedRef = useRef<number | null>(null);
+  const loadedRef = useRef<string | null>(null);
   const filterId = useId();
 
   /** `fresh` is the Tải lại button: it bypasses the route's own cache as well as
@@ -730,22 +715,24 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
    *  cheap: the route compares the shared config stamp and re-reads the sheet
    *  only when a write has actually moved it. */
   const load = useCallback(async (fresh = false) => {
+    const sequence = ++loadSequence.current;
     setLoading(true);
     setErr(null);
     try {
-      const res = await fetch(`/api/config/rows${fresh ? "?fresh=1" : ""}`, { cache: "no-store" });
+      const res = await fetch(`/api/config/rows?day=${configDay}${fresh ? "&fresh=1" : ""}`, { cache: "no-store" });
       const data = await res.json().catch(() => ({}));
+      if (sequence !== loadSequence.current || configDay !== dayRef.current) return;
       if (!res.ok && !Array.isArray(data.rows)) throw new Error(data.error || `Lỗi ${res.status}`);
       setSheetRows(Array.isArray(data.rows) ? data.rows : []);
       setSelected(new Set());
       setMeta({ tab: data.tab ?? "", fetchedAt: data.fetchedAt ?? "" });
       if (data.error) setErr(String(data.error));
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      if (sequence === loadSequence.current && configDay === dayRef.current) setErr(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (sequence === loadSequence.current && configDay === dayRef.current) setLoading(false);
     }
-  }, []);
+  }, [configDay]);
 
   const loadMetadata = useCallback(async () => {
     setMetaBusy(true); setMetaError("");
@@ -778,6 +765,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
     return byName;
   }, [clientMetadata]);
   const rows = useMemo<ConfigRowView[]>(() => {
+    if (loading) return [];
     const mappedIds = new Set(sheetRows.map((row) => row.customer_id).filter(Boolean));
     const mappedNames = new Set(sheetRows.filter((row) => !row.customer_id).map((row) => row.pickup.trim().toLocaleLowerCase("vi")));
     const nameCounts = new Map<string, number>();
@@ -795,15 +783,16 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
           driver: "", start: "", end: "", dropoff: "", smart: false, unmapped: true }];
       }),
     ];
-  }, [sheetRows, clientMetadata]);
+  }, [sheetRows, clientMetadata, loading]);
 
   // On opening or an explicit header sync; never on the status poll.
   useEffect(() => {
-    if (loadedRef.current === refreshKey) return;
-    void load(loadedRef.current !== null);
-    loadedRef.current = refreshKey;
+    const key = `${configDay}:${refreshKey}`;
+    if (loadedRef.current === key) return;
+    void load(loadedRef.current !== null && loadedRef.current.split(":")[1] !== String(refreshKey));
+    loadedRef.current = key;
     if (sessionMetadata?.refreshKey !== refreshKey) void loadMetadata();
-  }, [load, loadMetadata, refreshKey]);
+  }, [configDay, load, loadMetadata, refreshKey]);
 
   const optionValues = useMemo(() => configFilterOptions(rows), [rows]);
   const driverOptions = useMemo(() => optionValues.drivers.map((value) => {
@@ -863,7 +852,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
    * refuse those, but a selection that silently means something else is not a
    * thing to keep on screen.
    */
-  const selectable = useMemo(() => shown.filter(isWritable), [shown]);
+  const selectable = useMemo(() => readOnly || loading || err ? [] : shown.filter(isWritable), [shown, readOnly, loading, err]);
 
   /** For each drawn row, the index of the first row of its route run. A
    *  route's rows are adjacent (sortConfigRows), so the run is the route as
@@ -918,6 +907,16 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
     <Card className={`gap-0 py-2 flex flex-col border-slate-200 ${expandedTools ? "h-auto min-h-full" : "h-full"}`}>
       <CardContent className="px-3 flex flex-1 flex-col min-h-0 gap-2">
         <div className="flex flex-wrap items-center gap-2">
+          <div role="group" aria-label="Ngày cấu hình" className="flex h-9 shrink-0 items-center rounded-md border border-slate-300 bg-slate-50 p-0.5">
+            {([['weekday', 'Ngày thường'], ['sunday', 'Chủ nhật']] as const).map(([day, label]) => <button
+              key={day} type="button" aria-pressed={configDay === day}
+              disabled={!!editing || replacing || selected.size > 0 || profileEditing}
+              title={editing || replacing || selected.size > 0 ? "Đóng trình sửa hoặc bỏ chọn dòng trước khi đổi ngày" : undefined}
+              onClick={() => { if (day === configDay) return; closeProfile(); setSheetRows([]); setMeta(null); setLoading(true); clearSelection(); setLimit(RENDER_CAP); setConfigDay(day); }}
+              className={`h-7 rounded px-3 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:opacity-50 ${configDay === day ? "bg-indigo-600 text-white shadow-sm" : "text-slate-600 hover:bg-slate-200 hover:text-slate-900"}`}>
+              {label}
+            </button>)}
+          </div>
           <div className="relative flex-1 min-w-[200px]">
             <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
             <input
@@ -942,7 +941,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
             className="h-9 bg-indigo-600 px-3 text-xs font-semibold hover:bg-indigo-700"
             aria-expanded={replacing}
             onClick={() => setReplacing((v) => !v)}
-            disabled={rows.length === 0}
+            disabled={readOnly || loading || !!err || rows.length === 0}
           >
             <ArrowRightLeft className="size-3.5" aria-hidden="true" /> Thay tài xế
           </Button>
@@ -957,6 +956,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
           </Button>
         </div>
 
+        {readOnly && <p className="text-xs leading-5 text-slate-600">Chủ nhật · chỉ xem. Tài xế và ca được lấy từ lịch trực Chủ nhật trên Google Sheet.</p>}
         <div className="flex items-center gap-2">
           <Button size="sm" variant="ghost" type="button" className="h-8 px-2 text-xs text-indigo-700"
             aria-expanded={advancedFilters} aria-controls={filterId}
@@ -1078,6 +1078,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
 
         {replacing && (
           <ReplaceDriverPanel
+            configDay={configDay}
             rows={rows}
             drivers={rosterDrivers}
             fromOptions={optionValues.drivers}
@@ -1088,6 +1089,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
 
         {selectedRows.length > 0 && (
           <BulkBar
+            configDay={configDay}
             targets={selectedRows}
             allRows={rows}
             drivers={rosterDrivers}
@@ -1106,6 +1108,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
             <Button size="icon" variant="ghost" className="size-8 shrink-0 text-indigo-700" aria-label="Đóng trình sửa lịch" disabled={editingBusy} onClick={() => setEditing(null)}><X className="size-4" aria-hidden="true" /></Button>
           </div>
           <BranchEditor
+            configDay={configDay}
             key={`${editing.branch}|${editing.dropoff}`}
             pickupName={editing.pickup} pickupId={editingRows[0].customer_id} dropoffName={editing.dropoff}
             rules={rulesOf(editingRows)}
@@ -1197,7 +1200,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
                         type="checkbox"
                         checked={selected.has(r.row)}
                         onChange={() => toggleRow(r.row)}
-                        disabled={!isWritable(r)}
+                        disabled={readOnly || loading || !!err || !isWritable(r)}
                         aria-label={`Chọn dòng ${r.row}${r.pickup ? ` — ${r.pickup}` : ""}`}
                         title={isWritable(r) ? undefined : "Dòng không có điểm lấy — sửa từng dòng bằng nút Sửa"}
                         className="size-4 accent-indigo-600"
@@ -1217,7 +1220,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
                           aria-expanded={runOpen}
                           aria-label={runOpen ? "Đóng" : r.unmapped ? `Thiết lập config cho ${r.pickup}` : `Sửa lịch ${r.pickup || branch} → ${r.dropoff || "mọi điểm"}`}
                           onClick={() => { closeProfile(); setEditing(runOpen ? null : { branch, pickup: r.pickup, dropoff: r.dropoff, row: r.row }); }}
-                          disabled={editingBusy || inactive || (!r.customer_id && !r.pickup)}
+                          disabled={readOnly || loading || !!err || editingBusy || inactive || (!r.customer_id && !r.pickup)}
                         >
                           {runOpen ? <X className="size-4" aria-hidden="true" /> : <Pencil className="size-4" aria-hidden="true" />}
                         </Button>

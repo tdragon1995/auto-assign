@@ -73,8 +73,17 @@ export function MasterProfileEditor({ kind, id, initial, clients, linkedLabcente
     <fieldset disabled={saving} className="space-y-3">
       {kind === "client" ? <>
         {input("customer_name", "Tên khách hàng")}
-        <label className="block space-y-1"><span className="text-xs font-medium text-slate-700">Trạng thái địa điểm</span><select className={fieldClass} value={draft.is_active} onChange={e=>set("is_active",e.target.value)}><option value="true">Hoạt động</option><option value="false">Ngừng hoạt động</option></select></label>
-        <p className="text-xs text-slate-600">Ngừng hoạt động sẽ thêm {"{inacttiv}"} vào tên và dừng tự động gán job tại điểm này. Lịch và lịch sử được giữ lại.</p>
+        <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+          <div className="flex items-center justify-between gap-3">
+            <span id={`location-status-${id}`} className="text-xs font-semibold text-slate-800">{draft.is_active === "true" ? "Địa điểm đang hoạt động" : "Địa điểm ngừng hoạt động"}</span>
+            <button type="button" role="switch" aria-checked={draft.is_active === "true"} aria-label="Trạng thái địa điểm" aria-describedby={`location-status-${id}`}
+              onClick={() => set("is_active", draft.is_active === "true" ? "false" : "true")}
+              className={`relative h-6 w-11 shrink-0 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 ${draft.is_active === "true" ? "bg-emerald-600" : "bg-slate-400"}`}>
+              <span className={`absolute top-0.5 size-5 rounded-full bg-white shadow-sm transition-transform ${draft.is_active === "true" ? "left-0.5 translate-x-5" : "left-0.5"}`} />
+            </button>
+          </div>
+          <p className="mt-2 text-xs leading-5 text-slate-600">Ngừng hoạt động thêm {"{inactive}"} vào tên trên Cartrack và dừng tự động gán job tại điểm này. Lịch và lịch sử được giữ lại. Bấm Lưu và đồng bộ để áp dụng.</p>
+        </div>
         {input("address_line_1", "Địa chỉ")}{input("address_line_2", "Địa chỉ bổ sung")}
         <div className="grid grid-cols-2 gap-3">{input("contact_number", "Điện thoại")}{input("email", "Email")}{input("postal_code", "Mã bưu chính")}{input("client_reference", "Mã tham chiếu")}</div>
         <label className="flex items-center gap-2 text-xs text-slate-700"><input type="checkbox" checked={keepGps} onChange={e => setKeepGps(e.target.checked)} className="accent-indigo-600" />Giữ nguyên GPS khi sửa địa chỉ</label>

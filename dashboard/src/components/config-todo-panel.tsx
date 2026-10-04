@@ -13,6 +13,7 @@ import { displayDriverCell } from "@/lib/driver-label";
 import { coverageLostWithout, overlapKey } from "@/lib/config-shift";
 import type { ConfigRowSnapshot } from "@/lib/config-row-match";
 import { searchConfigRows } from "./config-browser-panel";
+import type { ConfigDay } from "@/lib/config-day";
 import type { ConfigRowView } from "@/app/api/config/rows/route";
 import { DriverCombobox } from "./driver-combobox";
 import { FilterMultiSelect } from "./filter-multi-select";
@@ -369,11 +370,13 @@ type CopySource = {
  * source pattern so the supervisor can review it before saving.
  */
 function CopyFromBranch({
+  configDay,
   open,
   onClose,
   onCopy,
   panelId,
 }: {
+  configDay?: ConfigDay;
   open: boolean;
   onClose: () => void;
   onCopy: (lines: CopiedLine[]) => void;
@@ -393,7 +396,7 @@ function CopyFromBranch({
     setLoading(true);
     setErr(null);
     try {
-      const res = await fetch("/api/config/rows", { cache: "no-store" });
+      const res = await fetch(`/api/config/rows${configDay ? `?day=${configDay}` : ""}`, { cache: "no-store" });
       const data = await res.json().catch(() => ({}));
       if (!Array.isArray(data.rows)) throw new Error(data.error || `Lỗi ${res.status}`);
       setRows(data.rows as ConfigRowView[]);
@@ -402,7 +405,7 @@ function CopyFromBranch({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [configDay]);
 
   // One fetch per opening of the editor, and none at all until the picker is
   // actually opened. The route is behind a five-minute cache on the server, so
@@ -625,8 +628,9 @@ function CopyFromBranch({
  * way in" would be a second set of those, and they would drift.
  */
 export function BranchEditor({
-  pickupName, pickupId, dropoffName, rules, extraLines = [], drivers, locations, bulkSchedules, onDone, onRemoved, onStale, onCancel, onBusyChange,
+  configDay, pickupName, pickupId, dropoffName, rules, extraLines = [], drivers, locations, bulkSchedules, onDone, onRemoved, onStale, onCancel, onBusyChange,
 }: {
+  configDay?: ConfigDay;
   pickupName: string;
   pickupId?: string;
   dropoffName: string;
@@ -790,9 +794,9 @@ export function BranchEditor({
     let written = 0;
     let relocated = 0;
     try {
-      const post = async (url: string, body: unknown) => {
+      const post = async (url: string, body: object) => {
         const res = await fetch(url, {
-          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...body, config_day: configDay }),
         });
         const j = await res.json().catch(() => ({}));
         if (!res.ok || !j.ok) { const error = new Error(j.error || `Lỗi ${res.status}`) as Error & { code?: string }; error.code = j.code ?? (res.status >= 500 ? "CONFIG_SAVE_UNCERTAIN" : undefined); throw error; }
@@ -912,6 +916,7 @@ export function BranchEditor({
         )}
       </div>
       <CopyFromBranch
+        configDay={configDay}
         open={copyOpen}
         panelId={copyPanelId}
         onClose={() => { setCopyOpen(false); copyBtnRef.current?.focus(); }}

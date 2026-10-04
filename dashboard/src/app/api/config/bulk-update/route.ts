@@ -1,3 +1,4 @@
+import { resolveConfigDay } from "@/lib/config-day";
 import { NextRequest, NextResponse } from "next/server";
 import { bulkUpdateConfigRows } from "@/lib/sheets-writer";
 import { splitDriverNames, DRIVER_SEP } from "@/lib/driver-cell";
@@ -21,6 +22,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== "object") return bad("Body không hợp lệ");
+    const configDay = resolveConfigDay(body.config_day);
     const { rows, driver_name, shift_start, shift_end } = body as {
       rows?: unknown; driver_name?: string; shift_start?: string; shift_end?: string;
     };
@@ -44,7 +46,7 @@ export async function POST(req: NextRequest) {
     }
     if (driverName === undefined && !start && !end) return bad("Không có gì để ghi");
 
-    const result = await bulkUpdateConfigRows({
+    const result = await bulkUpdateConfigRows({ config_day: configDay,
       targets: parsed.targets,
       driverName,
       start: start || undefined,

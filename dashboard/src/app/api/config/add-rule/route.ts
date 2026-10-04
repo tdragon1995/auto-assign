@@ -1,3 +1,4 @@
+import { resolveConfigDay } from "@/lib/config-day";
 import { NextRequest, NextResponse } from "next/server";
 import { writeConfigRows } from "@/lib/sheets-writer";
 import { splitDriverNames, DRIVER_SEP } from "@/lib/driver-cell";
@@ -5,7 +6,6 @@ import { loadDriversFromSheet, invalidateConfigCache } from "@/lib/config";
 import { timeToMins } from "@/lib/time";
 import { masterEnabled } from "@/lib/master-store";
 import { sbSelect } from "@/lib/supabase-rest";
-import { vnIsSunday } from "@/lib/time";
 
 /**
  * Close an uncovered hour by SPLITTING it out into its own rule, rather than
@@ -47,7 +47,8 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== "object") return bad("Body không hợp lệ");
-    if (body.alt_drop_off_id !== undefined && (!masterEnabled() || vnIsSunday() || typeof body.alt_drop_off_id !== "string")) return bad("Điểm giao thay thế không hợp lệ");
+    const configDay = resolveConfigDay(body.config_day);
+    if (body.alt_drop_off_id !== undefined && (!masterEnabled() || configDay === "sunday" || typeof body.alt_drop_off_id !== "string")) return bad("Điểm giao thay thế không hợp lệ");
     const { pickup_name, dropoff_name, driver_name, shift_start, shift_end, copy_from_row } = body as {
       pickup_name?: string; dropoff_name?: string; driver_name?: string;
       shift_start?: string; shift_end?: string;
@@ -77,10 +78,10 @@ export async function POST(req: NextRequest) {
     const [row] = await writeConfigRows([
       { pickup, dropoff: (dropoff_name ?? "").trim(), start, end, driver: names.join(DRIVER_SEP), copyFromRow: copy_from_row,
         copyFromRuleId:body.copy_from_rule_id,assignment_mode:body.assignment_mode,driver_ids:body.driver_ids,alt_drop_off_id:body.alt_drop_off_id },
-    ]);
+    ], configDay);
     await invalidateConfigCache();
 
-    const meta=masterEnabled() && !vnIsSunday() ? (await sbSelect<{id:number;revision:number}>("master_config_rules",`select=id,revision&day_type=eq.weekday&active=eq.true&source_row=eq.${row}`))[0] : null;
+    const meta=masterEnabled() && configDay === "weekday" ? (await sbSelect<{id:number;revision:number}>("master_config_rules",`select=id,revision&day_type=eq.weekday&active=eq.true&source_row=eq.${row}`))[0] : null;
     return NextResponse.json({ ok: true, row, ...(meta?{rule_id:meta.id,revision:meta.revision}:{}) });
   } catch (e) {
     return bad(e instanceof Error ? e.message : String(e), 409);

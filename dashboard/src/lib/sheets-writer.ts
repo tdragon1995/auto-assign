@@ -1,7 +1,8 @@
 import { google } from "googleapis";
 import { randomUUID } from "node:crypto";
 import { SHEET_ID, SHEET_GID } from "./sheets";
-import { vnIsSunday, vnTimestamp } from "./time";
+import { vnTimestamp } from "./time";
+import { resolveConfigDay, type ConfigDay } from "./config-day";
 import { LEAVE_DELETED_SHEET, LEAVE_DELETED_HEADERS } from "./leave-suppression";
 import type { ConfigCells } from "./unmapped-row";
 import { timeToMins } from "./time";
@@ -1723,8 +1724,8 @@ export const CONFIG_TABS: Record<"weekday" | "sunday", ConfigTabSpec> = {
 /** Which tab the engine is reading right now. Matched to `loadConfigFromSheets`
  *  deliberately: a row written into the tab the engine is NOT reading today fixes
  *  nothing, and quietly adds a rule to the other half of the week. */
-export function currentConfigTab(): ConfigTabSpec {
-  return vnIsSunday() ? CONFIG_TABS.sunday : CONFIG_TABS.weekday;
+export function currentConfigTab(day?: ConfigDay): ConfigTabSpec {
+  return resolveConfigDay(day) === "sunday" ? CONFIG_TABS.sunday : CONFIG_TABS.weekday;
 }
 
 const a1 = (t: ConfigTabSpec) => `'${t.title.replace(/'/g, "''")}'`;
@@ -1969,10 +1970,10 @@ async function copyConfigRowParts(
  * Write config lines into the spare rows inside whichever tab the engine is
  * reading today. Returns the 1-based row numbers written.
  */
-export async function writeConfigRows(cells: ConfigCells[]): Promise<number[]> {
+export async function writeConfigRows(cells: ConfigCells[], configDay?: ConfigDay): Promise<number[]> {
   if (cells.length === 0) return [];
-  if (masterEnabled() && !vnIsSunday()) return createMasterConfigRows(cells);
-  const tab = currentConfigTab();
+  if (masterEnabled() && resolveConfigDay(configDay) === "weekday") return createMasterConfigRows(cells);
+  const tab = currentConfigTab(configDay);
   const sheets = getSheetsClient();
   // WEEKDAY ONLY for a named driver, exactly as completeConfigRow refuses: the
   // Sunday tab derives Driver from the public roster with a formula, and a name
@@ -2104,6 +2105,7 @@ async function resolveConfigTargetRow(
  * driver onto whatever happens to live there now.
  */
 export async function completeConfigRow(opts: {
+  config_day?: ConfigDay;
   alt_drop_off_id?: string;
   assignment_mode?: "fixed" | "smart";
   driver_ids?: string[];
@@ -2118,9 +2120,9 @@ export async function completeConfigRow(opts: {
   /** Optional source row used to restore formulas and formatting after a copy. */
   copyFromRow?: number;
 }): Promise<{ row: number; moved: boolean }> {
-  if (masterEnabled() && !vnIsSunday()) return editMasterConfig(opts, opts);
+  if (masterEnabled() && resolveConfigDay(opts.config_day) === "weekday") return editMasterConfig(opts, opts);
   if (opts.alt_drop_off_id !== undefined) throw new Error("Điểm giao thay thế chỉ sửa trong config Supabase");
-  const tab = currentConfigTab();
+  const tab = currentConfigTab(opts.config_day);
   if (tab.gid !== CONFIG_TABS.weekday.gid) {
     throw new Error(
       "Chủ nhật: tài xế được suy ra từ lịch trực công khai, không chọn trong config — sửa trên tab lịch Chủ nhật",
@@ -2200,8 +2202,9 @@ async function readTargetColumns(
   targets: readonly ConfigTarget[],
   columns: readonly string[],
   sundayMsg: string,
+  configDay?: ConfigDay,
 ) {
-  const tab = currentConfigTab();
+  const tab = currentConfigTab(configDay);
   if (tab.gid !== CONFIG_TABS.weekday.gid) throw new Error(sundayMsg);
   if (targets.length === 0) throw new Error("Chưa chọn dòng nào");
   const sheets = getSheetsClient();
@@ -2287,12 +2290,13 @@ const SUNDAY_DRIVER_MSG =
  * The caller validates the names against the roster and the window's shape.
  */
 export async function bulkUpdateConfigRows(opts: {
+  config_day?: ConfigDay;
   targets: ConfigTarget[];
   driverName?: string;
   start?: string;
   end?: string;
 }): Promise<BulkConfigResult> {
-  if (masterEnabled() && !vnIsSunday()) return bulkMasterConfig(opts.targets, opts);
+  if (masterEnabled() && resolveConfigDay(opts.config_day) === "weekday") return bulkMasterConfig(opts.targets, opts);
   const withDriver = opts.driverName !== undefined;
   const withHours = opts.start !== undefined || opts.end !== undefined;
   if (!withDriver && !withHours) throw new Error("Không có gì để ghi");
@@ -2300,7 +2304,7 @@ export async function bulkUpdateConfigRows(opts: {
     ...(withDriver ? ["Driver"] : []),
     ...(withHours ? [WRITE_COLS.start, WRITE_COLS.end] : []),
   ];
-  const { sheets, q, cols, cell, live, skipped } = await readTargetColumns(opts.targets, columns, SUNDAY_DRIVER_MSG);
+  const { sheets, q, cols, cell, live, skipped } = await readTargetColumns(opts.targets, columns, SUNDAY_DRIVER_MSG, opts.config_day);
 
   const data: { range: string; values: string[][] }[] = [];
   const done: BulkConfigResult["done"] = [];
@@ -2341,8 +2345,8 @@ export async function bulkUpdateConfigRows(opts: {
  * Row 2 is refused like the single delete refuses it (the id ARRAYFORMULA
  * anchor), and the same read-back runs once at the end. See `deleteConfigRow`.
  */
-export async function bulkDeleteConfigRows(opts: { targets: ConfigTarget[] }): Promise<BulkConfigResult> {
-  if (masterEnabled() && !vnIsSunday()) return bulkMasterConfig(opts.targets, {delete:true});
+export async function bulkDeleteConfigRows(opts: { targets: ConfigTarget[]; config_day?: ConfigDay }): Promise<BulkConfigResult> {
+  if (masterEnabled() && resolveConfigDay(opts.config_day) === "weekday") return bulkMasterConfig(opts.targets, {delete:true});
   const ANCHOR = "dòng 2 giữ công thức id của cả cột — không xoá";
   const anchor = opts.targets
     .filter((t) => t.row <= 2)
@@ -2351,7 +2355,7 @@ export async function bulkDeleteConfigRows(opts: { targets: ConfigTarget[] }): P
   if (rest.length === 0) return { done: [], skipped: anchor };
 
   const { sheets, tab, q, letter, live, skipped } = await readTargetColumns(
-    rest, [], "Chủ nhật: dòng được suy ra từ lịch trực công khai — sửa trên tab lịch Chủ nhật",
+    rest, [], "Chủ nhật: dòng được suy ra từ lịch trực công khai — sửa trên tab lịch Chủ nhật", opts.config_day,
   );
   skipped.push(...anchor);
   skipped.push(...live.filter((t) => t.row <= 2).map((t) => ({ row: t.row, pickup: t.expectPickup, reason: ANCHOR })));
@@ -2401,13 +2405,14 @@ export interface DriverReplaceResult {
  * dashboard's copy, so a smart row edited in the meantime keeps the edit.
  */
 export async function replaceConfigDriver(opts: {
+  config_day?: ConfigDay;
   from: string;
   to: string;
   targets: ConfigTarget[];
 }): Promise<DriverReplaceResult> {
-  if (masterEnabled() && !vnIsSunday()) return replaceMasterConfig(opts);
+  if (masterEnabled() && resolveConfigDay(opts.config_day) === "weekday") return replaceMasterConfig(opts);
   const { sheets, q, cols, cell, live, skipped } =
-    await readTargetColumns(opts.targets, ["Driver"], SUNDAY_DRIVER_MSG);
+    await readTargetColumns(opts.targets, ["Driver"], SUNDAY_DRIVER_MSG, opts.config_day);
 
   const result: DriverReplaceResult = { replaced: [], skipped };
   const data: { range: string; values: string[][] }[] = [];
@@ -2460,12 +2465,13 @@ export async function replaceConfigDriver(opts: {
  * formula deriving cover from the public roster.
  */
 export async function deleteConfigRow(opts: {
+  config_day?: ConfigDay;
   row: number;
   expectPickup: string;
   expected?: ConfigRowSnapshot;
 }): Promise<{ row: number; moved: boolean }> {
-  if (masterEnabled() && !vnIsSunday()) return editMasterConfig(opts, {delete:true});
-  const tab = currentConfigTab();
+  if (masterEnabled() && resolveConfigDay(opts.config_day) === "weekday") return editMasterConfig(opts, {delete:true});
+  const tab = currentConfigTab(opts.config_day);
   if (tab.gid !== CONFIG_TABS.weekday.gid) {
     throw new Error(
       "Chủ nhật: dòng được suy ra từ lịch trực công khai — sửa trên tab lịch Chủ nhật",
@@ -2549,14 +2555,15 @@ export async function deleteConfigRow(opts: {
  * that may be minutes old.
  */
 export async function adjustConfigRowWindow(opts: {
+  config_day?: ConfigDay;
   row: number;
   expectPickup: string;
   expected?: ConfigRowSnapshot;
   edge: "start" | "end";
   value: string;
 }): Promise<{ row: number; moved: boolean }> {
-  if (masterEnabled() && !vnIsSunday()) return editMasterConfig(opts, {[opts.edge]:opts.value});
-  const tab = currentConfigTab();
+  if (masterEnabled() && resolveConfigDay(opts.config_day) === "weekday") return editMasterConfig(opts, {[opts.edge]:opts.value});
+  const tab = currentConfigTab(opts.config_day);
   if (tab.gid !== CONFIG_TABS.weekday.gid) {
     throw new Error("Chủ nhật: ca được suy ra từ lịch trực công khai — sửa trên tab lịch Chủ nhật");
   }

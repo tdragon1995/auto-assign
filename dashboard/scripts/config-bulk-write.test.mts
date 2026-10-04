@@ -76,11 +76,6 @@ const fake = {
 process.env.GOOGLE_SERVICE_ACCOUNT_KEY = JSON.stringify({ type: "service_account", client_email: "t@t", private_key: "x" });
 
 const { bulkUpdateConfigRows, bulkDeleteConfigRows, replaceConfigDriver } = await import("../src/lib/sheets-writer");
-const { vnIsSunday } = await import("../src/lib/time");
-if (vnIsSunday()) {
-  console.log("Sunday: the writers refuse the Sunday tab by design — run this on a weekday.");
-  process.exit(0);
-}
 const t = (row: number) => ({ row, expectPickup: `PK${row}` });
 const pickups = () => grid.slice(1).map((r) => r[1]);
 
@@ -88,7 +83,7 @@ const pickups = () => grid.slice(1).map((r) => r[1]);
 reset();
 {
   const rows = Array.from({ length: 40 }, (_, i) => t(i + 3));
-  const res = await bulkUpdateConfigRows({ targets: rows, driverName: B });
+  const res = await bulkUpdateConfigRows({ config_day: "weekday", targets: rows, driverName: B });
   ok("40 driver edits: 1 header read + 1 column read + 1 write",
     calls.get === 1 && calls.batchGet === 1 && calls.write === 1, JSON.stringify(calls));
   ok("every target now names B", rows.every((r) => grid[r.row - 1][3] === B));
@@ -98,25 +93,25 @@ reset();
 }
 reset();
 {
-  await bulkUpdateConfigRows({ targets: [t(4), t(5)], start: "13:00", end: "17:30" });
+  await bulkUpdateConfigRows({ config_day: "weekday", targets: [t(4), t(5)], start: "13:00", end: "17:30" });
   ok("window edit writes both ends", grid[3][4] === "13:00" && grid[3][5] === "17:30" && grid[4][5] === "17:30");
   ok("driver untouched by a window edit", grid[3][3] === C);
 }
 reset();
 {
   grid[4][4]="16:45";
-  await bulkUpdateConfigRows({ targets: [t(4),t(5)], end: "20:00" });
+  await bulkUpdateConfigRows({ config_day: "weekday", targets: [t(4),t(5)], end: "20:00" });
   ok("end-only edit preserves each row's own start",grid[3][4]==="07:00" && grid[4][4]==="16:45" && grid[3][5]==="20:00" && grid[4][5]==="20:00");
   ok("partial edits still use one batch write",calls.get===1 && calls.batchGet===1 && calls.write===1);
-  await bulkUpdateConfigRows({ targets: [t(4)], start: "08:00",driverName:B });
+  await bulkUpdateConfigRows({ config_day: "weekday", targets: [t(4)], start: "08:00",driverName:B });
   ok("driver + start-only edit keeps the end",grid[3][3]===B && grid[3][4]==="08:00" && grid[3][5]==="20:00");
   grid[4][4]="";grid[4][5]="";
-  const res=await bulkUpdateConfigRows({ targets: [t(4),t(5)], end:"08:00" });
+  const res=await bulkUpdateConfigRows({ config_day: "weekday", targets: [t(4),t(5)], end:"08:00" });
   ok("incomplete and equal resulting windows are skipped",res.done.length===0 && res.skipped.length===2 && grid[4][5]==="");
 }
 reset();
 {
-  const res = await bulkUpdateConfigRows({ targets: [t(4), { row: 5, expectPickup: "PK999" }], driverName: B });
+  const res = await bulkUpdateConfigRows({ config_day: "weekday", targets: [t(4), { row: 5, expectPickup: "PK999" }], driverName: B });
   ok("a row whose branch moved is skipped, not written", grid[4][3] !== B && res.skipped[0]?.row === 5);
   ok("…and the others still land", grid[3][3] === B && res.done.length === 1);
 }
@@ -125,7 +120,7 @@ reset();
 reset();
 {
   const doomed = [5, 30, 6, 12, 59, 7];                 // ticked in no particular order
-  const res = await bulkDeleteConfigRows({ targets: doomed.map(t) });
+  const res = await bulkDeleteConfigRows({ config_day: "weekday", targets: doomed.map(t) });
   const left = pickups();
   ok("exactly the ticked rows are gone", doomed.every((r) => !left.includes(`PK${r}`)) && left.length === 59 - doomed.length,
     `left ${left.length}`);
@@ -136,13 +131,13 @@ reset();
 }
 reset();
 {
-  const res = await bulkDeleteConfigRows({ targets: [t(2), t(9)] });
+  const res = await bulkDeleteConfigRows({ config_day: "weekday", targets: [t(2), t(9)] });
   ok("row 2 (id formula anchor) refused, the rest deleted",
     pickups().includes("PK2") && !pickups().includes("PK9") && res.skipped.some((s) => s.row === 2));
 }
 reset();
 {
-  const res = await bulkDeleteConfigRows({ targets: [t(9), { row: 10, expectPickup: "PK999" }] });
+  const res = await bulkDeleteConfigRows({ config_day: "weekday", targets: [t(9), { row: 10, expectPickup: "PK999" }] });
   ok("a moved row is not deleted", pickups().includes("PK10") && !pickups().includes("PK9") && res.skipped[0]?.row === 10);
 }
 
@@ -150,7 +145,7 @@ reset();
 reset();
 {
   const rows = [t(3), t(5), t(4)];                      // 3: "A, C" (smart)  5: A  4: C
-  const res = await replaceConfigDriver({ from: A, to: B, targets: rows });
+  const res = await replaceConfigDriver({ config_day: "weekday", from: A, to: B, targets: rows });
   ok("smart row keeps its other driver", grid[2][3] === `${B}, ${C}`);
   ok("fixed row swapped", grid[4][3] === B);
   ok("row without A skipped, untouched", grid[3][3] === C && res.skipped.some((s) => s.row === 4));

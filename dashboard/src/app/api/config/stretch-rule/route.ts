@@ -1,3 +1,4 @@
+import { resolveConfigDay } from "@/lib/config-day";
 import { NextRequest, NextResponse } from "next/server";
 import { adjustConfigRowWindow, ConfigRowChangedError } from "@/lib/sheets-writer";
 import { parseConfigRowSnapshot } from "@/lib/config-row-match";
@@ -19,6 +20,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== "object") return bad("Body không hợp lệ");
+    const configDay = resolveConfigDay(body.config_day);
     const { row, pickup_name, edge, value, expected_row } = body as {
       row?: number; pickup_name?: string; edge?: string; value?: string; expected_row?: unknown;
     };
@@ -31,7 +33,7 @@ export async function POST(req: NextRequest) {
     const v = (value ?? "").trim();
     if (timeToMins(v) < 0) return bad(`Giờ không hợp lệ: ${v || "(trống)"}`);
 
-    const result = await adjustConfigRowWindow({ row: row as number, expectPickup: pickup_name, expected: expected ?? undefined, edge, value: v });
+    const result = await adjustConfigRowWindow({ config_day: configDay, row: row as number, expectPickup: pickup_name, expected: expected ?? undefined, edge, value: v });
     await invalidateConfigCache();
     return NextResponse.json({ ok: true, ...result });
   } catch (e) {

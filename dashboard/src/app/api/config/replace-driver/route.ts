@@ -1,3 +1,4 @@
+import { resolveConfigDay } from "@/lib/config-day";
 import { NextRequest, NextResponse } from "next/server";
 import { replaceConfigDriver } from "@/lib/sheets-writer";
 import { loadDriversFromSheet, invalidateConfigCache } from "@/lib/config";
@@ -6,7 +7,6 @@ import { getDrivers } from "@/lib/cartrack";
 import { masterDriver, masterEnabled } from "@/lib/master-store";
 import { syncMissingProfiles } from "@/lib/master-sync";
 import { sbSelectAll } from "@/lib/supabase-rest";
-import { vnIsSunday } from "@/lib/time";
 
 /**
  * Replace one driver with another across the config — "Hùng nghỉ, từ nay Nam
@@ -31,6 +31,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== "object") return bad("Body không hợp lệ");
+    const configDay = resolveConfigDay(body.config_day);
     const { from, to, rows } = body as {
       from?: string; to?: string; rows?: unknown;
     };
@@ -43,7 +44,7 @@ export async function POST(req: NextRequest) {
     const parsed = parseConfigTargets(rows);
     if ("error" in parsed) return bad(parsed.error);
 
-    if (masterEnabled() && !vnIsSunday()) {
+    if (masterEnabled() && configDay === "weekday") {
       const drivers = await getDrivers();
       if (drivers.length < 100) return bad("Chưa đọc đủ tài xế Cartrack — thử lại sau", 503);
       const matches = drivers.filter((d) => d.is_active && `${d.first_name} ${d.last_name}`.trim() === toName);
@@ -60,7 +61,7 @@ export async function POST(req: NextRequest) {
       if (!drivers.some((d) => d.name === toName)) return bad(`"${toName}" không có trong tab Driver — chọn từ danh sách`);
     }
 
-    const result = await replaceConfigDriver({ from: fromName, to: toName, targets: parsed.targets });
+    const result = await replaceConfigDriver({ config_day: configDay, from: fromName, to: toName, targets: parsed.targets });
     if (result.replaced.length > 0) await invalidateConfigCache();
     return NextResponse.json({ ok: true, ...result });
   } catch (e) {

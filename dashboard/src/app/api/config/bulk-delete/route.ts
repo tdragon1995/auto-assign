@@ -1,3 +1,4 @@
+import { resolveConfigDay } from "@/lib/config-day";
 import { NextRequest, NextResponse } from "next/server";
 import { bulkDeleteConfigRows } from "@/lib/sheets-writer";
 import { invalidateConfigCache } from "@/lib/config";
@@ -16,10 +17,11 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== "object") return bad("Body không hợp lệ");
+    const configDay = resolveConfigDay(body.config_day);
     const parsed = parseConfigTargets((body as { rows?: unknown }).rows);
     if ("error" in parsed) return bad(parsed.error);
 
-    const result = await bulkDeleteConfigRows({ targets: parsed.targets });
+    const result = await bulkDeleteConfigRows({ config_day: configDay, targets: parsed.targets });
     if (result.done.length > 0) await invalidateConfigCache();
     return NextResponse.json({ ok: true, ...result });
   } catch (e) {

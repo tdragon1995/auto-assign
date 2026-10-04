@@ -60,7 +60,7 @@ try {
   assert.equal(writes.at(-1)?.changes[0].shift_start,"08:00");
   assert.equal(writes.at(-1)?.changes[0].assignment_mode,"smart");
   const rows=[{row:2,pickup_name:"Pickup",expected_row:expected}];
-  const request=(body:Record<string,unknown>)=>new NextRequest("https://dashboard.invalid/api/config/bulk-update",{method:"POST",body:JSON.stringify({rows,...body})});
+  const request=(body:Record<string,unknown>)=>new NextRequest("https://dashboard.invalid/api/config/bulk-update",{method:"POST",body:JSON.stringify({rows,config_day:"weekday",...body})});
   assert.equal((await bulkUpdate(request({shift_start:"",shift_end:"20:00"}))).status,200);
   assert.equal(writes.at(-1)?.changes[0].shift_start,"07:00","end-only API update keeps the existing start");
   assert.equal(writes.at(-1)?.changes[0].shift_end,"20:00");
