@@ -9,6 +9,7 @@ import { ActivityLog } from "./activity-log";
 import { ScheduleListPanel } from "./schedule-list-panel";
 import { type HeldJob } from "./note-review-panel";
 import { JobAdminPanel, type JobAdminRequest } from "./job-admin-panel";
+import { BatchLookupPanel } from "./batch-lookup-panel";
 import { DistanceTab } from "./distance-tab";
 import { FailedJobsPanel, type ScheduleErrorRow } from "./failed-jobs-panel";
 import { LeaveStatusPanel } from "./leave-status-panel";
@@ -29,7 +30,7 @@ import type { LeaveSuppression } from "@/lib/leave-suppression";
 import type { LabcenterMetadataReport } from "@/lib/master-sync";
 
 type Env = "prod" | "uat";
-type RightTab = "attention" | "live" | "config" | "schedule" | "distance" | "tat" | "pay" | "locations";
+type RightTab = "attention" | "live" | "batch" | "config" | "schedule" | "distance" | "tat" | "pay" | "locations";
 
 export function Dashboard() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -697,6 +698,9 @@ export function Dashboard() {
             <button onClick={() => setRightTab("live")} className={tabBtn(rightTab === "live")}>
               Nhật ký
             </button>
+            <button onClick={() => setRightTab("batch")} className={tabBtn(rightTab === "batch")}>
+              Tra cứu VID / Batch
+            </button>
             <button onClick={() => setRightTab("config")} className={tabBtn(rightTab === "config")}>
               Master Client Info
             </button>
@@ -783,6 +787,10 @@ export function Dashboard() {
                 <div className="lg:h-full lg:w-[26rem] lg:shrink-0">
                   <JobAdminPanel env={env} drivers={drivers} openRequest={adminRequest} />
                 </div>
+              </div>
+            ) : rightTab === "batch" ? (
+              <div className="h-[72vh] lg:h-full">
+                <BatchLookupPanel />
               </div>
             ) : rightTab === "config" ? (
               /* Mounted only while the tab is open, so the ~1,700-row fetch
