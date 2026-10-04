@@ -1179,6 +1179,8 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
                   const first = shown[runStart[i]];
                   const firstOfBranch = runStart[i] === i;
                   const inactive = isInactive(r.pickup);
+                  const pickupLabel = locationName(r.pickup, true);
+                  const pickupTail = pickupLabel.lastIndexOf(" ") + 1;
                   const locationInfo = clientMetaById.get(r.customer_id) ?? clientMetaByName.get(r.pickup.trim().toLocaleLowerCase("vi"));
                   const dropoffInfo = clientMetaByName.get(r.dropoff.trim().toLocaleLowerCase("vi"));
                   const alternativeInfo = clientMetaById.get(r.alt_drop_off_id ?? "");
@@ -1235,8 +1237,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
                             onPointerLeave={e => { if (e.pointerType === "mouse") leaveProfile(); }}
                             onClick={e => { if (locationInfo) openProfile("client", locationInfo.customer_id, e.currentTarget, true); }}
                             className={`text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${inactive ? "text-slate-500" : "font-medium text-slate-900"}`}>
-                            {r.pickup ? locationName(r.pickup,true) : <span className="text-slate-500">—</span>}
-                            {inactive && <>{"\u00a0"}<span title="Ngừng hoạt động" className="inline-flex whitespace-nowrap rounded border border-slate-200 bg-slate-100 px-1.5 text-[10px] font-medium leading-4 text-slate-600 align-middle">Inactive</span></>}
+                            {inactive ? <>{pickupLabel.slice(0, pickupTail)}<span className="whitespace-nowrap">{pickupLabel.slice(pickupTail)}{" "}<span title="Ngừng hoạt động" className="inline-flex rounded border border-slate-200 bg-slate-100 px-1.5 text-[10px] font-medium leading-4 text-slate-600 align-middle">Inactive</span></span></> : r.pickup ? pickupLabel : <span className="text-slate-500">—</span>}
                           </button>
                           {r.dropoff && <>
                             <span className="mx-1 text-slate-500" aria-hidden="true">→</span>
