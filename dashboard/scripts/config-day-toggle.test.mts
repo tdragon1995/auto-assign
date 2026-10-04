@@ -81,7 +81,7 @@ try {
   assert.equal(writes, 1, "Sunday edits never reach Supabase");
   const html = renderToStaticMarkup(createElement(MasterProfileEditor, {kind: "client", id: pickup, initial: {customer_name: "{inactive} Location"}, clients: [], onCancel() {}, async onSaved() {}}));
   assert.match(html, /role="switch" aria-checked="false"/);
-  assert.ok(html.includes("Bấm Lưu và đồng bộ để áp dụng"));
+  assert.ok(html.includes("Ngừng hoạt động: chặn gửi yêu cầu ở Diag Portal"));
   assert.deepEqual(profilePatch("client", {customer_name: "{inactive} Location"}, {is_active: "true"}, true), {is_active: true});
   console.log("PASS: selected sources, isolated caches, Sunday write protection, weekday save on Sunday, and staged hover status");
 } finally { globalThis.fetch = originalFetch; globalThis.Date = RealDate; }

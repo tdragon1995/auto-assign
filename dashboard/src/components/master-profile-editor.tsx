@@ -82,7 +82,7 @@ export function MasterProfileEditor({ kind, id, initial, clients, linkedLabcente
               <span className={`absolute top-0.5 size-5 rounded-full bg-white shadow-sm transition-transform ${draft.is_active === "true" ? "left-0.5 translate-x-5" : "left-0.5"}`} />
             </button>
           </div>
-          <p className="mt-2 text-xs leading-5 text-slate-600">Ngừng hoạt động thêm {"{inactive}"} vào tên trên Cartrack và dừng tự động gán job tại điểm này. Lịch và lịch sử được giữ lại. Bấm Lưu và đồng bộ để áp dụng.</p>
+          <p className="mt-2 text-xs leading-5 text-slate-600">Ngừng hoạt động: chặn gửi yêu cầu ở Diag Portal và thêm {"{inactive}"} vào tên trên Cartrack.</p>
         </div>
         {input("address_line_1", "Địa chỉ")}{input("address_line_2", "Địa chỉ bổ sung")}
         <div className="grid grid-cols-2 gap-3">{input("contact_number", "Điện thoại")}{input("email", "Email")}{input("postal_code", "Mã bưu chính")}{input("client_reference", "Mã tham chiếu")}</div>
