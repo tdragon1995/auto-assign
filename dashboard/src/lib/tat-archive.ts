@@ -9,13 +9,13 @@
  */
 import { Redis } from "@upstash/redis";
 import { getTimelineRoutes, type Env } from "./cartrack";
-import { pickupEtaRows, writePickupEta } from "./pickup-setup";
+import { archivePickupEvents } from "./pickup-setup";
 import { buildDayLegs } from "./tat";
 import { buildDayPay } from "./pay";
 import { sbDelete, sbUpsert, sbSelectAll, supabaseConfigured, missingSupabaseEnv } from "./supabase-rest";
 import { keepStoredDistances, markPayDay } from "./pay-reconcile";
 import type { PayJob } from "./pay";
-import { vnDate, addDays, vnHoursMinutes } from "./time";
+import { vnDate, addDays, vnHoursMinutes, cartrackHistoryCutoff } from "./time";
 import type { TimelineRoute } from "./types";
 import type { MorningReads } from "./morning-reads";
 
@@ -116,17 +116,18 @@ async function archivePay(
   }
 }
 
-/** One day's completed ad-hoc client pickups → pickup_eta, off routes already in
- *  hand. Idempotent (upsert on job_id). */
-export async function archivePickupEta(routes: TimelineRoute[]): Promise<number> {
-  return writePickupEta(pickupEtaRows(routes));
+/** One day's completed pickups → the shared pickup archive, off routes already
+ *  in hand. ETA eligibility is a flag; volume counts every completed pickup. */
+export async function archivePickupEta(routes: TimelineRoute[], date: string): Promise<number> {
+  return archivePickupEvents(routes, date);
 }
 
 /** The same for a day this process has not fetched — the one-off backfill. */
 export async function archivePickupEtaForDate(date: string): Promise<number> {
+  if (date < cartrackHistoryCutoff()) return 0;
   const routes = await getTimelineRoutes(date, "prod");
   if (!routes) throw new Error(`Không lấy được lộ trình ${date}`);
-  return archivePickupEta(routes);
+  return archivePickupEta(routes, date);
 }
 
 /**
@@ -153,6 +154,7 @@ export async function archivePickupEtaForDate(date: string): Promise<number> {
  * what separates "written by this pass" from "left over from the last one".
  */
 export async function archiveDay(date: string, env: Env = "prod", reads?: MorningReads, resume = false): Promise<ArchiveResult> {
+  if (date < cartrackHistoryCutoff()) return { ok: true, date, skipped: "outside retained history" };
   if (!supabaseConfigured()) {
     return { ok: false, date, error: "Supabase chưa được cấu hình (thiếu SUPABASE_SERVICE_ROLE_KEY)." };
   }
@@ -215,7 +217,7 @@ export async function archiveDay(date: string, env: Env = "prod", reads?: Mornin
     // day retryable, while the successful TAT/pay upserts remain intact.
     if (env === "prod" && progress.pickupEta?.rows === undefined) {
       try {
-        progress.pickupEta = { rows: await archivePickupEta(routes) };
+        progress.pickupEta = { rows: await archivePickupEta(routes, date) };
         await checkpoint();
       } catch (e) { progress.pickupEta = { error: e instanceof Error ? e.message : String(e) }; }
     }

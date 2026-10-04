@@ -18,7 +18,8 @@ import {
   type PickDropRow,
 } from "./labcenter";
 import { isPlanStop } from "./smart-rank";
-import { sbInsert, sbSelect, sbSelectAll, sbUpsert } from "./supabase-rest";
+import { sbInsert, sbRpc, sbSelect, sbSelectAll, sbUpsert } from "./supabase-rest";
+import { addDays, cartrackHistoryCutoff, vnDate } from "./time";
 import type { TimelineRoute, TimelineStop } from "./types";
 
 // -- Measured pickups --------------------------------------------------------
@@ -118,8 +119,63 @@ export function pickupEtaRows(routes: TimelineRoute[]): PickupEtaRow[] {
   return [...out.values()];
 }
 
-export async function writePickupEta(rows: PickupEtaRow[]): Promise<number> {
-  return sbUpsert("pickup_eta", rows as unknown as Record<string, unknown>[], "job_id");
+export interface PickupEventRow extends Omit<PickupEtaRow, "scheduled_ts"> {
+  scheduled_ts: string | null;
+  pickup_completed_ts: string;
+  is_eta_sample: boolean;
+}
+
+/** All completed pickup stops, including plans, unpaid jobs and split-driver jobs.
+ * The existing table now serves both volume and ETA; job_id deduplicates routes. */
+export function pickupEventRows(routes: TimelineRoute[], date: string): PickupEventRow[] {
+  const eta = new Map(pickupEtaRows(routes).map(row => [row.job_id, row]));
+  const dropoffDay = dropoffDayByJob(routes);
+  const rows = new Map<number, PickupEventRow>();
+  for (const route of routes) {
+    for (const stop of (route.orderedStops ?? []) as TimelineStop[]) {
+      const completed = toIso(stop.activityCompletedTs);
+      const jobId = Number(stop.jobId);
+      if (Number(stop.stopTypeId) !== PICKUP_STOP || !completed || completed.slice(0, 10) !== date ||
+          !stop.customerId || !Number.isSafeInteger(jobId) || jobId <= 0 || isChamCong(stop)) continue;
+      rows.set(jobId, {
+        job_id: jobId, trip_date: date, pickup_customer_id: stop.customerId,
+        pickup_name: stop.customerName ?? null,
+        scheduled_ts: toIso(stop.scheduledDeliveryTs),
+        arrived_ts: toIso(stop.activityArrivedTs) ?? completed,
+        arrived_basis: stop.activityArrivedTs ? "arrived" : "completed",
+        has_window: (stop.deliveryWindows?.length ?? 0) > 0,
+        dropoff_date: dropoffDay.get(jobId) ?? null,
+        pickup_completed_ts: completed, is_eta_sample: eta.has(jobId),
+      });
+    }
+  }
+  return [...rows.values()];
+}
+
+export async function archivePickupEvents(routes: TimelineRoute[], date: string): Promise<number> {
+  if (date < cartrackHistoryCutoff()) return 0;
+  const rows = pickupEventRows(routes, date);
+  const stamp = new Date().toISOString();
+  await sbUpsert("pickup_eta", rows.map(row => ({ ...row, archived_at: stamp })), "job_id");
+  await sbRpc("refresh_pickup_volume_stats");
+  return rows.length;
+}
+
+export interface PickupVolume {
+  pickup_customer_id: string;
+  total_pickups: number;
+  average_per_day: number;
+  period_from: string;
+  period_to: string;
+  calendar_days: number;
+}
+
+export async function loadPickupVolumes(): Promise<PickupVolume[]> {
+  const read = () => sbSelectAll<PickupVolume>("pickup_volume_stats", "select=*", "pickup_customer_id.asc");
+  const rows = await read();
+  if (rows[0]?.period_from === cartrackHistoryCutoff() && rows[0]?.period_to === addDays(vnDate(), -1)) return rows;
+  await sbRpc("refresh_pickup_volume_stats");
+  return read();
 }
 
 // ── Proposals and drift (pure) ───────────────────────────────────────────────

@@ -37,6 +37,12 @@ export function vnDate(d: Date = new Date()): string {
   return VN_DATE_FORMATTER.format(d).slice(0, 10);
 }
 
+/** Operational history starts on the 15th of the month two months before now. */
+export function cartrackHistoryCutoff(d: Date = new Date()): string {
+  const [year, month] = vnDate(d).split("-").map(Number);
+  return new Date(Date.UTC(year, month - 3, 15)).toISOString().slice(0, 10);
+}
+
 /**
  * Shift a "YYYY-MM-DD" date string by N days (UTC-anchored, so no local-TZ
  * drift can move the day). Returns the input unchanged if it isn't a parseable

@@ -1,5 +1,6 @@
 import { BadgeCheck, Clock3, Hash, Mail, MapPin, MessageCircle, Navigation, Phone, Route, ShieldCheck, UserRound, Users, Warehouse, type LucideIcon } from "lucide-react";
 import { isInactiveLocation } from "@/lib/location-status";
+import type { PickupVolume } from "@/lib/pickup-setup";
 
 export type ClientMeta = {
   customer_id: string; cartrack: Record<string, unknown>;
@@ -9,6 +10,7 @@ export type ClientMeta = {
   default_dropoff_id: string | null; labcenter_location_id: number | null;
   sales_name: string | null; sales_email: string | null;
   supervisor_name: string | null; supervisor_email: string | null;
+  pickup_volume?: PickupVolume | null;
 };
 export type DriverMeta = {
   driver_id: string; cartrack: Record<string, unknown>; roster: Record<string, unknown>;
@@ -37,6 +39,9 @@ export function MasterProfileDetails({ client, driver, clients }: {
       [[Route, "PSC gần nhất", text(client.nearest_psc_name) ? `${client.nearest_psc_name}${client.nearest_psc_km == null ? "" : ` · ${client.nearest_psc_km.toFixed(1)} km`}` : ""],
         [Warehouse, "Điểm giao mặc định", text(client.default_dropoff_name)],
         [Clock3, "ETA", client.eta_minutes == null ? "" : `${client.eta_minutes} phút`]],
+      [[Hash, "Lượt lấy mẫu hoàn thành", client.pickup_volume ? Number(client.pickup_volume.total_pickups).toLocaleString("vi-VN") : "Chưa có thống kê"],
+        [Route, "Trung bình / ngày", client.pickup_volume ? `${Number(client.pickup_volume.average_per_day).toLocaleString("vi-VN", { maximumFractionDigits: 2 })} lượt` : ""],
+        [Clock3, "Khoảng thống kê", client.pickup_volume ? `${client.pickup_volume.period_from} → ${client.pickup_volume.period_to}\n${client.pickup_volume.calendar_days} ngày lịch, gồm ngày không có lượt lấy mẫu` : ""]],
       [[Hash, "Mã khách hàng", text(client.client_code)], [Hash, "Mã tham chiếu", text(c.client_reference)], [MapPin, "Mã bưu chính", text(c.postal_code)],
         [UserRound, "Sales phụ trách", join([client.sales_name, client.sales_email], "\n")],
         [Users, "Supervisor", join([client.supervisor_name, client.supervisor_email], "\n")]],

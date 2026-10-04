@@ -14,7 +14,19 @@
  * caller here is a route handler that derives its own authorization first.
  */
 
+import { cartrackHistoryCutoff } from "./time";
+
 const REST_TIMEOUT_MS = 15_000;
+
+/** All operational writers share the boundary, including manual reconciliation. */
+function checkHistoryDate(table: string, rows: Record<string, unknown>[]): void {
+  const dateColumn = table === "photo_reviews" ? "review_date" : "trip_date";
+  if (!["tat_legs", "pay_jobs", "pay_punches", "pickup_eta", "pay_days", "photo_reviews"].includes(table)) return;
+  const cutoff = cartrackHistoryCutoff();
+  if (rows.some(row => typeof row[dateColumn] === "string" && row[dateColumn] < cutoff)) {
+    throw new Error(`${table}: archive dates before ${cutoff} are outside retained history`);
+  }
+}
 
 /**
  * SUPABASE_URL first, NEXT_PUBLIC_SUPABASE_URL only as a fallback.
@@ -143,6 +155,7 @@ export async function sbInsert(
   rows: Record<string, unknown>[],
   batchSize = 500,
 ): Promise<number> {
+  checkHistoryDate(table, rows);
   for (let i = 0; i < rows.length; i += batchSize) {
     await request(table, {
       method: "POST",
@@ -166,6 +179,7 @@ export async function sbUpsert(
   batchSize = 500,
   ignoreDuplicates = false,
 ): Promise<number> {
+  checkHistoryDate(table, rows);
   if (rows.length === 0) return 0;
   if (!Number.isSafeInteger(batchSize) || batchSize < 1) throw new Error("Invalid upsert batch size");
   const shape = (row: Record<string, unknown>) => JSON.stringify(Object.keys(row).filter(k => row[k] !== undefined).sort());

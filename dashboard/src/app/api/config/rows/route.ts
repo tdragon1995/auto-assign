@@ -4,6 +4,7 @@ import { readConfigGen } from "@/lib/config-gen";
 import { vnTimestamp } from "@/lib/time";
 import { masterClients, masterDrivers, masterEnabled, masterRuleRows } from "@/lib/master-store";
 import { publicClient, publicDriver } from "@/lib/master-public";
+import { loadPickupVolumes } from "@/lib/pickup-setup";
 
 import { resolveConfigDay, type ConfigDay } from "@/lib/config-day";
 
@@ -76,8 +77,12 @@ const TTL_MS = 5 * 60 * 1000;
 export async function GET(req: NextRequest) {
   if (req.nextUrl.searchParams.has("metadata")) {
     try {
-      const [clients, drivers] = await Promise.all([masterClients(), masterDrivers()]);
-      return NextResponse.json({ clients: clients.map(publicClient), drivers: drivers.map(publicDriver) },
+      const [clients, drivers, volumes] = await Promise.all([
+        masterClients(), masterDrivers(),
+        loadPickupVolumes().catch(e => { console.error("[config] pickup volumes:", e); return null; }),
+      ]);
+      const byClient = new Map(volumes?.map(v => [v.pickup_customer_id, v]));
+      return NextResponse.json({ clients: clients.map(c => ({ ...publicClient(c), pickup_volume: byClient.get(c.customer_id) ?? null })), drivers: drivers.map(publicDriver) },
         { headers: { "Cache-Control": "private, no-store" } });
     } catch (e) {
       return NextResponse.json({ error: String(e) }, { status: 502 });
