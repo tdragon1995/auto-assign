@@ -10,8 +10,8 @@ export type MasterLeave={id:number;source_uid:string;source_row:number;revision:
   linked_driver_id:string|null;starts_on:string|null;ends_on:string|null;starts_at:string|null;ends_at:string|null;
   master_leave_substitutes:{selection_order:number;coverage_kind:string;driver_id:string|null;starts_at:string|null;ends_at:string|null}[]};
 export async function masterLeaveRows():Promise<MasterLeave[]> {
-  return sbSelectAll<MasterLeave>("master_leave_rows",
-    "select=id,source_uid,source_row,revision,row_data,linked_driver_id,starts_on,ends_on,starts_at,ends_at,master_leave_substitutes(selection_order,coverage_kind,driver_id,starts_at,ends_at)&active=eq.true","source_row.asc,id.asc");
+  return sbSelectAll<MasterLeave>("master_leave_read",
+    "select=id,source_uid,source_row,revision,row_data,linked_driver_id,starts_on,ends_on,starts_at,ends_at,master_leave_substitutes&active=eq.true","source_row.asc,id.asc");
 }
 export function leaveLegacyRow(row:MasterLeave):Record<string,string> {
   const raw:Record<string,string>={...row.row_data,driver_id:row.linked_driver_id??"",

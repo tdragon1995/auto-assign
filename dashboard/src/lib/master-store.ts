@@ -19,8 +19,8 @@ export function assertMasterWritable() {
 
 export async function masterRules(day:"weekday"|"sunday", scope: { ids?: number[]; pickupIds?: string[]; copyIds?: number[]; resolveNames?: boolean } = {}):Promise<MasterRule[]> {
   type Linked = MasterRule & { master_rule_drivers:{driver_id:string;selection_order:number}[] };
-  const [rows,clients,drivers]=await Promise.all([sbSelectAll<Linked>("master_config_rules",
-    `select=id,source_uid,source_row,revision,row_data,assignment_mode,pickup_customer_id,dropoff_customer_id,alternate_dropoff_customer_id,shift_start,shift_end,review_issues,updated_at,master_rule_drivers(driver_id,selection_order)&active=eq.true&day_type=eq.${day}${scope.ids ? `&id=in.(${scope.ids.join(",")})` : ""}${scope.pickupIds ? `&or=(pickup_customer_id.in.(${scope.pickupIds.join(",")})${scope.copyIds?.length ? `,id.in.(${scope.copyIds.join(",")})` : ""})` : ""}`,"source_row.asc,id.asc"),
+  const [rows,clients,drivers]=await Promise.all([sbSelectAll<Linked>("master_rules_read",
+    `select=id,source_uid,source_row,revision,row_data,assignment_mode,pickup_customer_id,dropoff_customer_id,alternate_dropoff_customer_id,shift_start,shift_end,review_issues,updated_at,master_rule_drivers&active=eq.true&day_type=eq.${day}${scope.ids ? `&id=in.(${scope.ids.join(",")})` : ""}${scope.pickupIds ? `&or=(pickup_customer_id.in.(${scope.pickupIds.join(",")})${scope.copyIds?.length ? `,id.in.(${scope.copyIds.join(",")})` : ""})` : ""}`,"source_row.asc,id.asc"),
     scope.resolveNames === false ? Promise.resolve([]) : sbSelectAll<{customer_id:string;customer_name:string}>("master_clients","select=customer_id,customer_name","customer_id.asc"),
     scope.resolveNames === false ? Promise.resolve([]) : sbSelectAll<{driver_id:string;first_name:string;last_name:string}>("master_drivers","select=driver_id,first_name,last_name","driver_id.asc")]);
   const names=new Map(clients.map(c=>[c.customer_id,c.customer_name]));
@@ -51,7 +51,7 @@ export async function masterRuleRows(day:"weekday"|"sunday"):Promise<Record<stri
   for(let i=0;i<out.length;i++) out[i]??={};
   return out;
 }
-export const masterClients=()=>sbSelectAll<MasterClient>("master_clients","select=customer_id,cartrack,is_active,client_code,new_ward,nearest_psc_id,nearest_psc_name,nearest_psc_km,labcenter_location_id,default_dropoff_id,default_dropoff_name,eta_minutes,sales_name,sales_email,supervisor_name,supervisor_email","customer_id.asc");
+export const masterClients=()=>sbSelectAll<MasterClient>("master_clients_read","select=customer_id,cartrack,is_active,client_code,new_ward,nearest_psc_id,nearest_psc_name,nearest_psc_km,labcenter_location_id,default_dropoff_id,default_dropoff_name,eta_minutes,sales_name,sales_email,supervisor_name,supervisor_email","customer_id.asc");
 export async function inactiveMasterClientIds():Promise<string[]> {
   if (!masterEnabled()) return [];
   return (await sbSelectAll<{customer_id:string;is_active:boolean}>("master_clients","select=customer_id,is_active&is_active=eq.false","customer_id.asc")).filter(c=>c.is_active===false).map(c=>c.customer_id);
@@ -68,7 +68,7 @@ export async function masterDriverNames(driverIds:string[]):Promise<Map<string,s
 }
 export async function masterClient(id:string):Promise<MasterClient|null> {
   if(!UUID.test(id)) throw new Error("Invalid customer ID");
-  return (await sbSelect<MasterClient>("master_clients",`select=*&customer_id=eq.${id}`))[0]??null;
+  return (await sbSelect<MasterClient>("master_clients_read",`select=*&customer_id=eq.${id}`))[0]??null;
 }
 export async function masterDriver(id:string):Promise<MasterDriver|null> {
   if(!UUID.test(id)) throw new Error("Invalid driver ID");

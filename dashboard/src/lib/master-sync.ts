@@ -60,7 +60,7 @@ export async function syncCartrackClient(id: string): Promise<string | null> {
   await sbUpsert("master_clients", [{
     customer_id: id, cartrack, client_code: clientCode,
     new_ward: lat !== null && lon !== null ? newWard(lat, lon) : null,
-    nearest_psc_id: psc?.id ?? null, nearest_psc_name: psc?.name ?? null,
+    nearest_psc_id: psc?.id ?? null,
     nearest_psc_km: psc?.km ?? null, geo_calculated_at: new Date().toISOString(), geo_dataset_version: GEO_DATASET_VERSION, detail_synced_at: new Date().toISOString(),
   }], "customer_id");
   return clientCode;
@@ -132,7 +132,7 @@ export async function syncCartrackProfiles(): Promise<{ clients: number; drivers
       client_code: candidate,
       new_ward: latitude !== null && longitude !== null ? newWard(latitude, longitude) : null,
       nearest_psc_id: psc?.id ?? null,
-      nearest_psc_name: psc?.name ?? null,
+
       nearest_psc_km: psc?.km ?? null, geo_calculated_at: new Date().toISOString(), geo_dataset_version: GEO_DATASET_VERSION,
       synced_at: now,
     };
@@ -170,7 +170,6 @@ export async function syncCartrackDetailPage(kind: "customers" | "drivers", offs
           const psc = lat !== null && lon !== null ? await nearestPsc(lat, lon) : null;
           update.new_ward = lat !== null && lon !== null ? newWard(lat, lon) : null;
           update.nearest_psc_id = psc?.id ?? null;
-          update.nearest_psc_name = psc?.name ?? null;
           update.nearest_psc_km = psc?.km ?? null;
         }
         updates.push(update);
@@ -263,12 +262,6 @@ export async function syncLabcenterMetadata(offset = 0, limit = 200, onlyCodes?:
       const owner = exact[0];
       accounts.push({client_code:code,verified_at:new Date().toISOString(),
         sales_name:owner.owner_name??null,sales_email:owner.owner??null,supervisor_name:owner.supervisor??null,supervisor_email:owner.supervisor_email??null});
-      for (const c of group) {
-        changed.set(c.customer_id, {...changed.get(c.customer_id), customer_id:c.customer_id,
-          sales_name: owner.owner_name ?? null, sales_email: owner.owner ?? null,
-          supervisor_name: owner.supervisor ?? null, supervisor_email: owner.supervisor_email ?? null,
-        });
-      }
       owners += group.length;
       } catch (e) {
         errors++;

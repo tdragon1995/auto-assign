@@ -15,15 +15,15 @@ assert.equal(new Set(populated.map(r=>r.reference)).size,populated.length,"Dupli
 assert.ok(populated.every(r=>r.pickup_id&&r.dropoff_id&&r.reference&&/^([01]?\d|2[0-3]):[0-5]\d$/.test(r.delivery_window)));
 mkdirSync(".state",{recursive:true});
 writeFileSync(".state/schedule-before.json",JSON.stringify({at:new Date().toISOString(),raw,rows}));
-const imported=populated.map(r=>({source_row:r.rowIndex,source_data:raw[r.rowIndex-2],pickup_id:r.pickup_id,dropoff_id:r.dropoff_id,
+const imported=populated.map(r=>({source_row:r.rowIndex,pickup_id:r.pickup_id,dropoff_id:r.dropoff_id,
   driver_id:r.driver_id||null,delivery_window:r.delivery_window,sent_to_driver_before:r.sent_to_driver_before,reference:r.reference,days:r.days}));
 const json=JSON.stringify(imported);
 assert.ok(!json.includes("$schedule_import$"));
-const recordset=`jsonb_to_recordset($schedule_import$${json}$schedule_import$::jsonb) as r(source_row integer,source_data jsonb,pickup_id uuid,dropoff_id uuid,driver_id uuid,delivery_window time,sent_to_driver_before integer,reference text,days boolean[])`;
+const recordset=`jsonb_to_recordset($schedule_import$${json}$schedule_import$::jsonb) as r(source_row integer,pickup_id uuid,dropoff_id uuid,driver_id uuid,delivery_window time,sent_to_driver_before integer,reference text,days boolean[])`;
 writeFileSync(".state/schedule-import.sql",`begin;
 do $$ begin if exists(select 1 from public.master_schedule_jobs) then raise exception 'Schedule import already applied; do not replace operational edits'; end if; end $$;
-insert into public.master_schedule_jobs(source_row,source_data,pickup_id,dropoff_id,driver_id,delivery_window,sent_to_driver_before,reference,days)
-select source_row,source_data,pickup_id,dropoff_id,driver_id,delivery_window,sent_to_driver_before,reference,days from ${recordset};
+insert into public.master_schedule_jobs(source_row,pickup_id,dropoff_id,driver_id,delivery_window,sent_to_driver_before,reference,days)
+select source_row,pickup_id,dropoff_id,driver_id,delivery_window,sent_to_driver_before,reference,days from ${recordset};
 commit; select count(*) as imported from public.master_schedule_jobs;`);
 writeFileSync(".state/schedule-links.sql",`select r.source_row,r.reference,
   not exists(select 1 from public.master_clients where customer_id=r.pickup_id) as missing_pickup,

@@ -62,9 +62,11 @@ globalThis.fetch = async (input, init) => {
     return json([{ customer_id: id, cartrack: { customer_name: "Location" }, default_dropoff_id: null, eta_minutes: null,
       labcenter_location_id: linked ? id === pickup ? 10 : 20 : null }]);
   }
-  if (url.includes("/rest/v1/master_config_rules")) return json([{ ...rule, master_rule_drivers: [{driver_id:driver,selection_order:0}] }]);
+  if (url.includes("/rest/v1/master_rules_read")) return json([{ ...rule, master_rule_drivers: [{driver_id:driver,selection_order:0}] }]);
   if (url.includes("/rest/v1/master_drivers")) return json([{driver_id:driver,first_name:"Driver",last_name:"",cartrack:{first_name:"Driver"},roster:{}}]);
   if (url.endsWith("/rest/v1/rpc/master_write_rules")) { writes.push({url,body:JSON.parse(String(init?.body))}); return json([{id:1,revision:8,source_row:2}]); }
+  if (url.includes("/rest/v1/pickup_setup?")) return json([]);
+  if (url.endsWith("/rest/v1/rpc/commit_pickup_setup")) { writes.push({url,body:JSON.parse(String(init?.body))}); return new Response(null,{status:204}); }
   if (url.includes("fleetapi-vn.cartrack.com") && method === "GET") return json({ data: { customer_name: "Location", latitude: "invalid", longitude: "invalid" } });
   if (url.endsWith("/api/v1/auth/login")) return json({ token: "test-only" });
   if (url.endsWith("/api/locations/update-pick-drop-location")) { writes.push({ url, body: JSON.parse(String(init?.body)) }); return json({}); }
@@ -73,14 +75,15 @@ globalThis.fetch = async (input, init) => {
 };
 try {
   await editClient(pickup, { default_dropoff_id: destination });
-  assert.deepEqual(writes.map(w => w.body), [{ default_dropoff_id: destination, default_dropoff_name: "Location", eta_minutes: null }]);
+  assert.deepEqual(writes.map(w => w.body), [{ default_dropoff_id: destination, eta_minutes: null }]);
   writes.length = 0;
   await editClient(pickup, { default_dropoff_id: "" });
   assert.equal(writes[0].body.default_dropoff_id, null);
   linked = true; writes.length = 0;
   await editClient(pickup, { default_dropoff_id: destination, eta_minutes: 20 });
   assert.deepEqual(writes.map(w => w.body), [{ pick_id: pickup, drop_id: destination, estimate_pick_up: 20 },
-    { default_dropoff_id: destination, default_dropoff_name: "Location", eta_minutes: 20 }]);
+    { item:{lc_location_id:10,pick_id:pickup,pick_name:"Location",drop_location_id:20,drop_id:destination,
+      drop_name:"Location",eta_mins:20,kind:"client_edit",basis_mins:null,n:null},expected:null }]);
   labcenterAccepts = false; writes.length = 0;
   await assert.rejects(editClient(pickup, { default_dropoff_id: destination, eta_minutes: 20 }), /không cập nhật/);
   assert.equal(writes.length, 1); // A failed Labcenter read-back must not update Supabase.

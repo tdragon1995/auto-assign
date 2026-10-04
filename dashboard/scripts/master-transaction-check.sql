@@ -17,7 +17,7 @@ begin
   perform public.master_commit_import(fresh_run,jsonb_set(payload,'{rules}',payload->'rules'||jsonb_build_array(payload->'rules'->0)),r.source_hash);
  exception when others then if sqlerrm not like '%Duplicate source UID%' then raise; end if; rejected:=true; end;
  if not rejected then raise exception 'Duplicate source IDs accepted'; end if;
- payload:=jsonb_set(payload,'{rules,0,row_data,_rollback_check}','"changed"');
+ payload:=jsonb_set(payload,'{rules,0,row_data,chat_id}','"changed"');
  payload:=jsonb_set(payload,array['rules',(jsonb_array_length(payload->'rules')-1)::text,'driver_ids'],jsonb_build_array(gen_random_uuid()));
  rejected:=false;
  begin perform public.master_commit_import(fresh_run,payload,r.source_hash);

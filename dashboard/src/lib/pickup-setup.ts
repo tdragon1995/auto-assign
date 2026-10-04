@@ -13,6 +13,7 @@
  * pickup; and the check runs only when the Config tab is opened.
  */
 import { isChamCong } from "./job-filters";
+import { UUID } from "./master-reconcile";
 import {
   getAdminToken, getCartrackCustomerId, listPickDropLocations, updatePickDropLocation,
   type PickDropRow,
@@ -172,8 +173,10 @@ export interface PickupVolume {
 
 export async function loadPickupVolumes(): Promise<PickupVolume[]> {
   const read = () => sbSelectAll<PickupVolume>("pickup_volume_stats", "select=*", "pickup_customer_id.asc");
-  const rows = await read();
-  if (rows[0]?.period_from === cartrackHistoryCutoff() && rows[0]?.period_to === addDays(vnDate(), -1)) return rows;
+  const [rows,clients] = await Promise.all([read(),sbSelectAll<{customer_id:string}>("master_clients","select=customer_id","customer_id.asc")]);
+  const represented = new Set(rows.map(r=>r.pickup_customer_id));
+  if (rows[0]?.period_from === cartrackHistoryCutoff() && rows[0]?.period_to === addDays(vnDate(), -1)
+      && clients.every(c=>represented.has(c.customer_id))) return rows;
   await sbRpc("refresh_pickup_volume_stats");
   return read();
 }
@@ -388,12 +391,9 @@ export async function applySetupAction(a: SetupAction): Promise<{ ok: boolean; e
     const lc = (await listPickDropLocations(token)).find((r) => r.lc_location_id === m.lc_location_id);
     if (!lc) return { ok: false, error: "Labcenter không còn địa điểm này" };
     const dropChanged = lc.drop_location_id !== m.drop_location_id;
-    await sbUpsert("pickup_setup", [{
-      lc_location_id: m.lc_location_id, drop_location_id: lc.drop_location_id, drop_name: lc.drop_name,
-      drop_id: dropChanged ? null : m.drop_id, eta_mins: lc.eta_mins,
-      updated_at: new Date().toISOString(), updated_reason: "accept_lc",
-    }], "lc_location_id");
-    await logChange(m, "accept_lc", lc.drop_location_id, lc.eta_mins);
+    const dropId = dropChanged ? await getCartrackCustomerId(lc.drop_location_id,token) : m.drop_id;
+    await commitPickupSetup({...m,drop_location_id:lc.drop_location_id,drop_name:lc.drop_name,
+      drop_id:dropId,eta_mins:lc.eta_mins},"accept_lc",m);
     return { ok: true };
   }
 
@@ -401,25 +401,22 @@ export async function applySetupAction(a: SetupAction): Promise<{ ok: boolean; e
   if (!(mins >= ETA_MIN && mins <= ETA_MAX)) return { ok: false, error: `ETA phải trong ${ETA_MIN}–${ETA_MAX} phút` };
   const pickId = m.pick_id || await getCartrackCustomerId(m.lc_location_id, token);
   const dropId = m.drop_id || await getCartrackCustomerId(m.drop_location_id, token);
-  if (!pickId || !dropId) return { ok: false, error: "Không tìm được mã Cartrack của địa điểm" };
+  if (!pickId || !dropId || !UUID.test(pickId) || !UUID.test(dropId)) return { ok: false, error: "Không tìm được mã Cartrack của địa điểm" };
+  const ids = [...new Set([pickId,dropId])];
+  const known = await sbSelect<{customer_id:string}>("master_clients",`select=customer_id&customer_id=in.(${ids.join(",")})`);
+  if (known.length !== ids.length) return {ok:false,error:"Địa điểm chưa có trong Master — đồng bộ trước khi duyệt ETA"};
 
   const pushed = await updatePickDropLocation(
     { pickId, dropId, etaMins: mins, lcLocationId: m.lc_location_id, dropLocationId: m.drop_location_id }, token);
   if (!pushed.ok) return pushed;
 
-  await sbUpsert("pickup_setup", [{
-    lc_location_id: m.lc_location_id, drop_location_id: m.drop_location_id, pick_id: pickId, drop_id: dropId,
-    eta_mins: mins, updated_at: new Date().toISOString(), updated_reason: a.action,
-  }], "lc_location_id");
-  await logChange(m, a.action, m.drop_location_id, mins,
+  await commitPickupSetup({...m,pick_id:pickId,drop_id:dropId,eta_mins:mins},a.action,m,
     a.action === "approve_eta" ? a.basis_mins : undefined, a.action === "approve_eta" ? a.n : undefined);
   return { ok: true };
 }
 
-async function logChange(m: SetupRow, kind: SetupAction["action"], newDrop: number, newEta: number, basis?: number, n?: number) {
-  await sbInsert("pickup_setup_changes", [{
-    lc_location_id: m.lc_location_id, kind,
-    old_drop_location_id: m.drop_location_id, new_drop_location_id: newDrop,
-    old_eta: m.eta_mins, new_eta: newEta, basis_mins: basis ?? null, n: n ?? null,
-  }]);
+export async function commitPickupSetup(row:SetupRow,kind:"accept_lc"|"approve_eta"|"repush"|"client_edit",previous:SetupRow|null,basis?:number,n?:number) {
+  const expected = previous ? {drop_location_id:previous.drop_location_id,eta_mins:previous.eta_mins,
+    drop_id:previous.drop_id,pick_id:previous.pick_id} : null;
+  await sbRpc("commit_pickup_setup",{item:{...row,kind,basis_mins:basis??null,n:n??null},expected});
 }

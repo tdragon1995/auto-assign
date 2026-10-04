@@ -2,9 +2,10 @@ import { BASE_URL, getCustomerById, getHeaders } from "./cartrack";
 import { DELIVERY_BASE, getAdminToken, updateLocationAddress, updateLocationPhone, updatePickDropLocation } from "./labcenter";
 import { nearestPsc, newWard, GEO_DATASET_VERSION } from "./master-geo";
 import { masterClient, masterDriver, masterEnabled } from "./master-store";
-import { sbPatch, sbUpsert } from "./supabase-rest";
+import { sbPatch, sbSelect, sbUpsert } from "./supabase-rest";
 import { SHEET_GID, SHEET_ID } from "./sheets";
 import { getSheetsClient } from "./sheets-writer";
+import { commitPickupSetup, type SetupRow } from "./pickup-setup";
 import { isInactiveLocation, locationName } from "./location-status";
 
 export async function assertSheetRenameSafe(id:string,names:string[]) {
@@ -73,6 +74,8 @@ export async function editClient(id: string, patch: Record<string, unknown>) {
     if (drop && isInactiveLocation(drop.cartrack.customer_name)) throw new Error("Điểm giao đã ngừng hoạt động");
     if (row.labcenter_location_id && (!drop?.labcenter_location_id || eta === null)) throw new Error("Chọn điểm giao đã liên kết Labcenter và nhập ETA");
   }
+  const previousSetup = changeDropoff && row.labcenter_location_id
+    ? (await sbSelect<SetupRow>("pickup_setup", `select=*&lc_location_id=eq.${row.labcenter_location_id}`))[0] ?? null : null;
   let after = current;
   if (changeCartrack) {
     const payload = {
@@ -95,7 +98,7 @@ export async function editClient(id: string, patch: Record<string, unknown>) {
     await sbUpsert("master_clients", [{
       customer_id: id, cartrack: after,
       ...(gpsChanged ? { new_ward: newWard(lat, lon), nearest_psc_id: psc?.id ?? null,
-        nearest_psc_name: psc?.name ?? null, nearest_psc_km: psc?.km ?? null,
+        nearest_psc_km: psc?.km ?? null,
         geo_calculated_at:new Date().toISOString(),geo_dataset_version:GEO_DATASET_VERSION } : {}),
     }], "customer_id");
   }
@@ -127,8 +130,12 @@ export async function editClient(id: string, patch: Record<string, unknown>) {
     }, token);
     if (!result.ok) throw new Error(result.error ?? "Labcenter không lưu điểm giao");
   }
-  if (changeDropoff) await sbPatch("master_clients", `customer_id=eq.${id}`, {
-    default_dropoff_id: dropId || null, default_dropoff_name: drop?.cartrack.customer_name ?? null, eta_minutes: eta,
+  if (changeDropoff && row.labcenter_location_id && drop?.labcenter_location_id) {
+    await commitPickupSetup({lc_location_id:row.labcenter_location_id,pick_id:id,pick_name:name,
+      drop_location_id:drop.labcenter_location_id,drop_id:dropId,drop_name:String(drop.cartrack.customer_name ?? ""),eta_mins:eta!},
+      "client_edit",previousSetup);
+  } else if (changeDropoff) await sbPatch("master_clients", `customer_id=eq.${id}`, {
+    default_dropoff_id: dropId || null, eta_minutes: eta,
   });
   return { customer_id: id };
 }
@@ -171,8 +178,9 @@ export async function editDriver(id: string, patch: Record<string, unknown>) {
       : String(after?.[k] ?? "") !== String(v ?? ""))) throw new Error("Cartrack trả 200 nhưng dữ liệu không khớp khi đọc lại");
   }
   const renamed = ["first_name", "last_name"].some(k => k in cartrackPatch);
+  const roster = Object.fromEntries(Object.entries(row.roster ?? {}).filter(([key]) => !localFields.includes(key)));
   const masterPatch = {...localPatch,
-    ...(renamed || Object.keys(rosterPatch).length ? {roster:{...row.roster,...rosterPatch,
+    ...(renamed || Object.keys(rosterPatch).length ? {roster:{...roster,...rosterPatch,
       ...(renamed ? {Driver:`${after.first_name ?? ""} ${after.last_name ?? ""}`.trim()} : {})}} : {})};
   if (Object.keys(cartrackPatch).length) await sbUpsert("master_drivers", [{driver_id:id,cartrack:after,...masterPatch}],"driver_id");
   else if (Object.keys(masterPatch).length) await sbPatch("master_drivers",`driver_id=eq.${id}`,masterPatch);
