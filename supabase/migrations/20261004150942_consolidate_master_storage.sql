@@ -318,20 +318,6 @@ $function$;
 alter table public.master_config_rules drop column row_data,drop column fixed_driver_id,drop column smart_driver_id,drop column smart_driver_id_manual;
 alter table public.master_leave_rows drop column driver_id,drop column driver_name,drop column leave_from,drop column leave_to,drop column leave_from_hr,drop column leave_to_hr,drop column day,drop column sub1_name,drop column sub1_id,drop column sub1_from,drop column sub1_to,drop column position,drop column row_data,drop column linked_sub1_driver_id;
 alter table public.master_schedule_jobs drop column source_data;
--- Four unapproved copies disagree with the read-only Labcenter snapshot. Never change existing approved decisions.
-with actual(lc_location_id,old_drop,old_eta,new_drop,new_eta) as (values(424,561,45,681,45),(2212,681,60,681,45),(1634,556,66,1634,70),(1886,562,120,554,120)),
-changed as (
- update public.pickup_setup p set drop_location_id=a.new_drop,eta_mins=a.new_eta,
- drop_id=(select customer_id::text from public.master_clients where labcenter_location_id=a.new_drop),
- drop_name=(select customer_name from public.master_clients where labcenter_location_id=a.new_drop),
- updated_at=now(),updated_reason='reconcile_lc'
- from actual a where p.lc_location_id=a.lc_location_id and p.drop_location_id=a.old_drop and p.eta_mins=a.old_eta
- and not exists(select 1 from public.pickup_setup_changes h where h.lc_location_id=p.lc_location_id)
- and coalesce(p.updated_reason,'') not in ('approve_eta','repush','accept_lc','client_edit')
- returning p.lc_location_id,p.drop_location_id,p.eta_mins
-)
-insert into public.pickup_setup_changes(lc_location_id,kind,old_drop_location_id,new_drop_location_id,old_eta,new_eta)
-select a.lc_location_id,'reconcile_lc',a.old_drop,c.drop_location_id,a.old_eta,c.eta_mins from changed c join actual a using(lc_location_id);
 create or replace function public.master_refresh_metadata(updates jsonb, accounts jsonb default '[]')
 returns void language plpgsql set search_path='' as $$
 begin
@@ -361,7 +347,7 @@ update public.pickup_setup p set drop_id=c.customer_id::text from public.master_
 update public.master_clients c set default_dropoff_id=null,eta_minutes=null where exists(select 1 from public.pickup_setup p where p.lc_location_id=c.labcenter_location_id);
 alter table public.master_clients drop column sales_name,drop column sales_email,drop column supervisor_name,drop column supervisor_email,drop column nearest_psc_name,drop column default_dropoff_name;
 alter table public.master_drivers drop column delivery_driver_id;
-update public.master_drivers set roster=roster-'driver_zalo_id'-'bot_token'-'phone_number_update' where roster ?| array['driver_zalo_id','bot_token','phone_number_update'];
+
 create or replace view public.tat_legs_linked with(security_invoker=true) as
 select r.id,r.trip_date,r.driver_id,r.driver_name,r.seq,r.from_stop_id,r.from_job_id,r.from_customer_id,r.from_name,r.from_lat,r.from_lng,r.departed_ts,r.to_stop_id,r.to_job_id,r.to_customer_id,r.to_name,r.to_lat,r.to_lng,r.arrived_ts,r.tat_mins,r.tat_basis,r.distance_km,r.target_mins,r.on_time,r.long_gap,r.archived_at,r.eta_mins,r.benchmark_mins,r.available_at,r.idle_mins,r.unscored,m0.driver_id as master_driver_id,m1.customer_id as master_from_id,m2.customer_id as master_to_id
 from public.tat_legs r
@@ -399,15 +385,6 @@ revoke all on public.pickup_eta_linked from public,anon,authenticated;
 grant select on public.pickup_eta_linked to service_role;
 drop trigger master_link_pickup_eta on public.pickup_eta;
 alter table public.pickup_eta drop column master_pickup_id;
-create or replace view public.pay_shifts_linked with(security_invoker=true) as
-select r.id,r.trip_date,r.driver_id,r.staff_code,r.account_name,r.shift_start,r.shift_end,r.source,r.imported_at,m0.driver_id as master_driver_id
-from public.pay_shifts r
-left join public.master_drivers m0 on m0.driver_id=public.master_uuid_or_null(r.driver_id::text);
-revoke all on public.pay_shifts_linked from public,anon,authenticated;
-grant select on public.pay_shifts_linked to service_role;
-drop trigger master_link_pay_shifts on public.pay_shifts;
-alter table public.pay_shifts drop column master_driver_id;
-drop function public.master_link_report();
 do $$
 declare snapshot jsonb; original jsonb; current_row public.master_leave_rows; key text; val text;
 begin
@@ -422,8 +399,3 @@ begin
  if exists(select 1 from jsonb_array_elements(snapshot->'rules') x(item) join public.master_config_rules r on r.id=(x.item->>'id')::bigint where coalesce(r.bot_token,'')<>coalesce(x.item->'row_data'->>'bot_token','') or coalesce(r.chat_id,'')<>coalesce(x.item->'row_data'->>'chat_id','')) then raise exception 'Notification settings changed'; end if;
 end $$;
 notify pgrst,'reload schema';
--- Retire only the confirmed empty, unused shift table. Never discard newly arrived data.
-do $$ begin if exists(select 1 from public.pay_shifts) then raise exception 'pay_shifts is no longer empty; review before retiring'; end if; end $$;
-drop view public.pay_shifts_linked;
-drop table public.pay_shifts;
-drop function public.master_smart_driver_id(text,text);
