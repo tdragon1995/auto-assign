@@ -95,6 +95,7 @@ export const PSC_ROUTES: PscRoute[] = [
   route("BRA - D050", "BRA - D001", D050, D001, 10.786807, 106.679405),
   route("BRA - D051", "BRA - D001", D051, D001, 10.80086399, 106.7345728),
   route("BRA - D052", "BRA - D001", "e6f95bb6-9c5a-11f1-9378-fa163ee8d8ac", D001, 10.785039, 106.699989),
+  route("BRA - D053", "BRA - D006", "41c2df14-b7bc-11f1-9378-fa163ee8d8ac", D006, 10.749114, 106.728865),
 ];
 
 /**
