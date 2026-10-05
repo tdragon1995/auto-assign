@@ -332,13 +332,26 @@ export async function listPickDropLocations(token: string): Promise<PickDropRow[
  *  (see updateLocationAddress), so the row is read back by its Labcenter pick id
  *  (`?pick_location_id=` does filter — verified) before this reports success. */
 export async function updatePickDropLocation(
-  w: { pickId: string; dropId: string; etaMins: number; lcLocationId: number; dropLocationId: number },
+  w: { pickId: string; dropId: string; etaMins: number; lcLocationId: number; dropLocationId: number; expectedEtaMins?: number },
   token: string,
 ): Promise<{ ok: boolean; error?: string }> {
+  if (w.expectedEtaMins !== undefined) {
+    const before = await labcenterFetch(`${DELIVERY_BASE}/api/pick-drop-locations?pick_location_id=${w.lcLocationId}&perPage=5`, {
+      headers: { Authorization: `Bearer ${token}`, accept: "application/json" },
+      cache: "no-store", signal: AbortSignal.timeout(15_000),
+    });
+    if (!before.ok) return { ok: false, error: `Labcenter preflight ${before.status}` };
+    const rows: unknown[] = (await before.json())?.data ?? [];
+    const current = rows.map(toPickDropRow).find(r => r?.lc_location_id === w.lcLocationId);
+    if (!current?.eta_valid || current.eta_mins !== w.expectedEtaMins || current.drop_location_id !== w.dropLocationId) {
+      return { ok: false, error: "Labcenter setup changed; refresh before updating ETA" };
+    }
+  }
   const res = await labcenterFetch(`${DELIVERY_BASE}/api/locations/update-pick-drop-location`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", accept: "application/json" },
     body: JSON.stringify({ pick_id: w.pickId, drop_id: w.dropId, estimate_pick_up: w.etaMins }),
+    signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
@@ -347,6 +360,7 @@ export async function updatePickDropLocation(
   const check = await labcenterFetch(`${DELIVERY_BASE}/api/pick-drop-locations?pick_location_id=${w.lcLocationId}&perPage=5`, {
     headers: { Authorization: `Bearer ${token}`, accept: "application/json" },
     cache: "no-store",
+    signal: AbortSignal.timeout(15_000),
   });
   if (!check.ok) return { ok: false, error: `Không đọc lại được Labcenter (HTTP ${check.status})` };
   const rows: unknown[] = (await check.json().catch(() => ({})))?.data ?? [];

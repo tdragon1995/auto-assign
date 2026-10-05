@@ -3,14 +3,14 @@
  *
  * Labcenter's pick-drop setup gives each client place a default drop-off and an
  * `estimate_pick_up`. Supabase `pickup_setup` is our MASTER copy of it: a change
- * is proposed here, approved by an admin, pushed to Labcenter, read back, and
+ * is proposed here, approved by an admin or the daily check, pushed to Labcenter, read back, and
  * only then written to the master. Labcenter's live values are never stored —
  * drift is the two compared at read time.
  *
- * Cost shape (free tiers): no Redis anywhere; no Cartrack call of its own (the
+ * Cost shape (free tiers): only the daily gate uses Redis; no Cartrack call of its own (the
  * pickups come off the routes the archive already holds); the percentiles are a
  * Postgres view, so the dashboard pulls a few hundred rows rather than every
- * pickup; and the check runs only when the Config tab is opened.
+ * pickup; the report runs on demand and reliable increases are applied daily.
  */
 import { isChamCong } from "./job-filters";
 import { UUID } from "./master-reconcile";
@@ -193,13 +193,15 @@ export interface SetupRow {
   eta_mins: number;
 }
 
-export interface StatsRow { pickup_customer_id: string; n: number; median_mins: number; p80_mins: number; pickup_name?: string | null }
+export interface StatsRow { pickup_customer_id: string; n: number; median_mins: number; p80_mins: number; pickup_name?: string | null; sample_days?: number }
 
 export interface EtaProposal {
   lc_location_id: number;
+  drop_location_id: number;
   pick_name: string | null;
   drop_name: string | null;
   n: number;
+  sample_days: number;
   median_mins: number;
   /** The time 8 in 10 pickups beat — what the proposal is based on. */
   p80_mins: number;
@@ -246,15 +248,17 @@ export function etaProposals(setup: SetupRow[], stats: StatsRow[]): EtaProposal[
   const out: EtaProposal[] = [];
   for (const s of setup) {
     const m = s.pick_id ? byPick.get(s.pick_id) : undefined;
-    if (!m) continue;
+    if (!m || !Number.isInteger(m.n) || m.n < 6 || !Number.isFinite(s.eta_mins) || s.eta_mins < 0) continue;
     const p80 = Number(m.p80_mins);
+    if (!Number.isFinite(p80) || !Number.isFinite(Number(m.median_mins)) || Number(m.median_mins) <= 0 || p80 < Number(m.median_mins)) continue;
     const target = targetMins(Number(m.median_mins), p80);
     const deviation = s.eta_mins > 0 ? (target - s.eta_mins) / s.eta_mins : Infinity;
     if (Math.abs(deviation) <= ETA_TOLERANCE) continue;
     const proposed = roundTo5(target);
     if (proposed === s.eta_mins) continue;
     out.push({
-      lc_location_id: s.lc_location_id, pick_name: s.pick_name, drop_name: s.drop_name,
+      lc_location_id: s.lc_location_id, drop_location_id: s.drop_location_id, pick_name: s.pick_name, drop_name: s.drop_name,
+      sample_days: m.sample_days ?? 0,
       n: m.n, median_mins: Number(m.median_mins), p80_mins: p80, current_mins: s.eta_mins, proposed_mins: proposed, deviation,
     });
   }
@@ -361,7 +365,7 @@ export async function pickupSetupReport(): Promise<{ proposals: EtaProposal[]; d
   const [lc, setup, stats] = await Promise.all([
     listPickDropLocations(token),
     loadSetup(),
-    sbSelect<StatsRow>("pickup_eta_stats_30d", "select=pickup_customer_id,n,median_mins,p80_mins,pickup_name"),
+    sbSelect<StatsRow>("pickup_eta_stats_30d", "select=*"),
   ]);
   const { adopt, drift, renamed } = compareWithLabcenter(setup, lc);
   await adoptNew(adopt);
@@ -381,13 +385,44 @@ export type SetupAction =
   | { action: "repush"; lc_location_id: number }
   | { action: "accept_lc"; lc_location_id: number };
 
+/** The median must confirm the increase; a long tail alone cannot. */
+export function canAutoUpdateEta(p: EtaProposal): boolean {
+  return p.n >= 6 && p.sample_days >= 3 && p.current_mins > 0
+    && p.deviation > ETA_TOLERANCE && p.proposed_mins > p.current_mins
+    && p.median_mins > p.current_mins * (1 + ETA_TOLERANCE)
+    && p.p80_mins <= 2 * Math.max(p.median_mins, ETA_MIN)
+    && p.p80_mins <= ETA_MAX;
+}
+
+/** Bounded batches on the existing cron; failures wait until tomorrow, so one
+ * broken location cannot prevent other locations from being corrected. */
+export async function autoUpdatePickupEtas(skipIds: number[] = []) {
+  const report = await pickupSetupReport();
+  const blocked = new Set([...skipIds, ...report.drift.map(d => d.lc_location_id)]);
+  const candidates = report.proposals.filter(p => canAutoUpdateEta(p) && !blocked.has(p.lc_location_id));
+  const batch = candidates.slice(0, 10);
+  const results = await Promise.all(batch.map(async p => {
+    try {
+      const result = await applySetupAction({ action: "approve_eta", lc_location_id: p.lc_location_id,
+        mins: p.proposed_mins, basis_mins: p.p80_mins, n: p.n }, p);
+      return { lc_location_id: p.lc_location_id, ...result };
+    } catch (e) {
+      return { lc_location_id: p.lc_location_id, ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }));
+  return { remaining: candidates.length - batch.length, results };
+}
+
 /**
  * Apply one admin decision. Labcenter first, master second: a push that fails
  * or that Labcenter silently drops leaves BOTH copies as they were.
  */
-export async function applySetupAction(a: SetupAction): Promise<{ ok: boolean; error?: string }> {
+export async function applySetupAction(a: SetupAction, automatic?: EtaProposal): Promise<{ ok: boolean; error?: string }> {
   const [m] = await sbSelect<SetupRow>("pickup_setup", `select=${SETUP_COLS}&lc_location_id=eq.${a.lc_location_id}`);
   if (!m) return { ok: false, error: "Không có địa điểm này trong bản gốc" };
+  if (automatic && (!canAutoUpdateEta(automatic) || m.eta_mins !== automatic.current_mins || m.drop_location_id !== automatic.drop_location_id)) {
+    return { ok: false, error: "Pickup setup changed; retry tomorrow" };
+  }
   const token = await getAdminToken();
   if (!token) return { ok: false, error: "Labcenter login failed" };
 
@@ -411,7 +446,8 @@ export async function applySetupAction(a: SetupAction): Promise<{ ok: boolean; e
   if (known.length !== ids.length) return {ok:false,error:"Địa điểm chưa có trong Master — đồng bộ trước khi duyệt ETA"};
 
   const pushed = await updatePickDropLocation(
-    { pickId, dropId, etaMins: mins, lcLocationId: m.lc_location_id, dropLocationId: m.drop_location_id }, token);
+    { pickId, dropId, etaMins: mins, lcLocationId: m.lc_location_id, dropLocationId: m.drop_location_id,
+      expectedEtaMins: automatic ? m.eta_mins : undefined }, token);
   if (!pushed.ok) return pushed;
 
   await commitPickupSetup({...m,pick_id:pickId,drop_id:dropId,eta_mins:mins},a.action,m,

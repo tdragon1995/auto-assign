@@ -12,6 +12,7 @@ import { archiveSealedDays } from "@/lib/tat-archive";
 import { restoreExpiredGeofences } from "@/lib/geofence-bypass";
 import { createMorningReads } from "@/lib/morning-reads";
 import { recoverMorning } from "@/lib/morning-recovery";
+import { maybeAutoUpdatePickupEtas } from "@/lib/pickup-setup-auto";
 
 // The cycle (Cartrack + Goong calls) can take a while; give it headroom.
 export const maxDuration = 60;
@@ -52,6 +53,7 @@ export async function GET(req: NextRequest) {
     const n = await restoreExpiredGeofences().catch((e) => { console.error("[cron] geofence restore:", e); return 0; });
     if (n) console.log(`[cron] geofence restored for ${n} driver(s)`);
   });
+  after(() => maybeAutoUpdatePickupEtas().catch(e => console.error("[cron] pickup ETA update:", e)));
 
   // 1) Switch off? Inside 05:30–22:00 the engine should be running, so self-heal
   //    by auto-arming — unless someone turned it off by hand, which now holds

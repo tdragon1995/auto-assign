@@ -65,6 +65,7 @@ test('cron starts assignment while archive write is still pending and archives w
   let finishArchive;
   const archiveWait = new Promise(resolve => { finishArchive = resolve; });
   let assignmentStarted = false;
+  let autoEtaChecks = 0;
   let armed = true;
   const callbacks = [];
   const route = load('src/app/api/assign/cron/route.ts', {
@@ -77,6 +78,7 @@ test('cron starts assignment while archive write is still pending and archives w
     '@/lib/geofence-bypass': { restoreExpiredGeofences: async () => 0 },
     '@/lib/morning-reads': { createMorningReads: () => ({}) },
     '@/lib/morning-recovery': { recoverMorning: async () => {} },
+    '@/lib/pickup-setup-auto': { maybeAutoUpdatePickupEtas: async () => { autoEtaChecks++; } },
   });
   await route.GET({ headers: { get: () => null } });
   const cycle = callbacks.at(-1)();
@@ -89,6 +91,7 @@ test('cron starts assignment while archive write is still pending and archives w
   await route.GET({ headers: { get: () => null } });
   assert.ok(callbacks.length >= 1);
   await Promise.all(callbacks.map(cb => cb()));
+  assert.equal(autoEtaChecks, 1); // Still scheduled while assignment is disarmed.
 });
 
 function redisMemory() {

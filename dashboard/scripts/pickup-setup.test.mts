@@ -5,7 +5,7 @@
  *   npx tsx scripts/pickup-setup.test.mts
  */
 import assert from "node:assert/strict";
-import { compareWithLabcenter, etaProposals, pickupEtaRows, pickupSetupReport, roundTo5, targetMins, type SetupRow } from "../src/lib/pickup-setup";
+import { canAutoUpdateEta, compareWithLabcenter, etaProposals, pickupEtaRows, pickupSetupReport, roundTo5, targetMins, type SetupRow } from "../src/lib/pickup-setup";
 import type { TimelineRoute, TimelineStop } from "../src/lib/types";
 
 // ── 1. Measured pickups ──
@@ -94,6 +94,18 @@ assert.equal(targetMins(1, 8), 8);        // cap never RAISES the target above t
 assert.equal(roundTo5(2), 5);
 assert.equal(roundTo5(1000), 480);
 assert.equal(roundTo5(62.4), 60);
+
+const [red] = etaProposals([setup(8, "h", 30)], [{ ...st("h", 68, 45), n: 18, sample_days: 7 }]);
+assert.equal(canAutoUpdateEta(red), true); // The screenshot's +127% case.
+assert.equal(canAutoUpdateEta({ ...red, sample_days: 2 }), false);
+assert.equal(canAutoUpdateEta({ ...red, n: 5 }), false);
+assert.equal(canAutoUpdateEta({ ...red, median_mins: 30 }), false); // Only the tail is slow.
+assert.equal(canAutoUpdateEta({ ...red, p80_mins: 369 }), false);
+assert.equal(canAutoUpdateEta({ ...red, current_mins: 0 }), false);
+assert.equal(canAutoUpdateEta({ ...red, proposed_mins: 25, deviation: -0.2 }), false);
+assert.equal(canAutoUpdateEta({ ...red, sample_days: 0 }), false); // Migration missing: fail closed.
+assert.deepEqual(etaProposals([setup(8, "h", 30)], [{ ...st("h", NaN), sample_days: 7 }]), []);
+assert.deepEqual(etaProposals([setup(8, "h", 30)], [{ ...st("h", 68), n: 5 }]), []);
 
 // ── 3. Drift / adopt / rename ──
 const { adopt, drift, renamed } = compareWithLabcenter(

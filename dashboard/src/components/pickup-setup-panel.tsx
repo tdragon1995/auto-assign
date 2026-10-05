@@ -11,8 +11,8 @@ type Report = { proposals: EtaProposal[]; drift: Drift[]; adopted: number; place
 
 /**
  * ETA shown on the customer portal vs what pickups actually take, and places
- * where Labcenter was changed behind our master copy. Nothing reaches Labcenter
- * until someone clicks.
+ * where Labcenter was changed behind our master copy. Reliable increases are
+ * applied daily; uncertain cases and decreases stay available for review.
  *
  * Collapsed by default and fetched the first time it is opened, not when the
  * Config tab opens: the comparison reads Supabase and Labcenter, and most visits
@@ -113,8 +113,9 @@ export function PickupSetupPanel() {
                 ETA lệch thực tế <span className="font-normal tabular-nums text-slate-500">{data.proposals.length}</span>
               </h3>
               <p className="mb-1 max-w-[75ch] text-[11px] text-slate-500">
-                Tính từ giờ hẹn lấy mẫu tới lúc tài xế đến · đề xuất theo mốc 80% chuyến · 30 ngày, trên 5 chuyến,
-                bỏ chuyến có khung giờ, chuyến hẹn trước 06:00 và chuyến giao khác ngày.
+                Tự động tăng ETA mỗi ngày 06:00–07:00 khi có ít nhất 6 chuyến trên 3 ngày và trung vị xác nhận ETA thấp.
+                Mốc 80% chuyến trong 30 ngày sau khi bỏ chuyến bất thường, có khung giờ, hẹn trước 06:00 hoặc giao khác ngày.
+                Các trường hợp còn lại cần duyệt.
               </p>
               {data.proposals.length === 0 ? (
                 <p className="text-xs text-slate-500">Không có địa điểm nào lệch quá 10%.</p>
