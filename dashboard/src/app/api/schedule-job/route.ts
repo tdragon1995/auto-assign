@@ -29,11 +29,11 @@ export async function POST(req: NextRequest) {
       ? "cron"
       : "manual";
 
-  // Start the browser workflow on the first daily cron, even with no scheduled
+  // Start MISA plus Cartrack/Labcenter refreshes in the existing workflow on the first daily cron, even with no scheduled
   // jobs. Only dispatch is awaited; MISA finishes independently in GitHub Actions.
   if (trigger === "cron" && env === "prod") {
     try {
-      const response = await dispatchMisaSync();
+      const response = await dispatchMisaSync(null, true);
       console.log("[schedule-job] MISA sync:", await response.json());
     } catch (e) {
       console.error("[schedule-job] MISA sync failed:", e);

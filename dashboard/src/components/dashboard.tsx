@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, ChevronDown, RefreshCw } from "lucide-react";
+import { DropdownMenu } from "radix-ui";
+import { DataSourceIcon } from "./data-source-icon";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { ServiceStatus } from "./stats-sidebar";
@@ -49,10 +51,10 @@ export function Dashboard() {
   const [warnings, setWarnings] = useState<PickupWarning[]>([]);
   const [warningsAt, setWarningsAt] = useState<string | null>(null);
   /** Counts explicit leave refreshes, so the leave panel's week grid — which
-   *  owns a fetch of its own — re-reads when Đồng bộ dữ liệu is pressed. */
+   *  owns a fetch of its own — re-reads after a source sync completes. */
   const [leaveRefreshKey, setLeaveRefreshKey] = useState(0);
   const [configRefreshKey, setConfigRefreshKey] = useState(0);
-  const [syncingSettings, setSyncingSettings] = useState(false);
+  const [syncingSource, setSyncingSource] = useState<"cartrack" | "labcenter" | null>(null);
   const [metadataReport, setMetadataReport] = useState<(LabcenterMetadataReport & {state:"running"|"complete"|"failed"; error?:string}) | null>(null);
   const [syncingMisa, setSyncingMisa] = useState(false);
   const [failed, setFailed] = useState<FailedJob[]>([]);
@@ -500,15 +502,20 @@ export function Dashboard() {
     if (!leaveLoaded) throw new Error("Không tải được lịch nghỉ phép");
   }, [loadLeaveStatus, syncStatus]);
 
-  const handleRefresh = useCallback(async (syncProfiles = false) => {
-    setSyncingSettings(true);
+  const handleRefresh = useCallback(async () => {
+    try { await syncSettings(); }
+    catch (error) { toast.error(`Không tải lại được cài đặt: ${error instanceof Error ? error.message : String(error)}`); }
+  }, [syncSettings]);
+
+  const handleSourceSync = useCallback(async (source: "cartrack" | "labcenter") => {
+    setSyncingSource(source);
     let report: LabcenterMetadataReport | null = null;
     try {
-      if (syncProfiles) {
-        setMetadataReport(null);
-        const res = await fetch("/api/master-client-info/sync", { method: "POST", cache: "no-store" });
+      if (source === "cartrack") {
+        const res = await fetch("/api/master-client-info/sync?phase=profiles", {method:"POST", cache:"no-store"});
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data.ok !== true) throw new Error(data.error || `Cartrack returned ${res.status}`);
+      } else {
         report = {matched:0, owners:0, errors:0, totalCodes:0, processed:0, nextCursor:null, issues:[]};
         let after = "";
         do {
@@ -523,16 +530,17 @@ export function Dashboard() {
           after = batch.nextCursor ?? "";
         } while (after);
         setMetadataReport({...report, state:"complete"});
-        setConfigRefreshKey(key => key + 1);
       }
       await syncSettings();
-      if (report?.issues.length) toast.warning(`Đã đồng bộ; ${report.issues.length} vấn đề Labcenter cần kiểm tra`);
-      else toast.success(syncProfiles ? "Đã đồng bộ Cartrack, Labcenter, config và lịch nghỉ phép" : "Đã tải lại config và lịch nghỉ phép");
+      if (report?.issues.length) toast.warning(`Đã đồng bộ Labcenter; ${report.issues.length} mục cần kiểm tra`);
+      else toast.success(`Đã đồng bộ ${source === "cartrack" ? "Cartrack" : "Labcenter"} vào Supabase và tải lại cài đặt`);
     } catch (err) {
-      if (report) {setMetadataReport({...report, state:"failed", error:err instanceof Error ? err.message : String(err)}); setConfigRefreshKey(key => key + 1);}
-      toast.error(`Đồng bộ dữ liệu thất bại: ${err instanceof Error ? err.message : String(err)}`);
+      if (report) setMetadataReport({...report, state:"failed", error:err instanceof Error ? err.message : String(err)});
+      toast.error(`Đồng bộ ${source === "cartrack" ? "Cartrack" : "Labcenter"} thất bại: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
-      setSyncingSettings(false);
+      // A partial Labcenter run may have saved completed batches; show those too.
+      setConfigRefreshKey(key => key + 1);
+      setSyncingSource(null);
     }
   }, [syncSettings]);
 
@@ -575,11 +583,12 @@ export function Dashboard() {
           completed = true;
           break;
         }
-        if (!completed) throw new Error("Quá thời gian chờ MISA; hãy bấm Đồng bộ cài đặt sau khi workflow hoàn tất");
+        if (!completed) throw new Error("Quá thời gian chờ MISA; hãy thử lại trong Đồng Bộ Thông Tin sau khi workflow hoàn tất");
       } else {
         throw new Error(`Trạng thái MISA không rõ: ${data.status ?? "trống"}`);
       }
       await syncSettings();
+      setConfigRefreshKey(key => key + 1);
       toast.success("Đã đồng bộ MISA, cài đặt auto-assign và lịch nghỉ phép");
     } catch (err) {
       toast.error(`Đồng bộ MISA thất bại: ${err instanceof Error ? err.message : String(err)}`);
@@ -642,12 +651,27 @@ export function Dashboard() {
             <Switch checked={isRunning} onCheckedChange={toggleService} />
           </div>
 
-          <Button variant="outline" size="sm" className="text-slate-900" onClick={() => void handleRefresh(true)} disabled={syncingSettings}>
-            {syncingSettings ? metadataReport?.state === "running" ? metadataReport.totalCodes > 0 ? `Labcenter: ${metadataReport.processed}/${metadataReport.totalCodes} mã KH` : "Đang lấy dữ liệu Labcenter…" : "Đang đồng bộ dữ liệu…" : "Đồng bộ dữ liệu"}
-          </Button>
-          <Button variant="outline" size="sm" className="text-slate-900" onClick={handleMisaRefresh} disabled={syncingMisa}>
-            {syncingMisa ? "Đang đồng bộ MISA…" : "Đồng bộ MISA"}
-          </Button>
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger asChild>
+              <Button variant="outline" size="sm" className="h-9 gap-2 text-slate-900" disabled={!!syncingSource || syncingMisa}>
+                <RefreshCw aria-hidden="true" className={`size-4 ${syncingSource || syncingMisa ? "motion-safe:animate-spin" : ""}`} />
+                {syncingSource || syncingMisa ? "Đang đồng bộ…" : "Đồng Bộ Thông Tin"}
+                <ChevronDown aria-hidden="true" className="size-3.5 text-slate-500" />
+              </Button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content align="end" sideOffset={6} className="z-50 min-w-64 max-w-[calc(100vw-24px)] rounded-lg border border-slate-200 bg-white p-1.5 text-sm text-slate-900 shadow-md">
+                {(["cartrack", "misa", "labcenter"] as const).map(source => <DropdownMenu.Item key={source}
+                  onSelect={() => { if (source === "misa") void handleMisaRefresh(); else void handleSourceSync(source); }}
+                  className="flex min-h-10 cursor-pointer items-center gap-3 rounded-md px-2.5 outline-none data-[highlighted]:bg-slate-100 data-[highlighted]:text-slate-950">
+                  <DataSourceIcon source={source} />
+                  <span className="flex-1">{source === "cartrack" ? "Cartrack" : source === "misa" ? "MISA" : "Labcenter (Sapoche)"}</span>
+                  <RefreshCw aria-hidden="true" className="size-3.5 text-slate-500" />
+                </DropdownMenu.Item>)}
+                <p className="mt-1 border-t border-slate-200 px-2.5 pt-2 pb-1 text-xs leading-5 text-slate-600">Nguồn → Supabase → cài đặt đã lưu<br />Tự động mỗi ngày lúc 05:00</p>
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
         </div>
       </header>
 
@@ -666,7 +690,7 @@ export function Dashboard() {
                   <span>{metadataReport.owners} địa điểm có thông tin sales / supervisor</span>
                   {metadataReport.state !== "failed" || metadataReport.issues.length > 0 ? <span className="font-semibold">{metadataReport.issues.length > 0 ? `${metadataReport.issues.length} mục cần kiểm tra · Xem chi tiết` : metadataReport.state === "complete" ? "Không có vấn đề cần kiểm tra" : "Chưa phát hiện vấn đề"}</span> : null}
                 </span>}
-                {metadataReport.state === "failed" && <span className="mt-1 block font-normal">{metadataReport.error}. Nhấn Đồng bộ dữ liệu để thử lại.</span>}
+                {metadataReport.state === "failed" && <span className="mt-1 block font-normal">{metadataReport.error}. Chọn Đồng Bộ Thông Tin → Labcenter để thử lại.</span>}
               </summary>
               <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-current/15 pt-2">
                 <span className="max-w-prose leading-relaxed">Đối chiếu điểm giao mặc định, ETA và người phụ trách từ Labcenter. Các số trên là kết quả kiểm tra, không phải số hồ sơ thay đổi. Giá trị chưa xác minh được giữ nguyên. Báo cáo hiển thị đến khi tải lại trang.</span>
@@ -813,7 +837,7 @@ export function Dashboard() {
                   branchRules={branchRules}
                   drivers={drivers}
                   parsedAt={parsedAt}
-                  onSaved={(key?: string) => { if (key) markDone(key); void handleRefresh(); }}
+                  onSaved={(key?: string) => { if (key) markDone(key); setConfigRefreshKey(value => value + 1); void handleRefresh(); }}
                 />
                 <div className="min-h-[28rem] flex-1">
                   <ConfigBrowserPanel drivers={drivers} refreshKey={configRefreshKey} />

@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { ArrowRightLeft, Building2, ChevronDown, Pencil, Search, SlidersHorizontal, UserRound, X } from "lucide-react";
+import { ArrowRightLeft, Building2, ChevronDown, Pencil, RefreshCw, Search, SlidersHorizontal, UserRound, X } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { DataSourceIcon } from "./data-source-icon";
 import { foldName, replaceDriverInCell, splitDriverNames, DRIVER_SEP } from "@/lib/driver-cell";
 import { displayDriverCell, splitDriverName } from "@/lib/driver-label";
 import { configFilterOptions, EMPTY_CONFIG_FILTERS, filterConfigRows, usesTextInput } from "@/lib/config-filters";
@@ -674,9 +675,6 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
   const [driverMetadata, setDriverMetadata] = useState<DriverMeta[] | null>(sessionMetadata?.refreshKey === refreshKey ? sessionMetadata.drivers : null);
   const [metaBusy, setMetaBusy] = useState(false);
   const [metaError, setMetaError] = useState("");
-  const [refreshedDrivers, setAvailableDrivers] = useState<ConfigDriver[] | null>(null);
-  const [refreshingDrivers, setRefreshingDrivers] = useState(false);
-  useEffect(() => { setAvailableDrivers(null); }, [refreshKey]);
   const [profileHover, setProfileHover] = useState<{ kind: "client" | "driver"; id: string; anchor: HTMLElement; pinned: boolean } | null>(null);
   const [profileEditing, setProfileEditing] = useState(false);
   const profileOpenTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -744,26 +742,11 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
     finally { setMetaBusy(false); }
   }, [refreshKey]);
 
-  const refreshDrivers = async () => {
-    setRefreshingDrivers(true);
-    try {
-      const res = await fetch("/api/drivers", { cache: "no-store" });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !Array.isArray(data.data) || data.data.length < 100) throw new Error(data.error || "Không đọc được danh sách tài xế Cartrack");
-      setAvailableDrivers(data.data.filter((d: { is_active: boolean }) => d.is_active)
-        .map((d: { delivery_driver_id: string; first_name: string; last_name: string }) => ({
-          driver_id: d.delivery_driver_id, name: `${d.first_name} ${d.last_name}`.trim(),
-        })));
-      toast.success("Đã tải danh sách tài xế Cartrack");
-    } catch (e) { toast.error(e instanceof Error ? e.message : String(e)); }
-    finally { setRefreshingDrivers(false); }
-  };
-
   const clientMetaById = useMemo(() => new Map((clientMetadata ?? []).map((c) => [c.customer_id, c])), [clientMetadata]);
   const driverMetaById = useMemo(() => new Map((driverMetadata ?? []).map((d) => [d.driver_id, d])), [driverMetadata]);
-  const rosterDrivers = useMemo(() => refreshedDrivers ?? (driverMetadata ? driverMetadata.filter(d => d.cartrack.is_active !== false).map(d => ({
+  const rosterDrivers = useMemo(() => driverMetadata ? driverMetadata.filter(d => d.cartrack.is_active !== false).map(d => ({
     driver_id: d.driver_id, name: `${d.cartrack.first_name ?? ""} ${d.cartrack.last_name ?? ""}`.trim() || d.driver_id,
-  })).sort((a, b) => a.name.localeCompare(b.name)) : drivers), [refreshedDrivers, driverMetadata, drivers]);
+  })).sort((a, b) => a.name.localeCompare(b.name)) : drivers, [driverMetadata, drivers]);
   const hoverClient = profileHover?.kind === "client" ? clientMetaById.get(profileHover.id) : null;
   const hoverDriver = profileHover?.kind === "driver" ? driverMetaById.get(profileHover.id) : null;
   const hoverName = hoverClient ? clientName(hoverClient) : hoverDriver ? displayDriverCell(`${hoverDriver.cartrack.first_name ?? ""} ${hoverDriver.cartrack.last_name ?? ""}`.trim()) : "";
@@ -969,11 +952,13 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
           <Button
             size="sm" variant="outline"
             className="h-9 px-3 text-xs"
-            title="Đọc lại config, hồ sơ đã lưu và danh sách tài xế Cartrack"
-            onClick={() => { void load(true); void loadMetadata(); void refreshDrivers(); }}
-            disabled={loading || metaBusy || refreshingDrivers}
+            title={readOnly ? "Đọc lại lịch Chủ nhật và hồ sơ đã lưu" : "Đọc lại config và hồ sơ từ Supabase; không gọi hệ thống nguồn"}
+            onClick={() => { void load(true); void loadMetadata(); }}
+            disabled={loading || metaBusy}
           >
-            {loading || metaBusy || refreshingDrivers ? "Đang tải…" : "Tải lại"}
+            <RefreshCw aria-hidden="true" className={`size-3.5 ${loading || metaBusy ? "motion-safe:animate-spin" : ""}`} />
+            <DataSourceIcon source="supabase" className="size-4" />
+            {loading || metaBusy ? "Đang tải…" : "Tải lại"}
           </Button>
         </div>
 
@@ -1354,7 +1339,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
             initial={hoverClient ? { ...hoverClient.cartrack, default_dropoff_id: hoverClient.default_dropoff_id, default_dropoff_name: hoverClient.default_dropoff_name, eta_minutes: hoverClient.eta_minutes }
               : { ...hoverDriver!.cartrack, ...hoverDriver!.roster, driver_zalo_id: hoverDriver!.driver_zalo_id, phone_number_update: hoverDriver!.phone_number_update }}
             clients={clientMetadata ?? []} linkedLabcenter={!!hoverClient?.labcenter_location_id}
-            onCancel={() => setProfileEditing(false)} onSaved={async () => { setAvailableDrivers(null); await loadMetadata(); await load(true); closeProfile(); toast.success("Đã lưu và đồng bộ hồ sơ"); }}
+            onCancel={() => setProfileEditing(false)} onSaved={async () => { await loadMetadata(); await load(true); closeProfile(); toast.success("Đã lưu và đồng bộ hồ sơ"); }}
           /> : <>
             <MasterProfileDetails client={hoverClient} driver={hoverDriver} clients={clientMetaById} />
             <div className="flex justify-end border-t border-slate-200 pt-3"><Button size="sm" variant="outline" onClick={() => { pinProfile(); setProfileEditing(true); }}><Pencil aria-hidden="true" className="size-3.5" />Sửa hồ sơ</Button></div>

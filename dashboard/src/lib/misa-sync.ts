@@ -87,7 +87,7 @@ export async function getMisaSyncStatus() {
   });
 }
 
-export async function dispatchMisaSync(month: string | null = null) {
+export async function dispatchMisaSync(month: string | null = null, syncMaster = false) {
   const token = process.env.GITHUB_DISPATCH_TOKEN;
   if (!token) {
     // Not configured — the Refresh button carries on as before.
@@ -98,14 +98,15 @@ export async function dispatchMisaSync(month: string | null = null) {
     // Don't stack runs: a second dispatch while one is mid-flight would race
     // the same sheet writes, and the whole tab is cleared and rewritten.
     const running = await latestRun(token);
-    if (running && (running.status === "queued" || running.status === "in_progress")) {
-      return NextResponse.json({ status: "already_running", id: running.id, url: running.html_url });
+    const misaRunning = !!running && (running.status === "queued" || running.status === "in_progress");
+    if (!syncMaster && misaRunning) {
+      return NextResponse.json({ status: "already_running", id: running!.id, url: running!.html_url });
     }
 
     // Ran recently enough — say so rather than starting another one. The caller
     // is told how long is left so a Refresh never looks like it did nothing.
     const wait = running ? cooldownLeft(running) : 0;
-    if (wait > 0) {
+    if (!syncMaster && wait > 0) {
       return NextResponse.json({
         status: "cooldown",
         conclusion: running!.conclusion,
@@ -124,7 +125,7 @@ export async function dispatchMisaSync(month: string | null = null) {
         headers: { ...ghHeaders(token), "Content-Type": "application/json" },
         body: JSON.stringify({
           ref: BRANCH,
-          inputs: month ? { month } : {},
+          inputs: { ...(month ? { month } : {}), ...(syncMaster ? { sync_master: "true", skip_misa: String(misaRunning || wait > 0) } : {}) },
         }),
       },
     );

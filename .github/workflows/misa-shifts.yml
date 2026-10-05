@@ -1,7 +1,7 @@
 name: MISA Driver Shifts
 
 # Dispatched by the daily 05:00 VN Vercel cron (/api/schedule-job) and the
-# dashboard's "Đồng bộ MISA" button (/api/misa-sync). No separate schedule here.
+# dashboard's Đồng Bộ Thông Tin → MISA option (/api/misa-sync). No separate schedule here.
 # Also runnable by hand from the Actions tab.
 on:
   workflow_dispatch:
@@ -10,13 +10,37 @@ on:
         description: "Target month as YYYY-MM (blank = current month, VN time)"
         required: false
         type: string
+      sync_master:
+        description: "Also refresh Cartrack and Labcenter (enabled by the morning cron)"
+        required: false
+        type: boolean
+        default: false
+
+      skip_misa:
+        description: "Refresh Master data only when MISA is already running or cooling down"
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: misa-shifts
   cancel-in-progress: false
 
 jobs:
+  master-info:
+    if: ${{ inputs.sync_master }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Refresh Cartrack and Labcenter into Supabase and reload config
+        run: node dashboard/scripts/sync-master.mjs
+
   fetch:
+    if: ${{ !inputs.skip_misa }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:

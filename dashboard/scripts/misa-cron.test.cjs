@@ -41,9 +41,9 @@ const next = { NextResponse: { json: (body, init) => Response.json(body, init) }
   let scheduleFails = false;
   const schedule = load('src/app/api/schedule-job/route.ts', {
     'next/server': next,
-    '@/lib/misa-sync': { dispatchMisaSync: async () => {
+    '@/lib/misa-sync': { dispatchMisaSync: async (...args) => {
       events.push('sync');
-      return sync.dispatchMisaSync();
+      return sync.dispatchMisaSync(...args);
     } },
     '@/lib/schedule-job': { runScheduleJobCycle: async () => {
       events.push('jobs');
@@ -60,7 +60,7 @@ const next = { NextResponse: { json: (body, init) => Response.json(body, init) }
   assert.equal((await schedule.GET(request())).status, 200);
   assert.deepEqual(events, ['sync', 'jobs', 'saved']);
   assert.equal(requests.filter(r => r.options.method === 'POST').length, 1);
-  assert.deepEqual(JSON.parse(requests[1].options.body), { ref: 'master', inputs: {} });
+  assert.deepEqual(JSON.parse(requests[1].options.body), { ref: 'master', inputs: {sync_master:'true',skip_misa:'false'} });
   assert.ok(requests[1].url.endsWith('/misa-shifts.yml/dispatches'));
 
   for (const req of [request('', false), request('?mode=retry'), request('?env=uat')]) {
@@ -71,8 +71,12 @@ const next = { NextResponse: { json: (body, init) => Response.json(body, init) }
   for (const status of ['queued', 'in_progress', 'completed']) {
     latest = { id: 42, conclusion: "success", status, created_at: new Date().toISOString(), html_url: 'test-run' };
     requests.length = 0;
+    await sync.dispatchMisaSync();
+    assert.equal(requests.length, 1, `${status}: no duplicate manual dispatch`);
+    requests.length = 0;
     await schedule.GET(request());
-    assert.equal(requests.length, 1, `${status}: no duplicate dispatch`);
+    assert.equal(requests.length, 2, `${status}: daily Master data still refreshes`);
+    assert.deepEqual(JSON.parse(requests.at(-1).options.body).inputs,{sync_master:'true',skip_misa:'true'},"Daily refresh does not repeat MISA");
   }
   latest.created_at = new Date(Date.now() - 16 * 60_000).toISOString();
   assert.equal((await (await sync.dispatchMisaSync()).json()).status, 'dispatched');
