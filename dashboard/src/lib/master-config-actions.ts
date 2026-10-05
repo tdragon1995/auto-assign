@@ -69,9 +69,11 @@ export async function bulkMasterConfig(targets:Target[],patch:Patch|{delete:true
   }
   return {done,skipped};
 }
-export async function replaceMasterConfig(opts:{from:string;to:string;targets:Target[]}) {
+export async function replaceMasterConfig(opts:{from:string;to:string;from_driver_id?:string;to_driver_id?:string;targets:Target[]}) {
   const ctx=await context(opts.targets.map(t=>t.expected?.rule_id ?? 0));
-  const from=uniqueNameId(opts.from,ctx.drivers),to=uniqueNameId(opts.to,ctx.drivers);
+  const from=opts.from_driver_id??uniqueNameId(opts.from,ctx.drivers),to=opts.to_driver_id??uniqueNameId(opts.to,ctx.drivers);
+  if (!UUID.test(from) || !UUID.test(to) || !ctx.drivers.some(d=>d.id===from) || !ctx.drivers.some(d=>d.id===to && d.active)) throw new Error("Tài xế không hợp lệ hoặc đã ngừng hoạt động — chọn lại tài xế");
+  if (from===to) throw new Error("Hai tài xế trùng nhau");
   const replaced:{row:number;pickup:string;before:string;after:string}[]=[],skipped:{row:number;pickup:string;reason:string}[]=[],changes:Record<string,unknown>[]=[];
   const seen=new Set<number>();
   for(const target of opts.targets) {

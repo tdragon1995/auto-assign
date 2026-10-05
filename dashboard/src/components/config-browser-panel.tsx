@@ -424,6 +424,8 @@ function ReplaceDriverPanel({
 }) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  const [fromId, setFromId] = useState("");
+  const [toId, setToId] = useState("");
   const [excluded, setExcluded] = useState<ReadonlySet<number>>(new Set());
   const [busy, setBusy] = useState(false);
   const [refreshedDrivers, setAvailableDrivers] = useState<ConfigDriver[] | null>(null);
@@ -431,19 +433,24 @@ function ReplaceDriverPanel({
   const [refreshingDrivers, setRefreshingDrivers] = useState(false);
 
   const fromDrivers = useMemo<ConfigDriver[]>(
-    () => fromOptions.map((name) => ({ driver_id: name, name })),
-    [fromOptions],
+    () => fromOptions.flatMap((name) => {
+      const ids = new Set(rows.flatMap(r => splitDriverNames(r.driver)
+        .flatMap((n, index) => n === name && r.driver_ids?.[index] ? [r.driver_ids[index]] : [])));
+      return ids.size ? [...ids].map(driver_id => ({driver_id,name})) : [{driver_id:name,name}];
+    }),
+    [fromOptions, rows],
   );
   const affected = useMemo(
-    () => (from ? sortConfigRows(rows.filter((r) => splitDriverNames(r.driver).includes(from))) : []),
-    [rows, from],
+    () => (from ? sortConfigRows(rows.filter((r) => fromId ? r.driver_ids?.includes(fromId) : splitDriverNames(r.driver).includes(from))) : []),
+    [rows, from, fromId],
   );
   const writable = affected.filter(isWritable);
   const unwritable = affected.length - writable.length;
   const picked = writable.filter((r) => !excluded.has(r.row));
 
-  const pickFrom = (names: string[]) => {
+  const pickFrom = (names: string[], selected?: ConfigDriver) => {
     setFrom(names[0] ?? "");
+    setFromId(selected && rows.some(r => r.driver_ids?.includes(selected.driver_id)) ? selected.driver_id : "");
     setExcluded(new Set());
   };
   const toggle = (row: number) =>
@@ -455,11 +462,13 @@ function ReplaceDriverPanel({
 
   const apply = async () => {
     if (!from || !to) return toast.error("Chọn đủ hai tài xế");
+    if (configDay === "weekday" && (!fromId || !toId)) return toast.error("Tải lại config và chọn lại hai tài xế");
     if (picked.length === 0) return toast.error("Chưa chọn dòng nào");
     setBusy(true);
     try {
       const j = await postJson("/api/config/replace-driver", {
         from, to, config_day: configDay, rows: targetBody(picked),
+        ...(configDay === "weekday" ? {from_driver_id:fromId,to_driver_id:toId} : {}),
       });
       const done = (j.replaced ?? []).length as number;
       const skipped = (j.skipped ?? []) as { row: number; pickup: string; reason: string }[];
@@ -511,8 +520,8 @@ function ReplaceDriverPanel({
         <span className="text-[11px] font-semibold text-indigo-900">bằng</span>
         <DriverCombobox
           names={to ? [to] : []}
-          onChange={(names) => setTo(names[0] ?? "")}
-          drivers={availableDrivers.filter((d) => d.name !== from)}
+          onChange={(names, selected) => { setTo(names[0] ?? ""); setToId(selected?.driver_id ?? ""); }}
+          drivers={availableDrivers.filter((d) => fromId ? d.driver_id !== fromId : d.name !== from)}
           max={1}
           placeholder="Tài xế thay thế…"
           ariaLabel="Tài xế thay thế"

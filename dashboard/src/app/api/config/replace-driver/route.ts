@@ -7,6 +7,7 @@ import { getDrivers } from "@/lib/cartrack";
 import { masterDriver, masterEnabled } from "@/lib/master-store";
 import { syncMissingProfiles } from "@/lib/master-sync";
 import { sbSelectAll } from "@/lib/supabase-rest";
+import { UUID } from "@/lib/master-reconcile";
 
 /**
  * Replace one driver with another across the config — "Hùng nghỉ, từ nay Nam
@@ -32,23 +33,29 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== "object") return bad("Body không hợp lệ");
     const configDay = resolveConfigDay(body.config_day);
-    const { from, to, rows } = body as {
-      from?: string; to?: string; rows?: unknown;
+    const { from, to, rows, from_driver_id, to_driver_id } = body as {
+      from?: string; to?: string; rows?: unknown; from_driver_id?: unknown; to_driver_id?: unknown;
     };
+    if (typeof from !== "string" || typeof to !== "string") return bad("Chọn đủ hai tài xế");
+    const usingIds = from_driver_id !== undefined || to_driver_id !== undefined;
+    if (usingIds && (typeof from_driver_id !== "string" || !UUID.test(from_driver_id) || typeof to_driver_id !== "string" || !UUID.test(to_driver_id))) return bad("ID tài xế không hợp lệ — chọn lại tài xế");
+    const fromId = usingIds ? from_driver_id as string : undefined;
+    const toId = usingIds ? to_driver_id as string : undefined;
     const fromName = (from ?? "").trim(), toName = (to ?? "").trim();
     if (!fromName) return bad("Chưa chọn tài xế cần thay");
     if (!toName) return bad("Chưa chọn tài xế thay thế");
-    if (fromName === toName) return bad("Hai tài xế trùng nhau");
+    if (usingIds ? fromId === toId : fromName === toName) return bad("Hai tài xế trùng nhau");
     // A name is one cell entry; a comma would be read as a second driver.
-    if (fromName.includes(",") || toName.includes(",")) return bad("Mỗi bên chỉ một tài xế");
+    if (!usingIds && (fromName.includes(",") || toName.includes(","))) return bad("Mỗi bên chỉ một tài xế");
     const parsed = parseConfigTargets(rows);
     if ("error" in parsed) return bad(parsed.error);
 
     if (masterEnabled() && configDay === "weekday") {
       const drivers = await getDrivers();
       if (drivers.length < 100) return bad("Chưa đọc đủ tài xế Cartrack — thử lại sau", 503);
-      const matches = drivers.filter((d) => d.is_active && `${d.first_name} ${d.last_name}`.trim() === toName);
-      if (matches.length !== 1) return bad(`"${toName}" không xác định duy nhất trong Cartrack`);
+      const matches = drivers.filter((d) => d.is_active && (toId ? d.delivery_driver_id === toId : `${d.first_name} ${d.last_name}`.trim() === toName));
+      if (matches.length === 0) return bad("Tài xế thay thế không còn hoạt động hoặc danh sách đã thay đổi — tải lại và chọn lại tài xế");
+      if (matches.length !== 1) return bad(`"${toName}" có nhiều hồ sơ Cartrack — tải lại và chọn bằng ID`);
       const id = matches[0].delivery_driver_id;
       if (!(await masterDriver(id))) {
         const clients = await sbSelectAll<{ customer_id: string }>("master_clients", "select=customer_id", "customer_id.asc");
@@ -61,7 +68,7 @@ export async function POST(req: NextRequest) {
       if (!drivers.some((d) => d.name === toName)) return bad(`"${toName}" không có trong tab Driver — chọn từ danh sách`);
     }
 
-    const result = await replaceConfigDriver({ config_day: configDay, from: fromName, to: toName, targets: parsed.targets });
+    const result = await replaceConfigDriver({ config_day: configDay, from: fromName, to: toName, from_driver_id:fromId, to_driver_id:toId, targets: parsed.targets });
     if (result.replaced.length > 0) await invalidateConfigCache();
     return NextResponse.json({ ok: true, ...result });
   } catch (e) {

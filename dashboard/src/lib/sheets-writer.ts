@@ -2408,6 +2408,8 @@ export async function replaceConfigDriver(opts: {
   config_day?: ConfigDay;
   from: string;
   to: string;
+  from_driver_id?: string;
+  to_driver_id?: string;
   targets: ConfigTarget[];
 }): Promise<DriverReplaceResult> {
   if (masterEnabled() && resolveConfigDay(opts.config_day) === "weekday") return replaceMasterConfig(opts);

@@ -39,7 +39,7 @@ export function DriverCombobox({
 }: {
   /** Full sheet labels, in the order they should read. */
   names: string[];
-  onChange: (names: string[]) => void;
+  onChange: (names: string[], selected?: ConfigDriver) => void;
   drivers: ConfigDriver[];
   /** How many names fit. 1 turns this into an ordinary single picker. */
   max?: number;
@@ -92,9 +92,9 @@ export function DriverCombobox({
     };
   }, [open, place]);
 
-  const add = (name: string) => {
-    const next = [...names, name].slice(0, max === Infinity ? undefined : max);
-    onChange(next);
+  const add = (driver: ConfigDriver) => {
+    const next = [...names, driver.name].slice(0, max === Infinity ? undefined : max);
+    onChange(next, driver);
     setQ(""); setActive(0);
     // At the limit there is no input left to focus and nothing more to choose,
     // so the menu closes instead of hanging open over a full field.
@@ -117,7 +117,7 @@ export function DriverCombobox({
       });
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (open && matches[active]) add(matches[active].name);
+      if (open && matches[active]) add(matches[active]);
     } else if (e.key === "Escape") {
       setOpen(false);
     } else if (e.key === "Backspace" && q === "" && names.length > 0) {
@@ -181,7 +181,7 @@ export function DriverCombobox({
                 role="option"
                 aria-selected={i === active}
                 onMouseEnter={() => setActive(i)}
-                onClick={() => add(d.name)}
+                onClick={() => add(d)}
                 className={`flex w-full flex-wrap items-baseline gap-x-1.5 px-2 py-1 text-left text-xs ${
                   i === active ? "bg-indigo-50 text-slate-900" : "text-slate-700"
                 }`}
