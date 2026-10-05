@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { NextRequest } from "next/server";
-import { cancelableScheduleJobs, isNoSampleCommand, POST } from "../src/app/api/zalo/sample-cancel/route";
+import { POST } from "../src/app/api/zalo/sample-cancel/route";
+import { cancelableScheduleJobs, isNoSampleCommand } from "../src/lib/scheduled-pickup-cancel";
 import { SAMPLE_PICKUP_CUSTOMER_ID } from "../src/lib/scheduled-pickup-reminder";
 import type { Job } from "../src/lib/types";
 
@@ -20,11 +21,11 @@ const job = (overrides: Partial<Job> = {}): Job => ({
   stops: [{ stop_type_id: 1, stop_status_id: 1, customer_id: SAMPLE_PICKUP_CUSTOMER_ID }],
   ...overrides,
 });
-assert.deepEqual(cancelableScheduleJobs([job()], today).map((j) => j.job_id), [1]);
-assert.equal(cancelableScheduleJobs([job({ labels: [] })], today).length, 0);
-assert.equal(cancelableScheduleJobs([job({ scheduled_delivery_ts: "2026-10-02 10:30:00" })], today).length, 0);
-assert.equal(cancelableScheduleJobs([job({ stops: [{ stop_type_id: 1, stop_status_id: 2, customer_id: SAMPLE_PICKUP_CUSTOMER_ID }] })], today).length, 0);
-assert.equal(cancelableScheduleJobs([job({ stops: [{ stop_type_id: 1, stop_status_id: 1, customer_id: "other" }] })], today).length, 0);
+assert.deepEqual(cancelableScheduleJobs([job()], today, SAMPLE_PICKUP_CUSTOMER_ID).map((j) => j.job_id), [1]);
+assert.equal(cancelableScheduleJobs([job({ labels: [] })], today, SAMPLE_PICKUP_CUSTOMER_ID).length, 0);
+assert.equal(cancelableScheduleJobs([job({ scheduled_delivery_ts: "2026-10-02 10:30:00" })], today, SAMPLE_PICKUP_CUSTOMER_ID).length, 0);
+assert.equal(cancelableScheduleJobs([job({ stops: [{ stop_type_id: 1, stop_status_id: 2, customer_id: SAMPLE_PICKUP_CUSTOMER_ID }] })], today, SAMPLE_PICKUP_CUSTOMER_ID).length, 0);
+assert.equal(cancelableScheduleJobs([job({ stops: [{ stop_type_id: 1, stop_status_id: 1, customer_id: "other" }] })], today, SAMPLE_PICKUP_CUSTOMER_ID).length, 0);
 
 // A real handler request: Zalo's documented envelope and tagged commands must reply.
 const originalFetch = globalThis.fetch;

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sendZaloMessage } from "@/lib/zalo";
+import { cancelScheduledPickup, isNoSampleCommand } from "@/lib/scheduled-pickup-cancel";
+import { CHAT_BY_CUSTOMER_ID, PHARMACY_PICKUP_CUSTOMER_ID } from "@/lib/scheduled-pickup-reminder";
 import {
   HELP,
   parseCommand,
@@ -30,7 +32,8 @@ interface ZaloUpdate {
   event_name?: string;
   message?: {
     text?: string;
-    chat?: { id?: string | number };
+    chat?: { id?: string | number; chat_type?: string };
+    from?: { is_bot?: boolean };
   };
 }
 
@@ -103,7 +106,10 @@ export async function POST(req: NextRequest) {
 
   let update: ZaloUpdate;
   try {
-    update = (await req.json()) as ZaloUpdate;
+    const body = await req.json();
+    if (!body || typeof body !== "object") return NextResponse.json({ ok: true });
+    update = body.result ?? body;
+    if (!update || typeof update !== "object") return NextResponse.json({ ok: true });
   } catch {
     return NextResponse.json({ ok: true });
   }
@@ -127,11 +133,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   }
 
-  const text = update.message?.text ?? "";
+  if (update.message?.from?.is_bot) return NextResponse.json({ ok: true });
+  const text = typeof update.message?.text === "string" ? update.message.text : "";
   const chatId = update.message?.chat?.id != null ? String(update.message.chat.id) : "";
   if (!chatId) return NextResponse.json({ ok: true });
-  // These groups receive pickup reminders but never participate in revenue chat.
-  if (chatId === "zgr-1c7aa981bbcf52910bde" || chatId === "zgr-5f2b2b46331ada44830b") return NextResponse.json({ ok: true });
+  // This pickup group handles no-sample replies, without any mention requirement.
+  if (chatId === CHAT_BY_CUSTOMER_ID[PHARMACY_PICKUP_CUSTOMER_ID]) {
+    if (update.message?.chat?.chat_type === "GROUP" && isNoSampleCommand(text, true)) {
+      const reply = await cancelScheduledPickup(PHARMACY_PICKUP_CUSTOMER_ID, true);
+      await sendZaloMessage(token, chatId, reply);
+    }
+    return NextResponse.json({ ok: true });
+  }
+  if (chatId === "zgr-5f2b2b46331ada44830b") return NextResponse.json({ ok: true });
 
   // Gate 2 — chat allowlist. Unconfigured: hand back the id so setup is self-serve.
   const allowed = allowedChats();

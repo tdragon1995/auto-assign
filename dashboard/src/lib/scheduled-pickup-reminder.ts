@@ -6,8 +6,9 @@ import type { Job, LogLevel } from "./types";
 import { sendZaloMessage } from "./zalo";
 
 export const SAMPLE_PICKUP_CUSTOMER_ID = "81f0d4a6-acf9-11f1-9378-fa163ee8d8ac";
-const CHAT_BY_CUSTOMER_ID: Record<string, string> = {
-  "51bfb168-446f-11ed-888f-506b8dbc8dfb": "zgr-1c7aa981bbcf52910bde",
+export const PHARMACY_PICKUP_CUSTOMER_ID = "51bfb168-446f-11ed-888f-506b8dbc8dfb";
+export const CHAT_BY_CUSTOMER_ID: Record<string, string> = {
+  [PHARMACY_PICKUP_CUSTOMER_ID]: "zgr-1c7aa981bbcf52910bde",
   "f88dfab6-b522-11ee-bb52-506b8d9879b5": "zgr-5f2b2b46331ada44830b",
 };
 const MESSAGE = "Dạ, sắp đến giờ lấy mẫu cố định của bên mình rồi ạ. Bên mình hôm nay có mẫu không ạ, cho Diag xin xác nhận với ạ?";
