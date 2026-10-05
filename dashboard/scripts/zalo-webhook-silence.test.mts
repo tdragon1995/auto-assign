@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { NextRequest } from "next/server";
 import { isNoSampleCommand, cancelableScheduleJobs } from "../src/lib/scheduled-pickup-cancel";
 import { CHAT_BY_CUSTOMER_ID, PHARMACY_PICKUP_CUSTOMER_ID, SAMPLE_PICKUP_CUSTOMER_ID } from "../src/lib/scheduled-pickup-reminder";
+import { vnDate } from "../src/lib/time";
 import { PROXY_DRIVER_ID } from "../src/lib/cartrack";
 import type { Job } from "../src/lib/types";
 
@@ -14,10 +15,11 @@ const { POST } = await import("../src/app/api/zalo/webhook/route");
 const originalFetch = globalThis.fetch;
 const sent: string[] = [];
 let jobReads = 0;
+let lookupJobs: Job[] = [];
 globalThis.fetch = async (input, init) => {
   if (String(input).startsWith("https://fleetapi-vn.cartrack.com/rest/delivery/jobs?")) {
     jobReads++;
-    return Response.json({ data: [] });
+    return Response.json({ data: lookupJobs });
   }
   sent.push(String(init?.body));
   return Response.json({ ok: true });
@@ -52,24 +54,31 @@ try {
   );
   const positives = ["có mẫu nhe", "có mẫu", "hôm nay có mẫu", "đã có mẫu", "có mẫu rồi", "chưa có mẫu?", "chưa có mẫu nhưng lát có mẫu"];
   for (const text of positives) {
-    assert.equal(isNoSampleCommand(text, true), false, text);
-    await POST(webhookRequest(text));
+    assert.equal(isNoSampleCommand(text), false, text);
+    for (const chatId of Object.values(CHAT_BY_CUSTOMER_ID)) {
+      await POST(webhookRequest(text, { chat: { id: chatId, chat_type: "GROUP" } }));
+    }
   }
   assert.equal(jobReads, 0, "positive/ambiguous replies must never enter cancellation");
   assert.equal(sent.length, 1, "positive replies in the pickup group stay silent");
-  for (const text of ["chưa có mẫu", "không có mẫu", "k có mẫu", "chua co mau", "hôm nay chưa có mẫu"]) {
-    assert.equal(isNoSampleCommand(text, true), true, text);
-    await POST(webhookRequest(text)); // No tag or reply metadata.
+  const negatives = ["chưa có mẫu", "không có mẫu", "k có mẫu", "chua co mau", "hôm nay chưa có mẫu", "hôm nay k có mẫu", "ko có", "chưa có", "k có", "@Bot Điều Phối X ko có"];
+  for (const chatId of Object.values(CHAT_BY_CUSTOMER_ID)) {
+    const before = sent.length;
+    for (const text of negatives) {
+      assert.equal(isNoSampleCommand(text), true, text);
+      await POST(webhookRequest(text, { chat: { id: chatId, chat_type: "GROUP" } }));
+    }
+    assert.ok(sent.slice(before).every((body) => JSON.parse(body).chat_id === chatId));
   }
-  assert.equal(jobReads, 5, "untagged negative replies must enter cancellation");
-  assert.equal(sent.length, 6);
-  assert.ok(sent.slice(1).every((body) => JSON.parse(body).chat_id === pharmacyChat));
+  const expectedReads = negatives.length * Object.keys(CHAT_BY_CUSTOMER_ID).length;
+  assert.equal(jobReads, expectedReads, "all configured pickup groups must handle negative replies");
+  assert.equal(sent.length, 1 + expectedReads);
   await POST(webhookRequest("chưa có mẫu", { from: { is_bot: true } }));
   await POST(webhookRequest("chưa có mẫu", { chat: { id: pharmacyChat, chat_type: "PRIVATE" } }));
-  await POST(webhookRequest("chưa có mẫu", { chat: { id: "zgr-5f2b2b46331ada44830b", chat_type: "GROUP" } }));
+  await POST(webhookRequest("chưa có mẫu", { chat: { id: "zgr-unmapped", chat_type: "GROUP" } }));
   assert.equal((await POST(webhookRequest("chưa có mẫu", {}, "wrong-secret"))).status, 401);
-  assert.equal(jobReads, 5, "bots, other pickup groups, private chats and invalid secrets cannot cancel");
-  assert.equal(isNoSampleCommand("chưa có mẫu"), false, "the TECCO phrase rules stay unchanged");
+  assert.equal(jobReads, expectedReads, "bots, unmapped groups, private chats and invalid secrets cannot cancel");
+  assert.equal(isNoSampleCommand("chưa có mẫu"), true, "all clients share the negative phrases");
   const today = "2026-10-05";
   const pickupJob: Job = {
     job_id: 1, job_status_id: 4, scheduled_delivery_ts: today + " 10:30:00", labels: ["📅 Lịch cố định"],
@@ -87,6 +96,10 @@ try {
   assert.equal(cancelableScheduleJobs([{ ...dueJob, send_to_driver_at: "invalid" }], today, PHARMACY_PICKUP_CUSTOMER_ID, true).length, 0);
   assert.equal(cancelableScheduleJobs([{ ...dueJob, delivery_driver_id: PROXY_DRIVER_ID }], today, PHARMACY_PICKUP_CUSTOMER_ID, true).length, 0, "a pickup still parked must not be cancelled");
   assert.equal(cancelableScheduleJobs([pickupJob], today, PHARMACY_PICKUP_CUSTOMER_ID, true).length, 0, "unknown release state must fail closed");
+  lookupJobs = [{ ...dueJob, scheduled_delivery_ts: vnDate() + " 10:30:00" }];
+  const otherCustomerChat = Object.entries(CHAT_BY_CUSTOMER_ID).find(([customerId]) => customerId !== PHARMACY_PICKUP_CUSTOMER_ID)![1];
+  await POST(webhookRequest("ko có", { chat: { id: otherCustomerChat, chat_type: "GROUP" } }));
+  assert.equal(JSON.parse(sent.at(-1)!).text, "Hiện không có chuyến lấy mẫu cố định nào đủ điều kiện huỷ.", "a group cannot cancel another customer's current pickup");
   console.log("Zalo pickup cancellation and revenue isolation check passed.");
 } finally {
   globalThis.fetch = originalFetch;

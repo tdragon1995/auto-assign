@@ -3,10 +3,9 @@ import { SCHEDULE_JOB_LABEL } from "./schedule-job";
 import { vnDate } from "./time";
 import type { Job } from "./types";
 
-export function isNoSampleCommand(text: string, allowChua = false): boolean {
+export function isNoSampleCommand(text: string): boolean {
   const plain = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
-  return /^(?:@.+?\s+)?\/?(?:hom\s+nay\s+)?(?:khong|k)\s+co\s+mau(?:\s+@.+)?$/.test(plain) ||
-    (allowChua && /^(?:@.+?\s+)?\/?(?:hom\s+nay\s+)?chua\s+co\s+mau(?:\s+@.+)?$/.test(plain));
+  return /^(?:@.+?\s+)?\/?(?:hom\s+nay\s+)?(?:khong|ko|k|chua)\s+co(?:\s+mau)?(?:\s+@.+)?$/.test(plain);
 }
 
 export function cancelableScheduleJobs(jobs: Job[], today: string, customerId: string, currentOnly = false): Job[] {

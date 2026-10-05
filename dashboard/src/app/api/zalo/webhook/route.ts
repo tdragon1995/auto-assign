@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sendZaloMessage } from "@/lib/zalo";
 import { cancelScheduledPickup, isNoSampleCommand } from "@/lib/scheduled-pickup-cancel";
-import { CHAT_BY_CUSTOMER_ID, PHARMACY_PICKUP_CUSTOMER_ID } from "@/lib/scheduled-pickup-reminder";
+import { CHAT_BY_CUSTOMER_ID } from "@/lib/scheduled-pickup-reminder";
 import {
   HELP,
   parseCommand,
@@ -137,15 +137,15 @@ export async function POST(req: NextRequest) {
   const text = typeof update.message?.text === "string" ? update.message.text : "";
   const chatId = update.message?.chat?.id != null ? String(update.message.chat.id) : "";
   if (!chatId) return NextResponse.json({ ok: true });
-  // This pickup group handles no-sample replies, without any mention requirement.
-  if (chatId === CHAT_BY_CUSTOMER_ID[PHARMACY_PICKUP_CUSTOMER_ID]) {
-    if (update.message?.chat?.chat_type === "GROUP" && isNoSampleCommand(text, true)) {
-      const reply = await cancelScheduledPickup(PHARMACY_PICKUP_CUSTOMER_ID, true);
+  // Only configured pickup groups can cancel their own customer's current trip.
+  const pickupCustomerId = Object.entries(CHAT_BY_CUSTOMER_ID).find(([, group]) => group === chatId)?.[0];
+  if (pickupCustomerId) {
+    if (update.message?.chat?.chat_type === "GROUP" && isNoSampleCommand(text)) {
+      const reply = await cancelScheduledPickup(pickupCustomerId, true);
       await sendZaloMessage(token, chatId, reply);
     }
     return NextResponse.json({ ok: true });
   }
-  if (chatId === "zgr-5f2b2b46331ada44830b") return NextResponse.json({ ok: true });
 
   // Gate 2 — chat allowlist. Unconfigured: hand back the id so setup is self-serve.
   const allowed = allowedChats();
