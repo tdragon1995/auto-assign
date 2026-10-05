@@ -25,11 +25,12 @@ type LookupJob = Job & { update_ts?: string; items?: { tracking_number?: string 
 export type LookupEvent = {
   time: string; source: "POS" | "LIS" | "Cartrack"; label: string;
   who?: string | null; detail?: string | null; kind: "done" | "due";
-  samples: string[]; since_start_min: number; since_prev_min: number | null;
+  job_id?: number; stop_index?: number; samples: string[]; since_start_min: number; since_prev_min: number | null;
 };
 export type LookupStep = { step: string; msg: string };
 export type LookupJobRow = {
   job_id: number; reference: string; status: string; driver: string;
+  driver_id?: string | null; assigned?: string | null;
   match: string; start: string; end: string; kind: string; ours: boolean;
   stops: { place: string; type: string; arrived?: string | null; completed?: string | null }[];
   batches: { code: string; branch: string; created: string | null; ours: boolean }[];
@@ -101,22 +102,23 @@ function jobRow(j: LookupJob, ours: Set<number>, codes: Set<string>): LookupJobR
   return {
     job_id: j.job_id, reference: kind === "home" ? stopLabel(j.stops.find(s => homeStop(s.customer_name))?.customer_name) : j.reference_number ?? String(j.job_id),
     status: JOB_STATUS[j.job_status_id ?? 0] ?? String(j.job_status_id ?? ""), driver: driverName(j), match: j.match ?? "batch code",
-    start, end, kind, ours: ours.has(j.job_id),
-    stops: j.stops.map(s => ({ place: stopLabel(s.customer_name), type: STOP_TYPE[s.stop_type_id ?? 0] ?? "Stop", arrived: s.activity_arrived_ts, completed: s.activity_completed_ts })),
+    start, end, kind, ours: ours.has(j.job_id), driver_id: j.delivery_driver_id, assigned: formatted(j.assigned_ts),
+    stops: j.stops.map(s => ({ place: stopLabel(s.customer_name), type: STOP_TYPE[s.stop_type_id ?? 0] ?? "Stop", arrived: formatted(s.activity_arrived_ts), completed: formatted(s.activity_completed_ts) })),
     batches: batchCodes.map(code => ({ code, branch: `D${code.slice(1, 4)}`, created: vnTimestamp(new Date(batchTimestamp(code)!)), ours: codes.has(code) })),
   };
 }
 
 // ponytail: cache 12 days per server instance; use Redis only if cross-instance reuse matters.
 const daysCache = new Map<string, { expires: number; jobs: Promise<LookupJob[]> }>();
-async function cartrackDay(day: string, signal: AbortSignal): Promise<LookupJob[]> {
-  const hit = daysCache.get(day);
+async function cartrackDay(day: string, signal: AbortSignal, field = "create_ts"): Promise<LookupJob[]> {
+  const key = `${field}:${day}`;
+  const hit = daysCache.get(key);
   if (hit && hit.expires > Date.now()) return hit.jobs;
   const promise = (async () => {
     const jobs = new Map<number, LookupJob>();
     for (let page = 1; page <= 20; page++) {
       // Forensic creation-day scan mirrors the supplied tool; the assign cycle still uses scheduled dates.
-      const params = new URLSearchParams({ "filter[create_ts_from]": `${day} 00:00:00`, "filter[create_ts_to]": `${day} 23:59:59`, limit: "1000", page: String(page) });
+      const params = new URLSearchParams({ [`filter[${field}_from]`]: `${day} 00:00:00`, [`filter[${field}_to]`]: `${day} 23:59:59`, limit: "1000", page: String(page) });
       const res = await fetch(`${BASE_URL}/jobs?${params}`, { headers: getHeaders(), cache: "no-store", signal });
       if (!res.ok) throw new Error(`Cartrack jobs: HTTP ${res.status}`);
       const json = await res.json();
@@ -141,16 +143,16 @@ async function cartrackDay(day: string, signal: AbortSignal): Promise<LookupJob[
   })();
   const age = Math.floor((Date.parse(vnDate() + "T00:00:00Z") - Date.parse(day + "T00:00:00Z")) / DAY);
   const entry = { expires: Date.now() + (age <= 0 ? 120_000 : age === 1 ? 600_000 : 6 * 60 * MINUTE), jobs: promise };
-  daysCache.set(day, entry);
+  daysCache.set(key, entry);
   if (daysCache.size > 12) daysCache.delete(daysCache.keys().next().value!);
-  try { return await promise; } catch (e) { if (daysCache.get(day) === entry) daysCache.delete(day); throw e; }
+  try { return await promise; } catch (e) { if (daysCache.get(key) === entry) daysCache.delete(key); throw e; }
 }
 
 export function buildLookupTimeline(order: Order, samples: Sample[], batches: Batch[], jobs: LookupJob[]): LookupEvent[] {
   const events: (Omit<LookupEvent, "since_start_min" | "since_prev_min" | "time"> & { ms: number })[] = [];
-  const add = (ts: string | undefined | null, source: LookupEvent["source"], label: string, who?: string | null, detail?: string | null, sample?: string, kind: "done" | "due" = "done") => {
+  const add = (ts: string | undefined | null, source: LookupEvent["source"], label: string, who?: string | null, detail?: string | null, sample?: string, kind: "done" | "due" = "done", job_id?: number, stop_index?: number) => {
     const ms = lookupTimestamp(ts);
-    if (ms !== null) events.push({ ms, source, label, who, detail, kind, samples: sample ? [sample] : [] });
+    if (ms !== null) events.push({ ms, source, label, who, detail, kind, job_id, stop_index, samples: sample ? [sample] : [] });
   };
   add(order.created_at, "POS", "Visit / order created", order.created_by_employee_code, `${order.branch_code ?? ""} · ${order.order_test_details?.length ?? 0} tests`);
   for (const p of order.order_payment_details ?? []) add(p.created_at, "POS", `Payment ${p.status}`, null, p.payment_type);
@@ -163,20 +165,20 @@ export function buildLookupTimeline(order: Order, samples: Sample[], batches: Ba
     add(b.completed_at ?? (b.batch_status === "completed" ? b.updated_at : null), "LIS", `Batch ${b.batch_code} completed`);
   }
   for (const j of jobs) {
-    add(j.create_ts, "Cartrack", `Delivery job ${j.reference_number ?? j.job_id} created`, null, `Job ${j.job_id}${j.match ? " · route + time match (lower confidence)" : ""}`);
-    add(j.assigned_ts, "Cartrack", "Job assigned to driver", driverName(j));
-    for (const s of j.stops) {
+    add(j.create_ts, "Cartrack", `Delivery job ${j.reference_number ?? j.job_id} created`, null, `Job ${j.job_id}${j.match ? " · route + time match (lower confidence)" : ""}`, undefined, "done", j.job_id);
+    add(j.assigned_ts, "Cartrack", "Job assigned to driver", driverName(j), undefined, undefined, "done", j.job_id);
+    for (const [index, s] of j.stops.entries()) {
       const type = STOP_TYPE[s.stop_type_id ?? 0] ?? "Stop";
-      add(s.activity_started_ts, "Cartrack", `${type} started → ${stopLabel(s.customer_name)}`, driverName(j));
-      add(s.activity_arrived_ts, "Cartrack", `Driver arrived at ${stopLabel(s.customer_name)} (${type.toLowerCase()})`, driverName(j));
-      add(s.activity_completed_ts, "Cartrack", `${type} completed at ${stopLabel(s.customer_name)}`, driverName(j));
+      add(s.activity_started_ts, "Cartrack", `${type} started → ${stopLabel(s.customer_name)}`, driverName(j), undefined, undefined, "done", j.job_id, index);
+      add(s.activity_arrived_ts, "Cartrack", `Driver arrived at ${stopLabel(s.customer_name)} (${type.toLowerCase()})`, driverName(j), undefined, undefined, "done", j.job_id, index);
+      add(s.activity_completed_ts, "Cartrack", `${type} completed at ${stopLabel(s.customer_name)}`, driverName(j), undefined, undefined, "done", j.job_id, index);
     }
   }
   const due = (order.tat?.tests_tat ?? []).map(t => lookupTimestamp(t.tat)).filter((t): t is number => t !== null);
   if (due.length) add(new Date(Math.max(...due)).toISOString(), "POS", "Results due (TAT)", null, `${due.length} test TATs`, undefined, "due");
   const merged = new Map<string, typeof events[number]>();
   for (const e of events) {
-    const key = JSON.stringify([e.ms, e.source, e.label, e.who]);
+    const key = JSON.stringify([e.ms, e.source, e.label, e.who, e.job_id, e.stop_index]);
     const old = merged.get(key);
     if (old) old.samples = [...new Set([...old.samples, ...e.samples])]; else merged.set(key, e);
   }
@@ -346,11 +348,23 @@ export async function lookupBatch(vid: string, emit: Emit = () => {}, signal = A
     out.branch_batches = lisRows.filter(b => { const t = lookupTimestamp(b.created_at); return t !== null && vnDate(new Date(t)) >= first && vnDate(new Date(t)) <= last; }).map(b => ({
       code: b.batch_code, branch: `D${b.source_location ?? b.batch_code.slice(1, 4)}`, status: b.status, total_samples: b.total_sample,
       created: formatted(b.created_at), transferred: formatted(b.transferred_at), completed: formatted(b.completed_at), ours: codes.has(b.batch_code), cartrack_job: carried.get(b.batch_code) }));
+    // Scheduled-day scans include jobs created earlier but worked during this driver's window.
+    const contextDays = new Set(batchJobs.flatMap(j => [formatted(j.assigned_ts)?.slice(0, 10), ...jobSpan(j).map(t => t.slice(0, 10))]).filter((d): d is string => !!d));
+    try {
+      for (const day of contextDays) {
+        if (day > vnDate() || Math.abs(Date.parse(day + "T00:00:00Z") - Date.parse(first + "T00:00:00Z")) > 7 * DAY) continue;
+        doing(`Reading driver context for ${day}`);
+        for (const j of await cartrackDay(day, signal, "scheduled_delivery_ts")) {
+          const old = jobs.get(j.job_id);
+          if (!old || (j.update_ts ?? "") >= (old.update_ts ?? "")) jobs.set(j.job_id, j);
+        }
+      }
+    } catch { log("warning", "Driver context is incomplete; scheduled-day jobs could not all be retrieved."); }
     for (const did of new Set(batchJobs.map(j => j.delivery_driver_id).filter((s): s is string => !!s))) {
       const mine = batchJobs.filter(j => j.delivery_driver_id === did);
-      const driverDays = [...new Set(mine.map(j => jobSpan(j)[0].slice(0, 10)))].sort();
+      const driverDays = [...new Set(mine.flatMap(j => [formatted(j.assigned_ts)?.slice(0, 10), ...jobSpan(j).map(t => t.slice(0, 10))]).filter((d): d is string => !!d))].sort();
       out.driver_days.push({ driver: driverName(mine[0]), days: driverDays,
-        jobs: [...jobs.values()].filter(j => j.delivery_driver_id === did && driverDays.includes(jobSpan(j)[0].slice(0, 10))).sort((a, b) => jobSpan(a)[0].localeCompare(jobSpan(b)[0])).map(j => jobRow(j, ours, codes)) });
+        jobs: [...jobs.values()].filter(j => j.delivery_driver_id === did).sort((a, b) => jobSpan(a)[0].localeCompare(jobSpan(b)[0])).map(j => jobRow(j, ours, codes)) });
     }
     out.timeline = buildLookupTimeline(order, samples, confirmed, batchJobs);
     out.phases = durations(out.timeline);

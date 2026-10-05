@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { lookupBatch, batchTimestamp, lookupTimestamp, buildLookupTimeline } from "../src/lib/batch-lookup";
 import { NextRequest } from "next/server";
 import { GET } from "../src/app/api/admin/batch-lookup/route";
-import { driverWindowJobs, isKeyLookupEvent } from "../src/components/batch-lookup-panel";
+import { driverArrivalContext, isKeyLookupEvent } from "../src/components/batch-lookup-panel";
 
 const nativeFetch = globalThis.fetch;
 const oldEnv = { email: process.env.LABCENTER_RECEPTIONIST_EMAIL, password: process.env.LABCENTER_RECEPTIONIST_PASSWORD, auth: process.env.CARTRACK_AUTH, lookup: process.env.LABCENTER_LOOKUP_TOKEN };
@@ -107,14 +107,27 @@ try {
   assert(keyEvents.some(event => event.kind === "due"));
   assert(keyEvents.some(event => event.label.startsWith("Sample received")));
   const leg = result.summary!.jobs[0];
-  const surrounding = [leg,
-    { ...leg, job_id: 9001, start: "2026-02-07 06:00:00", end: "2026-02-07 07:00:00" },
-    { ...leg, job_id: 9002, start: leg.start, end: leg.end, ours: false },
-    { ...leg, job_id: 9003, driver: "Other driver" },
-    { ...leg, job_id: 9004, start: "2026-02-07 20:00:00", end: "2026-02-07 21:00:00" },
+  assert.equal(leg.assigned, "2026-02-07 14:05:00");
+  assert(result.timeline.filter(e => e.source === "Cartrack").every(e => e.job_id));
+  assert(requests.some(u => u.searchParams.has("filter[scheduled_delivery_ts_from]")), "driver context includes earlier-created scheduled jobs");
+  const contextJob = { ...leg, driver_id: "driver1", assigned: "2026-02-07 10:00:00", stops: [
+    { place: "Target", type: "Pickup", arrived: "2026-02-07 12:00:00", completed: "2026-02-07 12:05:00" },
+    { place: "Lab", type: "Delivery", arrived: "2026-02-07 13:00:00" },
+  ] };
+  const contextRows = [contextJob,
+    { ...contextJob, job_id: 9100, assigned: "2026-02-07 09:00:00", stops: [{ place: "Previous", type: "Delivery", completed: "2026-02-07 09:50:00" }] },
+    { ...contextJob, job_id: 9101, assigned: "2026-02-07 09:00:00", stops: [{ place: "Other", type: "Pickup", arrived: "2026-02-07 11:00:00", completed: "2026-02-07 11:05:00" }] },
+    { ...contextJob, job_id: 9102, assigned: "2026-02-07 10:30:00", stops: [{ place: "Other", type: "Pickup", arrived: "2026-02-07 11:00:00" }] },
+    { ...contextJob, job_id: 9103, driver_id: "different", stops: [{ place: "Wrong driver", type: "Pickup", arrived: "2026-02-07 11:00:00" }] },
+    { ...contextJob, job_id: 9104, stops: [{ place: "After arrival", type: "Pickup", arrived: "2026-02-07 14:00:00" }] },
   ];
-  assert.deepEqual(driverWindowJobs(leg, surrounding).map(job => job.job_id), [leg.job_id, 9002], "driver preview excludes the rest of the day and other drivers");
-  assert.deepEqual(driverWindowJobs({ ...leg, start: "" }, surrounding), [{ ...leg, start: "" }]);
+  const context = driverArrivalContext(contextJob, contextRows);
+  assert.equal(context.previous?.place, "Previous");
+  assert.deepEqual(context.active.map(j => j.job_id), [9101, 9104]);
+  assert.deepEqual(context.route.map(s => s.place), ["Other"], "deduplicate shared stop and exclude later activity or another driver");
+  assert.deepEqual(driverArrivalContext(contextJob, contextRows, 1).route.map(s => s.place), ["Other", "Target"], "delivery hover uses its own arrival, not the pickup window");
+  assert.equal(driverArrivalContext({ ...contextJob, assigned: null }, contextRows).known, false);
+  assert.deepEqual(driverArrivalContext({ ...contextJob, assigned: null }, contextRows).active, []);
   assert(!requests.some(u => /gps|track|polyline/.test(u.pathname)), "no map or GPS fetches");
   assert(requests.some(u => u.pathname.endsWith("/jobs") && u.searchParams.get("page") === "2"), "honor pagination even on a short first page");
 
