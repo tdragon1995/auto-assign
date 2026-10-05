@@ -13,11 +13,17 @@ export const CARTRACK_INTEGRATION_CODE = "cartrack_vn";
 
 type TokenCache = { token: string; expiresAt: number };
 const caches: Record<string, TokenCache | null> = { admin: null, receptionist: null };
+const logins: Partial<Record<"admin" | "receptionist", Promise<string | null>>> = {};
 
-async function login(kind: "admin" | "receptionist"): Promise<string | null> {
-  const now = Date.now();
+function login(kind: "admin" | "receptionist", rejectedToken?: string): Promise<string | null> {
+  if (rejectedToken && caches[kind]?.token === rejectedToken) caches[kind] = null;
   const cached = caches[kind];
-  if (cached && cached.expiresAt > now + 60_000) return cached.token;
+  if (cached && cached.expiresAt > Date.now() + 60_000) return Promise.resolve(cached.token);
+  return logins[kind] ??= freshLogin(kind).finally(() => { delete logins[kind]; });
+}
+
+async function freshLogin(kind: "admin" | "receptionist"): Promise<string | null> {
+  const now = Date.now();
 
   const email =
     kind === "admin" ? process.env.LABCENTER_EMAIL : process.env.LABCENTER_RECEPTIONIST_EMAIL;
@@ -48,6 +54,26 @@ async function login(kind: "admin" | "receptionist"): Promise<string | null> {
 
 export const getAdminToken = () => login("admin");
 export const getReceptionistToken = () => login("receptionist");
+
+export class LabcenterAuthenticationError extends Error {
+  constructor() { super("Labcenter từ chối phiên đăng nhập sau khi thử đăng nhập lại (401); đồng bộ đã dừng, dữ liệu hiện có được giữ nguyên"); }
+}
+
+/** Renew a rejected session once; concurrent requests share the same login. */
+export async function labcenterFetch(url: string, init: RequestInit, kind: "admin" | "receptionist" = "admin"): Promise<Response> {
+  const headers = new Headers(init.headers);
+  const token = await login(kind) ?? headers.get("Authorization")?.replace(/^Bearer /, "");
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  let res = await fetch(url, { ...init, headers });
+  if (res.status !== 401) return res;
+  const renewed = await login(kind, token);
+  if (renewed) {
+    headers.set("Authorization", `Bearer ${renewed}`);
+    res = await fetch(url, { ...init, headers });
+  }
+  if (res.status === 401) throw new LabcenterAuthenticationError();
+  return res;
+}
 
 // --- Delivery requests (the SPC queue Labcenter shows its dispatchers) ---
 
@@ -102,7 +128,7 @@ export async function listDeliveryRequests(
       page: String(page),
       perPage: String(PER_PAGE),
     });
-    const res = await fetch(`${DELIVERY_BASE}/api/delivery-requests?${params}`, {
+    const res = await labcenterFetch(`${DELIVERY_BASE}/api/delivery-requests?${params}`, {
       headers: { Authorization: `Bearer ${token}`, accept: "application/json" },
       cache: "no-store",
     });
@@ -121,7 +147,7 @@ export async function updateExpectedAssign(
   minutes: number,
   token: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(
+  const res = await labcenterFetch(
     `${DELIVERY_BASE}/api/delivery-requests/${requestId}/update-expected-assign`,
     {
       method: "PATCH",
@@ -167,7 +193,7 @@ export async function listLocationsByClientCode(
     page: "1",
     perPage: "100",
   });
-  const res = await fetch(`${DELIVERY_BASE}/api/locations?${params}`, {
+  const res = await labcenterFetch(`${DELIVERY_BASE}/api/locations?${params}`, {
     headers: { Authorization: `Bearer ${token}` },
     cache: "no-store",
     signal: AbortSignal.timeout(15_000),
@@ -184,7 +210,7 @@ export async function getCartrackCustomerId(
   locationId: number,
   token: string,
 ): Promise<string | null> {
-  const res = await fetch(`${DELIVERY_BASE}/api/locations/${locationId}`, {
+  const res = await labcenterFetch(`${DELIVERY_BASE}/api/locations/${locationId}`, {
     headers: { Authorization: `Bearer ${token}` },
     cache: "no-store",
     signal: AbortSignal.timeout(15_000),
@@ -205,7 +231,7 @@ export async function updateLocationPhone(
   phone: string,
   token: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${DELIVERY_BASE}/api/locations/${locationId}`, {
+  const res = await labcenterFetch(`${DELIVERY_BASE}/api/locations/${locationId}`, {
     method: "PUT",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ phone }),
@@ -227,7 +253,7 @@ export async function updateLocationAddress(
   addr: { address: string; latitude: number; longitude: number },
   token: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${DELIVERY_BASE}/api/locations/${locationId}`, {
+  const res = await labcenterFetch(`${DELIVERY_BASE}/api/locations/${locationId}`, {
     method: "PUT",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ address: addr.address, latitude: addr.latitude, longitude: addr.longitude }),
@@ -236,7 +262,7 @@ export async function updateLocationAddress(
     const text = await res.text().catch(() => "");
     return { ok: false, error: `HTTP ${res.status}: ${text.slice(0, 200)}` };
   }
-  const check = await fetch(`${DELIVERY_BASE}/api/locations/${locationId}`, {
+  const check = await labcenterFetch(`${DELIVERY_BASE}/api/locations/${locationId}`, {
     headers: { Authorization: `Bearer ${token}` },
     cache: "no-store",
   });
@@ -261,12 +287,13 @@ export interface PickDropRow {
   drop_name: string | null;
   eta_mins: number;
   eta_valid?: boolean;
+  eta_blank?: boolean;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function toPickDropRow(r: any): PickDropRow | null {
   const pick = Number(r?.pick_location_id);
-  const drop = Number(r?.drop_location_id);
+  const drop = r?.drop_location_id == null || String(r.drop_location_id).trim() === "" ? 0 : Number(r.drop_location_id);
   if (!Number.isFinite(pick) || !Number.isFinite(drop)) return null;
   return {
     lc_location_id: pick,
@@ -274,6 +301,7 @@ function toPickDropRow(r: any): PickDropRow | null {
     drop_location_id: drop,
     drop_name: r?.drop_location?.name ?? null,
     eta_mins: Number(r?.estimate_pick_up) || 0,
+    eta_blank: r?.estimate_pick_up == null || String(r.estimate_pick_up).trim() === "",
     eta_valid: r?.estimate_pick_up != null && String(r.estimate_pick_up).trim() !== "" && Number.isFinite(Number(r.estimate_pick_up)),
   };
 }
@@ -283,7 +311,7 @@ function toPickDropRow(r: any): PickDropRow | null {
 export async function listPickDropLocations(token: string): Promise<PickDropRow[]> {
   const out: PickDropRow[] = [];
   for (let page = 1; page <= 20; page++) {
-    const res = await fetch(`${DELIVERY_BASE}/api/pick-drop-locations?page=${page}&perPage=500`, {
+    const res = await labcenterFetch(`${DELIVERY_BASE}/api/pick-drop-locations?page=${page}&perPage=500`, {
       headers: { Authorization: `Bearer ${token}`, accept: "application/json" },
       cache: "no-store",
       signal: AbortSignal.timeout(15_000),
@@ -307,7 +335,7 @@ export async function updatePickDropLocation(
   w: { pickId: string; dropId: string; etaMins: number; lcLocationId: number; dropLocationId: number },
   token: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${DELIVERY_BASE}/api/locations/update-pick-drop-location`, {
+  const res = await labcenterFetch(`${DELIVERY_BASE}/api/locations/update-pick-drop-location`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", accept: "application/json" },
     body: JSON.stringify({ pick_id: w.pickId, drop_id: w.dropId, estimate_pick_up: w.etaMins }),
@@ -316,7 +344,7 @@ export async function updatePickDropLocation(
     const text = await res.text().catch(() => "");
     return { ok: false, error: `HTTP ${res.status}: ${text.slice(0, 200)}` };
   }
-  const check = await fetch(`${DELIVERY_BASE}/api/pick-drop-locations?pick_location_id=${w.lcLocationId}&perPage=5`, {
+  const check = await labcenterFetch(`${DELIVERY_BASE}/api/pick-drop-locations?pick_location_id=${w.lcLocationId}&perPage=5`, {
     headers: { Authorization: `Bearer ${token}`, accept: "application/json" },
     cache: "no-store",
   });

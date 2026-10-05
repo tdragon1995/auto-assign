@@ -114,5 +114,6 @@ assert.equal((await refresh(new NextRequest('https://dashboard.invalid/api/maste
 scenario='owners';writes.length=0;
 const withOwners=await syncLabcenterMetadata(0,2);
 assert.equal(withOwners.owners,2);assert.equal(withOwners.issues.length,0);assert.equal(accountWrites.flat().length,2);
-assert.ok(writes.flat().filter(r=>r.customer_id!==drop).every(r=>r.sales_name==='Sales' && r.default_dropoff_id===drop));
+assert.ok(writes.flat().filter(r=>r.customer_id!==drop).every(r=>r.default_dropoff_id===drop));
+assert.ok(accountWrites.flat().every(r=>r.sales_name==='Sales'),'Ownership is stored in account records after consolidation');
 console.log('Profile aliases, verified metadata links, cursor pagination, public manual refresh, preserved unresolved values and case-by-case issue flags passed.');

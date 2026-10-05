@@ -46,6 +46,8 @@ export interface ConfigRowView {
   end: string;
   /** Destination this rule is scoped to; blank means every destination. */
   dropoff: string;
+  /** Client metadata joined in the browser; undefined until the profile is loaded. */
+  default_dropoff?: string;
   alt_drop_off_id?: string;
   /** True when the cell names several drivers: the engine ranks them by
    *  distance rather than treating them as competing rules. */

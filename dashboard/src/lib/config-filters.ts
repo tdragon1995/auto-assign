@@ -15,6 +15,9 @@ export interface ConfigFilters {
   dropoffs: readonly string[];
   dropoffOperator: ConfigTextOperator;
   dropoffText: string;
+  defaultDropoffs: readonly string[];
+  defaultDropoffOperator: ConfigTextOperator;
+  defaultDropoffText: string;
   starts: readonly string[];
   startOperator: ConfigTimeOperator;
   startText: string;
@@ -30,6 +33,7 @@ export interface ConfigFilterOptions {
   drivers: string[];
   pickups: string[];
   dropoffs: string[];
+  defaultDropoffs: string[];
   starts: string[];
   ends: string[];
 }
@@ -45,6 +49,9 @@ export const EMPTY_CONFIG_FILTERS: ConfigFilters = {
   dropoffs: [],
   dropoffOperator: "is",
   dropoffText: "",
+  defaultDropoffs: [],
+  defaultDropoffOperator: "is",
+  defaultDropoffText: "",
   starts: [],
   startOperator: "is",
   startText: "",
@@ -99,11 +106,13 @@ export function filterConfigRows(
   const driverText = normalizeConfigText(filters.driverText);
   const pickupText = normalizeConfigText(filters.pickupText);
   const dropoffText = normalizeConfigText(filters.dropoffText);
+  const defaultDropoffText = normalizeConfigText(filters.defaultDropoffText);
   const startText = normalizeConfigText(filters.startText);
   const endText = normalizeConfigText(filters.endText);
   const selectedDrivers = new Set(filters.drivers);
   const selectedPickups = new Set(filters.pickups);
   const selectedDropoffs = new Set(filters.dropoffs);
+  const selectedDefaultDropoffs = new Set(filters.defaultDropoffs);
   const selectedStarts = new Set(filters.starts);
   const selectedEnds = new Set(filters.ends);
 
@@ -115,6 +124,7 @@ export function filterConfigRows(
         row.customer_id,
         ...rowDrivers,
         row.dropoff,
+        row.default_dropoff ?? "",
         row.start,
         row.end,
         row.start && row.end ? `${row.start}–${row.end}` : "",
@@ -137,6 +147,12 @@ export function filterConfigRows(
     if (usesTextInput(filters.dropoffOperator)
       ? !matchesText([row.dropoff], filters.dropoffOperator, dropoffText)
       : !matchesSelection([row.dropoff], selectedDropoffs, filters.dropoffOperator)) return false;
+    if (usesTextInput(filters.defaultDropoffOperator) ? defaultDropoffText : selectedDefaultDropoffs.size) {
+      if (row.default_dropoff === undefined) return false;
+      if (usesTextInput(filters.defaultDropoffOperator)
+        ? !matchesText([row.default_dropoff], filters.defaultDropoffOperator, defaultDropoffText)
+        : !matchesSelection([row.default_dropoff], selectedDefaultDropoffs, filters.defaultDropoffOperator)) return false;
+    }
     if (!matchesTime(row.start, filters.startOperator, startText, selectedStarts)) return false;
     if (!matchesTime(row.end, filters.endOperator, endText, selectedEnds)) return false;
     return true;
@@ -150,6 +166,7 @@ export function configFilterOptions(rows: readonly ConfigRowView[]): ConfigFilte
   const drivers = new Set<string>();
   const pickups = new Set<string>();
   const dropoffs = new Set<string>();
+  const defaultDropoffs = new Set<string>();
   const starts = new Set<string>();
   const ends = new Set<string>();
 
@@ -157,6 +174,7 @@ export function configFilterOptions(rows: readonly ConfigRowView[]): ConfigFilte
     for (const driver of splitDriverNames(row.driver)) drivers.add(driver);
     if (row.pickup) pickups.add(row.pickup);
     dropoffs.add(row.dropoff);
+    if (row.default_dropoff !== undefined) defaultDropoffs.add(row.default_dropoff);
     starts.add(row.start);
     ends.add(row.end);
   }
@@ -173,6 +191,7 @@ export function configFilterOptions(rows: readonly ConfigRowView[]): ConfigFilte
       if (!b) return 1;
       return vi.compare(a, b);
     }),
+    defaultDropoffs: [...defaultDropoffs].sort(vi.compare),
     starts: [...starts].sort(timeOrder.compare),
     ends: [...ends].sort(timeOrder.compare),
   };

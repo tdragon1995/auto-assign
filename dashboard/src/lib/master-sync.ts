@@ -1,5 +1,5 @@
 import { BASE_URL, getHeaders } from "./cartrack";
-import { getAdminToken, getReceptionistToken, listLocationsByClientCode, getCartrackCustomerId, listPickDropLocations } from "./labcenter";
+import { getAdminToken, getReceptionistToken, listLocationsByClientCode, getCartrackCustomerId, listPickDropLocations, labcenterFetch, LabcenterAuthenticationError } from "./labcenter";
 import { sbSelect, sbSelectAll, sbUpsert, sbRpc } from "./supabase-rest";
 import { nearestPsc, newWard, GEO_DATASET_VERSION } from "./master-geo";
 import type { MasterClient } from "./master-store";
@@ -251,9 +251,9 @@ export async function syncLabcenterMetadata(offset = 0, limit = 200, onlyCodes?:
         matched++;
       }
       for (const c of group) if (!found.has(c.customer_id) && c.is_active !== false) flag(c, "missing_location", "Không tìm thấy địa điểm Labcenter đang hoạt động liên kết UUID này; giữ nguyên dữ liệu");
-      const res = await fetch(`https://api.labcenter.vn/spc-pos/api/client?q=${encodeURIComponent(code)}`, {
+      const res = await labcenterFetch(`https://api.labcenter.vn/spc-pos/api/client?q=${encodeURIComponent(code)}`, {
         headers: { Authorization: `Bearer ${receptionist}` }, cache: "no-store", signal: AbortSignal.timeout(15_000),
-      });
+      }, "receptionist");
       if (!res.ok) throw new Error(`Labcenter sales HTTP ${res.status}`);
       const rows = (await res.json().catch(() => ({})))?.data;
       if (!Array.isArray(rows)) throw new Error("Labcenter sales trả về dữ liệu không hợp lệ");
@@ -264,6 +264,7 @@ export async function syncLabcenterMetadata(offset = 0, limit = 200, onlyCodes?:
         sales_name:owner.owner_name??null,sales_email:owner.owner??null,supervisor_name:owner.supervisor??null,supervisor_email:owner.supervisor_email??null});
       owners += group.length;
       } catch (e) {
+        if (e instanceof LabcenterAuthenticationError) throw e;
         errors++;
         for (const c of group) flag(c, "request_failed", e instanceof Error ? e.message : "Labcenter request failed");
         console.error(`Master metadata ${code}:`, e);

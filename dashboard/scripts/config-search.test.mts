@@ -170,6 +170,19 @@ console.log("dashboard phrase and facet filters");
   eq("selected values are inactive in contains mode", hits({ driverOperator: "contains", drivers: [HOANG_PHI], driverText: "viết phi" }), [31, 32]);
   eq("text is inactive in is mode", hits({ driverOperator: "is", drivers: [HOANG_PHI], driverText: "viết phi" }), [30]);
   eq("separate controls combine with AND", hits({ driverOperator: "is", drivers: [VIET_PHI], pickupOperator: "contains", pickupText: "miền", dropoffOperator: "is", dropoffs: [""] }), [32]);
+  const profileRows = [
+    { ...FILTER_ROWS[0], default_dropoff: "BRA - D001" },
+    { ...FILTER_ROWS[1], default_dropoff: "BRA - D006" },
+    { ...FILTER_ROWS[2], default_dropoff: "" },
+    FILTER_ROWS[3], // Metadata unavailable, not a verified blank.
+  ];
+  const profileHits = (partial: Partial<typeof EMPTY_CONFIG_FILTERS>) => filterConfigRows(profileRows, { ...EMPTY_CONFIG_FILTERS, ...partial }).map(r => r.row);
+  eq("default dropoff uses client metadata, not the rule destination", profileHits({defaultDropoffs:["BRA - D001"]}), [30]);
+  eq("blank default excludes unavailable metadata", profileHits({defaultDropoffs:[""]}), [32]);
+  eq("default dropoff supports contains", profileHits({defaultDropoffOperator:"contains",defaultDropoffText:"d006"}), [31]);
+  eq("default dropoff combines with driver filter", profileHits({defaultDropoffs:[""],drivers:[VIET_PHI]}), [32]);
+  eq("inactive default text does not filter", profileHits({defaultDropoffText:"d001"}), [30,31,32,33]);
+  eq("default options include a verified blank", configFilterOptions(profileRows).defaultDropoffs, ["","BRA - D001","BRA - D006"]);
 
   const options = configFilterOptions(FILTER_ROWS);
   eq("driver options split and deduplicate smart cells", options.drivers.length, 3);
