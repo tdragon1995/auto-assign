@@ -1010,22 +1010,17 @@ function UnfinishedRow({
 
   return (
     <div className="px-2 py-1.5 hover:bg-slate-50">
-      <div className="flex items-center gap-2 min-w-0">
+      <div className="flex flex-wrap items-center gap-2 min-w-0">
         <span className="shrink-0 font-mono text-[11px] text-slate-500" title="Dòng trong Google Sheet">
           #{u.row}{rows.length > 1 ? ` +${rows.length - 1}` : ""}
         </span>
         <span
-          className="min-w-0 flex-1 break-words md:truncate text-sm font-medium text-slate-800"
+          className="order-first min-w-0 basis-full break-words text-sm font-medium text-slate-800 md:order-none md:basis-auto md:flex-1 md:truncate"
           title={`${u.pickup_name}${u.dropoff_name ? ` → ${u.dropoff_name}` : ""}`}
         >
           {u.pickup_name}
           {u.dropoff_name && <span className="text-slate-500"> → {u.dropoff_name}</span>}
         </span>
-        {(u.missingTimes?.length || u.window) && (
-          <span className="shrink-0 text-[11px] text-slate-600 bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">
-            Thiếu lúc {u.missingTimes?.join(", ") || u.window}
-          </span>
-        )}
         {!open && (
           <Button
             size="sm" variant="outline" className="h-6 shrink-0 text-[11px] px-2"
@@ -1035,6 +1030,11 @@ function UnfinishedRow({
           </Button>
         )}
       </div>
+      {(u.missingTimes?.length || u.window) && (
+        <div className="mt-0.5 text-[11px] text-slate-500">
+          Thiếu lúc {u.missingTimes?.join(", ") || u.window}
+        </div>
+      )}
       {open && (
         <BranchEditor
           pickupName={u.pickup_name}
@@ -1112,7 +1112,7 @@ function GapRow({
 
   return (
     <div className="px-2 py-1.5 hover:bg-slate-50">
-      <div className="flex items-center gap-2 min-w-0">
+      <div className="flex flex-wrap items-center gap-2 min-w-0">
         <span className="shrink-0 rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 font-mono text-[11px] text-amber-800">
           {g.at}
         </span>
@@ -1128,7 +1128,7 @@ function GapRow({
           </span>
         )}
         <span
-          className="min-w-0 flex-1 break-words md:truncate text-sm font-medium text-slate-800"
+          className="order-first min-w-0 basis-full break-words text-sm font-medium text-slate-800 md:order-none md:basis-auto md:flex-1 md:truncate"
           title={`${g.pickup_name}${g.dropoff_name ? ` → ${g.dropoff_name}` : ""}`}
         >
           {g.pickup_name}
@@ -1318,23 +1318,23 @@ export function ConfigTodoPanel({
               <section aria-label="Dòng config chưa có tài xế" className="min-w-0 space-y-1">
                 <SectionHeader label="Chưa có tài xế" count={groupedUnfinished.length} className="pt-0.5" />
                 <div className="max-h-[38vh] overflow-y-auto">
-                <div className={listBox}>
-                  {groupedUnfinished.map((rows) => (
-                    <UnfinishedRow key={`${rows[0].customer_id}|${rows[0].dropoff_name}`} rows={rows} rules={branchRules[rows[0].customer_id] ?? []} drivers={drivers} onSaved={onSaved} />
-                  ))}
-                  {groupedUnfinished.length === 0 && <p className="px-2 py-3 text-xs text-slate-500">Không có config thiếu tài xế.</p>}
-                </div>
+                  <div className={listBox}>
+                    {groupedUnfinished.map((rows) => (
+                      <UnfinishedRow key={`${rows[0].customer_id}|${rows[0].dropoff_name}`} rows={rows} rules={branchRules[rows[0].customer_id] ?? []} drivers={drivers} onSaved={onSaved} />
+                    ))}
+                    {groupedUnfinished.length === 0 && <p className="px-2 py-3 text-xs text-slate-500">Không có config thiếu tài xế.</p>}
+                  </div>
                 </div>
               </section>
               <section aria-label="Giờ không có ai trực" className="min-w-0 space-y-1">
                 <SectionHeader label="Thiếu ca — giờ không ai trực" count={gaps.length} tone="amber" className="pt-0.5" />
                 <div className="max-h-[38vh] overflow-y-auto">
-                <div className={listBox}>
-                  {sortedGaps.map((g) => (
-                    <GapRow key={`${g.customer_id}-${g.at}`} g={g} rules={branchRules[g.customer_id] ?? []} drivers={drivers} onSaved={onSaved} />
-                  ))}
-                  {gaps.length === 0 && <p className="px-2 py-3 text-xs text-slate-500">Không có giờ thiếu ca.</p>}
-                </div>
+                  <div className={listBox}>
+                    {sortedGaps.map((g) => (
+                      <GapRow key={`${g.customer_id}-${g.at}`} g={g} rules={branchRules[g.customer_id] ?? []} drivers={drivers} onSaved={onSaved} />
+                    ))}
+                    {gaps.length === 0 && <p className="px-2 py-3 text-xs text-slate-500">Không có giờ thiếu ca.</p>}
+                  </div>
                 </div>
               </section>
             </div>
