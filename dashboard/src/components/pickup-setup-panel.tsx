@@ -174,16 +174,11 @@ export function PickupSetupPanel() {
             {data.drift.length > 0 && (
               <section>
                 <h3 className="text-xs font-semibold text-slate-700">
-                  Labcenter khác bản gốc — có người sửa trực tiếp trên Labcenter ({data.drift.length})
+                  Labcenter khác bản gốc hoặc có cấu hình trùng ({data.drift.length})
                 </h3>
-                {/* What this list IS, in words: the bare heading left readers
-                    asking. Bản gốc is our Supabase copy of each place's portal
-                    setup (default drop-off + ETA); these rows are places where
-                    Labcenter now says something else, because someone changed
-                    it there rather than through this panel. */}
                 <p className="mb-1 max-w-[75ch] text-[11px] text-slate-500">
                   Mỗi địa điểm có điểm giao mặc định và ETA trên cổng khách hàng. Bản gốc là bản hệ thống lưu;
-                  các dòng dưới đây đã bị sửa thẳng trên Labcenter nên hai bên không khớp. Chọn bên đúng:
+                  Các dòng dưới đây chưa khớp hoặc có nhiều cấu hình trên Labcenter. Bản ghi trùng cần được xử lý trên Labcenter trước. Với một cấu hình duy nhất, chọn bên đúng:
                   <span className="font-medium text-slate-600"> Đẩy lại</span> ghi bản gốc đè lên Labcenter,
                   <span className="font-medium text-slate-600"> Nhận theo Labcenter</span> lấy giá trị Labcenter làm bản gốc mới.
                 </p>
@@ -194,6 +189,9 @@ export function PickupSetupPanel() {
                       {/* Only what differs, so the change reads at a glance
                           instead of being found by comparing two strings. */}
                       <span className="text-slate-600">
+                        {d.conflicts ? (
+                          <>Labcenter có {d.conflicts.length} cấu hình: <span className="font-semibold text-amber-800">{d.conflicts.map(c=>`${c.drop_name ?? "Chưa có điểm giao"} · ${c.eta_mins}′`).join(" / ")}</span>. Bản gốc: {d.master.drop_name ?? "Chưa có"} · {d.master.eta_mins}′</>
+                        ) : <>
                         {d.master.drop_name !== d.labcenter.drop_name && (
                           <>Điểm giao: <span className="text-slate-800">{d.master.drop_name}</span> → <span className="font-semibold text-amber-800">{d.labcenter.drop_name}</span></>
                         )}
@@ -204,13 +202,14 @@ export function PickupSetupPanel() {
                         {d.master.drop_name === d.labcenter.drop_name && d.master.eta_mins === d.labcenter.eta_mins && (
                           <>Điểm giao đổi mã, cùng tên {d.labcenter.drop_name}</>
                         )}
+                        </>}
                       </span>
-                      <Button size="sm" variant="outline" className="h-7" disabled={busy === d.lc_location_id}
+                      <Button size="sm" variant="outline" className="h-7" disabled={busy === d.lc_location_id || !!d.conflicts}
                         title={`Ghi lại bản gốc lên Labcenter: ${d.master.drop_name} · ${d.master.eta_mins}′`}
                         onClick={() => void act(d.lc_location_id, { action: "repush" }, "Đã đẩy lại bản gốc")}>
                         Đẩy lại
                       </Button>
-                      <Button size="sm" variant="outline" className="h-7" disabled={busy === d.lc_location_id}
+                      <Button size="sm" variant="outline" className="h-7" disabled={busy === d.lc_location_id || !!d.conflicts}
                         title={`Giữ giá trị Labcenter làm bản gốc mới: ${d.labcenter.drop_name} · ${d.labcenter.eta_mins}′`}
                         onClick={() => void act(d.lc_location_id, { action: "accept_lc" }, "Đã nhận theo Labcenter")}>
                         Nhận theo Labcenter

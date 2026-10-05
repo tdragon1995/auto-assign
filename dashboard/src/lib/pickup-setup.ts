@@ -216,6 +216,7 @@ export interface Drift {
   pick_name: string | null;
   master: { drop_name: string | null; eta_mins: number };
   labcenter: { drop_name: string | null; eta_mins: number };
+  conflicts?: { drop_name: string | null; eta_mins: number }[];
 }
 
 /** More than this far from the target, relative to the current ETA, is proposed.
@@ -266,7 +267,7 @@ export function etaProposals(setup: SetupRow[], stats: StatsRow[]): EtaProposal[
 }
 
 /** Places Labcenter has and the master does not (adopt as-is), places where
- *  the two disagree (someone edited Labcenter directly), and master rows whose
+ *  the two disagree, conflicting Labcenter records, and master rows whose
  *  NAMES are stale. Names are Labcenter's to own — a rename is not drift, so it
  *  is copied over silently; the setup values (drop, ETA) are never touched here. */
 export function compareWithLabcenter(setup: SetupRow[], lc: PickDropRow[]): { adopt: PickDropRow[]; drift: Drift[]; renamed: SetupRow[] } {
@@ -275,8 +276,22 @@ export function compareWithLabcenter(setup: SetupRow[], lc: PickDropRow[]): { ad
   const adopt: PickDropRow[] = [];
   const drift: Drift[] = [];
   const renamed: SetupRow[] = [];
+  const groups = new Map<number, PickDropRow[]>();
   for (const l of lc) {
+    const rows = groups.get(l.lc_location_id) ?? [];
+    if (!rows.some(r => r.drop_location_id === l.drop_location_id && r.eta_mins === l.eta_mins)) rows.push(l);
+    groups.set(l.lc_location_id, rows);
+  }
+  for (const rows of groups.values()) {
+    const l = rows[0];
     const m = master.get(l.lc_location_id);
+    if (rows.length > 1) {
+      drift.push({lc_location_id:l.lc_location_id,pick_name:m?.pick_name ?? l.pick_name,
+        master:{drop_name:m?.drop_name ?? null,eta_mins:m?.eta_mins ?? 0},
+        labcenter:{drop_name:l.drop_name,eta_mins:l.eta_mins},
+        conflicts:rows.map(r=>({drop_name:r.drop_name,eta_mins:r.eta_mins}))});
+      continue;
+    }
     if (!m) { adopt.push(l); continue; }
     const dropName = lcDropName.get(m.drop_location_id) ?? m.drop_name;
     if (m.pick_name !== l.pick_name || m.drop_name !== dropName) {
@@ -377,7 +392,8 @@ export async function pickupSetupReport(): Promise<{ proposals: EtaProposal[]; d
   }
   const all = [...setup, ...adopt.map((a) => ({ ...a, pick_id: null, drop_id: null }))];
   await resolveIds(all, stats, token);
-  return { proposals: etaProposals(all, stats), drift, adopted: adopt.length, places: all.length };
+  const conflicts = new Set(drift.filter(d=>d.conflicts).map(d=>d.lc_location_id));
+  return { proposals: etaProposals(all.filter(s=>!conflicts.has(s.lc_location_id)), stats), drift, adopted: adopt.length, places: all.length };
 }
 
 export type SetupAction =
@@ -427,7 +443,11 @@ export async function applySetupAction(a: SetupAction, automatic?: EtaProposal):
   if (!token) return { ok: false, error: "Labcenter login failed" };
 
   if (a.action === "accept_lc") {
-    const lc = (await listPickDropLocations(token)).find((r) => r.lc_location_id === m.lc_location_id);
+    const source = (await listPickDropLocations(token, m.lc_location_id)).filter(r=>r.lc_location_id===m.lc_location_id);
+    if (source.some(r=>r.drop_location_id!==source[0].drop_location_id || r.eta_mins!==source[0].eta_mins)) {
+      return {ok:false,error:"Labcenter có nhiều điểm giao/ETA cho địa điểm này; cần xử lý bản ghi trùng trước khi đồng bộ"};
+    }
+    const lc = source[0];
     if (!lc) return { ok: false, error: "Labcenter không còn địa điểm này" };
     const dropChanged = lc.drop_location_id !== m.drop_location_id;
     const dropId = dropChanged ? await getCartrackCustomerId(lc.drop_location_id,token) : m.drop_id;

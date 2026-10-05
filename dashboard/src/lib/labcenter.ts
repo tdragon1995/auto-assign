@@ -308,10 +308,10 @@ function toPickDropRow(r: any): PickDropRow | null {
 
 /** GET /api/pick-drop-locations, every page (~2,100 rows = 5 pages at 500). The
  *  response carries no total, so a short page is the last one. */
-export async function listPickDropLocations(token: string): Promise<PickDropRow[]> {
+export async function listPickDropLocations(token: string, pickLocationId?: number): Promise<PickDropRow[]> {
   const out: PickDropRow[] = [];
   for (let page = 1; page <= 20; page++) {
-    const res = await labcenterFetch(`${DELIVERY_BASE}/api/pick-drop-locations?page=${page}&perPage=500`, {
+    const res = await labcenterFetch(`${DELIVERY_BASE}/api/pick-drop-locations?page=${page}&perPage=500${pickLocationId === undefined ? "" : `&pick_location_id=${pickLocationId}`}`, {
       headers: { Authorization: `Bearer ${token}`, accept: "application/json" },
       cache: "no-store",
       signal: AbortSignal.timeout(15_000),
@@ -335,14 +335,12 @@ export async function updatePickDropLocation(
   w: { pickId: string; dropId: string; etaMins: number; lcLocationId: number; dropLocationId: number; expectedEtaMins?: number },
   token: string,
 ): Promise<{ ok: boolean; error?: string }> {
+  const source = (await listPickDropLocations(token, w.lcLocationId)).filter(r=>r.lc_location_id===w.lcLocationId);
+  if (source.some(r=>r.drop_location_id!==source[0].drop_location_id || r.eta_mins!==source[0].eta_mins)) {
+    return {ok:false,error:"Labcenter có nhiều điểm giao/ETA cho địa điểm này; cần xử lý bản ghi trùng trước khi đồng bộ"};
+  }
   if (w.expectedEtaMins !== undefined) {
-    const before = await labcenterFetch(`${DELIVERY_BASE}/api/pick-drop-locations?pick_location_id=${w.lcLocationId}&perPage=5`, {
-      headers: { Authorization: `Bearer ${token}`, accept: "application/json" },
-      cache: "no-store", signal: AbortSignal.timeout(15_000),
-    });
-    if (!before.ok) return { ok: false, error: `Labcenter preflight ${before.status}` };
-    const rows: unknown[] = (await before.json())?.data ?? [];
-    const current = rows.map(toPickDropRow).find(r => r?.lc_location_id === w.lcLocationId);
+    const current = source[0];
     if (!current?.eta_valid || current.eta_mins !== w.expectedEtaMins || current.drop_location_id !== w.dropLocationId) {
       return { ok: false, error: "Labcenter setup changed; refresh before updating ETA" };
     }

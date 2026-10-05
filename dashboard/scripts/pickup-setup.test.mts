@@ -5,7 +5,8 @@
  *   npx tsx scripts/pickup-setup.test.mts
  */
 import assert from "node:assert/strict";
-import { canAutoUpdateEta, compareWithLabcenter, etaProposals, pickupEtaRows, pickupSetupReport, roundTo5, targetMins, type SetupRow } from "../src/lib/pickup-setup";
+import { applySetupAction, canAutoUpdateEta, compareWithLabcenter, etaProposals, pickupEtaRows, pickupSetupReport, roundTo5, targetMins, type SetupRow } from "../src/lib/pickup-setup";
+import { updatePickDropLocation } from "../src/lib/labcenter";
 import type { TimelineRoute, TimelineStop } from "../src/lib/types";
 
 // ── 1. Measured pickups ──
@@ -120,6 +121,19 @@ const { adopt, drift, renamed } = compareWithLabcenter(
 assert.deepEqual(adopt.map((a) => a.lc_location_id), [9]);
 assert.deepEqual(drift.map((d) => d.lc_location_id), [2]);
 assert.deepEqual(renamed.map((r) => [r.lc_location_id, r.pick_name, r.eta_mins]), [[3, "P3 new", 60]]); // name only, setup untouched
+const duplicates = [
+  {lc_location_id:558,pick_name:'Client {inactive}',drop_location_id:548,drop_name:'BRA - D018',eta_mins:60},
+  {lc_location_id:558,pick_name:'Client {inactive}',drop_location_id:561,drop_name:'BRA - D001',eta_mins:60},
+];
+const saved = {...setup(558,'a',60),pick_name:'Client {inactive}',drop_location_id:548,drop_name:'BRA - D018'};
+for (const source of [duplicates,[...duplicates].reverse()]) {
+  const report=compareWithLabcenter([saved],source);
+  assert.equal(report.drift.length,1);
+  assert.deepEqual(report.drift[0].conflicts?.map(r=>r.drop_name).sort(),['BRA - D001','BRA - D018']);
+  assert.equal(report.renamed.length,0);
+  assert.equal(compareWithLabcenter([],source).adopt.length,0,'Never adopt an arbitrary duplicate');
+}
+assert.equal(compareWithLabcenter([saved],[duplicates[0],duplicates[0]]).drift.length,0,'Identical duplicates are not competing values');
 
 // Exercise the report's adoption write through the real Labcenter parser: its
 // eta_valid flag must stay in memory, never become a PostgREST column.
@@ -128,16 +142,17 @@ const testEnv = { SUPABASE_URL: "https://supabase.invalid", SUPABASE_SERVICE_ROL
 const previousEnv = Object.fromEntries(Object.keys(testEnv).map(k => [k, process.env[k]]));
 Object.assign(process.env, testEnv);
 const writes: Record<string, unknown>[][] = [];
+let conflicting=false;
 globalThis.fetch = async (input, init) => {
   const url = String(input), method = init?.method ?? "GET";
   if (url.endsWith("/api/v1/auth/login")) return Response.json({ token: "test-only" });
-  if (url.includes("/api/pick-drop-locations?")) return Response.json({ data: [{
+  if (url.includes("/api/pick-drop-locations?")) return Response.json({ data: conflicting ? duplicates.map(r=>({pick_location_id:r.lc_location_id,pick_location:{name:r.pick_name},drop_location_id:r.drop_location_id,drop_location:{name:r.drop_name},estimate_pick_up:r.eta_mins})) : [{
     pick_location_id: 9, pick_location: { name: "New pickup" },
     drop_location_id: 560, drop_location: { name: "Lab" }, estimate_pick_up: "60",
   }] });
   if (url.includes("/api/locations/")) return Response.json({ data: { delivery_integration_locations: [] } });
   if (url.startsWith("https://supabase.invalid/rest/v1/")) {
-    if (method === "GET") return Response.json([]);
+    if (method === "GET") return Response.json(conflicting ? [saved] : []);
     assert.equal(method, "POST");
     assert.ok(url.includes("/pickup_setup?on_conflict=lc_location_id"));
     const rows = JSON.parse(String(init?.body)) as Record<string, unknown>[];
@@ -154,6 +169,12 @@ try {
   assert.deepEqual(writes[0], [{ lc_location_id: 9, pick_name: "New pickup", drop_location_id: 560,
     drop_name: "Lab", eta_mins: 60, pick_id: null, drop_id: null, updated_reason: "adopt" }]);
   assert.equal(writes.length, 2); // Adoption, then resolving missing UUID links.
+  conflicting=true;writes.length=0;
+  const accepted=await applySetupAction({action:'accept_lc',lc_location_id:558});
+  assert.equal(accepted.ok,false);assert.match(accepted.error!,/nhiều điểm giao/);
+  const pushed=await updatePickDropLocation({pickId:'a',dropId:'d',etaMins:60,lcLocationId:558,dropLocationId:548},'test-only');
+  assert.equal(pushed.ok,false);assert.match(pushed.error!,/nhiều điểm giao/);
+  assert.equal(writes.length,0,'Conflicting source cannot be accepted or written by any profile action');
 } finally {
   globalThis.fetch = oldFetch;
   for (const [key, value] of Object.entries(previousEnv)) {

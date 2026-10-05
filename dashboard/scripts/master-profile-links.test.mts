@@ -34,7 +34,7 @@ process.env.MASTER_CLIENT_INFO_SOURCE='sheet';
 await assert.rejects(assertSheetRenameSafe(pickup,['Old name']));
 process.env.MASTER_CLIENT_INFO_SOURCE='supabase';
 
-let destinationReads=0,existingLink:number|null=null,scenario='linked';
+let destinationReads=0,existingLink:number|null=null,scenario='linked', inactive=false, inactiveName=false;
 const writes:Record<string,unknown>[][]=[];
 const accountWrites:Record<string,unknown>[][]=[];
 globalThis.fetch=async(input,init)=>{
@@ -45,7 +45,7 @@ globalThis.fetch=async(input,init)=>{
       return new Response(null,{status:204}); // Real PostgREST response for RETURNS void.
     }
     if(url.pathname==='/rest/v1/master_clients' && method==='GET') return Response.json([
-      {customer_id:pickup,customer_name:'Client 1',client_code:'1',labcenter_location_id:10},
+      {customer_id:pickup,customer_name:inactiveName?'Client 1 {inactive}':'Client 1',is_active:!inactive,client_code:'1',labcenter_location_id:10},
       {customer_id:other,customer_name:'Client 2',client_code:'2',labcenter_location_id:11},
       {customer_id:drop,client_code:null,labcenter_location_id:existingLink}]);
     throw Error(`Metadata must use a batch UPDATE, not incomplete profile upserts: ${method} ${url}`);
@@ -80,6 +80,12 @@ assert.ok(result.issues.every(i=>i.kind==='missing_owner' && i.customer_id && i.
 assert.equal(labcenterClientCode('{inactive} 55025027 - Hospital'),'55025027');
 assert.equal(labcenterClientCode('55025027 - Hospital {inacttiv}'),'55025027');
 assert.equal(labcenterClientCode('55025027xyz - Hospital'),null);
+for (const byName of [false,true]) {
+  inactive=!byName;inactiveName=byName;
+  const report=await syncLabcenterMetadata(0,2);
+  assert.deepEqual(report.issues.filter(i=>i.kind==='missing_owner').map(i=>i.customer_id),[other], 'Ignore missing owners for inactive clients; keep active issues');
+}
+inactive=false;inactiveName=false;
 existingLink=99;writes.length=0;
 const oldError=console.error;console.error=()=>{};
 try {assert.equal((await syncLabcenterMetadata(0,2)).errors,2);assert.equal(writes.length,0);}

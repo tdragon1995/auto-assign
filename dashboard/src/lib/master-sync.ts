@@ -4,7 +4,7 @@ import { sbSelect, sbSelectAll, sbUpsert, sbRpc } from "./supabase-rest";
 import { nearestPsc, newWard, GEO_DATASET_VERSION } from "./master-geo";
 import type { MasterClient } from "./master-store";
 import { UUID, type SourceRow } from "./master-reconcile";
-import { locationName } from "./location-status";
+import { locationName, isInactiveLocation } from "./location-status";
 
 type CartrackRow = Record<string, unknown>;
 type MasterDriver = { driver_id: string; cartrack: CartrackRow; detail_synced_at?: string | null };
@@ -258,7 +258,12 @@ export async function syncLabcenterMetadata(offset = 0, limit = 200, onlyCodes?:
       const rows = (await res.json().catch(() => ({})))?.data;
       if (!Array.isArray(rows)) throw new Error("Labcenter sales trả về dữ liệu không hợp lệ");
       const exact = rows.filter(r => String(r.code) === code);
-      if (exact.length !== 1) {for (const c of group) flag(c, "missing_owner", exact.length ? "Nhiều hồ sơ sales cùng mã khách hàng; giữ nguyên sales/supervisor" : "Không tìm thấy hồ sơ sales đúng mã khách hàng; giữ nguyên sales/supervisor"); return;}
+      if (exact.length !== 1) {
+        for (const c of group) if (exact.length || (c.is_active !== false && !isInactiveLocation(c.customer_name))) {
+          flag(c, "missing_owner", exact.length ? "Nhiều hồ sơ sales cùng mã khách hàng; giữ nguyên sales/supervisor" : "Không tìm thấy hồ sơ sales đúng mã khách hàng; giữ nguyên sales/supervisor");
+        }
+        return;
+      }
       const owner = exact[0];
       accounts.push({client_code:code,verified_at:new Date().toISOString(),
         sales_name:owner.owner_name??null,sales_email:owner.owner??null,supervisor_name:owner.supervisor??null,supervisor_email:owner.supervisor_email??null});
