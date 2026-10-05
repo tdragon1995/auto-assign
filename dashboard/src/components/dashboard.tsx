@@ -754,6 +754,7 @@ export function Dashboard() {
                       scheduleErrors={scheduleErrors}
                       drivers={drivers}
                       onAssign={handleManualAssign}
+                      onConfigSaved={() => { setConfigRefreshKey(k => k + 1); void handleRefresh(); }}
                       onScheduleFailed={handleScheduleFailed}
                       leaveToday={leave.today}
                       leaveTomorrow={leave.tomorrow}

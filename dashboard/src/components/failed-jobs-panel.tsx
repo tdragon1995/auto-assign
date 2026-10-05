@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState, type ComponentProps } from "react";
 import { toast } from "sonner";
 import { CheckCircle2, ClipboardList, Clock, MapPin } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -16,6 +16,11 @@ import { DriverName } from "./driver-name";
 import type { FailedJob, FailedReason, PickupWarning, ConfigDriver } from "@/lib/types";
 import type { LeaveOnDate } from "@/lib/leave-config";
 import { OpenInAdminButton } from "./job-admin-panel";
+import { BranchEditor } from "./config-todo-panel";
+import { servesDropoff } from "@/lib/config-shift";
+import { isInactiveLocation } from "@/lib/location-status";
+import type { ConfigRowView } from "@/app/api/config/rows/route";
+import type { ClientMeta } from "./master-profile-details";
 
 export interface ScheduleErrorRow {
   pickup_id: string;
@@ -126,19 +131,82 @@ function refTime(w: PickupWarning): { time: string; full: string } | null {
   return null;
 }
 
+type MissingConfig = Pick<ComponentProps<typeof BranchEditor>,
+  "configDay" | "pickupName" | "pickupId" | "dropoffName" | "rules" | "extraLines" | "locations">;
+
+async function loadMissingJobConfig(jobId: number, env: "prod" | "uat"): Promise<MissingConfig> {
+  const [job, config, metadata] = await Promise.all([
+    `/api/admin/job?job_id=${jobId}&env=${env}`,
+    "/api/config/rows?fresh=1",
+    "/api/config/rows?metadata=1",
+  ].map(async (url) => {
+    const res = await fetch(url, { cache: "no-store" });
+    const data = await res.json();
+    if (!res.ok || data.error || data.stale) throw new Error(data.error || "Không đọc được cấu hình mới — thử lại");
+    return data;
+  }));
+  if (config.day === "sunday") throw new Error("Config Chủ nhật chỉ đọc. Thiết lập ca trong tab Config ngày thường.");
+  if (!job.pickup?.customer_id || !job.dropoff?.customer_id) throw new Error("Job thiếu điểm lấy hoặc điểm giao — kiểm tra trong Điều chỉnh");
+  if (!Array.isArray(config.rows) || !Array.isArray(metadata.clients)) throw new Error("Không đọc được danh sách cấu hình");
+  const clients = metadata.clients as ClientMeta[];
+  const pickup = clients.find(c => c.customer_id === job.pickup.customer_id);
+  const dropoff = clients.find(c => c.customer_id === job.dropoff.customer_id);
+  // Use the master names matched by ID, never split the row's display label.
+  if (!pickup?.cartrack.customer_name || !dropoff?.cartrack.customer_name) throw new Error("Điểm lấy hoặc điểm giao chưa có trong Master Client Info — tải lại hồ sơ trước");
+  const pickupName = String(pickup.cartrack.customer_name);
+  const dropoffName = String(dropoff.cartrack.customer_name);
+  if (isInactiveLocation(pickupName) || isInactiveLocation(dropoffName)) throw new Error("Điểm lấy hoặc điểm giao đã ngừng hoạt động — kiểm tra Master Client Info");
+  const rules = servesDropoff((config.rows as ConfigRowView[]).filter(r => !r.unmapped && r.customer_id === pickup.customer_id), dropoffName);
+  return {
+    configDay: config.day, pickupId: pickup.customer_id, pickupName, dropoffName, rules,
+    extraLines: rules.length ? [] : [{ driver: "", start: "", end: "", dropoff: dropoffName,
+      assignment_mode: config.tab === "Supabase" ? "fixed" : undefined }],
+    locations: clients.map(c => ({id:c.customer_id, name:String(c.cartrack.customer_name ?? c.customer_id)})).filter(c => !isInactiveLocation(c.name)),
+  };
+}
+
+function MissingJobConfig({ jobId, env, drivers, onCancel, onSaved }: {
+  jobId: number; env: "prod" | "uat"; drivers: ConfigDriver[]; onCancel: () => void; onSaved: () => void;
+}) {
+  const [config, setConfig] = useState<MissingConfig | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    setConfig(null); setError(null);
+    void loadMissingJobConfig(jobId, env).then(data => { if (!cancelled) setConfig(data); })
+      .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); });
+    return () => { cancelled = true; };
+  }, [jobId, env, attempt]);
+  return <div className="mt-2 rounded-md border border-indigo-200 bg-indigo-50/30 p-2 space-y-2">
+    <p className="text-xs font-semibold text-slate-700">Thiết lập config{config ? ` · ${config.pickupName} → ${config.dropoffName}` : ""}</p>
+    {config ? <BranchEditor {...config} drivers={drivers} onCancel={onCancel} onDone={onSaved}
+      onStale={() => setAttempt(n => n + 1)} /> : <>
+      <p className={error ? "text-xs text-red-600" : "text-xs text-slate-500"} role={error ? "alert" : "status"}>{error ?? "Đang tải job và cấu hình…"}</p>
+      {error && <Button size="sm" variant="outline" onClick={() => setAttempt(n => n + 1)}>Thử lại</Button>}
+      <Button size="sm" variant="outline" onClick={onCancel}>Hủy</Button>
+    </>}
+  </div>;
+}
+
 function FailedRow({
   job,
   drivers,
   onAssign,
   onSchedule,
   onOpenJob,
+  env,
+  onConfigSaved,
 }: {
   job: FailedJob;
   drivers: ConfigDriver[];
   onAssign: (job: FailedJob, driverId: string) => void;
   onSchedule: (job: FailedJob, scheduledAt: string, label: string) => void;
   onOpenJob?: (jobId: number) => void;
+  env: "prod" | "uat";
+  onConfigSaved: () => void;
 }) {
+  const [showConfig, setShowConfig] = useState(false);
   const [showDriverSelect, setShowDriverSelect] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
   const [dayOffset, setDayOffset] = useState(0);
@@ -251,8 +319,14 @@ function FailedRow({
             {job.scheduled_delivery_ts.slice(11, 19)}
           </span>
         )}
-        {!showDriverSelect && !showSchedule && (
+        {!showDriverSelect && !showSchedule && !showConfig && (
           <>
+            {(job.reason === "NO_MAPPING" || job.reason === "NO_DROPOFF_RULE") && (
+              <Button size="sm" variant="outline" className="text-[11px] h-6 px-2 shrink-0" onClick={() => setShowConfig(true)}>
+                <ClipboardList className="size-3 shrink-0" aria-hidden />
+                Thiết lập config
+              </Button>
+            )}
             {canSchedule && (
               <Button
                 size="sm"
@@ -286,6 +360,9 @@ function FailedRow({
           </>
         )}
       </div>
+
+      {showConfig && <MissingJobConfig key={`${env}:${job.job_id}`} jobId={job.job_id} env={env} drivers={drivers}
+        onCancel={() => setShowConfig(false)} onSaved={() => { setShowConfig(false); onConfigSaved(); }} />}
 
       {/* Every failed-assign reason ends with the job unassigned, so all of them
           allow a manual pick. (Manual assign is a direct Cartrack assign by
@@ -370,6 +447,7 @@ export function FailedJobsPanel({
   leaveTomorrow,
   onLeaveRefresh,
   onOpenJob,
+  onConfigSaved,
 }: {
   held: HeldJob[];
   env: "prod" | "uat";
@@ -392,6 +470,7 @@ export function FailedJobsPanel({
   onLeaveRefresh: () => void;
   /** Open a job in the Điều chỉnh job panel (the "Điều chỉnh" chip on each row). */
   onOpenJob?: (jobId: number) => void;
+  onConfigSaved: () => void;
 }) {
   // Today's uncovered leave counts toward the tab's total: it is a section of
   // this list now, so an otherwise-clear day with an unfilled substitute must
@@ -539,6 +618,8 @@ export function FailedJobsPanel({
                       onAssign={onAssign}
                       onSchedule={onScheduleFailed}
                       onOpenJob={onOpenJob}
+                      env={env}
+                      onConfigSaved={onConfigSaved}
                     />
                   ))}
                 </div>
