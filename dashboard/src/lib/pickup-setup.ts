@@ -299,7 +299,11 @@ export const loadSetup = () => sbSelectAll<SetupRow>("pickup_setup", `select=${S
 
 async function adoptNew(rows: PickDropRow[]): Promise<void> {
   if (rows.length === 0) return;
-  await sbUpsert("pickup_setup", rows.map((r) => ({ ...r, pick_id: null, drop_id: null, updated_reason: "adopt" })), "lc_location_id");
+  await sbUpsert("pickup_setup", rows.map((r) => ({
+    lc_location_id: r.lc_location_id, pick_name: r.pick_name,
+    drop_location_id: r.drop_location_id, drop_name: r.drop_name, eta_mins: r.eta_mins,
+    pick_id: null, drop_id: null, updated_reason: "adopt",
+  })), "lc_location_id");
 }
 
 /** Lookups per open beyond the priority set, and how many run at once. Each is

@@ -5,7 +5,7 @@
  *   npx tsx scripts/pickup-setup.test.mts
  */
 import assert from "node:assert/strict";
-import { compareWithLabcenter, etaProposals, pickupEtaRows, roundTo5, targetMins, type SetupRow } from "../src/lib/pickup-setup";
+import { compareWithLabcenter, etaProposals, pickupEtaRows, pickupSetupReport, roundTo5, targetMins, type SetupRow } from "../src/lib/pickup-setup";
 import type { TimelineRoute, TimelineStop } from "../src/lib/types";
 
 // ── 1. Measured pickups ──
@@ -109,4 +109,43 @@ assert.deepEqual(adopt.map((a) => a.lc_location_id), [9]);
 assert.deepEqual(drift.map((d) => d.lc_location_id), [2]);
 assert.deepEqual(renamed.map((r) => [r.lc_location_id, r.pick_name, r.eta_mins]), [[3, "P3 new", 60]]); // name only, setup untouched
 
-console.log("pickup-setup: all assertions passed");
+// Exercise the report's adoption write through the real Labcenter parser: its
+// eta_valid flag must stay in memory, never become a PostgREST column.
+const oldFetch = globalThis.fetch;
+const testEnv = { SUPABASE_URL: "https://supabase.invalid", SUPABASE_SERVICE_ROLE_KEY: "test-only", LABCENTER_EMAIL: "test-only", LABCENTER_PASSWORD: "test-only" };
+const previousEnv = Object.fromEntries(Object.keys(testEnv).map(k => [k, process.env[k]]));
+Object.assign(process.env, testEnv);
+const writes: Record<string, unknown>[][] = [];
+globalThis.fetch = async (input, init) => {
+  const url = String(input), method = init?.method ?? "GET";
+  if (url.endsWith("/api/v1/auth/login")) return Response.json({ token: "test-only" });
+  if (url.includes("/api/pick-drop-locations?")) return Response.json({ data: [{
+    pick_location_id: 9, pick_location: { name: "New pickup" },
+    drop_location_id: 560, drop_location: { name: "Lab" }, estimate_pick_up: "60",
+  }] });
+  if (url.includes("/api/locations/")) return Response.json({ data: { delivery_integration_locations: [] } });
+  if (url.startsWith("https://supabase.invalid/rest/v1/")) {
+    if (method === "GET") return Response.json([]);
+    assert.equal(method, "POST");
+    assert.ok(url.includes("/pickup_setup?on_conflict=lc_location_id"));
+    const rows = JSON.parse(String(init?.body)) as Record<string, unknown>[];
+    assert.ok(rows.every(row => !("eta_valid" in row)));
+    writes.push(rows);
+    return new Response(null, { status: 204 });
+  }
+  throw new Error(`Unexpected request: ${method} ${url}`);
+};
+try {
+  const report = await pickupSetupReport();
+  assert.equal(report.adopted, 1);
+  assert.equal(report.places, 1);
+  assert.deepEqual(writes[0], [{ lc_location_id: 9, pick_name: "New pickup", drop_location_id: 560,
+    drop_name: "Lab", eta_mins: 60, pick_id: null, drop_id: null, updated_reason: "adopt" }]);
+  assert.equal(writes.length, 2); // Adoption, then resolving missing UUID links.
+} finally {
+  globalThis.fetch = oldFetch;
+  for (const [key, value] of Object.entries(previousEnv)) {
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
+}
+console.log("pickup-setup: all assertions passed, including report adoption payload");
