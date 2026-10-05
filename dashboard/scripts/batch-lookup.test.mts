@@ -57,7 +57,7 @@ globalThis.fetch = async (input, init) => {
     }
     if (day === "2026-02-08") return reply({ data: [job(3, day, "BRA - D019", "BRA - D001", first, "driver2")], meta: { last_page: 1 } });
     if (day !== "2026-02-07") return reply({ data: [], meta: { last_page: 1 } });
-    return reply({ data: url.searchParams.get("page") === "1" ? [job(1, day, "BRA - D017", "BRA - D019", first)] : [job(2, day, "BRA - D017", "BRA - D019", second), { ...job(4, day, "BRA - D017", "BRA - D017"), reference_number: "Chấm Công - Vào" }], meta: { last_page: 2 } });
+    return reply({ data: url.searchParams.get("page") === "1" ? [job(1, day, "BRA - D017", "BRA - D019", first)] : [job(2, day, "BRA - D017", "BRA - D019", second), { ...job(4, day, "BRA - D017", "BRA - D017"), reference_number: "Chấm Công - Vào" }, job(7, day, "46512272 - ThAn - 22/12 - BV COLUMBIA ASIA BD", "BRA - D017")], meta: { last_page: 2 } });
   }
   throw new Error(`Unexpected network call: ${url.pathname}`);
 };
@@ -97,6 +97,10 @@ try {
   assert.deepEqual(result.summary?.jobs.map(j => j.job_id), [1, 2, 3], "must follow the overnight relay to HQ");
   assert.equal(result.driver_days.length, 2);
   assert(result.driver_days[0].jobs.some(j => j.kind === "clock_in"));
+  const hospital = result.driver_days[0].jobs.find(j => j.job_id === 7)!;
+  assert.equal(hospital.kind, "other", "numeric customer codes do not imply home visits");
+  assert.equal(hospital.stops[0].place, "46512272 - ThAn - 22/12 - BV COLUMBIA ASIA BD", "keep the actual Cartrack stop name");
+  assert(!JSON.stringify(result).includes("Home collection"));
   assert.equal(result.summary?.client?.name, "Fixture Clinic");
   assert.equal(result.phases.find(p => p.label === "Collected → last sample received")?.minutes, 1530);
   assert.equal(result.timeline.find(e => e.label === "Sample collected")?.time, "2026-02-07 14:00:00");

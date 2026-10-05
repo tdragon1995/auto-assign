@@ -87,8 +87,6 @@ export function batchTimestamp(code?: string): number | null {
 }
 const driverName = (j: Job) => [j.driver?.first_name, j.driver?.last_name].filter(Boolean).join(" ");
 const trackingCodes = (j: LookupJob) => [...new Set([...(j.items ?? []).map(i => i.tracking_number ?? ""), ...(j.item_tracking_numbers ?? [])])].filter(c => batchTimestamp(c) !== null);
-const homeStop = (name = "") => /^\d{4,} - /.test(name);
-const stopLabel = (name = "") => homeStop(name) ? `Home collection (${name.split(" - ")[1]})` : name;
 function jobSpan(j: LookupJob): [string, string] {
   const times = j.stops.flatMap(s => [s.activity_started_ts, s.activity_arrived_ts, s.activity_completed_ts]).filter((s): s is string => !!s && lookupTimestamp(s) !== null).sort();
   return [times[0] ?? j.create_ts ?? "", times.at(-1) ?? j.create_ts ?? ""];
@@ -98,12 +96,12 @@ function jobRow(j: LookupJob, ours: Set<number>, codes: Set<string>): LookupJobR
   const batchCodes = trackingCodes(j);
   const kind = j.reference_number?.startsWith("Chấm Công - Vào") ? "clock_in"
     : j.reference_number?.startsWith("Chấm Công - Ra") ? "clock_out" : batchCodes.length ? "batch"
-    : j.stops.some(s => homeStop(s.customer_name)) ? "home" : "other";
+    : "other";
   return {
-    job_id: j.job_id, reference: kind === "home" ? stopLabel(j.stops.find(s => homeStop(s.customer_name))?.customer_name) : j.reference_number ?? String(j.job_id),
+    job_id: j.job_id, reference: j.reference_number ?? String(j.job_id),
     status: JOB_STATUS[j.job_status_id ?? 0] ?? String(j.job_status_id ?? ""), driver: driverName(j), match: j.match ?? "batch code",
     start, end, kind, ours: ours.has(j.job_id), driver_id: j.delivery_driver_id, assigned: formatted(j.assigned_ts),
-    stops: j.stops.map(s => ({ place: stopLabel(s.customer_name), type: STOP_TYPE[s.stop_type_id ?? 0] ?? "Stop", arrived: formatted(s.activity_arrived_ts), completed: formatted(s.activity_completed_ts) })),
+    stops: j.stops.map(s => ({ place: (s.customer_name || "Chưa có tên điểm dừng"), type: STOP_TYPE[s.stop_type_id ?? 0] ?? "Stop", arrived: formatted(s.activity_arrived_ts), completed: formatted(s.activity_completed_ts) })),
     batches: batchCodes.map(code => ({ code, branch: `D${code.slice(1, 4)}`, created: vnTimestamp(new Date(batchTimestamp(code)!)), ours: codes.has(code) })),
   };
 }
@@ -169,9 +167,9 @@ export function buildLookupTimeline(order: Order, samples: Sample[], batches: Ba
     add(j.assigned_ts, "Cartrack", "Job assigned to driver", driverName(j), undefined, undefined, "done", j.job_id);
     for (const [index, s] of j.stops.entries()) {
       const type = STOP_TYPE[s.stop_type_id ?? 0] ?? "Stop";
-      add(s.activity_started_ts, "Cartrack", `${type} started → ${stopLabel(s.customer_name)}`, driverName(j), undefined, undefined, "done", j.job_id, index);
-      add(s.activity_arrived_ts, "Cartrack", `Driver arrived at ${stopLabel(s.customer_name)} (${type.toLowerCase()})`, driverName(j), undefined, undefined, "done", j.job_id, index);
-      add(s.activity_completed_ts, "Cartrack", `${type} completed at ${stopLabel(s.customer_name)}`, driverName(j), undefined, undefined, "done", j.job_id, index);
+      add(s.activity_started_ts, "Cartrack", `${type} started → ${(s.customer_name || "Chưa có tên điểm dừng")}`, driverName(j), undefined, undefined, "done", j.job_id, index);
+      add(s.activity_arrived_ts, "Cartrack", `Driver arrived at ${(s.customer_name || "Chưa có tên điểm dừng")} (${type.toLowerCase()})`, driverName(j), undefined, undefined, "done", j.job_id, index);
+      add(s.activity_completed_ts, "Cartrack", `${type} completed at ${(s.customer_name || "Chưa có tên điểm dừng")}`, driverName(j), undefined, undefined, "done", j.job_id, index);
     }
   }
   const due = (order.tat?.tests_tat ?? []).map(t => lookupTimestamp(t.tat)).filter((t): t is number => t !== null);

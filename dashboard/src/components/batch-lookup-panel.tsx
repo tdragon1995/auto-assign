@@ -5,6 +5,7 @@ import { HoverCard } from "radix-ui";
 import { ArrowRight, ChevronDown, Search, Truck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { BatchLookupResult, LookupEvent, LookupJobRow, LookupStep } from "@/lib/batch-lookup";
+import { driverDisplayName, placeName, staffCode } from "@/lib/display-names";
 import { parseVnTimestamp } from "@/lib/time";
 
 const timestamp = (value?: string | null) => {
@@ -64,29 +65,36 @@ export function driverArrivalContext(job: LookupJobRow, jobs: LookupJobRow[], st
 
 function DriverContext({ job, jobs, stopIndex = 0 }: { job: LookupJobRow; jobs: LookupJobRow[]; stopIndex?: number }) {
   const context = driverArrivalContext(job, jobs, stopIndex);
+  const leg = driverArrivalContext(job, jobs, Math.max(0, job.stops.length - 1));
+  const ownStops = job.stops.map((stop, index) => ({ ...stop, at: stop.arrived || stop.completed || "", job_id: job.job_id, index, reference: job.reference }));
+  // A shared visit can appear on several jobs; keep this VID's own stop in the route.
+  const route = [...new Map([...leg.route, ...ownStops].map(stop => [`${stop.place}|${stop.at || stop.index}`, stop])).values()].sort((a, b) => (a.at || "9999").localeCompare(b.at || "9999"));
+  const nodeTime = (at?: string | null) => <span className="tabular-nums">{time(at)}{at && job.assigned && at.slice(0, 10) !== job.assigned.slice(0, 10) && <span className="block text-[10px] text-slate-500">{date(at)}</span>}</span>;
   return <>
-    <h4 className="font-semibold leading-5">{job.driver || "Chưa phân công"}</h4>
-    <p className={`${muted} mt-1`}>#{job.job_id} · {job.reference}</p>
-    <dl className="mt-3 grid grid-cols-[7rem_1fr] gap-x-3 gap-y-2 text-xs">
-      <dt className="text-slate-600">Phân công</dt><dd className="font-medium tabular-nums">{job.assigned ? `${date(job.assigned)} · ${time(job.assigned)}` : "Cartrack chưa ghi nhận"}</dd>
-      <dt className="text-slate-600">Đến {context.target?.place || "điểm lấy"}</dt><dd className="font-medium tabular-nums">{context.arrival ? `${date(context.arrival)} · ${time(context.arrival)}${context.target?.arrived ? "" : " (giờ hoàn tất)"}` : "Chưa có giờ đến"}</dd>
-      <dt className="text-slate-600">Trước phân công</dt><dd>{context.previous ? <>{context.previous.place}<span className="block text-slate-600">{time(context.previous.recorded_at)} · điểm cuối ghi nhận</span></> : "Chưa có điểm dừng trước đó trong dữ liệu tra cứu"}</dd>
-    </dl>
-    <div className="mt-4 border-t border-slate-200 pt-3"><h5 className="text-xs font-semibold">Chuyến chưa ghi nhận hoàn tất lúc phân công ({job.assigned ? context.active.length : "—"})</h5>
-      {job.assigned ? context.active.length ? <ul className="mt-2 space-y-2 text-xs">{context.active.map(row => <li key={row.job_id}><p className="font-medium">{row.reference}</p><p className="text-slate-600">#{row.job_id} · phân công {time(row.assigned)} · {row.stops.map(stop => stop.place).join(" → ")}</p></li>)}</ul> : <p className={`${muted} mt-2`}>Không ghi nhận công việc khác còn mở.</p> : <p className={`${muted} mt-2`}>Thiếu giờ phân công để xác định.</p>}
+    <div className="flex items-baseline justify-between gap-3"><h4 className="text-base font-semibold">{driverDisplayName(job.driver) || "Chưa phân công"}</h4><span className="shrink-0 text-xs text-slate-500">{staffCode(job.driver)}</span></div>
+    <p className={`${muted} mt-1`}>{job.stops.map(stop => placeName(stop.place)).join(" → ")} · {date(job.assigned || job.start)}</p>
+    <p className="mt-2 text-xs text-slate-600">{context.known ? <><strong className="text-slate-800">{context.route.length} điểm dừng</strong> trước khi đến {placeName(context.target?.place)} · {mins((timestamp(context.arrival)! - timestamp(job.assigned)!) / 60000)} từ phân công</> : "Chưa đủ giờ phân công / giờ đến để đếm điểm dừng."}</p>
+    <ol aria-label="Lộ trình tài xế trong chặng liên quan" className="relative mt-3 space-y-2 before:absolute before:bottom-3 before:left-[5.5rem] before:top-3 before:w-px before:bg-slate-200">
+      {context.previous && <li className="relative grid grid-cols-[4.5rem_1rem_1fr] gap-2 text-xs text-slate-600">{nodeTime(context.previous.recorded_at)}<span aria-hidden="true" className="z-10 mt-1.5 mx-auto size-2 rounded-full bg-slate-400" /><div><p title={context.previous.place} className="font-medium">{placeName(context.previous.place)}</p><p className="text-[11px]">Điểm cuối ghi nhận trước phân công</p></div></li>}
+      <li className="relative grid grid-cols-[4.5rem_1rem_1fr] gap-2 text-xs">{nodeTime(job.assigned)}<Truck aria-hidden="true" className="z-10 mt-0.5 size-4 bg-white text-slate-600" /><p className="font-medium">{job.assigned ? "Được phân công chuyến này" : "Chưa có giờ phân công"}</p></li>
+      {route.map(stop => {
+        const ours = stop.job_id === job.job_id;
+        const selected = ours && stop.index === stopIndex;
+        return <li key={`${stop.job_id}-${stop.index}`} className={`relative grid grid-cols-[4.5rem_1rem_1fr] gap-2 text-xs ${selected ? "font-semibold" : ""}`}>
+          {nodeTime(stop.at)}<span aria-hidden="true" className={`z-10 mx-auto mt-1.5 size-2 rounded-full ${ours ? "bg-[#F47735]" : "bg-slate-400"}`} />
+          <div><p title={stop.place} className="font-medium leading-5">{placeName(stop.place)}{selected && <span className="ml-2 whitespace-nowrap rounded bg-orange-50 px-1.5 py-0.5 text-[10px] font-semibold text-orange-800">Đang xem</span>}</p><p className="text-[11px] font-normal text-slate-600">{stop.type === "Pickup" ? "Điểm lấy" : ["Delivery", "Dropoff"].includes(stop.type) ? "Điểm giao" : "Điểm dừng"}{ours ? " · VID này" : " · chuyến khác"}{stop.completed && ` · xong ${time(stop.completed)}`}{!stop.arrived && stop.completed && " · chỉ có giờ hoàn tất"}{!stop.at && " · chưa có giờ đến"}</p></div>
+        </li>;
+      })}
+    </ol>
+    <div className="mt-3 border-t border-slate-200 pt-2 text-xs text-slate-600">
+      {job.assigned ? context.active.length ? <details><summary className={`cursor-pointer font-medium ${focus}`}>{context.active.length} chuyến khác chưa xong lúc phân công</summary><ul className="mt-2 space-y-2">{context.active.map(row => <li key={row.job_id}>{row.stops.map(stop => placeName(stop.place)).join(" → ")}<span className="block text-[11px]">#{row.job_id} · phân công {time(row.assigned)}</span></li>)}</ul></details> : <p>Không ghi nhận chuyến khác còn mở lúc {time(job.assigned)}.</p> : <p>Thiếu giờ phân công để xác định các chuyến khác.</p>}
+      <details className="mt-2 text-[11px]"><summary className={`cursor-pointer ${focus}`}>Dữ liệu Cartrack · #{job.job_id}</summary><p className="mt-1 leading-4">{job.reference} · {job.driver}. Điểm dừng trong các ngày đã tra cứu; phân công theo bản ghi hiện tại. Lịch sử đổi tài xế không có trong dữ liệu này.</p></details>
     </div>
-    <div className="mt-4 border-t border-slate-200 pt-3"><h5 className="text-xs font-semibold">{context.known ? `${context.route.length} điểm dừng trước khi đến ${context.target?.place}` : "Lộ trình trước giờ đến"}</h5>
-      <p className={`${muted} mt-1`}>Từ phân công {time(job.assigned)} đến {time(context.arrival)}.</p>
-      <ol className="mt-3 space-y-3">{context.route.map((stop) => <li key={`${stop.job_id}-${stop.index}`} className="grid grid-cols-[4rem_1fr] gap-3 text-xs"><span className="tabular-nums text-slate-600">{time(stop.at)}</span><div><p className="font-medium">{stop.place}</p><p className="text-slate-600">#{stop.job_id} · {stop.type}{!stop.arrived && " · giờ hoàn tất"}</p></div></li>)}
-        <li className="grid grid-cols-[4rem_1fr] gap-3 text-xs"><span className="font-semibold tabular-nums">{time(context.arrival)}</span><div><p className="font-semibold">{context.target?.place || "Chưa có điểm dừng"} · VID này</p>{context.target?.completed && <p className="text-slate-600">Hoàn tất {time(context.target.completed)}</p>}</div></li>
-      </ol>
-    </div>
-    <p className="mt-4 text-[11px] leading-4 text-slate-600">Theo phân công và điểm dừng Cartrack trong các ngày đã tra cứu. Vị trí là điểm dừng ghi nhận; Cartrack không cung cấp lịch sử thay đổi tài xế trong dữ liệu này.</p>
   </>;
 }
 
 function DriverRoute({ job, jobs }: { job: LookupJobRow; jobs: LookupJobRow[] }) {
-  return <Detail name={`Lộ trình liên quan của ${job.driver || "tài xế chưa được phân công"}`} label={<span className="truncate">{job.driver || "Chưa phân công"}</span>} className="min-h-8 text-xs font-medium"><DriverContext job={job} jobs={jobs} /></Detail>;
+  return <Detail name={`Lộ trình liên quan của ${job.driver || "tài xế chưa được phân công"}`} label={<span className="truncate">{driverDisplayName(job.driver) || "Chưa phân công"}</span>} className="min-h-8 text-xs font-medium"><DriverContext job={job} jobs={jobs} /></Detail>;
 }
 
 export function BatchLookupPanel() {
@@ -171,9 +179,9 @@ export function BatchLookupPanel() {
                   {!singleDay && (index === 0 || timeline[index - 1].time.slice(0, 10) !== event.time.slice(0, 10)) && <tr className="bg-slate-50"><th scope="rowgroup" colSpan={3} className="px-3 py-2 text-xs font-medium text-slate-600">{date(event.time)} · Giờ Việt Nam</th></tr>}
                   <tr className={`border-t border-slate-100 align-top hover:bg-slate-50 ${event.kind === "due" ? "bg-amber-50 text-amber-900" : ""}`}>
                     <td className="whitespace-nowrap px-3 py-1 tabular-nums">{time(event.time)}</td>
-                    <td className="px-2 py-0.5"><Detail name={job ? `Lộ trình tài xế: ${event.label}` : `Chi tiết: ${event.label}`} className="min-h-8 w-full text-xs font-medium sm:min-h-6 leading-5" label={<>{tag}<span className="min-w-0 [overflow-wrap:anywhere]">{event.label === "Job assigned to driver" && job ? `Phân công · ${job.driver}` : event.label}</span></>}>
+                    <td className="px-2 py-0.5"><Detail name={job ? `Lộ trình tài xế: ${event.label}` : `Chi tiết: ${event.label}`} className="min-h-8 w-full text-xs font-medium sm:min-h-6 leading-5" label={<>{tag}<span className="min-w-0 [overflow-wrap:anywhere]">{event.label === "Job assigned to driver" && job ? `Phân công · ${driverDisplayName(job.driver)}` : event.label}</span></>}>
                       {job ? <DriverContext job={job} jobs={driverJobs} stopIndex={event.stop_index ?? 0} /> : <><h4 className="font-semibold">{event.label}</h4>{event.who && <p className="mt-3 break-words text-xs">{event.who}</p>}{event.detail && <p className="mt-2 text-xs text-slate-600">{event.detail}</p>}{!!event.samples.length && <p className="mt-2 break-all font-mono text-xs">{event.samples.join(", ")}</p>}</>}
-                      <p className={`${muted} mt-3`}>{date(event.time)} · {time(event.time)} · {event.source}</p><p className={`${muted} mt-1`}>Từ sự kiện trước trong timeline đầy đủ: {mins(event.since_prev_min)}</p>
+                      {!job && <><p className={`${muted} mt-3`}>{date(event.time)} · {time(event.time)} · {event.source}</p><p className={`${muted} mt-1`}>Từ sự kiện trước trong timeline đầy đủ: {mins(event.since_prev_min)}</p></>}
                     </Detail></td>
                     <td className="px-3 py-1 text-right tabular-nums text-slate-600">{collected === null ? "—" : mins(Math.round((timestamp(event.time)! - collected) / 6000) / 10)}</td>
                   </tr>
