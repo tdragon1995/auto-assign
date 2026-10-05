@@ -1272,14 +1272,14 @@ export function ConfigTodoPanel({
               {overlaps.length} trùng config
             </span>
           )}
-          {gaps.length > 0 && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-800 border border-amber-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
-              {gaps.length} thiếu ca
-            </span>
-          )}
           {groupedUnfinished.length > 0 && (
             <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
               {groupedUnfinished.length} chưa có tài xế
+            </span>
+          )}
+          {gaps.length > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-800 border border-amber-200 px-1.5 py-0 text-[11px] font-semibold leading-relaxed">
+              {gaps.length} thiếu ca
             </span>
           )}
           </span>
@@ -1294,21 +1294,12 @@ export function ConfigTodoPanel({
           )}
         </button>
 
-        {/* Capped and scrolled, exactly as the leave panel caps itself.
-            These are the least urgent things on the tab — they wait on a person
-            editing a sheet — and the card is shrink-0 inside a fixed-height
-            column, so an uncapped list of a dozen open to-dos pushed the stuck
-            jobs and late pickups above it down to nothing. That list is the one
-            thing here getting worse while you read it; it does not lose its
-            space to this one. */}
-        {/* max-w-5xl to match FailedJobsPanel's own scroll container above it.
-            Without it these rows ran the full width of the card while every row
-            in the panel above stopped short, so this panel's button sat alone
-            out at the right edge instead of in the column the others share. */}
+        {/* Independent scroll areas keep both queues visible without consuming
+            the space needed by the Config browser below. */}
         {open && (
-          <div id={LIST_ID} className="max-h-[38vh] max-w-5xl space-y-1.5 overflow-y-auto">
+          <div id={LIST_ID} className="space-y-3">
             {overlaps.length > 0 && (
-              <section aria-label="Trùng config">
+              <section aria-label="Trùng config" className="max-h-[38vh] overflow-y-auto">
                 <SectionHeader label="Trùng config" count={overlaps.length} tone="amber" className="pt-0.5" />
                 <div className={listBox}>
                   {overlaps.map((o) => (
@@ -1323,26 +1314,30 @@ export function ConfigTodoPanel({
                 </div>
               </section>
             )}
-            {gaps.length > 0 && (
-              <section aria-label="Giờ không có ai trực">
-                <SectionHeader label="Thiếu ca — giờ không ai trực" count={gaps.length} tone="amber" className="pt-0.5" />
-                <div className={listBox}>
-                  {sortedGaps.map((g) => (
-                    <GapRow key={`${g.customer_id}-${g.at}`} g={g} rules={branchRules[g.customer_id] ?? []} drivers={drivers} onSaved={onSaved} />
-                  ))}
-                </div>
-              </section>
-            )}
-            {groupedUnfinished.length > 0 && (
-              <section aria-label="Dòng config chưa có tài xế">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <section aria-label="Dòng config chưa có tài xế" className="min-w-0 space-y-1">
                 <SectionHeader label="Chưa có tài xế" count={groupedUnfinished.length} className="pt-0.5" />
+                <div className="max-h-[38vh] overflow-y-auto">
                 <div className={listBox}>
                   {groupedUnfinished.map((rows) => (
                     <UnfinishedRow key={`${rows[0].customer_id}|${rows[0].dropoff_name}`} rows={rows} rules={branchRules[rows[0].customer_id] ?? []} drivers={drivers} onSaved={onSaved} />
                   ))}
+                  {groupedUnfinished.length === 0 && <p className="px-2 py-3 text-xs text-slate-500">Không có config thiếu tài xế.</p>}
+                </div>
                 </div>
               </section>
-            )}
+              <section aria-label="Giờ không có ai trực" className="min-w-0 space-y-1">
+                <SectionHeader label="Thiếu ca — giờ không ai trực" count={gaps.length} tone="amber" className="pt-0.5" />
+                <div className="max-h-[38vh] overflow-y-auto">
+                <div className={listBox}>
+                  {sortedGaps.map((g) => (
+                    <GapRow key={`${g.customer_id}-${g.at}`} g={g} rules={branchRules[g.customer_id] ?? []} drivers={drivers} onSaved={onSaved} />
+                  ))}
+                  {gaps.length === 0 && <p className="px-2 py-3 text-xs text-slate-500">Không có giờ thiếu ca.</p>}
+                </div>
+                </div>
+              </section>
+            </div>
           </div>
         )}
       </CardContent>
