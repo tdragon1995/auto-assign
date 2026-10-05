@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { NextRequest } from "next/server";
 import { POST } from "../src/app/api/config/replace-driver/route";
+import { writeMasterRules, type MasterRule } from "../src/lib/master-store";
 
 const fromId="22222222-2222-4222-8222-222222222222", toId="33333333-3333-4333-8333-333333333333";
 const peerId="44444444-4444-4444-8444-444444444444", pickup="11111111-1111-4111-8111-111111111111";
@@ -18,6 +19,7 @@ const testEnv={SUPABASE_URL:"https://supabase.invalid",SUPABASE_SERVICE_ROLE_KEY
 const previousEnv=Object.fromEntries(Object.keys(testEnv).map(k=>[k,process.env[k]])), previousFetch=globalThis.fetch;
 Object.assign(process.env,testEnv);
 let cartrackActive=true;
+let locationActive=true;
 const writes:{changes:Record<string,unknown>[]}[]=[];
 globalThis.fetch=async (input,init)=>{
   const url=String(input);
@@ -27,7 +29,7 @@ globalThis.fetch=async (input,init)=>{
   if(url.includes("rpc/master_write_rules")) { writes.push(JSON.parse(String(init?.body))); return Response.json([{id:1,source_row:2,revision:4}]); }
   assert.equal(init?.method,"GET","The test must never write Cartrack or Sheets");
   if(url.includes("master_rules_read")) return Response.json([rule]);
-  if(url.includes("master_clients")) return Response.json([{customer_id:pickup,customer_name:"Pickup",is_active:true}]);
+  if(url.includes("master_clients")) return Response.json([{customer_id:pickup,customer_name:"Pickup",is_active:locationActive}]);
   if(url.includes("master_drivers")) {
     const id=new URL(url).searchParams.get("driver_id")?.replace(/^eq\./,"");
     return Response.json(id?drivers.filter(d=>d.driver_id===id):drivers);
@@ -47,6 +49,16 @@ try {
   assert.equal(saved.shift_start,"07:00");assert.equal(saved.shift_end,"12:00");
   assert.equal(saved.dropoff_customer_id,pickup);assert.equal(saved.alternate_dropoff_customer_id,pickup);
   assert.deepEqual(saved.row_data,{},"Credential fields remain untouched");
+
+  locationActive=false;
+  assert.equal((await POST(request())).status,200,"Existing inactive locations must allow driver replacement");
+  saved=writes.at(-1)!.changes[0];assert.equal(saved.pickup_customer_id,pickup);
+  assert.ok(!("active" in saved),"Replacement must not reactivate a rule or location");
+  await assert.rejects(writeMasterRules([saved]),/ngừng hoạt động/,"New inactive references remain blocked outside replacement");
+  const unrelated=[{...rule,pickup_customer_id:peerId}] as unknown as MasterRule[];
+  await assert.rejects(writeMasterRules([saved],unrelated),/ngừng hoạt động/,"Preservation must not allow changing to an inactive pickup");
+  await assert.rejects(writeMasterRules([saved],[{...rule,revision:2}] as unknown as MasterRule[]),/ngừng hoạt động/,"Stale context must not exempt an inactive reference");
+  locationActive=true;
 
   rule.master_rule_drivers=[{driver_id:fromId,selection_order:0},{driver_id:toId,selection_order:1},{driver_id:peerId,selection_order:2}];
   assert.equal((await POST(request())).status,200);

@@ -87,7 +87,7 @@ export async function replaceMasterConfig(opts:{from:string;to:string;from_drive
       replaced.push({row:old.source_row,pickup:target.expectPickup,before,after:replaceDriverInCell(before,opts.from,opts.to)??opts.to});
     } catch(e) {skipped.push({row:target.row,pickup:target.expectPickup,reason:String(e)});}
   }
-  if(changes.length) await writeMasterRules(changes);
+  if(changes.length) await writeMasterRules(changes,ctx.rules);
   return {replaced,skipped};
 }
 

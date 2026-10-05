@@ -98,9 +98,13 @@ export function ruleChange(input:RuleInput,old?:MasterRule) {
     alternate_dropoff_customer_id:input.alt_drop_off_id===undefined?old?.alternate_dropoff_customer_id??null:input.alt_drop_off_id||null,
     shift_start:start||null,shift_end:end||null,row_data};
 }
-export async function writeMasterRules(changes:Record<string,unknown>[]) {
+export async function writeMasterRules(changes:Record<string,unknown>[], existingRules:readonly MasterRule[] = []) {
   assertMasterWritable();
-  const references=new Set(changes.filter(c=>c.active!==false).flatMap(c=>[c.pickup_customer_id,c.dropoff_customer_id,c.alternate_dropoff_customer_id]));
+  const references=new Set(changes.filter(c=>c.active!==false).flatMap(c=>{
+    const old=existingRules.find(r=>r.id===c.id && r.revision===c.revision);
+    return (["pickup_customer_id","dropoff_customer_id","alternate_dropoff_customer_id"] as const)
+      .filter(key=>!old || c[key]!==old[key]).map(key=>c[key]);
+  }));
   if (references.size && (await inactiveMasterClientIds()).some(id=>references.has(id))) throw new Error("Không thể chọn địa điểm đã ngừng hoạt động");
   return sbRpc<{id:number;revision:number;source_row:number}[]>("master_write_rules",{changes});
 }

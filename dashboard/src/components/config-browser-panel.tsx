@@ -444,7 +444,8 @@ function ReplaceDriverPanel({
     () => (from ? sortConfigRows(rows.filter((r) => fromId ? r.driver_ids?.includes(fromId) : splitDriverNames(r.driver).includes(from))) : []),
     [rows, from, fromId],
   );
-  const writable = affected.filter(isWritable);
+  const writable = affected.filter(r => !r.unmapped && r.pickup.trim().length > 0);
+  const inactiveCount = writable.filter(r => isInactive(r.pickup)).length;
   const unwritable = affected.length - writable.length;
   const picked = writable.filter((r) => !excluded.has(r.row));
 
@@ -546,6 +547,11 @@ function ReplaceDriverPanel({
                 · {unwritable} dòng không có điểm lấy — sửa từng dòng bằng nút Sửa
               </span>
             )}
+            {inactiveCount > 0 && (
+              <span className="ml-1 text-slate-600">
+                · gồm {inactiveCount} dòng tại điểm ngừng hoạt động; trạng thái vẫn giữ nguyên
+              </span>
+            )}
           </p>
           {writable.length > 0 && (
             <ul className="max-h-60 overflow-y-auto rounded border border-indigo-200 bg-white text-xs">
@@ -563,6 +569,7 @@ function ReplaceDriverPanel({
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-x-2">
                         <span className="font-medium text-slate-900">{locationName(r.pickup,true)}</span>
+                        {isInactive(r.pickup) && <span className="rounded bg-slate-100 px-1 text-[10px] text-slate-600">ngừng hoạt động</span>}
                         <span className="tabular-nums text-slate-600">{r.start && r.end ? `${r.start}–${r.end}` : "cả ngày"}</span>
                         {r.dropoff && <span className="text-slate-600">→ {r.dropoff}</span>}
                       </div>
