@@ -428,9 +428,6 @@ function ReplaceDriverPanel({
   const [toId, setToId] = useState("");
   const [excluded, setExcluded] = useState<ReadonlySet<number>>(new Set());
   const [busy, setBusy] = useState(false);
-  const [refreshedDrivers, setAvailableDrivers] = useState<ConfigDriver[] | null>(null);
-  const availableDrivers = refreshedDrivers ?? drivers;
-  const [refreshingDrivers, setRefreshingDrivers] = useState(false);
 
   const fromDrivers = useMemo<ConfigDriver[]>(
     () => fromOptions.flatMap((name) => {
@@ -487,21 +484,6 @@ function ReplaceDriverPanel({
     }
   };
 
-  const refreshDrivers = async () => {
-    setRefreshingDrivers(true);
-    try {
-      const res = await fetch("/api/drivers", { cache: "no-store" });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !Array.isArray(data.data) || data.data.length < 100) throw new Error(data.error || "Không đọc được danh sách tài xế Cartrack");
-      setAvailableDrivers(data.data.filter((d: { is_active: boolean }) => d.is_active)
-        .map((d: { delivery_driver_id: string; first_name: string; last_name: string }) => ({
-          driver_id: d.delivery_driver_id, name: `${d.first_name} ${d.last_name}`.trim(),
-        })));
-      toast.success("Đã tải danh sách tài xế Cartrack");
-    } catch (e) { toast.error(e instanceof Error ? e.message : String(e)); }
-    finally { setRefreshingDrivers(false); }
-  };
-
   const comboClass =
     "flex min-w-[200px] flex-1 flex-wrap items-center gap-1 rounded border border-slate-300 bg-white px-1 py-0.5 focus-within:ring-2 focus-within:ring-indigo-400/50";
 
@@ -522,15 +504,12 @@ function ReplaceDriverPanel({
         <DriverCombobox
           names={to ? [to] : []}
           onChange={(names, selected) => { setTo(names[0] ?? ""); setToId(selected?.driver_id ?? ""); }}
-          drivers={availableDrivers.filter((d) => fromId ? d.driver_id !== fromId : d.name !== from)}
+          drivers={drivers.filter((d) => fromId ? d.driver_id !== fromId : d.name !== from)}
           max={1}
           placeholder="Tài xế thay thế…"
           ariaLabel="Tài xế thay thế"
           className={comboClass}
         />
-        <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void refreshDrivers()} disabled={refreshingDrivers}>
-          {refreshingDrivers ? "Đang tải…" : "Tải tài xế Cartrack"}
-        </Button>
       </div>
 
       {from && (
@@ -695,6 +674,9 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
   const [driverMetadata, setDriverMetadata] = useState<DriverMeta[] | null>(sessionMetadata?.refreshKey === refreshKey ? sessionMetadata.drivers : null);
   const [metaBusy, setMetaBusy] = useState(false);
   const [metaError, setMetaError] = useState("");
+  const [refreshedDrivers, setAvailableDrivers] = useState<ConfigDriver[] | null>(null);
+  const [refreshingDrivers, setRefreshingDrivers] = useState(false);
+  useEffect(() => { setAvailableDrivers(null); }, [refreshKey]);
   const [profileHover, setProfileHover] = useState<{ kind: "client" | "driver"; id: string; anchor: HTMLElement; pinned: boolean } | null>(null);
   const [profileEditing, setProfileEditing] = useState(false);
   const profileOpenTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -762,11 +744,26 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
     finally { setMetaBusy(false); }
   }, [refreshKey]);
 
+  const refreshDrivers = async () => {
+    setRefreshingDrivers(true);
+    try {
+      const res = await fetch("/api/drivers", { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !Array.isArray(data.data) || data.data.length < 100) throw new Error(data.error || "Không đọc được danh sách tài xế Cartrack");
+      setAvailableDrivers(data.data.filter((d: { is_active: boolean }) => d.is_active)
+        .map((d: { delivery_driver_id: string; first_name: string; last_name: string }) => ({
+          driver_id: d.delivery_driver_id, name: `${d.first_name} ${d.last_name}`.trim(),
+        })));
+      toast.success("Đã tải danh sách tài xế Cartrack");
+    } catch (e) { toast.error(e instanceof Error ? e.message : String(e)); }
+    finally { setRefreshingDrivers(false); }
+  };
+
   const clientMetaById = useMemo(() => new Map((clientMetadata ?? []).map((c) => [c.customer_id, c])), [clientMetadata]);
   const driverMetaById = useMemo(() => new Map((driverMetadata ?? []).map((d) => [d.driver_id, d])), [driverMetadata]);
-  const rosterDrivers = useMemo(() => driverMetadata ? driverMetadata.filter(d => d.cartrack.is_active !== false).map(d => ({
+  const rosterDrivers = useMemo(() => refreshedDrivers ?? (driverMetadata ? driverMetadata.filter(d => d.cartrack.is_active !== false).map(d => ({
     driver_id: d.driver_id, name: `${d.cartrack.first_name ?? ""} ${d.cartrack.last_name ?? ""}`.trim() || d.driver_id,
-  })).sort((a, b) => a.name.localeCompare(b.name)) : drivers, [driverMetadata, drivers]);
+  })).sort((a, b) => a.name.localeCompare(b.name)) : drivers), [refreshedDrivers, driverMetadata, drivers]);
   const hoverClient = profileHover?.kind === "client" ? clientMetaById.get(profileHover.id) : null;
   const hoverDriver = profileHover?.kind === "driver" ? driverMetaById.get(profileHover.id) : null;
   const hoverName = hoverClient ? clientName(hoverClient) : hoverDriver ? displayDriverCell(`${hoverDriver.cartrack.first_name ?? ""} ${hoverDriver.cartrack.last_name ?? ""}`.trim()) : "";
@@ -972,11 +969,11 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
           <Button
             size="sm" variant="outline"
             className="h-9 px-3 text-xs"
-            title="Đọc lại config và hồ sơ đã lưu; không gọi Cartrack"
-            onClick={() => { void load(true); void loadMetadata(); }}
-            disabled={loading || metaBusy}
+            title="Đọc lại config, hồ sơ đã lưu và danh sách tài xế Cartrack"
+            onClick={() => { void load(true); void loadMetadata(); void refreshDrivers(); }}
+            disabled={loading || metaBusy || refreshingDrivers}
           >
-            {loading ? "Đang tải…" : "Tải lại"}
+            {loading || metaBusy || refreshingDrivers ? "Đang tải…" : "Tải lại"}
           </Button>
         </div>
 
@@ -1357,7 +1354,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
             initial={hoverClient ? { ...hoverClient.cartrack, default_dropoff_id: hoverClient.default_dropoff_id, default_dropoff_name: hoverClient.default_dropoff_name, eta_minutes: hoverClient.eta_minutes }
               : { ...hoverDriver!.cartrack, ...hoverDriver!.roster, driver_zalo_id: hoverDriver!.driver_zalo_id, phone_number_update: hoverDriver!.phone_number_update }}
             clients={clientMetadata ?? []} linkedLabcenter={!!hoverClient?.labcenter_location_id}
-            onCancel={() => setProfileEditing(false)} onSaved={async () => { await loadMetadata(); await load(true); closeProfile(); toast.success("Đã lưu và đồng bộ hồ sơ"); }}
+            onCancel={() => setProfileEditing(false)} onSaved={async () => { setAvailableDrivers(null); await loadMetadata(); await load(true); closeProfile(); toast.success("Đã lưu và đồng bộ hồ sơ"); }}
           /> : <>
             <MasterProfileDetails client={hoverClient} driver={hoverDriver} clients={clientMetaById} />
             <div className="flex justify-end border-t border-slate-200 pt-3"><Button size="sm" variant="outline" onClick={() => { pinProfile(); setProfileEditing(true); }}><Pencil aria-hidden="true" className="size-3.5" />Sửa hồ sơ</Button></div>
