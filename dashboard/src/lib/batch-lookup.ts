@@ -32,7 +32,7 @@ export type LookupJobRow = {
   job_id: number; reference: string; status: string; driver: string;
   driver_id?: string | null; assigned?: string | null;
   match: string; start: string; end: string; kind: string; ours: boolean;
-  stops: { place: string; type: string; arrived?: string | null; completed?: string | null }[];
+  stops: { place: string; type: string; started?: string | null; arrived?: string | null; completed?: string | null }[];
   batches: { code: string; branch: string; created: string | null; ours: boolean }[];
 };
 export type BatchLookupResult = {
@@ -101,7 +101,7 @@ function jobRow(j: LookupJob, ours: Set<number>, codes: Set<string>): LookupJobR
     job_id: j.job_id, reference: j.reference_number ?? String(j.job_id),
     status: JOB_STATUS[j.job_status_id ?? 0] ?? String(j.job_status_id ?? ""), driver: driverName(j), match: j.match ?? "batch code",
     start, end, kind, ours: ours.has(j.job_id), driver_id: j.delivery_driver_id, assigned: formatted(j.assigned_ts),
-    stops: j.stops.map(s => ({ place: (s.customer_name || "Chưa có tên điểm dừng"), type: STOP_TYPE[s.stop_type_id ?? 0] ?? "Stop", arrived: formatted(s.activity_arrived_ts), completed: formatted(s.activity_completed_ts) })),
+    stops: j.stops.map(s => ({ place: (s.customer_name || "Chưa có tên điểm dừng"), type: STOP_TYPE[s.stop_type_id ?? 0] ?? "Stop", started: formatted(s.activity_started_ts), arrived: formatted(s.activity_arrived_ts), completed: formatted(s.activity_completed_ts) })),
     batches: batchCodes.map(code => ({ code, branch: `D${code.slice(1, 4)}`, created: vnTimestamp(new Date(batchTimestamp(code)!)), ours: codes.has(code) })),
   };
 }

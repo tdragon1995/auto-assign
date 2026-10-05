@@ -126,12 +126,22 @@ try {
     { ...contextJob, job_id: 9104, stops: [{ place: "After arrival", type: "Pickup", arrived: "2026-02-07 14:00:00" }] },
   ];
   const context = driverArrivalContext(contextJob, contextRows);
-  assert.equal(context.previous?.place, "Previous");
   assert.deepEqual(context.active.map(j => j.job_id), [9101, 9104]);
   assert.deepEqual(context.route.map(s => s.place), ["Other"], "deduplicate shared stop and exclude later activity or another driver");
   assert.deepEqual(driverArrivalContext(contextJob, contextRows, 1).route.map(s => s.place), ["Other", "Target"], "delivery hover uses its own arrival, not the pickup window");
   assert.equal(driverArrivalContext({ ...contextJob, assigned: null }, contextRows).known, false);
   assert.deepEqual(driverArrivalContext({ ...contextJob, assigned: null }, contextRows).active, []);
+  const afterCollection = driverArrivalContext(contextJob, contextRows, 1, "2026-02-07 11:01:00");
+  assert.deepEqual(afterCollection.ongoing.map(s => s.job_id), [9101], "include tasks begun before collection and still underway at collection");
+  const enRoute = { ...contextRows[1], job_id: 9105, stops: [{ place: "En route", type: "Pickup", started: "2026-02-07 10:30:00", arrived: "2026-02-07 11:30:00", completed: "2026-02-07 11:35:00" }] };
+  assert.deepEqual(driverArrivalContext(contextJob, [contextJob, enRoute], 0, "2026-02-07 11:01:00").ongoing.map(s => s.job_id), [9105], "include driving to a task that started before collection");
+  assert.equal(afterCollection.cutoff, "2026-02-07 11:01:00");
+  assert.deepEqual(afterCollection.route.map(s => s.place), ["Target"], "collection cutoff excludes earlier driver stops even when assignment is earlier");
+  assert.deepEqual(afterCollection.active.map(j => j.job_id), [9101, 9102, 9104], "other jobs are evaluated at collection time");
+  assert.deepEqual(driverArrivalContext(contextJob, contextRows, 0, "2026-02-07 11:00:00").route.map(s => s.place), ["Other"], "include stops exactly at the collection cutoff");
+  assert.equal(driverArrivalContext({ ...contextJob, assigned: null }, contextRows, 0, "2026-02-07 11:00:00").known, true, "collection can bound the route without assignment time");
+  assert.equal(driverArrivalContext(contextJob, contextRows, 0, "invalid").cutoff, contextJob.assigned, "missing or invalid collection falls back to known assignment time");
+  assert.deepEqual(driverArrivalContext(contextJob, contextRows, 0, "2026-02-07 11:05:00").ongoing, [], "completed tasks are excluded at their exact completion time");
   assert(!requests.some(u => /gps|track|polyline/.test(u.pathname)), "no map or GPS fetches");
   assert(requests.some(u => u.pathname.endsWith("/jobs") && u.searchParams.get("page") === "2"), "honor pagination even on a short first page");
 
