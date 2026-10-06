@@ -158,7 +158,7 @@ export function BatchLookupPanel() {
   const singleDay = new Set(timeline.map(event => event.time.slice(0, 10))).size <= 1;
   const warnings = steps.filter(step => step.step === "warning" || step.step === "error");
 
-  return <div className={`flex min-h-full flex-col gap-2 overflow-visible bg-white p-3 text-slate-800 selection:bg-indigo-100 sm:p-4 lg:overflow-hidden ${idle || busy ? "h-full justify-center" : "h-auto"} lg:h-full lg:min-h-0`}>
+  return <div className={`flex min-h-full flex-col gap-2 overflow-visible bg-white p-3 text-slate-800 selection:bg-indigo-100 sm:p-4 lg:overflow-hidden ${idle ? "h-full justify-center" : "h-auto"} lg:h-full lg:min-h-0`}>
     <header className={`grid shrink-0 items-center gap-3 ${idle ? "mx-auto w-full max-w-lg text-center" : "lg:grid-cols-[1fr_auto_1fr]"}`}>
       <div><h2 className="text-base font-semibold">Tra cứu VID / Batch</h2><p className={`${muted} mt-0.5`}>Hành trình mẫu từ điểm lấy đến phòng xét nghiệm.</p></div>
       <form onSubmit={lookup} className="mx-auto flex w-full max-w-md items-center gap-2"><label htmlFor="batch-lookup-vid" className="sr-only">VID</label>
@@ -169,7 +169,7 @@ export function BatchLookupPanel() {
     </header>
     {error && <p role="alert" className="shrink-0 rounded-md bg-red-50 px-3 py-2 text-sm text-red-800">{error}{summary ? " Dữ liệu đã tìm được vẫn hiển thị bên dưới." : ""}</p>}
     {!!warnings.length && !busy && <p role="status" className="shrink-0 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900">{warnings.map(step => step.msg).join(" · ")}</p>}
-    {busy && <div role="status" aria-live="polite" className="space-y-3 border-t pt-4"><p className="text-sm font-medium">{progress}</p><p className={muted}>{steps.length} bước đã hoàn tất</p><div aria-hidden="true" className="space-y-3 motion-safe:animate-pulse"><div className="h-12 rounded bg-slate-100" /><div className="h-64 rounded bg-slate-50" /></div></div>}
+    {busy && <div role="status" aria-live="polite" className="min-h-0 space-y-3 overflow-hidden border-t pt-4 lg:flex-1"><p className="text-sm font-medium">{progress}</p><p className={muted}>{steps.length} bước đã hoàn tất</p><div aria-hidden="true" className="space-y-3 motion-safe:animate-pulse"><div className="h-12 rounded bg-slate-100" /><div className="h-64 rounded bg-slate-50" /></div></div>}
     {!busy && progress && <p role="status" className="text-sm text-slate-600">{progress}</p>}
     {!result && !busy && !error && !progress && <p className="text-center text-xs text-slate-600">POS <ArrowRight aria-hidden="true" className="mx-2 inline size-3" /> LIS <ArrowRight aria-hidden="true" className="mx-2 inline size-3" /> Cartrack · Giờ Việt Nam (UTC+7)</p>}
 
