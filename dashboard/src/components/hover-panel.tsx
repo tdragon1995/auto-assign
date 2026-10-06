@@ -73,6 +73,7 @@ export function HoverPanel({
         maxH = Math.max(160, flip ? above : below);
         top = flip ? Math.max(pad, a.top - gap - Math.min(h, maxH)) : a.bottom + gap;
       }
+      left = Math.max(pad, Math.min(left, vw - w - pad));
       setPos((p) => (p && p.top === top && p.left === left && p.maxH === maxH ? p : { top, left, maxH }));
     };
     place();

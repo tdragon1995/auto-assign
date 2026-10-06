@@ -36,10 +36,10 @@ export function RemovedCartrackClients({refreshKey,onDeleted}:{refreshKey:number
     <p className="mt-2 leading-5">Supabase đang giữ các địa điểm này. Chỉ cho phép xoá sau khi kiểm tra config, lịch, điểm giao, lịch sử và Google Sheet.</p>
     <ul className="mt-2 max-h-64 overflow-y-auto divide-y divide-amber-200">{rows.map(row=>{
       const refs=checks[row.customer_id],blocked=refs&&Object.keys(refs).length>0;
-      return <li key={row.customer_id} className="flex flex-wrap items-center justify-between gap-3 py-2">
-        <div className="min-w-0 flex-1"><p className="font-medium">{row.customer_name}</p><p className="mt-0.5 break-all text-[11px] text-amber-800">{row.customer_id}</p>{refs&&<p className="mt-1">{blocked?`Giữ lại: ${Object.entries(refs).map(([name,count])=>`${name} (${count})`).join(" · ")}`:"Không có tham chiếu; có thể yêu cầu xoá."}</p>}</div>
-        <Button size="sm" variant="outline" disabled={!!busy} onClick={()=>void check(row.customer_id)}><RefreshCw className={`size-3.5 ${busy===row.customer_id?"animate-spin":""}`} />Kiểm tra</Button>
-        {refs&&!blocked&&<Button size="sm" variant="outline" className="text-red-700" disabled={!!busy} onClick={()=>void drop(row)}><Trash2 className="size-3.5" />Xoá khỏi Supabase</Button>}
+      return <li key={row.customer_id} className="flex flex-col items-start gap-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="w-full min-w-0 sm:flex-1"><p className="font-medium">{row.customer_name}</p><p className="mt-0.5 break-all text-[11px] text-amber-800">{row.customer_id}</p>{refs&&<p className="mt-1">{blocked?`Giữ lại: ${Object.entries(refs).map(([name,count])=>`${name} (${count})`).join(" · ")}`:"Không có tham chiếu; có thể yêu cầu xoá."}</p>}</div>
+        <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={!!busy} onClick={()=>void check(row.customer_id)}><RefreshCw className={`size-3.5 ${busy===row.customer_id?"animate-spin":""}`} />Kiểm tra</Button>
+        {refs&&!blocked&&<Button size="sm" variant="outline" className="text-red-700" disabled={!!busy} onClick={()=>void drop(row)}><Trash2 className="size-3.5" />Xoá khỏi Supabase</Button>}</div>
       </li>;
     })}</ul>
   </details>;
