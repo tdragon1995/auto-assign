@@ -4,10 +4,11 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { FilterMultiSelect } from "./filter-multi-select";
 import { isInactiveLocation } from "@/lib/location-status";
+import { staffCode } from "@/lib/display-names";
 
 type Kind = "client" | "driver";
 const clientFields = ["customer_name", "address_line_1", "address_line_2", "contact_number", "email", "postal_code", "client_reference", "latitude", "longitude", "default_dropoff_id", "eta_minutes", "is_active"];
-const driverFields = ["first_name", "last_name", "email", "phone_code", "phone_number", "shift_time_start", "shift_time_end", "start_location_customer_id", "end_location_customer_id", "driver_zalo_id", "phone_number_update", "employee_code", "employee_full_name", "code_name"];
+const driverFields = ["first_name", "last_name", "email", "phone_code", "phone_number", "shift_time_start", "shift_time_end", "start_location_customer_id", "end_location_customer_id", "driver_zalo_id", "phone_number_update", "employee_full_name"];
 const shiftFields = new Set(["shift_time_start", "shift_time_end"]);
 
 export function profilePatch(kind: Kind, initial: Record<string, unknown>, draft: Record<string, string>, keepGps: boolean) {
@@ -94,7 +95,7 @@ export function MasterProfileEditor({ kind, id, initial, clients, linkedLabcente
       </> : <>
         <div className="grid grid-cols-2 gap-3">{input("first_name", "Họ / mã")}{input("last_name", "Tên")}{input("email", "Email")}{input("phone_code", "Mã vùng")}{input("phone_number", "Điện thoại")}{input("phone_number_update", "Điện thoại thay thế")}{input("shift_time_start", "Bắt đầu ca (giờ VN)", "time")}{input("shift_time_end", "Kết thúc ca (giờ VN)", "time")}</div>
         {location("start_location_customer_id", "Điểm xuất phát")}{location("end_location_customer_id", "Điểm kết thúc")}
-        <div className="grid grid-cols-2 gap-3">{input("driver_zalo_id", "Zalo ID")}{input("employee_code", "Mã nhân viên")}{input("employee_full_name", "Tên nhân viên MISA")}{input("code_name", "Mã / tên nội bộ")}</div>
+        <div className="grid grid-cols-2 gap-3">{input("driver_zalo_id", "Zalo ID")}<label className="block min-w-0 space-y-1"><span className="text-xs font-medium text-slate-700">Mã nhân viên</span><input className={fieldClass} readOnly value={staffCode(draft.first_name) || String(initial.employee_code ?? "")} /><span className="block text-[11px] text-slate-500">Lấy từ Họ / mã; tài xế vẫn được phân biệt bằng ID.</span></label>{input("employee_full_name", "Tên nhân viên MISA")}</div>
       </>}
       {error && <p role="alert" className="whitespace-pre-line text-xs text-red-700">{error}</p>}
       <div className="flex justify-end gap-2"><Button type="button" size="sm" variant="outline" onClick={onCancel}>Huỷ</Button><Button type="submit" size="sm">{saving ? "Đang lưu…" : "Lưu và đồng bộ"}</Button></div>

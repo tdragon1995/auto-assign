@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { staffCode } from "@/lib/display-names";
 import type { MasterClient, MasterDriver, MasterRule, RuleInput } from "@/lib/master-store";
 
 type View = "rules" | "clients" | "drivers";
@@ -79,7 +80,7 @@ export function MasterClientInfoPanel() {
       });
     } else if (next.view === "drivers") {
       const d = driverById.get(next.id)!;
-      setDraft(Object.fromEntries(["first_name", "last_name", "email", "phone_code", "phone_number", "shift_time_start", "shift_time_end", "start_location_customer_id", "end_location_customer_id", "driver_zalo_id", "phone_number_update", "employee_code", "employee_full_name", "code_name"].map((k) => [k, String(d.cartrack[k] ?? d.roster?.[k] ?? (d as unknown as Record<string, unknown>)[k] ?? "")])));
+      setDraft(Object.fromEntries(["first_name", "last_name", "email", "phone_code", "phone_number", "shift_time_start", "shift_time_end", "start_location_customer_id", "end_location_customer_id", "driver_zalo_id", "phone_number_update", "employee_full_name"].map((k) => [k, String(d.cartrack[k] ?? d.roster?.[k] ?? (d as unknown as Record<string, unknown>)[k] ?? "")])));
     } else {
       const r = rules.find((r) => String(r.id) === next.id);
       setMode(r?.assignment_mode ?? "fixed");
@@ -198,7 +199,7 @@ export function MasterClientInfoPanel() {
             {textInput("shift_time_start", "Bắt đầu ca")}{textInput("shift_time_end", "Kết thúc ca")}
             {clientSelect("start_location_customer_id", "Điểm xuất phát", true)}{clientSelect("end_location_customer_id", "Điểm kết thúc", true)}
             {textInput("driver_zalo_id", "Zalo ID")}{textInput("phone_number_update", "Điện thoại thay thế")}
-            {textInput("employee_code", "Mã nhân viên")}{textInput("employee_full_name", "Tên nhân viên MISA")}{textInput("code_name", "Mã / tên nội bộ")}
+            <label className="block"><span className={label}>Mã nhân viên</span><input className={field} readOnly value={staffCode(draft.first_name) || String((current as MasterDriver)?.roster?.employee_code ?? "")} /></label>{textInput("employee_full_name", "Tên nhân viên MISA")}
             <label className="block"><span className={label}>Bot token · để trống để giữ token hiện tại</span><input className={field} type="password" value={draft.bot_token ?? ""} onChange={(e) => set("bot_token", e.target.value)} placeholder={(current as MasterDriver)?.has_bot_token ? "Đã lưu" : "Chưa có"} /></label>
           </>}
           {selected.view === "rules" && <>

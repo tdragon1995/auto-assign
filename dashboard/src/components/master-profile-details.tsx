@@ -1,4 +1,5 @@
 import { BadgeCheck, Clock3, Hash, Mail, MapPin, MessageCircle, Navigation, Phone, Route, ShieldCheck, UserRound, Users, Warehouse, type LucideIcon } from "lucide-react";
+import { staffCode } from "@/lib/display-names";
 import { isInactiveLocation } from "@/lib/location-status";
 import type { PickupVolume } from "@/lib/pickup-setup";
 
@@ -62,8 +63,8 @@ export function MasterProfileDetails({ client, driver, clients }: {
         [Phone, "Điện thoại thay thế", text(driver.phone_number_update)], [Mail, "Email", text(c.email)]],
       [[Clock3, "Ca làm việc (giờ VN)", start && end ? `${start}–${end}` : start ? `Từ ${start}` : end ? `Đến ${end}` : ""],
         [Navigation, "Điểm xuất phát", location(c.start_location_customer_id)], [Warehouse, "Điểm kết thúc", location(c.end_location_customer_id)]],
-      [[BadgeCheck, "Mã nhân viên", text(driver.roster.employee_code)], [UserRound, "Tên nhân viên", text(driver.roster.employee_full_name)],
-        [Hash, "Mã nội bộ", text(driver.roster.code_name)], [ShieldCheck, "Trạng thái", active]],
+      [[BadgeCheck, "Mã nhân viên", staffCode(String(c.first_name ?? "")) || text(driver.roster.employee_code)], [UserRound, "Tên nhân viên", text(driver.roster.employee_full_name)],
+        [ShieldCheck, "Trạng thái", active]],
       [[MessageCircle, "Zalo ID", text(driver.driver_zalo_id)], [MessageCircle, "Thông báo Zalo", driver.has_bot_token ? "Đã lưu token" : ""]],
     ];
   }

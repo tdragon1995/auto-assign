@@ -98,6 +98,7 @@ export function stableJson(value: unknown): string {
 export async function syncCartrackProfiles(): Promise<{ clients: number; drivers: number; changedClients: number; changedDrivers: number; newClientCodes: string[] }> {
   const [clients, drivers] = await Promise.all([cartrackList("customers"), cartrackList("drivers")]);
   if (clients.length < 100 || drivers.length < 100) throw new Error("Refusing to replace profiles with an incomplete Cartrack response");
+  if (clients.some(c=>!UUID.test(String(c.customer_id))) || new Set(clients.map(c=>c.customer_id)).size!==clients.length) throw new Error("Invalid or repeated Cartrack customer IDs; deletion review was not updated");
   const [storedClients, storedDrivers] = await Promise.all([
     sbSelectAll<MasterClient>("master_clients", "select=customer_id,cartrack,client_code", "customer_id.asc"),
     sbSelectAll<MasterDriver>("master_drivers", "select=driver_id,cartrack,detail_synced_at", "driver_id.asc"),
@@ -138,6 +139,7 @@ export async function syncCartrackProfiles(): Promise<{ clients: number; drivers
     };
   }));
   await sbUpsert("master_clients", clientRows, "customer_id", 200);
+  await sbRpc("master_mark_cartrack_missing", {seen_ids:clients.map(c=>String(c.customer_id))});
   const driverRows = await Promise.all(changedDrivers.map(async (d) => {
     const id = String(d.delivery_driver_id ?? "");
     const previous = oldDrivers.get(id);

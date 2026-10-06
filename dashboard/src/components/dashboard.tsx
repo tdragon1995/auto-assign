@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, ChevronDown, RefreshCw } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
+import { RemovedCartrackClients } from "./removed-cartrack-clients";
 import { DataSourceIcon } from "./data-source-icon";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -679,6 +680,7 @@ export function Dashboard() {
           the landing tab, Live Log is just the log). */}
       <div className="flex flex-col lg:flex-1 lg:min-h-0 p-2 sm:p-3">
         <div className="min-w-0 flex flex-col gap-1.5 lg:flex-1 lg:min-h-0">
+          <RemovedCartrackClients refreshKey={configRefreshKey} onDeleted={async()=>{await syncSettings();setConfigRefreshKey(key=>key+1);}} />
           {metadataReport && (
             <details className={`rounded-md border px-3 py-2 text-xs shrink-0 ${metadataReport.issues.length || metadataReport.state === "failed" ? "border-amber-200 bg-amber-50 text-amber-900" : "border-slate-200 bg-slate-50 text-slate-700"}`}>
               <summary className="cursor-pointer leading-relaxed focus-visible:outline-2 focus-visible:outline-blue-600">
