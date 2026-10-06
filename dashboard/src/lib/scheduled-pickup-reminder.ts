@@ -11,6 +11,7 @@ export const CHAT_BY_CUSTOMER_ID: Record<string, string> = {
   [PHARMACY_PICKUP_CUSTOMER_ID]: "zgr-1c7aa981bbcf52910bde",
   "f88dfab6-b522-11ee-bb52-506b8d9879b5": "zgr-5f2b2b46331ada44830b",
 };
+export const PICKUP_REMINDER_CLAIM = "fixed-pickup-reminder";
 const MESSAGE = "Dạ, sắp đến giờ lấy mẫu cố định của bên mình rồi ạ. Bên mình hôm nay có mẫu không ạ, cho Diag xin xác nhận với ạ?";
 const SAMPLE_MESSAGE = "Dạ, sắp đến giờ lấy mẫu cố định của bên mình rồi. Diag xin xác nhận hôm nay có mẫu không ạ? Nếu hôm nay không có mẫu, anh/chị vui lòng trả lời tin nhắn này hoặc tag bot với nội dung “không có mẫu” để huỷ chuyến lấy mẫu hôm nay.";
 
@@ -20,7 +21,7 @@ export async function remindScheduledPickup(
   env: Env,
   log: (msg: string, level?: LogLevel) => void,
 ): Promise<void> {
-  if (env !== "prod" || !job.labels?.includes(SCHEDULE_JOB_LABEL)) return;
+  if (env !== "prod" || ![2, 4].includes(job.job_status_id ?? 0) || !job.labels?.includes(SCHEDULE_JOB_LABEL)) return;
   const pickup = job.stops?.find((stop) => stop.stop_type_id === 1);
   const isSampleBot = pickup?.customer_id === SAMPLE_PICKUP_CUSTOMER_ID;
   const chatId = isSampleBot
@@ -46,7 +47,7 @@ export async function remindScheduledPickup(
 
   try {
     // Claim before sending: a stale queue-driver list cannot repeat the reminder.
-    if (!(await claimLateAlert(job.job_id, env, 86400, "fixed-pickup-reminder"))) return;
+    if (!(await claimLateAlert(job.job_id, env, 86400, PICKUP_REMINDER_CLAIM))) return;
     if (!(await sendZaloMessage(token, chatId, isSampleBot ? SAMPLE_MESSAGE : MESSAGE))) {
       log(`Job ${job.job_id} - Fixed-pickup Zalo reminder failed`, "WARN");
     } else {

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sendZaloMessage } from "@/lib/zalo";
-import { cancelScheduledPickup, isNoSampleCommand } from "@/lib/scheduled-pickup-cancel";
+import { getPickupReply } from "@/lib/scheduled-pickup-cancel";
 import { CHAT_BY_CUSTOMER_ID } from "@/lib/scheduled-pickup-reminder";
 import {
   HELP,
@@ -140,9 +140,9 @@ export async function POST(req: NextRequest) {
   // Only configured pickup groups can cancel their own customer's current trip.
   const pickupCustomerId = Object.entries(CHAT_BY_CUSTOMER_ID).find(([, group]) => group === chatId)?.[0];
   if (pickupCustomerId) {
-    if (update.message?.chat?.chat_type === "GROUP" && isNoSampleCommand(text)) {
-      const reply = await cancelScheduledPickup(pickupCustomerId, true);
-      await sendZaloMessage(token, chatId, reply);
+    if (update.message?.chat?.chat_type === "GROUP") {
+      const reply = await getPickupReply(pickupCustomerId, text, chatId);
+      if (reply) await sendZaloMessage(token, chatId, reply);
     }
     return NextResponse.json({ ok: true });
   }

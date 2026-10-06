@@ -129,7 +129,7 @@ try {
   const noBot = await releaseDueProxyJobs("2026-09-29", "prod", log, [job(109)]);
   assert.deepEqual(noBot.releasedIds, [109]);
   assert.equal(sends.length, 4);
-  assert.ok(logs.some((line) => line.includes("Job 109 - Fixed-pickup Zalo reminder skipped: Pharmacy bot token missing")));
+  assert.ok(logs.some((line) => line.includes("Job 109 - Fixed-pickup Zalo reminder skipped: bot token missing")));
 
   process.env.ZALO_KIOT_BOT_TOKEN = "pharmacy-token";
   const preassigned = await releaseDueProxyJobs("2026-09-29", "prod", log, [job(301, { reference_number: "scheduled-301_2026-09-29" })]);

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { cancelScheduledPickup, isNoSampleCommand } from "@/lib/scheduled-pickup-cancel";
+import { getPickupReply } from "@/lib/scheduled-pickup-cancel";
 import { SAMPLE_PICKUP_CUSTOMER_ID } from "@/lib/scheduled-pickup-reminder";
 import { sendZaloMessage } from "@/lib/zalo";
 
@@ -53,11 +53,11 @@ export async function POST(req: NextRequest) {
     if (!sent) console.error("[zalo-sample] chat ID reply failed", { chatId });
     return NextResponse.json({ ok: true });
   }
-  if (chatId !== process.env.ZALO_SAMPLE_CHAT_ID || !isNoSampleCommand(text)) {
+  if (chatId !== process.env.ZALO_SAMPLE_CHAT_ID) {
     return NextResponse.json({ ok: true });
   }
 
-  const reply = await cancelScheduledPickup(SAMPLE_PICKUP_CUSTOMER_ID);
-  await sendZaloMessage(token, chatId, reply);
+  const reply = await getPickupReply(SAMPLE_PICKUP_CUSTOMER_ID, text, chatId);
+  if (reply) await sendZaloMessage(token, chatId, reply);
   return NextResponse.json({ ok: true });
 }

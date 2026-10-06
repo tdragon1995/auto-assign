@@ -1,15 +1,45 @@
 import assert from "node:assert/strict";
 import { NextRequest } from "next/server";
 import { POST } from "../src/app/api/zalo/sample-cancel/route";
-import { cancelableScheduleJobs, isNoSampleCommand } from "../src/lib/scheduled-pickup-cancel";
+import { cancelableScheduleJobs, classifyPickupReply } from "../src/lib/scheduled-pickup-cancel";
 import { SAMPLE_PICKUP_CUSTOMER_ID } from "../src/lib/scheduled-pickup-reminder";
 import type { Job } from "../src/lib/types";
 
-for (const text of ["ko mẫu", "không mẫu", "k mẫu", "ko mẫu nha", "chưa có mẫu nhé", "dạ hôm nay không có mẫu ạ", "@Bot Giao nhận mẫu dạ ko mẫu a", "dạ ko mẫu a", "dạ hôm nay không có mẫu ạ", "@Bot Điều Phối X chưa có mẫu nhé", "không mẫu ạ", "ko mẫu", "ko có", "chưa có", "k có", "ko có mẫu", "chưa có mẫu", "@Bot Giao nhận mẫu ko có", "chua co", "k co @Bot Giao nhận mẫu", "/không có mẫu", "/k co mau", "/k có mẫu", "@Bot Giao nhận mẫu /không có mẫu", "/k co mau @Bot Giao nhận mẫu", "không có mẫu", "hôm nay không có mẫu", "k co mau", "hôm nay k có mẫu", "@Bot Giao nhận mẫu hôm nay không có mẫu", "không có mẫu @Bot Giao nhận mẫu"]) {
-  assert.equal(isNoSampleCommand(text), true, text);
+const cases: Record<"cancel" | "review" | "ignore", string[]> = {
+  cancel: [
+    "ko mẫu", "không mẫu", "k mẫu", "ko mẫu nha", "chưa có mẫu nhé", "dạ hôm nay không có mẫu ạ",
+    "@Bot Giao nhận mẫu dạ ko mẫu a", "@Bot Điều Phối X chưa có mẫu nhé", "không mẫu ạ", "ko có", "k có",
+    "chưa có mẫu", "chưa có", "chưa có hàng", "chưa có bệnh phẩm", "chưa c mẫu", "chx có mẫu", "chưa có mẫu nha",
+    "/không có mẫu", "@Bot Giao nhận mẫu /không có mẫu", "không có mẫu @Bot Giao nhận mẫu",
+    "hôm nay k có mẫu", "không có mẫu nào", "hết mẫu", "không còn mẫu", "không có bệnh phẩm",
+    "không có hàng", "không có gì gửi", "không có gì để gửi", "không cần lấy", "không cần qua lấy",
+    "không cần đến", "không cần ghé", "không cần chạy", "khỏi lấy", "khỏi qua", "khỏi ghé", "không phải qua",
+    "đừng qua", "hôm nay nghỉ", "hôm nay đóng cửa", "nghỉ lễ", "nghỉ phép", "tạm nghỉ", "bên em nghỉ",
+    "phòng khám nghỉ", "hôm nay không lấy", "bỏ lượt hôm nay", "huỷ lịch lấy", "huỷ pick", "0 có mẫu", "o có mẫu",
+    "ko có hàng", "k có hàng", "ko cần lấy", "k cần lấy", "ko cần qua", "k cần qua", "hnay ko co",
+    "hnay k có mẫu", "hnay nghỉ", "hnay ko lấy", "hnay k lay", "nay không có mẫu", "hum nay ko có",
+    "không cần qua lấy giúp em", "không cần lấy dùm", "không còn mẫu, không cần qua lấy", "không có gì",
+    "@Bot Giao nhận mẫu không có mẫu, không cần qua lấy",
+  ],
+  review: [
+    "không có mẫu nhưng chiều có mẫu", "không có hàng nhưng vẫn lấy", "ko mẫu nhưng cần lấy giúp",
+    "không mẫu nhưng nhờ qua", "không có mẫu gấp", "dạ ko mẫu a?", "mai ko mẫu",
+    "hôm nay không có mẫu, ngày mai có mẫu", "@Bot Giao nhận mẫu hôm nay có mẫu nhưng chiều ko mẫu",
+    "@Bot Điều Phối X có mẫu, không cần qua", "dạ ko mẫu nhưng chiều có", "ko có mẫu nhưng lát có",
+    "chưa có mẫu nhưng lát có mẫu", "chưa có mẫu?", "không có mẫu?", "còn mẫu nhưng không cần qua",
+  ],
+  ignore: [
+    "dạ có mẫu ạ", "@Bot Giao nhận mẫu dạ có mẫu a", "có", "có nhe", "có mẫu nhe", "/có mẫu",
+    "hôm nay có mẫu", "còn mẫu", "còn hàng", "mẫu gấp", "nhờ qua lấy", "doanh thu", "hello",
+    "lúc nữa", "lát nữa", "chiều có", "chiều mới có", "để em báo lại", "để em báo", "cho em xác nhận",
+  ],
+};
+for (const [expected, messages] of Object.entries(cases)) {
+  for (const text of messages) assert.equal(classifyPickupReply(text), expected, text);
 }
-for (const text of ["dạ có mẫu ạ", "@Bot Giao nhận mẫu dạ có mẫu a", "@Bot Giao nhận mẫu hôm nay có mẫu nhưng chiều ko mẫu", "@Bot Điều Phối X có mẫu, chưa có chuyến", "dạ ko mẫu nhưng chiều có", "dạ ko mẫu a?", "mai ko mẫu", "có", "có nhe", "có mẫu nhe", "ko có mẫu nhưng lát có", "chưa có?", "ko có gì", "/có mẫu", "hôm nay có mẫu", "có mẫu", "không có mẫu?", "hôm nay không có mẫu nhưng chiều có", "/không có mẫu nữa"]) {
-  assert.equal(isNoSampleCommand(text), false, text);
+for (const date of ["mai", "ngày mai", "mốt", "hôm sau", "ngày kia", "thứ 2", "thứ 3", "thứ 4", "thứ 5", "thứ 6", "thứ 7", "chủ nhật", "cn", "thứ hai", "thứ ba", "thứ tư", "thứ năm", "thứ sáu", "thứ bảy", "tuần sau", "tuần tới", "tháng sau", "tháng tới"]) {
+  assert.equal(classifyPickupReply(`${date} không có mẫu`), "review", date);
+  assert.equal(classifyPickupReply(`hôm nay không có mẫu, ${date} vẫn lấy`), "review", date);
 }
 
 const today = "2026-10-01";
@@ -78,7 +108,11 @@ try {
   }
   assert.equal(jobReads, negatives.length, "Natural replies must enter the cancellation handler");
   assert.equal(sends.length, 4 + negatives.length);
-  assert.ok(sends.slice(4).every((reply) => reply.text === "Hôm nay không có chuyến lấy mẫu cố định nào đang chờ huỷ."));
+  assert.ok(sends.slice(4).every((reply) => reply.text === "Hiện không có chuyến lấy mẫu cố định nào đủ điều kiện huỷ."));
+  const readsBeforeReview = jobReads;
+  for (const text of cases.review) await POST(request({ ok: true, result: message(text) }));
+  assert.equal(jobReads, readsBeforeReview, "mixed and future-date replies must never read or cancel Cartrack jobs");
+  assert.ok(sends.slice(4 + negatives.length).every(reply => reply.chat_id === "test-group" && reply.text.includes("Bot chưa huỷ")));
 } finally {
   globalThis.fetch = originalFetch;
   process.env = originalEnv;

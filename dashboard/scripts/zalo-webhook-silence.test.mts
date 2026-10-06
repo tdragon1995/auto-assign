@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { NextRequest } from "next/server";
-import { isNoSampleCommand, cancelableScheduleJobs } from "../src/lib/scheduled-pickup-cancel";
+import { classifyPickupReply, cancelableScheduleJobs } from "../src/lib/scheduled-pickup-cancel";
 import { CHAT_BY_CUSTOMER_ID, PHARMACY_PICKUP_CUSTOMER_ID, SAMPLE_PICKUP_CUSTOMER_ID } from "../src/lib/scheduled-pickup-reminder";
 import { vnDate } from "../src/lib/time";
 import { PROXY_DRIVER_ID } from "../src/lib/cartrack";
@@ -52,9 +52,9 @@ try {
       } } }),
     },
   );
-  const positives = ["dạ có mẫu ạ", "@Bot Điều Phối X dạ có mẫu a", "@Bot Điều Phối X hôm nay có mẫu nhưng chiều ko mẫu", "có mẫu nhe", "có mẫu", "hôm nay có mẫu", "đã có mẫu", "có mẫu rồi", "chưa có mẫu?", "chưa có mẫu nhưng lát có mẫu"];
+  const positives = ["dạ có mẫu ạ", "@Bot Điều Phối X dạ có mẫu a", "có mẫu nhe", "có mẫu", "hôm nay có mẫu", "đã có mẫu", "có mẫu rồi"];
   for (const text of positives) {
-    assert.equal(isNoSampleCommand(text), false, text);
+    assert.equal(classifyPickupReply(text), "ignore", text);
     for (const chatId of Object.values(CHAT_BY_CUSTOMER_ID)) {
       await POST(webhookRequest(text, { chat: { id: chatId, chat_type: "GROUP" } }));
     }
@@ -65,7 +65,7 @@ try {
   for (const chatId of Object.values(CHAT_BY_CUSTOMER_ID)) {
     const before = sent.length;
     for (const text of negatives) {
-      assert.equal(isNoSampleCommand(text), true, text);
+      assert.equal(classifyPickupReply(text), "cancel", text);
       await POST(webhookRequest(text, { chat: { id: chatId, chat_type: "GROUP" } }));
     }
     assert.ok(sent.slice(before).every((body) => JSON.parse(body).chat_id === chatId));
@@ -73,12 +73,25 @@ try {
   const expectedReads = negatives.length * Object.keys(CHAT_BY_CUSTOMER_ID).length;
   assert.equal(jobReads, expectedReads, "all configured pickup groups must handle negative replies");
   assert.equal(sent.length, 1 + expectedReads);
+  const reviewStart = sent.length;
+  for (const chatId of Object.values(CHAT_BY_CUSTOMER_ID)) {
+    for (const text of ["không có mẫu nhưng chiều có mẫu", "mai không có mẫu", "chưa có mẫu?", "chưa có mẫu nhưng lát có mẫu"]) {
+      assert.equal(classifyPickupReply(text), "review", text);
+      await POST(webhookRequest(text, { chat: { id: chatId, chat_type: "GROUP" } }));
+    }
+    for (const text of ["lát nữa", "để em báo lại", "cho em xác nhận"]) {
+      assert.equal(classifyPickupReply(text), "ignore", text);
+      await POST(webhookRequest(text, { chat: { id: chatId, chat_type: "GROUP" } }));
+    }
+  }
+  assert.equal(jobReads, expectedReads, "review and ignored replies must never enter the cancellation path");
+  assert.ok(sent.slice(reviewStart).every(body => JSON.parse(body).text.includes("Bot chưa huỷ")));
   await POST(webhookRequest("chưa có mẫu", { from: { is_bot: true } }));
   await POST(webhookRequest("chưa có mẫu", { chat: { id: pharmacyChat, chat_type: "PRIVATE" } }));
   await POST(webhookRequest("chưa có mẫu", { chat: { id: "zgr-unmapped", chat_type: "GROUP" } }));
   assert.equal((await POST(webhookRequest("chưa có mẫu", {}, "wrong-secret"))).status, 401);
   assert.equal(jobReads, expectedReads, "bots, unmapped groups, private chats and invalid secrets cannot cancel");
-  assert.equal(isNoSampleCommand("chưa có mẫu"), true, "all clients share the negative phrases");
+  assert.equal(classifyPickupReply("chưa có mẫu"), "cancel", "all clients share the negative phrases");
   const today = "2026-10-05";
   const pickupJob: Job = {
     job_id: 1, job_status_id: 4, scheduled_delivery_ts: today + " 10:30:00", labels: ["📅 Lịch cố định"],
