@@ -246,8 +246,10 @@ async function auditParsedConfig(
   pickupNames: Set<string>,
   nameByCustomer: Map<string, string>,
   today: string,
+  sheetLookups: boolean,
 ): Promise<void> {
   emitConfigWarnings(tabLabel, unresolved);
+  if (!sheetLookups) return;
 
   if (locationsAuditedOn === today) return;
   try {
@@ -287,6 +289,10 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
   // crossed midnight cache Saturday's tab under Sunday's date.
   const today = vnDate(now);
   const sunday = vnIsSunday(now);
+  const sheetLookups = !masterEnabled() || sunday;
+  // Supabase rules use IDs; duplicate Sheet names cannot change their lookup.
+  // Retract old alarms before either cache can return.
+  if (!sheetLookups) noteSheetWarning(A_DUPE_LOC, null);
   const version = masterEnabled() ? 14 : 12;
   // Read once and reuse for the write below, so a hit costs exactly one Redis GET.
   const gen = await readGen();
@@ -329,7 +335,7 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
 
   const tab = sunday ? "sunday" : "mapping";
   try {
-    const rawRows = masterEnabled() && !sunday
+    const rawRows = !sheetLookups
       ? await masterRuleRows("weekday")
       : await fetchSheetRows(SHEET_GID[tab], SHEET_CONTRACT[tab]);
     const inactiveLocationIds = await inactiveMasterClientIds();
@@ -541,7 +547,7 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
       }
     }
 
-    await auditParsedConfig(SHEET_CONTRACT[tab].label, mappings, unresolved, pickupNames, nameByCustomer, today);
+    await auditParsedConfig(SHEET_CONTRACT[tab].label, mappings, unresolved, pickupNames, nameByCustomer, today, sheetLookups);
     const parsedAt = vnTimestamp();
     cachedConfig = { mappings, inactiveLocationIds, unfinished: isWeekday ? stillNeeded : [], gaps: isWeekday ? gaps : [], overlaps, branchRules, parsedAt };
     cachedDay = today;
