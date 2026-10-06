@@ -1,4 +1,5 @@
 import { BASE_URL, getHeaders } from "./cartrack";
+import { placeName } from "./display-names";
 import { getReceptionistToken } from "./labcenter";
 import { JOB_STATUS } from "./job-filters";
 import { addDays, vnDate, vnTimestamp } from "./time";
@@ -40,6 +41,7 @@ export type BatchLookupResult = {
   phases: { label: string; minutes: number; breach?: boolean }[];
   branch_batches: { code: string; branch: string; status?: string; total_samples?: number;
     created: string | null; transferred: string | null; completed: string | null; ours: boolean; cartrack_job?: string }[];
+  related_routes: LookupJobRow[];
   driver_days: { driver: string; days: string[]; jobs: LookupJobRow[] }[];
   summary: null | {
     order: { vid: string; branch?: string; status?: string; created: string | null; tests: number; route?: string; expected_transport?: string };
@@ -104,6 +106,19 @@ function jobRow(j: LookupJob, ours: Set<number>, codes: Set<string>): LookupJobR
     stops: j.stops.map(s => ({ place: (s.customer_name || "Chưa có tên điểm dừng"), type: STOP_TYPE[s.stop_type_id ?? 0] ?? "Stop", started: formatted(s.activity_started_ts), arrived: formatted(s.activity_arrived_ts), completed: formatted(s.activity_completed_ts) })),
     batches: batchCodes.map(code => ({ code, branch: `D${code.slice(1, 4)}`, created: vnTimestamp(new Date(batchTimestamp(code)!)), ours: codes.has(code) })),
   };
+}
+
+// Match recorded branch-to-branch work, including return trips, rather than branch mentions in job references.
+export function associatedRouteJobs(jobs: LookupJobRow[], legs: LookupJobRow[], days: string[]): LookupJobRow[] {
+  const pairs = (row: LookupJobRow) => {
+    const branches = row.stops.map(stop => placeName(stop.place)).filter(name => /^D\d{3}$/.test(name));
+    return branches.slice(1).flatMap((to, index) => to === branches[index] ? [] : [[branches[index], to].sort().join("|")]);
+  };
+  const routes = new Set(legs.flatMap(pairs));
+  const daySet = new Set(days);
+  return jobs.filter(row => !row.ours && !!row.driver_id && row.status !== "Đã huỷ" && row.kind !== "clock_in" && row.kind !== "clock_out"
+    && pairs(row).some(pair => routes.has(pair))
+    && row.stops.some(stop => [stop.started, stop.arrived, stop.completed].some(at => !!at && daySet.has(at.slice(0, 10)))));
 }
 
 // ponytail: cache 12 days per server instance; use Redis only if cross-instance reuse matters.
@@ -208,7 +223,7 @@ function durations(timeline: LookupEvent[]): BatchLookupResult["phases"] {
 }
 
 export async function lookupBatch(vid: string, emit: Emit = () => {}, signal = AbortSignal.timeout(240_000)): Promise<BatchLookupResult> {
-  const out: BatchLookupResult = { vid, summary: null, timeline: [], phases: [], driver_days: [], branch_batches: [], steps: [] };
+  const out: BatchLookupResult = { vid, summary: null, timeline: [], phases: [], related_routes: [], driver_days: [], branch_batches: [], steps: [] };
   const log = (step: string, msg: string) => { const row = { step, msg }; out.steps.push(row); emit("step", row); };
   const doing = (msg: string) => emit("doing", { msg });
   try {
@@ -358,8 +373,10 @@ export async function lookupBatch(vid: string, emit: Emit = () => {}, signal = A
         }
       }
     } catch { log("warning", "Driver context is incomplete; scheduled-day jobs could not all be retrieved."); }
-    for (const did of new Set(batchJobs.map(j => j.delivery_driver_id).filter((s): s is string => !!s))) {
-      const mine = batchJobs.filter(j => j.delivery_driver_id === did);
+    out.related_routes = associatedRouteJobs([...jobs.values()].map(j => jobRow(j, ours, codes)), out.summary.jobs, [...contextDays]);
+    const contextRoutes = [...batchJobs, ...out.related_routes.map(row => jobs.get(row.job_id)!)];
+    for (const did of new Set(contextRoutes.map(j => j.delivery_driver_id).filter((s): s is string => !!s))) {
+      const mine = contextRoutes.filter(j => j.delivery_driver_id === did);
       const driverDays = [...new Set(mine.flatMap(j => [formatted(j.assigned_ts)?.slice(0, 10), ...jobSpan(j).map(t => t.slice(0, 10))]).filter((d): d is string => !!d))].sort();
       out.driver_days.push({ driver: driverName(mine[0]), days: driverDays,
         jobs: [...jobs.values()].filter(j => j.delivery_driver_id === did).sort((a, b) => jobSpan(a)[0].localeCompare(jobSpan(b)[0])).map(j => jobRow(j, ours, codes)) });

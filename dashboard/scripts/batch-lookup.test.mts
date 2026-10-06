@@ -1,6 +1,6 @@
 // Run: npx tsx scripts/batch-lookup.test.mts
 import assert from "node:assert/strict";
-import { lookupBatch, batchTimestamp, lookupTimestamp, buildLookupTimeline } from "../src/lib/batch-lookup";
+import { lookupBatch, batchTimestamp, lookupTimestamp, buildLookupTimeline, associatedRouteJobs } from "../src/lib/batch-lookup";
 import { NextRequest } from "next/server";
 import { GET } from "../src/app/api/admin/batch-lookup/route";
 import { driverArrivalContext, isKeyLookupEvent } from "../src/components/batch-lookup-panel";
@@ -57,7 +57,7 @@ globalThis.fetch = async (input, init) => {
     }
     if (day === "2026-02-08") return reply({ data: [job(3, day, "BRA - D019", "BRA - D001", first, "driver2")], meta: { last_page: 1 } });
     if (day !== "2026-02-07") return reply({ data: [], meta: { last_page: 1 } });
-    return reply({ data: url.searchParams.get("page") === "1" ? [job(1, day, "BRA - D017", "BRA - D019", first)] : [job(2, day, "BRA - D017", "BRA - D019", second), { ...job(4, day, "BRA - D017", "BRA - D017"), reference_number: "Chấm Công - Vào" }, job(7, day, "46512272 - ThAn - 22/12 - BV COLUMBIA ASIA BD", "BRA - D017")], meta: { last_page: 2 } });
+    return reply({ data: url.searchParams.get("page") === "1" ? [job(1, day, "BRA - D017", "BRA - D019", first)] : [job(2, day, "BRA - D017", "BRA - D019", second), { ...job(4, day, "BRA - D017", "BRA - D017"), reference_number: "Chấm Công - Vào" }, job(7, day, "46512272 - ThAn - 22/12 - BV COLUMBIA ASIA BD", "BRA - D017"), job(8, day, "BRA - D019", "BRA - D017", undefined, "associated"), job(9, day, "Clinic", "BRA - D017", undefined, "associated")], meta: { last_page: 2 } });
   }
   throw new Error(`Unexpected network call: ${url.pathname}`);
 };
@@ -95,7 +95,10 @@ try {
   assert.deepEqual(result.summary?.batches.map(b => b.code), [first, second]);
   assert.deepEqual(result.summary?.unbatched_samples, []);
   assert.deepEqual(result.summary?.jobs.map(j => j.job_id), [1, 2, 3], "must follow the overnight relay to HQ");
-  assert.equal(result.driver_days.length, 2);
+  assert.equal(result.driver_days.length, 3);
+  assert(result.related_routes.some(j => j.job_id === 8), "include reverse branch routes from other drivers");
+  assert(result.driver_days.find(d => d.driver === "associated Fixture")?.jobs.some(j => j.job_id === 9), "retain that driver's other stops for the collection-window route");
+  assert(!result.timeline.some(e => e.job_id === 8 || e.job_id === 9), "associated work is context, not this VID's transport timeline");
   assert(result.driver_days[0].jobs.some(j => j.kind === "clock_in"));
   const hospital = result.driver_days[0].jobs.find(j => j.job_id === 7)!;
   assert.equal(hospital.kind, "other", "numeric customer codes do not imply home visits");
@@ -111,6 +114,10 @@ try {
   assert(keyEvents.some(event => event.kind === "due"));
   assert(keyEvents.some(event => event.label.startsWith("Sample received")));
   const leg = result.summary!.jobs[0];
+  const candidate = { ...leg, job_id: 9200, driver_id: "other", driver: "Other Driver", ours: false };
+  assert.deepEqual(associatedRouteJobs([candidate, { ...candidate, job_id: 9201, stops: candidate.stops.map(stop => ({ ...stop, place: stop.place.replace("D017", "D0179") })) }, { ...candidate, job_id: 9202, status: "Đã huỷ" }], [leg], ["2026-02-07"]).map(j => j.job_id), [9200], "match exact branch pairs and exclude cancelled routes");
+  assert.deepEqual(associatedRouteJobs([candidate], [leg], ["2026-02-08"]), [], "a branch route must have recorded activity on the journey day");
+  assert.deepEqual(driverArrivalContext(leg, [candidate], 1, "2026-02-07 14:00:00", candidate).route.map(s => s.place), ["BRA - D017"], "show another driver's actual stops without adding the carrier's stops");
   assert.equal(leg.assigned, "2026-02-07 14:05:00");
   assert(result.timeline.filter(e => e.source === "Cartrack").every(e => e.job_id));
   assert(requests.some(u => u.searchParams.has("filter[scheduled_delivery_ts_from]")), "driver context includes earlier-created scheduled jobs");
