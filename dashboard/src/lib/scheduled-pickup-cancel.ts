@@ -4,8 +4,11 @@ import { vnDate } from "./time";
 import type { Job } from "./types";
 
 export function isNoSampleCommand(text: string): boolean {
-  const plain = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
-  return /^(?:@.+?\s+)?\/?(?:hom\s+nay\s+)?(?:khong|ko|k|chua)\s+co(?:\s+mau)?(?:\s+@.+)?$/.test(plain);
+  const plain = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase()
+    // Stop at the first command word; a mention must not swallow a positive clause.
+    .replace(/^@.+?\s+(?=\/?(?:da|hom|khong|ko|k|chua|co)\b)/, "")
+    .replace(/\s+@.+$/, "");
+  return /^\/?(?:da\s+)?(?:hom\s+nay\s+)?(?:khong|ko|k|chua)\s+(?:co(?:\s+mau)?|mau)(?:\s+(?:a|ah|nhe|nha))*[.!]?$/.test(plain);
 }
 
 export function cancelableScheduleJobs(jobs: Job[], today: string, customerId: string, currentOnly = false): Job[] {

@@ -52,7 +52,7 @@ try {
       } } }),
     },
   );
-  const positives = ["có mẫu nhe", "có mẫu", "hôm nay có mẫu", "đã có mẫu", "có mẫu rồi", "chưa có mẫu?", "chưa có mẫu nhưng lát có mẫu"];
+  const positives = ["dạ có mẫu ạ", "@Bot Điều Phối X dạ có mẫu a", "@Bot Điều Phối X hôm nay có mẫu nhưng chiều ko mẫu", "có mẫu nhe", "có mẫu", "hôm nay có mẫu", "đã có mẫu", "có mẫu rồi", "chưa có mẫu?", "chưa có mẫu nhưng lát có mẫu"];
   for (const text of positives) {
     assert.equal(isNoSampleCommand(text), false, text);
     for (const chatId of Object.values(CHAT_BY_CUSTOMER_ID)) {
@@ -61,7 +61,7 @@ try {
   }
   assert.equal(jobReads, 0, "positive/ambiguous replies must never enter cancellation");
   assert.equal(sent.length, 1, "positive replies in the pickup group stay silent");
-  const negatives = ["chưa có mẫu", "không có mẫu", "k có mẫu", "chua co mau", "hôm nay chưa có mẫu", "hôm nay k có mẫu", "ko có", "chưa có", "k có", "@Bot Điều Phối X ko có"];
+  const negatives = ["ko mẫu", "không mẫu", "k mẫu", "ko mẫu nha", "chưa có mẫu nhé", "dạ hôm nay không có mẫu ạ", "@Bot Điều Phối X dạ ko mẫu a", "dạ ko mẫu a", "chưa có mẫu", "không có mẫu", "k có mẫu", "chua co mau", "hôm nay chưa có mẫu", "hôm nay k có mẫu", "ko có", "chưa có", "k có", "@Bot Điều Phối X ko có"];
   for (const chatId of Object.values(CHAT_BY_CUSTOMER_ID)) {
     const before = sent.length;
     for (const text of negatives) {

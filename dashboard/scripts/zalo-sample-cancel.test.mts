@@ -5,10 +5,10 @@ import { cancelableScheduleJobs, isNoSampleCommand } from "../src/lib/scheduled-
 import { SAMPLE_PICKUP_CUSTOMER_ID } from "../src/lib/scheduled-pickup-reminder";
 import type { Job } from "../src/lib/types";
 
-for (const text of ["ko có", "chưa có", "k có", "ko có mẫu", "chưa có mẫu", "@Bot Giao nhận mẫu ko có", "chua co", "k co @Bot Giao nhận mẫu", "/không có mẫu", "/k co mau", "/k có mẫu", "@Bot Giao nhận mẫu /không có mẫu", "/k co mau @Bot Giao nhận mẫu", "không có mẫu", "hôm nay không có mẫu", "k co mau", "hôm nay k có mẫu", "@Bot Giao nhận mẫu hôm nay không có mẫu", "không có mẫu @Bot Giao nhận mẫu"]) {
+for (const text of ["ko mẫu", "không mẫu", "k mẫu", "ko mẫu nha", "chưa có mẫu nhé", "dạ hôm nay không có mẫu ạ", "@Bot Giao nhận mẫu dạ ko mẫu a", "dạ ko mẫu a", "dạ hôm nay không có mẫu ạ", "@Bot Điều Phối X chưa có mẫu nhé", "không mẫu ạ", "ko mẫu", "ko có", "chưa có", "k có", "ko có mẫu", "chưa có mẫu", "@Bot Giao nhận mẫu ko có", "chua co", "k co @Bot Giao nhận mẫu", "/không có mẫu", "/k co mau", "/k có mẫu", "@Bot Giao nhận mẫu /không có mẫu", "/k co mau @Bot Giao nhận mẫu", "không có mẫu", "hôm nay không có mẫu", "k co mau", "hôm nay k có mẫu", "@Bot Giao nhận mẫu hôm nay không có mẫu", "không có mẫu @Bot Giao nhận mẫu"]) {
   assert.equal(isNoSampleCommand(text), true, text);
 }
-for (const text of ["có", "có nhe", "có mẫu nhe", "ko có mẫu nhưng lát có", "chưa có?", "ko có gì", "/có mẫu", "hôm nay có mẫu", "có mẫu", "không có mẫu?", "hôm nay không có mẫu nhưng chiều có", "/không có mẫu nữa"]) {
+for (const text of ["dạ có mẫu ạ", "@Bot Giao nhận mẫu dạ có mẫu a", "@Bot Giao nhận mẫu hôm nay có mẫu nhưng chiều ko mẫu", "@Bot Điều Phối X có mẫu, chưa có chuyến", "dạ ko mẫu nhưng chiều có", "dạ ko mẫu a?", "mai ko mẫu", "có", "có nhe", "có mẫu nhe", "ko có mẫu nhưng lát có", "chưa có?", "ko có gì", "/có mẫu", "hôm nay có mẫu", "có mẫu", "không có mẫu?", "hôm nay không có mẫu nhưng chiều có", "/không có mẫu nữa"]) {
   assert.equal(isNoSampleCommand(text), false, text);
 }
 
@@ -72,7 +72,7 @@ try {
   await POST(request(message("hôm nay không có mẫu")));
   assert.equal(jobReads, 0, "Positive replies and other groups cannot trigger a cancellation lookup");
   process.env.ZALO_SAMPLE_CHAT_ID = "test-group";
-  const negatives = ["không có mẫu", "hôm nay không có mẫu", "hôm nay k có mẫu", "ko có", "chưa có", "k có", "ko có mẫu", "chưa có mẫu", "@Bot Giao nhận mẫu ko có"];
+  const negatives = ["ko mẫu", "không mẫu", "k mẫu", "ko mẫu nha", "chưa có mẫu nhé", "dạ hôm nay không có mẫu ạ", "@Bot Giao nhận mẫu dạ ko mẫu a", "dạ ko mẫu a", "không có mẫu", "hôm nay không có mẫu", "hôm nay k có mẫu", "ko có", "chưa có", "k có", "ko có mẫu", "chưa có mẫu", "@Bot Giao nhận mẫu ko có"];
   for (const text of negatives) {
     await POST(request({ ok: true, result: message(text) }));
   }
