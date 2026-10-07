@@ -1,5 +1,5 @@
-import { masterRules,ruleChange,writeMasterRules,uniqueNameId,type MasterRule,type AssignmentMode } from "./master-store";
-import { sbSelectAll } from "./supabase-rest";
+import { masterRules,ruleChange,writeMasterRules,uniqueNameId,assertMasterWritable,type MasterRule,type AssignmentMode } from "./master-store";
+import { sbSelectAll,sbRpc } from "./supabase-rest";
 import { findClash, type Line } from "./config-shift";
 import { parseConfigRowSnapshot } from "./config-row-match";
 import type { ConfigRowSnapshot } from "./config-row-match";
@@ -87,8 +87,13 @@ export async function replaceMasterConfig(opts:{from:string;to:string;from_drive
       replaced.push({row:old.source_row,pickup:target.expectPickup,before,after:replaceDriverInCell(before,opts.from,opts.to)??opts.to});
     } catch(e) {skipped.push({row:target.row,pickup:target.expectPickup,reason:String(e)});}
   }
-  if(changes.length) await writeMasterRules(changes,ctx.rules);
-  return {replaced,skipped};
+  let scheduled_replaced=0;
+  if(changes.length) {
+    assertMasterWritable();
+    const saved=await sbRpc<{scheduled_replaced:number}>("master_replace_config_driver",{changes,from_driver:from,to_driver:to});
+    scheduled_replaced=saved.scheduled_replaced;
+  }
+  return {replaced,skipped,scheduled_replaced};
 }
 
 /** One transaction for a reviewed schedule, including copies, additions and removals. */

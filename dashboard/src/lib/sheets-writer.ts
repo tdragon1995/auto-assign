@@ -2406,6 +2406,7 @@ export async function bulkDeleteConfigRows(opts: { targets: ConfigTarget[]; conf
 }
 
 export interface DriverReplaceResult {
+  scheduled_replaced?: number;
   replaced: { row: number; pickup: string; before: string; after: string }[];
   skipped: { row: number; pickup: string; reason: string }[];
 }

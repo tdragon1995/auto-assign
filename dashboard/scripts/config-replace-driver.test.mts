@@ -26,6 +26,10 @@ globalThis.fetch=async (input,init)=>{
   if(url.includes("fleetapi-vn.cartrack.com/rest/delivery/drivers?")) return Response.json({data:Array.from({length:100},(_,i)=>({
     delivery_driver_id:i===0?toId:peerId,first_name:"P - C - PTBU",last_name:"Nguyễn Trần Toán",is_active:i===0?cartrackActive:true,
   }))});
+  if(url.includes("rpc/master_replace_config_driver")) {
+    const data=JSON.parse(String(init?.body));assert.equal(data.from_driver,fromId);assert.equal(data.to_driver,toId);writes.push(data);
+    return Response.json({rules:[{id:1,source_row:2,revision:4}],scheduled_replaced:3});
+  }
   if(url.includes("rpc/master_write_rules")) { writes.push(JSON.parse(String(init?.body))); return Response.json([{id:1,source_row:2,revision:4}]); }
   assert.equal(init?.method,"GET","The test must never write Cartrack or Sheets");
   if(url.includes("master_rules_read")) return Response.json([rule]);
@@ -42,7 +46,9 @@ const request=(patch:Record<string,unknown>={})=>new NextRequest("https://dashbo
 try {
   const response=await POST(request());
   assert.equal(response.status,200);
-  assert.equal((await response.json()).replaced.length,1,"Renamed / prefixed / duplicate names must not block a selected ID");
+  const result=await response.json();
+  assert.equal(result.replaced.length,1,"Renamed / prefixed / duplicate names must not block a selected ID");
+  assert.equal(result.scheduled_replaced,3,"Report the Schedule Setup rows from the same replacement transaction");
   let saved=writes.at(-1)!.changes[0];
   assert.deepEqual(saved.driver_ids,[toId,peerId]);
   assert.equal(saved.assignment_mode,"smart");

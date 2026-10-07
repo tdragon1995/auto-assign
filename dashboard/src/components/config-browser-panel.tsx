@@ -428,6 +428,17 @@ function ReplaceDriverPanel({
   const [fromId, setFromId] = useState("");
   const [toId, setToId] = useState("");
   const [excluded, setExcluded] = useState<ReadonlySet<number>>(new Set());
+  const [scheduleCount,setScheduleCount]=useState<number|null>(null);
+  const [scheduleError,setScheduleError]=useState("");
+  useEffect(()=>{
+    let alive=true;setScheduleCount(null);setScheduleError("");
+    if(configDay!=="weekday"||!fromId)return;
+    void fetch("/api/schedule-job/list",{cache:"no-store"}).then(async res=>{
+      const data=await res.json();if(!res.ok||data.source!=="supabase")throw Error("Không đọc được lịch cố định — tải lại để thử lại");
+      if(alive)setScheduleCount(data.rows.filter((r:{driver_id:string})=>r.driver_id===fromId).length);
+    }).catch(e=>{if(alive)setScheduleError(e instanceof Error?e.message:String(e));});
+    return ()=>{alive=false;};
+  },[configDay,fromId]);
   const [busy, setBusy] = useState(false);
 
   const fromDrivers = useMemo<ConfigDriver[]>(
@@ -471,9 +482,10 @@ function ReplaceDriverPanel({
       });
       const done = (j.replaced ?? []).length as number;
       const skipped = (j.skipped ?? []) as { row: number; pickup: string; reason: string }[];
-      if (skipped.length === 0) toast.success(`Đã thay tài xế trên ${done} dòng`);
+      const scheduled=Number(j.scheduled_replaced??0);
+      if (skipped.length === 0) toast.success(`Đã thay tài xế trên ${done} dòng config và ${scheduled} lịch cố định`);
       else if (done > 0) {
-        toast.warning(`Đã thay ${done} dòng — bỏ qua ${skipped.length}. Dòng ${skipped[0].row} (${skipped[0].pickup}): ${skipped[0].reason}`);
+        toast.warning(`Đã thay ${done} dòng config và ${scheduled} lịch cố định — bỏ qua ${skipped.length}. Dòng ${skipped[0].row} (${skipped[0].pickup}): ${skipped[0].reason}`);
       } else {
         toast.error(`Không thay được dòng nào. Dòng ${skipped[0]?.row} (${skipped[0]?.pickup}): ${skipped[0]?.reason}`);
       }
@@ -533,6 +545,9 @@ function ReplaceDriverPanel({
               </span>
             )}
           </p>
+          {configDay==="weekday"&&<p className={`text-[11px] ${scheduleError?"text-red-700":"text-indigo-900"}`} role={scheduleError?"alert":undefined}>
+            {scheduleError||(scheduleCount===null?"Đang kiểm tra lịch cố định…":`Bao gồm tất cả ${scheduleCount} lịch cố định đang dùng tài xế này. Giữ nguyên tuyến, giờ và ngày chạy.`)}
+          </p>}
           {writable.length > 0 && (
             <ul className="max-h-60 overflow-y-auto rounded border border-indigo-200 bg-white text-xs">
               {writable.map((r) => {
@@ -581,7 +596,7 @@ function ReplaceDriverPanel({
           size="sm"
           className="h-6 px-2 text-[11px] bg-indigo-600 hover:bg-indigo-700"
           onClick={() => void apply()}
-          disabled={busy || !from || !to || picked.length === 0}
+          disabled={busy || !from || !to || picked.length === 0 || (configDay==="weekday"&&(scheduleCount===null||!!scheduleError))}
         >
           {busy ? "Đang ghi…" : `Thay ${picked.length} dòng`}
         </Button>

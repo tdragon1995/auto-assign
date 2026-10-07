@@ -54,3 +54,8 @@ future dates, cutoff rejection and stale edits on the actual database.
 Before rollout, GitHub Actions must have SUPABASE_URL and
 SUPABASE_SERVICE_ROLE_KEY for the same production project. The MISA reader and
 sink fail explicitly if these are absent; they never fall back to Sheet.
+
+Bulk driver replacement also updates every active Schedule Setup definition using
+the old driver, in the same transaction as the selected Config rows. The preview
+shows the number of schedules. Route, times, weekdays and inactive definitions
+are preserved; existing assigned jobs and historical payroll rows are not rewritten.
