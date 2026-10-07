@@ -832,7 +832,7 @@ export function Dashboard() {
                     when the to-do list is open, at the cost of an outer
                     scroll only then. */}
                 <PickupSetupPanel />
-                <ConfigTodoPanel
+                <ConfigBrowserPanel drivers={drivers} refreshKey={configRefreshKey} beforeTable={renderProfile => <ConfigTodoPanel
                   gaps={visibleGaps}
                   overlaps={visibleOverlaps}
                   unfinished={visibleUnfinished}
@@ -840,10 +840,8 @@ export function Dashboard() {
                   drivers={drivers}
                   parsedAt={parsedAt}
                   onSaved={(key?: string) => { if (key) markDone(key); setConfigRefreshKey(value => value + 1); void handleRefresh(); }}
-                />
-                <div className="min-h-[28rem] flex-1">
-                  <ConfigBrowserPanel drivers={drivers} refreshKey={configRefreshKey} />
-                </div>
+                  renderProfile={renderProfile}
+                />} />
               </div>
             ) : rightTab === "live" ? (
               <div className="h-[72vh] lg:h-full">

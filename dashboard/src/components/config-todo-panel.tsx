@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronRight, ClipboardList, Copy, MapPin, Search, X } from "lucide-react";
 import { toast } from "sonner";
@@ -12,7 +12,7 @@ import { DRIVER_SEP, resolveDriverCell, splitDriverNames } from "@/lib/driver-ce
 import { displayDriverCell } from "@/lib/driver-label";
 import { coverageLostWithout, overlapKey } from "@/lib/config-shift";
 import type { ConfigRowSnapshot } from "@/lib/config-row-match";
-import { searchConfigRows } from "./config-browser-panel";
+import { searchConfigRows, type ConfigProfileRenderer } from "./config-browser-panel";
 import type { ConfigDay } from "@/lib/config-day";
 import type { ConfigRowView } from "@/app/api/config/rows/route";
 import { DriverCombobox } from "./driver-combobox";
@@ -99,6 +99,12 @@ export function TimeSelect({
 /** What the panel header discloses, so aria-expanded actually points at it. */
 const LIST_ID = "config-todo-list";
 
+function driverProfiles(value: string, renderProfile?: ConfigProfileRenderer) {
+  return splitDriverNames(value).map((name, i) => <Fragment key={name}>
+    {i > 0 && DRIVER_SEP}{renderProfile?.("driver", undefined, name, displayDriverCell(name)) ?? displayDriverCell(name)}
+  </Fragment>);
+}
+
 
 /**
  * Two fixed rules on one branch that are both on duty at the same minute.
@@ -115,12 +121,13 @@ const LIST_ID = "config-todo-list";
  * offered and the full editor takes over, because that shows the whole day.
  */
 function OverlapRow({
-  o, rules, drivers, onSaved,
+  o, rules, drivers, onSaved, renderProfile,
 }: {
   o: ShiftOverlap;
   rules: BranchRule[];
   drivers: ConfigDriver[];
   onSaved: (key?: string) => void;
+  renderProfile?: ConfigProfileRenderer;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -171,7 +178,7 @@ function OverlapRow({
           </span>
         )}
         <span className="min-w-0 flex-1 truncate text-xs font-medium text-slate-800" title={o.pickup_name}>
-          {o.pickup_name}
+          {renderProfile?.("client", o.customer_id, o.pickup_name) ?? o.pickup_name}
         </span>
         {!open && (
           <Button
@@ -186,10 +193,10 @@ function OverlapRow({
       <div className="mt-0.5 text-[11px] text-slate-600">
         {/* Both rules named with their hours, so the supervisor can identify the
             exact rows even when each smart rule contains several candidates. */}
-        {displayDriverCell(o.drivers[0])}
+        {driverProfiles(o.drivers[0], renderProfile)}
         {o.rules && <span className="tabular-nums"> {o.rules[0].window}</span>}
         {" · "}
-        {displayDriverCell(o.drivers[1])}
+        {driverProfiles(o.drivers[1], renderProfile)}
         {o.rules && <span className="tabular-nums"> {o.rules[1].window}</span>}
       </div>
       {/* Removing a row, two clicks. Offered per side and never as one button:
@@ -998,12 +1005,13 @@ export function BranchEditor({
 
 /** A branch with a line but no driver on it. */
 function UnfinishedRow({
-  rows, rules, drivers, onSaved,
+  rows, rules, drivers, onSaved, renderProfile,
 }: {
   rows: UnfinishedConfigRow[];
   rules: BranchRule[];
   drivers: ConfigDriver[];
   onSaved: (key?: string) => void;
+  renderProfile?: ConfigProfileRenderer;
 }) {
   const u = rows[0];
   const [open, setOpen] = useState(false);
@@ -1018,8 +1026,8 @@ function UnfinishedRow({
           className="order-first min-w-0 basis-full break-words text-sm font-medium text-slate-800 md:order-none md:basis-auto md:flex-1 md:truncate"
           title={`${u.pickup_name}${u.dropoff_name ? ` → ${u.dropoff_name}` : ""}`}
         >
-          {u.pickup_name}
-          {u.dropoff_name && <span className="text-slate-500"> → {u.dropoff_name}</span>}
+          {renderProfile?.("client", u.customer_id, u.pickup_name) ?? u.pickup_name}
+          {u.dropoff_name && <span className="text-slate-500"> → {renderProfile?.("client", undefined, u.dropoff_name) ?? u.dropoff_name}</span>}
         </span>
         {!open && (
           <Button
@@ -1072,12 +1080,13 @@ const edgeOf = (window: string, edge: "start" | "end"): string => {
  * an hour, or add a line, in the context of the whole day.
  */
 function GapRow({
-  g, rules, drivers, onSaved,
+  g, rules, drivers, onSaved, renderProfile,
 }: {
   g: CoverageGap;
   rules: BranchRule[];
   drivers: ConfigDriver[];
   onSaved: (key?: string) => void;
+  renderProfile?: ConfigProfileRenderer;
 }) {
   const [open, setOpen] = useState(false);
   const [dropping, setDropping] = useState(false);
@@ -1131,10 +1140,10 @@ function GapRow({
           className="order-first min-w-0 basis-full break-words text-sm font-medium text-slate-800 md:order-none md:basis-auto md:flex-1 md:truncate"
           title={`${g.pickup_name}${g.dropoff_name ? ` → ${g.dropoff_name}` : ""}`}
         >
-          {g.pickup_name}
+          {renderProfile?.("client", g.customer_id, g.pickup_name) ?? g.pickup_name}
           {/* Grey, exactly as on an unfinished row: the branch is what the fix is
               about, the destination only says which trip fell in the hole. */}
-          {g.dropoff_name && <span className="text-slate-500"> → {g.dropoff_name}</span>}
+          {g.dropoff_name && <span className="text-slate-500"> → {renderProfile?.("client", undefined, g.dropoff_name) ?? g.dropoff_name}</span>}
         </span>
         {!open && (
           <>
@@ -1205,6 +1214,7 @@ export function ConfigTodoPanel({
   drivers,
   parsedAt,
   onSaved,
+  renderProfile,
 }: {
   gaps: CoverageGap[];
   unfinished: UnfinishedConfigRow[];
@@ -1215,6 +1225,7 @@ export function ConfigTodoPanel({
   /** When the sheet behind both lists was last read. */
   parsedAt: string;
   onSaved: (key?: string) => void;
+  renderProfile?: ConfigProfileRenderer;
 }) {
   const [open, setOpen] = useState(false);
   const groupedUnfinished = useMemo(() => {
@@ -1309,6 +1320,7 @@ export function ConfigTodoPanel({
                       rules={branchRules[o.customer_id] ?? []}
                       drivers={drivers}
                       onSaved={onSaved}
+                      renderProfile={renderProfile}
                     />
                   ))}
                 </div>
@@ -1320,7 +1332,7 @@ export function ConfigTodoPanel({
                 <div className="max-h-[38vh] overflow-y-auto">
                   <div className={listBox}>
                     {groupedUnfinished.map((rows) => (
-                      <UnfinishedRow key={`${rows[0].customer_id}|${rows[0].dropoff_name}`} rows={rows} rules={branchRules[rows[0].customer_id] ?? []} drivers={drivers} onSaved={onSaved} />
+                      <UnfinishedRow key={`${rows[0].customer_id}|${rows[0].dropoff_name}`} rows={rows} rules={branchRules[rows[0].customer_id] ?? []} drivers={drivers} onSaved={onSaved} renderProfile={renderProfile} />
                     ))}
                     {groupedUnfinished.length === 0 && <p className="px-2 py-3 text-xs text-slate-500">Không có config thiếu tài xế.</p>}
                   </div>
@@ -1331,7 +1343,7 @@ export function ConfigTodoPanel({
                 <div className="max-h-[38vh] overflow-y-auto">
                   <div className={listBox}>
                     {sortedGaps.map((g) => (
-                      <GapRow key={`${g.customer_id}-${g.at}`} g={g} rules={branchRules[g.customer_id] ?? []} drivers={drivers} onSaved={onSaved} />
+                      <GapRow key={`${g.customer_id}-${g.at}`} g={g} rules={branchRules[g.customer_id] ?? []} drivers={drivers} onSaved={onSaved} renderProfile={renderProfile} />
                     ))}
                     {gaps.length === 0 && <p className="px-2 py-3 text-xs text-slate-500">Không có giờ thiếu ca.</p>}
                   </div>

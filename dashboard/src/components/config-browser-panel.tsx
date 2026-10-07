@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowRightLeft, Building2, ChevronDown, Pencil, RefreshCw, Search, SlidersHorizontal, UserRound, X } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
@@ -658,7 +658,11 @@ function activeColumnFilterCount(operator: ConfigTimeOperator, text: string, val
   return usesTextInput(operator) ? Number(Boolean(text.trim())) : Number(values.length > 0);
 }
 
-export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: ConfigDriver[]; refreshKey?: number }) {
+export type ConfigProfileRenderer = (kind: "client" | "driver", id: string | undefined, name: string, label?: ReactNode) => ReactNode;
+
+export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
+  drivers: ConfigDriver[]; refreshKey?: number; beforeTable?: (renderProfile: ConfigProfileRenderer) => ReactNode;
+}) {
   const [configDay, setConfigDay] = useState<ConfigDay>(() => resolveConfigDay());
   const readOnly = configDay === "sunday";
   const dayRef = useRef(configDay);
@@ -760,6 +764,20 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
     }
     return byName;
   }, [clientMetadata]);
+  const renderProfile: ConfigProfileRenderer = (kind, id, name, label = name) => {
+    const matches = kind === "driver" && !id ? (driverMetadata ?? []).filter(d =>
+      [String(d.roster.Driver ?? ""), `${d.cartrack.first_name ?? ""} ${d.cartrack.last_name ?? ""}`.trim()]
+        .some(alias => alias.trim() && foldName(alias.trim()) === foldName(name.trim()))) : [];
+    const profileId = kind === "client"
+      ? (id ? clientMetaById.get(id) : clientMetaByName.get(name.trim().toLocaleLowerCase("vi")))?.customer_id
+      : id ? driverMetaById.get(id)?.driver_id : matches.length === 1 ? matches[0].driver_id : undefined;
+    if (!profileId) return label;
+    return <button type="button" aria-haspopup="dialog" aria-expanded={profileHover?.kind === kind && profileHover.id === profileId}
+      onPointerEnter={e => { if (e.pointerType === "mouse") openProfile(kind, profileId, e.currentTarget); }}
+      onPointerLeave={e => { if (e.pointerType === "mouse") leaveProfile(); }}
+      onClick={e => openProfile(kind, profileId, e.currentTarget, true)}
+      className="text-left hover:text-indigo-700 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">{label}</button>;
+  };
   const rows = useMemo<ConfigRowView[]>(() => {
     if (loading) return [];
     const mappedIds = new Set(sheetRows.map((row) => row.customer_id).filter(Boolean));
@@ -908,6 +926,9 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
   const expandedTools = advancedFilters || replacing || selectedRows.length > 0 || !!editing;
 
   return (
+    <>
+    {beforeTable?.(renderProfile)}
+    <div className="min-h-[28rem] flex-1">
     <Card className={`gap-0 py-2 flex flex-col border-slate-200 ${expandedTools ? "h-auto min-h-full" : "h-full"}`}>
       <CardContent className="px-3 flex flex-1 flex-col min-h-0 gap-2">
         <div className="flex flex-wrap items-center gap-2">
@@ -1347,5 +1368,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0 }: { drivers: Confi
         </div>
       </HoverPanel>
     </Card>
+    </div>
+    </>
   );
 }
