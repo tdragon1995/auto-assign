@@ -9,6 +9,15 @@ export { PSC_RETURN_LABEL } from "./job-filters";
 import { PSC_RETURN_LABEL } from "./job-filters";
 export const PSC_OUTBOUND_LABEL = "🛵 Vận chuyển mẫu PSC";
 
+// These PSCs do not generate automatic returns, regardless of driver or shift.
+// D053 has two customer records in the locations sheet; cover both.
+const NO_RETURN_PSC_IDS = new Set([
+  "4daa0bca-2d7b-11f1-9378-fa163ee8d8ac", // D051
+  "e6f95bb6-9c5a-11f1-9378-fa163ee8d8ac", // D052
+  "41c2df14-b7bc-11f1-9378-fa163ee8d8ac", // D053
+  "ada89b7e-b7cb-11f1-9378-fa163ee8d8ac", // D053
+]);
+
 // Race-condition guard across overlapping 30s cycles. L1 only — it guards this
 // lambda. The cross-instance half is claimTripAction (Redis NX, same 60s), which
 // is what lets the engine run from more than one deployment at a time.
@@ -250,6 +259,7 @@ export async function detectAndCreateReturnTrips(
     const dropoffStop = (outbound.stops ?? []).find((s: any) => s.stop_type_id === 2);
 
     if (!pickupStop?.customer_id || !dropoffStop?.customer_id) continue;
+    if (NO_RETURN_PSC_IDS.has(pickupStop.customer_id)) continue;
 
     // Shift check for the PSC the driver just serviced. A substitute is judged on
     // BOTH their own window here and the covered driver's. Swapping in the covered

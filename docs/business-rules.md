@@ -61,6 +61,10 @@ Ranking logic (`dashboard/src/app/api/smart-assign/route.ts`):
 5. Tie-break by `lastCompletedTs` (more recent = less busy) then `jobsDone` (fewer = preferred).
 6. Assign the top-ranked driver.
 
+## Automatic PSC return trips
+
+Completed PSC outbounds from D051, D052, and D053 do not generate automatic return trips. The exclusion checks the outbound pickup customer ID and covers both D053 customer records, regardless of driver or shift.
+
 ## Auto-Plan mode (dashboard toggle)
 
 When the user enables Auto-Plan mode the dashboard fires two requests **in parallel**:
