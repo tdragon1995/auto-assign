@@ -233,6 +233,7 @@ function FailedRow({
   const pickDay = (offset: number) => {
     // Switching back to today invalidates a slot that has already gone by.
     if (offset === 0 && timeLabel && timeLabel <= vnNowLabel()) setTimeLabel(null);
+    if (offset === 1 && !timeLabel) setTimeLabel(defaultSchedule(offset).timeLabel);
     setDayOffset(offset);
   };
 

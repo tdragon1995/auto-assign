@@ -121,7 +121,7 @@ export function NoteReviewPanel({
       patchSched(jobId, { dayOffset: 0, timeLabel: null });
       return;
     }
-    patchSched(jobId, { dayOffset: offset });
+    patchSched(jobId, { dayOffset: offset, timeLabel: timeLabel ?? defaultSchedule(offset).timeLabel });
   };
 
   // ── Bulk selection helpers ──────────────────────────────────────────────
@@ -155,7 +155,7 @@ export function NoteReviewPanel({
       setBulkSched({ dayOffset: 0, timeLabel: null });
       return;
     }
-    setBulkSched((s) => ({ ...s, dayOffset: offset }));
+    setBulkSched((s) => ({ ...s, dayOffset: offset, timeLabel: s.timeLabel ?? defaultSchedule(offset).timeLabel }));
   };
 
   const runBulk = async (body: (id: number) => Record<string, unknown>, verb: string) => {
