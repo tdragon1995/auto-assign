@@ -1,52 +1,7 @@
-/**
- * What a driver was SCHEDULED to work on a given day.
- *
- * The roster the fleet is actually run from lives in MISA AMIS (full-timers) and
- * in a hand-kept weekly pattern (part-timers). `misa-fetcher` merges the two
- * every morning and writes the result to two Google Sheet tabs. This module is
- * the dashboard's reader for that schedule.
- *
- * WHICH TAB, AND WHY NOT THE ONE YOU WERE LOOKING AT
- *   The tab a person opens is "Lịch Ca" (gid 1656364758) — a month GRID, one
- *   column per calendar day, colour-coded, with a legend block underneath. It is
- *   the human view. This module reads its sibling instead, the flat "Driver
- *   Shift" tab (gid 2131164961), which the SAME misa-fetcher run writes from the
- *   SAME parsed rows in the same pass. Nothing is lost by preferring it and three
- *   things are gained:
- *
- *     1. The grid's day columns are headed `1/8` … `30/9` with NO YEAR. The year
- *        appears only in a footer sentence below the data. A reader would have to
- *        infer it, and would infer it wrongly across a December boundary — for a
- *        payroll input that is not an acceptable failure mode.
- *     2. The grid compresses a half-day into the single letter `P`. The flat tab
- *        carries `leave_start_time` / `leave_end_time`, the actual window. A pay
- *        rule that has to treat a half-day differently from a full one needs the
- *        window, not the letter.
- *     3. The grid's columns ARE dates, so it can never carry a `SHEET_CONTRACT`
- *        entry; the flat tab has stable named columns and does (below). That is
- *        the difference between a hand-edit being refused loudly and being read
- *        as data.
- *
- *   The one thing the grid has and the flat tab does not is the NAME of a public
- *   holiday: on 01–02/09 the grid says "Quốc khánh" where the flat tab simply
- *   leaves the times blank. For pay that distinction does not matter — a holiday
- *   and an ordinary day off are both "no scheduled window" — so it is not worth
- *   the year-inference to go and get it. If a caller ever needs the reason a day
- *   is blank, that is the tab to add, not this one to replace.
- *
- * ⚠ COVERAGE IS PARTIAL, AND `unknown` IS NOT `off`.
- *   Measured against the live workbook on 2026-09-06: the schedule covers a
- *   ROLLING TWO-MONTH WINDOW (2026-08-01 → 2026-09-30 that day) and only 45 of
- *   the 82 active PT accounts appear in it at all — the other 37 have no row in
- *   the "PT Shift Pattern" tab, so the fetcher produces nothing for them. That is
- *   a data-entry gap upstream, not something this module can compute around.
- *
- *   Both gaps therefore answer `unknown`, and `unknown` is a DIFFERENT answer
- *   from `off`. Collapsing the two would quietly turn "we do not know this
- *   person's hours" into "this person was not scheduled" — which, in anything
- *   that touches wages, is the difference between a question and a wrong number.
- *   Every caller must handle `unknown` explicitly; none may default it.
- */
+/** Date-specific duty windows from Supabase; unknown is never treated as off. */
+import { sbSelectAll } from "./supabase-rest";
+import { cartrackHistoryCutoff } from "./time";
+import { readConfigGen } from "./config-gen";
 import { Redis } from "@upstash/redis";
 import { masterDrivers, masterEnabled } from "./master-store";
 import {
@@ -72,6 +27,7 @@ export interface ShiftRow {
    *  are not. Carried through rather than resolved here; it is a thing to show a
    *  supervisor, not a thing to silently subtract. */
   leave_gap: boolean;
+  driver_id?: string;
 }
 
 export type ShiftDay =
@@ -126,15 +82,14 @@ const EMPTY: ShiftIndex = {
 // instance does not either (cold starts are what make an in-memory-only cache a
 // no-op — see the shared-cache note in the deploy memory).
 //
-// The schedule is rewritten by a GitHub Action twice a day (04:45 and 12:00 VN),
-// so it is near-static. The TTL is deliberately far shorter than that gap only so
-// that a hand-edit to the pattern tab shows up within the working day.
+// Writes and Tải lại invalidate the shared generation. TTL is a backstop for
+// external database edits when nobody has requested refresh.
 
 const MEM_TTL_MS = 10 * 60 * 1000;
 const REDIS_TTL_S = 60 * 60;
-const REDIS_KEY = masterEnabled() ? "shifts:v2" : "shifts:v1";
+const REDIS_KEY = masterEnabled() ? "shifts:v3" : "shifts:v1";
 
-let mem: { at: number; index: ShiftIndex } | null = null;
+let mem: { at: number; index: ShiftIndex; gen: string | null } | null = null;
 
 function getRedis(): Redis | null {
   const url = process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
@@ -148,6 +103,7 @@ function getRedis(): Redis | null {
  *  are not worth repeating 6,600 times. */
 type WireRow = [string, string, string, string | null, string | null, string | null, string | null, 0 | 1];
 interface Wire {
+  gen?: string | null;
   rows: WireRow[];
   roster: [string, string][];
   from: string | null;
@@ -218,7 +174,11 @@ async function loadRosterCodes(): Promise<Map<string, string>> {
 }
 
 async function loadShiftRows(): Promise<{ rows: ShiftRow[]; from: string | null; to: string | null }> {
-  const raw = await fetchSheetRows(SHEET_GID.driver_shift, SHEET_CONTRACT.driver_shift);
+  const raw = masterEnabled()
+    ? (await sbSelectAll<{employee_code:string;full_name:string;shift_date:string;start_time:string|null;end_time:string|null;leave_start:string|null;leave_end:string|null;leave_gap:boolean;driver_id:string|null}>(
+        "driver_shifts", `select=employee_code,full_name,shift_date,start_time,end_time,leave_start,leave_end,leave_gap,driver_id&shift_date=gte.${cartrackHistoryCutoff()}`, "employee_code.asc,shift_date.asc,slot.asc"))
+      .map(r => ({employee_code:r.employee_code,full_name:r.full_name,date:r.shift_date,start_time:r.start_time??"",end_time:r.end_time??"",leave_start_time:r.leave_start??"",leave_end_time:r.leave_end??"",leave_gap:r.leave_gap?"1":"",driver_id:r.driver_id??""}))
+    : await fetchSheetRows(SHEET_GID.driver_shift, SHEET_CONTRACT.driver_shift);
   const rows: ShiftRow[] = [];
   let from: string | null = null;
   let to: string | null = null;
@@ -230,6 +190,7 @@ async function loadShiftRows(): Promise<{ rows: ShiftRow[]; from: string | null;
 
     rows.push({
       employee_code,
+      driver_id: r["driver_id"] || undefined,
       full_name: (r["full_name"] ?? "").trim(),
       date,
       start: time(r["start_time"]),
@@ -254,15 +215,16 @@ async function loadShiftRows(): Promise<{ rows: ShiftRow[]; from: string | null;
  * authoritative.
  */
 export async function loadShiftIndex(fresh = false): Promise<ShiftIndex> {
-  if (!fresh && mem && Date.now() - mem.at < MEM_TTL_MS) return mem.index;
+  const gen = masterEnabled() ? await readConfigGen() : null;
+  if (!fresh && mem && mem.gen === gen && Date.now() - mem.at < MEM_TTL_MS) return mem.index;
 
   const redis = getRedis();
   if (!fresh && redis) {
     try {
       const hit = await redis.get<Wire>(REDIS_KEY);
-      if (hit?.rows?.length) {
+      if (hit?.rows?.length && (!masterEnabled() || hit.gen === gen)) {
         const index = fromWire(hit);
-        mem = { at: Date.now(), index };
+        mem = { at: Date.now(), index, gen };
         return index;
       }
     } catch {
@@ -285,14 +247,17 @@ export async function loadShiftIndex(fresh = false): Promise<ShiftIndex> {
     }
 
     const byCodeDate = new Map<string, ShiftRow>();
-    for (const r of rows) byCodeDate.set(`${r.employee_code}|${r.date}`, r);
+    for (const r of rows) {
+      byCodeDate.set(`${r.employee_code}|${r.date}`, r);
+      if (r.driver_id) codeByDriverId.set(r.driver_id, r.employee_code);
+    }
 
     const index: ShiftIndex = { byCodeDate, codeByDriverId, from, to, degraded: false };
     noteSheetLoad(SHEET_CONTRACT.driver_shift.label, null);
-    mem = { at: Date.now(), index };
+    mem = { at: Date.now(), index, gen };
     if (redis) {
       try {
-        await redis.set(REDIS_KEY, toWire(index), { ex: REDIS_TTL_S });
+        await redis.set(REDIS_KEY, {...toWire(index), gen}, { ex: REDIS_TTL_S });
       } catch {
         /* cache write is best-effort */
       }

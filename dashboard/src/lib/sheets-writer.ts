@@ -1,9 +1,12 @@
+import { UUID } from "./master-reconcile";
+import { sbInsert, sbSelect } from "./supabase-rest";
+import { cartrackHistoryCutoff } from "./time";
 import { google } from "googleapis";
 import { randomUUID } from "node:crypto";
 import { SHEET_ID, SHEET_GID } from "./sheets";
 import { vnTimestamp } from "./time";
 import { resolveConfigDay, type ConfigDay } from "./config-day";
-import { LEAVE_DELETED_SHEET, LEAVE_DELETED_HEADERS } from "./leave-suppression";
+import { LEAVE_DELETED_SHEET, LEAVE_DELETED_HEADERS, appendMasterLeaveDeletion, removeMasterLeaveSuppression } from "./leave-suppression";
 import type { ConfigCells } from "./unmapped-row";
 import { timeToMins } from "./time";
 import { findUniqueConfigRow, type ConfigRowAt, type ConfigRowSnapshot } from "./config-row-match";
@@ -1219,6 +1222,7 @@ export async function appendLeaveDeletion(
   deleted: LeaveRowDeletion,
   driver_id: string,
 ): Promise<void> {
+  if(masterEnabled()) return appendMasterLeaveDeletion(deleted,driver_id);
   const sheets = getSheetsClient();
   if (!leaveDeletedSheetReady) await ensureLeaveDeletedSheet(sheets);
   await sheets.spreadsheets.values.append({
@@ -1246,6 +1250,7 @@ export async function appendLeaveDeletion(
  * time keeps this symmetric with the delete it undoes.
  */
 export async function removeLeaveSuppression(match: LeaveRowMatch): Promise<{ row: number; loai_nghi: string }> {
+  if(masterEnabled()) return removeMasterLeaveSuppression(match);
   const sheets = getSheetsClient();
   const sheetId = await ensureLeaveDeletedSheet(sheets);
   const res = await sheets.spreadsheets.values.get({
@@ -1646,6 +1651,16 @@ async function ensureLogSheet(
 }
 
 async function appendLogRows(title: string, headers: string[], rows: (string | number | null)[][]): Promise<void> {
+  if(masterEnabled()) {
+    const retained=rows.filter(r=>String(r[0]).slice(0,10)>=cartrackHistoryCutoff());
+    if(!retained.length)return;
+    const ids=[...new Set(retained.map(r=>String(r[2]??"")).filter(id=>UUID.test(id)))];
+    const linked=new Set(ids.length?(await sbSelect<{driver_id:string}>("master_drivers",`select=driver_id&driver_id=in.(${ids.join(",")})`)).map(r=>r.driver_id):[]);
+    const records=retained.map(r=>({
+      action:title,occurred_at:String(r[0]).replace(" ","T")+"+07:00",driver_id:linked.has(String(r[2]))?r[2]:null,job_id:r[3]||null,
+      details:Object.fromEntries(headers.map((h,i)=>[h,r[i]??null]))}));
+    await sbInsert("master_action_logs",records); return;
+  }
   const sheets = getSheetsClient();
   await ensureLogSheet(sheets, title, headers);
   await sheets.spreadsheets.values.append({

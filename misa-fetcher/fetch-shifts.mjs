@@ -3,20 +3,16 @@
  *
  * Logs into MISA AMIS with a fresh headless-browser session (username +
  * password + TOTP, fully automatic — nothing stored that can expire), fetches
- * the current month's shift schedule + leave requests, folds in the part-time
- * roster (staff with no AMIS access, kept as a weekly pattern in the sheet),
- * then writes to:
- *   1. Nghỉ phép tab  → approved leave, via POST /api/nghi-phep (engine source)
- *   2. Google Sheet   → "Driver Shift" flat tab + "Lịch Ca" month grid
- *   3. Supabase       → public.driver_shifts (dormant until keys are set)
+ * shift schedules and leave requests, merges Supabase PT patterns, and writes
+ * shifts atomically to Supabase. Approved leave uses /api/nghi-phep (Supabase).
+ * Google Sheet is no longer a source or output for this pipeline.
  *
  * Flags:
  *   --dry-run      fetch + parse only; write JSON to out/, touch no sinks
- *   --no-sheet     skip the Google Sheet sinks
  *   --no-supabase  skip the Supabase sink
  *   --no-leave     skip the Nghỉ phép push
  *   --leave-dry    report the leave that would be written, but don't write it
- *   --month=YYYY-MM  target a specific month (default: current, VN time)
+ *   --month=YYYY-MM  target a specific month (default: payroll history through next month)
  *   --headed       run the browser visibly (local debugging)
  */
 
@@ -28,7 +24,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSession, ensureLoggedIn, fetchAllShifts, fetchAllAttendance } from "./lib/misa.mjs";
 import { monthRange, buildLeaveMap, parseShifts } from "./lib/parse.mjs";
-import { pushSupabase, pushSheet, pushGrid } from "./lib/sinks.mjs";
+import { pushSupabase } from "./lib/sinks.mjs";
 import {
   loadDrivers,
   driversByEmployeeCode,
@@ -62,11 +58,10 @@ async function runOnce() {
   const monthsArg = argv.find((a) => a.startsWith("--months="));
   const offsetArg = argv.find((a) => a.startsWith("--start-offset="));
 
-  // Default span: last month and this one. Starting a month back keeps the
-  // month just ended on the sheet while it is still being reviewed, instead of
-  // it vanishing at midnight on the 1st.
-  const span = monthsArg ? Number(monthsArg.split("=")[1]) : 2;
-  const startOffset = offsetArg ? Number(offsetArg.split("=")[1]) : -1;
+  // Cover payroll retention (15th two months back) through the end of next month.
+  // The database clips historical rows at its exact payroll cutoff.
+  const span = monthsArg ? Number(monthsArg.split("=")[1]) : (monthArg ? 1 : 4);
+  const startOffset = offsetArg ? Number(offsetArg.split("=")[1]) : -2;
   const startMonth =
     monthArg?.split("=")[1] ??
     (() => {
@@ -80,6 +75,7 @@ async function runOnce() {
     `[run] range ${range.monthStart} → ${range.monthEnd} (${range.months} month(s), VN)`,
   );
 
+  const drivers = await loadDrivers(); // Fail before MISA login or leave writes when Supabase is unavailable.
   const { browser, context, page } = await createSession({
     headless: !args.has("--headed"),
     statePath: STATE_PATH,
@@ -102,7 +98,7 @@ async function runOnce() {
       }
     }
     const leaveMap = buildLeaveMap(attendance);
-    const { sheetRows, records, gaps } = parseShifts(shiftData, leaveMap, attendance);
+    const { records, gaps } = parseShifts(shiftData, leaveMap, attendance);
 
     console.log(
       `[run] parsed: ${shiftData.length} employees, ${records.length} shift rows, ` +
@@ -127,7 +123,6 @@ async function runOnce() {
     // ~70 active part-timers have no MISA account, so their shifts live in the
     // sheet as a weekly pattern. Anyone already covered by MISA is skipped, so
     // a person in both sources is never rostered twice.
-    const drivers = await loadDrivers();
     const byCode = driversByEmployeeCode(drivers);
     // Being in MISA is not the same as having a roster there: 30 of 88 people
     // have an AMIS account but no shift plan, so they arrive as a month of
@@ -142,21 +137,14 @@ async function runOnce() {
     // MISA supplies a bare name, which never matches.
     for (const r of records) {
       r.source = "MISA";
+      r.driver_id = byCode.get(r.employee_code)?.driver_id ?? null;
       r.label = byCode.get(r.employee_code)?.label || r.full_name;
     }
 
     const patterns = await loadPtPatterns();
-    let ptRecords = [];
-    if (patterns === null) {
-      console.warn(
-        `[run] ⚠ "${PT_PATTERN_SHEET}" tab not found — part-time roster skipped. ` +
-          `Create it with headers: driver, employee_code, active_from, active_to, mon, tue, wed, thu, fri, sat, sun, note`,
-      );
-    } else {
-      ptRecords = expandPtPatterns(patterns, range, rosteredInMisa);
-      const ptPeople = new Set(ptRecords.map((r) => r.employee_code));
-      console.log(`[run] part-time: ${patterns.length} pattern(s) → ${ptPeople.size} people, ${ptRecords.length} day rows`);
-    }
+    const ptRecords = expandPtPatterns(patterns, range, rosteredInMisa);
+    const ptPeople = new Set(ptRecords.map((r) => r.employee_code));
+    console.log(`[run] part-time: ${patterns.length} pattern(s) → ${ptPeople.size} people, ${ptRecords.length} day rows`);
 
     // Where the pattern tab now supplies someone who had only blank MISA days,
     // drop those blanks — otherwise the same person appears twice.
@@ -301,10 +289,7 @@ async function runOnce() {
     }
 
     if (!args.has("--no-supabase")) await pushSupabase(allRecords, range);
-    if (!args.has("--no-sheet")) {
-      await pushSheet(allSheetRows);
-      await pushGrid(grid, range);
-    }
+
     console.log("[run] done ✅");
   } finally {
     await browser.close();

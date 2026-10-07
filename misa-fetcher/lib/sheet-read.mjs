@@ -1,83 +1,17 @@
-/**
- * Read-only access to the config spreadsheet via its public CSV export — the
- * same mechanism the dashboard uses (dashboard/src/lib/sheets.ts), so no
- * credentials are needed. Writes go through the Apps Script web app or the
- * dashboard API; nothing here mutates the sheet.
- */
-
-export const SHEET_ID = "1Bqsm5atLYUQ4gMsL7zHrbrS6YUu7pEDa-Iy_j_wpCss";
-
-export const GID = {
-  drivers: "467715355",
-  nghi_phep: "158238549",
-};
-
-/** Tab read by name rather than gid — it may not exist yet, and a hand-created
- *  tab gets a gid we can't know in advance. */
-export const PT_PATTERN_SHEET = "PT Shift Pattern";
-
-/** Full RFC-4180 CSV parse: quoted fields may contain commas AND newlines. */
-function parseCsv(text) {
-  const rows = [];
-  let row = [];
-  let cur = "";
-  let inQ = false;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (inQ) {
-      if (ch === '"') {
-        if (text[i + 1] === '"') {
-          cur += '"';
-          i++;
-        } else inQ = false;
-      } else cur += ch;
-    } else if (ch === '"') inQ = true;
-    else if (ch === ",") {
-      row.push(cur);
-      cur = "";
-    } else if (ch === "\n") {
-      row.push(cur);
-      rows.push(row);
-      row = [];
-      cur = "";
-    } else if (ch !== "\r") cur += ch;
-  }
-  if (cur !== "" || row.length) {
-    row.push(cur);
-    rows.push(row);
-  }
-  return rows;
+/** Source readers for the MISA pipeline. Non-Sunday data is Supabase-owned. */
+export const PT_PATTERN_SHEET = "Mẫu ca PT (Supabase)";
+async function select(table,query,order) {
+ const url=process.env.SUPABASE_URL,key=process.env.SUPABASE_SERVICE_ROLE_KEY;
+ if(!url||!key)throw new Error("Supabase credentials required; Sheet fallback is retired");
+ const rows=[];
+ for(let offset=0;;offset+=1000){
+  const res=await fetch(`${url.replace(/\/$/,"")}/rest/v1/${table}?${query}&order=${order}&limit=1000&offset=${offset}`,{headers:{apikey:key,Authorization:`Bearer ${key}`},signal:AbortSignal.timeout(20000)});
+  if(!res.ok)throw new Error(`Supabase ${table} HTTP ${res.status}`);
+  const batch=await res.json();rows.push(...batch);if(batch.length<1000)return rows;
+ }
 }
 
-/** Header-keyed objects from a parsed CSV. First occurrence of a header wins. */
-function toObjects(rows) {
-  if (rows.length < 2) return [];
-  const headers = rows[0].map((h) => h.trim());
-  return rows.slice(1).map((f) => {
-    const o = {};
-    headers.forEach((h, i) => {
-      if (!(h in o)) o[h] = (f[i] ?? "").trim();
-    });
-    return o;
-  });
-}
 
-async function fetchCsv(url) {
-  // Cache-bust: Google's CDN serves a stale copy of the export URL for minutes.
-  const res = await fetch(`${url}&_cb=${Date.now()}`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`sheet fetch failed: HTTP ${res.status}`);
-  return toObjects(parseCsv(await res.text()));
-}
-
-export function byGid(gid) {
-  return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${gid}`;
-}
-
-export function byName(sheetName) {
-  return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&headers=1&sheet=${encodeURIComponent(sheetName)}`;
-}
-
-const isFalsey = (v) => ["false", "0", "no"].includes((v || "").trim().toLowerCase());
 
 /**
  * The Driver tab: the bridge between MISA and Cartrack. `employee_code` holds
@@ -85,16 +19,10 @@ const isFalsey = (v) => ["false", "0", "no"].includes((v || "").trim().toLowerCa
  * xlookup resolves to a driver_id, and `delivery_driver_id` is the Cartrack UUID.
  */
 export async function loadDrivers() {
-  const rows = await fetchCsv(byGid(GID.drivers));
-  return rows
-    .map((r) => ({
-      label: (r["Driver"] || "").trim(),
-      driver_id: (r["delivery_driver_id"] || "").trim(),
-      employee_code: (r["employee_code"] || "").trim(),
-      employee_name: (r["employee_full_name"] || "").trim(),
-      active: !isFalsey(r["is_active"]),
-    }))
-    .filter((d) => d.driver_id);
+  const rows=await select("master_drivers","select=driver_id,first_name,last_name,is_active,roster","driver_id.asc");
+  return rows.map(r=>({label:r.roster?.Driver || `${r.first_name??""} ${r.last_name??""}`.trim(),
+    driver_id:r.driver_id,employee_code:r.roster?.employee_code || `driver:${r.driver_id}`,
+    employee_name:r.roster?.employee_full_name || r.last_name || "",active:r.is_active!==false}));
 }
 
 /** employee_code → driver row, active drivers only (a deactivated account can
@@ -106,29 +34,6 @@ export function driversByEmployeeCode(drivers) {
     if (!map.has(d.employee_code)) map.set(d.employee_code, d);
   }
   return map;
-}
-
-const DAY_COLS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]; // index = getUTCDay()
-
-/** "06:00-15:00" / "6:00 - 15:00" / "OFF" / "" → {start,end} or null for off. */
-function parseWindow(cell) {
-  const v = (cell || "").trim();
-  if (!v || /^(off|nghỉ|nghi|-)$/i.test(v)) return null;
-  const m = v.match(/^(\d{1,2}):(\d{2})\s*[-–—]\s*(\d{1,2}):(\d{2})$/);
-  if (!m) return null;
-  const pad = (h, mm) => `${String(Number(h)).padStart(2, "0")}:${mm}`;
-  return { start: pad(m[1], m[2]), end: pad(m[3], m[4]) };
-}
-
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-
-function parseDateCell(v) {
-  const s = (v || "").trim();
-  if (ISO_DATE.test(s)) return s;
-  // Sheets may hand back d/m/yyyy depending on the cell's locale formatting.
-  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (m) return `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
-  return null;
 }
 
 /**
@@ -143,46 +48,12 @@ function parseDateCell(v) {
  * A blank `active_from` means "always", so a single-row-per-person sheet works
  * unchanged.
  *
- * Returns null when the tab does not exist yet, so the pipeline still runs.
+ * Unlinked patterns remain visible for review and are not expanded.
  */
 export async function loadPtPatterns() {
-  let rows;
-  try {
-    rows = await fetchCsv(byName(PT_PATTERN_SHEET));
-  } catch {
-    return null; // tab missing — caller warns
-  }
-
-  // gviz answers an unknown sheet name with the FIRST sheet rather than an
-  // error, so a missing tab arrives looking like perfectly good data — in this
-  // spreadsheet, the customer→driver mapping, whose `Driver` column parses as a
-  // person and puts 1,300 customers on the roster. Verify the shape before
-  // trusting it: a real pattern tab has weekday columns.
-  if (rows.length && !DAY_COLS.some((c) => c in rows[0])) {
-    return null; // some other sheet — treat as missing
-  }
-
-  const out = [];
-  for (const r of rows) {
-    const label = (r["driver"] || r["Driver"] || "").trim();
-    const code = (r["employee_code"] || "").trim();
-    if (!label && !code) continue;
-    if (isFalsey(r["active"])) continue; // optional legacy kill-switch column
-    const days = DAY_COLS.map((c) => parseWindow(r[c]));
-    // A row with no working day at all says nothing — it would otherwise expand
-    // into a full month of "off" rows and put a person on the roster as
-    // permanently not-working, which reads very differently from absent.
-    if (days.every((d) => d === null)) continue;
-    out.push({
-      label,
-      employee_code: code,
-      days,
-      active_from: parseDateCell(r["active_from"]),
-      active_to: parseDateCell(r["active_to"]),
-      note: (r["note"] || "").trim(),
-    });
-  }
-  return out;
+  const rows=await select("driver_shift_patterns","select=employee_code,label,days,active_from,active_to,note,driver_id,review_issues&active=eq.true","id.asc");
+  return rows.filter(r=>r.review_issues.length===0 && r.days.some(Boolean)).map(r=>({
+    label:r.label,employee_code:r.employee_code,days:r.days,active_from:r.active_from,active_to:r.active_to,note:r.note,driver_id:r.driver_id}));
 }
 
 /** The pattern in force for `date`: latest active_from that has started and has
@@ -233,6 +104,7 @@ export function expandPtPatterns(patterns, range, skipCodes = new Set()) {
       const win = p.days[d.getUTCDay()];
       records.push({
         employee_code: p.employee_code || label,
+        driver_id: p.driver_id ?? null,
         full_name: label,
         label, // canonical Driver-tab label, for leave matching
 
@@ -258,7 +130,11 @@ export function expandPtPatterns(patterns, range, skipCodes = new Set()) {
  * MISA knows nothing about. Returns a Map of "label|YYYY-MM-DD" → leave label.
  */
 export async function loadSheetLeave() {
-  const rows = await fetchCsv(byGid(GID.nghi_phep));
+  const stored=await select("master_leave_read","select=linked_driver_id,starts_on,ends_on,starts_at,ends_at,leave_type,row_data&active=eq.true","id.asc");
+  const drivers=await loadDrivers(),names=new Map(drivers.map(d=>[d.driver_id,d.label]));
+  const rows=stored.map(r=>({...r.row_data,driver:names.get(r.linked_driver_id)||r.row_data.driver,
+    leave_from:r.starts_on||r.row_data.leave_from,leave_to:r.ends_on||r.row_data.leave_to,
+    leave_from_hr:r.starts_at?.slice(0,5)||"",leave_to_hr:r.ends_at?.slice(0,5)||"","Loại Nghỉ":r.leave_type}));
   const map = new Map();
   for (const r of rows) {
     const label = (r["driver"] || "").trim();

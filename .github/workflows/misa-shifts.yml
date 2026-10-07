@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       month:
-        description: "Target month as YYYY-MM (blank = current month, VN time)"
+        description: "Target month as YYYY-MM (blank = payroll history through next month, VN time)"
         required: false
         type: string
       sync_master:
@@ -69,7 +69,7 @@ jobs:
           key: misa-session-${{ github.run_id }}
           restore-keys: misa-session-
 
-      - name: Fetch shifts and push to sinks
+      - name: Fetch shifts and replace Supabase schedule
         run: node fetch-shifts.mjs ${{ inputs.month && format('--month={0}', inputs.month) || '' }}
         env:
           MISA_USERNAME: ${{ secrets.MISA_USERNAME }}
@@ -77,10 +77,8 @@ jobs:
           MISA_TOTP_SECRET: ${{ secrets.MISA_TOTP_SECRET }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          SHEET_WEBAPP_URL: ${{ secrets.SHEET_WEBAPP_URL }}
-          SHEET_WEBAPP_TOKEN: ${{ secrets.SHEET_WEBAPP_TOKEN }}
 
-      # The sheet writes above must finish before either cache is invalidated.
+      # The Supabase writes above must finish before either cache is invalidated.
       # This also updates the assign engine if the dashboard tab was closed.
       - name: Refresh dashboard config and leave caches
         run: |

@@ -19,6 +19,7 @@ import { LeaveStatusPanel } from "./leave-status-panel";
 import { ConfigTodoPanel } from "./config-todo-panel";
 import { SheetAlarmBanner } from "./sheet-alarm-banner";
 import { TatTeamPanel } from "./tat-team-panel";
+import { DriverShiftPanel } from "./driver-shift-panel";
 import { PayTeamPanel } from "./pay-team-panel";
 import { LocationsPanel } from "./locations-panel";
 import { toast } from "sonner";
@@ -33,7 +34,7 @@ import type { LeaveSuppression } from "@/lib/leave-suppression";
 import type { LabcenterMetadataReport } from "@/lib/master-sync";
 
 type Env = "prod" | "uat";
-type RightTab = "attention" | "live" | "batch" | "config" | "schedule" | "distance" | "tat" | "pay" | "locations";
+type RightTab = "attention" | "live" | "batch" | "config" | "schedule" | "distance" | "tat" | "pay" | "locations" | "shifts";
 
 export function Dashboard() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -739,6 +740,7 @@ export function Dashboard() {
             <button onClick={() => setRightTab("tat")} className={tabBtn(rightTab === "tat")}>
               Hiệu suất
             </button>
+            <button onClick={() => setRightTab("shifts")} className={tabBtn(rightTab === "shifts")}>Lịch ca tài xế</button>
             <button onClick={() => setRightTab("pay")} className={tabBtn(rightTab === "pay")}>
               Lương PT
             </button>
@@ -855,6 +857,8 @@ export function Dashboard() {
               <div className="h-[72vh] lg:h-full">
                 <TatTeamPanel />
               </div>
+            ) : rightTab === "shifts" ? (
+              <div className="h-[72vh] lg:h-full"><DriverShiftPanel /></div>
             ) : rightTab === "pay" ? (
               /* Mounted only while the tab is open, like the config browser: a
                  month of punches across the fleet is not something to fetch on

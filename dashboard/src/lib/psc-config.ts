@@ -1,4 +1,7 @@
 import { fetchSheetRows, isSheetShapeError, noteSheetLoad, SHEET_CONTRACT, SHEET_GID } from "./sheets";
+import { masterEnabled } from "./master-store";
+import { sbSelectAll } from "./supabase-rest";
+import { readConfigGen } from "./config-gen";
 import { PSC_ROUTES } from "./psc-routes-data";
 
 export const PSC_TINH_LABEL = "🛵 Vận chuyển mẫu tỉnh";
@@ -34,6 +37,7 @@ export interface TplEntry {
 const TPL_CACHE_MS = 5 * 60 * 1000;
 let _tplCache: TplEntry[] | null = null;
 let _tplCacheAt = 0;
+let _tplGen: string | null = null;
 
 /** Busts the TPL-entries cache (PSC routes are hard-coded — [[psc-routes-data]] — so
  *  this is all there is to bust). Wired to the dashboard Refresh button via /api/config. */
@@ -43,7 +47,13 @@ export function invalidatePscCache() {
 }
 
 export async function loadTplEntries(): Promise<TplEntry[]> {
-  if (_tplCache && Date.now() - _tplCacheAt < TPL_CACHE_MS) return _tplCache;
+  const gen = masterEnabled() ? await readConfigGen() : null;
+  if (_tplCache && gen === _tplGen && Date.now() - _tplCacheAt < TPL_CACHE_MS) return _tplCache;
+  if (masterEnabled()) {
+    const entries = await sbSelectAll<TplEntry>("master_tpl_entries", "select=psc_tinh,tpl_name,tpl_uuid,address&active=eq.true", "id.asc");
+    _tplCache = entries; _tplCacheAt = Date.now(); _tplGen = gen;
+    return entries;
+  }
 
   const rows = await fetchSheetRows(SHEET_GID.tpl, SHEET_CONTRACT.tpl).catch((e) => {
     // Record and rethrow: the caller's existing error handling is unchanged, but

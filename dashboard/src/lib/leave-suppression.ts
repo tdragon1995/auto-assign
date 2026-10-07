@@ -29,6 +29,9 @@
  * deleting the morning one must not suppress the afternoon.
  */
 
+import { masterEnabled } from "./master-store";
+import { sbSelectAll, sbInsert, sbDelete } from "./supabase-rest";
+import type { LeaveRowDeletion, LeaveRowMatch } from "./sheets-writer";
 import { fetchSheetRowsByName, isSheetShapeError, noteSheetLoad } from "./sheets";
 import { timeToMins, vnDate } from "./time";
 import { parseThayCaNote, THAY_CA_LABEL } from "./thay-ca";
@@ -214,6 +217,12 @@ export interface SuppressionLoad {
  * answer as "write it back again".
  */
 export async function loadLeaveSuppressions(force = false): Promise<SuppressionLoad> {
+  if (masterEnabled()) {
+    try {
+      const list = await sbSelectAll<LeaveSuppression>("master_leave_suppressions", "select=driver_id,driver_name,loai_nghi,leave_from,leave_to,gio_bat_dau,gio_ket_thuc,deleted_at,note", "id.asc");
+      return { list, trusted: true };
+    } catch (e) { console.error("[leave-suppression] Supabase unavailable", e); return { list: [], trusted: false }; }
+  }
   if (!force && cache && Date.now() - cache.at < TTL_MS) {
     return { list: cache.list, trusted: true };
   }
@@ -259,4 +268,20 @@ export async function loadLeaveSuppressions(force = false): Promise<SuppressionL
   noteSheetLoad(LEAVE_DELETED_SHEET, null);
   cache = { list, at: Date.now() };
   return { list, trusted: true };
+}
+
+export async function appendMasterLeaveDeletion(deleted:LeaveRowDeletion,driver_id:string) {
+  await sbInsert("master_leave_suppressions", [{driver_id,driver_name:deleted.driver_name,loai_nghi:deleted.loai_nghi,
+    leave_from:normDate(deleted.leave_from),leave_to:normDate(deleted.leave_to)||null,
+    gio_bat_dau:deleted.leave_from_hr,gio_ket_thuc:deleted.leave_to_hr,note:deleted.note}]);
+}
+export async function removeMasterLeaveSuppression(match:LeaveRowMatch) {
+  const rows=await sbSelectAll<LeaveSuppression & {id:number}>("master_leave_suppressions","select=*","id.asc");
+  const [start,end]=(match.timeLabel??"").split("–");
+  const target=rows.filter(r=>r.driver_id===match.driver_id && r.leave_from===normDate(match.leave_from) &&
+    windowKey(r.gio_bat_dau,r.gio_ket_thuc)===(match.timeLabel?windowKey(start,end):"full") &&
+    (!match.loai_nghi || r.loai_nghi===match.loai_nghi)).at(-1);
+  if(!target) throw new Error("Không tìm thấy dòng đã xoá — tải lại rồi thử lại");
+  await sbDelete("master_leave_suppressions",`id=eq.${target.id}`);
+  return {row:target.id,loai_nghi:target.loai_nghi};
 }

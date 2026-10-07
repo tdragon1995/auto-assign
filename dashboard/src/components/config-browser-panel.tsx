@@ -746,6 +746,16 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
     finally { setMetaBusy(false); }
   }, [refreshKey]);
 
+  const reloadSupabase = async () => {
+    setLoading(true); setErr(null);
+    try {
+      const response = await fetch("/api/config", { cache: "no-store" });
+      if (!response.ok) throw new Error("Không làm mới được cache — thử Tải lại");
+      await Promise.all([load(true), loadMetadata()]);
+    } catch (error) { setErr(error instanceof Error ? error.message : String(error)); }
+    finally { setLoading(false); }
+  };
+
   const clientMetaById = useMemo(() => new Map((clientMetadata ?? []).map((c) => [c.customer_id, c])), [clientMetadata]);
   const driverMetaById = useMemo(() => new Map((driverMetadata ?? []).map((d) => [d.driver_id, d])), [driverMetadata]);
   const rosterDrivers = useMemo(() => driverMetadata ? driverMetadata.filter(d => d.cartrack.is_active !== false).map(d => ({
@@ -974,7 +984,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
             size="sm" variant="outline"
             className="h-9 px-3 text-xs"
             title={readOnly ? "Đọc lại lịch Chủ nhật và hồ sơ đã lưu" : "Đọc lại config và hồ sơ từ Supabase; không gọi hệ thống nguồn"}
-            onClick={() => { void load(true); void loadMetadata(); }}
+            onClick={() => { void reloadSupabase(); }}
             disabled={loading || metaBusy}
           >
             <RefreshCw aria-hidden="true" className={`size-3.5 ${loading || metaBusy ? "motion-safe:animate-spin" : ""}`} />

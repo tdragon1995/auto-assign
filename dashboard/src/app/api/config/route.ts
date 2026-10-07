@@ -1,3 +1,6 @@
+import { invalidateShiftCache } from "@/lib/shift-window";
+import { invalidateLeaveCache } from "@/lib/leave-config";
+import { invalidateSuppressionCache } from "@/lib/leave-suppression";
 import { NextResponse } from "next/server";
 import { loadConfigFromSheets, invalidateConfigCache, loadDriversFromSheet, invalidateDriversCache } from "@/lib/config";
 import { loadPscRoutes, invalidatePscCache } from "@/lib/psc-config";
@@ -8,7 +11,8 @@ export async function GET() {
     // Bust the caches so fresh sheet data (and start-location coords) is loaded.
     // The config one is awaited because it also bumps the shared stamp that tells every
     // OTHER serverless instance to drop its copy — the whole point of pressing Refresh.
-    await invalidateConfigCache();
+    await Promise.all([invalidateConfigCache(), invalidateShiftCache(), invalidateLeaveCache()]);
+    invalidateSuppressionCache();
     invalidateDriversCache();
     invalidatePscCache();
     invalidateStartLocCache();

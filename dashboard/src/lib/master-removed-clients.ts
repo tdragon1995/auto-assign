@@ -1,6 +1,7 @@
 import { BASE_URL, getHeaders } from "./cartrack";
 import { sbRpc, sbSelectAll } from "./supabase-rest";
 import { fetchSheetRows, SHEET_GID, SHEET_CONTRACT } from "./sheets";
+import { loadTplEntries } from "./psc-config";
 import { PSC_ROUTES } from "./psc-routes-data";
 import { UUID } from "./master-reconcile";
 
@@ -11,12 +12,12 @@ export async function removedClientReferences(id:string) {
   const [references,sunday,tpl]=await Promise.all([
     sbRpc<Record<string,number>>("master_client_references",{p_id:id}),
     fetchSheetRows(SHEET_GID.sunday,SHEET_CONTRACT.sunday),
-    fetchSheetRows(SHEET_GID.tpl,SHEET_CONTRACT.tpl),
+    loadTplEntries(),
   ]);
   const contains=(value:unknown):boolean=>JSON.stringify(value).includes(id);
   const sundayCount=sunday.filter(contains).length,tplCount=tpl.filter(contains).length,pscCount=PSC_ROUTES.filter(contains).length;
   if(sundayCount) references["Sunday (Google Sheet)"]=sundayCount;
-  if(tplCount) references["3PL (Google Sheet)"]=tplCount;
+  if(tplCount) references["3PL (Supabase)"]=tplCount;
   if(pscCount) references["PSC routes"]=pscCount;
   return references;
 }
