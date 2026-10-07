@@ -12,9 +12,9 @@ new Function('require', 'exports', outputText)(() => ({}), mod.exports);
 const originalNow = Date.now;
 try {
   for (const [clock, dayOffset, timeLabel] of [
-    ['00:00', 0, '08:00'], ['07:59', 0, '08:00'],
-    ['08:00', 0, '08:00'], ['13:03', 0, '08:00'],
-    ['18:59', 0, '08:00'], ['19:00', 1, '08:00'], ['23:59', 1, '08:00'],
+    ['00:00', 0, null], ['07:59', 0, null],
+    ['08:00', 0, null], ['13:03', 0, null],
+    ['18:59', 0, null], ['19:00', 1, null], ['23:59', 1, null],
   ]) {
     Date.now = () => new Date(`2026-10-07T${clock}:00+07:00`).getTime();
     assert.deepEqual(mod.exports.defaultSchedule(), { dayOffset, timeLabel }, clock);
@@ -23,8 +23,8 @@ try {
     Date.now = () => new Date('2026-10-07T00:00:00+07:00').getTime() + minute * 60_000;
     const { dayOffset, timeLabel } = mod.exports.defaultSchedule();
     assert.equal(dayOffset, minute >= 19 * 60 ? 1 : 0);
-    assert.equal(timeLabel, '08:00');
-    assert.equal(mod.exports.isTimePast(dayOffset, timeLabel), minute >= 8 * 60 && minute < 19 * 60);
+    assert.equal(timeLabel, null);
+    assert.equal(mod.exports.isTimePast(dayOffset, timeLabel), false);
   }
 } finally { Date.now = originalNow; }
 console.log('Scheduler defaults passed at every VN minute, including 19:00 and midnight.');

@@ -40,9 +40,8 @@ export function isTimePast(dayOffset: number, timeLabel: string | null): boolean
 }
 
 /** Initially select today before 19:00 VN time, otherwise tomorrow. */
-export const DEFAULT_SCHEDULE_TIME = "08:00";
-export function defaultSchedule(): { dayOffset: number; timeLabel: string } {
-  return { dayOffset: vnNowLabel() >= "19:00" ? 1 : 0, timeLabel: DEFAULT_SCHEDULE_TIME };
+export function defaultSchedule(): { dayOffset: number; timeLabel: string | null } {
+  return { dayOffset: vnNowLabel() >= "19:00" ? 1 : 0, timeLabel: null };
 }
 
 // Schedule times are offered on a 30-minute grid via an explicit dropdown. A
