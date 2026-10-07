@@ -171,9 +171,9 @@ function MissingJobConfig({ jobId, env, drivers, onCancel, onSaved }: {
   const [config, setConfig] = useState<MissingConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const reload = () => { setConfig(null); setError(null); setAttempt(n => n + 1); };
   useEffect(() => {
     let cancelled = false;
-    setConfig(null); setError(null);
     void loadMissingJobConfig(jobId, env).then(data => { if (!cancelled) setConfig(data); })
       .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); });
     return () => { cancelled = true; };
@@ -181,9 +181,9 @@ function MissingJobConfig({ jobId, env, drivers, onCancel, onSaved }: {
   return <div className="mt-2 rounded-md border border-indigo-200 bg-indigo-50/30 p-2 space-y-2">
     <p className="text-xs font-semibold text-slate-700">Thiết lập config{config ? ` · ${config.pickupName} → ${config.dropoffName}` : ""}</p>
     {config ? <BranchEditor {...config} drivers={drivers} onCancel={onCancel} onDone={onSaved}
-      onStale={() => setAttempt(n => n + 1)} /> : <>
+      onStale={reload} /> : <>
       <p className={error ? "text-xs text-red-600" : "text-xs text-slate-500"} role={error ? "alert" : "status"}>{error ?? "Đang tải job và cấu hình…"}</p>
-      {error && <Button size="sm" variant="outline" onClick={() => setAttempt(n => n + 1)}>Thử lại</Button>}
+      {error && <Button size="sm" variant="outline" onClick={reload}>Thử lại</Button>}
       <Button size="sm" variant="outline" onClick={onCancel}>Hủy</Button>
     </>}
   </div>;
@@ -321,7 +321,7 @@ function FailedRow({
         )}
         {!showDriverSelect && !showSchedule && !showConfig && (
           <>
-            {(job.reason === "NO_MAPPING" || job.reason === "NO_DROPOFF_RULE") && (
+            {(job.reason === "NO_MAPPING" || job.reason === "NO_DROPOFF_RULE" || job.reason === "NO_DRIVER") && (
               <Button size="sm" variant="outline" className="text-[11px] h-6 px-2 shrink-0" onClick={() => setShowConfig(true)}>
                 <ClipboardList className="size-3 shrink-0" aria-hidden />
                 Thiết lập config

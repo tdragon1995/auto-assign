@@ -47,9 +47,10 @@ const noop = () => {};
 const props = {held:[],env:"prod" as const,onNoteRefresh:noop,onNoteAssigned:noop,onNoteManualAssign:noop,warnings:[],warningsAt:null,
   scheduleErrors:[],drivers:[],onAssign:noop,onScheduleFailed:noop,onRetrySchedule:noop,retryingSchedule:false,
   leaveToday:[],leaveTomorrow:[],onLeaveRefresh:noop,onConfigSaved:noop};
-for (const reason of ["NO_MAPPING", "NO_DROPOFF_RULE", "INVALID_DRIVER"] as const) {
+for (const reason of ["NO_MAPPING", "NO_DROPOFF_RULE", "NO_DRIVER", "INVALID_DRIVER"] as const) {
   const html = renderToStaticMarkup(createElement(FailedJobsPanel, {...props,failed:[{job_id:34479357,customer:"Pickup → BRA - D006",reason,detail:"",level:"ERROR",ts:""}]}));
   assert.equal(html.includes("Thiết lập config"), reason !== "INVALID_DRIVER");
+  if (reason === "NO_DRIVER") assert.ok(html.includes("Hẹn giờ") && html.includes("Gán thủ công"));
 }
 const editor = renderToStaticMarkup(createElement(BranchEditor, {...config,drivers:[],onCancel:noop,onDone:noop,onStale:noop}));
 assert.ok(editor.includes("Copy ca từ điểm khác") && editor.includes("Lưu"));
