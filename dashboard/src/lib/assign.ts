@@ -2164,7 +2164,7 @@ export async function autoAssignCycle(
           const preview = previewFixedDriver(config, job, customerId, leaveEntries, dropoffId);
           heldJobs.push({
             job_id: jobId,
-            customer: jobCustomerName ?? customerId ?? "—",
+            customer: route,
             note: getJobNoteText(job),
             ...(preview
               ? {

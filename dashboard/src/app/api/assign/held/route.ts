@@ -6,13 +6,13 @@ import { vnTimestamp, parseVnTimestamp, vnDate } from "@/lib/time";
 
 type RawStop = { stop_id?: number; stop_type_id?: number; customer_id?: string; customer_name?: string; note?: string };
 
-/** Pickup customer name, the "<pickup> → <dropoff>" route (for the uniform log
+/** Pickup → dropoff display label, the route (for the uniform log
  *  suffix; stops are already fetched, so no extra Cartrack call), and the joined
  *  blocking notes — for putting a failed job back. */
 function heldFields(jobId: number, stops: RawStop[]): { customer: string; route: string; note: string } {
   const pickup = stops.find((s) => s.stop_type_id === 1)?.customer_name;
   const dropoff = stops.find((s) => s.stop_type_id === 2)?.customer_name;
-  const customer = pickup ?? `Job ${jobId}`;
+  const customer = `${pickup ?? `Job ${jobId}`} → ${dropoff ?? "—"}`;
   const route = `${pickup ?? "—"} → ${dropoff ?? "—"}`;
   // No `now`: this is the text shown on the review row, and a note is worth
   // showing whether or not the safe-list would have released it at this hour.
