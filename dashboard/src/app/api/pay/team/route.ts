@@ -43,7 +43,11 @@ interface DailyRow {
   jobs_total: number;
   jobs_priced: number;
   total_km: number | string | null;
+  first_pickup_ts: string | null;
+  last_dropoff_ts: string | null;
 }
+
+interface ShiftRow { driver_id: string | null; trip_date: string; shift_start: string; shift_end: string }
 
 const num = (v: number | string | null | undefined): number => {
   const n = typeof v === "number" ? v : Number(v);
@@ -79,7 +83,7 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const [daily, punches, sealed, legsDaily] = await Promise.all([
+    const [daily, punches, sealed, legsDaily, shiftRows] = await Promise.all([
       sbSelectAll<DailyRow>(
         "v_pay_daily",
         `select=*&trip_date=gte.${from}&trip_date=lte.${to}`,
@@ -107,7 +111,23 @@ export async function GET(req: NextRequest) {
         `select=driver_id,total_km&trip_date=gte.${from}&trip_date=lte.${to}`,
         "trip_date.asc,driver_id.asc",
       ),
+      // Payroll's shifts for the period, imported from its monthly file. Until
+      // that import happens the hours are unknown, not zero — see coverage.
+      sbSelectAll<ShiftRow>(
+        "pay_shifts",
+        `select=driver_id,trip_date,shift_start,shift_end&trip_date=gte.${from}&trip_date=lte.${to}`,
+        "id.asc",
+      ),
     ]);
+    const shiftsFor = new Map<string, { start: string; end: string }[]>();
+    for (const r of shiftRows) {
+      if (!r.driver_id) continue;
+      const k = `${r.driver_id}|${r.trip_date}`;
+      const w = { start: r.shift_start.slice(0, 5), end: r.shift_end.slice(0, 5) };
+      const list = shiftsFor.get(k);
+      if (list) list.push(w); else shiftsFor.set(k, [w]);
+    }
+    const shiftsImported = shiftRows.length > 0;
     const realKm = new Map<string, number>();
     for (const r of legsDaily) realKm.set(r.driver_id, (realKm.get(r.driver_id) ?? 0) + num(r.total_km));
 
@@ -125,16 +145,16 @@ export async function GET(req: NextRequest) {
       km: number;
       jobs: number;
       unpriced: number;
-      /** Punches bucketed BY DAY, because the pairing is a within-day rule: a
-       *  month's taps thrown into one list would pair a Monday check-in with a
-       *  Tuesday check-out and bill the night in between. */
+      /** Punches bucketed BY DAY: the hours rule is a within-day rule. */
       byDay: Map<string, PayPunch[]>;
+      /** First pickup / last dropoff per day, for the hours rule. */
+      tasks: Map<string, { first: string | null; last: string | null }>;
       /** Days with any activity at all — a day worked with no dispatch counts. */
       days: Set<string>;
     }
     const acc = new Map<string, Acc>();
     const get = (id: string, name: string | null): Acc => {
-      const e = acc.get(id) ?? { name, km: 0, jobs: 0, unpriced: 0, byDay: new Map(), days: new Set() };
+      const e = acc.get(id) ?? { name, km: 0, jobs: 0, unpriced: 0, byDay: new Map(), tasks: new Map(), days: new Set() };
       if (!e.name && name) e.name = name;
       acc.set(id, e);
       return e;
@@ -145,6 +165,7 @@ export async function GET(req: NextRequest) {
       e.km += num(d.total_km);
       e.jobs += d.jobs_total;
       e.unpriced += d.jobs_total - d.jobs_priced;
+      e.tasks.set(d.trip_date, { first: d.first_pickup_ts, last: d.last_dropoff_ts });
       e.days.add(d.trip_date);
     }
     for (const p of punches) {
@@ -160,11 +181,17 @@ export async function GET(req: NextRequest) {
       .filter(([, e]) => employmentOf(e.name) === "part-time")
       .map(([driver_id, e]) => {
         let mins = 0;
-        let openInDays = 0;
-        for (const dayPunches of e.byDay.values()) {
-          const w = workedMinutes(dayPunches);
+        let noShiftDays = 0;
+        for (const date of e.days) {
+          const t = e.tasks.get(date);
+          const w = workedMinutes(e.byDay.get(date) ?? [], {
+            date,
+            shifts: shiftsFor.get(`${driver_id}|${date}`) ?? [],
+            firstTaskAt: t?.first ?? null,
+            lastTaskAt: t?.last ?? null,
+          });
           mins += w.minutes;
-          if (w.open_in.length > 0) openInDays++;
+          if (w.no_shift) noShiftDays++;
         }
         const km = Math.round(e.km * 100) / 100;
         return {
@@ -185,9 +212,10 @@ export async function GET(req: NextRequest) {
           hour_pay: hourPayFor(mins),
           km_pay: kmPayFor(km),
           total_pay: hourPayFor(mins) + kmPayFor(km),
-          /** Days with a check-in and no check-out. These pay nothing, so this is
-           *  the column a supervisor acts on BEFORE the 25th, not after. */
-          open_in_days: openInDays,
+          /** Days worked with no shift in payroll's file: they pay no hours, so
+           *  this is the column a supervisor checks before the 25th. Meaningless
+           *  before the import, when EVERY day would count. */
+          no_shift_days: shiftsImported ? noShiftDays : 0,
           /** Completed jobs with no distance: paid 0 km until priced. */
           unpriced_jobs: e.unpriced,
         };
@@ -206,8 +234,12 @@ export async function GET(req: NextRequest) {
         expected_days: missingDays.length + [...have].filter((d) => d <= lastExpected).length,
         missing_days: missingDays,
         period_closed: periodClosed,
-        // Approval needs every day of a finished period in, and every job priced.
-        ready: periodClosed && missingDays.length === 0 && drivers.every((d) => d.unpriced_jobs === 0),
+        /** Payroll's shift file for this period has been imported. Before it is,
+         *  every hour figure is zero because it is unknown, not because nobody worked. */
+        shifts_imported: shiftsImported,
+        // Approval needs every day of a finished period in, the shifts imported,
+        // and every job priced.
+        ready: periodClosed && shiftsImported && missingDays.length === 0 && drivers.every((d) => d.unpriced_jobs === 0),
       },
       totals: {
         days_worked: drivers.reduce((s, d) => s + d.days_worked, 0),
@@ -218,7 +250,7 @@ export async function GET(req: NextRequest) {
         hour_pay: drivers.reduce((s, d) => s + d.hour_pay, 0),
         km_pay: drivers.reduce((s, d) => s + d.km_pay, 0),
         total_pay: drivers.reduce((s, d) => s + d.total_pay, 0),
-        open_in_days: drivers.reduce((s, d) => s + d.open_in_days, 0),
+        no_shift_days: drivers.reduce((s, d) => s + d.no_shift_days, 0),
         unpriced_jobs: drivers.reduce((s, d) => s + d.unpriced_jobs, 0),
       },
       drivers,

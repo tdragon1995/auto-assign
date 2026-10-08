@@ -281,6 +281,7 @@ ever named, which is how a warning stops being read.
 | `GET /api/pay/me` | The signed-in driver's part-time earnings. `?month=YYYY-MM` for the month, `?date=` for one day. Driver id from the `nv_session` cookie only; refuses any account that is not `PT…` |
 | `GET /api/pay/team` | Every PT driver's month, for điều phối's "Lương PT" tab. Defaults to LAST month (payroll runs on the 25th) |
 | `GET /api/pickup-setup` | Config tab's portal-ETA check: measured **scheduled→arrival** (Supabase view `pickup_eta_stats_30d`; >5 pickups, windowed trips out, and nothing due before 06:00 VN — a 00:00 pickup waits 509 min at the median because no one is on shift — and nothing whose delivery finished on another day) vs the master `pickup_setup`, plus places Labcenter changed behind the master. The proposal is the p80 capped at 2× the median (`targetMins`) — the ETA is a promise, and some clients are bimodal. `POST` applies one admin decision (`approve_eta` / `repush` / `accept_lc`) — Labcenter first with read-back, master second, logged to `pickup_setup_changes`. No Redis, no cache, on demand only. `pickup_eta` rides `archiveDay` off the routes it already fetched (no Cartrack call of its own); one-off history: `GET /api/tat/archive?only=pickup&date=<yesterday>&days=30`. The first panel open adopts every Labcenter place (no seed) and looks up Cartrack ids for the measured ones first |
+| `POST /api/pay/shifts` | Import payroll's shifts for a period (`{month, rows}`, parsed from the xlsx in the browser); replaces that period in `pay_shifts` and lists accounts it could not match |
 
 ### Shared Libraries
 
@@ -294,7 +295,7 @@ ever named, which is how a warning stops being read.
 | `src/lib/smart-rank.ts` | `RefStop`, `RefLabel`, `selectReferenceStop`, `computeStopStats`, `rankingComparator`; anchor honesty: `isUnreachedAnchor`, `liveGpsRef`, `lastRealPositionRef` (see footgun 9) |
 | `src/lib/time.ts` | `vnDate`, `vnTimestamp`, `vnHoursMinutes`, `vnMinutesSinceMidnight`, `vnDayWindow`, `parseVnTimestamp` |
 | `src/lib/tat.ts` | Driver TAT: `legsForRoute` / `buildDayLegs` cut a day into **legs** (rides between consecutive stops, in the order actually worked), `MINS_PER_KM`, `targetMinsFor`, `summarize`. See `docs/driver-tat.md` |
-| `src/lib/pay.ts` | Part-time pay: `RATE_PER_HOUR_VND`/`RATE_PER_KM_VND`, `buildDayPay` (routes → paid jobs + chấm-công punches), `workedMinutes` (the PROVISIONAL pairing formula — see footgun 11), `hourPayFor`/`kmPayFor`. See `docs/driver-pay.md` |
+| `src/lib/pay.ts` | Part-time pay: `RATE_PER_HOUR_VND`/`RATE_PER_KM_VND`, `buildDayPay` (routes → paid jobs + chấm-công punches), `workedMinutes` (payroll's hours rule on the imported shift — see footgun 11), `hourPayFor`/`kmPayFor`. See `docs/driver-pay.md` |
 | `src/lib/tat-archive.ts` | `archiveDay` — fetch, price and **replace** one day in Supabase `tat_legs`, and (in the same pass, off the same routes) `pay_jobs` + `pay_punches` |
 | `src/lib/supabase-rest.ts` | `sbSelect` / `sbInsert` / `sbUpsert` / `sbDelete` — PostgREST over `fetch`, service-role, SERVER ONLY. No SDK dependency by design |
 
@@ -457,14 +458,24 @@ These are the things most likely to burn a future agent working on this codebase
     rode, the job pair is what payroll pays, and the job pair is the same measure
     `/api/export-completed` has produced for the payroll CSV all along.
 
-    **The hours formula is PROVISIONAL and lives in exactly one function.**
-    `workedMinutes` in `pay.ts` pairs each check-in with the next check-out and sums
-    the pairs; an unpaired check-in pays nothing and is surfaced with a ⚠ rather than
-    closed at a guessed time. The payroll rule is still being settled, which is why
-    the archive stores the RAW taps (all three activity stamps) and the minutes are
-    derived on READ. Changing the rule must stay a change to that one function — no
-    minute count is ever written to a column, deliberately, so a new formula applies
-    to every past month with no re-archive and no billed distance lookup behind it.
+    **Hours are PAYROLL'S rule on PAYROLL'S shift, in exactly one function.**
+    `workedMinutes` in `pay.ts`: start = later of the first check-in tap (no tap →
+    first pickup) and the shift start; end = later of the shift end and the last
+    dropoff. The check-out tap is not used. Holidays ×3 (`HOLIDAY_MULTIPLIER`, a
+    hand-kept list — extend it as holidays are announced). Reconciled against
+    payroll's 15/08–14/09 file: start matches 95% of days, end 84%, total within
+    1%; the old tap-to-tap pairing paid 6% more.
+
+    **The shift comes from payroll's monthly file, NOT the roster grid.** The grid
+    agreed with payroll's shifts on only 52% of days (2026-09-22). "Nhập ca từ file"
+    on Lương PT parses `…_Parttime Records.xlsx` in the browser (`pay-shifts.ts`) and
+    `POST /api/pay/shifts` REPLACES the period in `pay_shifts`. No shift → no hours,
+    flagged "Không ca", never guessed from taps. Before the import every hour figure
+    is unknown — `coverage.shifts_imported` says so.
+
+    Nothing derived is stored: raw taps and imported shifts are, and the minutes
+    are computed on READ, so a rule change applies to every past month with no
+    re-archive and no billed distance lookup behind it.
 
     Distance is the opposite: `distance_km` is frozen onto the row because resolving
     a new pair costs a billed request, and recomputing it would re-spend money to get

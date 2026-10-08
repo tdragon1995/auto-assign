@@ -33,7 +33,7 @@ import { employmentOf } from "@/lib/driver-label";
 import {
   workedMinutes, hourPayFor, kmPayFor, punchAt,
   RATE_PER_HOUR_VND, RATE_PER_KM_VND,
-  type PayPunch, type PayJob,
+  type PayPunch, type PayJob, type DayFacts, type ShiftWindow,
 } from "@/lib/pay";
 import { payrollPeriod } from "@/lib/pay-period";
 import { vnDate, addDays } from "@/lib/time";
@@ -52,6 +52,21 @@ interface DailyRow {
   jobs_total: number;
   jobs_priced: number;
   total_km: number | string | null;
+  first_pickup_ts: string | null;
+  last_dropoff_ts: string | null;
+}
+
+interface ShiftRow { trip_date: string; shift_start: string; shift_end: string }
+
+/** Payroll's imported shift windows for one driver, keyed by date. */
+function shiftsByDate(rows: ShiftRow[]): Map<string, ShiftWindow[]> {
+  const m = new Map<string, ShiftWindow[]>();
+  for (const r of rows) {
+    const w = { start: r.shift_start.slice(0, 5), end: r.shift_end.slice(0, 5) };
+    const list = m.get(r.trip_date);
+    if (list) list.push(w); else m.set(r.trip_date, [w]);
+  }
+  return m;
 }
 
 const timeFmt = new Intl.DateTimeFormat("en-GB", {
@@ -78,10 +93,12 @@ function addMonths(m: string, n: number): string {
 }
 
 /** One day's line on the month view. The hours are derived HERE, from the stored
- *  taps, rather than read from a column — that is what makes the payroll formula
- *  replaceable without re-archiving anything. See pay.ts/workedMinutes. */
-function dayLine(date: string, km: number, jobs: number, punches: PayPunch[], unpriced = 0) {
-  const worked = workedMinutes(punches);
+ *  taps and payroll's imported shift, rather than read from a column — that is
+ *  what makes the rule replaceable without re-archiving anything. See
+ *  pay.ts/workedMinutes. */
+function dayLine(facts: DayFacts, km: number, jobs: number, punches: PayPunch[], unpriced = 0) {
+  const date = facts.date;
+  const worked = workedMinutes(punches, facts);
   return {
     date,
     jobs,
@@ -91,10 +108,8 @@ function dayLine(date: string, km: number, jobs: number, punches: PayPunch[], un
     km: Math.round(km * 100) / 100,
     worked_mins: worked.minutes,
     spans: worked.spans.map((s) => ({ from: hhmm(s.from), to: hhmm(s.to), minutes: s.minutes })),
-    // Surfaced, not swallowed: an unclosed shift pays nothing, and the driver
-    // needs to see WHICH day so they can get it fixed before payday.
-    open_in: worked.open_in.map(hhmm).filter((t): t is string => t !== null),
-    stray_out: worked.stray_out.map(hhmm).filter((t): t is string => t !== null),
+    /** Worked with no shift in payroll's file: no hours paid for this day. */
+    no_shift: worked.no_shift,
     hour_pay: hourPayFor(worked.minutes),
     km_pay: kmPayFor(km),
     total_pay: hourPayFor(worked.minutes) + kmPayFor(km),
@@ -147,7 +162,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "Ngày không hợp lệ." }, { status: 400 });
     }
     try {
-      const [jobs, punches] = await Promise.all([
+      const [jobs, punches, shiftRows] = await Promise.all([
         sbSelectAll<PayJob>(
           "pay_jobs",
           `select=*&driver_id=eq.${driverId}&trip_date=eq.${askedDate}`,
@@ -158,14 +173,30 @@ export async function GET(req: NextRequest) {
           `select=*&driver_id=eq.${driverId}&trip_date=eq.${askedDate}`,
           "id.asc",
         ),
+        sbSelectAll<ShiftRow>(
+          "pay_shifts",
+          `select=trip_date,shift_start,shift_end&driver_id=eq.${driverId}&trip_date=eq.${askedDate}`,
+          "id.asc",
+        ),
       ]);
 
+      // Same VN date only, as v_pay_daily does: a job finished the next morning
+      // must not stretch this day's shift overnight.
+      const stamps = (xs: (string | null)[]) => xs
+        .filter((t): t is string => t !== null && vnDate(new Date(t)) === askedDate)
+        .sort((a, b) => Date.parse(a) - Date.parse(b));
+      const facts: DayFacts = {
+        date: askedDate,
+        shifts: shiftsByDate(shiftRows).get(askedDate) ?? [],
+        firstTaskAt: stamps(jobs.map((j) => j.pickup_completed_ts))[0] ?? null,
+        lastTaskAt: stamps(jobs.map((j) => j.dropoff_completed_ts)).at(-1) ?? null,
+      };
       const km = jobs.reduce((sum, j) => sum + num(j.distance_km), 0);
       return NextResponse.json({
         ok: true,
         date: askedDate,
         rates,
-        day: dayLine(askedDate, km, jobs.length, punches, jobs.filter((j) => j.distance_km == null).length),
+        day: dayLine(facts, km, jobs.length, punches, jobs.filter((j) => j.distance_km == null).length),
         jobs: jobs.map((j) => ({
           job_id: j.job_id,
           reference_number: j.reference_number,
@@ -206,11 +237,11 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({
         ok: true, driver_name: (await masterDriverNames([driverId])).get(driverId)||session.driver_name, month: askedMonth, from, to: from,
         rates, latest, days: [],
-        summary: { days: 0, jobs: 0, km: 0, worked_mins: 0, hour_pay: 0, km_pay: 0, total_pay: 0, open_in_days: 0, unpriced_jobs: 0 },
+        summary: { days: 0, jobs: 0, km: 0, worked_mins: 0, hour_pay: 0, km_pay: 0, total_pay: 0, no_shift_days: 0, unpriced_jobs: 0 },
       });
     }
 
-    const [daily, punches, names] = await Promise.all([
+    const [daily, punches, names, shiftRows] = await Promise.all([
       sbSelectAll<DailyRow>(
         "v_pay_daily",
         `select=*&driver_id=eq.${driverId}&trip_date=gte.${from}&trip_date=lte.${to}`,
@@ -222,7 +253,13 @@ export async function GET(req: NextRequest) {
         "id.asc",
       ),
       masterDriverNames([driverId]),
+      sbSelectAll<ShiftRow>(
+        "pay_shifts",
+        `select=trip_date,shift_start,shift_end&driver_id=eq.${driverId}&trip_date=gte.${from}&trip_date=lte.${to}`,
+        "id.asc",
+      ),
     ]);
+    const shifts = shiftsByDate(shiftRows);
 
     const punchesByDay = new Map<string, PayPunch[]>();
     for (const p of punches) {
@@ -238,8 +275,14 @@ export async function GET(req: NextRequest) {
     const jobsByDay = new Map(daily.map((d) => [d.trip_date, d.jobs_total]));
     const unpricedByDay = new Map(daily.map((d) => [d.trip_date, d.jobs_total - d.jobs_priced]));
 
+    const taskByDay = new Map(daily.map((d) => [d.trip_date, d]));
     const days = dates.map((d) =>
-      dayLine(d, kmByDay.get(d) ?? 0, jobsByDay.get(d) ?? 0, punchesByDay.get(d) ?? [], unpricedByDay.get(d) ?? 0),
+      dayLine({
+        date: d,
+        shifts: shifts.get(d) ?? [],
+        firstTaskAt: taskByDay.get(d)?.first_pickup_ts ?? null,
+        lastTaskAt: taskByDay.get(d)?.last_dropoff_ts ?? null,
+      }, kmByDay.get(d) ?? 0, jobsByDay.get(d) ?? 0, punchesByDay.get(d) ?? [], unpricedByDay.get(d) ?? 0),
     );
 
     // Totals are built from the month's own sums, not from adding up the day
@@ -266,7 +309,7 @@ export async function GET(req: NextRequest) {
         hour_pay: hourPayFor(totalMins),
         km_pay: kmPayFor(roundedKm),
         total_pay: hourPayFor(totalMins) + kmPayFor(roundedKm),
-        open_in_days: days.filter((d) => d.open_in.length > 0).length,
+        no_shift_days: shiftRows.length > 0 ? days.filter((d) => d.no_shift).length : 0,
         // One number the driver can act on without opening thirty days.
         unpriced_jobs: days.reduce((s, d) => s + d.unpriced, 0),
       },

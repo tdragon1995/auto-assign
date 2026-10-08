@@ -176,19 +176,19 @@ function summarize() {
 
   const sum = (k: "before" | "after") => reports.reduce((s, r) => ({
     jobs: s.jobs + r.totals[k].jobs, km: Math.round((s.km + r.totals[k].km) * 100) / 100,
-    worked_mins: s.worked_mins + r.totals[k].worked_mins, pay: s.pay + r.totals[k].pay,
-  }), { jobs: 0, km: 0, worked_mins: 0, pay: 0 });
+    punches: s.punches + (r.totals[k].punches ?? 0), pay: s.pay + r.totals[k].pay,
+  }), { jobs: 0, km: 0, punches: 0, pay: 0 });
 
   const exceptionCounts: Record<string, number> = {};
   for (const r of reports) for (const e of r.exceptions) exceptionCounts[e.kind] = (exceptionCounts[e.kind] ?? 0) + 1;
 
-  const rows = ["date,driver_id,driver_name,jobs_before,jobs_after,km_before,km_after,mins_before,mins_after,pay_before,pay_after,open_in,stray_out"];
+  const rows = ["date,driver_id,driver_name,jobs_before,jobs_after,km_before,km_after,punches_before,punches_after,km_pay_before,km_pay_after"];
   for (const r of reports) {
     const ids = new Set([...Object.keys(r.totals.by_driver_before), ...Object.keys(r.totals.by_driver_after)]);
     for (const id of ids) {
       const b = r.totals.by_driver_before[id] ?? {}; const a = r.totals.by_driver_after[id] ?? {};
       const name = String(a.driver_name ?? b.driver_name ?? "").replace(/"/g, '""');
-      rows.push([r.date, id, `"${name}"`, b.jobs ?? 0, a.jobs ?? 0, b.km ?? 0, a.km ?? 0, b.worked_mins ?? 0, a.worked_mins ?? 0, b.pay ?? 0, a.pay ?? 0, a.open_in ?? 0, a.stray_out ?? 0].join(","));
+      rows.push([r.date, id, `"${name}"`, b.jobs ?? 0, a.jobs ?? 0, b.km ?? 0, a.km ?? 0, b.punches ?? 0, a.punches ?? 0, b.pay ?? 0, a.pay ?? 0].join(","));
     }
   }
   writeFileSync(file("by-driver.csv"), "﻿" + rows.join("\n"));
@@ -225,9 +225,9 @@ function summarize() {
   writeFileSync(file("summary.md"), [
     `# Payroll reconciliation ${FROM} – ${TO} (${summary.mode})`,
     `Days reconciled: **${reconciled.length}/${days.length}**${failed.length ? ` — failed: ${failed.map((f) => f.date).join(", ")}` : ""}`,
-    ``, `| PT totals | jobs | km | minutes | pay (đ) |`, `|---|---|---|---|---|`,
-    `| before | ${summary.part_time_totals.before.jobs} | ${summary.part_time_totals.before.km} | ${summary.part_time_totals.before.worked_mins} | ${summary.part_time_totals.before.pay} |`,
-    `| after | ${summary.part_time_totals.after.jobs} | ${summary.part_time_totals.after.km} | ${summary.part_time_totals.after.worked_mins} | ${summary.part_time_totals.after.pay} |`,
+    ``, `| PT totals | jobs | km | taps | km pay (đ) |`, `|---|---|---|---|---|`,
+    `| before | ${summary.part_time_totals.before.jobs} | ${summary.part_time_totals.before.km} | ${summary.part_time_totals.before.punches} | ${summary.part_time_totals.before.pay} |`,
+    `| after | ${summary.part_time_totals.after.jobs} | ${summary.part_time_totals.after.km} | ${summary.part_time_totals.after.punches} | ${summary.part_time_totals.after.pay} |`,
     ``, `## Differences`, ...Object.entries(summary.diff_totals).map(([k, v]) => `- ${k}: ${v}`),
     ``, `## Exceptions (review before approval)`, ...Object.entries(exceptionCounts).map(([k, v]) => `- ${k}: ${v}`),
     ``, `Per-day detail: <date>.dry.json / <date>.apply.json. Per driver: by-driver.csv.`,

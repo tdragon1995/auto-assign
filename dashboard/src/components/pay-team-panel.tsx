@@ -9,14 +9,19 @@
  * Sorted by what is OWED, largest first — this is a payables list, so the biggest
  * number is the one worth checking before it is paid, not the best performer.
  *
- * The one column that is a TASK rather than a report is "⚠": days where a driver
- * checked in and never checked out. Those hours pay nothing, and the fix has to
- * happen before the 25th, so the column stays visible even at zero rather than
- * appearing only when something is wrong.
+ * HOURS NEED PAYROLL'S SHIFT FILE. The hours are computed on payroll's own
+ * shifts, imported here once a month ("Nhập ca từ file"); until that happens
+ * every hour figure is unknown, and the panel says so rather than showing 0.
+ *
+ * The one column that is a TASK rather than a report is "Không ca": days a
+ * driver worked with no shift in payroll's file. Those pay no hours, and the fix
+ * has to happen before the 25th.
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, AlertCircle, Download, ChevronLeft, ChevronRight, Search, X } from "lucide-react";
+import { Loader2, AlertCircle, Download, ChevronLeft, ChevronRight, Search, X, Upload } from "lucide-react";
+import * as XLSX from "xlsx";
+import { parsePayrollSheet } from "@/lib/pay-shifts";
 import { foldName } from "@/lib/driver-cell";
 import { DriverName } from "./driver-name";
 
@@ -32,7 +37,8 @@ interface DriverRow {
   hour_pay: number;
   km_pay: number;
   total_pay: number;
-  open_in_days: number;
+  /** Days worked with no shift in payroll's file — they pay no hours. */
+  no_shift_days: number;
   unpriced_jobs: number;
 }
 
@@ -43,7 +49,7 @@ interface PayTeamReport {
   to: string;
   rates: { per_hour: number; per_km: number };
   driver_count: number;
-  coverage: { expected_days: number; missing_days: string[]; period_closed: boolean; ready: boolean };
+  coverage: { expected_days: number; missing_days: string[]; period_closed: boolean; shifts_imported: boolean; ready: boolean };
   totals: Omit<DriverRow, "driver_id" | "driver_name">;
   drivers: DriverRow[];
   error?: string;
@@ -143,8 +149,40 @@ export function PayTeamPanel() {
   /** Free-text driver filter. Accent-insensitive, and it searches the staff code
    *  too ("pt1015", "quynh") because that is what payroll keys on. */
   const [q, setQ] = useState("");
-  /** Set from the amber banner: show only the drivers with an unclosed shift. */
+  /** Set from the amber banner: show only the drivers who worked without a shift. */
   const [onlyFlagged, setOnlyFlagged] = useState(false);
+
+  /** Payroll's monthly shift file → /api/pay/shifts. Parsed HERE, in the
+   *  browser, so the server never spends CPU on a spreadsheet. */
+  const [importing, setImporting] = useState(false);
+  const [importNote, setImportNote] = useState<string | null>(null);
+  async function importShifts(file: File) {
+    setImporting(true);
+    setImportNote(null);
+    try {
+      const wb = XLSX.read(await file.arrayBuffer());
+      const ws = wb.Sheets["Details"] ?? wb.Sheets[wb.SheetNames[0]];
+      const parsed = parsePayrollSheet(XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, raw: true }));
+      if (parsed.error) { setImportNote(parsed.error); return; }
+      const res = await fetch("/api/pay/shifts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ month, rows: parsed.rows }),
+      });
+      const j = await res.json();
+      if (!res.ok || !j.ok) { setImportNote(j.error ?? "Không nhập được ca."); return; }
+      setImportNote(
+        `Đã nhập ${j.imported} ca của ${j.drivers} tài xế.` +
+        (parsed.skipped ? ` Bỏ qua ${parsed.skipped} dòng thiếu ngày/giờ.` : "") +
+        (j.unmatched.length ? ` Không khớp tài khoản (chưa tính giờ): ${j.unmatched.join(", ")}.` : ""),
+      );
+      await load(month);
+    } catch {
+      setImportNote("Không đọc được file. Có đúng file .xlsx chấm công bán thời gian không?");
+    } finally {
+      setImporting(false);
+    }
+  }
 
   async function exportCsv() {
     if (!data) return;
@@ -158,14 +196,14 @@ export function PayTeamPanel() {
 
       const head = ["Tài xế", "Số ngày", "Số chuyến", "Km tính tiền", "Km thực chạy", "Giờ chấm công (phút)",
                     "Tiền giờ (đ)", "Tiền km (đ)", "Tổng (đ)", "Tổng tiền / km thực (đ)",
-                    "Ngày thiếu chấm công ra", "Chuyến chưa có km"];
+                    "Ngày làm không có ca", "Chuyến chưa có km"];
       const rows: (string | number)[][] = data.drivers.map((d) => [
         // FULL name here, staff code and all, unlike the table on screen. This file
         // gets matched against attendance and leave in a spreadsheet, and the code
         // is what those are keyed on — two drivers share a display name today.
         d.driver_name, d.days_worked, d.jobs, d.km, d.real_km, d.worked_mins,
         d.hour_pay, d.km_pay, d.total_pay, realRate(d.total_pay, d.real_km) ?? "",
-        d.open_in_days, d.unpriced_jobs,
+        d.no_shift_days, d.unpriced_jobs,
       ]);
       // An incomplete payroll must not leave this screen looking final.
       if (!data.coverage.ready) {
@@ -202,7 +240,7 @@ export function PayTeamPanel() {
   const needle = foldName(q.trim());
   const shown = !data ? [] : data.drivers
     .filter((d) => (needle ? foldName(d.driver_name).includes(needle) : true))
-    .filter((d) => (onlyFlagged ? d.open_in_days > 0 : true));
+    .filter((d) => (onlyFlagged ? d.no_shift_days > 0 : true));
 
   return (
     <div className="h-full flex flex-col rounded-xl border border-slate-200 bg-white overflow-hidden">
@@ -258,7 +296,23 @@ export function PayTeamPanel() {
           <Download className="size-3.5" />
           CSV
         </button>
+        <label
+          className={`flex items-center gap-1.5 min-h-11 text-xs font-semibold text-slate-700 border border-slate-300 rounded-lg px-3 hover:bg-slate-50 cursor-pointer ${importing ? "opacity-40 pointer-events-none" : ""}`}
+          title="File chấm công bán thời gian của phòng lương (…_Parttime Records.xlsx)"
+        >
+          {importing ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />}
+          Nhập ca từ file
+          <input
+            type="file"
+            accept=".xlsx"
+            className="sr-only"
+            onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) importShifts(f); }}
+          />
+        </label>
       </div>
+      {importNote && (
+        <p role="status" className="px-3 py-2 text-xs text-slate-700 bg-slate-50 border-b border-slate-200">{importNote}</p>
+      )}
 
       {data && (
         <p className="px-3 py-2 text-xs text-slate-600 border-b border-slate-200">
@@ -295,6 +349,7 @@ export function PayTeamPanel() {
           <span>
             <strong>Chưa đủ dữ liệu — chưa duyệt lương kỳ này.</strong>{" "}
             {!data.coverage.period_closed && "Kỳ lương chưa kết thúc. "}
+            {!data.coverage.shifts_imported && "Chưa nhập ca từ file chấm công — tiền giờ chưa tính. "}
             {data.coverage.missing_days.length > 0 &&
               `Thiếu ${data.coverage.missing_days.length}/${data.coverage.expected_days} ngày: ${data.coverage.missing_days.map((d) => d.slice(8, 10) + "/" + d.slice(5, 7)).join(", ")}. `}
             {data.totals.unpriced_jobs > 0 && `${data.totals.unpriced_jobs} chuyến chưa có km (đang tính 0đ).`}
@@ -303,12 +358,12 @@ export function PayTeamPanel() {
       )}
 
       {/* The one thing here that is a to-do rather than a report. */}
-      {data && data.totals.open_in_days > 0 && (
+      {data && data.totals.no_shift_days > 0 && (
         <div className="flex items-start gap-2 text-xs text-amber-900 bg-amber-50 border-b border-amber-200 px-3 py-2 shrink-0">
           <AlertCircle className="size-3.5 mt-0.5 shrink-0" />
           <span>
-            {data.totals.open_in_days} ngày có chấm công vào nhưng không có chấm công ra —
-            những ca đó <strong>chưa được tính giờ</strong>.{" "}
+            {data.totals.no_shift_days} ngày tài xế có chấm công hoặc chạy chuyến nhưng
+            không có ca trong file — <strong>không tính tiền giờ</strong>.{" "}
             {/* The banner IS the filter. Telling a supervisor to eye-scan 82 rows for
                 a low-contrast digit is not a to-do, it is a search task. */}
             <button
@@ -317,7 +372,7 @@ export function PayTeamPanel() {
             >
               {onlyFlagged
                 ? "Hiện tất cả tài xế"
-                : `Chỉ hiện ${data.drivers.filter((d) => d.open_in_days > 0).length} tài xế cần bổ sung`}
+                : `Chỉ hiện ${data.drivers.filter((d) => d.no_shift_days > 0).length} tài xế cần kiểm tra`}
             </button>
           </span>
         </div>
@@ -339,7 +394,7 @@ export function PayTeamPanel() {
           </p>
         ) : shown.length === 0 ? (
           <p className="text-center text-sm text-slate-500 py-16">
-            {q ? `Không có tài xế nào khớp "${q}".` : "Không có tài xế nào cần bổ sung chấm công."}
+            {q ? `Không có tài xế nào khớp "${q}".` : "Không có tài xế nào làm ngoài ca."}
           </p>
         ) : (
           <table className="w-full text-sm">
@@ -354,7 +409,7 @@ export function PayTeamPanel() {
                 <th className="text-right font-semibold px-2 py-2" title="(Tiền giờ + tiền km) ÷ km thực chạy">đ/km thực</th>
                 {/* A word, not a glyph: the column is a task list and screen readers
                     got nothing from "⚠". */}
-                <th className="text-right font-semibold px-2 py-2">Thiếu ra</th>
+                <th className="text-right font-semibold px-2 py-2" title="Ngày có làm nhưng không có ca trong file — không tính tiền giờ">Không ca</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -385,8 +440,8 @@ export function PayTeamPanel() {
                     {fmtRate(realRate(d.total_pay, d.real_km))}
                   </td>
                   <td className="text-right px-2 py-2 tabular-nums">
-                    {d.open_in_days > 0
-                      ? <span className="text-amber-700 font-semibold">{d.open_in_days}</span>
+                    {d.no_shift_days > 0
+                      ? <span className="text-amber-700 font-semibold">{d.no_shift_days}</span>
                       : <span className="text-slate-500">—</span>}
                   </td>
                 </tr>
@@ -400,7 +455,9 @@ export function PayTeamPanel() {
       {data && (
         <div className="px-3 py-2 border-t border-slate-200 shrink-0">
           <p className="text-[11px] text-slate-500">
-            {vnd.format(data.rates.per_hour)}đ/giờ chấm công (tính theo phút) +{" "}
+            {vnd.format(data.rates.per_hour)}đ/giờ theo ca của phòng lương: bắt đầu từ lúc chấm công vào
+            (không có thì chuyến lấy mẫu đầu tiên), không sớm hơn giờ vào ca; kết thúc lúc hết ca, hoặc
+            chuyến cuối nếu trễ hơn. Ngày lễ ×3. +{" "}
             {vnd.format(data.rates.per_km)}đ/km lấy mẫu → giao mẫu của mỗi chuyến đã hoàn thành.{" "}
             <em>đ/km thực</em> = (tiền giờ + tiền km) ÷ quãng đường thực chạy — gồm cả đoạn di chuyển
             giữa các chuyến, đường về và chuyến không tính tiền. Đây là chi phí thật cho mỗi km,

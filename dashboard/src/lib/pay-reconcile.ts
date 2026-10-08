@@ -22,7 +22,7 @@
  */
 import { createHash } from "node:crypto";
 import { getTimelineRoutes, getJobsByStatusAndDate, type Env } from "./cartrack";
-import { payRowsForRoute, payEligible, attachPayDistances, workedMinutes, hourPayFor, kmPayFor, type PayJob, type PayPunch } from "./pay";
+import { payRowsForRoute, payEligible, attachPayDistances, kmPayFor, type PayJob, type PayPunch } from "./pay";
 import { isChamCong, PSC_RETURN_LABEL } from "./job-filters";
 import { employmentOf } from "./driver-label";
 import { sbSelectAll, sbUpsert, sbDelete } from "./supabase-rest";
@@ -78,26 +78,22 @@ export function keepStoredDistances(jobs: PayJob[], stored: StoredJob[]): number
 
 export interface Exception { kind: string; driver_id?: string; driver_name?: string | null; job_id?: number; detail: string }
 
-/** The rows that carry through to totals, per driver. */
+/** The rows that carry through to totals, per driver. KM ONLY: hours need
+ *  payroll's imported shifts (pay_shifts), which are a monthly input rather than
+ *  a day's records, so they are not this reconciliation's to check. */
 function totalsByDriver(jobs: PayJob[], punches: PayPunch[]) {
-  const m = new Map<string, { driver_name: string | null; jobs: number; km: number; worked_mins: number; pay: number; open_in: number; stray_out: number }>();
+  const m = new Map<string, { driver_name: string | null; jobs: number; km: number; punches: number; pay: number }>();
   const get = (id: string, name: string | null) => {
-    const e = m.get(id) ?? { driver_name: name, jobs: 0, km: 0, worked_mins: 0, pay: 0, open_in: 0, stray_out: 0 };
+    const e = m.get(id) ?? { driver_name: name, jobs: 0, km: 0, punches: 0, pay: 0 };
     if (!e.driver_name && name) e.driver_name = name;
     m.set(id, e);
     return e;
   };
   for (const j of jobs) { const e = get(j.driver_id, j.driver_name); e.jobs++; e.km += num(j.distance_km) ?? 0; }
-  const punchesBy = new Map<string, PayPunch[]>();
-  for (const p of punches) {
-    get(p.driver_id, p.driver_name);
-    const l = punchesBy.get(p.driver_id); if (l) l.push(p); else punchesBy.set(p.driver_id, [p]);
-  }
-  for (const [id, e] of m) {
-    const w = workedMinutes(punchesBy.get(id) ?? []);
-    e.worked_mins = w.minutes; e.open_in = w.open_in.length; e.stray_out = w.stray_out.length;
+  for (const p of punches) get(p.driver_id, p.driver_name).punches++;
+  for (const e of m.values()) {
     e.km = round2(e.km);
-    e.pay = hourPayFor(e.worked_mins) + kmPayFor(e.km);
+    e.pay = kmPayFor(e.km);
   }
   return Object.fromEntries(m);
 }
@@ -205,18 +201,14 @@ export function diffPayDay(input: DayInput, proposedJobsIn: PayJob[], proposedPu
   const changedPunchRows = punches.filter((p) => storedPunchFacts.get(p.job_id) !== punchFacts(p));
 
   const after = totalsByDriver(jobs, punches);
-  for (const [driver_id, t] of Object.entries(after)) {
-    if (t.open_in > 0) exceptions.push({ kind: "attendance_open_in", driver_id, driver_name: t.driver_name, detail: `${t.open_in} check-in without check-out (pays 0)` });
-    if (t.stray_out > 0) exceptions.push({ kind: "attendance_stray_out", driver_id, driver_name: t.driver_name, detail: `${t.stray_out} check-out without check-in (pays 0)` });
-  }
 
   const digest = createHash("sha256")
     .update(JSON.stringify([jobs.map(jobFacts).sort(), punches.map(punchFacts).sort(), extraJobs.map((e) => e.job_id).sort(), extraPunches.map((p) => Number(p.job_id)).sort()]))
     .digest("hex").slice(0, 16);
 
-  const partTime = (t: Record<string, { driver_name: string | null; jobs: number; km: number; worked_mins: number; pay: number }>) =>
+  const partTime = (t: Record<string, { driver_name: string | null; jobs: number; km: number; punches: number; pay: number }>) =>
     Object.values(t).filter((d) => employmentOf(d.driver_name) === "part-time")
-      .reduce((s, d) => ({ drivers: s.drivers + 1, jobs: s.jobs + d.jobs, km: round2(s.km + d.km), worked_mins: s.worked_mins + d.worked_mins, pay: s.pay + d.pay }), { drivers: 0, jobs: 0, km: 0, worked_mins: 0, pay: 0 });
+      .reduce((s, d) => ({ drivers: s.drivers + 1, jobs: s.jobs + d.jobs, km: round2(s.km + d.km), punches: s.punches + d.punches, pay: s.pay + d.pay }), { drivers: 0, jobs: 0, km: 0, punches: 0, pay: 0 });
   const before = totalsByDriver(stored.jobs, stored.punches);
 
   return {

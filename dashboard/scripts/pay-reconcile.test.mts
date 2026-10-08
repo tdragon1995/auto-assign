@@ -5,7 +5,7 @@
  *   npx tsx scripts/pay-reconcile.test.mts
  */
 import { diffPayDay, keepStoredDistances, type DayInput } from "../src/lib/pay-reconcile";
-import { payRowsForRoute, kmPayFor, workedMinutes, type PayJob, type PayPunch } from "../src/lib/pay";
+import { payRowsForRoute, kmPayFor, type PayJob, type PayPunch } from "../src/lib/pay";
 import { payrollPeriod } from "../src/lib/pay-period";
 import { sbSelectAll } from "../src/lib/supabase-rest";
 import type { Job, TimelineRoute, TimelineStop } from "../src/lib/types";
@@ -96,14 +96,14 @@ console.log("\n5. Distances: stored figure kept, never replaced by a failure");
   check("missing coordinates is an exception", r.exceptions.some((e) => e.kind === "job_missing_coordinates" && e.job_id === 4));
 }
 
-console.log("\n6. Attendance exceptions — nothing invented");
+console.log("\n6. Taps are records here, not hours");
 {
-  const punches = [punch(1, "in", "06:00"), punch(2, "out", "10:00"), punch(3, "in", "15:00"), punch(4, "out", "05:00")];
-  const w = workedMinutes(punches);
-  check("orphan clock-out pays nothing", w.minutes === 0 + 240 && w.stray_out.length === 1, JSON.stringify(w));
+  // Hours need payroll's imported shifts, so the reconciliation neither prices
+  // taps nor flags an unclosed one — a missing check-out costs nothing now.
+  const punches = [punch(1, "in", "06:00"), punch(2, "out", "10:00"), punch(3, "in", "15:00")];
   const r = diffPayDay(input(), [], punches, new Map());
-  check("open check-in listed", r.exceptions.some((e) => e.kind === "attendance_open_in"));
-  check("stray check-out listed", r.exceptions.some((e) => e.kind === "attendance_stray_out"));
+  check("taps are written", r.write.punches.length === 3);
+  check("no attendance exceptions", !r.exceptions.some((e) => e.kind.startsWith("attendance_")));
   check("REST-only job flagged, not dropped silently", diffPayDay(input({ restCompleted: [rest(77)] }), [], [], new Map()).exceptions.some((e) => e.kind === "rest_only_job"));
 }
 

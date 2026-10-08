@@ -289,10 +289,8 @@ interface PayDay {
   worked_mins: number;
   unpriced: number;
   spans: PaySpanRow[];
-  /** Check-ins with no check-out after them. These pay NOTHING, so they are the
-   *  one thing on this screen a driver must act on. */
-  open_in: string[];
-  stray_out: string[];
+  /** Worked with no shift in payroll's file: no hours paid for this day. */
+  no_shift: boolean;
   hour_pay: number;
   km_pay: number;
   total_pay: number;
@@ -310,7 +308,7 @@ interface PayReport {
   next_month: string | null;
   summary: {
     days: number; jobs: number; km: number; worked_mins: number;
-    hour_pay: number; km_pay: number; total_pay: number; open_in_days: number;
+    hour_pay: number; km_pay: number; total_pay: number; no_shift_days: number;
     unpriced_jobs: number;
   };
   days: PayDay[];

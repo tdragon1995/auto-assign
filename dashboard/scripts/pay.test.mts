@@ -1,5 +1,5 @@
 /**
- * Part-time pay: the punch pairing, and what counts as a paid kilometre.
+ * Part-time pay: the hours rule, and what counts as a paid kilometre.
  *
  * Why this is worth a test. Both halves are somebody's wage, and both fail
  * QUIETLY when they fail. A pairing bug pays a two-shift day as one long shift
@@ -7,9 +7,8 @@
  * clinics as a trip. Neither throws, neither shows up in a build, and both are
  * discovered on payday.
  *
- * The pairing rule is PROVISIONAL (see pay.ts/workedMinutes) — when the payroll
- * formula is settled, section 1 is the thing to rewrite, and it is deliberately
- * the only place in the codebase that has to change.
+ * Section 1 pins the hours rule to days copied from payroll's own 15/08-14/09
+ * file, so a change to workedMinutes that stops reproducing payroll fails here.
  *
  *   npx tsx scripts/pay.test.mts
  */
@@ -17,6 +16,7 @@ import {
   workedMinutes, payRowsForRoute, hourPayFor, kmPayFor, dropSameTripDuplicates,
   RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch,
 } from "../src/lib/pay";
+import { parsePayrollSheet, resolveDriver } from "../src/lib/pay-shifts";
 import type { TimelineRoute, TimelineStop } from "../src/lib/types";
 
 let failures = 0;
@@ -25,7 +25,7 @@ function check(label: string, cond: boolean, detail = "") {
   else { failures++; console.log(`  FAIL ${label}${detail ? ` — ${detail}` : ""}`); }
 }
 
-const DAY = "2026-09-01";
+const DAY = "2026-08-15";
 
 /** A punch as the archive stores it. Only the completed stamp is set, which is
  *  what punchAt() prefers and what a normally-tapped chấm-công job carries. */
@@ -43,45 +43,75 @@ const punch = (kind: "in" | "out", hhmm: string): PayPunch => ({
   job_status_id: 5,
 });
 
-console.log("\n1. Punch pairing (PROVISIONAL formula — pay.ts/workedMinutes)");
+console.log("\n1. Hours — payroll's rule on payroll's shift (pay.ts/workedMinutes)");
 
-const oneShift = workedMinutes([punch("in", "08:00"), punch("out", "12:30")]);
-check("one shift is its own length", oneShift.minutes === 270, String(oneShift.minutes));
-check("and is reported as one span", oneShift.spans.length === 1);
+const at = (hhmm: string, date = DAY) => `${date}T${hhmm}:00+07:00`;
+const facts = (shifts: [string, string][], first: string | null, last: string | null, date = DAY) => ({
+  date, shifts: shifts.map(([start, end]) => ({ start, end })),
+  firstTaskAt: first ? at(first, date) : null, lastTaskAt: last ? at(last, date) : null,
+});
 
-// The reason pairing exists at all. A driver working 08:00-12:00 and 17:00-20:00
-// worked seven hours, not twelve — the five hours between shifts are not paid.
-const twoShifts = workedMinutes([
-  punch("in", "08:00"), punch("out", "12:00"),
-  punch("in", "17:00"), punch("out", "20:00"),
-]);
-check("two shifts sum, the gap between them does not", twoShifts.minutes === 420, String(twoShifts.minutes));
-check("both spans are shown", twoShifts.spans.length === 2);
+// Bùi Ngọc Thành 15/08: shift 12:00–20:00, tapped in 12:23, last trip 20:02 → 7.65 h.
+const late = workedMinutes([punch("in", "12:23")], facts([["12:00", "20:00"]], "12:40", "20:02"));
+check("late tap-in starts the clock; last trip past shift end extends it", late.minutes === 459, String(late.minutes));
 
-// Taps arrive from the day's routes in route order, not clock order.
-const shuffled = workedMinutes([
-  punch("out", "20:00"), punch("in", "08:00"),
-  punch("out", "12:00"), punch("in", "17:00"),
-]);
-check("order of arrival does not matter", shuffled.minutes === 420, String(shuffled.minutes));
+// Arriving early earns nothing; with a check-out, stopping early is still paid to shift end.
+const early = workedMinutes([punch("in", "16:35"), punch("out", "19:10")], facts([["17:00", "20:00"]], "17:10", "19:05"));
+check("early tap-in clamps to shift start, end is the shift end", early.minutes === 180, String(early.minutes));
 
-// A forgotten check-out pays NOTHING for that shift and says so, rather than
-// being closed at some plausible-looking later moment.
-const forgot = workedMinutes([punch("in", "08:00"), punch("out", "12:00"), punch("in", "17:00")]);
-check("an unclosed shift pays nothing", forgot.minutes === 240, String(forgot.minutes));
-check("and is reported, not swallowed", forgot.open_in.length === 1);
+// A late check-out tap is not paid time when there were trips: the last trip says when work stopped.
+const lateOut = workedMinutes([punch("in", "17:00"), punch("out", "23:00")], facts([["17:00", "21:00"]], "17:05", "20:30"));
+check("a late check-out tap is not paid", lateOut.minutes === 240, String(lateOut.minutes));
 
-// Two check-ins running: the later one is the shift actually open, the earlier
-// is an orphan. Keeping the FIRST would pay the gap between them.
-const doubleIn = workedMinutes([punch("in", "08:00"), punch("in", "09:00"), punch("out", "12:00")]);
-check("two check-ins in a row keep the later", doubleIn.minutes === 180, String(doubleIn.minutes));
-check("and report the orphan", doubleIn.open_in.length === 1);
+// The check-in counts from ARRIVAL — Đỗ Hữu Hùng 26/08 arrived 14:55 and
+// completed it at 17:38; payroll paid from 15:00.
+const opened = workedMinutes(
+  [{ ...punch("in", "17:38"), started_ts: at("14:55"), arrived_ts: at("14:55") }],
+  facts([["15:00", "21:00"]], "17:38", "21:27"),
+);
+check("check-in counts from arrival, not completion", opened.minutes === 387, String(opened.minutes));
 
-const strayOut = workedMinutes([punch("out", "08:00"), punch("in", "09:00"), punch("out", "12:00")]);
-check("a check-out with no check-in pays nothing", strayOut.minutes === 180, String(strayOut.minutes));
-check("and is reported", strayOut.stray_out.length === 1);
+// No taps: the first pickup opens the shift (supervisor, 2026-09-22), and with
+// no check-out the last trip closes it.
+const noTap = workedMinutes([], facts([["06:00", "15:00"]], "06:25", "14:00"));
+check("no tap → first pickup opens, last trip closes", noTap.minutes === 455, String(noTap.minutes));
 
-check("no taps at all is zero, not a crash", workedMinutes([]).minutes === 0);
+// Trips but no check-out: nothing says they stayed on — payroll pays to the last
+// trip (47 of 49 such days). Nguyễn Thanh Tú 19/08: 06:31–10:59 on a 06:00–15:00 shift.
+const leftEarly = workedMinutes([punch("in", "06:31")], facts([["06:00", "15:00"]], "06:50", "10:59"));
+check("no check-out → paid to the last trip", leftEarly.minutes === 268, String(leftEarly.minutes));
+
+// No trips at all: the check-out tap is the only evidence, even a few minutes past
+// shift end. Trần Thị Mộng Hoa 15/08: 15:00–21:06 on a 15:00–21:00 shift.
+const noTrips = workedMinutes([punch("in", "14:58"), punch("out", "21:06")], facts([["15:00", "21:00"]], null, null));
+check("no trips → paid to the check-out tap", noTrips.minutes === 366, String(noTrips.minutes));
+
+// A check-out before the check-in is a stray tap. Trần Minh Nhật 31/08: in 15:35,
+// "out" 15:30, shift 15:00–16:00 → paid 15:35–16:00.
+const stray = workedMinutes([punch("in", "15:35"), punch("out", "15:30")], facts([["15:00", "16:00"]], null, null));
+check("a check-out before the check-in is ignored", stray.minutes === 25, String(stray.minutes));
+
+check("a shift on paper with no taps and no trips pays nothing",
+  workedMinutes([], facts([["06:00", "15:00"]], null, null)).minutes === 0);
+
+// No shift in payroll's file → no hours, and the day is flagged, never guessed.
+const noShift = workedMinutes([punch("in", "07:11"), punch("out", "20:30")], facts([], "08:00", "20:00"));
+check("worked without a shift pays no hours", noShift.minutes === 0);
+check("and is flagged", noShift.no_shift);
+check("an idle day without a shift is not flagged", !workedMinutes([], facts([], null, null)).no_shift);
+
+// Split day: the gap between windows is not paid.
+const split = workedMinutes([punch("in", "08:25")], facts([["15:00", "21:00"], ["08:00", "12:00"]], "08:30", "21:01"));
+check("split day pays both windows, not the gap", split.minutes === 215 + 361, String(split.minutes));
+check("and shows two spans", split.spans.length === 2);
+
+// Quốc khánh is paid at 300% — Kim Thành Tài Huy 02/09: 07:00–12:14 → 15.7 h.
+const HOLIDAY = "2026-09-02";
+const holiday = workedMinutes(
+  [{ ...punch("in", "07:00"), trip_date: HOLIDAY, completed_ts: at("07:00", HOLIDAY) }],
+  facts([["07:00", "12:00"]], "07:05", "12:14", HOLIDAY),
+);
+check("holiday triples the paid minutes", holiday.clocked === 314 && holiday.minutes === 942, `${holiday.clocked}/${holiday.minutes}`);
 
 console.log("\n2. Money");
 
@@ -160,8 +190,10 @@ check("chấm công does not become a paid job", withChamCong.jobs.length === 1,
 check("it becomes two punches", withChamCong.punches.length === 2);
 check("pointing the right ways",
   withChamCong.punches[0].kind === "in" && withChamCong.punches[1].kind === "out");
-check("and the day they bound is 9h10", workedMinutes(withChamCong.punches).minutes === 550,
-  String(workedMinutes(withChamCong.punches).minutes));
+// The archived taps bound payroll's shift like any tap would (no trips given here,
+// so the check-out closes it).
+const bound = workedMinutes(withChamCong.punches, facts([["07:00", "17:00"]], null, null));
+check("and the taps bound the shift 07:55–17:05", bound.minutes === 550, String(bound.minutes));
 
 // Labels arrive as objects over JSON-RPC and as strings over REST; the reference
 // number is the fallback when a payload carries neither.
@@ -219,6 +251,37 @@ console.log("\n7. Same trip within 5 minutes at both ends pays once");
     ids(dropSameTripDuplicates([j(1, "19:40:00", "20:20:00"), j(2, "19:40:00", "20:20:00", { driver_id: "d2" })])).length === 2);
   check("missing stamp is never merged",
     ids(dropSameTripDuplicates([j(1, "19:40:00", "20:20:00"), j(2, "19:40:00", "20:20:00", { pickup_completed_ts: null })])).length === 2);
+}
+
+console.log("\n8. Payroll's shift file → shift rows (pay-shifts.ts)");
+{
+  // Excel hands back a date as days since 1899-12-30 and a time as a day fraction.
+  const serial = (Date.UTC(2026, 7, 15) - Date.UTC(1899, 11, 30)) / 86_400_000;
+  const grid: unknown[][] = [
+    ["Mã nhân viên", "Tài khoản nhân viên", "Họ tên nhân viên", "Ngày làm việc", "Thứ", "Ca vào", "Ca ra"],
+    ["PT101235", "P - P - PT101235 Bùi Ngọc Thành", "Bùi Ngọc Thành", serial, 7, 0.5, 20 / 24],
+    ["Chưa có code ", "P - P - PTBU Lợi Huỳnh Khoa", "Lợi Huỳnh Khoa", serial, 7, 0.25, 0.5],
+    ["PT1", "P - P - PT1 Someone", "Someone", serial, 7, 0.5, 0.25],   // ends before it starts
+    [],
+  ];
+  const p = parsePayrollSheet(grid);
+  check("reads the Excel serial date and time fractions",
+    p.rows[0]?.date === "2026-08-15" && p.rows[0]?.start === "12:00" && p.rows[0]?.end === "20:00", JSON.stringify(p.rows[0]));
+  check("a row with no staff code is kept, code blank", p.rows[1]?.code === "" && p.rows[1]?.account === "P - P - PTBU Lợi Huỳnh Khoa");
+  check("an impossible shift is skipped, not stored", p.rows.length === 2 && p.skipped === 1);
+  check("columns are found by name, not position",
+    parsePayrollSheet([["Ca ra", "Ca vào", "Tài khoản nhân viên", "Ngày làm việc", "Mã nhân viên"], [0.5, 0.25, "A", serial, "PT9"]]).rows[0]?.start === "06:00");
+  check("a different file is refused, not half-read", !!parsePayrollSheet([["foo"], [1]]).error);
+
+  const known = [
+    { driver_id: "pt", driver_name: "P - P - PT101235 Bùi Ngọc Thành" },
+    { driver_id: "khoa", driver_name: "P - P - PTBU Lợi Huỳnh Khoa" },
+    { driver_id: "renamed", driver_name: "P - C - PT101999 Tên Mới" },
+  ];
+  const row = (account: string, code: string) => ({ account, code, date: "2026-08-15", start: "06:00", end: "12:00" });
+  check("exact account label matches", resolveDriver(row("P - P - PTBU Lợi Huỳnh Khoa", ""), known) === "khoa");
+  check("a renamed account matches on its staff code", resolveDriver(row("P - C - PT101999 Tên Cũ", "PT101999"), known) === "renamed");
+  check("no label and no code is left unmatched, never guessed", resolveDriver(row("P - C - PTBU Người Lạ", ""), known) === null);
 }
 
 console.log(failures === 0 ? "\nAll pay checks passed." : `\n${failures} check(s) FAILED.`);

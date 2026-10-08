@@ -3,7 +3,8 @@
  * đồng those come to.
  *
  * TWO RATES, TWO SOURCES
- *   30.000đ per hour, from the driver's own chấm-công check-in / check-out taps.
+ *   30.000đ per hour, on payroll's imported shift, opened by the check-in tap
+ *   and extended by the last trip — see workedMinutes().
  *   2.000đ per kilometre, measured pickup → dropoff on each completed job.
  *
  * THE KILOMETRE IS A JOB'S PICKUP→DROPOFF, NOT A TAT LEG.
@@ -15,9 +16,9 @@
  *   pays, and it is the identical measure /api/export-completed has produced for
  *   the payroll CSV all along. Do not "fix" one to match the other.
  *
- * THE HOURS FORMULA IS PROVISIONAL — see workedMinutes().
- *   Which is why nothing here stores a minute count. The raw taps are archived
- *   and the arithmetic runs on read, so settling the formula later is a change to
+ * THE HOURS ARE DERIVED ON READ — see workedMinutes().
+ *   Nothing here stores a minute count. The raw taps and the imported shifts are
+ *   stored and the arithmetic runs on read, so a change to the rule is a change to
  *   ONE function with no re-archive and no billed distance call behind it.
  *
  * COST: this module adds no Cartrack fetch of its own. It is handed the same
@@ -144,70 +145,116 @@ export function punchAt(p: Pick<PayPunch, "started_ts" | "arrived_ts" | "complet
   return p.completed_ts ?? p.arrived_ts ?? p.started_ts ?? null;
 }
 
+/** One rostered window, VN wall clock "HH:MM", as payroll's file states it. */
+export interface ShiftWindow { start: string; end: string }
+
+/** What a day's hours are computed from, besides the taps. */
+export interface DayFacts {
+  date: string;
+  /** Payroll's shift(s) for the day, imported from its monthly file. Two on a
+   *  split day. Empty = payroll has no shift for this driver on this date. */
+  shifts: ShiftWindow[];
+  /** First pickup completed — stands in for a check-in the driver never tapped. */
+  firstTaskAt: string | null;
+  /** Last dropoff completed — extends a shift a trip ran past. */
+  lastTaskAt: string | null;
+}
+
+/** Public holidays paid at 300%. Payroll's file hard-codes the multiplier per
+ *  date, so this list must be extended the same way as holidays are announced.
+ *  ponytail: hand-kept list; move to a table once a second year of holidays is known. */
+export const HOLIDAY_MULTIPLIER: Record<string, number> = {
+  "2026-09-01": 3,
+  "2026-09-02": 3,
+};
+
 export interface WorkedDay {
-  /** Minutes the formula below counts as worked. */
+  /** PAID minutes: clocked × the holiday multiplier. What the đồng come from,
+   *  and what payroll's file calls "Giờ". */
   minutes: number;
-  /** The spans that produced them, for showing the driver the working, in order. */
+  /** Minutes on the clock, before any multiplier. */
+  clocked: number;
+  multiplier: number;
+  /** The span(s) that produced them, in order. */
   spans: { from: string; to: string; minutes: number }[];
-  /** A check-in with no check-out after it. Contributes NOTHING to `minutes` — a
-   *  shift that was never closed has no recorded end, and inventing one would be
-   *  paying against a guess. Surfaced so the driver can get it corrected rather
-   *  than discover the hole on payday. */
-  open_in: string[];
-  /** A check-out with no check-in before it. Also contributes nothing; listed for
-   *  the same reason. */
-  stray_out: string[];
+  /** Worked — tapped or completed a trip — with no shift in payroll's file.
+   *  Pays no hours; listed so a supervisor can check it before payday. */
+  no_shift: boolean;
 }
 
 /**
- * ⚠ PROVISIONAL FORMULA — the payroll rule is still being settled, and this is
- * the ONLY place the pairing lives. Replacing it is a change to this function and
- * nothing else: the archive stores raw taps, `/api/pay/me` derives the minutes on
- * read, so a new rule applies to every past month the moment it deploys, with no
- * re-archive and no billed distance lookup behind it.
+ * PAYROLL'S HOURS RULE, reconciled row by row against its 15/08–14/09 file: on
+ * payroll's own shifts this reproduces 1,003 of 1,042 shifts to the minute. The
+ * tap-to-tap rule it replaced paid 6% more. What is left is payroll's own
+ * day-by-day judgement (a shift cut short on 16 of 66 identical-looking days, a
+ * start moved to the shift start by hand) — which no rule can derive.
  *
- * What it does today: sort the day's taps by time, pair each check-in with the
- * next check-out, sum the pairs. Several pairs a day is normal and all of them
- * count — drivers check in and out at different PSCs across a shift, and the gap
- * between two shifts is not paid time.
+ *     start = later of (check-in ARRIVAL, shift start)      arriving early earns nothing
+ *     end   = see lastEnd() below                           paid to the end of the shift,
+ *                                                           past it only for real work
  *
- * What it deliberately does NOT do: close an unpaired check-in at some plausible
- * later moment. There is no recorded end to that shift, and the difference
- * between a forgotten tap and a short one is not something this data can tell
- * apart. It counts zero and says so on screen.
+ * No check-in tap → the first pickup stands in for it (supervisor's rule,
+ * 2026-09-22; payroll itself used the shift start on 25 of 36 such days).
+ *
+ * No shift → no hours. Payroll pays only days in its file; a day worked without
+ * one is flagged (`no_shift`), never guessed from the taps — that guess is what
+ * paid Lê Hoàng Anh Duy 161 h against payroll's 53 h.
+ *
+ * A SPLIT DAY (two windows): the evidence opens the first window and the last
+ * trip extends the last one; windows in between are paid as rostered.
+ * ponytail: per-window evidence needs every trip's time, not just first/last —
+ * 3 split days in 1,042, so the edges are enough until that changes.
  */
-export function workedMinutes(punches: PayPunch[]): WorkedDay {
-  const ordered = punches
-    .map((p) => ({ kind: p.kind, at: punchAt(p) }))
-    .filter((p): p is { kind: "in" | "out"; at: string } => p.at !== null)
-    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+export function workedMinutes(punches: PayPunch[], day: DayFacts): WorkedDay {
+  const multiplier = HOLIDAY_MULTIPLIER[day.date] ?? 1;
+  const out: WorkedDay = { minutes: 0, clocked: 0, multiplier, spans: [], no_shift: false };
 
-  const out: WorkedDay = { minutes: 0, spans: [], open_in: [], stray_out: [] };
-  let open: string | null = null;
+  // A check-in counts from when the driver ARRIVED at it — payroll's "Ghi nhận
+  // vào", matching 98.5% of its days. Not completion: some open the check-in on
+  // arrival and complete it hours later (Đỗ Hữu Hùng 26/08: arrived 14:55,
+  // completed 17:38; payroll paid from 15:00).
+  const stamp = (p: PayPunch) => p.arrived_ts ?? p.started_ts ?? p.completed_ts;
+  const times = (kind: "in" | "out") => punches
+    .filter((p) => p.kind === kind)
+    .map(stamp)
+    .filter((t): t is string => t !== null)
+    .sort((a, b) => Date.parse(a) - Date.parse(b));
+  const firstIn = times("in")[0] ?? null;
+  const startEvidence = firstIn ?? day.firstTaskAt;
+  // A check-out only counts AFTER the shift opened; one before it is a stray tap.
+  const lastOut = times("out").filter((t) => !startEvidence || Date.parse(t) > Date.parse(startEvidence)).at(-1) ?? null;
 
-  for (const p of ordered) {
-    if (p.kind === "in") {
-      // Two check-ins in a row: the first was never closed. Keep the LATER one —
-      // it is the shift that is actually running — and report the orphan.
-      if (open) out.open_in.push(open);
-      open = p.at;
-      continue;
-    }
-    if (!open) { out.stray_out.push(p.at); continue; }
-    const mins = Math.round((Date.parse(p.at) - Date.parse(open)) / 60_000);
-    // A negative span means the taps landed out of order, which is not a
-    // measurement. Dropped rather than clamped to zero, so it shows up as an
-    // unpaired check-in instead of a silent 0-minute shift.
-    if (mins > 0) {
-      out.spans.push({ from: open, to: p.at, minutes: mins });
-      out.minutes += mins;
-    } else {
-      out.open_in.push(open);
-    }
-    open = null;
+  if (day.shifts.length === 0) {
+    out.no_shift = punches.length > 0 || day.firstTaskAt !== null;
+    return out;
   }
-  if (open) out.open_in.push(open);
+  // Nothing says they came in at all: a shift on paper is not a shift worked.
+  if (!startEvidence && !day.lastTaskAt && !lastOut) return out;
 
+  /** Where the last window ends — payroll's rule, reconciled 2026-09-22:
+   *   no trips at all        → the check-out tap (the only evidence there is)
+   *   trips, no check-out    → the last trip; nothing says they stayed on
+   *   trips and a check-out  → shift end, or the last trip if it ran later */
+  const lastEnd = (shiftEnd: number): number => {
+    if (!day.lastTaskAt) return lastOut ? Date.parse(lastOut) : shiftEnd;
+    if (!lastOut) return Date.parse(day.lastTaskAt);
+    return Math.max(shiftEnd, Date.parse(day.lastTaskAt));
+  };
+
+  // ponytail: same-day windows only; an overnight shift would need its end on the next date.
+  const at = (hhmm: string) => `${day.date}T${hhmm.slice(0, 5)}:00+07:00`;
+  const windows = [...day.shifts].sort((a, b) => a.start.localeCompare(b.start));
+  windows.forEach((w, i) => {
+    let from = Date.parse(at(w.start));
+    let to = Date.parse(at(w.end));
+    if (i === 0 && startEvidence) from = Math.max(from, Date.parse(startEvidence));
+    if (i === windows.length - 1) to = lastEnd(to);
+    const mins = Math.round((to - from) / 60_000);
+    if (mins <= 0) return;
+    out.spans.push({ from: new Date(from).toISOString(), to: new Date(to).toISOString(), minutes: mins });
+    out.clocked += mins;
+  });
+  out.minutes = out.clocked * multiplier;
   return out;
 }
 
