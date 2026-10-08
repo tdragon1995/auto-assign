@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { FilterMultiSelect } from "./filter-multi-select";
 import { isInactiveLocation } from "@/lib/location-status";
+import { haversineKm } from "@/lib/distance";
 import { staffCode } from "@/lib/display-names";
 
 type Kind = "client" | "driver";
@@ -34,6 +35,14 @@ export function profilePatch(kind: Kind, initial: Record<string, unknown>, draft
   return patch;
 }
 
+export function gpsDeltaKm(initial: Record<string, unknown>, draft: Record<string, string>): number | null {
+  const coords = [initial.latitude, initial.longitude, draft.latitude, draft.longitude];
+  if (coords.some(value => value == null || String(value).trim() === "")) return null;
+  const [lat, lon, nextLat, nextLon] = coords.map(Number);
+  if (![lat, lon, nextLat, nextLon].every(Number.isFinite) || Math.abs(lat)>90 || Math.abs(nextLat)>90 || Math.abs(lon)>180 || Math.abs(nextLon)>180) return null;
+  return haversineKm(lat, lon, nextLat, nextLon);
+}
+
 export function MasterProfileEditor({ kind, id, initial, clients, linkedLabcenter, onCancel, onSaved, gpsOnly=false, creating=false }: {
   kind: Kind; id: string; gpsOnly?:boolean; creating?:boolean; initial: Record<string, unknown>;
   clients: { customer_id: string; cartrack: Record<string, unknown>; labcenter_location_id: number | null }[];
@@ -45,6 +54,7 @@ export function MasterProfileEditor({ kind, id, initial, clients, linkedLabcente
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [requestId]=useState(()=>crypto.randomUUID());
+  const gpsDistance = kind === "client" && !keepGps ? gpsDeltaKm(initial, draft) : null;
   const fieldClass = "w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:bg-slate-100";
   const set = (key: string, value: string) => setDraft(d => ({ ...d, [key]: value }));
   const input = (key: string, label: string, type = "text") => <label key={key} className="block min-w-0 space-y-1">
@@ -85,6 +95,10 @@ export function MasterProfileEditor({ kind, id, initial, clients, linkedLabcente
         <div className="flex items-center justify-between gap-2"><span className="text-xs font-semibold text-slate-800">Toạ độ GPS</span>
           {!gpsOnly && <button type="button" aria-pressed={!keepGps} onClick={()=>setKeepGps(v=>!v)} className="rounded px-2 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">{keepGps ? "Đổi GPS" : "Giữ GPS hiện tại"}</button>}</div>
         <fieldset disabled={keepGps} className="grid grid-cols-2 gap-3">{input("latitude","Vĩ độ","number")}{input("longitude","Kinh độ","number")}</fieldset>
+        {!keepGps && <div className="space-y-1 text-xs leading-5 text-slate-700">
+          {gpsDeltaKm(initial,{latitude:String(initial.latitude??""),longitude:String(initial.longitude??"")}) !== null && <p>GPS hiện tại: <span className="tabular-nums">{String(initial.latitude)}, {String(initial.longitude)}</span></p>}
+          <p aria-live="polite">{gpsDistance === null ? "Nhập đủ GPS hợp lệ để tính khoảng cách." : <>Khoảng cách đường thẳng (Haversine): <strong className="tabular-nums text-slate-900">{gpsDistance < 1 ? `${Math.round(gpsDistance*1000).toLocaleString("vi-VN")} m` : `${gpsDistance.toLocaleString("vi-VN",{maximumFractionDigits:2})} km`}</strong></>}</p>
+        </div>}
         <p className="text-[11px] leading-4 text-slate-600">{keepGps ? "Sửa địa chỉ sẽ giữ nguyên GPS." : "Đồng bộ GPS tới Cartrack, Supabase và Labcenter nếu đã liên kết; tính lại phường và PSC gần nhất."}</p>
       </section>}
       {gpsOnly ? null : kind === "client" ? <>
