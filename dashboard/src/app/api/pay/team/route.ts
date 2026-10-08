@@ -30,6 +30,7 @@ import {
   RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch, type PayJob,
 } from "@/lib/pay";
 import { payrollPeriod } from "@/lib/pay-period";
+import { loadPayDayInputs, dayKey } from "@/lib/pay-days";
 import { vnDate, addDays } from "@/lib/time";
 
 export const runtime = "nodejs";
@@ -47,7 +48,6 @@ interface DailyRow {
   last_dropoff_ts: string | null;
 }
 
-interface ShiftRow { driver_id: string | null; trip_date: string; shift_start: string; shift_end: string }
 
 const num = (v: number | string | null | undefined): number => {
   const n = typeof v === "number" ? v : Number(v);
@@ -83,7 +83,7 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const [daily, punches, sealed, legsDaily, shiftRows] = await Promise.all([
+    const [daily, punches, sealed, legsDaily, inputs] = await Promise.all([
       sbSelectAll<DailyRow>(
         "v_pay_daily",
         `select=*&trip_date=gte.${from}&trip_date=lte.${to}`,
@@ -111,23 +111,11 @@ export async function GET(req: NextRequest) {
         `select=driver_id,total_km&trip_date=gte.${from}&trip_date=lte.${to}`,
         "trip_date.asc,driver_id.asc",
       ),
-      // Payroll's shifts for the period, imported from its monthly file. Until
-      // that import happens the hours are unknown, not zero — see coverage.
-      sbSelectAll<ShiftRow>(
-        "pay_shifts",
-        `select=driver_id,trip_date,shift_start,shift_end&trip_date=gte.${from}&trip_date=lte.${to}`,
-        "id.asc",
-      ),
+      // Shifts (Lịch ca) and approved "cập nhật công" — see lib/pay-days.ts.
+      loadPayDayInputs(from, to),
     ]);
-    const shiftsFor = new Map<string, { start: string; end: string }[]>();
-    for (const r of shiftRows) {
-      if (!r.driver_id) continue;
-      const k = `${r.driver_id}|${r.trip_date}`;
-      const w = { start: r.shift_start.slice(0, 5), end: r.shift_end.slice(0, 5) };
-      const list = shiftsFor.get(k);
-      if (list) list.push(w); else shiftsFor.set(k, [w]);
-    }
-    const shiftsImported = shiftRows.length > 0;
+    const shiftsImported = inputs.payrollImported;
+    const pendingCorrections = inputs.corrections.filter((c) => c.status === "pending").length;
     const realKm = new Map<string, number>();
     for (const r of legsDaily) realKm.set(r.driver_id, (realKm.get(r.driver_id) ?? 0) + num(r.total_km));
 
@@ -174,6 +162,11 @@ export async function GET(req: NextRequest) {
       if (list) list.push(p); else e.byDay.set(p.trip_date, [p]);
       e.days.add(p.trip_date);
     }
+    // An approved correction makes a day count even with no taps and no trips —
+    // that is exactly the day a supervisor has vouched for.
+    for (const c of inputs.corrections) {
+      if (c.status === "approved") get(c.driver_id, c.driver_name).days.add(c.trip_date);
+    }
 
     const names=await masterDriverNames([...acc.keys()]);
     const drivers = [...acc.entries()]
@@ -186,9 +179,10 @@ export async function GET(req: NextRequest) {
           const t = e.tasks.get(date);
           const w = workedMinutes(e.byDay.get(date) ?? [], {
             date,
-            shifts: shiftsFor.get(`${driver_id}|${date}`) ?? [],
+            shifts: inputs.shifts.get(dayKey(driver_id, date)) ?? [],
             firstTaskAt: t?.first ?? null,
             lastTaskAt: t?.last ?? null,
+            correction: inputs.approved.get(dayKey(driver_id, date)) ?? null,
           });
           mins += w.minutes;
           if (w.no_shift) noShiftDays++;
@@ -237,9 +231,11 @@ export async function GET(req: NextRequest) {
         /** Payroll's shift file for this period has been imported. Before it is,
          *  every hour figure is zero because it is unknown, not because nobody worked. */
         shifts_imported: shiftsImported,
+        /** "Cập nhật công" requests waiting for a decision — approval needs none. */
+        pending_corrections: pendingCorrections,
         // Approval needs every day of a finished period in, the shifts imported,
         // and every job priced.
-        ready: periodClosed && shiftsImported && missingDays.length === 0 && drivers.every((d) => d.unpriced_jobs === 0),
+        ready: periodClosed && shiftsImported && pendingCorrections === 0 && missingDays.length === 0 && drivers.every((d) => d.unpriced_jobs === 0),
       },
       totals: {
         days_worked: drivers.reduce((s, d) => s + d.days_worked, 0),

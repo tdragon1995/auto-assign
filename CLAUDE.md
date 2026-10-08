@@ -281,7 +281,9 @@ ever named, which is how a warning stops being read.
 | `GET /api/pay/me` | The signed-in driver's part-time earnings. `?month=YYYY-MM` for the month, `?date=` for one day. Driver id from the `nv_session` cookie only; refuses any account that is not `PT…` |
 | `GET /api/pay/team` | Every PT driver's month, for điều phối's "Lương PT" tab. Defaults to LAST month (payroll runs on the 25th) |
 | `GET /api/pickup-setup` | Config tab's portal-ETA check: measured **scheduled→arrival** (Supabase view `pickup_eta_stats_30d`; >5 pickups, windowed trips out, and nothing due before 06:00 VN — a 00:00 pickup waits 509 min at the median because no one is on shift — and nothing whose delivery finished on another day) vs the master `pickup_setup`, plus places Labcenter changed behind the master. The proposal is the p80 capped at 2× the median (`targetMins`) — the ETA is a promise, and some clients are bimodal. `POST` applies one admin decision (`approve_eta` / `repush` / `accept_lc`) — Labcenter first with read-back, master second, logged to `pickup_setup_changes`. No Redis, no cache, on demand only. `pickup_eta` rides `archiveDay` off the routes it already fetched (no Cartrack call of its own); one-off history: `GET /api/tat/archive?only=pickup&date=<yesterday>&days=30`. The first panel open adopts every Labcenter place (no seed) and looks up Cartrack ids for the measured ones first |
-| `POST /api/pay/shifts` | Import payroll's shifts for a period (`{month, rows}`, parsed from the xlsx in the browser); replaces that period in `pay_shifts` and lists accounts it could not match |
+| `POST /api/pay/shifts` | Import payroll's shifts for a period (`{month, rows}`, parsed from the xlsx in the browser) INTO Lịch ca (`driver_shifts`, source `payroll`) via `import_payroll_shifts`; lists accounts it could not match |
+| `POST /api/pay/me/correction` | A driver's "cập nhật công" request (nv_session only, PT only): date, giờ vào/ra, reason `forgot_tap` / `system_error` (screenshot required), proof uploaded to Cartrack server-side. Waits for approval |
+| `GET/POST /api/pay/corrections` | Supervisor review: the period's requests with the day's evidence (Lịch ca shift, taps, first/last stop); approve / reject (reason required) / create a direct correction (approved at once) |
 
 ### Shared Libraries
 
@@ -458,24 +460,35 @@ These are the things most likely to burn a future agent working on this codebase
     rode, the job pair is what payroll pays, and the job pair is the same measure
     `/api/export-completed` has produced for the payroll CSV all along.
 
-    **Hours are PAYROLL'S rule on PAYROLL'S shift, in exactly one function.**
-    `workedMinutes` in `pay.ts`: start = later of the first check-in tap (no tap →
-    first pickup) and the shift start; end = later of the shift end and the last
-    dropoff. The check-out tap is not used. Holidays ×3 (`HOLIDAY_MULTIPLIER`, a
-    hand-kept list — extend it as holidays are announced). Reconciled against
-    payroll's 15/08–14/09 file: start matches 95% of days, end 84%, total within
-    1%; the old tap-to-tap pairing paid 6% more.
+    **Hours are PAYROLL'S rule, in exactly one function** — `workedMinutes` in
+    `pay.ts`. Start = later of the check-in ARRIVAL (no tap → first pickup) and the
+    shift start. End: no trips → the check-out tap; trips but no check-out → the
+    last trip; both → later of shift end and last trip. Holidays ×3
+    (`HOLIDAY_MULTIPLIER`, hand-kept). Reconciled row by row against payroll's
+    15/08–14/09 file: 1,003 of 1,042 shifts to the minute; every remaining gap is
+    a per-day payroll judgement, which is what "cập nhật công" is for.
 
-    **The shift comes from payroll's monthly file, NOT the roster grid.** The grid
-    agreed with payroll's shifts on only 52% of days (2026-09-22). "Nhập ca từ file"
-    on Lương PT parses `…_Parttime Records.xlsx` in the browser (`pay-shifts.ts`) and
-    `POST /api/pay/shifts` REPLACES the period in `pay_shifts`. No shift → no hours,
-    flagged "Không ca", never guessed from taps. Before the import every hour figure
-    is unknown — `coverage.shifts_imported` says so.
+    **The shift comes from Lịch ca tài xế (`driver_shifts`), fed by payroll's
+    file.** Lịch ca alone matched payroll on only half the days (2026-10-08), so
+    "Nhập ca từ file" on Lương PT writes payroll's `…_Parttime Records.xlsx` into it
+    (`import_payroll_shifts`: each driver-day in the file becomes exactly payroll's
+    windows, source `payroll`). The MISA refresh leaves `payroll` rows alone exactly
+    as it does `manual` ones (`replace_driver_shifts`). No shift → no hours, flagged
+    "Không ca". `coverage.shifts_imported` = payroll's file has been written for the
+    period. Loaded ONE way for every reader: `lib/pay-days.ts`.
 
-    Nothing derived is stored: raw taps and imported shifts are, and the minutes
-    are computed on READ, so a rule change applies to every past month with no
-    re-archive and no billed distance lookup behind it.
+    **"Cập nhật công" (`pay_day_corrections`).** An APPROVED correction is the day's
+    worked window outright — it replaces the rule, shift or no shift. Drivers ask
+    from Thu Nhập (open days only: the running period, plus the previous one until
+    the 25th — `openRange`); supervisors approve/reject or correct directly on Lương
+    PT. There is NO GPS trail anywhere (Cartrack gives only a current position):
+    the evidence shown beside each request is the day's completed stops and taps.
+    Proof files go to a Cartrack appointment (`lib/cartrack-files.ts`,
+    `CARTRACK_PROOF_APPOINTMENT_ID`) and come back as PUBLIC links.
+
+    Nothing derived is stored: raw taps, shifts and corrections are, and the
+    minutes are computed on READ, so a rule change applies to every past month with
+    no re-archive and no billed distance lookup behind it.
 
     Distance is the opposite: `distance_km` is frozen onto the row because resolving
     a new pair costs a billed request, and recomputing it would re-spend money to get

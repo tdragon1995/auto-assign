@@ -151,13 +151,18 @@ export interface ShiftWindow { start: string; end: string }
 /** What a day's hours are computed from, besides the taps. */
 export interface DayFacts {
   date: string;
-  /** Payroll's shift(s) for the day, imported from its monthly file. Two on a
-   *  split day. Empty = payroll has no shift for this driver on this date. */
+  /** The working shift(s) for the day from Lịch ca tài xế (driver_shifts) —
+   *  where payroll's monthly file is written for the days it paid. Two on a split
+   *  day. Empty = no working shift for this driver on this date. */
   shifts: ShiftWindow[];
   /** First pickup completed — stands in for a check-in the driver never tapped. */
   firstTaskAt: string | null;
   /** Last dropoff completed — extends a shift a trip ran past. */
   lastTaskAt: string | null;
+  /** An APPROVED "cập nhật công" for the day, VN wall clock "HH:MM". It is the
+   *  day's worked window outright: it replaces everything the rule would compute,
+   *  shift or no shift, because a supervisor has looked at this day. */
+  correction?: ShiftWindow | null;
 }
 
 /** Public holidays paid at 300%. Payroll's file hard-codes the multiplier per
@@ -180,6 +185,8 @@ export interface WorkedDay {
   /** Worked — tapped or completed a trip — with no shift in payroll's file.
    *  Pays no hours; listed so a supervisor can check it before payday. */
   no_shift: boolean;
+  /** The minutes come from an approved correction, not the rule. */
+  corrected: boolean;
 }
 
 /**
@@ -207,7 +214,21 @@ export interface WorkedDay {
  */
 export function workedMinutes(punches: PayPunch[], day: DayFacts): WorkedDay {
   const multiplier = HOLIDAY_MULTIPLIER[day.date] ?? 1;
-  const out: WorkedDay = { minutes: 0, clocked: 0, multiplier, spans: [], no_shift: false };
+  const out: WorkedDay = { minutes: 0, clocked: 0, multiplier, spans: [], no_shift: false, corrected: false };
+
+  // ponytail: same-day windows only; an overnight shift would need its end on the next date.
+  const at = (hhmm: string) => `${day.date}T${hhmm.slice(0, 5)}:00+07:00`;
+
+  if (day.correction) {
+    const from = Date.parse(at(day.correction.start));
+    const to = Date.parse(at(day.correction.end));
+    const mins = Math.max(0, Math.round((to - from) / 60_000));
+    out.corrected = true;
+    out.clocked = mins;
+    out.minutes = mins * multiplier;
+    if (mins > 0) out.spans.push({ from: new Date(from).toISOString(), to: new Date(to).toISOString(), minutes: mins });
+    return out;
+  }
 
   // A check-in counts from when the driver ARRIVED at it — payroll's "Ghi nhận
   // vào", matching 98.5% of its days. Not completion: some open the check-in on
@@ -241,8 +262,6 @@ export function workedMinutes(punches: PayPunch[], day: DayFacts): WorkedDay {
     return Math.max(shiftEnd, Date.parse(day.lastTaskAt));
   };
 
-  // ponytail: same-day windows only; an overnight shift would need its end on the next date.
-  const at = (hhmm: string) => `${day.date}T${hhmm.slice(0, 5)}:00+07:00`;
   const windows = [...day.shifts].sort((a, b) => a.start.localeCompare(b.start));
   windows.forEach((w, i) => {
     let from = Date.parse(at(w.start));

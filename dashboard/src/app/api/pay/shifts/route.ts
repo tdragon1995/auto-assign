@@ -2,17 +2,20 @@
  * Import payroll's shifts for one payroll period — the Lương PT tab's
  * "Nhập ca từ file" button. The browser parses the xlsx (lib/pay-shifts.ts) and
  * posts the rows; this re-validates them, resolves each account to a driver, and
- * REPLACES the period's shifts. Re-importing a corrected file is how a shift is
- * corrected.
+ * writes them INTO Lịch ca tài xế (driver_shifts, source 'payroll') through
+ * import_payroll_shifts: for every driver-day in the file, that day's shifts
+ * become exactly payroll's windows. Days payroll did not pay are left alone, and
+ * the MISA refresh leaves 'payroll' rows alone. Re-importing a corrected file is
+ * how a shift is corrected.
+ *
+ * Why into Lịch ca: one shift source for dispatch and pay. Lịch ca on its own
+ * matched payroll's shifts on only half the days of 1–14/09 (2026-10-08).
  *
  * Same auth posture as /api/pay/team (the dashboard has none); see that route.
- *
- * Replace = upsert with a fresh stamp, then delete the period's rows that did
- * not get it. A failure part-way leaves the previous import in place rather
- * than an empty period — the pattern the pay archive uses.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { sbDelete, sbSelectAll, sbUpsert, supabaseConfigured } from "@/lib/supabase-rest";
+import { sbRpc, sbSelectAll, supabaseConfigured } from "@/lib/supabase-rest";
+import { assertMasterWritable } from "@/lib/master-store";
 import { validShiftRow, resolveDriver, type ShiftImportRow } from "@/lib/pay-shifts";
 import { payrollPeriod } from "@/lib/pay-period";
 
@@ -59,32 +62,36 @@ export async function POST(req: NextRequest) {
     ]);
     const known = [...new Map([...a, ...b].map((k) => [`${k.driver_id}|${k.driver_name}`, k])).values()];
 
-    const stamp = new Date().toISOString();
-    const byKey = new Map<string, Record<string, unknown>>();
+    assertMasterWritable();
+    const byKey = new Map<string, { driver_id: string; shift_date: string; start_time: string; end_time: string }>();
     const unmatched = new Set<string>();
     for (const r of rows) {
       const driver_id = resolveDriver(r, known);
-      if (!driver_id) unmatched.add(r.account);
-      // One window per account, date and start — a repeated row is the same shift.
-      byKey.set(`${r.date}|${r.account}|${r.start}`, {
-        trip_date: r.date, driver_id, staff_code: r.code || null, account_name: r.account,
-        shift_start: r.start, shift_end: r.end, source: "payroll-file", imported_at: stamp,
-      });
+      // Lịch ca needs a driver; an account the app cannot place is reported, not stored.
+      if (!driver_id) { unmatched.add(r.account); continue; }
+      // One window per driver, date and start — a repeated row is the same shift.
+      byKey.set(`${driver_id}|${r.date}|${r.start}`, { driver_id, shift_date: r.date, start_time: r.start, end_time: r.end });
+    }
+    if (byKey.size === 0) {
+      return NextResponse.json({ ok: false, error: "Không khớp được tài khoản nào trong file." }, { status: 400 });
     }
 
-    await sbUpsert("pay_shifts", [...byKey.values()], "trip_date,account_name,shift_start");
-    await sbDelete("pay_shifts", `trip_date=gte.${from}&trip_date=lte.${to}&imported_at=lt.${encodeURIComponent(stamp)}`);
+    const written = await sbRpc<number>("import_payroll_shifts", { p_from: from, p_to: to, rows: [...byKey.values()] });
 
     return NextResponse.json({
       ok: true, month, from, to,
-      imported: byKey.size,
-      drivers: new Set(rows.map((r) => r.account)).size,
-      // Stored, but paying nothing until the account is recognised: payroll named
-      // someone the app has no taps or trips for in this period.
+      imported: written,
+      // Rows dated before the payroll-history cutoff are refused by Lịch ca's
+      // retention rule; say so rather than reporting them as imported.
+      too_old: byKey.size - written,
+      drivers: new Set([...byKey.values()].map((r) => r.driver_id)).size,
+      // Not stored: payroll named an account the app has no taps or trips for.
       unmatched: [...unmatched].sort(),
     });
   } catch (e) {
-    console.error("[pay/shifts] import error:", e instanceof Error ? e.message : e);
-    return NextResponse.json({ ok: false, error: "Không lưu được ca. Thử lại sau." }, { status: 502 });
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[pay/shifts] import error:", msg);
+    // assertMasterWritable's message is meant for the person; anything else is not.
+    return NextResponse.json({ ok: false, error: msg.startsWith("Supabase đang") ? msg : "Không lưu được ca vào Lịch ca. Thử lại sau." }, { status: 502 });
   }
 }

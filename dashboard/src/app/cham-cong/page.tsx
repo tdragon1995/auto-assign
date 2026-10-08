@@ -5,6 +5,7 @@ import { Calendar, Clock, ClipboardCheck, FileText, NotepadText, CalendarDays, S
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 import { driverDisplayName, placeName } from "@/lib/display-names";
 import { employmentOf } from "@/lib/driver-label";
+import { CorrectionForm, CorrectionChip } from "@/components/correction-form";
 
 interface Driver {
   driver_id: string;
@@ -289,8 +290,10 @@ interface PayDay {
   worked_mins: number;
   unpriced: number;
   spans: PaySpanRow[];
-  /** Worked with no shift in payroll's file: no hours paid for this day. */
+  /** Worked with no shift in Lịch ca: no hours paid for this day. */
   no_shift: boolean;
+  /** The day's latest "cập nhật công" request, if any. */
+  correction: { status: "pending" | "approved" | "rejected" | "withdrawn"; reason: string; in_time: string; out_time: string; decision_note: string } | null;
   hour_pay: number;
   km_pay: number;
   total_pay: number;
@@ -799,6 +802,10 @@ export default function ChamCongPage() {
   const [payError,     setPayError]     = useState<string | null>(null);
   const [payOpenDay,   setPayOpenDay]   = useState<string | null>(null);
   const [payDayDetail, setPayDayDetail] = useState<PayDayDetail | null>(null);
+  /** The "cập nhật công" form: "new" = any day (date picker), or the date of the
+   *  open day it was started from. */
+  const [corrFor, setCorrFor] = useState<string | null>(null);
+  const [corrSent, setCorrSent] = useState(false);
   const [payDayLoading, setPayDayLoading] = useState(false);
   const [tatDayLoading, setTatDayLoading] = useState(false);
 
@@ -2509,15 +2516,37 @@ export default function ChamCongPage() {
                         <TatStat label="Chuyến" value={String(payReport.summary.jobs)} />
                       </div>
 
+                      {/* Cập nhật công — a day missing from the list (no trips at
+                          all) can still be asked for from here. */}
+                      {corrSent && (
+                        <p role="status" className="text-xs text-green-800 bg-green-50 border border-green-200 rounded-xl px-3 py-2.5">
+                          Đã gửi yêu cầu cập nhật công — chờ điều phối duyệt.
+                        </p>
+                      )}
+                      {corrFor === "new" ? (
+                        <CorrectionForm
+                          today={todayVnStr()}
+                          onCancel={() => setCorrFor(null)}
+                          onDone={() => { setCorrFor(null); setCorrSent(true); payLoad(payMonth); }}
+                        />
+                      ) : (
+                        <button
+                          onClick={() => { setCorrFor("new"); setCorrSent(false); }}
+                          className="w-full min-h-[44px] text-sm font-semibold text-blue-700 border border-blue-200 bg-white rounded-xl"
+                        >
+                          Cập nhật công
+                        </button>
+                      )}
+
                       {/* The days. Each is tappable; only the one you open costs a
                           request for its jobs. */}
-                      {payReport.days.every((d) => d.jobs === 0) ? (
+                      {payReport.days.every((d) => d.jobs === 0 && !d.correction) ? (
                         <p className="text-xs text-gray-400 text-center py-6">
                           Chưa có dữ liệu cho tháng này.
                         </p>
                       ) : (
                         <div className="rounded-xl border border-gray-200 divide-y divide-gray-100 overflow-hidden">
-                          {payReport.days.filter((d) => d.jobs > 0).map((d) => {
+                          {payReport.days.filter((d) => d.jobs > 0 || d.correction).map((d) => {
                             const open = payOpenDay === d.date;
                             return (
                               <div key={d.date}>
@@ -2533,6 +2562,7 @@ export default function ChamCongPage() {
                                     <p className="text-xs font-semibold text-gray-700">
                                       {vnWeekday(d.date)}, {fmtDate(d.date)}
                                       {d.unpriced > 0 && <span className="ml-1 text-amber-600">⚠</span>}
+                                      {d.correction && <CorrectionChip status={d.correction.status} />}
                                     </p>
                                     <p className="text-xs text-gray-500">
                                       {fmtKm(d.km)} km · {d.jobs} chuyến
@@ -2605,6 +2635,34 @@ export default function ChamCongPage() {
                                             Chuyến &quot;chưa đo được&quot; là chuyến hệ thống chưa lấy được quãng đường —
                                             báo điều phối để được bổ sung.
                                           </p>
+                                        )}
+
+                                        {/* This day's request, and the way to make one. */}
+                                        {d.correction && d.correction.status !== "withdrawn" && (
+                                          <p className="text-xs text-gray-600">
+                                            Yêu cầu cập nhật công {d.correction.in_time}–{d.correction.out_time}:
+                                            <CorrectionChip status={d.correction.status} />
+                                            {d.correction.status === "rejected" && d.correction.decision_note && (
+                                              <span className="block mt-1 text-red-700">Lý do: {d.correction.decision_note}</span>
+                                            )}
+                                          </p>
+                                        )}
+                                        {corrFor === d.date ? (
+                                          <CorrectionForm
+                                            today={todayVnStr()}
+                                            date={d.date}
+                                            defaultIn={d.spans[0]?.from}
+                                            defaultOut={d.spans.at(-1)?.to}
+                                            onCancel={() => setCorrFor(null)}
+                                            onDone={() => { setCorrFor(null); setCorrSent(true); payLoad(payMonth); }}
+                                          />
+                                        ) : (
+                                          <button
+                                            onClick={() => { setCorrFor(d.date); setCorrSent(false); }}
+                                            className="w-full min-h-[44px] text-xs font-semibold text-blue-700 border border-blue-200 bg-white rounded-lg"
+                                          >
+                                            {d.correction?.status === "pending" ? "Sửa yêu cầu cập nhật công" : "Cập nhật công ngày này"}
+                                          </button>
                                         )}
                                       </>
                                     )}

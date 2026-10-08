@@ -9,13 +9,14 @@
  * Sorted by what is OWED, largest first — this is a payables list, so the biggest
  * number is the one worth checking before it is paid, not the best performer.
  *
- * HOURS NEED PAYROLL'S SHIFT FILE. The hours are computed on payroll's own
- * shifts, imported here once a month ("Nhập ca từ file"); until that happens
- * every hour figure is unknown, and the panel says so rather than showing 0.
+ * HOURS USE LỊCH CA, FED BY PAYROLL'S FILE. The hours are computed on the
+ * driver's shift in Lịch ca tài xế; payroll's monthly records file is written
+ * into it here ("Nhập ca từ file"). Until it is, the shifts are MISA's plan —
+ * which matched payroll on only half the days — and the panel says so.
  *
- * The one column that is a TASK rather than a report is "Không ca": days a
- * driver worked with no shift in payroll's file. Those pay no hours, and the fix
- * has to happen before the 25th.
+ * Two things here are TASKS rather than a report, both before the 25th:
+ * "Không ca" (days worked with no shift, which pay no hours) and "Cập nhật công"
+ * (drivers' requests to correct a day, waiting for a decision).
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -24,6 +25,7 @@ import * as XLSX from "xlsx";
 import { parsePayrollSheet } from "@/lib/pay-shifts";
 import { foldName } from "@/lib/driver-cell";
 import { DriverName } from "./driver-name";
+import { PayCorrectionsPanel } from "./pay-corrections-panel";
 
 interface DriverRow {
   driver_id: string;
@@ -49,7 +51,7 @@ interface PayTeamReport {
   to: string;
   rates: { per_hour: number; per_km: number };
   driver_count: number;
-  coverage: { expected_days: number; missing_days: string[]; period_closed: boolean; shifts_imported: boolean; ready: boolean };
+  coverage: { expected_days: number; missing_days: string[]; period_closed: boolean; shifts_imported: boolean; pending_corrections: number; ready: boolean };
   totals: Omit<DriverRow, "driver_id" | "driver_name">;
   drivers: DriverRow[];
   error?: string;
@@ -151,6 +153,8 @@ export function PayTeamPanel() {
   const [q, setQ] = useState("");
   /** Set from the amber banner: show only the drivers who worked without a shift. */
   const [onlyFlagged, setOnlyFlagged] = useState(false);
+  /** The "Cập nhật công" review panel. */
+  const [showCorrections, setShowCorrections] = useState(false);
 
   /** Payroll's monthly shift file → /api/pay/shifts. Parsed HERE, in the
    *  browser, so the server never spends CPU on a spreadsheet. */
@@ -172,7 +176,8 @@ export function PayTeamPanel() {
       const j = await res.json();
       if (!res.ok || !j.ok) { setImportNote(j.error ?? "Không nhập được ca."); return; }
       setImportNote(
-        `Đã nhập ${j.imported} ca của ${j.drivers} tài xế.` +
+        `Đã ghi ${j.imported} ca của ${j.drivers} tài xế vào Lịch ca.` +
+        (j.too_old ? ` ${j.too_old} ca quá cũ, ngoài kỳ lưu dữ liệu.` : "") +
         (parsed.skipped ? ` Bỏ qua ${parsed.skipped} dòng thiếu ngày/giờ.` : "") +
         (j.unmatched.length ? ` Không khớp tài khoản (chưa tính giờ): ${j.unmatched.join(", ")}.` : ""),
       );
@@ -298,7 +303,7 @@ export function PayTeamPanel() {
         </button>
         <label
           className={`flex items-center gap-1.5 min-h-11 text-xs font-semibold text-slate-700 border border-slate-300 rounded-lg px-3 hover:bg-slate-50 cursor-pointer ${importing ? "opacity-40 pointer-events-none" : ""}`}
-          title="File chấm công bán thời gian của phòng lương (…_Parttime Records.xlsx)"
+          title="File chấm công bán thời gian của phòng lương (…_Parttime Records.xlsx) — ghi ca vào Lịch ca tài xế"
         >
           {importing ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />}
           Nhập ca từ file
@@ -309,7 +314,26 @@ export function PayTeamPanel() {
             onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) importShifts(f); }}
           />
         </label>
+        <button
+          onClick={() => setShowCorrections((v) => !v)}
+          aria-expanded={showCorrections}
+          className={`flex items-center gap-1.5 min-h-11 text-xs font-semibold rounded-lg px-3 border ${showCorrections ? "bg-slate-800 text-white border-slate-800" : "text-slate-700 border-slate-300 hover:bg-slate-50"}`}
+        >
+          Cập nhật công
+          {!!data?.coverage.pending_corrections && (
+            <span className="rounded-full bg-amber-500 text-white text-[11px] leading-none px-1.5 py-1 tabular-nums">
+              {data.coverage.pending_corrections}
+            </span>
+          )}
+        </button>
       </div>
+      {showCorrections && data && (
+        <PayCorrectionsPanel
+          month={data.month}
+          drivers={data.drivers.map((d) => ({ driver_id: d.driver_id, driver_name: d.driver_name }))}
+          onChanged={() => load(data.month)}
+        />
+      )}
       {importNote && (
         <p role="status" className="px-3 py-2 text-xs text-slate-700 bg-slate-50 border-b border-slate-200">{importNote}</p>
       )}
@@ -349,7 +373,8 @@ export function PayTeamPanel() {
           <span>
             <strong>Chưa đủ dữ liệu — chưa duyệt lương kỳ này.</strong>{" "}
             {!data.coverage.period_closed && "Kỳ lương chưa kết thúc. "}
-            {!data.coverage.shifts_imported && "Chưa nhập ca từ file chấm công — tiền giờ chưa tính. "}
+            {!data.coverage.shifts_imported && "Chưa nhập ca từ file chấm công — tiền giờ đang tính theo Lịch ca dự kiến. "}
+            {data.coverage.pending_corrections > 0 && `${data.coverage.pending_corrections} yêu cầu cập nhật công chờ duyệt. `}
             {data.coverage.missing_days.length > 0 &&
               `Thiếu ${data.coverage.missing_days.length}/${data.coverage.expected_days} ngày: ${data.coverage.missing_days.map((d) => d.slice(8, 10) + "/" + d.slice(5, 7)).join(", ")}. `}
             {data.totals.unpriced_jobs > 0 && `${data.totals.unpriced_jobs} chuyến chưa có km (đang tính 0đ).`}

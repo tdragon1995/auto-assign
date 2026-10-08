@@ -17,6 +17,7 @@ import {
   RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch,
 } from "../src/lib/pay";
 import { parsePayrollSheet, resolveDriver } from "../src/lib/pay-shifts";
+import { openRange, checkTimes, checkProof } from "../src/lib/pay-corrections";
 import type { TimelineRoute, TimelineStop } from "../src/lib/types";
 
 let failures = 0;
@@ -282,6 +283,42 @@ console.log("\n8. Payroll's shift file → shift rows (pay-shifts.ts)");
   check("exact account label matches", resolveDriver(row("P - P - PTBU Lợi Huỳnh Khoa", ""), known) === "khoa");
   check("a renamed account matches on its staff code", resolveDriver(row("P - C - PT101999 Tên Cũ", "PT101999"), known) === "renamed");
   check("no label and no code is left unmatched, never guessed", resolveDriver(row("P - C - PTBU Người Lạ", ""), known) === null);
+}
+
+console.log("\n9. Cập nhật công (pay-corrections.ts, and the override in workedMinutes)");
+{
+  // An approved correction IS the day: it overrides the rule, shift or no shift.
+  const fixed = workedMinutes([punch("in", "15:33")], { ...facts([["07:00", "15:00"]], null, null), correction: { start: "07:00", end: "15:41" } });
+  check("approved correction replaces the computed window", fixed.minutes === 521 && fixed.corrected, String(fixed.minutes));
+  const noShiftFixed = workedMinutes([], { ...facts([], null, null), correction: { start: "19:00", end: "20:30" } });
+  check("…even on a day with no shift and no evidence", noShiftFixed.minutes === 90 && !noShiftFixed.no_shift);
+  const holidayFixed = workedMinutes([], { ...facts([], null, null, "2026-09-02"), correction: { start: "07:00", end: "08:00" } });
+  check("…and still takes the holiday multiplier", holidayFixed.minutes === 180, String(holidayFixed.minutes));
+
+  // Open days: the running period; plus the previous one from the 15th to the 25th.
+  const r1 = openRange("2026-10-08");
+  check("8/10 → 15/09 to 7/10", r1.from === "2026-09-15" && r1.to === "2026-10-07", JSON.stringify(r1));
+  const r2 = openRange("2026-10-20");
+  check("20/10 → previous period still open (15/09 on)", r2.from === "2026-09-15", JSON.stringify(r2));
+  const r3 = openRange("2026-10-26");
+  check("26/10 → only the running period (15/10 on)", r3.from === "2026-10-15", JSON.stringify(r3));
+  const r4 = openRange("2026-12-20");
+  check("year boundary: 20/12 → 15/11 on", r4.from === "2026-11-15", JSON.stringify(r4));
+
+  const ok = { date: "2026-10-01", in_time: "06:00", out_time: "15:00", note: "" };
+  check("a valid request passes", checkTimes(ok, "2026-10-08") === null);
+  check("today cannot be corrected", checkTimes({ ...ok, date: "2026-10-08" }, "2026-10-08") !== null);
+  check("a closed period cannot, for a driver", checkTimes({ ...ok, date: "2026-09-10" }, "2026-10-08") !== null);
+  check("…but can, for a supervisor", checkTimes({ ...ok, date: "2026-09-10" }, "2026-10-08", { anyPastDay: true }) === null);
+  check("out must be after in", checkTimes({ ...ok, out_time: "06:00" }, "2026-10-08") !== null);
+
+  const img = { name: "loi.jpg", dataUrl: "data:image/jpeg;base64,/9j/4AAQSkZJRg==" };
+  check("Lỗi hệ thống needs a screenshot", checkProof("system_error", []) !== null);
+  check("…and passes with one", checkProof("system_error", [img]) === null);
+  check("Quên chấm công needs none", checkProof("forgot_tap", []) === null);
+  check("a reason is required", checkProof("", []) !== null);
+  check("not an image → refused", checkProof("system_error", [{ name: "x.exe", dataUrl: "data:application/octet-stream;base64,AAAA" }]) !== null);
+  check("more than three files → refused", checkProof("forgot_tap", [img, img, img, img]) !== null);
 }
 
 console.log(failures === 0 ? "\nAll pay checks passed." : `\n${failures} check(s) FAILED.`);
