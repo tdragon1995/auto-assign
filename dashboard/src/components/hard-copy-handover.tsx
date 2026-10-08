@@ -435,7 +435,7 @@ export function HardCopyHandover() {
       </header>
       {draftError && <p role="alert" className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">{draftError} · Dòng mới chưa chắc đã được lưu trên máy khác.</p>}
       {statusLoading && <p role="status" className="text-xs text-slate-600">Đang kiểm tra kết quả {statusDone}/{statusTotal} VID…</p>}
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(320px,1fr)] lg:items-start">
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(320px,1fr)]">
         <section className="bg-white rounded-2xl shadow-sm p-5 space-y-3 min-w-0">
         <h2 className="text-base font-bold text-slate-900">Dán danh sách VID</h2>
         <textarea
