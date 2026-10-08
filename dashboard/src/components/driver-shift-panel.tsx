@@ -7,18 +7,20 @@ import { foldName } from "@/lib/driver-cell";
 import { addDays,cartrackHistoryCutoff,vnDate } from "@/lib/time";
 import type { DriverShift,ShiftPattern,ShiftDriver } from "@/lib/driver-shifts";
 import { toast } from "sonner";
+import { BulkPtShiftPanel } from "./bulk-pt-shift-panel";
 const field="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 placeholder:text-slate-600 placeholder:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:opacity-60";
 const weekdays=["CN","T2","T3","T4","T5","T6","T7"];
 const kindLabel={working:"Làm việc",off:"Nghỉ",holiday:"Nghỉ lễ"};
 export function DriverShiftPanel(){
- const [mode,setMode]=useState<"daily"|"patterns">("daily"),[date,setDate]=useState(vnDate),[cutoff,setCutoff]=useState(cartrackHistoryCutoff);
+ const [mode,setMode]=useState<"daily"|"patterns"|"bulk">("daily"),[date,setDate]=useState(vnDate),[cutoff,setCutoff]=useState(cartrackHistoryCutoff);
+ const [configuredIds,setConfiguredIds]=useState<string[]>([]);
  const [rows,setRows]=useState<(DriverShift|ShiftPattern)[]>([]),[drivers,setDrivers]=useState<ShiftDriver[]>([]);
  const [search,setSearch]=useState(""),[loading,setLoading]=useState(true),[error,setError]=useState(""),[saving,setSaving]=useState(false);
  const [editing,setEditing]=useState<DriverShift|ShiftPattern|null>(null),[isNew,setIsNew]=useState(false);
  const sequence=useRef(0);
- const load=useCallback(async()=>{const current=++sequence.current;setLoading(true);setError("");try{
-  const res=await fetch(`/api/driver-shifts?mode=${mode}&date=${date}`,{cache:"no-store"}),data=await res.json();
-  if(!res.ok)throw Error(data.error||"Không tải được lịch ca");if(current!==sequence.current)return;setRows(data.rows);setDrivers(data.drivers);setCutoff(data.cutoff);
+ const load=useCallback(async(quiet=false)=>{const current=++sequence.current;if(!quiet)setLoading(true);setError("");try{
+  const res=await fetch(`/api/driver-shifts?mode=${mode==="bulk"?"patterns":mode}&date=${date}`,{cache:"no-store"}),data=await res.json();
+  if(!res.ok)throw Error(data.error||"Không tải được lịch ca");if(current!==sequence.current)return;setRows(data.rows);setDrivers(data.drivers);setConfiguredIds(data.configuredDriverIds??[]);setCutoff(data.cutoff);
  }catch(e){if(current===sequence.current)setError(e instanceof Error?e.message:String(e));}finally{if(current===sequence.current)setLoading(false);}},[mode,date]);
  useEffect(()=>{void load();setEditing(null);},[load]);
  const directory=useMemo(()=>new Map(drivers.map(d=>[d.driver_id,d])),[drivers]);
@@ -37,17 +39,19 @@ export function DriverShiftPanel(){
    <div className="flex gap-1 rounded-lg bg-slate-100 p-1" aria-label="Chế độ lịch ca">
     <Button size="sm" variant={mode==="daily"?"default":"ghost"} aria-pressed={mode==="daily"} disabled={saving} onClick={()=>setMode("daily")}>Theo ngày</Button>
     <Button size="sm" variant={mode==="patterns"?"default":"ghost"} aria-pressed={mode==="patterns"} disabled={saving} onClick={()=>setMode("patterns")}>Mẫu ca PT</Button>
+    <Button size="sm" variant={mode==="bulk"?"default":"ghost"} aria-pressed={mode==="bulk"} disabled={saving} onClick={()=>setMode("bulk")}>Thiếu chu kỳ PT</Button>
    </div>
    <div className="flex flex-wrap items-center gap-2">
     {mode==="daily"&&<><Button variant="outline" size="icon" aria-label="Ngày trước" disabled={date<=cutoff||saving} onClick={()=>setDate(addDays(date,-1))}><ChevronLeft/></Button>
      <label className="sr-only" htmlFor="shift-date">Ngày xem lịch ca</label><input id="shift-date" type="date" value={date} min={cutoff} disabled={saving} className={field} onChange={e=>{if(e.target.value>=cutoff)setDate(e.target.value);}}/>
      <Button variant="outline" size="icon" aria-label="Ngày sau" disabled={saving} onClick={()=>setDate(addDays(date,1))}><ChevronRight/></Button>
      <Button variant="ghost" size="sm" disabled={saving} onClick={()=>setDate(vnDate())}>Hôm nay</Button></>}
-    {mode==="patterns"&&<Button variant="outline" disabled={loading||saving} onClick={()=>void syncMonth()}>Đồng bộ MISA</Button>}
+    {mode!=="daily"&&<Button variant="outline" disabled={loading||saving} onClick={()=>void syncMonth()}>Đồng bộ MISA</Button>}
     <Button variant="outline" disabled={loading||saving} onClick={()=>void load()}><RefreshCw className="size-4"/>Tải lại</Button>
-    <Button disabled={loading||saving} onClick={startNew}><Plus className="size-4"/>{mode==="daily"?"Thêm ca":"Thêm mẫu ca"}</Button>
+    {mode!=="bulk"&&<Button disabled={loading||saving} onClick={startNew}><Plus className="size-4"/>{mode==="daily"?"Thêm ca":"Thêm mẫu ca"}</Button>}
    </div>
   </div>
+  {mode==="bulk"?<>{error?<p role="alert" className="p-4 text-sm text-red-700">{error} · Bấm Tải lại để thử lại.</p>:loading?<p role="status" className="p-4 text-sm text-slate-600">Đang đọc config và chu kỳ tuần…</p>:<BulkPtShiftPanel drivers={drivers} patterns={rows as ShiftPattern[]} configuredIds={configuredIds} onSaved={()=>load(true)} onBusy={setSaving}/>}</>:<>
   <div className="flex flex-wrap items-center justify-between gap-3 px-3 py-3">
    <label className="relative w-full sm:max-w-sm"><span className="sr-only">Tìm tài xế trong lịch ca</span><Search className="absolute left-3 top-3 size-4 text-slate-500"/><input type="search" className={`${field} w-full pl-9`} placeholder="Tìm tài xế hoặc mã nhân viên…" value={search} onChange={e=>setSearch(e.target.value)}/></label>
    <p className="text-xs text-slate-600">Lưu từ {cutoff} · Giờ Việt Nam · Có thể xem ngày tương lai</p>
@@ -74,6 +78,6 @@ export function DriverShiftPanel(){
     <thead className="sticky top-0 z-10 bg-slate-50 text-left text-xs font-medium text-slate-600"><tr><th className="w-12 p-3"><span className="sr-only">Sửa</span></th><th className="p-3">Tài xế</th>{mode==="daily"?<><th className="p-3">Thời gian</th><th className="hidden p-3 sm:table-cell">Nghỉ phép</th><th className="p-3">Nguồn</th></>:<><th className="p-3">Tuần làm việc</th><th className="p-3">Hiệu lực</th><th className="p-3">Trạng thái</th></>}</tr></thead>
     <tbody>{filtered.map(r=><tr key={"id" in r?r.id:`${r.employee_code}|${r.shift_date}|${r.slot}`} className="border-t border-slate-200 align-top hover:bg-slate-50"><td className="p-2"><Button variant="ghost" size="icon" className="text-blue-600" aria-label={`Sửa lịch ca ${name(r)}`} disabled={saving} onClick={()=>{setIsNew(false);setEditing(r);}}><Pencil className="size-4"/></Button></td><td className="p-3"><DriverName full={name(r)}/><p className="mt-1 break-all text-xs text-slate-600">{r.employee_code.startsWith("driver:")?"Liên kết bằng ID tài xế":r.employee_code}</p></td>{"day_type" in r?<><td className="whitespace-nowrap p-3 tabular-nums">{r.day_type==="working"?`${r.start_time} – ${r.end_time}`:r.holiday_name||kindLabel[r.day_type]}{r.slot>1&&<p className="text-xs text-slate-600">Ca {r.slot}</p>}</td><td className="hidden p-3 sm:table-cell">{r.leave_start&&r.leave_end?`${r.leave_start} – ${r.leave_end}`:""}{r.leave_gap&&<p className="text-xs text-amber-800">Cần kiểm tra nghỉ phép</p>}</td><td className="p-3 text-xs text-slate-600">{r.source==="manual"?"Sửa trong app":r.source==="Sheet migration"?"Dữ liệu đã chuyển":r.source}</td></>:<><td className="p-3"><div className="flex flex-wrap gap-x-3 gap-y-1 text-xs tabular-nums">{[1,2,3,4,5,6,0].filter(d=>r.days[d]).map(d=><span key={d}>{weekdays[d]} {r.days[d]!.start}–{r.days[d]!.end}</span>)}{r.days.every(d=>!d)&&<span className="text-slate-600">Chưa nhập giờ làm việc</span>}</div></td><td className="whitespace-nowrap p-3 text-xs">{r.active_from||"Không giới hạn"}{r.active_to&&` → ${r.active_to}`}</td><td className="p-3 text-xs">{r.review_issues.length?<span className="text-amber-800">Cần liên kết tài xế</span>:r.active?"Đang áp dụng":"Tạm ngừng"}</td></>}</tr>)}</tbody>
    </table>}
-  </div><p className="border-t border-slate-200 px-3 py-2 text-xs text-slate-600">{loading?"Đang đọc Supabase":`${filtered.length} ${mode==="daily"?"ca":"mẫu ca"} · Supabase`}</p>
+  </div><p className="border-t border-slate-200 px-3 py-2 text-xs text-slate-600">{loading?"Đang đọc Supabase":`${filtered.length} ${mode==="daily"?"ca":"mẫu ca"} · Supabase`}</p></>}
  </section>;
 }

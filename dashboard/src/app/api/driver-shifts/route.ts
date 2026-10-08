@@ -3,12 +3,15 @@ import { dailyDriverShifts,shiftDrivers,shiftPatterns,saveDriverShift } from "@/
 import { cartrackHistoryCutoff,vnDate } from "@/lib/time";
 import { invalidateShiftCache } from "@/lib/shift-window";
 import { invalidateConfigCache } from "@/lib/config";
+import { masterRules } from "@/lib/master-store";
 export const runtime="nodejs";
 export const preferredRegion="sin1";
 export async function GET(req:NextRequest){
  try{const pattern=req.nextUrl.searchParams.get("mode")==="patterns",date=req.nextUrl.searchParams.get("date")||vnDate();
-  const [rows,drivers]=await Promise.all([pattern?shiftPatterns():dailyDriverShifts(date),shiftDrivers()]);
-  return NextResponse.json({rows,drivers,date,cutoff:cartrackHistoryCutoff()});
+  const [rows,drivers,rules]=await Promise.all([pattern?shiftPatterns():dailyDriverShifts(date),shiftDrivers(),
+   pattern?Promise.all([masterRules("weekday",{resolveNames:false}),masterRules("sunday",{resolveNames:false})]):Promise.resolve([])]);
+  const configuredDriverIds=[...new Set(rules.flat().filter(r=>r.pickup_customer_id&&!r.review_issues.length).flatMap(r=>r.driver_ids))];
+  return NextResponse.json({rows,drivers,configuredDriverIds,date,cutoff:cartrackHistoryCutoff()});
  }catch(e){return NextResponse.json({error:e instanceof Error?e.message:String(e)},{status:400});}
 }
 export async function POST(req:NextRequest){
