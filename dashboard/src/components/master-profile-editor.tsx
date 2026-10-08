@@ -43,24 +43,44 @@ export function gpsDeltaKm(initial: Record<string, unknown>, draft: Record<strin
   return haversineKm(lat, lon, nextLat, nextLon);
 }
 
+export function parseGpsPair(text:string):{latitude:string;longitude:string}|null {
+  const values=text.trim().replace(/^\(|\)$/g, "").split(/[,;\s]+/);
+  if(values.length!==2 || values.some(value=>!/^[-+]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value)))return null;
+  const [latitude,longitude]=values.map(Number);
+  return Number.isFinite(latitude)&&Number.isFinite(longitude)&&Math.abs(latitude)<=90&&Math.abs(longitude)<=180 ? {latitude:values[0],longitude:values[1]} : null;
+}
+
 export function MasterProfileEditor({ kind, id, initial, clients, linkedLabcenter, onCancel, onSaved, gpsOnly=false, creating=false }: {
   kind: Kind; id: string; gpsOnly?:boolean; creating?:boolean; initial: Record<string, unknown>;
   clients: { customer_id: string; cartrack: Record<string, unknown>; labcenter_location_id: number | null }[];
   linkedLabcenter?: boolean; onCancel: () => void; onSaved: () => Promise<void>;
 }) {
   const [draft, setDraft] = useState(() => Object.fromEntries((kind === "client" ? clientFields : driverFields)
-    .map(key => [key, key === "is_active" ? String(!isInactiveLocation(initial.customer_name)) : shiftFields.has(key) ? String(initial[key] ?? "").slice(0, 5) : String(initial[key] ?? "")])));
+    .map(key => [key, key === "phone_code" && creating ? "84" : key === "is_active" ? String(!isInactiveLocation(initial.customer_name)) : shiftFields.has(key) ? String(initial[key] ?? "").slice(0, 5) : String(initial[key] ?? "")])));
+  const [gpsPaste,setGpsPaste]=useState("");
   const [keepGps, setKeepGps] = useState(!gpsOnly);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [requestId]=useState(()=>crypto.randomUUID());
-  const gpsDistance = kind === "client" && !keepGps ? gpsDeltaKm(initial, draft) : null;
+  const gpsDistance = kind === "client" && !keepGps && (!gpsPaste.trim() || parseGpsPair(gpsPaste)) ? gpsDeltaKm(initial, draft) : null;
   const fieldClass = "w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:bg-slate-100";
   const set = (key: string, value: string) => setDraft(d => ({ ...d, [key]: value }));
-  const input = (key: string, label: string, type = "text") => <label key={key} className="block min-w-0 space-y-1">
-    <span className="text-xs font-medium text-slate-700">{label}</span>
-    <input className={fieldClass} type={type} step={type === "number" ? "any" : undefined} required={creating && ["first_name","last_name","phone_code","phone_number"].includes(key)} autoFocus={gpsOnly && key==="latitude"} value={draft[key]} onChange={e => set(key, e.target.value)} />
-  </label>;
+  const applyGpsPaste=(text:string)=>{
+    setGpsPaste(text);setError("");
+    const coords=parseGpsPair(text);if(coords)setDraft(d=>({...d,...coords}));
+  };
+  const input = (key: string, label: string, type = "text") => {
+    const required=creating && ["first_name","last_name","phone_number"].includes(key);
+    const locked=creating && key==="phone_code";
+    return <label key={key} className="block min-w-0 space-y-1">
+      <span className="text-xs font-medium text-slate-700">{label}{required && <span aria-hidden="true" className="ml-1 text-red-600">*</span>}</span>
+      <input className={`${fieldClass}${locked ? " bg-slate-50 text-slate-600" : ""}`} type={type} step={type === "number" ? "any" : undefined} required={required} readOnly={locked} tabIndex={locked ? -1 : undefined} autoFocus={gpsOnly && key==="latitude"} value={draft[key]} onChange={e => {set(key, e.target.value);if(["latitude","longitude"].includes(key))setGpsPaste("");}} onPaste={e=>{
+        if(!keepGps && ["latitude","longitude"].includes(key)) {
+          const text=e.clipboardData.getData("text");if(parseGpsPair(text)){e.preventDefault();applyGpsPaste(text);}
+        }
+      }} />
+    </label>;
+  };
   const location = (key: string, label: string) => <div className="block min-w-0 space-y-1">
     <span className="text-xs font-medium text-slate-700">{label}</span>
     <FilterMultiSelect label={label} multiple={false} portal={false} disabled={saving}
@@ -75,6 +95,7 @@ export function MasterProfileEditor({ kind, id, initial, clients, linkedLabcente
   const save = async (e: React.FormEvent) => {
     e.preventDefault(); setSaving(true); setError("");
     try {
+      if(kind==="client" && !keepGps && gpsPaste.trim() && !parseGpsPair(gpsPaste))throw new Error("Dán GPS theo dạng vĩ độ, kinh độ; vĩ độ từ −90 đến 90, kinh độ từ −180 đến 180");
       const patch = profilePatch(kind, creating?{}:initial, gpsOnly ? {latitude:draft.latitude,longitude:draft.longitude} : draft, keepGps);
       if(creating) {
         const res=await fetch("/api/drivers",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({request_id:requestId,profile:patch})});
@@ -94,6 +115,7 @@ export function MasterProfileEditor({ kind, id, initial, clients, linkedLabcente
       {kind === "client" && <section className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3" aria-label="Toạ độ GPS">
         <div className="flex items-center justify-between gap-2"><span className="text-xs font-semibold text-slate-800">Toạ độ GPS</span>
           {!gpsOnly && <button type="button" aria-pressed={!keepGps} onClick={()=>setKeepGps(v=>!v)} className="rounded px-2 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">{keepGps ? "Đổi GPS" : "Giữ GPS hiện tại"}</button>}</div>
+        {!keepGps && <label className="block space-y-1"><span className="text-xs font-medium text-slate-700">Dán vĩ độ, kinh độ</span><input className={fieldClass} placeholder="10.762622, 106.660172" value={gpsPaste} onChange={e=>applyGpsPaste(e.target.value)} aria-invalid={!!gpsPaste.trim() && !parseGpsPair(gpsPaste)} /><span className="block text-[11px] text-slate-500">Dán cả hai tọa độ để điền vào các ô bên dưới.</span></label>}
         <fieldset disabled={keepGps} className="grid grid-cols-2 gap-3">{input("latitude","Vĩ độ","number")}{input("longitude","Kinh độ","number")}</fieldset>
         {!keepGps && <div className="space-y-1 text-xs leading-5 text-slate-700">
           {gpsDeltaKm(initial,{latitude:String(initial.latitude??""),longitude:String(initial.longitude??"")}) !== null && <p>GPS hiện tại: <span className="tabular-nums">{String(initial.latitude)}, {String(initial.longitude)}</span></p>}

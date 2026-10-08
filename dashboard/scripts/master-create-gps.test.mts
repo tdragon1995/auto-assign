@@ -3,7 +3,7 @@ import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {createMasterDriver} from '../src/lib/master-driver-create';
 import {editClient} from '../src/lib/master-profile';
-import {MasterProfileEditor,profilePatch,gpsDeltaKm} from '../src/components/master-profile-editor';
+import {MasterProfileEditor,profilePatch,gpsDeltaKm,parseGpsPair} from '../src/components/master-profile-editor';
 const driver='44444444-4444-4444-8444-444444444444',pickup='11111111-1111-4111-8111-111111111111';
 const draft={first_name:'P - C - PTBU',last_name:'Test driver',phone_code:'84',phone_number:'903123456'};
 const html=renderToStaticMarkup(createElement(MasterProfileEditor,{kind:'client',id:pickup,gpsOnly:true,initial:{latitude:10.5,longitude:106.5},clients:[],onCancel(){},async onSaved(){}}));
@@ -16,6 +16,12 @@ assert.ok(Math.abs(gpsDeltaKm({latitude:0,longitude:0},{latitude:"1",longitude:"
 assert.ok(html.includes("Haversine")&&html.includes("GPS hiện tại")&&html.includes("0 m"));
 assert.throws(()=>profilePatch('client',{}, {latitude:'91',longitude:'106'},false));
 assert.deepEqual(profilePatch('client',{latitude:10.5,longitude:106.5},{latitude:'11',longitude:'107'},false),{latitude:11,longitude:107});
+assert.deepEqual(parseGpsPair('10.762622, 106.660172'),{latitude:'10.762622',longitude:'106.660172'});
+assert.deepEqual(parseGpsPair('(10.762622 106.660172)'),{latitude:'10.762622',longitude:'106.660172'});
+for(const pair of ['', '91, 106', '10, 181', '10,', '10,106,7','bad,106'])assert.equal(parseGpsPair(pair),null);
+const createHtml=renderToStaticMarkup(createElement(MasterProfileEditor,{kind:'driver',id:'new',creating:true,initial:{phone_code:'1'},clients:[],onCancel(){},async onSaved(){}}));
+assert.ok(createHtml.includes('readOnly=""')&&createHtml.includes('value="84"'));
+assert.equal((createHtml.match(/text-red-600/g)||[]).length,3);
 const env={SUPABASE_URL:'https://supabase.invalid',SUPABASE_SERVICE_ROLE_KEY:'test',CARTRACK_AUTH:'test',KV_REST_API_URL:'https://redis.invalid',KV_REST_API_TOKEN:'test',LABCENTER_EMAIL:'test',LABCENTER_PASSWORD:'test',MASTER_CLIENT_INFO_SOURCE:'supabase'};
 const before=Object.fromEntries(Object.keys(env).map(k=>[k,process.env[k]])),previousFetch=globalThis.fetch;
 Object.assign(process.env,env);
@@ -51,6 +57,7 @@ globalThis.fetch=async(input,init)=>{
 try {
  await assert.rejects(createMasterDriver(pickup,{...draft,bot_token:'secret'}));assert.equal(creates,0);
  await assert.rejects(createMasterDriver(pickup,{...draft,start_location_customer_id:'invalid'}));assert.equal(creates,0);
+ await assert.rejects(createMasterDriver(pickup,{...draft,phone_code:'1'}));assert.equal(creates,0);
  dbFails=true;await assert.rejects(createMasterDriver(pickup,draft));assert.equal(creates,1);
  dbFails=false;assert.equal((await createMasterDriver(pickup,draft)).driver_id,driver);assert.equal(creates,1,'retry after DB failure must not create another driver');
  assert.equal((await createMasterDriver(pickup,draft)).driver_id,driver);assert.equal(creates,1);

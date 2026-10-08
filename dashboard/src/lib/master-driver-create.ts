@@ -15,7 +15,7 @@ export async function createMasterDriver(requestId:unknown,input:unknown) {
   for(const [key,value] of Object.entries(draft))if(value!==null && (typeof value!=="string" || value.length>250))throw new Error(`${key} không hợp lệ`);
   const text=(key:string)=>typeof draft[key]==="string"?draft[key].trim():"";
   if(!text("first_name")||!text("last_name"))throw new Error("Nhập Họ / mã và Tên tài xế");
-  if(!/^\d{1,4}$/.test(text("phone_code"))||!/^\d{1,15}$/.test(text("phone_number"))||!Number.isSafeInteger(Number(text("phone_number"))))throw new Error("Mã vùng hoặc số điện thoại không hợp lệ");
+  if(text("phone_code")!=="84"||!/^\d{1,15}$/.test(text("phone_number"))||!Number.isSafeInteger(Number(text("phone_number"))))throw new Error("Mã vùng hoặc số điện thoại không hợp lệ");
   if(text("email") && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text("email")))throw new Error("Email không hợp lệ");
   for(const key of ["shift_time_start","shift_time_end"])if(text(key)&&!/^([01]\d|2[0-3]):[0-5]\d:[0-5]\d\+07:00$/.test(text(key)))throw new Error("Ca tài xế không hợp lệ");
   if(!!text("shift_time_start")!==!!text("shift_time_end"))throw new Error("Nhập đủ giờ bắt đầu và kết thúc ca, hoặc để trống cả hai");

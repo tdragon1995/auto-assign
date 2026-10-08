@@ -74,3 +74,7 @@ Bulk driver replacement also updates every active Schedule Setup definition usin
 the old driver, in the same transaction as the selected Config rows. The preview
 shows the number of schedules. Route, times, weekdays and inactive definitions
 are preserved; existing assigned jobs and historical payroll rows are not rewritten.
+
+Controlled native verification on 8 October 2026: October MISA refresh completed
+successfully with 3,379 parsed shift rows, followed by the shared cache refresh.
+The old misa-shifts GitHub workflow was retired after this check.
