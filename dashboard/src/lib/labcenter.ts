@@ -266,12 +266,11 @@ export async function updateLocationAddress(
     headers: { Authorization: `Bearer ${token}` },
     cache: "no-store",
   });
-  if (check.ok) {
-    const d = (await check.json().catch(() => ({})))?.data;
-    if (d && d.address !== addr.address) {
-      return { ok: false, error: "Labcenter nhận yêu cầu nhưng không cập nhật địa chỉ" };
-    }
-  }
+  if (!check.ok) return {ok:false,error:`Không đọc lại được địa chỉ/GPS Labcenter (HTTP ${check.status})`};
+  const d=(await check.json().catch(()=>({})))?.data;
+  if(!d || d.address!==addr.address || d.latitude==null || d.longitude==null ||
+    Number(d.latitude)!==addr.latitude || Number(d.longitude)!==addr.longitude)
+    return {ok:false,error:"Labcenter nhận yêu cầu nhưng địa chỉ/GPS không khớp khi đọc lại"};
   return { ok: true };
 }
 

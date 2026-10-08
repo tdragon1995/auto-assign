@@ -53,8 +53,7 @@ export async function PATCH(req: NextRequest) {
       if ("bot_token" in body.patch && !authorized(req)) return deny();
     }
     if (body.kind === "client") {
-      const result = await editClient(body.id, body.patch);
-      await invalidateConfigCache();
+      const result = await editClient(body.id, body.patch).finally(() => invalidateConfigCache());
       return NextResponse.json({ ok: true, result });
     }
     if (body.kind === "driver") {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowRightLeft, Building2, ChevronDown, Pencil, RefreshCw, Search, SlidersHorizontal, UserRound, X } from "lucide-react";
+import { ArrowRightLeft, Building2, ChevronDown, Pencil, RefreshCw, Search, SlidersHorizontal, MapPin, UserPlus, UserRound, X } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -14,7 +14,7 @@ import { BranchEditor, TimeSelect } from "./config-todo-panel";
 import { DriverCombobox } from "./driver-combobox";
 import { FilterMultiSelect } from "./filter-multi-select";
 import { HoverPanel } from "./hover-panel";
-import { MasterProfileEditor } from "./master-profile-editor";
+import { MasterProfileEditor, DriverCreateDialog } from "./master-profile-editor";
 import { MasterProfileDetails, type ClientMeta, type DriverMeta } from "./master-profile-details";
 import type { ConfigRowView } from "@/app/api/config/rows/route";
 import type { BranchRule, ConfigDriver } from "@/lib/types";
@@ -696,6 +696,8 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
   const [metaError, setMetaError] = useState("");
   const [profileHover, setProfileHover] = useState<{ kind: "client" | "driver"; id: string; anchor: HTMLElement; pinned: boolean } | null>(null);
   const [profileEditing, setProfileEditing] = useState(false);
+  const [gpsEditing,setGpsEditing]=useState(false);
+  const [creatingDriver,setCreatingDriver]=useState(false);
   const profileOpenTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const profileCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clearProfileTimers = () => {
@@ -710,14 +712,14 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
   const openProfile = (kind: "client" | "driver", id: string, anchor: HTMLElement, pinned = false) => {
     clearProfileTimers();
     if (profileHover?.pinned && !pinned) return;
-    const open = () => { setProfileEditing(false); setProfileHover({ kind, id, anchor, pinned }); };
+    const open = () => { setProfileEditing(false); setGpsEditing(false); setProfileHover({ kind, id, anchor, pinned }); };
     if (pinned) open(); else profileOpenTimer.current = setTimeout(open, 250);
   };
   const leaveProfile = () => {
     clearProfileTimers();
     profileCloseTimer.current = setTimeout(() => setProfileHover(p => p?.pinned ? p : null), 200);
   };
-  const closeProfile = () => { clearProfileTimers(); setProfileHover(null); setProfileEditing(false); };
+  const closeProfile = () => { clearProfileTimers(); setProfileHover(null); setProfileEditing(false); setGpsEditing(false); };
   const pinProfile = () => setProfileHover(p => p ? { ...p, pinned: true } : p);
   const [replacing, setReplacing] = useState(false);
   const loadedRef = useRef<string | null>(null);
@@ -986,6 +988,9 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
             </span>
           )}
           {metaBusy && <span className="text-[11px] text-slate-500">Đang tải thông tin…</span>}
+          <Button size="sm" variant="outline" className="h-9 px-3 text-xs" onClick={()=>setCreatingDriver(true)} disabled={metaBusy}>
+            <UserPlus aria-hidden="true" className="size-3.5"/>Tạo tài xế
+          </Button>
           <Button
             size="sm" variant="default"
             className="h-9 bg-indigo-600 px-3 text-xs font-semibold hover:bg-indigo-700"
@@ -1370,6 +1375,8 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
           )}
         </div>
       </CardContent>
+      {creatingDriver && <DriverCreateDialog clients={clientMetadata??[]} onClose={()=>setCreatingDriver(false)}
+        onSaved={async()=>{await reloadSupabase();setCreatingDriver(false);toast.success("Đã tạo tài xế trên Cartrack và Supabase");}}/>}
       <HoverPanel anchor={profileHover?.anchor ?? null} open={!!(hoverClient || hoverDriver)} label={hoverName}
         onClose={closeProfile} onEngage={pinProfile} onPointerEnter={clearProfileTimers} onPointerLeave={leaveProfile}>
         <div className="space-y-4 p-3">
@@ -1381,14 +1388,14 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
             <button type="button" aria-label="Đóng" title="Đóng" onClick={closeProfile} className="flex size-8 shrink-0 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"><X aria-hidden="true" className="size-4" /></button>
           </div>
           {profileEditing && profileHover && (hoverClient || hoverDriver) ? <MasterProfileEditor
-            key={`${profileHover.kind}-${profileHover.id}`} kind={profileHover.kind} id={profileHover.id}
+            key={`${profileHover.kind}-${profileHover.id}-${gpsEditing}`} gpsOnly={gpsEditing} kind={profileHover.kind} id={profileHover.id}
             initial={hoverClient ? { ...hoverClient.cartrack, default_dropoff_id: hoverClient.default_dropoff_id, default_dropoff_name: hoverClient.default_dropoff_name, eta_minutes: hoverClient.eta_minutes }
               : { ...hoverDriver!.cartrack, ...hoverDriver!.roster, driver_zalo_id: hoverDriver!.driver_zalo_id, phone_number_update: hoverDriver!.phone_number_update }}
             clients={clientMetadata ?? []} linkedLabcenter={!!hoverClient?.labcenter_location_id}
-            onCancel={() => setProfileEditing(false)} onSaved={async () => { await loadMetadata(); await load(true); closeProfile(); toast.success("Đã lưu và đồng bộ hồ sơ"); }}
+            onCancel={() => {setProfileEditing(false);setGpsEditing(false);}} onSaved={async () => { await loadMetadata(); await load(true); closeProfile(); toast.success("Đã lưu và đồng bộ hồ sơ"); }}
           /> : <>
             <MasterProfileDetails client={hoverClient} driver={hoverDriver} clients={clientMetaById} />
-            <div className="flex justify-end border-t border-slate-200 pt-3"><Button size="sm" variant="outline" onClick={() => { pinProfile(); setProfileEditing(true); }}><Pencil aria-hidden="true" className="size-3.5" />Sửa hồ sơ</Button></div>
+            <div className="flex flex-wrap justify-end gap-2 border-t border-slate-200 pt-3">{hoverClient && <Button size="sm" variant="outline" onClick={()=>{pinProfile();setGpsEditing(true);setProfileEditing(true);}}><MapPin aria-hidden="true" className="size-3.5"/>Cập nhật GPS</Button>}<Button size="sm" variant="outline" onClick={() => { pinProfile(); setProfileEditing(true); }}><Pencil aria-hidden="true" className="size-3.5" />Sửa hồ sơ</Button></div>
           </>}
         </div>
       </HoverPanel>
