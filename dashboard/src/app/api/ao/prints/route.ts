@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { draftRedis, printRowOf, readPrintHistory, readPrintHistoryItem, savePrintHistory } from "@/lib/ao-print-draft";
+import { deletePrintHistoryItem, draftRedis, printRowOf, readPrintHistory, readPrintHistoryItem, savePrintHistory } from "@/lib/ao-print-draft";
 import type { PrintDraftRow } from "@/lib/handover";
 
 export const runtime = "nodejs";
@@ -41,5 +41,21 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     console.error("[ao/prints] save", error);
     return NextResponse.json({ error: "Không lưu được lịch sử in" }, { status: 502 });
+  }
+}
+
+export async function DELETE(req: NextRequest) {
+  const db = draftRedis();
+  if (!db) return NextResponse.json({ error: "Lịch sử in chưa được cấu hình" }, { status: 503 });
+  const id = req.nextUrl.searchParams.get("id");
+  if (!id || !/^[0-9a-f-]{36}$/i.test(id)) return NextResponse.json({ error: "Mã bản in không hợp lệ" }, { status: 400 });
+  try {
+    const deleted = await deletePrintHistoryItem(db, id);
+    return NextResponse.json(deleted ? { deleted: true } : { error: "Không tìm thấy bản in" }, {
+      status: deleted ? 200 : 404, headers: { "Cache-Control": "no-store" },
+    });
+  } catch (error) {
+    console.error("[ao/prints] delete", error);
+    return NextResponse.json({ error: "Không xóa được bản in" }, { status: 502 });
   }
 }

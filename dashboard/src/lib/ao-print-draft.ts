@@ -4,6 +4,7 @@ import { printRowKey, type PrintDraftRow, type PrintHistory } from "./handover";
 import { vnDate } from "./time";
 
 const draftPrefix = (day: string) => `ao:hardcopy:day:${day}:`;
+const draftUpdatedAtKey = (day: string) => `ao:hardcopy:updated:${day}`;
 const HISTORY_PREFIX = "ao:hardcopy:history:";
 const TTL = 7 * 24 * 60 * 60;
 
@@ -25,7 +26,7 @@ export function printRowOf(value: unknown): PrintDraftRow | null {
     patient: r.patient as string, billing: r.billing as string, note: r.note as string };
 }
 
-export async function readPrintDraft(db: Redis, day = vnDate()): Promise<PrintDraftRow[]> {
+async function draftKeys(db: Redis, day: string): Promise<string[]> {
   const keys: string[] = [];
   let cursor = "0";
   do {
@@ -34,7 +35,11 @@ export async function readPrintDraft(db: Redis, day = vnDate()): Promise<PrintDr
     if (keys.length > 5000) throw new Error("AO print draft exceeds 5000 rows");
     cursor = String(next);
   } while (cursor !== "0");
+  return keys;
+}
 
+export async function readPrintDraft(db: Redis, day = vnDate()): Promise<PrintDraftRow[]> {
+  const keys = await draftKeys(db, day);
   const rows: PrintDraftRow[] = [];
   for (let i = 0; i < keys.length; i += 200) {
     const values = await db.mget<(PrintDraftRow | string | null)[]>(...keys.slice(i, i + 200));
@@ -47,16 +52,29 @@ export async function readPrintDraft(db: Redis, day = vnDate()): Promise<PrintDr
   return rows;
 }
 
-export async function savePrintDraft(db: Redis, rows: PrintDraftRow[], day = vnDate()): Promise<PrintDraftRow[]> {
+export async function readPrintDraftState(db: Redis, day = vnDate()) {
+  const [rows, updatedAt] = await Promise.all([readPrintDraft(db, day), db.get<string>(draftUpdatedAtKey(day))]);
+  return { rows, updatedAt };
+}
+
+export async function savePrintDraft(db: Redis, rows: PrintDraftRow[], day = vnDate()) {
   const unique = new Map(rows.map((r) => [printRowKey(r), r]));
   if (unique.size) {
     const pipe = db.pipeline();
     for (const [key, row] of unique) {
       pipe.set(draftPrefix(day) + createHash("sha256").update(key).digest("hex"), row, { ex: TTL });
     }
+    pipe.set(draftUpdatedAtKey(day), new Date().toISOString(), { ex: TTL });
     await pipe.exec();
   }
-  return readPrintDraft(db, day);
+  return readPrintDraftState(db, day);
+}
+
+export async function clearPrintDraft(db: Redis, day = vnDate()) {
+  const keys = await draftKeys(db, day);
+  for (let i = 0; i < keys.length; i += 200) await db.del(...keys.slice(i, i + 200));
+  await db.del(draftUpdatedAtKey(day));
+  return readPrintDraftState(db, day);
 }
 
 export async function readPrintHistory(db: Redis): Promise<PrintHistory[]> {
@@ -83,6 +101,10 @@ export async function readPrintHistory(db: Redis): Promise<PrintHistory[]> {
 export async function readPrintHistoryItem(db: Redis, id: string): Promise<PrintHistory | null> {
   if (!/^[0-9a-f-]{36}$/i.test(id)) return null;
   return db.get<PrintHistory>(HISTORY_PREFIX + id);
+}
+
+export async function deletePrintHistoryItem(db: Redis, id: string): Promise<boolean> {
+  return (await db.del(HISTORY_PREFIX + id)) === 1;
 }
 
 export async function savePrintHistory(db: Redis, title: string, rows: PrintDraftRow[]): Promise<PrintHistory> {

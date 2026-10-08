@@ -294,12 +294,15 @@ export function HardCopyHandover() {
   const [lines, setLines] = useState<PasteLine[]>([]); // what was pasted when "Tra cứu" was pressed
   const [orders, setOrders] = useState<Record<string, Order>>({});
   const [savedRows, setSavedRows] = useState<PrintDraftRow[]>([]);
+  const [draftUpdatedAt, setDraftUpdatedAt] = useState<string | null>(null);
   const [savedOrders, setSavedOrders] = useState<Record<string, Order>>({});
   const [history, setHistory] = useState<PrintHistorySummary[]>([]);
   const [historyDate, setHistoryDate] = useState(vnDate);
   const [historyError, setHistoryError] = useState("");
   const [draftError, setDraftError] = useState("");
   const [draftLoading, setDraftLoading] = useState(true);
+  const [clearingDraft, setClearingDraft] = useState(false);
+  const [deletingPrintId, setDeletingPrintId] = useState<string | null>(null);
   const [statusLoading, setStatusLoading] = useState(false);
   const [statusDone, setStatusDone] = useState(0);
   const [statusTotal, setStatusTotal] = useState(0);
@@ -314,6 +317,7 @@ export function HardCopyHandover() {
       if (!res.ok) throw new Error(data.error ?? "Không tải được bản nháp chung");
       const draftRows: PrintDraftRow[] = data.rows ?? [];
       setSavedRows(draftRows);
+      setDraftUpdatedAt(data.updatedAt ?? null);
       setDraftError("");
       setDraftLoading(false);
       const { statusOnly: statusOnlyVids, full: fullVids } = statusLookupVids(draftRows);
@@ -371,6 +375,7 @@ export function HardCopyHandover() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "Không lưu được bản nháp chung");
         setSavedRows(data.rows ?? []);
+        setDraftUpdatedAt(data.updatedAt ?? null);
         setDraftError("");
       } catch (error) {
         setDraftError(String(error));
@@ -421,17 +426,64 @@ export function HardCopyHandover() {
     }
   };
 
+  const clearDraft = async () => {
+    if (!window.confirm("Xóa toàn bộ bản nháp chung hôm nay? Danh sách đã in vẫn được lưu trong lịch sử.")) return;
+    setClearingDraft(true);
+    try {
+      const res = await fetch("/api/ao/draft", { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Không xóa được bản nháp");
+      setSavedRows(data.rows ?? []);
+      setDraftUpdatedAt(data.updatedAt ?? null);
+      setText("");
+      setLines([]);
+      setOrders({});
+      setSavedOrders({});
+      setDone(0);
+      setStatusDone(0);
+      setStatusTotal(0);
+      setDraftError("");
+    } catch (error) {
+      setDraftError(String(error));
+    } finally {
+      setClearingDraft(false);
+    }
+  };
+
+  const deleteHistory = async (item: PrintHistorySummary) => {
+    if (!window.confirm(`Xóa bản in ${item.title} lúc ${new Date(item.printedAt).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })}?`)) return;
+    setDeletingPrintId(item.id);
+    try {
+      const res = await fetch(`/api/ao/prints?id=${encodeURIComponent(item.id)}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Không xóa được bản in");
+      setHistory((prev) => prev.filter((print) => print.id !== item.id));
+      setHistoryError("");
+    } catch (error) {
+      setHistoryError(String(error));
+    } finally {
+      setDeletingPrintId(null);
+    }
+  };
+
   return (
     <div className="space-y-5">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-xl font-extrabold text-slate-900">Bàn giao kết quả bản cứng</h1>
           <p className="mt-1 text-sm text-slate-600">Ngày {today("vi-VN")} · Bản nháp chung hôm nay: {savedRows.length} dòng</p>
+          <p className="mt-0.5 text-xs text-slate-500">{draftUpdatedAt ? `Cập nhật cuối: ${new Date(draftUpdatedAt).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })}` : savedRows.length ? "Chưa rõ thời gian cập nhật" : "Chưa có bản nháp"}</p>
         </div>
-        <button onClick={refreshDraft} disabled={draftLoading || statusLoading || loading}
-          className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 disabled:opacity-40">
-          <RefreshCw aria-hidden className="w-4 h-4" />{draftLoading ? "Đang tải bản nháp…" : "Làm mới bản nháp"}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button onClick={refreshDraft} disabled={draftLoading || statusLoading || loading || clearingDraft}
+            className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 disabled:opacity-40">
+            <RefreshCw aria-hidden className="w-4 h-4" />{draftLoading ? "Đang tải bản nháp…" : "Làm mới bản nháp"}
+          </button>
+          <button onClick={() => void clearDraft()} disabled={!savedRows.length || draftLoading || statusLoading || loading || clearingDraft}
+            className="rounded-lg px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-700 disabled:opacity-40">
+            {clearingDraft ? "Đang xóa…" : "Xóa bản nháp"}
+          </button>
+        </div>
       </header>
       {draftError && <p role="alert" className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">{draftError} · Dòng mới chưa chắc đã được lưu trên máy khác.</p>}
       {statusLoading && <p role="status" className="text-xs text-slate-600">Đang kiểm tra kết quả {statusDone}/{statusTotal} VID…</p>}
@@ -479,9 +531,12 @@ export function HardCopyHandover() {
               {group.prints.length ? (
                 <ul className="max-h-24 divide-y divide-slate-100 overflow-y-auto pr-1">
                   {group.prints.map((print) => (
-                    <li key={print.id} className="flex items-center justify-between gap-2 py-2 text-xs">
+                    <li key={print.id} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 py-2 text-xs">
                       <span className="min-w-0 text-slate-600">{new Date(print.printedAt).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })} · {print.count} hồ sơ</span>
-                      <button className="shrink-0 font-semibold text-blue-700 hover:underline focus-visible:outline-2 focus-visible:outline-blue-700" onClick={() => void openHistory(print)}>Xem bản in</button>
+                      <span className="flex shrink-0 items-center gap-3">
+                        <button className="font-semibold text-blue-700 hover:underline focus-visible:outline-2 focus-visible:outline-blue-700" onClick={() => void openHistory(print)}>Xem bản in</button>
+                        <button className="font-semibold text-red-700 hover:underline focus-visible:outline-2 focus-visible:outline-red-700 disabled:opacity-40" disabled={deletingPrintId === print.id} onClick={() => void deleteHistory(print)}>{deletingPrintId === print.id ? "Đang xóa…" : "Xóa"}</button>
+                      </span>
                     </li>
                   ))}
                 </ul>

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { draftRedis, printRowOf, readPrintDraft, savePrintDraft } from "@/lib/ao-print-draft";
+import { clearPrintDraft, draftRedis, printRowOf, readPrintDraftState, savePrintDraft } from "@/lib/ao-print-draft";
 import type { PrintDraftRow } from "@/lib/handover";
 
 export const runtime = "nodejs";
@@ -9,7 +9,7 @@ export async function GET() {
   const db = draftRedis();
   if (!db) return NextResponse.json({ error: "Bản nháp chung chưa được cấu hình" }, { status: 503 });
   try {
-    return NextResponse.json({ rows: await readPrintDraft(db) }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json(await readPrintDraftState(db), { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("[ao/draft] read", error);
     return NextResponse.json({ error: "Không tải được bản nháp chung" }, { status: 502 });
@@ -27,9 +27,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Dòng in không hợp lệ" }, { status: 400 });
   }
   try {
-    return NextResponse.json({ rows: await savePrintDraft(db, rows) }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json(await savePrintDraft(db, rows), { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("[ao/draft] save", error);
     return NextResponse.json({ error: "Không lưu được bản nháp chung" }, { status: 502 });
+  }
+}
+
+export async function DELETE() {
+  const db = draftRedis();
+  if (!db) return NextResponse.json({ error: "Bản nháp chung chưa được cấu hình" }, { status: 503 });
+  try {
+    return NextResponse.json(await clearPrintDraft(db), { headers: { "Cache-Control": "no-store" } });
+  } catch (error) {
+    console.error("[ao/draft] clear", error);
+    return NextResponse.json({ error: "Không xóa được bản nháp chung" }, { status: 502 });
   }
 }
