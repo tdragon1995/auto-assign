@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Redis } from "@upstash/redis";
 import { printRowKey, type PrintDraftRow, type PrintHistory } from "./handover";
+import { vnDate } from "./time";
 
-const PREFIX = "ao:hardcopy:print:";
+const draftPrefix = (day: string) => `ao:hardcopy:day:${day}:`;
 const HISTORY_PREFIX = "ao:hardcopy:history:";
 const TTL = 7 * 24 * 60 * 60;
 
@@ -24,11 +25,11 @@ export function printRowOf(value: unknown): PrintDraftRow | null {
     patient: r.patient as string, billing: r.billing as string, note: r.note as string };
 }
 
-export async function readPrintDraft(db: Redis): Promise<PrintDraftRow[]> {
+export async function readPrintDraft(db: Redis, day = vnDate()): Promise<PrintDraftRow[]> {
   const keys: string[] = [];
   let cursor = "0";
   do {
-    const [next, batch] = await db.scan(cursor, { match: `${PREFIX}*`, count: 500 });
+    const [next, batch] = await db.scan(cursor, { match: `${draftPrefix(day)}*`, count: 500 });
     keys.push(...batch);
     if (keys.length > 5000) throw new Error("AO print draft exceeds 5000 rows");
     cursor = String(next);
@@ -46,16 +47,16 @@ export async function readPrintDraft(db: Redis): Promise<PrintDraftRow[]> {
   return rows;
 }
 
-export async function savePrintDraft(db: Redis, rows: PrintDraftRow[]): Promise<PrintDraftRow[]> {
+export async function savePrintDraft(db: Redis, rows: PrintDraftRow[], day = vnDate()): Promise<PrintDraftRow[]> {
   const unique = new Map(rows.map((r) => [printRowKey(r), r]));
   if (unique.size) {
     const pipe = db.pipeline();
     for (const [key, row] of unique) {
-      pipe.set(PREFIX + createHash("sha256").update(key).digest("hex"), row, { ex: TTL });
+      pipe.set(draftPrefix(day) + createHash("sha256").update(key).digest("hex"), row, { ex: TTL });
     }
     await pipe.exec();
   }
-  return readPrintDraft(db);
+  return readPrintDraft(db, day);
 }
 
 export async function readPrintHistory(db: Redis): Promise<PrintHistory[]> {

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Loader2, Download, AlertCircle, Printer, Check, X, RefreshCw } from "lucide-react";
 import { parsePaste, billingFound, stripPatient, pendingFor, statusLabel, displayClientName, printRowKey, statusLookupVids, type PasteLine, type PrintDraftRow, type PrintHistory, type PrintHistorySummary, type TestEntry, type PendingTest } from "@/lib/handover";
+import { vnDate } from "@/lib/time";
 
 /** One order as the lookup route returns it. */
 interface Order {
@@ -155,7 +156,7 @@ thead th { border-top: 2pt solid #000; border-bottom: 2pt solid #000; font-weigh
   return true;
 }
 
-function HandoverList({ title, groups, onPrint }: { title: string; groups: Group[]; onPrint: (title: string, groups: Group[]) => void }) {
+function HandoverList({ title, groups, busy, onPrint }: { title: string; groups: Group[]; busy: boolean; onPrint: (title: string, groups: Group[]) => void }) {
   const total = groups.reduce((n, g) => n + g.count, 0);
   return (
     <section className="bg-white rounded-2xl shadow-sm p-4 space-y-3 min-w-0">
@@ -166,14 +167,14 @@ function HandoverList({ title, groups, onPrint }: { title: string; groups: Group
         <div className="flex gap-2">
           <button
             onClick={() => onPrint(title, groups)}
-            disabled={!total}
+            disabled={!total || busy}
             className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-semibold text-white bg-blue-700 active:scale-[.97] disabled:opacity-40"
           >
             <Printer aria-hidden className="w-4 h-4" />In A4
           </button>
           <button
             onClick={() => downloadExcel(title, groups)}
-            disabled={!total}
+            disabled={!total || busy}
             className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-semibold text-blue-700 border border-blue-200 active:bg-blue-50 disabled:opacity-40"
           >
             <Download aria-hidden className="w-4 h-4" />Excel
@@ -295,6 +296,7 @@ export function HardCopyHandover() {
   const [savedRows, setSavedRows] = useState<PrintDraftRow[]>([]);
   const [savedOrders, setSavedOrders] = useState<Record<string, Order>>({});
   const [history, setHistory] = useState<PrintHistorySummary[]>([]);
+  const [historyDate, setHistoryDate] = useState(vnDate);
   const [historyError, setHistoryError] = useState("");
   const [draftError, setDraftError] = useState("");
   const [draftLoading, setDraftLoading] = useState(true);
@@ -334,6 +336,11 @@ export function HardCopyHandover() {
     }
   }, []);
   useEffect(() => { void refreshDraft(); }, [refreshDraft]);
+  useEffect(() => {
+    const day = vnDate();
+    const timer = window.setInterval(() => { if (vnDate() !== day) window.location.reload(); }, 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
   useEffect(() => {
     void fetch("/api/ao/prints", { cache: "no-store" })
       .then(async (res) => { const data = await res.json(); if (!res.ok) throw new Error(data.error); setHistory(data.prints ?? []); })
@@ -380,6 +387,10 @@ export function HardCopyHandover() {
   const hubGroups = groupRows(allRows.filter((r) => r.dest === HUB));
   const outsideGroups = groupRows(allRows.filter((r) => r.dest !== HUB));
   const failed = Object.values(orders).filter((o) => o.error);
+  const datedHistory = history.filter((item) => !historyDate || vnDate(new Date(item.printedAt)) === historyDate);
+  const historyGroups = ["D001", "Ngoài D001"].map((title) => ({
+    title, prints: datedHistory.filter((item) => item.title === title),
+  }));
 
   const handlePrint = (title: string, groups: Group[]) => {
     if (!printA4(title, groups)) return;
@@ -411,16 +422,22 @@ export function HardCopyHandover() {
   };
 
   return (
-    <div className="space-y-4">
-      {draftError && <p role="alert" className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">{draftError} · Dòng mới chưa chắc đã được lưu trên máy khác.</p>}
-      <div className="flex items-center justify-between gap-2 text-xs text-slate-500">
-        <span>Bản nháp chung · {savedRows.length} dòng · lưu 7 ngày</span>
-        <button onClick={refreshDraft} disabled={draftLoading || statusLoading || loading} className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 disabled:opacity-40">
-          <RefreshCw aria-hidden className="w-3.5 h-3.5" />{draftLoading ? "Đang tải bản nháp chung…" : "Làm mới bản nháp chung"}
+    <div className="space-y-5">
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-extrabold text-slate-900">Bàn giao kết quả bản cứng</h1>
+          <p className="mt-1 text-sm text-slate-600">Ngày {today("vi-VN")} · Bản nháp chung hôm nay: {savedRows.length} dòng</p>
+        </div>
+        <button onClick={refreshDraft} disabled={draftLoading || statusLoading || loading}
+          className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 disabled:opacity-40">
+          <RefreshCw aria-hidden className="w-4 h-4" />{draftLoading ? "Đang tải bản nháp…" : "Làm mới bản nháp"}
         </button>
-      </div>
+      </header>
+      {draftError && <p role="alert" className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">{draftError} · Dòng mới chưa chắc đã được lưu trên máy khác.</p>}
       {statusLoading && <p role="status" className="text-xs text-slate-600">Đang kiểm tra kết quả {statusDone}/{statusTotal} VID…</p>}
-      <div className="bg-white rounded-2xl shadow-sm p-4 space-y-3 max-w-[430px] mx-auto">
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(320px,1fr)] lg:items-start">
+        <section className="bg-white rounded-2xl shadow-sm p-5 space-y-3 min-w-0">
+        <h2 className="text-base font-bold text-slate-900">Dán danh sách VID</h2>
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -439,23 +456,41 @@ export function HardCopyHandover() {
         >
           {loading ? <><Loader2 aria-hidden className="w-4 h-4 animate-spin" />Đang tra cứu {done}/{vids.length} VID…</> : "Tra cứu"}
         </button>
-      </div>
+        </section>
 
-      <details className="bg-white rounded-2xl shadow-sm p-4">
-        <summary className="cursor-pointer text-sm font-bold text-slate-800">Lịch sử in 7 ngày · {history.length} bản</summary>
-        {historyError && <p role="alert" className="text-xs text-red-700 mt-2">{historyError}</p>}
-        {!history.length && <p className="text-xs text-slate-500 mt-2">Chưa có bản in nào được lưu.</p>}
-        <ul className="mt-2 divide-y divide-slate-100">
-          {history.map((print) => (
-            <li key={print.id} className="py-2 flex items-center justify-between gap-3 text-xs">
-              <span>{new Date(print.printedAt).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })} · {print.title} · {print.count} hồ sơ</span>
-              <button className="text-blue-700 font-semibold shrink-0" onClick={() => void openHistory(print)}>
-                Xem bản in
-              </button>
-            </li>
+        <section className="bg-white rounded-2xl shadow-sm p-5 space-y-3 min-w-0">
+        <div className="flex items-baseline justify-between gap-2">
+          <h2 className="text-base font-bold text-slate-900">Lịch sử in</h2>
+          <span className="text-xs text-slate-500">Lưu 7 ngày</span>
+        </div>
+        <div className="flex items-end gap-2">
+          <label htmlFor="ao-history-date" className="flex-1 text-xs font-semibold text-slate-600">
+            Ngày in
+            <input id="ao-history-date" type="date" value={historyDate} onChange={(e) => setHistoryDate(e.target.value)}
+              className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400" />
+          </label>
+          <button onClick={() => setHistoryDate("")} className="rounded-lg px-2 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-blue-700">Tất cả</button>
+        </div>
+        {historyError && <p role="alert" className="text-xs text-red-700">{historyError}</p>}
+        <div className="space-y-3">
+          {historyGroups.map((group) => (
+            <div key={group.title}>
+              <h3 className="border-b border-slate-200 pb-1 text-xs font-bold text-slate-800">{group.title} · {group.prints.length} bản</h3>
+              {group.prints.length ? (
+                <ul className="max-h-24 divide-y divide-slate-100 overflow-y-auto pr-1">
+                  {group.prints.map((print) => (
+                    <li key={print.id} className="flex items-center justify-between gap-2 py-2 text-xs">
+                      <span className="min-w-0 text-slate-600">{new Date(print.printedAt).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })} · {print.count} hồ sơ</span>
+                      <button className="shrink-0 font-semibold text-blue-700 hover:underline focus-visible:outline-2 focus-visible:outline-blue-700" onClick={() => void openHistory(print)}>Xem bản in</button>
+                    </li>
+                  ))}
+                </ul>
+              ) : <p className="py-2 text-xs text-slate-500">Chưa có bản in.</p>}
+            </div>
           ))}
-        </ul>
-      </details>
+        </div>
+        </section>
+      </div>
 
       {failed.length > 0 && (
         <div className="bg-red-50 border border-red-200 rounded-2xl p-4 text-xs text-red-800 space-y-1">
@@ -470,8 +505,8 @@ export function HardCopyHandover() {
 
       {allRows.length > 0 && (
         <div className={`grid gap-4 items-start ${hubGroups.length && outsideGroups.length ? "md:grid-cols-2" : "grid-cols-1"}`}>
-          {hubGroups.length > 0 && <HandoverList title={HUB} groups={hubGroups} onPrint={handlePrint} />}
-          {outsideGroups.length > 0 && <HandoverList title={`Ngoài ${HUB}`} groups={outsideGroups} onPrint={handlePrint} />}
+          {hubGroups.length > 0 && <HandoverList title={HUB} groups={hubGroups} busy={loading || draftLoading} onPrint={handlePrint} />}
+          {outsideGroups.length > 0 && <HandoverList title={`Ngoài ${HUB}`} groups={outsideGroups} busy={loading || draftLoading} onPrint={handlePrint} />}
         </div>
       )}
     </div>

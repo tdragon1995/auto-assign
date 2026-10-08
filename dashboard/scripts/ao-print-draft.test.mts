@@ -28,14 +28,19 @@ const row = (billing: string): PrintDraftRow => ({
 });
 assert.deepEqual(printRowOf({ ...row("Xét nghiệm A"), secret: "discard" }), row("Xét nghiệm A"));
 assert.equal(printRowOf({ ...row("Xét nghiệm A"), vid: "bad" }), null);
-await savePrintDraft(db, [row("Xét nghiệm A"), row("xet nghiem  a"), row("Xét nghiệm B")]);
-assert.equal((await readPrintDraft(db)).length, 2); // one VID may still carry two distinct tests
+saved.set("ao:hardcopy:print:old-test", row("Old test"));
+await savePrintDraft(db, [row("Xét nghiệm A"), row("xet nghiem  a"), row("Xét nghiệm B")], "2026-10-08");
+assert.equal((await readPrintDraft(db, "2026-10-08")).length, 2); // one VID may still carry two distinct tests
+assert.deepEqual(await readPrintDraft(db, "2026-10-09"), []); // new Vietnam day starts blank
 assert.deepEqual(ttls, [604800, 604800]);
-assert.deepEqual(Object.keys((await readPrintDraft(db))[0]).sort(), ["billing", "client", "dest", "note", "patient", "vid"]);
+assert.deepEqual(Object.keys((await readPrintDraft(db, "2026-10-08"))[0]).sort(), ["billing", "client", "dest", "note", "patient", "vid"]);
+await savePrintDraft(db, [row("New day")], "2026-10-09");
+assert.equal((await readPrintDraft(db, "2026-10-09")).length, 1);
+assert.equal((await readPrintDraft(db, "2026-10-08")).length, 2);
 const print = await savePrintHistory(db, "Ngoài D001", [row("Xét nghiệm A"), row("xet nghiem  a"), row("Xét nghiệm B")]);
 assert.equal(print.rows.length, 2);
 assert.deepEqual((await readPrintHistory(db)).map((p) => p.id), [print.id]);
-assert.deepEqual(ttls, [604800, 604800, 604800]);
+assert.deepEqual(ttls, [604800, 604800, 604800, 604800]);
 const twoHundred = Array.from({ length: 200 }, (_, i) => ({ ...row(""), vid: String(10000000 + i) }));
 twoHundred.push({ ...twoHundred[0], billing: "Xét nghiệm A" });
 const plan = statusLookupVids(twoHundred);
@@ -43,4 +48,4 @@ assert.equal(plan.statusOnly.length, 199);
 assert.deepEqual(plan.full, [twoHundred[0].vid]);
 const largePrint = await savePrintHistory(db, "D001", twoHundred);
 assert.equal((await readPrintHistoryItem(db, largePrint.id))?.rows.length, 201);
-console.log("ok — 200 VIDs use one status call when safe; print history keeps all rows for seven days");
+console.log("ok — daily draft isolation, 200-VID lookup plan, and seven-day print history");

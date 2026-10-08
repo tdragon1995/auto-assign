@@ -334,7 +334,7 @@ export default function AoPage() {
   const [requestsOpened, setRequestsOpened] = useState(false);
   return (
     <div className="min-h-screen bg-slate-100">
-      <nav role="tablist" className="flex justify-center gap-1 pt-4 px-4">
+      <nav role="tablist" className="mx-auto flex max-w-5xl gap-1 px-4 pt-5">
         <div className="inline-flex rounded-xl bg-white shadow-sm p-1">
           {TABS.map((t) => (
             <button
