@@ -14,8 +14,6 @@
  * authenticated. Then cookie-authenticated in-page POSTs to the datapaging APIs.
  */
 
-import { chromium } from "playwright";
-import { authenticator } from "otplib";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -40,8 +38,8 @@ function log(msg) {
 
 // ---------------------------------------------------------------- session ---
 
-export async function createSession({ headless = true, statePath } = {}) {
-  const browser = await chromium.launch({ headless });
+export async function createSession({ chromium, launchOptions={}, headless = true, statePath } = {}) {
+  const browser = await chromium.launch({ ...launchOptions, headless });
   const hasState = statePath && fs.existsSync(statePath);
   const context = await browser.newContext({
     userAgent: UA,
@@ -113,7 +111,7 @@ async function sessionIsAlive(page, range) {
 }
 
 /** Drive the real login form: username + password → TOTP → authenticated. */
-async function login(page, context, { username, password, totpSecret }) {
+async function login(page, context, { username, password, totpSecret, generateTotp }) {
   await landOnOrigin(page);
 
   const user = page.getByPlaceholder("Số điện thoại/email");
@@ -154,8 +152,8 @@ async function login(page, context, { username, password, totpSecret }) {
 
     const otpField = page.locator('input[name="otp"]');
     await otpField.waitFor({ timeout: 15_000 });
-    const otp = authenticator.generate(totpSecret);
-    log(`entering TOTP ${otp}...`);
+    const otp = generateTotp();
+    log("entering TOTP...");
     await otpField.fill(otp);
 
     // "Không hỏi lại trên thiết bị này" — remember device to cut future prompts.

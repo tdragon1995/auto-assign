@@ -51,9 +51,24 @@ The SQL check in scripts/driver-shifts.test.sql runs inside a transaction and
 rolls back every write. It exercises atomic replacement, manual preservation,
 future dates, cutoff rejection and stale edits on the actual database.
 
-Before rollout, GitHub Actions must have SUPABASE_URL and
-SUPABASE_SERVICE_ROLE_KEY for the same production project. The MISA reader and
-sink fail explicitly if these are absent; they never fall back to Sheet.
+Morning data refresh piggybacks the existing cron-job.org dispatch request at
+05:00 Vietnam time, even when automatic assignment is disarmed. No new cron is
+created. Cartrack profiles, bounded Labcenter batches and MISA months run in
+Vercel, then warm the shared config cache from Supabase. Checkpoints in Redis
+prevent overlapping runs and let bounded invocations continue without a polling
+schedule. MISA covers the cutoff month, following month, current month and next
+month; database retention clips history at the payroll cutoff.
+
+The production worker requires the existing MISA_USERNAME, MISA_PASSWORD,
+MISA_TOTP_SECRET, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, Redis settings and
+CRON_SECRET in Vercel. Its continuation accepts only the existing cron secret.
+GitHub Actions is not involved in data synchronization. Missing credentials or
+failed source reads are reported explicitly; there is no Sheet fallback.
+
+GET /api/misa-sync exposes progress/failure. POST starts a manual MISA refresh;
+?month=YYYY-MM selects one month. GET /api/morning-sync starts the full refresh
+with Authorization: Bearer CRON_SECRET. The local misa-fetcher CLI remains
+available for manual diagnostics.
 
 Bulk driver replacement also updates every active Schedule Setup definition using
 the old driver, in the same transaction as the selected Config rows. The preview

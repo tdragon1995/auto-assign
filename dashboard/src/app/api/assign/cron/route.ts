@@ -10,6 +10,7 @@ import { autoArmIfDue } from "@/lib/auto-arm";
 import { maybeAlertHeldOff } from "@/lib/disarm-alert";
 import { archiveSealedDays } from "@/lib/tat-archive";
 import { restoreExpiredGeofences } from "@/lib/geofence-bypass";
+import { maybeMorningSync } from "@/lib/morning-sync-trigger";
 import { createMorningReads } from "@/lib/morning-reads";
 import { recoverMorning } from "@/lib/morning-recovery";
 import { maybeAutoUpdatePickupEtas } from "@/lib/pickup-setup-auto";
@@ -36,6 +37,7 @@ export async function GET(req: NextRequest) {
   // is alive even when nothing gets logged.
   await setCronHeartbeat().catch(() => {});
 
+  after(()=>maybeMorningSync().catch(e=>console.error("[cron] morning data sync:",e)));
   const reads = createMorningReads();
   const archive = async () => {
     const recovery = recoverMorning().catch((e) => console.error("[cron] morning recovery:", e));

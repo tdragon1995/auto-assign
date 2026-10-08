@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import type { Env } from "@/lib/cartrack";
 import { runScheduleJobCycle } from "@/lib/schedule-job";
 import { saveLastRun } from "@/lib/schedule-job-kv";
-import { dispatchMisaSync } from "@/lib/misa-sync";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -29,16 +28,7 @@ export async function POST(req: NextRequest) {
       ? "cron"
       : "manual";
 
-  // Start MISA plus Cartrack/Labcenter refreshes in the existing workflow on the first daily cron, even with no scheduled
-  // jobs. Only dispatch is awaited; MISA finishes independently in GitHub Actions.
-  if (trigger === "cron" && env === "prod") {
-    try {
-      const response = await dispatchMisaSync(null, true);
-      console.log("[schedule-job] MISA sync:", await response.json());
-    } catch (e) {
-      console.error("[schedule-job] MISA sync failed:", e);
-    }
-  }
+  // Data refresh piggybacks the existing cron-job.org dispatch run.
 
   try {
     const { date, weekday, results } = await runScheduleJobCycle(env);

@@ -25,26 +25,10 @@ function load(file, dependencies, globals = {}) {
 const next = { NextResponse: { json: (body, init) => Response.json(body, init) } };
 
 (async () => {
-  const env = { GITHUB_DISPATCH_TOKEN: 'test-token' };
-  let latest = null, fail = false;
-  const requests = [];
-  const sync = load('src/lib/misa-sync.ts', { 'next/server': next }, {
-    process: { env },
-    fetch: async (url, options) => {
-      requests.push({ url, options });
-      if (fail) throw new Error('GitHub unavailable');
-      if (options.method === 'POST') return new Response(null, { status: 204 });
-      return Response.json({ workflow_runs: latest ? [latest] : [] });
-    },
-  });
   const events = [];
   let scheduleFails = false;
   const schedule = load('src/app/api/schedule-job/route.ts', {
     'next/server': next,
-    '@/lib/misa-sync': { dispatchMisaSync: async (...args) => {
-      events.push('sync');
-      return sync.dispatchMisaSync(...args);
-    } },
     '@/lib/schedule-job': { runScheduleJobCycle: async () => {
       events.push('jobs');
       if (scheduleFails) throw new Error('Schedule unavailable');
@@ -57,53 +41,14 @@ const next = { NextResponse: { json: (body, init) => Response.json(body, init) }
     headers: new Headers(cron ? { 'user-agent': 'vercel-cron/1.0' } : {}),
   });
 
-  assert.equal((await schedule.GET(request())).status, 200);
-  assert.deepEqual(events, ['sync', 'jobs', 'saved']);
-  assert.equal(requests.filter(r => r.options.method === 'POST').length, 1);
-  assert.deepEqual(JSON.parse(requests[1].options.body), { ref: 'master', inputs: {sync_master:'true',skip_misa:'false'} });
-  assert.ok(requests[1].url.endsWith('/misa-shifts.yml/dispatches'));
-
-  for (const req of [request('', false), request('?mode=retry'), request('?env=uat')]) {
+  for (const req of [request(), request('', false), request('?mode=retry'), request('?env=uat')]) {
     events.length = 0;
-    await schedule.POST(req);
-    assert.deepEqual(events, ['jobs', 'saved']);
+    assert.equal((await schedule.POST(req)).status, 200);
+    assert.deepEqual(events, ['jobs', 'saved'], 'Job creation never dispatches GitHub or morning data sync');
   }
-  for (const status of ['queued', 'in_progress', 'completed']) {
-    latest = { id: 42, conclusion: "success", status, created_at: new Date().toISOString(), html_url: 'test-run' };
-    requests.length = 0;
-    await sync.dispatchMisaSync();
-    assert.equal(requests.length, 1, `${status}: no duplicate manual dispatch`);
-    requests.length = 0;
-    await schedule.GET(request());
-    assert.equal(requests.length, 2, `${status}: daily Master data still refreshes`);
-    assert.deepEqual(JSON.parse(requests.at(-1).options.body).inputs,{sync_master:'true',skip_misa:'true'},"Daily refresh does not repeat MISA");
-  }
-  latest.created_at = new Date(Date.now() - 16 * 60_000).toISOString();
-  assert.equal((await (await sync.dispatchMisaSync()).json()).status, 'dispatched');
-
-  fail = true;
-  events.length = 0;
-  assert.equal((await schedule.GET(request())).status, 200);
-  assert.deepEqual(events, ['sync', 'jobs', 'saved'], 'MISA failure must not block jobs');
-  fail = false;
   scheduleFails = true;
   events.length = 0;
   assert.equal((await schedule.GET(request())).status, 500);
-  assert.deepEqual(events, ['sync', 'jobs'], 'Schedule failure must not prevent MISA dispatch');
-  delete env.GITHUB_DISPATCH_TOKEN;
-  requests.length = 0;
-  assert.equal((await (await sync.dispatchMisaSync()).json()).status, 'disabled');
-  assert.equal(requests.length, 0);
-
-  const api = load('src/app/api/misa-sync/route.ts', {
-    'next/server': next, '@/lib/misa-sync': sync,
-  });
-  env.GITHUB_DISPATCH_TOKEN = 'test-token';
-  const status = await api.GET();
-  assert.equal(status.status, 200);
-  assert.equal((await status.json()).id, 42, 'Preserve dashboard run tracking');
-  const manual = await api.POST(request('?month=2026-10', false));
-  assert.equal((await manual.json()).previous_run_id, 42);
-  assert.deepEqual(JSON.parse(requests.at(-1).options.body).inputs, { month: '2026-10' });
-  console.log('MISA cron checks passed: daily dispatch, guards, failure isolation, manual sync.');
+  assert.deepEqual(events, ['jobs']);
+  console.log('Schedule checks passed: cron/manual/retry isolation from morning data sync.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

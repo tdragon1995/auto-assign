@@ -547,14 +547,13 @@ export function Dashboard() {
   }, [syncSettings]);
 
   const handleMisaRefresh = useCallback(async () => {
-    // MISA needs a real browser in GitHub Actions. Wait for its sheet writes to
-    // finish before reading those sheets through the settings refresh.
+    // Vercel runs MISA; wait for Supabase writes before refreshing cached configuration.
     setSyncingMisa(true);
     try {
       const res = await fetch("/api/misa-sync", { method: "POST" });
       const data = await res.json();
       if (!res.ok || data.status === "error") throw new Error(data.error ?? `HTTP ${res.status}`);
-      if (data.status === "disabled") throw new Error("Chưa cấu hình kết nối GitHub Actions");
+      if (data.status === "disabled") throw new Error("Chưa cấu hình đồng bộ MISA trên Vercel");
       if (data.status === "cooldown") {
         // Not an error and not silence: the click was deliberately skipped, so
         // say when it will go again, while still loading the last synced sheets.
@@ -571,7 +570,7 @@ export function Dashboard() {
         let completed = false;
         while (Date.now() < deadline) {
           await new Promise((resolve) => setTimeout(resolve, 15_000));
-          let status: { id?: number; status?: string; conclusion?: string | null };
+          let status: { id?: number; status?: string; conclusion?: string | null; error?:string };
           try {
             const statusRes = await fetch("/api/misa-sync", { cache: "no-store" });
             if (!statusRes.ok) continue;
@@ -581,11 +580,11 @@ export function Dashboard() {
             continue;
           }
           if (!status.id || status.id === previousRunId || (targetRunId && status.id !== targetRunId) || status.status !== "completed") continue;
-          if (status.conclusion !== "success") throw new Error(`Lần chạy MISA kết thúc: ${status.conclusion ?? "không rõ"}`);
+          if (status.conclusion !== "success") throw new Error(status.error ?? `Lần chạy MISA kết thúc: ${status.conclusion ?? "không rõ"}`);
           completed = true;
           break;
         }
-        if (!completed) throw new Error("Quá thời gian chờ MISA; hãy thử lại trong Đồng Bộ Thông Tin sau khi workflow hoàn tất");
+        if (!completed) throw new Error("Quá thời gian chờ MISA; hãy thử lại trong Đồng Bộ Thông Tin sau khi đồng bộ hoàn tất");
       } else {
         throw new Error(`Trạng thái MISA không rõ: ${data.status ?? "trống"}`);
       }
