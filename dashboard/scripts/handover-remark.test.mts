@@ -4,7 +4,7 @@
  *   npx tsx scripts/handover-remark.test.mts
  */
 import assert from "node:assert/strict";
-import { destFromRemark, displayClientName } from "../src/lib/handover";
+import { destFromRemark, displayClientName, printRowKey } from "../src/lib/handover";
 
 assert.equal(displayClientName("CÔNG TY CỔ PHẦN y khoa Việt"), "Y khoa Việt");
 assert.equal(displayClientName("Công ty trách nhiệm hữu hạn y khoa Việt"), "Y khoa Việt");
@@ -17,6 +17,8 @@ assert.equal(displayClientName("Công TNHH Phát Triển Công Nghệ Anapath"),
 assert.equal(displayClientName("25372 - MTho - THDuc - HỘ KINH DOANH phòng khám An"), "25372 - MTho - THDuc - Phòng khám An");
 assert.equal(displayClientName("123 - D5 - A - Công ty TNHH phòng khám An"), "123 - D5 - A - Phòng khám An");
 assert.equal(displayClientName("phòng khám An"), "Phòng khám An");
+assert.equal(printRowKey({ vid: "12345678", billing: "Xét nghiệm A" }), printRowKey({ vid: "12345678", billing: "xet nghiem  a" }));
+assert.notEqual(printRowKey({ vid: "12345678", billing: "Xét nghiệm A" }), printRowKey({ vid: "12345678", billing: "Xét nghiệm B" }));
 
 const cases: [string | null, string | null][] = [
   ["Bản cứng kết quả gửi về D015", "D015"],   // the template

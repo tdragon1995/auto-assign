@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
-import { Loader2, Download, AlertCircle, Printer, Check, X, Clock } from "lucide-react";
-import { parsePaste, billingFound, stripPatient, pendingFor, statusLabel, displayClientName, type PasteLine, type TestEntry, type PendingTest } from "@/lib/handover";
+import { useCallback, useEffect, useState } from "react";
+import { Loader2, Download, AlertCircle, Printer, Check, X, Clock, RefreshCw } from "lucide-react";
+import { parsePaste, billingFound, stripPatient, pendingFor, statusLabel, displayClientName, printRowKey, type PasteLine, type PrintDraftRow, type TestEntry, type PendingTest } from "@/lib/handover";
 
 /** One order as the lookup route returns it. */
 interface Order {
@@ -24,6 +24,7 @@ interface Row extends Order {
   key: string;
   billing: string;
   billing_ok: boolean | null;
+  print_note?: string;
   /** Pending results this row stands for; null = the status could not be checked. */
   row_pending: PendingTest[] | null;
 }
@@ -71,12 +72,15 @@ const HEAD = ["STT", "Gửi về", "Khách hàng", "VID", "Bệnh nhân", "Xét 
 const OPTIONAL = [5, 6]; // Xét nghiệm, Ghi chú — dropped when every row leaves them blank
 
 /** The checklist table shared by print and Excel, minus optional columns nobody filled. */
-function checklist(groups: Group[]) {
-  let n = 0;
-  const rows = groups.flatMap((g) => g.clients.flatMap((c) => c.rows.map((r) => {
+function printRows(groups: Group[]): PrintDraftRow[] {
+  return groups.flatMap((g) => g.clients.flatMap((c) => c.rows.map((r) => {
     const note = unreadRemark(r);
-    return [++n, g.dest, c.name, r.vid, r.patient_name ?? "", billingText(r), note ? `Theo chi nhánh ${r.branch_code ?? "?"} — ${note}` : ""];
+    return { dest: g.dest, client: c.name, vid: r.vid, patient: r.patient_name ?? "", billing: billingText(r), note: r.print_note ?? (note ? `Theo chi nhánh ${r.branch_code ?? "?"} — ${note}` : "") };
   })));
+}
+
+function checklist(groups: Group[]) {
+  const rows = printRows(groups).map((r, i) => [i + 1, r.dest, r.client, r.vid, r.patient, r.billing, r.note]);
   const cols = HEAD.map((_, i) => i).filter((i) => !OPTIONAL.includes(i) || rows.some((r) => r[i]));
   return { cols, head: cols.map((i) => HEAD[i]), rows: rows.map((r) => cols.map((i) => r[i])) };
 }
@@ -183,18 +187,18 @@ function HandoverList({ title, groups }: { title: string; groups: Group[] }) {
               <p className="text-xs font-bold text-slate-700">{c.name} · {c.rows.length} hồ sơ</p>
               <ul className="mt-1 divide-y divide-slate-100">
                 {c.rows.map((r) => {
-                  const note = unreadRemark(r);
+                  const note = r.print_note || unreadRemark(r);
                   return (
                     <li key={r.key} className="py-1.5 text-xs flex gap-2">
                       <span className="font-mono text-slate-700 shrink-0">{r.vid}</span>
                       <span className="flex-1 min-w-0 text-slate-800">
                         {r.patient_name ?? "—"}
                         {r.billing && (
-                          <span className={`flex items-start gap-1 mt-0.5 ${r.billing_ok ? "text-green-700" : "text-red-600"}`}>
-                            {r.billing_ok
+                          <span className={`flex items-start gap-1 mt-0.5 ${r.billing_ok === null ? "text-slate-700" : r.billing_ok ? "text-green-700" : "text-red-600"}`}>
+                            {r.billing_ok === null ? null : r.billing_ok
                               ? <Check aria-label="Có trong đơn" className="w-3.5 h-3.5 shrink-0" />
                               : <X aria-label="Không có trong đơn" className="w-3.5 h-3.5 shrink-0" />}
-                            <span>{r.billing}{!r.billing_ok && " — không có trong đơn"}</span>
+                            <span>{r.billing}{r.billing_ok === false && " — không có trong đơn"}</span>
                           </span>
                         )}
                         {r.row_pending === null ? (
@@ -211,7 +215,7 @@ function HandoverList({ title, groups }: { title: string; groups: Group[] }) {
                         {note && (
                           <span className="flex items-start gap-1 text-amber-700 mt-0.5">
                             <AlertCircle aria-hidden className="w-3.5 h-3.5 shrink-0" />
-                            <span>{note} — tạm theo chi nhánh {r.branch_code ?? "?"}</span>
+                            <span>{note}{r.print_note ? "" : ` — tạm theo chi nhánh ${r.branch_code ?? "?"}`}</span>
                           </span>
                         )}
                       </span>
@@ -227,12 +231,44 @@ function HandoverList({ title, groups }: { title: string; groups: Group[] }) {
   );
 }
 
+function joinedRows(lines: PasteLine[], orders: Record<string, Order>): Row[] {
+  return lines.flatMap((l, i) => {
+    const o = orders[l.vid];
+    if (!o || o.error) return [];
+    const billing = stripPatient(l.billing, o.patient_name);
+    const entries = o.test_entries ?? [];
+    const billing_ok = billing ? billingFound(billing, entries.flatMap((e) => e.names)) : null;
+    // A name that isn't on the order already shows ✗; its status would say nothing more.
+    const row_pending = billing_ok === false ? [] : pendingFor(billing, entries, o.pending ?? null);
+    return [{ ...o, key: `${i}`, billing, billing_ok, row_pending }];
+  });
+}
+
 export function HardCopyHandover() {
   const [text, setText] = useState("");
   const [lines, setLines] = useState<PasteLine[]>([]); // what was pasted when "Tra cứu" was pressed
   const [orders, setOrders] = useState<Record<string, Order>>({});
+  const [savedRows, setSavedRows] = useState<PrintDraftRow[]>([]);
+  const [draftError, setDraftError] = useState("");
+  const [draftLoading, setDraftLoading] = useState(true);
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(0);
+
+  const refreshDraft = useCallback(async () => {
+    setDraftLoading(true);
+    try {
+      const res = await fetch("/api/ao/draft", { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Không tải được bản nháp chung");
+      setSavedRows(data.rows ?? []);
+      setDraftError("");
+    } catch (error) {
+      setDraftError(String(error));
+    } finally {
+      setDraftLoading(false);
+    }
+  }, []);
+  useEffect(() => { void refreshDraft(); }, [refreshDraft]);
 
   const pasted = parsePaste(text);
   const vids = [...new Set(pasted.map((l) => l.vid))];
@@ -243,6 +279,7 @@ export function HardCopyHandover() {
     setLines(pasted);
     setOrders({});
     setDone(0);
+    const found: Record<string, Order> = {};
     // One lookup per distinct VID, however many billing lines it has. Chunks run one after another so a
     // long paste never has more than 10 Labcenter calls in flight; a failed chunk marks only its own VIDs.
     for (let i = 0; i < vids.length; i += CHUNK) {
@@ -259,26 +296,47 @@ export function HardCopyHandover() {
       } catch {
         got = chunk.map((vid) => ({ vid, error: "Không thể kết nối" }));
       }
+      Object.assign(found, Object.fromEntries(got.map((o) => [o.vid, o])));
       setOrders((prev) => ({ ...prev, ...Object.fromEntries(got.map((o) => [o.vid, o])) }));
       setDone(i + chunk.length);
+    }
+    const incoming = printRows(groupRows(joinedRows(pasted, found)));
+    for (let i = 0; i < incoming.length; i += 200) {
+      try {
+        const res = await fetch("/api/ao/draft", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rows: incoming.slice(i, i + 200) }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "Không lưu được bản nháp chung");
+        setSavedRows(data.rows ?? []);
+        setDraftError("");
+      } catch (error) {
+        setDraftError(String(error));
+        break;
+      }
     }
     setLoading(false);
   };
 
-  const rows: Row[] = lines.flatMap((l, i) => {
-    const o = orders[l.vid];
-    if (!o || o.error) return [];
-    const billing = stripPatient(l.billing, o.patient_name);
-    const entries = o.test_entries ?? [];
-    const billing_ok = billing ? billingFound(billing, entries.flatMap((e) => e.names)) : null;
-    // A name that isn't on the order already shows ✗; its status would say nothing more.
-    const row_pending = billing_ok === false ? [] : pendingFor(billing, entries, o.pending ?? null);
-    return [{ ...o, key: `${i}`, billing, billing_ok, row_pending }];
-  });
+  const rows = joinedRows(lines, orders);
+  const merged = new Map<string, Row>(savedRows.map((r) => [printRowKey(r), {
+    vid: r.vid, dest: r.dest, client_name: r.client, patient_name: r.patient,
+    billing: r.billing, print_note: r.note, key: printRowKey(r), billing_ok: null, row_pending: [],
+  }]));
+  for (const row of rows) merged.set(printRowKey(row), row);
+  const allRows = [...merged.values()];
   const failed = Object.values(orders).filter((o) => o.error);
 
   return (
     <div className="space-y-4">
+      {draftError && <p role="alert" className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">{draftError} · Dòng mới chưa chắc đã được lưu trên máy khác.</p>}
+      <div className="flex items-center justify-between gap-2 text-xs text-slate-500">
+        <span>Bản nháp chung · {savedRows.length} dòng · lưu 7 ngày</span>
+        <button onClick={refreshDraft} disabled={draftLoading || loading} className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 disabled:opacity-40">
+          <RefreshCw aria-hidden className="w-3.5 h-3.5" />{draftLoading ? "Đang tải bản nháp chung…" : "Làm mới bản nháp chung"}
+        </button>
+      </div>
       <div className="bg-white rounded-2xl shadow-sm p-4 space-y-3 max-w-[430px] mx-auto">
         <textarea
           value={text}
@@ -311,10 +369,10 @@ export function HardCopyHandover() {
         </div>
       )}
 
-      {lines.length > 0 && Object.keys(orders).length > 0 && (
+      {allRows.length > 0 && (
         <div className="grid gap-4 md:grid-cols-2 items-start">
-          <HandoverList title={HUB} groups={groupRows(rows.filter((r) => r.dest === HUB))} />
-          <HandoverList title={`Ngoài ${HUB}`} groups={groupRows(rows.filter((r) => r.dest !== HUB))} />
+          <HandoverList title={HUB} groups={groupRows(allRows.filter((r) => r.dest === HUB))} />
+          <HandoverList title={`Ngoài ${HUB}`} groups={groupRows(allRows.filter((r) => r.dest !== HUB))} />
         </div>
       )}
     </div>

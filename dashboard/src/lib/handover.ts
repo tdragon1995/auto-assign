@@ -36,6 +36,7 @@ export function destFromRemark(remark: string | null | undefined): string | null
 // is two rows. A line of bare VIDs ("a, b c") is one row per VID, blank billing.
 
 export interface PasteLine { vid: string; billing: string }
+export interface PrintDraftRow { dest: string; client: string; vid: string; patient: string; billing: string; note: string }
 
 const VID_RE = /\d{8,}/g;
 
@@ -57,6 +58,9 @@ export function parsePaste(text: string): PasteLine[] {
 
 const norm = (s: string) =>
   s.normalize("NFD").replace(/\p{M}/gu, "").replace(/đ/gi, "d").toLowerCase().replace(/\s+/g, " ").trim();
+
+// A VID can have several printed tests; only the same VID and test is a duplicate.
+export const printRowKey = (r: Pick<PrintDraftRow, "vid" | "billing">) => `${r.vid}|${norm(r.billing)}`;
 
 /** Spacing is not meaningful in a test name: "Carrier Screening 18 **" is "…Screening 18**". */
 const squash = (s: string) => norm(s).replace(/ /g, "");
