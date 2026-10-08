@@ -1,8 +1,9 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Redis } from "@upstash/redis";
-import { printRowKey, type PrintDraftRow } from "./handover";
+import { printRowKey, type PrintDraftRow, type PrintHistory } from "./handover";
 
 const PREFIX = "ao:hardcopy:print:";
+const HISTORY_PREFIX = "ao:hardcopy:history:";
 const TTL = 7 * 24 * 60 * 60;
 
 export function draftRedis(): Redis | null {
@@ -55,4 +56,34 @@ export async function savePrintDraft(db: Redis, rows: PrintDraftRow[]): Promise<
     await pipe.exec();
   }
   return readPrintDraft(db);
+}
+
+export async function readPrintHistory(db: Redis): Promise<PrintHistory[]> {
+  const keys: string[] = [];
+  let cursor = "0";
+  do {
+    const [next, batch] = await db.scan(cursor, { match: `${HISTORY_PREFIX}*`, count: 500 });
+    keys.push(...batch);
+    if (keys.length > 1000) throw new Error("AO print history exceeds 1000 prints");
+    cursor = String(next);
+  } while (cursor !== "0");
+  const prints: PrintHistory[] = [];
+  for (let i = 0; i < keys.length; i += 100) {
+    const values = await db.mget<(PrintHistory | string | null)[]>(...keys.slice(i, i + 100));
+    for (const value of values) {
+      const parsed = typeof value === "string" ? JSON.parse(value) : value;
+      if (parsed && typeof parsed.id === "string" && typeof parsed.printedAt === "string"
+        && typeof parsed.title === "string" && Array.isArray(parsed.rows)) prints.push(parsed);
+    }
+  }
+  return prints.sort((a, b) => b.printedAt.localeCompare(a.printedAt));
+}
+
+export async function savePrintHistory(db: Redis, title: string, rows: PrintDraftRow[]): Promise<PrintHistory> {
+  const print: PrintHistory = {
+    id: randomUUID(), printedAt: new Date().toISOString(), title,
+    rows: [...new Map(rows.map((r) => [printRowKey(r), r])).values()],
+  };
+  await db.set(HISTORY_PREFIX + print.id, print, { ex: TTL });
+  return print;
 }

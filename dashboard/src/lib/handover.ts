@@ -37,6 +37,7 @@ export function destFromRemark(remark: string | null | undefined): string | null
 
 export interface PasteLine { vid: string; billing: string }
 export interface PrintDraftRow { dest: string; client: string; vid: string; patient: string; billing: string; note: string }
+export interface PrintHistory { id: string; printedAt: string; title: string; rows: PrintDraftRow[] }
 
 const VID_RE = /\d{8,}/g;
 

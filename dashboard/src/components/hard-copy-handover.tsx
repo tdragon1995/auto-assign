@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Loader2, Download, AlertCircle, Printer, Check, X, Clock, RefreshCw } from "lucide-react";
-import { parsePaste, billingFound, stripPatient, pendingFor, statusLabel, displayClientName, printRowKey, type PasteLine, type PrintDraftRow, type TestEntry, type PendingTest } from "@/lib/handover";
+import { parsePaste, billingFound, stripPatient, pendingFor, statusLabel, displayClientName, printRowKey, type PasteLine, type PrintDraftRow, type PrintHistory, type TestEntry, type PendingTest } from "@/lib/handover";
 
 /** One order as the lookup route returns it. */
 interface Order {
@@ -66,7 +66,8 @@ const unreadRemark = (r: Row) => (!r.dest_from_remark && r.remark ? `Ghi chú kh
 const billingText = (r: Row) => r.billing;
 
 const today = (locale: string) => new Date().toLocaleDateString(locale, { timeZone: "Asia/Ho_Chi_Minh" });
-const fileStem = (title: string) => `ban-giao-ban-cung_${title.replace(/\s+/g, "-")}_${today("sv-SE")}`;
+const fileStem = (title: string, printedAt?: string) => `ban-giao-ban-cung_${title.replace(/\s+/g, "-")}_${new Date(printedAt ?? Date.now()).toLocaleDateString("sv-SE", { timeZone: "Asia/Ho_Chi_Minh" })}`;
+const printDate = (printedAt?: string) => new Date(printedAt ?? Date.now()).toLocaleDateString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" });
 
 const HEAD = ["STT", "Gửi về", "Khách hàng", "VID", "Bệnh nhân", "Xét nghiệm", "Ghi chú"];
 const OPTIONAL = [5, 6]; // Xét nghiệm, Ghi chú — dropped when every row leaves them blank
@@ -104,7 +105,7 @@ async function downloadExcel(title: string, groups: Group[]) {
 const esc = (v: unknown) => String(v).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]!);
 
 /** A4 portrait checklist in a new window; the print dialog also offers "Save as PDF". */
-function printA4(title: string, groups: Group[]) {
+function printA4(title: string, groups: Group[], autoPrint = true, printedAt?: string): boolean {
   const { cols, head, rows } = checklist(groups);
   let offset = 0;
   const body = groups.map((g) => {
@@ -112,7 +113,7 @@ function printA4(title: string, groups: Group[]) {
     offset += g.count;
     return `<tbody class="psc">${groupRows.map((r, i) => `<tr>${r.map((v, j) => `<td class="c${cols[j]}">${esc(j === 0 ? i + 1 : v)}</td>`).join("")}<td class="box">☐</td></tr>`).join("")}</tbody>`;
   }).join("");
-  const html = `<!doctype html><html lang="vi"><head><meta charset="utf-8"><title>${esc(fileStem(title))}</title><style>
+  const html = `<!doctype html><html lang="vi"><head><meta charset="utf-8"><title>${esc(fileStem(title, printedAt))}</title><style>
 @page { size: A4 portrait; margin: 12mm 10mm; }
 * { box-sizing: border-box; }
 body { font: 10.5pt/1.35 Arial, sans-serif; color: #000; margin: 0; }
@@ -140,18 +141,19 @@ thead th { border-top: 2pt solid #000; border-bottom: 2pt solid #000; font-weigh
 .sign p { margin: 0 0 18mm; font-weight: bold; }
 </style></head><body>
 <h1>BÀN GIAO KẾT QUẢ BẢN CỨNG — ${esc(title)}</h1>
-<div class="meta">Ngày in: ${esc(today("vi-VN"))} · Tổng: ${rows.length} hồ sơ</div>
+<div class="meta">Ngày in: ${esc(printDate(printedAt))} · Tổng: ${rows.length} hồ sơ</div>
 <table><thead><tr>${[...head, "Đã nhận"].map((h) => `<th>${h}</th>`).join("")}</tr></thead>${body}</table>
 <div class="sign"><div><p>Người giao</p>(Ký, ghi rõ họ tên)</div><div><p>Người nhận</p>(Ký, ghi rõ họ tên)</div><div><p>Thời gian</p>____:____ ngày ____/____</div></div>
 </body></html>`;
   const w = window.open("", "_blank");
-  if (!w) return alert("Trình duyệt đã chặn cửa sổ in — hãy cho phép cửa sổ bật lên.");
+  if (!w) { alert("Trình duyệt đã chặn cửa sổ in — hãy cho phép cửa sổ bật lên."); return false; }
   w.document.write(html);
   w.document.close();
-  w.onload = () => w.print();
+  if (autoPrint) w.onload = () => w.print();
+  return true;
 }
 
-function HandoverList({ title, groups }: { title: string; groups: Group[] }) {
+function HandoverList({ title, groups, onPrint }: { title: string; groups: Group[]; onPrint: (title: string, groups: Group[]) => void }) {
   const total = groups.reduce((n, g) => n + g.count, 0);
   return (
     <section className="bg-white rounded-2xl shadow-sm p-4 space-y-3 min-w-0">
@@ -161,7 +163,7 @@ function HandoverList({ title, groups }: { title: string; groups: Group[] }) {
         </h2>
         <div className="flex gap-2">
           <button
-            onClick={() => printA4(title, groups)}
+            onClick={() => onPrint(title, groups)}
             disabled={!total}
             className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-semibold text-white bg-blue-700 active:scale-[.97] disabled:opacity-40"
           >
@@ -244,11 +246,46 @@ function joinedRows(lines: PasteLine[], orders: Record<string, Order>): Row[] {
   });
 }
 
+async function fetchOrders(vids: string[], onChunk?: (got: Record<string, Order>, done: number) => void): Promise<Record<string, Order>> {
+  const found: Record<string, Order> = {};
+  // Chunks run one after another so long lists never have more than 10 Labcenter calls in flight.
+  for (let i = 0; i < vids.length; i += CHUNK) {
+    const chunk = vids.slice(i, i + CHUNK);
+    let got: Order[];
+    try {
+      const res = await fetch("/api/labcenter/orders", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ vids: chunk }),
+      });
+      const data = await res.json().catch(() => ({}));
+      got = res.ok ? data.results ?? [] : chunk.map((vid) => ({ vid, error: data.error ?? "Tra cứu thất bại" }));
+    } catch {
+      got = chunk.map((vid) => ({ vid, error: "Không thể kết nối" }));
+    }
+    const batch = Object.fromEntries(got.map((o) => [o.vid, o]));
+    Object.assign(found, batch);
+    onChunk?.(batch, i + chunk.length);
+  }
+  return found;
+}
+
+function restoredRow(r: PrintDraftRow, order?: Order): Row {
+  const entries = order?.test_entries ?? [];
+  const billing_ok = !r.billing || !order || order.error ? null : billingFound(r.billing, entries.flatMap((e) => e.names));
+  return {
+    vid: r.vid, dest: r.dest, client_name: r.client, patient_name: r.patient,
+    billing: r.billing, print_note: r.note, key: printRowKey(r), billing_ok,
+    row_pending: !order || order.error ? null : billing_ok === false ? [] : pendingFor(r.billing, entries, order.pending ?? null),
+  };
+}
+
 export function HardCopyHandover() {
   const [text, setText] = useState("");
   const [lines, setLines] = useState<PasteLine[]>([]); // what was pasted when "Tra cứu" was pressed
   const [orders, setOrders] = useState<Record<string, Order>>({});
   const [savedRows, setSavedRows] = useState<PrintDraftRow[]>([]);
+  const [savedOrders, setSavedOrders] = useState<Record<string, Order>>({});
+  const [history, setHistory] = useState<PrintHistory[]>([]);
+  const [historyError, setHistoryError] = useState("");
   const [draftError, setDraftError] = useState("");
   const [draftLoading, setDraftLoading] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -262,6 +299,8 @@ export function HardCopyHandover() {
       if (!res.ok) throw new Error(data.error ?? "Không tải được bản nháp chung");
       setSavedRows(data.rows ?? []);
       setDraftError("");
+      const savedVids = [...new Set((data.rows as PrintDraftRow[]).map((r) => r.vid))];
+      setSavedOrders(await fetchOrders(savedVids));
     } catch (error) {
       setDraftError(String(error));
     } finally {
@@ -269,6 +308,11 @@ export function HardCopyHandover() {
     }
   }, []);
   useEffect(() => { void refreshDraft(); }, [refreshDraft]);
+  useEffect(() => {
+    void fetch("/api/ao/prints", { cache: "no-store" })
+      .then(async (res) => { const data = await res.json(); if (!res.ok) throw new Error(data.error); setHistory(data.prints ?? []); })
+      .catch((error) => setHistoryError(String(error)));
+  }, []);
 
   const pasted = parsePaste(text);
   const vids = [...new Set(pasted.map((l) => l.vid))];
@@ -279,27 +323,11 @@ export function HardCopyHandover() {
     setLines(pasted);
     setOrders({});
     setDone(0);
-    const found: Record<string, Order> = {};
-    // One lookup per distinct VID, however many billing lines it has. Chunks run one after another so a
-    // long paste never has more than 10 Labcenter calls in flight; a failed chunk marks only its own VIDs.
-    for (let i = 0; i < vids.length; i += CHUNK) {
-      const chunk = vids.slice(i, i + CHUNK);
-      let got: Order[];
-      try {
-        const res = await fetch("/api/labcenter/orders", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ vids: chunk }),
-        });
-        const data = await res.json().catch(() => ({}));
-        got = res.ok ? data.results ?? [] : chunk.map((vid) => ({ vid, error: data.error ?? "Tra cứu thất bại" }));
-      } catch {
-        got = chunk.map((vid) => ({ vid, error: "Không thể kết nối" }));
-      }
-      Object.assign(found, Object.fromEntries(got.map((o) => [o.vid, o])));
-      setOrders((prev) => ({ ...prev, ...Object.fromEntries(got.map((o) => [o.vid, o])) }));
-      setDone(i + chunk.length);
-    }
+    // One lookup per distinct VID, however many billing lines it has.
+    const found = await fetchOrders(vids, (got, count) => {
+      setOrders((prev) => ({ ...prev, ...got }));
+      setDone(count);
+    });
     const incoming = printRows(groupRows(joinedRows(pasted, found)));
     for (let i = 0; i < incoming.length; i += 200) {
       try {
@@ -320,13 +348,23 @@ export function HardCopyHandover() {
   };
 
   const rows = joinedRows(lines, orders);
-  const merged = new Map<string, Row>(savedRows.map((r) => [printRowKey(r), {
-    vid: r.vid, dest: r.dest, client_name: r.client, patient_name: r.patient,
-    billing: r.billing, print_note: r.note, key: printRowKey(r), billing_ok: null, row_pending: [],
-  }]));
+  const merged = new Map<string, Row>(savedRows.map((r) => [printRowKey(r), restoredRow(r, savedOrders[r.vid])]));
   for (const row of rows) merged.set(printRowKey(row), row);
   const allRows = [...merged.values()];
   const failed = Object.values(orders).filter((o) => o.error);
+
+  const handlePrint = (title: string, groups: Group[]) => {
+    if (!printA4(title, groups)) return;
+    void fetch("/api/ao/prints", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, rows: printRows(groups) }),
+    }).then(async (res) => {
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Không lưu được lịch sử in");
+      setHistory((prev) => [data.print, ...prev]);
+      setHistoryError("");
+    }).catch((error) => setHistoryError(String(error)));
+  };
 
   return (
     <div className="space-y-4">
@@ -371,10 +409,25 @@ export function HardCopyHandover() {
 
       {allRows.length > 0 && (
         <div className="grid gap-4 md:grid-cols-2 items-start">
-          <HandoverList title={HUB} groups={groupRows(allRows.filter((r) => r.dest === HUB))} />
-          <HandoverList title={`Ngoài ${HUB}`} groups={groupRows(allRows.filter((r) => r.dest !== HUB))} />
+          <HandoverList title={HUB} groups={groupRows(allRows.filter((r) => r.dest === HUB))} onPrint={handlePrint} />
+          <HandoverList title={`Ngoài ${HUB}`} groups={groupRows(allRows.filter((r) => r.dest !== HUB))} onPrint={handlePrint} />
         </div>
       )}
+      <details className="bg-white rounded-2xl shadow-sm p-4">
+        <summary className="cursor-pointer text-sm font-bold text-slate-800">Lịch sử in 7 ngày · {history.length} bản</summary>
+        {historyError && <p role="alert" className="text-xs text-red-700 mt-2">{historyError}</p>}
+        {!history.length && <p className="text-xs text-slate-500 mt-2">Chưa có bản in nào được lưu.</p>}
+        <ul className="mt-2 divide-y divide-slate-100">
+          {history.map((print) => (
+            <li key={print.id} className="py-2 flex items-center justify-between gap-3 text-xs">
+              <span>{new Date(print.printedAt).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })} · {print.title} · {print.rows.length} hồ sơ</span>
+              <button className="text-blue-700 font-semibold shrink-0" onClick={() => printA4(print.title, groupRows(print.rows.map((r) => restoredRow(r))), false, print.printedAt)}>
+                Xem bản in
+              </button>
+            </li>
+          ))}
+        </ul>
+      </details>
     </div>
   );
 }
