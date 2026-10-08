@@ -7,6 +7,7 @@ import type { Job } from "../src/lib/types";
 
 const cases: Record<"cancel" | "review" | "ignore", string[]> = {
   cancel: [
+    "@Bot Giao nhận mẫu Dạ hong có ạ", "hong có", "dạ hông có ạ", "hổng có mẫu", "hôm nay hong có mẫu",
     "ko mẫu", "không mẫu", "k mẫu", "ko mẫu nha", "chưa có mẫu nhé", "dạ hôm nay không có mẫu ạ",
     "@Bot Giao nhận mẫu dạ ko mẫu a", "@Bot Điều Phối X chưa có mẫu nhé", "không mẫu ạ", "ko có", "k có",
     "chưa có mẫu", "chưa có", "chưa có hàng", "chưa có bệnh phẩm", "chưa c mẫu", "chx có mẫu", "chưa có mẫu nha",
@@ -22,6 +23,7 @@ const cases: Record<"cancel" | "review" | "ignore", string[]> = {
     "@Bot Giao nhận mẫu không có mẫu, không cần qua lấy",
   ],
   review: [
+    "dạ hong có mẫu nhưng chiều có mẫu", "mai hong có mẫu", "hong có mẫu nhưng vẫn lấy", "hong có mẫu?",
     "không có mẫu nhưng chiều có mẫu", "không có hàng nhưng vẫn lấy", "ko mẫu nhưng cần lấy giúp",
     "không mẫu nhưng nhờ qua", "không có mẫu gấp", "dạ ko mẫu a?", "mai ko mẫu",
     "hôm nay không có mẫu, ngày mai có mẫu", "@Bot Giao nhận mẫu hôm nay có mẫu nhưng chiều ko mẫu",
@@ -29,6 +31,7 @@ const cases: Record<"cancel" | "review" | "ignore", string[]> = {
     "chưa có mẫu nhưng lát có mẫu", "chưa có mẫu?", "không có mẫu?", "còn mẫu nhưng không cần qua",
   ],
   ignore: [
+    "chị Hồng có mẫu", "dạ có ạ", "hong có?",
     "dạ có mẫu ạ", "@Bot Giao nhận mẫu dạ có mẫu a", "có", "có nhe", "có mẫu nhe", "/có mẫu",
     "hôm nay có mẫu", "còn mẫu", "còn hàng", "mẫu gấp", "nhờ qua lấy", "doanh thu", "hello",
     "lúc nữa", "lát nữa", "chiều có", "chiều mới có", "để em báo lại", "để em báo", "cho em xác nhận",
@@ -102,7 +105,7 @@ try {
   await POST(request(message("hôm nay không có mẫu")));
   assert.equal(jobReads, 0, "Positive replies and other groups cannot trigger a cancellation lookup");
   process.env.ZALO_SAMPLE_CHAT_ID = "test-group";
-  const negatives = ["ko mẫu", "không mẫu", "k mẫu", "ko mẫu nha", "chưa có mẫu nhé", "dạ hôm nay không có mẫu ạ", "@Bot Giao nhận mẫu dạ ko mẫu a", "dạ ko mẫu a", "không có mẫu", "hôm nay không có mẫu", "hôm nay k có mẫu", "ko có", "chưa có", "k có", "ko có mẫu", "chưa có mẫu", "@Bot Giao nhận mẫu ko có"];
+  const negatives = ["@Bot Giao nhận mẫu Dạ hong có ạ", "ko mẫu", "không mẫu", "k mẫu", "ko mẫu nha", "chưa có mẫu nhé", "dạ hôm nay không có mẫu ạ", "@Bot Giao nhận mẫu dạ ko mẫu a", "dạ ko mẫu a", "không có mẫu", "hôm nay không có mẫu", "hôm nay k có mẫu", "ko có", "chưa có", "k có", "ko có mẫu", "chưa có mẫu", "@Bot Giao nhận mẫu ko có"];
   for (const text of negatives) {
     await POST(request({ ok: true, result: message(text) }));
   }

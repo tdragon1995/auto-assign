@@ -61,7 +61,7 @@ try {
   }
   assert.equal(jobReads, 0, "positive/ambiguous replies must never enter cancellation");
   assert.equal(sent.length, 1, "positive replies in the pickup group stay silent");
-  const negatives = ["ko mẫu", "không mẫu", "k mẫu", "ko mẫu nha", "chưa có mẫu nhé", "dạ hôm nay không có mẫu ạ", "@Bot Điều Phối X dạ ko mẫu a", "dạ ko mẫu a", "chưa có mẫu", "không có mẫu", "k có mẫu", "chua co mau", "hôm nay chưa có mẫu", "hôm nay k có mẫu", "ko có", "chưa có", "k có", "@Bot Điều Phối X ko có"];
+  const negatives = ["@Bot Điều Phối X Dạ hong có ạ", "ko mẫu", "không mẫu", "k mẫu", "ko mẫu nha", "chưa có mẫu nhé", "dạ hôm nay không có mẫu ạ", "@Bot Điều Phối X dạ ko mẫu a", "dạ ko mẫu a", "chưa có mẫu", "không có mẫu", "k có mẫu", "chua co mau", "hôm nay chưa có mẫu", "hôm nay k có mẫu", "ko có", "chưa có", "k có", "@Bot Điều Phối X ko có"];
   for (const chatId of Object.values(CHAT_BY_CUSTOMER_ID)) {
     const before = sent.length;
     for (const text of negatives) {

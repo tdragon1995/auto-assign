@@ -48,10 +48,14 @@ const POSITIVE_PATTERN = phrasePattern(POSITIVE_OVERRIDE, "g");
 const FUTURE_PATTERN = phrasePattern(FUTURE_DATE_WORDS);
 const SHORT_NEGATIVE_PATTERN = new RegExp(`^/?(?:da )?(?:(?:${TODAY_WORDS.join("|")}) )?(?:khong|ko|k|0|o|chua|chx) (?:co(?: mau)?|mau)(?: (?:a|ah|nhe|nha))*[.!]?$`);
 
+// ponytail: interpret hong at reply start; extend clause grammar only for observed replies.
+const HONG_NEGATIVE_PATTERN = new RegExp(`^(/?(?:da )?(?:(?:${[...TODAY_WORDS, ...FUTURE_DATE_WORDS].join("|")}) )?)hong(?= (?:co|con|mau|can|lay)\\b)`);
+
 export function classifyPickupReply(text: string): "cancel" | "review" | "ignore" {
   const plain = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/gi, "d")
     .toLowerCase().replace(/\s+/g, " ").trim()
-    .replace(/@bot (?:giao nhan mau|dieu phoi x)\b/g, "").trim();
+    .replace(/@bot (?:giao nhan mau|dieu phoi x)\b/g, "").trim()
+    .replace(HONG_NEGATIVE_PATTERN, "$1khong");
   const core = CORE_PATTERN.test(plain) || NO_PICKUP_REGEX.some(pattern => pattern.test(plain)) || SHORT_NEGATIVE_PATTERN.test(plain);
   if (!core) return "ignore";
   const positive = [...plain.matchAll(POSITIVE_PATTERN)].some(match => {
