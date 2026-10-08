@@ -1,6 +1,7 @@
 import { BadgeCheck, Clock3, Hash, Mail, MapPin, MessageCircle, Navigation, Phone, Route, ShieldCheck, UserRound, Users, Warehouse, type LucideIcon } from "lucide-react";
 import { staffCode } from "@/lib/display-names";
 import { isInactiveLocation } from "@/lib/location-status";
+import type { DriverShift } from "@/lib/driver-shifts";
 import type { PickupVolume } from "@/lib/pickup-setup";
 
 export type ClientMeta = {
@@ -16,6 +17,7 @@ export type ClientMeta = {
 export type DriverMeta = {
   driver_id: string; cartrack: Record<string, unknown>; roster: Record<string, unknown>;
   driver_zalo_id: string | null; phone_number_update: string | null; has_bot_token: boolean;
+  shift_date?:string; work_shifts?:DriverShift[]|null;
 };
 
 const text = (v: unknown): string => {
@@ -58,10 +60,16 @@ export function MasterProfileDetails({ client, driver, clients }: {
     const end = /^(\d{1,2}:\d{2})/.exec(text(c.shift_time_end))?.[1];
     const active = c.is_active === true || c.is_active === 1 || c.is_active === "1" ? "Hoạt động"
       : c.is_active === false || c.is_active === 0 || c.is_active === "0" ? "Ngừng hoạt động" : "";
+    const duty=driver.work_shifts==null ? "Không đọc được lịch ca; bấm Tải lại để thử lại" : !driver.work_shifts.length ? "Chưa có ca được lưu" : driver.work_shifts.map(s=>{
+      const window=s.day_type==="working" && s.start_time && s.end_time ? `${s.start_time.slice(0,5)}–${s.end_time.slice(0,5)}` : s.day_type==="holiday" ? `Nghỉ lễ${s.holiday_name ? ` · ${s.holiday_name}` : ""}` : "Nghỉ";
+      return join([window,s.source,s.leave_start && s.leave_end ? `Nghỉ phép ${s.leave_start.slice(0,5)}–${s.leave_end.slice(0,5)}` : "",s.leave_gap ? "Cần kiểm tra nghỉ phép" : ""]);
+    }).join("\n");
+    const dutyDate=driver.shift_date?.split("-").reverse().join("/");
     groups = [
+      [[Clock3, `Ca làm${dutyDate ? ` · ${dutyDate}` : ""} (giờ VN)`, duty]],
       [[Phone, "Điện thoại", text(c.phone_number) ? join([c.phone_code, c.phone_number], " ") : ""],
         [Phone, "Điện thoại thay thế", text(driver.phone_number_update)], [Mail, "Email", text(c.email)]],
-      [[Clock3, "Ca làm việc (giờ VN)", start && end ? `${start}–${end}` : start ? `Từ ${start}` : end ? `Đến ${end}` : ""],
+      [[Clock3, "Ca hồ sơ Cartrack (giờ VN)", start && end ? `${start}–${end}` : start ? `Từ ${start}` : end ? `Đến ${end}` : ""],
         [Navigation, "Điểm xuất phát", location(c.start_location_customer_id)], [Warehouse, "Điểm kết thúc", location(c.end_location_customer_id)]],
       [[BadgeCheck, "Mã nhân viên", staffCode(String(c.first_name ?? "")) || text(driver.roster.employee_code)], [UserRound, "Tên nhân viên", text(driver.roster.employee_full_name)],
         [ShieldCheck, "Trạng thái", active]],

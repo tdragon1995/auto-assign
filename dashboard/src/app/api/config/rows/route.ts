@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchSheetRows, SHEET_CONTRACT, SHEET_GID } from "@/lib/sheets";
 import { readConfigGen } from "@/lib/config-gen";
-import { vnTimestamp } from "@/lib/time";
+import { dailyDriverShifts } from "@/lib/driver-shifts";
+import { vnDate, vnTimestamp } from "@/lib/time";
 import { masterClients, masterDrivers, masterEnabled, masterRuleRows } from "@/lib/master-store";
 import { publicClient, publicDriver } from "@/lib/master-public";
 import { loadPickupVolumes } from "@/lib/pickup-setup";
@@ -79,12 +80,21 @@ const TTL_MS = 5 * 60 * 1000;
 export async function GET(req: NextRequest) {
   if (req.nextUrl.searchParams.has("metadata")) {
     try {
-      const [clients, drivers, volumes] = await Promise.all([
+      const shiftDate=vnDate();
+      const [clients, drivers, volumes, shifts] = await Promise.all([
         masterClients(), masterDrivers(),
         loadPickupVolumes().catch(e => { console.error("[config] pickup volumes:", e); return null; }),
+        dailyDriverShifts(shiftDate).catch(e=>{console.error("[config] driver shifts:",e);return null;}),
       ]);
       const byClient = new Map(volumes?.map(v => [v.pickup_customer_id, v]));
-      return NextResponse.json({ clients: clients.map(c => ({ ...publicClient(c), pickup_volume: byClient.get(c.customer_id) ?? null })), drivers: drivers.map(publicDriver) },
+      const codeCounts=new Map<string,number>();
+      for(const d of drivers){const code=d.roster.employee_code?.trim();if(code)codeCounts.set(code,(codeCounts.get(code)??0)+1);}
+      // ponytail: bounded one-day roster scan; index by driver ID if fleet size grows.
+      const publicDrivers=drivers.map(d=>{
+        const code=d.roster.employee_code?.trim();
+        return {...publicDriver(d),shift_date:shiftDate,work_shifts:shifts?.filter(s=>s.driver_id===d.driver_id || (!s.driver_id && !!code && codeCounts.get(code)===1 && s.employee_code===code))??null};
+      });
+      return NextResponse.json({ clients: clients.map(c => ({ ...publicClient(c), pickup_volume: byClient.get(c.customer_id) ?? null })), drivers: publicDrivers },
         { headers: { "Cache-Control": "private, no-store" } });
     } catch (e) {
       return NextResponse.json({ error: String(e) }, { status: 502 });

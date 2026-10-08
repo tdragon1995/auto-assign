@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {MasterProfileDetails} from '../src/components/master-profile-details';
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {createMasterDriver} from '../src/lib/master-driver-create';
@@ -22,6 +23,12 @@ for(const pair of ['', '91, 106', '10, 181', '10,', '10,106,7','bad,106'])assert
 const createHtml=renderToStaticMarkup(createElement(MasterProfileEditor,{kind:'driver',id:'new',creating:true,initial:{phone_code:'1'},clients:[],onCancel(){},async onSaved(){}}));
 assert.ok(createHtml.includes('readOnly=""')&&createHtml.includes('value="84"'));
 assert.equal((createHtml.match(/text-red-600/g)||[]).length,3);
+const hover=(shifts:unknown)=>renderToStaticMarkup(createElement(MasterProfileDetails,{driver:{driver_id:driver,cartrack:{},roster:{},driver_zalo_id:null,phone_number_update:null,has_bot_token:false,shift_date:'2026-10-08',work_shifts:shifts as never},clients:new Map()}));
+assert.ok(hover(null).includes('Không đọc được lịch ca'));
+assert.ok(hover([]).includes('Chưa có ca được lưu'));
+const dutyHtml=hover([{day_type:'working',start_time:'07:00',end_time:'12:00',source:'MISA'},{day_type:'working',start_time:'15:00',end_time:'19:00',source:'PT',leave_start:'17:00',leave_end:'19:00'}]);
+assert.ok(dutyHtml.includes('07:00–12:00')&&dutyHtml.includes('15:00–19:00')&&dutyHtml.includes('Nghỉ phép 17:00–19:00')&&dutyHtml.includes('08/10/2026'));
+assert.ok(hover([{day_type:'off',source:'MISA'}]).includes('Nghỉ'));
 const env={SUPABASE_URL:'https://supabase.invalid',SUPABASE_SERVICE_ROLE_KEY:'test',CARTRACK_AUTH:'test',KV_REST_API_URL:'https://redis.invalid',KV_REST_API_TOKEN:'test',LABCENTER_EMAIL:'test',LABCENTER_PASSWORD:'test',MASTER_CLIENT_INFO_SOURCE:'supabase'};
 const before=Object.fromEntries(Object.keys(env).map(k=>[k,process.env[k]])),previousFetch=globalThis.fetch;
 Object.assign(process.env,env);
