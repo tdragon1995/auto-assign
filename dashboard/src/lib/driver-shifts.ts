@@ -2,6 +2,7 @@ import { sbRpc, sbSelect, sbSelectAll } from "./supabase-rest";
 import { cartrackHistoryCutoff } from "./time";
 import { UUID } from "./master-reconcile";
 import { assertMasterWritable } from "./master-store";
+import { employmentOf } from "./driver-label";
 
 export type DriverShift = {employee_code:string;full_name:string;driver_id:string|null;shift_date:string;slot:number;
  day_type:"working"|"off"|"holiday";start_time:string|null;end_time:string|null;holiday_name:string|null;
@@ -21,15 +22,21 @@ export async function dailyDriverShifts(date:string):Promise<DriverShift[]> {
  return sbSelectAll<DriverShift>("driver_shifts",`select=employee_code,full_name,driver_id,shift_date,slot,day_type,start_time,end_time,holiday_name,leave_start,leave_end,leave_gap,source,revision,synced_at&shift_date=eq.${date}`,"employee_code.asc,shift_date.asc,slot.asc");
 }
 export const shiftPatterns=()=>sbSelectAll<ShiftPattern>("driver_shift_patterns","select=id,driver_id,employee_code,label,days,active_from,active_to,active,note,revision,review_issues","id.asc");
+export function visiblePtPatterns(patterns:ShiftPattern[],drivers:ShiftDriver[]) {
+ const ids=new Set(drivers.filter(d=>d.active&&employmentOf(d.name)==="part-time").map(d=>d.driver_id));
+ return patterns.filter(p=>p.active&&p.driver_id&&ids.has(p.driver_id)&&!p.review_issues.length);
+}
 export async function saveDriverShift(input:unknown,pattern=false) {
  assertMasterWritable();
  if(!input||typeof input!=="object")throw new Error("Ca không hợp lệ");
  const data={...input} as Record<string,unknown>;
  if(typeof data.employee_code!=="string"||!data.employee_code.trim()||data.employee_code.length>200 ||
    !Number.isSafeInteger(data.revision)||Number(data.revision)<0 || (data.driver_id!==null && (typeof data.driver_id!=="string"||!UUID.test(data.driver_id))))throw new Error("Tài xế hoặc phiên bản không hợp lệ");
+ if(pattern&&!data.driver_id)throw new Error("Chọn tài xế PT đang hoạt động");
  if(data.driver_id && (pattern||data.revision===0)) {
   const driver=(await sbSelect<{driver_id:string;first_name:string|null;last_name:string|null;roster:{employee_code?:string};is_active:boolean}>("master_drivers",`select=driver_id,first_name,last_name,roster,is_active&driver_id=eq.${data.driver_id}`))[0];
-  if(!driver || (data.revision===0 && !driver.is_active))throw new Error("Chọn tài xế đang hoạt động");
+  if(!driver || ((pattern||data.revision===0) && !driver.is_active))throw new Error("Chọn tài xế đang hoạt động");
+  if(pattern&&employmentOf(`${driver.first_name??""} ${driver.last_name??""}`)!=="part-time")throw new Error("Mẫu ca chỉ dành cho tài xế PT; ca FT lấy từ MISA");
   data.employee_code=driver.roster?.employee_code||`driver:${driver.driver_id}`;
   if(pattern)data.label=`${driver.first_name??""} ${driver.last_name??""}`.trim();
   else data.full_name=`${driver.first_name??""} ${driver.last_name??""}`.trim();

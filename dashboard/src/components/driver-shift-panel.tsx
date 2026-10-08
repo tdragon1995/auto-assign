@@ -4,6 +4,7 @@ import { ChevronLeft,ChevronRight,Pencil,Plus,RefreshCw,Search,X } from "lucide-
 import { Button } from "./ui/button";
 import { DriverName } from "./driver-name";
 import { foldName } from "@/lib/driver-cell";
+import { employmentOf } from "@/lib/driver-label";
 import { addDays,cartrackHistoryCutoff,vnDate } from "@/lib/time";
 import type { DriverShift,ShiftPattern,ShiftDriver } from "@/lib/driver-shifts";
 import { toast } from "sonner";
@@ -58,7 +59,7 @@ export function DriverShiftPanel(){
   </div>
   {editing&&<form className="border-y border-indigo-200 bg-indigo-50/50 p-4" onSubmit={e=>{e.preventDefault();void save();}}>
    <div className="mb-3 flex items-center justify-between gap-3"><h2 className="font-semibold">{isNew?"Thêm":"Sửa"} {mode==="daily"?"ca làm việc":"mẫu ca PT"}</h2><Button type="button" variant="ghost" size="icon" aria-label="Đóng sửa lịch ca" disabled={saving} onClick={()=>setEditing(null)}><X className="size-4"/></Button></div>
-   {(isNew||!(editing.driver_id))&&<label className="mb-3 block text-sm font-medium">Tài xế<select required className={`${field} mt-1 w-full sm:max-w-lg`} value={editing.driver_id??""} onChange={e=>choose(e.target.value)} disabled={saving}><option value="">Chọn tài xế…</option>{drivers.filter(d=>d.active).map(d=><option key={d.driver_id} value={d.driver_id}>{d.name}</option>)}</select></label>}
+   {(isNew||!(editing.driver_id))&&<label className="mb-3 block text-sm font-medium">Tài xế<select required className={`${field} mt-1 w-full sm:max-w-lg`} value={editing.driver_id??""} onChange={e=>choose(e.target.value)} disabled={saving}><option value="">Chọn tài xế…</option>{drivers.filter(d=>d.active&&(mode==="daily"||employmentOf(d.name)==="part-time")).map(d=><option key={d.driver_id} value={d.driver_id}>{d.name}</option>)}</select></label>}
    {!isNew&&editing.driver_id&&<p className="mb-3 text-sm font-medium"><DriverName full={name(editing)}/></p>}
    {"day_type" in editing?<>
     <div className="grid gap-3 sm:grid-cols-3 sm:max-w-2xl">
