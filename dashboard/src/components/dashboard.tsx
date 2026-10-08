@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, ChevronDown, RefreshCw } from "lucide-react";
+import { AlertTriangle, ChevronDown, Gauge, RefreshCw } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
 import { RemovedCartrackClients } from "./removed-cartrack-clients";
 import { DataSourceIcon } from "./data-source-icon";
@@ -622,11 +622,14 @@ export function Dashboard() {
     // honoured, so it is a tidy-up, not something to handle today.
     leave.invalid.filter((r) => !r.recovered).length;
 
+  const setupActive = ["config", "schedule", "shifts", "locations"].includes(rightTab);
+  const operationsActive = rightTab === "distance" || rightTab === "tat";
+
   const tabBtn = (active: boolean) =>
-    `px-3 py-1.5 text-xs font-semibold rounded transition-colors border flex items-center gap-1.5 whitespace-nowrap ${
+    `min-h-10 px-3 py-2 text-xs font-semibold rounded transition-colors border flex items-center gap-1.5 whitespace-nowrap focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 ${
       active
         ? "bg-slate-800 text-white border-slate-700"
-        : "text-slate-500 border-transparent hover:text-slate-800"
+        : "text-slate-600 border-transparent hover:bg-slate-100 hover:text-slate-900"
     }`;
 
   return (
@@ -710,10 +713,9 @@ export function Dashboard() {
               </div>}
             </details>
           )}
-          {/* Tab bar */}
-          <div className="flex items-center gap-1 shrink-0 overflow-x-auto">
-            <button onClick={() => setRightTab("attention")} className={tabBtn(rightTab === "attention")}>
-              <AlertTriangle className="size-3.5" strokeWidth={2} />
+          <nav aria-label="Điều hướng chính" className="flex flex-wrap items-center gap-1 shrink-0">
+            <button aria-pressed={rightTab === "attention"} onClick={() => setRightTab("attention")} className={tabBtn(rightTab === "attention")}>
+              <AlertTriangle aria-hidden="true" className="size-3.5" strokeWidth={2} />
               Cần xử lý
               {attentionCount > 0 && (
                 <span className="rounded-full bg-red-600 text-white px-1.5 leading-none py-0.5 text-[11px] font-bold">
@@ -721,32 +723,34 @@ export function Dashboard() {
                 </span>
               )}
             </button>
-            <button onClick={() => setRightTab("live")} className={tabBtn(rightTab === "live")}>
-              Nhật ký
+            <button aria-pressed={rightTab === "live"} onClick={() => setRightTab("live")} className={tabBtn(rightTab === "live")}>
+              <span aria-hidden="true">📝</span> Nhật ký
             </button>
-            <button onClick={() => setRightTab("batch")} className={tabBtn(rightTab === "batch")}>
-              Tra cứu VID / Batch
+            <button aria-pressed={rightTab === "batch"} onClick={() => setRightTab("batch")} className={tabBtn(rightTab === "batch")}>
+              <span aria-hidden="true">🔍</span> Tra cứu VID / Batch
             </button>
-            <button onClick={() => setRightTab("config")} className={tabBtn(rightTab === "config")}>
-              Master Client Info
+            <button aria-pressed={setupActive} onClick={() => { if (!setupActive) setRightTab("config"); }} className={tabBtn(setupActive)}>
+              <span aria-hidden="true">⚙️</span> Master Setup
             </button>
-            <button onClick={() => setRightTab("schedule")} className={tabBtn(rightTab === "schedule")}>
-              Lịch cố định
+            <button aria-pressed={operationsActive} onClick={() => { if (!operationsActive) setRightTab("distance"); }} className={tabBtn(operationsActive)}>
+              <Gauge aria-hidden="true" className="size-4" /> Khoảng cách &amp; Hiệu suất
             </button>
-            <button onClick={() => setRightTab("distance")} className={tabBtn(rightTab === "distance")}>
-              Khoảng cách
+            <button aria-pressed={rightTab === "pay"} onClick={() => setRightTab("pay")} className={tabBtn(rightTab === "pay")}>
+              <span aria-hidden="true">💰</span> Lương PT
             </button>
-            <button onClick={() => setRightTab("tat")} className={tabBtn(rightTab === "tat")}>
-              Hiệu suất
-            </button>
-            <button onClick={() => setRightTab("shifts")} className={tabBtn(rightTab === "shifts")}>Lịch ca tài xế</button>
-            <button onClick={() => setRightTab("pay")} className={tabBtn(rightTab === "pay")}>
-              Lương PT
-            </button>
-            <button onClick={() => setRightTab("locations")} className={tabBtn(rightTab === "locations")}>
-              Địa điểm PSC
-            </button>
-          </div>
+          </nav>
+          {setupActive && <nav aria-label="Master Setup" className="flex flex-wrap items-center gap-1 shrink-0 border-b border-slate-200 pb-1.5">
+            {([
+              ["config", "📋", "Config"], ["schedule", "📅", "Lịch cố định"],
+              ["shifts", "🕒", "Ca làm"], ["locations", "📍", "Địa điểm PSC"],
+            ] as const).map(([tab, emoji, label]) => <button key={tab} aria-pressed={rightTab === tab} onClick={() => setRightTab(tab)} className={tabBtn(rightTab === tab)}>
+              <span aria-hidden="true">{emoji}</span> {label}
+            </button>)}
+          </nav>}
+          {operationsActive && <nav aria-label="Khoảng cách và Hiệu suất" className="flex flex-wrap items-center gap-1 shrink-0 border-b border-slate-200 pb-1.5">
+            <button aria-pressed={rightTab === "distance"} onClick={() => setRightTab("distance")} className={tabBtn(rightTab === "distance")}>Khoảng cách</button>
+            <button aria-pressed={rightTab === "tat"} onClick={() => setRightTab("tat")} className={tabBtn(rightTab === "tat")}>Hiệu suất</button>
+          </nav>}
 
           {/* Tab content. On mobile the page flows + scrolls (definite heights so
               each panel's ScrollArea renders); on lg it's a fixed flex-fill. */}
