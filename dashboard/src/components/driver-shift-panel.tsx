@@ -6,7 +6,7 @@ import { DriverName } from "./driver-name";
 import { foldName } from "@/lib/driver-cell";
 import { employmentOf } from "@/lib/driver-label";
 import { addDays,cartrackHistoryCutoff,vnDate } from "@/lib/time";
-import type { DriverShift,ShiftPattern,ShiftDriver } from "@/lib/driver-shifts";
+import type { DriverShift,ShiftPattern,ShiftDriver,RuleShiftSuggestion } from "@/lib/driver-shifts";
 import { toast } from "sonner";
 import { BulkPtShiftPanel } from "./bulk-pt-shift-panel";
 const field="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 placeholder:text-slate-600 placeholder:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:opacity-60";
@@ -15,13 +15,14 @@ const kindLabel={working:"Làm việc",off:"Nghỉ",holiday:"Nghỉ lễ"};
 export function DriverShiftPanel(){
  const [mode,setMode]=useState<"daily"|"patterns"|"bulk">("daily"),[date,setDate]=useState(vnDate),[cutoff,setCutoff]=useState(cartrackHistoryCutoff);
  const [configuredIds,setConfiguredIds]=useState<string[]>([]);
+ const [shifts,setShifts]=useState<DriverShift[]>([]),[suggestions,setSuggestions]=useState<Record<string,RuleShiftSuggestion[]>>({});
  const [rows,setRows]=useState<(DriverShift|ShiftPattern)[]>([]),[drivers,setDrivers]=useState<ShiftDriver[]>([]);
  const [search,setSearch]=useState(""),[loading,setLoading]=useState(true),[error,setError]=useState(""),[saving,setSaving]=useState(false);
  const [editing,setEditing]=useState<DriverShift|ShiftPattern|null>(null),[isNew,setIsNew]=useState(false);
  const sequence=useRef(0);
  const load=useCallback(async(quiet=false)=>{const current=++sequence.current;if(!quiet)setLoading(true);setError("");try{
-  const res=await fetch(`/api/driver-shifts?mode=${mode==="bulk"?"patterns":mode}&date=${date}`,{cache:"no-store"}),data=await res.json();
-  if(!res.ok)throw Error(data.error||"Không tải được lịch ca");if(current!==sequence.current)return;setRows(data.rows);setDrivers(data.drivers);setConfiguredIds(data.configuredDriverIds??[]);setCutoff(data.cutoff);
+  const res=await fetch(`/api/driver-shifts?mode=${mode==="bulk"?"missing":mode}&date=${date}`,{cache:"no-store"}),data=await res.json();
+  if(!res.ok)throw Error(data.error||"Không tải được lịch ca");if(current!==sequence.current)return;setRows(data.rows);setDrivers(data.drivers);setConfiguredIds(data.configuredDriverIds??[]);setShifts(data.shifts??[]);setSuggestions(data.suggestions??{});setCutoff(data.cutoff);
  }catch(e){if(current===sequence.current)setError(e instanceof Error?e.message:String(e));}finally{if(current===sequence.current)setLoading(false);}},[mode,date]);
  useEffect(()=>{void load();setEditing(null);},[load]);
  const directory=useMemo(()=>new Map(drivers.map(d=>[d.driver_id,d])),[drivers]);
@@ -40,7 +41,7 @@ export function DriverShiftPanel(){
    <div className="flex gap-1 rounded-lg bg-slate-100 p-1" aria-label="Chế độ lịch ca">
     <Button size="sm" variant={mode==="daily"?"default":"ghost"} aria-pressed={mode==="daily"} disabled={saving} onClick={()=>setMode("daily")}>Theo ngày</Button>
     <Button size="sm" variant={mode==="patterns"?"default":"ghost"} aria-pressed={mode==="patterns"} disabled={saving} onClick={()=>setMode("patterns")}>Mẫu ca PT</Button>
-    <Button size="sm" variant={mode==="bulk"?"default":"ghost"} aria-pressed={mode==="bulk"} disabled={saving} onClick={()=>setMode("bulk")}>Thiếu chu kỳ PT</Button>
+    <Button size="sm" variant={mode==="bulk"?"default":"ghost"} aria-pressed={mode==="bulk"} disabled={saving} onClick={()=>setMode("bulk")}>Thiếu ca PT</Button>
    </div>
    <div className="flex flex-wrap items-center gap-2">
     {mode==="daily"&&<><Button variant="outline" size="icon" aria-label="Ngày trước" disabled={date<=cutoff||saving} onClick={()=>setDate(addDays(date,-1))}><ChevronLeft/></Button>
@@ -52,7 +53,7 @@ export function DriverShiftPanel(){
     {mode!=="bulk"&&<Button disabled={loading||saving} onClick={startNew}><Plus className="size-4"/>{mode==="daily"?"Thêm ca":"Thêm mẫu ca"}</Button>}
    </div>
   </div>
-  {mode==="bulk"?<>{error?<p role="alert" className="p-4 text-sm text-red-700">{error} · Bấm Tải lại để thử lại.</p>:loading?<p role="status" className="p-4 text-sm text-slate-600">Đang đọc config và chu kỳ tuần…</p>:<BulkPtShiftPanel drivers={drivers} patterns={rows as ShiftPattern[]} configuredIds={configuredIds} onSaved={()=>load(true)} onBusy={setSaving}/>}</>:<>
+  {mode==="bulk"?<>{error?<p role="alert" className="p-4 text-sm text-red-700">{error} · Bấm Tải lại để thử lại.</p>:<BulkPtShiftPanel drivers={drivers} patterns={rows as ShiftPattern[]} shifts={shifts} suggestions={suggestions} configuredIds={configuredIds} date={date} cutoff={cutoff} onDateChange={setDate} loading={loading} onSaved={()=>load(true)} onBusy={setSaving}/>}</>:<>
   <div className="flex flex-wrap items-center justify-between gap-3 px-3 py-3">
    <label className="relative w-full sm:max-w-sm"><span className="sr-only">Tìm tài xế trong lịch ca</span><Search className="absolute left-3 top-3 size-4 text-slate-500"/><input type="search" className={`${field} w-full pl-9`} placeholder="Tìm tài xế hoặc mã nhân viên…" value={search} onChange={e=>setSearch(e.target.value)}/></label>
    <p className="text-xs text-slate-600">Lưu từ {cutoff} · Giờ Việt Nam · Có thể xem ngày tương lai</p>

@@ -3,6 +3,7 @@ import { cartrackHistoryCutoff } from "./time";
 import { UUID } from "./master-reconcile";
 import { assertMasterWritable } from "./master-store";
 import { employmentOf } from "./driver-label";
+import type { MasterRule } from "./master-store";
 
 export type DriverShift = {employee_code:string;full_name:string;driver_id:string|null;shift_date:string;slot:number;
  day_type:"working"|"off"|"holiday";start_time:string|null;end_time:string|null;holiday_name:string|null;
@@ -10,8 +11,25 @@ export type DriverShift = {employee_code:string;full_name:string;driver_id:strin
 export type ShiftPattern = {id:number;driver_id:string|null;employee_code:string;label:string;days:({start:string;end:string}|null)[];
  active_from:string|null;active_to:string|null;active:boolean;note:string;revision:number;review_issues:string[]};
 export type ShiftDriver = {driver_id:string;name:string;employee_code:string;active:boolean};
+export type RuleShiftSuggestion = {start:string;end:string;days:number[];sources:string[]};
 export const validShiftDate=(v:unknown):v is string=>typeof v==="string" && /^\d{4}-\d{2}-\d{2}$/.test(v) && Number.isFinite(Date.parse(v)) && new Date(v+"T00:00:00Z").toISOString().slice(0,10)===v;
 const hhmm=(v:unknown)=>typeof v==="string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(v);
+export function configShiftSuggestions(ruleGroups:MasterRule[][]) {
+ const suggestions:Record<string,RuleShiftSuggestion[]>={};
+ ruleGroups.forEach((rules,group)=>{for(const rule of rules){
+  const start=rule.shift_start?.slice(0,5)??"",end=rule.shift_end?.slice(0,5)??"";
+  if(!rule.pickup_customer_id||rule.review_issues.length||!hhmm(start)||!hhmm(end)||start===end)continue;
+  const days=group===0?[1,2,3,4,5,6]:[0],source=rule.row_data["Điểm Pick-up"]||rule.pickup_customer_id;
+  for(const id of rule.driver_ids){
+   const choices=suggestions[id]??=[];
+   let choice=choices.find(s=>s.start===start&&s.end===end);
+   if(!choice){choice={start,end,days:[],sources:[]};choices.push(choice);}
+   choice.days=[...new Set([...choice.days,...days])];
+   if(!choice.sources.includes(source))choice.sources.push(source);
+  }
+ }});
+ return suggestions;
+}
 export async function shiftDrivers():Promise<ShiftDriver[]> {
  const rows=await sbSelectAll<{driver_id:string;first_name:string|null;last_name:string|null;roster:{employee_code?:string};is_active:boolean}>("master_drivers","select=driver_id,first_name,last_name,roster,is_active","driver_id.asc");
  return rows.map(r=>({driver_id:r.driver_id,name:`${r.first_name??""} ${r.last_name??""}`.trim()||r.driver_id,
