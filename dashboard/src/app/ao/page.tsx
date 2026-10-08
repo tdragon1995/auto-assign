@@ -51,8 +51,8 @@ function OrderCard({ order, onCancel }: { order: Order; onCancel: (o: Order) => 
 
   return (
     <div className="rounded-2xl bg-white shadow-sm border border-slate-100 p-4">
-      <div className="flex items-start justify-between gap-2.5">
-        <div className="min-w-0">
+      <div className="flex flex-wrap items-start justify-between gap-2.5">
+        <div className="min-w-[12rem] flex-1">
           <p className="text-base font-extrabold tracking-tight text-slate-800">
             {placeLabel(order.vendor_name)} <ArrowRight aria-hidden className="inline w-4 h-4 text-slate-500 mx-0.5 shrink-0" /> {placeLabel(order.dropoff_name)}
           </p>
@@ -160,71 +160,62 @@ function VendorRequests() {
   const done = orders.filter((o) => stateOf(o) === 3);
 
   return (
-    <div className="flex justify-center">
-      <div className="w-full max-w-[430px] px-4 pb-12">
-
-        <header className="pt-5 pb-3.5 px-1">
+    <div className="mx-auto max-w-5xl px-4 pb-12">
+        <header className="pt-5 pb-5">
           <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">Lấy kết quả giấy</h1>
           <p className="text-sm text-slate-500 mt-0.5">Từ nhà cung cấp về Diag</p>
         </header>
 
-        <div className="flex items-center justify-end mb-3">
-          <button
-            onClick={loadOrders}
-            disabled={ordersLoading}
-            className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-semibold text-blue-700 bg-white shadow-sm active:bg-slate-50 disabled:opacity-50"
-          >
-            <RefreshCw aria-hidden className={`w-4 h-4 ${ordersLoading ? "animate-spin" : ""}`} />
-            Làm mới
-          </button>
-        </div>
-
-        {/* Request form */}
-        <div className="bg-white rounded-2xl shadow-sm p-4 mb-5 space-y-4">
-          <div className="space-y-2">
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)] lg:items-start">
+        <section className="min-w-0 rounded-2xl bg-white p-4 shadow-sm sm:p-5">
+          <h2 className="text-base font-bold text-slate-900">Tạo yêu cầu</h2>
+          <fieldset className="mt-4">
+            <legend className="mb-2 text-sm font-semibold text-slate-700">Nhà cung cấp</legend>
+            <div className="grid gap-1 sm:grid-cols-2">
             {VENDORS.map((v) => (
               <button
                 key={v.uuid}
                 type="button"
                 onClick={() => setSelectedUuid(v.uuid)}
                 aria-pressed={v.uuid === selectedUuid}
-                className={`w-full text-left rounded-xl border px-4 py-3 transition-colors ${
+                className={`flex min-h-14 w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 ${
                   v.uuid === selectedUuid
-                    ? "border-blue-500 bg-blue-50 ring-2 ring-blue-200"
-                    : "border-slate-200 bg-white active:bg-slate-50"
+                    ? "bg-blue-50 text-blue-900 ring-1 ring-inset ring-blue-500"
+                    : "text-slate-800 hover:bg-slate-50 active:bg-slate-100"
                 }`}
               >
-                <span className="flex items-center gap-2">
-                  {v.uuid === selectedUuid && <Check aria-hidden className="w-4 h-4 text-blue-600 shrink-0" />}
-                  <span className="text-base font-semibold text-slate-800">{v.name}</span>
+                <span>{v.name}</span>
+                <span aria-hidden className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${v.uuid === selectedUuid ? "border-blue-700 bg-blue-700 text-white" : "border-slate-300"}`}>
+                  {v.uuid === selectedUuid && <Check className="h-3 w-3" />}
                 </span>
               </button>
             ))}
-          </div>
+            </div>
+          </fieldset>
 
+          <label htmlFor="ao-request-note" className="mt-5 block text-sm font-semibold text-slate-700">Ghi chú <span className="font-normal text-slate-500">(tuỳ chọn)</span></label>
           <textarea
+            id="ao-request-note"
             value={note}
             onChange={(e) => setNote(e.target.value)}
-            placeholder="Ghi chú (tuỳ chọn)"
             rows={2}
-            aria-label="Ghi chú"
-            className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm text-slate-700 placeholder-slate-500 resize-none focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+            className="mt-2 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm text-slate-700 resize-none focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
           />
 
           <button
             onClick={submit}
             disabled={!selectedUuid || loading}
-            className="w-full rounded-2xl py-4 text-white text-lg font-extrabold flex items-center justify-center gap-2.5 bg-blue-700 active:scale-[.97] transition disabled:opacity-40"
+            className="mt-4 flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-blue-700 px-4 py-3 text-sm font-bold text-white transition active:scale-[.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 disabled:opacity-40"
           >
             {loading
-              ? <><Loader2 aria-hidden className="w-5 h-5 animate-spin" />Đang gửi…</>
-              : <><Package aria-hidden className="w-5 h-5" />Gửi yêu cầu</>}
+              ? <><Loader2 aria-hidden className="w-4 h-4 animate-spin" />Đang gửi…</>
+              : <><Package aria-hidden className="w-4 h-4" />Gửi yêu cầu</>}
           </button>
 
           {result && (
             <p
               role="alert"
-              className={`flex items-start gap-2 rounded-xl p-3 text-sm font-medium ${
+              className={`mt-4 flex items-start gap-2 rounded-xl p-3 text-sm font-medium ${
                 result.ok
                   ? "bg-emerald-50 border border-emerald-200 text-emerald-800"
                   : "bg-red-50 border border-red-200 text-red-800"
@@ -234,9 +225,20 @@ function VendorRequests() {
               {result.msg}
             </p>
           )}
-        </div>
+        </section>
 
-        {/* Live requests */}
+        <section className="min-w-0 space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-base font-bold text-slate-900">Đang thực hiện <span className="text-slate-500">({active.length})</span></h2>
+          <button
+            onClick={loadOrders}
+            disabled={ordersLoading}
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 disabled:opacity-50"
+          >
+            <RefreshCw aria-hidden className={`w-4 h-4 ${ordersLoading ? "animate-spin" : ""}`} />
+            Làm mới
+          </button>
+        </div>
         <div className="space-y-3">
           {active.map((o) => (
             <OrderCard key={o.job_id} order={o} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} />
@@ -247,16 +249,16 @@ function VendorRequests() {
             </p>
           )}
           {!ordersLoading && !active.length && (
-            <p className="flex items-center justify-center gap-2 text-center text-sm text-slate-500 py-7">
+            <p className="flex items-center justify-center gap-2 rounded-2xl bg-white py-7 text-center text-sm text-slate-500 shadow-sm">
               <Clock aria-hidden className="w-4 h-4" />Chưa có yêu cầu nào đang chạy.
             </p>
           )}
         </div>
 
         {/* Completed today — open by default; it's the record staff come here to check */}
-        <div className="bg-white rounded-2xl shadow-sm mt-3 overflow-hidden">
+        <div className="overflow-hidden rounded-2xl bg-white shadow-sm">
           <button onClick={() => setDoneOpen((v) => !v)} aria-expanded={doneOpen}
-            className="w-full flex items-center justify-between px-4 py-3.5 text-[15px] font-bold text-slate-800">
+            className="flex min-h-12 w-full items-center justify-between px-4 py-3.5 text-[15px] font-bold text-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700">
             <span className="flex items-center gap-2">
               <Check aria-hidden className="w-4 h-4 text-green-600" />
               Xong hôm nay <span className="text-green-600">({done.length})</span>
@@ -284,8 +286,8 @@ function VendorRequests() {
             </div>
           )}
         </div>
-
-      </div>
+        </section>
+        </div>
 
       {/* Cancel confirm overlay */}
       {cancelTarget && (
