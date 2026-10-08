@@ -38,6 +38,7 @@ export function destFromRemark(remark: string | null | undefined): string | null
 export interface PasteLine { vid: string; billing: string }
 export interface PrintDraftRow { dest: string; client: string; vid: string; patient: string; billing: string; note: string }
 export interface PrintHistory { id: string; printedAt: string; title: string; rows: PrintDraftRow[] }
+export type PrintHistorySummary = Omit<PrintHistory, "rows"> & { count: number };
 
 const VID_RE = /\d{8,}/g;
 
@@ -62,6 +63,16 @@ const norm = (s: string) =>
 
 // A VID can have several printed tests; only the same VID and test is a duplicate.
 export const printRowKey = (r: Pick<PrintDraftRow, "vid" | "billing">) => `${r.vid}|${norm(r.billing)}`;
+
+/** Saved bare VIDs need only LIS status; a named test also needs the order's test-code mapping. */
+export function statusLookupVids(rows: PrintDraftRow[]) {
+  const vids = [...new Set(rows.map((r) => r.vid))];
+  const withBilling = new Set(rows.filter((r) => r.billing.trim()).map((r) => r.vid));
+  return {
+    statusOnly: vids.filter((vid) => !withBilling.has(vid)),
+    full: vids.filter((vid) => withBilling.has(vid)),
+  };
+}
 
 /** Spacing is not meaningful in a test name: "Carrier Screening 18 **" is "…Screening 18**". */
 const squash = (s: string) => norm(s).replace(/ /g, "");

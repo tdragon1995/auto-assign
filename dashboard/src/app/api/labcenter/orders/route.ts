@@ -94,6 +94,7 @@ async function lookup(vid: string, token: string) {
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
+  const statusOnly = body?.statusOnly === true;
   const vids = [...new Set(
     (Array.isArray(body?.vids) ? body.vids : []).map((v: unknown) => String(v).replace(/\D/g, "")).filter(Boolean),
   )] as string[];
@@ -103,12 +104,12 @@ export async function POST(req: NextRequest) {
   const token = await getReceptionistToken();
   if (!token) return NextResponse.json({ error: "Labcenter login failed" }, { status: 502 });
 
-  const results: Awaited<ReturnType<typeof lookup>>[] = new Array(vids.length);
+  const results: (Awaited<ReturnType<typeof lookup>> | { vid: string; pending: PendingTest[] | null })[] = new Array(vids.length);
   let next = 0;
   await Promise.all(Array.from({ length: CONCURRENCY }, async () => {
     while (next < vids.length) {
       const i = next++;
-      results[i] = await lookup(vids[i], token);
+      results[i] = statusOnly ? { vid: vids[i], pending: await fetchPending(vids[i], token) } : await lookup(vids[i], token);
     }
   }));
 

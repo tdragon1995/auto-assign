@@ -79,6 +79,11 @@ export async function readPrintHistory(db: Redis): Promise<PrintHistory[]> {
   return prints.sort((a, b) => b.printedAt.localeCompare(a.printedAt));
 }
 
+export async function readPrintHistoryItem(db: Redis, id: string): Promise<PrintHistory | null> {
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return null;
+  return db.get<PrintHistory>(HISTORY_PREFIX + id);
+}
+
 export async function savePrintHistory(db: Redis, title: string, rows: PrintDraftRow[]): Promise<PrintHistory> {
   const print: PrintHistory = {
     id: randomUUID(), printedAt: new Date().toISOString(), title,

@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, Download, AlertCircle, Printer, Check, X, Clock, RefreshCw } from "lucide-react";
-import { parsePaste, billingFound, stripPatient, pendingFor, statusLabel, displayClientName, printRowKey, type PasteLine, type PrintDraftRow, type PrintHistory, type TestEntry, type PendingTest } from "@/lib/handover";
+import { Loader2, Download, AlertCircle, Printer, Check, X, RefreshCw } from "lucide-react";
+import { parsePaste, billingFound, stripPatient, pendingFor, statusLabel, displayClientName, printRowKey, statusLookupVids, type PasteLine, type PrintDraftRow, type PrintHistory, type PrintHistorySummary, type TestEntry, type PendingTest } from "@/lib/handover";
 
 /** One order as the lookup route returns it. */
 interface Order {
@@ -27,6 +27,7 @@ interface Row extends Order {
   print_note?: string;
   /** Pending results this row stands for; null = the status could not be checked. */
   row_pending: PendingTest[] | null;
+  status_checking?: boolean;
 }
 
 interface Group {
@@ -35,8 +36,8 @@ interface Group {
   clients: { name: string; sourceName: string; rows: Row[] }[];
 }
 
-// The route takes at most 100 per request (it has 60s to answer); longer lists go in chunks.
-const CHUNK = 100;
+// Smaller chunks keep a 200-VID lookup below the route timeout and show progress sooner.
+const CHUNK = 50;
 const HUB = "D001";
 
 function groupRows(rows: Row[]): Group[] {
@@ -105,7 +106,7 @@ async function downloadExcel(title: string, groups: Group[]) {
 const esc = (v: unknown) => String(v).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]!);
 
 /** A4 portrait checklist in a new window; the print dialog also offers "Save as PDF". */
-function printA4(title: string, groups: Group[], autoPrint = true, printedAt?: string): boolean {
+function printA4(title: string, groups: Group[], autoPrint = true, printedAt?: string, target?: Window): boolean {
   const { cols, head, rows } = checklist(groups);
   let offset = 0;
   const body = groups.map((g) => {
@@ -145,8 +146,9 @@ thead th { border-top: 2pt solid #000; border-bottom: 2pt solid #000; font-weigh
 <table><thead><tr>${[...head, "Đã nhận"].map((h) => `<th>${h}</th>`).join("")}</tr></thead>${body}</table>
 <div class="sign"><div><p>Người giao</p>(Ký, ghi rõ họ tên)</div><div><p>Người nhận</p>(Ký, ghi rõ họ tên)</div><div><p>Thời gian</p>____:____ ngày ____/____</div></div>
 </body></html>`;
-  const w = window.open("", "_blank");
+  const w = target ?? window.open("", "_blank");
   if (!w) { alert("Trình duyệt đã chặn cửa sổ in — hãy cho phép cửa sổ bật lên."); return false; }
+  w.document.open();
   w.document.write(html);
   w.document.close();
   if (autoPrint) w.onload = () => w.print();
@@ -203,16 +205,22 @@ function HandoverList({ title, groups, onPrint }: { title: string; groups: Group
                             <span>{r.billing}{r.billing_ok === false && " — không có trong đơn"}</span>
                           </span>
                         )}
-                        {r.row_pending === null ? (
+                        {r.status_checking ? (
+                          <span className="block text-slate-500 mt-0.5">Đang kiểm tra kết quả…</span>
+                        ) : r.row_pending === null ? (
                           <span className="flex items-start gap-1 text-slate-500 mt-0.5">
                             <AlertCircle aria-hidden className="w-3.5 h-3.5 shrink-0" />
                             <span>Không kiểm tra được trạng thái kết quả</span>
                           </span>
                         ) : r.row_pending.length > 0 && (
-                          <span className="flex items-start gap-1 text-amber-700 mt-0.5">
-                            <Clock aria-hidden className="w-3.5 h-3.5 shrink-0" />
-                            <span>Chưa có kết quả: {r.row_pending.map((p) => `${p.name} (${statusLabel(p.status)})`).join(", ")}</span>
-                          </span>
+                          <details className="text-amber-700 mt-0.5">
+                            <summary className="cursor-pointer marker:text-amber-700">
+                              Chưa có kết quả · {r.row_pending.length} xét nghiệm
+                            </summary>
+                            <ul className="list-disc pl-5 mt-1 space-y-0.5">
+                              {r.row_pending.map((p, i) => <li key={`${p.code}-${i}`}>{p.name} ({statusLabel(p.status)})</li>)}
+                            </ul>
+                          </details>
                         )}
                         {note && (
                           <span className="flex items-start gap-1 text-amber-700 mt-0.5">
@@ -246,7 +254,7 @@ function joinedRows(lines: PasteLine[], orders: Record<string, Order>): Row[] {
   });
 }
 
-async function fetchOrders(vids: string[], onChunk?: (got: Record<string, Order>, done: number) => void): Promise<Record<string, Order>> {
+async function fetchOrders(vids: string[], onChunk?: (got: Record<string, Order>, done: number) => void, statusOnly = false): Promise<Record<string, Order>> {
   const found: Record<string, Order> = {};
   // Chunks run one after another so long lists never have more than 10 Labcenter calls in flight.
   for (let i = 0; i < vids.length; i += CHUNK) {
@@ -254,7 +262,7 @@ async function fetchOrders(vids: string[], onChunk?: (got: Record<string, Order>
     let got: Order[];
     try {
       const res = await fetch("/api/labcenter/orders", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ vids: chunk }),
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ vids: chunk, statusOnly }),
       });
       const data = await res.json().catch(() => ({}));
       got = res.ok ? data.results ?? [] : chunk.map((vid) => ({ vid, error: data.error ?? "Tra cứu thất bại" }));
@@ -262,19 +270,21 @@ async function fetchOrders(vids: string[], onChunk?: (got: Record<string, Order>
       got = chunk.map((vid) => ({ vid, error: "Không thể kết nối" }));
     }
     const batch = Object.fromEntries(got.map((o) => [o.vid, o]));
+    for (const vid of chunk) if (!batch[vid]) batch[vid] = { vid, error: "Không có phản hồi từ Labcenter" };
     Object.assign(found, batch);
     onChunk?.(batch, i + chunk.length);
   }
   return found;
 }
 
-function restoredRow(r: PrintDraftRow, order?: Order): Row {
+function restoredRow(r: PrintDraftRow, order?: Order, checking = false): Row {
   const entries = order?.test_entries ?? [];
   const billing_ok = !r.billing || !order || order.error ? null : billingFound(r.billing, entries.flatMap((e) => e.names));
   return {
     vid: r.vid, dest: r.dest, client_name: r.client, patient_name: r.patient,
     billing: r.billing, print_note: r.note, key: printRowKey(r), billing_ok,
     row_pending: !order || order.error ? null : billing_ok === false ? [] : pendingFor(r.billing, entries, order.pending ?? null),
+    status_checking: checking && !order,
   };
 }
 
@@ -284,10 +294,13 @@ export function HardCopyHandover() {
   const [orders, setOrders] = useState<Record<string, Order>>({});
   const [savedRows, setSavedRows] = useState<PrintDraftRow[]>([]);
   const [savedOrders, setSavedOrders] = useState<Record<string, Order>>({});
-  const [history, setHistory] = useState<PrintHistory[]>([]);
+  const [history, setHistory] = useState<PrintHistorySummary[]>([]);
   const [historyError, setHistoryError] = useState("");
   const [draftError, setDraftError] = useState("");
   const [draftLoading, setDraftLoading] = useState(true);
+  const [statusLoading, setStatusLoading] = useState(false);
+  const [statusDone, setStatusDone] = useState(0);
+  const [statusTotal, setStatusTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(0);
 
@@ -297,14 +310,27 @@ export function HardCopyHandover() {
       const res = await fetch("/api/ao/draft", { cache: "no-store" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Không tải được bản nháp chung");
-      setSavedRows(data.rows ?? []);
+      const draftRows: PrintDraftRow[] = data.rows ?? [];
+      setSavedRows(draftRows);
       setDraftError("");
-      const savedVids = [...new Set((data.rows as PrintDraftRow[]).map((r) => r.vid))];
-      setSavedOrders(await fetchOrders(savedVids));
+      setDraftLoading(false);
+      const { statusOnly: statusOnlyVids, full: fullVids } = statusLookupVids(draftRows);
+      const savedCount = statusOnlyVids.length + fullVids.length;
+      setSavedOrders({});
+      setStatusDone(0);
+      setStatusTotal(savedCount);
+      setStatusLoading(savedCount > 0);
+      const update = (got: Record<string, Order>, count: number) => {
+        setSavedOrders((prev) => ({ ...prev, ...got }));
+        setStatusDone(count);
+      };
+      await fetchOrders(statusOnlyVids, update, true);
+      await fetchOrders(fullVids, (got, count) => update(got, statusOnlyVids.length + count));
     } catch (error) {
       setDraftError(String(error));
     } finally {
       setDraftLoading(false);
+      setStatusLoading(false);
     }
   }, []);
   useEffect(() => { void refreshDraft(); }, [refreshDraft]);
@@ -348,9 +374,11 @@ export function HardCopyHandover() {
   };
 
   const rows = joinedRows(lines, orders);
-  const merged = new Map<string, Row>(savedRows.map((r) => [printRowKey(r), restoredRow(r, savedOrders[r.vid])]));
+  const merged = new Map<string, Row>(savedRows.map((r) => [printRowKey(r), restoredRow(r, savedOrders[r.vid], statusLoading)]));
   for (const row of rows) merged.set(printRowKey(row), row);
   const allRows = [...merged.values()];
+  const hubGroups = groupRows(allRows.filter((r) => r.dest === HUB));
+  const outsideGroups = groupRows(allRows.filter((r) => r.dest !== HUB));
   const failed = Object.values(orders).filter((o) => o.error);
 
   const handlePrint = (title: string, groups: Group[]) => {
@@ -366,15 +394,32 @@ export function HardCopyHandover() {
     }).catch((error) => setHistoryError(String(error)));
   };
 
+  const openHistory = async (item: PrintHistorySummary) => {
+    const w = window.open("", "_blank");
+    if (!w) { alert("Trình duyệt đã chặn cửa sổ in — hãy cho phép cửa sổ bật lên."); return; }
+    w.document.body.textContent = "Đang tải bản in…";
+    try {
+      const res = await fetch(`/api/ao/prints?id=${encodeURIComponent(item.id)}`, { cache: "no-store" });
+      const data: { print?: PrintHistory; error?: string } = await res.json();
+      if (!res.ok || !data.print) throw new Error(data.error ?? "Không tải được bản in");
+      printA4(data.print.title, groupRows(data.print.rows.map((r) => restoredRow(r))), false, data.print.printedAt, w);
+      setHistoryError("");
+    } catch (error) {
+      w.document.body.textContent = "Không tải được bản in. Hãy thử lại.";
+      setHistoryError(String(error));
+    }
+  };
+
   return (
     <div className="space-y-4">
       {draftError && <p role="alert" className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">{draftError} · Dòng mới chưa chắc đã được lưu trên máy khác.</p>}
       <div className="flex items-center justify-between gap-2 text-xs text-slate-500">
         <span>Bản nháp chung · {savedRows.length} dòng · lưu 7 ngày</span>
-        <button onClick={refreshDraft} disabled={draftLoading || loading} className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 disabled:opacity-40">
+        <button onClick={refreshDraft} disabled={draftLoading || statusLoading || loading} className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 disabled:opacity-40">
           <RefreshCw aria-hidden className="w-3.5 h-3.5" />{draftLoading ? "Đang tải bản nháp chung…" : "Làm mới bản nháp chung"}
         </button>
       </div>
+      {statusLoading && <p role="status" className="text-xs text-slate-600">Đang kiểm tra kết quả {statusDone}/{statusTotal} VID…</p>}
       <div className="bg-white rounded-2xl shadow-sm p-4 space-y-3 max-w-[430px] mx-auto">
         <textarea
           value={text}
@@ -396,6 +441,22 @@ export function HardCopyHandover() {
         </button>
       </div>
 
+      <details className="bg-white rounded-2xl shadow-sm p-4">
+        <summary className="cursor-pointer text-sm font-bold text-slate-800">Lịch sử in 7 ngày · {history.length} bản</summary>
+        {historyError && <p role="alert" className="text-xs text-red-700 mt-2">{historyError}</p>}
+        {!history.length && <p className="text-xs text-slate-500 mt-2">Chưa có bản in nào được lưu.</p>}
+        <ul className="mt-2 divide-y divide-slate-100">
+          {history.map((print) => (
+            <li key={print.id} className="py-2 flex items-center justify-between gap-3 text-xs">
+              <span>{new Date(print.printedAt).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })} · {print.title} · {print.count} hồ sơ</span>
+              <button className="text-blue-700 font-semibold shrink-0" onClick={() => void openHistory(print)}>
+                Xem bản in
+              </button>
+            </li>
+          ))}
+        </ul>
+      </details>
+
       {failed.length > 0 && (
         <div className="bg-red-50 border border-red-200 rounded-2xl p-4 text-xs text-red-800 space-y-1">
           <p className="font-bold">Không tra được ({failed.length})</p>
@@ -408,26 +469,11 @@ export function HardCopyHandover() {
       )}
 
       {allRows.length > 0 && (
-        <div className="grid gap-4 md:grid-cols-2 items-start">
-          <HandoverList title={HUB} groups={groupRows(allRows.filter((r) => r.dest === HUB))} onPrint={handlePrint} />
-          <HandoverList title={`Ngoài ${HUB}`} groups={groupRows(allRows.filter((r) => r.dest !== HUB))} onPrint={handlePrint} />
+        <div className={`grid gap-4 items-start ${hubGroups.length && outsideGroups.length ? "md:grid-cols-2" : "grid-cols-1"}`}>
+          {hubGroups.length > 0 && <HandoverList title={HUB} groups={hubGroups} onPrint={handlePrint} />}
+          {outsideGroups.length > 0 && <HandoverList title={`Ngoài ${HUB}`} groups={outsideGroups} onPrint={handlePrint} />}
         </div>
       )}
-      <details className="bg-white rounded-2xl shadow-sm p-4">
-        <summary className="cursor-pointer text-sm font-bold text-slate-800">Lịch sử in 7 ngày · {history.length} bản</summary>
-        {historyError && <p role="alert" className="text-xs text-red-700 mt-2">{historyError}</p>}
-        {!history.length && <p className="text-xs text-slate-500 mt-2">Chưa có bản in nào được lưu.</p>}
-        <ul className="mt-2 divide-y divide-slate-100">
-          {history.map((print) => (
-            <li key={print.id} className="py-2 flex items-center justify-between gap-3 text-xs">
-              <span>{new Date(print.printedAt).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })} · {print.title} · {print.rows.length} hồ sơ</span>
-              <button className="text-blue-700 font-semibold shrink-0" onClick={() => printA4(print.title, groupRows(print.rows.map((r) => restoredRow(r))), false, print.printedAt)}>
-                Xem bản in
-              </button>
-            </li>
-          ))}
-        </ul>
-      </details>
     </div>
   );
 }
