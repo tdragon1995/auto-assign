@@ -1,4 +1,4 @@
-import { sbRpc, sbSelect, sbSelectAll } from "./supabase-rest";
+import { sbRpc, sbSelect, sbSelectAll, sbUpsert } from "./supabase-rest";
 import { cartrackHistoryCutoff } from "./time";
 import { UUID } from "./master-reconcile";
 import { assertMasterWritable } from "./master-store";
@@ -43,6 +43,27 @@ export const shiftPatterns=()=>sbSelectAll<ShiftPattern>("driver_shift_patterns"
 export function visiblePtPatterns(patterns:ShiftPattern[],drivers:ShiftDriver[]) {
  const ids=new Set(drivers.filter(d=>d.active&&employmentOf(d.name)==="part-time").map(d=>d.driver_id));
  return patterns.filter(p=>p.active&&p.driver_id&&ids.has(p.driver_id)&&!p.review_issues.length);
+}
+export async function applyPtPlan(driverId:unknown,date:unknown) {
+ assertMasterWritable();
+ if(typeof driverId!=="string"||!UUID.test(driverId)||!validShiftDate(date)||date<cartrackHistoryCutoff())throw new Error("Tài xế hoặc ngày áp dụng không hợp lệ");
+ const [drivers,patterns]=await Promise.all([shiftDrivers(),shiftPatterns()]);
+ const driver=drivers.find(d=>d.driver_id===driverId&&d.active&&employmentOf(d.name)==="part-time");
+ if(!driver)throw new Error("Chỉ áp dụng chu kỳ cho tài xế PT đang hoạt động");
+ if(drivers.filter(d=>d.employee_code===driver.employee_code).length!==1)throw new Error("Mã nhân viên trùng giữa nhiều tài xế — cần kiểm tra liên kết");
+ const versions=visiblePtPatterns(patterns,drivers).filter(p=>p.driver_id===driverId).map(p=>({...p,employee_code:driver.employee_code,label:driver.name}));
+ if(!versions.some(p=>(!p.active_from||p.active_from<=date)&&(!p.active_to||p.active_to>=date)))throw new Error("Chưa có chu kỳ PT áp dụng cho ngày này");
+ const to=new Date(Date.UTC(Number(date.slice(0,4)),Number(date.slice(5,7)),0)).toISOString().slice(0,10);
+ const existing=await sbSelectAll<DriverShift>("driver_shifts",`select=shift_date&shift_date=gte.${date}&shift_date=lte.${to}&or=(driver_id.eq.${driverId},employee_code.eq.${encodeURIComponent(driver.employee_code)})`,"employee_code.asc,shift_date.asc,slot.asc");
+ const covered=new Set(existing.map(s=>s.shift_date));
+ const {expandPtPatterns}=await import("../../../misa-fetcher/lib/sheet-read.mjs");
+ // Fill missing days only. Existing daily schedules, including manual edits, stay authoritative.
+ const rows=expandPtPatterns(versions,{monthStart:date,monthEnd:to}).filter(r=>!covered.has(r.shift_date)).map(r=>({
+  employee_code:driver.employee_code,full_name:driver.name,driver_id:driverId,shift_date:r.shift_date,slot:1,
+  day_type:r.day_type,start_time:r.start_time,end_time:r.end_time,source:"PT"}));
+ // Ignore conflicts so a simultaneous daily edit cannot be overwritten.
+ await sbUpsert("driver_shifts",rows,"employee_code,shift_date,slot",500,true);
+ return {from:date,to};
 }
 export async function saveDriverShift(input:unknown,pattern=false) {
  assertMasterWritable();

@@ -65,6 +65,12 @@ const select=id=>{const row=walk(render()).find(n=>n.type==='label'&&walk(n).som
  vm.runInNewContext(ts.transpileModule(fs.readFileSync('src/app/api/driver-shifts/route.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{module:route,exports:route.exports,require:n=>routeDeps[n],Set});
  const response=await route.exports.GET({nextUrl:new URL('https://example.test/api/driver-shifts?mode=missing&date=2026-10-08')});
  assert.equal(response.status,200);assert.equal(response.body.shifts.length,shifts.length-1);assert.deepEqual([...response.body.configuredDriverIds],['new']);assert.equal(response.body.suggestions.new[0].start,'22:00');
+ posts=[];select('new');select('covered');
+ walk(render()).find(n=>n.type==='input'&&n.props.type==='time').props.onChange({target:{value:''}});
+ const apply=walk(render()).find(n=>n.type==='button'&&n.props.children?.[0]==='Áp dụng chu kỳ cho ');
+ assert.equal(apply.props.disabled,false,'Saved PT plans can be applied without filling the new-plan form');
+ apply.props.onClick();for(let i=0;i<5;i++)await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(posts.map(p=>p.mode),['apply-pt','apply-pt']);assert.deepEqual(posts.map(p=>p.data.driver_id),['new','covered']);assert.equal(posts[0].data.date,'2026-10-12');assert.deepEqual([...state[3]],['retry']);
  props.loading=true;assert.equal(walk(render()).filter(n=>n.type==='driver-name').length,0,'Do not show stale missing rows while changing dates');
  console.log('PASS: configured PT with no dated shift, off/holiday, unique legacy codes, separate config windows, copy-to-weekly setup, partial failures and weekly expansion');
 })().catch(e=>{console.error(e);process.exitCode=1;});

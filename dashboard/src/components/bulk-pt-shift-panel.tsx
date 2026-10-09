@@ -24,7 +24,21 @@ export function BulkPtShiftPanel({drivers,patterns,shifts,suggestions,configured
  const [selected,setSelected]=useState<Set<string>>(new Set()),[search,setSearch]=useState(""),[saving,setSaving]=useState(false),[result,setResult]=useState("");
  const missing=loading?[]:missingPtShifts(drivers,shifts,configuredIds,date),shown=missing.filter(d=>foldName(`${d.name} ${d.employee_code}`).includes(foldName(search)));
  const targets=missing.filter(d=>selected.has(d.driver_id));
+ const hasPlan=(driver:ShiftDriver)=>patterns.some(p=>p.driver_id===driver.driver_id&&p.active&&!p.review_issues.length&&p.days.some(Boolean)&&(!p.active_from||p.active_from<=date)&&(!p.active_to||p.active_to>=date));
+ const applicable=targets.filter(hasPlan);
  const copy=(id:string,suggestion:RuleShiftSuggestion)=>{setStart(suggestion.start);setEnd(suggestion.end);setDays(suggestion.days);setSelected(new Set([id]));setResult("Đã sao chép giờ từ config. Kiểm tra lịch tuần; có thể chọn thêm PT để dùng cùng lịch.");};
+ const apply=async(list:ShiftDriver[])=>{
+  setSaving(true);onBusy(true);setResult("");
+  const applied:string[]=[],failed:string[]=[];
+  try{
+   for(const driver of list){try{
+    const res=await fetch("/api/driver-shifts",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"apply-pt",data:{driver_id:driver.driver_id,date}})}),body=await res.json();
+    if(!res.ok||!body.ok)throw Error(body.error||"Không áp dụng được chu kỳ");applied.push(driver.driver_id);
+   }catch(e){failed.push(`${driver.name}: ${e instanceof Error?e.message:String(e)}`);}setResult(`Đã xử lý ${applied.length+failed.length}/${list.length} PT…`);}
+   setSelected(current=>new Set([...current].filter(id=>!applied.includes(id))));
+   setResult(`Đã áp dụng ${applied.length}/${list.length} chu kỳ từ ${date} đến cuối tháng. Xem lịch tại Theo ngày.${failed.length?`\n${failed.join("\n")}`:""}`);await onSaved();
+  }catch(e){setResult(e instanceof Error?e.message:String(e));}finally{setSaving(false);onBusy(false);}
+ };
  const save=async()=>{
   if(!targets.length||!date||!days.length||!start||!end||start===end)return;
   setSaving(true);onBusy(true);setResult("");const saved:string[]=[],failed:string[]=[];
@@ -52,7 +66,7 @@ export function BulkPtShiftPanel({drivers,patterns,shifts,suggestions,configured
     <label className="text-sm">Kết thúc (giờ VN)<input required type="time" className={`${field} mt-1`} value={end} onChange={e=>setEnd(e.target.value)}/></label>
    </div>
    <div className="flex flex-wrap gap-4" role="group" aria-label="Ngày làm trong tuần">{[1,2,3,4,5,6,0].map(day=><label key={day} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={days.includes(day)} onChange={e=>setDays(current=>e.target.checked?[...current,day]:current.filter(d=>d!==day))}/>{weekdays[day]}</label>)}</div>
-   <p className="text-xs text-slate-600">Lặp lại hàng tuần từ ngày áp dụng. Ngày không chọn là nghỉ. Nếu đã có chu kỳ, lịch mới áp dụng từ ngày này. Bấm Đồng bộ MISA sau khi lưu để cập nhật lịch ngày; ca MISA và ca sửa thủ công được giữ lại.</p>
+   <p className="text-xs text-slate-600">Lặp lại hàng tuần từ ngày áp dụng. Ngày không chọn là nghỉ. Sau khi lưu, bấm Áp dụng chu kỳ PT để tạo lịch ngày còn thiếu đến cuối tháng. Ca đã có được giữ lại.</p>
   </fieldset>
   <div className="flex flex-wrap items-center gap-3 p-3"><label className="min-w-0 flex-1"><span className="sr-only">Tìm PT thiếu ca</span><input type="search" className={field} placeholder="Tìm tài xế…" value={search} disabled={saving||loading} onChange={e=>setSearch(e.target.value)}/></label>
    <Button type="button" variant="outline" disabled={saving||loading||!shown.length} onClick={()=>setSelected(current=>new Set([...current,...shown.map(d=>d.driver_id)]))}>Chọn tất cả ({shown.length})</Button>
@@ -60,11 +74,11 @@ export function BulkPtShiftPanel({drivers,patterns,shifts,suggestions,configured
   </div>
   <div className="min-h-0 flex-1 overflow-auto px-3">{loading?<p role="status" className="p-3 text-sm text-slate-600">Đang đọc config và lịch ca ngày {date}…</p>:shown.length?shown.map(driver=><div key={driver.driver_id} className="space-y-2 border-b border-slate-100 py-3 text-sm hover:bg-slate-50">
    <label className="flex cursor-pointer items-center gap-3"><input type="checkbox" checked={selected.has(driver.driver_id)} disabled={saving} onChange={e=>setSelected(current=>{const next=new Set(current);if(e.target.checked)next.add(driver.driver_id);else next.delete(driver.driver_id);return next;})}/><DriverName full={driver.name}/></label>
-   {patterns.some(p=>p.driver_id===driver.driver_id&&p.active&&!p.review_issues.length&&p.days.some(Boolean)&&(!p.active_from||p.active_from<=date)&&(!p.active_to||p.active_to>=date))&&<p className="pl-7 text-xs text-amber-800">Đã có chu kỳ tuần · chưa có lịch ngày. Có thể Đồng bộ MISA để cập nhật.</p>}
+   {hasPlan(driver)&&<div className="flex flex-wrap items-center gap-2 pl-7"><p className="text-xs text-amber-800">Đã có chu kỳ tuần · cần tạo lịch ngày.</p><Button type="button" size="sm" disabled={saving} onClick={()=>void apply([driver])}>Áp dụng chu kỳ PT · đến cuối tháng</Button></div>}
    <div className="flex flex-wrap gap-2 pl-7">{suggestions[driver.driver_id]?.length?suggestions[driver.driver_id].map(s=><Button key={`${s.start}-${s.end}`} type="button" size="sm" variant="outline" disabled={saving} title={`Config: ${s.sources.join("; ")}`} onClick={()=>copy(driver.driver_id,s)}>Sao chép config · {s.days.map(d=>weekdays[d]).join(", ")} {s.start}–{s.end}</Button>):<span className="text-xs text-slate-600">Config chưa có giờ cụ thể để sao chép. Nhập giờ ở trên.</span>}</div>
   </div>):<p className="p-3 text-sm text-slate-600">{search?"Không tìm thấy tài xế phù hợp.":"Không còn PT có config thiếu ca cho ngày này."}</p>}</div>
   <div className="space-y-2 border-t border-slate-200 p-3">{result&&<p role="status" className="whitespace-pre-line text-sm">{result}</p>}
-   <div className="flex items-center justify-between gap-3"><span className="text-sm text-slate-600">{targets.length} tài xế đã chọn</span><Button type="submit" disabled={saving||!targets.length||!date||!days.length||!start||!end||start===end}>{saving?"Đang lưu…":`Lưu chu kỳ cho ${targets.length} PT`}</Button></div>
+   <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-sm text-slate-600">{targets.length} tài xế đã chọn</span><div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={saving||!applicable.length} onClick={()=>void apply(applicable)}>Áp dụng chu kỳ cho {applicable.length} PT</Button><Button type="submit" disabled={saving||!targets.length||!date||!days.length||!start||!end||start===end}>{saving?"Đang lưu…":`Lưu chu kỳ cho ${targets.length} PT`}</Button></div></div>
   </div>
  </form>;
 }

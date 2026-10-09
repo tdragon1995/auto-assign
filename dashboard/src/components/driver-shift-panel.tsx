@@ -58,7 +58,7 @@ export function DriverShiftPanel(){
      <label className="sr-only" htmlFor="shift-date">Ngày xem lịch ca</label><input id="shift-date" type="date" value={date} min={cutoff} disabled={saving} className={field} onChange={e=>{if(e.target.value>=cutoff)setDate(e.target.value);}}/>
      <Button variant="outline" size="icon" aria-label="Ngày sau" disabled={saving} onClick={()=>setDate(addDays(date,1))}><ChevronRight/></Button>
      <Button variant="ghost" size="sm" disabled={saving} onClick={()=>setDate(vnDate())}>Hôm nay</Button></>}
-    {mode!=="daily"&&<Button variant="outline" disabled={loading||saving} onClick={()=>void syncMonth()}>Đồng bộ MISA</Button>}
+    {mode==="daily"&&<Button variant="outline" disabled={loading||saving} onClick={()=>void syncMonth()}>Đồng bộ MISA</Button>}
     <Button variant="outline" disabled={loading||saving} onClick={()=>void load()}><RefreshCw className="size-4"/>Tải lại</Button>
     {mode!=="bulk"&&<Button disabled={loading||saving} onClick={startNew}><Plus className="size-4"/>{mode==="daily"?"Thêm ca":"Thêm mẫu ca"}</Button>}
    </div>
@@ -81,7 +81,7 @@ export function DriverShiftPanel(){
     <div className="grid gap-3 sm:grid-cols-3 sm:max-w-2xl"><label className="text-sm">Hiệu lực từ<input type="date" className={`${field} mt-1 w-full`} value={editing.active_from??""} onChange={e=>setEditing({...editing,active_from:e.target.value||null})}/></label><label className="text-sm">Đến ngày<input type="date" className={`${field} mt-1 w-full`} min={editing.active_from??undefined} value={editing.active_to??""} onChange={e=>setEditing({...editing,active_to:e.target.value||null})}/></label><label className="flex items-center gap-2 self-end h-10 text-sm"><input type="checkbox" checked={editing.active} onChange={e=>setEditing({...editing,active:e.target.checked})}/>Đang áp dụng</label></div>
     <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{[1,2,3,4,5,6,0].map(day=><fieldset key={day} className="min-w-0"><legend className="mb-1 text-xs font-semibold">{weekdays[day]}</legend><div className="flex items-center gap-1"><PatternTimeSelect label={`${weekdays[day]} bắt đầu`} value={editing.days[day]?.start??""} disabled={saving} onChange={value=>{const days=[...editing.days];days[day]=value?{start:value,end:days[day]?.end??""}:null;setEditing({...editing,days});}}/><span aria-hidden="true">–</span><PatternTimeSelect label={`${weekdays[day]} kết thúc`} value={editing.days[day]?.end??""} disabled={saving} onChange={value=>{const days=[...editing.days];days[day]=value?{start:days[day]?.start??"",end:value}:null;setEditing({...editing,days});}}/></div></fieldset>)}</div>
     <label className="mt-3 block text-sm">Ghi chú<input className={`${field} mt-1 w-full`} value={editing.note} onChange={e=>setEditing({...editing,note:e.target.value})}/></label>
-    <p className="mt-2 text-xs text-slate-600">Để trống cả hai giờ nếu nghỉ. Mẫu ca áp dụng trong lần đồng bộ MISA kế tiếp khi chưa có ca MISA. Có thể đặt ngày hiệu lực tương lai.</p>
+    <p className="mt-2 text-xs text-slate-600">Để trống cả hai giờ nếu nghỉ. Sau khi lưu, mở Thiếu ca PT và bấm Áp dụng chu kỳ PT để tạo lịch ngày. Có thể đặt ngày hiệu lực tương lai.</p>
    </>}
    <div className="mt-4 flex justify-end gap-2"><Button type="button" variant="outline" disabled={saving} onClick={()=>setEditing(null)}>Huỷ</Button><Button type="submit" disabled={saving||!editing.employee_code}>{saving?"Đang lưu…":"Lưu lịch ca"}</Button></div>
   </form>}
