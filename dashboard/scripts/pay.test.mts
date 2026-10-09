@@ -56,9 +56,18 @@ const facts = (shifts: [string, string][], first: string | null, last: string | 
 const late = workedMinutes([punch("in", "12:23")], facts([["12:00", "20:00"]], "12:40", "20:02"));
 check("late tap-in starts the clock; last trip past shift end extends it", late.minutes === 459, String(late.minutes));
 
-// Arriving early earns nothing; with a check-out, stopping early is still paid to shift end.
+// Arriving early earns nothing; tapping out before shift end ends the paid day
+// there (supervisor, 2026-10-09: never pay later than the tap-out).
 const early = workedMinutes([punch("in", "16:35"), punch("out", "19:10")], facts([["17:00", "20:00"]], "17:10", "19:05"));
-check("early tap-in clamps to shift start, end is the shift end", early.minutes === 180, String(early.minutes));
+check("early tap-in clamps to shift start, an early tap-out ends the day", early.minutes === 130, String(early.minutes));
+
+// Lâm Sơn Tuấn 03/09: 19:00–19:30 slot, last trip 19:08, tapped out 19:08 → 8 min.
+const shortSlot = workedMinutes([punch("in", "18:49"), punch("out", "19:08")], facts([["19:00", "19:30"]], "18:55", "19:08"));
+check("tap-out with the last trip: paid to there, not the shift end", shortSlot.minutes === 8, String(shortSlot.minutes));
+
+// A trip finished AFTER the tap-out is still paid to the trip.
+const tripAfter = workedMinutes([punch("in", "18:49"), punch("out", "19:08")], facts([["19:00", "19:30"]], "18:55", "19:20"));
+check("a trip after the tap-out is paid to the trip", tripAfter.minutes === 20, String(tripAfter.minutes));
 
 // A late check-out tap is not paid time when there were trips: the last trip says when work stopped.
 const lateOut = workedMinutes([punch("in", "17:00"), punch("out", "23:00")], facts([["17:00", "21:00"]], "17:05", "20:30"));

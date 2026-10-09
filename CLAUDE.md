@@ -463,10 +463,14 @@ These are the things most likely to burn a future agent working on this codebase
     **Hours are PAYROLL'S rule, in exactly one function** — `workedMinutes` in
     `pay.ts`. Start = later of the check-in ARRIVAL (no tap → first pickup) and the
     shift start. End: no trips → the check-out tap; trips but no check-out → the
-    last trip; both → later of shift end and last trip. Holidays ×3
+    last trip; both → later of the tap-out and the last trip, never past the
+    tap-out just because the shift was still running (supervisor, 2026-10-09).
+    A tap stamped on another date is ignored, as trips are. Holidays ×3
     (`HOLIDAY_MULTIPLIER`, hand-kept). Reconciled row by row against payroll's
-    15/08–14/09 file: 1,003 of 1,042 shifts to the minute; every remaining gap is
-    a per-day payroll judgement, which is what "cập nhật công" is for.
+    15/08–14/09 file: 1,003 of 1,042 shifts to the minute before the tap-out
+    rule; that rule then pays ~119 h less than payroll did on ~200 days where
+    payroll paid an early tap-out to shift end — deliberately. Every other gap
+    is a per-day payroll judgement, which is what "cập nhật công" is for.
 
     **The shift comes from Lịch ca tài xế (`driver_shifts`), fed by payroll's
     file.** Lịch ca alone matched payroll on only half the days (2026-10-08), so

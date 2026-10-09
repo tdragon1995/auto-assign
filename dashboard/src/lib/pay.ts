@@ -198,8 +198,12 @@ export interface WorkedDay {
  * start moved to the shift start by hand) — which no rule can derive.
  *
  *     start = later of (check-in ARRIVAL, shift start)      arriving early earns nothing
- *     end   = see lastEnd() below                           paid to the end of the shift,
- *                                                           past it only for real work
+ *     end   = see lastEnd() below                           never past the tap-out unless
+ *                                                           a trip ran later; never past
+ *                                                           the shift unless a trip did
+ *
+ * The tap-out rule (2026-10-09) departs from payroll's file on purpose: payroll
+ * paid an early tap-out to shift end on ~200 days, ~119 h in that period.
  *
  * No check-in tap → the first pickup stands in for it (supervisor's rule,
  * 2026-09-22; payroll itself used the shift start on 25 of 36 such days).
@@ -259,11 +263,14 @@ export function workedMinutes(punches: PayPunch[], day: DayFacts): WorkedDay {
   /** Where the last window ends — payroll's rule, reconciled 2026-09-22:
    *   no trips at all        → the check-out tap (the only evidence there is)
    *   trips, no check-out    → the last trip; nothing says they stayed on
-   *   trips and a check-out  → shift end, or the last trip if it ran later */
+   *   trips and a check-out  → the later of the tap-out and the last trip; a
+   *                            shift still running pays nothing past the tap-out,
+   *                            a tap-out past shift end pays nothing past the
+   *                            shift (supervisor, 2026-10-09) */
   const lastEnd = (shiftEnd: number): number => {
     if (!day.lastTaskAt) return lastOut ? Date.parse(lastOut) : shiftEnd;
     if (!lastOut) return Date.parse(day.lastTaskAt);
-    return Math.max(shiftEnd, Date.parse(day.lastTaskAt));
+    return Math.max(Date.parse(day.lastTaskAt), Math.min(Date.parse(lastOut), shiftEnd));
   };
 
   const windows = [...day.shifts].sort((a, b) => a.start.localeCompare(b.start));
