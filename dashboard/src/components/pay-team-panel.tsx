@@ -317,23 +317,23 @@ export function PayTeamPanel() {
         <button
           onClick={() => setShowCorrections((v) => !v)}
           aria-expanded={showCorrections}
-          className={`flex items-center gap-1.5 min-h-11 text-xs font-semibold rounded-lg px-3 border ${showCorrections ? "bg-slate-800 text-white border-slate-800" : "text-slate-700 border-slate-300 hover:bg-slate-50"}`}
+          className="flex items-center gap-1.5 min-h-11 text-xs font-semibold rounded-lg px-3 border text-slate-700 border-slate-300 hover:bg-slate-50"
         >
-          Cập nhật công
-          {!!data?.coverage.pending_corrections && (
-            <span className="rounded-full bg-amber-500 text-white text-[11px] leading-none px-1.5 py-1 tabular-nums">
-              {data.coverage.pending_corrections}
-            </span>
+          {showCorrections ? (
+            <><ChevronLeft className="size-3.5" /> Bảng lương</>
+          ) : (
+            <>
+              Cập nhật công
+              {!!data?.coverage.pending_corrections && (
+                <span className="rounded-full bg-amber-600 text-white text-[11px] leading-none px-1.5 py-1 tabular-nums">
+                  {data.coverage.pending_corrections}
+                </span>
+              )}
+            </>
           )}
         </button>
       </div>
-      {showCorrections && data && (
-        <PayCorrectionsPanel
-          month={data.month}
-          drivers={data.drivers.map((d) => ({ driver_id: d.driver_id, driver_name: d.driver_name }))}
-          onChanged={() => load(data.month)}
-        />
-      )}
+
       {importNote && (
         <p role="status" className="px-3 py-2 text-xs text-slate-700 bg-slate-50 border-b border-slate-200">{importNote}</p>
       )}
@@ -403,6 +403,17 @@ export function PayTeamPanel() {
         </div>
       )}
 
+      {/* "Cập nhật công" takes the table's place while open, rather than pushing
+          the payroll off screen below it. */}
+      {showCorrections && data ? (
+        <div className="flex-1 min-h-0">
+          <PayCorrectionsPanel
+            month={data.month}
+            drivers={data.drivers.map((d) => ({ driver_id: d.driver_id, driver_name: d.driver_name }))}
+            onChanged={() => load(data.month)}
+          />
+        </div>
+      ) : (
       <div className="flex-1 overflow-auto">
         {loading ? (
           <div className="flex items-center justify-center py-16 text-slate-400">
@@ -475,9 +486,10 @@ export function PayTeamPanel() {
           </table>
         )}
       </div>
+      )}
 
       {/* The rule, stated once, where the numbers are. */}
-      {data && (
+      {data && !showCorrections && (
         <div className="px-3 py-2 border-t border-slate-200 shrink-0">
           <p className="text-[11px] text-slate-500">
             {vnd.format(data.rates.per_hour)}đ/giờ theo ca của phòng lương: bắt đầu từ lúc chấm công vào

@@ -93,6 +93,9 @@ export async function GET(req: NextRequest) {
           first_stop: first,
           last_stop: last,
           rule_mins: rule.clocked,
+          /** The window(s) the rule pays without the correction — drawn beside
+           *  the requested window so the difference is seen, not computed. */
+          rule_spans: rule.spans.map((s) => ({ from: hhmm(s.from), to: hhmm(s.to) })),
           outside_mins: outside,
         },
       };
