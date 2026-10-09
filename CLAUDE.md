@@ -483,8 +483,10 @@ These are the things most likely to burn a future agent working on this codebase
     the 25th — `openRange`); supervisors approve/reject or correct directly on Lương
     PT. There is NO GPS trail anywhere (Cartrack gives only a current position):
     the evidence shown beside each request is the day's completed stops and taps.
-    Proof files go to a Cartrack appointment (`lib/cartrack-files.ts`,
-    `CARTRACK_PROOF_APPOINTMENT_ID`) and come back as PUBLIC links.
+    Proof files go to a Cartrack appointment owned by CNGT00003, logged into
+    server-side (`lib/cartrack-files.ts`; `CARTRACK_PROOF_ACCOUNT`,
+    `CARTRACK_PROOF_PASSWORD`, `CARTRACK_PROOF_APPOINTMENT_ID` — env only, never in
+    code) and come back as PUBLIC links. The POC site shares that appointment.
 
     Nothing derived is stored: raw taps, shifts and corrections are, and the
     minutes are computed on READ, so a rule change applies to every past month with
