@@ -36,7 +36,7 @@ export function MasterProfileDetails({ client, driver, clients }: {
     const gps = text(c.latitude) && text(c.longitude) && Number.isFinite(Number(c.latitude)) && Number.isFinite(Number(c.longitude))
       && Math.abs(Number(c.latitude)) <= 90 && Math.abs(Number(c.longitude)) <= 180 ? `${Number(c.latitude)}, ${Number(c.longitude)}` : "";
     groups = [
-      [[MapPin, "Địa chỉ", join([c.address_line_1, c.address_line_2], ", ")],
+      [[MapPin, "Địa chỉ", text(c.address_line_1)], [MessageCircle, "Lưu ý", text(c.address_line_2)],
         [Navigation, "Phường mới", text(client.new_ward)], [MapPin, "GPS", gps]],
       [[Phone, "Điện thoại", text(c.contact_number)], [Mail, "Email", text(c.email)]],
       [[Route, "PSC gần nhất", text(client.nearest_psc_name) ? `${client.nearest_psc_name}${client.nearest_psc_km == null ? "" : ` · ${client.nearest_psc_km.toFixed(1)} km`}` : ""],
