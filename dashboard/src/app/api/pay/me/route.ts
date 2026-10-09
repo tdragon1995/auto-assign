@@ -31,11 +31,12 @@ import { sbSelectAll, supabaseConfigured } from "@/lib/supabase-rest";
 import { masterDriverNames } from "@/lib/master-store";
 import { employmentOf } from "@/lib/driver-label";
 import {
-  workedMinutes, hourPayFor, kmPayFor, punchAt,
+  paidDay, hoursPayFor, kmPayFor, punchAt,
   RATE_PER_HOUR_VND, RATE_PER_KM_VND,
   type PayPunch, type PayJob, type DayFacts,
 } from "@/lib/pay";
 import { payrollPeriod } from "@/lib/pay-period";
+import { staffCode } from "@/lib/display-names";
 import { loadPayDayInputs, dayKey, type CorrectionRow } from "@/lib/pay-days";
 import { vnDate, addDays } from "@/lib/time";
 
@@ -84,9 +85,9 @@ function addMonths(m: string, n: number): string {
  *  taps and payroll's imported shift, rather than read from a column — that is
  *  what makes the rule replaceable without re-archiving anything. See
  *  pay.ts/workedMinutes. */
-function dayLine(facts: DayFacts, km: number, jobs: number, punches: PayPunch[], unpriced = 0, request: CorrectionRow | null = null) {
+function dayLine(code: string, facts: DayFacts, km: number, jobs: number, punches: PayPunch[], unpriced = 0, request: CorrectionRow | null = null) {
   const date = facts.date;
-  const worked = workedMinutes(punches, facts);
+  const worked = paidDay(punches, facts, code);
   return {
     date,
     jobs,
@@ -95,6 +96,8 @@ function dayLine(facts: DayFacts, km: number, jobs: number, punches: PayPunch[],
     unpriced,
     km: Math.round(km * 100) / 100,
     worked_mins: worked.minutes,
+    /** Of those, paid at the BO Runner rate. */
+    bo_mins: worked.bo_minutes,
     spans: worked.spans.map((s) => ({ from: hhmm(s.from), to: hhmm(s.to), minutes: s.minutes })),
     /** Worked with no shift in Lịch ca: no hours paid for this day. */
     no_shift: worked.no_shift,
@@ -104,9 +107,9 @@ function dayLine(facts: DayFacts, km: number, jobs: number, punches: PayPunch[],
       in_time: request.in_time.slice(0, 5), out_time: request.out_time.slice(0, 5),
       decision_note: request.decision_note,
     },
-    hour_pay: hourPayFor(worked.minutes),
+    hour_pay: hoursPayFor(worked.minutes, worked.bo_minutes),
     km_pay: kmPayFor(km),
-    total_pay: hourPayFor(worked.minutes) + kmPayFor(km),
+    total_pay: hoursPayFor(worked.minutes, worked.bo_minutes) + kmPayFor(km),
   };
 }
 
@@ -139,6 +142,7 @@ export async function GET(req: NextRequest) {
 
   const sp = req.nextUrl.searchParams;
   const driverId = session.driver_id;
+  const code = staffCode(session.driver_name);
   const latest = latestDayFor(vnDate());
 
   const rates = {
@@ -188,7 +192,7 @@ export async function GET(req: NextRequest) {
         ok: true,
         date: askedDate,
         rates,
-        day: dayLine(facts, km, jobs.length, punches, jobs.filter((j) => j.distance_km == null).length, inputs.latest.get(key) ?? null),
+        day: dayLine(code, facts, km, jobs.length, punches, jobs.filter((j) => j.distance_km == null).length, inputs.latest.get(key) ?? null),
         jobs: jobs.map((j) => ({
           job_id: j.job_id,
           reference_number: j.reference_number,
@@ -268,7 +272,7 @@ export async function GET(req: NextRequest) {
 
     const taskByDay = new Map(daily.map((d) => [d.trip_date, d]));
     const days = dates.map((d) =>
-      dayLine({
+      dayLine(code, {
         date: d,
         shifts: inputs.shifts.get(dayKey(driverId, d)) ?? [],
         firstTaskAt: taskByDay.get(d)?.first_pickup_ts ?? null,
@@ -283,6 +287,7 @@ export async function GET(req: NextRequest) {
     // reason the per-job figures are display-only.
     const totalKm = days.reduce((s, d) => s + d.km, 0);
     const totalMins = days.reduce((s, d) => s + d.worked_mins, 0);
+    const boMins = days.reduce((s, d) => s + d.bo_mins, 0);
     const roundedKm = Math.round(totalKm * 100) / 100;
 
     return NextResponse.json({
@@ -299,9 +304,9 @@ export async function GET(req: NextRequest) {
         jobs: days.reduce((s, d) => s + d.jobs, 0),
         km: roundedKm,
         worked_mins: totalMins,
-        hour_pay: hourPayFor(totalMins),
+        hour_pay: hoursPayFor(totalMins, boMins),
         km_pay: kmPayFor(roundedKm),
-        total_pay: hourPayFor(totalMins) + kmPayFor(roundedKm),
+        total_pay: hoursPayFor(totalMins, boMins) + kmPayFor(roundedKm),
         no_shift_days: inputs.payrollImported ? days.filter((d) => d.no_shift).length : 0,
         pending_corrections: days.filter((d) => d.correction?.status === "pending").length,
         // One number the driver can act on without opening thirty days.

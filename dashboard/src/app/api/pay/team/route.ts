@@ -26,10 +26,11 @@ import { sbSelectAll, supabaseConfigured } from "@/lib/supabase-rest";
 import { masterDriverNames } from "@/lib/master-store";
 import { employmentOf } from "@/lib/driver-label";
 import {
-  workedMinutes, hourPayFor, kmPayFor,
+  paidDay, hoursPayFor, kmPayFor,
   RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch, type PayJob,
 } from "@/lib/pay";
 import { payrollPeriod } from "@/lib/pay-period";
+import { staffCode } from "@/lib/display-names";
 import { loadPayDayInputs, dayKey } from "@/lib/pay-days";
 import { vnDate, addDays } from "@/lib/time";
 
@@ -174,17 +175,20 @@ export async function GET(req: NextRequest) {
       .filter(([, e]) => employmentOf(e.name) === "part-time")
       .map(([driver_id, e]) => {
         let mins = 0;
+        let boMins = 0;
         let noShiftDays = 0;
+        const code = staffCode(names.get(driver_id) || e.name);
         for (const date of e.days) {
           const t = e.tasks.get(date);
-          const w = workedMinutes(e.byDay.get(date) ?? [], {
+          const w = paidDay(e.byDay.get(date) ?? [], {
             date,
             shifts: inputs.shifts.get(dayKey(driver_id, date)) ?? [],
             firstTaskAt: t?.first ?? null,
             lastTaskAt: t?.last ?? null,
             correction: inputs.approved.get(dayKey(driver_id, date)) ?? null,
-          });
+          }, code);
           mins += w.minutes;
+          boMins += w.bo_minutes;
           if (w.no_shift) noShiftDays++;
         }
         const km = Math.round(e.km * 100) / 100;
@@ -203,9 +207,9 @@ export async function GET(req: NextRequest) {
            *  screen must not divide by it blind. */
           real_km: Math.round((realKm.get(driver_id) ?? 0) * 100) / 100,
           worked_mins: mins,
-          hour_pay: hourPayFor(mins),
+          hour_pay: hoursPayFor(mins, boMins),
           km_pay: kmPayFor(km),
-          total_pay: hourPayFor(mins) + kmPayFor(km),
+          total_pay: hoursPayFor(mins, boMins) + kmPayFor(km),
           /** Days worked with no shift in payroll's file: they pay no hours, so
            *  this is the column a supervisor checks before the 25th. Meaningless
            *  before the import, when EVERY day would count. */

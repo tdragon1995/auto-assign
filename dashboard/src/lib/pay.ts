@@ -291,8 +291,52 @@ export function workedMinutes(punches: PayPunch[], day: DayFacts): WorkedDay {
 /** Đồng earned for a span of clocked minutes. Per MINUTE, not per whole hour:
  *  30.000đ/h is exactly 500đ a minute, so this needs no rounding rule of its own
  *  and a 20-minute shift is not rounded away to nothing. */
-export const hourPayFor = (minutes: number): number =>
-  Math.round((minutes / 60) * RATE_PER_HOUR_VND);
+export const hourPayFor = (minutes: number, rate = RATE_PER_HOUR_VND): number =>
+  Math.round((minutes / 60) * rate);
+
+/** Back-office runners, by staff code (supervisor, 2026-10-09). `window` = their
+ *  BO hours Monday–Saturday; outside it, and on Sundays, they are drivers at the
+ *  normal rate. No window = every hour is BO.
+ *  ponytail: hand-kept like HOLIDAY_MULTIPLIER; a column on the roster once a third appears. */
+export const BO_RATE_PER_HOUR_VND = 35_000;
+export const BO_RUNNERS: Record<string, { window?: ShiftWindow }> = {
+  PT101705: { window: { start: "06:00", end: "15:00" } }, // Lê Ngọc Anh Tú — driver after 15:00
+  PT101710: {},                                           // Trần Thị Mộng Hoa
+};
+
+export interface PaidDay extends WorkedDay {
+  /** PAID minutes (holiday multiplier included) at the BO rate; the rest at the normal one. */
+  bo_minutes: number;
+}
+
+/**
+ * workedMinutes plus the BO rate. A runner's BO window is a shift of its own —
+ * payroll's part-time file does not carry it — so it is added to the day, unless
+ * a shift in the file already covers those hours (a holiday driving shift).
+ */
+export function paidDay(punches: PayPunch[], day: DayFacts, staffCode: string): PaidDay {
+  const bo = BO_RUNNERS[staffCode];
+  if (!bo) return { ...workedMinutes(punches, day), bo_minutes: 0 };
+  if (!bo.window) {
+    const w = workedMinutes(punches, day);
+    return { ...w, bo_minutes: w.minutes };
+  }
+  const win = bo.window;
+  const sunday = new Date(`${day.date}T12:00:00+07:00`).getUTCDay() === 0;
+  const covered = day.shifts.some((s) => s.start < win.end && s.end > win.start);
+  if (sunday || covered) return { ...workedMinutes(punches, day), bo_minutes: 0 };
+
+  const w = workedMinutes(punches, { ...day, shifts: [...day.shifts, win] });
+  const from = Date.parse(`${day.date}T${win.start}:00+07:00`);
+  const to = Date.parse(`${day.date}T${win.end}:00+07:00`);
+  const boClocked = w.spans.reduce((s, sp) =>
+    s + Math.max(0, Math.round((Math.min(to, Date.parse(sp.to)) - Math.max(from, Date.parse(sp.from))) / 60_000)), 0);
+  return { ...w, bo_minutes: boClocked * w.multiplier };
+}
+
+/** Đồng for a set of paid minutes, `boMinutes` of them at the BO rate. */
+export const hoursPayFor = (minutes: number, boMinutes = 0): number =>
+  hourPayFor(minutes - boMinutes) + hourPayFor(boMinutes, BO_RATE_PER_HOUR_VND);
 
 /** Đồng earned for a distance.
  *

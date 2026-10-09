@@ -472,6 +472,13 @@ These are the things most likely to burn a future agent working on this codebase
     payroll paid an early tap-out to shift end — deliberately. Every other gap
     is a per-day payroll judgement, which is what "cập nhật công" is for.
 
+    **BO Runners are paid 35.000đ/h** (`BO_RUNNERS`, hand-kept by staff code;
+    `paidDay` wraps `workedMinutes` and every reader goes through it). Mộng Hoa:
+    every hour. Anh Tú: 06:00–15:00 Mon–Sat is a BO shift ADDED to the day —
+    payroll's part-time file does not carry it — unless a file shift already
+    covers those hours (holiday driving); after 15:00 and on Sundays he is a
+    driver at the normal rate.
+
     **The shift comes from Lịch ca tài xế (`driver_shifts`), fed by payroll's
     file.** Lịch ca alone matched payroll on only half the days (2026-10-08), so
     "Nhập ca từ file" on Lương PT writes payroll's `…_Parttime Records.xlsx` into it

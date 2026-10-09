@@ -23,7 +23,8 @@ import { sbInsert, sbPatch, sbSelectAll, supabaseConfigured } from "@/lib/supaba
 import { masterDriverNames } from "@/lib/master-store";
 import { payrollPeriod } from "@/lib/pay-period";
 import { loadPayDayInputs, dayKey } from "@/lib/pay-days";
-import { workedMinutes, punchAt, type PayPunch } from "@/lib/pay";
+import { paidDay, punchAt, type PayPunch } from "@/lib/pay";
+import { staffCode } from "@/lib/display-names";
 import { checkTimes } from "@/lib/pay-corrections";
 import { vnDate, cartrackHistoryCutoff } from "@/lib/time";
 
@@ -68,7 +69,7 @@ export async function GET(req: NextRequest) {
       const d = dayBy.get(k);
       const shifts = inputs.shifts.get(k) ?? [];
       // What the rule pays WITHOUT any correction — the "before" of the decision.
-      const rule = workedMinutes(taps, { date: c.trip_date, shifts, firstTaskAt: d?.first_pickup_ts ?? null, lastTaskAt: d?.last_dropoff_ts ?? null });
+      const rule = paidDay(taps, { date: c.trip_date, shifts, firstTaskAt: d?.first_pickup_ts ?? null, lastTaskAt: d?.last_dropoff_ts ?? null }, staffCode(c.driver_name));
       const first = hhmm(d?.first_pickup_ts), last = hhmm(d?.last_dropoff_ts);
       const inT = c.in_time.slice(0, 5), outT = c.out_time.slice(0, 5);
       // Minutes of the requested window that fall outside the day's first→last

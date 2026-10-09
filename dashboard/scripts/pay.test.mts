@@ -13,7 +13,7 @@
  *   npx tsx scripts/pay.test.mts
  */
 import {
-  workedMinutes, payRowsForRoute, hourPayFor, kmPayFor, dropSameTripDuplicates,
+  workedMinutes, payRowsForRoute, hourPayFor, kmPayFor, dropSameTripDuplicates, paidDay, hoursPayFor,
   RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch,
 } from "../src/lib/pay";
 import { parsePayrollSheet, resolveDriver } from "../src/lib/pay-shifts";
@@ -138,6 +138,26 @@ check("30.000đ/h is charged per minute", hourPayFor(60) === 30_000 && hourPayFo
 check("a 20-minute shift is not rounded away", hourPayFor(20) === 10_000, String(hourPayFor(20)));
 check("2.000đ/km", kmPayFor(3.5) === 7_000, String(kmPayFor(3.5)));
 check("rates are the stated contract", RATE_PER_HOUR_VND === 30_000 && RATE_PER_KM_VND === 2_000);
+
+// BO Runner. Lê Ngọc Anh Tú (PT101705) Mon 17/08: BO 06:04–15:00, then driver
+// 15:00–21:30 on payroll's shift → 536 min at 35.000đ + 390 min at 30.000đ.
+const tu = { ...facts([["15:00", "21:30"]], "15:58", "21:20", "2026-08-17") };
+const tuTaps = [punch("in", "06:04"), punch("out", "15:00"), punch("in", "15:00"), punch("out", "21:30")]
+  .map((p) => ({ ...p, trip_date: "2026-08-17", completed_ts: p.completed_ts!.replace(DAY, "2026-08-17") }));
+const tuDay = paidDay(tuTaps, tu, "PT101705");
+check("BO window added beside the driving shift", tuDay.minutes === 926 && tuDay.bo_minutes === 536, `${tuDay.minutes}/${tuDay.bo_minutes}`);
+check("BO minutes at 35.000đ, the rest at 30.000đ", hoursPayFor(tuDay.minutes, tuDay.bo_minutes) === 312_667 + 195_000,
+  String(hoursPayFor(tuDay.minutes, tuDay.bo_minutes)));
+// Sunday 16/08 he drives 06:00–15:00 on payroll's shift: no BO.
+const tuSun = paidDay([], facts([["06:00", "15:00"]], "07:05", "15:27", "2026-08-16"), "PT101705");
+check("Sunday is driving, normal rate", tuSun.bo_minutes === 0 && tuSun.minutes > 0, `${tuSun.bo_minutes}`);
+// Holiday 01/09: payroll's 07:00–12:00 driving shift covers the window → no BO.
+const tuHol = paidDay([], facts([["07:00", "12:00"]], "07:14", "12:36", "2026-09-01"), "PT101705");
+check("a payroll shift inside the window is driving, not BO", tuHol.bo_minutes === 0, `${tuHol.bo_minutes}`);
+// Trần Thị Mộng Hoa (PT101710): every hour is BO.
+const hoa = paidDay([punch("in", "14:53"), punch("out", "21:06")], facts([["15:00", "21:00"]], null, null), "PT101710");
+check("Mộng Hoa: all hours at the BO rate", hoa.bo_minutes === hoa.minutes && hoa.minutes === 366, `${hoa.minutes}/${hoa.bo_minutes}`);
+check("anyone else: no BO", paidDay([punch("in", "14:53"), punch("out", "21:06")], facts([["15:00", "21:00"]], null, null), "PT100001").bo_minutes === 0);
 
 // The reason totals price the SUMMED kilometres rather than adding per-job đồng.
 const legs = [1.115, 2.225, 3.335];

@@ -493,8 +493,9 @@ export function PayTeamPanel() {
         <div className="px-3 py-2 border-t border-slate-200 shrink-0">
           <p className="text-[11px] text-slate-500">
             {vnd.format(data.rates.per_hour)}đ/giờ theo ca của phòng lương: bắt đầu từ lúc chấm công vào
-            (không có thì chuyến lấy mẫu đầu tiên), không sớm hơn giờ vào ca; kết thúc lúc hết ca, hoặc
-            chuyến cuối nếu trễ hơn. Ngày lễ ×3. +{" "}
+            (không có thì chuyến lấy mẫu đầu tiên), không sớm hơn giờ vào ca; kết thúc lúc chấm công ra
+            hoặc chuyến cuối, lấy giờ trễ hơn, không quá hết ca trừ khi còn chuyến. Ngày lễ ×3. BO Runner
+            35.000đ/giờ (Anh Tú 6h–15h thứ 2–7, Mộng Hoa cả ca). +{" "}
             {vnd.format(data.rates.per_km)}đ/km lấy mẫu → giao mẫu của mỗi chuyến đã hoàn thành.{" "}
             <em>đ/km thực</em> = (tiền giờ + tiền km) ÷ quãng đường thực chạy — gồm cả đoạn di chuyển
             giữa các chuyến, đường về và chuyến không tính tiền. Đây là chi phí thật cho mỗi km,
