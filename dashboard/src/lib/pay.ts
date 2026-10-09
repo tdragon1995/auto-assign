@@ -31,6 +31,7 @@ import { newFallbackState, type QuotaSignal } from "./distance";
 import { isChamCong, CHAM_CONG_PREFIX, PSC_RETURN_LABEL, PSC_VIA_LABEL } from "./job-filters";
 import type { DistanceStats } from "./tat";
 import { vnDate } from "./time";
+import { placeName } from "./display-names";
 import type { TimelineRoute, TimelineStop } from "./types";
 
 /** Đồng per hour clocked. */
@@ -295,13 +296,14 @@ export const hourPayFor = (minutes: number, rate = RATE_PER_HOUR_VND): number =>
   Math.round((minutes / 60) * rate);
 
 /** Back-office runners, by staff code (supervisor, 2026-10-09). `window` = their
- *  BO hours Monday–Saturday; outside it, and on Sundays, they are drivers at the
- *  normal rate. No window = every hour is BO.
+ *  BO hours Monday–Saturday, counted only on a day they checked in at `place`
+ *  and ran no trip inside it; otherwise (Sundays, holidays, a morning spent
+ *  driving) they are drivers at the normal rate. No window = every hour is BO.
  *  ponytail: hand-kept like HOLIDAY_MULTIPLIER; a column on the roster once a third appears. */
 export const BO_RATE_PER_HOUR_VND = 35_000;
-export const BO_RUNNERS: Record<string, { window?: ShiftWindow }> = {
-  PT101705: { window: { start: "06:00", end: "15:00" } }, // Lê Ngọc Anh Tú — driver after 15:00
-  PT101710: {},                                           // Trần Thị Mộng Hoa
+export const BO_RUNNERS: Record<string, { window?: ShiftWindow; place?: string }> = {
+  PT101705: { window: { start: "06:00", end: "15:00" }, place: "D001" }, // Lê Ngọc Anh Tú — driver after 15:00
+  PT101710: {},                                                          // Trần Thị Mộng Hoa
 };
 
 export interface PaidDay extends WorkedDay {
@@ -322,13 +324,22 @@ export function paidDay(punches: PayPunch[], day: DayFacts, staffCode: string): 
     return { ...w, bo_minutes: w.minutes };
   }
   const win = bo.window;
-  const sunday = new Date(`${day.date}T12:00:00+07:00`).getUTCDay() === 0;
-  const covered = day.shifts.some((s) => s.start < win.end && s.end > win.start);
-  if (sunday || covered) return { ...workedMinutes(punches, day), bo_minutes: 0 };
-
-  const w = workedMinutes(punches, { ...day, shifts: [...day.shifts, win] });
   const from = Date.parse(`${day.date}T${win.start}:00+07:00`);
   const to = Date.parse(`${day.date}T${win.end}:00+07:00`);
+  const sunday = new Date(`${day.date}T12:00:00+07:00`).getUTCDay() === 0;
+  const covered = day.shifts.some((s) => s.start < win.end && s.end > win.start);
+  // A trip inside the window means the morning was spent driving.
+  const drove = day.firstTaskAt !== null && Date.parse(day.firstTaskAt) < to
+    && (day.lastTaskAt === null || Date.parse(day.lastTaskAt) > from);
+  const firstIn = punches
+    .filter((p) => p.kind === "in")
+    .map((p) => ({ p, t: p.arrived_ts ?? p.started_ts ?? p.completed_ts }))
+    .filter((x): x is { p: PayPunch; t: string } => x.t !== null && vnDate(new Date(x.t)) === day.date)
+    .sort((a, b) => Date.parse(a.t) - Date.parse(b.t))[0];
+  const atPlace = !bo.place || (!!firstIn && placeName(firstIn.p.location_name) === bo.place);
+  if (sunday || covered || drove || !atPlace) return { ...workedMinutes(punches, day), bo_minutes: 0 };
+
+  const w = workedMinutes(punches, { ...day, shifts: [...day.shifts, win] });
   const boClocked = w.spans.reduce((s, sp) =>
     s + Math.max(0, Math.round((Math.min(to, Date.parse(sp.to)) - Math.max(from, Date.parse(sp.from))) / 60_000)), 0);
   return { ...w, bo_minutes: boClocked * w.multiplier };

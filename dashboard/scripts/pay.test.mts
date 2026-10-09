@@ -143,11 +143,16 @@ check("rates are the stated contract", RATE_PER_HOUR_VND === 30_000 && RATE_PER_
 // 15:00–21:30 on payroll's shift → 536 min at 35.000đ + 390 min at 30.000đ.
 const tu = { ...facts([["15:00", "21:30"]], "15:58", "21:20", "2026-08-17") };
 const tuTaps = [punch("in", "06:04"), punch("out", "15:00"), punch("in", "15:00"), punch("out", "21:30")]
-  .map((p) => ({ ...p, trip_date: "2026-08-17", completed_ts: p.completed_ts!.replace(DAY, "2026-08-17") }));
+  .map((p) => ({ ...p, trip_date: "2026-08-17", location_name: "BRA - D001", completed_ts: p.completed_ts!.replace(DAY, "2026-08-17") }));
 const tuDay = paidDay(tuTaps, tu, "PT101705");
 check("BO window added beside the driving shift", tuDay.minutes === 926 && tuDay.bo_minutes === 536, `${tuDay.minutes}/${tuDay.bo_minutes}`);
 check("BO minutes at 35.000đ, the rest at 30.000đ", hoursPayFor(tuDay.minutes, tuDay.bo_minutes) === 312_667 + 195_000,
   String(hoursPayFor(tuDay.minutes, tuDay.bo_minutes)));
+// Only when he checked in at D001 and ran no trip inside 06:00–15:00.
+const tuD019 = paidDay(tuTaps.map((p) => ({ ...p, location_name: "BRA - D019" })), tu, "PT101705");
+check("BO needs the check-in at D001", tuD019.bo_minutes === 0 && tuD019.minutes === 390, `${tuD019.minutes}/${tuD019.bo_minutes}`);
+const tuDrove = paidDay(tuTaps, { ...tu, firstTaskAt: "2026-08-17T10:15:00+07:00" }, "PT101705");
+check("a trip inside the window: no BO, driving", tuDrove.bo_minutes === 0, `${tuDrove.bo_minutes}`);
 // Sunday 16/08 he drives 06:00–15:00 on payroll's shift: no BO.
 const tuSun = paidDay([], facts([["06:00", "15:00"]], "07:05", "15:27", "2026-08-16"), "PT101705");
 check("Sunday is driving, normal rate", tuSun.bo_minutes === 0 && tuSun.minutes > 0, `${tuSun.bo_minutes}`);
