@@ -10,7 +10,9 @@ export function missingPtShifts(drivers:ShiftDriver[],shifts:DriverShift[],confi
  const configured=new Set(configuredIds);
  const codeCounts=new Map<string,number>();
  for(const driver of drivers)codeCounts.set(driver.employee_code,(codeCounts.get(driver.employee_code)??0)+1);
- const dated=shifts.filter(s=>s.shift_date===date),covered=new Set(dated.map(s=>s.driver_id));
+ // "CHƯA CÓ CA" is MISA's placeholder for someone with no shift and no pattern —
+ // exactly who this panel exists for, so it never counts as covering the day.
+ const dated=shifts.filter(s=>s.shift_date===date&&s.source!=="CHƯA CÓ CA"),covered=new Set(dated.map(s=>s.driver_id));
  // Legacy code-only shifts count only when the payroll code identifies one account.
  const legacyCodes=new Set(dated.filter(s=>!s.driver_id).map(s=>s.employee_code));
  return drivers.filter(d=>d.active&&configured.has(d.driver_id)&&employmentOf(d.name)==="part-time"&&!covered.has(d.driver_id)&&

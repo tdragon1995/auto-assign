@@ -17,12 +17,12 @@ vm.runInNewContext(ts.transpileModule(fs.readFileSync('src/components/bulk-pt-sh
 const {missingPtShifts,BulkPtShiftPanel}=moduleShim.exports;
 const driver=(id,name='P - C - PTBU '+id,active=true)=>({driver_id:id,name,active,employee_code:'driver:'+id});
 const pattern=(id,extra={})=>({id:1,driver_id:id,employee_code:'driver:'+id,label:id,active:true,active_from:null,active_to:null,review_issues:[],days:[null,{start:'18:00',end:'21:00'},null,null,null,null,null],...extra});
-const drivers=[driver('new'),driver('retry'),driver('covered'),driver('unconfigured'),driver('inactive',undefined,false),driver('ft','F - C - DC1001 FT'),driver('blank'),driver('expired'),driver('future'),driver('off'),driver('holiday'),driver('legacy'),{...driver('shared1'),employee_code:'PTBU'},{...driver('shared2'),employee_code:'PTBU'},driver('foreign')];
+const drivers=[driver('new'),driver('retry'),driver('covered'),driver('unconfigured'),driver('inactive',undefined,false),driver('ft','F - C - DC1001 FT'),driver('blank'),driver('expired'),driver('future'),driver('off'),driver('holiday'),driver('legacy'),{...driver('shared1'),employee_code:'PTBU'},{...driver('shared2'),employee_code:'PTBU'},driver('foreign'),driver('placeholder')];
 let patterns=[pattern('covered'),pattern('blank',{days:Array(7).fill(null)}),pattern('expired',{active_to:'2026-10-07'}),pattern('future',{active_from:'2026-11-01'}),pattern(null,{employee_code:'PTBU'})];
 const configuredIds=drivers.filter(d=>d.driver_id!=='unconfigured').map(d=>d.driver_id);
 const row=(id,day_type='working',extra={})=>({driver_id:id,employee_code:'driver:'+id,shift_date:'2026-10-08',day_type,...extra});
-const shifts=[row('covered'),row('off','off'),row('holiday','holiday'),row(null,'off',{employee_code:'driver:legacy'}),row(null,'working',{employee_code:'PTBU'}),row('another','working',{employee_code:'driver:foreign'}),row('future','working',{shift_date:'2026-11-01'})];
-assert.deepEqual([...missingPtShifts(drivers,shifts,configuredIds,'2026-10-08')].map(d=>d.driver_id),['new','retry','blank','expired','future','shared1','shared2','foreign']);
+const shifts=[row('covered'),row('off','off'),row('holiday','holiday'),row(null,'off',{employee_code:'driver:legacy'}),row(null,'working',{employee_code:'PTBU'}),row('another','working',{employee_code:'driver:foreign'}),row('future','working',{shift_date:'2026-11-01'}),row('placeholder','off',{source:'CHƯA CÓ CA'})];
+assert.deepEqual([...missingPtShifts(drivers,shifts,configuredIds,'2026-10-08')].map(d=>d.driver_id),['new','retry','blank','expired','future','shared1','shared2','foreign','placeholder'],'The CHƯA CÓ CA placeholder from MISA is not a shift');
 assert.ok(!missingPtShifts(drivers,shifts,configuredIds,'2026-11-01').some(d=>d.driver_id==='future'),'Only shifts on the selected date count');
 assert.ok(missingPtShifts(drivers,[],configuredIds,'2026-10-08').some(d=>d.driver_id==='covered'),'A weekly pattern is not a dated shift');
 const shiftsModule={exports:{}};
