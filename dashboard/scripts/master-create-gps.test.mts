@@ -4,6 +4,7 @@ import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {createMasterDriver} from '../src/lib/master-driver-create';
 import {editClient} from '../src/lib/master-profile';
+import {updateLocationAddress} from '../src/lib/labcenter';
 import {MasterProfileEditor,profilePatch,gpsDeltaKm,parseGpsPair} from '../src/components/master-profile-editor';
 const driver='44444444-4444-4444-8444-444444444444',pickup='11111111-1111-4111-8111-111111111111';
 const draft={first_name:'P - C - PTBU',last_name:'Test driver',phone_code:'84',phone_number:'903123456'};
@@ -34,7 +35,7 @@ const before=Object.fromEntries(Object.keys(env).map(k=>[k,process.env[k]])),pre
 Object.assign(process.env,env);
 const saved=new Map<string,string>();let creates=0,dbFails=false,uncertain=false,lcAccepts=true,linked=false;
 let customer={customer_id:pickup,customer_name:'Location',address_line_1:'Address',latitude:10.5,longitude:106.5,contact_number:'123'};
-let lc={address:'Address',latitude:10.5,longitude:106.5};
+let lc:{address:string;latitude:number|string|null;longitude:number|string|null}={address:'Address',latitude:10.5,longitude:106.5};
 const writes:{url:string,body:unknown}[]=[];
 globalThis.fetch=async(input,init)=>{
  const url=String(input),method=init?.method??'GET';
@@ -56,7 +57,7 @@ globalThis.fetch=async(input,init)=>{
  }
  if(url.endsWith('/api/v1/auth/login'))return Response.json({token:'test'});
  if(url.endsWith('/api/locations/10')){
-   if(method==='PUT'){if(lcAccepts)Object.assign(lc,JSON.parse(String(init?.body)));return Response.json({});}
+   if(method==='PUT'){if(lcAccepts){const body=JSON.parse(String(init?.body));Object.assign(lc,body,{latitude:Number(body.latitude).toFixed(6),longitude:Number(body.longitude).toFixed(6)});}return Response.json({});}
    return Response.json({data:lc});
  }
  throw new Error('Unexpected '+method+' '+url);
@@ -73,9 +74,17 @@ try {
  await editClient(pickup,{latitude:11,longitude:107});assert.equal(customer.address_line_1,'Address');
  let update=(writes.at(-1)!.body as Record<string,unknown>[])[0];assert.ok(update.geo_calculated_at&&update.geo_dataset_version);assert.equal(customer.latitude,11);
  const coords=[customer.latitude,customer.longitude];await editClient(pickup,{address_line_1:'New address'});assert.deepEqual([customer.latitude,customer.longitude],coords);
- linked=true;await editClient(pickup,{latitude:10.6,longitude:106.6});assert.equal(lc.latitude,10.6);assert.equal(lc.longitude,106.6);
+ linked=true;await editClient(pickup,{latitude:10.6,longitude:106.6});assert.equal(Number(lc.latitude),10.6);assert.equal(Number(lc.longitude),106.6);
+ await editClient(pickup,{latitude:10.9285785,longitude:106.7124612});assert.equal(lc.latitude,'10.928579');assert.equal(lc.longitude,'106.712461');
+ await editClient(pickup,{latitude:-10.9285785,longitude:-106.7124612});
  lcAccepts=false;await assert.rejects(editClient(pickup,{latitude:10.7,longitude:106.7}),/GPS không khớp/);
  assert.equal(customer.latitude,10.7,'partial save remains explicit and retryable');
+ lcAccepts=true;await editClient(pickup,{latitude:10.7,longitude:106.7});assert.equal(Number(lc.latitude),10.7,'same GPS retry must reconcile Labcenter');
+ lcAccepts=false;
+ for(const invalid of [null,'','not a coordinate']){lc.latitude=invalid;assert.equal((await updateLocationAddress(10,{address:lc.address,latitude:0,longitude:106.7},'test')).ok,false);}
+ lc.latitude=0.000001;assert.equal((await updateLocationAddress(10,{address:lc.address,latitude:0,longitude:106.7},'test')).ok,false,'one storage unit is not rounding');
+ lc.latitude=0;assert.equal((await updateLocationAddress(10,{address:'Wrong address',latitude:0,longitude:106.7},'test')).ok,false);
+
  await assert.rejects(editClient(pickup,{latitude:91}),/GPS/);
  console.log('GPS save/read-back/address preservation and driver validation, partial-save retry, duplicate-submit safety passed; no live writes');
 }finally{globalThis.fetch=previousFetch;for(const [k,v]of Object.entries(before))if(v===undefined)delete process.env[k];else process.env[k]=v;}

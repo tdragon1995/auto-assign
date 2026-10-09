@@ -268,8 +268,12 @@ export async function updateLocationAddress(
   });
   if (!check.ok) return {ok:false,error:`Không đọc lại được địa chỉ/GPS Labcenter (HTTP ${check.status})`};
   const d=(await check.json().catch(()=>({})))?.data;
-  if(!d || d.address!==addr.address || d.latitude==null || d.longitude==null ||
-    Number(d.latitude)!==addr.latitude || Number(d.longitude)!==addr.longitude)
+  // Labcenter stores six decimal places: allow only half a storage unit of rounding.
+  const gpsMatches = (value: unknown, expected: number) =>
+    (typeof value === "number" || (typeof value === "string" && value.trim() !== "")) &&
+    Number.isFinite(Number(value)) &&
+    Math.abs(Number(value) - expected) <= 0.5e-6 + Number.EPSILON * Math.abs(expected);
+  if(!d || d.address!==addr.address || !gpsMatches(d.latitude,addr.latitude) || !gpsMatches(d.longitude,addr.longitude))
     return {ok:false,error:"Labcenter nhận yêu cầu nhưng địa chỉ/GPS không khớp khi đọc lại"};
   return { ok: true };
 }
