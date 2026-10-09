@@ -54,15 +54,19 @@ export async function applyPtPlan(driverId:unknown,date:unknown) {
  const versions=visiblePtPatterns(patterns,drivers).filter(p=>p.driver_id===driverId).map(p=>({...p,employee_code:driver.employee_code,label:driver.name}));
  if(!versions.some(p=>(!p.active_from||p.active_from<=date)&&(!p.active_to||p.active_to>=date)))throw new Error("Chưa có chu kỳ PT áp dụng cho ngày này");
  const to=new Date(Date.UTC(Number(date.slice(0,4)),Number(date.slice(5,7)),0)).toISOString().slice(0,10);
- const existing=await sbSelectAll<DriverShift>("driver_shifts",`select=shift_date&shift_date=gte.${date}&shift_date=lte.${to}&or=(driver_id.eq.${driverId},employee_code.eq.${encodeURIComponent(driver.employee_code)})`,"employee_code.asc,shift_date.asc,slot.asc");
- const covered=new Set(existing.map(s=>s.shift_date));
+ const existing=await sbSelectAll<DriverShift>("driver_shifts",`select=shift_date,slot,source&shift_date=gte.${date}&shift_date=lte.${to}&or=(driver_id.eq.${driverId},employee_code.eq.${encodeURIComponent(driver.employee_code)})`,"employee_code.asc,shift_date.asc,slot.asc");
+ // MISA's "CHƯA CÓ CA" rows are placeholders for exactly the people a plan is
+ // for: replace them. Every other existing row stays authoritative.
+ const placeholder=new Map(existing.filter(s=>s.source==="CHƯA CÓ CA").map(s=>[s.shift_date,s.slot]));
+ const covered=new Set(existing.filter(s=>s.source!=="CHƯA CÓ CA").map(s=>s.shift_date));
  const {expandPtPatterns}=await import("../../../misa-fetcher/lib/sheet-read.mjs");
  // Fill missing days only. Existing daily schedules, including manual edits, stay authoritative.
  const rows=expandPtPatterns(versions,{monthStart:date,monthEnd:to}).filter(r=>!covered.has(r.shift_date)).map(r=>({
-  employee_code:driver.employee_code,full_name:driver.name,driver_id:driverId,shift_date:r.shift_date,slot:1,
+  employee_code:driver.employee_code,full_name:driver.name,driver_id:driverId,shift_date:r.shift_date,slot:placeholder.get(r.shift_date)??1,
   day_type:r.day_type,start_time:r.start_time,end_time:r.end_time,source:"PT"}));
  // Ignore conflicts so a simultaneous daily edit cannot be overwritten.
- await sbUpsert("driver_shifts",rows,"employee_code,shift_date,slot",500,true);
+ await sbUpsert("driver_shifts",rows.filter(r=>!placeholder.has(r.shift_date)),"employee_code,shift_date,slot",500,true);
+ await sbUpsert("driver_shifts",rows.filter(r=>placeholder.has(r.shift_date)),"employee_code,shift_date,slot",500,false);
  return {from:date,to};
 }
 export async function saveDriverShift(input:unknown,pattern=false) {
