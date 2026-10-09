@@ -12,6 +12,16 @@ import { BulkPtShiftPanel } from "./bulk-pt-shift-panel";
 const field="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 placeholder:text-slate-600 placeholder:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:opacity-60";
 const weekdays=["CN","T2","T3","T4","T5","T6","T7"];
 const kindLabel={working:"Làm việc",off:"Nghỉ",holiday:"Nghỉ lễ"};
+const patternTimes=Array.from({length:48},(_,i)=>`${String(Math.floor(i/2)).padStart(2,"0")}:${i%2 ? "30" : "00"}`);
+export function PatternTimeSelect({label,value,onChange,disabled}:{label:string;value:string;onChange:(value:string)=>void;disabled:boolean}){
+ return <select aria-label={label} className={`${field} min-w-0 w-full px-2`} value={value} disabled={disabled} onChange={e=>onChange(e.target.value)}>
+  <option value="">--:--</option>
+  {/* Keep a saved off-grid time visible without offering it as a new choice. */}
+  {value&&!patternTimes.includes(value)&&<option value={value} disabled>{value}</option>}
+  {patternTimes.map(time=><option key={time} value={time}>{time}</option>)}
+ </select>;
+}
+
 export function DriverShiftPanel(){
  const [mode,setMode]=useState<"daily"|"patterns"|"bulk">("daily"),[date,setDate]=useState(vnDate),[cutoff,setCutoff]=useState(cartrackHistoryCutoff);
  const [configuredIds,setConfiguredIds]=useState<string[]>([]);
@@ -69,7 +79,7 @@ export function DriverShiftPanel(){
     </div><p className="mt-3 text-xs text-slate-600">Ca sửa tại đây được giữ lại khi MISA đồng bộ. Khung nghỉ phép vẫn lấy từ hồ sơ nghỉ phép.</p>
    </>:<>
     <div className="grid gap-3 sm:grid-cols-3 sm:max-w-2xl"><label className="text-sm">Hiệu lực từ<input type="date" className={`${field} mt-1 w-full`} value={editing.active_from??""} onChange={e=>setEditing({...editing,active_from:e.target.value||null})}/></label><label className="text-sm">Đến ngày<input type="date" className={`${field} mt-1 w-full`} min={editing.active_from??undefined} value={editing.active_to??""} onChange={e=>setEditing({...editing,active_to:e.target.value||null})}/></label><label className="flex items-center gap-2 self-end h-10 text-sm"><input type="checkbox" checked={editing.active} onChange={e=>setEditing({...editing,active:e.target.checked})}/>Đang áp dụng</label></div>
-    <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{[1,2,3,4,5,6,0].map(day=><fieldset key={day} className="min-w-0"><legend className="mb-1 text-xs font-semibold">{weekdays[day]}</legend><div className="flex items-center gap-1"><input aria-label={`${weekdays[day]} bắt đầu`} type="time" className={`${field} min-w-0 w-full px-2`} value={editing.days[day]?.start??""} onChange={e=>{const days=[...editing.days];days[day]=e.target.value?{start:e.target.value,end:days[day]?.end??""}:null;setEditing({...editing,days});}}/><span aria-hidden="true">–</span><input aria-label={`${weekdays[day]} kết thúc`} type="time" className={`${field} min-w-0 w-full px-2`} value={editing.days[day]?.end??""} onChange={e=>{const days=[...editing.days];days[day]=e.target.value?{start:days[day]?.start??"",end:e.target.value}:null;setEditing({...editing,days});}}/></div></fieldset>)}</div>
+    <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{[1,2,3,4,5,6,0].map(day=><fieldset key={day} className="min-w-0"><legend className="mb-1 text-xs font-semibold">{weekdays[day]}</legend><div className="flex items-center gap-1"><PatternTimeSelect label={`${weekdays[day]} bắt đầu`} value={editing.days[day]?.start??""} disabled={saving} onChange={value=>{const days=[...editing.days];days[day]=value?{start:value,end:days[day]?.end??""}:null;setEditing({...editing,days});}}/><span aria-hidden="true">–</span><PatternTimeSelect label={`${weekdays[day]} kết thúc`} value={editing.days[day]?.end??""} disabled={saving} onChange={value=>{const days=[...editing.days];days[day]=value?{start:days[day]?.start??"",end:value}:null;setEditing({...editing,days});}}/></div></fieldset>)}</div>
     <label className="mt-3 block text-sm">Ghi chú<input className={`${field} mt-1 w-full`} value={editing.note} onChange={e=>setEditing({...editing,note:e.target.value})}/></label>
     <p className="mt-2 text-xs text-slate-600">Để trống cả hai giờ nếu nghỉ. Mẫu ca áp dụng trong lần đồng bộ MISA kế tiếp khi chưa có ca MISA. Có thể đặt ngày hiệu lực tương lai.</p>
    </>}

@@ -1,0 +1,16 @@
+import assert from "node:assert/strict";
+import {createElement} from "react";
+import {renderToStaticMarkup} from "react-dom/server";
+import {PatternTimeSelect} from "../src/components/driver-shift-panel";
+const render=(value:string,disabled=false)=>renderToStaticMarkup(createElement(PatternTimeSelect,{label:"CN kết thúc",value,disabled,onChange(){}}));
+const html=render("17:30");
+const times=[...html.matchAll(/<option[^>]*value="([^"]+)"/g)].map(match=>match[1]);
+assert.equal(times.length,48);
+assert.equal(times[0],"00:00");assert.equal(times.at(-1),"23:30");
+assert.ok(times.every(time=>/^\d{2}:(00|30)$/.test(time)));
+assert.ok(html.includes('selected="" value="17:30"')||html.includes('value="17:30" selected=""'));
+assert.ok(render("").includes('value="" selected=""'));
+const legacy=render("15:39");assert.ok(/<option[^>]*value="15:39"[^>]*disabled=""[^>]*selected=""/.test(legacy));
+assert.ok(render("17:30",true).includes('<select aria-label="CN kết thúc"'));
+assert.ok(render("17:30",true).includes('disabled=""'));
+console.log("PT template dropdown: 48 half-hour choices, blank day, preserved legacy time, disabled state passed");
