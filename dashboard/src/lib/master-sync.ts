@@ -5,9 +5,32 @@ import { nearestPsc, newWard, GEO_DATASET_VERSION } from "./master-geo";
 import type { MasterClient } from "./master-store";
 import { UUID, type SourceRow } from "./master-reconcile";
 import { locationName, isInactiveLocation } from "./location-status";
+import { staffCode } from "./display-names";
 
 type CartrackRow = Record<string, unknown>;
-type MasterDriver = { driver_id: string; cartrack: CartrackRow; detail_synced_at?: string | null };
+type MasterDriver = { driver_id: string; cartrack: CartrackRow; detail_synced_at?: string | null; roster?: Record<string, string> | null; is_active?: boolean | null };
+
+/**
+ * The MISA staff code a driver's Cartrack name carries ("F - P - DC102159 Phạm
+ * Chiêu Hùng" → "DC102159"), or "" — and only a NUMBERED code. MISA's shifts in
+ * Lịch ca link to a driver solely through roster.employee_code, and a driver
+ * created straight in Cartrack used to arrive here without one, so their shifts
+ * sat unlinked (10 people, Oct 2026). "PTBU" (backup accounts) is deliberately
+ * NOT a code: dozens share it, and as an employee_code it would make their manual
+ * Lịch ca rows collide on (employee_code, date, slot).
+ */
+export function rosterCodeFromName(cartrack: CartrackRow | undefined): string {
+  const code = staffCode(String(cartrack?.first_name ?? ""));
+  return /^(?:PT|DC)\d{4,}$/.test(code) ? code : "";
+}
+/** The roster patch that fills a missing employee_code, keeping every other roster key.
+ *  ACTIVE drivers only (a brand-new one counts as active): an old inactive account
+ *  holding a person's code would otherwise collect the shifts MISA publishes for
+ *  them now, while they work under a newer account. */
+const rosterFill = (previous: MasterDriver | undefined, cartrack: CartrackRow) => {
+  const code = previous?.roster?.employee_code || previous?.is_active === false ? "" : rosterCodeFromName(cartrack);
+  return code ? { roster: { ...(previous?.roster ?? {}), employee_code: code } } : {};
+};
 export const labcenterClientCode = (name: string) => {
   const code = locationName(name, true).split(/\s*-\s*/, 1)[0].trim();
   return /^\d+$/.test(code) ? code : null;
@@ -29,7 +52,7 @@ export async function syncMissingProfiles(rows:SourceRow[], clients:Set<string>,
       const location=String(cartrack[key]??"");
       if(UUID.test(location) && !clients.has(location)) {await syncCartrackClient(location);clients.add(location);}
     }
-    await sbUpsert("master_drivers",[{driver_id:id,cartrack,detail_synced_at:new Date().toISOString()}],"driver_id");
+    await sbUpsert("master_drivers",[{driver_id:id,cartrack,...rosterFill(undefined,cartrack),detail_synced_at:new Date().toISOString()}],"driver_id");
     drivers.add(id);
   }
 }
@@ -101,7 +124,7 @@ export async function syncCartrackProfiles(): Promise<{ clients: number; drivers
   if (clients.some(c=>!UUID.test(String(c.customer_id))) || new Set(clients.map(c=>c.customer_id)).size!==clients.length) throw new Error("Invalid or repeated Cartrack customer IDs; deletion review was not updated");
   const [storedClients, storedDrivers] = await Promise.all([
     sbSelectAll<MasterClient>("master_clients", "select=customer_id,cartrack,client_code", "customer_id.asc"),
-    sbSelectAll<MasterDriver>("master_drivers", "select=driver_id,cartrack,detail_synced_at", "driver_id.asc"),
+    sbSelectAll<MasterDriver>("master_drivers", "select=driver_id,cartrack,detail_synced_at,roster,is_active", "driver_id.asc"),
   ]);
   const oldClients = new Map(storedClients.map((c) => [c.customer_id, c]));
   const oldDrivers = new Map(storedDrivers.map((d) => [d.driver_id, d]));
@@ -115,7 +138,7 @@ export async function syncCartrackProfiles(): Promise<{ clients: number; drivers
   });
   const changedDrivers = drivers.filter((d) => {
     const previous = oldDrivers.get(String(d.delivery_driver_id ?? ""));
-    return !previous?.detail_synced_at || listedChanged(previous.cartrack, d);
+    return !previous?.detail_synced_at || listedChanged(previous.cartrack, d) || !!rosterFill(previous, d).roster;
   });
   const clientRows = await Promise.all(changedClients.map(async (c) => {
     const id = String(c.customer_id ?? "");
@@ -144,7 +167,8 @@ export async function syncCartrackProfiles(): Promise<{ clients: number; drivers
     const id = String(d.delivery_driver_id ?? "");
     const previous = oldDrivers.get(id);
     const detail = !previous?.detail_synced_at && oldDrivers.size > 100 ? await cartrackDetail("drivers", id).catch((e) => { console.error(e); return null; }) : null;
-    return { driver_id: id, cartrack: mergeCartrack(previous?.cartrack, d, detail),
+    const cartrack = mergeCartrack(previous?.cartrack, d, detail);
+    return { driver_id: id, cartrack, ...rosterFill(previous, cartrack),
       ...(detail ? { detail_synced_at: now } : {}), synced_at: now };
   }));
   await sbUpsert("master_drivers", driverRows, "driver_id", 200);
