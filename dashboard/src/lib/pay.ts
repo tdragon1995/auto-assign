@@ -258,7 +258,8 @@ export function workedMinutes(punches: PayPunch[], day: DayFacts): WorkedDay {
   const lastOut = times("out").filter((t) => !startEvidence || Date.parse(t) > Date.parse(startEvidence)).at(-1) ?? null;
 
   if (day.shifts.length === 0) {
-    out.no_shift = punches.length > 0 || day.firstTaskAt !== null;
+    // A chấm-công task created but never tapped (no stamp at all) is not work.
+    out.no_shift = firstIn !== null || times("out").length > 0 || day.firstTaskAt !== null;
     return out;
   }
   // Nothing says they came in at all: a shift on paper is not a shift worked.

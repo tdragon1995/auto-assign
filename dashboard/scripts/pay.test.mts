@@ -113,6 +113,11 @@ check("a tap stamped on another date is ignored", lateTap.minutes === 25, String
 check("a shift on paper with no taps and no trips pays nothing",
   workedMinutes([], facts([["06:00", "15:00"]], null, null)).minutes === 0);
 
+// A chấm-công task created but never tapped carries no stamp: not a day worked.
+const untapped = { ...punch("in", "07:00"), completed_ts: null };
+check("an untapped task is not flagged as worked without a shift",
+  workedMinutes([untapped], facts([], null, null)).no_shift === false);
+
 // No shift in payroll's file → no hours, and the day is flagged, never guessed.
 const noShift = workedMinutes([punch("in", "07:11"), punch("out", "20:30")], facts([], "08:00", "20:00"));
 check("worked without a shift pays no hours", noShift.minutes === 0);

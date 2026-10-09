@@ -162,7 +162,8 @@ export async function GET(req: NextRequest) {
       const e = get(p.driver_id, p.driver_name);
       const list = e.byDay.get(p.trip_date);
       if (list) list.push(p); else e.byDay.set(p.trip_date, [p]);
-      e.days.add(p.trip_date);
+      // An untapped chấm-công task (no stamp) is not a day worked.
+      if (p.started_ts || p.arrived_ts || p.completed_ts) e.days.add(p.trip_date);
     }
     // An approved correction makes a day count even with no taps and no trips —
     // that is exactly the day a supervisor has vouched for.
