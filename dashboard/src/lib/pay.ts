@@ -30,6 +30,7 @@ import { roadDistancesForPairs } from "./distance-cache";
 import { newFallbackState, type QuotaSignal } from "./distance";
 import { isChamCong, CHAM_CONG_PREFIX, PSC_RETURN_LABEL, PSC_VIA_LABEL } from "./job-filters";
 import type { DistanceStats } from "./tat";
+import { vnDate } from "./time";
 import type { TimelineRoute, TimelineStop } from "./types";
 
 /** Đồng per hour clocked. */
@@ -235,10 +236,13 @@ export function workedMinutes(punches: PayPunch[], day: DayFacts): WorkedDay {
   // arrival and complete it hours later (Đỗ Hữu Hùng 26/08: arrived 14:55,
   // completed 17:38; payroll paid from 15:00).
   const stamp = (p: PayPunch) => p.arrived_ts ?? p.started_ts ?? p.completed_ts;
+  // A tap stamped on ANOTHER date is ignored, exactly as trips are (v_pay_daily).
+  // PT101638 31/08: a check-out opened at 16:21 and finished three days later
+  // stretched a one-hour shift to 72 h; payroll paid 25 minutes.
   const times = (kind: "in" | "out") => punches
     .filter((p) => p.kind === kind)
     .map(stamp)
-    .filter((t): t is string => t !== null)
+    .filter((t): t is string => t !== null && vnDate(new Date(t)) === day.date)
     .sort((a, b) => Date.parse(a) - Date.parse(b));
   const firstIn = times("in")[0] ?? null;
   const startEvidence = firstIn ?? day.firstTaskAt;

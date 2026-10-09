@@ -92,6 +92,15 @@ check("no trips → paid to the check-out tap", noTrips.minutes === 366, String(
 const stray = workedMinutes([punch("in", "15:35"), punch("out", "15:30")], facts([["15:00", "16:00"]], null, null));
 check("a check-out before the check-in is ignored", stray.minutes === 25, String(stray.minutes));
 
+// The REAL shape of that day: the check-out was opened at 16:21 and only reached
+// three days later (03/09 15:30). Counted, it paid 72 h; a tap stamped on another
+// date is ignored, so no trips + no same-day check-out → shift end, 25 min.
+const lateTap = workedMinutes(
+  [punch("in", "15:35"), { ...punch("out", "15:30"), started_ts: at("16:21"), arrived_ts: at("15:30", "2026-09-03"), completed_ts: at("15:30", "2026-09-03") }],
+  facts([["15:00", "16:00"]], null, null),
+);
+check("a tap stamped on another date is ignored", lateTap.minutes === 25, String(lateTap.minutes));
+
 check("a shift on paper with no taps and no trips pays nothing",
   workedMinutes([], facts([["06:00", "15:00"]], null, null)).minutes === 0);
 

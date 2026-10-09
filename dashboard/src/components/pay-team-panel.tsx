@@ -81,7 +81,7 @@ const fmtVnd = (v: number) => `${vnd.format(Math.round(v))}đ`;
  *  way — two conventions in the column an approval is read off, and the exact
  *  number reachable only through a hover tooltip. tabular-nums keeps it aligned. */
 
-const fmtHours = (mins: number) => `${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, "0")}`;
+const fmtHours = (mins: number) => `${vnd.format(Math.floor(mins / 60))}h${String(mins % 60).padStart(2, "0")}`;
 
 /** Kilometres in Vietnamese notation: 2.199 not 2199. Whole km in the table —
  *  the decimals live in the CSV, which is what a figure gets paid from. */
