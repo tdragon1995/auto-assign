@@ -825,7 +825,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
       }),
     ].map((row) => {
       const client = clientMetaById.get(row.customer_id) ?? clientMetaByName.get(row.pickup.trim().toLocaleLowerCase("vi"));
-      return { ...row, default_dropoff: client ? client.default_dropoff_name?.trim() || (client.default_dropoff_id ? String(clientMetaById.get(client.default_dropoff_id)?.cartrack.customer_name ?? client.default_dropoff_id) : "") : undefined };
+      return { ...row, nearest_psc: client ? client.nearest_psc_name?.trim() || "" : undefined, default_dropoff: client ? client.default_dropoff_name?.trim() || (client.default_dropoff_id ? String(clientMetaById.get(client.default_dropoff_id)?.cartrack.customer_name ?? client.default_dropoff_id) : "") : undefined };
     });
   }, [sheetRows, clientMetadata, clientMetaById, clientMetaByName, loading]);
 
@@ -854,6 +854,10 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
   const defaultDropoffOptions = useMemo(
     () => optionValues.defaultDropoffs.map((value) => ({ value, label: value || "Chưa có điểm giao mặc định" })),
     [optionValues.defaultDropoffs],
+  );
+  const nearestPscOptions = useMemo(
+    () => optionValues.nearestPscs.map(value => ({ value, label: value || "Chưa xác định PSC gần nhất" })),
+    [optionValues.nearestPscs],
   );
   const startOptions = useMemo(
     () => optionValues.starts.map((value) => ({ value, label: value || "trống / cả ngày" })),
@@ -946,6 +950,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
     + activeColumnFilterCount(filters.pickupOperator, filters.pickupText, filters.pickups)
     + activeColumnFilterCount(filters.dropoffOperator, filters.dropoffText, filters.dropoffs)
     + activeColumnFilterCount(filters.defaultDropoffOperator, filters.defaultDropoffText, filters.defaultDropoffs)
+    + activeColumnFilterCount(filters.nearestPscOperator, filters.nearestPscText, filters.nearestPscs)
     + activeColumnFilterCount(filters.startOperator, filters.startText, filters.starts)
     + activeColumnFilterCount(filters.endOperator, filters.endText, filters.ends);
   const hasFilters = activeFilters > 0;
@@ -1088,6 +1093,20 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
             onValuesChange={(values) => updateFilters({ ...filters, defaultDropoffs: values })}
             textPlaceholder="vd. D001"
             selectPlaceholder="Chọn điểm giao mặc định…"
+          />
+          <ConfigColumnFilter
+            label="PSC gần nhất"
+            showOperator={advancedFilters}
+            operator={filters.nearestPscOperator}
+            text={filters.nearestPscText}
+            values={[...filters.nearestPscs]}
+            options={nearestPscOptions}
+            onOperatorChange={operator => updateFilters({ ...filters, nearestPscOperator: operator,
+              ...(usesTextInput(operator) !== usesTextInput(filters.nearestPscOperator) ? { nearestPscText: "", nearestPscs: [] } : {}) })}
+            onTextChange={value => updateFilters({ ...filters, nearestPscText: value })}
+            onValuesChange={values => updateFilters({ ...filters, nearestPscs: values })}
+            textPlaceholder="vd. D006"
+            selectPlaceholder="Chọn PSC gần nhất…"
           />
           <ConfigColumnFilter
             label="Giờ bắt đầu"

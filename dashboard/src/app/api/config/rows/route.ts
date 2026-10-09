@@ -49,6 +49,7 @@ export interface ConfigRowView {
   dropoff: string;
   /** Client metadata joined in the browser; undefined until the profile is loaded. */
   default_dropoff?: string;
+  nearest_psc?: string;
   alt_drop_off_id?: string;
   /** True when the cell names several drivers: the engine ranks them by
    *  distance rather than treating them as competing rules. */

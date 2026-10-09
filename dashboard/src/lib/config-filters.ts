@@ -18,6 +18,9 @@ export interface ConfigFilters {
   defaultDropoffs: readonly string[];
   defaultDropoffOperator: ConfigTextOperator;
   defaultDropoffText: string;
+  nearestPscs: readonly string[];
+  nearestPscOperator: ConfigTextOperator;
+  nearestPscText: string;
   starts: readonly string[];
   startOperator: ConfigTimeOperator;
   startText: string;
@@ -34,6 +37,7 @@ export interface ConfigFilterOptions {
   pickups: string[];
   dropoffs: string[];
   defaultDropoffs: string[];
+  nearestPscs: string[];
   starts: string[];
   ends: string[];
 }
@@ -52,6 +56,9 @@ export const EMPTY_CONFIG_FILTERS: ConfigFilters = {
   defaultDropoffs: [],
   defaultDropoffOperator: "is",
   defaultDropoffText: "",
+  nearestPscs: [],
+  nearestPscOperator: "is",
+  nearestPscText: "",
   starts: [],
   startOperator: "is",
   startText: "",
@@ -107,12 +114,14 @@ export function filterConfigRows(
   const pickupText = normalizeConfigText(filters.pickupText);
   const dropoffText = normalizeConfigText(filters.dropoffText);
   const defaultDropoffText = normalizeConfigText(filters.defaultDropoffText);
+  const nearestPscText = normalizeConfigText(filters.nearestPscText);
   const startText = normalizeConfigText(filters.startText);
   const endText = normalizeConfigText(filters.endText);
   const selectedDrivers = new Set(filters.drivers);
   const selectedPickups = new Set(filters.pickups);
   const selectedDropoffs = new Set(filters.dropoffs);
   const selectedDefaultDropoffs = new Set(filters.defaultDropoffs);
+  const selectedNearestPscs = new Set(filters.nearestPscs);
   const selectedStarts = new Set(filters.starts);
   const selectedEnds = new Set(filters.ends);
 
@@ -153,6 +162,12 @@ export function filterConfigRows(
         ? !matchesText([row.default_dropoff], filters.defaultDropoffOperator, defaultDropoffText)
         : !matchesSelection([row.default_dropoff], selectedDefaultDropoffs, filters.defaultDropoffOperator)) return false;
     }
+    if (usesTextInput(filters.nearestPscOperator) ? nearestPscText : selectedNearestPscs.size) {
+      if (row.nearest_psc === undefined) return false;
+      if (usesTextInput(filters.nearestPscOperator)
+        ? !matchesText([row.nearest_psc], filters.nearestPscOperator, nearestPscText)
+        : !matchesSelection([row.nearest_psc], selectedNearestPscs, filters.nearestPscOperator)) return false;
+    }
     if (!matchesTime(row.start, filters.startOperator, startText, selectedStarts)) return false;
     if (!matchesTime(row.end, filters.endOperator, endText, selectedEnds)) return false;
     return true;
@@ -167,6 +182,7 @@ export function configFilterOptions(rows: readonly ConfigRowView[]): ConfigFilte
   const pickups = new Set<string>();
   const dropoffs = new Set<string>();
   const defaultDropoffs = new Set<string>();
+  const nearestPscs = new Set<string>();
   const starts = new Set<string>();
   const ends = new Set<string>();
 
@@ -175,6 +191,7 @@ export function configFilterOptions(rows: readonly ConfigRowView[]): ConfigFilte
     if (row.pickup) pickups.add(row.pickup);
     dropoffs.add(row.dropoff);
     if (row.default_dropoff !== undefined) defaultDropoffs.add(row.default_dropoff);
+    if (row.nearest_psc !== undefined) nearestPscs.add(row.nearest_psc);
     starts.add(row.start);
     ends.add(row.end);
   }
@@ -192,6 +209,7 @@ export function configFilterOptions(rows: readonly ConfigRowView[]): ConfigFilte
       return vi.compare(a, b);
     }),
     defaultDropoffs: [...defaultDropoffs].sort(vi.compare),
+    nearestPscs: [...nearestPscs].sort(vi.compare),
     starts: [...starts].sort(timeOrder.compare),
     ends: [...ends].sort(timeOrder.compare),
   };
