@@ -487,7 +487,9 @@ These are the things most likely to burn a future agent working on this codebase
     "Nhập ca từ file" on Lương PT writes payroll's `…_Parttime Records.xlsx` into it
     (`import_payroll_shifts`: each driver-day in the file becomes exactly payroll's
     windows, source `payroll`). The MISA refresh leaves `payroll` rows alone exactly
-    as it does `manual` ones (`replace_driver_shifts`). No shift → no hours, flagged
+    as it does `manual` ones (`replace_driver_shifts`). Once the file is in for a
+    period, ONLY `payroll` (and `manual`) rows count there, so a leftover MISA row
+    cannot pay a day payroll did not. No shift → no hours, flagged
     "Không ca". `coverage.shifts_imported` = payroll's file has been written for the
     period. Loaded ONE way for every reader: `lib/pay-days.ts`.
 
