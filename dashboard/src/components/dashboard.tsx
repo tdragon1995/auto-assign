@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, ChevronDown, Gauge, RefreshCw } from "lucide-react";
+import { AlertTriangle, Banknote, CalendarClock, ChevronDown, ClipboardList, Clock3, Gauge, MapPin, NotebookText, RefreshCw, Search, Settings2, Truck } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
 import { RemovedCartrackClients } from "./removed-cartrack-clients";
 import { DataSourceIcon } from "./data-source-icon";
@@ -21,7 +21,7 @@ import { SheetAlarmBanner } from "./sheet-alarm-banner";
 import { TatTeamPanel } from "./tat-team-panel";
 import { DriverShiftPanel } from "./driver-shift-panel";
 import { PayTeamPanel } from "./pay-team-panel";
-import { LocationsPanel } from "./locations-panel";
+import { LocationsPanel, TplMappingsPanel } from "./locations-panel";
 import { toast } from "sonner";
 import type { LogEntry, PickupWarning, FailedJob, ConfigDriver, SheetAlarm, UnfinishedConfigRow, CoverageGap, BranchRule } from "@/lib/types";
 import type { DeploymentBeat } from "@/lib/smart-log-kv";
@@ -34,7 +34,7 @@ import type { LeaveSuppression } from "@/lib/leave-suppression";
 import type { LabcenterMetadataReport } from "@/lib/master-sync";
 
 type Env = "prod" | "uat";
-type RightTab = "attention" | "live" | "batch" | "config" | "schedule" | "distance" | "tat" | "pay" | "locations" | "shifts";
+type RightTab = "attention" | "live" | "batch" | "config" | "schedule" | "distance" | "tat" | "pay" | "locations" | "shifts" | "tpl";
 
 export function Dashboard() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -622,7 +622,7 @@ export function Dashboard() {
     // honoured, so it is a tidy-up, not something to handle today.
     leave.invalid.filter((r) => !r.recovered).length;
 
-  const setupActive = ["config", "schedule", "shifts", "locations"].includes(rightTab);
+  const setupActive = ["config", "schedule", "shifts", "locations", "tpl"].includes(rightTab);
   const operationsActive = rightTab === "distance" || rightTab === "tat";
 
   const tabBtn = (active: boolean) =>
@@ -715,7 +715,7 @@ export function Dashboard() {
           )}
           <nav aria-label="Điều hướng chính" className="flex flex-wrap items-center gap-1 shrink-0">
             <button aria-pressed={rightTab === "attention"} onClick={() => setRightTab("attention")} className={tabBtn(rightTab === "attention")}>
-              <AlertTriangle aria-hidden="true" className="size-3.5" strokeWidth={2} />
+              <AlertTriangle aria-hidden="true" className="size-4 shrink-0" strokeWidth={1.75} />
               Cần xử lý
               {attentionCount > 0 && (
                 <span className="rounded-full bg-red-600 text-white px-1.5 leading-none py-0.5 text-[11px] font-bold">
@@ -724,27 +724,28 @@ export function Dashboard() {
               )}
             </button>
             <button aria-pressed={rightTab === "live"} onClick={() => setRightTab("live")} className={tabBtn(rightTab === "live")}>
-              <span aria-hidden="true">📝</span> Nhật ký
+              <NotebookText aria-hidden="true" className="size-4 shrink-0" strokeWidth={1.75} /> Nhật ký
             </button>
             <button aria-pressed={rightTab === "batch"} onClick={() => setRightTab("batch")} className={tabBtn(rightTab === "batch")}>
-              <span aria-hidden="true">🔍</span> Tra cứu VID / Batch
+              <Search aria-hidden="true" className="size-4 shrink-0" strokeWidth={1.75} /> Tra cứu VID / Batch
             </button>
             <button aria-pressed={setupActive} onClick={() => { if (!setupActive) setRightTab("config"); }} className={tabBtn(setupActive)}>
-              <span aria-hidden="true">⚙️</span> Master Setup
+              <Settings2 aria-hidden="true" className="size-4 shrink-0" strokeWidth={1.75} /> Master Setup
             </button>
             <button aria-pressed={operationsActive} onClick={() => { if (!operationsActive) setRightTab("distance"); }} className={tabBtn(operationsActive)}>
-              <Gauge aria-hidden="true" className="size-4" /> Khoảng cách &amp; Hiệu suất
+              <Gauge aria-hidden="true" className="size-4 shrink-0" strokeWidth={1.75} /> Khoảng cách &amp; Hiệu suất
             </button>
             <button aria-pressed={rightTab === "pay"} onClick={() => setRightTab("pay")} className={tabBtn(rightTab === "pay")}>
-              <span aria-hidden="true">💰</span> Lương PT
+              <Banknote aria-hidden="true" className="size-4 shrink-0" strokeWidth={1.75} /> Lương PT
             </button>
           </nav>
           {setupActive && <nav aria-label="Master Setup" className="flex flex-wrap items-center gap-1 shrink-0 border-b border-slate-200 pb-1.5">
             {([
-              ["config", "📋", "Config"], ["schedule", "📅", "Lịch cố định"],
-              ["shifts", "🕒", "Ca làm"], ["locations", "📍", "Địa điểm PSC"],
-            ] as const).map(([tab, emoji, label]) => <button key={tab} aria-pressed={rightTab === tab} onClick={() => setRightTab(tab)} className={tabBtn(rightTab === tab)}>
-              <span aria-hidden="true">{emoji}</span> {label}
+              ["config", ClipboardList, "Config"], ["schedule", CalendarClock, "Lịch cố định"],
+              ["shifts", Clock3, "Ca làm"], ["locations", MapPin, "Địa điểm PSC"],
+              ["tpl", Truck, "3PL Mapping"],
+            ] as const).map(([tab, Icon, label]) => <button key={tab} aria-pressed={rightTab === tab} onClick={() => setRightTab(tab)} className={tabBtn(rightTab === tab)}>
+              <Icon aria-hidden="true" className="size-4 shrink-0" strokeWidth={1.75} /> {label}
             </button>)}
           </nav>}
           {operationsActive && <nav aria-label="Khoảng cách và Hiệu suất" className="flex flex-wrap items-center gap-1 shrink-0 border-b border-slate-200 pb-1.5">
@@ -869,6 +870,8 @@ export function Dashboard() {
               <div className="h-[72vh] lg:h-full">
                 <PayTeamPanel />
               </div>
+            ) : rightTab === "tpl" ? (
+              <div className="h-[72vh] lg:h-full"><TplMappingsPanel /></div>
             ) : rightTab === "locations" ? (
               <div className="h-[72vh] lg:h-full overflow-y-auto">
                 <LocationsPanel />

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { DANANG_PICKUP_ADDRESS, DANANG_PICKUP_UUID, loadTplEntries, PSC_TINH_LABEL } from "@/lib/psc-config";
+import { DANANG_PICKUP_ADDRESS, DANANG_PICKUP_UUID, invalidatePscCache, loadTplEntries, PSC_TINH_LABEL } from "@/lib/psc-config";
 import { cancelJob, jobVnDate, BASE_URL, getHeaders, getStopsByLabels, createJob, type Env } from "@/lib/cartrack";
 import { addDays, vnDate, vnTimestamp } from "@/lib/time";
 import { pscTinhSchedule } from "@/lib/psc-tinh-time";
@@ -94,6 +94,15 @@ export async function GET(req: NextRequest) {
   const psc  = req.nextUrl.searchParams.get("psc")?.trim().toUpperCase();
   const mode = req.nextUrl.searchParams.get("mode");
 
+  if (mode === "mappings") {
+    try {
+      if (req.nextUrl.searchParams.get("fresh") === "1") invalidatePscCache();
+      return NextResponse.json({ entries: await loadTplEntries() }, { headers: { "Cache-Control": "private, no-store" } });
+    } catch (e) {
+      console.error("[3pl mappings]", e);
+      return NextResponse.json({ error: "Không đọc được cấu hình 3PL. Bấm Tải lại để thử lại." }, { status: 502 });
+    }
+  }
   if (!psc) return NextResponse.json({ error: "Missing psc param" }, { status: 400 });
 
   // ── mode=orders: fetch the selected day's jobs for this PSC ───────────────
