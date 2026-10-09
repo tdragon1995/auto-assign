@@ -94,4 +94,14 @@ const chain = deriveThayCaRows(
 assert.equal(chain.length, 0, "reciprocal assignment stops the chain");
 assert.deepEqual(parseThayCaNote(rows[0].note)?.chain, ["a", "b"]);
 
+const selfCovered = {
+  ...base, driver_id: "b", driver_name: "Driver B", loai_nghi: "Thay ca",
+  gio_bat_dau: rows[0].leave_from_hr, gio_ket_thuc: rows[0].leave_to_hr,
+  note: rows[0].note, subs: [{ id: "b", name: "Driver B", from: null, to: null }],
+};
+assert.deepEqual(
+  deriveThayCaRows([base, selfCovered], [mapping("b", "10:00", "14:00")]), rows,
+  "self-cover keeps the original transfer without generating another Thay ca row",
+);
+
 console.log("Thay ca: strict overlap, separated shifts, reciprocal guard and stable metadata passed.");

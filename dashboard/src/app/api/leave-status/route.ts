@@ -154,7 +154,10 @@ export async function POST(req: NextRequest) {
       if (!name) return bad("Người thay chưa được chọn");
       const subId = idByName.get(name);
       if (!subId) return bad(`"${name}" không có trong tab Driver — chọn từ danh sách`);
-      if (subId === driver_id) return bad("Người thay trùng với tài xế đang nghỉ");
+      // Thay ca can keep the same driver covering both areas.
+      // The writer verifies the type against the actual leave row.
+      if (subId === driver_id && loai_nghi !== THAY_CA_LABEL)
+        return bad("Người thay trùng với tài xế đang nghỉ");
       const from = (s.from ?? "").trim() || null;
       const to = (s.to ?? "").trim() || null;
       if ((from === null) !== (to === null)) return bad("Khung giờ thay phải đủ cả từ và đến");

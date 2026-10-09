@@ -17,6 +17,7 @@ import {
 import { normalizeDriverName } from "@/lib/driver-match";
 import { DriverName } from "./driver-name";
 import { DriverCombobox } from "./driver-combobox";
+import { THAY_CA_LABEL } from "@/lib/thay-ca";
 import { HoverPanel } from "./hover-panel";
 
 const TYPE_LABEL: Record<string, string> = {
@@ -1103,6 +1104,7 @@ function DeleteRowButton({
  */
 function SubEditor({
   row,
+  driverId,
   drivers,
   initial,
   allowSplit = true,
@@ -1110,6 +1112,7 @@ function SubEditor({
   onCancel,
 }: {
   row: LeaveRowView;
+  driverId: string;
   drivers: ConfigDriver[];
   /** Prefills the blocks with what the row already carries — the EDIT case
    *  (change a name or a window on a row that's already covered). Omitted for
@@ -1129,6 +1132,9 @@ function SubEditor({
   );
   const [busy, setBusy] = useState(false);
   const isSplit = allowSplit && blocks.length > 1;
+  const self = row.loai_nghi === THAY_CA_LABEL
+    ? drivers.find((d) => d.driver_id === driverId)
+    : undefined;
 
   const patch = (i: number, p: Partial<SubBlock>) =>
     setBlocks((prev) => prev.map((b, j) => (j === i ? { ...b, ...p } : b)));
@@ -1194,7 +1200,13 @@ function SubEditor({
           )}
         </div>
       ))}
-      <div className="flex items-center gap-1">
+      <div className="flex flex-wrap items-center gap-1">
+        {self && blocks.length === 1 && blocks[0].name !== self.name && (
+          <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={busy}
+            onClick={() => patch(0, { name: self.name })}>
+            Giữ tài xế này — phụ trách cả 2 khu vực
+          </Button>
+        )}
         {allowSplit && blocks.length < 3 && (
           <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={addBlock} disabled={busy}>
             + Chia ca
@@ -1410,6 +1422,7 @@ function DriverCard({
             {editRow === i && (
               <SubEditor
                 row={r}
+                driverId={g.driver_id}
                 drivers={drivers}
                 allowSplit={r.loai_nghi !== "Nghỉ việc"}
                 initial={
@@ -1537,10 +1550,11 @@ function UncoveredRowItem({
       {editing && (
         <SubEditor
           row={item.row}
+          driverId={item.driver_id}
           drivers={drivers}
           onSave={(subs, split) =>
             onFill(
-              { driver_id: item.driver_id, leave_from: item.row.leave_from, timeLabel: item.row.timeLabel, leave_id: item.row.leave_id, revision: item.row.revision },
+              { driver_id: item.driver_id, leave_from: item.row.leave_from, timeLabel: item.row.timeLabel, loai_nghi: item.row.loai_nghi ?? item.loai_nghi, leave_id: item.row.leave_id, revision: item.row.revision },
               subs,
               { split, expectedSubs: [] },
             )
