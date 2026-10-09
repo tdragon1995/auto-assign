@@ -475,7 +475,9 @@ These are the things most likely to burn a future agent working on this codebase
     **BO Runners are paid 35.000đ/h** (`BO_RUNNERS`, hand-kept by staff code;
     `paidDay` wraps `workedMinutes` and every reader goes through it). Mộng Hoa:
     every hour. Anh Tú: 06:00–15:00 Mon–Sat is a BO shift ADDED to the day, only
-    when he checked in at D001 and ran no trip inside it —
+    when he checked in at D001 and did not LEAVE D001 before 15:00
+    (`v_pay_daily.first_away_ts`; collecting the 14:5x sendout at D001 is the
+    handover into his driving shift, not driving) —
     payroll's part-time file does not carry it — unless a file shift already
     covers those hours (holiday driving); after 15:00 and on Sundays he is a
     driver at the normal rate.

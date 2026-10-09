@@ -161,6 +161,9 @@ export interface DayFacts {
   firstTaskAt: string | null;
   /** Last dropoff completed — extends a shift a trip ran past. */
   lastTaskAt: string | null;
+  /** First stop completed AWAY from D001 (v_pay_daily.first_away_ts) — when a
+   *  BO runner based there actually left to drive. Absent → the first pickup. */
+  firstAwayAt?: string | null;
   /** An APPROVED "cập nhật công" for the day, VN wall clock "HH:MM". It is the
    *  day's worked window outright: it replaces everything the rule would compute,
    *  shift or no shift, because a supervisor has looked at this day. */
@@ -328,9 +331,12 @@ export function paidDay(punches: PayPunch[], day: DayFacts, staffCode: string): 
   const to = Date.parse(`${day.date}T${win.end}:00+07:00`);
   const sunday = new Date(`${day.date}T12:00:00+07:00`).getUTCDay() === 0;
   const covered = day.shifts.some((s) => s.start < win.end && s.end > win.start);
-  // A trip inside the window means the morning was spent driving.
-  const drove = day.firstTaskAt !== null && Date.parse(day.firstTaskAt) < to
-    && (day.lastTaskAt === null || Date.parse(day.lastTaskAt) > from);
+  // Leaving D001 before the window closes means the morning was spent driving.
+  // Picking up at D001 itself is not leaving: the 14:5x sendout he collects
+  // there is the handover into his driving shift (9 of 24 weekdays, 15/08–14/09).
+  // ponytail: v_pay_daily measures "away" from D001 only; a runner based elsewhere needs the place in the view.
+  const away = day.firstAwayAt === undefined ? day.firstTaskAt : day.firstAwayAt;
+  const drove = away !== null && Date.parse(away) < to;
   const firstIn = punches
     .filter((p) => p.kind === "in")
     .map((p) => ({ p, t: p.arrived_ts ?? p.started_ts ?? p.completed_ts }))

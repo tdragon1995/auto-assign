@@ -47,6 +47,7 @@ interface DailyRow {
   total_km: number | string | null;
   first_pickup_ts: string | null;
   last_dropoff_ts: string | null;
+  first_away_ts: string | null;
 }
 
 
@@ -137,7 +138,7 @@ export async function GET(req: NextRequest) {
       /** Punches bucketed BY DAY: the hours rule is a within-day rule. */
       byDay: Map<string, PayPunch[]>;
       /** First pickup / last dropoff per day, for the hours rule. */
-      tasks: Map<string, { first: string | null; last: string | null }>;
+      tasks: Map<string, { first: string | null; last: string | null; away: string | null }>;
       /** Days with any activity at all — a day worked with no dispatch counts. */
       days: Set<string>;
     }
@@ -154,7 +155,7 @@ export async function GET(req: NextRequest) {
       e.km += num(d.total_km);
       e.jobs += d.jobs_total;
       e.unpriced += d.jobs_total - d.jobs_priced;
-      e.tasks.set(d.trip_date, { first: d.first_pickup_ts, last: d.last_dropoff_ts });
+      e.tasks.set(d.trip_date, { first: d.first_pickup_ts, last: d.last_dropoff_ts, away: d.first_away_ts });
       e.days.add(d.trip_date);
     }
     for (const p of punches) {
@@ -185,6 +186,7 @@ export async function GET(req: NextRequest) {
             shifts: inputs.shifts.get(dayKey(driver_id, date)) ?? [],
             firstTaskAt: t?.first ?? null,
             lastTaskAt: t?.last ?? null,
+            firstAwayAt: t?.away ?? null,
             correction: inputs.approved.get(dayKey(driver_id, date)) ?? null,
           }, code);
           mins += w.minutes;

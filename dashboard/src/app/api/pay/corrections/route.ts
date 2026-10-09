@@ -52,8 +52,8 @@ export async function GET(req: NextRequest) {
     const inList = `driver_id=in.(${ids.join(",")})&trip_date=gte.${from}&trip_date=lte.${to}`;
     const [punches, daily, names] = await Promise.all([
       sbSelectAll<PayPunch>("pay_punches", `select=*&${inList}`, "id.asc"),
-      sbSelectAll<{ driver_id: string; trip_date: string; jobs_total: number; first_pickup_ts: string | null; last_dropoff_ts: string | null }>(
-        "v_pay_daily", `select=driver_id,trip_date,jobs_total,first_pickup_ts,last_dropoff_ts&${inList}`, "trip_date.asc,driver_id.asc"),
+      sbSelectAll<{ driver_id: string; trip_date: string; jobs_total: number; first_pickup_ts: string | null; last_dropoff_ts: string | null; first_away_ts: string | null }>(
+        "v_pay_daily", `select=driver_id,trip_date,jobs_total,first_pickup_ts,last_dropoff_ts,first_away_ts&${inList}`, "trip_date.asc,driver_id.asc"),
       masterDriverNames(ids),
     ]);
     const punchesBy = new Map<string, PayPunch[]>();
@@ -69,7 +69,7 @@ export async function GET(req: NextRequest) {
       const d = dayBy.get(k);
       const shifts = inputs.shifts.get(k) ?? [];
       // What the rule pays WITHOUT any correction — the "before" of the decision.
-      const rule = paidDay(taps, { date: c.trip_date, shifts, firstTaskAt: d?.first_pickup_ts ?? null, lastTaskAt: d?.last_dropoff_ts ?? null }, staffCode(c.driver_name));
+      const rule = paidDay(taps, { date: c.trip_date, shifts, firstTaskAt: d?.first_pickup_ts ?? null, lastTaskAt: d?.last_dropoff_ts ?? null, firstAwayAt: d?.first_away_ts ?? null }, staffCode(c.driver_name));
       const first = hhmm(d?.first_pickup_ts), last = hhmm(d?.last_dropoff_ts);
       const inT = c.in_time.slice(0, 5), outT = c.out_time.slice(0, 5);
       // Minutes of the requested window that fall outside the day's first→last

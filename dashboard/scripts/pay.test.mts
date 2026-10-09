@@ -151,8 +151,12 @@ check("BO minutes at 35.000đ, the rest at 30.000đ", hoursPayFor(tuDay.minutes,
 // Only when he checked in at D001 and ran no trip inside 06:00–15:00.
 const tuD019 = paidDay(tuTaps.map((p) => ({ ...p, location_name: "BRA - D019" })), tu, "PT101705");
 check("BO needs the check-in at D001", tuD019.bo_minutes === 0 && tuD019.minutes === 390, `${tuD019.minutes}/${tuD019.bo_minutes}`);
-const tuDrove = paidDay(tuTaps, { ...tu, firstTaskAt: "2026-08-17T10:15:00+07:00" }, "PT101705");
-check("a trip inside the window: no BO, driving", tuDrove.bo_minutes === 0, `${tuDrove.bo_minutes}`);
+const tuDrove = paidDay(tuTaps, { ...tu, firstTaskAt: "2026-08-17T10:15:00+07:00", firstAwayAt: "2026-08-17T10:40:00+07:00" }, "PT101705");
+check("left D001 inside the window: no BO, driving", tuDrove.bo_minutes === 0, `${tuDrove.bo_minutes}`);
+// 18/08: picked up the K Labtech sendout AT D001 at 14:49, delivered 15:32 —
+// the handover into his driving shift, not a morning spent driving.
+const tuHandover = paidDay(tuTaps, { ...tu, firstTaskAt: "2026-08-17T14:49:00+07:00", firstAwayAt: "2026-08-17T15:32:00+07:00" }, "PT101705");
+check("a pickup at D001 before 15:00 keeps the BO morning", tuHandover.bo_minutes === 536, `${tuHandover.bo_minutes}`);
 // Sunday 16/08 he drives 06:00–15:00 on payroll's shift: no BO.
 const tuSun = paidDay([], facts([["06:00", "15:00"]], "07:05", "15:27", "2026-08-16"), "PT101705");
 check("Sunday is driving, normal rate", tuSun.bo_minutes === 0 && tuSun.minutes > 0, `${tuSun.bo_minutes}`);
