@@ -135,21 +135,26 @@ export async function uploadToCartrack(files: UploadFile[]): Promise<string[]> {
     win ??= appt.windowStartTime ? String(appt.windowStartTime).replace(" ", "T").replace(/([+-]\d{2})$/, "$1:00") : null;
     if (!win) throw new Error("Không tìm được khung giờ để tải ảnh.");
 
-    const update = (list: { file_name: string; base64_data: string }[]) => jsonRpc("delivery_update_appointment", {
+    // camelCase file fields. The POC's snake_case (file_name / base64_data) is
+    // refused since Cartrack's 2026-08-12 RPC rename: "files.0.base64Data is
+    // required…" (prod, 2026-10-09).
+    const update = (list: { fileName: string; base64Data: string }[]) => jsonRpc("delivery_update_appointment", {
       data: {
         windowStartTime: win, windowEndTime: win, durationInMinutes: appt.durationInMinutes ?? 45,
         properties: appt.properties, files: list, capabilityId, appointmentId,
       },
     });
 
-    const put = await update(files.map((f) => ({ file_name: f.name, base64_data: f.dataUrl })));
+    const put = await update(files.map((f) => ({ fileName: f.name, base64Data: f.dataUrl })));
     if (!put.ok) throw new Error(`delivery_update_appointment: ${put.error}`);
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const back = await jsonRpc<any>("delivery_get_appointment", { data: { appointmentId } });
       if (!back.ok) throw new Error(`delivery_get_appointment: ${back.error}`);
-      const stored: { file_url?: string }[] = back.result?.data?.files ?? [];
-      const links = stored.filter((f) => f.file_url).map((f) => PUBLIC_BASE + encodeURIComponent(new URL(f.file_url!).pathname));
+      // Either spelling on the way back — the read side has not been seen yet.
+      const stored: { fileUrl?: string; file_url?: string }[] = back.result?.data?.files ?? [];
+      const urls = stored.map((f) => f.fileUrl ?? f.file_url).filter((u): u is string => !!u);
+      const links = urls.map((u) => PUBLIC_BASE + encodeURIComponent(new URL(u).pathname));
       if (links.length !== files.length) throw new Error(`Cartrack giữ ${links.length}/${files.length} tệp.`);
       return links;
     } finally {
