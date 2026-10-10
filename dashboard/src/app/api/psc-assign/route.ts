@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, cancelJob, jobVnDate, completeJob, createJob, getJobDetails, getJobsByStatusAndDate, getLiveDrivers, type Env } from "@/lib/cartrack";
 import { driverDisplayName, stripDriverCode } from "@/lib/job-detail";
-import { vnDate, vnHoursMinutes, vnTimestamp } from "@/lib/time";
-import { isBlockingPickupStop, isStopStarted, isCompletedOrRejectedStop, pscPairKey } from "@/lib/job-filters";
+import { vnDate, vnHoursMinutes, vnMinutesSinceMidnight, vnTimestamp } from "@/lib/time";
+import { isBlockingPickupStop, isFarWindowPickup, isStopStarted, isCompletedOrRejectedStop, pscPairKey } from "@/lib/job-filters";
 import { PSC_VIA_LABEL } from "@/lib/via-legs";
 import { acquireCreateLock, releaseCreateLock, markPscPair, unmarkPscPair, lookupPscPair, type PscDupHit } from "@/lib/smart-log-kv";
 import { blockedPair, jobIsDone, slimJob } from "@/lib/day-snapshot";
@@ -71,12 +71,13 @@ async function liveDuplicateCheck(
   // a completion timestamp while the status still lags, see isBlockingPickupStop — or the
   // job was cancelled (7) / failed (3). Via-legs are intentional double-coverage.
   // (job/stop inferred from the any[] fetch results — no explicit annotation needed.)
+  const nowMin = vnMinutesSinceMidnight();
   const duplicate = jobs.find((job) => {
     if (job.job_status_id === 7 || job.job_status_id === 3) return false;
     if ((job.labels ?? []).includes(PSC_VIA_LABEL)) return false;
     const stops: Stop[] = job.stops ?? [];
     const hasActivePickup = stops.some((s) =>
-      s.stop_type_id === 1 && s.customer_id === pickup && isBlockingPickupStop(s),
+      s.stop_type_id === 1 && s.customer_id === pickup && isBlockingPickupStop(s) && !isFarWindowPickup(s, nowMin),
     );
     const hasMatchingDropoff = stops.some((s) =>
       s.stop_type_id === 2 && s.customer_id === dropoff,
@@ -112,7 +113,8 @@ async function stillBlocking(hit: PscDupHit, pickup: string, dropoff: string, en
     if (job.job_status_id === 7 || job.job_status_id === 3) return false;
     const stops: Stop[] = job.stops ?? [];
     const blockingPickup = stops.some(
-      (s) => s.stop_type_id === 1 && s.customer_id === pickup && isBlockingPickupStop(s),
+      (s) => s.stop_type_id === 1 && s.customer_id === pickup && isBlockingPickupStop(s)
+        && !isFarWindowPickup(s, vnMinutesSinceMidnight()),
     );
     const matchingDropoff = stops.some((s) => s.stop_type_id === 2 && s.customer_id === dropoff);
     return blockingPickup && matchingDropoff;

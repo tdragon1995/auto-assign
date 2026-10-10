@@ -24,9 +24,9 @@ delete process.env.KV_REST_API_URL;
 delete process.env.KV_REST_API_TOKEN;
 
 const { buildSnapshot } = await import("../src/lib/day-snapshot");
-const { isBlockingPickupStop, pscPairKey, STOP_STATUS } = await import("../src/lib/job-filters");
+const { isBlockingPickupStop, isFarWindowPickup, pscPairKey, STOP_STATUS } = await import("../src/lib/job-filters");
 const { PSC_VIA_LABEL } = await import("../src/lib/via-legs");
-const { vnDate } = await import("../src/lib/time");
+const { vnDate, vnMinutesSinceMidnight } = await import("../src/lib/time");
 
 const DATE = vnDate();
 const snap = await buildSnapshot(DATE, "prod");
@@ -44,7 +44,7 @@ if (!snap) {
   for (const j of jobs) {
     if (j.job_status_id === 7 || j.job_status_id === 3) continue;
     if (j.labels.includes(PSC_VIA_LABEL)) { exemptCount++; continue; }
-    const pickups = j.stops.filter((s) => s.stop_type_id === 1 && s.customer_id && isBlockingPickupStop(s));
+    const pickups = j.stops.filter((s) => s.stop_type_id === 1 && s.customer_id && isBlockingPickupStop(s) && !isFarWindowPickup(s, vnMinutesSinceMidnight()));
     if (!pickups.length) continue;
     const dropoffs = j.stops.filter((s) => s.stop_type_id === 2 && s.customer_id);
     for (const p of pickups) for (const d of dropoffs) {

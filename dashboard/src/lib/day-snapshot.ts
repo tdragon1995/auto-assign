@@ -1,7 +1,8 @@
 import { Redis } from "@upstash/redis";
 import { getTimelineJobs, getUnroutedJobs, type Env } from "./cartrack";
-import { isBlockingPickupStop, isLabWatchedClient, LAB_CUSTOMER_ID, pscPairKey, PSC_VIA_LABEL } from "./job-filters";
+import { isBlockingPickupStop, isFarWindowPickup, isLabWatchedClient, LAB_CUSTOMER_ID, pscPairKey, PSC_VIA_LABEL } from "./job-filters";
 import { driverDisplayName } from "./job-detail";
+import { vnMinutesSinceMidnight } from "./time";
 import type { Job, Stop } from "./types";
 
 /**
@@ -339,10 +340,11 @@ function slimUnrouted(j: any): SnapJob {
  *  sit frozen between cycles. */
 function buildPairs(jobs: SnapJob[]): Record<string, PairHit> {
   const pairs: Record<string, PairHit> = {};
+  const nowMin = vnMinutesSinceMidnight();
   for (const j of jobs) {
     if (j.job_status_id === 7 || j.job_status_id === 3) continue;
     if (j.labels.includes(PSC_VIA_LABEL)) continue;
-    const pickups = j.stops.filter((s) => s.stop_type_id === 1 && s.customer_id && isBlockingPickupStop(s));
+    const pickups = j.stops.filter((s) => s.stop_type_id === 1 && s.customer_id && isBlockingPickupStop(s) && !isFarWindowPickup(s, nowMin));
     if (!pickups.length) continue;
     const dropoffs = j.stops.filter((s) => s.stop_type_id === 2 && s.customer_id);
     const hit: PairHit = { job_id: j.job_id, reference_number: j.reference_number };

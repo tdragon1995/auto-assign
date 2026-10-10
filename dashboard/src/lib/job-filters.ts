@@ -236,6 +236,22 @@ export function isBlockingPickupStop(stop: {
   return stop.stop_status_id != null && isActiveStop(stop.stop_status_id);
 }
 
+/**
+ * True if the pickup's window opens more than an hour from now — a booked slot (Lịch cố
+ * định, Hẹn giờ) rather than a trip on its way, so it must not block the branch booking
+ * the batch in front of it. On 2026-10-11 D003's 17:30 Lịch cố định trip, parked on the
+ * proxy from 05:06, refused every D003→D001 request all morning. Same 60-minute rule the
+ * engine's buildActiveRouteMap applies, so the guard and the cycle agree. No overnight
+ * wrap: the guard reads one day, and a window already past is a trip that is due.
+ */
+export function isFarWindowPickup(
+  stop: { delivery_windows?: { time_from?: string | null }[] | null },
+  nowMinutes: number,
+): boolean {
+  const m = /^(\d{2}):(\d{2})/.exec(stop.delivery_windows?.[0]?.time_from ?? "");
+  return !!m && Number(m[1]) * 60 + Number(m[2]) - nowMinutes > 60;
+}
+
 /** Canonical key for the PSC active-pickup dedup index: a `pickup|dropoff` customer
  *  pair. Shared by the assign cycle (which writes the index) and /api/psc-assign
  *  (which reads it), so the two never disagree on format. Dependency-free on purpose
