@@ -1257,14 +1257,20 @@ export interface StatusBundle {
 /** One pipeline request to Upstash — and, since held/failed/warnings moved into a
  *  single hash, FOUR commands per poll instead of six. The dashboard polls every
  *  90s per open tab, so each command removed here is ~24k a month. */
-export async function getStatusBundle(logLimit = 100): Promise<StatusBundle> {
+export async function getStatusBundle(logLimit = 100, withConfigLists = true): Promise<StatusBundle> {
   const redis = getRedis();
   if (!redis) return { state: null, lastChecked: null, deployments: [], logs: [], held: [], warnings: [], warningsAt: null, failed: [], sheetAlarms: [], unfinished: [], gaps: [], overlaps: [], parsedAt: "", branchRules: {} };
 
   const pipe = redis.pipeline();
   pipe.get(ARM_KEY);
   pipe.lrange(RUN_LOG_KEY, 0, logLimit - 1);
-  pipe.hgetall(CYCLE_SNAPSHOT_KEY);
+  // The config lists (coverage_gaps + config_branch_rules ≈ 115 KB of the hash's
+  // ~125 KB) are only needed when the caller has no parsed config of its own — the
+  // status route normally overrides them from loadConfigFromSheets. Reading them anyway
+  // on every 90s poll of every open tab was a measurable share of the Redis bandwidth
+  // that hit the 10 GB cap (2026-10-12).
+  if (withConfigLists) pipe.hgetall(CYCLE_SNAPSHOT_KEY);
+  else pipe.hmget(CYCLE_SNAPSHOT_KEY, F_HELD, F_FAILED, F_WARNINGS, F_WARNINGS_TS, F_SHEET_ALARMS, F_PARSED_AT);
   pipe.hgetall(DEPLOY_HEARTBEAT_KEY);
   const [rawState, rawLogs, rawSnapshot, rawDeployments] = await pipe.exec();
 

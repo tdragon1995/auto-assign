@@ -15,7 +15,10 @@ export async function GET(req: NextRequest) {
   // Shaped by statusPayload rather than here, so the "every field the bundle
   // computes reaches the dashboard" rule is one testable function instead of a
   // list to keep in step. It has fallen out of step three times.
-  const [bundle, config] = await Promise.all([getStatusBundle(100), loadConfigFromSheets()]);
+  // Lists come from the parsed config when there is one, so the bundle skips its Redis
+  // copy of them; only a failed config load pays for the full hash.
+  const [light, config] = await Promise.all([getStatusBundle(100, false), loadConfigFromSheets()]);
+  const bundle = config ? light : await getStatusBundle(100);
   return NextResponse.json({ ...statusPayload(bundle, req.nextUrl.searchParams.get("since")),
     ...(config ? { unfinished: config.unfinished, gaps: config.gaps, overlaps: config.overlaps,
       branchRules: config.branchRules, parsedAt: config.parsedAt } : {}) });
