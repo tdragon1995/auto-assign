@@ -11,6 +11,8 @@ import { foldName } from "@/lib/driver-cell";
 import { driverDisplayName } from "@/lib/display-names";
 import { DriverName } from "./driver-name";
 import type { ConfigDriver } from "@/lib/types";
+import { RIDE_HAIL_ADMINS, RIDE_HAIL_PROVIDERS, formatVnd, parseVnd, type RideHailTrip } from "@/lib/ride-hail";
+import { THREE_PL_LABEL, proxyKind } from "@/lib/proxy-drivers";
 
 type Env = "prod" | "uat";
 
@@ -22,6 +24,7 @@ interface JobSummary {
   pickup: { stop_id: number | null; customer_id: string | null; customer_name: string | null } | null;
   dropoff: { stop_id: number | null; customer_id: string | null; customer_name: string | null } | null;
   started: boolean;
+  ride_hail: RideHailTrip | null;
 }
 
 // One row in the search result list. `statusId` is filled in lazily once the row
@@ -486,7 +489,9 @@ export function JobAdminPanel({
                               <dd className="font-medium text-slate-900 break-words">{job.dropoff?.customer_name ?? "—"}</dd>
                               <dt className="pt-0.5 text-[11px] font-semibold uppercase text-slate-600">Tài xế</dt>
                               <dd className="flex flex-wrap items-baseline gap-x-1.5 text-slate-900">
-                                {driverName ? (
+                                {proxyKind(null, driverId) === "3pl" ? (
+                                  <span className="font-medium text-slate-900">{THREE_PL_LABEL}</span>
+                                ) : driverName ? (
                                   <DriverName full={driverName} className="font-medium text-slate-900" />
                                 ) : driverId ? (
                                   <span className="text-slate-700">Không có trong danh sách tài xế</span>
@@ -504,6 +509,14 @@ export function JobAdminPanel({
                               Mở trên Cartrack
                               <ExternalLink className="size-3" aria-hidden />
                             </a>
+
+                            {job.ride_hail && (
+                              <RideHailRecord
+                                key={job.ride_hail.amount_vnd}
+                                trip={job.ride_hail}
+                                onSaved={(t) => setJob((prev) => (prev?.job_id === t.job_id ? { ...prev, ride_hail: t } : prev))}
+                              />
+                            )}
 
                             {isTerminal ? (
                               <p className="rounded-md bg-slate-100 px-3 py-2 text-xs text-slate-700">
@@ -570,6 +583,13 @@ export function JobAdminPanel({
                                     )}
                                   </section>
                                 )}
+
+                                {/* ── Ride-hail: completes the job too ──────── */}
+                                <RideHailForm
+                                  env={env}
+                                  job={job}
+                                  onSent={() => { setHit(job.job_id, () => ({ statusId: 5 })); fetchJob(job.job_id); }}
+                                />
 
                                 {/* ── Complete: the one that cannot be undone ── */}
                                 <section className="space-y-1.5 border-t border-slate-200 pt-3" aria-label="Hoàn thành job">
@@ -664,6 +684,178 @@ function ConfirmBox({
           Huỷ
         </Button>
       </div>
+    </div>
+  );
+}
+
+const FIELD = "w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-sm placeholder:text-slate-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500";
+
+/**
+ * "Gửi xe công nghệ": the trip goes by Grab/Be/XanhSM/Ahamove instead of a driver.
+ * Same handoff as the branch's /qr button, plus what the company paid and the
+ * courier's waybill. A previous send that saved but failed to complete pre-fills.
+ */
+function RideHailForm({ env, job, onSent }: { env: Env; job: JobSummary; onSent: () => void }) {
+  const prev = job.ride_hail;
+  const [provider, setProvider] = useState(prev?.provider ?? "");
+  const [amount, setAmount] = useState(prev ? String(prev.amount_vnd) : "");
+  const [waybill, setWaybill] = useState(prev?.waybill ?? "");
+  const [admin, setAdmin] = useState(prev?.admin_name ?? "");
+  const [confirming, setConfirming] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  const ids = useId();
+  const vnd = parseVnd(amount);
+  const ready = Boolean(provider && vnd && waybill.trim() && admin);
+
+  const send = async () => {
+    setSending(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/admin/ride-hail?env=${env}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: job.job_id, provider, amount_vnd: vnd, waybill: waybill.trim(), admin_name: admin }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error ?? "Gửi thất bại");
+        setConfirming(false);
+        return;
+      }
+      toast.success(`Đã gửi Job ${job.job_id} qua ${provider}`);
+      onSent();
+    } catch {
+      setError("Mất kết nối — chưa chắc đã gửi, tra lại job rồi thử lại.");
+      setConfirming(false);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <section className="space-y-2 border-t border-slate-200 pt-3" aria-label="Gửi xe công nghệ">
+      <h4 className="text-xs font-semibold text-slate-800">Gửi xe công nghệ</h4>
+      <p className="text-xs leading-snug text-slate-600">
+        Grab/Be/XanhSM/Ahamove chở thay tài xế. Job được hoàn thành dưới tên đối tác, không tính cho tài xế nào.
+      </p>
+      <div className="grid grid-cols-2 gap-2">
+        <label className="space-y-0.5" htmlFor={`${ids}-p`}>
+          <span className="text-[11px] font-medium text-slate-700">Hãng xe</span>
+          <select id={`${ids}-p`} value={provider} onChange={(e) => setProvider(e.target.value)} className={FIELD}>
+            <option value="">— Chọn —</option>
+            {RIDE_HAIL_PROVIDERS.map((p) => <option key={p}>{p}</option>)}
+          </select>
+        </label>
+        <label className="space-y-0.5" htmlFor={`${ids}-a`}>
+          <span className="text-[11px] font-medium text-slate-700">Số tiền (VNĐ)</span>
+          <input id={`${ids}-a`} inputMode="numeric" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="VD: 85000" className={FIELD} />
+        </label>
+        <label className="space-y-0.5" htmlFor={`${ids}-w`}>
+          <span className="text-[11px] font-medium text-slate-700">Mã vận đơn</span>
+          <input id={`${ids}-w`} value={waybill} onChange={(e) => setWaybill(e.target.value)} className={FIELD} />
+        </label>
+        <label className="space-y-0.5" htmlFor={`${ids}-u`}>
+          <span className="text-[11px] font-medium text-slate-700">Người gửi</span>
+          <select id={`${ids}-u`} value={admin} onChange={(e) => setAdmin(e.target.value)} className={FIELD}>
+            <option value="">— Chọn —</option>
+            {RIDE_HAIL_ADMINS.map((a) => <option key={a}>{a}</option>)}
+          </select>
+        </label>
+      </div>
+      {amount && !vnd && <p className="text-xs text-red-700">Số tiền không hợp lệ.</p>}
+      {error && <p role="alert" className="text-xs text-red-700">{error}</p>}
+      {confirming && vnd ? (
+        <ConfirmBox
+          title={`Gửi Job ${job.job_id} qua ${provider}?`}
+          lines={[
+            routeOf(job),
+            `${formatVnd(vnd)} · Mã vận đơn ${waybill.trim()}`,
+            `Người gửi: ${admin}`,
+            "Job sẽ được đánh dấu đã xong. Không thể hoàn tác.",
+          ]}
+          confirmLabel={sending ? "Đang gửi…" : "Xác nhận gửi"}
+          busy={sending}
+          tone="emerald"
+          onConfirm={send}
+          onCancel={() => setConfirming(false)}
+        />
+      ) : (
+        <Button size="sm" variant="outline" disabled={!ready} onClick={() => setConfirming(true)}>
+          Gửi xe công nghệ…
+        </Button>
+      )}
+    </section>
+  );
+}
+
+/** A trip already sent by ride-hail: what was paid, editable — the app's final
+ *  fare often differs from the one entered at booking. */
+function RideHailRecord({ trip, onSaved }: { trip: RideHailTrip; onSaved: (t: RideHailTrip) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [amount, setAmount] = useState(String(trip.amount_vnd));
+  const [saving, setSaving] = useState(false);
+  const vnd = parseVnd(amount);
+
+  const save = async () => {
+    if (!vnd) return;
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/admin/ride-hail`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: trip.job_id, amount_vnd: vnd }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(data.error ?? "Lưu số tiền thất bại");
+        return;
+      }
+      toast.success(`Đã sửa số tiền: ${formatVnd(data.amount_vnd)}`);
+      setEditing(false);
+      onSaved(data);
+    } catch {
+      toast.error("Mất kết nối — số tiền chưa đổi, thử lại.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-1.5 rounded-md border border-teal-200 bg-teal-50 px-3 py-2 text-xs text-teal-950">
+      <p className="font-semibold break-words">Gửi qua {trip.provider} · Mã vận đơn {trip.waybill}</p>
+      <p>
+        Người gửi: {trip.admin_name}
+        {!trip.completed_at && " · job chưa hoàn thành — gửi lại bên dưới"}
+      </p>
+      {editing ? (
+        <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); save(); }}>
+          <input
+            inputMode="numeric"
+            aria-label="Số tiền (VNĐ)"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            autoFocus
+            className="w-32 rounded-md border border-slate-300 bg-white px-2 py-1 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+          />
+          <Button type="submit" size="xs" disabled={!vnd || saving}>{saving ? "Đang lưu…" : "Lưu"}</Button>
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            disabled={saving}
+            onClick={() => { setEditing(false); setAmount(String(trip.amount_vnd)); }}
+          >
+            Huỷ
+          </Button>
+          {amount && !vnd && <span className="text-red-700">Số tiền không hợp lệ.</span>}
+        </form>
+      ) : (
+        <p className="flex items-center gap-2">
+          <span className="text-sm font-semibold">{formatVnd(trip.amount_vnd)}</span>
+          <Button size="xs" variant="outline" onClick={() => setEditing(true)}>Sửa số tiền</Button>
+        </p>
+      )}
     </div>
   );
 }

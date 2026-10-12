@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { BASE_URL, getHeaders, cancelJob, jobVnDate, completeJob, createJob, getJobDetails, getJobsByStatusAndDate, getLiveDrivers, type Env } from "@/lib/cartrack";
+import { BASE_URL, getHeaders, cancelJob, jobVnDate, createJob, getJobDetails, getJobsByStatusAndDate, getLiveDrivers, type Env } from "@/lib/cartrack";
 import { driverDisplayName, stripDriverCode } from "@/lib/job-detail";
 import { vnDate, vnHoursMinutes, vnMinutesSinceMidnight, vnTimestamp } from "@/lib/time";
-import { isBlockingPickupStop, isFarWindowPickup, isStopStarted, isCompletedOrRejectedStop, pscPairKey } from "@/lib/job-filters";
+import { isBlockingPickupStop, isFarWindowPickup, isStopStarted, pscPairKey } from "@/lib/job-filters";
 import { PSC_VIA_LABEL } from "@/lib/via-legs";
 import { acquireCreateLock, releaseCreateLock, markPscPair, unmarkPscPair, lookupPscPair, type PscDupHit } from "@/lib/smart-log-kv";
 import { blockedPair, jobIsDone, slimJob } from "@/lib/day-snapshot";
@@ -11,6 +11,7 @@ import { loadConfigFromSheets } from "@/lib/config";
 import { loadLeaveEntries } from "@/lib/leave-config";
 import { resolveFixedDriver } from "@/lib/fixed-driver";
 import { pushRunLog } from "@/lib/smart-log-kv";
+import { check3plHandoff, complete3plHandoff } from "@/lib/three-pl-handoff";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -559,7 +560,6 @@ export async function DELETE(req: NextRequest) {
 // while the pickup hasn't been started. Clears the dedup guards on success so the same
 // pickup→dropoff can be re-requested immediately.
 
-const GRAB_DRIVER_ID = "6437bace-6578-11f1-9378-fa163ee8d8ac";
 const BATCH_ID_RE = /^B\d+$/;
 
 export async function PUT(req: NextRequest) {
@@ -587,67 +587,10 @@ export async function PUT(req: NextRequest) {
       );
     }
 
-    const headers = getHeaders(env);
-
-    // Guard: job must exist, not be terminal, and the pickup must not have started.
-    const jobRes = await fetch(`${BASE_URL}/jobs/${jobId}`, { headers, cache: "no-store" });
-    if (!jobRes.ok) return NextResponse.json({ error: "Job not found" }, { status: 404 });
-    const jobData = await jobRes.json();
-    const statusId: number | null = jobData.data?.job_status_id ?? null;
-    if (statusId === 5) {
-      return NextResponse.json({ error: "Chuyến đã hoàn thành rồi" }, { status: 409 });
-    }
-    if (statusId === 3 || statusId === 7) {
-      return NextResponse.json({ error: "Chuyến đã huỷ/thất bại" }, { status: 409 });
-    }
-    const stops: Stop[] = jobData.data?.stops ?? [];
-    const pickup  = stops.find((s) => s.stop_type_id === 1);
-    const dropoff = stops.find((s) => s.stop_type_id === 2);
-    // Block only when pickup is fully completed or rejected — allow En Route (2) and Arrived (3).
-    if (pickup && isCompletedOrRejectedStop(pickup.stop_status_id ?? 0)) {
-      return NextResponse.json({ error: "Không thể gửi: tài xế đã hoàn thành lấy mẫu." }, { status: 409 });
-    }
-
-    // Assign the proxy driver + attach Batch IDs as item tracking numbers (partial update).
-    const updateRes = await fetch(`${BASE_URL}/jobs/${jobId}`, {
-      method: "PUT",
-      headers,
-      body: JSON.stringify({
-        delivery_driver_id: GRAB_DRIVER_ID,
-        items: batchIds.map((b) => ({
-          description: "🧪 Mẫu",
-          weight: 0,
-          item_type_id: 1,
-          quantity: 1,
-          tracking_number: b,
-        })),
-      }),
-    });
-    if (!updateRes.ok) {
-      const err = await updateRes.json().catch(() => ({}));
-      return NextResponse.json(
-        { error: "Gán tài xế / mã Batch thất bại", details: err },
-        { status: 502 }
-      );
-    }
-
-    // Force-complete the trip.
-    const completeRes = await completeJob(jobId, env);
-    if (!completeRes.ok) {
-      return NextResponse.json(
-        { error: "Hoàn thành chuyến thất bại", status: completeRes.status, details: completeRes.body },
-        { status: 502 }
-      );
-    }
-
-    // Pickup→dropoff is fulfilled — clear both dedup guards so a fresh batch can be
-    // re-requested at once instead of colliding with the just-completed job. Awaited:
-    // a lost note leaves the handed-off trip looking un-handed-off to the branch.
-    if (pickup?.customer_id && dropoff?.customer_id) {
-      // Free the pair on both guards, or the branch is refused over a trip that is gone.
-      await unmarkPscPair(vnDate(), pscPairKey(pickup.customer_id, dropoff.customer_id), jobId).catch(() => {});
-      void releaseCreateLock(`psc:${pickup.customer_id}-${dropoff.customer_id}-${vnDate()}`);
-    }
+    const job = await check3plHandoff(jobId, env);
+    if (!job.ok) return NextResponse.json({ error: job.error }, { status: job.status });
+    const done = await complete3plHandoff(job, batchIds.map((b) => ({ description: "🧪 Mẫu", tracking_number: b })), env);
+    if (!done.ok) return NextResponse.json({ error: done.error, details: done.details }, { status: done.status });
 
     // Hand back the trip as it now stands, so the branch's list can be updated from this
     // response instead of re-reading the whole network's day to learn about one job. One
@@ -657,9 +600,9 @@ export async function PUT(req: NextRequest) {
     // it has and the next feed load corrects it. A handoff that succeeded is never
     // reported as failed over a cosmetic re-read.
     const after = await getJobDetails(jobId, env).catch(() => null);
-    const job = after?.data ? slimJob(after.data, driverDisplayName(after.data.driver)) : null;
+    const slim = after?.data ? slimJob(after.data, driverDisplayName(after.data.driver)) : null;
 
-    return NextResponse.json({ success: true, job_id: jobId, job });
+    return NextResponse.json({ success: true, job_id: jobId, job: slim });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
