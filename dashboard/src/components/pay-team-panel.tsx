@@ -373,7 +373,6 @@ export function PayTeamPanel() {
           <span>
             <strong>Chưa đủ dữ liệu — chưa duyệt lương kỳ này.</strong>{" "}
             {!data.coverage.period_closed && "Kỳ lương chưa kết thúc. "}
-            {!data.coverage.shifts_imported && "Chưa nhập ca từ file chấm công — tiền giờ đang tính theo Lịch ca dự kiến. "}
             {data.coverage.pending_corrections > 0 && `${data.coverage.pending_corrections} yêu cầu cập nhật công chờ duyệt. `}
             {data.coverage.missing_days.length > 0 &&
               `Thiếu ${data.coverage.missing_days.length}/${data.coverage.expected_days} ngày: ${data.coverage.missing_days.map((d) => d.slice(8, 10) + "/" + d.slice(5, 7)).join(", ")}. `}
@@ -388,7 +387,7 @@ export function PayTeamPanel() {
           <AlertCircle className="size-3.5 mt-0.5 shrink-0" />
           <span>
             {data.totals.no_shift_days} ngày tài xế có chấm công hoặc chạy chuyến nhưng
-            không có ca trong file — <strong>không tính tiền giờ</strong>.{" "}
+            không có ca trong Lịch ca — <strong>không tính tiền giờ</strong>.{" "}
             {/* The banner IS the filter. Telling a supervisor to eye-scan 82 rows for
                 a low-contrast digit is not a to-do, it is a search task. */}
             <button
@@ -445,7 +444,7 @@ export function PayTeamPanel() {
                 <th className="text-right font-semibold px-2 py-2" title="(Tiền giờ + tiền km) ÷ km thực chạy">đ/km thực</th>
                 {/* A word, not a glyph: the column is a task list and screen readers
                     got nothing from "⚠". */}
-                <th className="text-right font-semibold px-2 py-2" title="Ngày có làm nhưng không có ca trong file — không tính tiền giờ">Không ca</th>
+                <th className="text-right font-semibold px-2 py-2" title="Ngày có làm nhưng không có ca trong Lịch ca — không tính tiền giờ">Không ca</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -492,7 +491,7 @@ export function PayTeamPanel() {
       {data && !showCorrections && (
         <div className="px-3 py-2 border-t border-slate-200 shrink-0">
           <p className="text-[11px] text-slate-500">
-            {vnd.format(data.rates.per_hour)}đ/giờ theo ca của phòng lương: bắt đầu từ lúc chấm công vào
+            {vnd.format(data.rates.per_hour)}đ/giờ theo Lịch ca: bắt đầu từ lúc chấm công vào
             (không có thì chuyến lấy mẫu đầu tiên), không sớm hơn giờ vào ca; kết thúc lúc chấm công ra
             hoặc chuyến cuối, lấy giờ trễ hơn, không quá hết ca trừ khi còn chuyến. Ngày lễ ×3. BO Runner
             35.000đ/giờ (Anh Tú 6h–15h thứ 2–7, Mộng Hoa cả ca). +{" "}

@@ -247,7 +247,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({
         ok: true, driver_name: (await masterDriverNames([driverId])).get(driverId)||session.driver_name, month: askedMonth, from, to: from,
         rates, latest, days: [],
-        summary: { days: 0, jobs: 0, km: 0, worked_mins: 0, bo_mins: 0, hour_pay: 0, km_pay: 0, total_pay: 0, no_shift_days: 0, unpriced_jobs: 0, shifts_imported: false },
+        summary: { days: 0, jobs: 0, km: 0, worked_mins: 0, bo_mins: 0, hour_pay: 0, km_pay: 0, total_pay: 0, no_shift_days: 0, unpriced_jobs: 0, hours_shown: false },
       });
     }
 
@@ -302,6 +302,7 @@ export async function GET(req: NextRequest) {
     // reason the per-job figures are display-only.
     const totalKm = days.reduce((s, d) => s + d.km, 0);
     const totalMins = days.reduce((s, d) => s + d.worked_mins, 0);
+    const hoursShown = askedMonth >= HOURS_FROM_MONTH;
     const boMins = days.reduce((s, d) => s + d.bo_mins, 0);
     const roundedKm = Math.round(totalKm * 100) / 100;
 
@@ -323,14 +324,13 @@ export async function GET(req: NextRequest) {
         hour_pay: hoursPayFor(totalMins, boMins),
         km_pay: kmPayFor(roundedKm),
         total_pay: hoursPayFor(totalMins, boMins) + kmPayFor(roundedKm),
-        no_shift_days: inputs.payrollImported ? days.filter((d) => d.no_shift).length : 0,
+        no_shift_days: hoursShown ? days.filter((d) => d.no_shift).length : 0,
         pending_corrections: days.filter((d) => d.correction?.status === "pending").length,
         // One number the driver can act on without opening thirty days.
         unpriced_jobs: days.reduce((s, d) => s + d.unpriced, 0),
-        /** Payroll's file is in for this period. Until it is, the hours rest on
-         *  MISA's plan, which misses ~40% of worked days — the screen shows no
-         *  hours rather than wrong ones. */
-        shifts_imported: inputs.payrollImported && askedMonth >= HOURS_FROM_MONTH,
+        /** Hours are shown for this month (from HOURS_FROM_MONTH on), straight
+         *  off Lịch ca: a worked day with no shift there is flagged, not guessed. */
+        hours_shown: hoursShown,
       },
       days,
     });

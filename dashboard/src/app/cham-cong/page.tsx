@@ -315,8 +315,8 @@ interface PayReport {
     days: number; jobs: number; km: number; worked_mins: number; bo_mins: number;
     hour_pay: number; km_pay: number; total_pay: number; no_shift_days: number;
     unpriced_jobs: number;
-    /** Payroll's file is in for the period. Hours are shown only then. */
-    shifts_imported: boolean;
+    /** Hours are shown for this month (from rates.hours_from_month on). */
+    hours_shown: boolean;
   };
   days: PayDay[];
 }
@@ -2490,19 +2490,19 @@ export default function ChamCongPage() {
                       {/* The headline. */}
                       <div className="rounded-2xl border border-gray-200 overflow-hidden">
                         <div className="px-4 pt-4 pb-3">
-                          {/* Hours show only once payroll's file is in for the period:
-                              before that they rest on MISA's plan, which misses ~40% of
-                              worked days, and a wrong hour total is worse than none. Without
-                              them this is NOT the month's pay and must not be labelled as
-                              it — an unlabelled partial number reads as the whole. */}
+                          {/* Hours show from rates.hours_from_month on, straight off Lịch
+                              ca; a worked day with no shift is flagged, never guessed.
+                              Earlier months show km only — they were paid on their own
+                              numbers — and then this is NOT the month's pay and must not
+                              be labelled as it: an unlabelled partial reads as the whole. */}
                           <p className="text-xs text-gray-500">
-                            {payReport.summary.shifts_imported ? "Thu nhập" : "Tiền km"} {fmtMonth(payReport.month)} · Từ {fmtDayMonth(payReport.from)} tới {fmtDayMonth(payReport.to)}
+                            {payReport.summary.hours_shown ? "Thu nhập" : "Tiền km"} {fmtMonth(payReport.month)} · Từ {fmtDayMonth(payReport.from)} tới {fmtDayMonth(payReport.to)}
                           </p>
                           <p className="text-3xl font-bold text-gray-900 leading-tight mt-0.5 tabular-nums">
-                            {fmtVnd(payReport.summary.shifts_imported ? payReport.summary.total_pay : payReport.summary.km_pay)}
+                            {fmtVnd(payReport.summary.hours_shown ? payReport.summary.total_pay : payReport.summary.km_pay)}
                           </p>
                           {/* The working, once: one line per rate. */}
-                          {payReport.summary.shifts_imported && (
+                          {payReport.summary.hours_shown && (
                             <p className="text-xs text-gray-600 mt-0.5 tabular-nums">
                               {fmtMins(payReport.summary.worked_mins)} công · {fmtVnd(payReport.summary.hour_pay)}
                               {payReport.summary.bo_mins > 0 && (
@@ -2516,18 +2516,16 @@ export default function ChamCongPage() {
                           )}
                           <p className="text-xs text-gray-600 mt-0.5 tabular-nums">
                             {fmtKm(payReport.summary.km)} km × {vndFmt.format(payReport.rates.per_km)}đ/km
-                            {payReport.summary.shifts_imported && ` · ${fmtVnd(payReport.summary.km_pay)}`}
+                            {payReport.summary.hours_shown && ` · ${fmtVnd(payReport.summary.km_pay)}`}
                           </p>
-                          {!payReport.summary.shifts_imported ? (
+                          {!payReport.summary.hours_shown ? (
                             <p className="text-xs text-amber-700 mt-1.5">
-                              {payReport.month < payReport.rates.hours_from_month
-                                ? "Tiền giờ tháng này đã tính theo bảng lương của phòng lương."
-                                : "Tiền giờ sẽ hiện sau khi phòng lương chốt ca (khoảng ngày 18)."}
+                              Tháng này chỉ hiển thị tiền km.
                             </p>
                           ) : payReport.summary.no_shift_days > 0 && (
                             <p className="text-xs text-amber-700 mt-1.5">
-                              {payReport.summary.no_shift_days} ngày có chấm công nhưng không có ca trong file
-                              lương nên chưa tính giờ. Nếu bạn đã làm, bấm &quot;Cập nhật công&quot; cho ngày đó.
+                              {payReport.summary.no_shift_days} ngày có chấm công nhưng chưa có ca làm nên chưa
+                              tính giờ. Nếu bạn đã làm, bấm &quot;Cập nhật công&quot; cho ngày đó.
                             </p>
                           )}
                         </div>
@@ -2545,7 +2543,7 @@ export default function ChamCongPage() {
                       )}
 
                       <div className="grid grid-cols-2 gap-2">
-                        <TatStat label="Ngày công" value={String(payReport.days.filter((d) => d.jobs > 0 || (payReport.summary.shifts_imported && d.worked_mins > 0)).length)} />
+                        <TatStat label="Ngày công" value={String(payReport.days.filter((d) => d.jobs > 0 || (payReport.summary.hours_shown && d.worked_mins > 0)).length)} />
                         <TatStat label="Chuyến" value={String(payReport.summary.jobs)} />
                       </div>
 
@@ -2573,14 +2571,14 @@ export default function ChamCongPage() {
 
                       {/* The days. Each is tappable; only the one you open costs a
                           request for its jobs. */}
-                      {!payReport.days.some((d) => payDayShown(d, payReport.summary.shifts_imported)) ? (
+                      {!payReport.days.some((d) => payDayShown(d, payReport.summary.hours_shown)) ? (
                         <p className="text-xs text-gray-400 text-center py-6">
                           Chưa có dữ liệu cho tháng này.
                         </p>
                       ) : (
                         <div className="rounded-xl border border-gray-200 divide-y divide-gray-100 overflow-hidden">
-                          {payReport.days.filter((d) => payDayShown(d, payReport.summary.shifts_imported)).map((d) => {
-                            const hours = payReport.summary.shifts_imported;
+                          {payReport.days.filter((d) => payDayShown(d, payReport.summary.hours_shown)).map((d) => {
+                            const hours = payReport.summary.hours_shown;
                             const open = payOpenDay === d.date;
                             return (
                               <div key={d.date}>
@@ -2628,7 +2626,7 @@ export default function ChamCongPage() {
                                             <p className="text-[11px] font-semibold text-gray-600">Giờ công</p>
                                             {d.no_shift ? (
                                               <p className="text-xs text-amber-700 mt-0.5">
-                                                Không có ca trong file lương nên chưa tính giờ. Nếu bạn đã làm, bấm
+                                                Chưa có ca làm ngày này nên chưa tính giờ. Nếu bạn đã làm, bấm
                                                 &quot;Cập nhật công ngày này&quot; bên dưới.
                                               </p>
                                             ) : d.spans.length === 0 ? (
@@ -2756,9 +2754,9 @@ export default function ChamCongPage() {
                           <span className="font-semibold">Cách tính:</span>{" "}
                           {vndFmt.format(payReport.rates.per_km)}đ mỗi km. {payReport.rates.km_basis}.
                         </p>
-                        {payReport.summary.shifts_imported && (
+                        {payReport.summary.hours_shown && (
                           <p className="text-xs text-gray-600">
-                            {vndFmt.format(payReport.rates.per_hour)}đ mỗi giờ theo ca của phòng lương: tính từ
+                            {vndFmt.format(payReport.rates.per_hour)}đ mỗi giờ theo ca làm: tính từ
                             lúc chấm công vào (không có thì chuyến lấy mẫu đầu tiên), không sớm hơn giờ vào ca;
                             đến lúc chấm công ra hoặc chuyến cuối, lấy giờ trễ hơn. Ngày lễ ×3.
                           </p>

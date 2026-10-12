@@ -494,10 +494,11 @@ These are the things most likely to burn a future agent working on this codebase
     "Không ca". `coverage.shifts_imported` = payroll's file has been written for the
     period. Loaded ONE way for every reader: `lib/pay-days.ts`.
 
-    **Drivers see hours (Thu Nhập) only once payroll's file is in for the period,
-    and only from Tháng 10/2026** (`HOURS_FROM_MONTH` in `/api/pay/me`). Before the
-    file, hours rest on MISA's plan (~40% of worked days missing) and the screen
-    stays km-only; earlier months were already paid on payroll's own numbers.
+    **Drivers see hours (Thu Nhập) from Tháng 10/2026 on** (`HOURS_FROM_MONTH` in
+    `/api/pay/me`), straight off Lịch ca — no file needed. A worked day with no
+    shift is flagged "Không ca" (driver screen and Lương PT alike) and is fixed in
+    Thiếu ca PT or by Cập nhật công. Earlier months stay km-only: they were paid on
+    their own numbers. Driver-facing text never mentions payroll or a file.
 
     **"Cập nhật công" (`pay_day_corrections`).** An APPROVED correction is the day's
     worked window outright — it replaces the rule, shift or no shift. Drivers ask

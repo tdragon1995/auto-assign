@@ -213,10 +213,9 @@ export async function GET(req: NextRequest) {
           hour_pay: hoursPayFor(mins, boMins),
           km_pay: kmPayFor(km),
           total_pay: hoursPayFor(mins, boMins) + kmPayFor(km),
-          /** Days worked with no shift in payroll's file: they pay no hours, so
-           *  this is the column a supervisor checks before the 25th. Meaningless
-           *  before the import, when EVERY day would count. */
-          no_shift_days: shiftsImported ? noShiftDays : 0,
+          /** Days worked with no shift in Lịch ca: they pay no hours, so this is
+           *  the column a supervisor checks (Thiếu ca PT) before the 25th. */
+          no_shift_days: noShiftDays,
           /** Completed jobs with no distance: paid 0 km until priced. */
           unpriced_jobs: e.unpriced,
         };
@@ -242,7 +241,7 @@ export async function GET(req: NextRequest) {
         pending_corrections: pendingCorrections,
         // Approval needs every day of a finished period in, the shifts imported,
         // and every job priced.
-        ready: periodClosed && shiftsImported && pendingCorrections === 0 && missingDays.length === 0 && drivers.every((d) => d.unpriced_jobs === 0),
+        ready: periodClosed && pendingCorrections === 0 && missingDays.length === 0 && drivers.every((d) => d.unpriced_jobs === 0),
       },
       totals: {
         days_worked: drivers.reduce((s, d) => s + d.days_worked, 0),
