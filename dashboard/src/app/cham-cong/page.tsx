@@ -2518,14 +2518,9 @@ export default function ChamCongPage() {
                             {fmtKm(payReport.summary.km)} km × {vndFmt.format(payReport.rates.per_km)}đ/km
                             {payReport.summary.hours_shown && ` · ${fmtVnd(payReport.summary.km_pay)}`}
                           </p>
-                          {!payReport.summary.hours_shown ? (
+                          {!payReport.summary.hours_shown && (
                             <p className="text-xs text-amber-700 mt-1.5">
                               Tháng này chỉ hiển thị tiền km.
-                            </p>
-                          ) : payReport.summary.no_shift_days > 0 && (
-                            <p className="text-xs text-amber-700 mt-1.5">
-                              {payReport.summary.no_shift_days} ngày có chấm công nhưng chưa có ca làm nên chưa
-                              tính giờ. Nếu bạn đã làm, bấm &quot;Cập nhật công&quot; cho ngày đó.
                             </p>
                           )}
                         </div>
@@ -2624,12 +2619,7 @@ export default function ChamCongPage() {
                                         {hours && (
                                           <div className="rounded-lg bg-white border border-gray-200 px-3 py-2">
                                             <p className="text-[11px] font-semibold text-gray-600">Giờ công</p>
-                                            {d.no_shift ? (
-                                              <p className="text-xs text-amber-700 mt-0.5">
-                                                Chưa có ca làm ngày này nên chưa tính giờ. Nếu bạn đã làm, bấm
-                                                &quot;Cập nhật công ngày này&quot; bên dưới.
-                                              </p>
-                                            ) : d.spans.length === 0 ? (
+                                            {d.spans.length === 0 ? (
                                               <p className="text-xs text-gray-500 mt-0.5">Không có giờ công ngày này.</p>
                                             ) : (
                                               <div className="flex items-start gap-2 mt-0.5">
