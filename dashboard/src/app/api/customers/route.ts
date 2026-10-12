@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
-import { DELIVERY_BASE, getAdminToken } from "@/lib/labcenter";
+import { DELIVERY_BASE, getAdminToken, labcenterFetch, listLocationsByClientCode } from "@/lib/labcenter";
 import { loadPscRoutes } from "@/lib/psc-config";
 import { haversineKm } from "@/lib/distance";
 import { notifyAdminGroup } from "@/lib/zalo";
@@ -35,7 +35,16 @@ function matchDistanceM(m: DuplicateMatch, lat: number, lon: number): number | n
   return haversineKm(lat, lon, mLat, mLon) * 1000;
 }
 
-async function registerLabcenterPickDrop(pickUuid: string, lat: number, lon: number): Promise<{ ok: boolean; drop_id?: string; error?: string }> {
+// This call is what CREATES the Labcenter location (Labcenter pulls the Cartrack
+// customer in and copies its name). It is the only thing that does, so a miss
+// here leaves the client unbookable on the portal — hence the read-back below.
+async function registerLabcenterPickDrop(
+  pickUuid: string,
+  name: string,
+  clientCode: string,
+  lat: number,
+  lon: number,
+): Promise<{ ok: boolean; drop_id?: string; error?: string }> {
   const token = await getAdminToken();
   if (!token) return { ok: false, error: "Labcenter login failed (check LABCENTER_EMAIL/LABCENTER_PASSWORD)" };
 
@@ -54,17 +63,22 @@ async function registerLabcenterPickDrop(pickUuid: string, lat: number, lon: num
   }
   if (!nearest) return { ok: false, error: "No PSC with coordinates found" };
 
-  const res = await fetch(LABCENTER_URL, {
+  // labcenterFetch, not fetch: it renews a session Labcenter has rejected (401)
+  // instead of failing on the cached token.
+  const res = await labcenterFetch(LABCENTER_URL, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
     body: JSON.stringify({ pick_id: pickUuid, drop_id: nearest.uuid, estimate_pick_up: 60 }),
+    signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     return { ok: false, drop_id: nearest.uuid, error: `HTTP ${res.status}: ${text.slice(0, 200)}` };
+  }
+  // Labcenter answers 200 to writes it discards — confirm the place now exists.
+  const locations = await listLocationsByClientCode(clientCode, token);
+  if (!locations.some((l) => l.name === name)) {
+    return { ok: false, drop_id: nearest.uuid, error: "Labcenter trả về 200 nhưng không thấy địa điểm khi đọc lại" };
   }
   return { ok: true, drop_id: nearest.uuid };
 }
@@ -226,14 +240,18 @@ export async function POST(req: NextRequest) {
     let labcenter: { ok: boolean; drop_id?: string; error?: string } | null = null;
     if (customer?.customer_id && latitude != null && longitude != null) {
       try {
-        labcenter = await registerLabcenterPickDrop(customer.customer_id, latitude, longitude);
+        labcenter = await registerLabcenterPickDrop(customer.customer_id, customer_name, code, latitude, longitude);
       } catch (e) {
         labcenter = { ok: false, error: String(e) };
       }
+      if (!labcenter.ok) console.error("Labcenter pick/drop for", customer.customer_id, labcenter.error);
     }
 
     await notifyAdminGroup(
-      `🆕 Sales tạo khách hàng mới\n${customer_name}\n${address_line_1 || "(không có địa chỉ)"}`,
+      `🆕 Sales tạo khách hàng mới\n${customer_name}\n${address_line_1 || "(không có địa chỉ)"}` +
+        (labcenter && !labcenter.ok
+          ? `\n⚠️ CHƯA tạo được trên Labcenter (${labcenter.error}). Cartrack id: ${customer.customer_id}`
+          : ""),
     );
 
     if (env === "prod" && customer?.customer_id) {

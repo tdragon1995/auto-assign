@@ -870,7 +870,11 @@ export default function SalesPage() {
           setResult({ ok: false, msg: data.error ?? "Lỗi không xác định" });
         }
       } else {
-        setResult({ ok: true, msg: "Đã tạo địa điểm lấy mẫu thành công." });
+        // Cartrack is done either way (re-submitting would hit the 100m block), so
+        // the form still clears — but a Labcenter miss must not read as success.
+        setResult(data.labcenter && !data.labcenter.ok
+          ? { ok: false, msg: `Đã tạo trên Cartrack nhưng CHƯA tạo được trên Labcenter (${data.labcenter.error}). Đã báo điều phối Logistics.` }
+          : { ok: true, msg: "Đã tạo địa điểm lấy mẫu thành công." });
         setDuplicates(null);
         setMaKh(""); setQuanCu(""); setTenDuong(""); setTenKh(""); setDiaChi(""); setLat(""); setLon(""); setPhone("");
         setClientSearch(""); setClientSelected(false); setClientSearchKey((k) => k + 1);
