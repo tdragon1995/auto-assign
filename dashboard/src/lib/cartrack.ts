@@ -1675,18 +1675,40 @@ export async function getJobDetailsFast(jobId: number, env: Env = "prod"): Promi
     "delivery_get_job_details", { data: { jobIds: [jobId] } }, { env },
   );
   const raw = det.ok ? det.result?.jobs?.[0] : undefined;
-  const dj = raw ? rpcDataToRestShape(raw) : null;
-  const rawStops = dj?.stop ?? dj?.stops;
-  if (!dj || Number(dj.job_id) !== jobId || !Array.isArray(rawStops)) return getJobDetails(jobId, env);
+  const dj = raw ? rpcJobToRestShape(raw) : null;
+  if (!dj || Number(dj.job_id) !== jobId) return getJobDetails(jobId, env);
+  return { data: dj };
+}
+
+/** Several jobs in ONE delivery_get_job_details call, same shape as getJobDetailsFast.
+ *  Null on any doubt — and note one deleted or foreign id fails the WHOLE call
+ *  ("Access forbidden to resource jobIds.N", seen 2026-10-12), so callers must treat
+ *  null as "re-discover the ids", not as "no jobs". */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function getJobsDetailsFast(jobIds: number[], env: Env = "prod"): Promise<any[] | null> {
+  if (jobIds.length === 0) return [];
+  const det = await jsonRpc<{ jobs?: Record<string, unknown>[] }>(
+    "delivery_get_job_details", { data: { jobIds } }, { env },
+  );
+  if (!det.ok || !Array.isArray(det.result?.jobs)) return null;
+  const jobs = det.result.jobs.map(rpcJobToRestShape);
+  return jobs.every(Boolean) ? jobs : null;
+}
+
+/** One delivery_get_job_details job in the REST spelling — top level, stops, and each
+ *  stop's nested `customer`. Null when the stops are missing (a shape we don't know). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function rpcJobToRestShape(raw: Record<string, unknown>): any | null {
+  const dj = rpcDataToRestShape(raw);
+  const rawStops = dj.stop ?? dj.stops;
+  if (!Array.isArray(rawStops)) return null;
   return {
-    data: {
-      ...dj,
-      stops: rawStops.map((s) => {
-        const st = stopToRestShape(s as Record<string, unknown>);
-        if (st.customer && typeof st.customer === "object") st.customer = rpcDataToRestShape(st.customer as Record<string, unknown>);
-        return st;
-      }),
-    },
+    ...dj,
+    stops: rawStops.map((s) => {
+      const st = stopToRestShape(s as Record<string, unknown>);
+      if (st.customer && typeof st.customer === "object") st.customer = rpcDataToRestShape(st.customer as Record<string, unknown>);
+      return st;
+    }),
   };
 }
 

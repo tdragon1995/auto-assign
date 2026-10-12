@@ -2,7 +2,7 @@ import { Redis } from "@upstash/redis";
 import { getTimelineJobs, getUnroutedJobs, type Env } from "./cartrack";
 import { isBlockingPickupStop, isFarWindowPickup, isLabWatchedClient, LAB_CUSTOMER_ID, pscPairKey, PSC_VIA_LABEL } from "./job-filters";
 import { driverDisplayName } from "./job-detail";
-import { vnMinutesSinceMidnight } from "./time";
+import { vnDate, vnMinutesSinceMidnight } from "./time";
 import type { Job, Stop } from "./types";
 
 /**
@@ -89,6 +89,15 @@ export const GUARD_MAX_AGE_MS = 240_000;
  *  short enough that a stale day self-clears. Freshness is decided by __built__,
  *  not by this. */
 const HASH_TTL_S = 900;
+
+/** A PAST day barely moves, but it was held to today's 5-minute tolerance and 15-minute
+ *  TTL — so a branch browsing yesterday rebuilt and rewrote the whole day (600–940 KB)
+ *  every few minutes. Measured 2026-10-12: those rewrites were the largest single share
+ *  of the Redis bandwidth that hit the 10 GB cap. An hour late costs a history view
+ *  nothing; `fresh` still forces a rebuild. */
+const PAST_MAX_AGE_MS = 3_600_000;
+const PAST_TTL_S = 7_200;
+const isPastDay = (date: string) => date < vnDate();
 
 /** Guards a rebuild so several readers crossing the freshness line in the same second
  *  don't all parse the day at once. The loser serves what's already cached. */
@@ -473,7 +482,7 @@ async function write(redis: Redis, env: Env, date: string, snap: Snapshot): Prom
   }
 
   const revision = nextRevision(snap.builtAt);
-  const args = casWriteArgs(expectedRevision, revision, HASH_TTL_S, mode, deleted, changed);
+  const args = casWriteArgs(expectedRevision, revision, isPastDay(date) ? PAST_TTL_S : HASH_TTL_S, mode, deleted, changed);
 
   const applied = Number(await redis.eval(CAS_WRITE_SCRIPT, [cacheKey], args));
   const cpuEnd = cpuMicros();
@@ -584,7 +593,8 @@ async function slice(
   if (!opts.fresh) {
     try {
       const hit = await readSlice(redis, env, date, indexField, indexKey);
-      if (hit && hit.builtAt && Date.now() - hit.builtAt < (opts.maxAgeMs ?? MAX_AGE_MS)) return hit;
+      const maxAge = Math.max(opts.maxAgeMs ?? MAX_AGE_MS, isPastDay(date) ? PAST_MAX_AGE_MS : 0);
+      if (hit && hit.builtAt && Date.now() - hit.builtAt < maxAge) return hit;
       const built = await rebuild(redis, date, env);
       if (built) return fromSnap(built);
       // Someone else is rebuilding — serve what we already read rather than queue.
@@ -666,8 +676,12 @@ export async function locationJobs(
 export async function driverJobs(
   date: string, env: Env, driverId: string, opts: ReadOpts = {},
 ): Promise<SnapJob[] | null> {
+  // Feed tolerance, like locationJobs. At MAX_AGE_MS (60s) against the ~180s publish,
+  // nearly every driver page load rebuilt the whole day as a FULL write (measured
+  // 2026-10-12) — and that reset the cycle's baseline, so its next publish was full too.
+  // Chấm-công's own actions still invalidate, so a driver's new check-in is never late.
   const s = await slice(date, env, IDX_DRV, driverId,
-    (snap) => snap.byDriver[driverId] ?? [], opts);
+    (snap) => snap.byDriver[driverId] ?? [], { maxAgeMs: FEED_MAX_AGE_MS, ...opts });
   return s?.jobs ?? null;
 }
 

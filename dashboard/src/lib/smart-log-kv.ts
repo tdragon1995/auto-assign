@@ -819,6 +819,62 @@ export async function releaseCreateLock(key: string): Promise<void> {
   await redis.del(CREATE_LOCK_PREFIX + key);
 }
 
+// ── Chấm-công job ids — so the driver's page asks Cartrack for 1–2 jobs, not the day ──
+
+// A SET per driver per day. NONE marks "looked, found nothing", kept briefly so a driver
+// reopening the page before their first tap does not re-run the network-wide lookup
+// every time — but short enough that a check-in điều phối creates by hand still appears.
+const CHAM_CONG_IDS_PREFIX = "chamcong:ids:";
+const CHAM_CONG_IDS_TTL_S = 172_800;
+const CHAM_CONG_NONE = "none";
+const CHAM_CONG_NONE_TTL_S = 600;
+
+/** Today's recorded chấm-công job ids, [] for "recorded none", null for "no record". */
+export async function getChamCongIds(date: string, driverId: string): Promise<number[] | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  try {
+    const members = await redis.smembers(CHAM_CONG_IDS_PREFIX + date + ":" + driverId);
+    if (!members?.length) return null;
+    return members.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  } catch {
+    return null;
+  }
+}
+
+/** Record a job the POST just created. Best-effort: a miss only costs one lookup. */
+export async function addChamCongId(date: string, driverId: string, jobId: number): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  const key = CHAM_CONG_IDS_PREFIX + date + ":" + driverId;
+  try {
+    const p = redis.pipeline();
+    p.srem(key, CHAM_CONG_NONE);
+    p.sadd(key, String(jobId));
+    p.expire(key, CHAM_CONG_IDS_TTL_S);
+    await p.exec();
+  } catch { /* best-effort */ }
+}
+
+/** Replace the record with what a full lookup found (possibly nothing). */
+export async function setChamCongIds(date: string, driverId: string, jobIds: number[]): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  const key = CHAM_CONG_IDS_PREFIX + date + ":" + driverId;
+  try {
+    const p = redis.pipeline();
+    p.del(key);
+    if (jobIds.length) {
+      p.sadd(key, ...jobIds.map(String) as [string, ...string[]]);
+      p.expire(key, CHAM_CONG_IDS_TTL_S);
+    } else {
+      p.sadd(key, CHAM_CONG_NONE);
+      p.expire(key, CHAM_CONG_NONE_TTL_S);
+    }
+    await p.exec();
+  } catch { /* best-effort */ }
+}
+
 // ── Overlap lock — one cycle at a time, safe at any cron frequency ──────────
 
 /** Try to claim the cycle lock. Returns true if claimed (caller may run the

@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createJob, deleteJob, getJobDetails, updateJobStops, BASE_URL, getHeaders, isDriverUnavailableError, type Env } from "@/lib/cartrack";
-import { driverJobs, invalidateSnapshot } from "@/lib/day-snapshot";
+import { createJob, deleteJob, getJobDetails, getJobsDetailsFast, getStopsByLabels, updateJobStops, BASE_URL, getHeaders, isDriverUnavailableError, type Env } from "@/lib/cartrack";
+import { driverJobs } from "@/lib/day-snapshot";
 import { vnDate } from "@/lib/time";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 import { isStopStarted, CHAM_CONG_PREFIX } from "@/lib/job-filters";
-import { acquireCreateLock, releaseCreateLock } from "@/lib/smart-log-kv";
+import { acquireCreateLock, releaseCreateLock, getChamCongIds, addChamCongId, setChamCongIds } from "@/lib/smart-log-kv";
 
 interface OngoingChamCong {
   job_id: number;
@@ -106,6 +106,40 @@ async function loadDriverJobsToday(driverId: string, today: string, env: Env): P
   return data.data ?? [];
 }
 
+/** The driver's chấm-công jobs, LIVE from Cartrack, without touching the day snapshot.
+ *
+ *  The page used to read them out of the shared day — every job in the network — and
+ *  each tap invalidated that day, so the next open rebuilt and rewrote all of it
+ *  (300 KB–1 MB of Redis per tap; the bulk of the bandwidth that hit the 10 GB cap,
+ *  2026-10-12). Cartrack has no server-side driver filter for this — its own map loads
+ *  every route and filters in the browser — so instead:
+ *
+ *  1. The POST records each job id it creates; the page asks for exactly those
+ *     (one delivery_get_job_details call, ~4 KB a job).
+ *  2. No record, or an id Cartrack refuses (deleted by điều phối): list the day's
+ *     check_in/check_out stops network-wide — a label filter Cartrack applies itself,
+ *     ~2 KB a stop — keep this driver's, and record them for next time.
+ *
+ *  Null = Cartrack unavailable (UAT, login failure); the caller uses the old path. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function loadChamCongJobsLive(driverId: string, today: string, env: Env): Promise<any[] | null> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mine = (jobs: any[]) => jobs.filter((j) => j.delivery_driver_id === driverId);
+  const recorded = await getChamCongIds(today, driverId);
+  if (recorded && recorded.length === 0) return [];
+  if (recorded) {
+    const jobs = await getJobsDetailsFast(recorded, env);
+    if (jobs) return mine(jobs);
+  }
+  const stops = await getStopsByLabels(today, ["check_in", "check_out"], env);
+  if (!stops) return null;
+  const ids = [...new Set(stops.filter((s) => s.delivery_driver_id === driverId).map((s) => Number(s.job_id)))];
+  const jobs = await getJobsDetailsFast(ids, env);
+  if (!jobs) return null;
+  await setChamCongIds(today, driverId, ids);
+  return mine(jobs);
+}
+
 /** The driver's chấm-công task whose location can still be corrected: today's newest
  *  one they haven't touched yet in the Cartrack app. Once a stop is started the record
  *  is real and only điều phối should move it — PATCH re-checks this against fresh job
@@ -150,9 +184,15 @@ export async function GET(req: NextRequest) {
       // Cartrack filters use GMT+7 (VN time) — pass VN date strings directly
       const today = vnDate();
 
-      const todayJobs = await loadDriverJobsToday(driverId, today, env);
+      // Chấm-công rows come live from Cartrack (a tap must show at once); the pending-trip
+      // count rides the day the assign cycle publishes every ~3 min, at a tolerance that
+      // never forces a rebuild of its own — a few minutes late is harmless for a count.
+      const live = await loadChamCongJobsLive(driverId, today, env).catch(() => null);
+      const todayJobs = live
+        ? await driverJobs(today, env, driverId, { maxAgeMs: 15 * 60_000 }).catch(() => null) ?? []
+        : await loadDriverJobsToday(driverId, today, env);
 
-      const chamCongJobs = todayJobs.filter(
+      const chamCongJobs = (live ?? todayJobs).filter(
         (j) =>
           (j.reference_number ?? "").startsWith(CHAM_CONG_PREFIX) &&
           j.job_status_id !== 7 &&
@@ -273,9 +313,9 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
-    // The stop moved, so the snapshot's location index now files this job under the wrong
-    // PSC — and the driver's list would keep showing the location they just corrected.
-    await invalidateSnapshot(vnDate(), env).catch(() => {});
+    // No snapshot invalidation: the driver's list reads this job live by id, and the
+    // shared day catches up at the next ~3-minute publish. Invalidating rebuilt the whole
+    // network's day for one corrected stop.
 
     return NextResponse.json({ success: true, job_id: jobId, location_name: psc.name });
   } catch (e) {
@@ -356,12 +396,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // The driver's list is rendered from the day snapshot, so mark it stale — their very
-    // next action is reloading that list to see the check-in they just made. Previously
-    // the day was usually stale anyway and the reload rebuilt by accident; now the assign
-    // cycle republishes it every ~3 minutes, so without this the tap can look like it
-    // failed and get repeated. Awaited (~10ms) — a dropped invalidation is the bug.
-    await invalidateSnapshot(vnDate(), env).catch(() => {});
+    // Record the id so the driver's very next reload asks Cartrack for this job by id and
+    // sees the tap at once — without it the tap can look like it failed and get repeated.
+    // Awaited (~10ms). A dropped record is not lost, only slower: the reload then finds it
+    // through the label lookup.
+    await addChamCongId(vnDate(), driver_id, jobId);
 
     return NextResponse.json({ success: true, job_id: jobId });
   } catch (e) {
