@@ -93,10 +93,11 @@ const HASH_TTL_S = 900;
 /** A PAST day barely moves, but it was held to today's 5-minute tolerance and 15-minute
  *  TTL — so a branch browsing yesterday rebuilt and rewrote the whole day (600–940 KB)
  *  every few minutes. Measured 2026-10-12: those rewrites were the largest single share
- *  of the Redis bandwidth that hit the 10 GB cap. An hour late costs a history view
- *  nothing; `fresh` still forces a rebuild. */
-const PAST_MAX_AGE_MS = 3_600_000;
-const PAST_TTL_S = 7_200;
+ *  of the Redis bandwidth that hit the 10 GB cap. A history view does not need to be
+ *  current; 12h means a past day costs at most two rebuilds a day. `fresh` still forces
+ *  one. TTL outlives the tolerance so the copy is still there to be reused. */
+const PAST_MAX_AGE_MS = 12 * 3_600_000;
+const PAST_TTL_S = 24 * 3_600;
 const isPastDay = (date: string) => date < vnDate();
 
 /** Guards a rebuild so several readers crossing the freshness line in the same second
