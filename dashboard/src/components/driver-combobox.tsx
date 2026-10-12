@@ -62,8 +62,19 @@ export function DriverCombobox({
     (d) => !taken.has(d.name) && (!q.trim() || foldName(d.name).includes(foldName(q.trim()))),
   );
 
+  /**
+   * Scrolling the highlighted row into view is for the ARROW KEYS only.
+   *
+   * The highlight also follows the mouse, and the two together ate clicks. A row
+   * sitting half-off the top or bottom edge of the list would, on hover, scroll
+   * itself fully into view — sliding the list under a stationary cursor. The
+   * mouse-up then landed on a different row than the mouse-down, and a browser
+   * fires no click at all when those disagree. Rows in the middle of the list
+   * were fine, which is what made it look random rather than broken.
+   */
+  const keyboardNav = useRef(false);
   useEffect(() => {
-    if (open) activeRef.current?.scrollIntoView({ block: "nearest" });
+    if (open && keyboardNav.current) activeRef.current?.scrollIntoView({ block: "nearest" });
   }, [active, open, q]);
 
   const add = (driver: ConfigDriver) => {
@@ -82,6 +93,7 @@ export function DriverCombobox({
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
+      keyboardNav.current = true;
       if (!open) { setOpen(true); return; }
       setActive((i) => {
         const n = matches.length;
@@ -175,7 +187,7 @@ export function DriverCombobox({
                   id={`${listId}-${i}`}
                   ref={i === active ? activeRef : undefined}
                   aria-selected={i === active}
-                  onMouseEnter={() => setActive(i)}
+                  onMouseEnter={() => { keyboardNav.current = false; setActive(i); }}
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => add(d)}
                   className={`flex w-full flex-wrap items-baseline gap-x-1.5 px-2 py-1 text-left text-xs ${
