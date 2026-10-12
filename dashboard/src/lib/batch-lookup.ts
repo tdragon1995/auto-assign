@@ -9,6 +9,7 @@ type Fields = Record<string, string | null | undefined>;
 type Sample = Fields & { sample_id: string | number };
 type Order = {
   lis_order_id?: string; branch_code?: string; status?: string; created_at?: string;
+  patient_full_name?: string;
   created_by_employee_code?: string; client_id?: string | number; client_type?: string;
   cancel_time?: string; cancel_by?: string; cancel_reason?: string;
   order_test_details?: unknown[];
@@ -44,7 +45,7 @@ export type BatchLookupResult = {
   related_routes: LookupJobRow[];
   driver_days: { driver: string; days: string[]; jobs: LookupJobRow[] }[];
   summary: null | {
-    order: { vid: string; branch?: string; status?: string; created: string | null; tests: number; route?: string; expected_transport?: string };
+    order: { vid: string; patient?: string; branch?: string; status?: string; created: string | null; tests: number; route?: string; expected_transport?: string };
     client: null | { code?: string; name?: string; type?: string; segment?: string; owner?: string; supervisor_email?: string };
     samples: { sample_id: string; name?: string | null; container?: string | null; status?: string | null; stat?: string | null }[];
     batches: { code: string; status?: string; total_samples?: number; orders_in_batch: number; our_samples: string[];
@@ -243,7 +244,7 @@ export async function lookupBatch(vid: string, emit: Emit = () => {}, signal = A
     if (!Array.isArray(samples)) throw new Error("LIS returned an unfamiliar samples response");
     const lg = order.tat?.logistic_detail;
     out.summary = {
-      order: { vid: order.lis_order_id ?? vid, branch: order.branch_code, status: order.status, created: formatted(order.created_at), tests: order.order_test_details?.length ?? 0,
+      order: { vid: order.lis_order_id ?? vid, patient: order.patient_full_name?.trim() || undefined, branch: order.branch_code, status: order.status, created: formatted(order.created_at), tests: order.order_test_details?.length ?? 0,
         route: lg ? `${lg.from_location ?? "?"} → ${lg.to_location ?? "?"}` : undefined, expected_transport: lg?.duration },
       client: order.client_id ? { code: String(order.client_id), type: order.client_type } : null,
       samples: samples.map(s => ({ sample_id: String(s.sample_id), name: s.sample_name, container: s.sample_container_name, status: s.sample_status, stat: s.stat_sid })),
