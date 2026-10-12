@@ -32,7 +32,7 @@ import { masterDriverNames } from "@/lib/master-store";
 import { employmentOf } from "@/lib/driver-label";
 import {
   paidDay, hoursPayFor, kmPayFor, punchAt,
-  RATE_PER_HOUR_VND, RATE_PER_KM_VND,
+  RATE_PER_HOUR_VND, RATE_PER_KM_VND, BO_RATE_PER_HOUR_VND,
   type PayPunch, type PayJob, type DayFacts,
 } from "@/lib/pay";
 import { payrollPeriod } from "@/lib/pay-period";
@@ -148,6 +148,7 @@ export async function GET(req: NextRequest) {
 
   const rates = {
     per_hour: RATE_PER_HOUR_VND,
+    per_hour_bo: BO_RATE_PER_HOUR_VND,
     per_km: RATE_PER_KM_VND,
     // Stated so the screen can say what it is paying for rather than only what it
     // paid, and so a disputed figure can be checked without reading this file.
@@ -239,7 +240,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({
         ok: true, driver_name: (await masterDriverNames([driverId])).get(driverId)||session.driver_name, month: askedMonth, from, to: from,
         rates, latest, days: [],
-        summary: { days: 0, jobs: 0, km: 0, worked_mins: 0, hour_pay: 0, km_pay: 0, total_pay: 0, no_shift_days: 0, unpriced_jobs: 0 },
+        summary: { days: 0, jobs: 0, km: 0, worked_mins: 0, bo_mins: 0, hour_pay: 0, km_pay: 0, total_pay: 0, no_shift_days: 0, unpriced_jobs: 0, shifts_imported: false },
       });
     }
 
@@ -311,6 +312,7 @@ export async function GET(req: NextRequest) {
         jobs: days.reduce((s, d) => s + d.jobs, 0),
         km: roundedKm,
         worked_mins: totalMins,
+        bo_mins: boMins,
         hour_pay: hoursPayFor(totalMins, boMins),
         km_pay: kmPayFor(roundedKm),
         total_pay: hoursPayFor(totalMins, boMins) + kmPayFor(roundedKm),
@@ -318,6 +320,10 @@ export async function GET(req: NextRequest) {
         pending_corrections: days.filter((d) => d.correction?.status === "pending").length,
         // One number the driver can act on without opening thirty days.
         unpriced_jobs: days.reduce((s, d) => s + d.unpriced, 0),
+        /** Payroll's file is in for this period. Until it is, the hours rest on
+         *  MISA's plan, which misses ~40% of worked days — the screen shows no
+         *  hours rather than wrong ones. */
+        shifts_imported: inputs.payrollImported,
       },
       days,
     });
