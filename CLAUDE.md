@@ -494,6 +494,11 @@ These are the things most likely to burn a future agent working on this codebase
     "Không ca". `coverage.shifts_imported` = payroll's file has been written for the
     period. Loaded ONE way for every reader: `lib/pay-days.ts`.
 
+    **Drivers see hours (Thu Nhập) only once payroll's file is in for the period,
+    and only from Tháng 10/2026** (`HOURS_FROM_MONTH` in `/api/pay/me`). Before the
+    file, hours rest on MISA's plan (~40% of worked days missing) and the screen
+    stays km-only; earlier months were already paid on payroll's own numbers.
+
     **"Cập nhật công" (`pay_day_corrections`).** An APPROVED correction is the day's
     worked window outright — it replaces the rule, shift or no shift. Drivers ask
     from Thu Nhập (open days only: the running period, plus the previous one until

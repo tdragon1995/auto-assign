@@ -47,6 +47,11 @@ export const preferredRegion = "sin1";
 /** The report stops at yesterday — see FRESHNESS above. */
 const latestDayFor = (today: string) => addDays(today, -1);
 
+/** First pay month whose hours drivers see (supervisor, 2026-10-12). Earlier
+ *  months were already paid on payroll's own numbers; showing today's rule
+ *  against them would only contradict a payslip already settled. */
+const HOURS_FROM_MONTH = "2026-10";
+
 interface DailyRow {
   driver_id: string;
   trip_date: string;
@@ -149,6 +154,8 @@ export async function GET(req: NextRequest) {
   const rates = {
     per_hour: RATE_PER_HOUR_VND,
     per_hour_bo: BO_RATE_PER_HOUR_VND,
+    /** Months before this show km only: their hours were paid on payroll's numbers. */
+    hours_from_month: HOURS_FROM_MONTH,
     per_km: RATE_PER_KM_VND,
     // Stated so the screen can say what it is paying for rather than only what it
     // paid, and so a disputed figure can be checked without reading this file.
@@ -323,7 +330,7 @@ export async function GET(req: NextRequest) {
         /** Payroll's file is in for this period. Until it is, the hours rest on
          *  MISA's plan, which misses ~40% of worked days — the screen shows no
          *  hours rather than wrong ones. */
-        shifts_imported: inputs.payrollImported,
+        shifts_imported: inputs.payrollImported && askedMonth >= HOURS_FROM_MONTH,
       },
       days,
     });

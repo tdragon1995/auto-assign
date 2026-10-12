@@ -308,7 +308,7 @@ interface PayReport {
   from: string;
   to: string;
   latest: string;
-  rates: { per_hour: number; per_hour_bo: number; per_km: number; km_basis: string };
+  rates: { per_hour: number; per_hour_bo: number; per_km: number; km_basis: string; hours_from_month: string };
   prev_month: string;
   next_month: string | null;
   summary: {
@@ -2520,7 +2520,9 @@ export default function ChamCongPage() {
                           </p>
                           {!payReport.summary.shifts_imported ? (
                             <p className="text-xs text-amber-700 mt-1.5">
-                              Tiền giờ sẽ hiện sau khi phòng lương chốt ca (khoảng ngày 18).
+                              {payReport.month < payReport.rates.hours_from_month
+                                ? "Tiền giờ tháng này đã tính theo bảng lương của phòng lương."
+                                : "Tiền giờ sẽ hiện sau khi phòng lương chốt ca (khoảng ngày 18)."}
                             </p>
                           ) : payReport.summary.no_shift_days > 0 && (
                             <p className="text-xs text-amber-700 mt-1.5">
