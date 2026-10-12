@@ -13,6 +13,10 @@ import { createPortal } from "react-dom";
  * Radix popover the menu would open offset by wherever the popover happens to
  * sit. This panel is placed with top/left only, so fixed children stay fixed.
  *
+ * The cost of not being a Radix layer is that nested popups do not dismiss in
+ * concert on their own — the pointer-down handler below has to be told that a
+ * portalled menu belongs to this panel.
+ *
  * The parent owns open/pinned; this only draws, places, and reports the
  * pointer and the outside click. `onEngage` fires on any pointer-down or focus
  * inside — the moment a hover preview becomes something being worked in, and
@@ -93,6 +97,20 @@ export function HoverPanel({
     const down = (e: PointerEvent) => {
       const t = e.target as Node;
       if (ref.current?.contains(t) || anchor?.contains(t)) return;
+      // A MENU OPENED FROM INSIDE THIS PANEL IS STILL INSIDE IT.
+      //
+      // The driver picker renders its list in its own portal at the document
+      // root, so the list is not a DOM descendant of this panel — but pressing
+      // a name in it is using the panel, not leaving it. Without this, choosing
+      // a substitute closed the panel on pointer-down and the click never
+      // completed: the name highlighted, nothing was registered, and only Enter
+      // worked, because a keypress never leaves the input.
+      //
+      // Matched on the wrapper Radix puts around any popper content, so it
+      // holds for whatever menu this panel comes to contain rather than for one
+      // component. A native <select> needs nothing — its dropdown is drawn by
+      // the OS and fires no pointer events into the page.
+      if (t instanceof Element && t.closest("[data-radix-popper-content-wrapper]")) return;
       onClose();
     };
     const key = (e: KeyboardEvent) => {
