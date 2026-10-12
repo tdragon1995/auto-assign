@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { Redis } from "@upstash/redis";
-import { CONFIG_CACHE_WRITE_SCRIPT, invalidateConfigCache, loadConfigFromSheets } from "../src/lib/config";
+import { CONFIG_CACHE_WRITE_SCRIPT, invalidateConfigCache, loadConfigFromSheets, unpackConfigBlob } from "../src/lib/config";
 import { vnDate } from "../src/lib/time";
 
 const { lua, lauxlib, lualib, to_luastring, to_jsstring } = createRequire(import.meta.url)("fengari");
@@ -88,7 +88,7 @@ try {
     await reset(payload(stale));
     assert.equal((await loadConfigFromSheets())?.mappings[0].customer_id, "D001");
     assert.equal(sheetReads, 1, "Mismatched metadata or an empty cache requires a sheet read");
-    const saved = JSON.parse(store.get(KEY)!);
+    const saved = unpackConfigBlob<{ version: number; gen: string; day: string; mappings: unknown[] }>(store.get(KEY))!;
     assert.equal(saved.gen, "current");
     assert.equal(saved.day, vnDate());
     assert.equal(saved.version, 12);

@@ -371,9 +371,18 @@ export interface CycleSnapshot {
  *  No EXPIRE here — that would put the per-cycle command back. The key is rewritten
  *  every cycle and never deleted, so its TTL is refreshed once a day by
  *  runDailyMaintenance(). */
+// The config lists (unfinished/gaps/branchRules/overlaps, ~120 KB) come from one parse
+// and only change when the config is re-read, yet every ~3-min cycle rewrote them.
+// Remember the parse this instance last published and skip them until it moves. A
+// cold instance writes once; the dashboard reads these only when it has no config.
+let publishedConfigParse = "";
+
 export async function setCycleSnapshot(snap: CycleSnapshot): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
+  if (snap.parsedAt && snap.parsedAt === publishedConfigParse) {
+    snap = { ...snap, unfinished: undefined, gaps: undefined, branchRules: undefined, overlaps: undefined };
+  }
   const fields: Record<string, string> = {};
   if (snap.held)     fields[F_HELD]   = JSON.stringify(snap.held);
   if (snap.failed)   fields[F_FAILED] = JSON.stringify(snap.failed);
@@ -389,6 +398,7 @@ export async function setCycleSnapshot(snap: CycleSnapshot): Promise<void> {
   if (snap.overlaps)    fields[F_OVERLAPS]     = JSON.stringify(snap.overlaps);
   if (Object.keys(fields).length === 0) return;
   await redis.hset(CYCLE_SNAPSHOT_KEY, fields);
+  if (snap.parsedAt && fields[F_GAPS] !== undefined) publishedConfigParse = snap.parsedAt;
 }
 
 /** Current held-jobs list. */

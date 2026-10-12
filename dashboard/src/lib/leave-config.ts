@@ -59,8 +59,16 @@ function nameRecoveryEnabled(): boolean {
 // parsed roster back instead of re-fetching + re-parsing the 68 KB sheet over
 // TLS. Same 5-min freshness on both. The Redis blob is the slimmed LeaveEntry[],
 // so it's far smaller than the raw CSV (drops scheduled_trips/note).
-let cache: { entries: LeaveEntry[]; invalid: InvalidLeaveRow[]; fetchedAt: number } | null = null;
+let cache: { entries: LeaveEntry[]; invalid: InvalidLeaveRow[]; fetchedAt: number; loadedAt?: number; gen?: string | null } | null = null;
 const CACHE_TTL_MS = 5 * 60 * 1000;
+// When L1 passes CACHE_TTL_MS it asks this stamp (a few bytes) whether the leave
+// changed, and only re-reads the ~316 KB L2 blob if it did. Re-reading the blob every
+// 5 minutes on every warm instance was the largest steady Redis bandwidth cost left
+// (2026-10-12, 10 GB cap). invalidateLeaveCache moves the stamp. L1_MAX_AGE_MS is the
+// backstop for a write path that forgets to invalidate — the 5-minute re-read used to
+// cover that, and the 4h L2 TTL alone would be a long time to serve stale leave.
+const LEAVE_GEN_KEY = "leave:gen";
+const L1_MAX_AGE_MS = 60 * 60 * 1000;
 // v2, not decoration: this blob holds a PARSE, and the parse changed when
 // name-recovered rows started arriving in `entries` and `invalid` gained its
 // `recovered` flag. Leaving the key alone would have every warm server serving a
@@ -118,7 +126,20 @@ export async function invalidateLeaveCache(): Promise<void> {
   cache = null;
   const redis = getRedis();
   if (!redis) return;
-  try { await redis.del(redisKey()); } catch { /* best-effort; the TTL is the backstop */ }
+  try {
+    const p = redis.pipeline();
+    p.del(redisKey());
+    p.set(LEAVE_GEN_KEY, String(Date.now()));
+    await p.exec();
+  } catch { /* best-effort; the TTL is the backstop */ }
+}
+
+/** Current leave stamp; "0" before the first invalidation ever, null when Redis is
+ *  absent or failed (then nothing is trusted and L1 expires on the clock as before). */
+async function readLeaveGen(): Promise<string | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  try { return (await redis.get<string | number>(LEAVE_GEN_KEY))?.toString() ?? "0"; } catch { return null; }
 }
 
 function parseField(f: string | undefined): string {
@@ -656,6 +677,11 @@ async function loadLeaveSheet(
   if (!force && cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS) {
     return { entries: cache.entries, invalid: cache.invalid, trusted: true };
   }
+  const gen = force ? null : await readLeaveGen();
+  if (!force && cache && gen !== null && gen === cache.gen && Date.now() - (cache.loadedAt ?? 0) < L1_MAX_AGE_MS) {
+    cache.fetchedAt = Date.now();
+    return { entries: cache.entries, invalid: cache.invalid, trusted: true };
+  }
 
   // L2: shared Redis copy. Skipped on force; failures fall through to the fetch.
   if (!force) {
@@ -668,7 +694,7 @@ async function loadLeaveSheet(
         const hit = await redis.get<LeaveEntry[] | { entries: LeaveEntry[]; invalid: InvalidLeaveRow[] }>(key);
         if (hit) {
           const shaped = Array.isArray(hit) ? { entries: hit, invalid: [] } : hit;
-          cache = { ...shaped, invalid: shaped.invalid ?? [], fetchedAt: Date.now() };
+          cache = { ...shaped, invalid: shaped.invalid ?? [], fetchedAt: Date.now(), loadedAt: Date.now(), gen };
           return { entries: cache.entries, invalid: cache.invalid, trusted: true };
         }
       } catch { /* fall through to the sheet fetch */ }
@@ -760,7 +786,7 @@ async function loadLeaveSheet(
     }
 
     noteSheetLoad(SHEET_CONTRACT.nghi_phep.label, null);
-    cache = { entries, invalid, fetchedAt: Date.now() };
+    cache = { entries, invalid, fetchedAt: Date.now(), loadedAt: Date.now(), gen };
     // Write-behind to L2 — but only a non-empty roster. A transient bad read
     // that parses to zero entries must never be shared to every instance (it
     // would read back as "nobody on leave"); leave that failure per-instance.

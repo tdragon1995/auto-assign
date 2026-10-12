@@ -1,5 +1,6 @@
 import { invalidateDayConfigCache } from "./day-config";
 import { Redis } from "@upstash/redis";
+import { gzipSync, gunzipSync } from "node:zlib";
 import type { Config, ConfigDriver, Mapping, UnfinishedConfigRow, CoverageGap, BranchRule } from "./types";
 import { fetchSheetRows, isSheetShapeError, noteSheetLoad, noteSheetWarning, SHEET_CONTRACT, SHEET_GID } from "./sheets";
 import {
@@ -57,6 +58,18 @@ const L2_TTL_S = 48 * 60 * 60;
 //          and neither reached the screen. Hence the audit inputs now ride the blob
 //          and the sentences are rebuilt on every load, cached or not.
 const L2_KEY = "config:parsed";
+// Stored gzipped: the parse is ~1.2 MB of JSON and EVERY warm instance re-reads it after
+// each config change, which was a large share of the Redis bandwidth that hit the 10 GB
+// cap (2026-10-12). Gzip takes it to ~133 KB for ~2 ms to unpack. Plain JSON still reads,
+// so the blob already in Redis keeps working across the deploy.
+const GZ_PREFIX = "gz1:";
+export const packConfigBlob = (v: unknown) => GZ_PREFIX + gzipSync(JSON.stringify(v)).toString("base64");
+export function unpackConfigBlob<T>(raw: unknown): T | null {
+  if (typeof raw === "string" && raw.startsWith(GZ_PREFIX)) {
+    return JSON.parse(gunzipSync(Buffer.from(raw.slice(GZ_PREFIX.length), "base64")).toString("utf8")) as T;
+  }
+  return (raw ?? null) as T | null;
+}
 // A parse started before Refresh must not overwrite the refreshed shared payload.
 export const CONFIG_CACHE_WRITE_SCRIPT = `-- config-cache-write-v1
 if redis.call("GET", KEYS[1]) ~= ARGV[1] then return 0 end
@@ -307,7 +320,7 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
     const redis = getRedis();
     if (redis) {
       try {
-        const hit = await redis.get<{ version: number; gen: string; day: string; mappings: Mapping[]; inactiveLocationIds?:string[]; unfinished?: UnfinishedConfigRow[]; gaps?: CoverageGap[]; overlaps?: ShiftOverlap[]; branchRules?: Record<string, BranchRule[]>; parsedAt?: string; unresolved?: UnresolvedRows; names?: [string, string][] }>(L2_KEY);
+        const hit = unpackConfigBlob<{ version: number; gen: string; day: string; mappings: Mapping[]; inactiveLocationIds?:string[]; unfinished?: UnfinishedConfigRow[]; gaps?: CoverageGap[]; overlaps?: ShiftOverlap[]; branchRules?: Record<string, BranchRule[]>; parsedAt?: string; unresolved?: UnresolvedRows; names?: [string, string][] }>(await redis.get(L2_KEY));
         // Same zero-length suspicion as the sheet path below: never adopt an empty
         // mapping, whatever it came from.
         if (hit?.version === version && hit.gen === gen && hit.day === today && Array.isArray(hit.mappings) && hit.mappings.length > 0) {
@@ -560,7 +573,7 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
       const redis = getRedis();
       if (redis) {
         try {
-          await redis.eval(CONFIG_CACHE_WRITE_SCRIPT, [GEN_KEY, L2_KEY], [gen, JSON.stringify({ version, gen, day: today, mappings, inactiveLocationIds, unfinished: isWeekday ? stillNeeded : [], gaps: isWeekday ? gaps : [], overlaps, branchRules, parsedAt, unresolved, names: [...nameByCustomer] }), String(L2_TTL_S)]);
+          await redis.eval(CONFIG_CACHE_WRITE_SCRIPT, [GEN_KEY, L2_KEY], [gen, packConfigBlob({ version, gen, day: today, mappings, inactiveLocationIds, unfinished: isWeekday ? stillNeeded : [], gaps: isWeekday ? gaps : [], overlaps, branchRules, parsedAt, unresolved, names: [...nameByCustomer] }), String(L2_TTL_S)]);
         } catch { /* best-effort; the sheet is always the fallback */ }
       }
     }
