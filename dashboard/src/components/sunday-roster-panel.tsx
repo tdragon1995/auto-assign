@@ -16,8 +16,8 @@ const dmy = (d: string) => `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}`
  * Lịch Chủ nhật — who covers which area on a given Sunday.
  *
  * Edited as a whole week and saved in one go, the way the sheet was: most weeks
- * are last week with a handful of lines changed, so "Sao chép CN trước" then a
- * few edits is the normal path. Drivers are PICKED (`DriverCombobox`), never
+ * are another week with a handful of lines changed, so "Sao chép từ CN" (any
+ * Sunday, earlier or later) then a few edits is the normal path. Drivers are PICKED (`DriverCombobox`), never
  * typed, so a line always names a real account.
  */
 type Line = RosterLine & { k: number };
@@ -30,6 +30,8 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  /** The Sunday to copy from — any week, earlier or later (20/09 had none before it). */
+  const [source, setSource] = useState(() => addDays(rosterSunday(vnDate()), -7));
   const seq = useRef(0);
   // Row keys for React only; never sent (the server keeps known fields only).
   const nextKey = useRef(0);
@@ -59,20 +61,24 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
     setDirty(true);
   };
 
-  const copyPrevious = async () => {
-    if (lines.length && !confirm(`Thay ${lines.length} dòng hiện tại bằng lịch Chủ nhật ${dmy(addDays(date, -7))}?`)) return;
+  // A new week defaults the copy source to the Sunday before it.
+  useEffect(() => { setSource(addDays(date, -7)); }, [date]);
+
+  const copyFrom = async (from: string) => {
+    if (from === date) { toast.error("Chọn một Chủ nhật khác để sao chép"); return; }
+    if (lines.length && !confirm(`Thay ${lines.length} dòng hiện tại bằng lịch Chủ nhật ${dmy(from)}?`)) return;
     setSaving(true);
     try {
-      const res = await fetch(`/api/sunday-roster?date=${addDays(date, -7)}`, { cache: "no-store" });
+      const res = await fetch(`/api/sunday-roster?date=${from}`, { cache: "no-store" });
       const data: RosterWeek & { error?: string } = await res.json();
-      if (!res.ok) throw new Error(data.error || "Không tải được lịch tuần trước");
-      if (!data.lines.length) throw new Error(`Chủ nhật ${dmy(addDays(date, -7))} chưa có lịch`);
+      if (!res.ok) throw new Error(data.error || "Không tải được lịch tuần được chọn");
+      if (!data.lines.length) throw new Error(`Chủ nhật ${dmy(from)} chưa có lịch`);
       // Copied as unsaved lines: the version check still points at THIS week,
       // so saving replaces what is here.
       setLines(keyed(data.lines));
       setWeek((w) => (w ? { ...w, names: { ...w.names, ...data.names } } : w));
       setDirty(true);
-      toast.info("Đã sao chép — sửa các dòng khác tuần trước rồi bấm Lưu.");
+      toast.info(`Đã sao chép từ Chủ nhật ${dmy(from)} — sửa các dòng khác rồi bấm Lưu.`);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
@@ -122,7 +128,12 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
           {date !== today && <Button variant="ghost" size="sm" disabled={busy} onClick={() => leave(today)}>CN tới</Button>}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" disabled={busy} onClick={() => void copyPrevious()}><Copy className="size-4" />Sao chép CN trước</Button>
+          <label className="flex items-center gap-1.5 text-sm text-slate-600">
+            Sao chép từ CN
+            <input type="date" step={7} className={`${field} w-auto`} value={source} disabled={busy}
+              aria-label="Chủ nhật để sao chép" onChange={(e) => setSource(e.target.value)} />
+          </label>
+          <Button variant="outline" disabled={busy || !source} onClick={() => void copyFrom(source)}><Copy className="size-4" />Sao chép</Button>
           <Button variant="outline" disabled={busy} onClick={() => { if (discard()) void load(); }}><RefreshCw className="size-4" />Tải lại</Button>
           <Button disabled={busy || !dirty || !week || incomplete} title={incomplete ? "Mỗi dòng cần khu vực, ca dạng 06:00 - 15:00" : undefined} onClick={() => void save()}>{saving ? "Đang lưu…" : "Lưu lịch"}</Button>
         </div>
@@ -149,7 +160,11 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
         ) : lines.length === 0 ? (
           <div className="p-6 text-sm text-slate-600">
             <p className="mb-3">Chủ nhật {dmy(date)} chưa có lịch.</p>
-            <Button variant="outline" disabled={busy} onClick={() => void copyPrevious()}><Copy className="size-4" />Sao chép CN {dmy(addDays(date, -7))}</Button>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" disabled={busy} onClick={() => void copyFrom(addDays(date, -7))}><Copy className="size-4" />Sao chép CN {dmy(addDays(date, -7))}</Button>
+              <Button variant="outline" disabled={busy} onClick={() => void copyFrom(addDays(date, 7))}><Copy className="size-4" />Sao chép CN {dmy(addDays(date, 7))}</Button>
+            </div>
+            <p className="mt-2 text-xs text-slate-500">Hoặc chọn Chủ nhật bất kỳ ở ô &quot;Sao chép từ CN&quot; phía trên.</p>
           </div>
         ) : (
           <table className="w-full min-w-[56rem] text-sm">
