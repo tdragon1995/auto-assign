@@ -182,25 +182,29 @@ type IntegrationLink = {
   delivery_integration_location_id: string;
 };
 
-// GET /api/locations?client_code=… — active locations for one client.
+// GET /api/locations?client_code=… — active locations for one client, or every
+// location when activeOnly is false (omitting is_active returns both, flagged).
 export async function listLocationsByClientCode(
   clientCode: string,
   token: string,
+  activeOnly = true,
 ): Promise<LabcenterLocation[]> {
-  const params = new URLSearchParams({
-    client_code: clientCode,
-    is_active: "true",
-    page: "1",
-    perPage: "100",
-  });
-  const res = await labcenterFetch(`${DELIVERY_BASE}/api/locations?${params}`, {
-    headers: { Authorization: `Bearer ${token}` },
-    cache: "no-store",
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!res.ok) throw new Error(`Labcenter locations ${res.status}`);
-  const data = await res.json().catch(() => ({}));
-  return data?.data ?? [];
+  // Pages until a short one: with closed locations included the largest client
+  // is already at 92, and one page silently stopped at 100.
+  const rows: LabcenterLocation[] = [];
+  for (let page = 1; ; page++) {
+    const params = new URLSearchParams({ client_code: clientCode, page: String(page), perPage: "100" });
+    if (activeOnly) params.set("is_active", "true");
+    const res = await labcenterFetch(`${DELIVERY_BASE}/api/locations?${params}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store",
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) throw new Error(`Labcenter locations ${res.status}`);
+    const data = (await res.json().catch(() => ({})))?.data ?? [];
+    rows.push(...data);
+    if (data.length < 100 || page >= 10) return rows;
+  }
 }
 
 // GET /api/locations/{id} — detail carries the integration links and mappings.

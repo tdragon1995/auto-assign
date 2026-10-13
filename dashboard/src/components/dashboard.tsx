@@ -58,7 +58,7 @@ export function Dashboard() {
   const [leaveRefreshKey, setLeaveRefreshKey] = useState(0);
   const [configRefreshKey, setConfigRefreshKey] = useState(0);
   const [syncingSource, setSyncingSource] = useState<"cartrack" | "labcenter" | null>(null);
-  const [metadataReport, setMetadataReport] = useState<(LabcenterMetadataReport & {state:"running"|"complete"|"failed"; error?:string}) | null>(null);
+  const [metadataReport, setMetadataReport] = useState<(LabcenterMetadataReport & {state:"running"|"complete"|"failed"; error?:string; morningAt?:string}) | null>(null);
   const [syncingMisa, setSyncingMisa] = useState(false);
   const [failed, setFailed] = useState<FailedJob[]>([]);
   const [sheetAlarms, setSheetAlarms] = useState<SheetAlarm[]>([]);
@@ -415,6 +415,15 @@ export function Dashboard() {
       .catch(() => {});
     loadScheduleErrors();
     loadLeaveStatus();
+    // The morning sync's Labcenter findings, in the same panel a manual sync fills.
+    fetch("/api/misa-sync?issues=1", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => {
+        if (!Array.isArray(d.issues) || !d.issues.length) return;
+        setMetadataReport((prev) => prev ?? {matched:0, owners:0, errors:0, totalCodes:0, processed:0, nextCursor:null,
+          issues:d.issues, state:"complete", morningAt:d.checked_at ?? ""});
+      })
+      .catch(() => {});
 
     let id: ReturnType<typeof setInterval> | null = null;
     const start = () => { if (!id) id = setInterval(syncStatus, 90_000); };
@@ -689,9 +698,9 @@ export function Dashboard() {
             <details className={`rounded-md border px-3 py-2 text-xs shrink-0 ${metadataReport.issues.length || metadataReport.state === "failed" ? "border-amber-200 bg-amber-50 text-amber-900" : "border-slate-200 bg-slate-50 text-slate-700"}`}>
               <summary className="cursor-pointer leading-relaxed focus-visible:outline-2 focus-visible:outline-blue-600">
                 <span className="font-semibold">
-                  Labcenter · {metadataReport.state === "running" ? metadataReport.totalCodes > 0 ? `Đã kiểm tra ${metadataReport.processed}/${metadataReport.totalCodes} mã khách hàng` : "Đang lấy danh sách khách hàng và điểm giao…" : metadataReport.state === "failed" ? "Đồng bộ chưa hoàn tất" : `Đồng bộ hoàn tất · Đã kiểm tra ${metadataReport.processed} mã khách hàng`}
+                  Labcenter · {metadataReport.morningAt !== undefined ? `Kiểm tra buổi sáng${metadataReport.morningAt ? ` ${new Date(metadataReport.morningAt).toLocaleString("vi-VN", {timeZone:"Asia/Ho_Chi_Minh", hour:"2-digit", minute:"2-digit", day:"2-digit", month:"2-digit"})}` : ""} · ${metadataReport.issues.length} mục cần kiểm tra · Xem chi tiết` : metadataReport.state === "running" ? metadataReport.totalCodes > 0 ? `Đã kiểm tra ${metadataReport.processed}/${metadataReport.totalCodes} mã khách hàng` : "Đang lấy danh sách khách hàng và điểm giao…" : metadataReport.state === "failed" ? "Đồng bộ chưa hoàn tất" : `Đồng bộ hoàn tất · Đã kiểm tra ${metadataReport.processed} mã khách hàng`}
                 </span>
-                {(metadataReport.processed > 0 || metadataReport.state === "complete") && <span className="mt-1 flex flex-wrap gap-x-4 gap-y-1 font-normal">
+                {metadataReport.morningAt === undefined && (metadataReport.processed > 0 || metadataReport.state === "complete") && <span className="mt-1 flex flex-wrap gap-x-4 gap-y-1 font-normal">
                   <span>{metadataReport.matched} địa điểm khớp liên kết</span>
                   <span>{metadataReport.owners} địa điểm có thông tin sales / supervisor</span>
                   {metadataReport.state !== "failed" || metadataReport.issues.length > 0 ? <span className="font-semibold">{metadataReport.issues.length > 0 ? `${metadataReport.issues.length} mục cần kiểm tra · Xem chi tiết` : metadataReport.state === "complete" ? "Không có vấn đề cần kiểm tra" : "Chưa phát hiện vấn đề"}</span> : null}
@@ -699,7 +708,7 @@ export function Dashboard() {
                 {metadataReport.state === "failed" && <span className="mt-1 block font-normal">{metadataReport.error}. Chọn Đồng Bộ Thông Tin → Labcenter để thử lại.</span>}
               </summary>
               <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-current/15 pt-2">
-                <span className="max-w-prose leading-relaxed">Đối chiếu điểm giao mặc định, ETA và người phụ trách từ Labcenter. Các số trên là kết quả kiểm tra, không phải số hồ sơ thay đổi. Giá trị chưa xác minh được giữ nguyên. Báo cáo hiển thị đến khi tải lại trang.</span>
+                <span className="max-w-prose leading-relaxed">Đối chiếu điểm giao mặc định, ETA và người phụ trách từ Labcenter. Các số trên là kết quả kiểm tra, không phải số hồ sơ thay đổi. Giá trị chưa xác minh được giữ nguyên. {metadataReport.morningAt !== undefined ? "Danh sách được làm mới mỗi sáng." : "Báo cáo hiển thị đến khi tải lại trang."}</span>
                 <button className="shrink-0 text-blue-700 underline" onClick={() => {
                   const url = URL.createObjectURL(new Blob([JSON.stringify(metadataReport,null,2)], {type:"application/json"}));
                   const link = document.createElement("a"); link.href=url; link.download="labcenter-refresh-report.json"; link.click(); URL.revokeObjectURL(url);

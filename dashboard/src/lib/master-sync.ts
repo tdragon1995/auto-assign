@@ -243,7 +243,8 @@ export async function syncLabcenterMetadata(offset = 0, limit = 200, onlyCodes?:
     await Promise.all(codes.slice(i, i + 4).map(async (code) => {
       const group = byCode.get(code)!;
       try {
-      const locations = await listLocationsByClientCode(code, admin);
+      const all = await listLocationsByClientCode(code, admin, false);
+      const locations = all.filter(loc => loc.is_active !== false);
       const clientIds = new Set(group.map((c) => c.customer_id));
       const found = new Set<string>();
       for (const loc of locations) {
@@ -276,7 +277,11 @@ export async function syncLabcenterMetadata(offset = 0, limit = 200, onlyCodes?:
         });
         matched++;
       }
-      for (const c of group) if (!found.has(c.customer_id) && c.is_active !== false) flag(c, "missing_location", "Không tìm thấy địa điểm Labcenter đang hoạt động liên kết UUID này; giữ nguyên dữ liệu");
+      // Same request as before, no longer filtered: a location closed in Labcenter
+      // but still active here is named as such instead of vanishing.
+      const closed = new Set(all.filter(loc => loc.is_active === false).map(loc => loc.id));
+      for (const c of group) if (!found.has(c.customer_id) && c.is_active !== false && c.labcenter_location_id && closed.has(c.labcenter_location_id))
+        flag(c, "inactive_in_labcenter", `Labcenter #${c.labcenter_location_id} đã ngừng hoạt động nhưng Master vẫn đang hoạt động`);
       const res = await labcenterFetch(`https://api.labcenter.vn/spc-pos/api/client?q=${encodeURIComponent(code)}`, {
         headers: { Authorization: `Bearer ${receptionist}` }, cache: "no-store", signal: AbortSignal.timeout(15_000),
       }, "receptionist");
