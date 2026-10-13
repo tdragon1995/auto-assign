@@ -22,6 +22,7 @@ type Row = { driver_id: string; name: string; code: string; type: "PT" | "FT"; a
   week: { from: string | null; days: ({ start: string; end: string } | null)[] } | null; cells: Record<string, Cell> };
 type Grid = { month: string; from: string; to: string; today: string; days: string[]; rows: Row[] };
 type Status = Exclude<CellStatus, "">;
+type Day = { start: string; end: string } | null;
 
 const WD = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"];
 const dow = (d: string) => new Date(`${d}T00:00:00Z`).getUTCDay();
@@ -233,22 +234,34 @@ function RowView({ r, days, only, editing, onEdit, onSaved }: { r: Row; days: st
 /** A PT driver's weekly shift, edited where it is read. Saving writes the days at once
  *  (until a newer weekly shift); days edited by hand are kept. */
 function WeekEditor({ r, onCancel, onSaved }: { r: Row; onCancel: () => void; onSaved: () => void }) {
-  const first = r.week ? [1, 2, 3, 4, 5, 6, 0].map((d) => r.week!.days[d]).find(Boolean) : null;
   // No weekly shift yet: start from what they actually worked, so this is a confirm, not a form.
   const guess = useMemo(() => (r.week ? null : guessWeek(r)), [r]);
   const firstWorked = Object.keys(r.cells).sort().find((d) => r.cells[d].a);
   const [from, setFrom] = useState(guess && firstWorked ? firstWorked : vnDate());
-  const [days, setDays] = useState<number[]>(() => (r.week ? [0, 1, 2, 3, 4, 5, 6].filter((d) => r.week!.days[d]) : guess?.days.length ? guess.days : [1, 2, 3, 4, 5, 6]));
-  const [start, setStart] = useState(first?.start ?? guess?.start ?? "");
-  const [end, setEnd] = useState(first?.end ?? guess?.end ?? "");
+  // Each weekday carries its own hours (index = getUTCDay, 0 = CN); null = off.
+  const [week, setWeek] = useState<Day[]>(() => r.week ? r.week.days.map((x) => (x ? { ...x } : null))
+    : Array.from({ length: 7 }, (_, d) => ((guess?.days.length ? guess.days : [1, 2, 3, 4, 5, 6]).includes(d) ? { start: guess?.start ?? "", end: guess?.end ?? "" } : null)));
   const [saving, setSaving] = useState(false);
-  const valid = days.length > 0 && !!start && !!end && start !== end && !!from;
+  const on = week.filter((x): x is NonNullable<Day> => !!x);
+  const valid = on.length > 0 && on.every((x) => x.start && x.end && x.start !== x.end) && !!from;
+  const set = (d: number, x: Day) => setWeek((w) => w.map((y, i) => (i === d ? x : y)));
+  // Setting a time on one day also fills every ticked day still blank there: tick
+  // the days, enter the hours once, then change only the day that differs.
+  const setTime = (d: number, k: "start" | "end", v: string) =>
+    setWeek((w) => w.map((y, i) => (!y ? y : i === d || !y[k] ? { ...y, [k]: v } : y)));
+  // Ticking a day copies the hours of the nearest day before it, so a regular week is still one entry.
+  const toggle = (d: number, checked: boolean) => {
+    if (!checked) return set(d, null);
+    const order = [1, 2, 3, 4, 5, 6, 0], at = order.indexOf(d);
+    const near = [...order.slice(0, at).reverse(), ...order.slice(at + 1)].map((i) => week[i]).find(Boolean);
+    set(d, near ? { ...near } : { start: "", end: "" });
+  };
   async function save() {
     if (!valid) return;
     setSaving(true);
     try {
       const data = { employee_code: r.code || `driver:${r.driver_id}`, label: r.name, driver_id: r.driver_id,
-        days: Array.from({ length: 7 }, (_, d) => (days.includes(d) ? { start, end } : null)), active_from: from, active_to: null, active: true, note: "", revision: 0, review_issues: [] };
+        days: week, active_from: from, active_to: null, active: true, note: "", revision: 0, review_issues: [] };
       const res = await fetch("/api/driver-shifts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "patterns", data }) });
       const j = await res.json();
       if (!res.ok || !j.ok) throw new Error(j.error || "Không lưu được ca tuần");
@@ -261,16 +274,23 @@ function WeekEditor({ r, onCancel, onSaved }: { r: Row; onCancel: () => void; on
     finally { setSaving(false); }
   }
   return (
-    <form className="sticky left-0 flex max-w-[56rem] flex-wrap items-end gap-3 p-3" onSubmit={(e) => { e.preventDefault(); void save(); }}>
-      <p className="w-full text-sm font-medium">Ca tuần của {r.name}<span className="ml-2 text-xs font-normal text-slate-600">{guess ? "Gợi ý theo giờ đã làm trong kỳ — kiểm tra rồi lưu. " : ""}Áp dụng từ ngày chọn đến khi có ca tuần mới · ngày sửa tay được giữ lại</span></p>
+    <form className="sticky left-0 flex max-w-[60rem] flex-wrap items-end gap-3 p-3" onSubmit={(e) => { e.preventDefault(); void save(); }}>
+      <p className="w-full text-sm font-medium">Ca tuần của {r.name}<span className="ml-2 text-xs font-normal text-slate-600">{guess ? "Gợi ý theo giờ đã làm trong kỳ — kiểm tra rồi lưu. " : ""}Chọn ngày, nhập giờ một lần rồi sửa riêng ngày khác giờ · áp dụng từ ngày chọn đến khi có ca tuần mới · ngày sửa tay được giữ lại</span></p>
       <label className="text-xs text-slate-700">Từ ngày<input type="date" className={`${field} mt-1 block`} value={from} onChange={(e) => setFrom(e.target.value)} /></label>
-      <fieldset className="flex flex-wrap items-center gap-3 pb-2"><legend className="sr-only">Ngày làm trong tuần</legend>
-        {[1, 2, 3, 4, 5, 6, 0].map((d) => (
-          <label key={d} className="flex items-center gap-1.5 text-sm"><input type="checkbox" checked={days.includes(d)} onChange={(e) => setDays((v) => (e.target.checked ? [...v, d] : v.filter((x) => x !== d)))} />{WD[d]}</label>
-        ))}
+      <fieldset className="flex w-full flex-wrap gap-2"><legend className="sr-only">Giờ làm từng ngày trong tuần</legend>
+        {[1, 2, 3, 4, 5, 6, 0].map((d) => {
+          const x = week[d];
+          return (
+            <div key={d} className={`w-28 rounded-md border p-2 ${x ? "border-slate-300 bg-white" : "border-dashed border-slate-200"}`}>
+              <label className="flex items-center gap-1.5 text-sm font-medium"><input type="checkbox" checked={!!x} disabled={saving} onChange={(e) => toggle(d, e.target.checked)} />{WD[d]}</label>
+              {x ? <div className="mt-1.5 space-y-1">
+                <PatternTimeSelect label={`${WD[d]} bắt đầu`} value={x.start} onChange={(v) => setTime(d, "start", v)} disabled={saving} />
+                <PatternTimeSelect label={`${WD[d]} kết thúc`} value={x.end} onChange={(v) => setTime(d, "end", v)} disabled={saving} />
+              </div> : <p className="mt-1.5 text-xs text-slate-500">Nghỉ</p>}
+            </div>
+          );
+        })}
       </fieldset>
-      <div className="w-28 text-xs text-slate-700">Bắt đầu<div className="mt-1"><PatternTimeSelect label="Bắt đầu" value={start} onChange={setStart} disabled={saving} /></div></div>
-      <div className="w-28 text-xs text-slate-700">Kết thúc<div className="mt-1"><PatternTimeSelect label="Kết thúc" value={end} onChange={setEnd} disabled={saving} /></div></div>
       <div className="flex gap-2 pb-0.5">
         <Button type="button" variant="outline" disabled={saving} onClick={onCancel}><X className="size-4" />Huỷ</Button>
         <Button type="submit" disabled={saving || !valid}>{saving ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />}Lưu ca tuần</Button>
