@@ -11,8 +11,15 @@ import { addDays } from "./time";
 export type RosterLine = { area: string; driver_id: string | null; raw_name: string | null; shift: string; note: string };
 /** An area someone can be rostered on, and how many Sunday rules point at it. */
 export type RosterArea = { area: string; rules: number };
+/** Why a rostered driver will not drive that Sunday. */
+export type RosterLeave = { kind: "leave" | "resigned"; label: string };
 export type RosterWeek = {
   date: string;
+  /** Nothing saved for this Sunday yet: `lines` are copied, unsaved, from this
+   *  earlier Sunday (the most recent one with a roster). */
+  copiedFrom?: string;
+  /** Leave filed for that Sunday, by driver id. */
+  leave: Record<string, RosterLeave>;
   /** The version check a save sends back: every save mints new ids. */
   ids: number[];
   lines: RosterLine[];
