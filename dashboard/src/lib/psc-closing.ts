@@ -1,13 +1,16 @@
 /**
  * PSC closing hours: send a job somewhere open, and send it home again once it can go.
  *
- * WHEN. Only from 19:00, Monday to Saturday (`isClosingWindow`). Before that, and all
- * day Sunday, every PSC counts as open and nothing is moved. The one thing that still
- * happens outside the window is the way BACK (below), because the job carried over
- * from last night comes up in the morning.
+ * WHEN. From 18:50, Monday to Saturday (`isClosingWindow`), and a PSC counts as
+ * closed CLOSING_LEAD_MIN (10) minutes before its closing time — a job sent to a
+ * 19:00 PSC at 18:55 would arrive after it shut. Before 18:50, and all day Sunday,
+ * every PSC counts as open and nothing is moved. The one thing that still happens
+ * outside the window is the way BACK (below), because the job carried over from
+ * last night comes up in the morning.
  *
- * THE RULE. When a job is about to be assigned and its drop-off PSC has passed its
- * closing time, the drop-off moves to that PSC's next best. Both are hard-coded in
+ * THE RULE. When a job is about to be assigned — or is already assigned but its
+ * sample not yet collected (`pickAssignedSwitches`) — and its drop-off PSC has
+ * passed its closing time, the drop-off moves to that PSC's next best. Both are hard-coded in
  * `PSC_CLOSING` (psc-routes-data.ts) beside the PSC routes, which have been the source
  * of truth since the sheet tab was retired — so this reads nothing at runtime. If the
  * next best has closed too, ITS next best is tried, and so on. Nothing open (or no
@@ -77,11 +80,22 @@ export function parseClosingTime(raw: string | undefined | null): number | null 
   return total === 0 ? null : total;
 }
 
-/** The check runs from 19:00, Monday to Saturday. */
-export const CLOSING_CHECK_FROM_MIN = 19 * 60;
+/** A PSC counts as closed this many minutes before its closing time: a job moved
+ *  at the last minute would still arrive after the door shut. */
+export const CLOSING_LEAD_MIN = 10;
+
+/** The check runs from 18:50 (the earliest closing, 19:00, less the lead),
+ *  Monday to Saturday. */
+export const CLOSING_CHECK_FROM_MIN = 19 * 60 - CLOSING_LEAD_MIN;
 
 export function isClosingWindow(now: Date = new Date()): boolean {
   return !vnIsSunday(now) && vnMinutesSinceMidnight(now) >= CLOSING_CHECK_FROM_MIN;
+}
+
+/** The clock closing times are compared against: now plus the lead. Pass this,
+ *  never the bare minute, wherever a real job is being judged. */
+export function closingClockMin(now: Date = new Date()): number {
+  return vnMinutesSinceMidnight(now) + CLOSING_LEAD_MIN;
 }
 
 /**
@@ -234,4 +248,61 @@ export function fmtMin(min: number | null): string {
 /** "D014" out of "BRA - D014" — the code people actually say. */
 export function pscCode(name: string): string {
   return name.match(/D\d+/i)?.[0] ?? name;
+}
+
+// ── Jobs already assigned ─────────────────────────────────────────────────────
+
+/** The fields `pickAssignedSwitches` reads — a Job from the cycle's assigned list. */
+export interface AssignedJobLike {
+  job_id: number;
+  delivery_driver_id?: string | null;
+  labels?: string[];
+  last_assigned_plan_id?: number | null;
+  stops: { stop_type_id?: number; stop_status_id?: number; customer_id?: string }[];
+}
+
+/**
+ * Assigned jobs whose drop-off PSC has closed and whose SAMPLE IS STILL AT THE
+ * CLIENT — pickup waiting, en route or arrived (1–3), drop-off not started (1).
+ * Once the sample is collected the job is left alone: the driver is already
+ * carrying it, and changing where they are heading mid-ride is a call for a
+ * person, not the engine.
+ *
+ * Also left alone: a job on a proxy driver (parked or being rejected), a Cartrack
+ * PLAN job (it regenerates daily on its own route), PSC tỉnh and the engine's own
+ * legs (`skip.labels`), and anything collected FROM a Diag location
+ * (`skip.pickupIds`) — a branch-to-branch bag run goes where it was sent. A job
+ * with more than one drop-off is not guessed at. Unknown stop statuses count as
+ * "not safe", never as "not started".
+ *
+ * Pure: reads the list the cycle already fetched, writes nothing.
+ */
+export function pickAssignedSwitches<J extends AssignedJobLike>(
+  jobs: readonly J[],
+  table: PscTable,
+  nowMin: number,
+  skip: { driverIds: ReadonlySet<string>; pickupIds: ReadonlySet<string>; labels: readonly string[] },
+): { job: J; fromId: string; targetId: string; closed: PscInfo[] }[] {
+  const out: { job: J; fromId: string; targetId: string; closed: PscInfo[] }[] = [];
+  if (table.size === 0) return out;
+  for (const job of jobs) {
+    const driver = job.delivery_driver_id;
+    if (!driver || skip.driverIds.has(driver)) continue;
+    if (job.last_assigned_plan_id != null) continue;
+    if ((job.labels ?? []).some((l) => skip.labels.includes(l))) continue;
+    const pickups = job.stops.filter((s) => s.stop_type_id === 1);
+    const drops = job.stops.filter((s) => s.stop_type_id === 2);
+    if (pickups.length !== 1 || drops.length !== 1) continue;
+    const [pickup] = pickups;
+    const [drop] = drops;
+    const ps = pickup.stop_status_id ?? 0;
+    if (ps < 1 || ps > 3) continue;                       // collected, or unknown
+    if (drop.stop_status_id !== 1) continue;              // drop-off already under way
+    if (!pickup.customer_id || skip.pickupIds.has(pickup.customer_id)) continue;
+    const fromId = drop.customer_id ?? "";
+    if (!table.has(fromId)) continue;
+    const res = resolveOpenDropoff(table, fromId, nowMin, pickup.customer_id);
+    if (res.id && res.id !== fromId) out.push({ job, fromId, targetId: res.id, closed: res.closed });
+  }
+  return out;
 }

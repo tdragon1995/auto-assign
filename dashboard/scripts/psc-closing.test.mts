@@ -11,7 +11,7 @@
  *
  * Run: npx tsx scripts/psc-closing.test.mts
  */
-import { buildPscTable, isClosingWindow, parseClosingTime, planDropoff, resolveOpenDropoff, PSC_TABLE, type DropoffSwapRecord } from "../src/lib/psc-closing";
+import { buildPscTable, closingClockMin, isClosingWindow, parseClosingTime, pickAssignedSwitches, planDropoff, resolveOpenDropoff, PSC_TABLE, type AssignedJobLike, type DropoffSwapRecord } from "../src/lib/psc-closing";
 import { PSC_CLOSING, PSC_ROUTES } from "../src/lib/psc-routes-data";
 
 let failures = 0;
@@ -57,10 +57,13 @@ ok("00:00 = never closes, not closed all day", parseClosingTime("00:00") === nul
 ok("24:00 = never closes", parseClosingTime("24:00") === null);
 ok("garbage fails OPEN", parseClosingTime("tối") === null);
 
-console.log("\nwindow: 19:00, Monday to Saturday");
+console.log("\nwindow: 18:50, Monday to Saturday, 10 minutes ahead of closing");
 const vn = (iso: string) => new Date(`${iso}+07:00`);
-ok("Tue 18:59 → not yet", !isClosingWindow(vn("2026-09-22T18:59:00")));
-ok("Tue 19:00 → on", isClosingWindow(vn("2026-09-22T19:00:00")));
+ok("Tue 18:49 → not yet", !isClosingWindow(vn("2026-09-22T18:49:00")));
+ok("Tue 18:50 → on", isClosingWindow(vn("2026-09-22T18:50:00")));
+ok("the clock runs 10 minutes ahead: 18:50 reads as 19:00", closingClockMin(vn("2026-09-22T18:50:00")) === at("19:00"));
+ok("…so a 19:00 PSC counts as closed from 18:50", resolveOpenDropoff(PSC_TABLE, PSC_ROUTES.find((r) => r.psc_pickup === "BRA - D026")!.pickup, closingClockMin(vn("2026-09-22T18:50:00")), CLINIC).id !== PSC_ROUTES.find((r) => r.psc_pickup === "BRA - D026")!.pickup);
+ok("…and still open at 18:49", resolveOpenDropoff(PSC_TABLE, PSC_ROUTES.find((r) => r.psc_pickup === "BRA - D026")!.pickup, closingClockMin(vn("2026-09-22T18:49:00")), CLINIC).id === PSC_ROUTES.find((r) => r.psc_pickup === "BRA - D026")!.pickup);
 ok("Sat 21:30 → on", isClosingWindow(vn("2026-09-26T21:30:00")));
 ok("Sun 21:30 → off all day", !isClosingWindow(vn("2026-09-27T21:30:00")));
 ok("Mon 07:00 → off", !isClosingWindow(vn("2026-09-28T07:00:00")));
@@ -175,6 +178,44 @@ console.log("\nplanDropoff — alt_drop_off_id");
 {
   const p = planDropoff({ ...base, currentId: D007, altId: D014, nowMin: at("08:00") });
   ok("next day the alt row puts it back by itself", p.targetId === D014 && p.reason === "alt");
+}
+
+console.log("\npickAssignedSwitches — jobs already assigned");
+{
+  const PROXY = "proxy-driver", DRV = "real-driver", BAGRUN_FROM = D007;
+  const skip = { driverIds: new Set([PROXY]), pickupIds: new Set([BAGRUN_FROM]), labels: ["🛵 Vận chuyển mẫu PSC"] };
+  const job = (id: number, over: Partial<AssignedJobLike> = {}, pickupStatus = 1, dropStatus = 1, drop = D014, pickupId = CLINIC): AssignedJobLike => ({
+    job_id: id, delivery_driver_id: DRV, labels: [], last_assigned_plan_id: null,
+    stops: [
+      { stop_type_id: 1, stop_status_id: pickupStatus, customer_id: pickupId },
+      { stop_type_id: 2, stop_status_id: dropStatus, customer_id: drop },
+    ],
+    ...over,
+  });
+  const jobs = [
+    job(1),                                   // waiting at the client → move
+    job(2, {}, 2),                            // driver en route to pickup → move
+    job(3, {}, 3),                            // arrived at pickup → move
+    job(4, {}, 4),                            // sample collected → leave
+    job(5, {}, 1, 2),                         // drop-off already under way → leave
+    job(6, { delivery_driver_id: PROXY }),    // parked on the proxy → leave
+    job(7, { delivery_driver_id: null }),     // no driver → the assign path's job
+    job(8, { last_assigned_plan_id: 42 }),    // Cartrack plan → leave
+    job(9, { labels: ["🛵 Vận chuyển mẫu PSC"] }), // engine leg → leave
+    job(10, {}, 1, 1, D014, BAGRUN_FROM),     // bag run from a Diag location → leave
+    job(11, {}, 1, 1, D001),                  // D001 never closes → nothing to do
+    job(12, {}, 0),                           // unknown pickup status → leave
+    job(13, { stops: [ { stop_type_id: 1, stop_status_id: 1, customer_id: CLINIC },
+                       { stop_type_id: 2, stop_status_id: 1, customer_id: D014 },
+                       { stop_type_id: 2, stop_status_id: 1, customer_id: D015 } ] }), // two drop-offs → leave
+  ];
+  const picked = pickAssignedSwitches(jobs, table, at("19:40"), skip);
+  ok("moves exactly the jobs whose sample is still at the client", picked.map((p) => p.job.job_id).join(",") === "1,2,3");
+  ok("…to the next best (D014 → D007)", picked.every((p) => p.fromId === D014 && p.targetId === D007));
+  ok("nothing before closing", pickAssignedSwitches(jobs, table, at("19:00"), skip).length === 0);
+  ok("nothing with an empty table (outside the window)", pickAssignedSwitches(jobs, new Map(), at("19:40"), skip).length === 0);
+  ok("nothing when every link is shut (left alone)", pickAssignedSwitches([job(20, {}, 1, 1, D021)], table, at("19:40"), skip).length === 0);
+  ok("an already-moved job is not moved again", pickAssignedSwitches([job(21, {}, 1, 1, D007)], table, at("19:40"), skip).length === 0);
 }
 
 console.log(failures === 0 ? "\nall passed\n" : `\n${failures} FAILED\n`);

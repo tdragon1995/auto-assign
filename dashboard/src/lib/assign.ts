@@ -12,7 +12,7 @@ import { detectAndCreateViaLegs, PSC_VIA_LABEL } from "./via-legs";
 import { cleanupStaleTrips } from "./cleanup-trips";
 import type { MorningReads } from "./morning-reads";
 import { setCycleSnapshot, recordCoverageGap, claimMorningPass, deferMorningPass, confirmMorningPass, pushRunLog, runDailyMaintenance, claimLateAlert, getAcceptedNotes, getResolvedCreateTs, saveResolvedCreateTs, readDropoffSwaps, writeDropoffSwap, deleteDropoffSwap, type HeldJob } from "./smart-log-kv";
-import { PSC_TABLE, isClosingWindow, planDropoff, resolveOpenDropoff, fmtMin, pscCode, type PscTable, type DropoffSwapRecord } from "./psc-closing";
+import { PSC_TABLE, isClosingWindow, closingClockMin, pickAssignedSwitches, planDropoff, resolveOpenDropoff, fmtMin, pscCode, type PscTable, type DropoffSwapRecord } from "./psc-closing";
 import { isValidDriverId, invalidateConfigCache, loadConfigFromSheets } from "./config";
 import { hasInactiveStop } from "./location-status";
 import { drainSheetAlarms } from "./sheets";
@@ -971,7 +971,7 @@ async function settleDropoff(
     altId,
     record,
     pickupId: getCustomerIdFromJob(job),
-    nowMin: vnMinutesSinceMidnight(),
+    nowMin: closingClockMin(),
     today: ctx.today,
     exempt: (job.labels ?? []).some((l) => CLOSING_EXEMPT_LABELS.includes(l)),
   });
@@ -986,9 +986,9 @@ async function settleDropoff(
   const code = (id: string) => pscCode(ctx.table!.get(id)?.name ?? result?.dropoffName ?? id);
   const shut = plan.closed.map((p) => `${pscCode(p.name)} đóng ${fmtMin(p.closeMin)}`).join(", ");
   if (plan.reason === "closed") {
-    log(`Job ${job.job_id} - PSC ĐÃ ĐÓNG CỬA (${shut}) → chuyển drop sang ${code(plan.targetId)} | ${route}`, "WARN");
+    log(`Job ${job.job_id} - PSC ĐÓNG CỬA (${shut}) → chuyển drop sang ${code(plan.targetId)} | ${route}`, "WARN");
   } else if (plan.reason === "all_closed") {
-    log(`Job ${job.job_id} - PSC ĐÃ ĐÓNG CỬA (${shut}), không còn PSC nào mở phía sau — giữ nguyên drop | ${route}`, "WARN");
+    log(`Job ${job.job_id} - PSC ĐÓNG CỬA (${shut}), không còn PSC nào mở phía sau — giữ nguyên drop | ${route}`, "WARN");
   } else if (plan.reason === "revert" && record) {
     log(`Job ${job.job_id} - Trả drop về ${code(plan.targetId)} (mặc định; đã chuyển sang ${code(currentId)} ngày ${record.on} vì PSC đóng cửa) | ${route}`, "INFO");
   }
@@ -996,6 +996,60 @@ async function settleDropoff(
   if (plan.record === "delete") await deleteDropoffSwap(job.job_id, env, ctx.today);
   else if (plan.record) await writeDropoffSwap(job.job_id, env, plan.record.set, ctx.today);
   return result;
+}
+
+// Jobs the sweep below already moved (or failed to) today, per instance: the
+// assigned list can lag a cycle behind a write, and a refused write must not be
+// retried every three minutes for the rest of the evening.
+const assignedSwitchSeen = new Map<string, string>();   // `${env}:${jobId}` → VN day
+
+// At most this many drop-off writes per cycle (one parallel round, ~5s). The
+// first evening cycle can find dozens; the rest go in the next cycles.
+const ASSIGNED_SWITCH_MAX = 10;
+
+/**
+ * Move ALREADY-ASSIGNED jobs off a PSC that has closed, while the sample is still
+ * at the client — see `pickAssignedSwitches` for exactly which. Same rule, same
+ * next-best chain and same swap record as the assign path, so a job not finished
+ * tonight still goes home tomorrow.
+ *
+ * Costs nothing to look: it reads the assigned list the cycle already fetched. The
+ * only calls are one drop-off write per job actually moved, plus its swap record.
+ * The driver keeps the job — this is the same REST stop write the dashboard's
+ * "Đổi điểm giao" uses on assigned jobs.
+ */
+async function switchAssignedOffClosedPscs(
+  assigned: Job[],
+  env: Env,
+  today: string,
+  log: (msg: string, level?: LogLevel) => void,
+): Promise<void> {
+  if (!isClosingWindow() || assigned.length === 0) return;
+  const rejectProxyId = process.env.CARTRACK_REJECT_PROXY_DRIVER_ID ?? "";
+  const picks = pickAssignedSwitches(assigned, PSC_TABLE, closingClockMin(), {
+    driverIds: new Set([PROXY_DRIVER_ID, rejectProxyId].filter(Boolean)),
+    pickupIds: DIAG_LOCATION_CUSTOMER_IDS,
+    labels: CLOSING_EXEMPT_LABELS,
+  }).filter((p) => assignedSwitchSeen.get(`${env}:${p.job.job_id}`) !== today);
+  if (picks.length === 0) return;
+  if (assignedSwitchSeen.size > 2_000) {
+    for (const [k, day] of assignedSwitchSeen) if (day !== today) assignedSwitchSeen.delete(k);
+  }
+
+  await Promise.all(picks.slice(0, ASSIGNED_SWITCH_MAX).map(async ({ job, fromId, targetId, closed }) => {
+    assignedSwitchSeen.set(`${env}:${job.job_id}`, today);
+    const pickupName = job.stops.find((st) => st.stop_type_id === 1)?.customer_name ?? "—";
+    const dropName = job.stops.find((st) => st.stop_type_id === 2)?.customer_name ?? "—";
+    const res = await applyAltDropoff(job.job_id, targetId, job.stops, env, log, false);
+    if (!res.ok) return;                                  // applyAltDropoff logged the failure
+    await writeDropoffSwap(job.job_id, env, { from: fromId, to: targetId, on: today }, today);
+    const shut = closed.map((p) => `${pscCode(p.name)} đóng ${fmtMin(p.closeMin)}`).join(", ");
+    const driver = driverDisplayName(job.driver?.first_name ?? "") || "tài xế";
+    log(
+      `Job ${job.job_id} - PSC ĐÓNG CỬA (${shut}) → chuyển drop sang ${pscCode(PSC_TABLE.get(targetId)?.name ?? res.dropoffName ?? targetId)} · đã giao ${driver}, chưa lấy mẫu | ${pickupName} → ${dropName}`,
+      "WARN",
+    );
+  }));
 }
 
 export function buildGmapsRouteLink(
@@ -1829,6 +1883,14 @@ export async function autoAssignCycle(
   // `fail` is defined inside the per-job worker below so it closes over that job's
   // `route` — no shared mutable state, safe when jobs run concurrently.
 
+  // PSC closing: already-assigned jobs whose sample is still at the client. Before
+  // the empty-list exit below, because that is the exit most evening cycles take.
+  if (!onlyJobIds && assignedJobsToday) {
+    await switchAssignedOffClosedPscs(assignedJobsToday, env, today, log).catch((e) =>
+      log(`PSC closing sweep failed: ${String(e).slice(0, 120)}`, "WARN"),
+    );
+  }
+
   if (jobs.length === 0) {
     log("No unassigned jobs");
     // THE LATE CHECK RUNS HERE TOO, and this is the exit most cycles take.
@@ -2197,7 +2259,7 @@ export async function autoAssignCycle(
     // and its twin — booked a minute earlier and already moved — is filed under THAT
     // pair. Look there too, or two after-hours bookings both pass and both run.
     const closedTo = routeKey && dropoffCtx.table && !jobLabels.some((l) => CLOSING_EXEMPT_LABELS.includes(l))
-      ? resolveOpenDropoff(dropoffCtx.table, dropoffId!, vnMinutesSinceMidnight(), customerId).id
+      ? resolveOpenDropoff(dropoffCtx.table, dropoffId!, closingClockMin(), customerId).id
       : null;
     const closedKey = closedTo && closedTo !== dropoffId ? `${customerId}:${closedTo}` : null;
     const blockingJobId = routeKey
