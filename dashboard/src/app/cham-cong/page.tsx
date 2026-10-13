@@ -2729,33 +2729,11 @@ export default function ChamCongPage() {
                         </div>
                       )}
 
-                      {/* The rule, stated once, in the driver's own units — the
-                          same principle the performance tab follows. The km line
-                          says WHICH distance it pays for, because the Hiệu Suất
-                          tab shows a different one and the two will not match. */}
-                      <div className="rounded-xl bg-gray-50 border border-gray-200 px-3 py-2.5 space-y-1.5">
-                        {/* The cutoff leads: "your number will still go up" is the one
-                            reassuring fact here, and it used to sit last and faintest. */}
-                        <p className="text-xs text-gray-700">
-                          Số liệu tính đến hết ngày {fmtDate(payReport.latest)} —{" "}
-                          <span className="font-semibold">ngày hôm nay chưa được tính.</span>
-                        </p>
-                        <p className="text-xs text-gray-600">
-                          <span className="font-semibold">Cách tính:</span>{" "}
-                          {vndFmt.format(payReport.rates.per_km)}đ mỗi km. {payReport.rates.km_basis}.
-                        </p>
-                        {payReport.summary.hours_shown && (
-                          <p className="text-xs text-gray-600">
-                            {vndFmt.format(payReport.rates.per_hour)}đ mỗi giờ theo ca làm: tính từ
-                            lúc chấm công vào (không có thì chuyến lấy mẫu đầu tiên), không sớm hơn giờ vào ca;
-                            đến lúc chấm công ra hoặc chuyến cuối, lấy giờ trễ hơn. Ngày lễ ×3.
-                          </p>
-                        )}
-                        <p className="text-xs text-gray-500">
-                          Số km ở đây khác với &quot;quãng đường&quot; ở tab Hiệu Suất: tab đó tính từng chặng
-                          giữa hai điểm liên tiếp, còn ở đây tính từ điểm lấy đến điểm giao của mỗi chuyến.
-                        </p>
-                      </div>
+                      {/* No "cách tính" here (supervisor, 2026-10-13) — only the
+                          cutoff, so a driver knows today's work is still to come. */}
+                      <p className="text-xs text-gray-500">
+                        Số liệu tính đến hết ngày {fmtDate(payReport.latest)} — ngày hôm nay chưa được tính.
+                      </p>
                     </>
                   )}
                 </div>
