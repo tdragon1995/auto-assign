@@ -500,6 +500,10 @@ These are the things most likely to burn a future agent working on this codebase
     Thiếu ca PT or by Cập nhật công. Earlier months stay km-only: they were paid on
     their own numbers. Driver-facing text never mentions payroll or a file.
 
+    **A PT account is never rostered from MISA** (supervisor, 2026-10-13): the MISA
+    sync drops every `PT…` shift row it parses, so a part-timer's Lịch ca comes only
+    from their PT pattern or a hand-entered day. MISA still supplies their leave.
+
     **"Cập nhật công" (`pay_day_corrections`).** An APPROVED correction is the day's
     worked window outright — it replaces the rule, shift or no shift. Drivers ask
     from Thu Nhập (open days only: the running period, plus the previous one until

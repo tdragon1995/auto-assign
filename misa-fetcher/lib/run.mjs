@@ -67,7 +67,14 @@ export async function runMisaSync({creds,chromium,launchOptions,month,flags=[],s
       }
     }
     const leaveMap = buildLeaveMap(attendance);
-    const { records, gaps } = parseShifts(shiftData, leaveMap, attendance);
+    const parsed = parseShifts(shiftData, leaveMap, attendance);
+    // Part-timers are rostered ONLY from their PT schedule (weekly pattern or a
+    // hand-entered day), never from MISA (supervisor, 2026-10-13): MISA's plan
+    // for a PT account said "off" on days they worked, and outranked the pattern.
+    // MISA still supplies their LEAVE — that comes from `attendance`, not here.
+    const isPt = (code) => /^PT/i.test(String(code ?? ""));
+    const records = parsed.records.filter((r) => !isPt(r.employee_code));
+    const gaps = parsed.gaps.filter((g) => !isPt(g.employee_code));
 
     console.log(
       `[run] parsed: ${shiftData.length} employees, ${records.length} shift rows, ` +
