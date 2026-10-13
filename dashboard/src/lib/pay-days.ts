@@ -106,13 +106,18 @@ export async function loadPayDayInputs(from: string, to: string, driverId?: stri
     const list = shifts.get(k);
     if (list) list.push(w); else shifts.set(k, [w]);
   };
+  /** Days MISA itself schedules: its hours stand, and a Sunday roster line for
+   *  that person only says where they are, not when (supervisor, 2026-10-13). */
+  const misaWorking = new Set<string>();
   for (const r of shiftRows) {
     if (!r.start_time || !r.end_time) continue;
+    if (r.source === "MISA") misaWorking.add(dayKey(r.driver_id, r.shift_date));
     if (payrollImported && r.source !== "payroll" && r.source !== "manual") continue;
     add(r.driver_id, r.shift_date, { start: hm(r.start_time), end: hm(r.end_time) });
   }
   if (!payrollImported) {
     for (const r of sunday) {
+      if (misaWorking.has(dayKey(r.driver_id, r.work_date))) continue;
       const w = isWeekdayRoleLine(r.area) ? null : parseShiftText(r.shift);
       if (w) { add(r.driver_id, r.work_date, w); mark(r.driver_id, r.work_date, { sunday: true }); }
     }
