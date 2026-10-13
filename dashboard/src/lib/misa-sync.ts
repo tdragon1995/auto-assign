@@ -95,10 +95,10 @@ export async function runMisaSyncStep(id:number) {
       await invalidateConfigCache();
     }else if(run.phase==="misa") {
       const {runNativeMisa}=await import("./misa-native");
-      const result=await runNativeMisa(run.months[run.monthIndex]);
-      run.shiftRows+=result?.shiftRows??0;run.monthIndex++;
+      const result=await runNativeMisa(run.months);
+      run.shiftRows+=result?.shiftRows??0;run.monthIndex=run.months.length;
       await Promise.all([invalidateShiftCache(),invalidateLeaveCache(),invalidateConfigCache()]);
-      if(run.monthIndex===run.months.length)run.phase="cache";
+      run.phase="cache";
     }else {
       invalidateDriversCache();await Promise.all([invalidateConfigCache(),invalidateShiftCache(),invalidateLeaveCache()]);
       if(!await loadConfigFromSheets())throw new Error("Configuration cache refresh failed");
