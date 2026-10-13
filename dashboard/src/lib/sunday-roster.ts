@@ -79,10 +79,12 @@ export function parseRosterLines(input: unknown): RosterLine[] {
  * Runner, but worth seeing).
  */
 export function rosterGaps(lines: readonly RosterLine[], areas: readonly RosterArea[]) {
-  const covered = new Set(lines.filter((l) => l.driver_id).map((l) => areaKey(l.area)));
-  const ruled = new Set(areas.filter((a) => a.rules > 0).map((a) => areaKey(a.area)));
+  // A rule's area is found INSIDE a line's area, as the sheet's SEARCH found it:
+  // rule "D004" is covered by "D004 ca 1", rule "D029" by "D029 + D046".
+  const covered = lines.filter((l) => l.driver_id).map((l) => areaKey(l.area));
+  const ruled = areas.filter((a) => a.rules > 0).map((a) => areaKey(a.area));
   return {
-    uncovered: areas.filter((a) => a.rules > 0 && !covered.has(areaKey(a.area))),
-    unused: new Set(lines.map((l) => areaKey(l.area)).filter((k) => !ruled.has(k))),
+    uncovered: areas.filter((a) => a.rules > 0 && !covered.some((k) => k.includes(areaKey(a.area)))),
+    unused: new Set(lines.map((l) => areaKey(l.area)).filter((k) => !ruled.some((r) => k.includes(r)))),
   };
 }
