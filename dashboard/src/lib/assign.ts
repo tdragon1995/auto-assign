@@ -819,9 +819,11 @@ async function alertOnboard(
     if (!quiet && late.length === 0) continue;
 
     const driver = a.driver_name ? stripDriverCode(a.driver_name) : "chưa rõ tên";
+    // Bold headline, then who — the supervisor's layout (2026-10-14).
     const lines: string[] = quiet
-      ? [`⏸️ ${driver} không có điểm dừng mới ~${dur(now - a.quiet_since_ms!)} (từ ${hhmm(a.quiet_since_ms!)}), đang giữ ${a.onboard_job_ids.length} mẫu`]
-      : [`🕒 Mẫu chưa về điểm giao · Tài xế ${driver}`];
+      ? [`⏸️ **Không có điểm dừng mới ~${dur(now - a.quiet_since_ms!)} (từ ${hhmm(a.quiet_since_ms!)})**`,
+         `GNM ${driver} · đang giữ ${a.onboard_job_ids.length} mẫu`]
+      : ["🕒 **Mẫu chưa về điểm giao**", `GNM ${driver}`];
     if (late.length) {
       lines.push("Mẫu trễ, cần báo khách:");
       for (const l of late) {
@@ -832,7 +834,7 @@ async function alertOnboard(
       lines.push("Chuyến chưa lấy, nên chuyển tài xế khác:");
       for (const p of a.pending) lines.push(`• ${place(p.pickup_name)}`, link(p.job_id));
     }
-    const sent = await sendZaloMessage(botToken, chatId, lines.join("\n"));
+    const sent = await sendZaloMessage(botToken, chatId, lines.join("\n"), "markdown");
     log(
       `Onboard alert ${sent ? "sent" : "failed"} for ${driver}: ${late.length} late, ${quiet ? `quiet since ${hhmm(a.quiet_since_ms!)}, ${a.pending.length} pending` : "not quiet"}`,
       sent ? "INFO" : "WARN",
