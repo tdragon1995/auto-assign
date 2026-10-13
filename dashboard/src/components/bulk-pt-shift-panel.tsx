@@ -38,7 +38,7 @@ export function BulkPtShiftPanel({drivers,patterns,shifts,suggestions,configured
     if(!res.ok||!body.ok)throw Error(body.error||"Không áp dụng được chu kỳ");applied.push(driver.driver_id);
    }catch(e){failed.push(`${driver.name}: ${e instanceof Error?e.message:String(e)}`);}setResult(`Đã xử lý ${applied.length+failed.length}/${list.length} PT…`);}
    setSelected(current=>new Set([...current].filter(id=>!applied.includes(id))));
-   setResult(`Đã áp dụng ${applied.length}/${list.length} chu kỳ từ ${date} đến hết tháng sau. Xem lịch tại Theo ngày.${failed.length?`\n${failed.join("\n")}`:""}`);await onSaved();
+   setResult(`Đã áp dụng ${applied.length}/${list.length} chu kỳ từ ${date} — chạy đến khi có chu kỳ mới. Xem lịch tại Theo ngày.${failed.length?`\n${failed.join("\n")}`:""}`);await onSaved();
   }catch(e){setResult(e instanceof Error?e.message:String(e));}finally{setSaving(false);onBusy(false);}
  };
  const save=async()=>{
@@ -68,7 +68,7 @@ export function BulkPtShiftPanel({drivers,patterns,shifts,suggestions,configured
     <label className="text-sm">Kết thúc (giờ VN)<input required type="time" className={`${field} mt-1`} value={end} onChange={e=>setEnd(e.target.value)}/></label>
    </div>
    <div className="flex flex-wrap gap-4" role="group" aria-label="Ngày làm trong tuần">{[1,2,3,4,5,6,0].map(day=><label key={day} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={days.includes(day)} onChange={e=>setDays(current=>e.target.checked?[...current,day]:current.filter(d=>d!==day))}/>{weekdays[day]}</label>)}</div>
-   <p className="text-xs text-slate-600">Lặp lại hàng tuần từ ngày áp dụng. Ngày không chọn là nghỉ. Sau khi lưu, bấm Áp dụng chu kỳ PT để tạo lịch ngày còn thiếu đến hết tháng sau. Ca đã có được giữ lại.</p>
+   <p className="text-xs text-slate-600">Lặp lại hàng tuần từ ngày áp dụng. Ngày không chọn là nghỉ. Sau khi lưu, bấm Áp dụng chu kỳ PT để tạo lịch ngày; chu kỳ chạy đến khi có chu kỳ mới, thay ca của chu kỳ cũ. Ca sửa tay được giữ lại.</p>
   </fieldset>
   <div className="flex flex-wrap items-center gap-3 p-3"><label className="min-w-0 flex-1"><span className="sr-only">Tìm PT thiếu ca</span><input type="search" className={field} placeholder="Tìm tài xế…" value={search} disabled={saving||loading} onChange={e=>setSearch(e.target.value)}/></label>
    <Button type="button" variant="outline" disabled={saving||loading||!shown.length} onClick={()=>setSelected(current=>new Set([...current,...shown.map(d=>d.driver_id)]))}>Chọn tất cả ({shown.length})</Button>
@@ -76,7 +76,7 @@ export function BulkPtShiftPanel({drivers,patterns,shifts,suggestions,configured
   </div>
   <div className="min-h-0 flex-1 overflow-auto px-3">{loading?<p role="status" className="p-3 text-sm text-slate-600">Đang đọc config và lịch ca ngày {date}…</p>:shown.length?shown.map(driver=><div key={driver.driver_id} className="space-y-2 border-b border-slate-100 py-3 text-sm hover:bg-slate-50">
    <label className="flex cursor-pointer items-center gap-3"><input type="checkbox" checked={selected.has(driver.driver_id)} disabled={saving} onChange={e=>setSelected(current=>{const next=new Set(current);if(e.target.checked)next.add(driver.driver_id);else next.delete(driver.driver_id);return next;})}/><DriverName full={driver.name}/></label>
-   {hasPlan(driver)&&<div className="flex flex-wrap items-center gap-2 pl-7"><p className="text-xs text-amber-800">Đã có chu kỳ tuần · cần tạo lịch ngày.</p><Button type="button" size="sm" disabled={saving} onClick={()=>void apply([driver])}>Áp dụng chu kỳ PT · đến hết tháng sau</Button></div>}
+   {hasPlan(driver)&&<div className="flex flex-wrap items-center gap-2 pl-7"><p className="text-xs text-amber-800">Đã có chu kỳ tuần · cần tạo lịch ngày.</p><Button type="button" size="sm" disabled={saving} onClick={()=>void apply([driver])}>Áp dụng chu kỳ PT</Button></div>}
    <div className="flex flex-wrap gap-2 pl-7">{suggestions[driver.driver_id]?.length?suggestions[driver.driver_id].map(s=><Button key={`${s.start}-${s.end}`} type="button" size="sm" variant="outline" disabled={saving} title={`Config: ${s.sources.join("; ")}`} onClick={()=>copy(driver.driver_id,s)}>Sao chép config · {s.days.map(d=>weekdays[d]).join(", ")} {s.start}–{s.end}</Button>):<span className="text-xs text-slate-600">Config chưa có giờ cụ thể để sao chép. Nhập giờ ở trên.</span>}</div>
   </div>):<p className="p-3 text-sm text-slate-600">{search?"Không tìm thấy tài xế phù hợp.":"Không còn PT có config thiếu ca cho ngày này."}</p>}</div>
   <div className="space-y-2 border-t border-slate-200 p-3">{result&&<p role="status" className="whitespace-pre-line text-sm">{result}</p>}
