@@ -17,13 +17,6 @@ export const STATUS_LABEL: Record<Exclude<CellStatus, "">, string> = {
   approved: "Đã duyệt",
 };
 
-/**
- * Staff codes Bảng ca leaves out (supervisor, 2026-10-13): full-timers who drive
- * but never tap chấm công, so every day of theirs would read as a fault.
- * Hand-kept, like BO_RUNNERS.
- */
-export const GRID_IGNORED_CODES = new Set(["DC100043", "DC100993", "DC102121"]);
-
 const min = (hhmm: string) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
 /** Arriving or leaving within this many minutes of the shift edge still counts as đủ. */
 export const GRACE_MIN = 15;
