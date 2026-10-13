@@ -14,7 +14,7 @@ vm.runInNewContext(ts.transpileModule(fs.readFileSync('src/components/bulk-pt-sh
  module:moduleShim,exports:moduleShim.exports,require:n=>deps[n]??(()=>{throw Error(n);})(),Set,Array,
  fetch:async(url,options)=>{assert.equal(url,'/api/driver-shifts');const body=JSON.parse(options.body);posts.push(body);const ok=body.data.driver_id!=='retry';return {ok,json:async()=>ok?{ok:true}:{error:'revision changed'}};}
 });
-const {missingPtShifts,BulkPtShiftPanel}=moduleShim.exports;
+const {missingPtShifts,BulkPtShiftPanel,PatternTimeSelect}=moduleShim.exports;
 const driver=(id,name='P - C - PTBU '+id,active=true)=>({driver_id:id,name,active,employee_code:'driver:'+id});
 const pattern=(id,extra={})=>({id:1,driver_id:id,employee_code:'driver:'+id,label:id,active:true,active_from:null,active_to:null,review_issues:[],days:[null,{start:'18:00',end:'21:00'},null,null,null,null,null],...extra});
 const drivers=[driver('new'),driver('retry'),driver('covered'),driver('unconfigured'),driver('inactive',undefined,false),driver('ft','F - C - DC1001 FT'),driver('blank'),driver('expired'),driver('future'),driver('off'),driver('holiday'),driver('legacy'),{...driver('shared1'),employee_code:'PTBU'},{...driver('shared2'),employee_code:'PTBU'},driver('foreign'),driver('placeholder')];
@@ -44,13 +44,13 @@ const select=id=>{const row=walk(render()).find(n=>n.type==='label'&&walk(n).som
 (async()=>{
  input('date').props.onChange({target:{value:'2026-10-12'}});
  const copy=walk(render()).find(n=>n.type==='button'&&n.props.title==='Config: Clinic');copy.props.onClick();
- assert.deepEqual(walk(render()).filter(n=>n.type==='input'&&n.props.type==='time').map(n=>n.props.value),['22:00','02:00']);
+ assert.deepEqual(walk(render()).filter(n=>n.type===PatternTimeSelect).map(n=>n.props.value),['22:00','02:00'],'Times are half-hour selects');
  const sunday=walk(render()).find(n=>n.type==='label'&&n.props.children?.[1]==='CN');walk(sunday).find(n=>n.type==='input').props.onChange({target:{checked:false}});
  const tuesday=walk(render()).find(n=>n.type==='label'&&n.props.children?.[1]==='T3');walk(tuesday).find(n=>n.type==='input').props.onChange({target:{checked:false}});
  select('new');select('retry');
  render().props.onSubmit({preventDefault(){}});
  for(let i=0;i<5;i++)await new Promise(resolve=>setImmediate(resolve));
- assert.equal(posts.length,2);assert.equal(saved,1);assert.deepEqual(busy,[true,false]);
+ assert.deepEqual(posts.map(p=>p.mode),['patterns','apply-pt','patterns'],'Saving a weekly shift also creates its daily shifts, in the same click');assert.equal(posts[1].data.driver_id,'new');assert.equal(saved,1);assert.deepEqual(busy,[true,false]);
  const cycle=posts[0].data;assert.equal(posts[0].mode,'patterns');assert.equal(cycle.active_from,'2026-10-12');assert.equal(cycle.active_to,null);assert.equal(cycle.days.length,7);
  assert.deepEqual(cycle.days[1],{start:'22:00',end:'02:00'});assert.equal(cycle.days[0],null);assert.equal(cycle.days[2],null);
  assert.ok(walk(render()).find(n=>n.props.role==='status').props.children.includes('revision changed'));
@@ -66,8 +66,8 @@ const select=id=>{const row=walk(render()).find(n=>n.type==='label'&&walk(n).som
  const response=await route.exports.GET({nextUrl:new URL('https://example.test/api/driver-shifts?mode=missing&date=2026-10-08')});
  assert.equal(response.status,200);assert.equal(response.body.shifts.length,shifts.length-1);assert.deepEqual([...response.body.configuredDriverIds],['new']);assert.equal(response.body.suggestions.new[0].start,'22:00');
  posts=[];select('new');select('covered');
- walk(render()).find(n=>n.type==='input'&&n.props.type==='time').props.onChange({target:{value:''}});
- const apply=walk(render()).find(n=>n.type==='button'&&n.props.children?.[0]==='Áp dụng chu kỳ cho ');
+ walk(render()).find(n=>n.type===PatternTimeSelect).props.onChange('');
+ const apply=walk(render()).find(n=>n.type==='button'&&n.props.children?.[0]==='Tạo lịch ngày cho ');
  assert.equal(apply.props.disabled,false,'Saved PT plans can be applied without filling the new-plan form');
  apply.props.onClick();for(let i=0;i<5;i++)await new Promise(resolve=>setImmediate(resolve));
  assert.deepEqual(posts.map(p=>p.mode),['apply-pt','apply-pt']);assert.deepEqual(posts.map(p=>p.data.driver_id),['new','covered']);assert.equal(posts[0].data.date,'2026-10-12');assert.deepEqual([...state[3]],['retry']);
