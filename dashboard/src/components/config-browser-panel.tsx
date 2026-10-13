@@ -1308,7 +1308,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
                       {firstOfBranch && (
                         <Button
                           size="icon" variant="ghost"
-                          className="size-8 text-blue-700 hover:bg-blue-50 hover:text-blue-800"
+                          className="-my-1.5 size-8 text-blue-700 hover:bg-blue-50 hover:text-blue-800"
                           aria-expanded={runOpen}
                           aria-label={runOpen ? "Đóng" : r.unmapped ? `Thiết lập config cho ${r.pickup}` : `Sửa lịch ${r.pickup || branch} → ${r.dropoff || "mọi điểm"}`}
                           onClick={() => { closeProfile(); setEditing(runOpen ? null : { branch, pickup: r.pickup, dropoff: r.dropoff, row: r.row }); }}

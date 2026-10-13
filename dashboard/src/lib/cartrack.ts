@@ -371,6 +371,24 @@ export async function completeJob(
   return { ok: res.ok, status: res.status, body };
 }
 
+/** Blanks customer fields through the web app's own RPC. The REST PUT answers 200 to
+ *  an empty address_line_2 / email / … and keeps the old value (verified on D030,
+ *  2026-10-13: "", null and " " all ignored), so clearing one needs this path.
+ *  The RPC replaces the whole record, so the current one is read and sent back whole. */
+const CLEARABLE: Record<string, string> = { address_line_2: "addressLine2", email: "email", postal_code: "postalCode", client_reference: "clientReference" };
+export async function clearCustomerFields(customerId: string, fields: string[]): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const read = await jsonRpc<any>("delivery_get_customer_details", { data: { customerIds: [customerId] } });
+  const c = read.ok ? read.result?.customers?.[0] : null;
+  if (!c) throw new Error(`Không đọc được khách hàng qua Cartrack RPC: ${read.ok ? "không có dữ liệu" : read.error}`);
+  const record = Object.fromEntries(["customerId", "customerName", "email", "contactCode", "contactNumber", "addressLine1", "addressLine2",
+    "postalCode", "countryId", "latitude", "longitude", "clientReference"].map((k) => [k, c[k]]));
+  for (const f of fields) record[CLEARABLE[f]] = f === "address_line_2" || f === "email" ? "" : null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const res = await jsonRpc<any[]>("delivery_update_customer", { data: [record] });
+  if (!res.ok || res.result?.[0]?.success !== true) throw new Error(`Cartrack RPC không xoá được trường: ${res.ok ? JSON.stringify(res.result?.[0]?.errors ?? null) : res.error}`);
+}
+
 export async function getCustomerById(
   customerId: string,
   env: Env = "prod"

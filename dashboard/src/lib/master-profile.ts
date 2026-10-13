@@ -1,4 +1,4 @@
-import { BASE_URL, getCustomerById, getHeaders } from "./cartrack";
+import { BASE_URL, clearCustomerFields, getCustomerById, getHeaders } from "./cartrack";
 import { DELIVERY_BASE, getAdminToken, updateLocationAddress, updateLocationPhone, updatePickDropLocation } from "./labcenter";
 import { nearestPsc, newWard, GEO_DATASET_VERSION } from "./master-geo";
 import { masterClient, masterDriver, masterEnabled } from "./master-store";
@@ -88,6 +88,8 @@ export async function editClient(id: string, patch: Record<string, unknown>) {
     const res = await fetch(`${BASE_URL}/customers/${id}`, { method: "PUT", headers: getHeaders(), body: JSON.stringify(payload) });
     if (!res.ok) throw new Error(`Cartrack HTTP ${res.status}: ${(await res.text()).slice(0, 180)}`);
     after = (await getCustomerById(id))?.data;
+    const blanked = ["address_line_2", "email", "postal_code", "client_reference"].filter(k => k in patch && !String(patch[k] ?? "").trim() && String(after?.[k] ?? "") !== "");
+    if (after && blanked.length) { await clearCustomerFields(id, blanked); after = (await getCustomerById(id))?.data; }
     if (!after || after.customer_name !== name || after.address_line_1 !== address ||
         Number(after.latitude) !== lat || Number(after.longitude) !== lon || String(after.contact_number ?? "") !== String(contact ?? "") ||
         ["address_line_2", "email", "postal_code", "client_reference"].some(k => k in patch && String(after[k] ?? "") !== String(patch[k] ?? ""))) {
