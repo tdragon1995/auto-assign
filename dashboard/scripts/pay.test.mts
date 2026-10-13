@@ -17,6 +17,8 @@ import {
   RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch,
 } from "../src/lib/pay";
 import { parsePayrollSheet, resolveDriver } from "../src/lib/pay-shifts";
+import { parseShiftText, mergeWindows } from "../src/lib/pay";
+import { isWeekdayRoleLine } from "../src/lib/pay-days";
 import { openRange, checkTimes, checkProof } from "../src/lib/pay-corrections";
 import type { TimelineRoute, TimelineStop } from "../src/lib/types";
 
@@ -142,6 +144,16 @@ console.log("\n2. Money");
 check("30.000đ/h is charged per minute", hourPayFor(60) === 30_000 && hourPayFor(30) === 15_000);
 check("a 20-minute shift is not rounded away", hourPayFor(20) === 10_000, String(hourPayFor(20)));
 check("2.000đ/km", kmPayFor(3.5) === 7_000, String(kmPayFor(3.5)));
+// Extra shift sources: Lịch Chủ nhật typing, weekday-role lines, merged overlaps.
+check("Sunday shift text parses, with a one-digit hour", JSON.stringify(parseShiftText("6:00 - 15:00")) === '{"start":"06:00","end":"15:00"}');
+check("a non-window is not a shift", parseShiftText("Nghỉ") === null && parseShiftText("15:00 - 06:00") === null);
+check("weekday-role lines are not Sunday shifts", isWeekdayRoleLine("BO Runner (Thứ 2 tới 7)") && !isWeekdayRoleLine("BO Runner (CN)") && !isWeekdayRoleLine("D004 ca 1"));
+check("overlapping windows from two sources merge",
+  JSON.stringify(mergeWindows([{ start: "15:00", end: "21:00" }, { start: "08:00", end: "18:00" }])) === '[{"start":"08:00","end":"21:00"}]');
+check("touching windows stay a split day",
+  mergeWindows([{ start: "06:00", end: "15:00" }, { start: "15:00", end: "20:00" }]).length === 2);
+check("the same window twice is one", mergeWindows([{ start: "06:00", end: "15:00" }, { start: "06:00", end: "15:00" }]).length === 1);
+
 check("rates are the stated contract", RATE_PER_HOUR_VND === 30_000 && RATE_PER_KM_VND === 2_000);
 
 // BO Runner. Lê Ngọc Anh Tú (PT101705) Mon 17/08: BO 06:04–15:00, then driver

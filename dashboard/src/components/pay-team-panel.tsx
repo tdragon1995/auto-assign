@@ -26,6 +26,7 @@ import { parsePayrollSheet } from "@/lib/pay-shifts";
 import { foldName } from "@/lib/driver-cell";
 import { DriverName } from "./driver-name";
 import { PayCorrectionsPanel } from "./pay-corrections-panel";
+import { PayNoShiftPanel, type NoShiftDay } from "./pay-no-shift-panel";
 
 interface DriverRow {
   driver_id: string;
@@ -53,6 +54,7 @@ interface PayTeamReport {
   driver_count: number;
   coverage: { expected_days: number; missing_days: string[]; period_closed: boolean; shifts_imported: boolean; pending_corrections: number; ready: boolean };
   totals: Omit<DriverRow, "driver_id" | "driver_name">;
+  no_shift?: NoShiftDay[];
   drivers: DriverRow[];
   error?: string;
 }
@@ -155,6 +157,7 @@ export function PayTeamPanel() {
   const [onlyFlagged, setOnlyFlagged] = useState(false);
   /** The "Cập nhật công" review panel. */
   const [showCorrections, setShowCorrections] = useState(false);
+  const [showFix, setShowFix] = useState(false);
 
   /** Payroll's monthly shift file → /api/pay/shifts. Parsed HERE, in the
    *  browser, so the server never spends CPU on a spreadsheet. */
@@ -397,6 +400,9 @@ export function PayTeamPanel() {
               {onlyFlagged
                 ? "Hiện tất cả tài xế"
                 : `Chỉ hiện ${data.drivers.filter((d) => d.no_shift_days > 0).length} tài xế cần kiểm tra`}
+            </button>{" · "}
+            <button onClick={() => { setShowFix((v) => !v); setShowCorrections(false); }} className="font-semibold underline underline-offset-2 hover:text-amber-950">
+              {showFix ? "‹ Bảng lương" : "Sửa nhanh"}
             </button>
           </span>
         </div>
@@ -404,7 +410,11 @@ export function PayTeamPanel() {
 
       {/* "Cập nhật công" takes the table's place while open, rather than pushing
           the payroll off screen below it. */}
-      {showCorrections && data ? (
+      {showFix && data && !showCorrections ? (
+        <div className="flex-1 min-h-0">
+          <PayNoShiftPanel key={data.month} days={data.no_shift ?? []} onChanged={() => load(data.month)} />
+        </div>
+      ) : showCorrections && data ? (
         <div className="flex-1 min-h-0">
           <PayCorrectionsPanel
             month={data.month}

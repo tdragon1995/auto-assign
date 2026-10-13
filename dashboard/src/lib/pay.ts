@@ -150,6 +150,28 @@ export function punchAt(p: Pick<PayPunch, "started_ts" | "arrived_ts" | "complet
 /** One rostered window, VN wall clock "HH:MM", as payroll's file states it. */
 export interface ShiftWindow { start: string; end: string }
 
+/** "6:00 - 15:00" (Lịch Chủ nhật's typing) → {start:"06:00", end:"15:00"};
+ *  null for anything that is not one same-day window. */
+export function parseShiftText(text: string | null | undefined): ShiftWindow | null {
+  const m = /^\s*(\d{1,2})[:h](\d{2})\s*[-–]\s*(\d{1,2})[:h](\d{2})\s*$/.exec(text ?? "");
+  if (!m) return null;
+  const w = { start: `${m[1].padStart(2, "0")}:${m[2]}`, end: `${m[3].padStart(2, "0")}:${m[4]}` };
+  return w.start < w.end ? w : null;
+}
+
+/** A day's windows from several sources (Lịch ca, a Sunday line, covering a
+ *  leave) as one list: OVERLAPPING windows are one stretch of work and merge, so
+ *  no minute is paid twice. Touching windows stay apart — a split day keeps its shape. */
+export function mergeWindows(ws: ShiftWindow[]): ShiftWindow[] {
+  const out: ShiftWindow[] = [];
+  for (const w of [...ws].sort((a, b) => a.start.localeCompare(b.start))) {
+    const last = out.at(-1);
+    if (last && w.start < last.end) { if (w.end > last.end) last.end = w.end; }
+    else out.push({ ...w });
+  }
+  return out;
+}
+
 /** What a day's hours are computed from, besides the taps. */
 export interface DayFacts {
   date: string;
@@ -291,6 +313,26 @@ export function workedMinutes(punches: PayPunch[], day: DayFacts): WorkedDay {
   });
   out.minutes = out.clocked * multiplier;
   return out;
+}
+
+/**
+ * What a day WITHOUT a shift suggests was worked, for Lương PT's quick fix: from
+ * the check-in (else the first pickup) to the later of the check-out and the last
+ * trip. Same-date stamps only, as everywhere. `in`/`out` are null where the day
+ * says nothing — a lone check-in has no end, so a person must type it.
+ */
+export function suggestedWindow(punches: PayPunch[], firstTaskAt: string | null, lastTaskAt: string | null, date: string) {
+  const at = (kind: "in" | "out") => punches
+    .filter((p) => p.kind === kind)
+    .map((p) => p.arrived_ts ?? p.started_ts ?? p.completed_ts)
+    .filter((t): t is string => t !== null && vnDate(new Date(t)) === date)
+    .sort((a, b) => Date.parse(a) - Date.parse(b));
+  const firstIn = at("in")[0] ?? null;
+  const start = firstIn ?? firstTaskAt;
+  const lastOut = at("out").filter((t) => !start || Date.parse(t) > Date.parse(start)).at(-1) ?? null;
+  const ends = [lastOut, lastTaskAt].filter((t): t is string => !!t && (!start || Date.parse(t) > Date.parse(start)));
+  const end = ends.sort((a, b) => Date.parse(a) - Date.parse(b)).at(-1) ?? null;
+  return { first_in: firstIn, last_out: lastOut, in: start, out: start ? end : null };
 }
 
 /** Đồng earned for a span of clocked minutes. Per MINUTE, not per whole hour:
