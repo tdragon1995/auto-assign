@@ -10,6 +10,14 @@ Default range: payroll cutoff month through the end of next month. A specific
 month can be requested with `--month=YYYY-MM`. History before the 15th of two
 months prior is clipped by the database; future dates are retained.
 
+Full-timers working only their default shift never appear in Phân ca
+(ShiftPlanEmployee). Anyone with no working day there takes their days from
+Bảng chấm công instead: the company-wide 15th→14th timesheets
+(TimeSheet/v2/datapaging → TimeSheetDetail/paging), shift times read off each
+"DayN" cell. A real Phân ca plan is never overridden, and part-timers stay
+excluded as before. A failed timesheet read logs a warning and the sync carries
+on with Phân ca alone.
+
 Drivers without MISA employment can use PT patterns linked to their driver UUID.
 New patterns take effect in the next refresh. Multiple effective-dated patterns
 use the latest applicable start date. Unlinked/review patterns are excluded.
@@ -30,5 +38,5 @@ on its uniquely matched PT account; ambiguous twins are reported. Manual leave
 removals are retained in `master_leave_suppressions`. Use the dashboard's
 **Khôi phục** action to let an automated leave record return.
 
-Checks: `node scripts/pt-companion.test.mjs`; see
+Checks: `node scripts/pt-companion.test.mjs`, `node scripts/timesheet.test.mjs`; see
 [cutover notes](../docs/non-sunday-supabase.md) for database and shift-reader checks.

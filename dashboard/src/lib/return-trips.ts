@@ -200,9 +200,13 @@ export async function detectAndCreateReturnTrips(
     (j) => (j.labels ?? []).includes(PSC_RETURN_LABEL) && j.delivery_driver_id && j.create_ts
   );
 
-  // Index completed returns: "fromId:toId:driverId" → sorted create_ts strings.
-  // Used to detect outbounds that were already handled: a return created AFTER the outbound's
-  // dropoff completion means that outbound has been processed — skip it even if the return is now done.
+  // Index completed returns: "fromId:toId:driverId" → the later of create_ts and the
+  // moment the driver LEFT on it (pickup completed). An outbound is already handled
+  // when a return was created after it finished OR the driver set off on one after it
+  // finished — one ride back carries every outbound completed before it. Create time
+  // alone missed the second case: outbound #2 finishes while return #1 is still open,
+  // the driver rides return #1 home, and the moment it closes a second return was
+  // built for a ride already made (job 34490287, 2026-10-13).
   const completedReturnIndex = new Map<string, string[]>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const ret of completedReturns as any[]) {
@@ -212,8 +216,10 @@ export async function detectAndCreateReturnTrips(
     const rDropoff = (ret.stops ?? []).find((s: any) => s.stop_type_id === 2);
     if (!rPickup?.customer_id || !rDropoff?.customer_id) continue;
     const key = `${rPickup.customer_id}:${rDropoff.customer_id}:${ret.delivery_driver_id}`;
+    const created = (ret.create_ts as string).slice(0, 19);
+    const left = ((rPickup.activity_completed_ts as string | null) ?? "").slice(0, 19);
     const arr = completedReturnIndex.get(key) ?? [];
-    arr.push(ret.create_ts as string);
+    arr.push(left > created ? left : created);
     completedReturnIndex.set(key, arr);
   }
 
@@ -299,12 +305,14 @@ export async function detectAndCreateReturnTrips(
 
     const returnKey = `${fromCustomerId}:${toCustomerId}:${outbound.delivery_driver_id}`;
 
-    // Skip if a completed return already exists that was created AFTER this outbound's dropoff finished.
+    // Skip if a completed return was created, or set off on, at/after this outbound's
+    // dropoff finished. >= because a driver closes the outbound and starts the ride
+    // back with one tap — both carry the same second (10:13:42 on 2026-10-13).
     // "YYYY-MM-DD HH:MM:SS" string comparison works for same-day Cartrack timestamps.
     const outboundDoneAt: string = (doneTs ?? "").slice(0, 19);
     if (outboundDoneAt) {
       const priorReturns = completedReturnIndex.get(returnKey) ?? [];
-      if (priorReturns.some((ts) => ts.slice(0, 19) > outboundDoneAt)) continue;
+      if (priorReturns.some((ts) => ts.slice(0, 19) >= outboundDoneAt)) continue;
     }
 
     if (blockingReturnKeys.has(returnKey)) continue;

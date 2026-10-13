@@ -49,4 +49,14 @@ const gaps = rosterGaps(
 assert.deepEqual(gaps.uncovered.map((a) => a.area), ["D043"]);
 assert.deepEqual([...gaps.unused], ["d006 ca 1"]);
 
+// A rule's area is found INSIDE a line's area, as the sheet's SEARCH did:
+// rule "D004" is covered by the "D004 ca 1" line (20/09 showed it uncovered).
+const ID2 = "11111111-2222-4333-8444-555555555555";
+const inside = rosterGaps(
+  [{ area: "D004 ca 1", driver_id: ID2, raw_name: null, shift: "07:00 - 15:00", note: "" },
+   { area: "D021", driver_id: null, raw_name: null, shift: "06:00 - 12:00", note: "" }],
+  [{ area: "D004", rules: 1 }, { area: "D004 ca 1", rules: 1 }, { area: "D021", rules: 11 }],
+);
+assert.deepEqual(inside.uncovered.map((a) => a.area), ["D021"], "a line with no driver still leaves its rules uncovered");
+
 console.log("sunday-roster: ok");

@@ -22,6 +22,8 @@ const ORIGIN = "https://amisapp.misa.vn";
 const URLS = {
   shift: `${ORIGIN}/APIS/g1/TimeSheetAPI/api/ShiftPlanEmployee/v2/datapaging`,
   attendance: `${ORIGIN}/APIS/g1/TimeSheetAPI/api/Attendance/v2/datapaging`,
+  timesheets: `${ORIGIN}/APIS/g2/TimeSheetAPI/api/TimeSheet/v2/datapaging`,
+  timesheetDetail: `${ORIGIN}/APIS/g2/TimeSheetAPI/api/TimeSheetDetail/paging`,
 };
 
 const WRONG_CREDS_TEXT = "Tên đăng nhập hoặc mật khẩu không đúng";
@@ -345,5 +347,54 @@ export async function fetchAllAttendance(page, year, statuses = ATTENDANCE_STATU
     }
     log(`attendance status ${status}: ${kept} new leave record(s)`);
   }
+  return all;
+}
+
+// ------------------------------------------------- Bảng chấm công fetch ---
+// Phân ca (ShiftPlanEmployee) leaves out anyone working only their DEFAULT
+// shift — Ngô Minh Quang DC102114 had no row there, yet Bảng chấm công shows
+// 08001700 every weekday. The timesheet is where that default shift lives.
+
+const b64 = (v) => Buffer.from(JSON.stringify(v)).toString("base64");
+const TIMESHEET_PAGE_SIZE = 50; // what MISA's own page asks for
+
+/** Newest timesheets first; 50 covers ~2 years, far past the sync range. */
+export async function fetchTimesheetList(page) {
+  const resp = await pageFetch(page, URLS.timesheets, {
+    method: "POST",
+    body: {
+      PageSize: 50, PageIndex: 1, Filter: "", CustomFilter: null, QuickSearch: null,
+      CustomParam: { OrganizationUnitIDs: null, InActive: false, JobPositionID: null },
+      Sort: b64([{ selector: "FromDate", desc: true }]), Columns: null,
+    },
+  });
+  if (resp.status !== 200 || !resp.data?.Success) {
+    throw new Error(`timesheet list failed (HTTP ${resp.status}): ${resp.data?.UserMessage || resp.text?.slice(0, 200)}`);
+  }
+  return Array.isArray(resp.data.Data) ? resp.data.Data : resp.data.Data?.PageData || [];
+}
+
+export async function fetchTimesheetDetail(page, timeSheetId) {
+  const all = [];
+  for (let pageIndex = 1; ; pageIndex++) {
+    const param = { OrganizationUnitID: null, TimeSheetID: timeSheetId, Inactive: true, IsSub: false };
+    const resp = await pageFetch(page, URLS.timesheetDetail, {
+      method: "POST",
+      body: {
+        ...param, CustomParam: param, PageIndex: pageIndex, PageSize: TIMESHEET_PAGE_SIZE,
+        Filter: b64([["TimeSheetID", "=", timeSheetId]]),
+        Sort: b64([{ selector: "EmployeeCode", desc: false }]),
+        IsGroup: false, FieldGroup: 1, QuickSearch: { SearchValue: "", Columns: [] },
+      },
+    });
+    if (resp.status !== 200 || !resp.data?.Success) {
+      throw new Error(`timesheet ${timeSheetId} page ${pageIndex} failed (HTTP ${resp.status}): ${resp.data?.UserMessage || resp.text?.slice(0, 200)}`);
+    }
+    const rows = resp.data.Data?.PageData || [];
+    all.push(...rows);
+    if (rows.length < TIMESHEET_PAGE_SIZE) break;
+    await page.waitForTimeout(300);
+  }
+  log(`timesheet ${timeSheetId}: ${all.length} employees`);
   return all;
 }

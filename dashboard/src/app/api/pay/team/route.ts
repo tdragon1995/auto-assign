@@ -26,7 +26,7 @@ import { sbSelectAll, supabaseConfigured } from "@/lib/supabase-rest";
 import { masterDriverNames } from "@/lib/master-store";
 import { employmentOf } from "@/lib/driver-label";
 import {
-  paidDay, hoursPayFor, kmPayFor,
+  paidDay, hoursPayFor, kmPayFor, suggestedWindow,
   RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch, type PayJob,
 } from "@/lib/pay";
 import { payrollPeriod } from "@/lib/pay-period";
@@ -55,6 +55,8 @@ const num = (v: number | string | null | undefined): number => {
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : 0;
 };
+
+const vnClock = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit", hour12: false });
 
 export async function GET(req: NextRequest) {
   if (!supabaseConfigured()) {
@@ -172,6 +174,11 @@ export async function GET(req: NextRequest) {
     }
 
     const names=await masterDriverNames([...acc.keys()]);
+    const hhmm = (iso: string | null) => (iso ? vnClock.format(new Date(iso)) : null);
+    /** Every day worked without a shift, with what the day itself says — Lương PT's
+     *  quick fix approves the suggested window as a supervisor correction. */
+    const noShift: { driver_id: string; driver_name: string; date: string; first_in: string | null; last_out: string | null;
+      first_task: string | null; last_task: string | null; suggest_in: string | null; suggest_out: string | null; pending: boolean }[] = [];
     const drivers = [...acc.entries()]
       // Full-time accounts are recorded but not priced — see PART-TIME ONLY above.
       .filter(([, e]) => employmentOf(e.name) === "part-time")
@@ -192,7 +199,16 @@ export async function GET(req: NextRequest) {
           }, code);
           mins += w.minutes;
           boMins += w.bo_minutes;
-          if (w.no_shift) noShiftDays++;
+          if (w.no_shift) {
+            noShiftDays++;
+            const s = suggestedWindow(e.byDay.get(date) ?? [], t?.first ?? null, t?.last ?? null, date);
+            noShift.push({
+              driver_id, driver_name: names.get(driver_id) || e.name || driver_id.slice(0, 8), date,
+              first_in: hhmm(s.first_in), last_out: hhmm(s.last_out), first_task: hhmm(t?.first ?? null), last_task: hhmm(t?.last ?? null),
+              suggest_in: hhmm(s.in), suggest_out: hhmm(s.out),
+              pending: inputs.latest.get(dayKey(driver_id, date))?.status === "pending",
+            });
+          }
         }
         const km = Math.round(e.km * 100) / 100;
         return {
@@ -256,6 +272,7 @@ export async function GET(req: NextRequest) {
         unpriced_jobs: drivers.reduce((s, d) => s + d.unpriced_jobs, 0),
       },
       drivers,
+      no_shift: noShift.sort((a, b) => a.date.localeCompare(b.date) || a.driver_name.localeCompare(b.driver_name, "vi")),
     });
   } catch (e) {
     console.error("[pay/team] error:", e instanceof Error ? e.message : e);

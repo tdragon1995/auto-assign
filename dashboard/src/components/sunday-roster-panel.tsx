@@ -16,8 +16,8 @@ const dmy = (d: string) => `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}`
  * Lịch Chủ nhật — who covers which area on a given Sunday.
  *
  * Edited as a whole week and saved in one go, the way the sheet was: most weeks
- * are last week with a handful of lines changed, so "Sao chép CN trước" then a
- * few edits is the normal path. Drivers are PICKED (`DriverCombobox`), never
+ * are another week with a handful of lines changed, so "Sao chép từ CN" (any
+ * Sunday, earlier or later) then a few edits is the normal path. Drivers are PICKED (`DriverCombobox`), never
  * typed, so a line always names a real account.
  */
 type Line = RosterLine & { k: number };
@@ -30,6 +30,8 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  /** The Sunday to copy from — only weeks that HAVE a roster are offered. */
+  const [source, setSource] = useState("");
   const seq = useRef(0);
   // Row keys for React only; never sent (the server keeps known fields only).
   const nextKey = useRef(0);
@@ -59,20 +61,28 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
     setDirty(true);
   };
 
-  const copyPrevious = async () => {
-    if (lines.length && !confirm(`Thay ${lines.length} dòng hiện tại bằng lịch Chủ nhật ${dmy(addDays(date, -7))}?`)) return;
+  // Weeks that can be copied: they have a roster and are not this one. The default
+  // is the nearest earlier one, else the nearest later one.
+  const copyable = useMemo(() => (week?.weeks ?? []).filter((w) => w !== date), [week, date]);
+  const before = copyable.find((w) => w < date) ?? null;
+  const after = [...copyable].reverse().find((w) => w > date) ?? null;
+  useEffect(() => { setSource(before ?? after ?? ""); }, [before, after]);
+
+  const copyFrom = async (from: string) => {
+    if (from === date) { toast.error("Chọn một Chủ nhật khác để sao chép"); return; }
+    if (lines.length && !confirm(`Thay ${lines.length} dòng hiện tại bằng lịch Chủ nhật ${dmy(from)}?`)) return;
     setSaving(true);
     try {
-      const res = await fetch(`/api/sunday-roster?date=${addDays(date, -7)}`, { cache: "no-store" });
+      const res = await fetch(`/api/sunday-roster?date=${from}`, { cache: "no-store" });
       const data: RosterWeek & { error?: string } = await res.json();
-      if (!res.ok) throw new Error(data.error || "Không tải được lịch tuần trước");
-      if (!data.lines.length) throw new Error(`Chủ nhật ${dmy(addDays(date, -7))} chưa có lịch`);
+      if (!res.ok) throw new Error(data.error || "Không tải được lịch tuần được chọn");
+      if (!data.lines.length) throw new Error(`Chủ nhật ${dmy(from)} chưa có lịch`);
       // Copied as unsaved lines: the version check still points at THIS week,
       // so saving replaces what is here.
       setLines(keyed(data.lines));
       setWeek((w) => (w ? { ...w, names: { ...w.names, ...data.names } } : w));
       setDirty(true);
-      toast.info("Đã sao chép — sửa các dòng khác tuần trước rồi bấm Lưu.");
+      toast.info(`Đã sao chép từ Chủ nhật ${dmy(from)} — sửa các dòng khác rồi bấm Lưu.`);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
@@ -109,6 +119,9 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
     return opts;
   }, [week, lines]);
   const busy = loading || saving;
+  // A Sunday pre-filled from last week is savable as it stands; leaving it loses
+  // nothing, so only a real edit asks before navigating away.
+  const unsaved = dirty || !!week?.copiedFrom;
   const incomplete = lines.some((l) => !l.area || !validShift(l.shift));
   const today = rosterSunday(vnDate());
 
@@ -122,11 +135,26 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
           {date !== today && <Button variant="ghost" size="sm" disabled={busy} onClick={() => leave(today)}>CN tới</Button>}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" disabled={busy} onClick={() => void copyPrevious()}><Copy className="size-4" />Sao chép CN trước</Button>
+          {copyable.length > 0 && <>
+            <label className="flex items-center gap-1.5 text-sm text-slate-600">
+              Sao chép từ CN
+              <select className={`${field} w-auto`} value={source} disabled={busy} aria-label="Chủ nhật để sao chép"
+                onChange={(e) => setSource(e.target.value)}>
+                {copyable.map((w) => <option key={w} value={w}>{dmy(w)}</option>)}
+              </select>
+            </label>
+            <Button variant="outline" disabled={busy || !source} onClick={() => void copyFrom(source)}><Copy className="size-4" />Sao chép</Button>
+          </>}
           <Button variant="outline" disabled={busy} onClick={() => { if (discard()) void load(); }}><RefreshCw className="size-4" />Tải lại</Button>
-          <Button disabled={busy || !dirty || !week || incomplete} title={incomplete ? "Mỗi dòng cần khu vực, ca dạng 06:00 - 15:00" : undefined} onClick={() => void save()}>{saving ? "Đang lưu…" : "Lưu lịch"}</Button>
+          <Button disabled={busy || !unsaved || !week || incomplete} title={incomplete ? "Mỗi dòng cần khu vực, ca dạng 06:00 - 15:00" : undefined} onClick={() => void save()}>{saving ? "Đang lưu…" : "Lưu lịch"}</Button>
         </div>
       </div>
+
+      {!loading && !error && week?.copiedFrom && (
+        <p role="status" className="border-b border-indigo-200 bg-indigo-50 px-3 py-2 text-sm text-indigo-900">
+          Chủ nhật này chưa lưu — đang hiện lịch <span className="font-medium">Chủ nhật {dmy(week.copiedFrom)}</span>. Sửa những dòng khác tuần này rồi bấm Lưu lịch.
+        </p>
+      )}
 
       {!loading && !error && gaps.uncovered.length > 0 && (
         <div role="status" className="flex gap-2 border-b border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
@@ -149,7 +177,14 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
         ) : lines.length === 0 ? (
           <div className="p-6 text-sm text-slate-600">
             <p className="mb-3">Chủ nhật {dmy(date)} chưa có lịch.</p>
-            <Button variant="outline" disabled={busy} onClick={() => void copyPrevious()}><Copy className="size-4" />Sao chép CN {dmy(addDays(date, -7))}</Button>
+            {before || after ? (
+              <div className="flex flex-wrap gap-2">
+                {before && <Button variant="outline" disabled={busy} onClick={() => void copyFrom(before)}><Copy className="size-4" />Sao chép CN {dmy(before)}</Button>}
+                {after && <Button variant="outline" disabled={busy} onClick={() => void copyFrom(after)}><Copy className="size-4" />Sao chép CN {dmy(after)}</Button>}
+              </div>
+            ) : (
+              <p className="text-xs text-slate-500">Chưa có Chủ nhật nào có lịch để sao chép — thêm dòng bên dưới.</p>
+            )}
           </div>
         ) : (
           <table className="w-full min-w-[56rem] text-sm">
@@ -166,8 +201,11 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
             <tbody>
               {lines.map((l, i) => {
                 const inactive = l.driver_id && !active.has(l.driver_id);
+                const off = l.driver_id ? week?.leave?.[l.driver_id] : undefined;
+                // Red = nobody on the line, grey = on leave that Sunday, black = resigned.
+                const tone = !l.driver_id ? "bg-red-50" : off?.kind === "resigned" ? "bg-slate-200" : off ? "bg-slate-50 text-slate-500" : "";
                 return (
-                  <tr key={l.k} className="border-t border-slate-200 align-top">
+                  <tr key={l.k} className={`border-t border-slate-200 align-top ${tone}`}>
                     <td className="p-2 pt-4 text-xs tabular-nums text-slate-500">{i + 1}</td>
                     <td className="p-2">
                       <select aria-label={`Khu vực dòng ${i + 1}`} className={field} value={l.area} disabled={saving}
@@ -181,7 +219,9 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
                       <DriverCombobox max={1} drivers={drivers} ariaLabel={`Tài xế dòng ${i + 1}`} placeholder="Chưa có người"
                         names={l.driver_id ? [label(l.driver_id)] : []}
                         onChange={(_, picked) => edit(i, { driver_id: picked?.driver_id ?? null, raw_name: null })} />
-                      {inactive && <p className="mt-1 text-xs text-amber-800">Tài khoản đã ngừng hoạt động — chọn người khác</p>}
+                      {!l.driver_id && <p className="mt-1 text-xs font-medium text-red-700">Chưa có người</p>}
+                      {off && <p className={`mt-1 inline-block rounded px-1.5 py-0.5 text-xs font-medium ${off.kind === "resigned" ? "bg-slate-900 text-white" : "bg-slate-300 text-slate-800"}`}>{off.label}</p>}
+                      {inactive && !off && <p className="mt-1 text-xs text-amber-800">Tài khoản đã ngừng hoạt động — chọn người khác</p>}
                       {!l.driver_id && l.raw_name && <p className="mt-1 text-xs text-amber-800">Tên “{l.raw_name}” chưa khớp tài xế nào</p>}
                     </td>
                     <td className="p-2">
@@ -207,8 +247,29 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
 
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 px-3 py-2">
         <p className="text-xs text-slate-600">
-          {loading ? "Đang đọc Supabase" : `${lines.length} dòng${dirty ? " · chưa lưu" : ""} · Supabase · Chưa dùng để phân công — động cơ vẫn đọc Google Sheet`}
+          {loading ? "Đang đọc Supabase" : `${lines.length} dòng${unsaved ? " · chưa lưu" : ""} · Supabase · Chưa dùng để phân công — động cơ vẫn đọc Google Sheet`}
         </p>
+        {!loading && !error && (
+          <p className="flex flex-wrap items-center gap-3 text-xs text-slate-600" aria-label="Chú thích màu">
+            <span className="inline-flex items-center gap-1"><span aria-hidden="true" className="size-3 rounded-sm border border-red-300 bg-red-50" />Chưa có người</span>
+            <span className="inline-flex items-center gap-1"><span aria-hidden="true" className="size-3 rounded-sm bg-slate-300" />Nghỉ phép</span>
+            <span className="inline-flex items-center gap-1"><span aria-hidden="true" className="size-3 rounded-sm bg-slate-900" />Nghỉ việc</span>
+          </p>
+        )}
+        {!loading && !error && (
+          <p className="flex flex-wrap items-center gap-3 text-xs text-slate-600" aria-label="Chú thích màu">
+            <span className="inline-flex items-center gap-1"><span aria-hidden="true" className="size-3 rounded-sm border border-red-300 bg-red-50" />Chưa có người</span>
+            <span className="inline-flex items-center gap-1"><span aria-hidden="true" className="size-3 rounded-sm bg-slate-300" />Nghỉ phép</span>
+            <span className="inline-flex items-center gap-1"><span aria-hidden="true" className="size-3 rounded-sm bg-slate-900" />Nghỉ việc</span>
+          </p>
+        )}
+        {!loading && !error && (
+          <p className="flex flex-wrap items-center gap-3 text-xs text-slate-600" aria-label="Chú thích màu">
+            <span className="inline-flex items-center gap-1"><span aria-hidden="true" className="size-3 rounded-sm border border-red-300 bg-red-50" />Chưa có người</span>
+            <span className="inline-flex items-center gap-1"><span aria-hidden="true" className="size-3 rounded-sm bg-slate-300" />Nghỉ phép</span>
+            <span className="inline-flex items-center gap-1"><span aria-hidden="true" className="size-3 rounded-sm bg-slate-900" />Nghỉ việc</span>
+          </p>
+        )}
         {!loading && !error && (
           <Button variant="outline" size="sm" disabled={saving}
             onClick={() => { setLines((prev) => [...prev, ...keyed([{ area: "", driver_id: null, raw_name: null, shift: "", note: "" }])]); setDirty(true); }}>

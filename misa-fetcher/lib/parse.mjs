@@ -282,3 +282,56 @@ export function parseShifts(pageData, leaveMap = {}, attendanceRows = []) {
 
   return { sheetRows, records, gaps };
 }
+
+/**
+ * The company-wide pay-period timesheets (15th → 14th) that overlap [from, to].
+ * MISA also keeps calendar-month and per-department sheets beside them; those
+ * are skipped. Two sheets for one period → the one payroll summarises, then the
+ * newest.
+ */
+export function pickTimesheets(list, from, to) {
+  const byStart = new Map();
+  for (const t of list) {
+    const start = extractIsoDate(t.FromDate), end = extractIsoDate(t.ToDate);
+    if (start.slice(8) !== "15" || String(t.OrganizationUnitID) !== "40286") continue;
+    if (end < from || start > to) continue;
+    const prev = byStart.get(start);
+    const rank = (x) => [x.IsUseBySummary === 1 ? 1 : 0, Number(x.TimeSheetID) || 0];
+    if (!prev || rank(t)[0] > rank(prev)[0] || (rank(t)[0] === rank(prev)[0] && rank(t)[1] > rank(prev)[1])) byStart.set(start, t);
+  }
+  return [...byStart.values()].map((t) => ({ id: t.TimeSheetID, from: extractIsoDate(t.FromDate), to: extractIsoDate(t.ToDate) }));
+}
+
+/**
+ * Bảng chấm công rows → the same record shape parseShifts makes. "DayN" is the
+ * Nth day from the sheet's start; each holds a JSON list of that day's shifts
+ * ("[]" = no shift, null = past the sheet's end). Days after a resignation
+ * (IsTerminationDate) produce nothing. Leave is joined from leaveMap as usual —
+ * a shift with a day's leave on it is still that day's shift.
+ */
+export function parseTimesheetShifts(pageData, sheetFrom, leaveMap = {}) {
+  const records = [];
+  const hm = (t) => (t ? String(t).slice(0, 5) : null);
+  for (const emp of pageData) {
+    const code = emp.EmployeeCode || "";
+    for (const key of Object.keys(emp)) {
+      const m = /^Day(\d+)$/.exec(key);
+      if (!m || emp[key] == null) continue;
+      let entries;
+      try { entries = JSON.parse(emp[key]); } catch { continue; }
+      if (!Array.isArray(entries) || entries.some((e) => e.IsTerminationDate)) continue;
+      const d = new Date(`${sheetFrom}T00:00:00Z`);
+      d.setUTCDate(d.getUTCDate() + Number(m[1]) - 1);
+      const date = d.toISOString().slice(0, 10);
+      const leave = leaveMap[`${code}|${date}`] || {};
+      const base = {
+        employee_code: code, full_name: emp.FullName || "", shift_date: date,
+        holiday_name: null, leave_start: leave.start || null, leave_end: leave.end || null, leave_gap: false,
+      };
+      const shifts = entries.filter((e) => e.StartTime && e.EndTime);
+      if (!shifts.length) records.push({ ...base, slot: 1, day_type: "off", start_time: null, end_time: null });
+      shifts.forEach((e, i) => records.push({ ...base, slot: i + 1, day_type: "working", start_time: hm(e.StartTime), end_time: hm(e.EndTime) }));
+    }
+  }
+  return records;
+}

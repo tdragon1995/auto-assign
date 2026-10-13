@@ -1,4 +1,4 @@
-import type { Config, Driver, FailedJob, Job, LogEntry, LogLevel, Mapping, PickupWarning, TimelineRoute } from "./types";
+import type { Config, Driver, FailedJob, Job, LogEntry, LogLevel, Mapping, PickupWarning, Stop, TimelineRoute } from "./types";
 import { getDrivers, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, parkOnProxy, updateJobSendToDriverAt, updateJobScheduledDeliveryTs, unassignJob, optimizeDriverRoute, getJobsByStatusAndDate, getUnassignedJobsFast, getJobsByDate, getTimelineRoutes, timelineRoutesToJobs, getJobDetails, jsonRpc, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { publishSnapshot } from "./day-snapshot";
 import { getDueTomorrowJobs } from "./scheduled-dispatch";
@@ -19,7 +19,7 @@ import { drainSheetAlarms } from "./sheets";
 // Driver labels carry a routing prefix and a payroll code ("F - C - DC100993
 // Nguyễn Hồng Sơn"). Those identify the Cartrack RECORD; every message below is
 // read by a person, so they are stripped at the point the sentence is built.
-import { driverDisplayName } from "./display-names";
+import { driverDisplayName, staffCode } from "./display-names";
 import { writeUnmappedConfigRows, type UnmappedBranch } from "./unmapped-row";
 import {
   vnDate,
@@ -29,7 +29,8 @@ import {
   parseVnTimestamp,
 } from "./time";
 import { haversineKm } from "./distance";
-import { roadDistancesToPoint } from "./distance-cache";
+import { roadDistancesToPoint, roadDistancesForPairs } from "./distance-cache";
+import { targetMinsFor } from "./tat";
 import { blockingNotes, isChamCong, isCompletedOrRejectedStop, isNoteApproved, DAYTIME_NON_BLOCKING } from "./job-filters";
 import { placeLabel } from "./place-label";
 import { stripDriverCode } from "./job-detail";
@@ -617,6 +618,225 @@ export async function alertLateJobs(
     const sent = await sendZaloMessage(botToken, chatId, text);
     log(
       `Late alert ${sent ? "sent" : "failed"} for job ${w.job_id} (~${elapsedMin} phút trễ)`,
+      sent ? "INFO" : "WARN",
+    );
+  }
+}
+
+// ── Samples on board: late to the drop-off, or a driver gone quiet ──────────────
+//
+// Two questions about the SAME on-board samples, answered on two different clocks,
+// because they serve two different people:
+//
+//   - The CUSTOMER cares how long THEIR sample has been in the car, whatever else
+//     the driver was doing — so that clock starts at their own pickup.
+//   - LOAD BALANCING cares whether the driver has stopped moving. Starting that
+//     clock at the pickup is wrong: 60% of jobs are batched (three clinics, then
+//     the lab), so the first sample of a batch is legitimately on board for an
+//     hour while the driver works the whole time. So it starts at the driver's
+//     LAST stop, and what it offers is their unstarted pickups — samples already
+//     on board cannot change hands.
+//
+// Each limit is the larger of a floor and twice the ride's TAT target, but never
+// more than an hour past the target: the floor alone is wrong for provincial
+// rides, twice the target alone is 16 minutes on a 1 km ride, and on long rides
+// drivers BEAT the 4 min/km target (median 0.73× of it at 60–119 min, 0.47× past
+// 120), so 2× would sit four hours on a 30 km ride nine in ten finish in two. Priced on 30 days of pay_jobs (2026-10-13, 18,100 jobs), measuring to
+// drop-off COMPLETION (arrival is a few minutes earlier, so live is a touch quieter):
+//   customer, from pickup, max(90, 2× target)    ≈ 17 a day
+//   driver, from last stop, max(60, 2× target)   ≈ 5 a day
+//   (from pickup with the 60 floor it was ≈ 32 a day, ~30 of them batches)
+const ONBOARD_LATE_FLOOR_MIN = 90;
+const STALL_FLOOR_MIN = 60;
+const ONBOARD_MAX_SLACK_MIN = 60;
+/** Drivers this alert never reports on (supervisor, 2026-10-14). Hand-kept by
+ *  staff code. Deliberately NOT shift-grid's GRID_IGNORED_CODES, though it holds
+ *  the same three today: two features, two decisions. */
+const ONBOARD_IGNORED_CODES = new Set(["DC100043", "DC100993", "DC102121"]);
+
+export interface OnboardAlert {
+  driver_id: string;
+  driver_name: string | null;
+  /** Every sample on board, for pricing their rides. */
+  onboard_job_ids: number[];
+  /** Set only when the driver has gone quiet past their limit. */
+  quiet_since_ms: number | null;
+  late: { job_id: number; pickup_name: string | null; dropoff_name: string | null; picked_ms: number }[];
+  /** Unstarted pickups that could go to another driver — filled only when quiet. */
+  pending: { job_id: number; pickup_name: string | null }[];
+}
+
+/**
+ * Pure. `dayJobs` is today's open AND completed jobs, the same list the late-pickup
+ * check takes — the completed ones are the evidence the driver is still working.
+ * `kmFor` gives a job's pickup→drop-off distance; null means "unknown" and leaves
+ * only the floor, which is the stricter limit — so calling this with no distances
+ * at all returns a SUPERSET of the real answer, which is how the caller decides
+ * which rides are worth pricing. Exported for scripts/onboard-alert.test.mts.
+ */
+export function computeOnboardAlerts(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  dayJobs: any[],
+  today: string,
+  nowMs: number,
+  kmFor: (jobId: number) => number | null = () => null,
+): OnboardAlert[] {
+  // A stamp from another day is not today's evidence: a job rolled over with its
+  // pickup collected yesterday would otherwise alert at dawn on hours of "lateness".
+  const todayMs = (ts?: string | null): number | null => {
+    if (!ts || !ts.startsWith(today)) return null;
+    const t = parseVnTimestamp(ts).getTime();
+    return Number.isNaN(t) ? null : t;
+  };
+  const limitMin = (jobId: number, floor: number) => {
+    const t = targetMinsFor(kmFor(jobId)) ?? 0;
+    return Math.max(floor, Math.min(2 * t, t + ONBOARD_MAX_SLACK_MIN));
+  };
+
+  const byDriver = new Map<string, OnboardAlert & { lastActiveMs: number }>();
+  for (const job of dayJobs) {
+    const driverId: string | null = job.delivery_driver_id;
+    if (!driverId) continue;
+    let d = byDriver.get(driverId);
+    if (!d) {
+      const name = job.driver
+        ? `${job.driver.first_name ?? ""} ${job.driver.last_name ?? ""}`.trim() || null
+        : null;
+      d = { driver_id: driverId, driver_name: name, onboard_job_ids: [], quiet_since_ms: null, late: [], pending: [], lastActiveMs: 0 };
+      byDriver.set(driverId, d);
+    }
+    if (ONBOARD_IGNORED_CODES.has(staffCode(d.driver_name))) continue;
+    const stops = (job.stops ?? []) as Stop[];
+    // Any tap on any job — internal, plan or finished — is proof they are working.
+    for (const s of stops) {
+      for (const ts of [s.activity_started_ts, s.activity_arrived_ts, s.activity_completed_ts]) {
+        const t = todayMs(ts);
+        if (t && t > d.lastActiveMs) d.lastActiveMs = t;
+      }
+    }
+    if (job.job_status_id !== 4 || isInternalOrPlanJob(job)) continue;
+    const pickup = stops.find((s) => s.stop_type_id === 1);
+    const dropoff = stops.find((s) => s.stop_type_id === 2);
+    if (!pickup || !dropoff) continue;
+    if (!pickup.activity_started_ts && !pickup.activity_arrived_ts && !pickup.activity_completed_ts
+        && !isCompletedOrRejectedStop(pickup.stop_status_id ?? 0)) {
+      d.pending.push({ job_id: job.job_id, pickup_name: pickup.customer_name ?? null });
+      continue;
+    }
+    const picked = todayMs(pickup.activity_completed_ts);
+    if (!picked) continue;
+    // Arrival ends it: the sample is at the drop-off, whatever the paperwork says.
+    if (dropoff.activity_arrived_ts || dropoff.activity_completed_ts
+        || isCompletedOrRejectedStop(dropoff.stop_status_id ?? 0)) continue;
+    d.onboard_job_ids.push(job.job_id);
+    if (nowMs - picked >= limitMin(job.job_id, ONBOARD_LATE_FLOOR_MIN) * 60_000) {
+      d.late.push({ job_id: job.job_id, pickup_name: pickup.customer_name ?? null, dropoff_name: dropoff.customer_name ?? null, picked_ms: picked });
+    }
+  }
+
+  const out: OnboardAlert[] = [];
+  for (const { lastActiveMs, ...d } of byDriver.values()) {
+    if (d.onboard_job_ids.length === 0) continue;
+    // The LONGEST ride on board sets the limit: they may be driving exactly that one.
+    const stallMin = Math.max(...d.onboard_job_ids.map((id) => limitMin(id, STALL_FLOOR_MIN)));
+    const quiet = lastActiveMs > 0 && nowMs - lastActiveMs >= stallMin * 60_000;
+    if (quiet) d.quiet_since_ms = lastActiveMs;
+    else d.pending = [];
+    if (quiet || d.late.length > 0) out.push(d);
+  }
+  return out;
+}
+
+/**
+ * Price the rides that could matter, then decide. The free pass with no distances
+ * finds every driver who COULD be flagged; only their on-board rides are priced
+ * (cache-first, so normally no API call), and a cycle where nobody is past a floor
+ * costs nothing at all.
+ */
+export async function checkOnboardSamples(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  dayJobs: any[],
+  today: string,
+  env: Env,
+  log: (msg: string, level?: LogLevel) => void,
+): Promise<void> {
+  if (env !== "prod" || !isLateAlertHour()) return;
+  const now = Date.now();
+  const suspects = computeOnboardAlerts(dayJobs, today, now);
+  if (suspects.length === 0) return;
+
+  const ids = new Set(suspects.flatMap((s) => s.onboard_job_ids));
+  const pairs: { jobId: number; from: { lat: number; lon: number }; to: { lat: number; lon: number } }[] = [];
+  for (const job of dayJobs) {
+    if (!ids.has(job.job_id)) continue;
+    const stops = (job.stops ?? []) as Stop[];
+    const p = stops.find((s) => s.stop_type_id === 1);
+    const q = stops.find((s) => s.stop_type_id === 2);
+    if (p?.latitude == null || p.longitude == null || q?.latitude == null || q.longitude == null) continue;
+    pairs.push({ jobId: job.job_id, from: { lat: p.latitude, lon: p.longitude }, to: { lat: q.latitude, lon: q.longitude } });
+  }
+  const km = new Map<number, number>();
+  const road = await roadDistancesForPairs(pairs).catch(() => pairs.map(() => null));
+  // A ride the road chain could not answer is priced as the crow flies — shorter
+  // than the road, so the limit errs early rather than letting a ride go unwatched.
+  pairs.forEach((p, i) =>
+    km.set(p.jobId, road[i]?.distance_km ?? haversineKm(p.from.lat, p.from.lon, p.to.lat, p.to.lon)));
+
+  await alertOnboard(computeOnboardAlerts(dayJobs, today, now, (id) => km.get(id) ?? null), log);
+}
+
+/**
+ * One supervisor message per driver, carrying only what has not been said before:
+ * each late sample once (its customer is told once), and a quiet spell once —
+ * keyed on the last tap, so the same driver going quiet again later is news.
+ */
+async function alertOnboard(
+  alerts: OnboardAlert[],
+  log: (msg: string, level?: LogLevel) => void,
+): Promise<void> {
+  const botToken = process.env.ZALO_ADMIN_BOT_TOKEN;
+  const chatId = process.env.ZALO_ADMIN_CHAT_ID;
+  if (!botToken || !chatId) return;
+  const now = Date.now();
+  const dur = (ms: number) => {
+    const min = Math.floor(ms / 60_000);
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    return h ? `${h}h${m ? String(m).padStart(2, "0") : ""}` : `${m} phút`;
+  };
+  const hhmm = (ms: number) => {
+    const { hours, minutes } = vnHoursMinutes(new Date(ms));
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+  };
+  const place = (s: string | null) => (s ? placeLabel(s) : "N/A");
+  const link = (jobId: number) => `https://fleetweb-vn.cartrack.com/delivery/map?job=${jobId}`;
+
+  for (const a of alerts) {
+    const late = [];
+    for (const l of a.late) if (await claimLateAlert(l.job_id, "prod", 86400, "onboard")) late.push(l);
+    const quiet = a.quiet_since_ms != null
+      && await claimLateAlert(Math.min(...a.onboard_job_ids), "prod", 86400, `stall${a.quiet_since_ms}`);
+    if (!quiet && late.length === 0) continue;
+
+    const driver = a.driver_name ? stripDriverCode(a.driver_name) : "chưa rõ tên";
+    // Bold headline, then who — the supervisor's layout (2026-10-14).
+    const lines: string[] = quiet
+      ? [`⏸️ **Không có điểm dừng mới ~${dur(now - a.quiet_since_ms!)} (từ ${hhmm(a.quiet_since_ms!)})**`,
+         `GNM ${driver} · đang giữ ${a.onboard_job_ids.length} mẫu`]
+      : ["🕒 **Mẫu chưa về điểm giao**", `GNM ${driver}`];
+    if (late.length) {
+      lines.push("Mẫu trễ, cần báo khách:");
+      for (const l of late) {
+        lines.push(`• ${place(l.pickup_name)} → ${place(l.dropoff_name)} · lấy lúc ${hhmm(l.picked_ms)} (~${dur(now - l.picked_ms)})`, link(l.job_id));
+      }
+    }
+    if (quiet && a.pending.length) {
+      lines.push("Chuyến chưa lấy, nên chuyển tài xế khác:");
+      for (const p of a.pending) lines.push(`• ${place(p.pickup_name)}`, link(p.job_id));
+    }
+    const sent = await sendZaloMessage(botToken, chatId, lines.join("\n"), "markdown");
+    log(
+      `Onboard alert ${sent ? "sent" : "failed"} for ${driver}: ${late.length} late, ${quiet ? `quiet since ${hhmm(a.quiet_since_ms!)}, ${a.pending.length} pending` : "not quiet"}`,
       sent ? "INFO" : "WARN",
     );
   }
@@ -1936,6 +2156,11 @@ export async function autoAssignCycle(
         alertLateJobs(quietWarnings, env, log).catch((e) =>
           log(`Late-alert push failed: ${e}`, "WARN"),
         ),
+        // Same lists, other end of the ride: samples collected but not yet at the
+        // drop-off. Prod-only and quiet-hours-gated inside, like the pickup alert.
+        checkOnboardSamples([...(assignedJobsToday ?? []), ...(cycleS5 ?? [])], today, env, log).catch((e) =>
+          log(`Onboard-alert push failed: ${e}`, "WARN"),
+        ),
       ]);
     }
     return logs;
@@ -3000,6 +3225,11 @@ export async function autoAssignCycle(
       // overdue pickups. Never throws the cycle: fire-and-log.
       alertLateJobs(pickupWarnings, env, log).catch((e) =>
         log(`Late-alert push failed: ${e}`, "WARN"),
+      ),
+      // Same lists, other end of the ride: samples collected but not yet at the
+      // drop-off. Prod-only and quiet-hours-gated inside, like the pickup alert.
+      checkOnboardSamples([...(assignedJobsToday ?? []), ...(cycleS5 ?? [])], today, env, log).catch((e) =>
+        log(`Onboard-alert push failed: ${e}`, "WARN"),
       ),
       writeUnmappedConfigRows(unmappedFound, log),
     ]);
