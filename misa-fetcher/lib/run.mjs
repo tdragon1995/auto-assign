@@ -1,8 +1,8 @@
 /** Shared MISA pipeline for CLI and Vercel. Browser/OTP runtime is supplied by the caller. */
 import fs from "node:fs";
 import path from "node:path";
-import { createSession, ensureLoggedIn, fetchAllShifts, fetchAllAttendance } from "./misa.mjs";
-import { monthRange, buildLeaveMap, parseShifts } from "./parse.mjs";
+import { createSession, ensureLoggedIn, fetchAllShifts, fetchAllAttendance, fetchTimesheetList, fetchTimesheetDetail } from "./misa.mjs";
+import { monthRange, buildLeaveMap, parseShifts, pickTimesheets, parseTimesheetShifts } from "./parse.mjs";
 import { pushSupabase } from "./sinks.mjs";
 import {
   loadDrivers,
@@ -73,8 +73,33 @@ export async function runMisaSync({creds,chromium,launchOptions,month,flags=[],s
     // for a PT account said "off" on days they worked, and outranked the pattern.
     // MISA still supplies their LEAVE — that comes from `attendance`, not here.
     const isPt = (code) => /^PT/i.test(String(code ?? ""));
-    const records = parsed.records.filter((r) => !isPt(r.employee_code));
+    let records = parsed.records.filter((r) => !isPt(r.employee_code));
     const gaps = parsed.gaps.filter((g) => !isPt(g.employee_code));
+
+    // Full-timers on their DEFAULT shift are missing from Phân ca altogether;
+    // Bảng chấm công has them. Only people with no working day in Phân ca take
+    // their days from it, so a real Phân ca plan is never overridden. A failed
+    // read keeps the sync going on Phân ca alone, as before.
+    try {
+      const planned = new Set(records.filter((r) => r.day_type === "working").map((r) => r.employee_code));
+      const sheets = pickTimesheets(await fetchTimesheetList(page), range.monthStart, range.monthEnd);
+      const fill = [];
+      for (const t of sheets) {
+        const rows = (await fetchTimesheetDetail(page, t.id)).filter((e) => !isPt(e.EmployeeCode) && !planned.has(e.EmployeeCode));
+        fill.push(...parseTimesheetShifts(rows, t.from, leaveMap)
+          .filter((r) => r.shift_date >= range.monthStart && r.shift_date <= range.monthEnd));
+      }
+      const filled = new Set(fill.filter((r) => r.day_type === "working").map((r) => r.employee_code));
+      const fillKeys = new Set(fill.filter((r) => filled.has(r.employee_code)).map((r) => `${r.employee_code}|${r.shift_date}`));
+      records = [
+        ...records.filter((r) => !fillKeys.has(`${r.employee_code}|${r.shift_date}`)),
+        ...fill.filter((r) => filled.has(r.employee_code)),
+      ];
+      console.log(`[run] Bảng chấm công: ${sheets.map((t) => t.id).join(", ") || "none"} → ${filled.size} people with no Phân ca plan` +
+        (filled.size ? `: ${[...filled].join(", ")}` : ""));
+    } catch (e) {
+      console.warn(`[run] ⚠ Bảng chấm công not read, Phân ca only: ${e.message}`);
+    }
 
     console.log(
       `[run] parsed: ${shiftData.length} employees, ${records.length} shift rows, ` +
