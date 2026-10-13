@@ -13,7 +13,7 @@ import { payrollPeriod } from "@/lib/pay-period";
 import { shiftDrivers, shiftPatterns } from "@/lib/driver-shifts";
 import { employmentOf } from "@/lib/driver-label";
 import { driverDisplayName } from "@/lib/display-names";
-import { cellStatus, periodMonthOf } from "@/lib/shift-grid";
+import { cellStatus, periodMonthOf, GRID_IGNORED_CODES } from "@/lib/shift-grid";
 import { addDays, vnDate } from "@/lib/time";
 
 export const runtime = "nodejs";
@@ -66,7 +66,7 @@ export async function GET(req: NextRequest) {
     for (const k of [...inputs.shifts.keys(), ...punchBy.keys(), ...dailyBy.keys(), ...offBy.keys(), ...leaveBy.keys()]) ids.add(k.split("|")[0]);
     const tapped = (ps: PayPunch[] | undefined) => (ps ?? []).some((p) => p.started_ts || p.arrived_ts || p.completed_ts);
 
-    const rows = [...ids].filter((id) => byId.has(id)).map((id) => {
+    const rows = [...ids].filter((id) => byId.has(id) && !GRID_IGNORED_CODES.has(byId.get(id)!.employee_code)).map((id) => {
       const full = byId.get(id)?.name ?? "";
       const type = employmentOf(full) === "part-time" ? "PT" : "FT";
       // The weekly shift in force today (newest version that has started), for the row's own editor.
