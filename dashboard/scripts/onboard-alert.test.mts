@@ -86,5 +86,12 @@ const job = (driver: string, picked: string | null, opts: { arrived?: string; st
   check("completed job's tap counts as activity", f === undefined || f.quiet_since_ms === null);
 }
 
+// 6. Ignored staff codes never alert, however late.
+{
+  const ignored = job("x", "06:00");
+  ignored.driver = { first_name: "F - C - DC100993 Nguyễn Hồng Sơn", last_name: "" };
+  check("ignored driver: nothing", computeOnboardAlerts([ignored], today, now("12:00")).length === 0);
+}
+
 console.log(failures ? `\n${failures} failure(s)` : "\nall ok");
 process.exit(failures ? 1 : 0);

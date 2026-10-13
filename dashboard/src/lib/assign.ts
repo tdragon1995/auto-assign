@@ -19,7 +19,7 @@ import { drainSheetAlarms } from "./sheets";
 // Driver labels carry a routing prefix and a payroll code ("F - C - DC100993
 // Nguyễn Hồng Sơn"). Those identify the Cartrack RECORD; every message below is
 // read by a person, so they are stripped at the point the sentence is built.
-import { driverDisplayName } from "./display-names";
+import { driverDisplayName, staffCode } from "./display-names";
 import { writeUnmappedConfigRows, type UnmappedBranch } from "./unmapped-row";
 import {
   vnDate,
@@ -649,6 +649,10 @@ export async function alertLateJobs(
 const ONBOARD_LATE_FLOOR_MIN = 90;
 const STALL_FLOOR_MIN = 60;
 const ONBOARD_MAX_SLACK_MIN = 60;
+/** Drivers this alert never reports on (supervisor, 2026-10-14). Hand-kept by
+ *  staff code. Deliberately NOT shift-grid's GRID_IGNORED_CODES, though it holds
+ *  the same three today: two features, two decisions. */
+const ONBOARD_IGNORED_CODES = new Set(["DC100043", "DC100993", "DC102121"]);
 
 export interface OnboardAlert {
   driver_id: string;
@@ -701,6 +705,7 @@ export function computeOnboardAlerts(
       d = { driver_id: driverId, driver_name: name, onboard_job_ids: [], quiet_since_ms: null, late: [], pending: [], lastActiveMs: 0 };
       byDriver.set(driverId, d);
     }
+    if (ONBOARD_IGNORED_CODES.has(staffCode(d.driver_name))) continue;
     const stops = (job.stops ?? []) as Stop[];
     // Any tap on any job — internal, plan or finished — is proof they are working.
     for (const s of stops) {
