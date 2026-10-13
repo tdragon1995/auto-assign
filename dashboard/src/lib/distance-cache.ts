@@ -1,4 +1,5 @@
-import { Redis } from "@upstash/redis";
+import type { Redis } from "@upstash/redis";
+import { sharedRedis } from "./redis";
 import { roadMatrixOneToMany, roadMatrixManyToOne, type GoongResult, type QuotaSignal, type FallbackState } from "./distance";
 import { sbSelect, sbUpsert, supabaseConfigured } from "./supabase-rest";
 
@@ -69,7 +70,7 @@ function getRedis() {
   const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
   if (!url || !token) return null;
-  return new Redis({ url, token });
+  return sharedRedis();
 }
 
 // Truncate to the 5th decimal (~1 m) — read the digits, do NOT round. Rounding

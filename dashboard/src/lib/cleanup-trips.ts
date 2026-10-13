@@ -15,7 +15,8 @@ import { PSC_VIA_LABEL } from "./via-legs";
 import { claimTripAction, releaseTripClaim } from "./smart-log-kv";
 import type { LeaveEntry } from "./leave-config";
 import { recordCleanedReturns } from "./return-suppress";
-import { Redis } from "@upstash/redis";
+import type { Redis } from "@upstash/redis";
+import { sharedRedis } from "./redis";
 
 // Reasons for removing a trip. Deleted trips keep no record, so these now read
 // as the log's explanation — and still fill Cartrack's rejection record on the
@@ -53,7 +54,7 @@ type CleanupTask = {
 function cleanupRedis(): Redis | null {
   const url = process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
-  return url && token ? new Redis({ url, token }) : null;
+  return url && token ? sharedRedis() : null;
 }
 const cleanupKey = (env: Env, day: string) => `cleanup:rollover:complete:${env}:${day}`;
 

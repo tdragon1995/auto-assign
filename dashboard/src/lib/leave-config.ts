@@ -1,4 +1,5 @@
-import { Redis } from "@upstash/redis";
+import type { Redis } from "@upstash/redis";
+import { sharedRedis } from "./redis";
 import { masterEnabled } from "./master-store";
 import { masterLeaveGrid } from "./master-leave";
 import {
@@ -107,7 +108,7 @@ function getRedis(): Redis | null {
   const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
   if (!url || !token) return null;
-  return new Redis({ url, token });
+  return sharedRedis();
 }
 
 /** Drop both cache tiers so the next load re-reads the sheet. Called after every write

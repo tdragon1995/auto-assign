@@ -1,4 +1,4 @@
-import { Redis } from "@upstash/redis";
+import { sharedRedis } from "./redis";
 import { readConfigGen } from "./config-gen";
 import { sbSelectAll } from "./supabase-rest";
 
@@ -12,7 +12,7 @@ export async function masterChoices():Promise<Choices> {
   if(cached && cached.gen===gen && now-cached.at<TTL*1000) return cached;
   const url=process.env.KV_REST_API_URL??process.env.UPSTASH_REDIS_REST_URL;
   const token=process.env.KV_REST_API_TOKEN??process.env.UPSTASH_REDIS_REST_TOKEN;
-  const redis=url&&token?new Redis({url,token}):null;
+  const redis=url&&token?sharedRedis():null;
   if(redis) try {
     const hit=await redis.get<Cached>(KEY);
     if(hit?.gen===gen && now-hit.at<TTL*1000) {cached=hit;return hit;}

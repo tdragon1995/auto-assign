@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Redis } from "@upstash/redis";
+import type { Redis } from "@upstash/redis";
+import { sharedRedis } from "@/lib/redis";
 import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { notesOf, type NoteMap } from "@/lib/stop-notes";
 import type { Job } from "@/lib/types";
@@ -48,7 +49,7 @@ function getRedis(): Redis | null {
   const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
   if (!url || !token) return null;
-  return new Redis({ url, token });
+  return sharedRedis();
 }
 
 // ponytail: no rebuild lock — branches that miss inside the same second each pay the day

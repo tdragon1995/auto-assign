@@ -1,5 +1,6 @@
 import { NextResponse, after } from "next/server";
-import { Redis } from "@upstash/redis";
+import type { Redis } from "@upstash/redis";
+import { sharedRedis } from "./redis";
 import { vnDate } from "./time";
 import { invalidateConfigCache, invalidateDriversCache, loadConfigFromSheets } from "./config";
 import { invalidateLeaveCache } from "./leave-config";
@@ -14,7 +15,7 @@ function redis() {
   const url=process.env.KV_REST_API_URL??process.env.UPSTASH_REDIS_REST_URL;
   const token=process.env.KV_REST_API_TOKEN??process.env.UPSTASH_REDIS_REST_TOKEN;
   if(!url||!token)throw new Error("Redis configuration required for sync coordination");
-  return new Redis({url,token});
+  return sharedRedis()!;
 }
 function missing() {
   return ["MISA_USERNAME","MISA_PASSWORD","MISA_TOTP_SECRET","SUPABASE_URL","SUPABASE_SERVICE_ROLE_KEY","CRON_SECRET"].filter(k=>!process.env[k]);

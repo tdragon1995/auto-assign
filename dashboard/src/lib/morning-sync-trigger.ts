@@ -1,4 +1,4 @@
-import { Redis } from "@upstash/redis";
+import { sharedRedis } from "./redis";
 import { vnDate, vnMinutesSinceMidnight } from "./time";
 export function morningSyncDue(now=new Date()) { return vnMinutesSinceMidnight(now)>=300 && vnMinutesSinceMidnight(now)<360; }
 /** Reuse the existing cron-job.org dispatch ping. One sync each morning, no extra schedule. */
@@ -7,7 +7,7 @@ export async function maybeMorningSync(now=new Date()) {
   const url=process.env.KV_REST_API_URL??process.env.UPSTASH_REDIS_REST_URL;
   const token=process.env.KV_REST_API_TOKEN??process.env.UPSTASH_REDIS_REST_TOKEN;
   if(!url||!token)throw new Error("Morning sync requires Redis");
-  const db=new Redis({url,token}),key="sync:morning:trigger:"+vnDate(now),owner=crypto.randomUUID();
+  const db=sharedRedis()!,key="sync:morning:trigger:"+vnDate(now),owner=crypto.randomUUID();
   if(await db.set(key,owner,{nx:true,ex:86400})!=="OK")return;
   try {
     const response=await fetch("https://diag-logistics.vercel.app/api/morning-sync",{

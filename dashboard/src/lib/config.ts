@@ -1,5 +1,6 @@
 import { invalidateDayConfigCache } from "./day-config";
-import { Redis } from "@upstash/redis";
+import type { Redis } from "@upstash/redis";
+import { sharedRedis } from "./redis";
 import { gzipSync, gunzipSync } from "node:zlib";
 import type { Config, ConfigDriver, Mapping, UnfinishedConfigRow, CoverageGap, BranchRule } from "./types";
 import { fetchSheetRows, isSheetShapeError, noteSheetLoad, noteSheetWarning, SHEET_CONTRACT, SHEET_GID } from "./sheets";
@@ -20,7 +21,7 @@ function getRedis(): Redis | null {
   const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
   if (!url || !token) return null;
-  return new Redis({ url, token });
+  return sharedRedis();
 }
 
 // Shared invalidation stamp — what makes Refresh reach every instance instead of only the

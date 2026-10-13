@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { Redis } from "@upstash/redis";
+import type { Redis } from "@upstash/redis";
+import { sharedRedis } from "./redis";
 import { printRowKey, type PrintDraftRow, type PrintHistory } from "./handover";
 import { vnDate } from "./time";
 
@@ -11,7 +12,7 @@ const TTL = 7 * 24 * 60 * 60;
 export function draftRedis(): Redis | null {
   const url = process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
-  return url && token ? new Redis({ url, token }) : null;
+  return url && token ? sharedRedis() : null;
 }
 
 export function printRowOf(value: unknown): PrintDraftRow | null {

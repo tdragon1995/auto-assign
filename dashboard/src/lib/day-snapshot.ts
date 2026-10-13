@@ -1,4 +1,5 @@
-import { Redis } from "@upstash/redis";
+import type { Redis } from "@upstash/redis";
+import { sharedRedis } from "./redis";
 import { getTimelineJobs, getUnroutedJobs, type Env } from "./cartrack";
 import { isBlockingPickupStop, isFarWindowPickup, isLabWatchedClient, LAB_CUSTOMER_ID, pscPairKey, PSC_VIA_LABEL } from "./job-filters";
 import { driverDisplayName } from "./job-detail";
@@ -225,7 +226,7 @@ function getRedis(): Redis | null {
   const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
   if (!url || !token) return null;
-  return new Redis({ url, token });
+  return sharedRedis();
 }
 
 /** The slimmed job every consumer reads. Deliberately NOT carrying address_line_1 or

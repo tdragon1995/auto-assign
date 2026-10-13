@@ -1,4 +1,4 @@
-import { Redis } from "@upstash/redis";
+import { sharedRedis } from "./redis";
 import { vnDate } from "./time";
 
 /**
@@ -30,7 +30,7 @@ function getRedis() {
   const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
   if (!url || !token) return null;
-  return new Redis({ url, token });
+  return sharedRedis();
 }
 
 function dayKey(dateVn: string): string {

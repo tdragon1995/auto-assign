@@ -1,4 +1,4 @@
-import { Redis } from "@upstash/redis";
+import { sharedRedis } from "./redis";
 import { createHash } from "node:crypto";
 import { BASE_URL, getHeaders } from "./cartrack";
 import { masterClient } from "./master-store";
@@ -26,7 +26,7 @@ export async function createMasterDriver(requestId:unknown,input:unknown) {
   if(!supabaseConfigured() || !process.env.CARTRACK_AUTH)throw new Error("Chưa cấu hình Cartrack/Supabase");
   const url=process.env.KV_REST_API_URL??process.env.UPSTASH_REDIS_REST_URL,token=process.env.KV_REST_API_TOKEN??process.env.UPSTASH_REDIS_REST_TOKEN;
   if(!url||!token)throw new Error("Chưa cấu hình lưu trạng thái tạo tài xế");
-  const db=new Redis({url,token}),key="driver:create:"+requestId;
+  const db=sharedRedis()!,key="driver:create:"+requestId;
   const payload=Object.fromEntries(fields.filter(k=>text(k)).map(k=>[k,k==="phone_number"?Number(text(k)):text(k)]));
   const hash=createHash("sha256").update(JSON.stringify(Object.fromEntries(Object.entries(draft).sort(([a],[b])=>a.localeCompare(b))))).digest("hex");
   type State={hash:string;id?:string;done?:boolean};
