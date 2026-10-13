@@ -91,6 +91,15 @@ export async function loadPayDayInputs(from: string, to: string, driverId?: stri
   );
 
   const shifts = new Map<string, ShiftWindow[]>();
+  /** Where a day's shift came from beyond Lịch ca, for the Bảng ca grid: a Sunday
+   *  roster line, and whose leave it covers. */
+  const origin = new Map<string, { sunday: boolean; covers: string[] }>();
+  const mark = (driver: string, date: string, o: { sunday?: boolean; cover?: string }) => {
+    const k = dayKey(driver, date), m = origin.get(k) ?? { sunday: false, covers: [] };
+    if (o.sunday) m.sunday = true;
+    if (o.cover && !m.covers.includes(o.cover)) m.covers.push(o.cover);
+    origin.set(k, m);
+  };
   const add = (driver: string, date: string, w: ShiftWindow) => {
     const k = dayKey(driver, date);
     const list = shifts.get(k);
@@ -104,7 +113,7 @@ export async function loadPayDayInputs(from: string, to: string, driverId?: stri
   if (!payrollImported) {
     for (const r of sunday) {
       const w = isWeekdayRoleLine(r.area) ? null : parseShiftText(r.shift);
-      if (w) add(r.driver_id, r.work_date, w);
+      if (w) { add(r.driver_id, r.work_date, w); mark(r.driver_id, r.work_date, { sunday: true }); }
     }
     const base = new Map([...shifts].map(([k, v]) => [k, [...v]]));
     for (const l of leaves) for (const s of l.master_leave_substitutes ?? []) {
@@ -113,7 +122,9 @@ export async function loadPayDayInputs(from: string, to: string, driverId?: stri
       const own = s.starts_at && s.ends_at ? { start: hm(s.starts_at), end: hm(s.ends_at) }
         : l.starts_at && l.ends_at ? { start: hm(l.starts_at), end: hm(l.ends_at) } : null;
       for (let d = l.starts_on < from ? from : l.starts_on; d <= (l.ends_on > to ? to : l.ends_on); d = addDays(d, 1)) {
-        for (const w of own ? [own] : l.linked_driver_id ? base.get(dayKey(l.linked_driver_id, d)) ?? [] : []) add(s.driver_id, d, w);
+        const ws = own ? [own] : l.linked_driver_id ? base.get(dayKey(l.linked_driver_id, d)) ?? [] : [];
+        for (const w of ws) add(s.driver_id, d, w);
+        if (ws.length && l.linked_driver_id) mark(s.driver_id, d, { cover: l.linked_driver_id });
       }
     }
   }
@@ -130,7 +141,7 @@ export async function loadPayDayInputs(from: string, to: string, driverId?: stri
   }
 
   return {
-    shifts, approved, latest, corrections,
+    shifts, approved, latest, corrections, origin,
     /** Payroll's file has been written into Lịch ca for this period. */
     payrollImported,
   };

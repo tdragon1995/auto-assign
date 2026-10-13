@@ -9,13 +9,14 @@ import { addDays,cartrackHistoryCutoff,vnDate } from "@/lib/time";
 import type { DriverShift,ShiftPattern,ShiftDriver,RuleShiftSuggestion } from "@/lib/driver-shifts";
 import { toast } from "sonner";
 import { BulkPtShiftPanel, PatternTimeSelect } from "./bulk-pt-shift-panel";
+import { ShiftGrid } from "./shift-grid";
 export { PatternTimeSelect };
 const field="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 placeholder:text-slate-600 placeholder:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:opacity-60";
 const weekdays=["CN","T2","T3","T4","T5","T6","T7"];
 const kindLabel={working:"Làm việc",off:"Nghỉ",holiday:"Nghỉ lễ"};
 
 export function DriverShiftPanel(){
- const [mode,setMode]=useState<"daily"|"patterns"|"bulk">("daily"),[date,setDate]=useState(vnDate),[cutoff,setCutoff]=useState(cartrackHistoryCutoff);
+ const [mode,setMode]=useState<"grid"|"daily"|"patterns"|"bulk">("grid"),[date,setDate]=useState(vnDate),[cutoff,setCutoff]=useState(cartrackHistoryCutoff);
  const [configuredIds,setConfiguredIds]=useState<string[]>([]);
  const [shifts,setShifts]=useState<DriverShift[]>([]),[suggestions,setSuggestions]=useState<Record<string,RuleShiftSuggestion[]>>({});
  const [rows,setRows]=useState<(DriverShift|ShiftPattern)[]>([]),[drivers,setDrivers]=useState<ShiftDriver[]>([]);
@@ -49,13 +50,18 @@ export function DriverShiftPanel(){
   setEditing(null);await load();toast.success(mode==="patterns"?"Đã lưu ca tuần và tạo lịch ngày":"Đã lưu lịch ca vào Supabase");
  }catch(e){toast.error(e instanceof Error?e.message:String(e));}finally{setSaving(false);}};
  const syncMonth=async()=>{setSaving(true);try{const res=await fetch(`/api/misa-sync?month=${date.slice(0,7)}`,{method:"POST"}),data=await res.json();if(!res.ok)throw Error(data.error||"Không bắt đầu được đồng bộ");if(data.status==="disabled")throw Error("Chưa kết nối đồng bộ MISA");toast.info(data.status==="dispatched"?"Đã yêu cầu MISA tải tháng này. Bấm Tải lại khi đồng bộ hoàn tất.":"MISA đang chạy hoặc vừa đồng bộ. Vui lòng tải lại sau.");}catch(e){toast.error(e instanceof Error?e.message:String(e));}finally{setSaving(false);}};
+ // Bảng ca is the default: the whole period at a glance. The other views stay for
+ // the rare one-off edit of a single day or a pattern's history.
+ const tabs=<div className="flex gap-1 rounded-lg bg-slate-100 p-1" aria-label="Chế độ lịch ca">
+  <Button size="sm" variant={mode==="grid"?"default":"ghost"} aria-pressed={mode==="grid"} disabled={saving} onClick={()=>setMode("grid")}>Bảng ca</Button>
+  <Button size="sm" variant={mode==="daily"?"default":"ghost"} aria-pressed={mode==="daily"} disabled={saving} onClick={()=>setMode("daily")}>Theo ngày</Button>
+  <Button size="sm" variant={mode==="patterns"?"default":"ghost"} aria-pressed={mode==="patterns"} disabled={saving} onClick={()=>setMode("patterns")}>Mẫu ca PT</Button>
+  <Button size="sm" variant={mode==="bulk"?"default":"ghost"} aria-pressed={mode==="bulk"} disabled={saving} onClick={()=>setMode("bulk")}>Thiếu ca PT</Button>
+ </div>;
+ if(mode==="grid")return <div className="flex h-full min-h-0 flex-col gap-2"><div>{tabs}</div><div className="min-h-0 flex-1"><ShiftGrid/></div></div>;
  return <section className="flex h-full min-h-0 flex-col rounded-xl border border-slate-200 bg-white text-slate-900">
   <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 p-3">
-   <div className="flex gap-1 rounded-lg bg-slate-100 p-1" aria-label="Chế độ lịch ca">
-    <Button size="sm" variant={mode==="daily"?"default":"ghost"} aria-pressed={mode==="daily"} disabled={saving} onClick={()=>setMode("daily")}>Theo ngày</Button>
-    <Button size="sm" variant={mode==="patterns"?"default":"ghost"} aria-pressed={mode==="patterns"} disabled={saving} onClick={()=>setMode("patterns")}>Mẫu ca PT</Button>
-    <Button size="sm" variant={mode==="bulk"?"default":"ghost"} aria-pressed={mode==="bulk"} disabled={saving} onClick={()=>setMode("bulk")}>Thiếu ca PT</Button>
-   </div>
+   {tabs}
    <div className="flex flex-wrap items-center gap-2">
     {mode==="daily"&&<><Button variant="outline" size="icon" aria-label="Ngày trước" disabled={date<=cutoff||saving} onClick={()=>setDate(addDays(date,-1))}><ChevronLeft/></Button>
      <label className="sr-only" htmlFor="shift-date">Ngày xem lịch ca</label><input id="shift-date" type="date" value={date} min={cutoff} disabled={saving} className={field} onChange={e=>{if(e.target.value>=cutoff)setDate(e.target.value);}}/>
