@@ -53,7 +53,9 @@ export async function applyPtPlan(driverId:unknown,date:unknown) {
  if(drivers.filter(d=>d.employee_code===driver.employee_code).length!==1)throw new Error("Mã nhân viên trùng giữa nhiều tài xế — cần kiểm tra liên kết");
  const versions=visiblePtPatterns(patterns,drivers).filter(p=>p.driver_id===driverId).map(p=>({...p,employee_code:driver.employee_code,label:driver.name}));
  if(!versions.some(p=>(!p.active_from||p.active_from<=date)&&(!p.active_to||p.active_to>=date)))throw new Error("Chưa có chu kỳ PT áp dụng cho ngày này");
- const to=new Date(Date.UTC(Number(date.slice(0,4)),Number(date.slice(5,7)),0)).toISOString().slice(0,10);
+ // Through the end of the FOLLOWING month: a plan applied from a past date must
+ // still reach today (Bùi Ngọc Thành, applied from 13/09, stopped at 30/09).
+ const to=new Date(Date.UTC(Number(date.slice(0,4)),Number(date.slice(5,7))+1,0)).toISOString().slice(0,10);
  const existing=await sbSelectAll<DriverShift>("driver_shifts",`select=shift_date,slot,source&shift_date=gte.${date}&shift_date=lte.${to}&or=(driver_id.eq.${driverId},employee_code.eq.${encodeURIComponent(driver.employee_code)})`,"employee_code.asc,shift_date.asc,slot.asc");
  // MISA's "CHƯA CÓ CA" rows are placeholders for exactly the people a plan is
  // for: replace them. Every other existing row stays authoritative.

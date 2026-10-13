@@ -14,8 +14,8 @@ const time=load('src/lib/time.ts',{}),labels=load('src/lib/driver-label.ts',{'./
   sbSelectAll:async(table,query)=>{if(table==='master_drivers')return drivers;if(table==='driver_shift_patterns')return patterns;assert.equal(table,'driver_shifts');assert.ok(query.includes('driver_id.eq.'+id));assert.ok(query.includes('shift_date=gte.2026-10-09'));return daily;},
   sbUpsert:async(table,rows,key,batch,ignore)=>{assert.equal(table,'driver_shifts');assert.equal(key,'employee_code,shift_date,slot');if(!ignore){replaced=rows;assert.ok(rows.every(r=>r.shift_date==='2026-10-14'),'Only placeholder days are overwritten');daily=daily.map(d=>d.shift_date==='2026-10-14'?{...d,source:'PT'}:d);return;}calls++;proposed=rows;daily=[...daily,...rows];}
  }});
- assert.deepEqual(JSON.parse(JSON.stringify(await api.applyPtPlan(id,'2026-10-09'))),{from:'2026-10-09',to:'2026-10-31'});
- assert.equal(proposed.length,18,'Fill 23 dates minus four existing daily schedules and one placeholder');
+ assert.deepEqual(JSON.parse(JSON.stringify(await api.applyPtPlan(id,'2026-10-09'))),{from:'2026-10-09',to:'2026-11-30'});
+ assert.equal(proposed.length,48,'Fill 53 dates (to the end of the following month) minus four existing daily schedules and one placeholder');
  assert.equal(replaced.length,1,'The CHƯA CÓ CA placeholder day is replaced by the plan');assert.equal(replaced[0].day_type,'working');
  assert.ok(proposed.every(r=>r.source==='PT'&&r.driver_id===id&&r.employee_code==='driver:'+id));
  assert.equal(proposed.find(r=>r.shift_date==='2026-10-09').start_time,'17:00');
