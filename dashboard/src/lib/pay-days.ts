@@ -43,7 +43,8 @@ export interface CorrectionRow {
 }
 
 interface LeaveRow {
-  starts_on: string; ends_on: string; starts_at: string | null; ends_at: string | null;
+  /** null = open-ended, e.g. a resignation ("Nghỉ việc") with someone taking over. */
+  starts_on: string; ends_on: string | null; starts_at: string | null; ends_at: string | null;
   linked_driver_id: string | null;
   master_leave_substitutes: { driver_id: string | null; starts_at: string | null; ends_at: string | null; coverage_kind: string | null }[] | null;
 }
@@ -73,7 +74,7 @@ export async function loadPayDayInputs(from: string, to: string, driverId?: stri
     ),
     sbSelectAll<LeaveRow>(
       "master_leave_read",
-      `select=starts_on,ends_on,starts_at,ends_at,linked_driver_id,master_leave_substitutes&active=eq.true&starts_on=lte.${to}&ends_on=gte.${from}` +
+      `select=starts_on,ends_on,starts_at,ends_at,linked_driver_id,master_leave_substitutes&active=eq.true&starts_on=lte.${to}&or=(ends_on.gte.${from},ends_on.is.null)` +
         (driverId ? `&master_leave_substitutes=cs.${encodeURIComponent(JSON.stringify([{ driver_id: driverId }]))}` : ""),
       "id.asc",
     ),
@@ -121,7 +122,7 @@ export async function loadPayDayInputs(from: string, to: string, driverId?: stri
       if (driverId && s.driver_id !== driverId) continue;
       const own = s.starts_at && s.ends_at ? { start: hm(s.starts_at), end: hm(s.ends_at) }
         : l.starts_at && l.ends_at ? { start: hm(l.starts_at), end: hm(l.ends_at) } : null;
-      for (let d = l.starts_on < from ? from : l.starts_on; d <= (l.ends_on > to ? to : l.ends_on); d = addDays(d, 1)) {
+      for (let d = l.starts_on < from ? from : l.starts_on; d <= (!l.ends_on || l.ends_on > to ? to : l.ends_on); d = addDays(d, 1)) {
         const ws = own ? [own] : l.linked_driver_id ? base.get(dayKey(l.linked_driver_id, d)) ?? [] : [];
         for (const w of ws) add(s.driver_id, d, w);
         if (ws.length && l.linked_driver_id) mark(s.driver_id, d, { cover: l.linked_driver_id });

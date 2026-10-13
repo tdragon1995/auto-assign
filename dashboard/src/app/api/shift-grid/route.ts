@@ -39,8 +39,8 @@ export async function GET(req: NextRequest) {
         "v_pay_daily", `select=driver_id,trip_date,first_pickup_ts,last_dropoff_ts&trip_date=gte.${from}&trip_date=lte.${to}`, "trip_date.asc,driver_id.asc"),
       sbSelectAll<{ driver_id: string | null; shift_date: string; day_type: string; holiday_name: string | null }>(
         "driver_shifts", `select=driver_id,shift_date,day_type,holiday_name&day_type=in.(off,holiday)&shift_date=gte.${from}&shift_date=lte.${to}&driver_id=not.is.null`, "shift_date.asc"),
-      sbSelectAll<{ linked_driver_id: string | null; starts_on: string; ends_on: string; starts_at: string | null }>(
-        "master_leave_read", `select=linked_driver_id,starts_on,ends_on,starts_at&active=eq.true&starts_on=lte.${to}&ends_on=gte.${from}`, "id.asc"),
+      sbSelectAll<{ linked_driver_id: string | null; starts_on: string; ends_on: string | null; starts_at: string | null }>(
+        "master_leave_read", `select=linked_driver_id,starts_on,ends_on,starts_at&active=eq.true&starts_on=lte.${to}&or=(ends_on.gte.${from},ends_on.is.null)`, "id.asc"),
     ]);
 
     const days: string[] = [];
@@ -55,7 +55,7 @@ export async function GET(req: NextRequest) {
     const leaveBy = new Map<string, "whole" | "half">();
     for (const l of leaves) {
       if (!l.linked_driver_id) continue;
-      for (let d = l.starts_on < from ? from : l.starts_on; d <= (l.ends_on > to ? to : l.ends_on); d = addDays(d, 1)) {
+      for (let d = l.starts_on < from ? from : l.starts_on; d <= (!l.ends_on || l.ends_on > to ? to : l.ends_on); d = addDays(d, 1)) {
         const k = dayKey(l.linked_driver_id, d);
         if (leaveBy.get(k) !== "whole") leaveBy.set(k, l.starts_at ? "half" : "whole");
       }
