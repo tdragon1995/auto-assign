@@ -19,6 +19,8 @@ export type RosterWeek = {
   areas: RosterArea[];
   /** Driver labels for the lines, including accounts no longer active. */
   names: Record<string, string>;
+  /** Every Sunday that HAS a roster, newest first — the only weeks worth offering to copy. */
+  weeks: string[];
 };
 
 /** How an area is matched to a rule: case and spacing never count, exactly as

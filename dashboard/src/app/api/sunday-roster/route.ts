@@ -16,10 +16,11 @@ export async function GET(req: NextRequest) {
   try {
     const date = req.nextUrl.searchParams.get("date") || rosterSunday(vnDate());
     if (!isSunday(date)) throw new Error("Ngày phải là Chủ nhật");
-    const [rows, rules, recent] = await Promise.all([
+    const [rows, rules, recent, dates] = await Promise.all([
       sbSelectAll<Row>("master_sunday_roster", `select=id,area,driver_id,raw_name,shift,note&work_date=eq.${date}`, "sort.asc,id.asc"),
       sbSelectAll<{ id: number; areas: string[] | null }>("master_config_rules", "select=id,areas&day_type=eq.sunday&active=eq.true", "id.asc"),
       sbSelectAll<{ id: number; area: string }>("master_sunday_roster", `select=id,area&work_date=gte.${addDays(date, -56)}`, "id.asc"),
+      sbSelectAll<{ work_date: string }>("master_sunday_roster", "select=work_date", "work_date.desc"),
     ]);
     const areas = new Map<string, RosterArea>();
     for (const r of rules) for (const a of r.areas ?? []) {
@@ -39,6 +40,7 @@ export async function GET(req: NextRequest) {
       })),
       areas: [...areas.values()].sort((a, b) => a.area.localeCompare(b.area, "vi")),
       names: Object.fromEntries(names),
+      weeks: [...new Set(dates.map((d) => d.work_date))],
     };
     return NextResponse.json(body);
   } catch (e) {

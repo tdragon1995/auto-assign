@@ -30,8 +30,8 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  /** The Sunday to copy from — any week, earlier or later (20/09 had none before it). */
-  const [source, setSource] = useState(() => addDays(rosterSunday(vnDate()), -7));
+  /** The Sunday to copy from — only weeks that HAVE a roster are offered. */
+  const [source, setSource] = useState("");
   const seq = useRef(0);
   // Row keys for React only; never sent (the server keeps known fields only).
   const nextKey = useRef(0);
@@ -61,8 +61,12 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
     setDirty(true);
   };
 
-  // A new week defaults the copy source to the Sunday before it.
-  useEffect(() => { setSource(addDays(date, -7)); }, [date]);
+  // Weeks that can be copied: they have a roster and are not this one. The default
+  // is the nearest earlier one, else the nearest later one.
+  const copyable = useMemo(() => (week?.weeks ?? []).filter((w) => w !== date), [week, date]);
+  const before = copyable.find((w) => w < date) ?? null;
+  const after = [...copyable].reverse().find((w) => w > date) ?? null;
+  useEffect(() => { setSource(before ?? after ?? ""); }, [before, after]);
 
   const copyFrom = async (from: string) => {
     if (from === date) { toast.error("Chọn một Chủ nhật khác để sao chép"); return; }
@@ -128,12 +132,16 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
           {date !== today && <Button variant="ghost" size="sm" disabled={busy} onClick={() => leave(today)}>CN tới</Button>}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <label className="flex items-center gap-1.5 text-sm text-slate-600">
-            Sao chép từ CN
-            <input type="date" step={7} className={`${field} w-auto`} value={source} disabled={busy}
-              aria-label="Chủ nhật để sao chép" onChange={(e) => setSource(e.target.value)} />
-          </label>
-          <Button variant="outline" disabled={busy || !source} onClick={() => void copyFrom(source)}><Copy className="size-4" />Sao chép</Button>
+          {copyable.length > 0 && <>
+            <label className="flex items-center gap-1.5 text-sm text-slate-600">
+              Sao chép từ CN
+              <select className={`${field} w-auto`} value={source} disabled={busy} aria-label="Chủ nhật để sao chép"
+                onChange={(e) => setSource(e.target.value)}>
+                {copyable.map((w) => <option key={w} value={w}>{dmy(w)}</option>)}
+              </select>
+            </label>
+            <Button variant="outline" disabled={busy || !source} onClick={() => void copyFrom(source)}><Copy className="size-4" />Sao chép</Button>
+          </>}
           <Button variant="outline" disabled={busy} onClick={() => { if (discard()) void load(); }}><RefreshCw className="size-4" />Tải lại</Button>
           <Button disabled={busy || !dirty || !week || incomplete} title={incomplete ? "Mỗi dòng cần khu vực, ca dạng 06:00 - 15:00" : undefined} onClick={() => void save()}>{saving ? "Đang lưu…" : "Lưu lịch"}</Button>
         </div>
@@ -160,11 +168,14 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
         ) : lines.length === 0 ? (
           <div className="p-6 text-sm text-slate-600">
             <p className="mb-3">Chủ nhật {dmy(date)} chưa có lịch.</p>
-            <div className="flex flex-wrap gap-2">
-              <Button variant="outline" disabled={busy} onClick={() => void copyFrom(addDays(date, -7))}><Copy className="size-4" />Sao chép CN {dmy(addDays(date, -7))}</Button>
-              <Button variant="outline" disabled={busy} onClick={() => void copyFrom(addDays(date, 7))}><Copy className="size-4" />Sao chép CN {dmy(addDays(date, 7))}</Button>
-            </div>
-            <p className="mt-2 text-xs text-slate-500">Hoặc chọn Chủ nhật bất kỳ ở ô &quot;Sao chép từ CN&quot; phía trên.</p>
+            {before || after ? (
+              <div className="flex flex-wrap gap-2">
+                {before && <Button variant="outline" disabled={busy} onClick={() => void copyFrom(before)}><Copy className="size-4" />Sao chép CN {dmy(before)}</Button>}
+                {after && <Button variant="outline" disabled={busy} onClick={() => void copyFrom(after)}><Copy className="size-4" />Sao chép CN {dmy(after)}</Button>}
+              </div>
+            ) : (
+              <p className="text-xs text-slate-500">Chưa có Chủ nhật nào có lịch để sao chép — thêm dòng bên dưới.</p>
+            )}
           </div>
         ) : (
           <table className="w-full min-w-[56rem] text-sm">
