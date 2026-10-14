@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { Redis } from "@upstash/redis";
 import { sharedRedis } from "@/lib/redis";
-import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
-import { notesOf, type NoteMap } from "@/lib/stop-notes";
-import type { Job } from "@/lib/types";
+import { getJobsByDate, type Env } from "@/lib/cartrack";
+import { notesOf, type NoteMap, type StopNotes } from "@/lib/stop-notes";
 
 export const preferredRegion = "sin1";
 
@@ -43,7 +42,7 @@ export const preferredRegion = "sin1";
 const CACHE_TTL_S = 300;
 
 /** A branch's feed is a few dozen trips; this only bounds a hand-made URL. */
-const MAX_IDS = 300;
+const MAX_IDS = 1000; // D001 receives ~450 trips a day
 
 function getRedis(): Redis | null {
   const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
@@ -55,42 +54,55 @@ function getRedis(): Redis | null {
 // ponytail: no rebuild lock — branches that miss inside the same second each pay the day
 // fetch. Feed loads follow attention rather than a timer, so they are staggered; add the
 // day-snapshot's lock pattern if the logs ever show bursts of these.
-async function dayNotes(env: Env, date: string): Promise<NoteMap | null> {
+async function notesFor(env: Env, date: string, ids: number[]): Promise<NoteMap | null> {
   const redis = getRedis();
-  const key = `stopnotes:v2:${env}:${date}`;
+  // v3: one hash field per trip (and the pickup photo on each entry), so a branch asking
+  // about its few trips reads those fields — not the whole day's map, which the photo
+  // links tripled. BUILT says the day was stored, so "no note" and "not cached" differ.
+  const key = `stopnotes:v3:${env}:${date}`;
+  const BUILT = "__built__";
+  const pick = (all: Record<string, StopNotes | null | undefined>) => {
+    const out: NoteMap = {};
+    for (const id of ids) { const n = all[String(id)]; if (n) out[id] = n; }
+    return out;
+  };
 
   // Redis is the saving, never the answer: each side is guarded on its own so an Upstash
   // hiccup costs a fetch rather than the notes. (A local .env pointed at a redis stub that
   // was not running is exactly how this first returned an empty map with a green status.)
   if (redis) {
     try {
-      const hit = await redis.get<NoteMap>(key);
-      if (hit) return hit;
+      const row = await redis.hmget<Record<string, StopNotes | null>>(key, BUILT, ...ids.map(String));
+      if (row?.[BUILT]) return pick(row);
     } catch (e) {
       console.error("[location-notes] cache read", e);
     }
   }
 
-  const res = await fetch(
-    `${BASE_URL}/jobs?filter[scheduled_delivery_ts_from]=${date} 00:00:00&filter[scheduled_delivery_ts_to]=${date} 23:59:59&limit=1000`,
-    { headers: getHeaders(env), cache: "no-store" }
-  );
-  if (!res.ok) {
-    console.error(`[location-notes] Cartrack ${res.status} for ${date}`);
+  // Every page: a busy day passes Cartrack's 1,000-per-page cap (1,057 on 2026-10-14),
+  // and reading only the first left ~5% of trips with no note and no photo.
+  const jobs = await getJobsByDate(date, env).catch((e) => {
+    console.error(`[location-notes] Cartrack day list for ${date}`, e);
     return null;
-  }
-  const jobs: Job[] = (await res.json()).data ?? [];
+  });
+  if (!jobs) return null;
 
-  const notes: NoteMap = {};
+  const fields: Record<string, StopNotes | string> = { [BUILT]: "1" };
   for (const j of jobs) {
     const n = notesOf(j);
-    if (n) notes[j.job_id] = n;
+    if (n) fields[String(j.job_id)] = n;
   }
 
   if (redis) {
-    try { await redis.set(key, notes, { ex: CACHE_TTL_S }); } catch {}
+    try {
+      const p = redis.pipeline();
+      p.del(key);
+      p.hset(key, fields);
+      p.expire(key, CACHE_TTL_S);
+      await p.exec();
+    } catch {}
   }
-  return notes;
+  return pick(fields as Record<string, StopNotes>);
 }
 
 export async function GET(req: NextRequest) {
@@ -102,11 +114,7 @@ export async function GET(req: NextRequest) {
   if (!date || !ids.length) return NextResponse.json({ notes: {} });
 
   try {
-    const all = await dayNotes(env, date);
-    if (!all) return NextResponse.json({ notes: {} });
-    const notes: NoteMap = {};
-    for (const id of ids) if (all[id]) notes[id] = all[id];
-    return NextResponse.json({ notes });
+    return NextResponse.json({ notes: (await notesFor(env, date, ids)) ?? {} });
   } catch (e) {
     // Loud on the server, empty to the phone. A note that never arrives is invisible on
     // the card — without this line the only symptom of a broken fetch is a feed that

@@ -6,7 +6,7 @@ import { useParams } from "next/navigation";
 // fetching /api/psc-routes — no function invocation, no network round-trip, instant render.
 import {
   Package, Check, ChevronDown, ChevronRight, Clock, Phone, Bike, CalendarDays,
-  ArrowRight, Loader2, Search, XCircle,
+  ArrowRight, Loader2, Search, XCircle, ZoomIn,
 } from "lucide-react";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
 import { placeLabel } from "@/lib/place-label";
@@ -62,6 +62,12 @@ const STEPS = ["Lấy mẫu", "Đã giao"] as const;
 // Shortest gap between two visibility refreshes. The day copy behind the list is
 // republished every ~3 min, so a refresh sooner than this mostly returns what is on screen.
 const MIN_REFRESH_MS = 60_000;
+
+// D001 gallery: how far back "arrived recently" reaches. 40 minutes by default.
+const GALLERY_WINDOWS = [
+  { mins: 20, label: "20 phút" }, { mins: 40, label: "40 phút" },
+  { mins: 60, label: "1 giờ" }, { mins: 120, label: "2 giờ" },
+];
 
 // Branches that see every trip touching them. The rest only book (2026-10-14).
 const FULL_VIEW = new Set(["D001", "D046"]);
@@ -299,8 +305,33 @@ function buildEvents(
   job: Job, state: TripState,
   p: Stop | undefined, d: Stop | undefined,
   pTodos: NonNullable<Stop["todos"]>, dTodos: NonNullable<Stop["todos"]>, threePl = false,
+  brief = false, photo?: string,
 ): TlEvent[] {
   const destName = placeLabel(d?.customer_name ?? "");
+
+  // D001's photo gallery: the nurse matches the photo against what arrived, so two facts
+  // and the photo large — not the whole journey.
+  if (brief) {
+    // Every photo on the trip, pickup first; the gallery's own photo leads so it shows
+    // before the trip's details have loaded.
+    const urls = [...new Set([photo, ...[...pTodos, ...dTodos].flatMap((t) => t.images ?? [])
+      .filter((i) => !i.is_deleted).map((i) => i.image_url)].filter((u): u is string => !!u))];
+    return [
+      {
+        tone: p?.activity_completed_ts ? "done" : "future", time: fmtTs(p?.activity_completed_ts),
+        label: `Lấy mẫu tại ${placeLabel(p?.customer_name ?? "")}`,
+        body: (
+          <>
+            <TodoNotes todos={pTodos} />
+            <BriefPhotos urls={urls} />
+          </>
+        ),
+      },
+      d?.activity_completed_ts
+        ? { tone: "done", time: fmtTs(d.activity_completed_ts), label: `Bàn giao tại ${destName}` }
+        : { tone: d?.activity_arrived_ts ? "now" : "future", time: fmtTs(d?.activity_arrived_ts), label: `Đến ${destName}` },
+    ];
+  }
   const addr = (s?: Stop | null) =>
     s?.address_line_1 ? <p className="text-xs text-slate-500 mt-0.5 leading-snug">{s.address_line_1}</p> : undefined;
   const win = windowLabel(p);
@@ -354,7 +385,34 @@ function buildEvents(
   return ev;
 }
 
-function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
+/** One big photo and every photo of the trip small beneath it; tapping a small one
+ *  makes it the big one, tapping the big one opens it full size. */
+function BriefPhotos({ urls }: { urls: string[] }) {
+  const [i, setI] = useState(0);
+  if (!urls.length) return null;
+  const big = urls[Math.min(i, urls.length - 1)];
+  return (
+    <div className="mt-2">
+      <a href={big} target="_blank" rel="noopener noreferrer" className="block">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={big} alt="Ảnh giao nhận" className="w-full max-h-[55vh] rounded-xl object-contain bg-slate-100 border border-slate-200" />
+      </a>
+      {urls.length > 1 && (
+        <div className="flex gap-2 mt-2 overflow-x-auto pb-1">
+          {urls.map((u, k) => (
+            <button key={u} onClick={() => setI(k)} aria-label={`Ảnh ${k + 1}`} aria-pressed={k === i}
+              className={`flex-none w-16 h-16 rounded-lg overflow-hidden border-2 ${k === i ? "border-blue-600" : "border-transparent"}`}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={u} alt="" loading="lazy" className="w-full h-full object-cover" />
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function JobSheet({ job, onClose, brief = false, photo }: { job: Job; onClose: () => void; brief?: boolean; photo?: string }) {
   const [detail, setDetail] = useState<Job | null>(null);
   const [detailLoading, setDetailLoading] = useState(true);
 
@@ -435,7 +493,7 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
           </div>
         )}
 
-        <Timeline events={buildEvents(shown, state, p, d, pTodos, dTodos, threePl)} />
+        <Timeline events={buildEvents(shown, state, p, d, pTodos, dTodos, threePl, brief, photo)} />
 
         {detailLoading && !detail && (
           <p className="text-[11px] text-slate-500 text-center">Đang tải ảnh giao nhận và số điện thoại Giao Nhận Mẫu…</p>
@@ -687,6 +745,15 @@ export default function QrPage() {
   // D001 only: narrow its (long) list to one driver. A filter over trips already loaded —
   // no request of its own.
   const [driverId, setDriverId] = useState("");
+  // D001 gallery window. The nurse picks it; this device remembers the pick.
+  const [galleryMins, setGalleryMins] = useState(40);
+  useEffect(() => {
+    try { const m = Number(localStorage.getItem("qr-gallery-mins")); if (GALLERY_WINDOWS.some((w) => w.mins === m)) setGalleryMins(m); } catch {}
+  }, []);
+  const pickGalleryMins = (m: number) => {
+    setGalleryMins(m);
+    try { localStorage.setItem("qr-gallery-mins", String(m)); } catch {}
+  };
 
   // The driver's typed notes, keyed by job. Its own request because nothing the feed is
   // built from carries a todo. Asked for by the ids this feed is showing, so the answer
@@ -699,6 +766,8 @@ export default function QrPage() {
   const [notesFailed, setNotesFailed] = useState(false);
 
   const [sheetJob, setSheetJob] = useState<Job | null>(null);
+  // Set when the sheet is opened from D001's gallery: brief view, led by this photo.
+  const [briefPhoto, setBriefPhoto] = useState<string | null>(null);
   const [doneQuery, setDoneQuery] = useState("");
   const [datePanel, setDatePanel] = useState(false);
 
@@ -1034,6 +1103,18 @@ export default function QrPage() {
       }, new Map<string, { name: string; n: number }>())].sort((a, b) => b[1].n - a[1].n)
     : [];
   const inScope = (j: Job) => !driverId || j.delivery_driver_id === driverId;
+  // D001: the pickup photos of trips that reached the lab in the last 2 hours, newest
+  // first, so the nurse can match each against what was handed over.
+  const vnMs = (ts?: string | null) => (ts ? Date.parse(`${ts.replace(" ", "T").slice(0, 19)}+07:00`) : NaN);
+  const showGallery = branchCode === "D001" && date === todayVN();
+  const gallery = showGallery
+    ? jobs.filter(inScope).flatMap((j) => {
+        const d = j.stops.find((st) => st.stop_type_id === 2 && st.customer_id === code);
+        const at = vnMs(d?.activity_arrived_ts ?? d?.activity_completed_ts);
+        const img = notes[j.job_id]?.img;
+        return img && Date.now() - at <= galleryMins * 60_000 ? [{ j, img, at }] : [];
+      }).sort((a, b) => b.at - a.at)
+    : [];
   const active = jobs.filter((j) => stateOf(j) !== 3 && inScope(j));
   const done = jobs.filter((j) => stateOf(j) === 3 && inScope(j));
   const q = norm(doneQuery);
@@ -1126,6 +1207,45 @@ export default function QrPage() {
           </div>
         )}
 
+        {showGallery && (
+          <section className="mb-4" aria-labelledby="qr-gallery">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+              <h3 id="qr-gallery" className="text-[13px] font-semibold text-slate-600">Ảnh mẫu vừa đến ({gallery.length})</h3>
+              <div role="group" aria-label="Trong khoảng" className="inline-flex rounded-lg bg-slate-200/70 p-0.5">
+                {GALLERY_WINDOWS.map((w) => (
+                  <button key={w.mins} aria-pressed={galleryMins === w.mins} onClick={() => pickGalleryMins(w.mins)}
+                    className={`px-2.5 py-1.5 rounded-md text-[12px] font-semibold transition-colors ${galleryMins === w.mins ? "bg-white text-slate-900 shadow-sm" : "text-slate-600"}`}>
+                    {w.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {loaded && !loading && gallery.length === 0 && (
+              <p className="text-sm text-slate-600 py-2">Chưa có mẫu nào đến trong {GALLERY_WINDOWS.find((w) => w.mins === galleryMins)?.label} qua.</p>
+            )}
+            <div className="grid grid-cols-3 gap-2">
+              {gallery.map(({ j, img, at }) => {
+                const from = placeLabel(j.stops.find((st) => st.stop_type_id === 1)?.customer_name ?? "");
+                return (
+                  <button key={j.job_id} onClick={() => { setBriefPhoto(img); setSheetJob(j); }}
+                    aria-label={`Xem chuyến từ ${from}`}
+                    className="group relative aspect-square overflow-hidden rounded-xl bg-slate-200 shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={img} alt="" loading="lazy" className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-105 group-active:scale-95 motion-reduce:transition-none" />
+                    <span aria-hidden className="absolute right-1.5 top-1.5 grid h-6 w-6 place-items-center rounded-full bg-white/90 text-slate-700 shadow">
+                      <ZoomIn className="h-3.5 w-3.5" />
+                    </span>
+                    <span aria-hidden className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 to-transparent px-1.5 pb-1 pt-5 text-left text-white">
+                      <span className="block truncate text-[11px] font-semibold leading-tight">{from}</span>
+                      <span className="text-[10px] opacity-90">{new Date(at).toLocaleTimeString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit" })}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
         <div className="space-y-3">
           {isToday && !driverId && pendingShown.map((p) => (
             <PendingCard key={p.job_id} req={p} pickup={route.pickup} dropoff={route.dropoff} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }}
@@ -1188,7 +1308,7 @@ export default function QrPage() {
         )}
       </div>
 
-      {sheetJob && <JobSheet job={sheetJob} onClose={() => setSheetJob(null)} />}
+      {sheetJob && <JobSheet job={sheetJob} brief={briefPhoto !== null} photo={briefPhoto ?? undefined} onClose={() => { setSheetJob(null); setBriefPhoto(null); }} />}
 
       {cancelTarget && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/45 p-4"

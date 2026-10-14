@@ -12,7 +12,9 @@ import type { Job } from "./types";
  * lines on a third of rows, with the separator landing mid-wrap where it separated
  * nothing.
  */
-export interface StopNotes { p?: string; d?: string }
+export interface StopNotes { p?: string; d?: string;
+  /** The pickup's photo ("Chụp mẫu/vật tư/kết quả"): a public Cartrack image link. */
+  img?: string }
 
 /** Notes keyed by job_id, the shape /api/location-notes returns. */
 export type NoteMap = Record<number, StopNotes>;
@@ -31,5 +33,8 @@ export function notesOf(job: Job): StopNotes | null {
     if (s.stop_type_id === 1) out.p = note;
     else out.d = note;
   }
-  return out.p || out.d ? out : null;
+  const img = (job.stops ?? []).find((s) => s.stop_type_id === 1)?.todos
+    ?.flatMap((t) => t.images ?? []).find((i) => i.image_url && !i.is_deleted)?.image_url;
+  if (img) out.img = img;
+  return out.p || out.d || out.img ? out : null;
 }
