@@ -50,10 +50,9 @@ export async function GET(req: NextRequest) {
     const feeders = feedersOf(code);
     const touches = (j: { stops?: { customer_id?: string | null; stop_type_id?: number; customer_name?: string }[] | null }) =>
       (j.stops ?? []).some((s) => s.customer_id === code) || (code === LAB_CUSTOMER_ID && isLabWatchedClient(j));
-    // D001 does not list trips going to an NĐTP drop-off — those have their own page (/ndtp).
-    const listed = (j: { job_status_id?: number; stops?: { stop_type_id?: number; customer_name?: string | null }[] | null }) =>
-      SHOWN_STATUSES.includes(j.job_status_id ?? 0)
-      && !(code === LAB_CUSTOMER_ID && /NDTP/i.test((j.stops ?? []).find((s) => s.stop_type_id === 2)?.customer_name ?? ""));
+    // (D001 hides NĐTP drop-offs from its list on the page itself: its driver chips still
+    // need them, to say where those drivers go instead of the lab.)
+    const listed = (j: { job_status_id?: number }) => SHOWN_STATUSES.includes(j.job_status_id ?? 0);
     const ids = (req.nextUrl.searchParams.get("ids") ?? "").split(",").map(Number).filter(Number.isInteger).slice(0, 50);
     // The whole branch (D001 / D046, and /qr tabs from before 2026-10-14), or only the
     // device's own bookings (every other branch: they book, they do not browse).

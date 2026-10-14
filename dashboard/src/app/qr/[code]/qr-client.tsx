@@ -1095,12 +1095,18 @@ export default function QrPage() {
   // jobs is the whole branch (fullView) or this device's bookings — either way the list.
   const pendingShown = pending.filter((p) => !seen.has(Number(p.job_id)));
   // The drivers on today's list, busiest first, for D001's picker.
+  // D001 does not list trips to an NĐTP drop-off (they have /ndtp) — but its chips
+  // still read them, to show where a driver goes instead of the lab.
+  const offList = (j: Job) => branchCode === "D001" && /NDTP/i.test(dropoffOf(j)?.customer_name ?? "");
+  const listJobs = jobs.filter((j) => !offList(j));
   const driverChips = branchCode === "D001"
     ? [...jobs.reduce((m, j) => {
         if (!j.delivery_driver_id) return m;
-        const c = m.get(j.delivery_driver_id) ?? { name: driverText(j.driver?.last_name), n: 0 };
-        return m.set(j.delivery_driver_id, { ...c, n: c.n + 1 });
-      }, new Map<string, { name: string; n: number }>())].sort((a, b) => b[1].n - a[1].n)
+        const c = m.get(j.delivery_driver_id) ?? { name: driverText(j.driver?.last_name), n: 0, dests: new Set<string>() };
+        const d = dropoffOf(j);
+        if (d && d.customer_id !== code) c.dests.add(placeLabel(d.customer_name ?? ""));
+        return m.set(j.delivery_driver_id, { ...c, n: c.n + (offList(j) ? 0 : 1) });
+      }, new Map<string, { name: string; n: number; dests: Set<string> }>())].sort((a, b) => b[1].n - a[1].n)
     : [];
   const inScope = (j: Job) => !driverId || j.delivery_driver_id === driverId;
   // D001: the pickup photos of trips that reached the lab in the last 2 hours, newest
@@ -1108,15 +1114,15 @@ export default function QrPage() {
   const vnMs = (ts?: string | null) => (ts ? Date.parse(`${ts.replace(" ", "T").slice(0, 19)}+07:00`) : NaN);
   const showGallery = branchCode === "D001" && date === todayVN();
   const gallery = showGallery
-    ? jobs.filter(inScope).flatMap((j) => {
+    ? listJobs.filter(inScope).flatMap((j) => {
         const d = j.stops.find((st) => st.stop_type_id === 2 && st.customer_id === code);
         const at = vnMs(d?.activity_arrived_ts ?? d?.activity_completed_ts);
         const img = notes[j.job_id]?.img;
         return img && Date.now() - at <= galleryMins * 60_000 ? [{ j, img, at }] : [];
       }).sort((a, b) => b.at - a.at)
     : [];
-  const active = jobs.filter((j) => stateOf(j) !== 3 && inScope(j));
-  const done = jobs.filter((j) => stateOf(j) === 3 && inScope(j));
+  const active = listJobs.filter((j) => stateOf(j) !== 3 && inScope(j));
+  const done = listJobs.filter((j) => stateOf(j) === 3 && inScope(j));
   const q = norm(doneQuery);
   const doneShown = q
     ? done.filter((j) => norm(`${j.stops.map((s) => s.customer_name).join(" ")} ${j.driver?.last_name ?? ""} ${(j.item_tracking_numbers ?? []).join(" ")}`).includes(q))
@@ -1199,8 +1205,14 @@ export default function QrPage() {
               const on = id === driverId;
               return (
                 <button key={id} aria-pressed={on} onClick={() => { setDriverId(on ? "" : id); setDoneQuery(""); }}
-                  className={`px-3.5 py-2 rounded-full text-sm font-semibold transition-colors ${on ? "bg-blue-700 text-white" : "bg-white text-slate-700 shadow-sm active:bg-slate-50"}`}>
-                  {d.name} <span className={on ? "text-blue-100" : "text-slate-500"}>{d.n}</span>
+                  className={`px-3.5 py-2 text-left transition-colors ${d.dests.size ? "rounded-2xl" : "rounded-full"} ${on ? "bg-blue-700 text-white" : "bg-white text-slate-700 shadow-sm active:bg-slate-50"}`}>
+                  <span className="block text-sm font-semibold">{d.name} {d.n > 0 && <span className={on ? "text-blue-100" : "text-slate-500"}>{d.n}</span>}</span>
+                  {/* Drivers who also go somewhere other than the lab say where, small. */}
+                  {d.dests.size > 0 && (
+                    <span className={`block max-w-[12rem] mt-0.5 text-[11px] font-medium leading-snug ${on ? "text-blue-100" : "text-slate-500"}`}>
+                      → {[...d.dests].join(", ")}
+                    </span>
+                  )}
                 </button>
               );
             })}
