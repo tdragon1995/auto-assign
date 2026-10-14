@@ -79,6 +79,7 @@ async function createViaLeg(
         tracking_number: "",
         todos: [
           { todo_type_id: 3, stop_type_id: 1, is_required: true, description: "🔍 Quét mọi batchsheet" },
+          { todo_type_id: 3, stop_type_id: 2, is_required: true, description: "🔍 Quét mọi batchsheet" },
         ],
       },
     ],

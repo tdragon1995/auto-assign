@@ -213,8 +213,8 @@ export const PSC_VIA_LABEL = "🛵 Vận chuyển mẫu PSC (ghé)";
 export const PSC_RETURN_LABEL = "🛵 Vận chuyển mẫu PSC (về)";
 
 /** The ONE photo a driver takes on any trip we create, at the pickup (supervisor,
- *  2026-10-14). Drop-off stops carry no to-dos; the batch scan stays on PSC trips
- *  because pay and the batch lookup read it. A todo without is_required: false is
+ *  2026-10-14). Drop-off stops carry no stop to-dos; PSC trips also scan the batch
+ *  at BOTH stops (pay and the batch lookup read it). A todo without is_required: false is
  *  compulsory — see restJobToRpc in cartrack.ts. */
 export const PICKUP_PHOTO_TODO = { todo_type_id: 2, description: "Chụp mẫu/vật tư/kết quả" };
 
