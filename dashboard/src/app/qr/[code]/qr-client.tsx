@@ -450,6 +450,51 @@ function JobSheet({ job, onClose }: { job: Job; onClose: () => void }) {
 
 /* ─────────────────────────── feed cards ─────────────────────────── */
 
+/** A finished trip: one tappable row with its timestamps. */
+function DoneRow({ job: j, notes, onOpen }: { job: Job; notes?: StopNotes; onOpen: () => void }) {
+    const p = pickupOf(j), d = dropoffOf(j);
+    const threePl = isThreePl(j.driver?.last_name);
+
+    // No aria-label on the button below: on a button it REPLACES the whole
+    // accessible name, so it hid the note, the driver and all four timestamps
+    // from a screen reader — while the active cards, which carry none,
+    // announced every one of them.
+    return (
+      <button onClick={onOpen}
+        className="group w-full block px-4 py-3 border-t border-slate-100 text-left hover:bg-slate-50 active:bg-slate-100 transition-colors">
+        <span className="flex items-start gap-2.5">
+          <Check aria-hidden className="w-4 h-4 text-green-600 shrink-0 mt-0.5" />
+          <span className="flex-1 min-w-0">
+            <span className="block text-sm font-semibold text-slate-800">
+              {placeLabel(p?.customer_name ?? "")} <ArrowRight aria-hidden className="inline w-3.5 h-3.5 text-slate-500 mx-0.5 shrink-0" /> {placeLabel(d?.customer_name ?? "")}
+            </span>
+            <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
+              <span className="text-[11px] text-slate-500">{driverText(j.driver?.last_name)}</span>
+              {windowLabel(p) && (
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700">
+                  <Clock aria-hidden className="w-3 h-3" />Hẹn {windowLabel(p)}
+                </span>
+              )}
+            </span>
+          </span>
+          {/* These rows open the detail sheet, but read as static text without a
+              chevron — the same affordance the active cards already carry. */}
+          <ChevronRight aria-hidden className="w-4 h-4 text-slate-400 shrink-0 mt-0.5 group-hover:text-slate-600 transition-colors" />
+        </span>
+        {/* A finished trip's four timestamps are the useful part here — the old row
+            showed a bare "15:23 → 15:33" pair with nothing saying what it meant. */}
+        {threePl ? (
+          <span className="block mt-2 text-[12px] font-semibold text-teal-700">
+            Gửi qua {THREE_PL_LABEL} · {fmtTs(d?.activity_completed_ts ?? p?.activity_completed_ts) ?? "—"}
+          </span>
+        ) : (
+          <Stepper job={j} state={3} />
+        )}
+        <NoteBlock notes={notes} />
+      </button>
+    );
+}
+
 function TripCard({ job, code, notes, onOpen, onCancel, onSendVia3pl, onChangeDriver }: {
   job: Job;
   code: string;
@@ -631,6 +676,7 @@ export default function QrPage() {
   // Whether anything has been fetched yet — counts and "none" lines wait for it.
   const [loaded, setLoaded] = useState(false);
   const [pending, setPending] = useState<PendingReq[]>([]);
+  const [seen, setSeen] = useState<Set<number>>(new Set());
   // Other trips show only for a driver the branch picks from its configured drivers —
   // one driver's entry in the day copy, not the whole branch's.
   const [driverId, setDriverId] = useState("");
@@ -647,9 +693,6 @@ export default function QrPage() {
   const [notesFailed, setNotesFailed] = useState(false);
 
   const [sheetJob, setSheetJob] = useState<Job | null>(null);
-  // Open by default: the completed list is the branch's record of its own day, and
-  // collapsing it hid the thing most staff open this page to check.
-  const [doneOpen, setDoneOpen] = useState(true);
   const [doneQuery, setDoneQuery] = useState("");
   const [datePanel, setDatePanel] = useState(false);
 
@@ -714,7 +757,21 @@ export default function QrPage() {
     try {
       const res = await fetch(`/api/location-jobs?date=${date}&code=${encodeURIComponent(code)}${driverId ? `&driver=${encodeURIComponent(driverId)}` : ""}${ownIds ? `&ids=${ownIds}` : ""}`);
       const data = await res.json();
-      const list: Job[] = (data.jobs ?? [])
+      const raw: Job[] = data.jobs ?? [];
+      // A waiting card hides once the server has its trip at all — even one the filters
+      // below then drop — and goes for good once Cartrack no longer has it (cancelled or
+      // deleted), after 10 minutes' grace for a booking Cartrack has not indexed yet.
+      setSeen(new Set(raw.map((j) => Number(j.job_id))));
+      const gone = new Set<number>((data.missing ?? []).map(Number));
+      if (gone.size) {
+        const mins = (hm: string) => { const [h, m] = hm.split(":").map(Number); return h * 60 + m; };
+        setPending((prev) => {
+          const next = prev.filter((p) => !(gone.has(Number(p.job_id)) && mins(nowHm()) - mins(p.created_ts) > 10));
+          if (next.length !== prev.length) try { localStorage.setItem(pendingKey, JSON.stringify(next)); } catch {}
+          return next;
+        });
+      }
+      const list: Job[] = raw
         .filter((j: Job) => (j.stops ?? []).length > 1)
         // Plan slots regenerate daily; the unfinished ones are noise, not real trips.
         .filter((j: Job) => j.last_assigned_plan_id == null || j.job_status_id === 5)
@@ -742,7 +799,7 @@ export default function QrPage() {
       setLoading(false);
       setLoaded(true);
     }
-  }, [date, code, driverId, ownIds]);
+  }, [date, code, driverId, ownIds, pendingKey]);
 
   // The picker's list. Config only — no day read — so it is fine to ask on open.
   useEffect(() => {
@@ -971,15 +1028,15 @@ export default function QrPage() {
   // Top: what THIS branch booked (from this device). Bottom panel: the picked driver's
   // trips here, running and done — the filter sits beside what it filters, and every
   // count and empty state names whose trips it is talking about.
-  // retirePending's id comparison (numbers, whatever the source) — see there.
-  const pendingShown = retirePending(pending, jobs.map((j) => j.job_id));
+  const pendingShown = pending.filter((p) => !seen.has(Number(p.job_id)));
   const ownSet = new Set(pending.map((p) => Number(p.job_id)));
   const isOwn = (j: Job) => ownSet.has(Number(j.job_id));
   const driverName = drivers?.find((d) => d.driver_id === driverId)?.name ?? "";
   const ofDriver = (j: Job) => !!driverId && j.delivery_driver_id === driverId;
   const active = jobs.filter((j) => isOwn(j) && stateOf(j) !== 3);
+  const ownDone = jobs.filter((j) => isOwn(j) && stateOf(j) === 3);
   const driverActive = jobs.filter((j) => ofDriver(j) && !isOwn(j) && stateOf(j) !== 3);
-  const done = jobs.filter((j) => stateOf(j) === 3 && (driverId ? ofDriver(j) : isOwn(j)));
+  const done = jobs.filter((j) => ofDriver(j) && !isOwn(j) && stateOf(j) === 3);
   const q = norm(doneQuery);
   const doneShown = q
     ? done.filter((j) => norm(`${j.stops.map((s) => s.customer_name).join(" ")} ${j.driver?.last_name ?? ""} ${(j.item_tracking_numbers ?? []).join(" ")}`).includes(q))
@@ -1020,21 +1077,19 @@ export default function QrPage() {
           </div>
         )}
 
-        {/* The date scopes everything below it, so it sits above the feed rather than at the
-            foot of a long completed list where it read as unrelated.
+        {notesFailed && (
+          <p role="alert" className="mb-3 px-3 py-2 rounded-xl text-[12px] font-semibold text-amber-700 bg-amber-50 border border-amber-200">
+            Không tải được ghi chú giao nhận. Mở từng chuyến để xem.
+          </p>
+        )}
 
-            There is no Làm mới button. It was the single most expensive control in the app:
-            every tap forced a full rebuild of the whole network's day — and once the assign
-            cycle began publishing that day every ~3 minutes, nearly all of those taps were
-            re-fetching something already current. The feed reloads on its own when the
-            branch returns to the tab, and every action they take (booking, cancelling,
-            handing to a 3PL) reloads it immediately — which is when they actually want to
-            see a change. */}
-        <div className="flex items-center gap-2 mb-3">
+        {/* ── This device's bookings. The date scopes the whole page, so it heads it. ── */}
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <h2 className="text-[15px] font-bold text-slate-800">{isToday ? "Chuyến đã gọi" : "Ngày đã chọn"}</h2>
           <button
             onClick={() => setDatePanel((v) => !v)}
             aria-expanded={datePanel}
-            className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-600 bg-white shadow-sm active:bg-slate-50"
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-semibold text-slate-700 bg-white shadow-sm active:bg-slate-50"
           >
             <CalendarDays aria-hidden className="w-4 h-4" />
             {isToday ? "Hôm nay" : date}
@@ -1055,137 +1110,86 @@ export default function QrPage() {
           </div>
         )}
 
-        {notesFailed && (
-          <p role="alert" className="mb-3 px-3 py-2 rounded-xl text-[12px] font-semibold text-amber-700 bg-amber-50 border border-amber-200">
-            Không tải được ghi chú giao nhận. Mở từng chuyến để xem.
-          </p>
+        {isToday && (
+          <div className="space-y-3">
+            {pendingShown.map((p) => (
+              <PendingCard key={p.job_id} req={p} pickup={route.pickup} dropoff={route.dropoff} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }}
+                onSendVia3pl={openVia3pl} onChangeDriver={openChangeDriver} />
+            ))}
+            {active.map((j) => (
+              <TripCard key={j.job_id} job={j} code={code} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)}
+                onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl}
+                onChangeDriver={openChangeDriver} />
+            ))}
+            {ownDone.length > 0 && (
+              <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+                <p className="px-4 pt-3 pb-1 text-[12px] font-semibold text-slate-600">Đã xong ({ownDone.length})</p>
+                {ownDone.map((j) => <DoneRow key={j.job_id} job={j} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)} />)}
+              </div>
+            )}
+            {/* Only what was checked — this device's bookings. A claim about the whole
+                branch here ("no trips running") is what makes a branch book twice. */}
+            {!pendingShown.length && !active.length && !ownDone.length && !route.no_request && (
+              <p className="text-sm text-slate-600 py-2">Chưa gọi chuyến nào từ máy này hôm nay.</p>
+            )}
+          </div>
         )}
 
-        <div className="space-y-3">
-          {pendingShown.map((p) => (
-            <PendingCard key={p.job_id} req={p} pickup={route.pickup} dropoff={route.dropoff} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }}
-              onSendVia3pl={openVia3pl} onChangeDriver={openChangeDriver} />
-          ))}
-          {active.map((j) => (
-            <TripCard key={j.job_id} job={j} code={code} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)}
-              onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl}
-              onChangeDriver={openChangeDriver} />
-          ))}
-          {/* Only what was checked: this device's own bookings. "Chưa có chuyến nào đang
-              chạy" here was a claim about the whole branch nobody had looked up — the
-              sentence most likely to make a branch book a second pickup. */}
-          {!pendingShown.length && !active.length && (isToday ? !route.no_request : true) && (
-            <p className="text-center text-sm text-slate-600 py-7">
-              {isToday ? <>Chưa gọi chuyến nào từ máy này hôm nay.<br />Bấm nút phía trên để gọi Giao Nhận Mẫu.</> : "Chọn Giao Nhận Mẫu ở mục bên dưới để xem chuyến ngày này."}
-            </p>
-          )}
-          {loading && <p className="text-center text-sm text-slate-500 py-7">Đang tải…</p>}
-        </div>
-
-        <div className="bg-white rounded-2xl shadow-sm mt-3 overflow-hidden">
-          <button onClick={() => { setDoneOpen((v) => !v); if (!loaded) loadJobs(); }} aria-expanded={doneOpen}
-            className="w-full flex items-center justify-between gap-2 px-4 py-3.5 text-[15px] font-bold text-slate-800">
-            {/* The count is omitted until the feed has been read — "(0)" before we have
-                looked reads as "nothing was delivered today", which is a different claim. */}
-            <span className="flex items-center gap-2 min-w-0"><Check aria-hidden className="w-4 h-4 text-green-700 shrink-0" /><span className="truncate">Xong {isToday ? "hôm nay" : ""}{driverName ? ` · ${driverName}` : ""}</span> {loaded && <span className="text-green-700">({done.length})</span>}</span>
-            <ChevronDown aria-hidden className={`w-5 h-5 shrink-0 text-slate-500 transition-transform ${doneOpen ? "rotate-180" : ""}`} />
-          </button>
-          {doneOpen && (
-            <div className="border-t border-slate-100">
-              <div className="px-4 pt-3">
-                <label className="block text-[12px] font-semibold text-slate-500 mb-1" htmlFor="qr-driver-filter">Lọc theo Giao Nhận Mẫu</label>
-                <select
-                  id="qr-driver-filter"
-                  value={driverId}
-                  onChange={(e) => setDriverId(e.target.value)}
-                  className="w-full bg-slate-100 rounded-xl px-3 py-3 text-base text-slate-800"
-                >
-                  <option value="">
-                    {drivers === null ? "Đang tải…" : drivers.length ? "Chỉ chuyến chi nhánh đã gọi" : "Chi nhánh chưa có Giao Nhận Mẫu trong cấu hình"}
-                  </option>
-                  {(drivers ?? []).map((d) => <option key={d.driver_id} value={d.driver_id}>{d.name}</option>)}
-                </select>
-              </div>
-              {driverActive.length > 0 && (
-                <div className="px-4 pt-3 space-y-3">
-                  <p className="text-[12px] font-semibold text-slate-600">Đang chạy ({driverActive.length})</p>
-                  {driverActive.map((j) => (
-                    <TripCard key={j.job_id} job={j} code={code} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)}
-                      onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl}
-                      onChangeDriver={openChangeDriver} />
-                  ))}
-                </div>
-              )}
-              {(done.length > 0 || doneQuery) && <div className="px-4 pt-3 pb-1">
-                <div className="relative">
-                  <Search aria-hidden className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
-                <input
-                  type="search"
-                  value={doneQuery}
-                  onChange={(e) => setDoneQuery(e.target.value)}
-                  placeholder="Tìm điểm, GNM, mã batch…"
-                  aria-label="Tìm trong chuyến đã xong"
-                  className="w-full bg-slate-100 rounded-xl pl-9 pr-3 py-3 text-sm placeholder:text-slate-600 outline-none focus:ring-2 focus:ring-blue-300"
-                />
-                </div>
-              </div>}
-              {doneShown.length === 0 ? (
-                // Never "nothing was delivered" about trips we did not look up: each line
-                // names whose trips it means.
-                <p className="text-center text-sm text-slate-600 py-5">
-                  {doneQuery ? `Không tìm thấy chuyến nào khớp “${doneQuery}”`
-                    : loading ? "Đang tải…"
-                    : driverId ? `${driverName} chưa có chuyến nào xong ở chi nhánh${isToday ? " hôm nay" : ""}.`
-                    : ownSet.size ? "Chuyến máy này đã gọi chưa xong."
-                    : "Chọn Giao Nhận Mẫu để xem chuyến của họ."}
-                </p>
-              ) : doneShown.map((j) => {
-                const p = pickupOf(j), d = dropoffOf(j);
-                const threePl = isThreePl(j.driver?.last_name);
-
-                // No aria-label on the button below: on a button it REPLACES the whole
-                // accessible name, so it hid the note, the driver and all four timestamps
-                // from a screen reader — while the active cards, which carry none,
-                // announced every one of them.
+        {/* ── Any driver's trips here: pick a name. Chips, not a dropdown — a branch has a
+            handful of drivers, and seeing them all at once is faster than opening a list. ── */}
+        <section className="mt-6" aria-labelledby="qr-by-driver">
+          <h2 id="qr-by-driver" className="text-[15px] font-bold text-slate-800 mb-2">Chuyến theo Giao Nhận Mẫu</h2>
+          {drivers === null ? (
+            <p className="text-sm text-slate-600">Đang tải…</p>
+          ) : drivers.length === 0 ? (
+            <p className="text-sm text-slate-600">Chi nhánh chưa có Giao Nhận Mẫu trong cấu hình.</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {drivers.map((d) => {
+                const on = d.driver_id === driverId;
                 return (
-                  <button key={j.job_id} onClick={() => setSheetJob(j)}
-                    className="group w-full block px-4 py-3 border-t border-slate-100 text-left hover:bg-slate-50 active:bg-slate-100 transition-colors">
-                    <span className="flex items-start gap-2.5">
-                      <Check aria-hidden className="w-4 h-4 text-green-600 shrink-0 mt-0.5" />
-                      <span className="flex-1 min-w-0">
-                        <span className="block text-sm font-semibold text-slate-800">
-                          {placeLabel(p?.customer_name ?? "")} <ArrowRight aria-hidden className="inline w-3.5 h-3.5 text-slate-500 mx-0.5 shrink-0" /> {placeLabel(d?.customer_name ?? "")}
-                        </span>
-                        <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
-                          <span className="text-[11px] text-slate-500">{driverText(j.driver?.last_name)}</span>
-                          {windowLabel(p) && (
-                            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700">
-                              <Clock aria-hidden className="w-3 h-3" />Hẹn {windowLabel(p)}
-                            </span>
-                          )}
-                        </span>
-                      </span>
-                      {/* These rows open the detail sheet, but read as static text without a
-                          chevron — the same affordance the active cards already carry. */}
-                      <ChevronRight aria-hidden className="w-4 h-4 text-slate-400 shrink-0 mt-0.5 group-hover:text-slate-600 transition-colors" />
-                    </span>
-                    {/* A finished trip's four timestamps are the useful part here — the old row
-                        showed a bare "15:23 → 15:33" pair with nothing saying what it meant. */}
-                    {threePl ? (
-                      <span className="block mt-2 text-[12px] font-semibold text-teal-700">
-                        Gửi qua {THREE_PL_LABEL} · {fmtTs(d?.activity_completed_ts ?? p?.activity_completed_ts) ?? "—"}
-                      </span>
-                    ) : (
-                      <Stepper job={j} state={3} />
-                    )}
-                    <NoteBlock notes={notes[j.job_id]} />
+                  <button key={d.driver_id} aria-pressed={on} onClick={() => { setDriverId(on ? "" : d.driver_id); setDoneQuery(""); }}
+                    className={`px-3.5 py-2.5 rounded-full text-sm font-semibold transition-colors ${on ? "bg-blue-700 text-white" : "bg-white text-slate-700 shadow-sm active:bg-slate-50"}`}>
+                    {d.name}
                   </button>
                 );
               })}
             </div>
           )}
-        </div>
 
+          {driverId && (
+            <div className="mt-3 space-y-3">
+              {loading && <p className="text-sm text-slate-600">Đang tải…</p>}
+              {driverActive.map((j) => (
+                <TripCard key={j.job_id} job={j} code={code} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)}
+                  onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl}
+                  onChangeDriver={openChangeDriver} />
+              ))}
+              {done.length > 0 && (
+                <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+                  <p className="px-4 pt-3 pb-1 text-[12px] font-semibold text-slate-600">Đã xong ({done.length})</p>
+                  {done.length > 5 && (
+                    <div className="px-4 pb-2">
+                      <div className="relative">
+                        <Search aria-hidden className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
+                        <input type="search" value={doneQuery} onChange={(e) => setDoneQuery(e.target.value)}
+                          placeholder="Tìm điểm, mã batch…" aria-label="Tìm trong chuyến đã xong"
+                          className="w-full bg-slate-100 rounded-xl pl-9 pr-3 py-2.5 text-sm placeholder:text-slate-600 outline-none focus:ring-2 focus:ring-blue-300" />
+                      </div>
+                    </div>
+                  )}
+                  {doneShown.map((j) => <DoneRow key={j.job_id} job={j} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)} />)}
+                  {doneQuery && doneShown.length === 0 && (
+                    <p className="px-4 py-4 text-sm text-slate-600">Không tìm thấy chuyến nào khớp “{doneQuery}”.</p>
+                  )}
+                </div>
+              )}
+              {loaded && !loading && !driverActive.length && !done.length && (
+                <p className="text-sm text-slate-600">{driverName} chưa có chuyến nào ở chi nhánh{isToday ? " hôm nay" : " ngày này"}.</p>
+              )}
+            </div>
+          )}
+        </section>
       </div>
 
       {sheetJob && <JobSheet job={sheetJob} onClose={() => setSheetJob(null)} />}

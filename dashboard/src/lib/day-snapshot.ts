@@ -698,6 +698,30 @@ export async function snapJobsByIds(date: string, env: Env, ids: number[]): Prom
   return out;
 }
 
+/** Specific trips by id (/qr's own bookings), with the same freshness rule as a feed
+ *  slice: a missing or stale day is rebuilt rather than answered with nothing. Without
+ *  that, a booking stayed "Chờ điều phối" all evening — the engine stops publishing at
+ *  22:00, so after hours there may be no day to read the trip from. */
+export async function jobsByIds(
+  date: string, env: Env, ids: number[], opts: ReadOpts = {},
+): Promise<SnapJob[] | null> {
+  if (ids.length === 0) return [];
+  const redis = getRedis();
+  const pick = (s: Snapshot) => ids.map((id) => s.jobs.get(id)).filter((j): j is SnapJob => !!j);
+  if (redis) {
+    try {
+      const rows = await redis.hmget<Record<string, unknown>>(key(env, date), BUILT, ...ids.map(jobField));
+      const builtAt = Number(rows?.[BUILT] ?? 0);
+      const maxAge = Math.max(opts.maxAgeMs ?? FEED_MAX_AGE_MS, isPastDay(date) ? PAST_MAX_AGE_MS : 0);
+      if (builtAt && Date.now() - builtAt < maxAge) {
+        return ids.map((id) => parse<SnapJob | null>(rows?.[jobField(id)], null)).filter((j): j is SnapJob => !!j);
+      }
+    } catch { /* rebuild below */ }
+  }
+  const built = (await rebuild(redis, date, env)) ?? (await buildSnapshot(date, env));
+  return built ? pick(built) : null;
+}
+
 /** `readSlice` for many drivers: same revision check, one row fetch for all of them. */
 async function readDriversSlice(
   redis: Redis, env: Env, date: string, driverIds: string[],

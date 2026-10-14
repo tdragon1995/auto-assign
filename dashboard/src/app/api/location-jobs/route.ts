@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { driverDisplayName, fetchJobDetail, stripDriverCode } from "@/lib/job-detail";
 import { isLabWatchedClient, keepOnBranchFeed, LAB_CUSTOMER_ID } from "@/lib/job-filters";
-import { driverJobs, FEED_MAX_AGE_MS, locationJobs, slimJob, snapJobsByIds } from "@/lib/day-snapshot";
+import { driverJobs, FEED_MAX_AGE_MS, jobsByIds, locationJobs, slimJob } from "@/lib/day-snapshot";
 import { isValidDriverId, loadConfigFromSheets, loadDriversFromSheet } from "@/lib/config";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
 import type { Job } from "@/lib/types";
@@ -80,14 +80,17 @@ export async function GET(req: NextRequest) {
     if (driver || ids.length) {
       const [theirs, own] = await Promise.all([
         driver ? driverJobs(date, env, driver, { maxAgeMs: FEED_MAX_AGE_MS }).catch(() => null) : [],
-        snapJobsByIds(date, env, ids),
+        jobsByIds(date, env, ids).catch(() => null),
       ]);
-      // Driver's day unavailable: fall through to REST — an empty list here would tell
-      // the branch the driver has nothing.
-      if (theirs) {
-        const byId = new Map(own);
+      // Day unavailable: fall through to REST — an empty list here would tell the branch
+      // the driver has nothing, or leave its own booking waiting forever.
+      if (theirs && own) {
+        const byId = new Map(own.map((j) => [j.job_id, j]));
         for (const j of theirs) if (touches(j) && keepOnBranchFeed(code, j, feeders)) byId.set(j.job_id, j);
-        return NextResponse.json({ jobs: [...byId.values()].filter(shown) });
+        // Own bookings the day no longer has at all (cancelled or deleted in Cartrack):
+        // the page drops their waiting cards instead of showing them all day.
+        const missing = ids.filter((id) => !own.some((j) => j.job_id === id));
+        return NextResponse.json({ jobs: [...byId.values()].filter(shown), missing });
       }
     } else {
       // ponytail: whole-branch list, kept only for /qr tabs opened before 2026-10-14 that
