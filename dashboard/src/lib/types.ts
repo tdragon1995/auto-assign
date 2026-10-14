@@ -190,7 +190,9 @@ export interface Stop {
   // Only the REST job endpoints return these; the route timeline carries no todos at
   // all. Typed to what a reader needs — the driver's typed note (todo_type_id 5) —
   // rather than the full todo record.
-  todos?: { todo_type_id?: number; note?: string | null; images?: { image_url?: string | null; is_deleted?: boolean | null }[] }[];
+  // REST spells these snake_case; the fleetweb job RPC camelCase (todoTypeId, imageUrl).
+  todos?: { todo_type_id?: number; todoTypeId?: number; note?: string | null;
+    images?: { image_url?: string | null; imageUrl?: string | null; is_deleted?: boolean | null }[] }[];
 }
 
 // The driver block Cartrack embeds in each job of the `GET /jobs` list response
