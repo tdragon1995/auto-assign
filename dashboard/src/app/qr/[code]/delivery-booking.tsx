@@ -6,7 +6,7 @@
  * client, waiting for the dispatcher (/api/psc-delivery). Photos are shrunk here
  * exactly as in "Cập nhật công".
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, Loader2, Package, Paperclip, Plus, Search, Send, X } from "lucide-react";
 import { shrink } from "@/components/correction-form";
 import { MAX_PROOF_FILES } from "@/lib/pay-corrections";
@@ -27,21 +27,28 @@ export function DeliveryBooking({ pickup }: { pickup: string }) {
   // are created in the background), so this is the whole confirmation.
   const [sent, setSent] = useState<string[]>([]);
 
-  // Opening the form loads the client list on the server, so the first search is quick.
-  useEffect(() => { if (open) fetch("/api/psc-delivery").catch(() => {}); }, [open]);
+  // Searches already answered on this page, so going back to one costs nothing.
+  const seen = useRef(new Map<string, Customer[]>());
 
+  // 3 letters and a 600 ms pause before asking: each ask is a server call, and the
+  // first one on a cold server loads the whole client list from Cartrack (~6s).
   useEffect(() => {
-    if (q.trim().length < 2) { setHits([]); return; }
+    const key = q.trim().toLowerCase();
+    if (key.length < 3) { setHits([]); setSearching(false); return; }
+    const known = seen.current.get(key);
+    if (known) { setHits(known); setSearching(false); return; }
+    // Spinner from the first keystroke, so "not found" never flashes during the pause.
+    setSearching(true);
     const ac = new AbortController();
     const t = setTimeout(async () => {
-      setSearching(true);
       try {
-        const r = await fetch(`/api/psc-delivery?q=${encodeURIComponent(q.trim())}`, { signal: ac.signal });
+        const r = await fetch(`/api/psc-delivery?q=${encodeURIComponent(key)}`, { signal: ac.signal });
         const j = await r.json();
+        if (r.ok) seen.current.set(key, j.customers ?? []);
         setHits(j.customers ?? []);
       } catch { /* aborted or offline: keep the last hits */ }
       finally { if (!ac.signal.aborted) setSearching(false); }
-    }, 300);
+    }, 600);
     return () => { clearTimeout(t); ac.abort(); };
   }, [q]);
 
@@ -116,7 +123,7 @@ export function DeliveryBooking({ pickup }: { pickup: string }) {
           ))}
         </ul>
       )}
-      {q.trim().length >= 2 && !searching && hits.length === 0 && <p className="text-xs text-slate-500">Không tìm thấy khách hàng.</p>}
+      {q.trim().length >= 3 && !searching && hits.length === 0 && <p className="text-xs text-slate-500">Không tìm thấy khách hàng.</p>}
 
       {rows.map((r, i) => (
         <div key={r.c.customer_id} className="border border-slate-200 rounded-xl p-3 space-y-2">

@@ -6,7 +6,6 @@
  *              → 202 at once; then ONE trip per client, PSC → client, created
  *                UNASSIGNED with PSC_DELIVERY_LABEL so the engine leaves it to the
  *                dispatcher. Reference "D002→Mai Hoàng Anh_05:43" (short client name).
- *   GET  (no q) warms the directory — the form calls it when it opens.
  *
  * Photos/files ride as public links in the drop-off note, uploaded through the same
  * Cartrack carrier as "Cập nhật công" (lib/cartrack-files.ts). The /qr page is open
@@ -14,7 +13,7 @@
  * Cartrack customer; the search never hands out the whole directory.
  */
 import { NextRequest, NextResponse, after } from "next/server";
-import { BASE_URL, getHeaders, createJob } from "@/lib/cartrack";
+import { BASE_URL, getHeaders, createJob, getCustomerById } from "@/lib/cartrack";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
 import { PSC_DELIVERY_LABEL, PICKUP_PHOTO_TODO } from "@/lib/job-filters";
 import { shortCode } from "@/lib/psc-dup";
@@ -35,11 +34,13 @@ const MAX_CLIENTS = 10;
 const NOTE_MAX = 300;
 const DATA_URL = /^data:(image\/(png|jpe?g|webp|gif|heic)|application\/pdf);base64,[A-Za-z0-9+/=]+$/;
 
-// ponytail: per-instance directory cache (~2,300 customers, 3 Cartrack pages); move to
-// Redis only if cold instances stay slow after the warm-up below.
+// Economy over speed (supervisor, 2026-10-15): ~2,300 customers is 3 Cartrack pages
+// (~1.3 MB), fetched one after another, kept an HOUR per instance, and only when someone
+// actually searches. A client created in Cartrack today can take up to that hour to
+// appear. ponytail: per-instance; share it through Redis only if cold loads add up.
 let dir: { at: number; rows: Map<string, Indexed> } | null = null;
 let loading: Promise<Map<string, Indexed>> | null = null;
-const DIR_TTL_MS = 10 * 60_000;
+const DIR_TTL_MS = 60 * 60_000;
 const PAGE = 1000;
 
 async function page(n: number): Promise<Customer[]> {
@@ -48,16 +49,15 @@ async function page(n: number): Promise<Customer[]> {
   return (await res.json()).data ?? [];
 }
 
-/** All customers, indexed. Pages are fetched 4 at a time (one after another took ~6.5s),
- *  and concurrent callers share one load. */
+/** All customers, indexed; concurrent callers share one load. ~6.5s cold. */
 function directory(): Promise<Map<string, Indexed>> {
   if (dir && Date.now() - dir.at < DIR_TTL_MS) return Promise.resolve(dir.rows);
   loading ??= (async () => {
     const rows = new Map<string, Indexed>();
-    for (let first = 1; first <= 30; first += 4) {
-      const batch = await Promise.all([0, 1, 2, 3].map((i) => page(first + i)));
-      for (const c of batch.flat()) rows.set(c.customer_id, indexCustomer(c));
-      if (batch.some((b) => b.length < PAGE)) break;
+    for (let n = 1; n <= 30; n++) {
+      const list = await page(n);
+      for (const c of list) rows.set(c.customer_id, indexCustomer(c));
+      if (list.length < PAGE) break;
     }
     dir = { at: Date.now(), rows };
     return rows;
@@ -65,11 +65,11 @@ function directory(): Promise<Map<string, Indexed>> {
   return loading;
 }
 
-/** No `q` = the form just opened: load the directory now so the first search is warm. */
 export async function GET(req: NextRequest) {
+  const q = req.nextUrl.searchParams.get("q") ?? "";
+  if (q.trim().length < 3) return NextResponse.json({ customers: [] });
   try {
-    const all = await directory();
-    return NextResponse.json({ customers: rankCustomers(all.values(), req.nextUrl.searchParams.get("q") ?? "") });
+    return NextResponse.json({ customers: rankCustomers((await directory()).values(), q) });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 502 });
   }
@@ -141,14 +141,17 @@ export async function POST(req: NextRequest) {
   after(async () => {
     let sent = false;
     try {
-      const known = await directory();
+      // The client's name: from this instance's directory if it holds one, else one
+      // small lookup per client — never a whole-directory load just to name a trip.
+      const nameOf = async (id: string) =>
+        dir?.rows.get(id)?.customer_name ?? (await getCustomerById(id, "prod"))?.data?.customer_name;
       // One upload for the whole booking (one login, one lock), split back per client.
       // Only when there are files: the uploader refuses outright where it is not configured.
       const links = allFiles.length ? await uploadToCartrack(allFiles) : [];
       let li = 0;
       for (const d of deliveries) {
         const mine = links.slice(li, li += d.files.length);
-        const full = known.get(d.customer_id)?.customer_name;
+        const full = await nameOf(d.customer_id);
         if (!full) { await failed(d.customer_id, "không có khách hàng này trên Cartrack"); continue; }
         const client = placeLabel(full);
         const reference = `${psc}→${client.slice(0, 60)}_${hm}`;
