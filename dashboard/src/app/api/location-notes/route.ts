@@ -59,7 +59,7 @@ async function notesFor(env: Env, date: string, ids: number[]): Promise<NoteMap 
   // v3: one hash field per trip (and the pickup photo on each entry), so a branch asking
   // about its few trips reads those fields — not the whole day's map, which the photo
   // links tripled. BUILT says the day was stored, so "no note" and "not cached" differ.
-  const key = `stopnotes:v3:${env}:${date}`;
+  const key = `stopnotes:v4:${env}:${date}`; // v4: imgs[] (every photo), was one img
   const BUILT = "__built__";
   const pick = (all: Record<string, StopNotes | null | undefined>) => {
     const out: NoteMap = {};

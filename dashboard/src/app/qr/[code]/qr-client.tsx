@@ -306,16 +306,16 @@ function buildEvents(
   job: Job, state: TripState,
   p: Stop | undefined, d: Stop | undefined,
   pTodos: NonNullable<Stop["todos"]>, dTodos: NonNullable<Stop["todos"]>, threePl = false,
-  brief = false, photo?: string,
+  brief = false, photos: string[] = [],
 ): TlEvent[] {
   const destName = placeLabel(d?.customer_name ?? "");
 
   // D001's photo gallery: the nurse matches the photo against what arrived, so two facts
   // and the photo large — not the whole journey.
   if (brief) {
-    // Every photo on the trip, pickup first; the gallery's own photo leads so it shows
-    // before the trip's details have loaded.
-    const urls = [...new Set([photo, ...[...pTodos, ...dTodos].flatMap((t) => t.images ?? [])
+    // Every photo on the trip, pickup first. The gallery already has them all, so they
+    // show at once; the trip's details only add any it did not carry.
+    const urls = [...new Set([...photos, ...[...pTodos, ...dTodos].flatMap((t) => t.images ?? [])
       .filter((i) => !i.is_deleted).map((i) => i.image_url)].filter((u): u is string => !!u))];
     return [
       {
@@ -413,7 +413,7 @@ function BriefPhotos({ urls }: { urls: string[] }) {
   );
 }
 
-function JobSheet({ job, onClose, brief = false, photo }: { job: Job; onClose: () => void; brief?: boolean; photo?: string }) {
+function JobSheet({ job, onClose, brief = false, photos }: { job: Job; onClose: () => void; brief?: boolean; photos?: string[] }) {
   const [detail, setDetail] = useState<Job | null>(null);
   const [detailLoading, setDetailLoading] = useState(true);
 
@@ -494,7 +494,7 @@ function JobSheet({ job, onClose, brief = false, photo }: { job: Job; onClose: (
           </div>
         )}
 
-        <Timeline events={buildEvents(shown, state, p, d, pTodos, dTodos, threePl, brief, photo)} />
+        <Timeline events={buildEvents(shown, state, p, d, pTodos, dTodos, threePl, brief, photos)} />
 
         {detailLoading && !detail && (
           <p className="text-[11px] text-slate-500 text-center">Đang tải ảnh giao nhận và số điện thoại Giao Nhận Mẫu…</p>
@@ -768,7 +768,7 @@ export default function QrPage() {
 
   const [sheetJob, setSheetJob] = useState<Job | null>(null);
   // Set when the sheet is opened from D001's gallery: brief view, led by this photo.
-  const [briefPhoto, setBriefPhoto] = useState<string | null>(null);
+  const [briefPhotos, setBriefPhotos] = useState<string[] | null>(null);
   const [doneQuery, setDoneQuery] = useState("");
   const dateRef = useRef<HTMLInputElement>(null);
   const openDatePicker = () => {
@@ -1125,10 +1125,10 @@ export default function QrPage() {
         const d = j.stops.find((st) => st.stop_type_id === 2 && st.customer_id === code);
         const arrived = vnMs(d?.activity_arrived_ts ?? d?.activity_completed_ts);
         const at = Number.isNaN(arrived) ? vnMs(pickupOf(j)?.activity_completed_ts) : arrived;
-        const img = notes[j.job_id]?.img;
-        if (!img) return [];
+        const imgs = notes[j.job_id]?.imgs ?? [];
+        if (!imgs.length) return [];
         if (windowed && !(Date.now() - arrived <= galleryMins * 60_000)) return [];
-        return [{ j, img, at }];
+        return [{ j, imgs, at }];
       }).sort((a, b) => (b.at || 0) - (a.at || 0))
     : [];
   const active = listJobs.filter((j) => stateOf(j) !== 3 && inScope(j));
@@ -1254,21 +1254,37 @@ export default function QrPage() {
                 ? `Chưa có mẫu nào đến trong ${GALLERY_WINDOWS.find((w) => w.mins === galleryMins)?.label} qua.`
                 : `${driverName} chưa có ảnh mẫu${isToday ? " hôm nay" : " ngày này"}.`}</p>
             )}
-            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
-              {gallery.map(({ j, img, at }) => {
+            <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+              {gallery.map(({ j, imgs, at }) => {
                 const from = placeLabel(j.stops.find((st) => st.stop_type_id === 1)?.customer_name ?? "");
+                const [big, ...rest] = imgs;
                 return (
-                  <button key={j.job_id} onClick={() => { setBriefPhoto(img); setSheetJob(j); }}
+                  <button key={j.job_id} onClick={() => { setBriefPhotos(imgs); setSheetJob(j); }}
                     aria-label={`Xem chuyến từ ${from}`}
-                    className="group relative aspect-square overflow-hidden rounded-xl bg-slate-200 shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={img} alt="" loading="lazy" className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-105 group-active:scale-95 motion-reduce:transition-none" />
-                    <span aria-hidden className="absolute right-1.5 top-1.5 grid h-6 w-6 place-items-center rounded-full bg-white/90 text-slate-700 shadow">
-                      <ZoomIn className="h-3.5 w-3.5" />
+                    className="group flex flex-col overflow-hidden rounded-xl bg-white shadow-sm text-left outline-none hover:shadow-md transition-shadow focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2">
+                    <span className="relative block aspect-[4/3] overflow-hidden bg-slate-200">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={big} alt="" loading="lazy" className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-105 motion-reduce:transition-none" />
+                      <span aria-hidden className="absolute right-1.5 top-1.5 grid h-6 w-6 place-items-center rounded-full bg-white/90 text-slate-700 shadow">
+                        <ZoomIn className="h-3.5 w-3.5" />
+                      </span>
                     </span>
-                    <span aria-hidden className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 to-transparent px-1.5 pb-1 pt-5 text-left text-white">
-                      <span className="block truncate text-[11px] font-semibold leading-tight">{from}</span>
-                      <span className="text-[10px] opacity-90">{Number.isNaN(at) ? "" : new Date(at).toLocaleTimeString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit" })}</span>
+                    {rest.length > 0 && (
+                      <span aria-hidden className="flex gap-1 px-1.5 pt-1.5">
+                        {rest.slice(0, 4).map((u, k) => (
+                          <span key={u} className="relative h-9 w-9 shrink-0 overflow-hidden rounded-md bg-slate-200">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src={u} alt="" loading="lazy" className="h-full w-full object-cover" />
+                            {k === 3 && rest.length > 4 && (
+                              <span className="absolute inset-0 grid place-items-center bg-black/55 text-[11px] font-bold text-white">+{rest.length - 4}</span>
+                            )}
+                          </span>
+                        ))}
+                      </span>
+                    )}
+                    <span aria-hidden className="block px-2 pt-1 pb-1.5">
+                      <span className="block truncate text-[12px] font-semibold leading-tight text-slate-800">{from}</span>
+                      <span className="text-[11px] text-slate-500">{Number.isNaN(at) ? "" : new Date(at).toLocaleTimeString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit" })}{imgs.length > 1 ? ` · ${imgs.length} ảnh` : ""}</span>
                     </span>
                   </button>
                 );
@@ -1343,7 +1359,7 @@ export default function QrPage() {
         )}
       </div>
 
-      {sheetJob && <JobSheet job={sheetJob} brief={briefPhoto !== null} photo={briefPhoto ?? undefined} onClose={() => { setSheetJob(null); setBriefPhoto(null); }} />}
+      {sheetJob && <JobSheet job={sheetJob} brief={briefPhotos !== null} photos={briefPhotos ?? undefined} onClose={() => { setSheetJob(null); setBriefPhotos(null); }} />}
 
       {cancelTarget && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/45 p-4"
