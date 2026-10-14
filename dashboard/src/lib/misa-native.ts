@@ -1,11 +1,17 @@
-import serverChromium from "@sparticuz/chromium";
+import serverChromium from "@sparticuz/chromium-min";
+
+// The browser is downloaded at run time instead of shipped in every deployment: the
+// bundled ~67 MB binary was stored again with each deploy and filled Vercel's 10 GB
+// Functions Storage. A cold run fetches it once into /tmp; warm runs reuse it. Keep
+// the version in step with @sparticuz/chromium-min in package.json.
+const CHROMIUM_PACK = "https://github.com/Sparticuz/chromium/releases/download/v153.0.0/chromium-v153.0.0-pack.x64.tar";
 import { chromium } from "playwright-core";
 import { authenticator } from "otplib";
 import { runMisaSync } from "../../../misa-fetcher/lib/run.mjs";
 
 const run = async (months: string[]) => runMisaSync({month:months[0],flags:[`--months=${months.length}`],chromium,
   writeDump:false,statePath:"/tmp/misa-session.json",
-  launchOptions:{args:serverChromium.args,executablePath:await serverChromium.executablePath()},
+  launchOptions:{args:serverChromium.args,executablePath:await serverChromium.executablePath(CHROMIUM_PACK)},
   creds:{username:process.env.MISA_USERNAME,password:process.env.MISA_PASSWORD,totpSecret:process.env.MISA_TOTP_SECRET,
     generateTotp:()=>authenticator.generate(process.env.MISA_TOTP_SECRET!)}});
 
