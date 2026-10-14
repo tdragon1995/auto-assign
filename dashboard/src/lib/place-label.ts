@@ -8,6 +8,10 @@
  * Shared by /qr, /psc-tinh and /ao so the same place reads the same way on every screen.
  */
 export function placeLabel(name: string): string {
+  return displayClientName(placeCore(name));
+}
+
+function placeCore(name: string): string {
   const raw = (name ?? "").trim();
   const parts = raw.split(" - ");
   if (parts.length < 2) return raw;
@@ -19,4 +23,12 @@ export function placeLabel(name: string): string {
   // Shorter rows still lead with the account code.
   if (/^\d+$/.test(parts[0])) return parts.slice(1).join(" - ");
   return raw;
+}
+
+/** Drops the legal-form prefix ("Công ty cổ phần", "TNHH", "CTCP", "Hộ kinh doanh"…) the way
+ *  the AO hard copy prints client names. */
+export function displayClientName(name: string): string {
+  const short = name.replace(/(^|[\s-])(?:công ty\s+(?:cổ phần|tnhh|trách\s+nhiệm\s+hữu\s+hạn)|cty\s+tnhh|ctcp|hộ\s+kinh\s+doanh|doanh\s+nghiệp\s+tư\s+nhân|công\s+tnhh)\s+(\S)/iu,
+    (_, lead: string, first: string) => lead + first.toLocaleUpperCase("vi")).trim();
+  return short.replace(/^\p{L}/u, (first) => first.toLocaleUpperCase("vi"));
 }

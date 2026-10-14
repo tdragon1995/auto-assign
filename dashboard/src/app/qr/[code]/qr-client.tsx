@@ -63,6 +63,9 @@ const STEPS = ["Lấy mẫu", "Đã giao"] as const;
 // republished every ~3 min, so a refresh sooner than this mostly returns what is on screen.
 const MIN_REFRESH_MS = 60_000;
 
+// Branches that see every trip touching them. The rest only book (2026-10-14).
+const FULL_VIEW = new Set(["D001", "D046"]);
+
 function todayVN(): string {
   return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Ho_Chi_Minh" }).format(new Date()).slice(0, 10);
 }
@@ -677,10 +680,8 @@ export default function QrPage() {
   const [loaded, setLoaded] = useState(false);
   const [pending, setPending] = useState<PendingReq[]>([]);
   const [seen, setSeen] = useState<Set<number>>(new Set());
-  // Other trips show only for a driver the branch picks from its configured drivers —
-  // one driver's entry in the day copy, not the whole branch's.
-  const [driverId, setDriverId] = useState("");
-  const [drivers, setDrivers] = useState<{ driver_id: string; name: string }[] | null>(null);
+  // D001 and D046 see every trip touching them; every other branch only books.
+  const fullView = FULL_VIEW.has((route?.psc_pickup ?? "").replace(/^BRA\s*-\s*/i, ""));
 
   // The driver's typed notes, keyed by job. Its own request because nothing the feed is
   // built from carries a todo. Asked for by the ids this feed is showing, so the answer
@@ -751,11 +752,11 @@ export default function QrPage() {
   const ownIds = pending.filter((p) => p.date === date).map((p) => p.job_id).join(",");
 
   const loadJobs = useCallback(async () => {
-    if (!driverId && !ownIds) { setJobs([]); setLoaded(false); return; }
+    if (!fullView) { setJobs([]); setLoaded(false); return; }
     lastLoadRef.current = Date.now();
     setLoading(true);
     try {
-      const res = await fetch(`/api/location-jobs?date=${date}&code=${encodeURIComponent(code)}${driverId ? `&driver=${encodeURIComponent(driverId)}` : ""}${ownIds ? `&ids=${ownIds}` : ""}`);
+      const res = await fetch(`/api/location-jobs?date=${date}&code=${encodeURIComponent(code)}${fullView ? "&all=1" : ""}${ownIds ? `&ids=${ownIds}` : ""}`);
       const data = await res.json();
       const raw: Job[] = data.jobs ?? [];
       // A waiting card hides once the server has its trip at all — even one the filters
@@ -799,23 +800,15 @@ export default function QrPage() {
       setLoading(false);
       setLoaded(true);
     }
-  }, [date, code, driverId, ownIds, pendingKey]);
+  }, [date, code, fullView, ownIds, pendingKey]);
 
-  // The picker's list. Config only — no day read — so it is fine to ask on open.
-  useEffect(() => {
-    fetch(`/api/location-jobs?drivers=1&code=${encodeURIComponent(code)}`)
-      .then((r) => r.json())
-      .then((d) => setDrivers(d.drivers ?? []))
-      .catch(() => setDrivers([]));
-  }, [code]);
-
-  // Not on mount (loadJobs has nothing to ask for until bookings are restored or a driver
-  // is picked); after that, whenever the date, the driver or the branch's bookings change.
+  // Whenever the date or the branch's bookings change — and on open only for a branch
+  // that sees its whole list; elsewhere there is nothing to ask until bookings restore.
   const mountedRef = useRef(false);
   useEffect(() => {
-    if (!mountedRef.current) { mountedRef.current = true; return; }
+    if (!mountedRef.current) { mountedRef.current = true; if (!fullView) return; }
     loadJobs();
-  }, [loadJobs]);
+  }, [loadJobs, fullView]);
 
   // Refresh when the branch comes BACK to the tab, not on a timer — staff flip between
   // Zalo and this page constantly, and a timer kept every open tab polling all day.
@@ -1025,18 +1018,10 @@ export default function QrPage() {
     );
   }
 
-  // Top: what THIS branch booked (from this device). Bottom panel: the picked driver's
-  // trips here, running and done — the filter sits beside what it filters, and every
-  // count and empty state names whose trips it is talking about.
+  // jobs is the whole branch (fullView) or this device's bookings — either way the list.
   const pendingShown = pending.filter((p) => !seen.has(Number(p.job_id)));
-  const ownSet = new Set(pending.map((p) => Number(p.job_id)));
-  const isOwn = (j: Job) => ownSet.has(Number(j.job_id));
-  const driverName = drivers?.find((d) => d.driver_id === driverId)?.name ?? "";
-  const ofDriver = (j: Job) => !!driverId && j.delivery_driver_id === driverId;
-  const active = jobs.filter((j) => isOwn(j) && stateOf(j) !== 3);
-  const ownDone = jobs.filter((j) => isOwn(j) && stateOf(j) === 3);
-  const driverActive = jobs.filter((j) => ofDriver(j) && !isOwn(j) && stateOf(j) !== 3);
-  const done = jobs.filter((j) => ofDriver(j) && !isOwn(j) && stateOf(j) === 3);
+  const active = jobs.filter((j) => stateOf(j) !== 3);
+  const done = jobs.filter((j) => stateOf(j) === 3);
   const q = norm(doneQuery);
   const doneShown = q
     ? done.filter((j) => norm(`${j.stops.map((s) => s.customer_name).join(" ")} ${j.driver?.last_name ?? ""} ${(j.item_tracking_numbers ?? []).join(" ")}`).includes(q))
@@ -1083,21 +1068,24 @@ export default function QrPage() {
           </p>
         )}
 
-        {/* ── This device's bookings. The date scopes the whole page, so it heads it. ── */}
+        {fullView && (<>
+        {/* ── The list — D001 and D046 only. Every other branch only books (2026-10-14). ── */}
         <div className="flex items-center justify-between gap-2 mb-2">
-          <h2 className="text-[15px] font-bold text-slate-800">{isToday ? "Chuyến đã gọi" : "Ngày đã chọn"}</h2>
-          <button
-            onClick={() => setDatePanel((v) => !v)}
-            aria-expanded={datePanel}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-semibold text-slate-700 bg-white shadow-sm active:bg-slate-50"
-          >
-            <CalendarDays aria-hidden className="w-4 h-4" />
-            {isToday ? "Hôm nay" : date}
-            <ChevronDown aria-hidden className={`w-4 h-4 text-slate-500 transition-transform ${datePanel ? "rotate-180" : ""}`} />
-          </button>
+          <h2 className="text-[15px] font-bold text-slate-800">{fullView ? "Chuyến của chi nhánh" : "Chuyến đã gọi"}</h2>
+          {fullView && (
+            <button
+              onClick={() => setDatePanel((v) => !v)}
+              aria-expanded={datePanel}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-semibold text-slate-700 bg-white shadow-sm active:bg-slate-50"
+            >
+              <CalendarDays aria-hidden className="w-4 h-4" />
+              {isToday ? "Hôm nay" : date}
+              <ChevronDown aria-hidden className={`w-4 h-4 text-slate-500 transition-transform ${datePanel ? "rotate-180" : ""}`} />
+            </button>
+          )}
         </div>
 
-        {datePanel && (
+        {fullView && datePanel && (
           <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
             <input
               type="date"
@@ -1110,86 +1098,45 @@ export default function QrPage() {
           </div>
         )}
 
-        {isToday && (
-          <div className="space-y-3">
-            {pendingShown.map((p) => (
-              <PendingCard key={p.job_id} req={p} pickup={route.pickup} dropoff={route.dropoff} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }}
-                onSendVia3pl={openVia3pl} onChangeDriver={openChangeDriver} />
-            ))}
-            {active.map((j) => (
-              <TripCard key={j.job_id} job={j} code={code} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)}
-                onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl}
-                onChangeDriver={openChangeDriver} />
-            ))}
-            {ownDone.length > 0 && (
-              <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-                <p className="px-4 pt-3 pb-1 text-[12px] font-semibold text-slate-600">Đã xong ({ownDone.length})</p>
-                {ownDone.map((j) => <DoneRow key={j.job_id} job={j} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)} />)}
-              </div>
-            )}
-            {/* Only what was checked — this device's bookings. A claim about the whole
-                branch here ("no trips running") is what makes a branch book twice. */}
-            {!pendingShown.length && !active.length && !ownDone.length && !route.no_request && (
-              <p className="text-sm text-slate-600 py-2">Chưa gọi chuyến nào từ máy này hôm nay.</p>
-            )}
-          </div>
-        )}
-
-        {/* ── Any driver's trips here: pick a name. Chips, not a dropdown — a branch has a
-            handful of drivers, and seeing them all at once is faster than opening a list. ── */}
-        <section className="mt-6" aria-labelledby="qr-by-driver">
-          <h2 id="qr-by-driver" className="text-[15px] font-bold text-slate-800 mb-2">Chuyến theo Giao Nhận Mẫu</h2>
-          {drivers === null ? (
-            <p className="text-sm text-slate-600">Đang tải…</p>
-          ) : drivers.length === 0 ? (
-            <p className="text-sm text-slate-600">Chi nhánh chưa có Giao Nhận Mẫu trong cấu hình.</p>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {drivers.map((d) => {
-                const on = d.driver_id === driverId;
-                return (
-                  <button key={d.driver_id} aria-pressed={on} onClick={() => { setDriverId(on ? "" : d.driver_id); setDoneQuery(""); }}
-                    className={`px-3.5 py-2.5 rounded-full text-sm font-semibold transition-colors ${on ? "bg-blue-700 text-white" : "bg-white text-slate-700 shadow-sm active:bg-slate-50"}`}>
-                    {d.name}
-                  </button>
-                );
-              })}
-            </div>
+        <div className="space-y-3">
+          {isToday && pendingShown.map((p) => (
+            <PendingCard key={p.job_id} req={p} pickup={route.pickup} dropoff={route.dropoff} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }}
+              onSendVia3pl={openVia3pl} onChangeDriver={openChangeDriver} />
+          ))}
+          {active.map((j) => (
+            <TripCard key={j.job_id} job={j} code={code} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)}
+              onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl}
+              onChangeDriver={openChangeDriver} />
+          ))}
+          {loading && !jobs.length && <p className="text-sm text-slate-600 py-2">Đang tải…</p>}
+          {/* Each line claims only what was looked up: the branch's trips where the whole
+              list is read, this device's bookings elsewhere. */}
+          {!loading && !pendingShown.length && !active.length && (fullView ? loaded : isToday && !route.no_request) && (
+            <p className="text-sm text-slate-600 py-2">
+              {fullView ? `Không có chuyến nào đang chạy${isToday ? "" : " ngày này"}.` : "Chưa gọi chuyến nào từ máy này hôm nay."}
+            </p>
           )}
-
-          {driverId && (
-            <div className="mt-3 space-y-3">
-              {loading && <p className="text-sm text-slate-600">Đang tải…</p>}
-              {driverActive.map((j) => (
-                <TripCard key={j.job_id} job={j} code={code} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)}
-                  onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl}
-                  onChangeDriver={openChangeDriver} />
-              ))}
-              {done.length > 0 && (
-                <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-                  <p className="px-4 pt-3 pb-1 text-[12px] font-semibold text-slate-600">Đã xong ({done.length})</p>
-                  {done.length > 5 && (
-                    <div className="px-4 pb-2">
-                      <div className="relative">
-                        <Search aria-hidden className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
-                        <input type="search" value={doneQuery} onChange={(e) => setDoneQuery(e.target.value)}
-                          placeholder="Tìm điểm, mã batch…" aria-label="Tìm trong chuyến đã xong"
-                          className="w-full bg-slate-100 rounded-xl pl-9 pr-3 py-2.5 text-sm placeholder:text-slate-600 outline-none focus:ring-2 focus:ring-blue-300" />
-                      </div>
-                    </div>
-                  )}
-                  {doneShown.map((j) => <DoneRow key={j.job_id} job={j} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)} />)}
-                  {doneQuery && doneShown.length === 0 && (
-                    <p className="px-4 py-4 text-sm text-slate-600">Không tìm thấy chuyến nào khớp “{doneQuery}”.</p>
-                  )}
+          {done.length > 0 && (
+            <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+              <p className="px-4 pt-3 pb-1 text-[12px] font-semibold text-slate-600">Đã xong ({done.length})</p>
+              {done.length > 5 && (
+                <div className="px-4 pb-2">
+                  <div className="relative">
+                    <Search aria-hidden className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
+                    <input type="search" value={doneQuery} onChange={(e) => setDoneQuery(e.target.value)}
+                      placeholder="Tìm điểm, GNM, mã batch…" aria-label="Tìm trong chuyến đã xong"
+                      className="w-full bg-slate-100 rounded-xl pl-9 pr-3 py-2.5 text-sm placeholder:text-slate-600 outline-none focus:ring-2 focus:ring-blue-300" />
+                  </div>
                 </div>
               )}
-              {loaded && !loading && !driverActive.length && !done.length && (
-                <p className="text-sm text-slate-600">{driverName} chưa có chuyến nào ở chi nhánh{isToday ? " hôm nay" : " ngày này"}.</p>
+              {doneShown.map((j) => <DoneRow key={j.job_id} job={j} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)} />)}
+              {doneQuery && doneShown.length === 0 && (
+                <p className="px-4 py-4 text-sm text-slate-600">Không tìm thấy chuyến nào khớp “{doneQuery}”.</p>
               )}
             </div>
           )}
-        </section>
+        </div>
+        </>)}
       </div>
 
       {sheetJob && <JobSheet job={sheetJob} onClose={() => setSheetJob(null)} />}

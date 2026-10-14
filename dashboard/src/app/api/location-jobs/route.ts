@@ -1,22 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
-import { driverDisplayName, fetchJobDetail, stripDriverCode } from "@/lib/job-detail";
+import { driverDisplayName, fetchJobDetail } from "@/lib/job-detail";
 import { isLabWatchedClient, keepOnBranchFeed, LAB_CUSTOMER_ID } from "@/lib/job-filters";
-import { driverJobs, FEED_MAX_AGE_MS, jobsByIds, locationJobs, slimJob } from "@/lib/day-snapshot";
-import { isValidDriverId, loadConfigFromSheets, loadDriversFromSheet } from "@/lib/config";
+import { jobsByIds, locationJobs, slimJob } from "@/lib/day-snapshot";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
 import type { Job } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
 
-// The /qr page's trips (only caller). Three shapes:
-//   ?job_id=123                      full detail for the job sheet
-//   ?drivers=1&code=…                the branch's configured drivers, for the picker
-//   ?date=…&code=…&driver=…&ids=…    the picked driver's trips touching the branch, plus
-//                                    the branch's own bookings by id
-// Everything comes from the shared day (@/lib/day-snapshot), never rebuilt here; when it
-// is unavailable the REST day is filtered the same way. Statuses 2-5: what the timeline
+// The /qr page's trips (only caller):
+//   ?job_id=123                  full detail for the job sheet
+//   ?date=…&code=…&all=1&ids=…   the whole branch (D001, D046) plus own bookings
+//   ?date=…&code=…&ids=…         only the device's own bookings (every other branch)
+// From the shared day (@/lib/day-snapshot), which rebuilds when stale; when it is
+// unavailable the REST day is filtered the same way. Statuses 2-5: what the timeline
 // carries (4, 5) and the unrouted pool (2, 3) — cancelled (7) never shows.
 const SHOWN_STATUSES = [2, 3, 4, 5];
 
@@ -44,27 +42,6 @@ export async function GET(req: NextRequest) {
   const date = req.nextUrl.searchParams.get("date");
   const code = req.nextUrl.searchParams.get("code");
 
-  // ── ?drivers=1&code=…: the branch's configured drivers, for /qr's picker ──────────
-  // Fixed and smart drivers of every config row for this branch. The config and roster
-  // are in-process caches, so this costs no day read at all.
-  if (req.nextUrl.searchParams.get("drivers") === "1" && code) {
-    const [config, roster] = await Promise.all([
-      loadConfigFromSheets().catch(() => null), loadDriversFromSheet().catch(() => []),
-    ]);
-    const ids = new Set((config?.mappings ?? [])
-      .filter((m) => m.customer_id === code)
-      .flatMap((m) => [m.driver_id, ...(m.smart_driver_id ?? [])])
-      .filter((id): id is string => !!id && isValidDriverId(id)));
-    // A person with a full-time and a part-time account would otherwise be listed twice
-    // under one name; mark the PT one.
-    const names = new Map(roster.map((d) => [d.driver_id, stripDriverCode(d.name) + (/\bPT\d/i.test(d.name) ? " (PT)" : "")]));
-    const drivers = [...ids]
-      .map((driver_id) => ({ driver_id, name: names.get(driver_id) ?? "" }))
-      .filter((d) => d.name)
-      .sort((a, b) => a.name.localeCompare(b.name, "vi"));
-    return NextResponse.json({ drivers });
-  }
-
   if (!date || !code) {
     return NextResponse.json({ error: "Missing date or code" }, { status: 400 });
   }
@@ -73,32 +50,28 @@ export async function GET(req: NextRequest) {
     const feeders = feedersOf(code);
     const touches = (j: { stops?: { customer_id?: string | null; stop_type_id?: number; customer_name?: string }[] | null }) =>
       (j.stops ?? []).some((s) => s.customer_id === code) || (code === LAB_CUSTOMER_ID && isLabWatchedClient(j));
-    const shown = (j: { job_status_id?: number }) => SHOWN_STATUSES.includes(j.job_status_id ?? 0);
-    const driver = req.nextUrl.searchParams.get("driver");
+    // D001 does not list trips going to an NĐTP drop-off — those have their own page (/ndtp).
+    const listed = (j: { job_status_id?: number; stops?: { stop_type_id?: number; customer_name?: string | null }[] | null }) =>
+      SHOWN_STATUSES.includes(j.job_status_id ?? 0)
+      && !(code === LAB_CUSTOMER_ID && /NDTP/i.test((j.stops ?? []).find((s) => s.stop_type_id === 2)?.customer_name ?? ""));
     const ids = (req.nextUrl.searchParams.get("ids") ?? "").split(",").map(Number).filter(Number.isInteger).slice(0, 50);
+    // The whole branch (D001 / D046, and /qr tabs from before 2026-10-14), or only the
+    // device's own bookings (every other branch: they book, they do not browse).
+    const wholeBranch = req.nextUrl.searchParams.get("all") === "1" || ids.length === 0;
 
-    if (driver || ids.length) {
-      const [theirs, own] = await Promise.all([
-        driver ? driverJobs(date, env, driver, { maxAgeMs: FEED_MAX_AGE_MS }).catch(() => null) : [],
-        jobsByIds(date, env, ids).catch(() => null),
-      ]);
-      // Day unavailable: fall through to REST — an empty list here would tell the branch
-      // the driver has nothing, or leave its own booking waiting forever.
-      if (theirs && own) {
-        const byId = new Map(own.map((j) => [j.job_id, j]));
-        for (const j of theirs) if (touches(j) && keepOnBranchFeed(code, j, feeders)) byId.set(j.job_id, j);
-        // Own bookings the day no longer has at all (cancelled or deleted in Cartrack):
-        // the page drops their waiting cards instead of showing them all day.
-        const missing = ids.filter((id) => !own.some((j) => j.job_id === id));
-        return NextResponse.json({ jobs: [...byId.values()].filter(shown), missing });
-      }
-    } else {
-      // ponytail: whole-branch list, kept only for /qr tabs opened before 2026-10-14 that
-      // still send neither driver nor ids. Delete once those tabs have reloaded.
-      const mine = await locationJobs(date, env, code).catch(() => null);
-      if (mine) return NextResponse.json({ jobs: mine.filter(shown).filter((j) => keepOnBranchFeed(code, j, feeders)) });
+    const day = wholeBranch
+      ? await locationJobs(date, env, code).catch(() => null)
+      : await jobsByIds(date, env, ids).catch(() => null);
+    if (day) {
+      const jobs = day.filter((j) => listed(j) && (!wholeBranch || keepOnBranchFeed(code, j, feeders)));
+      // Own bookings the day no longer has at all (cancelled or deleted in Cartrack): the
+      // page drops their waiting cards instead of showing them all day.
+      const missing = ids.filter((id) => !day.some((j) => j.job_id === id));
+      return NextResponse.json({ jobs, missing });
     }
 
+    // Day unavailable: the REST day, filtered the same way — an empty list here would
+    // leave a booking waiting forever.
     const res = await fetch(
       `${BASE_URL}/jobs?filter[scheduled_delivery_ts_from]=${date} 00:00:00&filter[scheduled_delivery_ts_to]=${date} 23:59:59&limit=1000`,
       { headers: getHeaders(env), cache: "no-store" },
@@ -107,8 +80,7 @@ export async function GET(req: NextRequest) {
     const allJobs: Job[] = (await res.json()).data ?? [];
     return NextResponse.json({
       jobs: allJobs
-        .filter((j) => shown(j) && touches(j) && keepOnBranchFeed(code, j, feeders))
-        .filter((j) => (!driver && !ids.length) || j.delivery_driver_id === driver || ids.includes(j.job_id))
+        .filter((j) => listed(j) && (wholeBranch ? touches(j) && keepOnBranchFeed(code, j, feeders) : ids.includes(j.job_id)))
         .map((j) => slimJob(j, driverDisplayName(j.driver))),
     });
   } catch (e) {

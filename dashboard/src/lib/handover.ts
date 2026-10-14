@@ -7,12 +7,7 @@
 // falls back to the order's own branch.
 
 import { DIAG_LOCATIONS } from "./diag-locations";
-
-export function displayClientName(name: string): string {
-  const short = name.replace(/(^|[\s-])(?:công ty\s+(?:cổ phần|tnhh|trách\s+nhiệm\s+hữu\s+hạn)|cty\s+tnhh|ctcp|hộ\s+kinh\s+doanh|doanh\s+nghiệp\s+tư\s+nhân|công\s+tnhh)\s+(\S)/iu,
-    (_, lead: string, first: string) => lead + first.toLocaleUpperCase("vi")).trim();
-  return short.replace(/^\p{L}/u, (first) => first.toLocaleUpperCase("vi"));
-}
+export { displayClientName } from "./place-label";
 
 const KNOWN = new Set(DIAG_LOCATIONS.map((l) => l.name));
 const CODE_RE = /(?<![\p{L}\d])[DĐ]\s*[-.]?\s*(\d{1,3})(?!\d)/giu;
