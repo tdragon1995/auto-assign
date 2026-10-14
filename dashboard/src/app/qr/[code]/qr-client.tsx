@@ -395,7 +395,7 @@ function BriefPhotos({ urls }: { urls: string[] }) {
     <div className="mt-2">
       <a href={big} target="_blank" rel="noopener noreferrer" className="block">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={big} alt="Ảnh giao nhận" className="w-full max-h-[55vh] rounded-xl object-contain bg-slate-100 border border-slate-200" />
+        <img src={big} alt="Ảnh giao nhận" className="w-full max-h-[55vh] lg:max-h-[46vh] rounded-xl object-contain bg-slate-100 border border-slate-200" />
       </a>
       {urls.length > 1 && (
         <div className="flex gap-2 mt-2 overflow-x-auto pb-1">
@@ -450,7 +450,7 @@ function JobSheet({ job, onClose, brief = false, photo }: { job: Job; onClose: (
         role="dialog"
         aria-modal="true"
         aria-label="Chi tiết chuyến"
-        className="w-full max-w-sm bg-white rounded-t-[20px] max-h-[86vh] overflow-y-auto px-5 pt-2.5 pb-6"
+        className={`w-full bg-white rounded-t-[20px] max-h-[86vh] overflow-y-auto px-5 pt-2.5 pb-6 ${brief ? "max-w-sm lg:max-w-2xl lg:rounded-[20px] lg:mb-6" : "max-w-sm"}`}
         onClick={(e) => e.stopPropagation()}
       >
         <div aria-hidden className="w-10 h-1 rounded-full bg-slate-200 mx-auto mt-1 mb-3.5" />
@@ -1131,7 +1131,7 @@ export default function QrPage() {
 
   return (
     <div className="min-h-screen bg-slate-100 flex justify-center">
-      <div className="w-full max-w-[430px] px-4 pb-12">
+      <div className={`w-full px-4 pb-12 ${branchCode === "D001" ? "max-w-[1280px] lg:px-6" : "max-w-[430px]"}`}>
 
         <header className="pt-5 pb-3.5 px-1">
           <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">{route.psc_pickup.replace(/^BRA\s*-\s*/i, "PSC ")}</h1>
@@ -1168,7 +1168,37 @@ export default function QrPage() {
           </p>
         )}
 
-        {fullView && (<>
+        {fullView && (
+        // D001 on a PC: drivers in a side column, the gallery first on the right — picking
+        // a driver shows their photos without scrolling. A phone stacks the same pieces.
+        <div className={branchCode === "D001" && driverChips.length > 1 ? "lg:grid lg:grid-cols-[17rem_minmax(0,1fr)] lg:gap-6 lg:items-start" : ""}>
+        {driverChips.length > 1 && (
+          <aside className="mb-3 lg:mb-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto lg:pr-1">
+          <h2 className="hidden lg:block text-[13px] font-semibold text-slate-600 mb-2 px-1">Giao Nhận Mẫu</h2>
+          <div className="flex flex-wrap gap-2 lg:flex-col lg:flex-nowrap" role="group" aria-label="Lọc theo Giao Nhận Mẫu">
+            <button aria-pressed={!driverId} onClick={() => { setDriverId(""); setDoneQuery(""); }}
+              className={`px-3.5 py-2 text-left rounded-full lg:rounded-xl text-sm font-semibold transition-colors ${!driverId ? "bg-blue-700 text-white" : "bg-white text-slate-700 shadow-sm hover:bg-slate-50 active:bg-slate-50"}`}>
+              Tất cả <span className={!driverId ? "text-blue-100" : "text-slate-500"}>{jobs.length}</span>
+            </button>
+            {driverChips.map(([id, d]) => {
+              const on = id === driverId;
+              return (
+                <button key={id} aria-pressed={on} onClick={() => { setDriverId(on ? "" : id); setDoneQuery(""); }}
+                  className={`px-3.5 py-2 text-left transition-colors lg:w-full lg:rounded-xl ${d.dests.size ? "rounded-2xl" : "rounded-full"} ${on ? "bg-blue-700 text-white" : "bg-white text-slate-700 shadow-sm hover:bg-slate-50 active:bg-slate-50"}`}>
+                  <span className="block text-sm font-semibold">{d.name} <span className={on ? "text-blue-100" : "text-slate-500"}>{d.n}</span></span>
+                  {/* Drivers who also go somewhere other than the lab say where, small. */}
+                  {d.dests.size > 0 && (
+                    <span className={`block max-w-[15rem] lg:max-w-none mt-0.5 text-[11px] font-medium leading-snug ${on ? "text-blue-100" : "text-slate-500"}`}>
+                      {[...d.dests].map((x) => <span key={x} className="block truncate">{x}</span>)}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          </aside>
+        )}
+        <div className="min-w-0">
         {/* ── The list — D001 and D046 only. Every other branch only books (2026-10-14). ── */}
         <div className="flex items-center justify-between gap-2 mb-2">
           <h2 className="text-[15px] font-bold text-slate-800">{fullView ? "Chuyến của chi nhánh" : "Chuyến đã gọi"}</h2>
@@ -1198,25 +1228,6 @@ export default function QrPage() {
           </div>
         )}
 
-        {driverChips.length > 1 && (
-          <div className="flex flex-wrap gap-2 mb-3" role="group" aria-label="Lọc theo Giao Nhận Mẫu">
-            {driverChips.map(([id, d]) => {
-              const on = id === driverId;
-              return (
-                <button key={id} aria-pressed={on} onClick={() => { setDriverId(on ? "" : id); setDoneQuery(""); }}
-                  className={`px-3.5 py-2 text-left transition-colors ${d.dests.size ? "rounded-2xl" : "rounded-full"} ${on ? "bg-blue-700 text-white" : "bg-white text-slate-700 shadow-sm active:bg-slate-50"}`}>
-                  <span className="block text-sm font-semibold">{d.name} <span className={on ? "text-blue-100" : "text-slate-500"}>{d.n}</span></span>
-                  {/* Drivers who also go somewhere other than the lab say where, small. */}
-                  {d.dests.size > 0 && (
-                    <span className={`block max-w-[15rem] mt-0.5 text-[11px] font-medium leading-snug ${on ? "text-blue-100" : "text-slate-500"}`}>
-                      {[...d.dests].map((x) => <span key={x} className="block truncate">{x}</span>)}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        )}
 
         {showGallery && (
           <section className="mb-4" aria-labelledby="qr-gallery">
@@ -1234,7 +1245,7 @@ export default function QrPage() {
             {loaded && !loading && gallery.length === 0 && (
               <p className="text-sm text-slate-600 py-2">Chưa có mẫu nào đến trong {GALLERY_WINDOWS.find((w) => w.mins === galleryMins)?.label} qua.</p>
             )}
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
               {gallery.map(({ j, img, at }) => {
                 const from = placeLabel(j.stops.find((st) => st.stop_type_id === 1)?.customer_name ?? "");
                 return (
@@ -1262,11 +1273,13 @@ export default function QrPage() {
             <PendingCard key={p.job_id} req={p} pickup={route.pickup} dropoff={route.dropoff} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }}
               onSendVia3pl={openVia3pl} onChangeDriver={openChangeDriver} />
           ))}
-          {active.map((j) => (
-            <TripCard key={j.job_id} job={j} code={code} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)}
-              onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl}
-              onChangeDriver={openChangeDriver} />
-          ))}
+          <div className="space-y-3 lg:space-y-0 lg:grid lg:grid-cols-2 lg:gap-3">
+            {active.map((j) => (
+              <TripCard key={j.job_id} job={j} code={code} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)}
+                onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl}
+                onChangeDriver={openChangeDriver} />
+            ))}
+          </div>
           {loading && !jobs.length && <p className="text-sm text-slate-600 py-2">Đang tải…</p>}
           {/* Each line claims only what was looked up: the branch's trips where the whole
               list is read, this device's bookings elsewhere. */}
@@ -1295,7 +1308,9 @@ export default function QrPage() {
             </div>
           )}
         </div>
-        </>)}
+        </div>
+        </div>
+        )}
 
         {/* ── Every other branch: only its own bookings, no heading, nothing when none. ── */}
         {!fullView && isToday && (pendingShown.length > 0 || jobs.length > 0) && (
