@@ -52,6 +52,7 @@ LABCENTER_PASSWORD=              # Labcenter API password
 LABCENTER_RECEPTIONIST_EMAIL=    # Separate receptionist account for /api/labcenter/client (client search in sales form)
 LABCENTER_RECEPTIONIST_PASSWORD= # Password for receptionist account
 LEAVE_NAME_RECOVERY=             # Set to "0" to stop recovering a leave row from its typed name
+STANDBY=                         # "1" on the BACKUP Vercel account only: its cron ping idles while another deployment's heartbeat is fresh (<6 min) and takes over the engine when it goes stale (primary paused over a plan limit, or its cron job died)
 ```
 
 `LEAVE_NAME_RECOVERY` is ON unless set to `0`. When a leave row's `driver_id` comes

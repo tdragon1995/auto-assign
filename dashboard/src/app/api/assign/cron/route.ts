@@ -5,6 +5,7 @@ import {
   acquireCycleLock,
   releaseCycleLock,
   setCronHeartbeat,
+  otherDeploymentAlive,
 } from "@/lib/smart-log-kv";
 import { autoArmIfDue } from "@/lib/auto-arm";
 import { maybeAlertHeldOff } from "@/lib/disarm-alert";
@@ -36,6 +37,13 @@ export async function GET(req: NextRequest) {
   // Liveness: record every authorized ping so the dashboard can show the system
   // is alive even when nothing gets logged.
   await setCronHeartbeat().catch(() => {});
+
+  // Backup account (STANDBY=1): do nothing while the primary is still being pinged.
+  // When the primary stops answering (Vercel paused it over a plan limit, or its
+  // cron job died) this deployment runs the whole ping below instead.
+  if (process.env.STANDBY === "1" && (await otherDeploymentAlive())) {
+    return NextResponse.json({ ran: false, skipped: "standby" });
+  }
 
   after(()=>maybeMorningSync().catch(e=>console.error("[cron] morning data sync:",e)));
   const reads = createMorningReads();

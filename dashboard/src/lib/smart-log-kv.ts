@@ -214,6 +214,24 @@ export async function getCronHeartbeat(): Promise<string | null> {
   return newestBeat(parseDeploymentBeats(raw));
 }
 
+/** STANDBY gate. True when some OTHER deployment has been pinged within the stale
+ *  window, i.e. the primary account is up and this one should stay idle. A Vercel
+ *  account over its plan limits is paused (503 before our code runs), so its beat
+ *  goes stale and the standby takes over within ~2 pings; it steps back on its own
+ *  once the primary beats again. An unreadable hash answers false — running beside
+ *  a live primary is safe (the cycle lock serialises them), sitting idle beside a
+ *  dead one is not. */
+export async function otherDeploymentAlive(): Promise<boolean> {
+  const redis = getRedis();
+  if (!redis) return false;
+  const raw = await redis.hgetall(DEPLOY_HEARTBEAT_KEY).catch(() => null);
+  return anyOtherFresh(raw, DEPLOY_ID);
+}
+
+export function anyOtherFresh(raw: unknown, self: string): boolean {
+  return parseDeploymentBeats(raw).some((b) => b.fresh && b.id !== self);
+}
+
 export interface DeploymentBeat {
   id: string;
   ts: string;
