@@ -416,7 +416,7 @@ export function Dashboard() {
     loadScheduleErrors();
     loadLeaveStatus();
     // The morning sync's Labcenter findings, in the same panel a manual sync fills.
-    fetch("/api/misa-sync?issues=1", { cache: "no-store" })
+    fetch("/api/misa-sync/issues", { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => {
         if (!Array.isArray(d.issues) || !d.issues.length) return;

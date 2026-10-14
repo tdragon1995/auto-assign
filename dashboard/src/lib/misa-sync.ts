@@ -5,7 +5,7 @@ import { vnDate } from "./time";
 import { invalidateConfigCache, invalidateDriversCache, loadConfigFromSheets } from "./config";
 import { invalidateLeaveCache } from "./leave-config";
 import { invalidateShiftCache } from "./shift-window";
-import { syncCartrackProfiles, syncLabcenterMetadata, type LabcenterMetadataIssue } from "./master-sync";
+import { syncCartrackProfiles, syncLabcenterMetadata } from "./master-sync";
 import { sbDelete, sbInsert, sbSelectAll } from "./supabase-rest";
 
 const KEY="sync:morning:v1", LOCK=KEY+":lock", TTL=7*86400, COOLDOWN=15;
@@ -38,10 +38,6 @@ async function release(db:Redis,key:string,owner:string) {
   await db.eval("if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) else return 0 end",[key],[owner]);
 }
 /** What the latest morning Labcenter check flagged; read once when the dashboard opens. */
-export async function morningIssues() {
-  const rows=await sbSelectAll<LabcenterMetadataIssue&{created_at:string}>("master_sync_issues","select=client_code,customer_id,name,kind,detail,created_at","client_code.asc,customer_id.asc,id.asc");
-  return NextResponse.json({issues:rows,checked_at:rows.reduce((a,r)=>r.created_at>a?r.created_at:a,"")||null});
-}
 export async function getMisaSyncStatus() {
   if(missing().length)return NextResponse.json({status:"disabled",missing:missing()});
   const run=await redis().get<Run>(KEY);
