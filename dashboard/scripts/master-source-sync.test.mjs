@@ -12,10 +12,10 @@ const request = async (url, options) => {
 };
 assert.deepEqual(await runMasterSync("https://example.test", request),{processed:200,issues:0});
 assert.ok(calls[2][0].endsWith("after=100"));
-assert.deepEqual(calls.at(-1),["/api/config","GET"],"Reload cached configuration after sources finish");
+assert.deepEqual(calls.at(-1),["/api/config?refresh=1","GET"],"Reload cached configuration after sources finish");
 stall = true; batches = 0; calls.length = 0;
 await assert.rejects(runMasterSync("https://example.test",request),/did not advance/);
-assert.ok(!calls.some(([path])=>path === "/api/config"),"Never claim a failed full refresh completed");
+assert.ok(!calls.some(([path])=>path.startsWith("/api/config")),"Never claim a failed full refresh completed");
 fail = true; calls.length = 0;
 await assert.rejects(runMasterSync("https://example.test",request),/Source unavailable/);
 assert.equal(calls.length,1);

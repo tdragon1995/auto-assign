@@ -503,7 +503,7 @@ export function Dashboard() {
   }, [arm, disarm]);
 
   const syncSettings = useCallback(async () => {
-    const configRes = await fetch("/api/config", { cache: "no-store" });
+    const configRes = await fetch("/api/config?refresh=1", { cache: "no-store" });
     if (!configRes.ok) throw new Error(`Config returned ${configRes.status}`);
     const configData = await configRes.json();
     if (configData.status === "error") throw new Error(configData.error);

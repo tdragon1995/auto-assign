@@ -18,7 +18,7 @@ export async function runMasterSync(baseUrl = "https://diag-logistics.vercel.app
     processed += report.processed;
     issues += report.issues.length;
     if (!report.nextCursor) {
-      await call("/api/config", "GET");
+      await call("/api/config?refresh=1", "GET");
       console.log(`Morning sync complete: ${processed} Labcenter client codes; ${issues} review issues`);
       return {processed, issues};
     }

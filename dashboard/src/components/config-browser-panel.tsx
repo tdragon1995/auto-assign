@@ -771,7 +771,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
   const reloadSupabase = async () => {
     setLoading(true); setErr(null);
     try {
-      const response = await fetch("/api/config", { cache: "no-store" });
+      const response = await fetch("/api/config?refresh=1", { cache: "no-store" });
       if (!response.ok) throw new Error("Không làm mới được cache — thử Tải lại");
       await Promise.all([load(true), loadMetadata()]);
     } catch (error) { setErr(error instanceof Error ? error.message : String(error)); }

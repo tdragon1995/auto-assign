@@ -1,21 +1,25 @@
 import { invalidateShiftCache } from "@/lib/shift-window";
 import { invalidateLeaveCache } from "@/lib/leave-config";
 import { invalidateSuppressionCache } from "@/lib/leave-suppression";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { loadConfigFromSheets, invalidateConfigCache, loadDriversFromSheet, invalidateDriversCache } from "@/lib/config";
 import { loadPscRoutes, invalidatePscCache } from "@/lib/psc-config";
 import { invalidateStartLocCache } from "@/lib/assign";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    // Bust the caches so fresh sheet data (and start-location coords) is loaded.
+    // ?refresh=1 (the Refresh buttons) busts the caches so fresh sheet data is loaded.
     // The config one is awaited because it also bumps the shared stamp that tells every
-    // OTHER serverless instance to drop its copy — the whole point of pressing Refresh.
-    await Promise.all([invalidateConfigCache(), invalidateShiftCache(), invalidateLeaveCache()]);
-    invalidateSuppressionCache();
-    invalidateDriversCache();
-    invalidatePscCache();
-    invalidateStartLocCache();
+    // OTHER serverless instance to drop its copy. A plain GET (dashboard page load) only
+    // reads: busting on every page open re-parsed the whole config here AND in every
+    // other instance — the cron engine included — each time an admin opened the page.
+    if (req.nextUrl.searchParams.get("refresh") === "1") {
+      await Promise.all([invalidateConfigCache(), invalidateShiftCache(), invalidateLeaveCache()]);
+      invalidateSuppressionCache();
+      invalidateDriversCache();
+      invalidatePscCache();
+      invalidateStartLocCache();
+    }
 
     const [config, drivers, pscRoutes] = await Promise.all([
       loadConfigFromSheets(),
