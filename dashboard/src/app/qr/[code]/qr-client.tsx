@@ -1095,17 +1095,16 @@ export default function QrPage() {
   // jobs is the whole branch (fullView) or this device's bookings — either way the list.
   const pendingShown = pending.filter((p) => !seen.has(Number(p.job_id)));
   // The drivers on today's list, busiest first, for D001's picker.
-  // D001 does not list trips to an NĐTP drop-off (they have /ndtp) — but its chips
-  // still read them, to show where a driver goes instead of the lab.
-  const offList = (j: Job) => branchCode === "D001" && /NDTP/i.test(dropoffOf(j)?.customer_name ?? "");
-  const listJobs = jobs.filter((j) => !offList(j));
+  // (NĐTP drop-offs never reach D001's list: the server leaves them out.)
+  const listJobs = jobs;
+  // D001's driver chips; a trip not going to the lab is named "pickup → drop-off".
   const driverChips = branchCode === "D001"
     ? [...jobs.reduce((m, j) => {
         if (!j.delivery_driver_id) return m;
         const c = m.get(j.delivery_driver_id) ?? { name: driverText(j.driver?.last_name), n: 0, dests: new Set<string>() };
         const d = dropoffOf(j);
-        if (d && d.customer_id !== code) c.dests.add(placeLabel(d.customer_name ?? ""));
-        return m.set(j.delivery_driver_id, { ...c, n: c.n + (offList(j) ? 0 : 1) });
+        if (d && d.customer_id !== code) c.dests.add(`${placeLabel(pickupOf(j)?.customer_name ?? "")} → ${placeLabel(d.customer_name ?? "")}`);
+        return m.set(j.delivery_driver_id, { ...c, n: c.n + 1 });
       }, new Map<string, { name: string; n: number; dests: Set<string> }>())].sort((a, b) => b[1].n - a[1].n)
     : [];
   const inScope = (j: Job) => !driverId || j.delivery_driver_id === driverId;
@@ -1135,8 +1134,8 @@ export default function QrPage() {
       <div className="w-full max-w-[430px] px-4 pb-12">
 
         <header className="pt-5 pb-3.5 px-1">
-          <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">{route.psc_pickup}</h1>
-          <p className="text-sm text-slate-500 mt-0.5">Điểm đến: {route.dropoff_location}</p>
+          <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">{route.psc_pickup.replace(/^BRA\s*-\s*/i, "PSC ")}</h1>
+          <p className="text-sm text-slate-500 mt-0.5">Điểm đến: {route.dropoff_location.replace(/^BRA\s*-\s*/i, "PSC ")}</p>
         </header>
 
         {!route.no_request && (
@@ -1206,11 +1205,11 @@ export default function QrPage() {
               return (
                 <button key={id} aria-pressed={on} onClick={() => { setDriverId(on ? "" : id); setDoneQuery(""); }}
                   className={`px-3.5 py-2 text-left transition-colors ${d.dests.size ? "rounded-2xl" : "rounded-full"} ${on ? "bg-blue-700 text-white" : "bg-white text-slate-700 shadow-sm active:bg-slate-50"}`}>
-                  <span className="block text-sm font-semibold">{d.name} {d.n > 0 && <span className={on ? "text-blue-100" : "text-slate-500"}>{d.n}</span>}</span>
+                  <span className="block text-sm font-semibold">{d.name} <span className={on ? "text-blue-100" : "text-slate-500"}>{d.n}</span></span>
                   {/* Drivers who also go somewhere other than the lab say where, small. */}
                   {d.dests.size > 0 && (
-                    <span className={`block max-w-[12rem] mt-0.5 text-[11px] font-medium leading-snug ${on ? "text-blue-100" : "text-slate-500"}`}>
-                      → {[...d.dests].join(", ")}
+                    <span className={`block max-w-[15rem] mt-0.5 text-[11px] font-medium leading-snug ${on ? "text-blue-100" : "text-slate-500"}`}>
+                      {[...d.dests].map((x) => <span key={x} className="block truncate">{x}</span>)}
                     </span>
                   )}
                 </button>
