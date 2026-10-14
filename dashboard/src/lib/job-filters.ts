@@ -212,6 +212,11 @@ export const PSC_VIA_LABEL = "🛵 Vận chuyển mẫu PSC (ghé)";
  *  pay.ts can read it without importing the assign graph; return-trips re-exports it. */
 export const PSC_RETURN_LABEL = "🛵 Vận chuyển mẫu PSC (về)";
 
+/** A PSC sending Kết Quả / Vật Tư out to a client, booked from /qr. The engine leaves
+ *  these for the dispatcher (supervisor, 2026-10-15): the PSC's own config row would
+ *  otherwise hand every one to the sample driver. A real Cartrack label. */
+export const PSC_DELIVERY_LABEL = "📄 Giao KQ/VT PSC";
+
 /** The ONE photo a driver takes on any trip we create, at the pickup (supervisor,
  *  2026-10-14). Drop-off stops carry no stop to-dos; PSC trips also scan the batch
  *  at BOTH stops (pay and the batch lookup read it). A todo without is_required: false is

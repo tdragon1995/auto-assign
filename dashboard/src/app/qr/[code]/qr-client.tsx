@@ -5,7 +5,7 @@ import { useParams } from "next/navigation";
 // PSC routes are a hard-coded constant ([[psc-routes-data]]); look up directly instead of
 // fetching /api/psc-routes — no function invocation, no network round-trip, instant render.
 import {
-  Package, Check, ChevronDown, ChevronRight, Clock, Phone, Bike, CalendarDays,
+  TestTubes, Check, ChevronDown, ChevronRight, Clock, Phone, Bike, CalendarDays,
   ArrowRight, Loader2, Search, XCircle, ZoomIn,
 } from "lucide-react";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
@@ -16,6 +16,7 @@ import { proxyKind, driverLabel, THREE_PL_LABEL } from "@/lib/proxy-drivers";
 import { driverDisplayName } from "@/lib/display-names";
 import type { PickerDriver } from "@/lib/psc-driver-choices";
 import { retirePending, type PendingReq } from "@/lib/pending-cards";
+import { DeliveryBooking } from "./delivery-booking";
 
 interface Stop {
   stop_id: number;
@@ -1164,13 +1165,15 @@ export default function QrPage() {
                 </>
               ) : assignStatus === "success"
                 ? <><Check aria-hidden className="w-5 h-5" />Đã gửi yêu cầu</>
-                : <><Package aria-hidden className="w-5 h-5" />Đề Nghị Giao Mẫu</>}
+                : <><TestTubes aria-hidden className="w-5 h-5" />Đề Nghị Giao Mẫu</>}
             </button>
             {assignStatus === "error" && (
               <p role="alert" className="mt-3 text-sm font-medium text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">{assignError}</p>
             )}
           </div>
         )}
+
+        <DeliveryBooking pickup={route.pickup} />
 
         {notesFailed && (
           <p role="alert" className="mb-3 px-3 py-2 rounded-xl text-[12px] font-semibold text-amber-700 bg-amber-50 border border-amber-200">

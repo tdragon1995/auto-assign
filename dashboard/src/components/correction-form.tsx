@@ -16,7 +16,7 @@ import { useState } from "react";
 import { Loader2, Paperclip, X } from "lucide-react";
 import { openRange, checkTimes, checkProof, MAX_PROOF_FILES, type DriverReason } from "@/lib/pay-corrections";
 
-const shrink = (file: File): Promise<{ name: string; dataUrl: string }> =>
+export const shrink = (file: File): Promise<{ name: string; dataUrl: string }> =>
   new Promise((resolve, reject) => {
     const read = () => {
       const r = new FileReader();

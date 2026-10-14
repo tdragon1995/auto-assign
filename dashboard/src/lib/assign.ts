@@ -31,7 +31,7 @@ import {
 import { haversineKm } from "./distance";
 import { roadDistancesToPoint, roadDistancesForPairs } from "./distance-cache";
 import { targetMinsFor } from "./tat";
-import { blockingNotes, isChamCong, isCompletedOrRejectedStop, isNoteApproved, DAYTIME_NON_BLOCKING } from "./job-filters";
+import { blockingNotes, isChamCong, isCompletedOrRejectedStop, isNoteApproved, DAYTIME_NON_BLOCKING, PSC_DELIVERY_LABEL } from "./job-filters";
 import { placeLabel } from "./place-label";
 import { stripDriverCode } from "./job-detail";
 import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, idleBand, isUnreachedAnchor, liveGpsRef, lastRealPositionRef, type RefStop, type RefLabel } from "./smart-rank";
@@ -2424,6 +2424,10 @@ export async function autoAssignCycle(
     // (continue → while(false) → exit). The nested candidate-retry `for` loop's own
     // continue/break are unaffected — this avoids converting ~20 continue→return.
     do {
+
+    // A PSC's Kết Quả / Vật Tư run waits for the dispatcher. Silent: it would reprint
+    // every cycle until someone assigns it, and its note would list it as held.
+    if ((job.labels ?? []).includes(PSC_DELIVERY_LABEL)) continue;
 
     // Did the measured whitelist clear this job's notes? True only when the job
     // carries notes that WOULD have held it under the old rule and every one of
