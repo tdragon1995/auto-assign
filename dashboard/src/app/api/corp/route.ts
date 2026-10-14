@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createJob, type Env } from "@/lib/cartrack";
+import { PICKUP_PHOTO_TODO } from "@/lib/job-filters";
 import { vnDate, vnHoursMinutes } from "@/lib/time";
 import { acquireCreateLock, releaseCreateLock } from "@/lib/smart-log-kv";
 import { CORP_CLINICS, CORP_DROPOFF_ID, CORP_LABEL, normalizeVnPhone } from "@/lib/corp";
@@ -57,19 +58,13 @@ export async function POST(req: NextRequest) {
             duration: 5,
             contact_code: "84",
             contact_number: phone,
-            todos: [
-              { todo_type_id: 2, description: "📦 Chụp rõ số lượng và thông tin mẫu nhận" },
-              { todo_type_id: 5, description: "Ghi chú" },
-            ],
+            todos: [PICKUP_PHOTO_TODO, { todo_type_id: 5, description: "Ghi chú" }],
           },
           {
             stop_type_id: 2,
             customer_id: CORP_DROPOFF_ID,
             duration: 5,
-            todos: [
-              { todo_type_id: 2, description: "🤝 Chụp rõ mẫu tại khu vực bàn giao" },
-              { todo_type_id: 5, description: "Ghi chú" },
-            ],
+            todos: [],
           },
         ],
       },

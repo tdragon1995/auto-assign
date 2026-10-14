@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cancelJob, jobVnDate, BASE_URL, getHeaders, createJob, type Env } from "@/lib/cartrack";
 import { vnDate, vnHoursMinutes, vnTimestamp } from "@/lib/time";
-import { isBlockingPickupStop, JOB_STATUS, STOP_STATUS } from "@/lib/job-filters";
+import { isBlockingPickupStop, JOB_STATUS, STOP_STATUS, PICKUP_PHOTO_TODO } from "@/lib/job-filters";
 import { pushRunLog, acquireCreateLock, releaseCreateLock } from "@/lib/smart-log-kv";
 
 export const runtime = "nodejs";
@@ -227,9 +227,7 @@ export async function POST(req: NextRequest) {
       customer_id:  vendor_uuid,
       duration:     5,
       note:         note || null,
-      todos: [
-        { todo_type_id: 2, description: "Chụp Hình Kết Quả", is_required: true },
-      ],
+      todos: [PICKUP_PHOTO_TODO],
     };
 
     let scheduleTypeId = 1;
@@ -266,9 +264,7 @@ export async function POST(req: NextRequest) {
           stop_type_id: 2,
           customer_id:  vendor.dropoff_uuid,
           duration:     10,
-          todos: [
-            { todo_type_id: 5, description: "Tên Người Bàn Giao Kết Quả", is_required: true },
-          ],
+          todos: [],
         },
       ],
     };

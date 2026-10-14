@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createJob, type Env } from "@/lib/cartrack";
+import { PICKUP_PHOTO_TODO } from "@/lib/job-filters";
 import { addDays, vnDate, vnHoursMinutes, vnTimestamp } from "@/lib/time";
 import { acquireCreateLock, pushRunLog, releaseCreateLock } from "@/lib/smart-log-kv";
 import { parkScheduledJob } from "@/lib/scheduled-dispatch";
@@ -111,16 +112,13 @@ export async function POST(req: NextRequest) {
             ...(tomorrow
               ? { delivery_windows: [{ time_from: `${TOMORROW_PICKUP}:00+07:00`, time_to: "08:30:00+07:00" }] }
               : {}),
-            todos: [
-              { todo_type_id: 2, description: "📦 Chụp rõ số lượng và thông tin mẫu nhận" },
-              { todo_type_id: 5, description: "Số lượng mẫu" },
-            ],
+            todos: [PICKUP_PHOTO_TODO, { todo_type_id: 5, description: "Số lượng mẫu" }],
           },
           {
             stop_type_id: 2,
             customer_id: dropoff.customer_id,
             duration: 5,
-            todos: [{ todo_type_id: 2, description: "🤝 Chụp rõ mẫu tại khu vực bàn giao" }],
+            todos: [],
           },
         ],
       },

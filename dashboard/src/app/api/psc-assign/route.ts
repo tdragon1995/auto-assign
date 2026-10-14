@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, cancelJob, jobVnDate, createJob, getJobDetails, getJobsByStatusAndDate, getLiveDrivers, type Env } from "@/lib/cartrack";
 import { driverDisplayName, stripDriverCode } from "@/lib/job-detail";
 import { vnDate, vnHoursMinutes, vnMinutesSinceMidnight, vnTimestamp } from "@/lib/time";
-import { isBlockingPickupStop, isFarWindowPickup, isStopStarted, pscPairKey } from "@/lib/job-filters";
+import { isBlockingPickupStop, isFarWindowPickup, isStopStarted, pscPairKey, PICKUP_PHOTO_TODO } from "@/lib/job-filters";
 import { PSC_VIA_LABEL } from "@/lib/via-legs";
 import { acquireCreateLock, releaseCreateLock, markPscPair, unmarkPscPair, lookupPscPair, type PscDupHit } from "@/lib/smart-log-kv";
 import { blockedPair, jobIsDone, slimJob } from "@/lib/day-snapshot";
@@ -354,18 +354,14 @@ export async function POST(req: NextRequest) {
     }
     if (skipped) plog(`no instant driver: ${skipped}`);
 
-    // Via-route (e.g. D007/D004 stopping by D046): remind the driver to also grab the via PSC's
-    // inbound box at this pickup, to hand over informally when passing through the via PSC.
+    // Via-route (e.g. D007/D004 stopping by D046): the reminder to also grab the via PSC's
+    // inbound box rides on the one photo rather than being a step of its own. Not a stop
+    // note — a note holds an unassigned job (isBlockingNote).
     const pickupTodos = [
-      { todo_type_id: 2, description: "📦 Chụp thấy rõ mẫu đã đóng gói trong hộp" },
-      { todo_type_id: 2, description: "✍️ Chụp batchsheet đã ký" },
+      via_pickup_name
+        ? { ...PICKUP_PHOTO_TODO, description: `${PICKUP_PHOTO_TODO.description} — lấy thêm hộp của ${via_pickup_name}` }
+        : PICKUP_PHOTO_TODO,
     ];
-    if (via_pickup_name) {
-      pickupTodos.push({
-        todo_type_id: 2,
-        description: `📦 Lấy thêm hộp vật tư/tài liệu của ${via_pickup_name} để giao dọc đường`,
-      });
-    }
 
     const jobPayload = {
       job_type_id: 1,
@@ -384,10 +380,7 @@ export async function POST(req: NextRequest) {
           stop_type_id: 2,
           customer_id: dropoff,
           duration: 10,
-          todos: [
-            { todo_type_id: 2, description: "📋 Chụp các hộp thấy rõ batchsheet" },
-            { todo_type_id: 2, description: "🤝 Chụp phiếu bàn giao & hàng mang về" },
-          ],
+          todos: [],
         },
       ],
       items: [
@@ -399,7 +392,6 @@ export async function POST(req: NextRequest) {
           tracking_number: "",
           todos: [
             { todo_type_id: 3, stop_type_id: 1, is_required: true, description: "🔍 Quét mọi batchsheet" },
-            { todo_type_id: 5, stop_type_id: 2, is_required: true, description: "👤 Người nhận" },
           ],
         },
       ],

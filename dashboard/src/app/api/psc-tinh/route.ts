@@ -4,7 +4,7 @@ import { cancelJob, jobVnDate, BASE_URL, getHeaders, getStopsByLabels, createJob
 import { addDays, vnDate, vnTimestamp } from "@/lib/time";
 import { pscTinhSchedule } from "@/lib/psc-tinh-time";
 import { parkScheduledJob } from "@/lib/scheduled-dispatch";
-import { STOP_STATUS, JOB_STATUS } from "@/lib/job-filters";
+import { STOP_STATUS, JOB_STATUS, PICKUP_PHOTO_TODO } from "@/lib/job-filters";
 import { pushRunLog, acquireCreateLock, releaseCreateLock, nextOrderNumber } from "@/lib/smart-log-kv";
 import { fetchJobDetail } from "@/lib/job-detail";
 import { danangPickupNote, validDanangPhone } from "@/lib/danang";
@@ -328,19 +328,13 @@ export async function POST(req: NextRequest) {
           duration: 5,
           note: pickupNote,
           delivery_windows: [{ time_from: etaFrom, time_to: etaTo }],
-          todos: [
-            { todo_type_id: 2, description: "" },
-            { todo_type_id: 5, description: "" },
-          ],
+          todos: [PICKUP_PHOTO_TODO],
         },
         {
           stop_type_id: 2,
           customer_id: D001_UUID,
           duration: 10,
-          todos: [
-            { todo_type_id: 2, description: "" },
-            { todo_type_id: 5, description: "" },
-          ],
+          todos: [],
         },
       ],
     };

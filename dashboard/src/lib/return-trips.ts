@@ -6,7 +6,7 @@ import { loadCleanedReturns } from "./return-suppress";
 import { claimTripAction, releaseTripClaim } from "./smart-log-kv";
 
 export { PSC_RETURN_LABEL } from "./job-filters";
-import { PSC_RETURN_LABEL } from "./job-filters";
+import { PSC_RETURN_LABEL, PICKUP_PHOTO_TODO } from "./job-filters";
 export const PSC_OUTBOUND_LABEL = "🛵 Vận chuyển mẫu PSC";
 
 // These PSCs do not generate automatic returns, regardless of driver or shift.
@@ -67,27 +67,15 @@ async function createReturnJob(
         stop_type_id: 1,
         customer_id: fromCustomerId,
         duration: 5,
-        todos: [],
+        // Optional: most returns ride back empty, and a compulsory photo of nothing is a
+        // photo of the floor.
+        todos: [{ ...PICKUP_PHOTO_TODO, is_required: false }],
       },
       {
         stop_type_id: 2,
         customer_id: toCustomerId,
         duration: 10,
-        todos: [
-          { todo_type_id: 2, description: "📦 Chụp vật tư / tài liệu (nếu có)" },
-        ],
-      },
-    ],
-    items: [
-      {
-        description: "📦 Vật tư / tài liệu",
-        weight: 0,
-        item_type_id: 1,
-        quantity: 1,
-        tracking_number: "",
-        todos: [
-          { todo_type_id: 5, stop_type_id: 2, is_required: true, description: "👤 Người nhận" },
-        ],
+        todos: [],
       },
     ],
   };

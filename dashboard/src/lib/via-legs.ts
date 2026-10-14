@@ -10,7 +10,7 @@ import { PSC_OUTBOUND_LABEL } from "./return-trips";
 // Declared in job-filters (dependency-free, importable from edge routes) and
 // re-exported here so existing importers are unaffected.
 export { PSC_VIA_LABEL } from "./job-filters";
-import { PSC_VIA_LABEL } from "./job-filters";
+import { PSC_VIA_LABEL, PICKUP_PHOTO_TODO } from "./job-filters";
 import { claimTripAction, releaseTripClaim } from "./smart-log-kv";
 
 // Race guard across overlapping cycles, keyed by the triggering outbound job_id.
@@ -58,20 +58,16 @@ async function createViaLeg(
         stop_type_id: 1,
         customer_id: viaCustomerId,
         duration: 5,
+        // The hand-over reminder rides on the one photo rather than being a step of its own.
         todos: [
-          { todo_type_id: 2, description: "📦 Chụp thấy rõ mẫu đã đóng gói trong hộp" },
-          { todo_type_id: 2, description: "✍️ Chụp batchsheet đã ký" },
-          { todo_type_id: 2, description: `🔻 Giao vật tư/tài liệu cho ${shortName(viaName)} (lấy từ ${shortName(originName)})` },
+          { ...PICKUP_PHOTO_TODO, description: `${PICKUP_PHOTO_TODO.description} — giao vật tư/tài liệu cho ${shortName(viaName)} (lấy từ ${shortName(originName)})` },
         ],
       },
       {
         stop_type_id: 2,
         customer_id: dropoffCustomerId,
         duration: 10,
-        todos: [
-          { todo_type_id: 2, description: "📋 Chụp các hộp thấy rõ batchsheet" },
-          { todo_type_id: 2, description: "🤝 Chụp phiếu bàn giao & hàng mang về" },
-        ],
+        todos: [],
       },
     ],
     items: [
@@ -83,7 +79,6 @@ async function createViaLeg(
         tracking_number: "",
         todos: [
           { todo_type_id: 3, stop_type_id: 1, is_required: true, description: "🔍 Quét mọi batchsheet" },
-          { todo_type_id: 5, stop_type_id: 2, is_required: true, description: "👤 Người nhận" },
         ],
       },
     ],

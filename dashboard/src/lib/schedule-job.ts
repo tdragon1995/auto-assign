@@ -1,6 +1,7 @@
 import { BASE_URL, PROXY_DRIVER_ID, assignJob, createJob, getHeaders, getStopsByLabels, type Env } from "./cartrack";
 import { SHEET_GID, SHEET_CONTRACT, fetchSheetRows, isSheetShapeError, noteSheetLoad } from "./sheets";
 import { vnDate, vnTimestamp } from "./time";
+import { PICKUP_PHOTO_TODO } from "./job-filters";
 import { masterScheduleEnabled,masterScheduleRows } from "./master-schedule";
 
 const WEEKDAY_COLUMNS = [
@@ -216,11 +217,7 @@ function buildJobPayload(
           },
         ],
         todos: [
-          {
-            todo_type_id: 2,
-            description:
-              "Chụp rõ số lượng và thông tin của mẫu/giấy tờ/vật tư nhận",
-          },
+          PICKUP_PHOTO_TODO,
           {
             todo_type_id: 5,
             description:
@@ -232,13 +229,7 @@ function buildJobPayload(
         stop_type_id: 2,
         customer_id: row.dropoff_id,
         duration: 5,
-        todos: [
-          {
-            todo_type_id: 2,
-            description:
-              "Chụp rõ số lượng và thông tin của mẫu/giấy tờ/vật tư giao tại khu vực bàn giao",
-          },
-        ],
+        todos: [],
       },
     ],
   };
