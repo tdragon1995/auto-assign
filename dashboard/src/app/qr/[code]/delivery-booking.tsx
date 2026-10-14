@@ -25,6 +25,9 @@ export function DeliveryBooking({ pickup }: { pickup: string }) {
   const [error, setError] = useState("");
   const [done, setDone] = useState<Result[]>([]);
 
+  // Opening the form loads the client list on the server, so the first search is quick.
+  useEffect(() => { if (open) fetch("/api/psc-delivery").catch(() => {}); }, [open]);
+
   useEffect(() => {
     if (q.trim().length < 2) { setHits([]); return; }
     const ac = new AbortController();

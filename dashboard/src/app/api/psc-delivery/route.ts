@@ -16,7 +16,7 @@ import { BASE_URL, getHeaders, createJob } from "@/lib/cartrack";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
 import { PSC_DELIVERY_LABEL, PICKUP_PHOTO_TODO } from "@/lib/job-filters";
 import { shortCode } from "@/lib/psc-dup";
-import { foldName } from "@/lib/driver-cell";
+import { indexCustomer, rankCustomers, type Customer, type Indexed } from "@/lib/customer-search";
 import { vnHoursMinutes, vnTimestamp } from "@/lib/time";
 import { acquireCreateLock, releaseCreateLock, pushRunLog } from "@/lib/smart-log-kv";
 import { uploadToCartrack, proofUploadConfigured, type UploadFile } from "@/lib/cartrack-files";
@@ -32,38 +32,41 @@ const MAX_CLIENTS = 10;
 const NOTE_MAX = 300;
 const DATA_URL = /^data:(image\/(png|jpe?g|webp|gif|heic)|application\/pdf);base64,[A-Za-z0-9+/=]+$/;
 
-interface Customer { customer_id: string; customer_name: string; address_line_1?: string | null }
-
-// ponytail: per-instance directory cache; a cold instance pays ~2–5 pages of Cartrack.
-let dir: { at: number; rows: Map<string, Customer & { key: string }> } | null = null;
+// ponytail: per-instance directory cache (~2,300 customers, 3 Cartrack pages); move to
+// Redis only if cold instances stay slow after the warm-up below.
+let dir: { at: number; rows: Map<string, Indexed> } | null = null;
+let loading: Promise<Map<string, Indexed>> | null = null;
 const DIR_TTL_MS = 10 * 60_000;
+const PAGE = 1000;
 
-async function directory(): Promise<Map<string, Customer & { key: string }>> {
-  if (dir && Date.now() - dir.at < DIR_TTL_MS) return dir.rows;
-  const rows = new Map<string, Customer & { key: string }>();
-  for (let page = 1; page <= 30; page++) {
-    const res = await fetch(`${BASE_URL}/customers?page=${page}&limit=1000`, { headers: getHeaders("prod"), cache: "no-store" });
-    if (!res.ok) throw new Error(`Cartrack HTTP ${res.status}`);
-    const list: Customer[] = (await res.json()).data ?? [];
-    for (const c of list) {
-      rows.set(c.customer_id, { customer_id: c.customer_id, customer_name: c.customer_name, address_line_1: c.address_line_1, key: foldName(`${c.customer_name} ${c.address_line_1 ?? ""}`) });
-    }
-    if (list.length < 1000) break;
-  }
-  dir = { at: Date.now(), rows };
-  return rows;
+async function page(n: number): Promise<Customer[]> {
+  const res = await fetch(`${BASE_URL}/customers?page=${n}&limit=${PAGE}`, { headers: getHeaders("prod"), cache: "no-store" });
+  if (!res.ok) throw new Error(`Cartrack HTTP ${res.status}`);
+  return (await res.json()).data ?? [];
 }
 
-export async function GET(req: NextRequest) {
-  const words = foldName(req.nextUrl.searchParams.get("q") ?? "").split(/\s+/).filter(Boolean);
-  if (words.join("").length < 2) return NextResponse.json({ customers: [] });
-  try {
-    const hits: Customer[] = [];
-    for (const c of (await directory()).values()) {
-      if (words.every((w) => c.key.includes(w))) hits.push({ customer_id: c.customer_id, customer_name: c.customer_name, address_line_1: c.address_line_1 });
-      if (hits.length >= 15) break;
+/** All customers, indexed. Pages are fetched 4 at a time (one after another took ~6.5s),
+ *  and concurrent callers share one load. */
+function directory(): Promise<Map<string, Indexed>> {
+  if (dir && Date.now() - dir.at < DIR_TTL_MS) return Promise.resolve(dir.rows);
+  loading ??= (async () => {
+    const rows = new Map<string, Indexed>();
+    for (let first = 1; first <= 30; first += 4) {
+      const batch = await Promise.all([0, 1, 2, 3].map((i) => page(first + i)));
+      for (const c of batch.flat()) rows.set(c.customer_id, indexCustomer(c));
+      if (batch.some((b) => b.length < PAGE)) break;
     }
-    return NextResponse.json({ customers: hits });
+    dir = { at: Date.now(), rows };
+    return rows;
+  })().finally(() => { loading = null; });
+  return loading;
+}
+
+/** No `q` = the form just opened: load the directory now so the first search is warm. */
+export async function GET(req: NextRequest) {
+  try {
+    const all = await directory();
+    return NextResponse.json({ customers: rankCustomers(all.values(), req.nextUrl.searchParams.get("q") ?? "") });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 502 });
   }
