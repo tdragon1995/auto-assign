@@ -7,7 +7,7 @@
  *   npx tsx scripts/sunday-roster.test.mts
  */
 import assert from "node:assert/strict";
-import { areaKey, isSunday, parseRosterLines, rosterGaps, rosterSunday } from "../src/lib/sunday-roster";
+import { areaKey, isSunday, parseRosterLines, rosterGaps, rosterSunday, sundayDrivers } from "../src/lib/sunday-roster";
 
 const ID = "8094d712-0f78-11f0-b96d-506b8d982279";
 
@@ -60,3 +60,42 @@ const inside = rosterGaps(
 assert.deepEqual(inside.uncovered.map((a) => a.area), ["D021"], "a line with no driver still leaves its rules uncovered");
 
 console.log("sunday-roster: ok");
+
+// Who drives a Sunday rule: every line whose area equals one of the rule's
+// areas (case/spacing aside), roster order, each driver once. "D004" does not
+// match "D004 ca 1" — the sheet's formula never did either.
+const A = "11111111-1111-1111-1111-111111111111", B = "22222222-2222-2222-2222-222222222222";
+const lines = [
+  { area: "D032 ca 2", driver_id: B }, { area: "d032  CA 1", driver_id: A },
+  { area: "D032 ca 1", driver_id: null }, { area: "D032 ca 2", driver_id: A }, { area: "D004 ca 1", driver_id: B },
+];
+assert.deepEqual(sundayDrivers(["D032 ca 1", "D032 ca 2"], lines), [B, A]);
+assert.deepEqual(sundayDrivers(["D032 ca 1"], lines), [A]);
+assert.deepEqual(sundayDrivers(["D004"], lines), []);
+assert.deepEqual(sundayDrivers([], lines), []);
+
+// Suggestions come from same-district clinics only, by exact hours; a clinic
+// never suggests to itself, and rules with no area are no evidence.
+{
+  const { districtOf, suggestSundayArea, suggestSundayDay } = await import("../src/lib/sunday-roster");
+  assert.equal(districtOf("20198 - TBinh - PVHai - ThS.BS Lâm Quang An"), "tbinh");
+  const r = (customer_id: string, pickup: string, start: string, end: string, areas: string[], alt = "") => ({ customer_id, pickup, start, end, areas, alt_drop_off_id: alt });
+  const rows = [
+    r("a", "1 - TBinh - X - A", "07:00", "14:00", ["TB ca 1"]), r("a", "1 - TBinh - X - A", "15:00", "16:00", ["TB ca 2"], "P"),
+    r("b", "2 - TBinh - Y - B", "07:00", "14:00", ["TB ca 1"]), r("b", "2 - TBinh - Y - B", "15:00", "16:00", ["TB ca 2"], "P"),
+    r("c", "3 - TBinh - Z - C", "06:00", "14:00", ["Other"]),
+    r("d", "4 - D8 - Z - D", "07:00", "14:00", ["Q8 ca 1"]),
+    r("e", "5 - TBinh - Z - E", "07:00", "14:00", []),
+  ];
+  assert.deepEqual(suggestSundayArea("9 - TBinh - Q - New", "new", "07:00", "14:00", rows), ["TB ca 1"]);
+  assert.deepEqual(suggestSundayArea("9 - D8 - Q - New", "new", "07:00", "14:00", rows), ["Q8 ca 1"]);
+  assert.equal(suggestSundayArea("9 - D8 - Q - New", "new", "06:00", "14:00", rows), null);
+  assert.equal(suggestSundayArea("4 - D8 - Z - D", "d", "07:00", "14:00", rows), null);
+  const day = suggestSundayDay("9 - TBinh - Q - New", "new", rows)!;
+  assert.deepEqual(day.lines, [
+    { start: "07:00", end: "14:00", areas: ["TB ca 1"], alt_drop_off_id: "" },
+    { start: "15:00", end: "16:00", areas: ["TB ca 2"], alt_drop_off_id: "P" },
+  ]);
+  assert.equal(suggestSundayDay("9 - Nowhere - Q - New", "new", rows), null);
+}
+console.log("sunday suggestions: ok");

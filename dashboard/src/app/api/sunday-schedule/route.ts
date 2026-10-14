@@ -1,5 +1,30 @@
 import { NextResponse } from "next/server";
 import { fetchSheetRowsByName, SHEET_CONTRACT } from "@/lib/sheets";
+import { masterEnabled } from "@/lib/master-store";
+import { sbSelectAll } from "@/lib/supabase-rest";
+
+/** The roster ops edit in Lịch Chủ nhật, in the sheet tab's shape: the next
+ *  saved Sunday from today on, else the latest one before. */
+async function rosterRows(today: string): Promise<Record<string, string>[]> {
+  const dates = (await sbSelectAll<{ work_date: string }>("master_sunday_roster", "select=work_date&work_date=not.is.null", "work_date.desc")).map((d) => d.work_date);
+  const date = [...dates].reverse().find((d) => d >= today) ?? dates[0];
+  if (!date) return [];
+  type Line = { sort: number; area: string; shift: string | null; note: string | null; raw_name: string | null;
+    master_drivers: { last_name: string | null; roster: Record<string, string> | null; phone_number_update: string | null } | null };
+  const lines = await sbSelectAll<Line>("master_sunday_roster",
+    `select=sort,area,shift,note,raw_name,master_drivers(last_name,roster,phone_number_update)&work_date=eq.${date}`, "sort.asc,id.asc");
+  const label = `${date.slice(8)}/${date.slice(5, 7)}/${date.slice(0, 4)}`;
+  return lines.map((l, i) => {
+    const d = l.master_drivers;
+    const phone = d?.phone_number_update?.replace(/\D/g, "").replace(/^0/, "");
+    return {
+      "Ngày làm việc": label, STT: String(i + 1),
+      "Họ và tên": d ? (d.roster?.employee_full_name || d.last_name || "") : l.raw_name ?? "",
+      "Địa điểm": l.area, Ca: l.shift ?? "", "Ghi chú": l.note ?? "",
+      "Số điện thoại": phone ? `+84${phone}` : d ? "" : "Liên hệ Đội điều phối",
+    };
+  });
+}
 
 // Display-only schedule tab maintained weekly by ops. Read by visible name so a
 // re-created tab/gid doesn't break us. Columns:
@@ -51,7 +76,7 @@ export async function GET(req: Request) {
     // first tab in the workbook instead of an error — which is the ~1,700-row
     // customer→driver mapping. Renaming this tab therefore used to read as
     // perfectly good data about something else entirely.
-    const rows = await fetchSheetRowsByName(SHEET_NAME, SHEET_CONTRACT.public_sunday);
+    const rows = masterEnabled() ? await rosterRows(today) : await fetchSheetRowsByName(SHEET_NAME, SHEET_CONTRACT.public_sunday);
 
     // The sheet may carry several weeks; only the latest work date is "live".
     let latestKey = 0;

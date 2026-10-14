@@ -11,6 +11,7 @@ import { displayDriverCell, splitDriverName } from "@/lib/driver-label";
 import { configFilterOptions, EMPTY_CONFIG_FILTERS, filterConfigRows, usesTextInput } from "@/lib/config-filters";
 import type { ConfigTimeOperator } from "@/lib/config-filters";
 import { BranchEditor, TimeSelect } from "./config-todo-panel";
+import { SundayRuleEditor } from "./sunday-rule-editor";
 import { DriverCombobox } from "./driver-combobox";
 import { FilterMultiSelect } from "./filter-multi-select";
 import { HoverPanel } from "./hover-panel";
@@ -679,6 +680,8 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
   drivers: ConfigDriver[]; refreshKey?: number; beforeTable?: (renderProfile: ConfigProfileRenderer) => ReactNode;
 }) {
   const [configDay, setConfigDay] = useState<ConfigDay>(() => resolveConfigDay());
+  // Sunday: bulk tools stay off (a Sunday rule names areas, not drivers), but
+  // each clinic's Sunday is edited on its own once it comes from Supabase.
   const readOnly = configDay === "sunday";
   const dayRef = useRef(configDay);
   dayRef.current = configDay;
@@ -690,6 +693,8 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [meta, setMeta] = useState<{ tab: string; fetchedAt: string } | null>(null);
+  const sundayEditable = readOnly && !!meta?.tab.startsWith("Supabase");
+  const [noAreaOnly, setNoAreaOnly] = useState(false);
   const [clientMetadata, setClientMetadata] = useState<ClientMeta[] | null>(sessionMetadata?.refreshKey === refreshKey ? sessionMetadata.clients : null);
   const [driverMetadata, setDriverMetadata] = useState<DriverMeta[] | null>(sessionMetadata?.refreshKey === refreshKey ? sessionMetadata.drivers : null);
   const [metaBusy, setMetaBusy] = useState(false);
@@ -867,7 +872,9 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
     () => optionValues.ends.map((value) => ({ value, label: value || "trống / cả ngày" })),
     [optionValues.ends],
   );
-  const matches = useMemo(() => sortConfigRows(filterConfigRows(rows, filters)), [rows, filters]);
+  const noArea = (r: ConfigRowView) => readOnly && !r.unmapped && !!r.areas && r.areas.length === 0;
+  const noAreaCount = useMemo(() => rows.filter(noArea).length, [rows, readOnly]); // eslint-disable-line react-hooks/exhaustive-deps
+  const matches = useMemo(() => sortConfigRows(filterConfigRows(rows, filters).filter(r => !noAreaOnly || noArea(r))), [rows, filters, noAreaOnly, readOnly]); // eslint-disable-line react-hooks/exhaustive-deps
   // The cap applies AFTER the sort, so it is the first N of a stable ordering
   // rather than an arbitrary slice of the sheet. Which rows get cut is then
   // something the reader can predict, and narrowing the search is a way to
@@ -969,7 +976,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
               key={day} type="button" aria-pressed={configDay === day}
               disabled={!!editing || replacing || selected.size > 0 || profileEditing}
               title={editing || replacing || selected.size > 0 ? "Đóng trình sửa hoặc bỏ chọn dòng trước khi đổi ngày" : undefined}
-              onClick={() => { if (day === configDay) return; closeProfile(); setSheetRows([]); setMeta(null); setLoading(true); clearSelection(); setLimit(RENDER_CAP); setConfigDay(day); }}
+              onClick={() => { if (day === configDay) return; closeProfile(); setNoAreaOnly(false); setSheetRows([]); setMeta(null); setLoading(true); clearSelection(); setLimit(RENDER_CAP); setConfigDay(day); }}
               className={`h-7 rounded px-3 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:opacity-50 ${configDay === day ? "bg-indigo-600 text-white shadow-sm" : "text-slate-600 hover:bg-slate-200 hover:text-slate-900"}`}>
               {label}
             </button>)}
@@ -1018,7 +1025,16 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
           </Button>
         </div>
 
-        {readOnly && <p className="text-xs leading-5 text-slate-600">Chủ nhật · chỉ xem. Tài xế và ca được lấy từ lịch trực Chủ nhật trên Google Sheet.</p>}
+        {readOnly && (sundayEditable
+          ? <div className="flex flex-wrap items-center gap-2 text-xs leading-5 text-slate-600">
+              <span>Chủ nhật · mỗi điểm chọn giờ và khu vực. Tài xế là người được xếp ở khu vực đó trong Lịch Chủ nhật.</span>
+              {noAreaCount > 0 && <Button size="sm" variant={noAreaOnly ? "default" : "outline"} aria-pressed={noAreaOnly}
+                className={`h-7 px-2 text-xs ${noAreaOnly ? "bg-red-600 hover:bg-red-700" : "border-red-300 text-red-700 hover:bg-red-50"}`}
+                onClick={() => { setNoAreaOnly(v => !v); setLimit(RENDER_CAP); clearSelection(); }}>
+                {noAreaCount} ca chưa có khu vực
+              </Button>}
+            </div>
+          : <p className="text-xs leading-5 text-slate-600">Chủ nhật · chỉ xem. Tài xế và ca được lấy từ lịch trực Chủ nhật trên Google Sheet.</p>)}
         <div className="flex items-center gap-2">
           <Button size="sm" variant="ghost" type="button" className="h-8 px-2 text-xs text-indigo-700"
             aria-expanded={advancedFilters} aria-controls={filterId}
@@ -1192,12 +1208,21 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
         {editing && editingRows.length > 0 && <section ref={editorRef} tabIndex={-1} aria-label="Sửa cấu hình tuyến" className="max-h-[60vh] shrink-0 scroll-mt-3 overflow-y-auto rounded-md bg-indigo-50 px-3 pb-3 focus:outline-none">
           <div className="sticky top-0 z-10 flex items-start justify-between gap-3 bg-indigo-50 py-3">
             <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-indigo-950">{editingRows[0].unmapped ? "Thiết lập config" : "Sửa lịch tuyến"}</h3>
+              <h3 className="text-sm font-semibold text-indigo-950">{configDay === "sunday" ? "Lịch Chủ nhật của điểm" : editingRows[0].unmapped ? "Thiết lập config" : "Sửa lịch tuyến"}</h3>
               <p className="break-words text-xs leading-relaxed text-indigo-900">{editing.pickup}{editing.dropoff && ` → ${editing.dropoff}`} · {editingRows.filter(r => !r.unmapped).length} ca</p>
             </div>
             <Button size="icon" variant="ghost" className="size-8 shrink-0 text-indigo-700" aria-label="Đóng trình sửa lịch" disabled={editingBusy} onClick={() => setEditing(null)}><X className="size-4" aria-hidden="true" /></Button>
           </div>
-          <BranchEditor
+          {configDay === "sunday" ? <SundayRuleEditor
+            key={editing.branch}
+            pickupName={editing.pickup} customerId={editingRows[0].customer_id}
+            rules={editingRows.filter(r => !r.unmapped)} allRows={rows}
+            locations={(clientMetadata ?? []).filter(c=>!isInactive(clientName(c))).map(c => ({id:c.customer_id,name:clientName(c)}))}
+            onBusyChange={setEditingBusy}
+            onCancel={() => setEditing(null)}
+            onDone={() => { setEditing(null); void load(); }}
+            onStale={() => { setEditing(null); void load(true); }}
+          /> : <BranchEditor
             configDay={configDay}
             key={`${editing.branch}|${editing.dropoff}`}
             pickupName={editing.pickup} pickupId={editingRows[0].customer_id} dropoffName={editing.dropoff}
@@ -1213,7 +1238,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
             onCancel={() => setEditing(null)}
             onDone={() => { setEditing(null); void load(); }}
             onStale={() => { setEditing(null); void load(true); }}
-          />
+          />}
         </section>}
 
         <div className={`overflow-auto rounded-md border border-slate-200 ${expandedTools ? "h-96 shrink-0" : "min-h-0 flex-1"}`}>
@@ -1254,7 +1279,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
                   <th className="px-1 py-1 text-left font-medium"><span className="sr-only">Sửa lịch</span></th>
                   <th className="px-2 py-1 text-left font-medium">Tuyến</th>
                   <th className="px-2 py-1 text-left font-medium">Thời gian</th>
-                  <th className="px-2 py-1 text-left font-medium">Tài xế</th>
+                  <th className="px-2 py-1 text-left font-medium">{readOnly ? "Khu vực · tài xế" : "Tài xế"}</th>
                   <th className="px-2 py-1 text-left font-medium whitespace-nowrap">Điểm giao thay thế</th>
                   {showSheetRow && <th className="px-2 py-1 text-right font-medium" title="Số dòng Google Sheet Chủ nhật">Dòng</th>}
                 </tr>
@@ -1312,7 +1337,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
                           aria-expanded={runOpen}
                           aria-label={runOpen ? "Đóng" : r.unmapped ? `Thiết lập config cho ${r.pickup}` : `Sửa lịch ${r.pickup || branch} → ${r.dropoff || "mọi điểm"}`}
                           onClick={() => { closeProfile(); setEditing(runOpen ? null : { branch, pickup: r.pickup, dropoff: r.dropoff, row: r.row }); }}
-                          disabled={readOnly || loading || !!err || editingBusy || inactive || (!r.customer_id && !r.pickup)}
+                          disabled={(readOnly && !sundayEditable) || loading || !!err || editingBusy || inactive || (readOnly ? !r.customer_id : !r.customer_id && !r.pickup)}
                         >
                           {runOpen ? <X className="size-4" aria-hidden="true" /> : <Pencil className="size-4" aria-hidden="true" />}
                         </Button>
@@ -1348,6 +1373,9 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
                       {(r.start || r.end) ? [r.start, r.end].filter(Boolean).join(" – ") : !r.unmapped && "Cả ngày"}
                     </td>
                     <td className="px-2 py-1 text-slate-700 break-words">
+                      {r.areas && (r.areas.length
+                        ? <span className="mr-1.5 text-xs text-slate-500">{r.areas.join(" + ")} ·</span>
+                        : <span className="mr-1.5 text-xs font-semibold text-red-700">chưa có khu vực</span>)}
                       {r.driver ? splitDriverNames(r.driver).map((name, index) => {
                         const id = r.driver_ids?.[index] ?? "";
                         const detail = driverMetaById.get(id);
@@ -1363,7 +1391,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
                             {displayDriverCell(name)}
                           </button> : displayDriverCell(name)}
                         </span>;
-                      }) : <span className="text-amber-700">{r.unmapped ? "cần thiết lập" : "chưa có tài xế"}</span>}
+                      }) : <span className="text-amber-700">{r.unmapped ? "cần thiết lập" : r.areas?.length ? "chưa ai trực khu vực này" : r.areas ? "" : "chưa có tài xế"}</span>}
                     </td>
                     <td className="break-words px-2 py-1 text-slate-700">
                       {alternativeInfo ? <button type="button" aria-haspopup="dialog" aria-expanded={profileHover?.kind === "client" && profileHover.id === alternativeInfo.customer_id}

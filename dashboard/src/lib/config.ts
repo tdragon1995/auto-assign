@@ -303,11 +303,13 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
   // crossed midnight cache Saturday's tab under Sunday's date.
   const today = vnDate(now);
   const sunday = vnIsSunday(now);
-  const sheetLookups = !masterEnabled() || sunday;
+  // Sunday reads Supabase too: rules carry areas, the weekly roster
+  // (Lịch Chủ nhật) says who drives each area — see masterRules.
+  const sheetLookups = !masterEnabled();
   // Supabase rules use IDs; duplicate Sheet names cannot change their lookup.
   // Retract old alarms before either cache can return.
   if (!sheetLookups) noteSheetWarning(A_DUPE_LOC, null);
-  const version = masterEnabled() ? 14 : 12;
+  const version = masterEnabled() ? 15 : 12;
   // Read once and reuse for the write below, so a hit costs exactly one Redis GET.
   const gen = await readGen();
   if (cachedConfig && cachedDay === today && (gen === null || gen === cachedGen)) {
@@ -350,7 +352,7 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
   const tab = sunday ? "sunday" : "mapping";
   try {
     const rawRows = !sheetLookups
-      ? await masterRuleRows("weekday")
+      ? await masterRuleRows(sunday ? "sunday" : "weekday", today)
       : await fetchSheetRows(SHEET_GID[tab], SHEET_CONTRACT[tab]);
     const inactiveLocationIds = await inactiveMasterClientIds();
     const rows = activeLocationRules(rawRows,inactiveLocationIds);

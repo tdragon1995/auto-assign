@@ -3,6 +3,7 @@ import { fetchSheetRows, SHEET_CONTRACT, SHEET_GID } from "@/lib/sheets";
 import { readConfigGen } from "@/lib/config-gen";
 import { dailyDriverShifts } from "@/lib/driver-shifts";
 import { vnDate, vnTimestamp } from "@/lib/time";
+import { rosterSunday } from "@/lib/sunday-roster";
 import { masterClients, masterDrivers, masterEnabled, masterRuleRows } from "@/lib/master-store";
 import { publicClient, publicDriver } from "@/lib/master-public";
 import { loadPickupVolumes } from "@/lib/pickup-setup";
@@ -56,6 +57,8 @@ export interface ConfigRowView {
   smart: boolean;
   /** Display-only Cartrack client without a weekday Google Sheet mapping. */
   unmapped?: boolean;
+  /** Sunday rules: the roster areas that decide who drives (drivers shown are that week's). */
+  areas?: string[];
 }
 
 /**
@@ -108,7 +111,8 @@ export async function GET(req: NextRequest) {
   let cache = caches[day];
   const contract = sunday ? SHEET_CONTRACT.sunday : SHEET_CONTRACT.mapping;
   const gid = sunday ? SHEET_GID.sunday : SHEET_GID.mapping;
-  const tab = masterEnabled() && !sunday ? "Supabase" : contract.label;
+  // A Sunday's drivers come from that week's roster, so the label says which week.
+  const tab = !masterEnabled() ? contract.label : sunday ? `Supabase · lịch CN ${rosterSunday(vnDate()).slice(8)}/${rosterSunday(vnDate()).slice(5, 7)}` : "Supabase";
   if (cache?.tab !== tab) cache = undefined;
   // The explicit reload. Belt and braces beside the stamp: it also covers the
   // case where Redis is unconfigured or unreachable, where `readConfigGen`
@@ -123,8 +127,8 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ day, rows: cache.rows, tab: cache.tab, fetchedAt: cache.fetchedAt, cached: true });
     }
 
-    const raw = masterEnabled() && !sunday
-      ? await masterRuleRows("weekday")
+    const raw = masterEnabled()
+      ? await masterRuleRows(day)
       : await fetchSheetRows(gid, { label: contract.label, require: contract.require });
     const rows: ConfigRowView[] = [];
     raw.forEach((r, idx) => {
@@ -147,6 +151,7 @@ export async function GET(req: NextRequest) {
         dropoff: (r["Điểm Drop-off"] ?? "").trim(),
         alt_drop_off_id: (r["alt_drop_off_id"] ?? "").trim(),
         smart: r.assignment_mode === "smart" || !!r.smart_driver_id?.trim(),
+        ...(r._areas ? { areas: JSON.parse(r._areas) as string[] } : {}),
       });
     });
 

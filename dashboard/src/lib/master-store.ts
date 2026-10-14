@@ -1,6 +1,7 @@
 import { sbRpc, sbSelect, sbSelectAll } from "./supabase-rest";
 import type { ConfigCells } from "./unmapped-row";
-import { timeToMins } from "./time";
+import { timeToMins, vnDate } from "./time";
+import { rosterSunday, sundayDrivers } from "./sunday-roster";
 import { PROXY_ID, UUID } from "./master-reconcile";
 
 export type AssignmentMode = "fixed" | "smart";
@@ -9,6 +10,8 @@ export type MasterRule = {
   row_data:Record<string,string>; driver_ids:string[]; smart_driver_id:string|null; updated_at:string;
   pickup_customer_id:string|null; dropoff_customer_id:string|null; alternate_dropoff_customer_id:string|null;
   shift_start:string|null; shift_end:string|null; review_issues:string[];
+  /** Sunday rules only: the roster areas whose drivers drive this rule. */
+  areas?:string[];
 };
 export type MasterClient = { customer_id: string; cartrack: Record<string, unknown>; client_code: string | null; new_ward: string | null; nearest_psc_id: string | null; nearest_psc_name: string | null; nearest_psc_km: number | null; labcenter_location_id: number | null; default_dropoff_id: string | null; default_dropoff_name: string | null; eta_minutes: number | null; sales_name: string | null; sales_email: string | null; supervisor_name: string | null; supervisor_email: string | null };
 export type MasterDriver = { driver_id: string; cartrack: Record<string, unknown>; roster: Record<string, string>; driver_zalo_id: string | null; bot_token: string | null; has_bot_token?:boolean; phone_number_update: string | null };
@@ -17,21 +20,35 @@ export function assertMasterWritable() {
   if (!masterEnabled()) throw new Error("Supabase đang là bản đối chiếu. Hãy sửa cấu hình trên Google Sheet trong thời gian kiểm tra.");
 }
 
-export async function masterRules(day:"weekday"|"sunday", scope: { ids?: number[]; pickupIds?: string[]; copyIds?: number[]; resolveNames?: boolean } = {}):Promise<MasterRule[]> {
-  type Linked = MasterRule & { master_rule_drivers:{driver_id:string;selection_order:number}[] };
-  const [rows,clients,drivers]=await Promise.all([sbSelectAll<Linked>("master_rules_read",
+/**
+ * A Sunday rule names AREAS, never a driver: its drivers are whoever the
+ * roster puts on those areas for `sundayDate` (default: this week's Sunday, the
+ * one the old sheet's formula showed). The drivers stored against Sunday rules
+ * are a stale 27/09 import and are never read.
+ */
+export async function masterRules(day:"weekday"|"sunday", scope: { ids?: number[]; pickupIds?: string[]; copyIds?: number[]; resolveNames?: boolean; sundayDate?: string } = {}):Promise<MasterRule[]> {
+  type Linked = Omit<MasterRule,"areas"> & { master_rule_drivers:{driver_id:string;selection_order:number}[] };
+  const sunday=day==="sunday", date=scope.sundayDate??rosterSunday(vnDate());
+  if(sunday && !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Invalid Sunday date");
+  const [rows,clients,drivers,areaRows,roster]=await Promise.all([sbSelectAll<Linked>("master_rules_read",
     `select=id,source_uid,source_row,revision,row_data,assignment_mode,pickup_customer_id,dropoff_customer_id,alternate_dropoff_customer_id,shift_start,shift_end,review_issues,updated_at,master_rule_drivers&active=eq.true&day_type=eq.${day}${scope.ids ? `&id=in.(${scope.ids.join(",")})` : ""}${scope.pickupIds ? `&or=(pickup_customer_id.in.(${scope.pickupIds.join(",")})${scope.copyIds?.length ? `,id.in.(${scope.copyIds.join(",")})` : ""})` : ""}`,"source_row.asc,id.asc"),
     scope.resolveNames === false ? Promise.resolve([]) : sbSelectAll<{customer_id:string;customer_name:string}>("master_clients","select=customer_id,customer_name","customer_id.asc"),
-    scope.resolveNames === false ? Promise.resolve([]) : sbSelectAll<{driver_id:string;first_name:string;last_name:string}>("master_drivers","select=driver_id,first_name,last_name","driver_id.asc")]);
+    scope.resolveNames === false ? Promise.resolve([]) : sbSelectAll<{driver_id:string;first_name:string;last_name:string}>("master_drivers","select=driver_id,first_name,last_name","driver_id.asc"),
+    sunday ? sbSelectAll<{id:number;areas:string[]|null}>("master_config_rules","select=id,areas&day_type=eq.sunday&active=eq.true","id.asc") : Promise.resolve([]),
+    sunday ? sbSelectAll<{area:string;driver_id:string|null}>("master_sunday_roster",`select=area,driver_id&work_date=eq.${date}&driver_id=not.is.null`,"sort.asc,id.asc") : Promise.resolve([])]);
+  const areasById=new Map(areaRows.map(r=>[r.id,r.areas??[]]));
   const names=new Map(clients.map(c=>[c.customer_id,c.customer_name]));
   const driverNames=new Map(drivers.map(d=>[d.driver_id,`${d.first_name??""} ${d.last_name??""}`.trim()]));
-  return rows.map(({master_rule_drivers,...r})=>{
-    const driver_ids=master_rule_drivers.sort((a,b)=>a.selection_order-b.selection_order).map(d=>d.driver_id);
+  return rows.map(({master_rule_drivers,...stored})=>{
+    const areas=sunday ? areasById.get(stored.id)??[] : [];
+    const driver_ids=sunday ? sundayDrivers(areas,roster) : master_rule_drivers.sort((a,b)=>a.selection_order-b.selection_order).map(d=>d.driver_id);
+    const r={...stored,areas,assignment_mode:sunday ? (driver_ids.length>1?"smart":"fixed") as AssignmentMode : stored.assignment_mode};
     const smart_driver_id=r.assignment_mode==="smart" ? driver_ids.join(",")||null : null;
     const row_data={...r.row_data,customer_id:r.pickup_customer_id??"",dropoff_id:r.dropoff_customer_id??"",
       alt_drop_off_id:r.alternate_dropoff_customer_id??"",shift_start:r.shift_start?.slice(0,5)??"",shift_end:r.shift_end?.slice(0,5)??"",
       driver_id:r.assignment_mode==="fixed" ? driver_ids[0]??"" : "",smart_driver_id:smart_driver_id??"",
       _rule_id:String(r.id),_revision:String(r.revision),assignment_mode:r.assignment_mode,
+      ...(sunday ? {_areas:JSON.stringify(areas)} : {}),
       "Điểm Pick-up":names.get(r.pickup_customer_id??"")??r.row_data["Điểm Pick-up"]??"",
       "Điểm Drop-off":names.get(r.dropoff_customer_id??"")??r.row_data["Điểm Drop-off"]??"",
       Driver:driver_ids.map(id=>driverNames.get(id)??id).join(", ")};
@@ -40,8 +57,8 @@ export async function masterRules(day:"weekday"|"sunday", scope: { ids?: number[
 }
 
 /** Only this boundary derives legacy fields for the unchanged assignment engine. */
-export async function masterRuleRows(day:"weekday"|"sunday"):Promise<Record<string,string>[]> {
-  const rules=await masterRules(day);
+export async function masterRuleRows(day:"weekday"|"sunday", sundayDate?:string):Promise<Record<string,string>[]> {
+  const rules=await masterRules(day,{sundayDate});
   const out:Record<string,string>[]=[];
   for (const r of rules) {
     const row={...r.row_data};

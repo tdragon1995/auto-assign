@@ -89,8 +89,7 @@ export async function POST(req: NextRequest) {
     if (!Array.isArray(body.ids) || body.ids.some((id: unknown) => !Number.isSafeInteger(id))) throw new Error("Phiên bản lịch không hợp lệ");
     const lines = parseRosterLines(body.lines);
     const saved = await sbRpc<number>("master_write_sunday_roster", { roster_date: body.date, expected_ids: body.ids, lines });
-    // Nothing assigns from the roster yet; this keeps the cut-over from
-    // forgetting that a roster save changes who drives a Sunday rule.
+    // A roster save changes who drives every Sunday rule on those areas.
     await invalidateConfigCache();
     return NextResponse.json({ ok: true, saved });
   } catch (e) {

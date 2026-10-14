@@ -96,7 +96,7 @@ async function loadTab(tab: ConfigTab): Promise<Mapping[] | null> {
   const hit = tabs[tab];
   if (hit && hit.day === today) return hit.mappings;
   try {
-    const rows = masterEnabled() && tab==="mapping" ? await masterRuleRows("weekday") : await fetchSheetRows(SHEET_GID[tab], SHEET_CONTRACT[tab]);
+    const rows = masterEnabled() ? await masterRuleRows(tab==="sunday" ? "sunday" : "weekday") : await fetchSheetRows(SHEET_GID[tab], SHEET_CONTRACT[tab]);
     const mappings = dutyRows(activeLocationRules(rows,await inactiveMasterClientIds()));
     // The same zero-length suspicion the config loader has: a tab that parses to
     // nothing is a bad read, not an empty roster, and adopting it would answer

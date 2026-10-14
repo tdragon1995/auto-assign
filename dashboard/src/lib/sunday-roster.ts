@@ -80,6 +80,17 @@ export function parseRosterLines(input: unknown): RosterLine[] {
 }
 
 /**
+ * Who drives a Sunday rule: everyone rostered that day on one of the rule's
+ * areas, in roster order, each once — the old sheet's Driver formula, which
+ * matched a roster line only when its area equalled one of the rule's areas
+ * (case and spacing aside). One driver is a fixed rule, several a smart one.
+ */
+export function sundayDrivers(areas: readonly string[], lines: readonly { area: string; driver_id: string | null }[]): string[] {
+  const keys = new Set(areas.map(areaKey));
+  return [...new Set(lines.filter((l) => l.driver_id && keys.has(areaKey(l.area))).map((l) => l.driver_id!))];
+}
+
+/**
  * What a supervisor needs to see before saving: areas Sunday rules depend on
  * that nobody covers (those jobs get no driver), and lines on an area no rule
  * points at (the person gets no config jobs that day — often fine, e.g. a BO
@@ -94,4 +105,55 @@ export function rosterGaps(lines: readonly RosterLine[], areas: readonly RosterA
     uncovered: areas.filter((a) => a.rules > 0 && !covered.some((k) => k.includes(areaKey(a.area)))),
     unused: new Set(lines.map((l) => areaKey(l.area)).filter((k) => !ruled.some((r) => k.includes(r)))),
   };
+}
+
+/** A Sunday rule as the Config tab holds it. */
+export type SundayRuleView = { customer_id: string; pickup: string; start: string; end: string; areas?: string[]; alt_drop_off_id?: string; unmapped?: boolean };
+export type SundayLine = { start: string; end: string; areas: string[]; alt_drop_off_id: string };
+
+/** The district segment of a Cartrack clinic name: "20198 - TBinh - PVHai - …" → "tbinh". */
+export const districtOf = (name: string) => (name.split(" - ")[1] ?? "").trim().toLowerCase();
+
+function mostCommon<T>(items: readonly T[], key: (t: T) => string): T | undefined {
+  const counts = new Map<string, { item: T; n: number }>();
+  for (const it of items) {
+    const k = key(it);
+    const hit = counts.get(k);
+    if (hit) hit.n++; else counts.set(k, { item: it, n: 1 });
+  }
+  let best: { item: T; n: number } | undefined;
+  for (const c of counts.values()) if (!best || c.n > best.n) best = c;
+  return best?.item;
+}
+
+/** Sunday rules of OTHER clinics in the same district, every one with an area. */
+function neighbours(pickup: string, customerId: string, rows: readonly SundayRuleView[]) {
+  const district = districtOf(pickup);
+  return district ? rows.filter((r) => !r.unmapped && r.customer_id !== customerId && r.areas?.length && districtOf(r.pickup) === district) : [];
+}
+
+/**
+ * The area a clinic's Sunday rule most likely needs: what same-district clinics
+ * use for these exact hours (district + hours named the right area for 1,220 of
+ * 1,268 rules on 14/10). Null when no neighbour works those hours.
+ */
+export function suggestSundayArea(pickup: string, customerId: string, start: string, end: string, rows: readonly SundayRuleView[]): string[] | null {
+  const same = neighbours(pickup, customerId, rows).filter((r) => r.start === start && r.end === end);
+  return mostCommon(same, (r) => r.areas!.join("\n"))?.areas ?? null;
+}
+
+/**
+ * A whole Sunday for a clinic that has none: the most common day among
+ * same-district clinics (hours, areas and alternate drop-off together), with
+ * one clinic that has it, so the editor can say where it came from.
+ */
+export function suggestSundayDay(pickup: string, customerId: string, rows: readonly SundayRuleView[]): { from: string; lines: SundayLine[] } | null {
+  const byClinic = new Map<string, SundayRuleView[]>();
+  for (const r of neighbours(pickup, customerId, rows)) byClinic.set(r.customer_id, [...(byClinic.get(r.customer_id) ?? []), r]);
+  const days = [...byClinic.values()].map((rs) => ({
+    from: rs[0].pickup,
+    lines: rs.map((r) => ({ start: r.start, end: r.end, areas: r.areas!, alt_drop_off_id: r.alt_drop_off_id ?? "" }))
+      .sort((a, b) => a.start.localeCompare(b.start) || a.end.localeCompare(b.end)),
+  }));
+  return mostCommon(days, (d) => JSON.stringify(d.lines)) ?? null;
 }
