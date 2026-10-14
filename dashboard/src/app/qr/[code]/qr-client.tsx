@@ -680,8 +680,13 @@ export default function QrPage() {
   const [loaded, setLoaded] = useState(false);
   const [pending, setPending] = useState<PendingReq[]>([]);
   const [seen, setSeen] = useState<Set<number>>(new Set());
-  // D001 and D046 see every trip touching them; every other branch only books.
-  const fullView = FULL_VIEW.has((route?.psc_pickup ?? "").replace(/^BRA\s*-\s*/i, ""));
+  // D001 and D046 see every trip touching them; every other branch sees only the trips it
+  // booked from this device (with their buttons) — nothing about anyone else's.
+  const branchCode = (route?.psc_pickup ?? "").replace(/^BRA\s*-\s*/i, "");
+  const fullView = FULL_VIEW.has(branchCode);
+  // D001 only: narrow its (long) list to one driver. A filter over trips already loaded —
+  // no request of its own.
+  const [driverId, setDriverId] = useState("");
 
   // The driver's typed notes, keyed by job. Its own request because nothing the feed is
   // built from carries a todo. Asked for by the ids this feed is showing, so the answer
@@ -752,7 +757,7 @@ export default function QrPage() {
   const ownIds = pending.filter((p) => p.date === date).map((p) => p.job_id).join(",");
 
   const loadJobs = useCallback(async () => {
-    if (!fullView) { setJobs([]); setLoaded(false); return; }
+    if (!fullView && !ownIds) { setJobs([]); setLoaded(false); return; }
     lastLoadRef.current = Date.now();
     setLoading(true);
     try {
@@ -1020,8 +1025,17 @@ export default function QrPage() {
 
   // jobs is the whole branch (fullView) or this device's bookings — either way the list.
   const pendingShown = pending.filter((p) => !seen.has(Number(p.job_id)));
-  const active = jobs.filter((j) => stateOf(j) !== 3);
-  const done = jobs.filter((j) => stateOf(j) === 3);
+  // The drivers on today's list, busiest first, for D001's picker.
+  const driverChips = branchCode === "D001"
+    ? [...jobs.reduce((m, j) => {
+        if (!j.delivery_driver_id) return m;
+        const c = m.get(j.delivery_driver_id) ?? { name: driverText(j.driver?.last_name), n: 0 };
+        return m.set(j.delivery_driver_id, { ...c, n: c.n + 1 });
+      }, new Map<string, { name: string; n: number }>())].sort((a, b) => b[1].n - a[1].n)
+    : [];
+  const inScope = (j: Job) => !driverId || j.delivery_driver_id === driverId;
+  const active = jobs.filter((j) => stateOf(j) !== 3 && inScope(j));
+  const done = jobs.filter((j) => stateOf(j) === 3 && inScope(j));
   const q = norm(doneQuery);
   const doneShown = q
     ? done.filter((j) => norm(`${j.stops.map((s) => s.customer_name).join(" ")} ${j.driver?.last_name ?? ""} ${(j.item_tracking_numbers ?? []).join(" ")}`).includes(q))
@@ -1098,8 +1112,22 @@ export default function QrPage() {
           </div>
         )}
 
+        {driverChips.length > 1 && (
+          <div className="flex flex-wrap gap-2 mb-3" role="group" aria-label="Lọc theo Giao Nhận Mẫu">
+            {driverChips.map(([id, d]) => {
+              const on = id === driverId;
+              return (
+                <button key={id} aria-pressed={on} onClick={() => { setDriverId(on ? "" : id); setDoneQuery(""); }}
+                  className={`px-3.5 py-2 rounded-full text-sm font-semibold transition-colors ${on ? "bg-blue-700 text-white" : "bg-white text-slate-700 shadow-sm active:bg-slate-50"}`}>
+                  {d.name} <span className={on ? "text-blue-100" : "text-slate-500"}>{d.n}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         <div className="space-y-3">
-          {isToday && pendingShown.map((p) => (
+          {isToday && !driverId && pendingShown.map((p) => (
             <PendingCard key={p.job_id} req={p} pickup={route.pickup} dropoff={route.dropoff} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }}
               onSendVia3pl={openVia3pl} onChangeDriver={openChangeDriver} />
           ))}
@@ -1137,6 +1165,27 @@ export default function QrPage() {
           )}
         </div>
         </>)}
+
+        {/* ── Every other branch: only its own bookings, no heading, nothing when none. ── */}
+        {!fullView && isToday && (pendingShown.length > 0 || jobs.length > 0) && (
+          <div className="space-y-3">
+            {pendingShown.map((p) => (
+              <PendingCard key={p.job_id} req={p} pickup={route.pickup} dropoff={route.dropoff} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }}
+                onSendVia3pl={openVia3pl} onChangeDriver={openChangeDriver} />
+            ))}
+            {active.map((j) => (
+              <TripCard key={j.job_id} job={j} code={code} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)}
+                onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl}
+                onChangeDriver={openChangeDriver} />
+            ))}
+            {done.length > 0 && (
+              <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+                <p className="px-4 pt-3 pb-1 text-[12px] font-semibold text-slate-600">Đã xong ({done.length})</p>
+                {done.map((j) => <DoneRow key={j.job_id} job={j} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)} />)}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {sheetJob && <JobSheet job={sheetJob} onClose={() => setSheetJob(null)} />}
