@@ -120,7 +120,7 @@ const changedFeed = await locationJobs(DATE, "prod", PICKUP);
 check("delta updates a job and removes another", changedFeed?.length === 1 &&
   changedFeed[0]?.reference_number === "D006→D001_UPDATED");
 check("delta deletes the removed job field",
-  await redis.hget(`day:v1:prod:${DATE}`, "j:900002") === null);
+  await redis.hget(`day:v2:prod:${DATE}`, "j:900002") === null);
 check("delete is reported in snapshot metrics",
   snapshotLogs.some((line) => line.includes("mode=delta") && line.includes("deleted=1")));
 

@@ -18,7 +18,7 @@ import { CAS_WRITE_SCRIPT, CAS_BATCH_FIELDS, casWriteArgs } from "../src/lib/day
 const { lua, lauxlib, lualib, to_luastring, to_jsstring } = createRequire(import.meta.url)("fengari") as any;
 
 type Store = Map<string, Map<string, string>>;
-const KEY = "day:v1:prod:2026-09-13";
+const KEY = "day:v2:prod:2026-09-13";
 
 function exec(store: Store, [cmd, key, ...rest]: string[]): string | number | null {
   const hash = store.get(key);

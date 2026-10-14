@@ -1,7 +1,7 @@
 /**
- * The branch's own just-booked trips, held on the device until the published day carries
- * them. One rule, because it is applied from three places (the feed reconcile, a cancel
- * and a 3PL handover) and got it wrong in all three the same way.
+ * The branch's own bookings, kept on this device for the day. /qr asks the day copy for
+ * them by id on every refresh; until it carries one, the booking shows as a waiting card.
+ * The id rule below is shared by hiding those cards and by a cancel.
  *
  * Ids are compared as NUMBERS. The feed's job ids arrive as numbers; a booking response's
  * id is whatever Cartrack put in the JSON, and the RPC and REST create paths do not agree
@@ -23,8 +23,7 @@ export interface PendingReq {
   driver_name?: string;
 }
 
-/** Everything in `list` that is not one of `done` — the ids now known to the server,
- *  whether from the feed, a cancel or a handover. */
+/** Everything in `list` that is not one of `done` (ids now loaded, or cancelled). */
 export function retirePending(
   list: readonly PendingReq[],
   done: readonly (number | string | null | undefined)[],

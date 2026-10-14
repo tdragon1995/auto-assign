@@ -92,8 +92,12 @@ const BUILT = "__built__";
  *  index can never be paired with job rows from a different snapshot. */
 const REVISION = "__revision__";
 
-const IDX_LOC = "x:loc";
-const IDX_DRV = "x:drv";
+// One hash field PER branch / driver ("l:<customer_id>", "d:<driver_id>"), not one map
+// of all of them: a reader wanting one branch read the whole network's index (17 KB+),
+// and every publish rewrote both maps whole because some entry always changed. Split,
+// a read is ~100 bytes and a publish rewrites only the entries that moved (2026-10-14).
+const IDX_LOC = "l:";
+const IDX_DRV = "d:";
 const jobField = (id: number) => `j:${id}`;
 
 /** One request performs the compare-and-swap and the complete hash mutation. This is
@@ -190,7 +194,9 @@ function utf8Bytes(value: string): number {
   return UTF8_ENCODER.encode(value).byteLength;
 }
 
-function key(env: Env, date: string) { return `day:v1:${env}:${date}`; }
+// v2: the per-entry index above. A new key rather than a migration, so old and new code
+// never read each other's layout while a deploy rolls out.
+function key(env: Env, date: string) { return `day:v2:${env}:${date}`; }
 function lockKey(env: Env, date: string) { return `day:lock:${env}:${date}`; }
 
 function getRedis(): Redis | null {
@@ -383,9 +389,9 @@ export function assembleSnapshot(
 function serializeSnapshot(snap: Snapshot): Record<string, string> {
   const fields: Record<string, string> = {
     [BUILT]: String(snap.builtAt),
-    [IDX_LOC]: JSON.stringify(snap.byLocation),
-    [IDX_DRV]: JSON.stringify(snap.byDriver),
   };
+  for (const [loc, ids] of Object.entries(snap.byLocation)) fields[IDX_LOC + loc] = JSON.stringify(ids);
+  for (const [drv, ids] of Object.entries(snap.byDriver)) fields[IDX_DRV + drv] = JSON.stringify(ids);
   for (const [id, j] of snap.jobs) fields[jobField(id)] = JSON.stringify(j);
   return fields;
 }
@@ -503,12 +509,11 @@ async function readSlice(
 ): Promise<Slice | null> {
   const cacheKey = key(env, date);
   for (let attempt = 0; attempt < 2; attempt++) {
-    const head = await redis.hmget<Record<string, unknown>>(cacheKey, REVISION, BUILT, indexField);
+    const head = await redis.hmget<Record<string, unknown>>(cacheKey, REVISION, BUILT, indexField + indexKey);
     const builtAt = Number(head?.[BUILT] ?? 0);
     if (!builtAt) return null;
     const revision = head?.[REVISION] == null ? "" : String(head[REVISION]);
-    const index = parse<Record<string, number[]>>(head?.[indexField], {});
-    const ids = index[indexKey] ?? [];
+    const ids = parse<number[]>(head?.[indexField + indexKey], []);
     const rows = await redis.hmget<Record<string, unknown>>(
       cacheKey, REVISION, ...ids.map(jobField),
     );
@@ -699,12 +704,11 @@ async function readDriversSlice(
 ): Promise<{ byDriver: Map<string, SnapJob[]>; builtAt: number } | null> {
   const cacheKey = key(env, date);
   for (let attempt = 0; attempt < 2; attempt++) {
-    const head = await redis.hmget<Record<string, unknown>>(cacheKey, REVISION, BUILT, IDX_DRV);
+    const head = await redis.hmget<Record<string, unknown>>(cacheKey, REVISION, BUILT, ...driverIds.map((d) => IDX_DRV + d));
     const builtAt = Number(head?.[BUILT] ?? 0);
     if (!builtAt) return null;
     const revision = head?.[REVISION] == null ? "" : String(head[REVISION]);
-    const index = parse<Record<string, number[]>>(head?.[IDX_DRV], {});
-    const ids = [...new Set(driverIds.flatMap((d) => index[d] ?? []))];
+    const ids = [...new Set(driverIds.flatMap((d) => parse<number[]>(head?.[IDX_DRV + d], [])))];
     if (ids.length === 0) return { byDriver: new Map(driverIds.map((d) => [d, []])), builtAt };
     const rows = await redis.hmget<Record<string, unknown>>(cacheKey, REVISION, ...ids.map(jobField));
     const rowRevision = rows?.[REVISION] == null ? "" : String(rows[REVISION]);
@@ -713,7 +717,7 @@ async function readDriversSlice(
     const byDriver = new Map<string, SnapJob[]>();
     for (const d of driverIds) {
       const jobs: SnapJob[] = [];
-      for (const id of index[d] ?? []) {
+      for (const id of parse<number[]>(head?.[IDX_DRV + d], [])) {
         const j = parse<SnapJob | null>(rows?.[jobField(id)], null);
         if (j) jobs.push(j);
       }

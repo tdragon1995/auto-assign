@@ -347,12 +347,10 @@ export async function POST(req: NextRequest) {
       await markPscPair(today, pairKey, { job_id: newJobId, reference_number: refLabel }).catch(() => {});
     }
 
-    // Still deliberately NOT releasing the cross-instance create lock. Invalidating the
-    // snapshot makes the day rebuild on the next read, but a rebuild only helps once
-    // Cartrack itself lists the new job — and it does not index one instantly. In that
-    // gap a second request would rebuild, still not see this job, and create a twin.
-    // The lock covers exactly that window; it self-expires, and the cancel/3PL handlers
-    // release it early so a cleared trip can be re-requested at once.
+    // Still deliberately NOT releasing the cross-instance create lock: Cartrack does not
+    // index a new job instantly, so a second request in that gap would search, not see
+    // this job, and create a twin. The lock covers that window; it self-expires, and the
+    // cancel/3PL handlers release it early so a cleared trip can be re-requested at once.
     return NextResponse.json({
       success: true,
       reference: refLabel,

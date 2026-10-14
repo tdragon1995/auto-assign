@@ -43,6 +43,7 @@ interface Job {
   scheduled_delivery_ts: string | null;
   last_assigned_plan_id?: number | null;
   item_tracking_numbers?: string[];
+  delivery_driver_id?: string | null;
   driver?: { last_name?: string | null; phone_local?: string | null; phone_e164?: string | null } | null;
   stops: Stop[];
   // Set only on jobs from the unrouted pool (status 3).
@@ -58,14 +59,8 @@ type Status = "idle" | "loading" | "success" | "error";
 
 const STEPS = ["Lấy mẫu", "Đã giao"] as const;
 
-// Shortest gap between two automatic feed refreshes. Mirrors MAX_AGE_MS in
-// lib/day-snapshot — a request inside that window gets the snapshot already on screen,
-// so it costs an invocation and changes nothing. Hard-coded rather than imported because
-// day-snapshot pulls in the Redis client, which has no business in a phone's bundle.
-// Raising it there means raising it here.
-// Applies to the visibility refresh. Nothing on this page forces a rebuild any more —
-// actions update the list from their own response instead — so this is now the only
-// throttle that matters, and it guards an invocation rather than a day rebuild.
+// Shortest gap between two visibility refreshes. The day copy behind the list is
+// republished every ~3 min, so a refresh sooner than this mostly returns what is on screen.
 const MIN_REFRESH_MS = 60_000;
 
 function todayVN(): string {
@@ -633,16 +628,11 @@ export default function QrPage() {
   const [date, setDate] = useState(todayVN());
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(false);
-  // Whether the feed has been fetched at all. Distinct from `loading`, and load-bearing:
-  // the page no longer fetches on mount, so without this an unread feed would render
-  // "Chưa có chuyến nào đang chạy" — telling a branch no driver is coming when we simply
-  // have not looked. That is the sentence most likely to make them request a second
-  // pickup for a trip already on its way.
+  // Whether anything has been fetched yet — counts and "none" lines wait for it.
   const [loaded, setLoaded] = useState(false);
   const [pending, setPending] = useState<PendingReq[]>([]);
-  // Trips show only for a driver the branch picks — this branch's drivers in the config.
-  // The whole-branch list read the network's day on every look; one driver's entry is a
-  // fraction of that, and it is what a branch actually asks ("where is Nam?").
+  // Other trips show only for a driver the branch picks from its configured drivers —
+  // one driver's entry in the day copy, not the whole branch's.
   const [driverId, setDriverId] = useState("");
   const [drivers, setDrivers] = useState<{ driver_id: string; name: string }[] | null>(null);
 
@@ -713,12 +703,16 @@ export default function QrPage() {
   // change (booking, cancelling, handing to a 3PL) are now served from that action's own
   // response, which is both faster and more truthful than re-reading a Cartrack listing
   // that may not have indexed the change yet.
+  // The branch's own bookings, by id: they stay on this device for the day, so a trip it
+  // booked keeps showing its progress whichever driver has it.
+  const ownIds = pending.filter((p) => p.date === date).map((p) => p.job_id).join(",");
+
   const loadJobs = useCallback(async () => {
-    if (!driverId) { setJobs([]); setLoaded(false); return; }
+    if (!driverId && !ownIds) { setJobs([]); setLoaded(false); return; }
     lastLoadRef.current = Date.now();
     setLoading(true);
     try {
-      const res = await fetch(`/api/location-jobs?date=${date}&status=all&code=${encodeURIComponent(code)}&driver=${encodeURIComponent(driverId)}`);
+      const res = await fetch(`/api/location-jobs?date=${date}&code=${encodeURIComponent(code)}${driverId ? `&driver=${encodeURIComponent(driverId)}` : ""}${ownIds ? `&ids=${ownIds}` : ""}`);
       const data = await res.json();
       const list: Job[] = (data.jobs ?? [])
         .filter((j: Job) => (j.stops ?? []).length > 1)
@@ -748,7 +742,7 @@ export default function QrPage() {
       setLoading(false);
       setLoaded(true);
     }
-  }, [date, code, driverId]);
+  }, [date, code, driverId, ownIds]);
 
   // The picker's list. Config only — no day read — so it is fine to ask on open.
   useEffect(() => {
@@ -758,35 +752,16 @@ export default function QrPage() {
       .catch(() => setDrivers([]));
   }, [code]);
 
-  // No fetch on mount. Opening /qr is not by itself a request to read the day — most
-  // visits are a branch scanning the QR to CALL a pickup, and every one of those was
-  // paying a full snapshot read for a list nobody looked at. Submitting reloads the feed
-  // anyway, so it fills in exactly when it starts to matter.
-  // Changing the DATE is explicit intent and still loads, which is why this effect stays
-  // rather than being deleted: loadJobs is keyed on [date, code], so it re-runs only when
-  // the branch picks a different day.
+  // Not on mount (loadJobs has nothing to ask for until bookings are restored or a driver
+  // is picked); after that, whenever the date, the driver or the branch's bookings change.
   const mountedRef = useRef(false);
   useEffect(() => {
     if (!mountedRef.current) { mountedRef.current = true; return; }
     loadJobs();
   }, [loadJobs]);
 
-  // Refresh when the branch comes BACK to the feed, not on a timer. A 60s interval meant
-  // every open tab re-fetched the day forever whether or not anyone was looking, and 42
-  // branches doing that is what set the floor on how often the whole network's day had to
-  // be rebuilt. Tying it to attention instead means the rebuild rate follows real usage.
-  // Freshness doesn't suffer: the day snapshot rebuilds if it's older than 30s, so
-  // looking at the feed shows a state at most half a minute old — where the old interval
-  // could serve a 90s-old cache. Làm mới and the post-action reloads still force a rebuild.
-  //
-  // The 30s floor is what keeps this cheaper than the timer it replaced, and it is not
-  // optional. Branch staff work from a phone and flip constantly between Zalo and the
-  // feed, so returning to the tab is a FAR more frequent event than a 60s tick — the
-  // more so because a backgrounded tab's timers are throttled or frozen outright, which
-  // made the old poll near-free while nobody was looking. Some Android browsers also
-  // fire this when the soft keyboard opens over the request form. Unthrottled, that is
-  // a request per app-switch. Below 30s the snapshot has not rebuilt, so the answer is
-  // byte-for-byte the one already on screen: skipping costs the branch nothing.
+  // Refresh when the branch comes BACK to the tab, not on a timer — staff flip between
+  // Zalo and this page constantly, and a timer kept every open tab polling all day.
   useEffect(() => {
     if (date !== todayVN()) return;
     const onVisible = () => {
@@ -797,15 +772,6 @@ export default function QrPage() {
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [date, loadJobs]);
-
-  // A pending request that now appears on a driver's route has been dispatched —
-  // the fetched job takes over and the local placeholder retires. retirePending owns the
-  // id comparison; see there for why it is not a plain === .
-  useEffect(() => {
-    if (!pending.length || !jobs.length) return;
-    const still = retirePending(pending, jobs.map((j) => j.job_id));
-    if (still.length !== pending.length) persistPending(still);
-  }, [jobs, pending, persistPending]);
 
   const handleAssign = async () => {
     if (!route) return;
@@ -971,14 +937,15 @@ export default function QrPage() {
         return;
       }
       const handedId = via3plTarget.job_id;
-      persistPending(retirePending(pending, [handedId]));
       // The response carries the trip as it now stands — 3PL driver attached, completed,
       // with the real completion time the "Đã gửi qua…" line prints. Patch it in rather
       // than rebuilding the day to learn about one job. If the server's read-back failed
       // (`job` null) leave the row alone; the next feed load corrects it, and claiming the
       // handoff failed would be worse than showing it a few minutes late.
       if (data.job) {
-        setJobs((js) => js.map((j) => (j.job_id === handedId ? { ...j, ...data.job } : j)));
+        setJobs((js) => js.some((j) => j.job_id === handedId)
+          ? js.map((j) => (j.job_id === handedId ? { ...j, ...data.job } : j))
+          : [...js, data.job]);
       }
       setVia3plTarget(null);
       setBatchInput("");
@@ -1001,8 +968,18 @@ export default function QrPage() {
     );
   }
 
-  const active = jobs.filter((j) => stateOf(j) !== 3);
-  const done = jobs.filter((j) => stateOf(j) === 3);
+  // Top: what THIS branch booked (from this device). Bottom panel: the picked driver's
+  // trips here, running and done — the filter sits beside what it filters, and every
+  // count and empty state names whose trips it is talking about.
+  // retirePending's id comparison (numbers, whatever the source) — see there.
+  const pendingShown = retirePending(pending, jobs.map((j) => j.job_id));
+  const ownSet = new Set(pending.map((p) => Number(p.job_id)));
+  const isOwn = (j: Job) => ownSet.has(Number(j.job_id));
+  const driverName = drivers?.find((d) => d.driver_id === driverId)?.name ?? "";
+  const ofDriver = (j: Job) => !!driverId && j.delivery_driver_id === driverId;
+  const active = jobs.filter((j) => isOwn(j) && stateOf(j) !== 3);
+  const driverActive = jobs.filter((j) => ofDriver(j) && !isOwn(j) && stateOf(j) !== 3);
+  const done = jobs.filter((j) => stateOf(j) === 3 && (driverId ? ofDriver(j) : isOwn(j)));
   const q = norm(doneQuery);
   const doneShown = q
     ? done.filter((j) => norm(`${j.stops.map((s) => s.customer_name).join(" ")} ${j.driver?.last_name ?? ""} ${(j.item_tracking_numbers ?? []).join(" ")}`).includes(q))
@@ -1078,18 +1055,6 @@ export default function QrPage() {
           </div>
         )}
 
-        <select
-          value={driverId}
-          onChange={(e) => setDriverId(e.target.value)}
-          aria-label="Chọn Giao Nhận Mẫu để xem chuyến"
-          className="w-full mb-3 bg-white rounded-xl shadow-sm px-3 py-3 text-base text-slate-800"
-        >
-          <option value="">
-            {drivers === null ? "Đang tải Giao Nhận Mẫu…" : drivers.length ? "Chọn Giao Nhận Mẫu để xem chuyến" : "Chi nhánh chưa có Giao Nhận Mẫu trong cấu hình"}
-          </option>
-          {(drivers ?? []).map((d) => <option key={d.driver_id} value={d.driver_id}>{d.name}</option>)}
-        </select>
-
         {notesFailed && (
           <p role="alert" className="mb-3 px-3 py-2 rounded-xl text-[12px] font-semibold text-amber-700 bg-amber-50 border border-amber-200">
             Không tải được ghi chú giao nhận. Mở từng chuyến để xem.
@@ -1097,7 +1062,7 @@ export default function QrPage() {
         )}
 
         <div className="space-y-3">
-          {pending.map((p) => (
+          {pendingShown.map((p) => (
             <PendingCard key={p.job_id} req={p} pickup={route.pickup} dropoff={route.dropoff} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }}
               onSendVia3pl={openVia3pl} onChangeDriver={openChangeDriver} />
           ))}
@@ -1106,12 +1071,12 @@ export default function QrPage() {
               onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl}
               onChangeDriver={openChangeDriver} />
           ))}
-          {!driverId && !pending.length && (
-            <p className="text-center text-sm text-slate-500 py-7">Chọn Giao Nhận Mẫu ở trên để xem chuyến.</p>
-          )}
-          {loaded && !loading && !pending.length && !active.length && (
-            <p className="text-center text-sm text-slate-500 py-7">
-              {isToday ? <>Chưa có chuyến nào đang chạy.{!route.no_request && <><br />Bấm nút phía trên để gọi Giao Nhận Mẫu.</>}</> : "Không có chuyến đang chạy."}
+          {/* Only what was checked: this device's own bookings. "Chưa có chuyến nào đang
+              chạy" here was a claim about the whole branch nobody had looked up — the
+              sentence most likely to make a branch book a second pickup. */}
+          {!pendingShown.length && !active.length && (isToday ? !route.no_request : true) && (
+            <p className="text-center text-sm text-slate-600 py-7">
+              {isToday ? <>Chưa gọi chuyến nào từ máy này hôm nay.<br />Bấm nút phía trên để gọi Giao Nhận Mẫu.</> : "Chọn Giao Nhận Mẫu ở mục bên dưới để xem chuyến ngày này."}
             </p>
           )}
           {loading && <p className="text-center text-sm text-slate-500 py-7">Đang tải…</p>}
@@ -1119,38 +1084,61 @@ export default function QrPage() {
 
         <div className="bg-white rounded-2xl shadow-sm mt-3 overflow-hidden">
           <button onClick={() => { setDoneOpen((v) => !v); if (!loaded) loadJobs(); }} aria-expanded={doneOpen}
-            className="w-full flex items-center justify-between px-4 py-3.5 text-[15px] font-bold text-slate-800">
+            className="w-full flex items-center justify-between gap-2 px-4 py-3.5 text-[15px] font-bold text-slate-800">
             {/* The count is omitted until the feed has been read — "(0)" before we have
                 looked reads as "nothing was delivered today", which is a different claim. */}
-            <span className="flex items-center gap-2"><Check aria-hidden className="w-4 h-4 text-green-600" />Xong {isToday ? "hôm nay" : ""} {loaded && <span className="text-green-600">({done.length})</span>}</span>
-            <ChevronDown aria-hidden className={`w-5 h-5 text-slate-500 transition-transform ${doneOpen ? "rotate-180" : ""}`} />
+            <span className="flex items-center gap-2 min-w-0"><Check aria-hidden className="w-4 h-4 text-green-700 shrink-0" /><span className="truncate">Xong {isToday ? "hôm nay" : ""}{driverName ? ` · ${driverName}` : ""}</span> {loaded && <span className="text-green-700">({done.length})</span>}</span>
+            <ChevronDown aria-hidden className={`w-5 h-5 shrink-0 text-slate-500 transition-transform ${doneOpen ? "rotate-180" : ""}`} />
           </button>
           {doneOpen && (
             <div className="border-t border-slate-100">
-              <div className="px-4 pt-3 pb-1">
+              <div className="px-4 pt-3">
+                <label className="block text-[12px] font-semibold text-slate-500 mb-1" htmlFor="qr-driver-filter">Lọc theo Giao Nhận Mẫu</label>
+                <select
+                  id="qr-driver-filter"
+                  value={driverId}
+                  onChange={(e) => setDriverId(e.target.value)}
+                  className="w-full bg-slate-100 rounded-xl px-3 py-3 text-base text-slate-800"
+                >
+                  <option value="">
+                    {drivers === null ? "Đang tải…" : drivers.length ? "Chỉ chuyến chi nhánh đã gọi" : "Chi nhánh chưa có Giao Nhận Mẫu trong cấu hình"}
+                  </option>
+                  {(drivers ?? []).map((d) => <option key={d.driver_id} value={d.driver_id}>{d.name}</option>)}
+                </select>
+              </div>
+              {driverActive.length > 0 && (
+                <div className="px-4 pt-3 space-y-3">
+                  <p className="text-[12px] font-semibold text-slate-600">Đang chạy ({driverActive.length})</p>
+                  {driverActive.map((j) => (
+                    <TripCard key={j.job_id} job={j} code={code} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)}
+                      onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl}
+                      onChangeDriver={openChangeDriver} />
+                  ))}
+                </div>
+              )}
+              {(done.length > 0 || doneQuery) && <div className="px-4 pt-3 pb-1">
                 <div className="relative">
                   <Search aria-hidden className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
                 <input
                   type="search"
                   value={doneQuery}
                   onChange={(e) => setDoneQuery(e.target.value)}
-                  placeholder="Tìm địa điểm, Giao Nhận Mẫu, mã batch…"
+                  placeholder="Tìm điểm, GNM, mã batch…"
                   aria-label="Tìm trong chuyến đã xong"
-                  className="w-full bg-slate-100 rounded-xl pl-9 pr-3 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-300"
+                  className="w-full bg-slate-100 rounded-xl pl-9 pr-3 py-3 text-sm placeholder:text-slate-600 outline-none focus:ring-2 focus:ring-blue-300"
                 />
                 </div>
-              </div>
+              </div>}
               {doneShown.length === 0 ? (
-                // This panel starts expanded, so it is on screen before the feed has been
-                // read. "Chưa có chuyến nào hoàn thành" would then be asserting something
-                // we have not checked; offer to look instead.
-                !loaded && !loading && !doneQuery ? (
-                  <p className="text-center text-sm text-slate-500 py-5">Chọn Giao Nhận Mẫu ở trên để xem chuyến đã xong.</p>
-                ) : (
-                  <p className="text-center text-sm text-slate-500 py-5">
-                    {doneQuery ? `Không tìm thấy chuyến nào khớp “${doneQuery}”` : loading ? "Đang tải…" : "Chưa có chuyến nào hoàn thành."}
-                  </p>
-                )
+                // Never "nothing was delivered" about trips we did not look up: each line
+                // names whose trips it means.
+                <p className="text-center text-sm text-slate-600 py-5">
+                  {doneQuery ? `Không tìm thấy chuyến nào khớp “${doneQuery}”`
+                    : loading ? "Đang tải…"
+                    : driverId ? `${driverName} chưa có chuyến nào xong ở chi nhánh${isToday ? " hôm nay" : ""}.`
+                    : ownSet.size ? "Chuyến máy này đã gọi chưa xong."
+                    : "Chọn Giao Nhận Mẫu để xem chuyến của họ."}
+                </p>
               ) : doneShown.map((j) => {
                 const p = pickupOf(j), d = dropoffOf(j);
                 const threePl = isThreePl(j.driver?.last_name);

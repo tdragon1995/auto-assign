@@ -2,50 +2,28 @@ import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
 import { driverDisplayName, fetchJobDetail, stripDriverCode } from "@/lib/job-detail";
 import { isLabWatchedClient, keepOnBranchFeed, LAB_CUSTOMER_ID } from "@/lib/job-filters";
-import { driverJobs, FEED_MAX_AGE_MS, locationJobs, slimJob } from "@/lib/day-snapshot";
+import { driverJobs, FEED_MAX_AGE_MS, locationJobs, slimJob, snapJobsByIds } from "@/lib/day-snapshot";
 import { isValidDriverId, loadConfigFromSheets, loadDriversFromSheet } from "@/lib/config";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
-import type { Job, Stop } from "@/lib/types";
+import type { Job } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
 
-// GET /api/location-jobs?date=2026-04-11&status=4&code=<customer_uuid>
-//   Location-scoped list for the /qr page: only jobs touching `code`, slimmed to
-//   the fields the list renders. The old whole-day dump was ~220 KB per tap and
-//   the phone discarded 99% of it (all locations, todos, POD images).
-// GET /api/location-jobs?job_id=123
-//   Full detail for one job (address, todos, POD image URLs) — fetched only when
-//   staff open the job sheet.
-// Without `code`, returns the legacy whole-day dump so cached bundles keep working.
-//
-// The day itself — fetch, parse, cache, projections — lives in @/lib/day-snapshot,
-// shared with the duplicate guard so the feed and the guard can never disagree about
-// the same trip.
-//
-// `?fresh=1` still forces a rebuild, but NOTHING SENDS IT any more. The /qr page used to
-// on every Làm mới tap and after every booking, cancel and 3PL handoff — 41% of this
-// route's traffic, all of it rebuilding the whole network's day. Làm mới is gone, and the
-// actions now update the branch's list from their own response. Think hard before
-// reintroducing a caller: a rebuild costs ~5s of Cartrack round-trips to answer a question
-// about one branch's dozen rows, and a just-created job frequently is not in the rebuilt
-// answer anyway, because Cartrack has not indexed it yet.
-
-// `status=all` returns everything the feed shows: assigned + completed from the route
-// timeline, plus unassigned (2) and rejected (3) from the unrouted pool. The timeline
-// alone only ever contains 4 and 5, so without the second source a branch never sees a
-// request that hasn't been picked up or one a driver turned down.
-const ALL_STATUSES = [2, 3, 4, 5];
+// The /qr page's trips (only caller). Three shapes:
+//   ?job_id=123                      full detail for the job sheet
+//   ?drivers=1&code=…                the branch's configured drivers, for the picker
+//   ?date=…&code=…&driver=…&ids=…    the picked driver's trips touching the branch, plus
+//                                    the branch's own bookings by id
+// Everything comes from the shared day (@/lib/day-snapshot), never rebuilt here; when it
+// is unavailable the REST day is filtered the same way. Statuses 2-5: what the timeline
+// carries (4, 5) and the unrouted pool (2, 3) — cancelled (7) never shows.
+const SHOWN_STATUSES = [2, 3, 4, 5];
 
 /** Branches whose configured route ends at `code` — the provincial branches a hub receives.
  *  The lab is excluded by the feed rule itself, so every branch listing it does no harm. */
 function feedersOf(code: string): Set<string> {
   return new Set(PSC_ROUTES.filter((r) => r.dropoff === code).map((r) => r.pickup));
-}
-
-function matchesStatus(jobStatusId: number | undefined, status: string): boolean {
-  if (status === "all") return ALL_STATUSES.includes(jobStatusId ?? 0);
-  return jobStatusId === Number(status);
 }
 
 export async function GET(req: NextRequest) {
@@ -64,7 +42,6 @@ export async function GET(req: NextRequest) {
   }
 
   const date = req.nextUrl.searchParams.get("date");
-  const status = req.nextUrl.searchParams.get("status");
   const code = req.nextUrl.searchParams.get("code");
 
   // ── ?drivers=1&code=…: the branch's configured drivers, for /qr's picker ──────────
@@ -88,71 +65,49 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ drivers });
   }
 
-  if (!date || !status) {
-    return NextResponse.json({ error: "Missing date or status" }, { status: 400 });
+  if (!date || !code) {
+    return NextResponse.json({ error: "Missing date or code" }, { status: 400 });
   }
 
   try {
-    // Fast path (code-scoped): one slice of the shared day snapshot. Any failure
-    // (including a throw) falls back to REST rather than 500ing the branch's feed.
-    const feeders = code ? feedersOf(code) : new Set<string>();
-
-    // ── &driver=…: /qr shows trips only for the driver the branch picked ──────────────
-    // That driver's entry in the shared day, narrowed to trips touching this branch by
-    // the same rules as the branch feed. The day is never rebuilt for this: a few
-    // minutes behind is fine for a list someone asked to look at.
+    const feeders = feedersOf(code);
+    const touches = (j: { stops?: { customer_id?: string | null; stop_type_id?: number; customer_name?: string }[] | null }) =>
+      (j.stops ?? []).some((s) => s.customer_id === code) || (code === LAB_CUSTOMER_ID && isLabWatchedClient(j));
+    const shown = (j: { job_status_id?: number }) => SHOWN_STATUSES.includes(j.job_status_id ?? 0);
     const driver = req.nextUrl.searchParams.get("driver");
-    if (code && driver) {
-      const theirs = await driverJobs(date, env, driver, { maxAgeMs: FEED_MAX_AGE_MS }).catch(() => null);
-      // Day unavailable: fall through to the REST path below, narrowed to this driver
-      // there — an empty list here would tell the branch the driver has nothing.
+    const ids = (req.nextUrl.searchParams.get("ids") ?? "").split(",").map(Number).filter(Number.isInteger).slice(0, 50);
+
+    if (driver || ids.length) {
+      const [theirs, own] = await Promise.all([
+        driver ? driverJobs(date, env, driver, { maxAgeMs: FEED_MAX_AGE_MS }).catch(() => null) : [],
+        snapJobsByIds(date, env, ids),
+      ]);
+      // Driver's day unavailable: fall through to REST — an empty list here would tell
+      // the branch the driver has nothing.
       if (theirs) {
-        return NextResponse.json({
-          jobs: theirs
-            .filter((j) => matchesStatus(j.job_status_id, status))
-            .filter((j) => j.stops.some((s) => s.customer_id === code) || (code === LAB_CUSTOMER_ID && isLabWatchedClient(j)))
-            .filter((j) => keepOnBranchFeed(code, j, feeders)),
-        });
+        const byId = new Map(own);
+        for (const j of theirs) if (touches(j) && keepOnBranchFeed(code, j, feeders)) byId.set(j.job_id, j);
+        return NextResponse.json({ jobs: [...byId.values()].filter(shown) });
       }
+    } else {
+      // ponytail: whole-branch list, kept only for /qr tabs opened before 2026-10-14 that
+      // still send neither driver nor ids. Delete once those tabs have reloaded.
+      const mine = await locationJobs(date, env, code).catch(() => null);
+      if (mine) return NextResponse.json({ jobs: mine.filter(shown).filter((j) => keepOnBranchFeed(code, j, feeders)) });
     }
 
-    if (code && !driver) {
-      const fresh = req.nextUrl.searchParams.get("fresh") === "1";
-      const mine = await locationJobs(date, env, code, { fresh }).catch(() => null);
-      if (mine) {
-        // Location is already applied by the slice; only the status filter is left.
-        return NextResponse.json({
-          jobs: mine
-            .filter((j) => matchesStatus(j.job_status_id, status))
-            .filter((j) => keepOnBranchFeed(code, j, feeders)),
-        });
-      }
-    }
-
-    const headers = getHeaders(env);
-    // `status=all` has no single REST equivalent — drop the filter and narrow below.
-    const statusFilter = status === "all" ? "" : `&filter[job_status_id]=${status}`;
     const res = await fetch(
-      `${BASE_URL}/jobs?filter[scheduled_delivery_ts_from]=${date} 00:00:00&filter[scheduled_delivery_ts_to]=${date} 23:59:59${statusFilter}&limit=1000`,
-      { headers, cache: "no-store" }
+      `${BASE_URL}/jobs?filter[scheduled_delivery_ts_from]=${date} 00:00:00&filter[scheduled_delivery_ts_to]=${date} 23:59:59&limit=1000`,
+      { headers: getHeaders(env), cache: "no-store" },
     );
     if (!res.ok) return NextResponse.json({ jobs: [] });
-    const data = await res.json();
-    const allJobs: Job[] = data.data ?? [];
-
-    // Code-scoped REST fallback: same filter + slim as the fast path.
-    if (code) {
-      const jobs = allJobs
-        .filter((j) => matchesStatus(j.job_status_id, status))
-        .filter((j) => (j.stops ?? []).some((s: Stop) => s.customer_id === code)
-          || (code === LAB_CUSTOMER_ID && isLabWatchedClient(j)))
-        .filter((j) => keepOnBranchFeed(code, j, feeders))
-        .filter((j) => !driver || j.delivery_driver_id === driver)
-        .map((j) => slimJob(j, driverDisplayName(j.driver)));
-      return NextResponse.json({ jobs });
-    }
-
-    return NextResponse.json({ jobs: allJobs });
+    const allJobs: Job[] = (await res.json()).data ?? [];
+    return NextResponse.json({
+      jobs: allJobs
+        .filter((j) => shown(j) && touches(j) && keepOnBranchFeed(code, j, feeders))
+        .filter((j) => (!driver && !ids.length) || j.delivery_driver_id === driver || ids.includes(j.job_id))
+        .map((j) => slimJob(j, driverDisplayName(j.driver))),
+    });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
