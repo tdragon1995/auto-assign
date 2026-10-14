@@ -769,7 +769,12 @@ export default function QrPage() {
   // Set when the sheet is opened from D001's gallery: brief view, led by this photo.
   const [briefPhoto, setBriefPhoto] = useState<string | null>(null);
   const [doneQuery, setDoneQuery] = useState("");
-  const [datePanel, setDatePanel] = useState(false);
+  const dateRef = useRef<HTMLInputElement>(null);
+  const openDatePicker = () => {
+    const el = dateRef.current;
+    if (!el) return;
+    try { el.showPicker(); } catch { el.focus(); el.click(); }
+  };
 
   const [cancelTarget, setCancelTarget] = useState<{ job_id: number; reference: string } | null>(null);
   const [cancelLoading, setCancelLoading] = useState(false);
@@ -1108,17 +1113,22 @@ export default function QrPage() {
       }, new Map<string, { name: string; n: number; dests: Set<string> }>())].sort((a, b) => b[1].n - a[1].n)
     : [];
   const inScope = (j: Job) => !driverId || j.delivery_driver_id === driverId;
-  // D001: the pickup photos of trips that reached the lab in the last 2 hours, newest
-  // first, so the nurse can match each against what was handed over.
+  // D001's photo gallery, newest first. A picked driver: every photo of theirs that day,
+  // any date. No driver: today's trips that reached the lab inside the time window.
   const vnMs = (ts?: string | null) => (ts ? Date.parse(`${ts.replace(" ", "T").slice(0, 19)}+07:00`) : NaN);
-  const showGallery = branchCode === "D001" && date === todayVN();
+  const driverName = driverChips.find(([id]) => id === driverId)?.[1].name ?? "";
+  const windowed = !driverId;
+  const showGallery = branchCode === "D001" && (!!driverId || date === todayVN());
   const gallery = showGallery
     ? listJobs.filter(inScope).flatMap((j) => {
         const d = j.stops.find((st) => st.stop_type_id === 2 && st.customer_id === code);
-        const at = vnMs(d?.activity_arrived_ts ?? d?.activity_completed_ts);
+        const arrived = vnMs(d?.activity_arrived_ts ?? d?.activity_completed_ts);
+        const at = Number.isNaN(arrived) ? vnMs(pickupOf(j)?.activity_completed_ts) : arrived;
         const img = notes[j.job_id]?.img;
-        return img && Date.now() - at <= galleryMins * 60_000 ? [{ j, img, at }] : [];
-      }).sort((a, b) => b.at - a.at)
+        if (!img) return [];
+        if (windowed && !(Date.now() - arrived <= galleryMins * 60_000)) return [];
+        return [{ j, img, at }];
+      }).sort((a, b) => (b.at || 0) - (a.at || 0))
     : [];
   const active = listJobs.filter((j) => stateOf(j) !== 3 && inScope(j));
   const done = listJobs.filter((j) => stateOf(j) === 3 && inScope(j));
@@ -1203,47 +1213,43 @@ export default function QrPage() {
         <div className="flex items-center justify-between gap-2 mb-2">
           <h2 className="text-[15px] font-bold text-slate-800">{fullView ? "Chuyến của chi nhánh" : "Chuyến đã gọi"}</h2>
           {fullView && (
-            <button
-              onClick={() => setDatePanel((v) => !v)}
-              aria-expanded={datePanel}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-semibold text-slate-700 bg-white shadow-sm active:bg-slate-50"
-            >
-              <CalendarDays aria-hidden className="w-4 h-4" />
-              {isToday ? "Hôm nay" : date}
-              <ChevronDown aria-hidden className={`w-4 h-4 text-slate-500 transition-transform ${datePanel ? "rotate-180" : ""}`} />
-            </button>
+            <span className="relative">
+              <button
+                onClick={openDatePicker}
+                aria-label={`Chọn ngày (đang xem ${isToday ? "hôm nay" : date})`}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-semibold text-slate-700 bg-white shadow-sm hover:bg-slate-50 active:bg-slate-50"
+              >
+                <CalendarDays aria-hidden className="w-4 h-4" />
+                {isToday ? "Hôm nay" : date.split("-").reverse().join("/")}
+                <ChevronDown aria-hidden className="w-4 h-4 text-slate-500" />
+              </button>
+              {/* The browser's own calendar, opened by the button and anchored under it. */}
+              <input ref={dateRef} type="date" value={date} max={todayVN()} tabIndex={-1} aria-hidden
+                onChange={(e) => { if (e.target.value) setDate(e.target.value); }}
+                className="absolute inset-0 w-full h-full opacity-0 pointer-events-none" />
+            </span>
           )}
         </div>
 
-        {fullView && datePanel && (
-          <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
-            <input
-              type="date"
-              value={date}
-              max={todayVN()}
-              onChange={(e) => setDate(e.target.value)}
-              aria-label="Chọn ngày"
-              className="w-full border border-slate-200 rounded-xl px-3 py-3 text-base"
-            />
-          </div>
-        )}
 
 
         {showGallery && (
           <section className="mb-4" aria-labelledby="qr-gallery">
             <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-              <h3 id="qr-gallery" className="text-[13px] font-semibold text-slate-600">Ảnh mẫu vừa đến ({gallery.length})</h3>
-              <div role="group" aria-label="Trong khoảng" className="inline-flex rounded-lg bg-slate-200/70 p-0.5">
+              <h3 id="qr-gallery" className="text-[13px] font-semibold text-slate-600">{windowed ? "Ảnh mẫu vừa đến" : `Ảnh mẫu · ${driverName}`} ({gallery.length})</h3>
+              {windowed && <div role="group" aria-label="Trong khoảng" className="inline-flex rounded-lg bg-slate-200/70 p-0.5">
                 {GALLERY_WINDOWS.map((w) => (
                   <button key={w.mins} aria-pressed={galleryMins === w.mins} onClick={() => pickGalleryMins(w.mins)}
                     className={`px-2.5 py-1.5 rounded-md text-[12px] font-semibold transition-colors ${galleryMins === w.mins ? "bg-white text-slate-900 shadow-sm" : "text-slate-600"}`}>
                     {w.label}
                   </button>
                 ))}
-              </div>
+              </div>}
             </div>
             {loaded && !loading && gallery.length === 0 && (
-              <p className="text-sm text-slate-600 py-2">Chưa có mẫu nào đến trong {GALLERY_WINDOWS.find((w) => w.mins === galleryMins)?.label} qua.</p>
+              <p className="text-sm text-slate-600 py-2">{windowed
+                ? `Chưa có mẫu nào đến trong ${GALLERY_WINDOWS.find((w) => w.mins === galleryMins)?.label} qua.`
+                : `${driverName} chưa có ảnh mẫu${isToday ? " hôm nay" : " ngày này"}.`}</p>
             )}
             <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
               {gallery.map(({ j, img, at }) => {
@@ -1259,7 +1265,7 @@ export default function QrPage() {
                     </span>
                     <span aria-hidden className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 to-transparent px-1.5 pb-1 pt-5 text-left text-white">
                       <span className="block truncate text-[11px] font-semibold leading-tight">{from}</span>
-                      <span className="text-[10px] opacity-90">{new Date(at).toLocaleTimeString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit" })}</span>
+                      <span className="text-[10px] opacity-90">{Number.isNaN(at) ? "" : new Date(at).toLocaleTimeString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit" })}</span>
                     </span>
                   </button>
                 );
