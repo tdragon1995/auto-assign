@@ -497,7 +497,7 @@ These are the things most likely to burn a future agent working on this codebase
     **Drivers see hours (Thu Nhập) from Tháng 10/2026 on** (`HOURS_FROM_MONTH` in
     `/api/pay/me`), straight off Lịch ca — no file needed. A worked day with no
     shift is flagged "Không ca" (driver screen and Lương PT alike) and is fixed in
-    Thiếu ca PT or by Cập nhật công. Earlier months stay km-only: they were paid on
+    Bảng ca (a PT row's weekly shift, or "Duyệt theo chấm công") or by Cập nhật công. Earlier months stay km-only: they were paid on
     their own numbers. Driver-facing text never mentions payroll or a file.
 
     **A PT account is never rostered from MISA** (supervisor, 2026-10-13): the MISA

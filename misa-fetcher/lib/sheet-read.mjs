@@ -1,5 +1,5 @@
 /** Source readers for the MISA pipeline. Non-Sunday data is Supabase-owned. */
-export const PT_PATTERN_SHEET = "Mẫu ca PT (Supabase)";
+export const PT_PATTERN_SHEET = "Bảng ca (ca tuần PT)";
 async function select(table,query,order) {
  const url=process.env.SUPABASE_URL,key=process.env.SUPABASE_SERVICE_ROLE_KEY;
  if(!url||!key)throw new Error("Supabase credentials required; Sheet fallback is retired");

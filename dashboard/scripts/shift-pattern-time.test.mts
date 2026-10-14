@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {createElement} from "react";
 import {renderToStaticMarkup} from "react-dom/server";
-import {PatternTimeSelect} from "../src/components/driver-shift-panel";
+import {PatternTimeSelect} from "../src/components/pattern-time-select";
 const render=(value:string,disabled=false)=>renderToStaticMarkup(createElement(PatternTimeSelect,{label:"CN kết thúc",value,disabled,onChange(){}}));
 const html=render("17:30");
 const times=[...html.matchAll(/<option[^>]*value="([^"]+)"/g)].map(match=>match[1]);

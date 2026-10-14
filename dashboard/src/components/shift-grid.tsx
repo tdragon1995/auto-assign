@@ -13,7 +13,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Loader2, Pencil, RefreshCw, Search, Check, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "./ui/button";
-import { PatternTimeSelect } from "./bulk-pt-shift-panel";
+import { PatternTimeSelect } from "./pattern-time-select";
 import { STATUS_LABEL, periodMonthOf, type CellStatus } from "@/lib/shift-grid";
 import { vnDate } from "@/lib/time";
 

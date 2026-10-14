@@ -19,7 +19,7 @@ import { LeaveStatusPanel } from "./leave-status-panel";
 import { ConfigTodoPanel } from "./config-todo-panel";
 import { SheetAlarmBanner } from "./sheet-alarm-banner";
 import { TatTeamPanel } from "./tat-team-panel";
-import { DriverShiftPanel } from "./driver-shift-panel";
+import { ShiftGrid } from "./shift-grid";
 import { SundayRosterPanel } from "./sunday-roster-panel";
 import { PayTeamPanel } from "./pay-team-panel";
 import { LocationsPanel, TplMappingsPanel } from "./locations-panel";
@@ -752,7 +752,7 @@ export function Dashboard() {
           {setupActive && <nav aria-label="Master Setup" className="flex flex-wrap items-center gap-1 shrink-0 border-b border-slate-200 pb-1.5">
             {([
               ["config", ClipboardList, "Config"], ["schedule", CalendarClock, "Lịch cố định"],
-              ["shifts", Clock3, "Ca làm"], ["sunday", CalendarDays, "Lịch Chủ nhật"], ["locations", MapPin, "Địa điểm PSC"],
+              ["shifts", Clock3, "Bảng ca"], ["sunday", CalendarDays, "Lịch Chủ nhật"], ["locations", MapPin, "Địa điểm PSC"],
               ["tpl", Truck, "3PL Mapping"],
             ] as const).map(([tab, Icon, label]) => <button key={tab} aria-pressed={rightTab === tab} onClick={() => setRightTab(tab)} className={tabBtn(rightTab === tab)}>
               <Icon aria-hidden="true" className="size-4 shrink-0" strokeWidth={1.75} /> {label}
@@ -872,7 +872,7 @@ export function Dashboard() {
                 <TatTeamPanel />
               </div>
             ) : rightTab === "shifts" ? (
-              <div className="h-[72vh] lg:h-full"><DriverShiftPanel /></div>
+              <div className="h-[72vh] min-h-0 lg:h-full"><ShiftGrid /></div>
             ) : rightTab === "sunday" ? (
               <div className="h-[72vh] lg:h-full"><SundayRosterPanel drivers={drivers} /></div>
             ) : rightTab === "pay" ? (

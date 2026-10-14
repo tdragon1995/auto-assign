@@ -230,7 +230,7 @@ export async function GET(req: NextRequest) {
           km_pay: kmPayFor(km),
           total_pay: hoursPayFor(mins, boMins) + kmPayFor(km),
           /** Days worked with no shift in Lịch ca: they pay no hours, so this is
-           *  the column a supervisor checks (Thiếu ca PT) before the 25th. */
+           *  the column a supervisor checks (Bảng ca) before the 25th. */
           no_shift_days: noShiftDays,
           /** Completed jobs with no distance: paid 0 km until priced. */
           unpriced_jobs: e.unpriced,
