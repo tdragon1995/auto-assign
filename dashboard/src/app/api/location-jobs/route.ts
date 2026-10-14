@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
-import { driverDisplayName, fetchJobDetail } from "@/lib/job-detail";
+import { driverDisplayName, fetchJobDetail, stripDriverCode } from "@/lib/job-detail";
 import { isLabWatchedClient, keepOnBranchFeed, LAB_CUSTOMER_ID } from "@/lib/job-filters";
-import { locationJobs, slimJob } from "@/lib/day-snapshot";
+import { driverJobs, FEED_MAX_AGE_MS, locationJobs, slimJob } from "@/lib/day-snapshot";
+import { isValidDriverId, loadConfigFromSheets, loadDriversFromSheet } from "@/lib/config";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
 import type { Job, Stop } from "@/lib/types";
 
@@ -66,6 +67,27 @@ export async function GET(req: NextRequest) {
   const status = req.nextUrl.searchParams.get("status");
   const code = req.nextUrl.searchParams.get("code");
 
+  // ── ?drivers=1&code=…: the branch's configured drivers, for /qr's picker ──────────
+  // Fixed and smart drivers of every config row for this branch. The config and roster
+  // are in-process caches, so this costs no day read at all.
+  if (req.nextUrl.searchParams.get("drivers") === "1" && code) {
+    const [config, roster] = await Promise.all([
+      loadConfigFromSheets().catch(() => null), loadDriversFromSheet().catch(() => []),
+    ]);
+    const ids = new Set((config?.mappings ?? [])
+      .filter((m) => m.customer_id === code)
+      .flatMap((m) => [m.driver_id, ...(m.smart_driver_id ?? [])])
+      .filter((id): id is string => !!id && isValidDriverId(id)));
+    // A person with a full-time and a part-time account would otherwise be listed twice
+    // under one name; mark the PT one.
+    const names = new Map(roster.map((d) => [d.driver_id, stripDriverCode(d.name) + (/\bPT\d/i.test(d.name) ? " (PT)" : "")]));
+    const drivers = [...ids]
+      .map((driver_id) => ({ driver_id, name: names.get(driver_id) ?? "" }))
+      .filter((d) => d.name)
+      .sort((a, b) => a.name.localeCompare(b.name, "vi"));
+    return NextResponse.json({ drivers });
+  }
+
   if (!date || !status) {
     return NextResponse.json({ error: "Missing date or status" }, { status: 400 });
   }
@@ -74,7 +96,27 @@ export async function GET(req: NextRequest) {
     // Fast path (code-scoped): one slice of the shared day snapshot. Any failure
     // (including a throw) falls back to REST rather than 500ing the branch's feed.
     const feeders = code ? feedersOf(code) : new Set<string>();
-    if (code) {
+
+    // ── &driver=…: /qr shows trips only for the driver the branch picked ──────────────
+    // That driver's entry in the shared day, narrowed to trips touching this branch by
+    // the same rules as the branch feed. The day is never rebuilt for this: a few
+    // minutes behind is fine for a list someone asked to look at.
+    const driver = req.nextUrl.searchParams.get("driver");
+    if (code && driver) {
+      const theirs = await driverJobs(date, env, driver, { maxAgeMs: FEED_MAX_AGE_MS }).catch(() => null);
+      // Day unavailable: fall through to the REST path below, narrowed to this driver
+      // there — an empty list here would tell the branch the driver has nothing.
+      if (theirs) {
+        return NextResponse.json({
+          jobs: theirs
+            .filter((j) => matchesStatus(j.job_status_id, status))
+            .filter((j) => j.stops.some((s) => s.customer_id === code) || (code === LAB_CUSTOMER_ID && isLabWatchedClient(j)))
+            .filter((j) => keepOnBranchFeed(code, j, feeders)),
+        });
+      }
+    }
+
+    if (code && !driver) {
       const fresh = req.nextUrl.searchParams.get("fresh") === "1";
       const mine = await locationJobs(date, env, code, { fresh }).catch(() => null);
       if (mine) {
@@ -105,6 +147,7 @@ export async function GET(req: NextRequest) {
         .filter((j) => (j.stops ?? []).some((s: Stop) => s.customer_id === code)
           || (code === LAB_CUSTOMER_ID && isLabWatchedClient(j)))
         .filter((j) => keepOnBranchFeed(code, j, feeders))
+        .filter((j) => !driver || j.delivery_driver_id === driver)
         .map((j) => slimJob(j, driverDisplayName(j.driver)));
       return NextResponse.json({ jobs });
     }

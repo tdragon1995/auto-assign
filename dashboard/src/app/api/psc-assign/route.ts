@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { BASE_URL, getHeaders, cancelJob, jobVnDate, createJob, getJobDetails, getJobsByStatusAndDate, getLiveDrivers, type Env } from "@/lib/cartrack";
+import { BASE_URL, getHeaders, cancelJob, jobVnDate, createJob, getJobDetails, getJobsDetailsFast, getLiveDrivers, type Env } from "@/lib/cartrack";
 import { driverDisplayName, stripDriverCode } from "@/lib/job-detail";
 import { vnDate, vnHoursMinutes, vnMinutesSinceMidnight, vnTimestamp } from "@/lib/time";
 import { isBlockingPickupStop, isFarWindowPickup, isStopStarted, pscPairKey, PICKUP_PHOTO_TODO } from "@/lib/job-filters";
-import { PSC_VIA_LABEL } from "@/lib/via-legs";
 import { acquireCreateLock, releaseCreateLock, markPscPair, unmarkPscPair, lookupPscPair, type PscDupHit } from "@/lib/smart-log-kv";
-import { blockedPair, jobIsDone, slimJob } from "@/lib/day-snapshot";
-import type { Job, Stop } from "@/lib/types";
+import { slimJob } from "@/lib/day-snapshot";
+import { livePairDuplicate, shortCode } from "@/lib/psc-dup";
+import type { Stop } from "@/lib/types";
 import { loadConfigFromSheets } from "@/lib/config";
 import { loadLeaveEntries } from "@/lib/leave-config";
 import { resolveFixedDriver } from "@/lib/fixed-driver";
@@ -37,61 +37,6 @@ function releaseLock(key: string): void {
 }
 
 /**
- * Live duplicate check — the fallback used when the day snapshot cannot answer (Redis
- * down, Cartrack's timeline failing, or another caller holding the rebuild lock).
- * Scans today's Assign-Later (2) and Assigned (4) jobs for an active pickup at this
- * location with a matching dropoff. Same predicate the snapshot bakes into its pair
- * index, so the two paths can't reach different verdicts about the same day.
- *
- * Returns "unavailable" when the day could not be read. A caller must NOT read that as
- * a clear route: it used to, because the fetch it replaced answered a refused request
- * with an empty array, and an empty array is indistinguishable from a quiet morning.
- */
-async function liveDuplicateCheck(
-  pickup: string, dropoff: string, today: string, env: Env,
-): Promise<PscDupHit | null | "unavailable"> {
-  let jobs: Job[];
-  try {
-    // getJobsByStatusAndDate, not a local fetch: it filters on scheduled_delivery_ts
-    // (footgun 2 — a create_ts filter silently drops every scheduled job, which is most
-    // of what a PSC route is), pages to exhaustion rather than truncating at 1000, and
-    // THROWS when Cartrack refuses instead of returning nothing.
-    // Only statuses 2 + 4 can block re-booking; fetch both in parallel.
-    const [unassignedJobs, assignedJobs] = await Promise.all([
-      getJobsByStatusAndDate(2, today, env),
-      getJobsByStatusAndDate(4, today, env),
-    ]);
-    jobs = [...unassignedJobs, ...assignedJobs];
-  } catch (e) {
-    console.warn(`[psc-assign] live duplicate check failed: ${e instanceof Error ? e.message : String(e)}`);
-    return "unavailable";
-  }
-
-  // Block if a pickup stop is active (Created/En Route/Arrived) AND a dropoff matches.
-  // Allow re-booking once the pickup stop is Completed (4) or Rejected (5) — or carries
-  // a completion timestamp while the status still lags, see isBlockingPickupStop — or the
-  // job was cancelled (7) / failed (3). Via-legs are intentional double-coverage.
-  // (job/stop inferred from the any[] fetch results — no explicit annotation needed.)
-  const nowMin = vnMinutesSinceMidnight();
-  const duplicate = jobs.find((job) => {
-    if (job.job_status_id === 7 || job.job_status_id === 3) return false;
-    if ((job.labels ?? []).includes(PSC_VIA_LABEL)) return false;
-    const stops: Stop[] = job.stops ?? [];
-    const hasActivePickup = stops.some((s) =>
-      s.stop_type_id === 1 && s.customer_id === pickup && isBlockingPickupStop(s) && !isFarWindowPickup(s, nowMin),
-    );
-    const hasMatchingDropoff = stops.some((s) =>
-      s.stop_type_id === 2 && s.customer_id === dropoff,
-    );
-    return hasActivePickup && hasMatchingDropoff;
-  });
-
-  return duplicate
-    ? { job_id: duplicate.job_id, reference_number: duplicate.reference_number ?? null }
-    : null;
-}
-
-/**
  * Re-read one job live and re-test the blocking predicate. Returns false when the job
  * no longer blocks — its pickup has been collected, it was cancelled, or the pair no
  * longer matches — in which case the branch is free to send its next batch.
@@ -106,10 +51,15 @@ async function liveDuplicateCheck(
  */
 async function stillBlocking(hit: PscDupHit, pickup: string, dropoff: string, env: Env): Promise<boolean> {
   try {
-    const res = await fetch(`${BASE_URL}/jobs/${hit.job_id}`, { headers: getHeaders(env), cache: "no-store" });
-    if (res.status === 404) return false;
-    if (!res.ok) return true;
-    const job = (await res.json())?.data;
+    // The fleetweb job RPC answers in ~0.1s where the REST job read took 4-12s. It fails
+    // outright on a deleted job, so only that case pays the REST read and its exact 404.
+    let job = (await getJobsDetailsFast([hit.job_id], env).catch(() => null))?.[0];
+    if (!job) {
+      const res = await fetch(`${BASE_URL}/jobs/${hit.job_id}`, { headers: getHeaders(env), cache: "no-store" });
+      if (res.status === 404) return false;
+      if (!res.ok) return true;
+      job = (await res.json())?.data;
+    }
     if (!job) return true;
     if (job.job_status_id === 7 || job.job_status_id === 3) return false;
     const stops: Stop[] = job.stops ?? [];
@@ -173,10 +123,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // --- Duplicate check ---
-    // Reads the same day snapshot the branch's own feed renders, so the two can't
-    // disagree about whether a trip has left. Falls back to a live fetch when the day
-    // is unavailable, so correctness never depends on the cache.
+    // --- Duplicate check --- (live Cartrack search: see livePairDuplicate)
     // Everything the driver decision needs, started HERE so it overlaps the duplicate
     // check instead of queueing behind it. By the time the pair is cleared these have
     // landed, and putting the driver on the trip costs the booking nothing.
@@ -194,98 +141,36 @@ export async function POST(req: NextRequest) {
 
     const _tDup = Date.now();
     const pairKey = pscPairKey(pickup, dropoff);
-    // Two sources, one round of latency. The snapshot is the day as the assign cycle last
-    // published it — cheap, but up to GUARD_MAX_AGE_MS behind. The overlay is every pair
-    // THIS APP has booked, written the instant it was booked, which is precisely what the
-    // snapshot cannot yet know about. Reading both is what makes the cheap snapshot safe:
-    // a booking from 30 seconds ago is missing from one and present in the other.
-    const [overlayHit, lookup] = await Promise.all([
+    // Two sources, one round of latency. The live search is Cartrack's own answer for
+    // trips it has indexed. The overlay is every pair THIS APP booked today, written the
+    // instant it was booked — the one thing a search may not have indexed yet.
+    const [overlayHit, searchHit] = await Promise.all([
       lookupPscPair(today, pairKey),
-      blockedPair(today, env, pairKey),
+      livePairDuplicate(shortCode(psc_pickup), shortCode(dropoff_location), today, env),
     ]);
-    // The overlay names any pair THIS APP booked today, which is what makes the cheap
-    // snapshot safe. But it keeps naming that trip long after the samples have gone, and
-    // every later booking for the same route then paid a live job fetch to rediscover
-    // that. On 2026-08-18 that fetch was costing 4-12s of a branch's submit — measured
-    // across a morning of real bookings, it was the entire wait, with the trip creation
-    // itself only ~250ms.
-    //
-    // The published day can answer it for free. Its blocking-pair index is built from
-    // the same predicate the live re-check applies, so if the day was rebuilt AFTER this
-    // pair was booked and does not list it, the day has already looked at that trip and
-    // found it no longer blocking. Trusting it needs the "after" to be real: a snapshot
-    // older than the booking simply has not seen it, and treating that as clearance is
-    // how two drivers get sent for one box.
-    // Ask the stored day about the exact trip the overlay names. A collected pickup
-    // never uncollects, so an old picture showing the samples gone is as good as a new
-    // one — no freshness arithmetic required, which is where the first attempt at this
-    // went wrong: it demanded a day rebuilt AFTER the booking, and almost nothing
-    // qualified. Only the "still blocking" answer is time-sensitive, and that one still
-    // falls through to the live check below.
-    const clearedByDay =
-      overlayHit != null && (await jobIsDone(today, env, overlayHit.job_id)) === true;
+    plog(`dup-check: search ${Date.now() - _tDup}ms → ${searchHit === "unavailable" ? "unavailable" : searchHit ? `job ${searchHit.job_id}` : "clear"}${overlayHit ? ` (overlay job ${overlayHit.job_id})` : ""}`);
 
-    // What the DAY says about this pair, which is a different question from what the
-    // overlay says: the overlay names the last trip this app booked, the day names
-    // whatever is actually blocking. Memoised — the live fallback behind it is a real
-    // fetch, and both the first pass and the re-check below can ask for it.
-    let dayHit: PscDupHit | null | "unavailable" | undefined;
-    const fromDay = async (): Promise<PscDupHit | null | "unavailable"> =>
-      dayHit !== undefined
-        ? dayHit
-        : (dayHit = lookup ? lookup.hit : await liveDuplicateCheck(pickup, dropoff, today, env));
-
-    // A cleared overlay clears ONE TRIP, not the route. It used to clear the route: the
-    // candidate went straight to null and creation followed, so a pair whose morning run
-    // was finished could be booked on top of an afternoon trip the overlay had never
-    // named — one made in Cartrack directly, or by another branch's request. Ask the day.
-    const candidate = clearedByDay ? await fromDay() : (overlayHit ?? (await fromDay()));
-    plog(`dup-check: ${Date.now() - _tDup}ms (${clearedByDay ? "cleared-by-day" : overlayHit ? "overlay" : lookup ? `snapshot age=${lookup.ageMs}ms` : "live-fetch"})`);
-    if (clearedByDay && overlayHit) {
-      // Same self-heal as the stale-block path below: drop the entry the day has
-      // already superseded, so this pair stops being asked about at all.
-      void unmarkPscPair(today, pairKey, overlayHit.job_id).catch(() => {});
-    }
-
-    // Could not read the day at all. Not a clear route — an unanswered question, and the
-    // branch is told to retry rather than given a trip nobody checked. Both locks come
-    // off because nothing was created, so that retry can proceed at once. The sentence
-    // goes in `error`: the branch's page prints that verbatim for anything but a 409.
-    //
-    // 20 giây is the day-rebuild lock (LOCK_TTL_S): when another request is building the
-    // day, that is genuinely how long until the answer exists. The other two ways to get
-    // here — Cartrack refusing the job fetch, Redis unreachable — have no such clock, so
-    // the second half sends them to a person rather than round the loop again.
-    const unverified = () => {
-      releaseLock(lockKey!);
-      void releaseCreateLock(lockKey!);
+    // Could not ask Cartrack. Not a clear route — an unanswered question, and the branch
+    // is told to retry rather than given a trip nobody checked. Both locks come off
+    // because nothing was created, so that retry can proceed at once. The sentence goes
+    // in `error`: the branch's page prints that verbatim for anything but a 409.
+    if (searchHit === "unavailable") {
+      releaseLock(lockKey);
+      void releaseCreateLock(lockKey);
       return NextResponse.json(
-        { error: "Vui lòng thử lại sau 20 giây — nếu vẫn báo lỗi, liên hệ đội điều phối.", code: "unverified" },
+        { error: "Chưa kiểm tra được tuyến này. Vui lòng thử lại — nếu vẫn báo lỗi, liên hệ đội điều phối.", code: "unverified" },
         { status: 503 },
       );
-    };
-    if (candidate === "unavailable") return unverified();
+    }
 
-    // Never refuse a branch on a cached reading. A snapshot up to GUARD_MAX_AGE_MS old —
-    // or an overlay entry whose trip has since been collected — can still name a job that
-    // no longer blocks anything. That is exactly how D006 was told to wait for samples
-    // already on their way to D001. Confirming costs one job fetch and only happens on the
-    // rare path where we are about to say no.
-    let duplicate = candidate && (await stillBlocking(candidate, pickup, dropoff, env)) ? candidate : null;
-    if (candidate && !duplicate) {
-      plog(`dup-check: stale block on job ${candidate.job_id} — pickup already done, allowing`);
-      // Self-heal: drop the overlay entry that just cost a live fetch, so the NEXT booking
-      // for this pair doesn't pay for the same discovery again.
-      await unmarkPscPair(today, pairKey, candidate.job_id).catch(() => {});
-      // Disproving ONE suspect is not clearing the route, for the same reason the
-      // cleared-overlay path above is not. When the suspect came from the overlay the
-      // day may still be holding a different trip against this pair, and nothing had
-      // asked it. Same memoised read, so a suspect that came from the day costs nothing.
-      const second = await fromDay();
-      if (second === "unavailable") return unverified();
-      if (second && second.job_id !== candidate.job_id) {
-        duplicate = (await stillBlocking(second, pickup, dropoff, env)) ? second : null;
-      }
+    // The search is live, so a hit needs no second look. The overlay only matters when
+    // the search found nothing: its trip is then either collected already (a search for
+    // unfinished stops leaves it out) or too new to be indexed — one fast job read tells
+    // which, and a collected one is dropped so the next booking does not ask again.
+    let duplicate: PscDupHit | null = searchHit;
+    if (!duplicate && overlayHit) {
+      if (await stillBlocking(overlayHit, pickup, dropoff, env)) duplicate = overlayHit;
+      else await unmarkPscPair(today, pairKey, overlayHit.job_id).catch(() => {});
     }
 
     if (duplicate) {
@@ -307,7 +192,7 @@ export async function POST(req: NextRequest) {
     const { hours, minutes } = vnHoursMinutes();
     const hh = String(hours).padStart(2, "0");
     const mm = String(minutes).padStart(2, "0");
-    const refLabel = `${psc_pickup.replace(/^BRA\s*-\s*/i, "")}→${dropoff_location.replace(/^BRA\s*-\s*/i, "")}_${hh}:${mm}`;
+    const refLabel = `${shortCode(psc_pickup)}→${shortCode(dropoff_location)}_${hh}:${mm}`;
 
     // ── Who this trip is for, decided before it is created ────────────────────────
     // The roster answer is pure config — mapping row, shift window, leave, substitute —

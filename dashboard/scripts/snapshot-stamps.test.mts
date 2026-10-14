@@ -26,7 +26,7 @@ process.env.KV_REST_API_TOKEN = "local";
 delete process.env.CARTRACK_WEB_PASS;
 delete process.env.CARTRACK_WEB_PASS_UAT;
 
-const { publishSnapshot, locationJobs, blockedPair, invalidateSnapshot } =
+const { publishSnapshot, locationJobs, invalidateSnapshot } =
   await import("../src/lib/day-snapshot");
 const { pscPairKey } = await import("../src/lib/job-filters");
 const { markPscPair, unmarkPscPair, lookupPscPair } = await import("../src/lib/smart-log-kv");
@@ -99,11 +99,7 @@ check("feed serves published day", feed !== null && feed.length === 2,
 check("feed includes the unassigned job", (feed ?? []).some((j) => j.job_id === 900002));
 check("feed includes the assigned job", (feed ?? []).some((j) => j.job_id === 900001));
 
-// 2. The guard now READS the published day rather than rebuilding — that is the whole
-//    ~3s-per-booking saving. It must find the pair the published day contains.
-const guard = await blockedPair(DATE, "prod", pscPairKey(PICKUP, DROPOFF));
-check("guard reads the published day", guard !== null && guard.hit?.job_id === 900001,
-  guard === null ? "rebuilt — it is not reading the publish" : `job ${guard.hit?.job_id}, age ${guard.ageMs}ms`);
+// 2. (The booking guard no longer reads the day — it searches Cartrack live, 2026-10-14.)
 
 // 3. A newer publish wins; an older one is refused rather than overwriting.
 const stale = await publishSnapshot(DATE, "prod", timeline, unrouted, stamp - 60_000);
@@ -136,8 +132,6 @@ await publishSnapshot(DATE, "prod", timeline, unrouted, ++stamp);
 //    trip gets created. The overlay has to cover it, and be droppable again.
 const NEW_PAIR = pscPairKey("cust-psc-d007", "cust-lab-d001");
 await publishSnapshot(DATE, "prod", timeline, unrouted, ++stamp);
-check("a just-booked pair is absent from the published day",
-  (await blockedPair(DATE, "prod", NEW_PAIR))?.hit == null);
 await markPscPair(DATE, NEW_PAIR, { job_id: 900003, reference_number: "D007→D001_10:00" });
 const overlay = await lookupPscPair(DATE, NEW_PAIR);
 check("overlay covers it immediately", overlay?.job_id === 900003, `job ${overlay?.job_id}`);

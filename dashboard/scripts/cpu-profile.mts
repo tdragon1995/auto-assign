@@ -70,12 +70,12 @@ if (!routes) {
   const RUNS = 20; // average out GC and JIT noise
   const toJobs = measure("timelineRoutesToJobs", RUNS, () => timelineRoutesToJobs(routes));
   const jobs = toJobs.out;
-  const assemble = measure("assembleSnapshot (+buildPairs)", RUNS, () => assembleSnapshot(jobs, unrouted, Date.now()));
+  const assemble = measure("assembleSnapshot", RUNS, () => assembleSnapshot(jobs, unrouted, Date.now()));
   const snap = assemble.out;
   const serialize = measure("JSON.stringify (the Redis write)", RUNS, () => {
     const fields: Record<string, string> = {};
     for (const [id, j] of snap.jobs) fields[`j:${id}`] = JSON.stringify(j);
-    return JSON.stringify(snap.byLocation).length + JSON.stringify(snap.pairs).length + Object.keys(fields).length;
+    return JSON.stringify(snap.byLocation).length + Object.keys(fields).length;
   });
 
   const rows = [

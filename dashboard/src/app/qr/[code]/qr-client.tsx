@@ -640,6 +640,11 @@ export default function QrPage() {
   // pickup for a trip already on its way.
   const [loaded, setLoaded] = useState(false);
   const [pending, setPending] = useState<PendingReq[]>([]);
+  // Trips show only for a driver the branch picks — this branch's drivers in the config.
+  // The whole-branch list read the network's day on every look; one driver's entry is a
+  // fraction of that, and it is what a branch actually asks ("where is Nam?").
+  const [driverId, setDriverId] = useState("");
+  const [drivers, setDrivers] = useState<{ driver_id: string; name: string }[] | null>(null);
 
   // The driver's typed notes, keyed by job. Its own request because nothing the feed is
   // built from carries a todo. Asked for by the ids this feed is showing, so the answer
@@ -709,10 +714,11 @@ export default function QrPage() {
   // response, which is both faster and more truthful than re-reading a Cartrack listing
   // that may not have indexed the change yet.
   const loadJobs = useCallback(async () => {
+    if (!driverId) { setJobs([]); setLoaded(false); return; }
     lastLoadRef.current = Date.now();
     setLoading(true);
     try {
-      const res = await fetch(`/api/location-jobs?date=${date}&status=all&code=${encodeURIComponent(code)}`);
+      const res = await fetch(`/api/location-jobs?date=${date}&status=all&code=${encodeURIComponent(code)}&driver=${encodeURIComponent(driverId)}`);
       const data = await res.json();
       const list: Job[] = (data.jobs ?? [])
         .filter((j: Job) => (j.stops ?? []).length > 1)
@@ -742,7 +748,15 @@ export default function QrPage() {
       setLoading(false);
       setLoaded(true);
     }
-  }, [date, code]);
+  }, [date, code, driverId]);
+
+  // The picker's list. Config only — no day read — so it is fine to ask on open.
+  useEffect(() => {
+    fetch(`/api/location-jobs?drivers=1&code=${encodeURIComponent(code)}`)
+      .then((r) => r.json())
+      .then((d) => setDrivers(d.drivers ?? []))
+      .catch(() => setDrivers([]));
+  }, [code]);
 
   // No fetch on mount. Opening /qr is not by itself a request to read the day — most
   // visits are a branch scanning the QR to CALL a pickup, and every one of those was
@@ -1064,6 +1078,18 @@ export default function QrPage() {
           </div>
         )}
 
+        <select
+          value={driverId}
+          onChange={(e) => setDriverId(e.target.value)}
+          aria-label="Chọn Giao Nhận Mẫu để xem chuyến"
+          className="w-full mb-3 bg-white rounded-xl shadow-sm px-3 py-3 text-base text-slate-800"
+        >
+          <option value="">
+            {drivers === null ? "Đang tải Giao Nhận Mẫu…" : drivers.length ? "Chọn Giao Nhận Mẫu để xem chuyến" : "Chi nhánh chưa có Giao Nhận Mẫu trong cấu hình"}
+          </option>
+          {(drivers ?? []).map((d) => <option key={d.driver_id} value={d.driver_id}>{d.name}</option>)}
+        </select>
+
         {notesFailed && (
           <p role="alert" className="mb-3 px-3 py-2 rounded-xl text-[12px] font-semibold text-amber-700 bg-amber-50 border border-amber-200">
             Không tải được ghi chú giao nhận. Mở từng chuyến để xem.
@@ -1080,13 +1106,8 @@ export default function QrPage() {
               onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl}
               onChangeDriver={openChangeDriver} />
           ))}
-          {!loaded && !loading && (
-            <button
-              onClick={() => loadJobs()}
-              className="w-full py-7 rounded-2xl bg-white shadow-sm text-sm font-semibold text-blue-700 active:bg-slate-50"
-            >
-              Xem danh sách chuyến
-            </button>
+          {!driverId && !pending.length && (
+            <p className="text-center text-sm text-slate-500 py-7">Chọn Giao Nhận Mẫu ở trên để xem chuyến.</p>
           )}
           {loaded && !loading && !pending.length && !active.length && (
             <p className="text-center text-sm text-slate-500 py-7">
@@ -1124,12 +1145,10 @@ export default function QrPage() {
                 // read. "Chưa có chuyến nào hoàn thành" would then be asserting something
                 // we have not checked; offer to look instead.
                 !loaded && !loading && !doneQuery ? (
-                  <button onClick={() => loadJobs()} className="w-full py-5 text-center text-sm font-semibold text-blue-700 active:bg-slate-50">
-                    Xem chuyến đã xong
-                  </button>
+                  <p className="text-center text-sm text-slate-500 py-5">Chọn Giao Nhận Mẫu ở trên để xem chuyến đã xong.</p>
                 ) : (
                   <p className="text-center text-sm text-slate-500 py-5">
-                    {doneQuery ? `Không tìm thấy chuyến nào khớp “${doneQuery}”` : "Chưa có chuyến nào hoàn thành."}
+                    {doneQuery ? `Không tìm thấy chuyến nào khớp “${doneQuery}”` : loading ? "Đang tải…" : "Chưa có chuyến nào hoàn thành."}
                   </p>
                 )
               ) : doneShown.map((j) => {

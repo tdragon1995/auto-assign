@@ -1,9 +1,9 @@
 import type { Redis } from "@upstash/redis";
 import { sharedRedis } from "./redis";
 import { getTimelineJobs, getUnroutedJobs, type Env } from "./cartrack";
-import { isBlockingPickupStop, isFarWindowPickup, isLabWatchedClient, LAB_CUSTOMER_ID, pscPairKey, PSC_VIA_LABEL } from "./job-filters";
+import { isLabWatchedClient, LAB_CUSTOMER_ID } from "./job-filters";
 import { driverDisplayName } from "./job-detail";
-import { vnDate, vnMinutesSinceMidnight } from "./time";
+import { vnDate } from "./time";
 import type { Job, Stop } from "./types";
 
 /**
@@ -64,28 +64,6 @@ export const MAX_AGE_MS = 60_000;
  *  assign cycle already paid for rather than triggering a rebuild of its own. */
 export const FEED_MAX_AGE_MS = 300_000;
 
-/** How stale the DUPLICATE GUARD will accept. Sized to the assign cycle's ~180s cadence
- *  plus slack for jitter, because the cycle is what publishes the day — at anything below
- *  ~200s the guard would miss most publishes and rebuild anyway, which is the ~3s-per-
- *  booking cost this exists to remove (measured 2.4-3.5s against D030, 2026-08-11).
- *
- *  This used to be MAX_AGE_MS (60s) and the guard rebuilt on nearly every booking. Reading
- *  a published day is only safe because of two things that are NOT obvious:
- *
- *  1. Everything the APP books is recorded in the write-through pair overlay
- *     (markPscPair in smart-log-kv) the instant it is created, and psc-assign consults
- *     that alongside this. So the window this opens is not "any new trip" — it is only
- *     trips created OUTSIDE the app, i.e. by hand in Cartrack.
- *  2. The cycle's own follow-up creations cannot collide. Via-legs are excluded from the
- *     pair index by label, and a return trip is the INVERSE of a booking — return-trips.ts
- *     builds it "from where the outbound ended, back to the PSC" — while pscPairKey is
- *     directional. A booking asks D006|D001; a return trip is D001|D006.
- *
- *  Note the guard already tolerated 60s of staleness, so this widens an existing window
- *  rather than opening a new one. A cron that stalls simply pushes the age past this and
- *  the guard rebuilds live, which is the correct failure direction. */
-export const GUARD_MAX_AGE_MS = 240_000;
-
 /** Hash lifetime. Long enough that a quiet stretch doesn't force a cold rebuild,
  *  short enough that a stale day self-clears. Freshness is decided by __built__,
  *  not by this. */
@@ -105,16 +83,10 @@ const isPastDay = (date: string) => date < vnDate();
  *  don't all parse the day at once. The loser serves what's already cached. */
 const LOCK_TTL_S = 20;
 
-/** Freshness stamp: when the day this hash holds was FETCHED (not written).
- *
- *  There was briefly a second stamp here, so the duplicate guard could be kept off days
- *  published by the assign cycle while the branch feed rode them. That distinction is gone
- *  because the guard no longer needs it: every trip the app books is recorded in the
- *  write-through pair overlay (markPscPair) the moment it is created, so a published day
- *  being a few minutes behind can no longer hide one. What differs between readers now is
- *  only how much staleness each will accept — MAX_AGE_MS, FEED_MAX_AGE_MS,
- *  GUARD_MAX_AGE_MS — which is a number, not a second copy of the truth.
- */
+/** Freshness stamp: when the day this hash holds was FETCHED (not written). Readers
+ *  differ only in how much staleness they accept (MAX_AGE_MS, FEED_MAX_AGE_MS). The /qr
+ *  booking duplicate check no longer reads the day at all — it searches Cartrack live
+ *  (psc-assign, 2026-10-14), so the day carries no pair index. */
 const BUILT = "__built__";
 /** Changes on every atomic write. Readers compare it across their two HMGETs so an
  *  index can never be paired with job rows from a different snapshot. */
@@ -122,7 +94,6 @@ const REVISION = "__revision__";
 
 const IDX_LOC = "x:loc";
 const IDX_DRV = "x:drv";
-const IDX_PAIRS = "x:pairs";
 const jobField = (id: number) => `j:${id}`;
 
 /** One request performs the compare-and-swap and the complete hash mutation. This is
@@ -266,7 +237,6 @@ export interface SnapStop {
   delivery_windows: { time_from: string | null; time_to: string | null }[];
 }
 
-export interface PairHit { job_id: number; reference_number: string | null }
 
 function slimStop(s: Stop): SnapStop {
   return {
@@ -346,32 +316,10 @@ function slimUnrouted(j: any): SnapJob {
   };
 }
 
-/** pickup|dropoff pairs a new request would collide with. Mirrors what the assign cycle
- *  used to write on its own schedule — now rebuilt by whoever reads the day, so it can't
- *  sit frozen between cycles. */
-function buildPairs(jobs: SnapJob[]): Record<string, PairHit> {
-  const pairs: Record<string, PairHit> = {};
-  const nowMin = vnMinutesSinceMidnight();
-  for (const j of jobs) {
-    if (j.job_status_id === 7 || j.job_status_id === 3) continue;
-    if (j.labels.includes(PSC_VIA_LABEL)) continue;
-    const pickups = j.stops.filter((s) => s.stop_type_id === 1 && s.customer_id && isBlockingPickupStop(s) && !isFarWindowPickup(s, nowMin));
-    if (!pickups.length) continue;
-    const dropoffs = j.stops.filter((s) => s.stop_type_id === 2 && s.customer_id);
-    const hit: PairHit = { job_id: j.job_id, reference_number: j.reference_number };
-    for (const p of pickups) for (const d of dropoffs) {
-      const k = pscPairKey(p.customer_id!, d.customer_id!);
-      if (!(k in pairs)) pairs[k] = hit;
-    }
-  }
-  return pairs;
-}
-
 export interface Snapshot {
   jobs: Map<number, SnapJob>;
   byLocation: Record<string, number[]>;
   byDriver: Record<string, number[]>;
-  pairs: Record<string, PairHit>;
   builtAt: number;
 }
 
@@ -429,7 +377,7 @@ export function assembleSnapshot(
     if (j.delivery_driver_id) (byDriver[j.delivery_driver_id] ??= []).push(j.job_id);
   }
 
-  return { jobs, byLocation, byDriver, pairs: buildPairs(all), builtAt };
+  return { jobs, byLocation, byDriver, builtAt };
 }
 
 function serializeSnapshot(snap: Snapshot): Record<string, string> {
@@ -437,7 +385,6 @@ function serializeSnapshot(snap: Snapshot): Record<string, string> {
     [BUILT]: String(snap.builtAt),
     [IDX_LOC]: JSON.stringify(snap.byLocation),
     [IDX_DRV]: JSON.stringify(snap.byDriver),
-    [IDX_PAIRS]: JSON.stringify(snap.pairs),
   };
   for (const [id, j] of snap.jobs) fields[jobField(id)] = JSON.stringify(j);
   return fields;
@@ -777,69 +724,3 @@ async function readDriversSlice(
   return null;
 }
 
-/** The blocking job for one pickup→dropoff pair, or null when nothing blocks it.
- *  `stale` reports the snapshot's age so a caller about to REFUSE a user can decide to
- *  confirm against live data first — a refusal issued from a cached reading is how a
- *  branch gets told to wait for a trip that already left. */
-/**
- * Is this specific trip past the point where it could block a re-booking?
- *
- * Reads one job out of the stored day. Deliberately does NOT care how old that day is,
- * and that is the entire point: a collected pickup never becomes uncollected, a
- * cancelled job never uncancels. So a picture from four minutes ago showing the samples
- * already gone is exactly as conclusive as one from four seconds ago, and asking
- * Cartrack the same question live — which was costing a branch four seconds on every
- * booking of a route that had already run today — tells us nothing more.
- *
- * The reverse does NOT hold and is not claimed here: "still blocking a while ago" is no
- * evidence about now, so that answers false and the caller keeps its live check.
- *
- *   true  — done: cancelled, failed, or its pickup is completed/rejected. Safe to allow.
- *   false — the stored day still shows it blocking. Caller must verify live.
- *   null  — this day has never seen the trip (booked since it was built, or no day at
- *           all). Caller must verify live.
- */
-export async function jobIsDone(date: string, env: Env, jobId: number): Promise<boolean | null> {
-  const redis = getRedis();
-  if (!redis) return null;
-  try {
-    const row = await redis.hmget<Record<string, unknown>>(key(env, date), jobField(jobId));
-    const j = parse<SnapJob | null>(row?.[jobField(jobId)], null);
-    if (!j) return null;
-    if (j.job_status_id === 7 || j.job_status_id === 3) return true;
-    const pickups = j.stops.filter((st) => st.stop_type_id === 1);
-    if (!pickups.length) return null;
-    // Same predicate the pair index is built from, so the two can never disagree about
-    // the same trip.
-    return !pickups.some((st) => isBlockingPickupStop(st));
-  } catch {
-    return null;
-  }
-}
-
-export async function blockedPair(
-  date: string, env: Env, pairKey: string, opts: ReadOpts = {},
-): Promise<{ hit: PairHit | null; ageMs: number | null } | null> {
-  const redis = getRedis();
-  if (redis && !opts.fresh) {
-    try {
-      // BUILT, so a day the assign cycle published counts. See GUARD_MAX_AGE_MS for
-      // why that is safe — in short, the app's own bookings are covered by the pair
-      // overlay, and the cycle's follow-up trips run in the opposite direction.
-      const head = await redis.hmget<Record<string, unknown>>(key(env, date), BUILT, IDX_PAIRS);
-      const builtAt = Number(head?.[BUILT] ?? 0);
-      if (builtAt && Date.now() - builtAt < (opts.maxAgeMs ?? GUARD_MAX_AGE_MS)) {
-        const pairs = parse<Record<string, PairHit>>(head?.[IDX_PAIRS], {});
-        return { hit: pairs[pairKey] ?? null, ageMs: Date.now() - builtAt };
-      }
-    } catch { /* fall through */ }
-  }
-  // No unlocked buildSnapshot behind this. `rebuild` answers null when ANOTHER caller
-  // already holds the day's lock, and a second fleet-wide fetch alongside theirs is the
-  // one thing the lock exists to prevent — it was costing the duplicate guard a ~3s
-  // network rebuild precisely when the fleet was busiest. Null is a complete answer
-  // here: the guard's own live per-pair check is two status fetches, not a whole day.
-  const built = await rebuild(redis, date, env);
-  if (!built) return null;
-  return { hit: built.pairs[pairKey] ?? null, ageMs: 0 };
-}
