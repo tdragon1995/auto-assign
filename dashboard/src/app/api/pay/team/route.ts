@@ -38,6 +38,14 @@ export const runtime = "nodejs";
 export const maxDuration = 30;
 export const preferredRegion = "sin1";
 
+/** One day of one driver, for the expanded row on Lương PT. Times are VN HH:MM. */
+interface DayLine {
+  date: string; shift: string; tap_in: string | null; tap_out: string | null;
+  first_task: string | null; last_task: string | null; paid_from: string | null; paid_to: string | null;
+  worked_mins: number; bo_mins: number; multiplier: number; jobs: number; km: number;
+  hour_pay: number; km_pay: number; no_shift: boolean; corrected: boolean; pending: boolean;
+}
+
 interface DailyRow {
   driver_id: string;
   driver_name: string | null;
@@ -69,6 +77,11 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "month phải có dạng YYYY-MM" }, { status: 400 });
   }
   const { from, to } = payrollPeriod(month);
+  // ?driver=<id> — that driver's day-by-day lines, for the row an admin expands.
+  const detailFor = req.nextUrl.searchParams.get("driver");
+  if (detailFor && !/^[0-9a-f-]{36}$/i.test(detailFor)) {
+    return NextResponse.json({ ok: false, error: "driver không hợp lệ" }, { status: 400 });
+  }
 
   try {
     // ?detail=1 — the per-job lines behind the totals, for the CSV. Fetched only
@@ -140,7 +153,7 @@ export async function GET(req: NextRequest) {
       /** Punches bucketed BY DAY: the hours rule is a within-day rule. */
       byDay: Map<string, PayPunch[]>;
       /** First pickup / last dropoff per day, for the hours rule. */
-      tasks: Map<string, { first: string | null; last: string | null; away: string | null }>;
+      tasks: Map<string, { first: string | null; last: string | null; away: string | null; km: number; jobs: number }>;
       /** Days with any activity at all — a day worked with no dispatch counts. */
       days: Set<string>;
     }
@@ -157,7 +170,7 @@ export async function GET(req: NextRequest) {
       e.km += num(d.total_km);
       e.jobs += d.jobs_total;
       e.unpriced += d.jobs_total - d.jobs_priced;
-      e.tasks.set(d.trip_date, { first: d.first_pickup_ts, last: d.last_dropoff_ts, away: d.first_away_ts });
+      e.tasks.set(d.trip_date, { first: d.first_pickup_ts, last: d.last_dropoff_ts, away: d.first_away_ts, km: num(d.total_km), jobs: d.jobs_total });
       e.days.add(d.trip_date);
     }
     for (const p of punches) {
@@ -187,7 +200,8 @@ export async function GET(req: NextRequest) {
         let boMins = 0;
         let noShiftDays = 0;
         const code = staffCode(names.get(driver_id) || e.name);
-        for (const date of e.days) {
+        const lines: DayLine[] = [];
+        for (const date of [...e.days].sort()) {
           const t = e.tasks.get(date);
           const w = paidDay(e.byDay.get(date) ?? [], {
             date,
@@ -199,6 +213,22 @@ export async function GET(req: NextRequest) {
           }, code);
           mins += w.minutes;
           boMins += w.bo_minutes;
+          if (driver_id === detailFor) {
+            const s = suggestedWindow(e.byDay.get(date) ?? [], t?.first ?? null, t?.last ?? null, date);
+            const dayKm = Math.round((t?.km ?? 0) * 100) / 100;
+            lines.push({
+              date,
+              shift: (inputs.shifts.get(dayKey(driver_id, date)) ?? []).map((x) => `${x.start}–${x.end}`).join(", "),
+              tap_in: hhmm(s.first_in), tap_out: hhmm(s.last_out),
+              first_task: hhmm(t?.first ?? null), last_task: hhmm(t?.last ?? null),
+              paid_from: hhmm(w.spans[0]?.from ?? null), paid_to: hhmm(w.spans.at(-1)?.to ?? null),
+              worked_mins: w.minutes, bo_mins: w.bo_minutes, multiplier: w.multiplier,
+              jobs: t?.jobs ?? 0, km: dayKm,
+              hour_pay: hoursPayFor(w.minutes, w.bo_minutes), km_pay: kmPayFor(dayKm),
+              no_shift: w.no_shift, corrected: w.corrected,
+              pending: inputs.latest.get(dayKey(driver_id, date))?.status === "pending",
+            });
+          }
           if (w.no_shift) {
             noShiftDays++;
             const s = suggestedWindow(e.byDay.get(date) ?? [], t?.first ?? null, t?.last ?? null, date);
@@ -234,6 +264,7 @@ export async function GET(req: NextRequest) {
           no_shift_days: noShiftDays,
           /** Completed jobs with no distance: paid 0 km until priced. */
           unpriced_jobs: e.unpriced,
+          ...(driver_id === detailFor ? { days: lines } : {}),
         };
       });
 

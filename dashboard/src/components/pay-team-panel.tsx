@@ -19,8 +19,8 @@
  * (drivers' requests to correct a day, waiting for a decision).
  */
 
-import { useCallback, useEffect, useState } from "react";
-import { Loader2, AlertCircle, Download, ChevronLeft, ChevronRight, Search, X, Upload } from "lucide-react";
+import { Fragment, useCallback, useEffect, useState } from "react";
+import { Loader2, AlertCircle, Download, ChevronLeft, ChevronRight, ChevronDown, Search, X, Upload } from "lucide-react";
 import * as XLSX from "xlsx";
 import { parsePayrollSheet } from "@/lib/pay-shifts";
 import { foldName } from "@/lib/driver-cell";
@@ -121,8 +121,78 @@ function defaultMonth(): string {
   return vnNow;
 }
 
+/** One day of one driver, as /api/pay/team?driver= returns it. */
+interface DayLine {
+  date: string; shift: string; tap_in: string | null; tap_out: string | null;
+  first_task: string | null; last_task: string | null; paid_from: string | null; paid_to: string | null;
+  worked_mins: number; bo_mins: number; multiplier: number; jobs: number; km: number;
+  hour_pay: number; km_pay: number; no_shift: boolean; corrected: boolean; pending: boolean;
+}
+const span = (a: string | null, b: string | null) => (a || b ? `${a ?? "?"}–${b ?? "?"}` : "—");
+
+/** The days behind one driver's totals, loaded when the row is opened. */
+function DriverDays({ month, driverId }: { month: string; driverId: string }) {
+  const [days, setDays] = useState<DayLine[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    fetch(`/api/pay/team?month=${month}&driver=${driverId}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (!live) return;
+        if (!j.ok) { setError(j.error ?? "Không tải được chi tiết."); return; }
+        setDays(j.drivers?.find((d: { driver_id: string }) => d.driver_id === driverId)?.days ?? []);
+      })
+      .catch(() => live && setError("Không kết nối được máy chủ."));
+    return () => { live = false; };
+  }, [month, driverId]);
+  if (error) return <p className="px-4 py-3 text-sm text-red-600">{error}</p>;
+  if (!days) return <p className="flex items-center gap-2 px-4 py-3 text-sm text-slate-500"><Loader2 className="size-4 animate-spin" />Đang tải từng ngày…</p>;
+  if (!days.length) return <p className="px-4 py-3 text-sm text-slate-500">Không có ngày làm trong kỳ.</p>;
+  return (
+    <div className="overflow-x-auto px-3 py-2">
+      <table className="w-full text-xs">
+        <thead className="text-left text-[11px] text-slate-500">
+          <tr>
+            <th className="px-2 py-1 font-semibold">Ngày</th>
+            <th className="px-2 py-1 font-semibold">Ca</th>
+            <th className="px-2 py-1 font-semibold">Chấm công</th>
+            <th className="px-2 py-1 font-semibold">Chuyến</th>
+            <th className="px-2 py-1 font-semibold" title="Khoảng được tính giờ theo quy tắc">Tính giờ</th>
+            <th className="px-2 py-1 text-right font-semibold">Giờ</th>
+            <th className="px-2 py-1 text-right font-semibold">Chuyến · km</th>
+            <th className="px-2 py-1 text-right font-semibold">Tiền (đ)</th>
+            <th className="px-2 py-1 font-semibold"><span className="sr-only">Ghi chú</span></th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100 tabular-nums">
+          {days.map((d) => (
+            <tr key={d.date} className={d.no_shift ? "bg-amber-50" : ""}>
+              <td className="px-2 py-1 whitespace-nowrap">{d.date.slice(8, 10)}/{d.date.slice(5, 7)} <span className="text-slate-400">{["CN", "T2", "T3", "T4", "T5", "T6", "T7"][new Date(`${d.date}T00:00:00Z`).getUTCDay()]}</span></td>
+              <td className="px-2 py-1">{d.shift || <span className="text-amber-700">Không ca</span>}</td>
+              <td className="px-2 py-1">{span(d.tap_in, d.tap_out)}</td>
+              <td className="px-2 py-1">{span(d.first_task, d.last_task)}</td>
+              <td className="px-2 py-1">{span(d.paid_from, d.paid_to)}</td>
+              <td className="px-2 py-1 text-right">{fmtHours(d.worked_mins)}</td>
+              <td className="px-2 py-1 text-right">{d.jobs} · {vnd.format(d.km)}</td>
+              <td className="px-2 py-1 text-right font-medium text-slate-800" title={`${fmtVnd(d.hour_pay)} giờ + ${fmtVnd(d.km_pay)} km`}>{vnd.format(Math.round(d.hour_pay + d.km_pay))}</td>
+              <td className="px-2 py-1 text-[11px] whitespace-nowrap">
+                {d.corrected && <span className="mr-1 text-indigo-700">Đã duyệt</span>}
+                {d.pending && <span className="mr-1 text-amber-700">Chờ duyệt</span>}
+                {d.bo_mins > 0 && <span className="mr-1 text-emerald-700">BO {fmtHours(d.bo_mins)}</span>}
+                {d.multiplier > 1 && <span className="text-rose-700">Lễ ×{d.multiplier}</span>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export function PayTeamPanel() {
   const [month, setMonth] = useState<string>(defaultMonth);
+  const [open, setOpen] = useState<string | null>(null);
   const [data, setData] = useState<PayTeamReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -459,9 +529,18 @@ export function PayTeamPanel() {
             </thead>
             <tbody className="divide-y divide-slate-100">
               {shown.map((d, i) => (
-                // No hover highlight: it promised a row click that does not exist.
-                <tr key={d.driver_id}>
+                <Fragment key={d.driver_id}>
+                <tr className={open === d.driver_id ? "bg-slate-50" : ""}>
                   <td className="px-3 py-2">
+                    <button
+                      type="button"
+                      onClick={() => setOpen((o) => (o === d.driver_id ? null : d.driver_id))}
+                      aria-expanded={open === d.driver_id}
+                      aria-label={`Xem từng ngày của ${d.driver_name}`}
+                      className="mr-1 inline-flex size-6 items-center justify-center rounded text-slate-500 hover:bg-slate-200 hover:text-slate-800 align-middle"
+                    >
+                      <ChevronDown className={`size-4 transition-transform ${open === d.driver_id ? "" : "-rotate-90"}`} />
+                    </button>
                     <span className="text-slate-500 text-xs mr-1.5">{i + 1}</span>
                     {/* The staff code and the FT/PT chip both stay: about a dozen
                         drivers hold a part-time and a full-time account under one
@@ -490,6 +569,10 @@ export function PayTeamPanel() {
                       : <span className="text-slate-500">—</span>}
                   </td>
                 </tr>
+                {open === d.driver_id && (
+                  <tr><td colSpan={8} className="bg-slate-50 p-0 border-b border-slate-200"><DriverDays month={month} driverId={d.driver_id} /></td></tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>
