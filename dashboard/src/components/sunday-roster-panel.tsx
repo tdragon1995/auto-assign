@@ -9,7 +9,7 @@ import { areaKey, rosterGaps, rosterSunday, validShift, type RosterLine, type Ro
 import type { ConfigDriver } from "@/lib/types";
 
 const box = "w-full rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-900 placeholder:text-slate-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:opacity-60";
-const field = `h-9 ${box}`;
+const field = `h-8 ${box}`;
 const dmy = (d: string) => `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}`;
 
 /**
@@ -112,6 +112,15 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
   const active = useMemo(() => new Map(drivers.map((d) => [d.driver_id, d.name])), [drivers]);
   const label = (id: string) => active.get(id) ?? week?.names[id] ?? id;
   const gaps = useMemo(() => rosterGaps(lines, week?.areas ?? []), [lines, week]);
+  // Everything with nobody on it: areas Sunday rules need, and every empty line,
+  // whether or not a rule points at its area (an empty slot is still a gap).
+  const missing = useMemo(() => {
+    const seen = new Set<string>(), out: string[] = [];
+    for (const area of [...gaps.uncovered.map((a) => a.area), ...lines.filter((l) => l.area && !l.driver_id).map((l) => l.area)]) {
+      if (!seen.has(areaKey(area))) { seen.add(areaKey(area)); out.push(area); }
+    }
+    return out;
+  }, [gaps, lines]);
   const areaOptions = useMemo(() => {
     const opts = [...(week?.areas ?? [])];
     const known = new Set(opts.map((a) => areaKey(a.area)));
@@ -156,13 +165,10 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
         </p>
       )}
 
-      {!loading && !error && gaps.uncovered.length > 0 && (
+      {!loading && !error && missing.length > 0 && (
         <div role="status" className="flex gap-2 border-b border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
           <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-          <p>
-            <span className="font-medium">Chưa có tài xế — các quy tắc này sẽ không được phân công: </span>
-            {gaps.uncovered.map((a) => `${a.area} (${a.rules} quy tắc)`).join(" · ")}
-          </p>
+          <p><span className="font-medium">Chưa có tài xế: </span>{missing.join(" · ")}</p>
         </div>
       )}
 
@@ -190,12 +196,12 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
           <table className="w-full min-w-[56rem] text-sm">
             <thead className="sticky top-0 z-10 bg-slate-50 text-left text-xs font-medium text-slate-600">
               <tr>
-                <th className="w-10 p-2">#</th>
-                <th className="w-[30%] p-2">Khu vực</th>
-                <th className="p-2">Tài xế</th>
-                <th className="w-36 p-2">Ca</th>
-                <th className="w-[22%] p-2">Ghi chú</th>
-                <th className="w-10 p-2"><span className="sr-only">Xoá</span></th>
+                <th className="w-10 px-2 py-1.5">#</th>
+                <th className="w-[30%] px-2 py-1.5">Khu vực</th>
+                <th className="px-2 py-1.5">Tài xế</th>
+                <th className="w-36 px-2 py-1.5">Ca</th>
+                <th className="w-[22%] px-2 py-1.5">Ghi chú</th>
+                <th className="w-10 px-2 py-1.5"><span className="sr-only">Xoá</span></th>
               </tr>
             </thead>
             <tbody>
@@ -206,35 +212,33 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
                 const tone = !l.driver_id ? "bg-red-50" : off?.kind === "resigned" ? "bg-slate-200" : off ? "bg-slate-50 text-slate-500" : "";
                 return (
                   <tr key={l.k} className={`border-t border-slate-200 align-top ${tone}`}>
-                    <td className="p-2 pt-4 text-xs tabular-nums text-slate-500">{i + 1}</td>
-                    <td className="p-2">
+                    <td className="px-2 py-1 pt-2.5 text-xs tabular-nums text-slate-500">{i + 1}</td>
+                    <td className="px-2 py-1">
                       <select aria-label={`Khu vực dòng ${i + 1}`} className={field} value={l.area} disabled={saving}
                         onChange={(e) => edit(i, { area: e.target.value })}>
                         {!l.area && <option value="">Chọn khu vực…</option>}
-                        {areaOptions.map((a) => <option key={a.area} value={a.area}>{a.rules ? `${a.area} · ${a.rules} quy tắc` : a.area}</option>)}
+                        {areaOptions.map((a) => <option key={a.area} value={a.area}>{a.area}</option>)}
                       </select>
-                      {l.area && gaps.unused.has(areaKey(l.area)) && <p className="mt-1 text-xs text-slate-500">Không quy tắc Chủ nhật nào dùng khu vực này</p>}
                     </td>
-                    <td className="p-2">
+                    <td className="px-2 py-1">
                       <DriverCombobox max={1} drivers={drivers} ariaLabel={`Tài xế dòng ${i + 1}`} placeholder="Chưa có người"
                         names={l.driver_id ? [label(l.driver_id)] : []}
                         onChange={(_, picked) => edit(i, { driver_id: picked?.driver_id ?? null, raw_name: null })} />
-                      {!l.driver_id && <p className="mt-1 text-xs font-medium text-red-700">Chưa có người</p>}
-                      {off && <p className={`mt-1 inline-block rounded px-1.5 py-0.5 text-xs font-medium ${off.kind === "resigned" ? "bg-slate-900 text-white" : "bg-slate-300 text-slate-800"}`}>{off.label}</p>}
-                      {inactive && !off && <p className="mt-1 text-xs text-amber-800">Tài khoản đã ngừng hoạt động — chọn người khác</p>}
-                      {!l.driver_id && l.raw_name && <p className="mt-1 text-xs text-amber-800">Tên “{l.raw_name}” chưa khớp tài xế nào</p>}
+                      {off && <p className={`mt-0.5 inline-block rounded px-1.5 py-0.5 text-xs font-medium ${off.kind === "resigned" ? "bg-slate-900 text-white" : "bg-slate-300 text-slate-800"}`}>{off.label}</p>}
+                      {inactive && !off && <p className="mt-0.5 text-xs text-amber-800">Tài khoản đã ngừng hoạt động — chọn người khác</p>}
+                      {!l.driver_id && l.raw_name && <p className="mt-0.5 text-xs text-amber-800">Tên “{l.raw_name}” chưa khớp tài xế nào</p>}
                     </td>
-                    <td className="p-2">
+                    <td className="px-2 py-1">
                       <input aria-label={`Ca dòng ${i + 1}`} aria-invalid={!validShift(l.shift)}
                         className={`${validShift(l.shift) ? field : field.replace("border-slate-300", "border-red-600")} tabular-nums`}
                         placeholder="06:00 - 15:00" value={l.shift} disabled={saving} onChange={(e) => edit(i, { shift: e.target.value })} />
                     </td>
-                    <td className="p-2">
-                      <textarea aria-label={`Ghi chú dòng ${i + 1}`} rows={1} className={`${box} min-h-9 py-1.5`}
+                    <td className="px-2 py-1">
+                      <textarea aria-label={`Ghi chú dòng ${i + 1}`} rows={1} className={`${box} min-h-8 py-1`}
                         value={l.note} disabled={saving} onChange={(e) => edit(i, { note: e.target.value })} />
                     </td>
-                    <td className="p-2">
-                      <Button variant="ghost" size="icon" className="text-red-700" aria-label={`Xoá dòng ${i + 1}`} disabled={saving}
+                    <td className="px-2 py-1">
+                      <Button variant="ghost" size="icon" className="size-8 text-red-700" aria-label={`Xoá dòng ${i + 1}`} disabled={saving}
                         onClick={() => { setLines((prev) => prev.filter((_, j) => j !== i)); setDirty(true); }}><Trash2 className="size-4" /></Button>
                     </td>
                   </tr>
@@ -249,20 +253,6 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
         <p className="text-xs text-slate-600">
           {loading ? "Đang đọc Supabase" : `${lines.length} dòng${unsaved ? " · chưa lưu" : ""} · Supabase · Chưa dùng để phân công — động cơ vẫn đọc Google Sheet`}
         </p>
-        {!loading && !error && (
-          <p className="flex flex-wrap items-center gap-3 text-xs text-slate-600" aria-label="Chú thích màu">
-            <span className="inline-flex items-center gap-1"><span aria-hidden="true" className="size-3 rounded-sm border border-red-300 bg-red-50" />Chưa có người</span>
-            <span className="inline-flex items-center gap-1"><span aria-hidden="true" className="size-3 rounded-sm bg-slate-300" />Nghỉ phép</span>
-            <span className="inline-flex items-center gap-1"><span aria-hidden="true" className="size-3 rounded-sm bg-slate-900" />Nghỉ việc</span>
-          </p>
-        )}
-        {!loading && !error && (
-          <p className="flex flex-wrap items-center gap-3 text-xs text-slate-600" aria-label="Chú thích màu">
-            <span className="inline-flex items-center gap-1"><span aria-hidden="true" className="size-3 rounded-sm border border-red-300 bg-red-50" />Chưa có người</span>
-            <span className="inline-flex items-center gap-1"><span aria-hidden="true" className="size-3 rounded-sm bg-slate-300" />Nghỉ phép</span>
-            <span className="inline-flex items-center gap-1"><span aria-hidden="true" className="size-3 rounded-sm bg-slate-900" />Nghỉ việc</span>
-          </p>
-        )}
         {!loading && !error && (
           <p className="flex flex-wrap items-center gap-3 text-xs text-slate-600" aria-label="Chú thích màu">
             <span className="inline-flex items-center gap-1"><span aria-hidden="true" className="size-3 rounded-sm border border-red-300 bg-red-50" />Chưa có người</span>
