@@ -28,7 +28,12 @@ export const runtime = "nodejs";
 export const preferredRegion = "sin1";
 export const maxDuration = 60;
 
-const KINDS = { KQ: "Kết quả", VT: "Vật tư" } as const;
+// What the PSC sends; KV is both at once — one trip carrying both items.
+const KINDS = {
+  KQ: { text: "Kết quả", items: ["📄 Kết quả"] },
+  VT: { text: "Vật tư", items: ["📦 Vật tư"] },
+  KV: { text: "Kết quả + Vật tư", items: ["📄 Kết quả", "📦 Vật tư"] },
+} as const;
 type Kind = keyof typeof KINDS;
 const MAX_CLIENTS = 10;
 const NOTE_MAX = 300;
@@ -86,7 +91,7 @@ function parse(body: unknown): string | Delivery[] {
   const out: Delivery[] = [];
   for (const d of list as Record<string, unknown>[]) {
     if (typeof d?.customer_id !== "string") return "Khách hàng không hợp lệ.";
-    if (d.kind !== "KQ" && d.kind !== "VT") return "Chọn Kết quả hoặc Vật tư.";
+    if (typeof d.kind !== "string" || !Object.hasOwn(KINDS, d.kind)) return "Chọn Kết quả, Vật tư hoặc cả hai.";
     const note = typeof d.note === "string" ? d.note.trim() : "";
     if (note.length > NOTE_MAX) return `Ghi chú tối đa ${NOTE_MAX} ký tự.`;
     const files = Array.isArray(d.files) ? (d.files as UploadFile[]) : [];
@@ -95,7 +100,7 @@ function parse(body: unknown): string | Delivery[] {
       if (typeof f?.name !== "string" || f.name.length > 120 || typeof f.dataUrl !== "string" || !DATA_URL.test(f.dataUrl)) return "Chỉ nhận ảnh hoặc PDF.";
       bytes += Math.floor((f.dataUrl.length - f.dataUrl.indexOf(",") - 1) * 3 / 4);
     }
-    out.push({ customer_id: d.customer_id, kind: d.kind, note, files });
+    out.push({ customer_id: d.customer_id, kind: d.kind as Kind, note, files });
   }
   if (bytes > MAX_PROOF_BYTES) return "Ảnh quá lớn — tối đa 3 MB tổng cộng.";
   return out;
@@ -155,8 +160,8 @@ export async function POST(req: NextRequest) {
         if (!full) { await failed(d.customer_id, "không có khách hàng này trên Cartrack"); continue; }
         const client = placeLabel(full);
         const reference = `${psc}→${client.slice(0, 60)}_${hm}`;
-        const icon = d.kind === "KQ" ? "📄" : "📦";
-        const note = [`${icon} ${KINDS[d.kind]}${d.note ? ` — ${d.note}` : ""}`, ...mine.map((u, i) => `Ảnh ${i + 1}: ${u}`)].join("\n");
+        const items = KINDS[d.kind].items;
+        const note = [`${items.join(" + ")}${d.note ? ` — ${d.note}` : ""}`, ...mine.map((u, i) => `Ảnh ${i + 1}: ${u}`)].join("\n");
         sent = true;
         const res = await createJob({
           job_type_id: 1,
@@ -167,10 +172,10 @@ export async function POST(req: NextRequest) {
             { stop_type_id: 1, customer_id: route.pickup, duration: 5, note, todos: [PICKUP_PHOTO_TODO] },
             { stop_type_id: 2, customer_id: d.customer_id, duration: 10, note, todos: [] },
           ],
-          items: [{ description: `${icon} ${KINDS[d.kind]}`, weight: 0, item_type_id: 1, quantity: 1, tracking_number: "" }],
+          items: items.map((description) => ({ description, weight: 0, item_type_id: 1, quantity: 1, tracking_number: "" })),
         });
         if (res.ok) {
-          await pushRunLog([{ ts: vnTimestamp(), level: "INFO", msg: `Job ${res.body?.data?.job_id} - ${KINDS[d.kind]} chờ điều phối | ${psc} → ${client}` }]).catch(() => {});
+          await pushRunLog([{ ts: vnTimestamp(), level: "INFO", msg: `Job ${res.body?.data?.job_id} - ${KINDS[d.kind].text} chờ điều phối | ${psc} → ${client}` }]).catch(() => {});
         } else {
           console.error("[psc-delivery] create failed:", res.status, JSON.stringify(res.body).slice(0, 300));
           await failed(client, res.status >= 500 ? `chưa xác nhận được (${res.status}), kiểm tra trước khi tạo lại` : `Cartrack từ chối (${res.status})`);

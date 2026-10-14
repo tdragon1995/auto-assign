@@ -13,7 +13,8 @@ import { MAX_PROOF_FILES } from "@/lib/pay-corrections";
 import { placeLabel } from "@/lib/place-label";
 
 interface Customer { customer_id: string; customer_name: string; address_line_1?: string | null }
-interface Row { c: Customer; kind: "KQ" | "VT"; note: string; files: File[] }
+const KINDS = [["KQ", "Kết quả"], ["VT", "Vật tư"], ["KV", "Kết quả + Vật tư"]] as const;
+interface Row { c: Customer; kind: (typeof KINDS)[number][0]; note: string; files: File[] }
 
 export function DeliveryBooking({ pickup }: { pickup: string }) {
   const [open, setOpen] = useState(false);
@@ -134,11 +135,11 @@ export function DeliveryBooking({ pickup }: { pickup: string }) {
             </div>
             <button aria-label="Bỏ khách hàng" onClick={() => setRows(rows.filter((_, k) => k !== i))} className="p-2 -m-1 text-slate-500"><X className="w-4 h-4" /></button>
           </div>
-          <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-lg" role="radiogroup">
-            {(["KQ", "VT"] as const).map((k) => (
+          <div className="grid grid-cols-3 gap-1 p-1 bg-slate-100 rounded-lg" role="radiogroup">
+            {KINDS.map(([k, label]) => (
               <button key={k} role="radio" aria-checked={r.kind === k} onClick={() => set(i, { kind: k })}
-                className={`min-h-[40px] rounded-md text-sm font-semibold ${r.kind === k ? "bg-white shadow-sm text-blue-700" : "text-slate-600"}`}>
-                {k === "KQ" ? "Kết quả" : "Vật tư"}
+                className={`min-h-[40px] px-1 rounded-md text-sm leading-tight font-semibold ${r.kind === k ? "bg-white shadow-sm text-blue-700" : "text-slate-600"}`}>
+                {label}
               </button>
             ))}
           </div>
