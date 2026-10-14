@@ -3,19 +3,22 @@
  *
  *   GET  ?q=…  search the Cartrack customer directory (accent-insensitive, 15 hits)
  *   POST       { pickup, deliveries: [{ customer_id, kind, note, files }] }
- *              → ONE trip per client, PSC → client, created UNASSIGNED with
- *                PSC_DELIVERY_LABEL so the engine leaves it to the dispatcher.
+ *              → 202 at once; then ONE trip per client, PSC → client, created
+ *                UNASSIGNED with PSC_DELIVERY_LABEL so the engine leaves it to the
+ *                dispatcher. Reference "D002→Mai Hoàng Anh_05:43" (short client name).
+ *   GET  (no q) warms the directory — the form calls it when it opens.
  *
  * Photos/files ride as public links in the drop-off note, uploaded through the same
  * Cartrack carrier as "Cập nhật công" (lib/cartrack-files.ts). The /qr page is open
  * to anyone with the link, so the pickup must be a known PSC and every client a real
  * Cartrack customer; the search never hands out the whole directory.
  */
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { BASE_URL, getHeaders, createJob } from "@/lib/cartrack";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
 import { PSC_DELIVERY_LABEL, PICKUP_PHOTO_TODO } from "@/lib/job-filters";
 import { shortCode } from "@/lib/psc-dup";
+import { placeLabel } from "@/lib/place-label";
 import { indexCustomer, rankCustomers, type Customer, type Indexed } from "@/lib/customer-search";
 import { vnHoursMinutes, vnTimestamp } from "@/lib/time";
 import { acquireCreateLock, releaseCreateLock, pushRunLog } from "@/lib/smart-log-kv";
@@ -98,71 +101,85 @@ function parse(body: unknown): string | Delivery[] {
   return out;
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Answers as soon as the request is checked and locked; the upload and the creates run
+ * in after() (supervisor, 2026-10-15: the PSC should not wait ~5s per trip). The
+ * branch therefore never hears about a failed create — it lands in the run log as an
+ * ERROR line for the dispatcher, who is the one acting on these trips anyway.
+ */
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
   const route = PSC_ROUTES.find((r) => r.pickup === body?.pickup);
   if (!route) return NextResponse.json({ error: "Chi nhánh không hợp lệ." }, { status: 400 });
   const deliveries = parse(body);
   if (typeof deliveries === "string") return NextResponse.json({ error: deliveries }, { status: 400 });
-
-  let lockKey: string | null = null;
-  let sent = false;
+  if (deliveries.some((d) => !UUID.test(d.customer_id))) {
+    return NextResponse.json({ error: "Khách hàng không hợp lệ." }, { status: 400 });
+  }
+  const allFiles = deliveries.flatMap((d) => d.files);
+  if (allFiles.length && !proofUploadConfigured()) {
+    return NextResponse.json({ error: "Chưa gửi được ảnh lúc này — báo điều phối." }, { status: 503 });
+  }
+  // A double tap re-sends the same set; one lock over the whole booking stops the twin.
+  const lockKey = `psc-delivery:${route.pickup}:${deliveries.map((d) => d.customer_id).sort().join(",")}`;
   try {
-    const known = await directory();
-    if (deliveries.some((d) => !known.has(d.customer_id))) {
-      return NextResponse.json({ error: "Không tìm thấy khách hàng trên Cartrack." }, { status: 400 });
-    }
-    const allFiles = deliveries.flatMap((d) => d.files);
-    if (allFiles.length && !proofUploadConfigured()) {
-      return NextResponse.json({ error: "Chưa gửi được ảnh lúc này — báo điều phối." }, { status: 503 });
-    }
-    // A double tap re-sends the same set; one lock over the whole booking stops the twin.
-    const ids = deliveries.map((d) => d.customer_id).sort().join(",");
-    lockKey = `psc-delivery:${route.pickup}:${ids}`;
     if (!(await acquireCreateLock(lockKey))) {
-      lockKey = null;
       return NextResponse.json({ error: "Yêu cầu này vừa được gửi. Đợi một lát rồi thử lại." }, { status: 409 });
     }
-
-    // One upload for the whole booking (one login, one lock), split back per client.
-    // Only when there are files: the uploader refuses outright where it is not configured.
-    const links = allFiles.length ? await uploadToCartrack(allFiles) : [];
-    const psc = shortCode(route.psc_pickup);
-    const { hours, minutes } = vnHoursMinutes();
-    const hm = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
-
-    let li = 0;
-    const results: { customer_id: string; ok: boolean; job_id?: number; reference?: string; error?: string }[] = [];
-    for (const d of deliveries) {
-      const mine = links.slice(li, li += d.files.length);
-      const client = known.get(d.customer_id)!.customer_name;
-      const reference = `${d.kind} ${psc}→${client.slice(0, 40)}_${hm}`;
-      const note = [`${d.kind === "KQ" ? "📄" : "📦"} ${KINDS[d.kind]}${d.note ? ` — ${d.note}` : ""}`, ...mine.map((u, i) => `Ảnh ${i + 1}: ${u}`)].join("\n");
-      sent = true;
-      const res = await createJob({
-        job_type_id: 1,
-        schedule_type_id: 1,
-        reference_number: reference,
-        labels: [PSC_DELIVERY_LABEL],
-        stops: [
-          { stop_type_id: 1, customer_id: route.pickup, duration: 5, note, todos: [PICKUP_PHOTO_TODO] },
-          { stop_type_id: 2, customer_id: d.customer_id, duration: 10, note, todos: [] },
-        ],
-        items: [{ description: `${d.kind === "KQ" ? "📄" : "📦"} ${KINDS[d.kind]}`, weight: 0, item_type_id: 1, quantity: 1, tracking_number: "" }],
-      });
-      const job_id = res.ok ? res.body?.data?.job_id : undefined;
-      results.push(res.ok
-        ? { customer_id: d.customer_id, ok: true, job_id, reference }
-        : { customer_id: d.customer_id, ok: false, error: res.status >= 500 ? "Chưa xác nhận được — kiểm tra trước khi gửi lại." : "Không tạo được chuyến." });
-      if (res.ok) {
-        pushRunLog([{ ts: vnTimestamp(), level: "INFO", msg: `Job ${job_id} - ${KINDS[d.kind]} chờ điều phối | ${psc} → ${client}` }]).catch(() => {});
-      }
-    }
-    return NextResponse.json({ results });
-  } catch (e) {
-    console.error("[psc-delivery] error:", e);
-    // Nothing created yet (search or upload failed) → free the booking to retry at once.
-    if (lockKey && !sent) void releaseCreateLock(lockKey);
+  } catch {
     return NextResponse.json({ error: "Không gửi được yêu cầu. Thử lại sau." }, { status: 502 });
   }
+
+  const psc = shortCode(route.psc_pickup);
+  const { hours, minutes } = vnHoursMinutes();
+  const hm = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+  const failed = (who: string, why: string) =>
+    pushRunLog([{ ts: vnTimestamp(), level: "ERROR", msg: `Giao KQ/VT FAILED - ${why} | ${psc} → ${who}` }]).catch(() => {});
+
+  after(async () => {
+    let sent = false;
+    try {
+      const known = await directory();
+      // One upload for the whole booking (one login, one lock), split back per client.
+      // Only when there are files: the uploader refuses outright where it is not configured.
+      const links = allFiles.length ? await uploadToCartrack(allFiles) : [];
+      let li = 0;
+      for (const d of deliveries) {
+        const mine = links.slice(li, li += d.files.length);
+        const full = known.get(d.customer_id)?.customer_name;
+        if (!full) { await failed(d.customer_id, "không có khách hàng này trên Cartrack"); continue; }
+        const client = placeLabel(full);
+        const reference = `${psc}→${client.slice(0, 60)}_${hm}`;
+        const icon = d.kind === "KQ" ? "📄" : "📦";
+        const note = [`${icon} ${KINDS[d.kind]}${d.note ? ` — ${d.note}` : ""}`, ...mine.map((u, i) => `Ảnh ${i + 1}: ${u}`)].join("\n");
+        sent = true;
+        const res = await createJob({
+          job_type_id: 1,
+          schedule_type_id: 1,
+          reference_number: reference,
+          labels: [PSC_DELIVERY_LABEL],
+          stops: [
+            { stop_type_id: 1, customer_id: route.pickup, duration: 5, note, todos: [PICKUP_PHOTO_TODO] },
+            { stop_type_id: 2, customer_id: d.customer_id, duration: 10, note, todos: [] },
+          ],
+          items: [{ description: `${icon} ${KINDS[d.kind]}`, weight: 0, item_type_id: 1, quantity: 1, tracking_number: "" }],
+        });
+        if (res.ok) {
+          await pushRunLog([{ ts: vnTimestamp(), level: "INFO", msg: `Job ${res.body?.data?.job_id} - ${KINDS[d.kind]} chờ điều phối | ${psc} → ${client}` }]).catch(() => {});
+        } else {
+          console.error("[psc-delivery] create failed:", res.status, JSON.stringify(res.body).slice(0, 300));
+          await failed(client, res.status >= 500 ? `chưa xác nhận được (${res.status}), kiểm tra trước khi tạo lại` : `Cartrack từ chối (${res.status})`);
+        }
+      }
+    } catch (e) {
+      console.error("[psc-delivery] error:", e);
+      await failed(deliveries.length === 1 ? deliveries[0].customer_id : `${deliveries.length} khách hàng`, String(e).slice(0, 120));
+      // Nothing created yet (directory or upload failed) → free the booking to retry at once.
+      if (!sent) await releaseCreateLock(lockKey).catch(() => {});
+    }
+  });
+
+  return NextResponse.json({ accepted: true, count: deliveries.length }, { status: 202 });
 }
