@@ -241,12 +241,12 @@ export async function writeUnmappedConfigRows(
     if (mine.length === 0) return;
 
     const { writeConfigRows } = await import("./sheets-writer");
-    const at = await writeConfigRows(mine.map(configCellsFor));
-    mine.forEach((b, i) => {
+    await writeConfigRows(mine.map(configCellsFor));
+    mine.forEach((b) => {
       const { hours, minutes } = vnHoursMinutes(b.at);
-      // The row NUMBER is the useful part of this line: it is what turns "go and
-      // configure this branch" into "open the sheet at row 1751".
-      log(`Đã thêm dòng config ${at[i]} cho ${b.pickup_name} (thiếu lúc ${HHMM(hours * 60 + minutes)}) — cần chọn tài xế | ${b.pickup_name} → ${b.dropoff_name || "—"}`, "WARN");
+      // No row number: on Supabase it is a leftover sheet position, not the rule
+      // id, and searching the Config tab for it opened a different clinic's rule.
+      log(`Đã thêm config cho ${b.pickup_name} (thiếu lúc ${HHMM(hours * 60 + minutes)}) — cần chọn tài xế | ${b.pickup_name} → ${b.dropoff_name || "—"}`, "WARN");
     });
   } catch (e) {
     log(`Không ghi được dòng config cho điểm chưa cấu hình: ${e}`, "WARN");
