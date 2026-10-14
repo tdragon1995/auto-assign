@@ -571,8 +571,8 @@ The **GitHub→Vercel integration auto-deploys `master` to production** within ~
 
 **`./deploy.sh` is a fallback only** — use it if the GitHub integration is ever disabled or stalls. It enforces a clean tree in sync with `origin/master`, then runs `npx vercel --prod` from the repo root. **Never run `npx vercel --prod` directly** (especially from `dashboard/`, which has no `.vercel/` link — the CLI would create an orphan project instead of deploying to `diag-logistics`). The correct `.vercel/project.json` (`prj_DQHaXcRc31jOI58J7NU8cNK1iO4C` / `diag-logistics`) lives at the repo root.
 
-Production URL: **https://diag-logistics.vercel.app** (also aliased as `https://auto-assign-opal.vercel.app`).
-Account B (a second Vercel account, same repo, same Redis): **https://diag-bo.vercel.app** — serves the admin dashboard; `/` on A redirects there (`next.config.ts`).
+Production URL: **https://diag-logistics.vercel.app**.
+Account B (a second Vercel account, same repo, same Redis): **https://diag-bo.vercel.app** — serves the admin dashboard; `/` on A redirects there (`next.config.ts`). The old alias auto-assign-opal.vercel.app is gone (retired 2026-10-14).
 
 One GitHub Actions workflow exists: `.github/workflows/kiotviet-daily-report.yml`,
 `workflow_dispatch`-only (manual run + `dry_run` toggle, no `schedule:`). The actual

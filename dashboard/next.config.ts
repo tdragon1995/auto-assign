@@ -7,9 +7,7 @@ const nextConfig:NextConfig={
   // not A's. Only "/" moves; drivers and branches stay on A. Served by Vercel's
   // router, no function runs. 307 so browsers don't cache it — delete to undo.
   async redirects(){
-    return ["diag-logistics.vercel.app","auto-assign-opal.vercel.app"].map(value=>({
-      source:"/", has:[{type:"host" as const,value}], destination:"https://diag-bo.vercel.app/", permanent:false,
-    }));
+    return [{source:"/", has:[{type:"host" as const,value:"diag-logistics.vercel.app"}], destination:"https://diag-bo.vercel.app/", permanent:false}];
   },
   outputFileTracingIncludes:{"/api/morning-sync":["./node_modules/playwright-core/browsers.json"],"/api/misa-sync/**/*":["./node_modules/playwright-core/browsers.json"],"/api/misa-sync":["./node_modules/playwright-core/browsers.json"]},
 };

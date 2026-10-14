@@ -143,7 +143,7 @@ The **GitHub→Vercel integration auto-deploys `master` to production** within ~
 
 **`./deploy.sh` is a fallback only** — use it if the GitHub integration is ever disabled or stalls. It enforces a clean tree in sync with `origin/master`, then runs `npx vercel --prod` from the repo root. **Never run `npx vercel --prod` directly** (especially from `dashboard/`, which has no `.vercel/` link — the CLI would create an orphan project instead of deploying to `diag-logistics`). The correct `.vercel/project.json` (`prj_DQHaXcRc31jOI58J7NU8cNK1iO4C` / `diag-logistics`) lives at the repo root.
 
-Production URL: **https://diag-logistics.vercel.app** (also aliased as `https://auto-assign-opal.vercel.app`).
+Production URL: **https://diag-logistics.vercel.app**.
 
 There are no active GitHub Actions workflows.
 
