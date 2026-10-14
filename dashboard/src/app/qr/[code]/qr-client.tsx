@@ -6,7 +6,7 @@ import { useParams } from "next/navigation";
 // fetching /api/psc-routes — no function invocation, no network round-trip, instant render.
 import {
   TestTubes, Check, ChevronDown, ChevronRight, Clock, Phone, Bike, CalendarDays,
-  ArrowRight, Loader2, Search, XCircle, ZoomIn,
+  ArrowRight, Loader2, Search, XCircle, ZoomIn, RotateCw,
 } from "lucide-react";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
 import { placeLabel } from "@/lib/place-label";
@@ -1216,6 +1216,13 @@ export default function QrPage() {
         <div className="flex items-center justify-between gap-2 mb-2">
           <h2 className="text-[15px] font-bold text-slate-800">{fullView ? "Chuyến của chi nhánh" : "Chuyến đã gọi"}</h2>
           {fullView && (
+            <span className="flex items-center gap-2">
+            {/* Reloads from the shared day copy (republished every ~3 min) — it never forces a
+                rebuild of the day, which is what made the old "Làm mới" expensive. */}
+            <button onClick={() => loadJobs()} disabled={loading} aria-label="Tải lại danh sách" title="Tải lại"
+              className="grid h-9 w-9 place-items-center rounded-xl bg-white text-slate-700 shadow-sm hover:bg-slate-50 active:bg-slate-50 disabled:opacity-60">
+              <RotateCw aria-hidden className={`h-4 w-4 ${loading ? "animate-spin motion-reduce:animate-none" : ""}`} />
+            </button>
             <span className="relative">
               <button
                 onClick={openDatePicker}
@@ -1230,6 +1237,7 @@ export default function QrPage() {
               <input ref={dateRef} type="date" value={date} max={todayVN()} tabIndex={-1} aria-hidden
                 onChange={(e) => { if (e.target.value) setDate(e.target.value); }}
                 className="absolute inset-0 w-full h-full opacity-0 pointer-events-none" />
+            </span>
             </span>
           )}
         </div>
