@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { sbSelectAll } from "@/lib/supabase-rest";
 
-// The dashboard asks this on every page open. It lives apart from /api/misa-sync on
+// The dashboard asks this on every page open. It lives apart from /api/misa-sync (and
+// outside its folder, which next.config bundles with Chromium) on
 // purpose: that route pulls in the whole sync (config, Cartrack, Labcenter) and is
 // pinned to its own region, so each call started a cold copy of all of it — ~0.7s of
 // CPU to read a table that is usually empty. This one loads only the Supabase helper.
