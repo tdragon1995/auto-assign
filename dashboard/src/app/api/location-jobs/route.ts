@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { BASE_URL, getHeaders, type Env } from "@/lib/cartrack";
+import { BASE_URL, getHeaders, isProxyDriver, type Env } from "@/lib/cartrack";
 import { driverDisplayName, fetchJobDetail } from "@/lib/job-detail";
 import { isLabWatchedClient, keepOnBranchFeed, LAB_CUSTOMER_ID } from "@/lib/job-filters";
 import { jobsByIds, locationJobs, slimJob } from "@/lib/day-snapshot";
@@ -50,10 +50,13 @@ export async function GET(req: NextRequest) {
     const feeders = feedersOf(code);
     const touches = (j: { stops?: { customer_id?: string | null; stop_type_id?: number; customer_name?: string }[] | null }) =>
       (j.stops ?? []).some((s) => s.customer_id === code) || (code === LAB_CUSTOMER_ID && isLabWatchedClient(j));
-    // D001 does not show trips going to an NĐTP drop-off at all — they have /ndtp.
-    const listed = (j: { job_status_id?: number; stops?: { stop_type_id?: number; customer_name?: string | null }[] | null }) =>
+    // D001 does not show trips going to an NĐTP drop-off at all — they have /ndtp — nor
+    // trips sitting on a proxy driver (parked until their time, or staged for rejection).
+    const listed = (j: { job_status_id?: number; delivery_driver_id?: string | null; stops?: { stop_type_id?: number; customer_name?: string | null }[] | null }) =>
       SHOWN_STATUSES.includes(j.job_status_id ?? 0)
-      && !(code === LAB_CUSTOMER_ID && /NDTP/i.test((j.stops ?? []).find((s) => s.stop_type_id === 2)?.customer_name ?? ""));
+      && !(code === LAB_CUSTOMER_ID && (
+        isProxyDriver(j.delivery_driver_id ?? "")
+        || /NDTP/i.test((j.stops ?? []).find((s) => s.stop_type_id === 2)?.customer_name ?? "")));
     const ids = (req.nextUrl.searchParams.get("ids") ?? "").split(",").map(Number).filter(Number.isInteger).slice(0, 50);
     // The whole branch (D001 / D046, and /qr tabs from before 2026-10-14), or only the
     // device's own bookings (every other branch: they book, they do not browse).

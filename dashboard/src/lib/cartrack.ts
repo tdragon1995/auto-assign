@@ -1280,7 +1280,7 @@ async function gateDrivers(env: Env): Promise<Driver[]> {
 
 /** Proxy drivers are ours (parking, duplicate-reject staging) — human driver-state
  *  rules don't apply, so the RPC assign path skips the status gate for them. */
-function isProxyDriver(driverId: string): boolean {
+export function isProxyDriver(driverId: string): boolean {
   const rejectProxy = process.env.CARTRACK_REJECT_PROXY_DRIVER_ID ?? "";
   return driverId === PROXY_DRIVER_ID || (!!rejectProxy && driverId === rejectProxy);
 }
