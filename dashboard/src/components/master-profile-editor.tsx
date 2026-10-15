@@ -136,7 +136,10 @@ export function MasterProfileEditor({ kind, id, initial, clients, linkedLabcente
           </div>
           <p className="mt-2 text-xs leading-5 text-slate-600">Ngừng hoạt động: chặn gửi yêu cầu ở Diag Portal và thêm {"{inactive}"} vào tên trên Cartrack.</p>
         </div>
-        {input("address_line_1", "Địa chỉ")}{input("address_line_2", "Lưu ý")}
+        {input("address_line_1", "Địa chỉ")}
+        {/* Multi-line: in a one-line input, Enter submitted the form and saved only the first line. */}
+        <label className="block min-w-0 space-y-1"><span className="text-xs font-medium text-slate-700">Lưu ý</span>
+          <textarea className={`${fieldClass} min-h-20 resize-y`} rows={4} value={draft.address_line_2 ?? ""} onChange={e => set("address_line_2", e.target.value)} /></label>
         <div className="grid grid-cols-2 gap-3">{input("contact_number", "Điện thoại")}{input("email", "Email")}{input("postal_code", "Mã bưu chính")}{input("client_reference", "Mã tham chiếu")}</div>
 
         <div className="space-y-3">{location("default_dropoff_id", "Điểm giao mặc định")}{input("eta_minutes", "ETA (phút)", "number")}</div>
