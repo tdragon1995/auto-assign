@@ -2428,6 +2428,9 @@ export async function autoAssignCycle(
     // A PSC's Kết Quả / Vật Tư run waits for the dispatcher. Silent: it would reprint
     // every cycle until someone assigns it, and its note would list it as held.
     if ((job.labels ?? []).includes(PSC_DELIVERY_LABEL)) continue;
+    // Same for any "Booking" label (e.g. "📦 Booking - Vật tư") — hand-dispatched
+    // (supervisor, 2026-10-15). Silent for the same reason.
+    if ((job.labels ?? []).some((l) => l.includes("Booking"))) continue;
 
     // Did the measured whitelist clear this job's notes? True only when the job
     // carries notes that WOULD have held it under the old rule and every one of
