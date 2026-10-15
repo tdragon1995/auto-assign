@@ -7,7 +7,7 @@ import { parkScheduledJob } from "@/lib/scheduled-dispatch";
 import { STOP_STATUS, JOB_STATUS, PICKUP_PHOTO_TODO } from "@/lib/job-filters";
 import { pushRunLog, acquireCreateLock, releaseCreateLock, nextOrderNumber } from "@/lib/smart-log-kv";
 import { fetchJobDetail } from "@/lib/job-detail";
-import { danangPickupNote, validDanangPhone } from "@/lib/danang";
+import { DANANG_LEAD_MINS, danangPickupNote, validDanangPhone } from "@/lib/danang";
 import { notifyAdminGroup } from "@/lib/zalo";
 
 export const runtime = "nodejs";
@@ -239,7 +239,7 @@ export async function POST(req: NextRequest) {
 
     let schedule: ReturnType<typeof pscTinhSchedule>;
     try {
-      schedule = pscTinhSchedule(eta, delivery_date);
+      schedule = pscTinhSchedule(eta, delivery_date, new Date(), psc_code === "DANANG" ? DANANG_LEAD_MINS : 0);
     } catch (e) {
       return NextResponse.json({ error: (e as Error).message }, { status: 400 });
     }

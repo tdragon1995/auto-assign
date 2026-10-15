@@ -12,7 +12,7 @@ import { proxyKind, driverLabel } from "@/lib/proxy-drivers";
 import { useParams } from "next/navigation";
 import { addDays, vnDate } from "@/lib/time";
 import { buildPscTinhTimeSlots, pscTinhDayLabel } from "@/lib/psc-tinh-time";
-import { validDanangPhone } from "@/lib/danang";
+import { DANANG_LEAD_MINS, validDanangPhone } from "@/lib/danang";
 
 interface TplOption {
   tpl_uuid: string;
@@ -457,7 +457,7 @@ export default function PscTinhPage({ pscCode }: { pscCode?: string }) {
   const stillPending = pending.filter((p) => !known.has(p.job_id) && (!p.delivery_date || p.delivery_date >= today));
   const active = [...stillPending, ...orders.filter((o) => stateOf(o) !== 3)];
   const done = orders.filter((o) => stateOf(o) === 3 && o.delivery_date === today);
-  const timeSlots = slotNow ? buildPscTinhTimeSlots(slotNow) : [];
+  const timeSlots = slotNow ? buildPscTinhTimeSlots(slotNow, code === "DANANG" ? DANANG_LEAD_MINS : 0) : [];
   const selectedTime = timeSlots.flatMap((day) => day.slots).some((slot) => slot.value === eta);
   const canSubmit = selectedUuid && selectedTime && !loading &&
     (code !== "DANANG" || (recipient.trim() && validDanangPhone(recipientPhone)));
@@ -534,7 +534,9 @@ export default function PscTinhPage({ pscCode }: { pscCode?: string }) {
                     </optgroup>
                   ))}
                 </select>
-                <p id="psc-tinh-eta-hint" className="mt-1.5 text-xs text-slate-600">Cuộn qua 23:55 để chọn giờ ngày mai.</p>
+                <p id="psc-tinh-eta-hint" className="mt-1.5 text-xs text-slate-600">
+                  {code === "DANANG" ? "Đặt trước ít nhất 12 giờ." : "Cuộn qua 23:55 để chọn giờ ngày mai."}
+                </p>
               </div>
 
               {code === "DANANG" && (

@@ -52,12 +52,24 @@ test('schedule rejects stale selections and preserves an absolute date across mi
     { schedule_type_id: 1 });
 });
 
+test('Đà Nẵng lead hides and refuses anything inside the next 12 hours', () => {
+  const now = new Date('2026-09-09T15:02:00+07:00');
+  const days = helpers.buildPscTinhTimeSlots(now, 720);
+  assert.equal(days[0].slots.length, 0);
+  assert.equal(days[1].slots[0].value, '2026-09-10T03:05');
+  assert.throws(() => helpers.pscTinhSchedule('03:00', '2026-09-10', now, 720), /12 giờ/);
+  assert.equal(helpers.pscTinhSchedule('03:05', '2026-09-10', now, 720).deliveryDate, '2026-09-10');
+  assert.equal(helpers.buildPscTinhTimeSlots(new Date('2026-09-09T08:00:00+07:00'), 720)[0].slots[0].value, '2026-09-09T20:05');
+});
+
 function routeFixture(rest = false, schedulingFails = false) {
   const calls = [];
   const route = load('src/app/api/psc-tinh/route.ts', {
     'next/server': { NextResponse: { json: (data, init) => Response.json(data, init) } },
     '@/lib/time': time,
     '@/lib/psc-tinh-time': helpers,
+    '@/lib/danang': load('src/lib/danang.ts'),
+    '@/lib/zalo': { notifyAdminGroup: async () => {} },
     '@/lib/scheduled-dispatch': {
       parkScheduledJob: async (jobId, at) => {
         calls.push(['park', jobId, at]);
@@ -109,9 +121,18 @@ test('Đà Nẵng offers and enforces its fixed pickup location', async () => {
   assert.equal(calls.length, 0);
 
   const validResponse = await route.POST({ nextUrl: new URL('https://test.invalid'), json: async () => ({
-    psc_code: 'DANANG', tpl_uuid: pickupId, eta: '08:00', delivery_date: deliveryDate,
+    psc_code: 'DANANG', tpl_uuid: pickupId, eta: '23:55', delivery_date: deliveryDate,
+    recipient: 'Nguyễn Văn A', recipient_phone: '0901234567',
   }) });
   assert.equal(validResponse.status, 200);
+  const soon = new Date(Date.now() + 3600_000);
+  const { hours, minutes } = time.vnHoursMinutes(soon);
+  const tooSoon = await route.POST({ nextUrl: new URL('https://test.invalid'), json: async () => ({
+    psc_code: 'DANANG', tpl_uuid: pickupId, eta: `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`, delivery_date: time.vnDate(soon),
+    recipient: 'Nguyễn Văn A', recipient_phone: '0901234567',
+  }) });
+  assert.equal(tooSoon.status, 400);
+  assert.match((await tooSoon.json()).error, /12 giờ/);
   assert.equal(calls.find(c => c[0] === 'create')[1].stops[0].customer_id, pickupId);
 });
 
@@ -156,6 +177,7 @@ function dispatchFixture(jobs = [], fail = '') {
   const calls = [];
   const dispatch = load('src/lib/scheduled-dispatch.ts', {
     './time': time,
+    './scheduled-pickup-reminder': { remindScheduledPickup: async () => {} },
     './cartrack': {
       PROXY_DRIVER_ID: 'proxy',
       parkOnProxy: async (id, at) => { calls.push(['park', id, at]); return { ok: fail !== 'park', detail: 'unavailable' }; },
