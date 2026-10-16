@@ -221,9 +221,6 @@ export interface DayFacts {
   /** First stop completed AWAY from D001 (v_pay_daily.first_away_ts) — when a
    *  BO runner based there actually left to drive. Absent → the first pickup. */
   firstAwayAt?: string | null;
-  /** The same person's last drop-off on their DC (full-time) account that day.
-   *  Switching accounts within BRIDGE_GAP_MIN of it is one stretch of work. */
-  handoverAt?: string | null;
   /** An APPROVED "cập nhật công" for the day, VN wall clock "HH:MM". It is the
    *  day's worked window outright: it replaces everything the rule would compute,
    *  shift or no shift, because a supervisor has looked at this day. */
@@ -316,16 +313,9 @@ export function workedMinutes(punches: PayPunch[], day: DayFacts, opts: { tapOut
   // The day starts at the EARLIER of the check-in and reaching the first pickup:
   // a driver who taps in after starting work is paid from the work (Lê Minh
   // Triết 26/09: first pickup reached 17:04, tapped in 18:15; payroll 17:04).
-  let startEvidence = firstIn && day.firstTaskAt
+  const startEvidence = firstIn && day.firstTaskAt
     ? (Date.parse(day.firstTaskAt) < Date.parse(firstIn) ? day.firstTaskAt : firstIn)
     : firstIn ?? day.firstTaskAt;
-  // Picking up on the PT account within 15 min of the DC account's last drop-off
-  // is continuous work: the PT day starts at that drop-off (supervisor, 2026-10-16).
-  // A longer gap is not (Phan Thành Được 30/09: DC drop-off 19:22, PT pickup 19:46).
-  if (startEvidence && day.handoverAt) {
-    const gap = Date.parse(startEvidence) - Date.parse(day.handoverAt);
-    if (gap > 0 && gap <= BRIDGE_GAP_MIN * 60_000) startEvidence = day.handoverAt;
-  }
   // A check-out only counts AFTER the shift opened; one before it is a stray tap.
   const lastOut = times("out").filter((t) => !startEvidence || Date.parse(t) > Date.parse(startEvidence)).at(-1) ?? null;
 

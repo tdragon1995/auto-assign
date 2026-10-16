@@ -206,7 +206,6 @@ export async function GET(req: NextRequest) {
             firstTaskAt: t?.first ?? null,
             lastTaskAt: t?.last ?? null,
             firstAwayAt: t?.away ?? null,
-            handoverAt: inputs.handover.get(dayKey(driver_id, date)) ?? null,
             correction: inputs.approved.get(dayKey(driver_id, date)) ?? null,
           }, code);
           mins += w.minutes;
