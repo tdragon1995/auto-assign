@@ -303,7 +303,9 @@ export function workedMinutes(punches: PayPunch[], day: DayFacts): WorkedDay {
    *                            a tap-out past shift end pays nothing past the
    *                            shift (supervisor, 2026-10-09) */
   const lastEnd = (shiftEnd: number): number => {
-    if (!day.lastTaskAt) return lastOut ? Date.parse(lastOut) : shiftEnd;
+    // No trips: the tap-out, but never past the shift end (supervisor, 2026-10-16;
+    // Y Quý 28/09 tapped out 22:15 on a 21:00 shift, payroll paid to 21:00).
+    if (!day.lastTaskAt) return lastOut ? Math.min(Date.parse(lastOut), shiftEnd) : shiftEnd;
     if (!lastOut) return Date.parse(day.lastTaskAt);
     return Math.max(Date.parse(day.lastTaskAt), Math.min(Date.parse(lastOut), shiftEnd));
   };

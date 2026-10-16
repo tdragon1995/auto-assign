@@ -467,7 +467,7 @@ These are the things most likely to burn a future agent working on this codebase
     `pay.ts`. Start = later of the shift start and the EARLIER of the check-in
     ARRIVAL and reaching the first pickup (`pay_jobs.pickup_arrived_ts`, stored
     from 2026-10-16; older rows fall back to the pickup's completion) — a driver
-    who taps in after starting work is paid from the work, as payroll does. End: no trips → the check-out tap; trips but no check-out → the
+    who taps in after starting work is paid from the work, as payroll does. End: no trips → the check-out tap, capped at shift end; trips but no check-out → the
     last trip; both → later of the tap-out and the last trip, never past the
     tap-out just because the shift was still running (supervisor, 2026-10-09).
     A tap stamped on another date is ignored, as trips are. Holidays ×3

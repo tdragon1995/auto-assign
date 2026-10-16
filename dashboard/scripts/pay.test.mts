@@ -109,7 +109,9 @@ const tapAfterWork = workedMinutes([punch("in", "18:15"), punch("out", "21:01")]
 check("a tap-in after the first pickup starts the day at the pickup", tapAfterWork.minutes === 236, String(tapAfterWork.minutes));
 
 const noTrips = workedMinutes([punch("in", "14:58"), punch("out", "21:06")], facts([["15:00", "21:00"]], null, null));
-check("no trips → paid to the check-out tap", noTrips.minutes === 366, String(noTrips.minutes));
+check("no trips → paid to the check-out tap, capped at shift end", noTrips.minutes === 360, String(noTrips.minutes));
+const noTripsEarly = workedMinutes([punch("in", "14:58"), punch("out", "20:30")], facts([["15:00", "21:00"]], null, null));
+check("no trips, early tap-out → paid to the tap-out", noTripsEarly.minutes === 330, String(noTripsEarly.minutes));
 
 // A check-out before the check-in is a stray tap. Trần Minh Nhật 31/08: in 15:35,
 // "out" 15:30, shift 15:00–16:00 → paid 15:35–16:00.
