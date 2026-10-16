@@ -170,13 +170,15 @@ check("touching windows stay a split day",
 check("the same window twice is one", mergeWindows([{ start: "06:00", end: "15:00" }, { start: "06:00", end: "15:00" }]).length === 1);
 const J = (x: unknown) => JSON.stringify(x);
 const W = (start: string, end: string) => ({ start, end });
-check("a 30-minute gap between two windows is paid", J(bridgeGaps([W("07:00", "14:30"), W("15:00", "21:00")])) === J([W("07:00", "21:00")]));
+check("a 15-minute gap between two windows is paid", J(bridgeGaps([W("07:00", "14:45"), W("15:00", "21:00")])) === J([W("07:00", "21:00")]));
+check("a 30-minute gap is not", bridgeGaps([W("07:00", "14:30"), W("15:00", "21:00")]).length === 2);
 check("windows that touch become one", J(bridgeGaps([W("07:00", "20:00"), W("20:00", "20:30")])) === J([W("07:00", "20:30")]));
 check("a split shift (3-hour gap) stays split", bridgeGaps([W("06:00", "12:00"), W("15:00", "20:00")]).length === 2);
-check("PT window starting 30 min after the DC shift ends stretches back to it",
-  J(bridgeGaps([W("17:30", "21:00")], [W("08:00", "17:00")])) === J([W("17:00", "21:00")]));
-check("PT window ending 30 min before the DC shift starts stretches forward",
-  J(bridgeGaps([W("06:00", "07:30")], [W("08:00", "17:00")])) === J([W("06:00", "08:00")]));
+check("PT window starting 15 min after the DC shift ends stretches back to it",
+  J(bridgeGaps([W("17:15", "21:00")], [W("08:00", "17:00")])) === J([W("17:00", "21:00")]));
+check("PT window ending 15 min before the DC shift starts stretches forward",
+  J(bridgeGaps([W("06:00", "07:45")], [W("08:00", "17:00")])) === J([W("06:00", "08:00")]));
+check("a DC shift 30 min away is left alone", J(bridgeGaps([W("17:30", "21:00")], [W("08:00", "17:00")])) === J([W("17:30", "21:00")]));
 check("a DC shift 2 hours away is left alone", J(bridgeGaps([W("19:00", "21:00")], [W("08:00", "17:00")])) === J([W("19:00", "21:00")]));
 
 check("rates are the stated contract", RATE_PER_HOUR_VND === 30_000 && RATE_PER_KM_VND === 2_000);

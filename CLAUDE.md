@@ -471,7 +471,7 @@ These are the things most likely to burn a future agent working on this codebase
     last trip; both → later of the tap-out and the last trip, never past the
     tap-out just because the shift was still running (supervisor, 2026-10-09).
     A tap stamped on another date is ignored, as trips are. Two windows at most
-    60 min apart are one stretch and the gap is paid (`bridgeGaps`), including
+    15 min apart are one stretch and the gap is paid (`bridgeGaps`), including
     across a person's DC account: a PT window stretches to meet the DC shift
     (supervisor, 2026-10-16). A longer gap is a split shift and is not paid. Holidays ×3
     (`HOLIDAY_MULTIPLIER`, hand-kept). Reconciled row by row against payroll's

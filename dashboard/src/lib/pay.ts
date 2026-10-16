@@ -177,14 +177,14 @@ export function mergeWindows(ws: ShiftWindow[]): ShiftWindow[] {
 
 /** Two shift windows this close are one stretch of work: the gap between them is
  *  paid (supervisor, 2026-10-16). A longer gap is a split shift and is not. */
-export const BRIDGE_GAP_MIN = 60;
+export const BRIDGE_GAP_MIN = 15;
 
 /**
  * A day's windows with the short gaps closed. `neighbours` are the same person's
  * windows on their OTHER account (a DC full-time shift beside a PT one): a PT
  * window starting within the gap after one ends, or ending within the gap before
  * one starts, stretches to meet it, so the switch between accounts is paid on the
- * PT side. Đỗ Hữu Hùng 15/09: cover 07:00–14:30 + own 15:00–21:00 → 07:00–21:00.
+ * PT side. 07:00–14:45 + 15:00–21:00 → 07:00–21:00; a 30-minute gap stays unpaid.
  */
 export function bridgeGaps(own: ShiftWindow[], neighbours: ShiftWindow[] = []): ShiftWindow[] {
   const m = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
