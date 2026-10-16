@@ -19,7 +19,9 @@
  * Keyed `${driver_id}|${YYYY-MM-DD}`. SERVER ONLY.
  */
 import { sbSelect, sbSelectAll } from "./supabase-rest";
-import { mergeWindows, parseShiftText, type ShiftWindow } from "./pay";
+import { bridgeGaps, mergeWindows, parseShiftText, type ShiftWindow } from "./pay";
+import { normalizeDriverName } from "./driver-match";
+import { employmentOf } from "./driver-label";
 import { addDays } from "./time";
 
 export const dayKey = (driverId: string, date: string) => `${driverId}|${date}`;
@@ -55,7 +57,7 @@ export const isWeekdayRoleLine = (area: string) => /\(\s*Thứ\s/i.test(area) &&
 
 export async function loadPayDayInputs(from: string, to: string, driverId?: string) {
   const who = driverId ? `&driver_id=eq.${driverId}` : "&driver_id=not.is.null";
-  const [corrections, payrollAny, sunday, leaves] = await Promise.all([
+  const [corrections, payrollAny, sunday, leaves, roster] = await Promise.all([
     sbSelectAll<CorrectionRow>(
       "pay_day_corrections",
       `select=*&trip_date=gte.${from}&trip_date=lte.${to}${driverId ? `&driver_id=eq.${driverId}` : ""}`,
@@ -78,13 +80,30 @@ export async function loadPayDayInputs(from: string, to: string, driverId?: stri
         (driverId ? `&master_leave_substitutes=cs.${encodeURIComponent(JSON.stringify([{ driver_id: driverId }]))}` : ""),
       "id.asc",
     ),
+    sbSelectAll<{ driver_id: string; first_name: string | null; last_name: string | null }>(
+      "master_drivers", "select=driver_id,first_name,last_name&is_active=eq.true", "driver_id.asc"),
   ]);
   const payrollImported = payrollAny.length > 0;
+
+  // PT account → the same person's full-time (DC) account: one of each under one
+  // personal name, or none (Vietnamese names repeat; never guess between two).
+  const byPerson = new Map<string, { pt: string[]; ft: string[] }>();
+  for (const r of roster) {
+    const full = `${r.first_name ?? ""} ${r.last_name ?? ""}`.trim();
+    const kind = employmentOf(full), key = normalizeDriverName(full);
+    if (!key || !kind) continue;
+    const g = byPerson.get(key) ?? { pt: [], ft: [] };
+    (kind === "part-time" ? g.pt : g.ft).push(r.driver_id);
+    byPerson.set(key, g);
+  }
+  const ftTwin = new Map<string, string>();
+  for (const g of byPerson.values()) if (g.pt.length === 1 && g.ft.length === 1) ftTwin.set(g.pt[0], g.ft[0]);
 
   // A whole-day cover takes the ABSENT driver's shift, so one driver's view also
   // needs the shifts of whoever they covered.
   const takers = [...new Set(leaves.map((l) => l.linked_driver_id).filter((id): id is string => !!id))];
-  const shiftWho = driverId ? `&driver_id=in.(${[driverId, ...takers].join(",")})` : who;
+  const twinOf = driverId ? ftTwin.get(driverId) : undefined;
+  const shiftWho = driverId ? `&driver_id=in.(${[driverId, ...takers, ...(twinOf ? [twinOf] : [])].join(",")})` : who;
   const shiftRows = await sbSelectAll<{ driver_id: string; shift_date: string; start_time: string | null; end_time: string | null; source: string }>(
     "driver_shifts",
     `select=driver_id,shift_date,start_time,end_time,source&day_type=eq.working&shift_date=gte.${from}&shift_date=lte.${to}${shiftWho}`,
@@ -134,7 +153,20 @@ export async function loadPayDayInputs(from: string, to: string, driverId?: stri
       }
     }
   }
-  for (const [k, v] of shifts) shifts.set(k, mergeWindows(v));
+  // Short gaps are paid: between a day's own windows, and across to the person's
+  // full-time account (whatever its source — the DC shift is MISA's).
+  const otherAccount = new Map<string, ShiftWindow[]>();
+  for (const r of shiftRows) {
+    if (!r.start_time || !r.end_time) continue;
+    const k = dayKey(r.driver_id, r.shift_date), l = otherAccount.get(k);
+    const w = { start: hm(r.start_time), end: hm(r.end_time) };
+    if (l) l.push(w); else otherAccount.set(k, [w]);
+  }
+  for (const [k, v] of shifts) {
+    const [id, date] = k.split("|");
+    const ft = ftTwin.get(id);
+    shifts.set(k, bridgeGaps(mergeWindows(v), ft ? otherAccount.get(dayKey(ft, date)) ?? [] : []));
+  }
 
   // Ascending id, so a later approval overwrites an earlier one for the same day.
   const approved = new Map<string, ShiftWindow>();

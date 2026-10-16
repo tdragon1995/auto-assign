@@ -17,7 +17,7 @@ import {
   RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch,
 } from "../src/lib/pay";
 import { parsePayrollSheet, resolveDriver } from "../src/lib/pay-shifts";
-import { parseShiftText, mergeWindows } from "../src/lib/pay";
+import { parseShiftText, mergeWindows, bridgeGaps } from "../src/lib/pay";
 import { isWeekdayRoleLine } from "../src/lib/pay-days";
 import { openRange, checkTimes, checkProof } from "../src/lib/pay-corrections";
 import type { TimelineRoute, TimelineStop } from "../src/lib/types";
@@ -168,6 +168,16 @@ check("overlapping windows from two sources merge",
 check("touching windows stay a split day",
   mergeWindows([{ start: "06:00", end: "15:00" }, { start: "15:00", end: "20:00" }]).length === 2);
 check("the same window twice is one", mergeWindows([{ start: "06:00", end: "15:00" }, { start: "06:00", end: "15:00" }]).length === 1);
+const J = (x: unknown) => JSON.stringify(x);
+const W = (start: string, end: string) => ({ start, end });
+check("a 30-minute gap between two windows is paid", J(bridgeGaps([W("07:00", "14:30"), W("15:00", "21:00")])) === J([W("07:00", "21:00")]));
+check("windows that touch become one", J(bridgeGaps([W("07:00", "20:00"), W("20:00", "20:30")])) === J([W("07:00", "20:30")]));
+check("a split shift (3-hour gap) stays split", bridgeGaps([W("06:00", "12:00"), W("15:00", "20:00")]).length === 2);
+check("PT window starting 30 min after the DC shift ends stretches back to it",
+  J(bridgeGaps([W("17:30", "21:00")], [W("08:00", "17:00")])) === J([W("17:00", "21:00")]));
+check("PT window ending 30 min before the DC shift starts stretches forward",
+  J(bridgeGaps([W("06:00", "07:30")], [W("08:00", "17:00")])) === J([W("06:00", "08:00")]));
+check("a DC shift 2 hours away is left alone", J(bridgeGaps([W("19:00", "21:00")], [W("08:00", "17:00")])) === J([W("19:00", "21:00")]));
 
 check("rates are the stated contract", RATE_PER_HOUR_VND === 30_000 && RATE_PER_KM_VND === 2_000);
 
