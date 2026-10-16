@@ -199,6 +199,7 @@ export async function GET(req: NextRequest) {
           placeName(j.pickup_name) === "D001" ? null : j.pickup_completed_ts,
           placeName(j.dropoff_name) === "D001" ? null : j.dropoff_completed_ts,
         ]))[0] ?? null,
+        handoverAt: inputs.handover.get(key) ?? null,
         correction: inputs.approved.get(key) ?? null,
       };
       const km = jobs.reduce((sum, j) => sum + num(j.distance_km), 0);
@@ -292,6 +293,7 @@ export async function GET(req: NextRequest) {
         firstTaskAt: taskByDay.get(d)?.first_pickup_ts ?? null,
         lastTaskAt: taskByDay.get(d)?.last_dropoff_ts ?? null,
         firstAwayAt: taskByDay.get(d)?.first_away_ts ?? null,
+        handoverAt: inputs.handover.get(dayKey(driverId, d)) ?? null,
         correction: inputs.approved.get(dayKey(driverId, d)) ?? null,
       }, kmByDay.get(d) ?? 0, jobsByDay.get(d) ?? 0, punchesByDay.get(d) ?? [], unpricedByDay.get(d) ?? 0,
         inputs.latest.get(dayKey(driverId, d)) ?? null),

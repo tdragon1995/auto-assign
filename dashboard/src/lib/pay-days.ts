@@ -104,6 +104,15 @@ export async function loadPayDayInputs(from: string, to: string, driverId?: stri
   const takers = [...new Set(leaves.map((l) => l.linked_driver_id).filter((id): id is string => !!id))];
   const twinOf = driverId ? ftTwin.get(driverId) : undefined;
   const shiftWho = driverId ? `&driver_id=in.(${[driverId, ...takers, ...(twinOf ? [twinOf] : [])].join(",")})` : who;
+  // The DC twin's last drop-off per day — where a switch to the PT account starts.
+  const twinIds = driverId ? (twinOf ? [twinOf] : []) : [...new Set(ftTwin.values())];
+  const twinDays = twinIds.length ? await sbSelectAll<{ driver_id: string; trip_date: string; last_dropoff_ts: string | null }>(
+    "v_pay_daily", `select=driver_id,trip_date,last_dropoff_ts&driver_id=in.(${twinIds.join(",")})&trip_date=gte.${from}&trip_date=lte.${to}`,
+    "trip_date.asc,driver_id.asc") : [];
+  const ptOf = new Map([...ftTwin].map(([pt, ft]) => [ft, pt]));
+  const handover = new Map<string, string>();
+  for (const r of twinDays) { const pt = ptOf.get(r.driver_id); if (pt && r.last_dropoff_ts) handover.set(dayKey(pt, r.trip_date), r.last_dropoff_ts); }
+
   const shiftRows = await sbSelectAll<{ driver_id: string; shift_date: string; start_time: string | null; end_time: string | null; source: string }>(
     "driver_shifts",
     `select=driver_id,shift_date,start_time,end_time,source&day_type=eq.working&shift_date=gte.${from}&shift_date=lte.${to}${shiftWho}`,
@@ -180,6 +189,8 @@ export async function loadPayDayInputs(from: string, to: string, driverId?: stri
 
   return {
     shifts, approved, latest, corrections, origin,
+    /** PT driver-day → their DC account's last drop-off (DayFacts.handoverAt). */
+    handover,
     /** Payroll's file has been written into Lịch ca for this period. */
     payrollImported,
   };

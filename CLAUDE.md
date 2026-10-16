@@ -473,7 +473,8 @@ These are the things most likely to burn a future agent working on this codebase
     A tap stamped on another date is ignored, as trips are. Two windows at most
     15 min apart are one stretch and the gap is paid (`bridgeGaps`), including
     across a person's DC account: a PT window stretches to meet the DC shift
-    (supervisor, 2026-10-16). A longer gap is a split shift and is not paid. Holidays ×3
+    (supervisor, 2026-10-16). A longer gap is a split shift and is not paid. Likewise a PT day starting within 15 min of the
+    person's DC last drop-off starts AT that drop-off (`handoverAt`). Holidays ×3
     (`HOLIDAY_MULTIPLIER`, hand-kept). Reconciled row by row against payroll's
     15/08–14/09 file: 1,003 of 1,042 shifts to the minute before the tap-out
     rule; that rule then pays ~119 h less than payroll did on ~200 days where
