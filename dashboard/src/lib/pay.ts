@@ -77,6 +77,9 @@ export interface PayJob {
   pickup_lat: number | null;
   pickup_lng: number | null;
   pickup_completed_ts: string | null;
+  /** When the driver REACHED the pickup — the start-of-work evidence payroll
+   *  uses. Null on rows archived before 2026-10-16 (readers fall back to completion). */
+  pickup_arrived_ts?: string | null;
 
   dropoff_customer_id: string | null;
   dropoff_name: string | null;
@@ -275,7 +278,12 @@ export function workedMinutes(punches: PayPunch[], day: DayFacts): WorkedDay {
     .filter((t): t is string => t !== null && vnDate(new Date(t)) === day.date)
     .sort((a, b) => Date.parse(a) - Date.parse(b));
   const firstIn = times("in")[0] ?? null;
-  const startEvidence = firstIn ?? day.firstTaskAt;
+  // The day starts at the EARLIER of the check-in and reaching the first pickup:
+  // a driver who taps in after starting work is paid from the work (Lê Minh
+  // Triết 26/09: first pickup reached 17:04, tapped in 18:15; payroll 17:04).
+  const startEvidence = firstIn && day.firstTaskAt
+    ? (Date.parse(day.firstTaskAt) < Date.parse(firstIn) ? day.firstTaskAt : firstIn)
+    : firstIn ?? day.firstTaskAt;
   // A check-out only counts AFTER the shift opened; one before it is a stray tap.
   const lastOut = times("out").filter((t) => !startEvidence || Date.parse(t) > Date.parse(startEvidence)).at(-1) ?? null;
 
@@ -331,7 +339,7 @@ export function suggestedWindow(punches: PayPunch[], firstTaskAt: string | null,
     .filter((t): t is string => t !== null && vnDate(new Date(t)) === date)
     .sort((a, b) => Date.parse(a) - Date.parse(b));
   const firstIn = at("in")[0] ?? null;
-  const start = firstIn ?? firstTaskAt;
+  const start = firstIn && firstTaskAt && Date.parse(firstTaskAt) < Date.parse(firstIn) ? firstTaskAt : firstIn ?? firstTaskAt;
   const lastOut = at("out").filter((t) => !start || Date.parse(t) > Date.parse(start)).at(-1) ?? null;
   const ends = [lastOut, lastTaskAt].filter((t): t is string => !!t && (!start || Date.parse(t) > Date.parse(start)));
   const end = ends.sort((a, b) => Date.parse(a) - Date.parse(b)).at(-1) ?? null;
@@ -523,6 +531,7 @@ export function payRowsForRoute(
       pickup_lat: Number.isFinite(pickup.latitude) ? pickup.latitude : null,
       pickup_lng: Number.isFinite(pickup.longitude) ? pickup.longitude : null,
       pickup_completed_ts: toIso(pickup.activityCompletedTs),
+      pickup_arrived_ts: toIso(pickup.activityArrivedTs),
 
       dropoff_customer_id: dropoff.customerId ?? null,
       dropoff_name: dropoff.customerName ?? null,

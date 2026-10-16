@@ -192,7 +192,7 @@ export async function GET(req: NextRequest) {
       const facts: DayFacts = {
         date: askedDate,
         shifts: inputs.shifts.get(key) ?? [],
-        firstTaskAt: stamps(jobs.map((j) => j.pickup_completed_ts))[0] ?? null,
+        firstTaskAt: stamps(jobs.map((j) => j.pickup_arrived_ts ?? j.pickup_completed_ts))[0] ?? null,
         lastTaskAt: stamps(jobs.map((j) => j.dropoff_completed_ts)).at(-1) ?? null,
         // Same as v_pay_daily.first_away_ts: the first stop not at D001.
         firstAwayAt: stamps(jobs.flatMap((j) => [

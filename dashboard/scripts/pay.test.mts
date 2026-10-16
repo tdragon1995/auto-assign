@@ -103,6 +103,11 @@ check("a tap-out before the last window clips the earlier windows too", splitOut
 const splitIn = workedMinutes([punch("in", "16:00"), punch("out", "21:00")], facts([["07:00", "14:30"], ["15:00", "21:00"]], "16:10", "20:50"));
 check("a tap-in inside a later window starts the clock there", splitIn.minutes === 300, String(splitIn.minutes));
 
+// Lê Minh Triết 26/09: shift 17:00–21:00, reached the first pickup 17:04, tapped
+// in 18:15 → paid from 17:04, the earlier of the two (payroll's "Ghi nhận vào").
+const tapAfterWork = workedMinutes([punch("in", "18:15"), punch("out", "21:01")], facts([["17:00", "21:00"]], "17:04", "20:55"));
+check("a tap-in after the first pickup starts the day at the pickup", tapAfterWork.minutes === 236, String(tapAfterWork.minutes));
+
 const noTrips = workedMinutes([punch("in", "14:58"), punch("out", "21:06")], facts([["15:00", "21:00"]], null, null));
 check("no trips → paid to the check-out tap", noTrips.minutes === 366, String(noTrips.minutes));
 
