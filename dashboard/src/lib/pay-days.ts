@@ -19,7 +19,7 @@
  * Keyed `${driver_id}|${YYYY-MM-DD}`. SERVER ONLY.
  */
 import { sbSelect, sbSelectAll } from "./supabase-rest";
-import { bridgeGaps, mergeWindows, parseShiftText, type ShiftWindow } from "./pay";
+import { BRIDGE_GAP_MIN, bridgeGaps, mergeWindows, parseShiftText, type ShiftWindow } from "./pay";
 import { normalizeDriverName } from "./driver-match";
 import { employmentOf } from "./driver-label";
 import { addDays } from "./time";
@@ -104,6 +104,14 @@ export async function loadPayDayInputs(from: string, to: string, driverId?: stri
   const takers = [...new Set(leaves.map((l) => l.linked_driver_id).filter((id): id is string => !!id))];
   const twinOf = driverId ? ftTwin.get(driverId) : undefined;
   const shiftWho = driverId ? `&driver_id=in.(${[driverId, ...takers, ...(twinOf ? [twinOf] : [])].join(",")})` : who;
+  // The DC twin's last drop-off per day: still driving past the DC shift's end
+  // means the switch to a continuing PT shift happened mid-trip.
+  const twinIds = driverId ? (twinOf ? [twinOf] : []) : [...new Set(ftTwin.values())];
+  const twinDays = twinIds.length ? await sbSelectAll<{ driver_id: string; trip_date: string; last_dropoff_ts: string | null }>(
+    "v_pay_daily", `select=driver_id,trip_date,last_dropoff_ts&driver_id=in.(${twinIds.join(",")})&trip_date=gte.${from}&trip_date=lte.${to}`,
+    "trip_date.asc,driver_id.asc") : [];
+  const twinLastDrop = new Map(twinDays.filter((r) => r.last_dropoff_ts).map((r) => [dayKey(r.driver_id, r.trip_date), r.last_dropoff_ts as string]));
+
   const shiftRows = await sbSelectAll<{ driver_id: string; shift_date: string; start_time: string | null; end_time: string | null; source: string }>(
     "driver_shifts",
     `select=driver_id,shift_date,start_time,end_time,source&day_type=eq.working&shift_date=gte.${from}&shift_date=lte.${to}${shiftWho}`,
@@ -162,10 +170,20 @@ export async function loadPayDayInputs(from: string, to: string, driverId?: stri
     const w = { start: hm(r.start_time), end: hm(r.end_time) };
     if (l) l.push(w); else otherAccount.set(k, [w]);
   }
+  const continued = new Map<string, string>();
+  const mins = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
   for (const [k, v] of shifts) {
     const [id, date] = k.split("|");
     const ft = ftTwin.get(id);
-    shifts.set(k, bridgeGaps(mergeWindows(v), ft ? otherAccount.get(dayKey(ft, date)) ?? [] : []));
+    const dc = ft ? otherAccount.get(dayKey(ft, date)) ?? [] : [];
+    const pt = bridgeGaps(mergeWindows(v), dc);
+    shifts.set(k, pt);
+    const lastDrop = ft ? twinLastDrop.get(dayKey(ft, date)) : undefined;
+    if (!lastDrop) continue;
+    for (const w of dc) {
+      const end = `${date}T${w.end}:00+07:00`;
+      if (Date.parse(lastDrop) > Date.parse(end) && pt.some((p) => Math.abs(mins(p.start) - mins(w.end)) <= BRIDGE_GAP_MIN)) continued.set(k, end);
+    }
   }
 
   // Ascending id, so a later approval overwrites an earlier one for the same day.
@@ -180,6 +198,8 @@ export async function loadPayDayInputs(from: string, to: string, driverId?: stri
 
   return {
     shifts, approved, latest, corrections, origin,
+    /** PT driver-day → when the continuing DC shift ended (DayFacts.continuedAt). */
+    continued,
     /** Payroll's file has been written into Lịch ca for this period. */
     payrollImported,
   };

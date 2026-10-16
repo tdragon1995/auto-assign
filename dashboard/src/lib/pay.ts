@@ -221,6 +221,12 @@ export interface DayFacts {
   /** First stop completed AWAY from D001 (v_pay_daily.first_away_ts) — when a
    *  BO runner based there actually left to drive. Absent → the first pickup. */
   firstAwayAt?: string | null;
+  /** The PT shift continues straight on from the person's DC shift and the DC
+   *  account was still driving past that shift's end: the instant the DC shift
+   *  ended. The driver cannot tap in on the PT account mid-trip, so the PT day
+   *  starts here (supervisor, 2026-10-16; Phan Thành Được 30/09: DC 06:00–19:00,
+   *  DC trip until 19:22, PT 19:00–19:30 → PT from 19:00). */
+  continuedAt?: string | null;
   /** An APPROVED "cập nhật công" for the day, VN wall clock "HH:MM". It is the
    *  day's worked window outright: it replaces everything the rule would compute,
    *  shift or no shift, because a supervisor has looked at this day. */
@@ -313,9 +319,10 @@ export function workedMinutes(punches: PayPunch[], day: DayFacts, opts: { tapOut
   // The day starts at the EARLIER of the check-in and reaching the first pickup:
   // a driver who taps in after starting work is paid from the work (Lê Minh
   // Triết 26/09: first pickup reached 17:04, tapped in 18:15; payroll 17:04).
-  const startEvidence = firstIn && day.firstTaskAt
+  const own = firstIn && day.firstTaskAt
     ? (Date.parse(day.firstTaskAt) < Date.parse(firstIn) ? day.firstTaskAt : firstIn)
     : firstIn ?? day.firstTaskAt;
+  const startEvidence = own && day.continuedAt && Date.parse(day.continuedAt) < Date.parse(own) ? day.continuedAt : own;
   // A check-out only counts AFTER the shift opened; one before it is a stray tap.
   const lastOut = times("out").filter((t) => !startEvidence || Date.parse(t) > Date.parse(startEvidence)).at(-1) ?? null;
 

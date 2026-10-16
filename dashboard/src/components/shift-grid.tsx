@@ -16,6 +16,7 @@ import { Button } from "./ui/button";
 import { PatternTimeSelect } from "./pattern-time-select";
 import { STATUS_LABEL, periodMonthOf, type CellStatus } from "@/lib/shift-grid";
 import { vnDate } from "@/lib/time";
+import { foldName } from "@/lib/driver-cell";
 
 type Cell = { p?: string; a?: string; s: CellStatus; t?: string[]; sug?: [string, string] };
 type Row = { driver_id: string; name: string; code: string; type: "PT" | "FT"; active: boolean;
@@ -83,7 +84,6 @@ export function ShiftGrid() {
   }, [month]);
   useEffect(() => { void load(); }, [load]);
 
-  const fold = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").toLowerCase();
   const counts = useMemo(() => {
     const c = Object.fromEntries(ORDER.map((s) => [s, 0])) as Record<Status, number>;
     for (const r of grid?.rows ?? []) for (const cell of Object.values(r.cells)) if (cell.s) c[cell.s as Status]++;
@@ -91,7 +91,7 @@ export function ShiftGrid() {
   }, [grid]);
   const rows = useMemo(() => (grid?.rows ?? []).filter((r) =>
     (type === "all" || r.type === type)
-    && (!q || fold(`${r.name} ${r.code}`).includes(fold(q)))
+    && (!q || foldName(`${r.name} ${r.code}`).includes(foldName(q.trim())))
     && (!only || Object.values(r.cells).some((c) => c.s === only))), [grid, type, q, only]);
   /** PT days without a shift that the day itself can settle: check-in and check-out both known. */
   const fixable = useMemo(() => rows.filter((r) => r.type === "PT").flatMap((r) =>

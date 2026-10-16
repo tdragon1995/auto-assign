@@ -108,6 +108,13 @@ check("a tap-in inside a later window starts the clock there", splitIn.minutes =
 const tapAfterWork = workedMinutes([punch("in", "18:15"), punch("out", "21:01")], facts([["17:00", "21:00"]], "17:04", "20:55"));
 check("a tap-in after the first pickup starts the day at the pickup", tapAfterWork.minutes === 236, String(tapAfterWork.minutes));
 
+// Phan Thành Được 30/09: PT 19:00–19:30 continues his DC 06:00–19:00 shift, his DC
+// trip ran to 19:22, no PT tap-in, PT pickup 19:46 → 20:04 → PT paid from 19:00.
+const cont = workedMinutes([punch("out", "20:06")], { ...facts([["19:00", "19:30"]], "19:46", "20:04"), continuedAt: at("19:00") });
+check("a PT shift continuing a DC trip past its end starts at the DC shift end", cont.minutes === 64, String(cont.minutes));
+const notCont = workedMinutes([punch("out", "20:06")], facts([["19:00", "19:30"]], "19:46", "20:04"));
+check("…without it, at the first PT pickup", notCont.minutes === 18, String(notCont.minutes));
+
 const noTrips = workedMinutes([punch("in", "14:58"), punch("out", "21:06")], facts([["15:00", "21:00"]], null, null));
 check("no trips → paid to the check-out tap, capped at shift end", noTrips.minutes === 360, String(noTrips.minutes));
 const noTripsEarly = workedMinutes([punch("in", "14:58"), punch("out", "20:30")], facts([["15:00", "21:00"]], null, null));
