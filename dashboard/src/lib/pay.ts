@@ -246,7 +246,7 @@ export interface WorkedDay {
  * ponytail: per-window evidence needs every trip's time, not just first/last —
  * 3 split days in 1,042, so the edges are enough until that changes.
  */
-export function workedMinutes(punches: PayPunch[], day: DayFacts): WorkedDay {
+export function workedMinutes(punches: PayPunch[], day: DayFacts, opts: { tapOutPastShift?: boolean } = {}): WorkedDay {
   const multiplier = HOLIDAY_MULTIPLIER[day.date] ?? 1;
   const out: WorkedDay = { minutes: 0, clocked: 0, multiplier, spans: [], no_shift: false, corrected: false };
 
@@ -305,7 +305,8 @@ export function workedMinutes(punches: PayPunch[], day: DayFacts): WorkedDay {
   const lastEnd = (shiftEnd: number): number => {
     // No trips: the tap-out, but never past the shift end (supervisor, 2026-10-16;
     // Y Quý 28/09 tapped out 22:15 on a 21:00 shift, payroll paid to 21:00).
-    if (!day.lastTaskAt) return lastOut ? Math.min(Date.parse(lastOut), shiftEnd) : shiftEnd;
+    // An all-day BO Runner is paid to the tap-out, as payroll's BO sheet does.
+    if (!day.lastTaskAt) return lastOut ? (opts.tapOutPastShift ? Date.parse(lastOut) : Math.min(Date.parse(lastOut), shiftEnd)) : shiftEnd;
     if (!lastOut) return Date.parse(day.lastTaskAt);
     return Math.max(Date.parse(day.lastTaskAt), Math.min(Date.parse(lastOut), shiftEnd));
   };
@@ -379,7 +380,7 @@ export function paidDay(punches: PayPunch[], day: DayFacts, staffCode: string): 
   const bo = BO_RUNNERS[staffCode];
   if (!bo) return { ...workedMinutes(punches, day), bo_minutes: 0 };
   if (!bo.window) {
-    const w = workedMinutes(punches, day);
+    const w = workedMinutes(punches, day, { tapOutPastShift: true });
     return { ...w, bo_minutes: w.minutes };
   }
   const win = bo.window;

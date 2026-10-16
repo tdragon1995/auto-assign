@@ -273,7 +273,7 @@ check("pointing the right ways",
 // The archived taps bound payroll's shift like any tap would (no trips given here,
 // so the check-out closes it).
 const bound = workedMinutes(withChamCong.punches, facts([["07:00", "17:00"]], null, null));
-check("and the taps bound the shift 07:55–17:05", bound.minutes === 550, String(bound.minutes));
+check("and the taps bound the shift 07:55–17:00 (no trips: capped at shift end)", bound.minutes === 545, String(bound.minutes));
 
 // Labels arrive as objects over JSON-RPC and as strings over REST; the reference
 // number is the fallback when a payload carries neither.
