@@ -25,10 +25,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { sbSelectAll, supabaseConfigured } from "@/lib/supabase-rest";
 import { masterDriverNames } from "@/lib/master-store";
 import { employmentOf } from "@/lib/driver-label";
-import {
-  paidDay, hoursPayFor, kmPayFor, suggestedWindow,
-  RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch, type PayJob,
-} from "@/lib/pay";
+import { paidDay, hoursPayFor, kmPayFor, suggestedWindow, RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch, type PayJob, hourPayFor, BO_RATE_PER_HOUR_VND } from "@/lib/pay";
 import { payrollPeriod } from "@/lib/pay-period";
 import { staffCode } from "@/lib/display-names";
 import { loadPayDayInputs, dayKey } from "@/lib/pay-days";
@@ -259,6 +256,9 @@ export async function GET(req: NextRequest) {
           hour_pay: hoursPayFor(mins, boMins),
           km_pay: kmPayFor(km),
           total_pay: hoursPayFor(mins, boMins) + kmPayFor(km),
+          /** The BO Runner share of hour_pay (35.000đ/h). Not a driving cost, so
+           *  Lương PT leaves it out of đ/km thực. */
+          bo_pay: hourPayFor(boMins, BO_RATE_PER_HOUR_VND),
           /** Days worked with no shift in Lịch ca: they pay no hours, so this is
            *  the column a supervisor checks (Bảng ca) before the 25th. */
           no_shift_days: noShiftDays,
@@ -299,6 +299,7 @@ export async function GET(req: NextRequest) {
         hour_pay: drivers.reduce((s, d) => s + d.hour_pay, 0),
         km_pay: drivers.reduce((s, d) => s + d.km_pay, 0),
         total_pay: drivers.reduce((s, d) => s + d.total_pay, 0),
+        bo_pay: drivers.reduce((s, d) => s + d.bo_pay, 0),
         no_shift_days: drivers.reduce((s, d) => s + d.no_shift_days, 0),
         unpriced_jobs: drivers.reduce((s, d) => s + d.unpriced_jobs, 0),
       },

@@ -95,6 +95,14 @@ check("no check-out → paid to the last trip", leftEarly.minutes === 268, Strin
 
 // No trips at all: the check-out tap is the only evidence, even a few minutes past
 // shift end. Trần Thị Mộng Hoa 15/08: 15:00–21:06 on a 15:00–21:00 shift.
+// Nguyễn Hoàng Nhân 02/10: shifts 07:00–20:00 + a 20:00–20:30 cover, no tap-in,
+// trips 08:55–19:27, out 19:32 → 08:55–19:32, not the first window paid to 20:00.
+const splitOut = workedMinutes([punch("out", "19:32")], facts([["07:00", "20:00"], ["20:00", "20:30"]], "08:55", "19:27"));
+check("a tap-out before the last window clips the earlier windows too", splitOut.minutes === 637, String(splitOut.minutes));
+// Tapped in at 16:00 during the second of two windows → the clock starts at 16:00.
+const splitIn = workedMinutes([punch("in", "16:00"), punch("out", "21:00")], facts([["07:00", "14:30"], ["15:00", "21:00"]], "16:10", "20:50"));
+check("a tap-in inside a later window starts the clock there", splitIn.minutes === 300, String(splitIn.minutes));
+
 const noTrips = workedMinutes([punch("in", "14:58"), punch("out", "21:06")], facts([["15:00", "21:00"]], null, null));
 check("no trips → paid to the check-out tap", noTrips.minutes === 366, String(noTrips.minutes));
 

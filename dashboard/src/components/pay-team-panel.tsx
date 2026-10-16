@@ -40,6 +40,8 @@ interface DriverRow {
   hour_pay: number;
   km_pay: number;
   total_pay: number;
+  /** BO Runner hours' pay — left out of đ/km thực, it buys no driving. */
+  bo_pay: number;
   /** Days worked with no shift in payroll's file — they pay no hours. */
   no_shift_days: number;
   unpriced_jobs: number;
@@ -280,7 +282,7 @@ export function PayTeamPanel() {
         // gets matched against attendance and leave in a spreadsheet, and the code
         // is what those are keyed on — two drivers share a display name today.
         d.driver_name, d.days_worked, d.jobs, d.km, d.real_km, d.worked_mins,
-        d.hour_pay, d.km_pay, d.total_pay, realRate(d.total_pay, d.real_km) ?? "",
+        d.hour_pay, d.km_pay, d.total_pay, realRate(d.total_pay - d.bo_pay, d.real_km) ?? "",
         d.no_shift_days, d.unpriced_jobs,
       ]);
       // An incomplete payroll must not leave this screen looking final.
@@ -428,8 +430,8 @@ export function PayTeamPanel() {
             // The fleet average, and the point of the two columns below: it is the
             // whole wage bill over every kilometre actually ridden, so it answers
             // "what do we pay per kilometre" rather than "what is the rate".
-            ["đ/km thực", fmtRate(realRate(data.totals.total_pay, data.totals.real_km)),
-             `Tổng chi (giờ + km) ÷ ${fmtKm(data.totals.real_km)} km thực chạy`],
+            ["đ/km thực", fmtRate(realRate(data.totals.total_pay - data.totals.bo_pay, data.totals.real_km)),
+             `Tổng chi (giờ + km), trừ ${fmtVnd(data.totals.bo_pay)} giờ BO Runner, ÷ ${fmtKm(data.totals.real_km)} km thực chạy`],
           ].map(([label, value, hint]) => (
             <div key={label} className="bg-white px-2 py-2 text-center" title={hint || undefined}>
               <p className="text-base font-bold text-slate-800 leading-tight">{value}</p>
@@ -521,7 +523,7 @@ export function PayTeamPanel() {
                 <th className="text-right font-semibold px-2 py-2" title="Quãng đường lấy mẫu → giao mẫu của các chuyến được tính tiền">Km tính tiền</th>
                 <th className="text-right font-semibold px-2 py-2" title="Quãng đường thực tế đã chạy, gồm cả đoạn di chuyển giữa các chuyến và chuyến không tính tiền (theo Hiệu Suất)">Km thực</th>
                 <th className="text-right font-semibold px-3 py-2">Tổng (đ)</th>
-                <th className="text-right font-semibold px-2 py-2" title="(Tiền giờ + tiền km) ÷ km thực chạy">đ/km thực</th>
+                <th className="text-right font-semibold px-2 py-2" title="(Tiền giờ + tiền km, không tính giờ BO Runner) ÷ km thực chạy">đ/km thực</th>
                 {/* A word, not a glyph: the column is a task list and screen readers
                     got nothing from "⚠". */}
                 <th className="text-right font-semibold px-2 py-2" title="Ngày có làm nhưng không có ca trong Lịch ca — không tính tiền giờ">Không ca</th>
@@ -559,9 +561,9 @@ export function PayTeamPanel() {
                   </td>
                   <td
                     className="text-right px-2 py-2 text-slate-600 tabular-nums"
-                    title={d.real_km > 0 ? `${fmtVnd(d.total_pay)} ÷ ${fmtKm(d.real_km)} km thực` : "Chưa có dữ liệu km thực"}
+                    title={d.real_km > 0 ? `${fmtVnd(d.total_pay - d.bo_pay)}${d.bo_pay ? ` (không tính ${fmtVnd(d.bo_pay)} giờ BO)` : ""} ÷ ${fmtKm(d.real_km)} km thực` : "Chưa có dữ liệu km thực"}
                   >
-                    {fmtRate(realRate(d.total_pay, d.real_km))}
+                    {fmtRate(realRate(d.total_pay - d.bo_pay, d.real_km))}
                   </td>
                   <td className="text-right px-2 py-2 tabular-nums">
                     {d.no_shift_days > 0
@@ -589,7 +591,7 @@ export function PayTeamPanel() {
             hoặc chuyến cuối, lấy giờ trễ hơn, không quá hết ca trừ khi còn chuyến. Ngày lễ ×3. BO Runner
             35.000đ/giờ (Anh Tú 6h–15h thứ 2–7, Mộng Hoa cả ca). +{" "}
             {vnd.format(data.rates.per_km)}đ/km lấy mẫu → giao mẫu của mỗi chuyến đã hoàn thành.{" "}
-            <em>đ/km thực</em> = (tiền giờ + tiền km) ÷ quãng đường thực chạy — gồm cả đoạn di chuyển
+            <em>đ/km thực</em> = (tiền giờ + tiền km, không tính giờ BO Runner) ÷ quãng đường thực chạy — gồm cả đoạn di chuyển
             giữa các chuyến, đường về và chuyến không tính tiền. Đây là chi phí thật cho mỗi km,
             không so trực tiếp được với mức {vnd.format(data.rates.per_km)}đ/km.
             Kỳ lương từ {data.from} đến {data.to}. Tải CSV để lấy số chính xác.

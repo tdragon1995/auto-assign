@@ -301,11 +301,14 @@ export function workedMinutes(punches: PayPunch[], day: DayFacts): WorkedDay {
   };
 
   const windows = [...day.shifts].sort((a, b) => a.start.localeCompare(b.start));
+  // The day's start and end clip EVERY window, not just the first and last: a
+  // check-out at 19:32 before a 20:00–20:30 cover window must not leave the
+  // 07:00–20:00 window paid to 20:00 (PT101808, 02/10).
+  const dayStart = startEvidence ? Date.parse(startEvidence) : -Infinity;
+  const dayEnd = lastEnd(Date.parse(at(windows[windows.length - 1].end)));
   windows.forEach((w, i) => {
-    let from = Date.parse(at(w.start));
-    let to = Date.parse(at(w.end));
-    if (i === 0 && startEvidence) from = Math.max(from, Date.parse(startEvidence));
-    if (i === windows.length - 1) to = lastEnd(to);
+    const from = Math.max(Date.parse(at(w.start)), dayStart);
+    const to = i === windows.length - 1 ? dayEnd : Math.min(Date.parse(at(w.end)), dayEnd);
     const mins = Math.round((to - from) / 60_000);
     if (mins <= 0) return;
     out.spans.push({ from: new Date(from).toISOString(), to: new Date(to).toISOString(), minutes: mins });
