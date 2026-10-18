@@ -318,6 +318,12 @@ export function isClientPickupJob(job: {
   return !!pickup && !/^\s*(BRA|3PL)\b/i.test(pickup.customer_name ?? "");
 }
 
+/** A run between two Diag sites: picked up at a "BRA - …" branch. */
+export function isBranchRun(job: { stops?: { stop_type_id?: number; customer_name?: string }[] | null }): boolean {
+  const pickup = (job.stops ?? []).find((s) => s.stop_type_id === 1);
+  return !!pickup && /^\s*BRA\b/i.test(pickup.customer_name ?? "");
+}
+
 /**
  * Client accounts the lab watches WHEREVER their samples go.
  *
@@ -349,13 +355,12 @@ export function isLabWatchedClient(job: {
 // Every feed shows CLIENT pickups and drops other sites' runs passing through — a Diag
 // branch's shuttle ("BRA - …") or a 3PL handoff ("3PL - …") — with two exceptions below.
 //
-// A HUB keeps the provincial branches that route through it: D014, D016 and D032 into
-// D007, D028 and D033 into D009, D015 into D004, D035 into D006. The hub forwards those
-// samples to the lab, so their arrival is its own work — but only while it is still
-// coming: once delivered the samples are in the hub's hands and the row leaves, the same
-// as its own requests below. `feeders` is the set of branches whose configured route ends
-// at this location — the caller reads it off the PSC route table, which is the one place
-// those routes are written down. What is still dropped at a hub is the lab's return runs.
+// A branch keeps every OTHER branch's run arriving at it — a provincial branch into its
+// hub (D014 into D007), the lab's runs out to a branch ("D001→D004_1141") — while it is
+// still coming: the /qr page lists them in a compact "coming in" block with an ETA, and
+// once delivered the row leaves, the same as its own requests below. Until 2026-10-18
+// only the hub's configured feeders were kept and the lab's runs were dropped; the
+// branch asked to see everything heading its way.
 //
 // A branch ALSO keeps the trips it booked itself, but only WHILE THEY ARE UNDER WAY: the
 // supervisor's rule is that a branch watches its outbound requests until they are handed
@@ -374,7 +379,7 @@ type FeedJob = {
   stops?: { stop_type_id?: number; customer_id?: string; customer_name?: string; activity_completed_ts?: string | null }[];
 };
 
-export function keepOnBranchFeed(code: string, job: FeedJob, feeders: ReadonlySet<string> = new Set()): boolean {
+export function keepOnBranchFeed(code: string, job: FeedJob): boolean {
   if (isClientPickupJob(job)) return true;
   if (code === LAB_CUSTOMER_ID) return false;
   const stops = job.stops ?? [];
@@ -383,7 +388,6 @@ export function keepOnBranchFeed(code: string, job: FeedJob, feeders: ReadonlySe
   const handedOver = job.job_status_id === 5
     || stops.some((s) => s.stop_type_id !== 1 && !!s.activity_completed_ts);
   if (handedOver) return false;
-  const hubArrival = !!pickup?.customer_id && feeders.has(pickup.customer_id) && dropoff?.customer_id === code;
   const ownRequest = pickup?.customer_id === code;
-  return hubArrival || ownRequest;
+  return ownRequest || (dropoff?.customer_id === code && isBranchRun(job));
 }

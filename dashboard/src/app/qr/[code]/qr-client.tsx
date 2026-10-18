@@ -64,14 +64,12 @@ const STEPS = ["Lấy mẫu", "Đã giao"] as const;
 // republished every ~3 min, so a refresh sooner than this mostly returns what is on screen.
 const MIN_REFRESH_MS = 60_000;
 
-// D001 gallery: how far back "arrived recently" reaches. 40 minutes by default.
+// Photo gallery: how far back "arrived recently" reaches. 40 minutes by default.
 const GALLERY_WINDOWS = [
   { mins: 20, label: "20 phút" }, { mins: 40, label: "40 phút" },
   { mins: 60, label: "1 giờ" }, { mins: 120, label: "2 giờ" },
 ];
 
-// Branches that see every trip touching them. The rest only book (2026-10-14).
-const FULL_VIEW = new Set(["D001", "D046"]);
 
 function todayVN(): string {
   return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Ho_Chi_Minh" }).format(new Date()).slice(0, 10);
@@ -557,6 +555,59 @@ function DoneRow({ job: j, notes, onOpen }: { job: Job; notes?: StopNotes; onOpe
     );
 }
 
+/* ─────────────────────────── coming in from other branches ─────────────────────────── */
+
+const vnClock = (ms: number) =>
+  new Date(ms).toLocaleTimeString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit" });
+
+/** Expected arrival: pickup finished + that route's 30-day p80. Null before the pickup —
+ *  the start time isn't known yet, so the row shows its status alone. */
+function etaOf(j: Job, etaMins: Record<string, number>): number | null {
+  const p = pickupOf(j);
+  const mins = p ? etaMins[p.customer_id] : undefined;
+  if (!mins || !p?.activity_completed_ts) return null;
+  const done = Date.parse(`${p.activity_completed_ts.replace(" ", "T").slice(0, 19)}+07:00`);
+  return Number.isNaN(done) ? null : done + mins * 60_000;
+}
+
+/** Other branches' runs on their way here: one line each — from, driver, status, ETA. */
+function IncomingBlock({ jobs, etaMins, now, onOpen }: { jobs: Job[]; etaMins: Record<string, number>; now: number; onOpen: (j: Job) => void }) {
+  const rows = jobs
+    .map((j) => ({ j, eta: etaOf(j, etaMins), state: stateOf(j) }))
+    .sort((a, b) => (a.eta ?? Infinity) - (b.eta ?? Infinity));
+  return (
+    <section aria-labelledby="qr-incoming" className="bg-white rounded-2xl shadow-sm mb-4 overflow-hidden">
+      <h3 id="qr-incoming" className="px-4 pt-3 pb-1 text-[12px] font-semibold text-slate-600">Đang đến từ PSC khác ({jobs.length})</h3>
+      <ul>
+        {rows.map(({ j, eta, state }) => {
+          const late = eta != null && now > eta;
+          return (
+            <li key={j.job_id} className="border-t border-slate-100">
+              <button onClick={() => onOpen(j)}
+                className="group w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-slate-50 active:bg-slate-100 transition-colors">
+                <span className="flex-1 min-w-0">
+                  <span className="block truncate text-sm font-semibold text-slate-800">
+                    PSC {placeLabel(pickupOf(j)?.customer_name ?? "")}
+                    <span className="font-normal text-slate-500"> · {driverText(j.driver?.last_name)}</span>
+                  </span>
+                  <span className={`inline-block mt-0.5 px-1.5 py-0.5 rounded-md text-[11px] font-semibold ${STATE_STYLE[state]}`}>{stateText(state)}</span>
+                </span>
+                {eta != null && (
+                  <span className="shrink-0 text-right">
+                    <span className={`block text-[15px] font-bold tabular-nums ${late ? "text-amber-700" : "text-slate-900"}`}>~{vnClock(eta)}</span>
+                    <span className={`block text-[11px] ${late ? "text-amber-700 font-semibold" : "text-slate-500"}`}>{late ? "Quá dự kiến" : "Dự kiến đến"}</span>
+                  </span>
+                )}
+                <ChevronRight aria-hidden className="w-4 h-4 text-slate-400 shrink-0 group-hover:text-slate-600 transition-colors" />
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 function TripCard({ job, code, notes, onOpen, onCancel, onSendVia3pl, onChangeDriver }: {
   job: Job;
   code: string;
@@ -739,14 +790,10 @@ export default function QrPage() {
   const [loaded, setLoaded] = useState(false);
   const [pending, setPending] = useState<PendingReq[]>([]);
   const [seen, setSeen] = useState<Set<number>>(new Set());
-  // D001 and D046 see every trip touching them; every other branch sees only the trips it
-  // booked from this device (with their buttons) — nothing about anyone else's.
-  const branchCode = (route?.psc_pickup ?? "").replace(/^BRA\s*-\s*/i, "");
-  const fullView = FULL_VIEW.has(branchCode);
-  // D001 only: narrow its (long) list to one driver. A filter over trips already loaded —
-  // no request of its own.
+  // Every branch sees every trip touching it (the D001 view, since 2026-10-18).
+  // Narrow the list to one driver. A filter over trips already loaded — no request of its own.
   const [driverId, setDriverId] = useState("");
-  // D001 gallery window. The nurse picks it; this device remembers the pick.
+  // Gallery window. Staff pick it; this device remembers the pick.
   const [galleryMins, setGalleryMins] = useState(40);
   useEffect(() => {
     try { const m = Number(localStorage.getItem("qr-gallery-mins")); if (GALLERY_WINDOWS.some((w) => w.mins === m)) setGalleryMins(m); } catch {}
@@ -765,6 +812,12 @@ export default function QrPage() {
   // the page would read as a quiet day — the same silence footgun 3 warns about for the
   // config sheet. One line says it, not thirty-eight.
   const [notesFailed, setNotesFailed] = useState(false);
+  // Minutes from pickup to here, per pickup branch (30-day p80, server-side), for the
+  // "coming in" block. Empty for D001 and past days.
+  const [etaMins, setEtaMins] = useState<Record<string, number>>({});
+  // When the list last arrived — "late" is judged against it, and the page refreshes
+  // whenever staff come back to the tab.
+  const [loadedAt, setLoadedAt] = useState(0);
 
   const [sheetJob, setSheetJob] = useState<Job | null>(null);
   // Set when the sheet is opened from D001's gallery: brief view, led by this photo.
@@ -832,12 +885,13 @@ export default function QrPage() {
   const ownIds = pending.filter((p) => p.date === date).map((p) => p.job_id).join(",");
 
   const loadJobs = useCallback(async () => {
-    if (!fullView && !ownIds) { setJobs([]); setLoaded(false); return; }
     lastLoadRef.current = Date.now();
     setLoading(true);
     try {
-      const res = await fetch(`/api/location-jobs?date=${date}&code=${encodeURIComponent(code)}${fullView ? "&all=1" : ""}${ownIds ? `&ids=${ownIds}` : ""}`);
+      const res = await fetch(`/api/location-jobs?date=${date}&code=${encodeURIComponent(code)}&all=1${ownIds ? `&ids=${ownIds}` : ""}`);
       const data = await res.json();
+      setEtaMins(data.eta ?? {});
+      setLoadedAt(Date.now());
       const raw: Job[] = data.jobs ?? [];
       // A waiting card hides once the server has its trip at all — even one the filters
       // below then drop — and goes for good once Cartrack no longer has it (cancelled or
@@ -880,15 +934,10 @@ export default function QrPage() {
       setLoading(false);
       setLoaded(true);
     }
-  }, [date, code, fullView, ownIds, pendingKey]);
+  }, [date, code, ownIds, pendingKey]);
 
-  // Whenever the date or the branch's bookings change — and on open only for a branch
-  // that sees its whole list; elsewhere there is nothing to ask until bookings restore.
-  const mountedRef = useRef(false);
-  useEffect(() => {
-    if (!mountedRef.current) { mountedRef.current = true; if (!fullView) return; }
-    loadJobs();
-  }, [loadJobs, fullView]);
+  // On open, and whenever the date or the branch's bookings change.
+  useEffect(() => { loadJobs(); }, [loadJobs]);
 
   // Refresh when the branch comes BACK to the tab, not on a timer — staff flip between
   // Zalo and this page constantly, and a timer kept every open tab polling all day.
@@ -1098,28 +1147,32 @@ export default function QrPage() {
     );
   }
 
-  // jobs is the whole branch (fullView) or this device's bookings — either way the list.
   const pendingShown = pending.filter((p) => !seen.has(Number(p.job_id)));
-  // The drivers on today's list, busiest first, for D001's picker.
-  // (NĐTP drop-offs never reach D001's list: the server leaves them out.)
-  const listJobs = jobs;
-  // D001's driver chips; a trip not going to the lab is named "pickup → drop-off".
-  const driverChips = branchCode === "D001"
-    ? [...jobs.reduce((m, j) => {
+  // Another branch's run still on its way here: the compact "coming in" block, kept out
+  // of the main list. (The server drops it once delivered.)
+  const isIncoming = (j: Job) => {
+    const p = pickupOf(j);
+    return /^\s*BRA\b/i.test(p?.customer_name ?? "") && p?.customer_id !== code
+      && dropoffOf(j)?.customer_id === code && stateOf(j) !== 3;
+  };
+  const incoming = jobs.filter(isIncoming);
+  const listJobs = jobs.filter((j) => !isIncoming(j));
+  // The drivers on today's list, busiest first. (NĐTP drop-offs never reach D001's list:
+  // the server leaves them out.) A trip going elsewhere is named "pickup → drop-off".
+  const driverChips = [...listJobs.reduce((m, j) => {
         if (!j.delivery_driver_id) return m;
         const c = m.get(j.delivery_driver_id) ?? { name: driverText(j.driver?.last_name), n: 0, dests: new Set<string>() };
         const d = dropoffOf(j);
         if (d && d.customer_id !== code) c.dests.add(`${placeLabel(pickupOf(j)?.customer_name ?? "")} → ${placeLabel(d.customer_name ?? "")}`);
         return m.set(j.delivery_driver_id, { ...c, n: c.n + 1 });
-      }, new Map<string, { name: string; n: number; dests: Set<string> }>())].sort((a, b) => b[1].n - a[1].n)
-    : [];
+      }, new Map<string, { name: string; n: number; dests: Set<string> }>())].sort((a, b) => b[1].n - a[1].n);
   const inScope = (j: Job) => !driverId || j.delivery_driver_id === driverId;
-  // D001's photo gallery, newest first. A picked driver: every photo of theirs that day,
-  // any date. No driver: today's trips that reached the lab inside the time window.
+  // The photo gallery, newest first. A picked driver: every photo of theirs that day,
+  // any date. No driver: today's trips that reached this branch inside the time window.
   const vnMs = (ts?: string | null) => (ts ? Date.parse(`${ts.replace(" ", "T").slice(0, 19)}+07:00`) : NaN);
   const driverName = driverChips.find(([id]) => id === driverId)?.[1].name ?? "";
   const windowed = !driverId;
-  const showGallery = branchCode === "D001" && (!!driverId || date === todayVN());
+  const showGallery = !!driverId || date === todayVN();
   const gallery = showGallery
     ? listJobs.filter(inScope).flatMap((j) => {
         const d = j.stops.find((st) => st.stop_type_id === 2 && st.customer_id === code);
@@ -1142,7 +1195,7 @@ export default function QrPage() {
 
   return (
     <div className="min-h-screen bg-slate-100 flex justify-center">
-      <div className={`w-full px-4 pb-12 ${branchCode === "D001" ? "max-w-[1280px] lg:px-6" : "max-w-[430px]"}`}>
+      <div className="w-full px-4 pb-12 max-w-[1280px] lg:px-6">
 
         <header className="pt-5 pb-3.5 px-1">
           <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">{route.psc_pickup.replace(/^BRA\s*-\s*/i, "PSC ")}</h1>
@@ -1181,17 +1234,16 @@ export default function QrPage() {
           </p>
         )}
 
-        {fullView && (
-        // D001 on a PC: drivers in a side column, the gallery first on the right — picking
-        // a driver shows their photos without scrolling. A phone stacks the same pieces.
-        <div className={branchCode === "D001" && driverChips.length > 1 ? "lg:grid lg:grid-cols-[17rem_minmax(0,1fr)] lg:gap-6 lg:items-start" : ""}>
+        {/* On a PC: drivers in a side column, the gallery first on the right — picking a
+            driver shows their photos without scrolling. A phone stacks the same pieces. */}
+        <div className={driverChips.length > 1 ? "lg:grid lg:grid-cols-[17rem_minmax(0,1fr)] lg:gap-6 lg:items-start" : ""}>
         {driverChips.length > 1 && (
           <aside className="mb-3 lg:mb-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto lg:pr-1">
           <h2 className="hidden lg:block text-[13px] font-semibold text-slate-600 mb-2 px-1">Giao Nhận Mẫu</h2>
           <div className="flex flex-wrap gap-2 lg:flex-col lg:flex-nowrap" role="group" aria-label="Lọc theo Giao Nhận Mẫu">
             <button aria-pressed={!driverId} onClick={() => { setDriverId(""); setDoneQuery(""); }}
               className={`px-3.5 py-2 text-left rounded-full lg:rounded-xl text-sm font-semibold transition-colors ${!driverId ? "bg-blue-700 text-white" : "bg-white text-slate-700 shadow-sm hover:bg-slate-50 active:bg-slate-50"}`}>
-              Tất cả <span className={!driverId ? "text-blue-100" : "text-slate-500"}>{jobs.length}</span>
+              Tất cả <span className={!driverId ? "text-blue-100" : "text-slate-500"}>{listJobs.length}</span>
             </button>
             {driverChips.map(([id, d]) => {
               const on = id === driverId;
@@ -1212,10 +1264,8 @@ export default function QrPage() {
           </aside>
         )}
         <div className="min-w-0">
-        {/* ── The list — D001 and D046 only. Every other branch only books (2026-10-14). ── */}
         <div className="flex items-center justify-between gap-2 mb-2">
-          <h2 className="text-[15px] font-bold text-slate-800">{fullView ? "Chuyến của chi nhánh" : "Chuyến đã gọi"}</h2>
-          {fullView && (
+          <h2 className="text-[15px] font-bold text-slate-800">Chuyến của chi nhánh</h2>
             <span className="flex items-center gap-2">
             {/* Reloads from the shared day copy (republished every ~3 min) — it never forces a
                 rebuild of the day, which is what made the old "Làm mới" expensive. */}
@@ -1239,8 +1289,11 @@ export default function QrPage() {
                 className="absolute inset-0 w-full h-full opacity-0 pointer-events-none" />
             </span>
             </span>
-          )}
         </div>
+
+        {incoming.length > 0 && (
+          <IncomingBlock jobs={incoming} etaMins={etaMins} now={loadedAt} onOpen={setSheetJob} />
+        )}
 
 
 
@@ -1316,10 +1369,8 @@ export default function QrPage() {
           {loading && !jobs.length && <p className="text-sm text-slate-600 py-2">Đang tải…</p>}
           {/* Each line claims only what was looked up: the branch's trips where the whole
               list is read, this device's bookings elsewhere. */}
-          {!loading && !pendingShown.length && !active.length && (fullView ? loaded : isToday && !route.no_request) && (
-            <p className="text-sm text-slate-600 py-2">
-              {fullView ? `Không có chuyến nào đang chạy${isToday ? "" : " ngày này"}.` : "Chưa gọi chuyến nào từ máy này hôm nay."}
-            </p>
+          {!loading && !pendingShown.length && !active.length && loaded && (
+            <p className="text-sm text-slate-600 py-2">Không có chuyến nào đang chạy{isToday ? "" : " ngày này"}.</p>
           )}
           {done.length > 0 && (
             <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
@@ -1343,28 +1394,6 @@ export default function QrPage() {
         </div>
         </div>
         </div>
-        )}
-
-        {/* ── Every other branch: only its own bookings, no heading, nothing when none. ── */}
-        {!fullView && isToday && (pendingShown.length > 0 || jobs.length > 0) && (
-          <div className="space-y-3">
-            {pendingShown.map((p) => (
-              <PendingCard key={p.job_id} req={p} pickup={route.pickup} dropoff={route.dropoff} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }}
-                onSendVia3pl={openVia3pl} onChangeDriver={openChangeDriver} />
-            ))}
-            {active.map((j) => (
-              <TripCard key={j.job_id} job={j} code={code} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)}
-                onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl}
-                onChangeDriver={openChangeDriver} />
-            ))}
-            {done.length > 0 && (
-              <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-                <p className="px-4 pt-3 pb-1 text-[12px] font-semibold text-slate-600">Đã xong ({done.length})</p>
-                {done.map((j) => <DoneRow key={j.job_id} job={j} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)} />)}
-              </div>
-            )}
-          </div>
-        )}
       </div>
 
       {sheetJob && <JobSheet job={sheetJob} brief={briefPhotos !== null} photos={briefPhotos ?? undefined} onClose={() => { setSheetJob(null); setBriefPhotos(null); }} />}
