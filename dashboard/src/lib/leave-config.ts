@@ -548,7 +548,7 @@ export function findLeaveConflict(
 /** `force` (the ?fresh=1 / Refresh path) bypasses BOTH cache tiers and re-reads
  *  the sheet, then overwrites both — so a supervisor's edit shows at once on
  *  every instance, not just the one that handled the refresh. */
-export async function loadLeaveEntries(force = false): Promise<LeaveEntry[]> {
+export async function loadLeaveEntries(force: boolean | "revalidate" = false): Promise<LeaveEntry[]> {
   return (await loadLeaveSheet(force)).entries;
 }
 
@@ -595,7 +595,7 @@ export async function loadLeaveEntriesStrict(): Promise<{
 
 /** The rows loadLeaveEntries had to discard — see {@link InvalidLeaveRow}.
  *  Shares the cached parse, so asking for it costs nothing extra. */
-export async function loadInvalidLeaveRows(force = false): Promise<InvalidLeaveRow[]> {
+export async function loadInvalidLeaveRows(force: boolean | "revalidate" = false): Promise<InvalidLeaveRow[]> {
   return (await loadLeaveSheet(force)).invalid;
 }
 
@@ -670,12 +670,18 @@ async function recoverOrphanRows(
   return { recovered, invalid };
 }
 
+/** `"revalidate"` is the dashboard's refresh after a write: it skips only the
+ *  blind 5-minute L1 window and trusts the shared stamp + Redis copy, which every
+ *  write already invalidates. `true` (a write guard) re-reads Supabase outright.
+ *  The dashboard used to send `true` twice per leave action (panel + week grid),
+ *  and each forced rebuild costs ~80–230 ms of CPU. */
 async function loadLeaveSheet(
-  force = false,
+  mode: boolean | "revalidate" = false,
 ): Promise<{ entries: LeaveEntry[]; invalid: InvalidLeaveRow[]; trusted: boolean }> {
+  const force = mode === true;
   const key = redisKey();
   if (cacheSource !== key) { cache = null; cacheSource = key; }
-  if (!force && cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS) {
+  if (!mode && cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS) {
     return { entries: cache.entries, invalid: cache.invalid, trusted: true };
   }
   const gen = force ? null : await readLeaveGen();

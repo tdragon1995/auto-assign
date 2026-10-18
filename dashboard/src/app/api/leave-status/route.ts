@@ -52,7 +52,9 @@ export async function GET(req: NextRequest) {
     // of them. A fortnight covers the week view and its neighbours.
     const askedDays = Number(url.searchParams.get("days") ?? "1");
     const days = Number.isFinite(askedDays) ? Math.min(Math.max(Math.trunc(askedDays), 1), 14) : 1;
-    const entries = await loadLeaveEntries(fresh);
+    // fresh=1 revalidates rather than forcing: every write already bumped the
+    // shared stamp, so this only has to look past this instance's L1 window.
+    const entries = await loadLeaveEntries(fresh ? "revalidate" : false);
     // Shares the same cached parse as the call above — no second sheet read.
     const dropped = await loadInvalidLeaveRows();
     const suppressed = await loadLeaveSuppressions(fresh);
