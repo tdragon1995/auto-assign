@@ -949,6 +949,9 @@ export default function QrPage() {
   const [via3plLoading, setVia3plLoading] = useState(false);
   const [via3plError, setVia3plError] = useState("");
   const [batchInput, setBatchInput] = useState("");
+  // Mã Batch suggestions from Labcenter (this branch's batches today, not yet handed
+  // over), asked once each time the Grab dialog opens. Empty whenever LIS is unreachable.
+  const [batchHints, setBatchHints] = useState<{ code: string; samples: number | null; created: string | null }[]>([]);
 
   // Pick / change driver: the roster for the trip's route at the time it was requested
   // (±10 min). Fetched fresh every time it opens — leave and shifts move during the day.
@@ -1177,7 +1180,15 @@ export default function QrPage() {
     setVia3plTarget(t);
     setVia3plError("");
     setBatchInput("");
+    setBatchHints([]);
+    if (route) {
+      fetch(`/api/psc-assign/batches?branch=${encodeURIComponent(shortRoute(route.psc_pickup))}`)
+        .then((r) => r.json()).then((d) => setBatchHints(Array.isArray(d.batches) ? d.batches : [])).catch(() => {});
+    }
   };
+  const batchLines = batchInput.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
+  const toggleBatch = (code: string) =>
+    setBatchInput((batchLines.includes(code) ? batchLines.filter((c) => c !== code) : [...batchLines, code]).join("\n"));
 
   const openChangeDriver = async (t: ChangeTarget) => {
     setChangeTarget(t);
@@ -1609,6 +1620,23 @@ export default function QrPage() {
               <label htmlFor="batch-input" className="block text-xs font-semibold text-slate-700">
                 Mã Batch (mỗi dòng một mã, VD: B006260628101037)
               </label>
+              {batchHints.length > 0 && (
+                <div>
+                  <p className="mb-1 text-[11px] font-semibold text-slate-500">Batch hôm nay chưa gửi (Labcenter) — bấm để chọn:</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {batchHints.map((b) => {
+                      const on = batchLines.includes(b.code);
+                      const at = b.created ? new Date(b.created).toLocaleTimeString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit" }) : "";
+                      return (
+                        <button key={b.code} type="button" aria-pressed={on} onClick={() => toggleBatch(b.code)}
+                          className={`px-2.5 py-1.5 rounded-lg text-[12px] font-semibold tabular-nums border transition-colors ${on ? "bg-blue-700 text-white border-blue-700" : "bg-white text-slate-700 border-slate-200 active:bg-slate-50"}`}>
+                          {b.code}{b.samples != null || at ? <span className={on ? "text-blue-100" : "text-slate-500"}> · {[b.samples != null ? `${b.samples} mẫu` : "", at].filter(Boolean).join(" · ")}</span> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               <textarea id="batch-input" value={batchInput} onChange={(e) => setBatchInput(e.target.value)} rows={3}
                 placeholder="B006260628101037"
                 className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-teal-400 resize-none" />
