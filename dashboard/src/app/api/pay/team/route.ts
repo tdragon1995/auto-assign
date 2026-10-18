@@ -25,7 +25,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { sbSelectAll, supabaseConfigured } from "@/lib/supabase-rest";
 import { masterDriverNames } from "@/lib/master-store";
 import { employmentOf } from "@/lib/driver-label";
-import { paidDay, hoursPayFor, kmPayFor, suggestedWindow, RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch, type PayJob, hourPayFor, BO_RATE_PER_HOUR_VND } from "@/lib/pay";
+import { paidDay, hoursPayFor, kmPayFor, suggestedWindow, RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch, type PayJob, hourPayFor, BO_RATE_PER_HOUR_VND, lateStartMins, LATE_START_FLAG_MIN } from "@/lib/pay";
 import { payrollPeriod } from "@/lib/pay-period";
 import { staffCode } from "@/lib/display-names";
 import { loadPayDayInputs, dayKey } from "@/lib/pay-days";
@@ -40,7 +40,7 @@ interface DayLine {
   date: string; shift: string; tap_in: string | null; tap_out: string | null;
   first_task: string | null; last_task: string | null; paid_from: string | null; paid_to: string | null;
   worked_mins: number; bo_mins: number; multiplier: number; jobs: number; km: number;
-  hour_pay: number; km_pay: number; no_shift: boolean; corrected: boolean; pending: boolean;
+  hour_pay: number; km_pay: number; no_shift: boolean; corrected: boolean; pending: boolean; late_mins: number;
 }
 
 interface DailyRow {
@@ -196,6 +196,7 @@ export async function GET(req: NextRequest) {
         let mins = 0;
         let boMins = 0;
         let noShiftDays = 0;
+        let lateDays = 0;
         const code = staffCode(names.get(driver_id) || e.name);
         const lines: DayLine[] = [];
         for (const date of [...e.days].sort()) {
@@ -211,8 +212,13 @@ export async function GET(req: NextRequest) {
           }, code);
           mins += w.minutes;
           boMins += w.bo_minutes;
+          const s = suggestedWindow(e.byDay.get(date) ?? [], t?.first ?? null, t?.last ?? null, date);
+          // A day continued from the DC account began at the DC shift end, not at the first PT stamp.
+          const cont = inputs.continued.get(dayKey(driver_id, date));
+          const startAt = cont && (!s.in || Date.parse(cont) < Date.parse(s.in)) ? cont : s.in;
+          const lateMins = w.corrected ? 0 : lateStartMins(inputs.shifts.get(dayKey(driver_id, date)) ?? [], startAt, date);
+          if (lateMins > LATE_START_FLAG_MIN) lateDays++;
           if (driver_id === detailFor) {
-            const s = suggestedWindow(e.byDay.get(date) ?? [], t?.first ?? null, t?.last ?? null, date);
             const dayKm = Math.round((t?.km ?? 0) * 100) / 100;
             lines.push({
               date,
@@ -223,7 +229,7 @@ export async function GET(req: NextRequest) {
               worked_mins: w.minutes, bo_mins: w.bo_minutes, multiplier: w.multiplier,
               jobs: t?.jobs ?? 0, km: dayKm,
               hour_pay: hoursPayFor(w.minutes, w.bo_minutes), km_pay: kmPayFor(dayKm),
-              no_shift: w.no_shift, corrected: w.corrected,
+              no_shift: w.no_shift, corrected: w.corrected, late_mins: lateMins,
               pending: inputs.latest.get(dayKey(driver_id, date))?.status === "pending",
             });
           }
@@ -263,6 +269,9 @@ export async function GET(req: NextRequest) {
           /** Days worked with no shift in Lịch ca: they pay no hours, so this is
            *  the column a supervisor checks (Bảng ca) before the 25th. */
           no_shift_days: noShiftDays,
+          /** Days that began more than 45 min after the shift start — usually a
+           *  wrong shift in Lịch ca. Payroll's sheet colours the same days. */
+          late_days: lateDays,
           /** Completed jobs with no distance: paid 0 km until priced. */
           unpriced_jobs: e.unpriced,
           ...(driver_id === detailFor ? { days: lines } : {}),
@@ -302,6 +311,7 @@ export async function GET(req: NextRequest) {
         total_pay: drivers.reduce((s, d) => s + d.total_pay, 0),
         bo_pay: drivers.reduce((s, d) => s + d.bo_pay, 0),
         no_shift_days: drivers.reduce((s, d) => s + d.no_shift_days, 0),
+        late_days: drivers.reduce((s, d) => s + d.late_days, 0),
         unpriced_jobs: drivers.reduce((s, d) => s + d.unpriced_jobs, 0),
       },
       drivers,

@@ -44,6 +44,8 @@ interface DriverRow {
   bo_pay: number;
   /** Days worked with no shift in payroll's file — they pay no hours. */
   no_shift_days: number;
+  /** Days begun more than 45 min after the shift start (payroll's red cells). */
+  late_days: number;
   unpriced_jobs: number;
 }
 
@@ -128,8 +130,9 @@ interface DayLine {
   date: string; shift: string; tap_in: string | null; tap_out: string | null;
   first_task: string | null; last_task: string | null; paid_from: string | null; paid_to: string | null;
   worked_mins: number; bo_mins: number; multiplier: number; jobs: number; km: number;
-  hour_pay: number; km_pay: number; no_shift: boolean; corrected: boolean; pending: boolean;
+  hour_pay: number; km_pay: number; no_shift: boolean; corrected: boolean; pending: boolean; late_mins: number;
 }
+const LATE_FLAG = 45;
 const span = (a: string | null, b: string | null) => (a || b ? `${a ?? "?"}–${b ?? "?"}` : "—");
 
 /** The days behind one driver's totals, loaded when the row is opened. */
@@ -169,7 +172,7 @@ function DriverDays({ month, driverId }: { month: string; driverId: string }) {
         </thead>
         <tbody className="divide-y divide-slate-100 tabular-nums">
           {days.map((d) => (
-            <tr key={d.date} className={d.no_shift ? "bg-amber-50" : ""}>
+            <tr key={d.date} className={d.no_shift ? "bg-amber-50" : d.late_mins > LATE_FLAG ? "bg-rose-50" : ""}>
               <td className="px-2 py-1 whitespace-nowrap">{d.date.slice(8, 10)}/{d.date.slice(5, 7)} <span className="text-slate-400">{["CN", "T2", "T3", "T4", "T5", "T6", "T7"][new Date(`${d.date}T00:00:00Z`).getUTCDay()]}</span></td>
               <td className="px-2 py-1">{d.shift || <span className="text-amber-700">Không ca</span>}</td>
               <td className="px-2 py-1">{span(d.tap_in, d.tap_out)}</td>
@@ -181,6 +184,7 @@ function DriverDays({ month, driverId }: { month: string; driverId: string }) {
               <td className="px-2 py-1 text-[11px] whitespace-nowrap">
                 {d.corrected && <span className="mr-1 text-indigo-700">Đã duyệt</span>}
                 {d.pending && <span className="mr-1 text-amber-700">Chờ duyệt</span>}
+                {d.late_mins > LATE_FLAG && <span className="mr-1 text-rose-700" title="Bắt đầu trễ hơn 45 phút so với giờ vào ca — kiểm tra lại ca">Vào trễ {fmtHours(d.late_mins)}</span>}
                 {d.bo_mins > 0 && <span className="mr-1 text-emerald-700">BO {fmtHours(d.bo_mins)}</span>}
                 {d.multiplier > 1 && <span className="text-rose-700">Lễ ×{d.multiplier}</span>}
               </td>
@@ -527,6 +531,7 @@ export function PayTeamPanel() {
                 {/* A word, not a glyph: the column is a task list and screen readers
                     got nothing from "⚠". */}
                 <th className="text-right font-semibold px-2 py-2" title="Ngày có làm nhưng không có ca trong Lịch ca — không tính tiền giờ">Không ca</th>
+                <th className="text-right font-semibold px-2 py-2" title="Ngày bắt đầu trễ hơn 45 phút so với giờ vào ca — thường là ca trong Lịch ca chưa đúng">Vào trễ</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -570,9 +575,14 @@ export function PayTeamPanel() {
                       ? <span className="text-amber-700 font-semibold">{d.no_shift_days}</span>
                       : <span className="text-slate-500">—</span>}
                   </td>
+                  <td className="text-right px-2 py-2 tabular-nums">
+                    {d.late_days > 0
+                      ? <span className="text-rose-700 font-semibold">{d.late_days}</span>
+                      : <span className="text-slate-500">—</span>}
+                  </td>
                 </tr>
                 {open === d.driver_id && (
-                  <tr><td colSpan={8} className="bg-slate-50 p-0 border-b border-slate-200"><DriverDays month={month} driverId={d.driver_id} /></td></tr>
+                  <tr><td colSpan={9} className="bg-slate-50 p-0 border-b border-slate-200"><DriverDays month={month} driverId={d.driver_id} /></td></tr>
                 )}
                 </Fragment>
               ))}

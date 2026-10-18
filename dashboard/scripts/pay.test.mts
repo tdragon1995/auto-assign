@@ -17,7 +17,7 @@ import {
   RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch,
 } from "../src/lib/pay";
 import { parsePayrollSheet, resolveDriver } from "../src/lib/pay-shifts";
-import { parseShiftText, mergeWindows, bridgeGaps } from "../src/lib/pay";
+import { parseShiftText, mergeWindows, bridgeGaps, lateStartMins } from "../src/lib/pay";
 import { isWeekdayRoleLine } from "../src/lib/pay-days";
 import { openRange, checkTimes, checkProof } from "../src/lib/pay-corrections";
 import type { TimelineRoute, TimelineStop } from "../src/lib/types";
@@ -186,6 +186,10 @@ check("PT window starting 15 min after the DC shift ends stretches back to it",
 check("PT window ending 15 min before the DC shift starts stretches forward",
   J(bridgeGaps([W("06:00", "07:45")], [W("08:00", "17:00")])) === J([W("06:00", "08:00")]));
 check("a DC shift 30 min away is left alone", J(bridgeGaps([W("17:30", "21:00")], [W("08:00", "17:00")])) === J([W("17:30", "21:00")]));
+// Payroll's red cell: Nguyễn Thanh Tú 15/09, shift 08:00, recorded in 09:35 → 95 min late.
+check("late start in minutes", lateStartMins([W("08:00", "19:00")], "2026-09-15T09:35:00+07:00", "2026-09-15") === 95);
+check("an early start is not late", lateStartMins([W("15:00", "21:30")], "2026-09-15T05:59:00+07:00", "2026-09-15") === 0);
+check("no shift, no flag", lateStartMins([], "2026-09-15T09:35:00+07:00", "2026-09-15") === 0);
 check("a DC shift 2 hours away is left alone", J(bridgeGaps([W("19:00", "21:00")], [W("08:00", "17:00")])) === J([W("19:00", "21:00")]));
 
 check("rates are the stated contract", RATE_PER_HOUR_VND === 30_000 && RATE_PER_KM_VND === 2_000);

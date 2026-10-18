@@ -388,6 +388,18 @@ export function suggestedWindow(punches: PayPunch[], firstTaskAt: string | null,
   return { first_in: firstIn, last_out: lastOut, in: start, out: start ? end : null };
 }
 
+/** A start this many minutes after the shift start is flagged for review — the
+ *  same check payroll's sheet colours (|Ca vào − Ghi nhận vào| > 45'). */
+export const LATE_START_FLAG_MIN = 45;
+
+/** Minutes the day began after its first shift window started (0 if on time or
+ *  early). `startAt` is the day's start evidence (check-in or first pickup). */
+export function lateStartMins(shifts: ShiftWindow[], startAt: string | null, date: string): number {
+  if (!shifts.length || !startAt) return 0;
+  const first = [...shifts].sort((a, b) => a.start.localeCompare(b.start))[0];
+  return Math.max(0, Math.round((Date.parse(startAt) - Date.parse(`${date}T${first.start}:00+07:00`)) / 60_000));
+}
+
 /** Đồng earned for a span of clocked minutes. Per MINUTE, not per whole hour:
  *  30.000đ/h is exactly 500đ a minute, so this needs no rounding rule of its own
  *  and a 20-minute shift is not rounded away to nothing. */
