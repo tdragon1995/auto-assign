@@ -951,7 +951,7 @@ export default function QrPage() {
   const [batchInput, setBatchInput] = useState("");
   // Mã Batch suggestions from Labcenter (this branch's batches today, not yet handed
   // over), asked once each time the Grab dialog opens. Empty whenever LIS is unreachable.
-  const [batchHints, setBatchHints] = useState<{ code: string; samples: number | null; created: string | null }[]>([]);
+  const [batchHints, setBatchHints] = useState<{ code: string; samples: number | null; created: string | null; by: string | null; hbc: boolean }[]>([]);
 
   // Pick / change driver: the roster for the trip's route at the time it was requested
   // (±10 min). Fetched fresh every time it opens — leave and shifts move during the day.
@@ -1621,15 +1621,20 @@ export default function QrPage() {
               </label>
               {batchHints.length > 0 && (
                 <div>
-                  <p className="mb-1 text-[11px] font-semibold text-slate-500">Batch hôm nay chưa gửi (Labcenter) — bấm để chọn:</p>
-                  <div className="flex flex-wrap gap-1.5">
+                  <p className="mb-1 text-[11px] font-semibold text-slate-500">Batch hôm nay (Labcenter) — bấm để chọn:</p>
+                  <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto">
                     {batchHints.map((b) => {
                       const on = batchLines.includes(b.code);
                       const at = b.created ? new Date(b.created).toLocaleTimeString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit" }) : "";
                       return (
                         <button key={b.code} type="button" aria-pressed={on} onClick={() => toggleBatch(b.code)}
-                          className={`px-2.5 py-1.5 rounded-lg text-[12px] font-semibold tabular-nums border transition-colors ${on ? "bg-blue-700 text-white border-blue-700" : "bg-white text-slate-700 border-slate-200 active:bg-slate-50"}`}>
-                          {b.code}{b.samples != null || at ? <span className={on ? "text-blue-100" : "text-slate-500"}> · {[b.samples != null ? `${b.samples} mẫu` : "", at].filter(Boolean).join(" · ")}</span> : null}
+                          className={`px-2.5 py-1.5 rounded-lg text-left border transition-colors ${on ? "bg-blue-700 text-white border-blue-700" : "bg-white text-slate-700 border-slate-200 active:bg-slate-50"}`}>
+                          <span className="block text-[12px] font-semibold tabular-nums">
+                            {b.code}{b.hbc && <span className={`ml-1.5 px-1 rounded text-[10px] font-bold ${on ? "bg-white/20" : "bg-amber-100 text-amber-800"}`}>HBC</span>}
+                          </span>
+                          <span className={`block text-[11px] ${on ? "text-blue-100" : "text-slate-500"}`}>
+                            {[b.by, b.samples != null ? `${b.samples} mẫu` : "", at].filter(Boolean).join(" · ")}
+                          </span>
                         </button>
                       );
                     })}

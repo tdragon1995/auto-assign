@@ -7,17 +7,21 @@ export const preferredRegion = "sin1";
 /**
  * GET /api/psc-assign/batches?branch=D006
  *
- * Mã Batch suggestions for the /qr Grab dialog: this branch's LIS batches created today
- * that have not been handed over yet (not cancelled, no transfer or completion time),
- * newest first. One Labcenter call, made only when the dialog opens.
+ * Mã Batch suggestions for the /qr Grab dialog: today's batches of this branch (D006 →
+ * B006…) and of HBC (B199…), newest first, each with who created it so staff pick the
+ * right ones. Only cancelled batches are left out. One Labcenter call, made only when
+ * the dialog opens.
  *
  * Needs an LIS-capable login. Neither the receptionist nor the admin account has one
  * (both 403, checked 2026-10-19), so this rides LABCENTER_LOOKUP_TOKEN like the admin
  * batch lookup does — a pasted token that lasts 14 days. Any failure answers an empty
  * list with `access: false`: the dialog then just shows the typing box, as before.
  */
+/** HBC's batches are B199… — offered to every branch alongside its own. */
+const HBC = "199";
+
 type LisBatch = {
-  batch_code?: string; status?: string; total_sample?: number; created_at?: string;
+  batch_code?: string; status?: string; total_sample?: number; created_at?: string; created_by?: string;
   transferred_at?: string | null; completed_at?: string | null; cancelled_at?: string | null;
 };
 
@@ -34,6 +38,7 @@ export async function GET(req: NextRequest) {
       created_at_to: new Date(`${today}T23:59:59.999+07:00`).toISOString(),
     });
     params.append("source_location[]", branch);
+    params.append("source_location[]", HBC);
     const res = await fetch(`https://api.labcenter.vn/spc-lis/api/v1/batch?${params}`, {
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json", Origin: "https://labcenter.vn", Referer: "https://labcenter.vn/" },
       cache: "no-store",
@@ -45,10 +50,14 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ batches: [], access: false });
     }
     const rows: LisBatch[] = (await res.json())?.data ?? [];
+    // The code says whose batch it is (B006… is D006's), so that is the filter.
     const batches = (Array.isArray(rows) ? rows : [])
-      .filter((b) => /^B\d+$/.test(b.batch_code ?? "") && b.status !== "cancelled"
-        && !b.cancelled_at && !b.transferred_at && !b.completed_at)
-      .map((b) => ({ code: b.batch_code as string, samples: b.total_sample ?? null, created: b.created_at ?? null }));
+      .filter((b) => (b.batch_code?.startsWith(`B${branch}`) || b.batch_code?.startsWith(`B${HBC}`))
+        && b.status !== "cancelled" && !b.cancelled_at)
+      .map((b) => ({
+        code: b.batch_code as string, samples: b.total_sample ?? null, created: b.created_at ?? null,
+        by: b.created_by ?? null, hbc: (b.batch_code as string).startsWith(`B${HBC}`),
+      }));
     return NextResponse.json({ batches, access: true });
   } catch (e) {
     console.error("[psc-assign/batches]", e);
