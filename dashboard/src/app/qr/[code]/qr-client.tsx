@@ -114,6 +114,9 @@ function driverText(name?: string | null): string {
 type ChangeTarget = { job_id: number; reference: string; pickup: string; dropoff: string; at: string | null; current: string | null };
 
 // The two driver actions on a trip card. Kept together so both cards read the same.
+// Grab actions: WhatsApp green.
+const GRAB_BG = "bg-[#25D366] active:bg-[#1DA851]";
+const shortRoute = (name: string) => name.replace(/^BRA\s*-\s*/i, "");
 const CHANGE_CTA = "shrink-0 min-h-11 px-3 rounded-xl text-xs font-bold text-blue-700 border border-blue-200 active:bg-blue-50 focus-visible:outline-2 focus-visible:outline-blue-600";
 const PICK_CTA = "w-full min-h-12 inline-flex items-center justify-center gap-2 rounded-xl text-[13px] font-bold text-white bg-blue-700 active:bg-blue-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600";
 
@@ -803,7 +806,7 @@ function TripCard({ job, code, notes, noDriver = false, onOpen, onCancel, onSend
         <div className="space-y-1.5 mt-3">
           {via3plEligible && !(state === 0 && noDriver) && (
             <button onClick={() => onSendVia3pl(target)}
-              className="w-full py-2.5 rounded-xl text-xs font-bold text-white bg-teal-600 active:bg-teal-800">
+              className={`w-full py-2.5 rounded-xl text-xs font-bold text-white ${GRAB_BG}`}>
               Gửi mẫu qua Grab
             </button>
           )}
@@ -860,7 +863,7 @@ function PendingCard({ req, pickup, dropoff, noDriver = false, onCancel, onSendV
       <div className="space-y-1.5 mt-3">
         {!(noDriver && !req.driver_name) && (
           <button onClick={() => onSendVia3pl(target)}
-            className="w-full py-2.5 rounded-xl text-xs font-bold text-white bg-teal-600 active:bg-teal-800">
+            className={`w-full py-2.5 rounded-xl text-xs font-bold text-white ${GRAB_BG}`}>
             Gửi mẫu qua Grab
           </button>
         )}
@@ -893,8 +896,9 @@ export default function QrPage() {
   const [seen, setSeen] = useState<Set<number>>(new Set());
   // Every branch sees every trip touching it (the D001 view, since 2026-10-18). Only the
   // lab gets the driver chips and the wide PC layout; a branch's list is short.
-  // Routes ("pickup|dropoff") whose every rostered driver is on leave right now — their
-  // waiting cards show Grab/Be and the back-office contacts instead of "Chỉ định GNM".
+  // Routes ("pickup|dropoff") whose every on-duty driver is on leave right now, as the
+  // engine last published them (it rides the list reply): "Đề Nghị Giao Mẫu" becomes "book
+  // and send by Grab", and a waiting card offers Grab instead of "Chỉ định GNM".
   const [noDriverRoutes, setNoDriverRoutes] = useState<Set<string>>(new Set());
   const isLab = (route?.psc_pickup ?? "").replace(/^BRA\s*-\s*/i, "") === "D001";
   // Narrow the list to one driver. A filter over trips already loaded — no request of its own.
@@ -940,6 +944,7 @@ export default function QrPage() {
   const [cancelLoading, setCancelLoading] = useState(false);
   const [cancelError, setCancelError] = useState("");
 
+  // job_id 0 = "book and send by Grab": the trip is booked on confirm, then handed over.
   const [via3plTarget, setVia3plTarget] = useState<{ job_id: number; reference: string } | null>(null);
   const [via3plLoading, setVia3plLoading] = useState(false);
   const [via3plError, setVia3plError] = useState("");
@@ -1007,6 +1012,7 @@ export default function QrPage() {
       const res = await fetch(`/api/location-jobs?date=${date}&code=${encodeURIComponent(code)}&all=1${ownIds ? `&ids=${ownIds}` : ""}`);
       const data = await res.json();
       setEtaMins(data.eta ?? {});
+      setNoDriverRoutes(new Set(data.noDriverRoutes ?? []));
       setLoadedAt(Date.now());
       const raw: Job[] = data.jobs ?? [];
       // A waiting card hides once the server has its trip at all — even one the filters
@@ -1056,25 +1062,6 @@ export default function QrPage() {
     }
   }, [date, code, ownIds, pendingKey]);
 
-  // Only trips waiting for a driver need the answer, so only their routes are asked — the
-  // picker's own lookup, once per route per list load. None waiting, no request.
-  const waitingRoutes = [...new Set([
-    ...jobs.filter((j) => stateOf(j) === 0 && pickupOf(j)?.customer_id === code)
-      .map((j) => `${pickupOf(j)?.customer_id}|${dropoffOf(j)?.customer_id}`),
-    ...pending.filter((x) => x.date === date && !x.driver_name && !seen.has(Number(x.job_id)) && route)
-      .map(() => `${route!.pickup}|${route!.dropoff}`),
-  ])].sort().join(",");
-  useEffect(() => {
-    if (!waitingRoutes || date !== todayVN()) { setNoDriverRoutes(new Set()); return; }
-    let alive = true;
-    Promise.all(waitingRoutes.split(",").map(async (k) => {
-      const [pickup, dropoff] = k.split("|");
-      const r = await fetch(`/api/psc-assign/reassign?${new URLSearchParams({ pickup, dropoff })}`, { cache: "no-store" })
-        .then((x) => x.json()).catch(() => null);
-      return r?.reason === "all_on_leave" ? k : null;
-    })).then((ks) => { if (alive) setNoDriverRoutes(new Set(ks.filter((k): k is string => !!k))); });
-    return () => { alive = false; };
-  }, [waitingRoutes, loadedAt, date]);
   const noDriverFor = (pickup?: string, dropoff?: string) => noDriverRoutes.has(`${pickup}|${dropoff}`);
 
   // On open, and whenever the date or the branch's bookings change.
@@ -1093,25 +1080,31 @@ export default function QrPage() {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [date, loadJobs]);
 
+  /** One booking request for this branch's route — shared by "Đề Nghị Giao Mẫu" and
+   *  "book and send by Grab". */
+  const postBooking = async () => {
+    const res = await fetch(`/api/psc-assign`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        psc_pickup: route!.psc_pickup,
+        dropoff_location: route!.dropoff_location,
+        pickup: route!.pickup,
+        dropoff: route!.dropoff,
+        ref_number: route!.ref_number,
+        via_pickup: route!.via_pickup,
+        via_pickup_name: route!.via_pickup_name,
+      }),
+    });
+    return { res, data: await res.json().catch(() => ({})) };
+  };
+
   const handleAssign = async () => {
     if (!route) return;
     setAssignStatus("loading");
     setAssignError("");
     try {
-      const res = await fetch(`/api/psc-assign`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          psc_pickup: route.psc_pickup,
-          dropoff_location: route.dropoff_location,
-          pickup: route.pickup,
-          dropoff: route.dropoff,
-          ref_number: route.ref_number,
-          via_pickup: route.via_pickup,
-          via_pickup_name: route.via_pickup_name,
-        }),
-      });
-      const data = await res.json();
+      const { res, data } = await postBooking();
       if (res.ok && data.success) {
         setAssignStatus("success");
         if (data.job_id) {
@@ -1239,6 +1232,7 @@ export default function QrPage() {
 
   const handleSendVia3pl = async () => {
     if (!via3plTarget) return;
+    let jobId = via3plTarget.job_id;
     const batchIds = batchInput.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
     if (batchIds.length === 0) {
       setVia3plError("Vui lòng nhập ít nhất một mã Batch.");
@@ -1252,17 +1246,32 @@ export default function QrPage() {
     setVia3plLoading(true);
     setVia3plError("");
     try {
+      // "Book and send by Grab": book first. A trip already waiting on this route is the
+      // one that goes by Grab — never a second trip for the same samples.
+      if (!jobId) {
+        const { res: b, data: bd } = await postBooking();
+        jobId = Number(bd.job_id) || 0;
+        if (!jobId) { setVia3plError(bd.error ?? bd.message ?? "Không tạo được chuyến. Vui lòng thử lại."); return; }
+        const reference = bd.reference ?? bd.reference_number ?? "";
+        if (!jobs.some((j) => j.job_id === jobId) && !pending.some((x) => Number(x.job_id) === jobId)) {
+          const hhmm = /(\d{2}:\d{2})/.exec(reference)?.[1];
+          persistPending([{ job_id: jobId, reference, created_ts: b.ok ? nowHm() : hhmm ?? nowHm(), date: todayVN() }, ...pending]);
+        }
+        // From here a retry only hands over; it must not book again.
+        setVia3plTarget({ job_id: jobId, reference });
+      }
       const res = await fetch(`/api/psc-assign`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ job_id: via3plTarget.job_id, batch_ids: batchIds }),
+        body: JSON.stringify({ job_id: jobId, batch_ids: batchIds }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setVia3plError(data.error ?? "Gửi thất bại");
+        setVia3plError(via3plTarget.job_id ? (data.error ?? "Gửi thất bại")
+          : `Đã tạo chuyến nhưng chưa gửi được qua Grab: ${data.error ?? "lỗi"}. Bấm Xác nhận gửi để thử lại.`);
         return;
       }
-      const handedId = via3plTarget.job_id;
+      const handedId = jobId;
       // The response carries the trip as it now stands — 3PL driver attached, completed,
       // with the real completion time the "Đã gửi qua…" line prints. Patch it in rather
       // than rebuilding the day to learn about one job. If the server's read-back failed
@@ -1360,7 +1369,17 @@ export default function QrPage() {
           <p className="text-sm text-slate-500 mt-0.5">Điểm đến: {route.dropoff_location.replace(/^BRA\s*-\s*/i, "PSC ")}</p>
         </header>
 
-        {!route.no_request && (
+        {!route.no_request && isToday && noDriverFor(route.pickup, route.dropoff) && (
+          // Every on-duty driver for this route is on leave: book and hand to Grab in one go.
+          <div className="bg-white rounded-2xl shadow-sm p-4 mb-5">
+            <p className="mb-2.5 text-[13px] font-semibold text-amber-700">Giao Nhận Mẫu của chi nhánh đang nghỉ lúc này.</p>
+            <button onClick={() => openVia3pl({ job_id: 0, reference: `${shortRoute(route.psc_pickup)}→${shortRoute(route.dropoff_location)}` })}
+              className={`w-full rounded-2xl py-4 text-white text-lg font-extrabold flex items-center justify-center gap-2.5 active:scale-[.97] transition ${GRAB_BG}`}>
+              <Bike aria-hidden className="w-5 h-5" />Đề nghị giao mẫu qua Grab
+            </button>
+          </div>
+        )}
+        {!route.no_request && !(isToday && noDriverFor(route.pickup, route.dropoff)) && (
           <div className="bg-white rounded-2xl shadow-sm p-4 mb-5">
             <button
               onClick={handleAssign}
@@ -1581,9 +1600,9 @@ export default function QrPage() {
           onClick={() => { if (!via3plLoading) { setVia3plTarget(null); setVia3plError(""); setBatchInput(""); } }}>
           <div role="dialog" aria-modal="true" className="w-full max-w-sm bg-white rounded-2xl p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
             <div className="space-y-1">
-              <p className="text-base font-bold text-slate-800">Gửi mẫu qua Grab?</p>
+              <p className="text-base font-bold text-slate-800">{via3plTarget.job_id ? "Gửi mẫu qua Grab?" : "Đề nghị giao mẫu qua Grab?"}</p>
               <p className="text-xs text-slate-500 font-semibold break-all">{via3plTarget.reference}</p>
-              <p className="text-xs text-slate-500">Chuyến sẽ được gán cho Giao Nhận Mẫu và đánh dấu hoàn thành. Hành động này không thể hoàn tác.</p>
+              <p className="text-xs text-slate-500">{via3plTarget.job_id ? "" : "Chuyến sẽ được tạo rồi gửi qua Grab ngay. "}Chuyến sẽ được gán cho Giao Nhận Mẫu và đánh dấu hoàn thành. Hành động này không thể hoàn tác.</p>
             </div>
             {/→D001(_|$)/.test(via3plTarget.reference) && <D001Receivers />}
             <div className="space-y-1.5">
@@ -1599,7 +1618,7 @@ export default function QrPage() {
               <button onClick={() => { setVia3plTarget(null); setVia3plError(""); setBatchInput(""); }} disabled={via3plLoading}
                 className="py-3 rounded-xl text-sm font-semibold border border-slate-200 text-slate-600 disabled:opacity-40">Quay lại</button>
               <button onClick={handleSendVia3pl} disabled={via3plLoading}
-                className="py-3 rounded-xl text-sm font-bold bg-teal-600 text-white disabled:opacity-40">
+                className={`py-3 rounded-xl text-sm font-bold text-white disabled:opacity-40 ${GRAB_BG}`}>
                 {via3plLoading ? "Đang gửi…" : "Xác nhận gửi"}
               </button>
             </div>

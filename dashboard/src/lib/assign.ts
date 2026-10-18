@@ -37,6 +37,7 @@ import { placeLabel } from "./place-label";
 import { stripDriverCode } from "./job-detail";
 import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, idleBand, isUnreachedAnchor, liveGpsRef, lastRealPositionRef, type RefStop, type RefLabel } from "./smart-rank";
 import { loadLeaveEntries, isDriverOnLeave, resolveSubstitute, type LeaveEntry } from "./leave-config";
+import { publishNoDriverRoutes } from "./psc-no-driver";
 import { getDriversOnDuty, resolveFixedDriver, findSmartMapping, waitForMappingShift } from "./fixed-driver";
 
 
@@ -1866,6 +1867,10 @@ export async function autoAssignCycle(
     : " | proxy-release: deferred (timeline)";
   clog(`[setup] leave-sheet: ${_tLeave - tStart}ms${_proxyStr}`);
   phase("setup+proxy-release");
+
+  // For /qr: which PSC routes have every on-duty driver on leave, off the config and leave
+  // already in hand — one small Redis write, so no page has to load them to find out.
+  if (!onlyJobIds) await publishNoDriverRoutes(config, leaveEntries, env);
 
   // ── Morning rollover: yesterday's unfinished client jobs → today ──────────
   // Once per day (Redis NX gate; without Redis every cycle retries — harmless,

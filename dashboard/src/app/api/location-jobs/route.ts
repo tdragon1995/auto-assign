@@ -7,6 +7,7 @@ import { sbRpc, supabaseConfigured } from "@/lib/supabase-rest";
 import { targetMinsFor } from "@/lib/tat";
 import { vnDate } from "@/lib/time";
 import { savedNotes } from "@/lib/trip-notes";
+import { readNoDriverRoutes } from "@/lib/psc-no-driver";
 import type { Job } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -90,7 +91,13 @@ export async function GET(req: NextRequest) {
     // The whole branch (every /qr page since 2026-10-18), or only the given ids.
     const wholeBranch = req.nextUrl.searchParams.get("all") === "1" || ids.length === 0;
     // ETAs for runs still coming in — today only, and not the lab, which lists clients.
-    const etaP = wholeBranch && code !== LAB_CUSTOMER_ID && date === vnDate() ? etaInto(code) : Promise.resolve({});
+    const branchToday = wholeBranch && code !== LAB_CUSTOMER_ID && date === vnDate();
+    const etaP = branchToday ? etaInto(code) : Promise.resolve({});
+    // Routes from this branch whose every on-duty driver is on leave (published by the
+    // engine each cycle): the page swaps in "book and send by Grab".
+    const noDriverP = branchToday
+      ? readNoDriverRoutes(env).then((ks) => ks.filter((k) => k.startsWith(`${code}|`)))
+      : Promise.resolve([] as string[]);
 
     const day = wholeBranch
       ? await locationJobs(date, env, code).catch(() => null)
@@ -103,7 +110,7 @@ export async function GET(req: NextRequest) {
       // The trips' SAVED notes and photos ride along (one Redis read), so most opens are
       // a single request; `notesMissing` are the few the page still has to ask for.
       const saved = await savedNotes(env, date, jobs.map((j) => j.job_id));
-      return NextResponse.json({ jobs, missing, eta: await etaP, notes: saved.notes, notesMissing: saved.missing });
+      return NextResponse.json({ jobs, missing, eta: await etaP, noDriverRoutes: await noDriverP, notes: saved.notes, notesMissing: saved.missing });
     }
 
     // Day unavailable: the REST day, filtered the same way — an empty list here would
