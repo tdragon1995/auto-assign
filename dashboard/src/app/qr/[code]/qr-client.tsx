@@ -932,14 +932,18 @@ export default function QrPage() {
         return t(b).localeCompare(t(a));
       });
       setJobs(list);
-      // After the feed, never blocking it: a missing note is a smaller loss than a feed
-      // that waits ~6s on Cartrack's day listing to render trips it already has.
-      if (list.length) {
-        fetch(`/api/location-notes?date=${date}&ids=${list.map((j) => j.job_id).join(",")}`)
+      // Saved notes come with the list. Only trips whose notes are missing or stale are
+      // asked for after — never blocking the list, which must not wait on Cartrack. (A
+      // reply without `notes` is the REST fallback: ask for every trip, as before.)
+      const shown = new Set(list.map((j) => j.job_id));
+      setNotes(data.notes ?? {});
+      const ask = data.notes ? (data.notesMissing ?? []).filter((id: number) => shown.has(id)) : [...shown];
+      if (ask.length) {
+        fetch(`/api/location-notes?date=${date}&ids=${ask.join(",")}`)
           .then((r) => r.json())
-          .then((d) => { setNotes(d.notes ?? {}); setNotesFailed(false); })
+          .then((d) => { setNotes((prev) => ({ ...prev, ...(d.notes ?? {}) })); setNotesFailed(false); })
           .catch(() => setNotesFailed(true));
-      }
+      } else setNotesFailed(false);
     } catch {
       setJobs([]);
     } finally {

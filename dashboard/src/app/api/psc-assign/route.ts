@@ -74,6 +74,9 @@ async function stillBlocking(hit: PscDupHit, pickup: string, dropoff: string, en
   }
 }
 
+/** False until this instance has served its first booking. */
+let warmed = false;
+
 export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
   let lockKey: string | null = null;
@@ -81,6 +84,13 @@ export async function POST(req: NextRequest) {
   let createSent = false;
   const _t0 = Date.now();
   const plog = (m: string) => console.log(`[VN ${vnTimestamp()}] [psc-assign] ${m}`);
+  // Active CPU since the request began — what Vercel bills, unlike the wall times beside
+  // it. Process-wide, so a concurrent request on the same instance can leak in; read the
+  // pattern across many bookings, not one line. ("cold" = first request on this instance.)
+  const _c0 = process.cpuUsage();
+  const cpu = () => { const c = process.cpuUsage(_c0); return `${Math.round((c.user + c.system) / 1000)}ms cpu${coldStart ? " cold" : ""}`; };
+  const coldStart = !warmed;
+  warmed = true;
 
   try {
     const body = await req.json();
@@ -176,6 +186,7 @@ export async function POST(req: NextRequest) {
     if (duplicate) {
       releaseLock(lockKey);
       void releaseCreateLock(lockKey);
+      plog(`duplicate → job ${duplicate.job_id} | ${cpu()}`);
       return NextResponse.json(
         {
           error: "duplicate",
@@ -208,6 +219,7 @@ export async function POST(req: NextRequest) {
     // and picks it up when they return, and the branch can move it with "Đổi giao
     // nhận mẫu" if they cannot wait.
     const [config, leaveEntries, live] = await driverPrep;
+    plog(`driver prep ready | ${cpu()} so far`);
     let assignTo: { driverId: string; name: string | null } | null = null;
     // Every path that declines to attach a driver says so. Silence here used to mean a
     // trip quietly waiting ~2 minutes for the engine with nothing to explain it — a real
@@ -321,7 +333,7 @@ export async function POST(req: NextRequest) {
 
     const created = createRes.body;
     const newJobId = created.data?.job_id;
-    plog(`job-create: ${Date.now() - _tCreate}ms via=${createRes.via} | total: ${Date.now() - _t0}ms | job_id=${newJobId}`);
+    plog(`job-create: ${Date.now() - _tCreate}ms via=${createRes.via} | total: ${Date.now() - _t0}ms, ${cpu()} | job_id=${newJobId}`);
 
     // The day we just changed is stale by definition, so drop its freshness stamp and
     // the next read rebuilds — this branch's own feed reload, or the next request for

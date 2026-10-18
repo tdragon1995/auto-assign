@@ -6,6 +6,7 @@ import { jobsByIds, locationJobs, slimJob } from "@/lib/day-snapshot";
 import { sbRpc, supabaseConfigured } from "@/lib/supabase-rest";
 import { targetMinsFor } from "@/lib/tat";
 import { vnDate } from "@/lib/time";
+import { savedNotes } from "@/lib/trip-notes";
 import type { Job } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -14,7 +15,8 @@ export const preferredRegion = "sin1";
 // The /qr page's trips (only caller):
 //   ?job_id=123                  full detail for the job sheet
 //   ?date=…&code=…&all=1&ids=…   the whole branch plus own bookings, and `eta` — minutes
-//                                pickup→here per pickup branch, for runs coming in
+//                                pickup→here per pickup branch, for runs coming in — and
+//                                the saved `notes`, with `notesMissing` for the rest
 //   ?date=…&code=…&ids=…         only those ids (tabs from before 2026-10-18)
 // From the shared day (@/lib/day-snapshot), which rebuilds when stale; when it is
 // unavailable the REST day is filtered the same way. Statuses 2-5: what the timeline
@@ -98,7 +100,10 @@ export async function GET(req: NextRequest) {
       // Own bookings the day no longer has at all (cancelled or deleted in Cartrack): the
       // page drops their waiting cards instead of showing them all day.
       const missing = ids.filter((id) => !day.some((j) => j.job_id === id));
-      return NextResponse.json({ jobs, missing, eta: await etaP });
+      // The trips' SAVED notes and photos ride along (one Redis read), so most opens are
+      // a single request; `notesMissing` are the few the page still has to ask for.
+      const saved = await savedNotes(env, date, jobs.map((j) => j.job_id));
+      return NextResponse.json({ jobs, missing, eta: await etaP, notes: saved.notes, notesMissing: saved.missing });
     }
 
     // Day unavailable: the REST day, filtered the same way — an empty list here would
