@@ -631,15 +631,15 @@ function IncomingBlock({ jobs, etaMins, now, onOpen }: { jobs: Job[]; etaMins: R
 // it sends a trip to the lab. Hand-kept: change here when the people or their days change.
 // days: 0 = Sunday … 6 = Saturday; hours in VN time, end exclusive.
 const D001_RECEIVERS = [
-  { name: "Anh Tú", phone: "0703977160", hours: "T2 → T7: 6:00–15:00", slots: [{ days: [1, 2, 3, 4, 5, 6], from: 6, to: 15 }] },
-  { name: "Chị Hoa", phone: "0908066033", hours: "T2, T4, T6: 15:00–21:00", slots: [{ days: [1, 3, 5], from: 15, to: 21 }] },
-  { name: "Anh Phát", phone: "0908064890", hours: "T3, T5, T7: 15:00–21:00 · CN: 7:00–15:00",
+  { name: "Anh Tú", phone: "0703977160", hours: ["T2 → T7: 6:00–15:00"], slots: [{ days: [1, 2, 3, 4, 5, 6], from: 6, to: 15 }] },
+  { name: "Chị Hoa", phone: "0908066033", hours: ["T2, T4, T6: 15:00–21:00"], slots: [{ days: [1, 3, 5], from: 15, to: 21 }] },
+  { name: "Anh Phát", phone: "0908064890", hours: ["T3, T5, T7: 15:00–21:00", "CN: 7:00–15:00"],
     slots: [{ days: [2, 4, 6], from: 15, to: 21 }, { days: [0], from: 7, to: 15 }] },
 ];
 const fmtPhone = (p: string) => p.replace(/^(\d{4})(\d{3})(\d{3})$/, "$1 $2 $3");
 
-/** The D001 receivers, whoever is on now first and marked, each number one tap to copy
- *  into the Grab/Be app. */
+/** The D001 receivers, whoever is on now first and marked: call, or copy the number
+ *  into the Grab app. */
 function D001Receivers() {
   // Read once when shown: who is on duty does not need to tick while the sheet is open.
   const [now] = useState(() => {
@@ -647,31 +647,37 @@ function D001Receivers() {
     return { day: vn.getUTCDay(), hour: vn.getUTCHours() + vn.getUTCMinutes() / 60 };
   });
   const [copied, setCopied] = useState("");
-  const onDuty = (r: (typeof D001_RECEIVERS)[number]) =>
-    r.slots.some((x) => x.days.includes(now.day) && now.hour >= x.from && now.hour < x.to);
-  const list = [...D001_RECEIVERS].sort((a, b) => Number(onDuty(b)) - Number(onDuty(a)));
   const copy = async (phone: string) => {
     try { await navigator.clipboard.writeText(phone); setCopied(phone); setTimeout(() => setCopied(""), 2000); } catch {}
   };
+  const onDuty = (r: (typeof D001_RECEIVERS)[number]) =>
+    r.slots.some((x) => x.days.includes(now.day) && now.hour >= x.from && now.hour < x.to);
+  const list = [...D001_RECEIVERS].sort((a, b) => Number(onDuty(b)) - Number(onDuty(a)));
   return (
     <div>
-      <p className="mb-1 text-[12px] font-semibold text-slate-600">Người nhận mẫu tại D001 — điền vào app Grab/Be:</p>
+      <p className="mb-1 text-[12px] font-semibold text-slate-600">Người nhận mẫu tại D001 — điền vào app Grab:</p>
       <ul className="divide-y divide-slate-100 rounded-xl border border-slate-200">
         {list.map((r) => {
           const on = onDuty(r);
           return (
-            <li key={r.phone} className={`flex items-center gap-3 px-3 py-2.5 ${on ? "bg-teal-50" : ""}`}>
+            <li key={r.phone} className={`flex items-center gap-3 px-3 py-2.5 ${on ? "bg-blue-50" : ""}`}>
               <span className="flex-1 min-w-0">
                 <span className="flex flex-wrap items-center gap-x-1.5 text-sm font-bold text-slate-800">
-                  {r.name} <span className="font-semibold text-slate-700 tabular-nums">{fmtPhone(r.phone)}</span>
-                  {on && <span className="px-1.5 py-0.5 rounded-md bg-teal-600 text-[10px] font-bold text-white">Đang trực</span>}
+                  {r.name} <span className="font-semibold text-blue-700 tabular-nums">{fmtPhone(r.phone)}</span>
+                  {on && <span className="px-1.5 py-0.5 rounded-md bg-blue-700 text-[10px] font-bold text-white">Đang trực</span>}
                 </span>
-                <span className="block text-[11px] text-slate-500">{r.hours}</span>
+                {r.hours.map((h) => <span key={h} className="block text-[11px] text-slate-500">{h}</span>)}
               </span>
-              <button onClick={() => copy(r.phone)} aria-label={`Sao chép số của ${r.name}`}
-                className="shrink-0 min-h-9 px-2.5 rounded-lg text-[12px] font-bold text-teal-700 border border-teal-200 active:bg-teal-50">
-                {copied === r.phone ? "Đã chép" : "Sao chép"}
-              </button>
+              <span className="shrink-0 flex flex-col gap-1.5">
+                <a href={`tel:${r.phone}`} aria-label={`Gọi ${r.name}`}
+                  className="min-h-9 inline-flex items-center justify-center gap-1.5 px-3 rounded-lg text-[12px] font-bold text-blue-700 border border-blue-200 active:bg-blue-50">
+                  <Phone aria-hidden className="w-3.5 h-3.5" />Gọi
+                </a>
+                <button onClick={() => copy(r.phone)} aria-label={`Sao chép số của ${r.name}`}
+                  className="min-h-9 px-3 rounded-lg text-[12px] font-bold text-blue-700 border border-blue-200 active:bg-blue-50">
+                  {copied === r.phone ? "Đã chép" : "Sao chép"}
+                </button>
+              </span>
             </li>
           );
         })}
@@ -686,8 +692,8 @@ function NoDriverBlock({ onGrab, toLab }: { onGrab: () => void; toLab: boolean }
   return (
     <div className="mt-3 pt-3 border-t border-slate-100 space-y-3">
       <p className="text-[13px] font-semibold text-amber-700">Giao Nhận Mẫu của chi nhánh đang nghỉ lúc này.</p>
-      <button onClick={onGrab} className="w-full min-h-12 inline-flex items-center justify-center gap-2 rounded-xl text-[13px] font-bold text-white bg-teal-600 active:bg-teal-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600">
-        <Bike aria-hidden className="w-4 h-4" />Gửi mẫu qua Grab/Be/XanhSM/Ahamove
+      <button onClick={onGrab} className={PICK_CTA}>
+        <Bike aria-hidden className="w-4 h-4" />Gửi mẫu qua Grab
       </button>
       {toLab && <D001Receivers />}
     </div>
@@ -798,7 +804,7 @@ function TripCard({ job, code, notes, noDriver = false, onOpen, onCancel, onSend
           {via3plEligible && !(state === 0 && noDriver) && (
             <button onClick={() => onSendVia3pl(target)}
               className="w-full py-2.5 rounded-xl text-xs font-bold text-white bg-teal-600 active:bg-teal-800">
-              Gửi mẫu qua Grab/Be/XanhSM/Ahamove
+              Gửi mẫu qua Grab
             </button>
           )}
           {cancellable && (
@@ -855,7 +861,7 @@ function PendingCard({ req, pickup, dropoff, noDriver = false, onCancel, onSendV
         {!(noDriver && !req.driver_name) && (
           <button onClick={() => onSendVia3pl(target)}
             className="w-full py-2.5 rounded-xl text-xs font-bold text-white bg-teal-600 active:bg-teal-800">
-            Gửi mẫu qua Grab/Be/XanhSM/Ahamove
+            Gửi mẫu qua Grab
           </button>
         )}
         <button onClick={() => onCancel(target)}
@@ -1269,7 +1275,7 @@ export default function QrPage() {
       }
       setVia3plTarget(null);
       setBatchInput("");
-      showToast("Đã gửi mẫu qua Grab/Be/XanhSM/Ahamove thành công.", true);
+      showToast("Đã gửi mẫu qua Grab thành công.", true);
     } catch {
       setVia3plError("Không thể kết nối. Vui lòng thử lại.");
     } finally {
@@ -1575,7 +1581,7 @@ export default function QrPage() {
           onClick={() => { if (!via3plLoading) { setVia3plTarget(null); setVia3plError(""); setBatchInput(""); } }}>
           <div role="dialog" aria-modal="true" className="w-full max-w-sm bg-white rounded-2xl p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
             <div className="space-y-1">
-              <p className="text-base font-bold text-slate-800">Gửi mẫu qua Grab/Be/XanhSM/Ahamove?</p>
+              <p className="text-base font-bold text-slate-800">Gửi mẫu qua Grab?</p>
               <p className="text-xs text-slate-500 font-semibold break-all">{via3plTarget.reference}</p>
               <p className="text-xs text-slate-500">Chuyến sẽ được gán cho Giao Nhận Mẫu và đánh dấu hoàn thành. Hành động này không thể hoàn tác.</p>
             </div>
@@ -1618,7 +1624,7 @@ export default function QrPage() {
                   {changeReason === "roster_unavailable" || changeReason === "leave_unavailable" || changeReason === "drivers_unavailable"
                     ? "Chưa tải được danh sách, vui lòng thử lại."
                     : changeReason === "all_on_leave"
-                      ? "Giao Nhận Mẫu của chi nhánh đang nghỉ lúc này. Vui lòng gửi qua Grab/Be hoặc gọi hỗ trợ."
+                      ? "Giao Nhận Mẫu của chi nhánh đang nghỉ lúc này. Vui lòng gửi qua Grab."
                       : "Không có Giao Nhận Mẫu khác trong lịch lúc này."}
                 </p>
               )
