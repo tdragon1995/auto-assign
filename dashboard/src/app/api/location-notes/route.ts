@@ -25,8 +25,9 @@ export const preferredRegion = "sin1";
  * Failure is always an empty map: a missing note must never take the feed down with it.
  */
 
-/** A trip still on the road is re-asked at most this often. */
-const STALE_MS = 60_000;
+/** A trip still on the road is re-asked at most this often — the same 3 minutes the
+ *  trip list itself runs behind (the cron's publish interval). */
+const STALE_MS = 180_000;
 /** The day's hash outlives the day: a past date is still opened the next morning. */
 const KEY_TTL_S = 36 * 3600;
 /** delivery_get_job_details ids per call (10 ids ≈ 230 KB, ~0.1 s, measured). */
