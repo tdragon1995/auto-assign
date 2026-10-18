@@ -1613,7 +1613,6 @@ export default function QrPage() {
             <div className="space-y-1">
               <p className="text-base font-bold text-slate-800">{via3plTarget.job_id ? "Gửi mẫu qua Grab?" : "Đề nghị giao mẫu qua Grab?"}</p>
               <p className="text-xs text-slate-500 font-semibold break-all">{via3plTarget.reference}</p>
-              <p className="text-xs text-slate-500">{via3plTarget.job_id ? "" : "Chuyến sẽ được tạo rồi gửi qua Grab ngay. "}Chuyến sẽ được gán cho Giao Nhận Mẫu và đánh dấu hoàn thành. Hành động này không thể hoàn tác.</p>
             </div>
             {/→D001(_|$)/.test(via3plTarget.reference) && <D001Receivers />}
             <div className="space-y-1.5">
