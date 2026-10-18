@@ -111,7 +111,7 @@ export async function POST(req: NextRequest) {
     const pick = out.choices.drivers.find((d) => d.driver_id === driverId);
     if (!pick) {
       return NextResponse.json(
-        { error: out.choices.reason === "no_driver" || !out.choices.reason
+        { error: out.choices.reason === "no_driver" || out.choices.reason === "all_on_leave" || !out.choices.reason
             ? "Giao Nhận Mẫu này không còn trong danh sách, vui lòng chọn lại"
             : "Chưa đọc được lịch phân công, vui lòng thử lại" },
         { status: 409 },

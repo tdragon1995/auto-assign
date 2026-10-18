@@ -250,7 +250,7 @@ export type DriverChoice = {
 
 export type ChoicesResult =
   | { ok: true; drivers: DriverChoice[] }
-  | { ok: false; reason: "no_mapping" | "no_driver" };
+  | { ok: false; reason: "no_mapping" | "no_driver" | "all_on_leave" };
 
 /** Minutes either side of the request time a roster row may cover to be offered. */
 export const CHOICE_WINDOW_MIN = 10;
@@ -285,12 +285,18 @@ export function resolveDriverChoices(
   const rows = preferDestinationRows(covering, dropoff);
 
   const drivers: DriverChoice[] = [];
+  // "Everyone rostered is on leave (with no substitute)" is its own answer: the /qr card
+  // then offers Grab/Be and the back-office contacts instead of an empty picker.
+  let rostered = 0, onLeave = 0;
   for (const m of rows) {
     for (const id of m.smart_driver_id.length > 0 ? m.smart_driver_id : [m.driver_id]) {
+      rostered++;
       const s = settle(m, id, dropoff, leaveEntries);
+      if (!s && isDriverOnLeave(id, leaveEntries).onLeave) onLeave++;
       if (!s || proxyKind(null, s.driverId) || drivers.some((d) => d.driverId === s.driverId)) continue;
       drivers.push({ driverId: s.driverId, name: m.smart_driver_id.length > 0 && !s.subFor ? null : s.name });
     }
   }
-  return drivers.length ? { ok: true, drivers } : { ok: false, reason: "no_driver" };
+  if (drivers.length) return { ok: true, drivers };
+  return { ok: false, reason: rostered > 0 && onLeave === rostered ? "all_on_leave" : "no_driver" };
 }

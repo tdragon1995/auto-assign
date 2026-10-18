@@ -627,10 +627,48 @@ function IncomingBlock({ jobs, etaMins, now, onOpen }: { jobs: Job[]; etaMins: R
   );
 }
 
-function TripCard({ job, code, notes, onOpen, onCancel, onSendVia3pl, onChangeDriver }: {
+// Back-office runners to call when no branch driver is working. Hand-kept: change here
+// when the people or their days change.
+const BACKUP_CONTACTS = [
+  { name: "Anh Tú", phone: "0703977160", hours: "T2 → T7: 6:00–15:00" },
+  { name: "Chị Hoa", phone: "0908066033", hours: "T2, T4, T6: 15:00–21:00" },
+  { name: "Anh Phát", phone: "0908064890", hours: "T3, T5, T7: 15:00–21:00 · CN: 7:00–15:00" },
+];
+const fmtPhone = (p: string) => p.replace(/^(\d{4})(\d{3})(\d{3})$/, "$1 $2 $3");
+
+/** In place of "Chỉ định GNM" when every driver rostered for the route is on leave:
+ *  Grab/Be first, then the back-office runners, each a tap to call. */
+function NoDriverBlock({ onGrab }: { onGrab: () => void }) {
+  return (
+    <div className="mt-3 pt-3 border-t border-slate-100">
+      <p className="text-[13px] font-semibold text-amber-700 mb-2">Giao Nhận Mẫu của chi nhánh đang nghỉ lúc này.</p>
+      <button onClick={onGrab} className="w-full min-h-12 inline-flex items-center justify-center gap-2 rounded-xl text-[13px] font-bold text-white bg-teal-600 active:bg-teal-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600">
+        <Bike aria-hidden className="w-4 h-4" />Gửi mẫu qua Grab/Be/XanhSM/Ahamove
+      </button>
+      <p className="mt-3 mb-1 text-[12px] font-semibold text-slate-500">Hoặc gọi hỗ trợ:</p>
+      <ul className="divide-y divide-slate-100 rounded-xl border border-slate-200">
+        {BACKUP_CONTACTS.map((c) => (
+          <li key={c.phone}>
+            <a href={`tel:${c.phone}`} className="flex items-center gap-3 px-3 py-2.5 active:bg-slate-50">
+              <span className="flex-1 min-w-0">
+                <span className="block text-sm font-bold text-slate-800">{c.name} <span className="font-semibold text-blue-700 tabular-nums">{fmtPhone(c.phone)}</span></span>
+                <span className="block text-[11px] text-slate-500">{c.hours}</span>
+              </span>
+              <Phone aria-hidden className="w-4 h-4 text-blue-700 shrink-0" />
+            </a>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function TripCard({ job, code, notes, noDriver = false, onOpen, onCancel, onSendVia3pl, onChangeDriver }: {
   job: Job;
   code: string;
   notes?: StopNotes;
+  /** Every driver rostered for this route is on leave right now. */
+  noDriver?: boolean;
   onOpen: () => void;
   onCancel: (t: { job_id: number; reference: string }) => void;
   onSendVia3pl: (t: { job_id: number; reference: string }) => void;
@@ -708,9 +746,11 @@ function TripCard({ job, code, notes, onOpen, onCancel, onSendVia3pl, onChangeDr
 
       {/* Outside the card's open-button: a button inside a button is invalid, and the
           driver action must not also open the trip sheet. */}
-      {state === 0 && changeDriverEligible ? (
+      {state === 0 && changeDriverEligible && noDriver ? (
+        <NoDriverBlock onGrab={() => onSendVia3pl(target)} />
+      ) : state === 0 && changeDriverEligible ? (
         <div className="mt-3 pt-3 border-t border-slate-100">
-          <button onClick={() => onChangeDriver(change)} className={PICK_CTA}>Chọn GNM để giao ngay</button>
+          <button onClick={() => onChangeDriver(change)} className={PICK_CTA}>Chỉ định GNM</button>
         </div>
       ) : isWaiting(state) ? (
         <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100 text-[13px] font-semibold text-amber-700">
@@ -722,9 +762,9 @@ function TripCard({ job, code, notes, onOpen, onCancel, onSendVia3pl, onChangeDr
           onChange={changeDriverEligible ? () => onChangeDriver(change) : undefined} />
       )}
 
-      {(via3plEligible || cancellable) && (
+      {((via3plEligible && !(state === 0 && noDriver)) || cancellable) && (
         <div className="space-y-1.5 mt-3">
-          {via3plEligible && (
+          {via3plEligible && !(state === 0 && noDriver) && (
             <button onClick={() => onSendVia3pl(target)}
               className="w-full py-2.5 rounded-xl text-xs font-bold text-white bg-teal-600 active:bg-teal-800">
               Gửi mẫu qua Grab/Be/XanhSM/Ahamove
@@ -742,8 +782,9 @@ function TripCard({ job, code, notes, onOpen, onCancel, onSendVia3pl, onChangeDr
   );
 }
 
-function PendingCard({ req, pickup, dropoff, onCancel, onSendVia3pl, onChangeDriver }: {
+function PendingCard({ req, pickup, dropoff, noDriver = false, onCancel, onSendVia3pl, onChangeDriver }: {
   req: PendingReq;
+  noDriver?: boolean;
   pickup: string;
   dropoff: string;
   onCancel: (t: { job_id: number; reference: string }) => void;
@@ -772,16 +813,20 @@ function PendingCard({ req, pickup, dropoff, onCancel, onSendVia3pl, onChangeDri
       </div>
       {req.driver_name ? (
         <DriverRow name={driverText(req.driver_name)} onChange={() => onChangeDriver(change)} />
+      ) : noDriver ? (
+        <NoDriverBlock onGrab={() => onSendVia3pl(target)} />
       ) : (
         <div className="mt-3 pt-3 border-t border-slate-100">
-          <button onClick={() => onChangeDriver(change)} className={PICK_CTA}>Chọn GNM để giao ngay</button>
+          <button onClick={() => onChangeDriver(change)} className={PICK_CTA}>Chỉ định GNM</button>
         </div>
       )}
       <div className="space-y-1.5 mt-3">
-        <button onClick={() => onSendVia3pl(target)}
-          className="w-full py-2.5 rounded-xl text-xs font-bold text-white bg-teal-600 active:bg-teal-800">
-          Gửi mẫu qua Grab/Be/XanhSM/Ahamove
-        </button>
+        {!(noDriver && !req.driver_name) && (
+          <button onClick={() => onSendVia3pl(target)}
+            className="w-full py-2.5 rounded-xl text-xs font-bold text-white bg-teal-600 active:bg-teal-800">
+            Gửi mẫu qua Grab/Be/XanhSM/Ahamove
+          </button>
+        )}
         <button onClick={() => onCancel(target)}
           className="w-full py-2.5 rounded-xl text-xs font-bold text-red-600 border border-red-200 active:bg-red-50">
           Huỷ yêu cầu
@@ -811,6 +856,9 @@ export default function QrPage() {
   const [seen, setSeen] = useState<Set<number>>(new Set());
   // Every branch sees every trip touching it (the D001 view, since 2026-10-18). Only the
   // lab gets the driver chips and the wide PC layout; a branch's list is short.
+  // Routes ("pickup|dropoff") whose every rostered driver is on leave right now — their
+  // waiting cards show Grab/Be and the back-office contacts instead of "Chỉ định GNM".
+  const [noDriverRoutes, setNoDriverRoutes] = useState<Set<string>>(new Set());
   const isLab = (route?.psc_pickup ?? "").replace(/^BRA\s*-\s*/i, "") === "D001";
   // Narrow the list to one driver. A filter over trips already loaded — no request of its own.
   const [driverId, setDriverId] = useState("");
@@ -970,6 +1018,27 @@ export default function QrPage() {
       setLoaded(true);
     }
   }, [date, code, ownIds, pendingKey]);
+
+  // Only trips waiting for a driver need the answer, so only their routes are asked — the
+  // picker's own lookup, once per route per list load. None waiting, no request.
+  const waitingRoutes = [...new Set([
+    ...jobs.filter((j) => stateOf(j) === 0 && pickupOf(j)?.customer_id === code)
+      .map((j) => `${pickupOf(j)?.customer_id}|${dropoffOf(j)?.customer_id}`),
+    ...pending.filter((x) => x.date === date && !x.driver_name && !seen.has(Number(x.job_id)) && route)
+      .map(() => `${route!.pickup}|${route!.dropoff}`),
+  ])].sort().join(",");
+  useEffect(() => {
+    if (!waitingRoutes || date !== todayVN()) { setNoDriverRoutes(new Set()); return; }
+    let alive = true;
+    Promise.all(waitingRoutes.split(",").map(async (k) => {
+      const [pickup, dropoff] = k.split("|");
+      const r = await fetch(`/api/psc-assign/reassign?${new URLSearchParams({ pickup, dropoff })}`, { cache: "no-store" })
+        .then((x) => x.json()).catch(() => null);
+      return r?.reason === "all_on_leave" ? k : null;
+    })).then((ks) => { if (alive) setNoDriverRoutes(new Set(ks.filter((k): k is string => !!k))); });
+    return () => { alive = false; };
+  }, [waitingRoutes, loadedAt, date]);
+  const noDriverFor = (pickup?: string, dropoff?: string) => noDriverRoutes.has(`${pickup}|${dropoff}`);
 
   // On open, and whenever the date or the branch's bookings change.
   useEffect(() => { loadJobs(); }, [loadJobs]);
@@ -1341,7 +1410,7 @@ export default function QrPage() {
         {showGallery && (
           <section className="mb-4" aria-labelledby="qr-gallery">
             <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-              <h3 id="qr-gallery" className="text-[13px] font-semibold text-slate-600">{windowed ? "Ảnh mẫu vừa đến" : `Ảnh mẫu · ${driverName}`} ({gallery.length})</h3>
+              <h3 id="qr-gallery" className="text-[13px] font-semibold text-slate-600">{windowed ? "Mẫu đã giao" : `Mẫu đã giao · ${driverName}`} ({gallery.length})</h3>
               {windowed && <div role="group" aria-label="Trong khoảng" className="inline-flex rounded-lg bg-slate-200/70 p-0.5">
                 {GALLERY_WINDOWS.map((w) => (
                   <button key={w.mins} aria-pressed={galleryMins === w.mins} onClick={() => pickGalleryMins(w.mins)}
@@ -1353,7 +1422,7 @@ export default function QrPage() {
             </div>
             {loaded && !loading && gallery.length === 0 && (
               <p className="text-sm text-slate-600 py-2">{windowed
-                ? `Chưa có mẫu nào đến trong ${GALLERY_WINDOWS.find((w) => w.mins === galleryMins)?.label} qua.`
+                ? `Chưa có mẫu nào giao trong ${GALLERY_WINDOWS.find((w) => w.mins === galleryMins)?.label} qua.`
                 : `${driverName} chưa có ảnh mẫu${isToday ? " hôm nay" : " ngày này"}.`}</p>
             )}
             <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
@@ -1398,14 +1467,14 @@ export default function QrPage() {
         <div className="space-y-3">
           {isToday && !driverId && pendingShown.map((p) => (
             <div key={p.job_id} id={`trip-${p.job_id}`} className={ring(Number(p.job_id))}>
-              <PendingCard req={p} pickup={route.pickup} dropoff={route.dropoff} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }}
+              <PendingCard req={p} pickup={route.pickup} dropoff={route.dropoff} noDriver={noDriverFor(route.pickup, route.dropoff)} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }}
                 onSendVia3pl={openVia3pl} onChangeDriver={openChangeDriver} />
             </div>
           ))}
           <div className={`space-y-3 ${isLab ? "lg:space-y-0 lg:grid lg:grid-cols-2 lg:gap-3" : ""}`}>
             {active.map((j) => (
               <div key={j.job_id} id={`trip-${j.job_id}`} className={ring(j.job_id)}>
-                <TripCard job={j} code={code} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)}
+                <TripCard job={j} code={code} notes={notes[j.job_id]} noDriver={noDriverFor(pickupOf(j)?.customer_id, dropoffOf(j)?.customer_id)} onOpen={() => setSheetJob(j)}
                   onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl}
                   onChangeDriver={openChangeDriver} />
               </div>
@@ -1511,7 +1580,9 @@ export default function QrPage() {
                 <p role="status" className="py-6 text-center text-sm font-semibold text-slate-500">
                   {changeReason === "roster_unavailable" || changeReason === "leave_unavailable" || changeReason === "drivers_unavailable"
                     ? "Chưa tải được danh sách, vui lòng thử lại."
-                    : "Không có Giao Nhận Mẫu khác trong lịch lúc này."}
+                    : changeReason === "all_on_leave"
+                      ? "Giao Nhận Mẫu của chi nhánh đang nghỉ lúc này. Vui lòng gửi qua Grab/Be hoặc gọi hỗ trợ."
+                      : "Không có Giao Nhận Mẫu khác trong lịch lúc này."}
                 </p>
               )
             ) : (

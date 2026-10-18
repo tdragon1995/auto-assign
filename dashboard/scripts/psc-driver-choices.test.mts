@@ -90,6 +90,14 @@ ok("a driver on leave is replaced by their substitute",
 ok("a driver on leave with no substitute is left out", ids(pick(cfg(row(A), row(B)), "10:00", [leave(A)])) === is(B));
 ok("leave dated another day changes nothing",
   ids(pick(cfg(row(A)), "10:00", [{ ...leave(A), leave_from: "2999-01-01", leave_to: "2999-01-01" }])) === is(A));
+// Everyone rostered on leave is its own answer: /qr offers Grab/Be and the back-office
+// contacts in place of an empty picker. Only when EVERY rostered driver is on leave.
+ok("everyone rostered on leave says all_on_leave",
+  ids(pick(cfg(row(A), row(B)), "10:00", [leave(A), leave(B)])) === JSON.stringify("all_on_leave"));
+ok("a driver whose shift does not cover the hour is not counted",
+  ids(pick(cfg(row(A), row(B, "06:00", "08:00")), "10:00", [leave(A)])) === JSON.stringify("all_on_leave"));
+ok("one on leave and one left out for another reason is still no_driver",
+  ids(pick(cfg(row(A), row(B, "", "", { alt_drop_off_id: HUB })), "10:00", [leave(A)])) === JSON.stringify("no_driver"));
 
 if (failed) { console.log(`\n${failed} failed`); process.exit(1); }
 console.log("\nall passed");
