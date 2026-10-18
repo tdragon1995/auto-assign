@@ -46,6 +46,8 @@ interface DriverRow {
   no_shift_days: number;
   /** Days begun more than 45 min after the shift start (payroll's red cells). */
   late_days: number;
+  /** Days whose last trip ran more than 45 min past the shift end. */
+  late_trip_days: number;
   unpriced_jobs: number;
 }
 
@@ -59,6 +61,7 @@ interface PayTeamReport {
   coverage: { expected_days: number; missing_days: string[]; period_closed: boolean; shifts_imported: boolean; pending_corrections: number; ready: boolean };
   totals: Omit<DriverRow, "driver_id" | "driver_name">;
   no_shift?: NoShiftDay[];
+  ran_late?: { driver_id: string; driver_name: string; date: string; shift: string; last_task: string | null; over_mins: number }[];
   drivers: DriverRow[];
   error?: string;
 }
@@ -130,7 +133,7 @@ interface DayLine {
   date: string; shift: string; tap_in: string | null; tap_out: string | null;
   first_task: string | null; last_task: string | null; paid_from: string | null; paid_to: string | null;
   worked_mins: number; bo_mins: number; multiplier: number; jobs: number; km: number;
-  hour_pay: number; km_pay: number; no_shift: boolean; corrected: boolean; pending: boolean; late_mins: number;
+  hour_pay: number; km_pay: number; no_shift: boolean; corrected: boolean; pending: boolean; late_mins: number; trip_over_mins: number;
 }
 const LATE_FLAG = 45;
 const span = (a: string | null, b: string | null) => (a || b ? `${a ?? "?"}–${b ?? "?"}` : "—");
@@ -172,7 +175,7 @@ function DriverDays({ month, driverId }: { month: string; driverId: string }) {
         </thead>
         <tbody className="divide-y divide-slate-100 tabular-nums">
           {days.map((d) => (
-            <tr key={d.date} className={d.no_shift ? "bg-amber-50" : d.late_mins > LATE_FLAG ? "bg-rose-50" : ""}>
+            <tr key={d.date} className={d.no_shift ? "bg-amber-50" : d.late_mins > LATE_FLAG || d.trip_over_mins > LATE_FLAG ? "bg-rose-50" : ""}>
               <td className="px-2 py-1 whitespace-nowrap">{d.date.slice(8, 10)}/{d.date.slice(5, 7)} <span className="text-slate-400">{["CN", "T2", "T3", "T4", "T5", "T6", "T7"][new Date(`${d.date}T00:00:00Z`).getUTCDay()]}</span></td>
               <td className="px-2 py-1">{d.shift || <span className="text-amber-700">Không ca</span>}</td>
               <td className="px-2 py-1">{span(d.tap_in, d.tap_out)}</td>
@@ -184,6 +187,7 @@ function DriverDays({ month, driverId }: { month: string; driverId: string }) {
               <td className="px-2 py-1 text-[11px] whitespace-nowrap">
                 {d.corrected && <span className="mr-1 text-indigo-700">Đã duyệt</span>}
                 {d.pending && <span className="mr-1 text-amber-700">Chờ duyệt</span>}
+                {d.trip_over_mins > LATE_FLAG && <span className="mr-1 text-rose-700" title="Chuyến cuối kết thúc trễ hơn 45 phút sau giờ hết ca">Quá giờ {fmtHours(d.trip_over_mins)}</span>}
                 {d.late_mins > LATE_FLAG && <span className="mr-1 text-rose-700" title="Bắt đầu trễ hơn 45 phút so với giờ vào ca — kiểm tra lại ca">Vào trễ {fmtHours(d.late_mins)}</span>}
                 {d.bo_mins > 0 && <span className="mr-1 text-emerald-700">BO {fmtHours(d.bo_mins)}</span>}
                 {d.multiplier > 1 && <span className="text-rose-700">Lễ ×{d.multiplier}</span>}
@@ -231,6 +235,9 @@ export function PayTeamPanel() {
   const [q, setQ] = useState("");
   /** Set from the amber banner: show only the drivers who worked without a shift. */
   const [onlyFlagged, setOnlyFlagged] = useState(false);
+  /** Set from the rose banner: only drivers whose trips ran past the shift end. */
+  const [onlyLate, setOnlyLate] = useState(false);
+  const [showLate, setShowLate] = useState(false);
   /** The "Cập nhật công" review panel. */
   const [showCorrections, setShowCorrections] = useState(false);
   const [showFix, setShowFix] = useState(false);
@@ -324,7 +331,8 @@ export function PayTeamPanel() {
   const needle = foldName(q.trim());
   const shown = !data ? [] : data.drivers
     .filter((d) => (needle ? foldName(d.driver_name).includes(needle) : true))
-    .filter((d) => (onlyFlagged ? d.no_shift_days > 0 : true));
+    .filter((d) => (onlyFlagged ? d.no_shift_days > 0 : true))
+    .filter((d) => (onlyLate ? d.late_trip_days > 0 : true));
 
   return (
     <div className="h-full flex flex-col rounded-xl border border-slate-200 bg-white overflow-hidden">
@@ -484,9 +492,52 @@ export function PayTeamPanel() {
         </div>
       )}
 
+      {/* Same shape as Không ca: a count, a filter, a list. Nothing to fix by
+          default — the hours already ran to the trip — but each day is a judgement. */}
+      {data && data.totals.late_trip_days > 0 && (
+        <div className="flex items-start gap-2 text-xs text-rose-900 bg-rose-50 border-b border-rose-200 px-3 py-2 shrink-0">
+          <AlertCircle className="size-3.5 mt-0.5 shrink-0" />
+          <span>
+            {data.totals.late_trip_days} ngày chuyến cuối kết thúc trễ hơn 45 phút sau giờ hết ca —
+            đã tính giờ đến chuyến cuối, cần kiểm tra.{" "}
+            <button onClick={() => setOnlyLate((v) => !v)} className="font-semibold underline underline-offset-2 hover:text-rose-950">
+              {onlyLate ? "Hiện tất cả tài xế" : `Chỉ hiện ${data.drivers.filter((d) => d.late_trip_days > 0).length} tài xế`}
+            </button>{" · "}
+            <button onClick={() => { setShowLate((v) => !v); setShowFix(false); setShowCorrections(false); }} className="font-semibold underline underline-offset-2 hover:text-rose-950">
+              {showLate ? "‹ Bảng lương" : "Xem danh sách"}
+            </button>
+          </span>
+        </div>
+      )}
+
       {/* "Cập nhật công" takes the table's place while open, rather than pushing
           the payroll off screen below it. */}
-      {showFix && data && !showCorrections ? (
+      {showLate && data && !showFix && !showCorrections ? (
+        <div className="flex-1 min-h-0 overflow-auto">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-slate-50 text-slate-600 text-[11px] uppercase tracking-wide">
+              <tr>
+                <th className="text-left font-semibold px-3 py-2">Ngày</th>
+                <th className="text-left font-semibold px-2 py-2">Tài xế</th>
+                <th className="text-left font-semibold px-2 py-2">Ca</th>
+                <th className="text-left font-semibold px-2 py-2">Chuyến cuối xong</th>
+                <th className="text-right font-semibold px-3 py-2">Quá giờ</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 tabular-nums">
+              {(data.ran_late ?? []).map((r) => (
+                <tr key={`${r.driver_id}|${r.date}`}>
+                  <td className="px-3 py-1.5 whitespace-nowrap">{r.date.slice(8, 10)}/{r.date.slice(5, 7)}</td>
+                  <td className="px-2 py-1.5"><DriverName full={r.driver_name} className="text-slate-800" /></td>
+                  <td className="px-2 py-1.5">{r.shift}</td>
+                  <td className="px-2 py-1.5">{r.last_task ?? "—"}</td>
+                  <td className="px-3 py-1.5 text-right font-semibold text-rose-700">{fmtHours(r.over_mins)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : showFix && data && !showCorrections ? (
         <div className="flex-1 min-h-0">
           <PayNoShiftPanel key={data.month} days={data.no_shift ?? []} onChanged={() => load(data.month)} />
         </div>
@@ -532,6 +583,7 @@ export function PayTeamPanel() {
                     got nothing from "⚠". */}
                 <th className="text-right font-semibold px-2 py-2" title="Ngày có làm nhưng không có ca trong Lịch ca — không tính tiền giờ">Không ca</th>
                 <th className="text-right font-semibold px-2 py-2" title="Ngày bắt đầu trễ hơn 45 phút so với giờ vào ca — thường là ca trong Lịch ca chưa đúng">Vào trễ</th>
+                <th className="text-right font-semibold px-2 py-2" title="Ngày chuyến cuối kết thúc trễ hơn 45 phút sau giờ hết ca">Quá giờ</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -580,9 +632,14 @@ export function PayTeamPanel() {
                       ? <span className="text-rose-700 font-semibold">{d.late_days}</span>
                       : <span className="text-slate-500">—</span>}
                   </td>
+                  <td className="text-right px-2 py-2 tabular-nums">
+                    {d.late_trip_days > 0
+                      ? <span className="text-rose-700 font-semibold">{d.late_trip_days}</span>
+                      : <span className="text-slate-500">—</span>}
+                  </td>
                 </tr>
                 {open === d.driver_id && (
-                  <tr><td colSpan={9} className="bg-slate-50 p-0 border-b border-slate-200"><DriverDays month={month} driverId={d.driver_id} /></td></tr>
+                  <tr><td colSpan={10} className="bg-slate-50 p-0 border-b border-slate-200"><DriverDays month={month} driverId={d.driver_id} /></td></tr>
                 )}
                 </Fragment>
               ))}

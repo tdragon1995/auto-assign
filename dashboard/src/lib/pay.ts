@@ -400,6 +400,14 @@ export function lateStartMins(shifts: ShiftWindow[], startAt: string | null, dat
   return Math.max(0, Math.round((Date.parse(startAt) - Date.parse(`${date}T${first.start}:00+07:00`)) / 60_000));
 }
 
+/** Minutes the day's last trip finished after its last shift window ended (0 if
+ *  not after). Flagged above LATE_START_FLAG_MIN: the hours were paid to the trip. */
+export function tripOverMins(shifts: ShiftWindow[], lastTaskAt: string | null, date: string): number {
+  if (!shifts.length || !lastTaskAt) return 0;
+  const end = [...shifts].sort((a, b) => a.end.localeCompare(b.end)).at(-1)!.end;
+  return Math.max(0, Math.round((Date.parse(lastTaskAt) - Date.parse(`${date}T${end}:00+07:00`)) / 60_000));
+}
+
 /** Đồng earned for a span of clocked minutes. Per MINUTE, not per whole hour:
  *  30.000đ/h is exactly 500đ a minute, so this needs no rounding rule of its own
  *  and a 20-minute shift is not rounded away to nothing. */

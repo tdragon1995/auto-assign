@@ -25,7 +25,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { sbSelectAll, supabaseConfigured } from "@/lib/supabase-rest";
 import { masterDriverNames } from "@/lib/master-store";
 import { employmentOf } from "@/lib/driver-label";
-import { paidDay, hoursPayFor, kmPayFor, suggestedWindow, RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch, type PayJob, hourPayFor, BO_RATE_PER_HOUR_VND, lateStartMins, LATE_START_FLAG_MIN } from "@/lib/pay";
+import { paidDay, hoursPayFor, kmPayFor, suggestedWindow, RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch, type PayJob, hourPayFor, BO_RATE_PER_HOUR_VND, lateStartMins, LATE_START_FLAG_MIN, tripOverMins } from "@/lib/pay";
 import { payrollPeriod } from "@/lib/pay-period";
 import { staffCode } from "@/lib/display-names";
 import { loadPayDayInputs, dayKey } from "@/lib/pay-days";
@@ -40,7 +40,7 @@ interface DayLine {
   date: string; shift: string; tap_in: string | null; tap_out: string | null;
   first_task: string | null; last_task: string | null; paid_from: string | null; paid_to: string | null;
   worked_mins: number; bo_mins: number; multiplier: number; jobs: number; km: number;
-  hour_pay: number; km_pay: number; no_shift: boolean; corrected: boolean; pending: boolean; late_mins: number;
+  hour_pay: number; km_pay: number; no_shift: boolean; corrected: boolean; pending: boolean; late_mins: number; trip_over_mins: number;
 }
 
 interface DailyRow {
@@ -189,6 +189,9 @@ export async function GET(req: NextRequest) {
      *  quick fix approves the suggested window as a supervisor correction. */
     const noShift: { driver_id: string; driver_name: string; date: string; first_in: string | null; last_out: string | null;
       first_task: string | null; last_task: string | null; suggest_in: string | null; suggest_out: string | null; pending: boolean }[] = [];
+    /** Days whose last trip finished more than 45 min after the shift end — the
+     *  hours ran to the trip; listed for review like the no-shift days. */
+    const ranLate: { driver_id: string; driver_name: string; date: string; shift: string; last_task: string | null; over_mins: number }[] = [];
     const drivers = [...acc.entries()]
       // Full-time accounts are recorded but not priced — see PART-TIME ONLY above.
       .filter(([, e]) => employmentOf(e.name) === "part-time")
@@ -197,6 +200,7 @@ export async function GET(req: NextRequest) {
         let boMins = 0;
         let noShiftDays = 0;
         let lateDays = 0;
+        let lateTripDays = 0;
         const code = staffCode(names.get(driver_id) || e.name);
         const lines: DayLine[] = [];
         for (const date of [...e.days].sort()) {
@@ -218,6 +222,13 @@ export async function GET(req: NextRequest) {
           const startAt = cont && (!s.in || Date.parse(cont) < Date.parse(s.in)) ? cont : s.in;
           const lateMins = w.corrected ? 0 : lateStartMins(inputs.shifts.get(dayKey(driver_id, date)) ?? [], startAt, date);
           if (lateMins > LATE_START_FLAG_MIN) lateDays++;
+          const dayShifts = inputs.shifts.get(dayKey(driver_id, date)) ?? [];
+          const overMins = w.corrected ? 0 : tripOverMins(dayShifts, t?.last ?? null, date);
+          if (overMins > LATE_START_FLAG_MIN) {
+            lateTripDays++;
+            ranLate.push({ driver_id, driver_name: names.get(driver_id) || e.name || driver_id.slice(0, 8), date,
+              shift: dayShifts.map((x) => `${x.start}–${x.end}`).join(", "), last_task: hhmm(t?.last ?? null), over_mins: overMins });
+          }
           if (driver_id === detailFor) {
             const dayKm = Math.round((t?.km ?? 0) * 100) / 100;
             lines.push({
@@ -229,7 +240,7 @@ export async function GET(req: NextRequest) {
               worked_mins: w.minutes, bo_mins: w.bo_minutes, multiplier: w.multiplier,
               jobs: t?.jobs ?? 0, km: dayKm,
               hour_pay: hoursPayFor(w.minutes, w.bo_minutes), km_pay: kmPayFor(dayKm),
-              no_shift: w.no_shift, corrected: w.corrected, late_mins: lateMins,
+              no_shift: w.no_shift, corrected: w.corrected, late_mins: lateMins, trip_over_mins: overMins,
               pending: inputs.latest.get(dayKey(driver_id, date))?.status === "pending",
             });
           }
@@ -272,6 +283,8 @@ export async function GET(req: NextRequest) {
           /** Days that began more than 45 min after the shift start — usually a
            *  wrong shift in Lịch ca. Payroll's sheet colours the same days. */
           late_days: lateDays,
+          /** Days whose last trip ran more than 45 min past the shift end. */
+          late_trip_days: lateTripDays,
           /** Completed jobs with no distance: paid 0 km until priced. */
           unpriced_jobs: e.unpriced,
           ...(driver_id === detailFor ? { days: lines } : {}),
@@ -312,9 +325,11 @@ export async function GET(req: NextRequest) {
         bo_pay: drivers.reduce((s, d) => s + d.bo_pay, 0),
         no_shift_days: drivers.reduce((s, d) => s + d.no_shift_days, 0),
         late_days: drivers.reduce((s, d) => s + d.late_days, 0),
+        late_trip_days: drivers.reduce((s, d) => s + d.late_trip_days, 0),
         unpriced_jobs: drivers.reduce((s, d) => s + d.unpriced_jobs, 0),
       },
       drivers,
+      ran_late: ranLate.sort((a, b) => a.date.localeCompare(b.date) || a.driver_name.localeCompare(b.driver_name, "vi")),
       no_shift: noShift.sort((a, b) => a.date.localeCompare(b.date) || a.driver_name.localeCompare(b.driver_name, "vi")),
     });
   } catch (e) {

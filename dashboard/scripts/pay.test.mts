@@ -17,7 +17,7 @@ import {
   RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch,
 } from "../src/lib/pay";
 import { parsePayrollSheet, resolveDriver } from "../src/lib/pay-shifts";
-import { parseShiftText, mergeWindows, bridgeGaps, lateStartMins } from "../src/lib/pay";
+import { parseShiftText, mergeWindows, bridgeGaps, lateStartMins, tripOverMins } from "../src/lib/pay";
 import { isWeekdayRoleLine } from "../src/lib/pay-days";
 import { openRange, checkTimes, checkProof } from "../src/lib/pay-corrections";
 import type { TimelineRoute, TimelineStop } from "../src/lib/types";
@@ -189,6 +189,8 @@ check("a DC shift 30 min away is left alone", J(bridgeGaps([W("17:30", "21:00")]
 // Payroll's red cell: Nguyễn Thanh Tú 15/09, shift 08:00, recorded in 09:35 → 95 min late.
 check("late start in minutes", lateStartMins([W("08:00", "19:00")], "2026-09-15T09:35:00+07:00", "2026-09-15") === 95);
 check("an early start is not late", lateStartMins([W("15:00", "21:30")], "2026-09-15T05:59:00+07:00", "2026-09-15") === 0);
+check("last trip 1h10 past the shift end", tripOverMins([W("17:00", "21:00")], "2026-09-15T22:10:00+07:00", "2026-09-15") === 70);
+check("a trip inside the shift is not over", tripOverMins([W("17:00", "21:00")], "2026-09-15T20:40:00+07:00", "2026-09-15") === 0);
 check("no shift, no flag", lateStartMins([], "2026-09-15T09:35:00+07:00", "2026-09-15") === 0);
 check("a DC shift 2 hours away is left alone", J(bridgeGaps([W("19:00", "21:00")], [W("08:00", "17:00")])) === J([W("19:00", "21:00")]));
 
