@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a **Fleet Auto-Assign** service for Cartrack (a Telematics fleet management platform). It automatically assigns unassigned delivery jobs to drivers based on customer–driver mappings stored in a Google Sheet.
+This is a **Fleet Auto-Assign** service for Cartrack (a Telematics fleet management platform). It automatically assigns unassigned delivery jobs to drivers based on customer–driver mappings stored in Supabase (the "master" tables; the Google Sheet they came from is now only the fallback — see "Where the data lives" below).
 
 The active codebase is `dashboard/` — a Next.js 15 (React 19, TypeScript) web app deployed to **Vercel**.
 
@@ -52,10 +52,40 @@ LABCENTER_PASSWORD=              # Labcenter API password
 LABCENTER_RECEPTIONIST_EMAIL=    # Separate receptionist account for /api/labcenter/client (client search in sales form)
 LABCENTER_RECEPTIONIST_PASSWORD= # Password for receptionist account
 LEAVE_NAME_RECOVERY=             # Set to "0" to stop recovering a leave row from its typed name
+MASTER_CLIENT_INFO_SOURCE=        # "supabase" = config, roster, leave, schedule read from/written to Supabase (production). Unset = the Google Sheet
 STANDBY=                         # "1" on the BACKUP Vercel account only: its cron ping idles while another deployment's heartbeat is fresh (<6 min) and takes over the engine when it goes stale (primary paused over a plan limit, or its cron job died)
 ```
 
-`LEAVE_NAME_RECOVERY` is ON unless set to `0`. When a leave row's `driver_id` comes
+### Where the data lives
+
+Production runs with `MASTER_CLIENT_INFO_SOURCE=supabase` (`masterEnabled()` in
+`master-store.ts`). In that mode every one of these is read from AND written to
+Supabase, and the Google Sheet is not touched — `master-sheet-sync.ts` even refuses a
+sheet import ("disabled after operational cutover"):
+
+| Data | Supabase (production) | Sheet path (switch off) |
+|---|---|---|
+| Weekday config rules | `masterRuleRows("weekday")`; writes via `master-config-actions.ts` (`bulkMasterConfig`, `editMasterConfig`, `createMasterConfigRows`) | mapping tab (GID 0) |
+| Sunday config | rules carry areas + the Lịch Chủ nhật roster (`/api/sunday-roster`, `/api/config/sunday-rules`) | "(NO edit) CONFIG SUNDAY" tab |
+| Driver roster | `master_drivers` | Driver tab |
+| Leave (Nghỉ phép) | view `master_leave_read` (`masterLeaveGrid`); writes via `appendMasterLeave`, `updateMasterLeave`, `deleteMasterLeave`, `editMasterLeaveSubs`, `splitMasterLeave` | Nghỉ phép tab |
+| Deleted-day tombstones | `master_leave_suppressions` | "Nghỉ phép đã xoá" tab |
+| Lịch cố định | `master_schedule_jobs` (validated ids, not name formulas) | schedule sheet |
+| PSC tỉnh 3PL list | `master_tpl_entries` | 3PL tab |
+
+Each sheet writer in `sheets-writer.ts` begins with `if (masterEnabled()) return <master…>`,
+so a function named after a sheet may well be writing Supabase. Config and leave still
+keep a Redis L2 copy (`config:parsed`; leave `leave:master:v1:entries`), so a cold
+instance reads Redis first, not Supabase. The leave, config and gap/overlap sections
+below were written for the sheet and still say "row", "tab" and "sheet": the RULES they
+describe (duplicate check, tombstones, automated-only blocking, whole-day twin, overlap =
+CLASH) hold in both modes, but row-number guards — row 2 refused, ARRAYFORMULA spill
+read-back, "re-resolved against the sheet" — are the sheet path's. PSC routes and PSC
+closing hours are neither: they are hard-coded in `psc-routes-data.ts`.
+
+`LEAVE_NAME_RECOVERY` is ON unless set to `0`. **Sheet mode only** — in Supabase mode a
+leave row carries `linked_driver_id`, so there is no orphaned name to recover and
+`recoverOrphanRows` returns at once. When a leave row's `driver_id` comes
 back blank — nearly always because the driver was renamed in Cartrack, which rewrites
 the roster tab's name column and orphans every row typed against the old spelling —
 the engine resolves the typed name against the *active* roster and honours the leave
@@ -65,6 +95,9 @@ name matching both is left alone. Recovered rows are still reported for repair, 
 blue rather than red. See `driver-match.ts`; step 4 of the config plan deletes it.
 
 ### Leave rows: written by MISA, removable by hand
+
+(Production stores these in Supabase — see "Where the data lives". "Row", "tab" and
+"sheet" below mean a leave record; the gviz/first-tab story is the sheet path's.)
 
 The MISA sync (`misa-fetcher/`) writes one Nghỉ phép row per day MISA charged,
 through the same `POST /api/nghi-phep` a driver's own form uses — so
@@ -232,7 +265,7 @@ ever named, which is how a warning stops being read.
 
 ### Data Flow
 
-1. **Config** is loaded on each assign cycle from a public Google Sheet (CSV export) via `src/lib/config.ts`. It maps `customer_id → driver_id` with optional shift windows and Zalo notification tokens.
+1. **Config** is loaded on each assign cycle via `src/lib/config.ts` — from Supabase master rules in production (Redis L2 copy first), from the Google Sheet CSV when `MASTER_CLIENT_INFO_SOURCE` is unset. It maps `customer_id → driver_id` with optional shift windows and Zalo notification tokens.
 
 2. **Dashboard UI** (`src/components/dashboard.tsx`) polls `POST /api/assign` every 3 minutes when running (hardcoded `180_000` ms in `dashboard.tsx`). It calls `POST /api/assign`, which handles all jobs (smart + fixed) in one cycle.
 
@@ -249,7 +282,7 @@ ever named, which is how a warning stops being read.
    - REST: `https://fleetapi-vn.cartrack.com/rest/delivery` — jobs, drivers, assignment, customers creation
    - JSONRPC: `https://fleetweb-vn.cartrack.com/jsonrpc/index.php` — route optimisation, job rejection
 
-5. **PSC Routes** (`src/lib/psc-config.ts`): separate Google Sheet for PSC sample-transport jobs (provincial routes). Has a 5-minute in-memory cache; invalidated by the dashboard Refresh button.
+5. **PSC Routes**: hard-coded in `src/lib/psc-routes-data.ts` (the sheet tab was retired). `src/lib/psc-config.ts` still loads the PSC tỉnh 3PL list — Supabase `master_tpl_entries` in production, the 3PL tab otherwise.
 
 ### API Routes
 
@@ -263,7 +296,7 @@ ever named, which is how a warning stops being read.
 | `POST /api/config/bulk-update` / `bulk-delete` | Config tab's bulk "Đổi tài xế" / "Đổi ca" / "Xoá" on ticked rows. ONE header read + ONE column read + ONE write for the whole selection, each row's branch re-checked in memory and skipped (not written) if it moved; deletes go highest-row-first in one atomic batch, row 2 refused. Replaced a loop of per-row `complete-row`/`delete-row` calls that hit Google's 60-reads/min/user quota after ~25 rows (~15 for deletes) and failed the rest with 429. `scripts/config-bulk-write.test.mts` |
 | `GET /api/drivers` | Proxy to Cartrack drivers list |
 | `POST /api/psc-assign` | PSC sample-transport job creation (creates unassigned job; auto-assign picks it up) |
-| `GET /api/psc-routes` | Load PSC routes from sheet (pickup→dropoff pairs with GPS coords) |
+| `GET /api/psc-routes` | PSC routes (pickup→dropoff pairs with GPS coords) from the hard-coded `psc-routes-data.ts` |
 | `GET /api/psc-tinh` | Provincial PSC route lookup; `?psc=D021` for 3PL options, `?psc=D021&mode=orders` for today's orders; `DELETE` cancels a job |
 | `POST /api/smart-assign` | Smart-assign dry-run — returns ranked driver suggestions without assigning |
 | `GET /api/audit` | List locations for weekly audit job creation; `POST` creates the audit job and assigns it |
@@ -306,7 +339,7 @@ ever named, which is how a warning stops being read.
 
 ### Key Types (`src/lib/types.ts`)
 
-- `Mapping` — customer→driver config row from Google Sheet (includes `smart_driver_id[]`, shift times, Zalo tokens, `alt_drop_off_id`, `dropoff_id`)
+- `Mapping` — customer→driver config row, from a Supabase rule or a sheet row (includes `smart_driver_id[]`, shift times, Zalo tokens, `alt_drop_off_id`, `dropoff_id`)
 - `Job` / `Stop` — Cartrack delivery job with stops (stop_type_id 1=pickup, 2=dropoff, 3=delivery)
 - `Driver` — Cartrack driver with GPS coords and status
 - `LogEntry` — `{ ts, level: "OK"|"INFO"|"WARN"|"ERROR", msg }`
@@ -323,7 +356,8 @@ These are the things most likely to burn a future agent working on this codebase
 
 2. **Fetch jobs by `scheduled_delivery_ts`, not `create_ts`.** The cycle fetches today's jobs with `getJobsByDate` (all statuses, one call) / `getJobsByStatusAndDate`, both filtered on `scheduled_delivery_ts` — so multi-day parked jobs released from the proxy driver surface on their scheduled day. A `create_ts` filter (the old `getUnassignedJobs` approach, now removed) is fine for ad-hoc jobs but silently drops scheduled/planned ones; don't reintroduce it.
 
-3. **`loadConfigFromSheets` has an in-memory cache.** It only re-fetches the sheet after `invalidateConfigCache()` is called (dashboard Refresh button). If the sheet fetch ever returns suspiciously few rows (network hiccup), the bad result gets cached and all subsequent cycles see an empty mapping — causing widespread NO MAPPING errors until the server restarts or Refresh is clicked.
+3. **`loadConfigFromSheets` has an in-memory cache** (despite the name it reads Supabase
+   in production; the Redis L2 blob sits between the two). It only re-fetches the sheet after `invalidateConfigCache()` is called (dashboard Refresh button). If the sheet fetch ever returns suspiciously few rows (network hiccup), the bad result gets cached and all subsequent cycles see an empty mapping — causing widespread NO MAPPING errors until the server restarts or Refresh is clicked.
 
    **Every reader now declares the columns it cannot work without** (`SHEET_CONTRACT`
    in `sheets.ts`). A tab missing one is refused, the last good copy keeps serving, and
@@ -591,6 +625,11 @@ report goes out twice; do not re-add `schedule:` to the workflow file.
 
 ## Google Sheet
 
+**Fallback only in production** — with `MASTER_CLIENT_INFO_SOURCE=supabase` the mapping,
+Sunday, Driver, Nghỉ phép and 3PL tabs below are not read (see "Where the data lives").
+The column names still matter: master rules keep a sheet-shaped `row_data`, and every
+reader parses that through the same code.
+
 Sheet ID and GIDs are hardcoded in `src/lib/sheets.ts` (`SHEET_GID` enum). Both `config.ts` and `psc-config.ts` import from there. The mapping sheet (GID 0) has columns: `customer_id`, `driver_id`, `smart_driver_id` (comma-separated UUIDs), `first_name_last_name`, `shift_start`, `shift_end`, `bot_token`, `chat_id`, `alt_drop_off_id`, `dropoff_id`.
 
 `dropoff_id` scopes a row to ONE destination, so a branch can send to two places
@@ -634,6 +673,10 @@ not repeated every three minutes. Changing an hour is
 an edit + deploy; `scripts/psc-closing.test.mts` fails on any code that is not a PSC.
 
 ### A gap and an overlap are the same fault, so both are to-dos
+
+(The rule holds in both modes. The row-deletion and ARRAYFORMULA mechanics below are the
+sheet path's; in production a weekday fix writes Supabase through
+`master-config-actions.ts` — `editMasterConfig` / `bulkMasterConfig`.)
 
 Two fixed rules covering one branch at the same minute fail the job as `CLASH`,
 exactly as an uncovered hour fails it as `NO_DRIVER`. Overlaps used to be
