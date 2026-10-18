@@ -570,40 +570,59 @@ function etaOf(j: Job, etaMins: Record<string, number>): number | null {
   return Number.isNaN(done) ? null : done + mins * 60_000;
 }
 
-/** Other branches' runs on their way here: one line each — from, driver, status, ETA. */
+// The table's status column is narrow, so it says the state in two or three words.
+const SHORT_STATE: Record<number, string> = {
+  0: "Chờ điều phối", 1: "Đang đến lấy", 2: "Đang giao", 5: "Chờ giờ hẹn",
+};
+
+/** Other branches' runs on their way here, as a table — from, driver, status, ETA. A row
+ *  opens the trip. */
 function IncomingBlock({ jobs, etaMins, now, onOpen }: { jobs: Job[]; etaMins: Record<string, number>; now: number; onOpen: (j: Job) => void }) {
   const rows = jobs
     .map((j) => ({ j, eta: etaOf(j, etaMins), state: stateOf(j) }))
     .sort((a, b) => (a.eta ?? Infinity) - (b.eta ?? Infinity));
   return (
     <section aria-labelledby="qr-incoming" className="bg-white rounded-2xl shadow-sm mb-4 overflow-hidden">
-      <h3 id="qr-incoming" className="px-4 pt-3 pb-1 text-[12px] font-semibold text-slate-600">Đang đến từ PSC khác ({jobs.length})</h3>
-      <ul>
-        {rows.map(({ j, eta, state }) => {
-          const late = eta != null && now > eta;
-          return (
-            <li key={j.job_id} className="border-t border-slate-100">
-              <button onClick={() => onOpen(j)}
-                className="group w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-slate-50 active:bg-slate-100 transition-colors">
-                <span className="flex-1 min-w-0">
-                  <span className="block truncate text-sm font-semibold text-slate-800">
-                    PSC {placeLabel(pickupOf(j)?.customer_name ?? "")}
-                    <span className="font-normal text-slate-500"> · {driverText(j.driver?.last_name)}</span>
-                  </span>
-                  <span className={`inline-block mt-0.5 px-1.5 py-0.5 rounded-md text-[11px] font-semibold ${STATE_STYLE[state]}`}>{stateText(state)}</span>
-                </span>
-                {eta != null && (
-                  <span className="shrink-0 text-right">
-                    <span className={`block text-[15px] font-bold tabular-nums ${late ? "text-amber-700" : "text-slate-900"}`}>~{vnClock(eta)}</span>
-                    <span className={`block text-[11px] ${late ? "text-amber-700 font-semibold" : "text-slate-500"}`}>{late ? "Quá dự kiến" : "Dự kiến đến"}</span>
-                  </span>
-                )}
-                <ChevronRight aria-hidden className="w-4 h-4 text-slate-400 shrink-0 group-hover:text-slate-600 transition-colors" />
-              </button>
-            </li>
-          );
-        })}
-      </ul>
+      <h3 id="qr-incoming" className="px-4 pt-3 pb-2 text-[13px] font-semibold text-slate-700">Đang đến từ PSC khác ({jobs.length})</h3>
+      <table className="w-full table-fixed text-[13px]">
+        <thead>
+          <tr className="border-y border-slate-100 bg-slate-50 text-left text-[11px] font-semibold text-slate-500">
+            <th scope="col" className="w-[24%] py-1.5 pl-4 pr-1 font-semibold">Từ</th>
+            <th scope="col" className="py-1.5 px-1 font-semibold">Giao nhận mẫu</th>
+            <th scope="col" className="w-[26%] py-1.5 px-1 font-semibold">Trạng thái</th>
+            <th scope="col" className="w-[18%] py-1.5 pl-1 pr-4 text-right font-semibold">Dự kiến</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(({ j, eta, state }) => {
+            const late = eta != null && now > eta;
+            return (
+              <tr key={j.job_id} onClick={() => onOpen(j)}
+                className="cursor-pointer border-t border-slate-100 first:border-t-0 hover:bg-slate-50 active:bg-slate-100">
+                <td className="py-2.5 pl-4 pr-1 font-semibold text-slate-800">
+                  {/* The row is clickable for the mouse; this button is the keyboard's way in. */}
+                  <button onClick={(e) => { e.stopPropagation(); onOpen(j); }}
+                    className="text-left rounded outline-none focus-visible:ring-2 focus-visible:ring-blue-600">
+                    {placeLabel(pickupOf(j)?.customer_name ?? "")}
+                  </button>
+                </td>
+                <td className="py-2.5 px-1 truncate text-slate-600">{driverText(j.driver?.last_name)}</td>
+                <td className="py-2.5 px-1">
+                  <span className={`inline-block px-1.5 py-0.5 rounded-md text-[11px] font-semibold ${STATE_STYLE[state]}`}>{SHORT_STATE[state] ?? stateText(state)}</span>
+                </td>
+                <td className={`py-2.5 pl-1 pr-4 text-right tabular-nums ${late ? "text-amber-700" : "text-slate-900"}`}>
+                  {eta == null ? <span className="text-slate-400">—</span> : (
+                    <>
+                      <span className="block font-bold">{vnClock(eta)}</span>
+                      {late && <span className="block text-[10px] font-semibold">Quá giờ</span>}
+                    </>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </section>
   );
 }
@@ -1383,7 +1402,7 @@ export default function QrPage() {
                 onSendVia3pl={openVia3pl} onChangeDriver={openChangeDriver} />
             </div>
           ))}
-          <div className="space-y-3 lg:space-y-0 lg:grid lg:grid-cols-2 lg:gap-3">
+          <div className={`space-y-3 ${isLab ? "lg:space-y-0 lg:grid lg:grid-cols-2 lg:gap-3" : ""}`}>
             {active.map((j) => (
               <div key={j.job_id} id={`trip-${j.job_id}`} className={ring(j.job_id)}>
                 <TripCard job={j} code={code} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)}
