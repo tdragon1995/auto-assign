@@ -487,7 +487,11 @@ export async function updateCustomerAddress(
  *  when job_type_id is included. 2-stop callers can safely omit it. */
 export async function updateJobStops(
   jobId: number,
-  stops: { stop_id: number; stop_type_id: number; customer_id: string; customer_name?: string; note?: string; country_id?: number; delivery_windows?: { time_from: string; time_to: string }[] }[],
+  stops: { stop_id: number; stop_type_id: number; customer_id: string; customer_name?: string; note?: string; country_id?: number; delivery_windows?: { time_from: string; time_to: string }[];
+    /** REPLACES the stop's to-dos: echo every existing one WITH its stop_todo_id (kept
+     *  as is) plus the new ones without. A stop sent with no `todos` keeps its own —
+     *  both verified on throwaway jobs, prod 2026-10-18 (lib/kqvt.ts). */
+    todos?: { stop_todo_id?: number; todo_type_id: number; description: string; is_required?: boolean }[] }[],
   env: Env = "prod",
   jobTypeId?: number
 ): Promise<{ ok: boolean; status: number; body: unknown }> {

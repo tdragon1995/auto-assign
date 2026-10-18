@@ -3,9 +3,10 @@
  *
  *   GET  ?q=…  search the Cartrack customer directory (accent-insensitive, 15 hits)
  *   POST       { pickup, deliveries: [{ customer_id, kind, note, files }] }
- *              → 202 at once; then ONE trip per client, PSC → client, created
- *                UNASSIGNED with PSC_DELIVERY_LABEL so the engine leaves it to the
- *                dispatcher. Reference "D002→Mai Hoàng Anh_05:43" (short client name).
+ *              → 202 at once; then per client a ONE-STOP collect job at the PSC,
+ *                given to the client's driver — or a photo to-do added to the open
+ *                one for that client. The hand-over at the client: lib/kqvt.ts.
+ *                Reference "D002→Mai Hoàng Anh_05:43" (short client name).
  *
  * Photos/files ride as public links in the drop-off note, uploaded through the same
  * Cartrack carrier as "Cập nhật công" (lib/cartrack-files.ts). The /qr page is open
@@ -15,7 +16,10 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { BASE_URL, getHeaders, createJob, getCustomerById } from "@/lib/cartrack";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
-import { PSC_DELIVERY_LABEL, PICKUP_PHOTO_TODO } from "@/lib/job-filters";
+import { PSC_DELIVERY_LABEL } from "@/lib/job-filters";
+import { appendStopTodos, collectTodo, loadPending, pickCollector, savePending, type KqvtEntry, type KqvtItem } from "@/lib/kqvt";
+import { loadConfigFromSheets } from "@/lib/config";
+import { loadLeaveEntries } from "@/lib/leave-config";
 import { shortCode } from "@/lib/psc-dup";
 import { placeLabel } from "@/lib/place-label";
 import { indexCustomer, rankCustomers, type Customer, type Indexed } from "@/lib/customer-search";
@@ -153,33 +157,62 @@ export async function POST(req: NextRequest) {
       // One upload for the whole booking (one login, one lock), split back per client.
       // Only when there are files: the uploader refuses outright where it is not configured.
       const links = allFiles.length ? await uploadToCartrack(allFiles) : [];
+      // Today's roster or none, and an unreadable leave sheet is not an empty one: either
+      // missing → the collect job goes out driverless, for the dispatcher.
+      const [config, leave] = await Promise.all([
+        loadConfigFromSheets({ requireCurrentDay: true }).catch(() => null),
+        loadLeaveEntries().catch(() => null),
+      ]);
+      const pending = await loadPending();
       let li = 0;
       for (const d of deliveries) {
         const mine = links.slice(li, li += d.files.length);
         const full = await nameOf(d.customer_id);
         if (!full) { await failed(d.customer_id, "không có khách hàng này trên Cartrack"); continue; }
         const client = placeLabel(full);
-        const reference = `${psc}→${client.slice(0, 60)}_${hm}`;
-        const items = KINDS[d.kind].items;
-        const note = [`${items.join(" + ")}${d.note ? ` — ${d.note}` : ""}`, ...mine.map((u, i) => `Ảnh ${i + 1}: ${u}`)].join("\n");
-        sent = true;
-        const res = await createJob({
-          job_type_id: 1,
+        const item: KqvtItem = { text: KINDS[d.kind].items.join(" + "), note: d.note, links: mine };
+        const noteLine = [collectTodo(item, client), ...mine.map((u, i) => `Ảnh ${i + 1}: ${u}`)].join("\n");
+
+        // Same client, collect job not yet set off → add to it rather than make another.
+        // The NEWEST one: an older one that set off stays on the list until collected.
+        const open = pending.filter((e) => e.psc === route.pickup && e.client_id === d.customer_id && !e.holder)
+          .sort((a, b) => b.created_ms - a.created_ms)[0];
+        if (open) {
+          const r = await appendStopTodos(open.job_id, route.pickup, [collectTodo(item, client)], "prod", noteLine).catch(() => "failed" as const);
+          if (r === "ok") {
+            open.items.push(item);
+            await savePending(open);
+            await pushRunLog([{ ts: vnTimestamp(), level: "INFO", msg: `Job ${open.job_id} - thêm ${item.text} vào chuyến lấy KQ/VT | ${psc} → ${client}` }]).catch(() => {});
+            continue;
+          }
+          // Set off already, gone, or the write did not hold: a new collect job below.
+        }
+
+        const who = config && leave ? await pickCollector(config, leave, d.customer_id, route, "prod").catch(() => null) : null;
+        const payload = {
+          job_type_id: 3,
           schedule_type_id: 1,
-          reference_number: reference,
+          reference_number: `${psc}→${client.slice(0, 60)}_${hm}`,
           labels: [PSC_DELIVERY_LABEL],
-          stops: [
-            { stop_type_id: 1, customer_id: route.pickup, duration: 5, note, todos: [PICKUP_PHOTO_TODO] },
-            { stop_type_id: 2, customer_id: d.customer_id, duration: 10, note, todos: [] },
-          ],
-          items: items.map((description) => ({ description, weight: 0, item_type_id: 1, quantity: 1, tracking_number: "" })),
-        });
-        if (res.ok) {
-          await pushRunLog([{ ts: vnTimestamp(), level: "INFO", msg: `Job ${res.body?.data?.job_id} - ${KINDS[d.kind].text} chờ điều phối | ${psc} → ${client}` }]).catch(() => {});
-        } else {
+          stops: [{ stop_type_id: 3, customer_id: route.pickup, duration: 5, note: noteLine, todos: [{ todo_type_id: 2, description: collectTodo(item, client), is_required: true }] }],
+        };
+        sent = true;
+        let res = await createJob(who ? { ...payload, delivery_driver_id: who.driverId } : payload);
+        // A driver Cartrack refuses (4xx) costs the driver, not the booking.
+        if (!res.ok && who && res.status >= 400 && res.status < 500) res = await createJob(payload);
+        const jobId = res.ok ? Number(res.body?.data?.job_id) : 0;
+        if (!jobId) {
           console.error("[psc-delivery] create failed:", res.status, JSON.stringify(res.body).slice(0, 300));
           await failed(client, res.status >= 500 ? `chưa xác nhận được (${res.status}), kiểm tra trước khi tạo lại` : `Cartrack từ chối (${res.status})`);
+          continue;
         }
+        const entry: KqvtEntry = {
+          job_id: jobId, psc: route.pickup, psc_name: psc, client_id: d.customer_id, client_name: client,
+          items: [item], created_ms: Date.now(), collector: who?.driverId, collector_name: who?.name ?? undefined,
+        };
+        await savePending(entry);
+        pending.push(entry);
+        await pushRunLog([{ ts: vnTimestamp(), level: "INFO", msg: `Job ${jobId} - lấy ${item.text} tại PSC: ${who?.name ?? "chờ điều phối"} | ${psc} → ${client}` }]).catch(() => {});
       }
     } catch (e) {
       console.error("[psc-delivery] error:", e);

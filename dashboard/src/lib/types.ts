@@ -393,7 +393,8 @@ export type FailedReason =
   | "INVALID_DRIVER"  // broken driver_id in the sheet (#REF!, …)
   | "UNAVAILABLE"     // all ranked smart candidates on-break/offline
   | "DEACTIVATED"     // driver account deactivated in Cartrack (left the company)
-  | "NO_GPS";         // pickup or all candidates missing coordinates
+  | "NO_GPS"          // pickup or all candidates missing coordinates
+  | "KQVT_WAITING";   // PSC Kết quả/Vật tư not collected, or held with no visit, > 24h (lib/kqvt.ts)
 
 export interface FailedJob {
   job_id: number;

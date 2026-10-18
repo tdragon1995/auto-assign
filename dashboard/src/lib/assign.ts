@@ -32,6 +32,7 @@ import { haversineKm } from "./distance";
 import { roadDistancesToPoint, roadDistancesForPairs } from "./distance-cache";
 import { targetMinsFor } from "./tat";
 import { blockingNotes, isChamCong, isCompletedOrRejectedStop, isNoteApproved, DAYTIME_NON_BLOCKING, PSC_DELIVERY_LABEL } from "./job-filters";
+import { kqvtCycle, rankWithHolderFirst, type KqvtCycle } from "./kqvt";
 import { placeLabel } from "./place-label";
 import { stripDriverCode } from "./job-detail";
 import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, idleBand, isUnreachedAnchor, liveGpsRef, lastRealPositionRef, type RefStop, type RefLabel } from "./smart-rank";
@@ -1661,6 +1662,9 @@ export function isRollable(j: Job): boolean {
   // a day the schedule does not cover. (Job 34447974: Saturday's 10:30 Bình Lợi
   // Trung pickup rolled onto Sunday 13/09 and was bounced between drivers.)
   if ((j.labels ?? []).includes(SCHEDULE_JOB_LABEL)) return false;
+  // A KQ/VT collect job keeps its date and its driver: rolling would strip the driver
+  // the hand-over is tied to. Left waiting, it surfaces in Cần xử lý after 24h.
+  if ((j.labels ?? []).includes(PSC_DELIVERY_LABEL)) return false;
   const stops = j.stops ?? [];
   // Skip if the pickup sample is already collected. Re-assignment resets a
   // stop's activity, so rolling a job whose pickup is Hoàn thành (status 4)
@@ -2109,6 +2113,15 @@ export async function autoAssignCycle(
     await switchAssignedOffClosedPscs(assignedJobsToday, env, today, log).catch((e) =>
       log(`PSC closing sweep failed: ${String(e).slice(0, 120)}`, "WARN"),
     );
+  }
+
+  // KQ/VT hand-over (lib/kqvt.ts): note who collected at the PSC, hang the hand-over
+  // on the holder's pickup at the client, raise the 24h rows. Before the empty-list
+  // exit like the sweep above; one Redis read when nothing is waiting.
+  let kqvt: KqvtCycle = { holders: new Map(), afterAssign: async () => {} };
+  if (!onlyJobIds) {
+    kqvt = await kqvtCycle([...s2Jobs, ...(assignedJobsToday ?? []), ...(cycleS5 ?? [])], env, log, failedJobs)
+      .catch((e) => { log(`KQ/VT step failed: ${String(e).slice(0, 120)}`, "WARN"); return kqvt; });
   }
 
   if (jobs.length === 0) {
@@ -2623,6 +2636,7 @@ export async function autoAssignCycle(
                 ctName || (subFor ? driverId : driverDisplayName(smartMapping.first_name_last_name)) || driverId;
               const who = subFor ? `${driverName} (sub for ${subFor})` : driverName;
               log(`Job ${jobId} - SMART(1): ${who} | ${route}`, "OK");
+              await kqvt.afterAssign(job, driverId);
             } else if (isDriverUnavailable(body)) {
               // One smart driver, on-break/offline → recurs every cycle. Route to
               // Cần xử lý instead of spamming the live log (dropped by shouldStore).
@@ -2804,6 +2818,16 @@ export async function autoAssignCycle(
           return { d, sortDist, priority, label: ref.label, gpsKm: hkm, idleBand: idleBand(tiebreakTs, nowMin), workload, tiebreakTs, jobsDone, name, distLabel };
         });
         withGoong.sort(rankingComparator);
+        // The driver holding this client's KQ/VT goes first: the hand-over rides on
+        // this visit. An unavailable holder falls through to the ranking as usual.
+        {
+          const holder = customerId ? kqvt.holders.get(customerId) : undefined;
+          const ordered = rankWithHolderFirst(withGoong, holder, (x) => x.d.delivery_driver_id);
+          if (ordered !== withGoong) {
+            withGoong.splice(0, withGoong.length, ...ordered);
+            log(`Job ${jobId} - KQ/VT: ${driverDisplayName(`${ordered[0].d.first_name} ${ordered[0].d.last_name}`.trim())} đang giữ KQ/VT của khách → ưu tiên | ${route}`, "INFO");
+          }
+        }
 
         const top        = withGoong[0];
         const driverName = `${top.d.first_name} ${top.d.last_name}`.trim();
@@ -2874,6 +2898,7 @@ export async function autoAssignCycle(
               const tag = attempt > 0 ? `[#${attempt + 1}] ` : "";
               const who = subFor ? `${ctName || targetId} (sub for ${subFor}) | ${rankStr}` : rankStr;
               log(`Job ${jobId} - SMART ${tag}: ${who}${noteTag} | ${route}`, "OK");
+              await kqvt.afterAssign(job, targetId);
               assigned = true;
               break;
             } else if (isDriverUnavailable(body)) {
@@ -3077,6 +3102,7 @@ export async function autoAssignCycle(
           `Job ${jobId} - ${subFor ? `${respDriverName} (sub for ${subFor})` : respDriverName}${noteTag} | ${pickupName} → ${dropoffName}`,
           "OK"
         );
+        await kqvt.afterAssign(job, driverId);
 
         // Build route link
         const routeLink = buildGmapsRouteLink(pickupLat, pickupLon, dropoffLat, dropoffLon);

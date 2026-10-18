@@ -97,7 +97,7 @@ export function DeliveryBooking({ pickup }: { pickup: string }) {
 
       {sent.length > 0 ? (<>
         <div role="status" className="text-sm text-green-800 bg-green-50 border border-green-200 rounded-xl p-3 space-y-1">
-          <p className="font-bold flex items-center gap-1.5"><Check aria-hidden className="w-4 h-4" />Đã gửi {sent.length} chuyến — chờ điều phối</p>
+          <p className="font-bold flex items-center gap-1.5"><Check aria-hidden className="w-4 h-4" />Đã gửi {sent.length} yêu cầu</p>
           {sent.map((n, i) => <p key={i} className="pl-5.5">{n}</p>)}
         </div>
         <button onClick={() => setSent([])}

@@ -68,6 +68,7 @@ const REASON_META: Record<
   INVALID_DRIVER: { label: "Sai driver_id (Sheet)", tone: "red", order: 7 },
   DEACTIVATED:    { label: "Tài khoản tài xế đã bị khoá", tone: "red", order: 8 },
   NO_GPS:         { label: "Thiếu toạ độ GPS", tone: "red", order: 9 },
+  KQVT_WAITING:   { label: "KQ/VT chờ giao quá 24h", tone: "amber", order: 10 },
 };
 
 /**
@@ -347,17 +348,21 @@ function FailedRow({
                 Hẹn giờ
               </Button>
             )}
-            <Button
-              size="sm"
-              variant="outline"
-              className="text-[11px] h-6 px-2 shrink-0"
-              onClick={() => {
-                setShowSchedule(false);
-                setShowDriverSelect(true);
-              }}
-            >
-              Gán thủ công
-            </Button>
+            {/* A KQ/VT waiting row names a collect job that is done or already out with
+                a driver — there is nothing to assign; the fix is a visit to the client. */}
+            {job.reason !== "KQVT_WAITING" && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-[11px] h-6 px-2 shrink-0"
+                onClick={() => {
+                  setShowSchedule(false);
+                  setShowDriverSelect(true);
+                }}
+              >
+                Gán thủ công
+              </Button>
+            )}
           </>
         )}
       </div>
