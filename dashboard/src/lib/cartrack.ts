@@ -1618,6 +1618,10 @@ const ACTIVE_STOP_STATUSES = ["picked_up", "arrived", "started"];
  *  sends it — captured from a real request. NOT "pending": that name was tried first,
  *  and Cartrack answered as if the filter did not contain it. */
 const NOT_STARTED_STOP_STATUS = "not_started";
+/** Stops whose samples are still at the pickup — not started, on the way, arrived: the
+ *  delivery table's stopStatus=1,2,3. What the /qr duplicate guard asks for; it would
+ *  throw every "picked_up" row away anyway (isBlockingPickupStop). */
+export const UNCOLLECTED_STOP_STATUSES = [NOT_STARTED_STOP_STATUS, "started", "arrived"];
 
 /** Today's unfinished stops matching free text — not started, on the way, arrived or
  *  picked up — through the same search box as Cartrack's delivery table
@@ -1628,8 +1632,11 @@ const NOT_STARTED_STOP_STATUS = "not_started";
  *  One RPC per call, made only when someone presses Tìm in Điều chỉnh job. Stops come back flat in the REST
  *  spelling (see getStopsByLabels); the caller groups by job_id. prod-only like every
  *  fleetweb read; null on any failure so the caller keeps its own fallbacks. */
+export async function searchActiveStops(
+  dateVn: string, text: string, env: Env = "prod",
+  statuses: string[] = [NOT_STARTED_STOP_STATUS, ...ACTIVE_STOP_STATUSES],
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function searchActiveStops(dateVn: string, text: string, env: Env = "prod"): Promise<any[] | null> {
+): Promise<any[] | null> {
   if (env !== "prod") return null;
   const call = (stopStatus: string[]) => jsonRpc<{ stops?: unknown }>(
     "delivery_get_stops_list",
@@ -1648,7 +1655,7 @@ export async function searchActiveStops(dateVn: string, text: string, env: Env =
     },
     { env }
   );
-  const out = await call([NOT_STARTED_STOP_STATUS, ...ACTIVE_STOP_STATUSES]);
+  const out = await call(statuses);
   if (!out.ok) return null;
   const stops = out.result?.stops;
   if (!Array.isArray(stops)) return null;

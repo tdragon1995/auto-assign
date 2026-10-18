@@ -136,5 +136,14 @@ check("an empty feed retires nothing", retirePending([card(1)], []).length === 1
 check("a null id in the feed retires nothing",
   retirePending([card(1)], [null, undefined]).length === 1);
 
+// ── 4. The duplicate search asks only for samples still at the pickup ────────────
+// stopStatus 1, 2, 3 in the delivery table's words. A picked-up trip can never block a
+// booking (isBlockingPickupStop), so asking for "picked_up" only fetched rows to discard.
+
+const { UNCOLLECTED_STOP_STATUSES } = await import("../src/lib/cartrack");
+check("the duplicate search asks for not started, on the way and arrived",
+  JSON.stringify([...UNCOLLECTED_STOP_STATUSES].sort()) === JSON.stringify(["arrived", "not_started", "started"]));
+check("…and not for picked-up stops", !UNCOLLECTED_STOP_STATUSES.includes("picked_up"));
+
 console.log(failures ? `\n${failures} FAILED\n` : "\nall good\n");
 process.exitCode = failures ? 1 : 0;

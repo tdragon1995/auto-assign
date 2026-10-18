@@ -627,38 +627,69 @@ function IncomingBlock({ jobs, etaMins, now, onOpen }: { jobs: Job[]; etaMins: R
   );
 }
 
-// Back-office runners to call when no branch driver is working. Hand-kept: change here
-// when the people or their days change.
-const BACKUP_CONTACTS = [
-  { name: "Anh Tú", phone: "0703977160", hours: "T2 → T7: 6:00–15:00" },
-  { name: "Chị Hoa", phone: "0908066033", hours: "T2, T4, T6: 15:00–21:00" },
-  { name: "Anh Phát", phone: "0908064890", hours: "T3, T5, T7: 15:00–21:00 · CN: 7:00–15:00" },
+// Who receives samples at D001 — the recipient a branch types into the Grab/Be app when
+// it sends a trip to the lab. Hand-kept: change here when the people or their days change.
+// days: 0 = Sunday … 6 = Saturday; hours in VN time, end exclusive.
+const D001_RECEIVERS = [
+  { name: "Anh Tú", phone: "0703977160", hours: "T2 → T7: 6:00–15:00", slots: [{ days: [1, 2, 3, 4, 5, 6], from: 6, to: 15 }] },
+  { name: "Chị Hoa", phone: "0908066033", hours: "T2, T4, T6: 15:00–21:00", slots: [{ days: [1, 3, 5], from: 15, to: 21 }] },
+  { name: "Anh Phát", phone: "0908064890", hours: "T3, T5, T7: 15:00–21:00 · CN: 7:00–15:00",
+    slots: [{ days: [2, 4, 6], from: 15, to: 21 }, { days: [0], from: 7, to: 15 }] },
 ];
 const fmtPhone = (p: string) => p.replace(/^(\d{4})(\d{3})(\d{3})$/, "$1 $2 $3");
 
-/** In place of "Chỉ định GNM" when every driver rostered for the route is on leave:
- *  Grab/Be first, then the back-office runners, each a tap to call. */
-function NoDriverBlock({ onGrab }: { onGrab: () => void }) {
+/** The D001 receivers, whoever is on now first and marked, each number one tap to copy
+ *  into the Grab/Be app. */
+function D001Receivers() {
+  // Read once when shown: who is on duty does not need to tick while the sheet is open.
+  const [now] = useState(() => {
+    const vn = new Date(Date.now() + 7 * 3_600_000);
+    return { day: vn.getUTCDay(), hour: vn.getUTCHours() + vn.getUTCMinutes() / 60 };
+  });
+  const [copied, setCopied] = useState("");
+  const onDuty = (r: (typeof D001_RECEIVERS)[number]) =>
+    r.slots.some((x) => x.days.includes(now.day) && now.hour >= x.from && now.hour < x.to);
+  const list = [...D001_RECEIVERS].sort((a, b) => Number(onDuty(b)) - Number(onDuty(a)));
+  const copy = async (phone: string) => {
+    try { await navigator.clipboard.writeText(phone); setCopied(phone); setTimeout(() => setCopied(""), 2000); } catch {}
+  };
   return (
-    <div className="mt-3 pt-3 border-t border-slate-100">
-      <p className="text-[13px] font-semibold text-amber-700 mb-2">Giao Nhận Mẫu của chi nhánh đang nghỉ lúc này.</p>
+    <div>
+      <p className="mb-1 text-[12px] font-semibold text-slate-600">Người nhận mẫu tại D001 — điền vào app Grab/Be:</p>
+      <ul className="divide-y divide-slate-100 rounded-xl border border-slate-200">
+        {list.map((r) => {
+          const on = onDuty(r);
+          return (
+            <li key={r.phone} className={`flex items-center gap-3 px-3 py-2.5 ${on ? "bg-teal-50" : ""}`}>
+              <span className="flex-1 min-w-0">
+                <span className="flex flex-wrap items-center gap-x-1.5 text-sm font-bold text-slate-800">
+                  {r.name} <span className="font-semibold text-slate-700 tabular-nums">{fmtPhone(r.phone)}</span>
+                  {on && <span className="px-1.5 py-0.5 rounded-md bg-teal-600 text-[10px] font-bold text-white">Đang trực</span>}
+                </span>
+                <span className="block text-[11px] text-slate-500">{r.hours}</span>
+              </span>
+              <button onClick={() => copy(r.phone)} aria-label={`Sao chép số của ${r.name}`}
+                className="shrink-0 min-h-9 px-2.5 rounded-lg text-[12px] font-bold text-teal-700 border border-teal-200 active:bg-teal-50">
+                {copied === r.phone ? "Đã chép" : "Sao chép"}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+/** In place of "Chỉ định GNM" when every driver rostered for the route is on leave:
+ *  Grab/Be, and — for a trip to the lab — who to name as the receiver there. */
+function NoDriverBlock({ onGrab, toLab }: { onGrab: () => void; toLab: boolean }) {
+  return (
+    <div className="mt-3 pt-3 border-t border-slate-100 space-y-3">
+      <p className="text-[13px] font-semibold text-amber-700">Giao Nhận Mẫu của chi nhánh đang nghỉ lúc này.</p>
       <button onClick={onGrab} className="w-full min-h-12 inline-flex items-center justify-center gap-2 rounded-xl text-[13px] font-bold text-white bg-teal-600 active:bg-teal-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600">
         <Bike aria-hidden className="w-4 h-4" />Gửi mẫu qua Grab/Be/XanhSM/Ahamove
       </button>
-      <p className="mt-3 mb-1 text-[12px] font-semibold text-slate-500">Hoặc gọi hỗ trợ:</p>
-      <ul className="divide-y divide-slate-100 rounded-xl border border-slate-200">
-        {BACKUP_CONTACTS.map((c) => (
-          <li key={c.phone}>
-            <a href={`tel:${c.phone}`} className="flex items-center gap-3 px-3 py-2.5 active:bg-slate-50">
-              <span className="flex-1 min-w-0">
-                <span className="block text-sm font-bold text-slate-800">{c.name} <span className="font-semibold text-blue-700 tabular-nums">{fmtPhone(c.phone)}</span></span>
-                <span className="block text-[11px] text-slate-500">{c.hours}</span>
-              </span>
-              <Phone aria-hidden className="w-4 h-4 text-blue-700 shrink-0" />
-            </a>
-          </li>
-        ))}
-      </ul>
+      {toLab && <D001Receivers />}
     </div>
   );
 }
@@ -747,7 +778,7 @@ function TripCard({ job, code, notes, noDriver = false, onOpen, onCancel, onSend
       {/* Outside the card's open-button: a button inside a button is invalid, and the
           driver action must not also open the trip sheet. */}
       {state === 0 && changeDriverEligible && noDriver ? (
-        <NoDriverBlock onGrab={() => onSendVia3pl(target)} />
+        <NoDriverBlock onGrab={() => onSendVia3pl(target)} toLab={/\bD001$/.test(d?.customer_name ?? "")} />
       ) : state === 0 && changeDriverEligible ? (
         <div className="mt-3 pt-3 border-t border-slate-100">
           <button onClick={() => onChangeDriver(change)} className={PICK_CTA}>Chỉ định GNM</button>
@@ -814,7 +845,7 @@ function PendingCard({ req, pickup, dropoff, noDriver = false, onCancel, onSendV
       {req.driver_name ? (
         <DriverRow name={driverText(req.driver_name)} onChange={() => onChangeDriver(change)} />
       ) : noDriver ? (
-        <NoDriverBlock onGrab={() => onSendVia3pl(target)} />
+        <NoDriverBlock onGrab={() => onSendVia3pl(target)} toLab={to === "D001"} />
       ) : (
         <div className="mt-3 pt-3 border-t border-slate-100">
           <button onClick={() => onChangeDriver(change)} className={PICK_CTA}>Chỉ định GNM</button>
@@ -1294,7 +1325,18 @@ export default function QrPage() {
         return [{ j, imgs, at }];
       }).sort((a, b) => (b.at || 0) - (a.at || 0))
     : [];
-  const active = listJobs.filter((j) => stateOf(j) !== 3 && inScope(j));
+  const running = listJobs.filter((j) => stateOf(j) !== 3 && inScope(j));
+  // A branch's own requests are the answer to the button it just pressed, so they sit
+  // right under it, above the branch's list. (The lab books nothing.)
+  const ownRequests = isLab ? [] : running.filter((j) => pickupOf(j)?.customer_id === code);
+  const active = isLab ? running : running.filter((j) => pickupOf(j)?.customer_id !== code);
+  const tripCard = (j: Job) => (
+    <div key={j.job_id} id={`trip-${j.job_id}`} className={ring(j.job_id)}>
+      <TripCard job={j} code={code} notes={notes[j.job_id]} noDriver={noDriverFor(pickupOf(j)?.customer_id, dropoffOf(j)?.customer_id)} onOpen={() => setSheetJob(j)}
+        onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl}
+        onChangeDriver={openChangeDriver} />
+    </div>
+  );
   const done = listJobs.filter((j) => stateOf(j) === 3 && inScope(j));
   const q = norm(doneQuery);
   const doneShown = q
@@ -1342,6 +1384,18 @@ export default function QrPage() {
           <p role="alert" className="mb-3 px-3 py-2 rounded-xl text-[12px] font-semibold text-amber-700 bg-amber-50 border border-amber-200">
             Không tải được ghi chú giao nhận. Mở từng chuyến để xem.
           </p>
+        )}
+
+        {!isLab && ((isToday && pendingShown.length > 0) || ownRequests.length > 0) && (
+          <div className="space-y-3 mb-5">
+            {isToday && pendingShown.map((p) => (
+              <div key={p.job_id} id={`trip-${p.job_id}`} className={ring(Number(p.job_id))}>
+                <PendingCard req={p} pickup={route.pickup} dropoff={route.dropoff} noDriver={noDriverFor(route.pickup, route.dropoff)} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }}
+                  onSendVia3pl={openVia3pl} onChangeDriver={openChangeDriver} />
+              </div>
+            ))}
+            {ownRequests.map(tripCard)}
+          </div>
         )}
 
         {/* On a PC: drivers in a side column, the gallery first on the right — picking a
@@ -1420,10 +1474,9 @@ export default function QrPage() {
                 ))}
               </div>}
             </div>
-            {loaded && !loading && gallery.length === 0 && (
-              <p className="text-sm text-slate-600 py-2">{windowed
-                ? `Chưa có mẫu nào giao trong ${GALLERY_WINDOWS.find((w) => w.mins === galleryMins)?.label} qua.`
-                : `${driverName} chưa có ảnh mẫu${isToday ? " hôm nay" : " ngày này"}.`}</p>
+            {/* Only for a picked driver (D001): an empty time window says nothing worth a line. */}
+            {loaded && !loading && gallery.length === 0 && !windowed && (
+              <p className="text-sm text-slate-600 py-2">{driverName} chưa có ảnh mẫu{isToday ? " hôm nay" : " ngày này"}.</p>
             )}
             <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
               {gallery.map(({ j, imgs, at }) => {
@@ -1465,27 +1518,10 @@ export default function QrPage() {
         )}
 
         <div className="space-y-3">
-          {isToday && !driverId && pendingShown.map((p) => (
-            <div key={p.job_id} id={`trip-${p.job_id}`} className={ring(Number(p.job_id))}>
-              <PendingCard req={p} pickup={route.pickup} dropoff={route.dropoff} noDriver={noDriverFor(route.pickup, route.dropoff)} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }}
-                onSendVia3pl={openVia3pl} onChangeDriver={openChangeDriver} />
-            </div>
-          ))}
           <div className={`space-y-3 ${isLab ? "lg:space-y-0 lg:grid lg:grid-cols-2 lg:gap-3" : ""}`}>
-            {active.map((j) => (
-              <div key={j.job_id} id={`trip-${j.job_id}`} className={ring(j.job_id)}>
-                <TripCard job={j} code={code} notes={notes[j.job_id]} noDriver={noDriverFor(pickupOf(j)?.customer_id, dropoffOf(j)?.customer_id)} onOpen={() => setSheetJob(j)}
-                  onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl}
-                  onChangeDriver={openChangeDriver} />
-              </div>
-            ))}
+            {active.map(tripCard)}
           </div>
           {loading && !jobs.length && <p className="text-sm text-slate-600 py-2">Đang tải…</p>}
-          {/* Each line claims only what was looked up: the branch's trips where the whole
-              list is read, this device's bookings elsewhere. */}
-          {!loading && !pendingShown.length && !active.length && loaded && (
-            <p className="text-sm text-slate-600 py-2">Không có chuyến nào đang chạy{isToday ? "" : " ngày này"}.</p>
-          )}
           {done.length > 0 && (
             <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
               <p className="px-4 pt-3 pb-1 text-[12px] font-semibold text-slate-600">Đã xong ({done.length})</p>
@@ -1543,6 +1579,7 @@ export default function QrPage() {
               <p className="text-xs text-slate-500 font-semibold break-all">{via3plTarget.reference}</p>
               <p className="text-xs text-slate-500">Chuyến sẽ được gán cho Giao Nhận Mẫu và đánh dấu hoàn thành. Hành động này không thể hoàn tác.</p>
             </div>
+            {/→D001(_|$)/.test(via3plTarget.reference) && <D001Receivers />}
             <div className="space-y-1.5">
               <label htmlFor="batch-input" className="block text-xs font-semibold text-slate-700">
                 Mã Batch (mỗi dòng một mã, VD: B006260628101037)

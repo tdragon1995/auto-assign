@@ -1,4 +1,4 @@
-import { searchActiveStops, type Env } from "./cartrack";
+import { searchActiveStops, UNCOLLECTED_STOP_STATUSES, type Env } from "./cartrack";
 import { isBlockingPickupStop, isFarWindowPickup } from "./job-filters";
 import { vnMinutesSinceMidnight } from "./time";
 import { PSC_VIA_LABEL } from "./via-legs";
@@ -29,7 +29,8 @@ export async function livePairDuplicate(
   pickupCode: string, dropoffCode: string, today: string, env: Env,
 ): Promise<PscDupHit | null | "unavailable"> {
   const prefix = `${pickupCode}→${dropoffCode}`;
-  const stops = await searchActiveStops(today, prefix, env).catch(() => null);
+  // Uncollected stops only (1, 2, 3): a picked-up trip can never block, so it is not fetched.
+  const stops = await searchActiveStops(today, prefix, env, UNCOLLECTED_STOP_STATUSES).catch(() => null);
   if (!stops) return "unavailable";
   const nowMin = vnMinutesSinceMidnight();
   const hit = stops.find((s) =>
