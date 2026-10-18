@@ -790,7 +790,9 @@ export default function QrPage() {
   const [loaded, setLoaded] = useState(false);
   const [pending, setPending] = useState<PendingReq[]>([]);
   const [seen, setSeen] = useState<Set<number>>(new Set());
-  // Every branch sees every trip touching it (the D001 view, since 2026-10-18).
+  // Every branch sees every trip touching it (the D001 view, since 2026-10-18). Only the
+  // lab gets the driver chips and the wide PC layout; a branch's list is short.
+  const isLab = (route?.psc_pickup ?? "").replace(/^BRA\s*-\s*/i, "") === "D001";
   // Narrow the list to one driver. A filter over trips already loaded — no request of its own.
   const [driverId, setDriverId] = useState("");
   // Gallery window. Staff pick it; this device remembers the pick.
@@ -1175,7 +1177,7 @@ export default function QrPage() {
   const listJobs = jobs.filter((j) => !isIncoming(j));
   // The drivers on today's list, busiest first. (NĐTP drop-offs never reach D001's list:
   // the server leaves them out.) A trip going elsewhere is named "pickup → drop-off".
-  const driverChips = [...listJobs.reduce((m, j) => {
+  const driverChips = !isLab ? [] : [...listJobs.reduce((m, j) => {
         if (!j.delivery_driver_id) return m;
         const c = m.get(j.delivery_driver_id) ?? { name: driverText(j.driver?.last_name), n: 0, dests: new Set<string>() };
         const d = dropoffOf(j);
@@ -1211,7 +1213,7 @@ export default function QrPage() {
 
   return (
     <div className="min-h-screen bg-slate-100 flex justify-center">
-      <div className="w-full px-4 pb-12 max-w-[1280px] lg:px-6">
+      <div className={`w-full px-4 pb-12 ${isLab ? "max-w-[1280px] lg:px-6" : "max-w-[430px]"}`}>
 
         <header className="pt-5 pb-3.5 px-1">
           <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">{route.psc_pickup.replace(/^BRA\s*-\s*/i, "PSC ")}</h1>
