@@ -79,13 +79,13 @@ export async function GET(req: NextRequest) {
   try {
     const touches = (j: { stops?: { customer_id?: string | null; stop_type_id?: number; customer_name?: string }[] | null }) =>
       (j.stops ?? []).some((s) => s.customer_id === code) || (code === LAB_CUSTOMER_ID && isLabWatchedClient(j));
-    // D001 does not show trips going to an NĐTP drop-off at all — they have /ndtp — nor
-    // trips sitting on a proxy driver (parked until their time, or staged for rejection).
+    // No page shows a trip sitting on a proxy driver — parked until its appointment
+    // ("Chờ tới giờ hẹn"), or staged for rejection; it appears once released to a real
+    // driver. D001 also drops trips going to an NĐTP drop-off — they have /ndtp.
     const listed = (j: { job_status_id?: number; delivery_driver_id?: string | null; stops?: { stop_type_id?: number; customer_name?: string | null }[] | null }) =>
       SHOWN_STATUSES.includes(j.job_status_id ?? 0)
-      && !(code === LAB_CUSTOMER_ID && (
-        isProxyDriver(j.delivery_driver_id ?? "")
-        || /NDTP/i.test((j.stops ?? []).find((s) => s.stop_type_id === 2)?.customer_name ?? "")));
+      && !isProxyDriver(j.delivery_driver_id ?? "")
+      && !(code === LAB_CUSTOMER_ID && /NDTP/i.test((j.stops ?? []).find((s) => s.stop_type_id === 2)?.customer_name ?? ""));
     const ids = (req.nextUrl.searchParams.get("ids") ?? "").split(",").map(Number).filter(Number.isInteger).slice(0, 50);
     // The whole branch (every /qr page since 2026-10-18), or only the given ids.
     const wholeBranch = req.nextUrl.searchParams.get("all") === "1" || ids.length === 0;
