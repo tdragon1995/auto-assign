@@ -501,7 +501,13 @@ These are the things most likely to burn a future agent working on this codebase
     `pay.ts`. Start = later of the shift start and the EARLIER of the check-in
     ARRIVAL and reaching the first pickup (`pay_jobs.pickup_arrived_ts`, stored
     from 2026-10-16; older rows fall back to the pickup's completion) — a driver
-    who taps in after starting work is paid from the work, as payroll does. End: no trips → the check-out tap, capped at shift end; trips but no check-out → the
+    who taps in after starting work is paid from the work, as payroll does. Past the shift end the last ride is paid only until it should have
+    arrived (`last_leg_due_ts` + 15 min hand-over), and a trip completed more than
+    5 min after the check-out adds no hours (km still paid) — supervisor,
+    2026-10-19, against padded hours. Lương PT's "Nghi vấn" lists the days with a
+    sign of it (slow last ride, completed after check-out, geofence opened);
+    an admin-completed drop-off (`pay_jobs.dropoff_force_completed`, from
+    Cartrack's isForceCompleted, stored from 2026-10-19) is never suspicious. End: no trips → the check-out tap, capped at shift end; trips but no check-out → the
     last trip; both → later of the tap-out and the last trip, never past the
     tap-out just because the shift was still running (supervisor, 2026-10-09).
     A tap stamped on another date is ignored, as trips are. Two windows at most

@@ -115,6 +115,20 @@ check("a PT shift continuing a DC trip past its end starts at the DC shift end",
 const notCont = workedMinutes([punch("out", "20:06")], facts([["19:00", "19:30"]], "19:46", "20:04"));
 check("…without it, at the first PT pickup", notCont.minutes === 18, String(notCont.minutes));
 
+// Phan Thành Được 24/09: shift 17:00–19:30, last ride D016 → D007 due 19:30,
+// completed 20:54 → paid to 19:45 (due + 15 min hand-over), not 20:54.
+const dragged = workedMinutes([punch("in", "17:00"), punch("out", "20:56")],
+  { ...facts([["17:00", "19:30"]], "17:05", "20:54"), lastLegDueAt: at("19:30"), taskEnds: [at("18:00"), at("20:54")] });
+check("a last ride that dragged past its due time is paid to due + 15 min", dragged.minutes === 165, String(dragged.minutes));
+// Đỗ Hữu Hùng 04/10: due 20:00, completed 20:06 → within the slack, paid to 20:06.
+const handover = workedMinutes([punch("in", "06:00")], { ...facts([["06:00", "17:30"]], "07:00", "20:06"), lastLegDueAt: at("20:00") });
+check("a hand-over inside the 15-min slack is paid in full", handover.minutes === 846, String(handover.minutes));
+// Nguyễn Quang Thụy 05/10: shift 17:00–20:00, out 20:34, trips to 20:01, then one
+// completed at 21:41 → hours stop with the trips before the check-out.
+const afterOut = workedMinutes([punch("in", "16:36"), punch("out", "20:34")],
+  { ...facts([["17:00", "20:00"]], "18:30", "21:41"), taskEnds: [at("19:10"), at("20:01"), at("21:41")] });
+check("a trip completed after the check-out adds no hours", afterOut.minutes === 181, String(afterOut.minutes));
+
 const noTrips = workedMinutes([punch("in", "14:58"), punch("out", "21:06")], facts([["15:00", "21:00"]], null, null));
 check("no trips → paid to the check-out tap, capped at shift end", noTrips.minutes === 360, String(noTrips.minutes));
 const noTripsEarly = workedMinutes([punch("in", "14:58"), punch("out", "20:30")], facts([["15:00", "21:00"]], null, null));

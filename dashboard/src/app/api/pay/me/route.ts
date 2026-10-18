@@ -62,6 +62,13 @@ interface DailyRow {
   first_pickup_ts: string | null;
   last_dropoff_ts: string | null;
   first_away_ts: string | null;
+  /** Same-date drop-offs, the last ride's due time and its actual vs normal time,
+   *  and whether an admin completed the last drop-off (v_pay_daily). */
+  dropoff_ts?: string[] | null;
+  last_leg_due_ts?: string | null;
+  last_leg_tat?: number | null;
+  last_leg_target?: number | null;
+  last_dropoff_forced?: boolean | null;
 }
 
 const timeFmt = new Intl.DateTimeFormat("en-GB", {
@@ -169,7 +176,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "Ngày không hợp lệ." }, { status: 400 });
     }
     try {
-      const [jobs, punches, inputs] = await Promise.all([
+      const [jobs, punches, inputs, dayRow] = await Promise.all([
         sbSelectAll<PayJob>(
           "pay_jobs",
           `select=*&driver_id=eq.${driverId}&trip_date=eq.${askedDate}`,
@@ -181,6 +188,7 @@ export async function GET(req: NextRequest) {
           "id.asc",
         ),
         loadPayDayInputs(askedDate, askedDate, driverId),
+        sbSelectAll<DailyRow>("v_pay_daily", `select=last_leg_due_ts&driver_id=eq.${driverId}&trip_date=eq.${askedDate}`, "trip_date.asc"),
       ]);
       const key = dayKey(driverId, askedDate);
 
@@ -200,6 +208,8 @@ export async function GET(req: NextRequest) {
           placeName(j.dropoff_name) === "D001" ? null : j.dropoff_completed_ts,
         ]))[0] ?? null,
         continuedAt: inputs.continued.get(key) ?? null,
+        taskEnds: stamps(jobs.map((j) => j.dropoff_completed_ts)),
+        lastLegDueAt: dayRow[0]?.last_leg_due_ts ?? null,
         correction: inputs.approved.get(key) ?? null,
       };
       const km = jobs.reduce((sum, j) => sum + num(j.distance_km), 0);
@@ -294,6 +304,8 @@ export async function GET(req: NextRequest) {
         lastTaskAt: taskByDay.get(d)?.last_dropoff_ts ?? null,
         firstAwayAt: taskByDay.get(d)?.first_away_ts ?? null,
         continuedAt: inputs.continued.get(dayKey(driverId, d)) ?? null,
+        taskEnds: taskByDay.get(d)?.dropoff_ts ?? [],
+        lastLegDueAt: taskByDay.get(d)?.last_leg_due_ts ?? null,
         correction: inputs.approved.get(dayKey(driverId, d)) ?? null,
       }, kmByDay.get(d) ?? 0, jobsByDay.get(d) ?? 0, punchesByDay.get(d) ?? [], unpricedByDay.get(d) ?? 0,
         inputs.latest.get(dayKey(driverId, d)) ?? null),

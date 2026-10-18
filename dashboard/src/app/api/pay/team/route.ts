@@ -25,7 +25,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { sbSelectAll, supabaseConfigured } from "@/lib/supabase-rest";
 import { masterDriverNames } from "@/lib/master-store";
 import { employmentOf } from "@/lib/driver-label";
-import { paidDay, hoursPayFor, kmPayFor, suggestedWindow, RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch, type PayJob, hourPayFor, BO_RATE_PER_HOUR_VND, lateStartMins, LATE_START_FLAG_MIN, tripOverMins } from "@/lib/pay";
+import { paidDay, hoursPayFor, kmPayFor, suggestedWindow, RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch, type PayJob, hourPayFor, BO_RATE_PER_HOUR_VND, lateStartMins, LATE_START_FLAG_MIN, tripOverMins, AFTER_OUT_MIN } from "@/lib/pay";
 import { payrollPeriod } from "@/lib/pay-period";
 import { staffCode } from "@/lib/display-names";
 import { loadPayDayInputs, dayKey } from "@/lib/pay-days";
@@ -40,7 +40,7 @@ interface DayLine {
   date: string; shift: string; tap_in: string | null; tap_out: string | null;
   first_task: string | null; last_task: string | null; paid_from: string | null; paid_to: string | null;
   worked_mins: number; bo_mins: number; multiplier: number; jobs: number; km: number;
-  hour_pay: number; km_pay: number; no_shift: boolean; corrected: boolean; pending: boolean; late_mins: number; trip_over_mins: number;
+  hour_pay: number; km_pay: number; no_shift: boolean; corrected: boolean; pending: boolean; late_mins: number; suspect: string[]; admin_done: boolean;
 }
 
 interface DailyRow {
@@ -53,6 +53,13 @@ interface DailyRow {
   first_pickup_ts: string | null;
   last_dropoff_ts: string | null;
   first_away_ts: string | null;
+  /** Same-date drop-offs, the last ride's due time and its actual vs normal time,
+   *  and whether an admin completed the last drop-off (v_pay_daily). */
+  dropoff_ts?: string[] | null;
+  last_leg_due_ts?: string | null;
+  last_leg_tat?: number | null;
+  last_leg_target?: number | null;
+  last_dropoff_forced?: boolean | null;
 }
 
 
@@ -97,7 +104,7 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const [daily, punches, sealed, legsDaily, inputs] = await Promise.all([
+    const [daily, punches, sealed, legsDaily, inputs, geofence] = await Promise.all([
       sbSelectAll<DailyRow>(
         "v_pay_daily",
         `select=*&trip_date=gte.${from}&trip_date=lte.${to}`,
@@ -127,7 +134,13 @@ export async function GET(req: NextRequest) {
       ),
       // Shifts (Lịch ca) and approved "cập nhật công" — see lib/pay-days.ts.
       loadPayDayInputs(from, to),
+      // "Mở Geofence": a stop unlocked to be completed away from its location.
+      sbSelectAll<{ driver_id: string | null; occurred_at: string }>(
+        "master_action_logs",
+        `select=driver_id,occurred_at&action=eq.${encodeURIComponent("Mở Geofence Log")}&occurred_at=gte.${from}T00:00:00%2B07:00&occurred_at=lte.${to}T23:59:59%2B07:00`,
+        "id.asc"),
     ]);
+    const geofenceDays = new Set(geofence.filter((g) => g.driver_id).map((g) => dayKey(g.driver_id!, vnDate(new Date(g.occurred_at)))));
     const shiftsImported = inputs.payrollImported;
     const pendingCorrections = inputs.corrections.filter((c) => c.status === "pending").length;
     const realKm = new Map<string, number>();
@@ -150,7 +163,7 @@ export async function GET(req: NextRequest) {
       /** Punches bucketed BY DAY: the hours rule is a within-day rule. */
       byDay: Map<string, PayPunch[]>;
       /** First pickup / last dropoff per day, for the hours rule. */
-      tasks: Map<string, { first: string | null; last: string | null; away: string | null; km: number; jobs: number }>;
+      tasks: Map<string, { first: string | null; last: string | null; away: string | null; km: number; jobs: number; row: DailyRow }>;
       /** Days with any activity at all — a day worked with no dispatch counts. */
       days: Set<string>;
     }
@@ -167,7 +180,7 @@ export async function GET(req: NextRequest) {
       e.km += num(d.total_km);
       e.jobs += d.jobs_total;
       e.unpriced += d.jobs_total - d.jobs_priced;
-      e.tasks.set(d.trip_date, { first: d.first_pickup_ts, last: d.last_dropoff_ts, away: d.first_away_ts, km: num(d.total_km), jobs: d.jobs_total });
+      e.tasks.set(d.trip_date, { first: d.first_pickup_ts, last: d.last_dropoff_ts, away: d.first_away_ts, km: num(d.total_km), jobs: d.jobs_total, row: d });
       e.days.add(d.trip_date);
     }
     for (const p of punches) {
@@ -189,9 +202,11 @@ export async function GET(req: NextRequest) {
      *  quick fix approves the suggested window as a supervisor correction. */
     const noShift: { driver_id: string; driver_name: string; date: string; first_in: string | null; last_out: string | null;
       first_task: string | null; last_task: string | null; suggest_in: string | null; suggest_out: string | null; pending: boolean }[] = [];
-    /** Days whose last trip finished more than 45 min after the shift end — the
-     *  hours ran to the trip; listed for review like the no-shift days. */
-    const ranLate: { driver_id: string; driver_name: string; date: string; shift: string; last_task: string | null; over_mins: number }[] = [];
+    /** "Nghi vấn": days with a sign of padded hours (supervisor, 2026-10-19). A
+     *  last ride past the shift end that took over twice its normal time (and 30+
+     *  min extra), a trip completed after the check-out, or a geofence opened.
+     *  An ADMIN-completed last drop-off is never suspicious — its time is the click. */
+    const suspects: { driver_id: string; driver_name: string; date: string; shift: string; last_task: string | null; reasons: string[] }[] = [];
     const drivers = [...acc.entries()]
       // Full-time accounts are recorded but not priced — see PART-TIME ONLY above.
       .filter(([, e]) => employmentOf(e.name) === "part-time")
@@ -200,7 +215,7 @@ export async function GET(req: NextRequest) {
         let boMins = 0;
         let noShiftDays = 0;
         let lateDays = 0;
-        let lateTripDays = 0;
+        let suspectDays = 0;
         const code = staffCode(names.get(driver_id) || e.name);
         const lines: DayLine[] = [];
         for (const date of [...e.days].sort()) {
@@ -212,6 +227,8 @@ export async function GET(req: NextRequest) {
             lastTaskAt: t?.last ?? null,
             firstAwayAt: t?.away ?? null,
             continuedAt: inputs.continued.get(dayKey(driver_id, date)) ?? null,
+            taskEnds: t?.row.dropoff_ts ?? [],
+            lastLegDueAt: t?.row.last_leg_due_ts ?? null,
             correction: inputs.approved.get(dayKey(driver_id, date)) ?? null,
           }, code);
           mins += w.minutes;
@@ -223,11 +240,20 @@ export async function GET(req: NextRequest) {
           const lateMins = w.corrected ? 0 : lateStartMins(inputs.shifts.get(dayKey(driver_id, date)) ?? [], startAt, date);
           if (lateMins > LATE_START_FLAG_MIN) lateDays++;
           const dayShifts = inputs.shifts.get(dayKey(driver_id, date)) ?? [];
-          const overMins = w.corrected ? 0 : tripOverMins(dayShifts, t?.last ?? null, date);
-          if (overMins > LATE_START_FLAG_MIN) {
-            lateTripDays++;
-            ranLate.push({ driver_id, driver_name: names.get(driver_id) || e.name || driver_id.slice(0, 8), date,
-              shift: dayShifts.map((x) => `${x.start}–${x.end}`).join(", "), last_task: hhmm(t?.last ?? null), over_mins: overMins });
+          const adminDone = t?.row.last_dropoff_forced === true;
+          const reasons: string[] = [];
+          if (!w.corrected && !adminDone) {
+            const tat = t?.row.last_leg_tat, target = t?.row.last_leg_target;
+            if (tripOverMins(dayShifts, t?.last ?? null, date) > 0 && tat != null && target != null && tat > 2 * target && tat - target >= 30)
+              reasons.push(`Chuyến cuối chậm: ${tat} phút, chuẩn ${target} phút`);
+            if (t?.last && s.last_out && Date.parse(t.last) > Date.parse(s.last_out) + AFTER_OUT_MIN * 60_000)
+              reasons.push(`Hoàn thành ${hhmm(t.last)} sau khi chấm công ra ${hhmm(s.last_out)}`);
+          }
+          if (geofenceDays.has(dayKey(driver_id, date))) reasons.push("Mở geofence");
+          if (reasons.length) {
+            suspectDays++;
+            suspects.push({ driver_id, driver_name: names.get(driver_id) || e.name || driver_id.slice(0, 8), date,
+              shift: dayShifts.map((x) => `${x.start}–${x.end}`).join(", "), last_task: hhmm(t?.last ?? null), reasons });
           }
           if (driver_id === detailFor) {
             const dayKm = Math.round((t?.km ?? 0) * 100) / 100;
@@ -240,7 +266,7 @@ export async function GET(req: NextRequest) {
               worked_mins: w.minutes, bo_mins: w.bo_minutes, multiplier: w.multiplier,
               jobs: t?.jobs ?? 0, km: dayKm,
               hour_pay: hoursPayFor(w.minutes, w.bo_minutes), km_pay: kmPayFor(dayKm),
-              no_shift: w.no_shift, corrected: w.corrected, late_mins: lateMins, trip_over_mins: overMins,
+              no_shift: w.no_shift, corrected: w.corrected, late_mins: lateMins, suspect: reasons, admin_done: adminDone,
               pending: inputs.latest.get(dayKey(driver_id, date))?.status === "pending",
             });
           }
@@ -283,8 +309,8 @@ export async function GET(req: NextRequest) {
           /** Days that began more than 45 min after the shift start — usually a
            *  wrong shift in Lịch ca. Payroll's sheet colours the same days. */
           late_days: lateDays,
-          /** Days whose last trip ran more than 45 min past the shift end. */
-          late_trip_days: lateTripDays,
+          /** Days on the "Nghi vấn" list. */
+          suspect_days: suspectDays,
           /** Completed jobs with no distance: paid 0 km until priced. */
           unpriced_jobs: e.unpriced,
           ...(driver_id === detailFor ? { days: lines } : {}),
@@ -325,11 +351,16 @@ export async function GET(req: NextRequest) {
         bo_pay: drivers.reduce((s, d) => s + d.bo_pay, 0),
         no_shift_days: drivers.reduce((s, d) => s + d.no_shift_days, 0),
         late_days: drivers.reduce((s, d) => s + d.late_days, 0),
-        late_trip_days: drivers.reduce((s, d) => s + d.late_trip_days, 0),
+        suspect_days: drivers.reduce((s, d) => s + d.suspect_days, 0),
         unpriced_jobs: drivers.reduce((s, d) => s + d.unpriced_jobs, 0),
       },
       drivers,
-      ran_late: ranLate.sort((a, b) => a.date.localeCompare(b.date) || a.driver_name.localeCompare(b.driver_name, "vi")),
+      // Repeat drivers first: one odd day is noise, a pattern is a conversation.
+      suspects: (() => {
+        const n = new Map<string, number>();
+        for (const x of suspects) n.set(x.driver_id, (n.get(x.driver_id) ?? 0) + 1);
+        return suspects.sort((a, b) => (n.get(b.driver_id)! - n.get(a.driver_id)!) || a.driver_name.localeCompare(b.driver_name, "vi") || a.date.localeCompare(b.date));
+      })(),
       no_shift: noShift.sort((a, b) => a.date.localeCompare(b.date) || a.driver_name.localeCompare(b.driver_name, "vi")),
     });
   } catch (e) {

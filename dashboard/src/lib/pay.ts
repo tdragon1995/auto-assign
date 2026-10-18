@@ -80,12 +80,16 @@ export interface PayJob {
   /** When the driver REACHED the pickup — the start-of-work evidence payroll
    *  uses. Null on rows archived before 2026-10-16 (readers fall back to completion). */
   pickup_arrived_ts?: string | null;
+  /** Cartrack's isForceCompleted — an ADMIN completed the stop, so its time is the
+   *  click, not the driver's work. Null on rows archived before 2026-10-19. */
+  pickup_force_completed?: boolean | null;
 
   dropoff_customer_id: string | null;
   dropoff_name: string | null;
   dropoff_lat: number | null;
   dropoff_lng: number | null;
   dropoff_completed_ts: string | null;
+  dropoff_force_completed?: boolean | null;
 
   distance_km: number | null;
 }
@@ -178,6 +182,10 @@ export function mergeWindows(ws: ShiftWindow[]): ShiftWindow[] {
 /** Two shift windows this close are one stretch of work: the gap between them is
  *  paid (supervisor, 2026-10-16). A longer gap is a split shift and is not. */
 export const BRIDGE_GAP_MIN = 15;
+/** Slack after a ride's expected arrival for handing the samples over. */
+export const TRIP_GRACE_MIN = 15;
+/** A trip completed this long after the check-out tap adds no hours. */
+export const AFTER_OUT_MIN = 5;
 
 /**
  * A day's windows with the short gaps closed. `neighbours` are the same person's
@@ -227,6 +235,13 @@ export interface DayFacts {
    *  starts here (supervisor, 2026-10-16; Phan Thành Được 30/09: DC 06:00–19:00,
    *  DC trip until 19:22, PT 19:00–19:30 → PT from 19:00). */
   continuedAt?: string | null;
+  /** Every same-date drop-off (v_pay_daily.dropoff_ts). With it, a trip completed
+   *  after the check-out adds no hours (supervisor, 2026-10-19). */
+  taskEnds?: string[] | null;
+  /** When the day's last ride should have arrived: its fair start plus the normal
+   *  time for its distance (v_pay_daily.last_leg_due_ts). Past the shift end,
+   *  hours run to this (+ TRIP_GRACE_MIN), not to a ride that dragged on. */
+  lastLegDueAt?: string | null;
   /** An APPROVED "cập nhật công" for the day, VN wall clock "HH:MM". It is the
    *  day's worked window outright: it replaces everything the rule would compute,
    *  shift or no shift, because a supervisor has looked at this day. */
@@ -342,12 +357,28 @@ export function workedMinutes(punches: PayPunch[], day: DayFacts, opts: { tapOut
    *                            a tap-out past shift end pays nothing past the
    *                            shift (supervisor, 2026-10-09) */
   const lastEnd = (shiftEnd: number): number => {
+    let trip = day.lastTaskAt;
+    // A trip completed after the check-out adds no hours — its km is still paid
+    // (supervisor, 2026-10-19; Nguyễn Quang Thụy 05/10: out 20:34, a trip
+    // completed by an admin at 21:41). The trips before the check-out stand.
+    if (trip && lastOut && day.taskEnds && Date.parse(trip) > Date.parse(lastOut) + AFTER_OUT_MIN * 60_000) {
+      const cut = Date.parse(lastOut) + AFTER_OUT_MIN * 60_000;
+      trip = day.taskEnds.filter((t) => Date.parse(t) <= cut).sort((a, b) => Date.parse(a) - Date.parse(b)).at(-1) ?? null;
+    }
+    // Past the shift end, the last ride is paid until it should have arrived
+    // (+ hand-over slack), not until it was finally completed (supervisor,
+    // 2026-10-19; Phan Thành Được 24/09: D016 → D007, 6.8 km, due 19:30,
+    // completed 20:54).
+    if (trip && trip === day.lastTaskAt && day.lastLegDueAt && Date.parse(trip) > shiftEnd) {
+      const due = Date.parse(day.lastLegDueAt) + TRIP_GRACE_MIN * 60_000;
+      if (Date.parse(trip) > due) trip = new Date(Math.max(shiftEnd, due)).toISOString();
+    }
     // No trips: the tap-out, but never past the shift end (supervisor, 2026-10-16;
     // Y Quý 28/09 tapped out 22:15 on a 21:00 shift, payroll paid to 21:00).
     // An all-day BO Runner is paid to the tap-out, as payroll's BO sheet does.
-    if (!day.lastTaskAt) return lastOut ? (opts.tapOutPastShift ? Date.parse(lastOut) : Math.min(Date.parse(lastOut), shiftEnd)) : shiftEnd;
-    if (!lastOut) return Date.parse(day.lastTaskAt);
-    return Math.max(Date.parse(day.lastTaskAt), Math.min(Date.parse(lastOut), shiftEnd));
+    if (!trip) return lastOut ? (opts.tapOutPastShift ? Date.parse(lastOut) : Math.min(Date.parse(lastOut), shiftEnd)) : shiftEnd;
+    if (!lastOut) return Date.parse(trip);
+    return Math.max(Date.parse(trip), Math.min(Date.parse(lastOut), shiftEnd));
   };
 
   const windows = [...day.shifts].sort((a, b) => a.start.localeCompare(b.start));
@@ -594,12 +625,14 @@ export function payRowsForRoute(
       pickup_lng: Number.isFinite(pickup.longitude) ? pickup.longitude : null,
       pickup_completed_ts: toIso(pickup.activityCompletedTs),
       pickup_arrived_ts: toIso(pickup.activityArrivedTs),
+      pickup_force_completed: !!pickup.isForceCompleted,
 
       dropoff_customer_id: dropoff.customerId ?? null,
       dropoff_name: dropoff.customerName ?? null,
       dropoff_lat: Number.isFinite(dropoff.latitude) ? dropoff.latitude : null,
       dropoff_lng: Number.isFinite(dropoff.longitude) ? dropoff.longitude : null,
       dropoff_completed_ts: toIso(dropoff.activityCompletedTs),
+      dropoff_force_completed: !!dropoff.isForceCompleted,
 
       distance_km: null,
     });
