@@ -631,9 +631,9 @@ function IncomingBlock({ jobs, etaMins, now, onOpen }: { jobs: Job[]; etaMins: R
 // it sends a trip to the lab. Hand-kept: change here when the people or their days change.
 // days: 0 = Sunday … 6 = Saturday; hours in VN time, end exclusive.
 const D001_RECEIVERS = [
-  { name: "Anh Tú", phone: "0703977160", hours: ["T2 → T7: 6:00–15:00"], slots: [{ days: [1, 2, 3, 4, 5, 6], from: 6, to: 15 }] },
-  { name: "Chị Hoa", phone: "0908066033", hours: ["T2, T4, T6: 15:00–21:00"], slots: [{ days: [1, 3, 5], from: 15, to: 21 }] },
-  { name: "Anh Phát", phone: "0908064890", hours: ["T3, T5, T7: 15:00–21:00", "CN: 7:00–15:00"],
+  { name: "Tú", phone: "0703977160", hours: ["T2 → T7: 6:00–15:00"], slots: [{ days: [1, 2, 3, 4, 5, 6], from: 6, to: 15 }] },
+  { name: "chị Hoa", phone: "0908066033", hours: ["T2, T4, T6: 15:00–21:00"], slots: [{ days: [1, 3, 5], from: 15, to: 21 }] },
+  { name: "Phát", phone: "0908064890", hours: ["T3, T5, T7: 15:00–21:00", "CN: 7:00–15:00"],
     slots: [{ days: [2, 4, 6], from: 15, to: 21 }, { days: [0], from: 7, to: 15 }] },
 ];
 const fmtPhone = (p: string) => p.replace(/^(\d{4})(\d{3})(\d{3})$/, "$1 $2 $3");
@@ -660,7 +660,7 @@ function D001Receivers() {
         {list.map((r) => {
           const on = onDuty(r);
           return (
-            <li key={r.phone} className={`flex items-center gap-3 px-3 py-2.5 ${on ? "bg-blue-50" : ""}`}>
+            <li key={r.phone} className={`flex items-center gap-2 px-3 py-2 ${on ? "bg-blue-50" : ""}`}>
               <span className="flex-1 min-w-0">
                 <span className="flex flex-wrap items-center gap-x-1.5 text-sm font-bold text-slate-800">
                   {r.name} <span className="font-semibold text-blue-700 tabular-nums">{fmtPhone(r.phone)}</span>
@@ -668,13 +668,13 @@ function D001Receivers() {
                 </span>
                 {r.hours.map((h) => <span key={h} className="block text-[11px] text-slate-500">{h}</span>)}
               </span>
-              <span className="shrink-0 flex flex-col gap-1.5">
-                <a href={`tel:${r.phone}`} aria-label={`Gọi ${r.name}`}
-                  className="min-h-9 inline-flex items-center justify-center gap-1.5 px-3 rounded-lg text-[12px] font-bold text-blue-700 border border-blue-200 active:bg-blue-50">
-                  <Phone aria-hidden className="w-3.5 h-3.5" />Gọi
+              <span className="shrink-0 flex items-center gap-1.5">
+                <a href={`tel:${r.phone}`} aria-label={`Gọi ${r.name}`} title="Gọi"
+                  className="grid h-9 w-9 place-items-center rounded-lg text-blue-700 border border-blue-200 active:bg-blue-50">
+                  <Phone aria-hidden className="w-4 h-4" />
                 </a>
                 <button onClick={() => copy(r.phone)} aria-label={`Sao chép số của ${r.name}`}
-                  className="min-h-9 px-3 rounded-lg text-[12px] font-bold text-blue-700 border border-blue-200 active:bg-blue-50">
+                  className="h-9 px-2.5 rounded-lg text-[12px] font-bold text-blue-700 border border-blue-200 active:bg-blue-50">
                   {copied === r.phone ? "Đã chép" : "Sao chép"}
                 </button>
               </span>
