@@ -848,6 +848,16 @@ export default function QrPage() {
   const [changeBusyId, setChangeBusyId] = useState("");
   const [changeError, setChangeError] = useState("");
 
+  // The trip a blocked duplicate booking points at: scrolled to and ringed for a moment.
+  const [focusId, setFocusId] = useState(0);
+  useEffect(() => {
+    if (!focusId) return;
+    const t0 = setTimeout(() => document.getElementById(`trip-${focusId}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
+    const t1 = setTimeout(() => setFocusId(0), 4000);
+    return () => { clearTimeout(t0); clearTimeout(t1); };
+  }, [focusId]);
+  const ring = (id: number) => `rounded-2xl transition-shadow ${focusId === id ? "ring-2 ring-blue-600 ring-offset-2 ring-offset-slate-100" : ""}`;
+
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
   const showToast = (msg: string, ok: boolean) => {
     setToast({ msg, ok });
@@ -990,13 +1000,19 @@ export default function QrPage() {
         // often has not indexed the job yet anyway, so it could come back WITHOUT it.
         // The placeholder retires itself once the job appears on a driver's route.
       } else if (res.status === 409) {
-        setAssignStatus("error");
-        const hhmm = /(\d{2}:\d{2})$/.exec(data.reference_number ?? "")?.[1];
-        setAssignError(
-          data.job_id
-            ? `Đã có yêu cầu được tạo lúc ${hhmm ?? "trước đó"} vẫn chưa rời chi nhánh, vui lòng chờ thêm hoặc liên hệ đội điều phối. Xin cám ơn!`
-            : (data.message ?? "Đang xử lý yêu cầu, vui lòng đợi.")
-        );
+        // Not an error: the branch already has this trip. Take them to it instead.
+        setAssignStatus("idle");
+        const id = Number(data.job_id) || 0;
+        const hhmm = /(\d{2}:\d{2})/.exec(data.reference_number ?? "")?.[1];
+        showToast(hhmm ? `Đã có chuyến gọi lúc ${hhmm} — xem bên dưới` : "Chuyến vừa được gọi — xem bên dưới", true);
+        if (!id) { loadJobs(); return; } // a twin tap still being created: it lands on the list
+        // A trip the list does not carry yet (just booked from another phone) gets a card
+        // the same way this device's own bookings do.
+        if (!jobs.some((j) => j.job_id === id) && !pending.some((x) => Number(x.job_id) === id)) {
+          persistPending([{ job_id: id, reference: data.reference_number ?? "", created_ts: hhmm ?? nowHm(), date: todayVN() }, ...pending]);
+        }
+        setDriverId("");
+        setFocusId(id);
       } else {
         setAssignStatus("error");
         setAssignError(data.error || "Không tạo được yêu cầu. Vui lòng thử lại.");
@@ -1356,14 +1372,18 @@ export default function QrPage() {
 
         <div className="space-y-3">
           {isToday && !driverId && pendingShown.map((p) => (
-            <PendingCard key={p.job_id} req={p} pickup={route.pickup} dropoff={route.dropoff} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }}
-              onSendVia3pl={openVia3pl} onChangeDriver={openChangeDriver} />
+            <div key={p.job_id} id={`trip-${p.job_id}`} className={ring(Number(p.job_id))}>
+              <PendingCard req={p} pickup={route.pickup} dropoff={route.dropoff} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }}
+                onSendVia3pl={openVia3pl} onChangeDriver={openChangeDriver} />
+            </div>
           ))}
           <div className="space-y-3 lg:space-y-0 lg:grid lg:grid-cols-2 lg:gap-3">
             {active.map((j) => (
-              <TripCard key={j.job_id} job={j} code={code} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)}
-                onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl}
-                onChangeDriver={openChangeDriver} />
+              <div key={j.job_id} id={`trip-${j.job_id}`} className={ring(j.job_id)}>
+                <TripCard job={j} code={code} notes={notes[j.job_id]} onOpen={() => setSheetJob(j)}
+                  onCancel={(t) => { setCancelTarget(t); setCancelError(""); }} onSendVia3pl={openVia3pl}
+                  onChangeDriver={openChangeDriver} />
+              </div>
             ))}
           </div>
           {loading && !jobs.length && <p className="text-sm text-slate-600 py-2">Đang tải…</p>}
