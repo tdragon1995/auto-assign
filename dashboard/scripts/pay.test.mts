@@ -58,6 +58,13 @@ const facts = (shifts: [string, string][], first: string | null, last: string | 
 const late = workedMinutes([punch("in", "12:23")], facts([["12:00", "20:00"]], "12:40", "20:02"));
 check("late tap-in starts the clock; last trip past shift end extends it", late.minutes === 459, String(late.minutes));
 
+// Huỳnh Tấn Phát 20/09: tapped in 07:57:40, paid to the 20:00 shift end. The row
+// reads 07:57–20:00, so the hours must read 12h03 — counting the exact span
+// rounded the 40 seconds away and showed 12h02.
+const secs = workedMinutes([{ ...punch("in", "07:57"), completed_ts: `${DAY}T07:57:40+07:00` }, punch("out", "20:01")],
+  facts([["06:00", "20:00"]], "08:52", "19:02"));
+check("hours count whole clock minutes, as the row shows them", secs.minutes === 723, String(secs.minutes));
+
 // Arriving early earns nothing; tapping out before shift end ends the paid day
 // there (supervisor, 2026-10-09: never pay later than the tap-out).
 const early = workedMinutes([punch("in", "16:35"), punch("out", "19:10")], facts([["17:00", "20:00"]], "17:10", "19:05"));

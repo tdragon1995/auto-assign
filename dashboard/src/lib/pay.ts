@@ -390,7 +390,9 @@ export function workedMinutes(punches: PayPunch[], day: DayFacts, opts: { tapOut
   windows.forEach((w, i) => {
     const from = Math.max(Date.parse(at(w.start)), dayStart);
     const to = i === windows.length - 1 ? dayEnd : Math.min(Date.parse(at(w.end)), dayEnd);
-    const mins = Math.round((to - from) / 60_000);
+    // Whole clock minutes, as the row shows them: 07:57:40 → 20:00 is 12h03, not
+    // the 12h02 that rounding the exact span gave (Huỳnh Tấn Phát 20/09).
+    const mins = Math.floor(to / 60_000) - Math.floor(from / 60_000);
     if (mins <= 0) return;
     out.spans.push({ from: new Date(from).toISOString(), to: new Date(to).toISOString(), minutes: mins });
     out.clocked += mins;
