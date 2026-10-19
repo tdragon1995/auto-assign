@@ -13,6 +13,7 @@ import {
 import { loadLeaveSuppressions, findSuppression } from "@/lib/leave-suppression";
 import { mappingsForDate } from "@/lib/day-config";
 import { configDutyBlocks, companionNeeded } from "@/lib/pt-companion";
+import { THAY_CA_LABEL } from "@/lib/thay-ca";
 
 /** Short human label for a clashing existing leave, for the reject message. */
 function describeLeave(e: LeaveEntry): string {
@@ -58,6 +59,11 @@ export async function POST(req: NextRequest) {
     const loaiNghiLabels: Record<string, string> = {
       nguyen_buoi: "Nghỉ nguyên buổi",
       nua_buoi: "Nghỉ nửa buổi",
+      // Filed by hand from the leave panel: the driver is off their own routes
+      // for these hours because they cover someone else's. The engine reads it
+      // as a windowed day; the generated rows carry a THAY_CA_V1 note and this
+      // one does not, so the reconciler leaves it alone.
+      thay_ca: THAY_CA_LABEL,
       nghi_viec: "Nghỉ việc",
     };
     if (!loaiNghiLabels[loai_nghi]) {
@@ -155,7 +161,7 @@ export async function POST(req: NextRequest) {
         leave_from: ngay_bat_dau, leave_to: ngay_ket_thuc ?? ngay_bat_dau,
         gio_bat_dau: null, gio_ket_thuc: null, subs: [],
       };
-    } else if (loai_nghi === "nua_buoi") {
+    } else if (loai_nghi === "nua_buoi" || loai_nghi === "thay_ca") {
       // leave_to = leave_from (same day)
       rows = [withNote({
         submitted_at: ts, driver_name, loai_nghi: loaiNghiText,

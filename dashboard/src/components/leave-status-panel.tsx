@@ -195,11 +195,11 @@ function TimeSelect({
 export interface NewLeaveForm {
   /** Full sheet label, exactly as the roster spells it. "" = nothing picked. */
   name: string;
-  loai_nghi: "" | "nguyen_buoi" | "nua_buoi" | "nghi_viec";
+  loai_nghi: "" | "nguyen_buoi" | "nua_buoi" | "thay_ca" | "nghi_viec";
   /** The days off, `yyyy-mm-dd`, sorted and unique. For "nghỉ việc" this holds
    *  the single LAST WORKING DAY. */
   days: string[];
-  /** Window — nua_buoi only, the same window on each chosen day. */
+  /** Window — nua_buoi and thay_ca only, the same window on each chosen day. */
   start: string;
   end: string;
   /** Who covers, optional. A full sheet label like every other driver field;
@@ -349,6 +349,10 @@ export function ptCompanionOf(p: LeavePayload, twin: ConfigDriver): LeavePayload
   // still working — the one case decided here rather than on the server,
   // because no config could tell the difference.
   if (p.loai_nghi === "nghi_viec") return null;
+  // A Thay ca is the person WORKING elsewhere for those hours, not a day off,
+  // so it says nothing about the other account — the same as the generated
+  // Thay ca rows, which never copy to a twin either.
+  if (p.loai_nghi === "thay_ca") return null;
   // An unusable window is not a config question. The engine ignores such a
   // leave row, so offering one would ask the server to judge hours that mean
   // nothing — the same refusal `buildPtCompanion` makes in misa-fetcher.
@@ -398,7 +402,7 @@ function subIdentities(p: LeavePayload): { driver_id: string; leave_from: string
   // A resignation is not a day off someone stands in for; the row has no window
   // and no end, and naming a substitute on it would say the wrong thing.
   if (p.loai_nghi === "nghi_viec") return [];
-  if (p.loai_nghi === "nua_buoi") {
+  if (p.loai_nghi === "nua_buoi" || p.loai_nghi === "thay_ca") {
     return [{
       driver_id: p.driver_id,
       leave_from: p.ngay_bat_dau,
@@ -501,7 +505,9 @@ function buildOwnSubmission(
     return { error: `${days.length} ngày quá nhiều — tối đa ${MAX_LEAVE_DAYS} ngày mỗi lần` };
   }
 
-  if (f.loai_nghi === "nua_buoi") {
+  // Thay ca takes the half-day shape: one row per day, each with the hours the
+  // driver is away from their own routes.
+  if (f.loai_nghi === "nua_buoi" || f.loai_nghi === "thay_ca") {
     if (!f.start || !f.end) return { error: "Chọn giờ bắt đầu và giờ kết thúc" };
     if (f.end <= f.start) return { error: "Giờ kết thúc phải sau giờ bắt đầu" };
     // One row per day, each carrying the window. Never grouped into a range: a
@@ -525,7 +531,7 @@ function buildOwnSubmission(
 /** "nghỉ nguyên buổi 04/09–06/09" — what the toast says actually landed. */
 function submissionLabel(p: LeavePayload): string {
   const type = ({
-    nguyen_buoi: "nghỉ nguyên buổi", nua_buoi: "nghỉ nửa buổi", nghi_viec: "nghỉ việc",
+    nguyen_buoi: "nghỉ nguyên buổi", nua_buoi: "nghỉ nửa buổi", thay_ca: "thay ca", nghi_viec: "nghỉ việc",
   } as Record<string, string>)[p.loai_nghi] ?? p.loai_nghi;
   if (p.loai_nghi === "nghi_viec") return `${type} — ngày cuối ${ddmm(p.ngay_bat_dau)}`;
   const range = rangeLabel(p.ngay_bat_dau, p.ngay_ket_thuc ?? null);
@@ -547,6 +553,9 @@ function twinEffect(f: NewLeaveForm): { copies: boolean; text: string } {
   // what actually happened.
   if (f.loai_nghi === "nguyen_buoi") {
     return { copies: true, text: "nghỉ cả ngày, nếu tài khoản PT có tuyến trong config" };
+  }
+  if (f.loai_nghi === "thay_ca") {
+    return { copies: false, text: "thay ca KHÔNG áp cho tài khoản PT" };
   }
   if (f.loai_nghi === "nghi_viec") {
     return {
@@ -764,10 +773,11 @@ function AddLeaveForm({
           <option value="">Loại nghỉ…</option>
           <option value="nguyen_buoi">Nghỉ nguyên buổi</option>
           <option value="nua_buoi">Nghỉ nửa buổi</option>
+          <option value="thay_ca">Thay ca</option>
           <option value="nghi_viec">Nghỉ việc</option>
         </select>
 
-        {form.loai_nghi === "nua_buoi" && (
+        {(form.loai_nghi === "nua_buoi" || form.loai_nghi === "thay_ca") && (
           <>
             {/* The same half-hour grid the substitute editor and the driver's
                 own form use. Shift windows are set on the half hour, so the

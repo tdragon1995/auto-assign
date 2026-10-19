@@ -390,5 +390,22 @@ eq("and the twin's leave row is still written",
   (build({ name: HUNG_FT.name, loai_nghi: "nguyen_buoi", days: ["2026-09-10"], sub: SOLO.name }) as LeavePayload[])
     .map((p) => p.driver_id), ["uuid-hung", "uuid-hung-pt"]);
 
+console.log("thay ca");
+// The driver is away from their own routes for these hours, covering someone
+// else's: the half-day shape, written under its own type.
+eq("one windowed request per day, typed thay_ca",
+  build({ name: HUNG, loai_nghi: "thay_ca", days: ["2026-10-20", "2026-10-21"], start: "08:30", end: "19:30" }),
+  [
+    { ...BASE, loai_nghi: "thay_ca", ngay_bat_dau: "2026-10-20", gio_bat_dau: "08:30", gio_ket_thuc: "19:30" },
+    { ...BASE, loai_nghi: "thay_ca", ngay_bat_dau: "2026-10-21", gio_bat_dau: "08:30", gio_ket_thuc: "19:30" },
+  ]);
+eq("needs its hours", errored({ name: HUNG, loai_nghi: "thay_ca", days: ["2026-10-20"] }), true);
+eq("is never copied onto the PT twin — the person is working, not off",
+  (build({ name: HUNG_FT.name, loai_nghi: "thay_ca", days: ["2026-10-20"], start: "08:30", end: "19:30" }) as LeavePayload[])
+    .map((p) => p.driver_id), ["uuid-hung"]);
+eq("its cover is addressed by the window, like a half day",
+  (subs({ name: HUNG, loai_nghi: "thay_ca", days: ["2026-10-20"], start: "08:30", end: "19:30", sub: HUNG_PT.name }) as SubWrite[])
+    .map((w) => w.timeLabel), ["08:30–19:30"]);
+
 console.log(failures === 0 ? "\nAll passed." : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
