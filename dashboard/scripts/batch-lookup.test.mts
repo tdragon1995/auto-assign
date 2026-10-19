@@ -11,7 +11,7 @@ process.env.LABCENTER_RECEPTIONIST_EMAIL = "fixture@example.test";
 process.env.LABCENTER_RECEPTIONIST_PASSWORD = "fixture";
 process.env.CARTRACK_AUTH = "Basic fixture";
 delete process.env.LABCENTER_LOOKUP_TOKEN;
-let mode = "split";
+let mode = "split", renewed = false;
 const requests: URL[] = [];
 const wrong = "B017260207070500", first = "B017260207071000", second = "B017260207071500";
 const reply = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
@@ -26,7 +26,13 @@ globalThis.fetch = async (input, init) => {
   const url = new URL(String(input)); requests.push(url);
   if (url.pathname.endsWith("/auth/login")) return reply({ token: `fixture.${Buffer.from(JSON.stringify({ exp: Date.now() / 1000 + 3600 })).toString("base64url")}.fixture` });
   if (url.pathname.endsWith("/orders")) {
-    if (mode === "token") assert.equal(new Headers(init?.headers).get("authorization"), "Bearer lookup-only-fixture");
+    const auth = new Headers(init?.headers).get("authorization");
+    // fallback: the receptionist is refused, so only the pasted token gets in.
+    if (mode === "fallback" && auth !== "Bearer lookup-only-fixture") return reply({}, 401);
+    // stale: the pasted token has expired and must not be the one asked.
+    if (mode === "stale") assert.notEqual(auth, "Bearer lookup-only-fixture");
+    // renew: the cached session was dropped by Labcenter once; a fresh login gets in.
+    if (mode === "renew" && !renewed) { renewed = true; return reply({}, 401); }
     if (mode === "missing") return reply({}, 404);
     return reply({ data: { lis_order_id: "26020720305", branch_code: "D017", status: "done", created_at: "2026-02-07T06:30:00Z", client_id: "12345",
       patient_name: "PRIVATE FIELD MUST NOT BE RETURNED", order_test_details: [1, 2],
@@ -175,8 +181,13 @@ try {
   assert.equal(empty.summary?.samples.length, 0);
   mode = "wide";
   assert((await lookupBatch("26020720305")).error?.includes("seven-day"));
-  mode = "token";
+  mode = "renew";
+  assert.equal((await lookupBatch("26020720305")).error, undefined);
+  assert(renewed, "a rejected receptionist session is renewed once");
   process.env.LABCENTER_LOOKUP_TOKEN = "lookup-only-fixture";
+  mode = "stale";
+  assert.equal((await lookupBatch("26020720305")).error, undefined);
+  mode = "fallback";
   assert.equal((await lookupBatch("26020720305")).error, undefined);
   delete process.env.LABCENTER_LOOKUP_TOKEN;
 

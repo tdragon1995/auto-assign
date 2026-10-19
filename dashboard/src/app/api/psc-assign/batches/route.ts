@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getReceptionistToken } from "@/lib/labcenter";
+import { receptionistFetch } from "@/lib/labcenter";
 import { vnDate } from "@/lib/time";
 
 export const preferredRegion = "sin1";
@@ -14,9 +14,8 @@ export const preferredRegion = "sin1";
  *
  * The same call Labcenter's own Batch Management page makes (checked 2026-10-19), and it
  * needs a login with the "receptionist-nurse-phlebotomist" role — the receptionist account
- * (LABCENTER_RECEPTIONIST_*), tried FIRST. LABCENTER_LOOKUP_TOKEN, a pasted token that
- * lasts 14 days, is only the fallback: tried first, an expired one failed every request
- * before the working login was ever asked. Any failure answers an empty list with
+ * (LABCENTER_RECEPTIONIST_*) via `receptionistFetch`, which renews a rejected session
+ * once before falling back to the pasted LABCENTER_LOOKUP_TOKEN. Any failure answers an empty list with
  * `access: false`: the dialog then just shows the typing box, as before.
  */
 /** HBC's batches are B199… — offered to every branch alongside its own. */
@@ -39,17 +38,13 @@ export async function GET(req: NextRequest) {
     });
     params.append("source_location[]", branch);
     params.append("source_location[]", HBC);
-    const ask = (token: string) => fetch(`https://api.labcenter.vn/spc-lis/api/v1/batch?${params}`, {
-      headers: { Authorization: `Bearer ${token}`, Accept: "application/json", Origin: "https://labcenter.vn", Referer: "https://labcenter.vn/" },
+    const res = await receptionistFetch(`https://api.labcenter.vn/spc-lis/api/v1/batch?${params}`, {
+      headers: { Accept: "application/json", Origin: "https://labcenter.vn", Referer: "https://labcenter.vn/" },
       cache: "no-store",
     });
-    const receptionist = await getReceptionistToken().catch(() => null);
-    let res = receptionist ? await ask(receptionist) : null;
-    const lookup = process.env.LABCENTER_LOOKUP_TOKEN?.trim();
-    if ((!res || res.status === 401 || res.status === 403) && lookup) res = await ask(lookup);
     if (!res) return NextResponse.json({ batches: [], access: false });
     if (!res.ok) {
-      // 401 = the pasted token expired; 403 = an account without LIS access. Loud here,
+      // 401 = the login and the pasted token both refused; 403 = an account without LIS access. Loud here,
       // silent on the phone.
       console.error(`[psc-assign/batches] LIS ${res.status} for D${branch}`);
       return NextResponse.json({ batches: [], access: false });

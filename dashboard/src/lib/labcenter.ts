@@ -75,6 +75,29 @@ export async function labcenterFetch(url: string, init: RequestInit, kind: "admi
   return res;
 }
 
+/**
+ * A POS/LIS read as the receptionist: its own login first (renewed once on a 401), the
+ * pasted LABCENTER_LOOKUP_TOKEN only when that login is refused or not configured. The
+ * pasted token lasts 14 days; tried first, an expired one failed every request before
+ * the working login was ever asked. null = nothing to ask with.
+ */
+export async function receptionistFetch(url: string, init: RequestInit = {}): Promise<Response | null> {
+  const ask = (token: string) => {
+    const headers = new Headers(init.headers);
+    headers.set("Authorization", `Bearer ${token}`);
+    return fetch(url, { ...init, headers });
+  };
+  const token = await login("receptionist").catch(() => null);
+  let res = token ? await ask(token) : null;
+  if (token && res?.status === 401) {
+    const renewed = await login("receptionist", token).catch(() => null);
+    if (renewed) res = await ask(renewed);
+  }
+  const lookup = process.env.LABCENTER_LOOKUP_TOKEN?.trim();
+  if ((!res || res.status === 401 || res.status === 403) && lookup) res = await ask(lookup);
+  return res;
+}
+
 // --- Delivery requests (the SPC queue Labcenter shows its dispatchers) ---
 
 /** One row of GET /api/delivery-requests. Only the fields the ETA sync reads are

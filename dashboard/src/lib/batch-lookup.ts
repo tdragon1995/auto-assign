@@ -1,6 +1,6 @@
 import { BASE_URL, getHeaders } from "./cartrack";
 import { placeName } from "./display-names";
-import { getReceptionistToken } from "./labcenter";
+import { receptionistFetch } from "./labcenter";
 import { JOB_STATUS } from "./job-filters";
 import { addDays, vnDate, vnTimestamp } from "./time";
 import type { Job } from "./types";
@@ -229,12 +229,11 @@ export async function lookupBatch(vid: string, emit: Emit = () => {}, signal = A
   const doing = (msg: string) => emit("doing", { msg });
   try {
     if (!/^\d{8,20}$/.test(vid)) throw new Error("VID phải gồm 8–20 chữ số.");
-    const token = process.env.LABCENTER_LOOKUP_TOKEN?.trim() || await getReceptionistToken();
-    if (!token) throw new Error("Labcenter lookup access is not configured. Ask an administrator to configure a POS/LIS account or lookup token.");
     async function lab<T>(path: string, params: URLSearchParams): Promise<{ data: T; pagination?: { last_page?: number; total_pages?: number } }> {
-      const res = await fetch(`https://api.labcenter.vn${path}?${params}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json", Origin: "https://labcenter.vn", Referer: "https://labcenter.vn/" }, cache: "no-store", signal });
+      const res = await receptionistFetch(`https://api.labcenter.vn${path}?${params}`, { headers: { Accept: "application/json", Origin: "https://labcenter.vn", Referer: "https://labcenter.vn/" }, cache: "no-store", signal });
+      if (!res) throw new Error("Labcenter lookup access is not configured. Ask an administrator to configure a POS/LIS account or lookup token.");
       if (res.status === 404 && path.endsWith("/orders")) throw new Error(`No order found for VID ${vid}`);
-      if (!res.ok) throw new Error(`Labcenter ${path}: HTTP ${res.status}${res.status === 403 ? " — this account needs POS/LIS access; configure an authorized lookup token" : res.status === 401 ? " — the lookup token has expired or is invalid" : ""}`);
+      if (!res.ok) throw new Error(`Labcenter ${path}: HTTP ${res.status}${res.status === 403 ? " — this account needs POS/LIS access; configure an authorized lookup token" : res.status === 401 ? " — Labcenter refused the receptionist login and the lookup token" : ""}`);
       return res.json();
     }
     doing("Looking up the order and samples in Labcenter");
