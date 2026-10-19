@@ -471,8 +471,10 @@ export async function updateCustomerAddress(
   if (!a) return { ok: true }; // write returned ok; couldn't re-read to confirm
   const landed =
     (a.address_line_1 ?? "") === addr.address_line_1 &&
-    Number(a.latitude) === addr.latitude &&
-    Number(a.longitude) === addr.longitude;
+    // Within 1e-6, not equal: Cartrack keeps ~14 significant digits, so a long pasted pin
+    // comes back shortened and an exact match failed a write that had landed.
+    Math.abs(Number(a.latitude) - addr.latitude) < 1e-6 &&
+    Math.abs(Number(a.longitude) - addr.longitude) < 1e-6;
   if (!landed) {
     return { ok: false, error: "Cartrack nhận yêu cầu nhưng không cập nhật (200 nhưng dữ liệu không đổi)" };
   }
