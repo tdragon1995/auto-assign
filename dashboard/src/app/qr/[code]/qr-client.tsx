@@ -1564,6 +1564,12 @@ export default function QrPage() {
                     <span aria-hidden className="block px-2.5 pt-1.5 pb-2">
                       <span className="block truncate text-[13px] font-semibold leading-tight text-slate-800">{from}</span>
                       <span className="text-[12px] text-slate-500">{Number.isNaN(at) ? "" : new Date(at).toLocaleTimeString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit" })}{imgs.length > 1 ? ` · ${imgs.length} ảnh` : ""}</span>
+                      {(notes[j.job_id]?.p || notes[j.job_id]?.d) && (
+                        <span className="block mt-1.5 pt-1.5 border-t border-slate-100 space-y-0.5">
+                          {notes[j.job_id].p && <NoteRow label="Nhận" value={notes[j.job_id].p!} />}
+                          {notes[j.job_id].d && <NoteRow label="Giao" value={notes[j.job_id].d!} />}
+                        </span>
+                      )}
                     </span>
                   </button>
                 );
