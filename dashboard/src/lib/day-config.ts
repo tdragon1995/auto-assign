@@ -101,7 +101,12 @@ async function loadTab(tab: ConfigTab): Promise<Mapping[] | null> {
     // The same zero-length suspicion the config loader has: a tab that parses to
     // nothing is a bad read, not an empty roster, and adopting it would answer
     // "nobody is on duty" to every question for the rest of the day.
-    if (mappings.length === 0) return null;
+    // Except a Supabase Sunday whose rules came back but whose roster is not filled
+    // in yet (every Monday, for the coming Sunday): nobody is rostered, which is a
+    // true answer, and refusing it blocked every Thay ca for the whole week.
+    // A failed Supabase read throws, so rules present here means the read worked.
+    const unrostered = masterEnabled() && tab === "sunday" && rows.some((row) => row.customer_id);
+    if (mappings.length === 0 && !unrostered) return null;
     tabs[tab] = { day: today, mappings };
     return mappings;
   } catch {
