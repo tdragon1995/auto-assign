@@ -1190,7 +1190,7 @@ export async function releaseTripClaim(
 // always kept. Note-skip lines are intentionally NOT kept — they'd repeat every
 // cycle for the same held job; the dashboard note-review panel shows them
 // instead. (The WARN "assigning despite note" override line is still kept.)
-const INFO_KEEP_PATTERNS = ["RELEASED", "PARKED", "ROLLED OVER", "swapped", "[fetch]", "[timing]", "[loop]", "[follow-ups]"];
+const INFO_KEEP_PATTERNS = ["RELEASED", "PARKED", "RECHECK", "ROLLED OVER", "swapped", "[fetch]", "[timing]", "[loop]", "[follow-ups]"];
 
 // Deterministic per-job assign failures recur every cycle for the same job until
 // a human fixes them — left in the rolling log they bury everything else (see the

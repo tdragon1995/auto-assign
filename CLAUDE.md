@@ -53,6 +53,7 @@ LABCENTER_RECEPTIONIST_EMAIL=    # Separate receptionist account for /api/labcen
 LABCENTER_RECEPTIONIST_PASSWORD= # Password for receptionist account
 LEAVE_NAME_RECOVERY=             # Set to "0" to stop recovering a leave row from its typed name
 MASTER_CLIENT_INFO_SOURCE=        # "supabase" = config, roster, leave, schedule read from/written to Supabase (production). Unset = the Google Sheet
+SMART_RECHECK=                   # Smart re-check (lib/smart-recheck.ts): unset = log-only ("RECHECK" lines + 14-day list smart:recheck:log:<env>:<date>), "live" = moves jobs, "off" = disabled
 STANDBY=                         # "1" on the BACKUP Vercel account only: its cron ping idles while another deployment's heartbeat is fresh (<6 min) and takes over the engine when it goes stale (primary paused over a plan limit, or its cron job died)
 ```
 
@@ -335,6 +336,7 @@ ever named, which is how a warning stops being read.
 | `src/lib/tat.ts` | Driver TAT: `legsForRoute` / `buildDayLegs` cut a day into **legs** (rides between consecutive stops, in the order actually worked), `MINS_PER_KM`, `targetMinsFor`, `summarize`. See `docs/driver-tat.md` |
 | `src/lib/pay.ts` | Part-time pay: `RATE_PER_HOUR_VND`/`RATE_PER_KM_VND`, `buildDayPay` (routes → paid jobs + chấm-công punches), `workedMinutes` (payroll's hours rule on the imported shift — see footgun 11), `hourPayFor`/`kmPayFor`. See `docs/driver-pay.md` |
 | `src/lib/tat-archive.ts` | `archiveDay` — fetch, price and **replace** one day in Supabase `tat_legs`, and (in the same pass, off the same routes) `pay_jobs` + `pay_punches` |
+| `src/lib/smart-recheck.ts` | Re-ranks the engine's OWN smart picks (recorded in `smart:recheck:<env>:<date>`; Cartrack can't say who assigned) whose pickup hasn't started, every cycle after 10 min with the driver; moves when the same ranking's winner arrives 5+ min sooner. Holder is measured with the job OFF their route, or they're anchored on its own pickup. `scripts/smart-recheck.test.mts` |
 | `src/lib/supabase-rest.ts` | `sbSelect` / `sbInsert` / `sbUpsert` / `sbDelete` — PostgREST over `fetch`, service-role, SERVER ONLY. No SDK dependency by design |
 
 ### Key Types (`src/lib/types.ts`)

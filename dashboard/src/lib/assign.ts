@@ -1,4 +1,4 @@
-import type { Config, Driver, FailedJob, Job, LogEntry, LogLevel, Mapping, PickupWarning, Stop, TimelineRoute } from "./types";
+import type { Config, Driver, FailedJob, Job, LogEntry, LogLevel, Mapping, PickupWarning, Stop, TimelineRoute, TimelineStop } from "./types";
 import { getDrivers, getAllAssignedDriverJobs, assignJob, assignJobViaUpdate, getCustomerById, updateJobStops, parkOnProxy, updateJobSendToDriverAt, updateJobScheduledDeliveryTs, unassignJob, optimizeDriverRoute, getJobsByStatusAndDate, getUnassignedJobsFast, getJobsByDate, getTimelineRoutes, timelineRoutesToJobs, getJobDetails, jsonRpc, PROXY_DRIVER_ID, type Env } from "./cartrack";
 import { publishSnapshot } from "./day-snapshot";
 import { getDueTomorrowJobs } from "./scheduled-dispatch";
@@ -39,6 +39,7 @@ import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_P
 import { loadLeaveEntries, isDriverOnLeave, resolveSubstitute, type LeaveEntry } from "./leave-config";
 import { publishNoDriverRoutes } from "./psc-no-driver";
 import { getDriversOnDuty, resolveFixedDriver, findSmartMapping, waitForMappingShift } from "./fixed-driver";
+import { recheckMode, isRecheckable, moveGain, recordSmartAssign, readSmartAssigns, logRecheck } from "./smart-recheck";
 
 
 const DUPLICATE_REJECT_REASON =
@@ -1763,6 +1764,448 @@ export async function rolloverUnfinishedJobs(
   return { bumped, remaining: eligible.length - bumped.size };
 }
 
+// Everything smart ranking needs about the fleet this cycle: who can be ranked,
+// where each driver is anchored, and their effective coordinates. Built once per
+// cycle, shared by the assign loop and the re-check (lib/smart-recheck.ts).
+// Note: `allGpsDrivers` also includes drivers without GPS if they have a start_location
+// (Phase 1 haversine falls back to start_location when GPS is unavailable).
+interface SmartPrep {
+  allGpsDrivers: Driver[];
+  smartRouteData: Record<string, DriverRouteInfo>;
+  phase1Coords: Map<string, { lat: number; lon: number }>;
+  infoWithout: (driverId: string, jobId: number) => DriverRouteInfo | null;
+}
+
+const EMPTY_SMART_PREP: SmartPrep = { allGpsDrivers: [], smartRouteData: {}, phase1Coords: new Map(), infoWithout: () => null };
+
+async function prepareSmart(
+  config: Config,
+  env: Env,
+  leaveEntries: LeaveEntry[],
+  routes: TimelineRoute[] | null,
+  log: (msg: string, level?: LogLevel) => void,
+): Promise<SmartPrep> {
+  let smartRouteData: Record<string, DriverRouteInfo> = {};
+  const phase1Coords = new Map<string, { lat: number; lon: number }>();
+  const fetchedDrivers = await getDrivers(env);
+  const allGpsDrivers = fetchedDrivers.filter((d) =>
+    (d.latitude != null && d.longitude != null) || !!d.start_location_customer_id
+  );
+  const shiftStartByDriverId: Record<string, string | null> = {};
+  for (const d of allGpsDrivers) shiftStartByDriverId[d.delivery_driver_id] = d.shift_time_start ?? null;
+  // Client-coordinate index from the timeline (Change 2) — fixed-client GPS for
+  // every customer that appears as a stop today, harvested from the routes we
+  // already have. Consulted before getCustomerById below. Empty when the timeline
+  // fetch failed (no routes stashed), so that path stays unchanged.
+  let clientCoords = new Map<string, { lat: number; lon: number; name: string | null }>();
+  if (routes) {
+    // Reuse the routes the fetch phase already pulled — same
+    // delivery_timeline_route_list payload, so no second ~2.3s call this cycle.
+    smartRouteData = timelineRoutesToDriverInfo(routes, shiftStartByDriverId);
+    clientCoords = timelineRoutesToCustomerCoords(routes);
+  } else {
+    smartRouteData = await fetchSmartRouteData(vnDate(), env, shiftStartByDriverId);
+  }
+
+  // ── Substitute start-location inheritance ──
+  // A driver covering an on-leave pool driver "takes after" that driver's start
+  // location: he's taking over that route, so smart-assign should rank him from
+  // its origin — not from his own base. Map sub → the covered driver's
+  // start_location so the reference-stop and coord fallbacks below treat the sub
+  // like that route's driver. The covered base OVERRIDES the sub's own base (see
+  // effStartLoc): a relief driver who also has a start_location of his own would
+  // otherwise keep ranking from it while covering, skewing the assignment.
+  // Caveat: this map is keyed by sub globally, so a driver who substitutes for one
+  // route while also being a regular member of a *different* pool would use the
+  // covered base in both. Assumed rare; make per-pool if that combination appears.
+  const subInheritedStartLoc = new Map<string, string>(); // subId → covered start_location_customer_id
+  {
+    const fetchedById = new Map<string, Driver>(
+      fetchedDrivers.map((d): [string, Driver] => [d.delivery_driver_id, d])
+    );
+    const poolIds = new Set(config.mappings.flatMap((m) => m.smart_driver_id));
+    for (const cfgId of poolIds) {
+      const lc = isDriverOnLeave(cfgId, leaveEntries);
+      if (!lc.onLeave) continue;
+      const sub = resolveSubstitute(lc.entry!);
+      if (sub.status !== "ok") continue;
+      const subDrv = fetchedById.get(sub.subId);
+      const covered = fetchedById.get(cfgId);
+      if (subDrv && covered?.start_location_customer_id) {
+        subInheritedStartLoc.set(sub.subId, covered.start_location_customer_id);
+      }
+    }
+  }
+  // Effective start_location for a driver: the covered route's base if he's a sub,
+  // else his own. Inherited (covered) base wins so a sub with his own start
+  // location still ranks from the route he's covering, not from home.
+  const effStartLoc = (d: Driver): string | null =>
+    subInheritedStartLoc.get(d.delivery_driver_id) ?? d.start_location_customer_id ?? null;
+
+  // ── Fetch start_location coords for drivers who need them ──
+  // Two reasons: (1) no GPS → Phase 1 fallback, (2) no route today → reference-stop fallback.
+  const startLocIdsNeeded = new Set<string>();
+  for (const d of allGpsDrivers) {
+    const sl = effStartLoc(d);
+    if (!sl) continue;
+    // Only drivers without a GPS fix: with one, both the Phase 1 coords and
+    // the reference anchor come from the fix, not from start_location.
+    if (d.latitude == null || d.longitude == null) startLocIdsNeeded.add(sl);
+  }
+  const startLocCoords = new Map<string, { lat: number; lon: number; name: string | null }>();
+  const nowMs = Date.now();
+  const startLocToFetch: string[] = [];
+  for (const cid of startLocIdsNeeded) {
+    // Timeline-harvested coords first (free — already in memory), then the in-memory
+    // TTL cache, then a getCustomerById fetch for whatever's left.
+    const fromTimeline = clientCoords.get(cid);
+    if (fromTimeline) { startLocCoords.set(cid, fromTimeline); continue; }
+    const hit = startLocCache.get(`${env}:${cid}`);
+    if (hit && nowMs - hit.fetchedAt < START_LOC_TTL_MS) startLocCoords.set(cid, hit.coords);
+    else startLocToFetch.push(cid);
+  }
+  await Promise.all(
+    startLocToFetch.map(async (cid) => {
+      const customerData = await getCustomerById(cid, env);
+      const c = customerData?.data;
+      if (c?.latitude != null && c?.longitude != null) {
+        const coords = { lat: c.latitude, lon: c.longitude, name: c.customer_name ?? null };
+        startLocCoords.set(cid, coords);
+        startLocCache.set(`${env}:${cid}`, { coords, fetchedAt: nowMs });
+      }
+    })
+  );
+
+  // Anchor every driver on a place they have actually been. An unreached
+  // anchor — no route (start_location), or an untouched stop of a PLANNED job
+  // — is where the driver is *meant* to be, and it competes on equal footing
+  // with a driver standing on the pickup. An ad-hoc stop is left alone: it was
+  // dispatched to this driver on purpose. See isUnreachedAnchor.
+  const anchor = (d: Driver, info: DriverRouteInfo | undefined): DriverRouteInfo | undefined => {
+    const ref = info?.ref ?? null;
+    if (!isUnreachedAnchor(ref)) return info;
+
+    // Best available truth, in order: the live GPS fix → the last stop we know
+    // they stood on → start_location (no route at all). A driver with none of
+    // these keeps their planned anchor; there is nothing better to say.
+    let nextRef: RefStop | null = null;
+    if (d.latitude != null && d.longitude != null) {
+      nextRef = liveGpsRef(ref, d.latitude, d.longitude, d.shift_time_start ?? null);
+    } else if (ref) {
+      nextRef = lastRealPositionRef(ref);
+    } else {
+      const sl = effStartLoc(d);
+      const coords = sl ? startLocCoords.get(sl) : undefined;
+      if (coords) {
+        nextRef = {
+          lat: coords.lat,
+          lon: coords.lon,
+          label: "Start Location",
+          customerName: coords.name,
+          tiebreakTs: d.shift_time_start ?? null,
+        };
+      }
+    }
+    if (!nextRef) return info;
+
+    return {
+      ref: nextRef,
+      label: nextRef.label,
+      workload: info?.workload ?? 0,
+      lastCompletedTs: info?.lastCompletedTs ?? null,
+      jobsDone: info?.jobsDone ?? 0,
+    };
+  };
+  for (const d of allGpsDrivers) {
+    const info = anchor(d, smartRouteData[d.delivery_driver_id]);
+    if (info) smartRouteData[d.delivery_driver_id] = info;
+  }
+
+  // Phase 1 effective coords: GPS if available, else start_location fallback
+  for (const d of allGpsDrivers) {
+    if (d.latitude != null && d.longitude != null) {
+      phase1Coords.set(d.delivery_driver_id, { lat: d.latitude, lon: d.longitude });
+    } else {
+      const sl = effStartLoc(d);
+      const coords = sl ? startLocCoords.get(sl) : undefined;
+      if (coords) phase1Coords.set(d.delivery_driver_id, { lat: coords.lat, lon: coords.lon });
+    }
+  }
+
+  log(`Smart-assign ready: ${phase1Coords.size} candidate driver(s) (GPS or start_location)`);
+
+  // The re-check's view of the driver HOLDING a job: their route with that job
+  // taken off. Left on, its own pickup is their next stop and they score 0 to it.
+  const byId = new Map(allGpsDrivers.map((d): [string, Driver] => [d.delivery_driver_id, d]));
+  const stopsByDriver = new Map<string, TimelineStop[]>();
+  for (const r of routes ?? []) {
+    stopsByDriver.set(r.routeId.replace(/^driver_/, ""), (r.orderedStops ?? []).filter((s) => !isChamCong(s)));
+  }
+  const infoWithout = (driverId: string, jobId: number): DriverRouteInfo | null => {
+    const d = byId.get(driverId);
+    if (!d) return null;
+    const stops = (stopsByDriver.get(driverId) ?? []).filter((s) => s.jobId !== jobId);
+    const ref = selectReferenceStop(stops, shiftStartByDriverId[driverId] ?? null);
+    const stats = computeStopStats(stops);
+    return anchor(d, { ref, label: ref?.label ?? null, workload: stops.length, lastCompletedTs: stats.lastCompletedTs, jobsDone: stats.done }) ?? null;
+  };
+
+  return { allGpsDrivers, smartRouteData, phase1Coords, infoWithout };
+}
+
+// The configured smart drivers who can be ranked for one job, with on-leave
+// drivers swapped for their substitute where one covers. Shared by the assign
+// loop and the re-check so both rank exactly the same pool.
+function buildSmartPool(
+  smartIds: string[],
+  allGpsDrivers: Driver[],
+  phase1Coords: Map<string, { lat: number; lon: number }>,
+  leaveEntries: LeaveEntry[],
+) {
+  const driverById = new Map<string, Driver>(
+    allGpsDrivers.map((d): [string, Driver] => [d.delivery_driver_id, d])
+  );
+  const subForByDriverId = new Map<string, string>(); // ranked driver id → on-leave name they cover
+  const candidates: Driver[] = [];
+  const candidateIds = new Set<string>();
+  // On-leave drivers whose row hands the lane to 3PL express today. Dropped
+  // from the pool here rather than at assign time, so they never reach the
+  // failure summary — a driver the engine never tried must not be counted
+  // among "N tài xế đều đang nghỉ giải lao/offline".
+  const tplCovered: string[] = [];
+  for (const cfgId of smartIds) {
+    let cand = driverById.get(cfgId);
+    let subFor: string | null = null;
+    const lc = isDriverOnLeave(cfgId, leaveEntries);
+    if (lc.onLeave) {
+      const sub = resolveSubstitute(lc.entry!);
+      if (sub.status === "tpl") {
+        tplCovered.push(lc.driverName ?? cfgId);
+        continue;                         // 3PL express covers this lane today
+      }
+      if (sub.status === "ok") {
+        const subDriver = driverById.get(sub.subId);
+        if (subDriver && phase1Coords.has(sub.subId)) {
+          cand = subDriver;                 // rank the substitute, not the absent driver
+          subFor = lc.driverName ?? cfgId;
+        }
+        // sub has no rankable coords → keep cfg driver; assign loop swaps at assign time
+      }
+      // clash / none → keep cfg driver; assign loop emits SUB_CLASH / skips
+    }
+    if (!cand) continue;                                // configured driver not in fleet list
+    if (!phase1Coords.has(cand.delivery_driver_id)) continue;
+    if (candidateIds.has(cand.delivery_driver_id)) {    // dedup (sub == another cfg driver, or two leaves → same sub)
+      if (subFor && !subForByDriverId.has(cand.delivery_driver_id)) {
+        subForByDriverId.set(cand.delivery_driver_id, subFor);
+      }
+      continue;
+    }
+    candidateIds.add(cand.delivery_driver_id);
+    candidates.push(cand);
+    if (subFor) subForByDriverId.set(cand.delivery_driver_id, subFor);
+  }
+  return { driverById, subForByDriverId, candidates, tplCovered };
+}
+
+// Each candidate's straight-line distance to the pickup and the reference
+// point(s) its road distance is measured from, nearest first.
+function smartRankInputs(
+  candidates: Driver[],
+  phase1Coords: Map<string, { lat: number; lon: number }>,
+  routeData: Record<string, DriverRouteInfo>,
+  pickupPt: { lat: number; lon: number },
+) {
+  // Haversine pre-rank — uses effective coords (GPS if available, else start_location)
+  const preRanked = candidates
+    .map((d) => {
+      const c = phase1Coords.get(d.delivery_driver_id)!;
+      return {
+        d,
+        hkm: Math.round(haversineKm(pickupPt.lat, pickupPt.lon, c.lat, c.lon) * 10) / 10,
+      };
+    })
+    .sort((a, b) => a.hkm - b.hkm);
+
+  // Goong re-rank: reference stop → pickup. Every candidate's reference
+  // points (primary ref; for "Next Stop" also the last completed stop —
+  // driver may still be there; min of both wins) resolve in ONE pass per
+  // job: self-pairs are 0 km for free, repeats and known pairs come from
+  // the Redis cache, and only the misses ride a single multi-origin
+  // matrix request — instead of up to two 1×1 Goong round trips per
+  // candidate. Nulls still fall back to haversine per point.
+  return preRanked.map(({ d, hkm }) => {
+    const info = routeData[d.delivery_driver_id];
+    const ref = info?.ref ?? null;
+    const refPts: { lat: number; lon: number }[] = ref ? [{ lat: ref.lat, lon: ref.lon }] : [];
+    if (ref && ref.altLat != null && ref.altLon != null) refPts.push({ lat: ref.altLat, lon: ref.altLon });
+    return { d, hkm, info, ref, refPts };
+  });
+}
+
+// The smart ranking itself: each candidate scored from their reference point(s)
+// with the road distances already resolved (`flatRoads`, aligned with every
+// candidate's refPts in order), sorted best first.
+function scoreSmartCandidates(
+  prepped: ReturnType<typeof smartRankInputs>,
+  flatRoads: ({ distance_km: number; eta_mins: number | null } | null)[],
+  pickupPt: { lat: number; lon: number },
+) {
+  // Rank by travel TIME (Goong eta_mins) instead of road distance when
+  // SMART_RANK_BY_DURATION=1. Duration reflects HCMC traffic/road speed, so the
+  // driver who *arrives soonest* wins — not merely the one fewest km away. eta_mins
+  // is already returned + cached alongside distance_km, so this costs no extra Goong
+  // call. The comparator is unit-agnostic (it just compares sortDist); gpsKm stays
+  // in km for the en-route GPS tiebreak band.
+  const rankByDuration = process.env.SMART_RANK_BY_DURATION === "1";
+  let ptCursor = 0;
+  const nowMin = vnMinutesSinceMidnight();
+  const withGoong = prepped.map(({ d, hkm, info, ref, refPts }) => {
+    const workload = info?.workload ?? 0;
+    const tiebreakTs = ref?.tiebreakTs ?? null;
+    const priority = ref ? ROUTE_STATE_PRIORITY[ref.label] : 0;
+    const tbTime   = hhmmVn(tiebreakTs);
+    const labelTag = ref ? `[${ref.label}${tbTime ? ` · ${TIEBREAK_VERB[ref.label]} ${tbTime}` : ""}] ` : "";
+    const jobsDone = info?.jobsDone ?? 0;
+    const name = `${d.first_name} ${d.last_name}`.trim();
+    if (!ref) {
+      // No route reference → only the live-GPS haversine is available. In duration
+      // mode convert it to estimated minutes so it ranks on the same scale.
+      const sortDist = rankByDuration ? Math.round(hkm * STRAIGHT_KM_TO_MIN) : hkm;
+      const distLabel = rankByDuration
+        ? `~${Math.round(hkm * STRAIGHT_KM_TO_MIN)}min GPS est (load ${workload})`
+        : `${hkm}km GPS (load ${workload})`;
+      const etaMin = Math.round(hkm * STRAIGHT_KM_TO_MIN);
+      return { d, sortDist, etaMin, priority, label: null, gpsKm: hkm, idleBand: idleBand(tiebreakTs, nowMin), workload, tiebreakTs, jobsDone, name, distLabel };
+    }
+    const entries = refPts.map(() => flatRoads[ptCursor++] ?? null);
+    const roads = entries.map((e) => e?.distance_km ?? null);
+    const mins  = entries.map((e) => e?.eta_mins ?? null);
+    const straights = refPts.map(
+      (p) => Math.round(haversineKm(p.lat, p.lon, pickupPt.lat, pickupPt.lon) * 10) / 10
+    );
+    // Per-point effective cost in the ranking unit (mins or km): Goong value first,
+    // haversine-derived fallback second. bestIdx = closest reference point.
+    const effPerPoint = refPts.map((_, i) =>
+      rankByDuration
+        ? (mins[i] ?? Math.round(straights[i] * STRAIGHT_KM_TO_MIN))
+        : (roads[i] ?? straights[i])
+    );
+    const bestIdx = effPerPoint.reduce((bi, e, i) => (e < effPerPoint[bi] ? i : bi), 0);
+    const roadKm = roads[bestIdx];
+    const roadMin = mins[bestIdx];
+    const refHkm = straights[bestIdx];
+    const sortDist = effPerPoint[bestIdx];
+    const refName  = ref.customerName ? `@${ref.customerName} ` : "";
+    const minTag   = refPts.length > 1 ? (bestIdx === 1 ? "via prev " : "via next ") : "";
+    const distLabel = rankByDuration
+      ? (roadMin != null
+          ? `${labelTag}${hkm}km GPS, ${minTag}${refName}→ ${roadMin}min road (${roadKm}km) (load ${workload})`
+          : `${labelTag}${hkm}km GPS, ${minTag}${refName}→ ~${Math.round(refHkm * STRAIGHT_KM_TO_MIN)}min est (${refHkm}km straight) (load ${workload})`)
+      : (roadKm != null
+          ? `${labelTag}${hkm}km GPS, ${minTag}${refName}→ ${roadKm}km road (load ${workload})`
+          : `${labelTag}${hkm}km GPS, ${minTag}${refName}→ ${refHkm}km straight (load ${workload})`);
+    const etaMin = roadMin ?? Math.round(refHkm * STRAIGHT_KM_TO_MIN);
+    return { d, sortDist, etaMin, priority, label: ref.label, gpsKm: hkm, idleBand: idleBand(tiebreakTs, nowMin), workload, tiebreakTs, jobsDone, name, distLabel };
+  });
+  withGoong.sort(rankingComparator);
+  return withGoong;
+}
+
+// Re-rank the engine's own smart picks whose driver has not set off, and move each
+// one whose winner now reaches the pickup RECHECK_MIN_GAIN_MIN sooner. Rules and
+// modes in lib/smart-recheck.ts.
+async function recheckSmartJobs(
+  assigned: Job[],
+  config: Config,
+  env: Env,
+  today: string,
+  leaveEntries: LeaveEntry[],
+  kqvt: KqvtCycle,
+  getPrep: () => Promise<SmartPrep>,
+  log: (msg: string, level?: LogLevel) => void,
+): Promise<void> {
+  const mode = recheckMode();
+  if (mode === "off") return;
+  const nowMs = Date.now();
+  // Free pre-filter: a waiting pickup at all, before the one Redis read.
+  const waiting = assigned.filter((j) => {
+    const pickups = (j.stops ?? []).filter((s) => s.stop_type_id === 1);
+    return !!j.delivery_driver_id && pickups.length > 0 && pickups.every((s) => s.stop_status_id === 1);
+  });
+  if (waiting.length === 0) return;
+  const records = await readSmartAssigns(env, today);
+  const due = waiting.filter((j) => isRecheckable(j, records.get(j.job_id), nowMs));
+  if (due.length === 0) return;
+
+  const prep = await getPrep();
+  const now = new Date();
+  const plans = [];
+  for (const job of due) {
+    const customerId = getCustomerIdFromJob(job);
+    const pickup = job.stops.find((s) => s.stop_type_id === 1);
+    if (!customerId || pickup?.latitude == null || pickup?.longitude == null) continue;
+    const dropoffId = job.stops.find((s) => s.stop_type_id === 2)?.customer_id ?? null;
+    const mapping = findSmartMapping(config, customerId, now, dropoffId);
+    if (!mapping || mapping.smart_driver_id.length < 2) continue;
+    const holderId = job.delivery_driver_id!;
+    const pool = buildSmartPool(mapping.smart_driver_id, prep.allGpsDrivers, prep.phase1Coords, leaveEntries);
+    // A holder outside today's pool (config changed, no position) has nothing fair to be compared with.
+    if (!pool.candidates.some((d) => d.delivery_driver_id === holderId)) continue;
+    const holderInfo = prep.infoWithout(holderId, job.job_id);
+    const routeData = holderInfo ? { ...prep.smartRouteData, [holderId]: holderInfo } : prep.smartRouteData;
+    const pickupPt = { lat: pickup.latitude, lon: pickup.longitude };
+    plans.push({ job, customerId, holderId, pool, pickupPt, prepped: smartRankInputs(pool.candidates, prep.phase1Coords, routeData, pickupPt) });
+  }
+  if (plans.length === 0) return;
+
+  // Every job's distances in one cache read; misses are batched by pickup.
+  const roads = await roadDistancesForPairs(
+    plans.flatMap((p) => p.prepped.flatMap((c) => c.refPts.map((from) => ({ from, to: p.pickupPt })))),
+  );
+  let cursor = 0;
+  for (const p of plans) {
+    const n = p.prepped.reduce((k, c) => k + c.refPts.length, 0);
+    const flat = roads.slice(cursor, (cursor += n));
+    const jobId = p.job.job_id;
+    const ranked = rankWithHolderFirst(
+      scoreSmartCandidates(p.prepped, flat, p.pickupPt),
+      kqvt.holders.get(p.customerId),
+      (x) => x.d.delivery_driver_id,
+    );
+    // As in the assign loop, an on-leave driver nobody covers for cannot take it.
+    const winner = ranked.find((x) =>
+      p.pool.subForByDriverId.has(x.d.delivery_driver_id) || !isDriverOnLeave(x.d.delivery_driver_id, leaveEntries).onLeave);
+    const holder = ranked.find((x) => x.d.delivery_driver_id === p.holderId);
+    if (!winner || !holder) continue;
+    const gain = moveGain(p.holderId, holder.etaMin, winner.d.delivery_driver_id, winner.etaMin);
+    if (gain == null) continue;
+
+    const route = `${p.job.stops.find((s) => s.stop_type_id === 1)?.customer_name ?? p.customerId} → ${
+      p.job.stops.find((s) => s.stop_type_id === 2)?.customer_name ?? "—"}`;
+    const detail = `${driverDisplayName(holder.name)} ${holder.etaMin}min (${holder.distLabel}) → ${
+      driverDisplayName(winner.name)} ${winner.etaMin}min (${winner.distLabel}), sớm hơn ${gain} phút`;
+    if (mode === "log") {
+      log(`Job ${jobId} - RECHECK (chỉ ghi log, chưa chuyển): ${detail} | ${route}`, "INFO");
+      await logRecheck(env, today, `${vnTimestamp()} job ${jobId} would move: ${detail} | ${route}`);
+      // Looked at again in 10 minutes, as it would be after a real move.
+      await recordSmartAssign(env, today, jobId, p.holderId);
+      continue;
+    }
+    const winnerId = winner.d.delivery_driver_id;
+    const r = await assignJob(winnerId, jobId, env, p.pool.driverById.get(winnerId));
+    if (r.status === 200) {
+      log(`Job ${jobId} - RECHECK chuyển: ${detail} | ${route}`, "OK");
+      await logRecheck(env, today, `${vnTimestamp()} job ${jobId} moved: ${detail} | ${route}`);
+      await recordSmartAssign(env, today, jobId, winnerId);
+      await kqvt.afterAssign(p.job, winnerId);
+    } else {
+      log(`Job ${jobId} - RECHECK failed: ${friendlyError(r.body)} | ${route}`, "WARN");
+      await recordSmartAssign(env, today, jobId, p.holderId); // not retried every cycle
+    }
+  }
+}
+
 export async function autoAssignCycle(
   config: Config,
   env: Env = "prod",
@@ -2129,6 +2572,17 @@ export async function autoAssignCycle(
       .catch((e) => { log(`KQ/VT step failed: ${String(e).slice(0, 120)}`, "WARN"); return kqvt; });
   }
 
+  // Smart re-check: the engine's own smart picks whose driver has not set off yet,
+  // re-ranked on where everyone is now (lib/smart-recheck.ts). Before the quiet
+  // exit, which most cycles take. Shares the cycle's smart prep with the assign loop.
+  let smartPrepP: Promise<SmartPrep> | null = null;
+  const getSmartPrep = () => (smartPrepP ??= prepareSmart(config, env, leaveEntries, timelineRoutesForSmart, log));
+  if (!onlyJobIds && !skipSmart && assignedJobsToday && timelineRoutesForSmart) {
+    await recheckSmartJobs(assignedJobsToday, config, env, today, leaveEntries, kqvt, getSmartPrep, log).catch((e) =>
+      log(`Smart re-check failed: ${String(e).slice(0, 120)}`, "WARN"),
+    );
+  }
+
   if (jobs.length === 0) {
     log("No unassigned jobs");
     // THE LATE CHECK RUNS HERE TOO, and this is the exit most cycles take.
@@ -2198,157 +2652,7 @@ export async function autoAssignCycle(
     return cid !== null && smartCustomerIds.has(cid);
   });
 
-  // Note: `allGpsDrivers` now also includes drivers without GPS if they have a start_location
-  // (Phase 1 haversine falls back to start_location when GPS is unavailable).
-  let allGpsDrivers: Driver[] = [];
-  let smartRouteData: Record<string, DriverRouteInfo> = {};
-  const phase1Coords = new Map<string, { lat: number; lon: number }>();
-
-  if (hasSmartJobs) {
-    const fetchedDrivers = await getDrivers(env);
-    allGpsDrivers = fetchedDrivers.filter((d) =>
-      (d.latitude != null && d.longitude != null) || !!d.start_location_customer_id
-    );
-    const shiftStartByDriverId: Record<string, string | null> = {};
-    for (const d of allGpsDrivers) shiftStartByDriverId[d.delivery_driver_id] = d.shift_time_start ?? null;
-    // Client-coordinate index from the timeline (Change 2) — fixed-client GPS for
-    // every customer that appears as a stop today, harvested from the routes we
-    // already have. Consulted before getCustomerById below. Empty when the timeline
-    // fetch failed (no routes stashed), so that path stays unchanged.
-    let clientCoords = new Map<string, { lat: number; lon: number; name: string | null }>();
-    if (timelineRoutesForSmart) {
-      // Reuse the routes the fetch phase already pulled — same
-      // delivery_timeline_route_list payload, so no second ~2.3s call this cycle.
-      smartRouteData = timelineRoutesToDriverInfo(timelineRoutesForSmart, shiftStartByDriverId);
-      clientCoords = timelineRoutesToCustomerCoords(timelineRoutesForSmart);
-    } else {
-      smartRouteData = await fetchSmartRouteData(vnDate(), env, shiftStartByDriverId);
-    }
-
-    // ── Substitute start-location inheritance ──
-    // A driver covering an on-leave pool driver "takes after" that driver's start
-    // location: he's taking over that route, so smart-assign should rank him from
-    // its origin — not from his own base. Map sub → the covered driver's
-    // start_location so the reference-stop and coord fallbacks below treat the sub
-    // like that route's driver. The covered base OVERRIDES the sub's own base (see
-    // effStartLoc): a relief driver who also has a start_location of his own would
-    // otherwise keep ranking from it while covering, skewing the assignment.
-    // Caveat: this map is keyed by sub globally, so a driver who substitutes for one
-    // route while also being a regular member of a *different* pool would use the
-    // covered base in both. Assumed rare; make per-pool if that combination appears.
-    const subInheritedStartLoc = new Map<string, string>(); // subId → covered start_location_customer_id
-    {
-      const fetchedById = new Map<string, Driver>(
-        fetchedDrivers.map((d): [string, Driver] => [d.delivery_driver_id, d])
-      );
-      const poolIds = new Set(config.mappings.flatMap((m) => m.smart_driver_id));
-      for (const cfgId of poolIds) {
-        const lc = isDriverOnLeave(cfgId, leaveEntries);
-        if (!lc.onLeave) continue;
-        const sub = resolveSubstitute(lc.entry!);
-        if (sub.status !== "ok") continue;
-        const subDrv = fetchedById.get(sub.subId);
-        const covered = fetchedById.get(cfgId);
-        if (subDrv && covered?.start_location_customer_id) {
-          subInheritedStartLoc.set(sub.subId, covered.start_location_customer_id);
-        }
-      }
-    }
-    // Effective start_location for a driver: the covered route's base if he's a sub,
-    // else his own. Inherited (covered) base wins so a sub with his own start
-    // location still ranks from the route he's covering, not from home.
-    const effStartLoc = (d: Driver): string | null =>
-      subInheritedStartLoc.get(d.delivery_driver_id) ?? d.start_location_customer_id ?? null;
-
-    // ── Fetch start_location coords for drivers who need them ──
-    // Two reasons: (1) no GPS → Phase 1 fallback, (2) no route today → reference-stop fallback.
-    const startLocIdsNeeded = new Set<string>();
-    for (const d of allGpsDrivers) {
-      const sl = effStartLoc(d);
-      if (!sl) continue;
-      // Only drivers without a GPS fix: with one, both the Phase 1 coords and
-      // the reference anchor come from the fix, not from start_location.
-      if (d.latitude == null || d.longitude == null) startLocIdsNeeded.add(sl);
-    }
-    const startLocCoords = new Map<string, { lat: number; lon: number; name: string | null }>();
-    const nowMs = Date.now();
-    const startLocToFetch: string[] = [];
-    for (const cid of startLocIdsNeeded) {
-      // Timeline-harvested coords first (free — already in memory), then the in-memory
-      // TTL cache, then a getCustomerById fetch for whatever's left.
-      const fromTimeline = clientCoords.get(cid);
-      if (fromTimeline) { startLocCoords.set(cid, fromTimeline); continue; }
-      const hit = startLocCache.get(`${env}:${cid}`);
-      if (hit && nowMs - hit.fetchedAt < START_LOC_TTL_MS) startLocCoords.set(cid, hit.coords);
-      else startLocToFetch.push(cid);
-    }
-    await Promise.all(
-      startLocToFetch.map(async (cid) => {
-        const customerData = await getCustomerById(cid, env);
-        const c = customerData?.data;
-        if (c?.latitude != null && c?.longitude != null) {
-          const coords = { lat: c.latitude, lon: c.longitude, name: c.customer_name ?? null };
-          startLocCoords.set(cid, coords);
-          startLocCache.set(`${env}:${cid}`, { coords, fetchedAt: nowMs });
-        }
-      })
-    );
-
-    // Anchor every driver on a place they have actually been. An unreached
-    // anchor — no route (start_location), or an untouched stop of a PLANNED job
-    // — is where the driver is *meant* to be, and it competes on equal footing
-    // with a driver standing on the pickup. An ad-hoc stop is left alone: it was
-    // dispatched to this driver on purpose. See isUnreachedAnchor.
-    for (const d of allGpsDrivers) {
-      const info = smartRouteData[d.delivery_driver_id];
-      const ref = info?.ref ?? null;
-      if (!isUnreachedAnchor(ref)) continue;
-
-      // Best available truth, in order: the live GPS fix → the last stop we know
-      // they stood on → start_location (no route at all). A driver with none of
-      // these keeps their planned anchor; there is nothing better to say.
-      let nextRef: RefStop | null = null;
-      if (d.latitude != null && d.longitude != null) {
-        nextRef = liveGpsRef(ref, d.latitude, d.longitude, d.shift_time_start ?? null);
-      } else if (ref) {
-        nextRef = lastRealPositionRef(ref);
-      } else {
-        const sl = effStartLoc(d);
-        const coords = sl ? startLocCoords.get(sl) : undefined;
-        if (coords) {
-          nextRef = {
-            lat: coords.lat,
-            lon: coords.lon,
-            label: "Start Location",
-            customerName: coords.name,
-            tiebreakTs: d.shift_time_start ?? null,
-          };
-        }
-      }
-      if (!nextRef) continue;
-
-      smartRouteData[d.delivery_driver_id] = {
-        ref: nextRef,
-        label: nextRef.label,
-        workload: info?.workload ?? 0,
-        lastCompletedTs: info?.lastCompletedTs ?? null,
-        jobsDone: info?.jobsDone ?? 0,
-      };
-    }
-
-    // Phase 1 effective coords: GPS if available, else start_location fallback
-    for (const d of allGpsDrivers) {
-      if (d.latitude != null && d.longitude != null) {
-        phase1Coords.set(d.delivery_driver_id, { lat: d.latitude, lon: d.longitude });
-      } else {
-        const sl = effStartLoc(d);
-        const coords = sl ? startLocCoords.get(sl) : undefined;
-        if (coords) phase1Coords.set(d.delivery_driver_id, { lat: coords.lat, lon: coords.lon });
-      }
-    }
-
-    log(`Smart-assign ready: ${phase1Coords.size} candidate driver(s) (GPS or start_location)`);
-  }
+  const { allGpsDrivers, smartRouteData, phase1Coords } = hasSmartJobs ? await getSmartPrep() : EMPTY_SMART_PREP;
   phase("smart-prep");
 
   // Duplicate-check map from the status-4 partition obtained above. Reused for
@@ -2677,49 +2981,8 @@ export async function autoAssignCycle(
         // one's stale location. The on-leave driver stays in the pool only when
         // their sub can't be ranked (clash / no cover / sub has no coords); the
         // assign loop below resolves those the legacy way (swap at assign time).
-        const driverById = new Map<string, Driver>(
-          allGpsDrivers.map((d): [string, Driver] => [d.delivery_driver_id, d])
-        );
-        const subForByDriverId = new Map<string, string>(); // ranked driver id → on-leave name they cover
-        const candidates: Driver[] = [];
-        const candidateIds = new Set<string>();
-        // On-leave drivers whose row hands the lane to 3PL express today. Dropped
-        // from the pool here rather than at assign time, so they never reach the
-        // failure summary — a driver the engine never tried must not be counted
-        // among "N tài xế đều đang nghỉ giải lao/offline".
-        const tplCovered: string[] = [];
-        for (const cfgId of smartMapping.smart_driver_id) {
-          let cand = driverById.get(cfgId);
-          let subFor: string | null = null;
-          const lc = isDriverOnLeave(cfgId, leaveEntries);
-          if (lc.onLeave) {
-            const sub = resolveSubstitute(lc.entry!);
-            if (sub.status === "tpl") {
-              tplCovered.push(lc.driverName ?? cfgId);
-              continue;                         // 3PL express covers this lane today
-            }
-            if (sub.status === "ok") {
-              const subDriver = driverById.get(sub.subId);
-              if (subDriver && phase1Coords.has(sub.subId)) {
-                cand = subDriver;                 // rank the substitute, not the absent driver
-                subFor = lc.driverName ?? cfgId;
-              }
-              // sub has no rankable coords → keep cfg driver; assign loop swaps at assign time
-            }
-            // clash / none → keep cfg driver; assign loop emits SUB_CLASH / skips
-          }
-          if (!cand) continue;                                // configured driver not in fleet list
-          if (!phase1Coords.has(cand.delivery_driver_id)) continue;
-          if (candidateIds.has(cand.delivery_driver_id)) {    // dedup (sub == another cfg driver, or two leaves → same sub)
-            if (subFor && !subForByDriverId.has(cand.delivery_driver_id)) {
-              subForByDriverId.set(cand.delivery_driver_id, subFor);
-            }
-            continue;
-          }
-          candidateIds.add(cand.delivery_driver_id);
-          candidates.push(cand);
-          if (subFor) subForByDriverId.set(cand.delivery_driver_id, subFor);
-        }
+        const { driverById, subForByDriverId, candidates, tplCovered } =
+          buildSmartPool(smartMapping.smart_driver_id, allGpsDrivers, phase1Coords, leaveEntries);
         if (candidates.length === 0) {
           if (tplCovered.length > 0) {
             // Not a staffing gap: the lane is on 3PL express today and the branch
@@ -2738,91 +3001,12 @@ export async function autoAssignCycle(
           continue;
         }
 
-        // Haversine pre-rank — uses effective coords (GPS if available, else start_location)
-        const preRanked = candidates
-          .map((d) => {
-            const c = phase1Coords.get(d.delivery_driver_id)!;
-            return {
-              d,
-              hkm: Math.round(haversineKm(pickupStop.latitude!, pickupStop.longitude!, c.lat, c.lon) * 10) / 10,
-            };
-          })
-          .sort((a, b) => a.hkm - b.hkm);
-
-        // Goong re-rank: reference stop → pickup. Every candidate's reference
-        // points (primary ref; for "Next Stop" also the last completed stop —
-        // driver may still be there; min of both wins) resolve in ONE pass per
-        // job: self-pairs are 0 km for free, repeats and known pairs come from
-        // the Redis cache, and only the misses ride a single multi-origin
-        // matrix request — instead of up to two 1×1 Goong round trips per
-        // candidate. Nulls still fall back to haversine per point.
         const pickupPt = { lat: pickupStop.latitude!, lon: pickupStop.longitude! };
-        const prepped = preRanked.map(({ d, hkm }) => {
-          const info = smartRouteData[d.delivery_driver_id];
-          const ref = info?.ref ?? null;
-          const refPts: { lat: number; lon: number }[] = ref ? [{ lat: ref.lat, lon: ref.lon }] : [];
-          if (ref && ref.altLat != null && ref.altLon != null) refPts.push({ lat: ref.altLat, lon: ref.altLon });
-          return { d, hkm, info, ref, refPts };
-        });
+        const prepped = smartRankInputs(candidates, phase1Coords, smartRouteData, pickupPt);
         const _tGoong = Date.now();
         const flatRoads = await roadDistancesToPoint(prepped.flatMap((p) => p.refPts), pickupPt);
         goongMs += Date.now() - _tGoong;
-        // Rank by travel TIME (Goong eta_mins) instead of road distance when
-        // SMART_RANK_BY_DURATION=1. Duration reflects HCMC traffic/road speed, so the
-        // driver who *arrives soonest* wins — not merely the one fewest km away. eta_mins
-        // is already returned + cached alongside distance_km, so this costs no extra Goong
-        // call. The comparator is unit-agnostic (it just compares sortDist); gpsKm stays
-        // in km for the en-route GPS tiebreak band.
-        const rankByDuration = process.env.SMART_RANK_BY_DURATION === "1";
-        let ptCursor = 0;
-        const nowMin = vnMinutesSinceMidnight();
-        const withGoong = prepped.map(({ d, hkm, info, ref, refPts }) => {
-          const workload = info?.workload ?? 0;
-          const tiebreakTs = ref?.tiebreakTs ?? null;
-          const priority = ref ? ROUTE_STATE_PRIORITY[ref.label] : 0;
-          const tbTime   = hhmmVn(tiebreakTs);
-          const labelTag = ref ? `[${ref.label}${tbTime ? ` · ${TIEBREAK_VERB[ref.label]} ${tbTime}` : ""}] ` : "";
-          const jobsDone = info?.jobsDone ?? 0;
-          const name = `${d.first_name} ${d.last_name}`.trim();
-          if (!ref) {
-            // No route reference → only the live-GPS haversine is available. In duration
-            // mode convert it to estimated minutes so it ranks on the same scale.
-            const sortDist = rankByDuration ? Math.round(hkm * STRAIGHT_KM_TO_MIN) : hkm;
-            const distLabel = rankByDuration
-              ? `~${Math.round(hkm * STRAIGHT_KM_TO_MIN)}min GPS est (load ${workload})`
-              : `${hkm}km GPS (load ${workload})`;
-            return { d, sortDist, priority, label: null, gpsKm: hkm, idleBand: idleBand(tiebreakTs, nowMin), workload, tiebreakTs, jobsDone, name, distLabel };
-          }
-          const entries = refPts.map(() => flatRoads[ptCursor++] ?? null);
-          const roads = entries.map((e) => e?.distance_km ?? null);
-          const mins  = entries.map((e) => e?.eta_mins ?? null);
-          const straights = refPts.map(
-            (p) => Math.round(haversineKm(p.lat, p.lon, pickupPt.lat, pickupPt.lon) * 10) / 10
-          );
-          // Per-point effective cost in the ranking unit (mins or km): Goong value first,
-          // haversine-derived fallback second. bestIdx = closest reference point.
-          const effPerPoint = refPts.map((_, i) =>
-            rankByDuration
-              ? (mins[i] ?? Math.round(straights[i] * STRAIGHT_KM_TO_MIN))
-              : (roads[i] ?? straights[i])
-          );
-          const bestIdx = effPerPoint.reduce((bi, e, i) => (e < effPerPoint[bi] ? i : bi), 0);
-          const roadKm = roads[bestIdx];
-          const roadMin = mins[bestIdx];
-          const refHkm = straights[bestIdx];
-          const sortDist = effPerPoint[bestIdx];
-          const refName  = ref.customerName ? `@${ref.customerName} ` : "";
-          const minTag   = refPts.length > 1 ? (bestIdx === 1 ? "via prev " : "via next ") : "";
-          const distLabel = rankByDuration
-            ? (roadMin != null
-                ? `${labelTag}${hkm}km GPS, ${minTag}${refName}→ ${roadMin}min road (${roadKm}km) (load ${workload})`
-                : `${labelTag}${hkm}km GPS, ${minTag}${refName}→ ~${Math.round(refHkm * STRAIGHT_KM_TO_MIN)}min est (${refHkm}km straight) (load ${workload})`)
-            : (roadKm != null
-                ? `${labelTag}${hkm}km GPS, ${minTag}${refName}→ ${roadKm}km road (load ${workload})`
-                : `${labelTag}${hkm}km GPS, ${minTag}${refName}→ ${refHkm}km straight (load ${workload})`);
-          return { d, sortDist, priority, label: ref.label, gpsKm: hkm, idleBand: idleBand(tiebreakTs, nowMin), workload, tiebreakTs, jobsDone, name, distLabel };
-        });
-        withGoong.sort(rankingComparator);
+        const withGoong = scoreSmartCandidates(prepped, flatRoads, pickupPt);
         // The driver holding this client's KQ/VT goes first: the hand-over rides on
         // this visit. An unavailable holder falls through to the ranking as usual.
         {
@@ -2903,6 +3087,7 @@ export async function autoAssignCycle(
               const tag = attempt > 0 ? `[#${attempt + 1}] ` : "";
               const who = subFor ? `${ctName || targetId} (sub for ${subFor}) | ${rankStr}` : rankStr;
               log(`Job ${jobId} - SMART ${tag}: ${who}${noteTag} | ${route}`, "OK");
+              await recordSmartAssign(env, today, jobId, targetId);
               await kqvt.afterAssign(job, targetId);
               assigned = true;
               break;
