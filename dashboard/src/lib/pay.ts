@@ -699,6 +699,14 @@ export async function attachPayDistances(jobs: PayJob[]): Promise<DistanceStats>
   return stats;
 }
 
+/** Paid distances set by hand for a pickup→drop-off pair (customer ids), winning
+ *  over the road lookup. Hand-kept; each one says who decided and when.
+ *  ponytail: a code map — move to a table once there are more than a handful. */
+export const PAY_DISTANCE_OVERRIDES: Record<string, number> = {
+  // BRA - D006 → BRA - D001: 8.1 km (supervisor, 2026-10-19; lookups gave 7.84–7.90).
+  "c07bc96a-3d81-11ed-989f-506b8dbc8dfb>3927b076-3af9-11ed-b939-506b8dbc8dfb": 8.1,
+};
+
 /** The whole pipeline for one day: routes in, priced pay rows out. Shared by the
  *  archiver and any caller that wants a day without persisting it. */
 export async function buildDayPay(
@@ -713,5 +721,9 @@ export async function buildDayPay(
     punches.push(...rows.punches);
   }
   const stats = await attachPayDistances(jobs);
+  for (const j of jobs) {
+    const km = PAY_DISTANCE_OVERRIDES[`${j.pickup_customer_id}>${j.dropoff_customer_id}`];
+    if (km != null) j.distance_km = km;
+  }
   return { jobs, punches, stats };
 }
