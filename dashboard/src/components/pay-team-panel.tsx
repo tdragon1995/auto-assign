@@ -61,7 +61,7 @@ interface PayTeamReport {
   coverage: { expected_days: number; missing_days: string[]; period_closed: boolean; shifts_imported: boolean; pending_corrections: number; ready: boolean };
   totals: Omit<DriverRow, "driver_id" | "driver_name">;
   no_shift?: NoShiftDay[];
-  suspects?: { driver_id: string; driver_name: string; date: string; shift: string; last_task: string | null; reasons: string[] }[];
+  suspects?: SuspectDay[];
   drivers: DriverRow[];
   error?: string;
 }
@@ -134,8 +134,76 @@ interface DayLine {
   first_task: string | null; last_task: string | null; paid_from: string | null; paid_to: string | null;
   worked_mins: number; bo_mins: number; multiplier: number; jobs: number; km: number;
   hour_pay: number; km_pay: number; no_shift: boolean; corrected: boolean; pending: boolean; late_mins: number; suspect: string[]; admin_done: boolean;
+  shift_in: string | null; shift_out: string | null;
 }
 const LATE_FLAG = 45;
+
+interface SuspectDay {
+  driver_id: string; driver_name: string; date: string; shift: string; last_task: string | null; reasons: string[];
+  /** The supervisor's ruling: ok = paid as computed, cut = paid `paid` instead. */
+  review: { verdict: "ok" | "cut"; note: string; paid: string | null } | null;
+}
+
+/** One "Nghi vấn" day with its ruling: Giữ giờ (pay as computed) or Cắt giờ (pay
+ *  the hours typed — a supervisor correction, approved at once). A ruled day stays
+ *  listed, greyed, with Hoàn tác. */
+function SuspectRow({ r, onChanged }: { r: SuspectDay; onChanged: () => void }) {
+  const times = r.shift.match(/\d{2}:\d{2}/g) ?? [];
+  const [cutting, setCutting] = useState(false);
+  const [range, setRange] = useState({ in_time: times[0] ?? "", out_time: times.at(-1) ?? "" });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  async function send(action: "suspect_ok" | "suspect_cut" | "suspect_undo") {
+    setBusy(true); setErr(null);
+    try {
+      const res = await fetch("/api/pay/corrections", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, driver_id: r.driver_id, date: r.date, ...(action === "suspect_cut" ? range : {}),
+          note: action === "suspect_cut" ? `Nghi vấn kéo dài giờ: ${r.reasons.join("; ")}` : "" }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j.ok) { setErr(j.error ?? "Không lưu được."); return; }
+      setCutting(false);
+      onChanged();
+    } catch {
+      setErr("Không kết nối được máy chủ.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  const btn = "rounded border px-2 py-0.5 text-xs font-semibold disabled:opacity-50";
+  return (
+    <tr className={r.review ? "text-slate-400" : ""}>
+      <td className="px-3 py-1.5 whitespace-nowrap">{r.date.slice(8, 10)}/{r.date.slice(5, 7)}</td>
+      <td className="px-2 py-1.5"><DriverName full={r.driver_name} className={r.review ? "" : "text-slate-800"} /></td>
+      <td className="px-2 py-1.5">{r.shift}</td>
+      <td className="px-2 py-1.5">{r.last_task ?? "—"}</td>
+      <td className={`px-3 py-1.5 ${r.review ? "" : "text-rose-700"}`}>{r.reasons.join(" · ")}</td>
+      <td className="px-3 py-1.5 whitespace-nowrap">
+        {r.review ? (
+          <span className="text-slate-600">
+            {r.review.verdict === "ok" ? "Đã duyệt — giữ giờ" : `Đã cắt giờ: trả ${r.review.paid}`}{" "}
+            <button disabled={busy} onClick={() => send("suspect_undo")} className="underline underline-offset-2 hover:text-slate-900 disabled:opacity-50">Hoàn tác</button>
+          </span>
+        ) : cutting ? (
+          <span className="inline-flex items-center gap-1">
+            <input type="time" aria-label="Giờ vào được trả" className="rounded border border-slate-300 px-1 py-0.5 text-xs" value={range.in_time} onChange={(e) => setRange({ ...range, in_time: e.target.value })} />
+            –
+            <input type="time" aria-label="Giờ ra được trả" className="rounded border border-slate-300 px-1 py-0.5 text-xs" value={range.out_time} onChange={(e) => setRange({ ...range, out_time: e.target.value })} />
+            <button disabled={busy || !range.in_time || !range.out_time} onClick={() => send("suspect_cut")} className={`${btn} border-rose-600 bg-rose-600 text-white hover:bg-rose-700`}>Lưu</button>
+            <button disabled={busy} onClick={() => setCutting(false)} className={`${btn} border-slate-300 text-slate-600 hover:bg-slate-50`}>Huỷ</button>
+          </span>
+        ) : (
+          <span className="inline-flex gap-1">
+            <button disabled={busy} onClick={() => send("suspect_ok")} title="Đã kiểm tra, giữ giờ như hệ thống tính" className={`${btn} border-emerald-300 text-emerald-700 hover:bg-emerald-50`}>Giữ giờ</button>
+            <button disabled={busy} onClick={() => setCutting(true)} title="Nhập giờ vào–ra được trả cho ngày này" className={`${btn} border-rose-300 text-rose-700 hover:bg-rose-50`}>Cắt giờ</button>
+          </span>
+        )}
+        {err && <div className="text-xs text-red-600">{err}</div>}
+      </td>
+    </tr>
+  );
+}
 const span = (a: string | null, b: string | null) => (a || b ? `${a ?? "?"}–${b ?? "?"}` : "—");
 
 /** The days behind one driver's totals, loaded when the row is opened. */
@@ -285,6 +353,20 @@ export function PayTeamPanel() {
       const j = await res.json();
       if (!res.ok || !j.ok) { setError(j.error ?? "Không tải được chi tiết chuyến."); return; }
       const jobs = j.jobs as DetailJob[];
+      // Day lines for every driver: the shift (ca vào / ca ra) beside the taps and paid hours.
+      const dres = await fetch(`/api/pay/team?month=${data.month}&driver=all`);
+      const dj = await dres.json();
+      if (!dres.ok || !dj.ok) { setError(dj.error ?? "Không tải được chi tiết ngày."); return; }
+      const dayRows = (dj.drivers as (DriverRow & { days?: DayLine[] })[]).flatMap((d) => (d.days ?? []).map((x) => [
+        d.driver_name, staffCode(d.driver_name), x.date, x.shift_in ?? "", x.shift_out ?? "", x.shift,
+        x.tap_in ?? "", x.tap_out ?? "", x.first_task ?? "", x.last_task ?? "", x.paid_from ?? "", x.paid_to ?? "",
+        x.worked_mins, x.hour_pay, x.jobs, x.km, x.km_pay,
+        [x.no_shift && "Không ca", x.corrected && "Cập nhật công", x.late_mins > LATE_FLAG && `Vào trễ ${x.late_mins} phút`, ...x.suspect]
+          .filter(Boolean).join("; "),
+      ]));
+      const dayHead = ["Tài xế", "Mã số nhân viên", "Ngày", "Ca vào", "Ca ra", "Ca (tất cả)", "Chấm công vào", "Chấm công ra",
+                       "Chuyến đầu", "Chuyến cuối", "Tính giờ từ", "Tính giờ đến", "Phút tính tiền", "Tiền giờ (đ)",
+                       "Số chuyến", "Km", "Tiền km (đ)", "Ghi chú"];
 
       const head = ["Tài xế", "Số ngày", "Số chuyến", "Km tính tiền", "Km thực chạy", "Giờ chấm công (phút)",
                     "Tiền giờ (đ)", "Tiền km (đ)", "Tổng (đ)", "Tổng tiền / km thực (đ)",
@@ -312,7 +394,7 @@ export function PayTeamPanel() {
         x.distance_km == null ? "" : Math.round(Number(x.distance_km) * data.rates.per_km),
       ]);
 
-      const csv = [head, ...rows, [], ["CHI TIẾT CHUYẾN"], detailHead, ...detail]
+      const csv = [head, ...rows, [], ["CHI TIẾT NGÀY"], dayHead, ...dayRows, [], ["CHI TIẾT CHUYẾN"], detailHead, ...detail]
         .map((r) => r.map((c) => (typeof c === "string" && /[",\n]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c)).join(","))
         .join("\n");
       // BOM so Excel opens Vietnamese diacritics correctly instead of mojibake.
@@ -495,11 +577,11 @@ export function PayTeamPanel() {
 
       {/* Same shape as Không ca: a count, a filter, a list. The pay rule already
           stops a dragged ride at its due time; this is who to talk to. */}
-      {data && data.totals.suspect_days > 0 && (
+      {data && (data.totals.suspect_days > 0 || showLate) && (
         <div className="flex items-start gap-2 text-xs text-rose-900 bg-rose-50 border-b border-rose-200 px-3 py-2 shrink-0">
           <AlertCircle className="size-3.5 mt-0.5 shrink-0" />
           <span>
-            {data.totals.suspect_days} ngày nghi vấn kéo dài giờ: chuyến cuối chậm bất thường, hoàn thành
+            {data.totals.suspect_days} ngày nghi vấn kéo dài giờ chưa xử lý: chuyến cuối chậm bất thường, hoàn thành
             sau khi chấm công ra, hoặc mở geofence.{" "}
             <button onClick={() => setOnlyLate((v) => !v)} className="font-semibold underline underline-offset-2 hover:text-rose-950">
               {onlyLate ? "Hiện tất cả tài xế" : `Chỉ hiện ${data.drivers.filter((d) => d.suspect_days > 0).length} tài xế`}
@@ -523,17 +605,12 @@ export function PayTeamPanel() {
                 <th className="text-left font-semibold px-2 py-2">Ca</th>
                 <th className="text-left font-semibold px-2 py-2">Chuyến cuối xong</th>
                 <th className="text-left font-semibold px-3 py-2">Lý do</th>
+                <th className="text-left font-semibold px-3 py-2">Quyết định</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 tabular-nums">
               {(data.suspects ?? []).map((r) => (
-                <tr key={`${r.driver_id}|${r.date}`}>
-                  <td className="px-3 py-1.5 whitespace-nowrap">{r.date.slice(8, 10)}/{r.date.slice(5, 7)}</td>
-                  <td className="px-2 py-1.5"><DriverName full={r.driver_name} className="text-slate-800" /></td>
-                  <td className="px-2 py-1.5">{r.shift}</td>
-                  <td className="px-2 py-1.5">{r.last_task ?? "—"}</td>
-                  <td className="px-3 py-1.5 text-rose-700">{r.reasons.join(" · ")}</td>
-                </tr>
+                <SuspectRow key={`${r.driver_id}|${r.date}|${r.review?.verdict ?? ""}`} r={r} onChanged={() => load(data.month)} />
               ))}
             </tbody>
           </table>

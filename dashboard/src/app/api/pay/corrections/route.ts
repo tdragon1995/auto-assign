@@ -8,6 +8,8 @@
  *   POST {action:"approve"|"reject", id, note}
  *        {action:"create", driver_id, date, in_time, out_time, note}
  *                         a supervisor's own correction — approved at once.
+ *        {action:"suspect_ok"|"suspect_cut"|"suspect_undo", driver_id, date, in_time?, out_time?, note}
+ *                         a ruling on a Lương PT "Nghi vấn" day (pay_suspect_reviews).
  *
  * EVIDENCE, NOT GPS. No GPS trail is kept anywhere (Cartrack gives only a driver's
  * current position); what the day does have is every completed stop with its time
@@ -19,7 +21,7 @@
  * Approving changes pay: it is the one write here that matters.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { sbInsert, sbPatch, sbSelectAll, supabaseConfigured } from "@/lib/supabase-rest";
+import { sbDelete, sbInsert, sbPatch, sbSelectAll, sbUpsert, supabaseConfigured } from "@/lib/supabase-rest";
 import { masterDriverNames } from "@/lib/master-store";
 import { payrollPeriod } from "@/lib/pay-period";
 import { loadPayDayInputs, dayKey } from "@/lib/pay-days";
@@ -149,6 +151,47 @@ export async function POST(req: NextRequest) {
         in_time: input.in_time, out_time: input.out_time, reason: "supervisor", note,
         source: "supervisor", status: "approved", decided_at: now,
       }]);
+      return NextResponse.json({ ok: true });
+    }
+
+    // A ruling on a "Nghi vấn" day: "ok" = paid as computed; "cut" = paid
+    // in_time–out_time, through a supervisor correction stamped with the same
+    // decided_at so "undo" can withdraw exactly that one.
+    if (body?.action === "suspect_ok" || body?.action === "suspect_cut" || body?.action === "suspect_undo") {
+      const driverId = String(body.driver_id ?? "");
+      const date = String(body.date ?? "");
+      if (!UUID.test(driverId) || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return NextResponse.json({ ok: false, error: "Ngày không hợp lệ." }, { status: 400 });
+      const key = `driver_id=eq.${driverId}&trip_date=eq.${date}`;
+      const [prev] = await sbSelectAll<{ verdict: string; decided_at: string }>("pay_suspect_reviews", `select=verdict,decided_at&${key}`, "trip_date.asc");
+      const withdrawPrev = async () => {
+        if (prev?.verdict === "cut") await sbPatch("pay_day_corrections",
+          `${key}&source=eq.supervisor&status=eq.approved&decided_at=eq.${encodeURIComponent(prev.decided_at)}`,
+          { status: "withdrawn", decision_note: "Bỏ quyết định nghi vấn." });
+      };
+      if (body.action === "suspect_undo") {
+        await withdrawPrev();
+        await sbDelete("pay_suspect_reviews", key);
+        return NextResponse.json({ ok: true });
+      }
+      if (body.action === "suspect_ok") {
+        await withdrawPrev();
+        await sbUpsert("pay_suspect_reviews", [{ driver_id: driverId, trip_date: date, verdict: "ok", in_time: null, out_time: null, note, decided_at: now }], "driver_id,trip_date");
+        return NextResponse.json({ ok: true });
+      }
+      const input = { date, in_time: body.in_time as string, out_time: body.out_time as string, note: note || "Nghi vấn kéo dài giờ" };
+      const bad = checkTimes(input, vnDate(), { anyPastDay: true });
+      if (bad) return NextResponse.json({ ok: false, error: bad }, { status: 400 });
+      await withdrawPrev();
+      const name = (await masterDriverNames([driverId])).get(driverId) ?? null;
+      await sbPatch("pay_day_corrections", `${key}&status=eq.pending`, {
+        status: "rejected", decision_note: "Thay bằng điều chỉnh của quản lý.", decided_at: now,
+      });
+      await sbInsert("pay_day_corrections", [{
+        driver_id: driverId, driver_name: name, trip_date: date,
+        in_time: input.in_time, out_time: input.out_time, reason: "supervisor", note: input.note,
+        source: "supervisor", status: "approved", decided_at: now,
+      }]);
+      await sbUpsert("pay_suspect_reviews", [{ driver_id: driverId, trip_date: date, verdict: "cut", in_time: input.in_time, out_time: input.out_time, note: input.note, decided_at: now }], "driver_id,trip_date");
       return NextResponse.json({ ok: true });
     }
 

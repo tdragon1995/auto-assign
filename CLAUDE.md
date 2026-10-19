@@ -509,7 +509,7 @@ These are the things most likely to burn a future agent working on this codebase
     2026-10-19, against padded hours. Lương PT's "Nghi vấn" lists the days with a
     sign of it (slow last ride, completed after check-out, geofence opened);
     an admin-completed drop-off (`pay_jobs.dropoff_force_completed`, from
-    Cartrack's isForceCompleted, stored from 2026-10-19) is never suspicious. End: no trips → the check-out tap, capped at shift end; trips but no check-out → the
+    Cartrack's isForceCompleted, stored from 2026-10-19) is never suspicious. Each listed day takes a ruling (`pay_suspect_reviews`): Giữ giờ = paid as computed, Cắt giờ = the typed hours paid through a supervisor correction carrying the same `decided_at` (Hoàn tác withdraws it); only unruled days count as open. End: no trips → the check-out tap, capped at shift end; trips but no check-out → the
     last trip; both → later of the tap-out and the last trip, never past the
     tap-out just because the shift was still running (supervisor, 2026-10-09).
     A tap stamped on another date is ignored, as trips are. Two windows at most
