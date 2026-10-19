@@ -12,10 +12,12 @@ export const preferredRegion = "sin1";
  * right ones. Only cancelled batches are left out. One Labcenter call, made only when
  * the dialog opens.
  *
- * Needs an LIS-capable login. Neither the receptionist nor the admin account has one
- * (both 403, checked 2026-10-19), so this rides LABCENTER_LOOKUP_TOKEN like the admin
- * batch lookup does — a pasted token that lasts 14 days. Any failure answers an empty
- * list with `access: false`: the dialog then just shows the typing box, as before.
+ * The same call Labcenter's own Batch Management page makes (checked 2026-10-19), and it
+ * needs a login with the "receptionist-nurse-phlebotomist" role — the receptionist account
+ * (LABCENTER_RECEPTIONIST_*), tried FIRST. LABCENTER_LOOKUP_TOKEN, a pasted token that
+ * lasts 14 days, is only the fallback: tried first, an expired one failed every request
+ * before the working login was ever asked. Any failure answers an empty list with
+ * `access: false`: the dialog then just shows the typing box, as before.
  */
 /** HBC's batches are B199… — offered to every branch alongside its own. */
 const HBC = "199";
@@ -29,20 +31,23 @@ export async function GET(req: NextRequest) {
   const branch = /^D?(\d{3})$/.exec(req.nextUrl.searchParams.get("branch") ?? "")?.[1];
   if (!branch) return NextResponse.json({ batches: [], access: true });
   try {
-    const token = process.env.LABCENTER_LOOKUP_TOKEN?.trim() || await getReceptionistToken();
-    if (!token) return NextResponse.json({ batches: [], access: false });
     const today = vnDate();
     const params = new URLSearchParams({
-      batch_code: "", status: "", per_page: "50", page: "1", order_direction: "desc",
+      batch_code: "", status: "", per_page: "100", page: "1", order_direction: "desc",
       created_at_from: new Date(`${today}T00:00:00+07:00`).toISOString(),
       created_at_to: new Date(`${today}T23:59:59.999+07:00`).toISOString(),
     });
     params.append("source_location[]", branch);
     params.append("source_location[]", HBC);
-    const res = await fetch(`https://api.labcenter.vn/spc-lis/api/v1/batch?${params}`, {
+    const ask = (token: string) => fetch(`https://api.labcenter.vn/spc-lis/api/v1/batch?${params}`, {
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json", Origin: "https://labcenter.vn", Referer: "https://labcenter.vn/" },
       cache: "no-store",
     });
+    const receptionist = await getReceptionistToken().catch(() => null);
+    let res = receptionist ? await ask(receptionist) : null;
+    const lookup = process.env.LABCENTER_LOOKUP_TOKEN?.trim();
+    if ((!res || res.status === 401 || res.status === 403) && lookup) res = await ask(lookup);
+    if (!res) return NextResponse.json({ batches: [], access: false });
     if (!res.ok) {
       // 401 = the pasted token expired; 403 = an account without LIS access. Loud here,
       // silent on the phone.

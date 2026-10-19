@@ -740,11 +740,11 @@ function TripCard({ job, code, notes, noDriver = false, onOpen, onCancel, onSend
   };
 
   return (
-    <div className="rounded-2xl bg-white shadow-sm border border-slate-100 p-4">
+    <div className="rounded-2xl bg-white shadow-sm border border-slate-100 p-3">
       <button onClick={onOpen} className="w-full text-left active:opacity-70">
         <div className="flex items-start justify-between gap-2.5">
           <div className="min-w-0">
-            <p className="text-base font-extrabold tracking-tight text-slate-800">
+            <p className="text-sm font-bold tracking-tight text-slate-800">
               {placeLabel(p?.customer_name ?? "")} <ArrowRight aria-hidden className="inline w-4 h-4 text-slate-500 mx-0.5 shrink-0" /> {destName}
             </p>
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1">
@@ -756,7 +756,7 @@ function TripCard({ job, code, notes, noDriver = false, onOpen, onCancel, onSend
               )}
             </div>
           </div>
-          <span className={`flex-none text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${STATE_STYLE[state]}`}>
+          <span className={`flex-none text-[10px] font-bold px-2 py-0.5 rounded-full whitespace-nowrap ${STATE_STYLE[state]}`}>
             {threePl ? "Đã gửi qua đối tác" : stateText(state)}
           </span>
         </div>
@@ -1514,7 +1514,7 @@ export default function QrPage() {
             {loaded && !loading && gallery.length === 0 && !windowed && (
               <p className="text-sm text-slate-600 py-2">{driverName} chưa có ảnh mẫu{isToday ? " hôm nay" : " ngày này"}.</p>
             )}
-            <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+            <div className={`grid gap-3 ${isLab ? "grid-cols-[repeat(auto-fill,minmax(17rem,1fr))]" : "grid-cols-2"}`}>
               {gallery.map(({ j, imgs, at }) => {
                 const from = placeLabel(j.stops.find((st) => st.stop_type_id === 1)?.customer_name ?? "");
                 const [big, ...rest] = imgs;
@@ -1525,14 +1525,14 @@ export default function QrPage() {
                     <span className="relative block aspect-[4/3] overflow-hidden bg-slate-200">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img src={big} alt="" loading="lazy" className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-105 motion-reduce:transition-none" />
-                      <span aria-hidden className="absolute right-1.5 top-1.5 grid h-6 w-6 place-items-center rounded-full bg-white/90 text-slate-700 shadow">
-                        <ZoomIn className="h-3.5 w-3.5" />
+                      <span aria-hidden className="absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-full bg-white/90 text-slate-700 shadow">
+                        <ZoomIn className="h-4 w-4" />
                       </span>
                     </span>
                     {rest.length > 0 && (
                       <span aria-hidden className="flex gap-1 px-1.5 pt-1.5">
                         {rest.slice(0, 4).map((u, k) => (
-                          <span key={u} className="relative h-9 w-9 shrink-0 overflow-hidden rounded-md bg-slate-200">
+                          <span key={u} className="relative h-11 w-11 shrink-0 overflow-hidden rounded-md bg-slate-200">
                             {/* eslint-disable-next-line @next/next/no-img-element */}
                             <img src={u} alt="" loading="lazy" className="h-full w-full object-cover" />
                             {k === 3 && rest.length > 4 && (
@@ -1542,9 +1542,9 @@ export default function QrPage() {
                         ))}
                       </span>
                     )}
-                    <span aria-hidden className="block px-2 pt-1 pb-1.5">
-                      <span className="block truncate text-[12px] font-semibold leading-tight text-slate-800">{from}</span>
-                      <span className="text-[11px] text-slate-500">{Number.isNaN(at) ? "" : new Date(at).toLocaleTimeString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit" })}{imgs.length > 1 ? ` · ${imgs.length} ảnh` : ""}</span>
+                    <span aria-hidden className="block px-2.5 pt-1.5 pb-2">
+                      <span className="block truncate text-[13px] font-semibold leading-tight text-slate-800">{from}</span>
+                      <span className="text-[12px] text-slate-500">{Number.isNaN(at) ? "" : new Date(at).toLocaleTimeString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit" })}{imgs.length > 1 ? ` · ${imgs.length} ảnh` : ""}</span>
                     </span>
                   </button>
                 );
@@ -1554,7 +1554,7 @@ export default function QrPage() {
         )}
 
         <div className="space-y-3">
-          <div className={`space-y-3 ${isLab ? "lg:space-y-0 lg:grid lg:grid-cols-2 lg:gap-3" : ""}`}>
+          <div className={`space-y-3 ${isLab ? "lg:space-y-0 lg:grid lg:grid-cols-3 lg:gap-3" : ""}`}>
             {active.map(tripCard)}
           </div>
           {loading && !jobs.length && <p className="text-sm text-slate-600 py-2">Đang tải…</p>}
@@ -1633,7 +1633,7 @@ export default function QrPage() {
                             {b.code}{b.hbc && <span className={`ml-1.5 px-1 rounded text-[10px] font-bold ${on ? "bg-white/20" : "bg-amber-100 text-amber-800"}`}>HBC</span>}
                           </span>
                           <span className={`block text-[11px] ${on ? "text-blue-100" : "text-slate-500"}`}>
-                            {[b.by, b.samples != null ? `${b.samples} mẫu` : "", at].filter(Boolean).join(" · ")}
+                            {[b.by?.split("@")[0], b.samples != null ? `${b.samples} mẫu` : "", at].filter(Boolean).join(" · ")}
                           </span>
                         </button>
                       );
