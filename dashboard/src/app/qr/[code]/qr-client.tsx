@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 // PSC routes are a hard-coded constant ([[psc-routes-data]]); look up directly instead of
 // fetching /api/psc-routes — no function invocation, no network round-trip, instant render.
@@ -580,7 +580,7 @@ const SHORT_STATE: Record<number, string> = {
 
 /** Other branches' runs on their way here, as a table — from, driver, status, ETA. A row
  *  opens the trip. */
-function IncomingBlock({ jobs, etaMins, now, onOpen }: { jobs: Job[]; etaMins: Record<string, number>; now: number; onOpen: (j: Job) => void }) {
+function IncomingBlock({ jobs, etaMins, now, notes, onOpen }: { jobs: Job[]; etaMins: Record<string, number>; now: number; notes: Record<number, StopNotes>; onOpen: (j: Job) => void }) {
   const rows = jobs
     .map((j) => ({ j, eta: etaOf(j, etaMins), state: stateOf(j) }))
     .sort((a, b) => (a.eta ?? Infinity) - (b.eta ?? Infinity));
@@ -599,8 +599,10 @@ function IncomingBlock({ jobs, etaMins, now, onOpen }: { jobs: Job[]; etaMins: R
         <tbody>
           {rows.map(({ j, eta, state }) => {
             const late = eta != null && now > eta;
+            const n = notes[j.job_id];
             return (
-              <tr key={j.job_id} onClick={() => onOpen(j)}
+              <Fragment key={j.job_id}>
+              <tr onClick={() => onOpen(j)}
                 className="cursor-pointer border-t border-slate-100 first:border-t-0 hover:bg-slate-50 active:bg-slate-100">
                 <td className="py-2.5 pl-4 pr-1 font-semibold text-slate-800">
                   {/* The row is clickable for the mouse; this button is the keyboard's way in. */}
@@ -622,6 +624,18 @@ function IncomingBlock({ jobs, etaMins, now, onOpen }: { jobs: Job[]; etaMins: R
                   )}
                 </td>
               </tr>
+              {/* What the driver noted taking (and handing over), under its row. */}
+              {(n?.p || n?.d) && (
+                <tr onClick={() => onOpen(j)} className="cursor-pointer hover:bg-slate-50 active:bg-slate-100">
+                  <td colSpan={4} className="pb-2.5 px-4">
+                    <span className="block space-y-0.5">
+                      {n.p && <NoteRow label="Nhận" value={n.p} />}
+                      {n.d && <NoteRow label="Giao" value={n.d} />}
+                    </span>
+                  </td>
+                </tr>
+              )}
+              </Fragment>
             );
           })}
         </tbody>
@@ -1348,7 +1362,10 @@ export default function QrPage() {
         const imgs = notes[j.job_id]?.imgs ?? [];
         if (!imgs.length) return [];
         if (windowed && !(Date.now() - arrived <= galleryMins * 60_000)) return [];
-        return [{ j, imgs, at }];
+        // The tile shows what ARRIVED — the drop-off's photos; the pickup's open with the
+        // trip. (A drop-off with no photo of its own falls back to every photo.)
+        const tile = notes[j.job_id]?.dimgs?.length ? notes[j.job_id].dimgs! : imgs;
+        return [{ j, imgs, tile, at }];
       }).sort((a, b) => (b.at || 0) - (a.at || 0))
     : [];
   const running = listJobs.filter((j) => stateOf(j) !== 3 && inScope(j));
@@ -1492,7 +1509,7 @@ export default function QrPage() {
         </div>
 
         {incoming.length > 0 && (
-          <IncomingBlock jobs={incoming} etaMins={etaMins} now={loadedAt} onOpen={setSheetJob} />
+          <IncomingBlock jobs={incoming} etaMins={etaMins} now={loadedAt} notes={notes} onOpen={setSheetJob} />
         )}
 
 
@@ -1517,9 +1534,9 @@ export default function QrPage() {
             {/* A branch: full page width, more than one swiped sideways with the next one peeking. */}
             <div className={`grid gap-3 ${isLab ? "grid-cols-[repeat(auto-fill,minmax(17rem,1fr))]"
               : gallery.length > 1 ? "grid-flow-col auto-cols-[88%] overflow-x-auto snap-x snap-mandatory -mx-4 px-4 scroll-px-4 pb-1" : "grid-cols-1"}`}>
-              {gallery.map(({ j, imgs, at }) => {
+              {gallery.map(({ j, imgs, tile, at }) => {
                 const from = placeLabel(j.stops.find((st) => st.stop_type_id === 1)?.customer_name ?? "");
-                const [big, ...rest] = imgs;
+                const [big, ...rest] = tile;
                 return (
                   <button key={j.job_id} onClick={() => { setBriefPhotos(imgs); setSheetJob(j); }}
                     aria-label={`Xem chuyến từ ${from}`}

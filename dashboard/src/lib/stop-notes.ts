@@ -15,7 +15,10 @@ import type { Job } from "./types";
 export interface StopNotes { p?: string; d?: string;
   /** Every photo on the trip — pickup first, then the drop-off's — as public Cartrack
    *  image links. The first is the pickup's "Chụp mẫu/vật tư/kết quả". */
-  imgs?: string[] }
+  imgs?: string[];
+  /** The drop-off's photos alone — what arrived. The /qr gallery leads with these; the
+   *  pickup's stay in the trip's details. */
+  dimgs?: string[] }
 
 /** Notes keyed by job_id, the shape /api/location-notes returns. */
 export type NoteMap = Record<number, StopNotes>;
@@ -39,5 +42,9 @@ export function notesOf(job: Job): StopNotes | null {
     .flatMap((s) => (s.todos ?? []).flatMap((t) => t.images ?? []))
     .filter((i) => (i.image_url ?? i.imageUrl) && !i.is_deleted).map((i) => (i.image_url ?? i.imageUrl) as string);
   if (imgs.length) out.imgs = [...new Set(imgs)];
+  const dimgs = (job.stops ?? []).filter((s) => s.stop_type_id !== 1)
+    .flatMap((s) => (s.todos ?? []).flatMap((t) => t.images ?? []))
+    .filter((i) => (i.image_url ?? i.imageUrl) && !i.is_deleted).map((i) => (i.image_url ?? i.imageUrl) as string);
+  if (dimgs.length) out.dimgs = [...new Set(dimgs)];
   return out.p || out.d || out.imgs ? out : null;
 }

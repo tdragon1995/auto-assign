@@ -73,7 +73,7 @@ async function fetchEntries(env: Env, ids: number[], budget: { calls: number }):
   return out;
 }
 
-const keyOf = (env: Env, date: string) => `stopnotes:v5:${env}:${date}`;
+const keyOf = (env: Env, date: string) => `stopnotes:v6:${env}:${date}`;
 
 /** What is saved for `ids`, read in one HMGET. Redis is the saving, never the answer: an
  *  Upstash hiccup costs a fetch, not the notes. */
