@@ -135,6 +135,8 @@ interface DayLine {
   worked_mins: number; bo_mins: number; multiplier: number; jobs: number; km: number;
   hour_pay: number; km_pay: number; no_shift: boolean; corrected: boolean; pending: boolean; late_mins: number; suspect: string[]; admin_done: boolean;
   shift_in: string | null; shift_out: string | null;
+  /** One per shift window (split day = several; Anh Tú's BO window is its own). */
+  parts?: { shift_in: string | null; shift_out: string | null; kind: string; paid_from: string | null; paid_to: string | null; minutes: number; hour_pay: number }[];
 }
 const LATE_FLAG = 45;
 
@@ -357,14 +359,21 @@ export function PayTeamPanel() {
       const dres = await fetch(`/api/pay/team?month=${data.month}&driver=all`);
       const dj = await dres.json();
       if (!dres.ok || !dj.ok) { setError(dj.error ?? "Không tải được chi tiết ngày."); return; }
-      const dayRows = (dj.drivers as (DriverRow & { days?: DayLine[] })[]).flatMap((d) => (d.days ?? []).map((x) => [
-        d.driver_name, staffCode(d.driver_name), x.date, x.shift_in ?? "", x.shift_out ?? "", x.shift,
-        x.tap_in ?? "", x.tap_out ?? "", x.first_task ?? "", x.last_task ?? "", x.paid_from ?? "", x.paid_to ?? "",
-        x.worked_mins, x.hour_pay, x.jobs, x.km, x.km_pay,
-        [x.no_shift && "Không ca", x.corrected && "Cập nhật công", x.late_mins > LATE_FLAG && `Vào trễ ${x.late_mins} phút`, ...x.suspect]
-          .filter(Boolean).join("; "),
-      ]));
-      const dayHead = ["Tài xế", "Mã số nhân viên", "Ngày", "Ca vào", "Ca ra", "Ca (tất cả)", "Chấm công vào", "Chấm công ra",
+      // One row per SHIFT WINDOW: a split day is two rows, and a BO Runner's BO
+      // hours are a row of their own at the BO rate. Trips, km and km pay sit on
+      // the day's first row only, so summing any column gives the right total.
+      const dayRows = (dj.drivers as (DriverRow & { days?: DayLine[] })[]).flatMap((d) => (d.days ?? []).flatMap((x) => {
+        const parts = x.parts?.length ? x.parts
+          : [{ shift_in: x.shift_in, shift_out: x.shift_out, kind: "Lái xe", paid_from: x.paid_from, paid_to: x.paid_to, minutes: x.worked_mins, hour_pay: x.hour_pay }];
+        const note = [x.no_shift && "Không ca", x.corrected && "Cập nhật công", x.multiplier > 1 && `Lễ ×${x.multiplier}`,
+          x.late_mins > LATE_FLAG && `Vào trễ ${x.late_mins} phút`, ...x.suspect].filter(Boolean).join("; ");
+        return parts.map((p, i) => [
+          d.driver_name, staffCode(d.driver_name), x.date, p.kind, p.shift_in ?? "", p.shift_out ?? "",
+          x.tap_in ?? "", x.tap_out ?? "", x.first_task ?? "", x.last_task ?? "", p.paid_from ?? "", p.paid_to ?? "",
+          p.minutes, p.hour_pay, i === 0 ? x.jobs : "", i === 0 ? x.km : "", i === 0 ? x.km_pay : "", note,
+        ]);
+      }));
+      const dayHead = ["Tài xế", "Mã số nhân viên", "Ngày", "Loại giờ", "Ca vào", "Ca ra", "Chấm công vào", "Chấm công ra",
                        "Chuyến đầu", "Chuyến cuối", "Tính giờ từ", "Tính giờ đến", "Phút tính tiền", "Tiền giờ (đ)",
                        "Số chuyến", "Km", "Tiền km (đ)", "Ghi chú"];
 

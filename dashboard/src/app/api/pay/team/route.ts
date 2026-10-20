@@ -25,7 +25,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { sbSelectAll, supabaseConfigured } from "@/lib/supabase-rest";
 import { masterDriverNames } from "@/lib/master-store";
 import { employmentOf } from "@/lib/driver-label";
-import { paidDay, hoursPayFor, kmPayFor, suggestedWindow, RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch, type PayJob, hourPayFor, BO_RATE_PER_HOUR_VND, lateStartMins, LATE_START_FLAG_MIN, tripOverMins, AFTER_OUT_MIN } from "@/lib/pay";
+import { paidDay, hoursPayFor, kmPayFor, suggestedWindow, RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch, type PayJob, hourPayFor, BO_RATE_PER_HOUR_VND, dayParts, type DayPart, lateStartMins, LATE_START_FLAG_MIN, tripOverMins, AFTER_OUT_MIN } from "@/lib/pay";
 import { payrollPeriod } from "@/lib/pay-period";
 import { staffCode } from "@/lib/display-names";
 import { loadPayDayInputs, dayKey } from "@/lib/pay-days";
@@ -43,7 +43,10 @@ interface DayLine {
   hour_pay: number; km_pay: number; no_shift: boolean; corrected: boolean; pending: boolean; late_mins: number; suspect: string[]; admin_done: boolean;
   /** First shift start and last shift end ("ca vào" / "ca ra"), for the CSV. */
   shift_in: string | null; shift_out: string | null;
+  /** One entry per shift window — the CSV's rows, so a split day is two rows. */
+  parts: DayPart[];
 }
+
 
 interface DailyRow {
   driver_id: string;
@@ -285,6 +288,7 @@ export async function GET(req: NextRequest) {
               no_shift: w.no_shift, corrected: w.corrected, late_mins: lateMins, suspect: reasons, admin_done: adminDone,
               pending: inputs.latest.get(dayKey(driver_id, date))?.status === "pending",
               shift_in: dayShifts[0]?.start ?? null, shift_out: dayShifts.at(-1)?.end ?? null,
+              parts: dayParts(w, inputs.rostered.get(dayKey(driver_id, date)) ?? dayShifts, date, code, hhmm),
             });
           }
           if (w.no_shift) {

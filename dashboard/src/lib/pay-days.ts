@@ -171,12 +171,22 @@ export async function loadPayDayInputs(from: string, to: string, driverId?: stri
     if (l) l.push(w); else otherAccount.set(k, [w]);
   }
   const continued = new Map<string, string>();
+  /** The day's shifts as rostered, for the CSV's one-row-per-shift: overlaps
+   *  merged (06:00–20:00 swallows a 06:00–15:00 line), back-to-back kept apart. */
+  const rostered = new Map<string, ShiftWindow[]>();
+  const keepApart = (v: ShiftWindow[]) => [...v].sort((a, b) => a.start.localeCompare(b.start))
+    .reduce<ShiftWindow[]>((out, w) => {
+      const last = out.at(-1);
+      if (last && w.start < last.end) { if (w.end > last.end) last.end = w.end; } else out.push({ ...w });
+      return out;
+    }, []);
   const mins = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
   for (const [k, v] of shifts) {
     const [id, date] = k.split("|");
     const ft = ftTwin.get(id);
     const dc = ft ? otherAccount.get(dayKey(ft, date)) ?? [] : [];
     const pt = bridgeGaps(mergeWindows(v), dc);
+    rostered.set(k, keepApart(v));
     shifts.set(k, pt);
     const lastDrop = ft ? twinLastDrop.get(dayKey(ft, date)) : undefined;
     if (!lastDrop) continue;
@@ -197,7 +207,7 @@ export async function loadPayDayInputs(from: string, to: string, driverId?: stri
   }
 
   return {
-    shifts, approved, latest, corrections, origin,
+    shifts, approved, latest, corrections, origin, rostered,
     /** PT driver-day → when the continuing DC shift ended (DayFacts.continuedAt). */
     continued,
     /** Payroll's file has been written into Lịch ca for this period. */

@@ -17,7 +17,7 @@ import {
   RATE_PER_HOUR_VND, RATE_PER_KM_VND, type PayPunch,
 } from "../src/lib/pay";
 import { parsePayrollSheet, resolveDriver } from "../src/lib/pay-shifts";
-import { parseShiftText, mergeWindows, bridgeGaps, lateStartMins, tripOverMins, PAY_DISTANCE_OVERRIDES } from "../src/lib/pay";
+import { parseShiftText, mergeWindows, bridgeGaps, lateStartMins, tripOverMins, PAY_DISTANCE_OVERRIDES, dayParts } from "../src/lib/pay";
 import { isWeekdayRoleLine } from "../src/lib/pay-days";
 import { openRange, checkTimes, checkProof } from "../src/lib/pay-corrections";
 import type { TimelineRoute, TimelineStop } from "../src/lib/types";
@@ -246,6 +246,30 @@ check("a payroll shift inside the window is driving, not BO", tuHol.bo_minutes =
 const hoa = paidDay([punch("in", "14:53"), punch("out", "21:06")], facts([["15:00", "21:00"]], null, null), "PT101710");
 check("Mộng Hoa: all hours at the BO rate", hoa.bo_minutes === hoa.minutes && hoa.minutes === 366, `${hoa.minutes}/${hoa.bo_minutes}`);
 check("anyone else: no BO", paidDay([punch("in", "14:53"), punch("out", "21:06")], facts([["15:00", "21:00"]], null, null), "PT100001").bo_minutes === 0);
+
+// Export rows: one per shift window, BO hours a row of their own.
+const hm = (iso: string | null) => (iso ? new Date(iso).toLocaleTimeString("en-GB", { timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit" }) : null);
+const tuParts = dayParts(tuDay, tu.shifts, "2026-08-17", "PT101705", hm);
+check("Anh Tú: BO 06:00–15:00 row + driving 15:00–21:30 row",
+  tuParts.length === 2 && tuParts[0].kind === "BO Runner" && tuParts[0].shift_in === "06:00" && tuParts[0].minutes === 536
+  && tuParts[1].kind === "Lái xe" && tuParts[1].shift_in === "15:00" && tuParts[1].minutes === 390,
+  JSON.stringify(tuParts));
+check("rows add up to the day's hour pay", tuParts.reduce((t, x) => t + x.hour_pay, 0) === hoursPayFor(tuDay.minutes, tuDay.bo_minutes));
+const hoaParts = dayParts(hoa, [{ start: "15:00", end: "21:00" }], DAY, "PT101710", hm);
+check("Mộng Hoa: her row is BO", hoaParts.length === 1 && hoaParts[0].kind === "BO Runner" && hoaParts[0].minutes === 366, JSON.stringify(hoaParts));
+const splitShifts = [{ start: "06:00", end: "10:00" }, { start: "16:00", end: "20:00" }];
+const splitDay = paidDay([punch("in", "05:55"), punch("out", "20:05")], facts([["06:00", "10:00"], ["16:00", "20:00"]], "06:10", "19:50"), "PT100001");
+const splitParts = dayParts(splitDay, splitShifts, DAY, "PT100001", hm);
+check("a split shift is two rows", splitParts.length === 2 && splitParts[0].minutes === 240 && splitParts[1].minutes === 240
+  && splitParts[1].paid_from === "16:00", JSON.stringify(splitParts));
+const halfSplit = paidDay([punch("in", "05:55"), punch("out", "09:55")], facts([["06:00", "10:00"], ["16:00", "20:00"]], "06:10", "09:40"), "PT100001");
+// Lưu Minh, Sundays: 06:00–15:00 + 15:00–20:00 is paid as one stretch, listed as two rows.
+const minhDay = paidDay([punch("in", "05:58"), punch("out", "20:02")], facts([["06:00", "20:00"]], "06:20", "19:40"), "PT101125");
+const minhParts = dayParts(minhDay, [{ start: "06:00", end: "15:00" }, { start: "15:00", end: "20:00" }], DAY, "PT101125", hm);
+check("back-to-back shifts: two rows, 540 + 300 min", minhParts.map((x) => `${x.shift_in}-${x.shift_out}:${x.minutes}`).join() === "06:00-15:00:540,15:00-20:00:300",
+  JSON.stringify(minhParts));
+check("an unworked window still gets a 0-minute row", dayParts(halfSplit, splitShifts, DAY, "PT100001", hm).map((x) => x.minutes).join() === "235,0",
+  JSON.stringify(dayParts(halfSplit, splitShifts, DAY, "PT100001", hm)));
 
 // The reason totals price the SUMMED kilometres rather than adding per-job đồng.
 const legs = [1.115, 2.225, 3.335];

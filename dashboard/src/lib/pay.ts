@@ -504,6 +504,56 @@ export function paidDay(punches: PayPunch[], day: DayFacts, staffCode: string): 
 export const hoursPayFor = (minutes: number, boMinutes = 0): number =>
   hourPayFor(minutes - boMinutes) + hourPayFor(boMinutes, BO_RATE_PER_HOUR_VND);
 
+/** One shift window of a day: its hours, what was paid inside it, and at which rate. */
+export interface DayPart {
+  shift_in: string | null; shift_out: string | null;
+  kind: "Lái xe" | "BO Runner";
+  paid_from: string | null; paid_to: string | null; minutes: number; hour_pay: number;
+}
+
+/** A day's paid hours split by ROSTERED shift (pay-days' `rostered`: back-to-back
+ *  windows kept apart, as payroll's file lists them), so 06:00–15:00 + 15:00–20:00
+ *  is two rows though it is paid as one stretch. Minutes are cut at each shift's
+ *  start: a bridged gap or a run past the end stays with the shift it followed,
+ *  a start before the first shift with the first. A BO Runner's BO window (Anh
+ *  Tú's 06:00–15:00, added by paidDay) is a row of its own at the BO rate; every
+ *  row of Mộng Hoa's is BO. Rows add up to the day exactly, minutes and đồng. */
+export function dayParts(w: PaidDay, rostered: ShiftWindow[], date: string, code: string, hhmm: (iso: string | null) => string | null): DayPart[] {
+  const bo = BO_RUNNERS[code];
+  const allBo = !!bo && (!bo.window || (w.bo_minutes > 0 && w.bo_minutes >= w.minutes));
+  const boWin = bo?.window && w.bo_minutes > 0 && !allBo ? bo.window : null;
+  const wins = [...rostered, ...(boWin ? [boWin] : [])].sort((a, b) => a.start.localeCompare(b.start));
+  const at = (t: string) => Date.parse(`${date}T${t}:00+07:00`);
+  const minute = (t: number) => Math.floor(t / 60_000);
+  const parts: DayPart[] = (wins.length ? wins : [null]).map((win, i) => {
+    const a = i === 0 ? -Infinity : at(win!.start);
+    const b = !wins.length || i === wins.length - 1 ? Infinity : at(wins[i + 1].start);
+    let clocked = 0, from: number | null = null, to: number | null = null;
+    for (const sp of w.spans) {
+      const f = Math.max(Date.parse(sp.from), a), t = Math.min(Date.parse(sp.to), b);
+      if (t <= f) continue;
+      clocked += minute(t) - minute(f);
+      from ??= f; to = t;
+    }
+    const isBo = allBo || (!!win && !!boWin && win.start === boWin.start && win.end === boWin.end);
+    return { shift_in: win?.start ?? null, shift_out: win?.end ?? null, kind: isBo ? "BO Runner" : "Lái xe",
+      paid_from: hhmm(from == null ? null : new Date(from).toISOString()), paid_to: hhmm(to == null ? null : new Date(to).toISOString()),
+      minutes: clocked * w.multiplier, hour_pay: 0 };
+  });
+  // Rounding (a correction, the BO overlap) must not move a minute between rates:
+  // each rate's rows add up to that rate's total, the rest lands on its last row.
+  const settle = (rows: DayPart[], target: number) => {
+    const last = [...rows].reverse().find((p) => p.minutes > 0) ?? rows.at(-1);
+    if (last) last.minutes += target - rows.reduce((t, p) => t + p.minutes, 0);
+  };
+  settle(parts.filter((p) => p.kind === "BO Runner"), w.bo_minutes);
+  settle(parts.filter((p) => p.kind === "Lái xe"), w.minutes - w.bo_minutes);
+  for (const p of parts) p.hour_pay = hourPayFor(p.minutes, p.kind === "BO Runner" ? BO_RATE_PER_HOUR_VND : undefined);
+  const diff = hoursPayFor(w.minutes, w.bo_minutes) - parts.reduce((t, p) => t + p.hour_pay, 0);
+  ([...parts].reverse().find((p) => p.minutes > 0) ?? parts.at(-1)!).hour_pay += diff;
+  return parts;
+}
+
 /** Đồng earned for a distance.
  *
  *  TOTALS MULTIPLY THE SUMMED KILOMETRES, they never add up per-job đồng. Each
