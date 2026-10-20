@@ -1405,6 +1405,7 @@ export default function QrPage() {
               className={`w-full rounded-2xl py-4 text-white text-lg font-extrabold flex items-center justify-center gap-2.5 active:scale-[.97] transition ${GRAB_BG}`}>
               <Bike aria-hidden className="w-5 h-5" />Đề nghị giao mẫu qua Grab
             </button>
+            {/\bD001$/.test(route.dropoff_location) && <div className="mt-3"><D001Receivers /></div>}
           </div>
         )}
         {!route.no_request && !(isToday && noDriverFor(route.pickup, route.dropoff)) && (
