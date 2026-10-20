@@ -1039,12 +1039,14 @@ export default function QrPage() {
       // A waiting card hides once the server has its trip at all — even one the filters
       // below then drop — and goes for good once Cartrack no longer has it (cancelled or
       // deleted), after 10 minutes' grace for a booking Cartrack has not indexed yet.
-      setSeen(new Set(raw.map((j) => Number(j.job_id))));
+      // `settled`: the server has the trip but leaves it off the list (delivered) — done.
+      const settled = new Set<number>((data.settled ?? []).map(Number));
+      setSeen(new Set([...raw.map((j) => Number(j.job_id)), ...settled]));
       const gone = new Set<number>((data.missing ?? []).map(Number));
-      if (gone.size) {
+      if (gone.size || settled.size) {
         const mins = (hm: string) => { const [h, m] = hm.split(":").map(Number); return h * 60 + m; };
         setPending((prev) => {
-          const next = prev.filter((p) => !(gone.has(Number(p.job_id)) && mins(nowHm()) - mins(p.created_ts) > 10));
+          const next = prev.filter((p) => !settled.has(Number(p.job_id)) && !(gone.has(Number(p.job_id)) && mins(nowHm()) - mins(p.created_ts) > 10));
           if (next.length !== prev.length) try { localStorage.setItem(pendingKey, JSON.stringify(next)); } catch {}
           return next;
         });
@@ -1176,6 +1178,12 @@ export default function QrPage() {
       const res = await fetch(`/api/psc-assign?job_id=${cancelTarget.job_id}`, { method: "DELETE" });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
+        // 409 = the trip has already started or finished. Its waiting card is out of date:
+        // drop it and reload, so the branch sees where the trip really is.
+        if (res.status === 409) {
+          persistPending(retirePending(pending, [cancelTarget.job_id]));
+          loadJobs();
+        }
         setCancelError(data.error ?? "Huỷ thất bại");
         return;
       }

@@ -107,10 +107,14 @@ export async function GET(req: NextRequest) {
       // Own bookings the day no longer has at all (cancelled or deleted in Cartrack): the
       // page drops their waiting cards instead of showing them all day.
       const missing = ids.filter((id) => !day.some((j) => j.job_id === id));
+      // Own bookings the day HAS but the list leaves out — delivered, or parked on a
+      // proxy. Without this the page never hears of them again and their waiting card
+      // stands at "Chờ điều phối" all day over a trip that was completed.
+      const settled = ids.filter((id) => day.some((j) => j.job_id === id) && !jobs.some((j) => j.job_id === id));
       // The trips' SAVED notes and photos ride along (one Redis read), so most opens are
       // a single request; `notesMissing` are the few the page still has to ask for.
       const saved = await savedNotes(env, date, jobs.map((j) => j.job_id));
-      return NextResponse.json({ jobs, missing, eta: await etaP, noDriverRoutes: await noDriverP, notes: saved.notes, notesMissing: saved.missing });
+      return NextResponse.json({ jobs, missing, settled, eta: await etaP, noDriverRoutes: await noDriverP, notes: saved.notes, notesMissing: saved.missing });
     }
 
     // Day unavailable: the REST day, filtered the same way — an empty list here would
@@ -121,12 +125,11 @@ export async function GET(req: NextRequest) {
     );
     if (!res.ok) return NextResponse.json({ jobs: [] });
     const allJobs: Job[] = (await res.json()).data ?? [];
-    return NextResponse.json({
-      jobs: allJobs
-        .filter((j) => listed(j) && (wholeBranch ? touches(j) && keepOnBranchFeed(code, j) : ids.includes(j.job_id)))
-        .map((j) => slimJob(j, driverDisplayName(j.driver))),
-      eta: await etaP,
-    });
+    const jobs = allJobs
+      .filter((j) => listed(j) && (wholeBranch ? touches(j) && keepOnBranchFeed(code, j) : ids.includes(j.job_id)))
+      .map((j) => slimJob(j, driverDisplayName(j.driver)));
+    const settled = ids.filter((id) => allJobs.some((j) => j.job_id === id) && !jobs.some((j) => j.job_id === id));
+    return NextResponse.json({ jobs, settled, eta: await etaP });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
