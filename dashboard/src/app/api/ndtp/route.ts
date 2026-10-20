@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createJob, type Env } from "@/lib/cartrack";
-import { PICKUP_PHOTO_TODO } from "@/lib/job-filters";
+import { PICKUP_PHOTO_TODO, DROPOFF_PHOTO_TODO } from "@/lib/job-filters";
 import { addDays, vnDate, vnHoursMinutes, vnTimestamp } from "@/lib/time";
 import { acquireCreateLock, pushRunLog, releaseCreateLock } from "@/lib/smart-log-kv";
 import { parkScheduledJob } from "@/lib/scheduled-dispatch";
@@ -118,7 +118,7 @@ export async function POST(req: NextRequest) {
             stop_type_id: 2,
             customer_id: dropoff.customer_id,
             duration: 5,
-            todos: [],
+            todos: [DROPOFF_PHOTO_TODO],
           },
         ],
       },

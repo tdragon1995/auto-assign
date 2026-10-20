@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { BASE_URL, getHeaders, cancelJob, jobVnDate, createJob, getJobDetails, getJobsDetailsFast, getLiveDrivers, type Env } from "@/lib/cartrack";
 import { driverDisplayName, stripDriverCode } from "@/lib/job-detail";
 import { vnDate, vnHoursMinutes, vnMinutesSinceMidnight, vnTimestamp } from "@/lib/time";
-import { isBlockingPickupStop, isFarWindowPickup, isStopStarted, pscPairKey, PICKUP_PHOTO_TODO } from "@/lib/job-filters";
+import { isBlockingPickupStop, isFarWindowPickup, isStopStarted, pscPairKey, PICKUP_PHOTO_TODO, DROPOFF_PHOTO_TODO } from "@/lib/job-filters";
 import { acquireCreateLock, releaseCreateLock, markPscPair, unmarkPscPair, lookupPscPair, type PscDupHit } from "@/lib/smart-log-kv";
 import { slimJob } from "@/lib/day-snapshot";
 import { livePairDuplicate, shortCode } from "@/lib/psc-dup";
@@ -277,7 +277,7 @@ export async function POST(req: NextRequest) {
           stop_type_id: 2,
           customer_id: dropoff,
           duration: 10,
-          todos: [],
+          todos: [DROPOFF_PHOTO_TODO],
         },
       ],
       items: [

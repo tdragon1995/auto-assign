@@ -1,7 +1,7 @@
 import { BASE_URL, PROXY_DRIVER_ID, assignJob, createJob, getHeaders, getStopsByLabels, type Env } from "./cartrack";
 import { SHEET_GID, SHEET_CONTRACT, fetchSheetRows, isSheetShapeError, noteSheetLoad } from "./sheets";
 import { vnDate, vnTimestamp } from "./time";
-import { PICKUP_PHOTO_TODO } from "./job-filters";
+import { PICKUP_PHOTO_TODO, DROPOFF_PHOTO_TODO } from "./job-filters";
 import { masterScheduleEnabled,masterScheduleRows } from "./master-schedule";
 
 const WEEKDAY_COLUMNS = [
@@ -229,7 +229,7 @@ function buildJobPayload(
         stop_type_id: 2,
         customer_id: row.dropoff_id,
         duration: 5,
-        todos: [],
+        todos: [DROPOFF_PHOTO_TODO],
       },
     ],
   };

@@ -218,10 +218,14 @@ export const PSC_RETURN_LABEL = "🛵 Vận chuyển mẫu PSC (về)";
 export const PSC_DELIVERY_LABEL = "📄 Giao KQ/VT PSC";
 
 /** The ONE photo a driver takes on any trip we create, at the pickup (supervisor,
- *  2026-10-14). Drop-off stops carry no stop to-dos; PSC trips also scan the batch
+ *  2026-10-14). Drop-off stops carry one photo too (below); PSC trips also scan the batch
  *  at BOTH stops (pay and the batch lookup read it). A todo without is_required: false is
  *  compulsory — see restJobToRpc in cartrack.ts. */
 export const PICKUP_PHOTO_TODO = { todo_type_id: 2, description: "Chụp mẫu/vật tư/kết quả" };
+
+/** The drop-off photo, added back by the supervisor 2026-10-20: proof of the hand-over
+ *  at the destination. Same wording as the pickup; optional on return trips only. */
+export const DROPOFF_PHOTO_TODO = { todo_type_id: 2, description: "Chụp mẫu/vật tư/kết quả" };
 
 /** True if this stop can still block re-booking (Created, En Route, Arrived). */
 export function isActiveStop(stopStatusId: number): boolean {

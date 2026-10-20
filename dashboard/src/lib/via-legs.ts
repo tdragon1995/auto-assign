@@ -10,7 +10,7 @@ import { PSC_OUTBOUND_LABEL } from "./return-trips";
 // Declared in job-filters (dependency-free, importable from edge routes) and
 // re-exported here so existing importers are unaffected.
 export { PSC_VIA_LABEL } from "./job-filters";
-import { PSC_VIA_LABEL, PICKUP_PHOTO_TODO } from "./job-filters";
+import { PSC_VIA_LABEL, PICKUP_PHOTO_TODO, DROPOFF_PHOTO_TODO } from "./job-filters";
 import { claimTripAction, releaseTripClaim } from "./smart-log-kv";
 
 // Race guard across overlapping cycles, keyed by the triggering outbound job_id.
@@ -67,7 +67,7 @@ async function createViaLeg(
         stop_type_id: 2,
         customer_id: dropoffCustomerId,
         duration: 10,
-        todos: [],
+        todos: [DROPOFF_PHOTO_TODO],
       },
     ],
     items: [

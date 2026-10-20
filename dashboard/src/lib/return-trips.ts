@@ -6,7 +6,7 @@ import { loadCleanedReturns } from "./return-suppress";
 import { claimTripAction, releaseTripClaim } from "./smart-log-kv";
 
 export { PSC_RETURN_LABEL } from "./job-filters";
-import { PSC_RETURN_LABEL, PICKUP_PHOTO_TODO } from "./job-filters";
+import { PSC_RETURN_LABEL, PICKUP_PHOTO_TODO, DROPOFF_PHOTO_TODO } from "./job-filters";
 export const PSC_OUTBOUND_LABEL = "🛵 Vận chuyển mẫu PSC";
 
 // These PSCs do not generate automatic returns, regardless of driver or shift.
@@ -75,7 +75,7 @@ async function createReturnJob(
         stop_type_id: 2,
         customer_id: toCustomerId,
         duration: 10,
-        todos: [],
+        todos: [{ ...DROPOFF_PHOTO_TODO, is_required: false }],
       },
     ],
   };

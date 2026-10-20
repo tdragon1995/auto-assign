@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createJob, type Env } from "@/lib/cartrack";
-import { PICKUP_PHOTO_TODO } from "@/lib/job-filters";
+import { PICKUP_PHOTO_TODO, DROPOFF_PHOTO_TODO } from "@/lib/job-filters";
 import { vnDate, vnHoursMinutes } from "@/lib/time";
 import { acquireCreateLock, releaseCreateLock } from "@/lib/smart-log-kv";
 import { CORP_CLINICS, CORP_DROPOFF_ID, CORP_LABEL, normalizeVnPhone } from "@/lib/corp";
@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
             stop_type_id: 2,
             customer_id: CORP_DROPOFF_ID,
             duration: 5,
-            todos: [],
+            todos: [DROPOFF_PHOTO_TODO],
           },
         ],
       },
