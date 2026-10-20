@@ -7,7 +7,8 @@
 // falls back to the order's own branch.
 
 import { DIAG_LOCATIONS } from "./diag-locations";
-export { displayClientName } from "./place-label";
+import { displayClientName } from "./place-label";
+export { displayClientName };
 
 const KNOWN = new Set(DIAG_LOCATIONS.map((l) => l.name));
 const CODE_RE = /(?<![\p{L}\d])[DĐ]\s*[-.]?\s*(\d{1,3})(?!\d)/giu;
@@ -115,4 +116,36 @@ export function pendingFor(
   if (!billing) return pending;
   const codes = new Set(entries.filter((e) => billingFound(billing, e.names)).flatMap((e) => e.codes));
   return pending.filter((p) => codes.has(p.code));
+}
+
+// ── Exclusion list ────────────────────────────────────────────────────────────
+// Clients (or only some of their tests) whose paper results are not handed over
+// from here. A client with no tests listed is excluded whole.
+
+export interface AoExcludedTest { code: string; names: string[] }
+export interface AoExclusion { client_code: string; client_name: string; tests: AoExcludedTest[] }
+
+/** A row to check. `client_code` is the order's client_id (the POS client code); a saved draft row
+ *  has only the printed client name, so it is matched by that. `test_codes` = the order's tests. */
+export interface ExclusionProbe { client_code?: string | null; client: string; billing: string; test_codes?: string[] }
+
+export function isExcluded(row: ExclusionProbe, list: AoExclusion[]): boolean {
+  const ex = list.find((e) => row.client_code
+    ? e.client_code === row.client_code
+    : squash(displayClientName(e.client_name)) === squash(row.client));
+  if (!ex) return false;
+  if (!ex.tests.length) return true;
+  // A pasted test name stands for that test; a bare VID stands for the whole order.
+  if (row.billing) return billingFound(row.billing, ex.tests.flatMap((t) => t.names));
+  return !!row.test_codes?.length && row.test_codes.every((c) => ex.tests.some((t) => t.code === c));
+}
+
+/** Validates a stored or submitted list; null when anything in it is malformed. */
+export function exclusionsOf(value: unknown): AoExclusion[] | null {
+  const str = (v: unknown, max: number) => typeof v === "string" && v.length > 0 && v.length <= max;
+  if (!Array.isArray(value) || value.length > 500) return null;
+  const ok = value.every((e) => e && str(e.client_code, 32) && str(e.client_name, 300) && Array.isArray(e.tests) && e.tests.length <= 200
+    && e.tests.every((t: AoExcludedTest) => t && str(t.code, 64) && Array.isArray(t.names) && t.names.length <= 5 && t.names.every((n) => str(n, 300))));
+  return ok ? value.map((e) => ({ client_code: e.client_code, client_name: e.client_name,
+    tests: e.tests.map((t: AoExcludedTest) => ({ code: t.code, names: t.names })) })) : null;
 }

@@ -81,6 +81,7 @@ async function lookup(vid: string, token: string) {
       client_name: o.client_name?.trim() || null,
       patient_name: o.patient_full_name?.trim() || null,
       test_entries: testEntries(o.order_test_details),
+      test_codes: (Array.isArray(o.order_test_details) ? o.order_test_details : []).map((t: { test_code?: unknown }) => String(t.test_code ?? "")).filter(Boolean),
       pending,
       remark,
       // Where the paper result goes: for HBC, the branch its remark names; otherwise the order's branch.

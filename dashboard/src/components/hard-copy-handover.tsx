@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Loader2, Download, AlertCircle, Printer, Check, X, RefreshCw } from "lucide-react";
-import { parsePaste, billingFound, stripNames, pendingFor, statusLabel, displayClientName, printRowKey, statusLookupVids, type PasteLine, type PrintDraftRow, type PrintHistory, type PrintHistorySummary, type TestEntry, type PendingTest } from "@/lib/handover";
+import { parsePaste, billingFound, stripNames, pendingFor, statusLabel, displayClientName, printRowKey, statusLookupVids, isExcluded, type AoExclusion, type PasteLine, type PrintDraftRow, type PrintHistory, type PrintHistorySummary, type TestEntry, type PendingTest } from "@/lib/handover";
 import { vnDate } from "@/lib/time";
+import { AoExclusions } from "./ao-exclusions";
 
 /** One order as the lookup route returns it. */
 interface Order {
@@ -12,6 +13,7 @@ interface Order {
   client_id?: string | null;
   client_name?: string | null;
   patient_name?: string | null;
+  test_codes?: string[]; // the order's own tests, as the POS codes them
   test_entries?: TestEntry[]; // every name a test (or a package part) goes by, with its LIS codes
   pending?: PendingTest[] | null; // tests without an approved result; null = status unreadable
   remark?: string | null;
@@ -286,6 +288,7 @@ function restoredRow(r: PrintDraftRow, order?: Order, checking = false): Row {
   const billing_ok = !billing || !order || order.error ? null : billingFound(billing, entries.flatMap((e) => e.names));
   return {
     vid: r.vid, dest: r.dest, client_name: r.client, patient_name: r.patient,
+    client_id: order?.client_id ?? null, test_codes: order?.test_codes,
     billing, print_note: r.note, key: printRowKey({ vid: r.vid, billing }), billing_ok,
     row_pending: !order || order.error ? null : billing_ok === false ? [] : pendingFor(billing, entries, order.pending ?? null),
     status_checking: checking && !order,
@@ -311,6 +314,35 @@ export function HardCopyHandover() {
   const [statusTotal, setStatusTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(0);
+  const [exclusions, setExclusions] = useState<AoExclusion[]>([]);
+  const [exclusionError, setExclusionError] = useState("");
+  const [savingExclusions, setSavingExclusions] = useState(false);
+
+  useEffect(() => {
+    void fetch("/api/ao/exclusions", { cache: "no-store" })
+      .then(async (res) => { const data = await res.json(); if (!res.ok) throw new Error(data.error); setExclusions(data.list ?? []); })
+      .catch((error) => setExclusionError(String(error)));
+  }, []);
+
+  const saveExclusions = async (list: AoExclusion[]) => {
+    const prev = exclusions;
+    setExclusions(list);
+    setSavingExclusions(true);
+    try {
+      const res = await fetch("/api/ao/exclusions", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ list }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Không lưu được danh sách loại trừ");
+      setExclusionError("");
+    } catch (error) {
+      setExclusions(prev);
+      setExclusionError(String(error));
+    } finally {
+      setSavingExclusions(false);
+    }
+  };
+
+  // A saved draft row whose order hasn't loaded has no client code, so it is matched by its printed name.
+  const kept = (r: Row) => !isExcluded({ client_code: r.client_id, client: displayClientName(r.client_name ?? ""), billing: r.billing, test_codes: r.test_codes }, exclusions);
 
   const refreshDraft = useCallback(async () => {
     setDraftLoading(true);
@@ -368,7 +400,7 @@ export function HardCopyHandover() {
       setOrders((prev) => ({ ...prev, ...got }));
       setDone(count);
     });
-    const incoming = printRows(groupRows(joinedRows(pasted, found)));
+    const incoming = printRows(groupRows(joinedRows(pasted, found).filter(kept)));
     for (let i = 0; i < incoming.length; i += 200) {
       try {
         const res = await fetch("/api/ao/draft", {
@@ -391,7 +423,8 @@ export function HardCopyHandover() {
   const rows = joinedRows(lines, orders);
   const merged = new Map<string, Row>(savedRows.map((r) => [printRowKey(r), restoredRow(r, savedOrders[r.vid], statusLoading)]));
   for (const row of rows) merged.set(printRowKey(row), row);
-  const allRows = [...merged.values()];
+  const allRows = [...merged.values()].filter(kept);
+  const excludedCount = merged.size - allRows.length;
   const hubGroups = groupRows(allRows.filter((r) => r.dest === HUB));
   const outsideGroups = groupRows(allRows.filter((r) => r.dest !== HUB));
   const failed = Object.values(orders).filter((o) => o.error);
@@ -549,6 +582,17 @@ export function HardCopyHandover() {
         </div>
         </section>
       </div>
+
+      <details className="bg-white rounded-2xl shadow-sm px-5 py-3">
+        <summary className="cursor-pointer text-base font-bold text-slate-900">
+          Loại trừ khỏi bàn giao <span className="text-sm font-normal text-slate-500">· {exclusions.length} khách hàng</span>
+        </summary>
+        <p className="mt-2 mb-3 text-xs text-slate-600">Hồ sơ của khách hàng trong danh sách không được tra cứu vào bản nháp và không được in. Chọn xét nghiệm để chỉ loại những xét nghiệm đó; không chọn xét nghiệm nào thì loại toàn bộ khách hàng.</p>
+        {exclusionError && <p role="alert" className="mb-2 text-xs text-red-700">{exclusionError}</p>}
+        <AoExclusions list={exclusions} busy={savingExclusions} onChange={(list) => void saveExclusions(list)} />
+      </details>
+
+      {excludedCount > 0 && <p role="status" className="text-xs text-slate-600">Đã loại {excludedCount} dòng theo danh sách loại trừ.</p>}
 
       {failed.length > 0 && (
         <div className="bg-red-50 border border-red-200 rounded-2xl p-4 text-xs text-red-800 space-y-1">

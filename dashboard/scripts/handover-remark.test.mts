@@ -121,3 +121,24 @@ assert.equal(isPending("approved"), false);
 assert.equal(isPending("sample_received"), true);
 assert.equal(isPending("cancelled"), false);
 console.log("ok — result status");
+
+// ── Exclusion list ──
+import { isExcluded, exclusionsOf } from "../src/lib/handover";
+{
+  const dym = "CHI NHÁNH CÔNG TY TNHH DYM MEDICAL CENTER VIỆT NAM TẠI THÀNH PHỐ HỒ CHÍ MINH";
+  const whole = [{ client_code: "18513", client_name: dym, tests: [] }];
+  const pap = [{ client_code: "18513", client_name: dym, tests: [{ code: "47527-7CR", names: ["Pap Smear"] }] }];
+  const row = { client_code: "18513", client: "x", billing: "", test_codes: ["47527-7CR"] };
+  assert.equal(isExcluded(row, whole), true);                                         // no tests → whole client
+  assert.equal(isExcluded({ ...row, client_code: "999" }, whole), false);              // other client
+  assert.equal(isExcluded({ ...row, client_code: null, client: "DYM medical center việt nam tại thành phố hồ chí minh" }, whole), true); // saved row: by printed name
+  assert.equal(isExcluded({ ...row, billing: "pap smear" }, pap), true);               // pasted test is listed
+  assert.equal(isExcluded({ ...row, billing: "HbA1c" }, pap), false);                  // pasted test is not
+  assert.equal(isExcluded(row, pap), true);                                            // bare VID, every test listed
+  assert.equal(isExcluded({ ...row, test_codes: ["47527-7CR", "4548-4"] }, pap), false); // bare VID with another test too
+  assert.equal(isExcluded({ ...row, test_codes: undefined }, pap), false);             // tests unknown → keep
+  assert.deepEqual(exclusionsOf(pap), pap);
+  assert.equal(exclusionsOf([{ client_code: "", client_name: "a", tests: [] }]), null);
+  assert.deepEqual(exclusionsOf(null), null);
+  console.log("ok — exclusion list");
+}
