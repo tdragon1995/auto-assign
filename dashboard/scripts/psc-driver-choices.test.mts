@@ -99,5 +99,24 @@ ok("a driver whose shift does not cover the hour is not counted",
 ok("one on leave and one left out for another reason is still no_driver",
   ids(pick(cfg(row(A), row(B, "", "", { alt_drop_off_id: HUB })), "10:00", [leave(A)])) === JSON.stringify("no_driver"));
 
+// -- allDay: the /qr branch picker lists the whole route --------------------------
+{
+  const all = (c: Config, hm: string, leave: LeaveEntry[] = []) =>
+    resolveDriverChoices(c, PICK, LAB, leave, at(hm), { allDay: true });
+  const c = cfg(row(B, "15:00", "21:00"), row(A, "07:00", "15:00"), row(C, "22:00", "06:00"));
+  const r = all(c, "10:00");
+  ok("allDay offers every row, the one on shift first", ids(r) === is(A, B, C), r);
+  ok("allDay marks who is on shift", r.ok && r.drivers.map((d) => d.onDuty).join() === "true,false,false", r);
+  ok("allDay carries each row's hours", r.ok && r.drivers[0].shift === "07:00–15:00" && r.drivers[2].shift === "22:00–06:00", r);
+  ok("a driver on two rows appears once with both hours",
+    (() => { const x = all(cfg(row(A, "07:00", "11:00"), row(A, "15:00", "21:00")), "10:00");
+      return x.ok && x.drivers.length === 1 && x.drivers[0].shift === "07:00–11:00, 15:00–21:00" && x.drivers[0].onDuty; })());
+  const sub = all(c, "10:00", [leave(B, [{ id: SUB, name: "Người Thay", from: null, to: null }])]);
+  ok("allDay: a driver on leave arrives as their substitute", ids(sub) === is(A, SUB, C), sub);
+  ok("allDay: the substitute says who they cover", sub.ok && sub.drivers[1].subFor === "F - C - DC9 Người Nghỉ", sub);
+  ok("allDay: on leave with no substitute is left out", ids(all(c, "10:00", [leave(B)])) === is(A, C));
+  ok("allDay off: the window still decides", ids(pick(c, "10:00")) === is(A));
+}
+
 if (failed) { console.log(`\n${failed} failed`); process.exit(1); }
 console.log("\nall passed");

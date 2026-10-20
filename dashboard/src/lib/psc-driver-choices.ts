@@ -7,7 +7,7 @@ import type { Config } from "./types";
 
 /** One row of the branch's driver picker. The name is the personal name only — no
  *  staff code, no PT/FT prefix. */
-export type PickerDriver = { driver_id: string; name: string };
+export type PickerDriver = { driver_id: string; name: string; onDuty: boolean; shift: string | null; subFor: string | null };
 
 export type PickerResult = { drivers: PickerDriver[]; reason: string | null };
 
@@ -41,7 +41,9 @@ export function driverChoices(
   if (!leave) return empty("leave_unavailable");
   if (!live) return empty("drivers_unavailable");
 
-  const res = resolveDriverChoices(config, pickup, dropoff, leave, requestedAt);
+  // Everyone configured for the route, the ones on shift at the request time first (a
+  // driver on leave arrives as their substitute).
+  const res = resolveDriverChoices(config, pickup, dropoff, leave, requestedAt, { allDay: true });
   if (!res.ok) return empty(res.reason);
 
   const byId = new Map(live.map((d) => [d.deliveryDriverId, d]));
@@ -53,7 +55,7 @@ export function driverChoices(
     // Names carry no staff code, so a person's PT and DC accounts would read as the same
     // line twice. Offer the first; either account reaches the same person.
     if (!name || drivers.some((x) => x.name === name)) continue;
-    drivers.push({ driver_id: c.driverId, name });
+    drivers.push({ driver_id: c.driverId, name, onDuty: c.onDuty, shift: c.shift, subFor: c.subFor ? driverDisplayName(c.subFor) || c.subFor : null });
   }
   return { drivers, reason: drivers.length ? null : "no_driver" };
 }

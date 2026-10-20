@@ -10,8 +10,9 @@ export const runtime = "nodejs";
 export const preferredRegion = "sin1";
 
 /**
- * Branch-triggered driver change: hand a trip that has not been collected yet to another
- * driver whose roster row covers the time the trip was requested, ±10 minutes.
+ * Branch-triggered driver change: hand a trip that has not been collected yet to any
+ * driver configured for its route — those whose row covers the time the trip was
+ * requested (±10 minutes) listed first, a driver on leave replaced by their substitute.
  *
  * Nothing here runs automatically. The engine keeps assigning by roster; this fires only
  * when a person at the branch decides this one trip should go to someone else.

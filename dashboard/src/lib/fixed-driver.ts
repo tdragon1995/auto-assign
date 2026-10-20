@@ -246,6 +246,12 @@ export type DriverChoice = {
    *  pool member — a smart row's name cell lists the whole pool. Callers name from the
    *  live driver list and only fall back to this. */
   name: string | null;
+  /** Their row covers the request time (±CHOICE_WINDOW_MIN). Always true unless `allDay`. */
+  onDuty: boolean;
+  /** The row's hours, "07:00–15:00"; null for a row with no hours (all day). */
+  shift: string | null;
+  /** On leave and covered: the name of the driver this one is substituting for. */
+  subFor: string | null;
 };
 
 export type ChoicesResult =
@@ -272,6 +278,10 @@ export function resolveDriverChoices(
   dropoff: string,
   leaveEntries: LeaveEntry[],
   requestedAt: Date = new Date(),
+  /** Offer every row of the route, whatever its hours — the ones covering the request
+   *  time first, marked `onDuty`. The /qr branch picker. "all_on_leave" still judges
+   *  only the rows covering the request time. */
+  opts?: { allDay?: boolean },
 ): ChoicesResult {
   const { applicable } = mappingsForRoute(config, pickup, dropoff);
   if (applicable.length === 0) return { ok: false, reason: "no_mapping" };
@@ -282,21 +292,36 @@ export function resolveDriverChoices(
   const to = Math.min(24 * 60 - 1, t + CHOICE_WINDOW_MIN);
   const covering = applicable.filter((m) => dutyBlocks(m).some(([a, b]) => a <= to && b >= from));
   // settle() below drops a redirecting row's drivers.
-  const rows = preferDestinationRows(covering, dropoff);
+  const onDutyRows = preferDestinationRows(covering, dropoff);
+  const rows = opts?.allDay
+    ? [...new Set([...onDutyRows, ...preferDestinationRows(applicable, dropoff)])]
+    : onDutyRows;
+  const hm = (x: { hours: number; minutes: number }) => `${String(x.hours).padStart(2, "0")}:${String(x.minutes).padStart(2, "0")}`;
 
   const drivers: DriverChoice[] = [];
   // "Everyone rostered is on leave (with no substitute)" is its own answer: the /qr card
   // then offers Grab/Be and the back-office contacts instead of an empty picker.
   let rostered = 0, onLeave = 0;
   for (const m of rows) {
+    const onDuty = onDutyRows.includes(m);
+    const shift = m.shift_start && m.shift_end ? `${hm(m.shift_start)}–${hm(m.shift_end)}` : null;
     for (const id of m.smart_driver_id.length > 0 ? m.smart_driver_id : [m.driver_id]) {
-      rostered++;
+      if (onDuty) rostered++;
       const s = settle(m, id, dropoff, leaveEntries);
-      if (!s && isDriverOnLeave(id, leaveEntries).onLeave) onLeave++;
-      if (!s || proxyKind(null, s.driverId) || drivers.some((d) => d.driverId === s.driverId)) continue;
-      drivers.push({ driverId: s.driverId, name: m.smart_driver_id.length > 0 && !s.subFor ? null : s.name });
+      if (onDuty && !s && isDriverOnLeave(id, leaveEntries).onLeave) onLeave++;
+      if (!s || proxyKind(null, s.driverId)) continue;
+      const seen = drivers.find((d) => d.driverId === s.driverId);
+      if (seen) {
+        // On two rows: on duty if either is; the hours of each, once.
+        seen.onDuty ||= onDuty;
+        if (shift && !seen.shift?.includes(shift)) seen.shift = seen.shift ? `${seen.shift}, ${shift}` : shift;
+        continue;
+      }
+      drivers.push({ driverId: s.driverId, name: m.smart_driver_id.length > 0 && !s.subFor ? null : s.name, onDuty, shift, subFor: s.subFor });
     }
   }
+  // Stable: the roster's own order within each group.
+  drivers.sort((a, b) => Number(b.onDuty) - Number(a.onDuty));
   if (drivers.length) return { ok: true, drivers };
   return { ok: false, reason: rostered > 0 && onLeave === rostered ? "all_on_leave" : "no_driver" };
 }

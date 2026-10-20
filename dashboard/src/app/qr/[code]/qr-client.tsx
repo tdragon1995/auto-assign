@@ -1706,7 +1706,7 @@ export default function QrPage() {
                 </p>
               )
             ) : (
-              <div className="space-y-1.5 max-h-64 overflow-y-auto">
+              <div className="space-y-1.5 max-h-[60vh] overflow-y-auto">
                 {changeList.map((d) => (
                   <button key={d.driver_id} onClick={() => handleChangeDriver(d.driver_id, d.name)}
                     disabled={!!changeBusyId}
@@ -1714,7 +1714,14 @@ export default function QrPage() {
                     <span aria-hidden className="w-8 h-8 flex-none rounded-full bg-blue-100 text-blue-700 font-extrabold text-xs flex items-center justify-center">
                       {initial(d.name)}
                     </span>
-                    <span className="flex-1 min-w-0 text-sm font-bold text-slate-800 break-words">{d.name}</span>
+                    <span className="flex-1 min-w-0">
+                      <span className="block text-sm font-bold text-slate-800 break-words">{d.name}</span>
+                      {(d.shift || d.subFor || !d.onDuty) && (
+                        <span className="block text-[11px] font-medium text-slate-500">
+                          {[d.subFor && `Thay ${d.subFor}`, d.shift && `Ca ${d.shift}`, !d.onDuty && "ngoài giờ yêu cầu"].filter(Boolean).join(" · ")}
+                        </span>
+                      )}
+                    </span>
                     {changeBusyId === d.driver_id && <span className="text-[11px] font-bold text-blue-700">Đang giao…</span>}
                   </button>
                 ))}
