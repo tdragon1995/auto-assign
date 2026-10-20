@@ -997,6 +997,22 @@ export default function QrPage() {
   };
 
   const pendingKey = `qr-pending:${code}`;
+  // Trips this device cancelled today. The shared day copy can be up to 5 minutes old and
+  // still carries them as running, so a reload in that window would bring a cancelled trip
+  // back as "Chờ điều phối"; the list filters these out. A ref: loadJobs reads it, and
+  // nothing renders from it directly.
+  const cancelledKey = `qr-cancelled:${code}`;
+  const cancelledRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    try {
+      const v = JSON.parse(localStorage.getItem(cancelledKey) ?? "null") as { date: string; ids: number[] } | null;
+      cancelledRef.current = new Set(v?.date === todayVN() ? v.ids : []);
+    } catch {}
+  }, [cancelledKey]);
+  const rememberCancelled = (id: number) => {
+    cancelledRef.current.add(id);
+    try { localStorage.setItem(cancelledKey, JSON.stringify({ date: todayVN(), ids: [...cancelledRef.current] })); } catch {}
+  };
 
   // Restore this device's not-yet-dispatched requests, dropping any from earlier days.
   useEffect(() => {
@@ -1035,7 +1051,7 @@ export default function QrPage() {
       setEtaMins(data.eta ?? {});
       setNoDriverRoutes(new Set(data.noDriverRoutes ?? []));
       setLoadedAt(Date.now());
-      const raw: Job[] = data.jobs ?? [];
+      const raw: Job[] = (data.jobs ?? []).filter((j: Job) => !cancelledRef.current.has(Number(j.job_id)));
       // A waiting card hides once the server has its trip at all — even one the filters
       // below then drop — and goes for good once Cartrack no longer has it (cancelled or
       // deleted), after 10 minutes' grace for a booking Cartrack has not indexed yet.
@@ -1188,6 +1204,7 @@ export default function QrPage() {
         return;
       }
       const cancelledId = cancelTarget.job_id;
+      rememberCancelled(cancelledId);
       persistPending(retirePending(pending, [cancelledId]));
       // Drop it locally instead of reloading. A cancelled job (status 7) is not one of the
       // statuses this feed shows, so removing it here produces exactly the list a reload
