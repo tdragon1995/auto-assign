@@ -308,3 +308,33 @@ export function rankingComparator(
   if (aTs !== bTs) return aTs.localeCompare(bTs);
   return a.name.localeCompare(b.name);
 }
+
+/**
+ * A driver already carrying this many samples is left out of smart ranking, so
+ * the samples on board are not held back by yet another pickup (supervisor,
+ * 2026-10-21). "Carrying" = a drop-off still open on a job whose pickup is
+ * collected; jobs assigned but not yet picked up do not count.
+ */
+export const MAX_ONBOARD_DROPOFFS = 3;
+
+export function onboardDropoffs(stops: TimelineStop[]): number {
+  const collected = new Set(stops.filter((s) => s.stopTypeId === 1 && s.stopStatusId === 4).map((s) => s.jobId));
+  return stops.filter((s) => s.stopTypeId === 2 && collected.has(s.jobId) && s.stopStatusId !== 4 && s.stopStatusId !== 5).length;
+}
+
+/**
+ * The pool without drivers at MAX_ONBOARD_DROPOFFS. When that would leave nobody,
+ * everyone stays and `allFull` is set — the job still goes to the best of them
+ * (supervisor's choice). `keep` is never left out: the re-check's current holder.
+ */
+export function withoutFullDrivers<T>(
+  pool: T[],
+  loadOf: (x: T) => number,
+  keep?: (x: T) => boolean,
+): { pool: T[]; full: T[]; allFull: boolean } {
+  const isFull = (x: T) => loadOf(x) >= MAX_ONBOARD_DROPOFFS && !keep?.(x);
+  const full = pool.filter(isFull);
+  if (full.length === 0) return { pool, full, allFull: false };
+  const open = pool.filter((x) => !isFull(x));
+  return open.length > 0 ? { pool: open, full, allFull: false } : { pool, full, allFull: true };
+}

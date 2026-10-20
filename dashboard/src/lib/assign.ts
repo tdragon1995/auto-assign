@@ -35,7 +35,7 @@ import { blockingNotes, isChamCong, isCompletedOrRejectedStop, isNoteApproved, D
 import { kqvtCycle, rankWithHolderFirst, type KqvtCycle } from "./kqvt";
 import { placeLabel } from "./place-label";
 import { stripDriverCode } from "./job-detail";
-import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, idleBand, isUnreachedAnchor, liveGpsRef, lastRealPositionRef, type RefStop, type RefLabel } from "./smart-rank";
+import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, idleBand, isUnreachedAnchor, liveGpsRef, lastRealPositionRef, onboardDropoffs, withoutFullDrivers, MAX_ONBOARD_DROPOFFS, type RefStop, type RefLabel } from "./smart-rank";
 import { loadLeaveEntries, isDriverOnLeave, resolveSubstitute, type LeaveEntry } from "./leave-config";
 import { publishNoDriverRoutes } from "./psc-no-driver";
 import { getDriversOnDuty, resolveFixedDriver, findSmartMapping, waitForMappingShift } from "./fixed-driver";
@@ -1774,9 +1774,11 @@ interface SmartPrep {
   smartRouteData: Record<string, DriverRouteInfo>;
   phase1Coords: Map<string, { lat: number; lon: number }>;
   infoWithout: (driverId: string, jobId: number) => DriverRouteInfo | null;
+  /** Samples each driver is carrying now (see MAX_ONBOARD_DROPOFFS). */
+  onboard: Map<string, number>;
 }
 
-const EMPTY_SMART_PREP: SmartPrep = { allGpsDrivers: [], smartRouteData: {}, phase1Coords: new Map(), infoWithout: () => null };
+const EMPTY_SMART_PREP: SmartPrep = { allGpsDrivers: [], smartRouteData: {}, phase1Coords: new Map(), infoWithout: () => null, onboard: new Map() };
 
 async function prepareSmart(
   config: Config,
@@ -1950,7 +1952,9 @@ async function prepareSmart(
     return anchor(d, { ref, label: ref?.label ?? null, workload: stops.length, lastCompletedTs: stats.lastCompletedTs, jobsDone: stats.done }) ?? null;
   };
 
-  return { allGpsDrivers, smartRouteData, phase1Coords, infoWithout };
+  const onboard = new Map([...stopsByDriver].map(([id, stops]): [string, number] => [id, onboardDropoffs(stops)]));
+
+  return { allGpsDrivers, smartRouteData, phase1Coords, infoWithout, onboard };
 }
 
 // The configured smart drivers who can be ranked for one job, with on-leave
@@ -1961,6 +1965,8 @@ function buildSmartPool(
   allGpsDrivers: Driver[],
   phase1Coords: Map<string, { lat: number; lon: number }>,
   leaveEntries: LeaveEntry[],
+  onboard: Map<string, number>,
+  keepId?: string,
 ) {
   const driverById = new Map<string, Driver>(
     allGpsDrivers.map((d): [string, Driver] => [d.delivery_driver_id, d])
@@ -2005,7 +2011,17 @@ function buildSmartPool(
     candidates.push(cand);
     if (subFor) subForByDriverId.set(cand.delivery_driver_id, subFor);
   }
-  return { driverById, subForByDriverId, candidates, tplCovered };
+  // Drivers already carrying MAX_ONBOARD_DROPOFFS samples sit this one out.
+  const { pool, full, allFull } = withoutFullDrivers(
+    candidates,
+    (d) => onboard.get(d.delivery_driver_id) ?? 0,
+    keepId ? (d) => d.delivery_driver_id === keepId : undefined,
+  );
+  const fullNames = full.map((d) => driverDisplayName(`${d.first_name} ${d.last_name}`.trim()));
+  const fullTag = fullNames.length === 0 ? ""
+    : allFull ? ` · cả ${fullNames.length} tài xế đang chở ≥${MAX_ONBOARD_DROPOFFS} mẫu, chọn người tốt nhất`
+    : ` · bỏ qua (đang chở ≥${MAX_ONBOARD_DROPOFFS} mẫu): ${fullNames.join(", ")}`;
+  return { driverById, subForByDriverId, candidates: pool, tplCovered, fullTag };
 }
 
 // Each candidate's straight-line distance to the pickup and the reference
@@ -2149,7 +2165,7 @@ async function recheckSmartJobs(
     const mapping = findSmartMapping(config, customerId, now, dropoffId);
     if (!mapping || mapping.smart_driver_id.length < 2) continue;
     const holderId = job.delivery_driver_id!;
-    const pool = buildSmartPool(mapping.smart_driver_id, prep.allGpsDrivers, prep.phase1Coords, leaveEntries);
+    const pool = buildSmartPool(mapping.smart_driver_id, prep.allGpsDrivers, prep.phase1Coords, leaveEntries, prep.onboard, holderId);
     // A holder outside today's pool (config changed, no position) has nothing fair to be compared with.
     if (!pool.candidates.some((d) => d.delivery_driver_id === holderId)) continue;
     const holderInfo = prep.infoWithout(holderId, job.job_id);
@@ -2652,7 +2668,7 @@ export async function autoAssignCycle(
     return cid !== null && smartCustomerIds.has(cid);
   });
 
-  const { allGpsDrivers, smartRouteData, phase1Coords } = hasSmartJobs ? await getSmartPrep() : EMPTY_SMART_PREP;
+  const { allGpsDrivers, smartRouteData, phase1Coords, onboard: smartOnboard } = hasSmartJobs ? await getSmartPrep() : EMPTY_SMART_PREP;
   phase("smart-prep");
 
   // Duplicate-check map from the status-4 partition obtained above. Reused for
@@ -2981,8 +2997,8 @@ export async function autoAssignCycle(
         // one's stale location. The on-leave driver stays in the pool only when
         // their sub can't be ranked (clash / no cover / sub has no coords); the
         // assign loop below resolves those the legacy way (swap at assign time).
-        const { driverById, subForByDriverId, candidates, tplCovered } =
-          buildSmartPool(smartMapping.smart_driver_id, allGpsDrivers, phase1Coords, leaveEntries);
+        const { driverById, subForByDriverId, candidates, tplCovered, fullTag } =
+          buildSmartPool(smartMapping.smart_driver_id, allGpsDrivers, phase1Coords, leaveEntries, smartOnboard);
         if (candidates.length === 0) {
           if (tplCovered.length > 0) {
             // Not a staffing gap: the lane is on 3PL express today and the branch
@@ -3086,7 +3102,7 @@ export async function autoAssignCycle(
             if (apiStatus === 200) {
               const tag = attempt > 0 ? `[#${attempt + 1}] ` : "";
               const who = subFor ? `${ctName || targetId} (sub for ${subFor}) | ${rankStr}` : rankStr;
-              log(`Job ${jobId} - SMART ${tag}: ${who}${noteTag} | ${route}`, "OK");
+              log(`Job ${jobId} - SMART ${tag}: ${who}${noteTag}${fullTag} | ${route}`, "OK");
               await recordSmartAssign(env, today, jobId, targetId);
               await kqvt.afterAssign(job, targetId);
               assigned = true;

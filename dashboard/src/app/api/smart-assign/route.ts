@@ -3,7 +3,7 @@ import { getDrivers, getJobsByStatusAndDate, getCustomerById, getTimelineRoutes,
 import { vnDate, vnMinutesSinceMidnight } from "@/lib/time";
 import { haversineKm } from "@/lib/distance";
 import { roadDistancesFromPoint, roadDistancesToPoint } from "@/lib/distance-cache";
-import { selectReferenceStop, computeStopStats, ROUTE_STATE_PRIORITY, enRouteGpsBand, idleBand, isUnreachedAnchor, liveGpsRef, lastRealPositionRef, type RefLabel, type RefStop } from "@/lib/smart-rank";
+import { selectReferenceStop, computeStopStats, ROUTE_STATE_PRIORITY, enRouteGpsBand, idleBand, isUnreachedAnchor, liveGpsRef, lastRealPositionRef, onboardDropoffs, withoutFullDrivers, type RefLabel, type RefStop } from "@/lib/smart-rank";
 import { isChamCong } from "@/lib/job-filters";
 
 const TOP_N        = 3;
@@ -24,6 +24,8 @@ interface DriverRouteData {
     altLat?: number | null; altLon?: number | null;
   } | null;
   lastCompletedTs: string | null;
+  /** Samples on board — see MAX_ONBOARD_DROPOFFS. */
+  onboard: number;
 }
 
 const ACTIVE_STOP_STATUSES = new Set([1, 2, 3]);
@@ -62,7 +64,7 @@ async function fetchAllDriverRouteData(
       const referenceStop = selectReferenceStop(stops, shiftStartByDriverId[driverId] ?? null);
       const { lastCompletedTs } = computeStopStats(stops);
 
-      result[driverId] = { stats: { total, active, done: total - active }, referenceStop, lastCompletedTs };
+      result[driverId] = { stats: { total, active, done: total - active }, referenceStop, lastCompletedTs, onboard: onboardDropoffs(stops) };
     }
     return result;
   } catch {
@@ -185,7 +187,7 @@ export async function POST(req: NextRequest) {
     }
     if (!nextRef) continue;
 
-    const existing = rd ?? { stats: { total: 0, active: 0, done: 0 }, referenceStop: null, lastCompletedTs: null };
+    const existing = rd ?? { stats: { total: 0, active: 0, done: 0 }, referenceStop: null, lastCompletedTs: null, onboard: 0 };
     routeData[d.delivery_driver_id] = { ...existing, referenceStop: nextRef };
   }
 
@@ -321,7 +323,10 @@ export async function POST(req: NextRequest) {
   // ── Assemble + re-rank by Goong detour, take top 3 ────────────────────────
   const nowMin = vnMinutesSinceMidnight();
   const suggestions = intermediate.map((s) => {
-    const rankedDrivers = s.drivers
+    // Same rule as the engine: drivers carrying MAX_ONBOARD_DROPOFFS samples are
+    // left out unless that leaves nobody.
+    const pool = withoutFullDrivers(s.drivers, (d) => routeData[d.driver_id]?.onboard ?? 0).pool;
+    const rankedDrivers = pool
       .map((d) => {
         const ref           = routeData[d.driver_id]?.referenceStop ?? null;
         const detourRouting = detourRoutingMap.get(`${s.job_id}:${d.driver_id}`) ?? null;
