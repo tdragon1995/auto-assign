@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Loader2, Download, AlertCircle, Printer, Check, X, RefreshCw } from "lucide-react";
-import { parsePaste, billingFound, stripPatient, pendingFor, statusLabel, displayClientName, printRowKey, statusLookupVids, type PasteLine, type PrintDraftRow, type PrintHistory, type PrintHistorySummary, type TestEntry, type PendingTest } from "@/lib/handover";
+import { parsePaste, billingFound, stripNames, pendingFor, statusLabel, displayClientName, printRowKey, statusLookupVids, type PasteLine, type PrintDraftRow, type PrintHistory, type PrintHistorySummary, type TestEntry, type PendingTest } from "@/lib/handover";
 import { vnDate } from "@/lib/time";
 
 /** One order as the lookup route returns it. */
@@ -71,7 +71,7 @@ const today = (locale: string) => new Date().toLocaleDateString(locale, { timeZo
 const fileStem = (title: string, printedAt?: string) => `ban-giao-ban-cung_${title.replace(/\s+/g, "-")}_${new Date(printedAt ?? Date.now()).toLocaleDateString("sv-SE", { timeZone: "Asia/Ho_Chi_Minh" })}`;
 const printDate = (printedAt?: string) => new Date(printedAt ?? Date.now()).toLocaleDateString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" });
 
-const HEAD = ["STT", "Gửi về", "Khách hàng", "VID", "Bệnh nhân", "Xét nghiệm", "Ghi chú"];
+const HEAD = ["STT", "PSC", "Khách hàng", "VID", "Bệnh nhân", "XN", "Ghi chú"];
 const OPTIONAL = [5, 6]; // Xét nghiệm, Ghi chú — dropped when every row leaves them blank
 
 /** The checklist table shared by print and Excel, minus optional columns nobody filled. */
@@ -92,7 +92,7 @@ async function downloadExcel(title: string, groups: Group[]) {
   const XLSX = await import("xlsx");
   const { cols, head, rows } = checklist(groups);
   const aoa: (string | number)[][] = [
-    [`BÀN GIAO KẾT QUẢ BẢN CỨNG — ${title}`], [`Ngày in: ${today("vi-VN")}`], [], [...head, "Đã nhận"],
+    [`BÀN GIAO KẾT QUẢ BẢN CỨNG — ${title}`], [`Ngày in: ${today("vi-VN")}`], [], [...head, "Nhận"],
     ...rows.map((r) => [...r, "☐"]),
     [], [`Tổng: ${rows.length} hồ sơ`], [], ["Người giao:", "", "", "Người nhận:", "", "Thời gian:"],
   ];
@@ -106,7 +106,7 @@ async function downloadExcel(title: string, groups: Group[]) {
 
 const esc = (v: unknown) => String(v).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]!);
 
-/** A4 portrait checklist in a new window; the print dialog also offers "Save as PDF". */
+/** A4 landscape checklist in a new window; the print dialog also offers "Save as PDF". */
 function printA4(title: string, groups: Group[], autoPrint = true, printedAt?: string, target?: Window): boolean {
   const { cols, head, rows } = checklist(groups);
   let offset = 0;
@@ -116,35 +116,36 @@ function printA4(title: string, groups: Group[], autoPrint = true, printedAt?: s
     return `<tbody class="psc">${groupRows.map((r, i) => `<tr>${r.map((v, j) => `<td class="c${cols[j]}">${esc(j === 0 ? i + 1 : v)}</td>`).join("")}<td class="box">☐</td></tr>`).join("")}</tbody>`;
   }).join("");
   const html = `<!doctype html><html lang="vi"><head><meta charset="utf-8"><title>${esc(fileStem(title, printedAt))}</title><style>
-@page { size: A4 portrait; margin: 12mm 10mm; }
+@page { size: A4 landscape; margin: 10mm; }
 * { box-sizing: border-box; }
-body { font: 10.5pt/1.35 Arial, sans-serif; color: #000; margin: 0; }
+body { font: 8.5pt/1.3 Arial, sans-serif; color: #000; margin: 0; }
 h1 { font-size: 14pt; margin: 0 0 2mm; }
 .meta { font-size: 10pt; margin-bottom: 4mm; }
 table { width: 100%; border-collapse: collapse; border-left: 2pt solid #000; border-right: 2pt solid #000; }
 thead { display: table-header-group; }
 tbody.psc { page-break-inside: auto; }
 tr { page-break-inside: avoid; }
-th, td { border: 0.6pt solid #000; padding: 1.5mm 1.8mm; text-align: left; vertical-align: top; }
+th, td { border: 0.6pt solid #000; padding: 1mm 1.5mm; text-align: left; vertical-align: top; }
 tbody.psc td { border-style: dotted; }
 tbody.psc td:first-child { border-left: 2pt solid #000; }
 tbody.psc td:last-child { border-right: 2pt solid #000; }
 tbody.psc tr:first-child td { border-top: 2pt solid #000; }
 tbody.psc tr:last-child td { border-bottom: 2pt solid #000; }
-th { background: #eee; font-size: 9.5pt; }
+th { background: #eee; font-size: 8pt; }
 thead th { border-top: 2pt solid #000; border-bottom: 2pt solid #000; font-weight: 700; }
 .c0, .box { text-align: center; width: 9mm; }
 .c1 { width: 14mm; font-weight: bold; }
 .c3 { width: 26mm; font-family: Consolas, monospace; }
-.c5, .c6 { font-size: 8.5pt; }
-.box { font-size: 13pt; width: 15mm; }
+.c5, .c6 { font-size: 8pt; }
+th, td { white-space: nowrap; } /* one line per record, always; a too-long row runs off the page rather than wrap */
+.box { font-size: 11pt; width: 15mm; }
 .sign { display: flex; justify-content: space-between; margin-top: 10mm; page-break-inside: avoid; }
 .sign div { width: 30%; text-align: center; }
 .sign p { margin: 0 0 18mm; font-weight: bold; }
 </style></head><body>
 <h1>BÀN GIAO KẾT QUẢ BẢN CỨNG — ${esc(title)}</h1>
 <div class="meta">Ngày in: ${esc(printDate(printedAt))} · Tổng: ${rows.length} hồ sơ</div>
-<table><thead><tr>${[...head, "Đã nhận"].map((h) => `<th>${h}</th>`).join("")}</tr></thead>${body}</table>
+<table><thead><tr>${[...head, "Nhận"].map((h) => `<th>${h}</th>`).join("")}</tr></thead>${body}</table>
 <div class="sign"><div><p>Người giao</p>(Ký, ghi rõ họ tên)</div><div><p>Người nhận</p>(Ký, ghi rõ họ tên)</div><div><p>Thời gian</p>____:____ ngày ____/____</div></div>
 </body></html>`;
   const w = target ?? window.open("", "_blank");
@@ -246,7 +247,7 @@ function joinedRows(lines: PasteLine[], orders: Record<string, Order>): Row[] {
   return lines.flatMap((l, i) => {
     const o = orders[l.vid];
     if (!o || o.error) return [];
-    const billing = stripPatient(l.billing, o.patient_name);
+    const billing = stripNames(l.billing, o.patient_name, o.client_name);
     const entries = o.test_entries ?? [];
     const billing_ok = billing ? billingFound(billing, entries.flatMap((e) => e.names)) : null;
     // A name that isn't on the order already shows ✗; its status would say nothing more.
@@ -280,11 +281,13 @@ async function fetchOrders(vids: string[], onChunk?: (got: Record<string, Order>
 
 function restoredRow(r: PrintDraftRow, order?: Order, checking = false): Row {
   const entries = order?.test_entries ?? [];
-  const billing_ok = !r.billing || !order || order.error ? null : billingFound(r.billing, entries.flatMap((e) => e.names));
+  // Rows saved before the client name was stripped on paste still carry it.
+  const billing = order && !order.error ? stripNames(r.billing, order.client_name) : r.billing;
+  const billing_ok = !billing || !order || order.error ? null : billingFound(billing, entries.flatMap((e) => e.names));
   return {
     vid: r.vid, dest: r.dest, client_name: r.client, patient_name: r.patient,
-    billing: r.billing, print_note: r.note, key: printRowKey(r), billing_ok,
-    row_pending: !order || order.error ? null : billing_ok === false ? [] : pendingFor(r.billing, entries, order.pending ?? null),
+    billing, print_note: r.note, key: printRowKey({ vid: r.vid, billing }), billing_ok,
+    row_pending: !order || order.error ? null : billing_ok === false ? [] : pendingFor(billing, entries, order.pending ?? null),
     status_checking: checking && !order,
   };
 }

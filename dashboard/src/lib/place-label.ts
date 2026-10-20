@@ -25,10 +25,10 @@ function placeCore(name: string): string {
   return raw;
 }
 
-/** Drops the legal-form prefix ("Công ty cổ phần", "TNHH (MTV)", "CTCP", "Hộ kinh doanh"…) the way
- *  the AO hard copy prints client names. */
+/** Drops a leading "Chi nhánh" and the legal-form prefix ("Công ty cổ phần", "TNHH (MTV)", "CTCP",
+ *  "Hộ kinh doanh"…) the way the AO hard copy prints client names. */
 export function displayClientName(name: string): string {
-  const short = name.replace(/(^|[\s-])(?:công ty\s+(?:cổ phần|tnhh|trách\s+nhiệm\s+hữu\s+hạn)|cty\s+tnhh|ctcp|hộ\s+kinh\s+doanh|doanh\s+nghiệp\s+tư\s+nhân|công\s+tnhh)(?:\s+(?:mtv|một\s+thành\s+viên))?\s+(\S)/iu,
+  const short = name.replace(/(^|\s-\s)\s*chi\s+nhánh\s+/iu, "$1").replace(/(^|[\s-])(?:công ty\s+(?:cổ phần|tnhh|trách\s+nhiệm\s+hữu\s+hạn)|cty\s+tnhh|ctcp|hộ\s+kinh\s+doanh|doanh\s+nghiệp\s+tư\s+nhân|công\s+tnhh)(?:\s+(?:mtv|một\s+thành\s+viên))?\s+(\S)/iu,
     (_, lead: string, first: string) => lead + first.toLocaleUpperCase("vi")).trim();
   return short.replace(/^\p{L}/u, (first) => first.toLocaleUpperCase("vi"));
 }

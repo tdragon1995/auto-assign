@@ -17,6 +17,9 @@ assert.equal(displayClientName("Công TNHH Phát Triển Công Nghệ Anapath"),
 assert.equal(displayClientName("25372 - MTho - THDuc - HỘ KINH DOANH phòng khám An"), "25372 - MTho - THDuc - Phòng khám An");
 assert.equal(displayClientName("123 - D5 - A - Công ty TNHH phòng khám An"), "123 - D5 - A - Phòng khám An");
 assert.equal(displayClientName("phòng khám An"), "Phòng khám An");
+assert.equal(displayClientName("CHI NHÁNH CÔNG TY TNHH DYM MEDICAL CENTER VIỆT NAM"), "DYM MEDICAL CENTER VIỆT NAM");
+assert.equal(displayClientName("123 - D5 - A - Chi nhánh phòng khám An"), "123 - D5 - A - phòng khám An");
+assert.equal(displayClientName("Phòng khám An chi nhánh 2"), "Phòng khám An chi nhánh 2"); // only a leading one
 assert.equal(printRowKey({ vid: "12345678", billing: "Xét nghiệm A" }), printRowKey({ vid: "12345678", billing: "xet nghiem  a" }));
 assert.notEqual(printRowKey({ vid: "12345678", billing: "Xét nghiệm A" }), printRowKey({ vid: "12345678", billing: "Xét nghiệm B" }));
 
@@ -65,7 +68,7 @@ assert.equal(billingFound("", names), false);
 console.log("ok — paste + billing");
 
 // ── Real paste from 22/09: VID, patient name, test name — three Excel columns ──
-import { stripPatient } from "../src/lib/handover";
+import { stripNames as stripPatient } from "../src/lib/handover";
 const nipt = ["NIPT 7* + Carrier Screening 18**", "NIPT 7* + Sàng Lọc 18 Gen Lặn**"];
 for (const [line, patient] of [
   ["26050623282\tĐẶNG PHƯƠNG LAN\tCarrier Screening 18 **", "ĐẶNG PHƯƠNG LAN"],
@@ -81,6 +84,14 @@ assert.equal(stripPatient("HbA1c", "ĐẶNG PHƯƠNG LAN"), "HbA1c");  // no pat
 assert.equal(stripPatient("HbA1c", null), "HbA1c");
 assert.equal(billingFound("Carrier Screening 19 **", nipt), false);
 console.log("ok — patient name stripped, spacing ignored");
+
+// ── Real paste from 20/10: VID, test, client name, patient — the client name landed in Xét nghiệm ──
+{
+  const client = "CHI NHÁNH CÔNG TY TNHH DYM MEDICAL CENTER VIỆT NAM TẠI THÀNH PHỐ HỒ CHÍ MINH";
+  const [{ billing }] = parsePaste(`26050755976\tPapsmear\t${client}\tTRẦN THỊ KIM KHOA`);
+  assert.equal(stripPatient(billing, "TRẦN THỊ KIM KHOA", client), "Papsmear");
+  console.log("ok — client name stripped");
+}
 
 // Exact whole-name match: case, accents and spacing ignored, nothing else.
 assert.equal(billingFound("NIPT 7* + Carrier Screening 18 **", nipt), true);  // space before ** ignored

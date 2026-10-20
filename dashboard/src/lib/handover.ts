@@ -72,12 +72,16 @@ export function statusLookupVids(rows: PrintDraftRow[]) {
 /** Spacing is not meaningful in a test name: "Carrier Screening 18 **" is "…Screening 18**". */
 const squash = (s: string) => norm(s).replace(/ /g, "");
 
-/** Staff paste whole Excel rows, so the patient's own name often sits beside the test name — drop it. */
-export function stripPatient(pasted: string, patient: string | null | undefined): string {
-  const words = (patient ?? "").trim().split(/\s+/).filter(Boolean);
-  if (!words.length) return pasted;
-  const re = new RegExp(words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"), "iu");
-  return pasted.replace(re, " ").replace(/^[\s,;|]+|[\s,;|]+$/g, "").replace(/\s+/g, " ");
+/** Staff paste whole Excel rows, so the patient's and the client's names often sit beside the test name — drop them. */
+export function stripNames(pasted: string, ...names: (string | null | undefined)[]): string {
+  let out = pasted;
+  for (const name of names) {
+    const words = (name ?? "").trim().split(/\s+/).filter(Boolean);
+    if (!words.length) continue;
+    const re = new RegExp(words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"), "iu");
+    out = out.replace(re, " ");
+  }
+  return out.replace(/^[\s,;|]+|[\s,;|]+$/g, "").replace(/\s+/g, " ");
 }
 
 /** True when the pasted text IS one of the order's test names — billing_name, test_name or test_name_vi.
