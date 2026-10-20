@@ -976,15 +976,19 @@ export default function QrPage() {
   const [changeBusyId, setChangeBusyId] = useState("");
   const [changeError, setChangeError] = useState("");
 
-  // The trip a blocked duplicate booking points at: scrolled to and ringed for a moment.
+  // The trip a blocked duplicate booking points at: scrolled to and lit up — a thick amber
+  // ring and glow, held ten seconds or until the next tap anywhere.
   const [focusId, setFocusId] = useState(0);
   useEffect(() => {
     if (!focusId) return;
     const t0 = setTimeout(() => document.getElementById(`trip-${focusId}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
-    const t1 = setTimeout(() => setFocusId(0), 4000);
-    return () => { clearTimeout(t0); clearTimeout(t1); };
+    const t1 = setTimeout(() => setFocusId(0), 10_000);
+    // Armed after the scroll, so the tap that triggered the booking does not clear it.
+    const off = () => setFocusId(0);
+    const t2 = setTimeout(() => document.addEventListener("pointerdown", off, { once: true }), 600);
+    return () => { clearTimeout(t0); clearTimeout(t1); clearTimeout(t2); document.removeEventListener("pointerdown", off); };
   }, [focusId]);
-  const ring = (id: number) => `rounded-2xl transition-shadow ${focusId === id ? "ring-2 ring-blue-600 ring-offset-2 ring-offset-slate-100" : ""}`;
+  const ring = (id: number) => `rounded-2xl transition-shadow duration-300 ${focusId === id ? "ring-4 ring-amber-400 ring-offset-2 ring-offset-slate-100 shadow-[0_0_0_10px_rgba(251,191,36,0.25)]" : ""}`;
 
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
   const showToast = (msg: string, ok: boolean) => {
