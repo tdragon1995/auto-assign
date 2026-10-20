@@ -5,7 +5,7 @@
  * in a smart ranking, and who collects for a smart client.
  */
 import assert from "node:assert/strict";
-import { handoverTarget, nearest, rankWithHolderFirst, waitingTooLong, WAIT_ALERT_MS, type KqvtEntry } from "../src/lib/kqvt";
+import { collectVerdict, handoverTarget, itemsText, nearest, rankWithHolderFirst, waitingTooLong, WAIT_ALERT_MS, type KqvtEntry } from "../src/lib/kqvt";
 import { PSC_DELIVERY_LABEL } from "../src/lib/job-filters";
 import type { Job } from "../src/lib/types";
 
@@ -50,4 +50,21 @@ const live = [
 ];
 assert.equal(nearest(["near-break", "far", "near"], live, 10, 106)?.deliveryDriverId, "near");
 assert.equal(nearest(["nobody"], live, 10, 106), null);
+// A collect job deleted (404) or cancelled drops its item; done by a driver = collected;
+// unreadable, not found today, or still waiting → keep waiting. (34497484 was cancelled
+// on 19/10 and sat until the 24h row, because cancelled jobs are on no daily list.)
+const one = (status: number, driver: string | null, stop: number) =>
+  ({ job_status_id: status, delivery_driver_id: driver, stops: [{ stop_status_id: stop }] }) as unknown as Job;
+assert.equal(collectVerdict("gone"), "drop");
+assert.equal(collectVerdict(one(7, null, 1)), "drop");
+assert.equal(collectVerdict(one(5, "H", 4)), "collected");
+assert.equal(collectVerdict(one(4, "H", 2)), "wait");
+assert.equal(collectVerdict(one(2, null, 1)), "wait");
+assert.equal(collectVerdict(null), "wait");
+assert.equal(collectVerdict(undefined), "wait");
+
+// Repeats counted, order kept.
+const it = (text: string) => ({ text, note: "", links: [] });
+assert.equal(itemsText([it("📄 Kết quả"), it("📄 Kết quả")]), "📄 Kết quả ×2");
+assert.equal(itemsText([it("📦 Vật tư"), it("📄 Kết quả"), it("📦 Vật tư")]), "📦 Vật tư ×2 + 📄 Kết quả");
 console.log("kqvt: ok");

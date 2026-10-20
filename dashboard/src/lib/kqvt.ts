@@ -22,7 +22,7 @@
  * one — verified on throwaway prod jobs 2026-10-18. Only a stop still "Chờ lấy" is ever
  * touched, so no photo a driver already took is at stake.
  */
-import { getJobDetails, getLiveDrivers, updateJobStops, type Env } from "./cartrack";
+import { BASE_URL, getHeaders, getJobDetails, getLiveDrivers, updateJobStops, type Env } from "./cartrack";
 import { sharedRedis } from "./redis";
 import { haversineKm } from "./distance";
 import { resolveDriverChoices, resolveFixedDriver } from "./fixed-driver";
@@ -33,6 +33,8 @@ import type { LeaveEntry } from "./leave-config";
 
 const KEY = "kqvt:pending";
 export const WAIT_ALERT_MS = 24 * 3600_000;
+/** How often a collect job missing from today's lists is looked up on its own. */
+const RECHECK_MS = 30 * 60_000;
 const PHOTO = 2;
 
 export interface KqvtItem { text: string; note: string; links: string[] }
@@ -45,6 +47,8 @@ export interface KqvtEntry {
   /** Who the collect job was given at booking — names the holder when it is them. */
   collector?: string; collector_name?: string;
   holder?: string; holder_name?: string; collected_ms?: number;
+  /** Last direct lookup of the collect job (see kqvtCycle). */
+  checked_ms?: number;
 }
 
 function redis() {
@@ -70,7 +74,33 @@ export async function dropPending(jobId: number): Promise<void> {
 export const collectTodo = (item: KqvtItem, client: string) =>
   `${item.text} cho ${client}${item.note ? ` — ${item.note}` : ""}`.slice(0, 250);
 export const handoverTodo = (e: KqvtEntry) =>
-  `Giao ${e.items.map((i) => i.text).join(" + ")} (từ ${e.psc_name})`.slice(0, 250);
+  `Giao ${itemsText(e.items)} (từ ${e.psc_name})`.slice(0, 250);
+
+/** "📄 Kết quả ×2 + 📦 Vật tư" — repeats counted, first-seen order kept. */
+export function itemsText(items: KqvtItem[]): string {
+  const counts = new Map<string, number>();
+  for (const i of items) counts.set(i.text, (counts.get(i.text) ?? 0) + 1);
+  return [...counts].map(([t, n]) => (n > 1 ? `${t} ×${n}` : t)).join(" + ");
+}
+
+type CollectState = Pick<Job, "job_status_id" | "delivery_driver_id" | "stops">;
+
+/** What the collect job's state means for its waiting item: gone/cancelled → drop it,
+ *  stop done by a driver → collected, anything else (including "could not tell") → wait. */
+export function collectVerdict(job: CollectState | "gone" | null | undefined): "drop" | "collected" | "wait" {
+  if (job === "gone" || job?.job_status_id === 7) return "drop";
+  if (job?.delivery_driver_id && job.stops?.[0]?.stop_status_id === 4) return "collected";
+  return "wait";
+}
+
+/** One job read directly: "gone" only on a 404 (deleted), null when it could not tell. */
+async function lookupJob(jobId: number, env: Env): Promise<CollectState | "gone" | null> {
+  const res = await fetch(`${BASE_URL}/jobs/${jobId}`, { headers: getHeaders(env), cache: "no-store" }).catch(() => null);
+  if (!res) return null;
+  if (res.status === 404) return "gone";
+  if (!res.ok) return null;
+  return ((await res.json().catch(() => null))?.data as CollectState) ?? null;
+}
 
 /**
  * Who collects: the client's fixed driver, else — smart client — the candidate on duty
@@ -186,7 +216,7 @@ export async function kqvtCycle(
     const r = await appendStopTodos(job.job_id, e.client_id, [handoverTodo(e)], env);
     if (r === "ok") {
       await dropPending(e.job_id);
-      log(`Job ${job.job_id} - KQ/VT giao kèm (${e.items.map((i) => i.text).join(" + ")}) | ${e.psc_name} → ${e.client_name}`, "OK");
+      log(`Job ${job.job_id} - KQ/VT giao kèm (${itemsText(e.items)}) | ${e.psc_name} → ${e.client_name}`, "OK");
       return true;
     }
     if (r === "failed") log(`Job ${job.job_id} - KQ/VT: không thêm được to-do giao | ${e.psc_name} → ${e.client_name}`, "WARN");
@@ -195,12 +225,20 @@ export async function kqvtCycle(
 
   for (const e of entries) {
     if (!e.holder) {
-      const collect = byId.get(e.job_id);
-      if (collect?.job_status_id === 7) { await dropPending(e.job_id); continue; }
-      const stop = collect?.stops?.[0];
-      if (collect?.delivery_driver_id && stop?.stop_status_id === 4) {
-        e.holder = collect.delivery_driver_id;
-        e.holder_name = e.holder === e.collector ? e.collector_name : collect.driver?.last_name ?? undefined;
+      // Today's lists miss a collect job dated another day, and every cancelled one —
+      // so one missing from them is read on its own, at most every RECHECK_MS. Without
+      // this a cancelled booking sat here until the 24h row (34497484, 2026-10-20).
+      let collect: CollectState | "gone" | null | undefined = byId.get(e.job_id);
+      if (!collect && now - (e.checked_ms ?? 0) > RECHECK_MS) {
+        collect = await lookupJob(e.job_id, env);
+        e.checked_ms = now;
+        if (collectVerdict(collect) === "wait") await savePending(e);
+      }
+      const verdict = collectVerdict(collect);
+      if (verdict === "drop") { await dropPending(e.job_id); continue; }
+      if (verdict === "collected" && collect && collect !== "gone") {
+        e.holder = collect.delivery_driver_id!;
+        e.holder_name = e.holder === e.collector ? e.collector_name : (collect as Job).driver?.last_name ?? undefined;
         e.collected_ms = now;
         await savePending(e);
       }
@@ -217,8 +255,8 @@ export async function kqvtCycle(
         customer: `${e.psc_name} → ${e.client_name}`,
         reason: "KQVT_WAITING",
         detail: e.holder
-          ? `${e.holder_name ?? "Tài xế"} đang giữ ${e.items.map((i) => i.text).join(" + ")}, chưa có chuyến lấy mẫu tại khách để giao kèm`
-          : `${e.items.map((i) => i.text).join(" + ")} chưa được lấy tại ${e.psc_name}`,
+          ? `${e.holder_name ?? "Tài xế"} đang giữ ${itemsText(e.items)}, chưa có chuyến lấy mẫu tại khách để giao kèm`
+          : `${itemsText(e.items)} chưa được lấy tại ${e.psc_name}`,
         level: "WARN",
         ts: vnTimestamp(),
       });
