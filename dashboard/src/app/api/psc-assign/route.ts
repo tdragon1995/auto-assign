@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { BASE_URL, getHeaders, cancelJob, jobVnDate, createJob, getJobDetails, getJobsDetailsFast, getLiveDrivers, type Env } from "@/lib/cartrack";
+import { BASE_URL, getHeaders, cancelJob, jobVnDate, createJob, getJobDetails, getJobDetailsFast, getJobsDetailsFast, getLiveDrivers, type Env } from "@/lib/cartrack";
 import { driverDisplayName, stripDriverCode } from "@/lib/job-detail";
 import { vnDate, vnHoursMinutes, vnMinutesSinceMidnight, vnTimestamp } from "@/lib/time";
 import { isBlockingPickupStop, isFarWindowPickup, isStopStarted, pscPairKey, PICKUP_PHOTO_TODO, DROPOFF_PHOTO_TODO } from "@/lib/job-filters";
@@ -397,12 +397,13 @@ export async function DELETE(req: NextRequest) {
   const jobId = req.nextUrl.searchParams.get("job_id");
   if (!jobId) return NextResponse.json({ error: "Missing job_id" }, { status: 400 });
 
+  const t0 = Date.now();
   try {
-    const headers = getHeaders(env);
-
-    const jobRes = await fetch(`${BASE_URL}/jobs/${jobId}`, { headers, cache: "no-store" });
-    if (!jobRes.ok) return NextResponse.json({ error: "Job not found" }, { status: 404 });
-    const jobData = await jobRes.json();
+    // The fleetweb job read (~0.1s) instead of REST (1–5s), falling back to REST on any
+    // doubt. It also leaves the fleetweb session warm for the cancel RPC right after.
+    const jobData = await getJobDetailsFast(Number(jobId), env);
+    if (!jobData.data?.job_id) return NextResponse.json({ error: "Job not found" }, { status: 404 });
+    const tRead = Date.now() - t0;
     const stops: Stop[] = jobData.data?.stops ?? [];
     const pickup  = stops.find((s) => s.stop_type_id === 1);
     const dropoff = stops.find((s) => s.stop_type_id === 2);
@@ -417,10 +418,14 @@ export async function DELETE(req: NextRequest) {
     // Already closed (a double tap, or dispatch got there first): nothing to do, and the
     // branch's list should drop it just the same.
     const statusId: number | null = jobData.data?.job_status_id ?? null;
+    let how: string = "already closed";
     if (statusId !== 3 && statusId !== 7) {
-      if (!(await cancelJob(Number(jobId), jobVnDate(jobData.data), env))) {
+      const done = await cancelJob(Number(jobId), jobVnDate(jobData.data), env);
+      console.log(`[VN ${vnTimestamp()}] [psc-assign] cancel job ${jobId}: read ${tRead}ms, ${done || "failed"} ${Date.now() - t0 - tRead}ms`);
+      if (!done) {
         return NextResponse.json({ error: "Huỷ thất bại, vui lòng thử lại" }, { status: 502 });
       }
+      how = done;
     }
 
     // Clear both dedup guards so the same pickup→dropoff can be re-requested at once
@@ -436,6 +441,7 @@ export async function DELETE(req: NextRequest) {
     // job_id echoed back so the branch's list can drop this trip locally. A cancelled job
     // leaves the feed entirely (status 7 is not in ALL_STATUSES), so removing it client-
     // side produces exactly what a reload would have — without the reload.
+    console.log(`[VN ${vnTimestamp()}] [psc-assign] cancel job ${jobId} (${how}): total ${Date.now() - t0}ms`);
     return NextResponse.json({ success: true, job_id: Number(jobId) });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });

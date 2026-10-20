@@ -271,7 +271,7 @@ export async function cancelJobFromTimeline(jobId: number, date: string, env: En
   const echo = out.result?.cancelledJobIds ?? out.result?.canceledJobIds;
   if (Array.isArray(echo) && echo.map(Number).includes(jobId)) return true;
   if (echo && typeof echo === "object" && (echo as Record<string, unknown>)[jobId] !== undefined) return true;
-  const after = await getJobDetails(jobId, env).catch(() => null);
+  const after = await getJobDetailsFast(jobId, env).catch(() => null);
   return after?.data?.job_status_id === 7;
 }
 
