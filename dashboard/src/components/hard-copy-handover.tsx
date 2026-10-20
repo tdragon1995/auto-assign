@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, Download, AlertCircle, Printer, Check, X, RefreshCw } from "lucide-react";
+import { Loader2, Download, AlertCircle, Printer, Check, X, RefreshCw, Ban } from "lucide-react";
 import { parsePaste, billingFound, stripNames, pendingFor, statusLabel, displayClientName, printRowKey, statusLookupVids, isExcluded, type AoExclusion, type PasteLine, type PrintDraftRow, type PrintHistory, type PrintHistorySummary, type TestEntry, type PendingTest } from "@/lib/handover";
 import { vnDate } from "@/lib/time";
 import { AoExclusions } from "./ao-exclusions";
@@ -319,6 +319,7 @@ export function HardCopyHandover() {
   const [exclusions, setExclusions] = useState<AoExclusion[]>([]);
   const [exclusionError, setExclusionError] = useState("");
   const [savingExclusions, setSavingExclusions] = useState(false);
+  const [showExclusions, setShowExclusions] = useState(false);
 
   useEffect(() => {
     void fetch("/api/ao/exclusions", { cache: "no-store" })
@@ -513,6 +514,10 @@ export function HardCopyHandover() {
           <p className="mt-0.5 text-xs text-slate-500">{draftUpdatedAt ? `Cập nhật cuối: ${new Date(draftUpdatedAt).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })}` : savedRows.length ? "Chưa rõ thời gian cập nhật" : "Chưa có bản nháp"}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <button onClick={() => setShowExclusions((v) => !v)} aria-expanded={showExclusions} aria-controls="ao-exclusions"
+            className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 ${showExclusions ? "bg-blue-50" : ""}`}>
+            <Ban aria-hidden className="w-4 h-4" />Loại trừ · {exclusions.length}
+          </button>
           <button onClick={refreshDraft} disabled={draftLoading || statusLoading || loading || clearingDraft}
             className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 disabled:opacity-40">
             <RefreshCw aria-hidden className="w-4 h-4" />{draftLoading ? "Đang tải bản nháp…" : "Làm mới bản nháp"}
@@ -523,6 +528,21 @@ export function HardCopyHandover() {
           </button>
         </div>
       </header>
+      {showExclusions && (
+        <section id="ao-exclusions" className="bg-white rounded-2xl shadow-sm p-5 space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-base font-bold text-slate-900">Loại trừ khỏi bàn giao · {exclusions.length} khách hàng</h2>
+              <p className="mt-1 text-xs text-slate-600">Hồ sơ của khách hàng trong danh sách không được tra cứu vào bản nháp và không được in. Chọn xét nghiệm để chỉ loại những xét nghiệm đó; không chọn xét nghiệm nào thì loại toàn bộ khách hàng.</p>
+            </div>
+            <button onClick={() => setShowExclusions(false)} aria-label="Đóng"
+              className="shrink-0 rounded-lg p-1.5 text-slate-600 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-blue-700"><X aria-hidden className="w-4 h-4" /></button>
+          </div>
+          {exclusionError && <p role="alert" className="text-xs text-red-700">{exclusionError}</p>}
+          <AoExclusions list={exclusions} busy={savingExclusions} onChange={(list) => void saveExclusions(list)} />
+        </section>
+      )}
+      {!showExclusions && exclusionError && <p role="alert" className="text-xs text-red-700">{exclusionError}</p>}
       {draftError && <p role="alert" className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">{draftError} · Dòng mới chưa chắc đã được lưu trên máy khác.</p>}
       {statusLoading && <p role="status" className="text-xs text-slate-600">Đang kiểm tra kết quả {statusDone}/{statusTotal} VID…</p>}
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(320px,1fr)]">
@@ -584,15 +604,6 @@ export function HardCopyHandover() {
         </div>
         </section>
       </div>
-
-      <details className="bg-white rounded-2xl shadow-sm px-5 py-3">
-        <summary className="cursor-pointer text-base font-bold text-slate-900">
-          Loại trừ khỏi bàn giao <span className="text-sm font-normal text-slate-500">· {exclusions.length} khách hàng</span>
-        </summary>
-        <p className="mt-2 mb-3 text-xs text-slate-600">Hồ sơ của khách hàng trong danh sách không được tra cứu vào bản nháp và không được in. Chọn xét nghiệm để chỉ loại những xét nghiệm đó; không chọn xét nghiệm nào thì loại toàn bộ khách hàng.</p>
-        {exclusionError && <p role="alert" className="mb-2 text-xs text-red-700">{exclusionError}</p>}
-        <AoExclusions list={exclusions} busy={savingExclusions} onChange={(list) => void saveExclusions(list)} />
-      </details>
 
       {excludedCount > 0 && <p role="status" className="text-xs text-slate-600">Đã loại {excludedCount} dòng theo danh sách loại trừ.</p>}
 
