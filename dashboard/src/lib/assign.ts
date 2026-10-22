@@ -38,7 +38,7 @@ import { stripDriverCode } from "./job-detail";
 import { selectReferenceStop, computeStopStats, rankingComparator, ROUTE_STATE_PRIORITY, idleBand, isUnreachedAnchor, liveGpsRef, lastRealPositionRef, onboardDropoffs, withoutFullDrivers, MAX_ONBOARD_DROPOFFS, type RefStop, type RefLabel } from "./smart-rank";
 import { loadLeaveEntries, isDriverOnLeave, resolveSubstitute, type LeaveEntry } from "./leave-config";
 import { publishNoDriverRoutes } from "./psc-no-driver";
-import { getDriversOnDuty, resolveFixedDriver, findSmartMapping, waitForMappingShift } from "./fixed-driver";
+import { getDriversOnDuty, resolveFixedDriver, findSmartMapping } from "./fixed-driver";
 import { recheckMode, isRecheckable, moveGain, recordSmartAssign, readSmartAssigns, logRecheck } from "./smart-recheck";
 
 
@@ -2900,14 +2900,15 @@ export async function autoAssignCycle(
 
     let jobTime: Date;
     try {
-      // A job with a delivery window (scheduled / released-from-parking) is shift-checked
-      // against its WINDOW time on the scheduled date — NOT scheduled_delivery_ts, whose
-      // time is the (often pre-shift) create time for ASAP-converted jobs. e.g. a job
-      // created 05:56 with a 14:30 window must check 14:30 (on shift), not 05:56 (pre-06:00).
-      const schedDate = job.scheduled_delivery_ts?.slice(0, 10) || today;
-      const windowed = windowTimeFrom ? parsePickupWindowTime(windowTimeFrom, schedDate) : null;
-      jobTime = windowed && !isNaN(windowed.getTime())
-        ? windowed
+      // A job with a delivery window that got this far is released (the gate above
+      // parks anything further than 60 min out), so it goes to the rule ON DUTY NOW
+      // (supervisor, 2026-10-22). It used to take the rule at the window time and wait
+      // for that rule's shift to start, which held a 16:40 pickup unassigned from its
+      // 15:40 release until 16:15 (job 34503015). Never scheduled_delivery_ts here: for
+      // an ASAP-converted job that is the create time, e.g. 05:56 for a 14:30 window,
+      // before any shift starts.
+      jobTime = windowTimeFrom
+        ? new Date()
         : parseVnTimestamp(job.scheduled_delivery_ts || job.create_ts);
       if (isNaN(jobTime.getTime())) jobTime = new Date();
     } catch {
@@ -2919,10 +2920,6 @@ export async function autoAssignCycle(
     const smartMapping = findSmartMapping(config, customerId, jobTime, dropoffId);
 
     if (smartMapping) {
-      if (windowTimeFrom && waitForMappingShift(smartMapping, jobTime, new Date())) {
-        log(`Job ${jobId} - SMART waiting for CONFIG shift to start | ${route}`, "INFO");
-        continue;
-      }
       // ── 1-driver: straight assign (like fixed auto-assign) ──────────────
         if (smartMapping.smart_driver_id.length === 1) {
           let driverId   = smartMapping.smart_driver_id[0];
