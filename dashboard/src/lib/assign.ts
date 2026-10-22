@@ -2232,8 +2232,14 @@ export async function autoAssignCycle(
   reads?: MorningReads,
 ): Promise<LogEntry[]> {
   const logs: LogEntry[] = [];
+  // While the per-job loop runs, every decision is echoed to the server log too.
+  // The run log drops the recurring skip reasons (LOG_DROP_PATTERNS, INFO), so
+  // without this a job stuck for many cycles left only its "[loop]" line in Vercel
+  // and no way to say why (job 34502483, 2026-10-22).
+  let echoJobLines = false;
   const log = (msg: string, level: LogLevel = "INFO") => {
     logs.push(makeLog(msg, level));
+    if (echoJobLines) console.log(`[VN ${vnTimestamp()}] [job] ${level} ${msg}`);
   };
 
   // ── G1: timing instrumentation. clog() streams to Vercel runtime logs immediately,
@@ -2765,10 +2771,10 @@ export async function autoAssignCycle(
 
     // A PSC's Kết Quả / Vật Tư run waits for the dispatcher. Silent: it would reprint
     // every cycle until someone assigns it, and its note would list it as held.
-    if ((job.labels ?? []).includes(PSC_DELIVERY_LABEL)) continue;
+    if ((job.labels ?? []).includes(PSC_DELIVERY_LABEL)) { clog(`[job] Job ${jobId} - left for dispatcher (KQ/VT PSC label) | ${route}`); continue; }
     // Same for any "Booking" label (e.g. "📦 Booking - Vật tư") — hand-dispatched
     // (supervisor, 2026-10-15). Silent for the same reason.
-    if ((job.labels ?? []).some((l) => l.includes("Booking"))) continue;
+    if ((job.labels ?? []).some((l) => l.includes("Booking"))) { clog(`[job] Job ${jobId} - left for dispatcher (Booking label) | ${route}`); continue; }
 
     // Did the measured whitelist clear this job's notes? True only when the job
     // carries notes that WOULD have held it under the old rule and every one of
@@ -3382,14 +3388,19 @@ export async function autoAssignCycle(
   // in bounded chunks; dedup stays safe because each job claims its route
   // synchronously (activeRouteMap.set) before its first await. Default = sequential.
   const LOOP_CONCURRENCY = 10; // matches the proxy-release bound; 5 left peak cycles paying a second ~10s round for jobs 6-10
-  if (process.env.ASSIGN_PARALLEL_LOOP === "1") {
-    for (let i = 0; i < jobs.length; i += LOOP_CONCURRENCY) {
-      await Promise.all(jobs.slice(i, i + LOOP_CONCURRENCY).map(processJob));
+  echoJobLines = true;
+  try {
+    if (process.env.ASSIGN_PARALLEL_LOOP === "1") {
+      for (let i = 0; i < jobs.length; i += LOOP_CONCURRENCY) {
+        await Promise.all(jobs.slice(i, i + LOOP_CONCURRENCY).map(processJob));
+      }
+    } else {
+      for (const job of jobs) {
+        await processJob(job);
+      }
     }
-  } else {
-    for (const job of jobs) {
-      await processJob(job);
-    }
+  } finally {
+    echoJobLines = false;
   }
 
   // Deferred route-optimise: one bounded-parallel call per pilot driver assigned
