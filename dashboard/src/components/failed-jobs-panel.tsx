@@ -244,6 +244,32 @@ function FailedRow({
     setDayOffset(0);
   };
 
+  // KQ/VT waiting row: the dispatcher dealt with it by hand. Takes the item off the
+  // engine's waiting list (no more warning, no more hand-over attempts); the collect job
+  // in Cartrack is untouched. Hidden at once — the cycle's snapshot drops it next run.
+  const [resolved, setResolved] = useState(false);
+  const [resolving, setResolving] = useState(false);
+  const resolveKqvt = async () => {
+    if (!window.confirm(`Đánh dấu KQ/VT của job ${job.job_id} là đã xử lý?\nCảnh báo sẽ không hiện lại và hệ thống ngừng tự giao kèm. Job trên Cartrack giữ nguyên.`)) return;
+    setResolving(true);
+    try {
+      const res = await fetch("/api/kqvt/resolve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: job.job_id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Không lưu được");
+      setResolved(true);
+      toast.success(`Đã xử lý KQ/VT job ${job.job_id}`);
+    } catch (e) {
+      toast.error(`Chưa lưu được: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setResolving(false);
+    }
+  };
+  if (resolved) return null;
+
   return (
     <div className="px-2 py-1.5 hover:bg-slate-50">
       {/* Line 1: job link · route (reason lives in the section header) */}
@@ -361,6 +387,19 @@ function FailedRow({
                 }}
               >
                 Gán thủ công
+              </Button>
+            )}
+            {job.reason === "KQVT_WAITING" && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-[11px] h-6 px-2 shrink-0"
+                disabled={resolving}
+                onClick={resolveKqvt}
+                title="Đã giao/đã xử lý bằng tay — bỏ khỏi danh sách chờ"
+              >
+                <CheckCircle2 className="size-3 shrink-0" aria-hidden />
+                Đã xử lý
               </Button>
             )}
           </>
