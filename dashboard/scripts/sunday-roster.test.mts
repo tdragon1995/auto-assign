@@ -99,3 +99,28 @@ assert.deepEqual(sundayDrivers([], lines), []);
   assert.equal(suggestSundayDay("9 - Nowhere - Q - New", "new", rows), null);
 }
 console.log("sunday suggestions: ok");
+
+// Overlapping Sunday rules share the work instead of clashing.
+{
+  const { mergeSundayOverlaps } = await import("../src/lib/sunday-roster");
+  const t = (s: string) => { const [h, m] = s.split(":").map(Number); return { hours: h, minutes: m }; };
+  const row = (start: string, end: string, ids: string[], extra: Record<string, string> = {}) => ({
+    customer_id: "D004", dropoff_id: "", alt_drop_off_id: "", first_name_last_name: ids.join(","),
+    driver_id: ids.length === 1 ? ids[0] : "", smart_driver_id: ids.length > 1 ? ids : [], shift_start: t(start), shift_end: t(end), ...extra });
+  const show = (rs: ReturnType<typeof row>[]) => rs.map((r) => `${r.shift_start!.hours}:${String(r.shift_start!.minutes).padStart(2, "0")}-${r.shift_end!.hours}:${String(r.shift_end!.minutes).padStart(2, "0")} ${r.driver_id || r.smart_driver_id.join("+")}`).sort();
+  // D004: ca 2 Long 06–14, ca 1 Quốc 07–14, ca 3 Quốc 14:30–17 → Long alone first, then both, ca 3 untouched.
+  assert.deepEqual(show(mergeSundayOverlaps([row("06:00", "14:00", ["L"]), row("07:00", "14:00", ["Q"]), row("14:30", "17:00", ["Q"])])),
+    ["14:30-17:00 Q", "6:00-7:00 L", "7:00-14:00 L+Q"]);
+  // The same driver twice (the 07:00–08:00 duplicates) collapses back into one fixed rule.
+  assert.deepEqual(show(mergeSundayOverlaps([row("07:00", "14:00", ["A"]), row("07:00", "08:00", ["A"])])), ["7:00-14:00 A"]);
+  // A smart pool joining a fixed rule: everyone on in the slice.
+  assert.deepEqual(show(mergeSundayOverlaps([row("06:00", "12:00", ["A", "B"]), row("10:00", "15:00", ["C"])])),
+    ["10:00-12:00 A+B+C", "12:00-15:00 C", "6:00-10:00 A+B"]);
+  // Different alternate drop-off: a real question, so left to clash.
+  const alt = [row("06:00", "14:00", ["L"]), row("07:00", "14:00", ["Q"], { alt_drop_off_id: "D029" })];
+  assert.deepEqual(mergeSundayOverlaps(alt), alt);
+  // No overlap: rows come back untouched.
+  const clean = [row("06:00", "10:00", ["A"]), row("10:00", "14:00", ["B"])];
+  assert.deepEqual(mergeSundayOverlaps(clean), clean);
+}
+console.log("sunday overlaps: ok");

@@ -11,6 +11,7 @@ import {
   type AuditableRow, type ShiftOverlap,
 } from "./config-audit";
 import { vnDate, vnIsSunday, vnTimestamp } from "./time";
+import { mergeSundayOverlaps } from "./sunday-roster";
 import { looksAutoCreated, scopedDropoffName } from "./unmapped-row";
 import { GEN_KEY, readConfigGen } from "./config-gen";
 import { masterEnabled, masterRuleRows, inactiveMasterClientIds } from "./master-store";
@@ -309,7 +310,7 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
   // Supabase rules use IDs; duplicate Sheet names cannot change their lookup.
   // Retract old alarms before either cache can return.
   if (!sheetLookups) noteSheetWarning(A_DUPE_LOC, null);
-  const version = masterEnabled() ? 15 : 12;
+  const version = masterEnabled() ? 16 : 12;
   // Read once and reuse for the write below, so a hit costs exactly one Redis GET.
   const gen = await readGen();
   if (cachedConfig && cachedDay === today && (gen === null || gen === cachedGen)) {
@@ -563,6 +564,8 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
       }
     }
 
+    // Sunday: a clinic's overlapping rules share the work instead of clashing.
+    if (sunday) mappings.splice(0, mappings.length, ...mergeSundayOverlaps(mappings));
     await auditParsedConfig(SHEET_CONTRACT[tab].label, mappings, unresolved, pickupNames, nameByCustomer, today, sheetLookups);
     const parsedAt = vnTimestamp();
     cachedConfig = { mappings, inactiveLocationIds, unfinished: isWeekday ? stillNeeded : [], gaps: isWeekday ? gaps : [], overlaps, branchRules, parsedAt };

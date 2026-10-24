@@ -28,6 +28,7 @@
  * branch, or with neither a fixed driver nor a smart pool, is not a duty).
  * Anything beyond those fields belongs in the full parse, not here.
  */
+import { mergeSundayOverlaps } from "./sunday-roster";
 import type { Mapping } from "./types";
 import { isValidDriverId, parseTime } from "./config";
 import { SHEET_CONTRACT, SHEET_GID, fetchSheetRows } from "./sheets";
@@ -97,7 +98,9 @@ async function loadTab(tab: ConfigTab): Promise<Mapping[] | null> {
   if (hit && hit.day === today) return hit.mappings;
   try {
     const rows = masterEnabled() ? await masterRuleRows(tab==="sunday" ? "sunday" : "weekday") : await fetchSheetRows(SHEET_GID[tab], SHEET_CONTRACT[tab]);
-    const mappings = dutyRows(activeLocationRules(rows,await inactiveMasterClientIds()));
+    const duty = dutyRows(activeLocationRules(rows,await inactiveMasterClientIds()));
+    // The same Sunday reading the engine uses: overlapping rules share, not clash.
+    const mappings = tab === "sunday" ? mergeSundayOverlaps(duty) : duty;
     // The same zero-length suspicion the config loader has: a tab that parses to
     // nothing is a bad read, not an empty roster, and adopting it would answer
     // "nobody is on duty" to every question for the rest of the day.

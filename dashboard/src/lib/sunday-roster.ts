@@ -157,3 +157,60 @@ export function suggestSundayDay(pickup: string, customerId: string, rows: reado
   }));
   return mostCommon(days, (d) => JSON.stringify(d.lines)) ?? null;
 }
+
+type Clock = { hours: number; minutes: number } | null;
+/** The fields of a config row this needs; a Mapping fits. */
+type DutyRow = { customer_id: string; dropoff_id: string; alt_drop_off_id: string; driver_id: string; smart_driver_id: string[];
+  first_name_last_name: string; shift_start: Clock; shift_end: Clock };
+
+/**
+ * On a Sunday, two of a clinic's rules on at the same time mean both people are
+ * on — so they share the work instead of clashing. Each clinic's overlapping
+ * rules are cut into time slices, and each slice gets everyone on duty in it:
+ * one driver is a fixed rule, several a smart pool. E.g. D004 ca 2 06:00–14:00
+ * (Long) + ca 1 07:00–14:00 (Quốc) → 06:00–07:00 Long, 07:00–14:00 Long or Quốc.
+ *
+ * Only rules with the same destination scope AND the same alternate drop-off
+ * merge: if they would send the samples to different places, which one is right
+ * is a real question, and those still clash. Rules with no hours, or crossing
+ * midnight, are left alone. Slices keep the engine's convention (start
+ * exclusive, end inclusive), so coverage is exactly the union of the originals.
+ */
+export function mergeSundayOverlaps<T extends DutyRow>(rows: readonly T[]): T[] {
+  const m = (c: NonNullable<Clock>) => c.hours * 60 + c.minutes;
+  const timed = (r: T) => !!r.shift_start && !!r.shift_end && m(r.shift_start) < m(r.shift_end);
+  const groups = new Map<string, T[]>();
+  const out: T[] = [];
+  for (const r of rows) {
+    if (!timed(r)) { out.push(r); continue; }
+    const k = `${r.customer_id}|${r.dropoff_id.trim()}|${r.alt_drop_off_id.trim()}`;
+    groups.set(k, [...(groups.get(k) ?? []), r]);
+  }
+  const clock = (x: number) => ({ hours: Math.floor(x / 60), minutes: x % 60 });
+  for (const g of groups.values()) {
+    const span = g.map((r) => [m(r.shift_start!), m(r.shift_end!)] as const);
+    const overlaps = span.some(([s, e], i) => span.some(([s2, e2], j) => j !== i && s < e2 && s2 < e));
+    if (!overlaps) { out.push(...g); continue; }
+    const cuts = [...new Set(span.flat())].sort((a, b) => a - b);
+    let open: { from: number; to: number; rows: T[]; ids: string[] } | null = null;
+    const close = () => {
+      if (!open) return;
+      const first = open.rows[0];
+      out.push({ ...first, shift_start: clock(open.from), shift_end: clock(open.to),
+        driver_id: open.ids.length === 1 ? open.ids[0] : "", smart_driver_id: open.ids.length > 1 ? open.ids : [],
+        first_name_last_name: [...new Set(open.rows.map((r) => r.first_name_last_name).filter(Boolean))].join(", ") });
+      open = null;
+    };
+    for (let i = 0; i + 1 < cuts.length; i++) {
+      const [a, b] = [cuts[i], cuts[i + 1]];
+      const on = g.filter((_, j) => span[j][0] <= a && span[j][1] >= b);
+      const ids = [...new Set(on.flatMap((r) => (r.smart_driver_id.length ? r.smart_driver_id : [r.driver_id]).filter(Boolean)))];
+      if (!ids.length) { close(); continue; }
+      if (open && open.to === a && open.ids.join() === ids.join()) { open.to = b; continue; }
+      close();
+      open = { from: a, to: b, rows: on, ids };
+    }
+    close();
+  }
+  return out;
+}
