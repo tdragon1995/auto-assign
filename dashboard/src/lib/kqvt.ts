@@ -33,7 +33,7 @@
  * one — verified on throwaway prod jobs 2026-10-18. Only a stop still "Chờ lấy" is ever
  * touched, so no photo a driver already took is at stake.
  */
-import { BASE_URL, createJob, getHeaders, getJobDetails, getLiveDrivers, updateJobStops, type Env } from "./cartrack";
+import { BASE_URL, cancelJob, createJob, jobVnDate, getHeaders, getJobDetails, getLiveDrivers, updateJobStops, type Env } from "./cartrack";
 import { sharedRedis } from "./redis";
 import { haversineKm } from "./distance";
 import { resolveDriverChoices, resolveFixedDriver } from "./fixed-driver";
@@ -160,7 +160,7 @@ export async function dropPending(jobId: number): Promise<void> {
  * item leaves the waiting list; everything before that is read off the list itself.
  */
 export interface BookedRow { bid: string; ts: string; client: string; text: string; note: string }
-type Ending = { state: "giao" | "huy" | "xong"; job?: number };
+type Ending = { state: "giao" | "huy" | "xong" | "psc"; job?: number };
 const BOOKED_TTL_S = 7 * 86400;
 
 export async function logBooking(log: string, row: BookedRow): Promise<void> {
@@ -181,7 +181,7 @@ export async function closeItems(e: KqvtEntry, ending: Ending): Promise<void> {
   }
 }
 
-export interface BookedView extends BookedRow { status: string; tone: "wait" | "move" | "done" | "off"; job: number | null }
+export interface BookedView extends BookedRow { status: string; tone: "wait" | "move" | "done" | "off"; job: number | null; cancellable: boolean }
 
 export async function loadBooked(psc: string, day: string): Promise<BookedView[]> {
   const r = redis();
@@ -191,8 +191,87 @@ export async function loadBooked(psc: string, day: string): Promise<BookedView[]
   const rows = Object.entries(all).filter(([k]) => !k.endsWith(":s")).map(([, v]) => parse<BookedRow>(v));
   const open = rows.some((x) => all[`${x.bid}:s`] == null) ? await loadPending() : [];
   return rows
-    .map((x) => ({ ...x, ...bookedStatus(x.bid, all[`${x.bid}:s`] == null ? null : parse<Ending>(all[`${x.bid}:s`]), open) }))
+    .map((x) => {
+      const ending = all[`${x.bid}:s`] == null ? null : parse<Ending>(all[`${x.bid}:s`]);
+      const e = ending ? undefined : open.find((y) => y.items.some((i) => i.bid === x.bid));
+      return { ...x, ...bookedStatus(x.bid, ending, open), cancellable: !!e && !cancelBlock(e) };
+    })
     .sort((a, b) => b.ts.localeCompare(a.ts));
+}
+
+/** Why the PSC may no longer call an item off — null while nobody has taken it. */
+export function cancelBlock(e: KqvtEntry): string | null {
+  if (e.holder) return "Tài xế đã lấy — liên hệ điều phối để huỷ.";
+  if (e.job_id < 0 && e.leg_job) return "Đang trên chuyến về — liên hệ điều phối để huỷ.";
+  return null;
+}
+
+/**
+ * The PSC calls one booking off. Still waiting for its first ride → it just leaves the
+ * list. On a collect job not yet started: the job is cancelled when this was its only
+ * item (as /qr's own "Huỷ"), else only this item's to-do comes off the stop.
+ */
+export async function cancelBooking(psc: string, day: string, bid: string, env: Env): Promise<{ ok: true; client: string; text: string } | { ok: false; status: number; error: string }> {
+  const r = redis();
+  if (!r) return { ok: false, status: 503, error: "Chưa huỷ được lúc này — báo điều phối." };
+  const key = `kqvt:booked:${psc}:${day}`;
+  const [row, ended] = await Promise.all([r.hget(key, bid), r.hget(key, `${bid}:s`)]);
+  if (!row) return { ok: false, status: 404, error: "Không tìm thấy yêu cầu." };
+  if (ended) return { ok: false, status: 409, error: "Yêu cầu đã kết thúc." };
+  const e = (await loadPending()).find((x) => x.items.some((i) => i.bid === bid));
+  if (!e) return { ok: false, status: 409, error: "Yêu cầu đang được tạo — thử lại sau ít phút." };
+  const block = cancelBlock(e);
+  if (block) return { ok: false, status: 409, error: block };
+  const item = e.items.find((i) => i.bid === bid)!;
+  const rest = e.items.filter((i) => i !== item);
+
+  if (e.job_id > 0) {
+    if (rest.length === 0) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const job: any = (await getJobDetails(e.job_id, env))?.data;
+      if (job && Number(job.stops?.[0]?.stop_status_id) !== 1) return { ok: false, status: 409, error: "Tài xế đã bắt đầu đi lấy — liên hệ điều phối để huỷ." };
+      if (job && job.job_status_id !== 3 && job.job_status_id !== 7 && !(await cancelJob(e.job_id, jobVnDate(job), env))) {
+        return { ok: false, status: 502, error: "Huỷ thất bại, vui lòng thử lại." };
+      }
+    } else {
+      const res = await removeStopTodo(e.job_id, e.psc, collectTodo(item, e.client_name), env);
+      if (res === "started") return { ok: false, status: 409, error: "Tài xế đã bắt đầu đi lấy — liên hệ điều phối để huỷ." };
+      if (res !== "ok") return { ok: false, status: 502, error: "Huỷ thất bại, vui lòng thử lại." };
+    }
+  }
+  if (rest.length) await savePending({ ...e, items: rest });
+  else await dropPending(e.job_id);
+  await closeItems({ ...e, items: [item] }, { state: "psc", ...(e.job_id > 0 ? { job: e.job_id } : {}) });
+  return { ok: true, client: e.client_name, text: item.text };
+}
+
+/** Take one to-do (by its text) off a not-started stop, keeping the rest, and say so in
+ *  the stop note. Same echo-and-read-back rules as appendStopTodos. */
+async function removeStopTodo(jobId: number, customerId: string, description: string, env: Env): Promise<"ok" | "started" | "missing" | "failed"> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const job: any = (await getJobDetails(jobId, env))?.data;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const stops: any[] = job?.stops ?? [];
+  const target = stops.find((s) => s.customer_id === customerId);
+  if (!target || job.job_status_id === 7) return "missing";
+  if (Number(target.stop_status_id) !== 1) return "started";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const todos: any[] = target.todos ?? [];
+  const drop = todos.findIndex((t) => t.description === description);
+  if (drop < 0) return "missing";
+  const keep = todos.filter((_, i) => i !== drop);
+  const res = await updateJobStops(jobId, stops.map((s) => s === target
+    ? {
+        stop_id: s.stop_id, stop_type_id: s.stop_type_id, customer_id: s.customer_id,
+        note: [s.note, `ĐÃ HUỶ: ${description}`].filter(Boolean).join("\n"),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        todos: keep.map((t: any) => ({ stop_todo_id: t.stop_todo_id, todo_type_id: t.todo_type_id, description: t.description, is_required: t.is_required !== false })),
+      }
+    : { stop_id: s.stop_id, stop_type_id: s.stop_type_id, customer_id: s.customer_id }), env, job.job_type_id);
+  if (!res.ok) return "failed";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const after = (await getJobDetails(jobId, env))?.data?.stops?.find((s: any) => s.stop_id === target.stop_id);
+  return (after?.todos ?? []).length === keep.length ? "ok" : "failed";
 }
 
 /** One booking's state in words for the PSC: its ending, else where it is on the list. */
@@ -200,6 +279,7 @@ export function bookedStatus(bid: string, ending: Ending | null, entries: KqvtEn
   if (ending?.state === "giao") return { status: "Đã giao kèm chuyến lấy mẫu tại khách", tone: "done", job: ending.job ?? null };
   if (ending?.state === "huy") return { status: "Chuyến lấy đã bị huỷ", tone: "off", job: ending.job ?? null };
   if (ending?.state === "xong") return { status: "Điều phối đã xử lý", tone: "done", job: ending.job ?? null };
+  if (ending?.state === "psc") return { status: "Đã huỷ", tone: "off", job: null };
   const e = entries.find((x) => x.items.some((i) => i.bid === bid));
   if (!e) return { status: "Đang cập nhật", tone: "wait", job: null };
   if (e.job_id < 0) {

@@ -17,12 +17,14 @@ interface Customer { customer_id: string; customer_name: string; address_line_1?
 const KINDS = [["KQ", "Kết quả"], ["VT", "Vật tư"], ["KV", "Kết quả + Vật tư"]] as const;
 interface Row { c: Customer; kind: (typeof KINDS)[number][0]; note: string; files: File[] }
 
-interface Booking { bid: string; ts: string; client: string; text: string; note: string; status: string; tone: "wait" | "move" | "done" | "off"; job: number | null }
+interface Booking { bid: string; ts: string; client: string; text: string; note: string; status: string; tone: "wait" | "move" | "done" | "off"; job: number | null; cancellable: boolean }
 const TONE = { wait: "text-amber-700", move: "text-blue-700", done: "text-green-700", off: "text-slate-500" } as const;
 
 /** This PSC's KQ/VT bookings for `date`. Read when the page opens or the day changes,
  *  after a booking, and on the refresh button — no polling, like the rest of /qr. */
-function Booked({ list, loading, onRefresh }: { list: Booking[]; loading: boolean; onRefresh: () => void }) {
+function Booked({ list, loading, onRefresh, onCancel, cancelling, error }: {
+  list: Booking[]; loading: boolean; onRefresh: () => void; onCancel: (b: Booking) => void; cancelling: string; error: string;
+}) {
   if (list.length === 0) return null;
   return (
     <div className="bg-white rounded-2xl shadow-sm p-4 mb-5">
@@ -32,6 +34,7 @@ function Booked({ list, loading, onRefresh }: { list: Booking[]; loading: boolea
           <RefreshCw aria-hidden className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
         </button>
       </div>
+      {error && <p role="alert" className="text-sm font-medium text-red-700 bg-red-50 border border-red-200 rounded-xl p-3 my-2">{error}</p>}
       <ul className="divide-y divide-slate-100">
         {list.map((b) => (
           <li key={b.bid} className="py-2.5 flex gap-3">
@@ -41,6 +44,12 @@ function Booked({ list, loading, onRefresh }: { list: Booking[]; loading: boolea
               <p className="text-xs text-slate-600 break-words">{b.text}{b.note ? ` — ${b.note}` : ""}</p>
               <p className={`text-xs font-semibold ${TONE[b.tone]}`}>{b.status}{b.job ? ` · Job ${b.job}` : ""}</p>
             </div>
+            {b.cancellable && (
+              <button onClick={() => onCancel(b)} disabled={!!cancelling}
+                className="self-center shrink-0 min-h-[40px] px-3 rounded-lg border border-red-200 text-sm font-semibold text-red-700 active:bg-red-50 disabled:opacity-50 inline-flex items-center gap-1">
+                {cancelling === b.bid && <Loader2 aria-hidden className="w-3.5 h-3.5 animate-spin" />}Huỷ
+              </button>
+            )}
           </li>
         ))}
       </ul>
@@ -61,6 +70,23 @@ export function DeliveryBooking({ pickup, date }: { pickup: string; date: string
     finally { setBookedLoading(false); }
   }, [pickup, date]);
   useEffect(() => { setBooked([]); void loadBooked(); }, [loadBooked]);
+  const [cancelling, setCancelling] = useState("");
+  const [cancelError, setCancelError] = useState("");
+  const cancel = async (b: Booking) => {
+    if (!window.confirm(`Huỷ ${b.text} cho ${b.client}?`)) return;
+    setCancelling(b.bid); setCancelError("");
+    try {
+      const r = await fetch(`/api/psc-delivery?booked=${encodeURIComponent(pickup)}&date=${date}&bid=${b.bid}`, { method: "DELETE" });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) setCancelError(j.error ?? "Huỷ thất bại, vui lòng thử lại.");
+    } catch {
+      setCancelError("Huỷ thất bại. Kiểm tra mạng rồi thử lại.");
+    } finally {
+      setCancelling("");
+      // Refused or not, the list is re-read: a refusal usually means the item moved on.
+      void loadBooked();
+    }
+  };
 
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -126,7 +152,7 @@ export function DeliveryBooking({ pickup, date }: { pickup: string; date: string
     }
   };
 
-  const list = <Booked list={booked} loading={bookedLoading} onRefresh={() => void loadBooked()} />;
+  const list = <Booked list={booked} loading={bookedLoading} onRefresh={() => void loadBooked()} onCancel={cancel} cancelling={cancelling} error={cancelError} />;
 
   if (!open) {
     return (<>

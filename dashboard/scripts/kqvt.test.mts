@@ -5,7 +5,7 @@
  * in a smart ranking, and who collects for a smart client.
  */
 import assert from "node:assert/strict";
-import { bookedStatus, chainFrom, collectVerdict, handoverTarget, itemsText, legTodos, legVerdict, nearest, planDelivery, rankWithHolderFirst, rideFor, waitingTooLong, WAIT_ALERT_MS, type KqvtEntry } from "../src/lib/kqvt";
+import { bookedStatus, cancelBlock, chainFrom, collectVerdict, handoverTarget, itemsText, legTodos, legVerdict, nearest, planDelivery, rankWithHolderFirst, rideFor, waitingTooLong, WAIT_ALERT_MS, type KqvtEntry } from "../src/lib/kqvt";
 import { returnRideable } from "../src/lib/return-trips";
 import { PSC_DELIVERY_LABEL, PSC_RETURN_LABEL } from "../src/lib/job-filters";
 import type { Job, Mapping } from "../src/lib/types";
@@ -124,4 +124,10 @@ assert.equal(bookedStatus("b1", null, [tagged({ job_id: 5, holder: "H", holder_n
 assert.deepEqual(bookedStatus("b1", null, [tagged({ job_id: -1, at: D001, hops: [D007, D014] })]), { status: "Chờ chuyến về D007 tại D001", tone: "wait", job: null });
 assert.deepEqual(bookedStatus("b1", null, [tagged({ job_id: -1, at: D001, hops: [D007, D014], leg_job: 77 })]), { status: "Đang trên chuyến về D007", tone: "move", job: 77 });
 assert.equal(bookedStatus("b2", null, [tagged({ job_id: 5 })]).status, "Đang cập nhật");
+assert.equal(bookedStatus("b1", { state: "psc" }, []).status, "Đã huỷ");
+// The PSC may cancel only while nobody has taken the item.
+assert.equal(cancelBlock(tagged({ job_id: 5 })), null);
+assert.equal(cancelBlock(tagged({ job_id: -1, at: D001, hops: [D007] })), null);
+assert.match(cancelBlock(tagged({ job_id: 5, holder: "H" }))!, /đã lấy/);
+assert.match(cancelBlock(tagged({ job_id: -1, at: D001, hops: [D007], leg_job: 77 }))!, /chuyến về/);
 console.log("kqvt: ok");

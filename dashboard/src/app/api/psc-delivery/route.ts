@@ -16,7 +16,7 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { BASE_URL, getHeaders, getCustomerById } from "@/lib/cartrack";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
-import { appendStopTodos, collectTodo, createCollectJob, defaultDropoff, loadBooked, loadPending, logBooking, pickCollector, planDelivery, pscName, savePending, waitingKey, type KqvtEntry, type KqvtItem } from "@/lib/kqvt";
+import { appendStopTodos, cancelBooking, collectTodo, createCollectJob, defaultDropoff, loadBooked, loadPending, logBooking, pickCollector, planDelivery, pscName, savePending, waitingKey, type KqvtEntry, type KqvtItem } from "@/lib/kqvt";
 import { loadConfigFromSheets } from "@/lib/config";
 import { loadLeaveEntries } from "@/lib/leave-config";
 import { shortCode } from "@/lib/psc-dup";
@@ -247,4 +247,25 @@ export async function POST(req: NextRequest) {
   });
 
   return NextResponse.json({ accepted: true, count: deliveries.length }, { status: 202 });
+}
+
+/** The PSC calls off one of its own bookings: ?booked=<PSC id>&date=YYYY-MM-DD&bid=… —
+ *  only while nobody has taken the item (lib/kqvt.ts cancelBooking). */
+export async function DELETE(req: NextRequest) {
+  const p = req.nextUrl.searchParams;
+  const psc = p.get("booked") ?? "";
+  const date = p.get("date") ?? "";
+  const bid = p.get("bid") ?? "";
+  const route = PSC_ROUTES.find((r) => r.pickup === psc);
+  if (!route || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^[0-9a-f]{8}$/.test(bid)) {
+    return NextResponse.json({ error: "Yêu cầu không hợp lệ." }, { status: 400 });
+  }
+  try {
+    const r = await cancelBooking(psc, date, bid, "prod");
+    if (!r.ok) return NextResponse.json({ error: r.error }, { status: r.status });
+    await pushRunLog([{ ts: vnTimestamp(), level: "INFO", msg: `KQ/VT ${r.text} - PSC huỷ | ${shortCode(route.psc_pickup)} → ${r.client}` }]).catch(() => {});
+    return NextResponse.json({ ok: true });
+  } catch (e) {
+    return NextResponse.json({ error: String(e).slice(0, 200) }, { status: 502 });
+  }
 }
