@@ -15,6 +15,7 @@ import { maybeMorningSync } from "@/lib/morning-sync-trigger";
 import { createMorningReads } from "@/lib/morning-reads";
 import { recoverMorning } from "@/lib/morning-recovery";
 import { maybeAutoUpdatePickupEtas } from "@/lib/pickup-setup-auto";
+import { maybeSundayRosterPost } from "@/lib/sunday-roster-zalo";
 
 // The cycle (Cartrack + Goong calls) can take a while; give it headroom.
 export const maxDuration = 60;
@@ -64,6 +65,8 @@ export async function GET(req: NextRequest) {
     if (n) console.log(`[cron] geofence restored for ${n} driver(s)`);
   });
   after(() => maybeAutoUpdatePickupEtas().catch(e => console.error("[cron] pickup ETA update:", e)));
+  // Friday 17:00 roster post to the drivers' group, Saturday 18:00 admin check.
+  after(() => maybeSundayRosterPost().catch(e => console.error("[cron] sunday roster post:", e)));
 
   // 1) Switch off? Inside 05:30–22:00 the engine should be running, so self-heal
   //    by auto-arming — unless someone turned it off by hand, which now holds

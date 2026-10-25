@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo, useRef } from "react";
+import { useCallback, useEffect, useState, useMemo, useRef } from "react";
 import { Calendar, Clock, ClipboardCheck, FileText, NotepadText, CalendarDays, Search, Truck, MapPin, ArrowLeftRight, CheckCircle2, LogOut, RefreshCw, AlertCircle, LogIn, Loader2, ChevronRight, ChevronLeft, Wallet } from "lucide-react";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
 import { driverDisplayName, placeName } from "@/lib/display-names";
@@ -158,6 +158,10 @@ interface ScheduleEntry {
   ca: string;
   note: string;
   phone: string;
+  /** Roster line id, and whether a driver can take it from here ("Nhận ca"). */
+  id?: number;
+  away?: boolean;
+  claimable?: boolean;
 }
 
 interface ScheduleData {
@@ -774,6 +778,8 @@ export default function ChamCongPage() {
   const [schedule,       setSchedule]       = useState<ScheduleData | null>(null);
   const [scheduleStatus, setScheduleStatus] = useState<Status>("idle");
   const [scheduleSearch, setScheduleSearch] = useState("");
+  const [claimingSlot,   setClaimingSlot]   = useState<number | null>(null);
+  const [slotNotice,     setSlotNotice]     = useState<{ ok: boolean; text: string } | null>(null);
 
   // ── Nhận Việc tab ─────────────────────────────────────────────────────────
   const [nvPhone,     setNvPhone]     = useState(() => typeof window !== "undefined" ? localStorage.getItem(LS_NV_PHONE) ?? "" : "");
@@ -865,11 +871,9 @@ export default function ChamCongPage() {
   // page life is enough — ops edits the sheet weekly, not while a driver is looking at it,
   // and the route holds a day-keyed cache behind this anyway.
   const scheduleLoadedRef = useRef(false);
-  useEffect(() => {
-    if (tab !== "lich-cn" || scheduleLoadedRef.current) return;
-    scheduleLoadedRef.current = true;
-    setScheduleStatus("loading");
-    fetch("/api/sunday-schedule")
+  const loadSchedule = useCallback((fresh = false) => {
+    if (!fresh) setScheduleStatus("loading");
+    return fetch(`/api/sunday-schedule${fresh ? "?fresh=1" : ""}`)
       .then((r) => r.json())
       .then((sd) => {
         if (sd.error) { setScheduleStatus("error"); return; }
@@ -877,7 +881,33 @@ export default function ChamCongPage() {
         setScheduleStatus("success");
       })
       .catch(() => setScheduleStatus("error"));
-  }, [tab]);
+  }, []);
+  useEffect(() => {
+    if (tab !== "lich-cn" || scheduleLoadedRef.current) return;
+    scheduleLoadedRef.current = true;
+    void loadSchedule();
+  }, [tab, loadSchedule]);
+
+  // "Nhận ca": the signed-in driver takes an open line. First one in wins on the
+  // server; either way the list is re-read so it shows who has it now.
+  async function claimSlot(e: ScheduleEntry) {
+    if (e.id === undefined || claimingSlot !== null) return;
+    if (!confirm(`Nhận ca ${e.addr} ${e.ca} Chủ nhật ${schedule?.dateLabel ?? ""}?`)) return;
+    setClaimingSlot(e.id);
+    setSlotNotice(null);
+    try {
+      const res = await fetch("/api/sunday-roster/claim", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: e.id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      setSlotNotice(res.ok
+        ? { ok: true, text: `Đã nhận ca ${e.addr} ${e.ca}. Đội điều phối và nhóm Zalo đã được báo.` }
+        : { ok: false, text: data.error ?? "Không nhận được ca — thử lại sau." });
+      await loadSchedule(true);
+    } finally {
+      setClaimingSlot(null);
+    }
+  }
 
   // Nhận Việc: (re)load jobs when the tab is opened while logged in.
   useEffect(() => {
@@ -2062,6 +2092,12 @@ export default function ChamCongPage() {
                     </p>
                   )}
 
+                  {slotNotice && (
+                    <div role="status" className={`rounded-lg px-4 py-2.5 text-sm border ${slotNotice.ok ? "bg-emerald-50 border-emerald-200 text-emerald-800" : "bg-red-50 border-red-200 text-red-700"}`}>
+                      {slotNotice.text}
+                    </div>
+                  )}
+
                   {filteredSchedule.emptySlots.length > 0 && (
                     <div className="rounded-xl border border-red-300 overflow-hidden">
                       <div className="bg-red-50 text-red-700 text-sm font-bold px-4 py-2.5 flex items-center justify-between border-b border-red-200">
@@ -2070,21 +2106,37 @@ export default function ChamCongPage() {
                       </div>
                       <ul className="divide-y divide-gray-100">
                         {filteredSchedule.emptySlots.map((r, i) => (
-                          <li key={`empty-${i}`} className="px-4 py-2.5 flex gap-2">
-                            <span className="text-xs text-gray-400 w-5 shrink-0 pt-0.5">{i + 1}</span>
+                          <li key={`empty-${i}`} className="px-4 py-2.5 flex items-center gap-2">
+                            <span className="text-xs text-gray-400 w-5 shrink-0 pt-0.5 self-start">{i + 1}</span>
                             <div className="min-w-0 flex-1">
                               {r.addr && <p className="text-sm text-gray-600">{r.addr}</p>}
-                              {r.ca && (
-                                <div className="mt-1">
-                                  <span className="inline-block text-xs font-medium text-gray-700 bg-gray-100 rounded px-1.5 py-0.5">{r.ca}</span>
-                                </div>
-                              )}
+                              <div className="mt-1 flex flex-wrap gap-1.5">
+                                {r.ca && <span className="inline-block text-xs font-medium text-gray-700 bg-gray-100 rounded px-1.5 py-0.5">{r.ca}</span>}
+                                {r.away && <span className="inline-block text-xs font-medium text-red-700 bg-red-50 border border-red-200 rounded px-1.5 py-0.5">Cần người thay</span>}
+                              </div>
                             </div>
+                            {r.claimable && (nvLoggedIn ? (
+                              <button
+                                type="button" disabled={claimingSlot !== null} onClick={() => void claimSlot(r)}
+                                className="shrink-0 min-h-11 rounded-lg bg-blue-600 px-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+                              >
+                                {claimingSlot === r.id ? <Loader2 size={16} className="animate-spin" /> : "Nhận ca"}
+                              </button>
+                            ) : (
+                              <button
+                                type="button" onClick={() => setTab("nhan-viec")}
+                                className="shrink-0 min-h-11 rounded-lg border border-blue-300 px-3 text-xs font-semibold text-blue-700 hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                              >
+                                Đăng nhập để nhận ca
+                              </button>
+                            ))}
                           </li>
                         ))}
                       </ul>
                       <p className="text-xs text-blue-700 bg-blue-50 border-t border-blue-100 px-4 py-2.5 leading-relaxed">
-                        📋 Vui lòng liên hệ lên nhóm làm việc để đăng ký ca làm việc còn trống!
+                        {filteredSchedule.emptySlots.some((r) => r.claimable)
+                          ? "📋 Bấm \"Nhận ca\" để đăng ký — ai nhận trước sẽ được xếp ca."
+                          : "📋 Vui lòng liên hệ lên nhóm làm việc để đăng ký ca làm việc còn trống!"}
                       </p>
                     </div>
                   )}

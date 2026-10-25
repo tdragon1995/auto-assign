@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ChevronLeft, ChevronRight, Copy, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { AlertTriangle, ChevronLeft, ChevronRight, Copy, Image as ImageIcon, Plus, RefreshCw, Send, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "./ui/button";
 import { DriverCombobox } from "./driver-combobox";
@@ -109,6 +109,38 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
     }
   };
 
+  // The Friday post on demand — after fixing the roster, or before 17:00 Friday.
+  const [posting, setPosting] = useState(false);
+  const preview = async () => {
+    // Opened first, filled after: a window opened after an await is a blocked popup.
+    const win = window.open("", "_blank");
+    try {
+      const res = await fetch(`/api/sunday-roster/post?date=${date}`, { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Không tạo được ảnh");
+      if (win) win.location.href = data.image;
+    } catch (e) {
+      win?.close();
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  };
+  const post = async () => {
+    if (!confirm(`Đăng ảnh lịch + danh sách ca trống Chủ nhật ${dmy(date)} lên nhóm Zalo tài xế?`)) return;
+    setPosting(true);
+    try {
+      const res = await fetch("/api/sunday-roster/post", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ date }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Không đăng được lên Zalo");
+      toast.success(`Đã đăng lịch Chủ nhật ${dmy(date)} lên nhóm tài xế`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPosting(false);
+    }
+  };
+
   const active = useMemo(() => new Map(drivers.map((d) => [d.driver_id, d.name])), [drivers]);
   const label = (id: string) => active.get(id) ?? week?.names[id] ?? id;
   const gaps = useMemo(() => rosterGaps(lines, week?.areas ?? []), [lines, week]);
@@ -155,6 +187,8 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
             <Button variant="outline" disabled={busy || !source} onClick={() => void copyFrom(source)}><Copy className="size-4" />Sao chép</Button>
           </>}
           <Button variant="outline" disabled={busy} onClick={() => { if (discard()) void load(); }}><RefreshCw className="size-4" />Tải lại</Button>
+          <Button variant="outline" disabled={busy || unsaved || !lines.length} title={unsaved ? "Lưu lịch trước" : "Xem ảnh sẽ đăng lên Zalo"} onClick={() => void preview()}><ImageIcon className="size-4" />Xem ảnh</Button>
+          <Button variant="outline" disabled={busy || posting || unsaved || !lines.length} title={unsaved ? "Lưu lịch trước" : "Đăng ảnh + ca trống lên nhóm Zalo tài xế (tự động lúc 17:00 thứ Sáu)"} onClick={() => void post()}><Send className="size-4" />{posting ? "Đang đăng…" : "Đăng Zalo"}</Button>
           <Button disabled={busy || !unsaved || !week || incomplete} title={incomplete ? "Mỗi dòng cần khu vực, ca dạng 06:00 - 15:00" : undefined} onClick={() => void save()}>{saving ? "Đang lưu…" : "Lưu lịch"}</Button>
         </div>
       </div>
