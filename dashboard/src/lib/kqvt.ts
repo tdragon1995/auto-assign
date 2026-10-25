@@ -21,17 +21,19 @@
  * booking PSC is reached by tracing back from that drop-off along the PSC routes
  * (D014 → D007 → D001). When the booking PSC is on that chain the items RIDE THE
  * RETURN TRIPS down it, one hop at a time — never one whose driver is due off within
- * 30 min, the ride home the cleanup cancels. The collect job is made at the drop-off
- * at booking, unassigned, and given to the client's driver only once the items
- * arrive. Anything else that is not the plain case — a booking PSC off the chain, a
- * client dropping at D001 — gets its collect job unassigned, for the dispatcher.
+ * 30 min, the ride home the cleanup cancels. No job exists until the items reach the
+ * drop-off: only then is the collect job made there, given to the client's driver.
+ * Until that the item is a list entry with a negative key (waitingKey). Anything else
+ * that is not the plain case — a booking PSC off the chain, a client dropping at D001
+ * (or with no drop-off, which means D001) — gets its collect job unassigned, for the
+ * dispatcher.
  *
  * Adding a to-do to a live job: the REST stop PUT REPLACES a stop's to-do list, so the
  * existing ones are echoed back with their stop_todo_id (kept untouched) plus the new
  * one — verified on throwaway prod jobs 2026-10-18. Only a stop still "Chờ lấy" is ever
  * touched, so no photo a driver already took is at stake.
  */
-import { assignJob, BASE_URL, getHeaders, getJobDetails, getLiveDrivers, updateJobStops, type Env } from "./cartrack";
+import { BASE_URL, createJob, getHeaders, getJobDetails, getLiveDrivers, updateJobStops, type Env } from "./cartrack";
 import { sharedRedis } from "./redis";
 import { haversineKm } from "./distance";
 import { resolveDriverChoices, resolveFixedDriver } from "./fixed-driver";
@@ -40,7 +42,7 @@ import { PSC_ROUTES } from "./psc-routes-data";
 import { shortCode } from "./psc-dup";
 import { returnRideable, shiftMappingsForPsc, subToCoveredDriver } from "./return-trips";
 import { sbSelect } from "./supabase-rest";
-import { vnTimestamp } from "./time";
+import { vnHoursMinutes, vnTimestamp } from "./time";
 import type { Config, FailedJob, Job, LogLevel } from "./types";
 import type { LeaveEntry } from "./leave-config";
 
@@ -153,6 +155,38 @@ export const collectTodo = (item: KqvtItem, client: string) =>
   `${item.text} cho ${client}${item.note ? ` — ${item.note}` : ""}`.slice(0, 250);
 export const handoverTodo = (e: KqvtEntry) =>
   `Giao ${itemsText(e.items)} (từ ${e.psc_name})`.slice(0, 250);
+
+/** The list key of a multi-leg item that has no collect job yet: negative, so it never
+ *  meets a real job id. */
+let seq = 0;
+export const waitingKey = () => -(Date.now() * 100 + (seq++ % 100));
+
+/**
+ * The one-stop collect job at `e.psc`, a photo to-do per item, given to `who` — or to
+ * nobody when Cartrack refuses that driver (4xx costs the driver, not the booking).
+ * jobId 0 = not created.
+ */
+export async function createCollectJob(
+  e: Pick<KqvtEntry, "psc" | "origin" | "client_name" | "items">, extraNote: string, who: { driverId: string } | null, env: Env,
+): Promise<{ jobId: number; driverId: string | null; status: number; body: unknown }> {
+  const { hours, minutes } = vnHoursMinutes();
+  const links = e.items.flatMap((i) => i.links);
+  const payload = {
+    job_type_id: 3,
+    schedule_type_id: 1,
+    reference_number: `${pscName(e.origin ?? e.psc)}→${e.client_name.slice(0, 60)}_${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`,
+    labels: [PSC_DELIVERY_LABEL],
+    stops: [{
+      stop_type_id: 3, customer_id: e.psc, duration: 5,
+      note: [...e.items.map((i) => collectTodo(i, e.client_name)), extraNote, ...links.map((u, i) => `Ảnh ${i + 1}: ${u}`)].filter(Boolean).join("\n"),
+      todos: e.items.map((i) => ({ todo_type_id: PHOTO, description: collectTodo(i, e.client_name), is_required: true })),
+    }],
+  };
+  let res = await createJob(who ? { ...payload, delivery_driver_id: who.driverId } : payload, env);
+  let driverId = who?.driverId ?? null;
+  if (!res.ok && who && res.status >= 400 && res.status < 500) { res = await createJob(payload, env); driverId = null; }
+  return { jobId: res.ok ? Number(res.body?.data?.job_id) || 0 : 0, driverId, status: res.status, body: res.body };
+}
 
 /** "📄 Kết quả ×2 + 📦 Vật tư" — repeats counted, first-seen order kept. */
 export function itemsText(items: KqvtItem[]): string {
@@ -298,10 +332,11 @@ export async function kqvtCycle(
   const rideable = (j: Job, hop: string) =>
     returnRideable(shiftMappingsForPsc(config, hop, j.delivery_driver_id!, subCovers ??= subToCoveredDriver(config, leave)), new Date(now));
 
-  /** One hop of a multi-leg item: follow the return carrying it, or load it on one. */
+  /** A multi-leg item: follow the return carrying it, load it on one, or — arrived at
+   *  the drop-off — make its collect job there. */
   const travel = async (e: KqvtEntry) => {
-    const hop = e.hops![0];
-    if (e.leg_job) {
+    if (e.leg_job && e.hops?.length) {
+      const hop = e.hops[0];
       let leg: CollectState | "gone" | null | undefined = byId.get(e.leg_job);
       if (!leg && now - (e.leg_checked_ms ?? 0) > RECHECK_MS) {
         leg = await lookupJob(e.leg_job, env);
@@ -312,30 +347,35 @@ export async function kqvtCycle(
       if (v === "wait") return;
       log(`Job ${e.leg_job} - KQ/VT ${v === "arrived" ? `đã tới ${pscName(hop)}` : `chuyến về bị huỷ, chờ chuyến khác tại ${pscName(e.at!)}`} | ${e.psc_name} → ${e.client_name}`, v === "arrived" ? "OK" : "WARN");
       e.leg_job = undefined;
-      if (v === "arrived") { e.at = hop; e.hops!.shift(); }
-      if (!e.hops!.length) await arrive(e);
+      if (v === "arrived") { e.at = hop; e.hops.shift(); }
       await savePending(e);
-      if (!e.hops?.length) return;
     }
+    if (!e.hops?.length) return arrive(e);
     const ride = rideFor(e, jobsToday, (j) => rideable(j, e.hops![0]));
     if (!ride) return;
     const t = legTodos(e);
-    const r = await appendStopTodos(ride.job_id, { [e.at!]: [t.pickup], [e.hops![0]]: [t.dropoff] }, env);
+    const r = await appendStopTodos(ride.job_id, { [e.at!]: [t.pickup], [e.hops[0]]: [t.dropoff] }, env);
     if (r !== "ok") return;
     e.leg_job = ride.job_id;
     await savePending(e);
-    log(`Job ${ride.job_id} - KQ/VT đi kèm chuyến về (${itemsText(e.items)}) | ${pscName(e.at!)} → ${pscName(e.hops![0])} → ${e.client_name}`, "OK");
+    log(`Job ${ride.job_id} - KQ/VT đi kèm chuyến về (${itemsText(e.items)}) | ${pscName(e.at!)} → ${pscName(e.hops[0])} → ${e.client_name}`, "OK");
   };
 
-  /** At the client's drop-off: the waiting collect job goes to the client's driver. */
+  /** At the client's drop-off: only now is the collect job made, given to the client's
+   *  driver. A failed create is retried next cycle — the item stays on the list. */
   const arrive = async (e: KqvtEntry) => {
-    e.hops = undefined;
     const psc = PSC_ROUTES.find((r) => r.pickup === e.psc);
     const who = psc ? await pickCollector(config, leave, e.client_id, psc, env).catch(() => null) : null;
-    const res = who ? await assignJob(who.driverId, e.job_id, env).catch(() => null) : null;
-    const ok = !!res && res.status >= 200 && res.status < 300;
-    if (ok) { e.collector = who!.driverId; e.collector_name = who!.name ?? undefined; }
-    log(`Job ${e.job_id} - lấy KQ/VT tại PSC: ${ok ? who!.name ?? "tài xế" : "chờ điều phối"} | ${e.psc_name} → ${e.client_name}`, ok ? "OK" : "WARN");
+    const res = await createCollectJob(e, `Chuyển từ ${pscName(e.origin!)} theo chuyến về`, who, env);
+    if (!res.jobId) {
+      log(`Giao KQ/VT FAILED - chưa tạo được chuyến lấy tại ${e.psc_name} (${res.status}) | ${pscName(e.origin!)} → ${e.client_name}`, "WARN");
+      return;
+    }
+    const waitKey = e.job_id;
+    Object.assign(e, { job_id: res.jobId, hops: undefined, collector: res.driverId ?? undefined, collector_name: res.driverId ? who?.name ?? undefined : undefined });
+    await savePending(e);
+    await dropPending(waitKey);
+    log(`Job ${e.job_id} - lấy KQ/VT tại PSC: ${res.driverId ? who?.name ?? "tài xế" : "chờ điều phối"} | ${e.psc_name} → ${e.client_name}`, "OK");
   };
 
   const attach = async (e: KqvtEntry, job: Job) => {
@@ -350,7 +390,9 @@ export async function kqvtCycle(
   };
 
   for (const e of entries) {
-    if (!e.holder) {
+    // Still travelling: no collect job exists yet (job_id is the waiting key, < 0).
+    if (e.job_id < 0) await travel(e);
+    else if (!e.holder) {
       // Today's lists miss a collect job dated another day, and every cancelled one —
       // so one missing from them is read on its own, at most every RECHECK_MS. Without
       // this a cancelled booking sat here until the 24h row (34497484, 2026-10-20).
@@ -368,7 +410,6 @@ export async function kqvtCycle(
         e.collected_ms = now;
         await savePending(e);
       }
-      if (!e.holder && e.hops?.length) await travel(e);
     }
     if (e.holder) {
       const target = handoverTarget(e, jobsToday);
@@ -383,10 +424,12 @@ export async function kqvtCycle(
         reason: "KQVT_WAITING",
         detail: e.holder
           ? `${e.holder_name ?? "Tài xế"} đang giữ ${itemsText(e.items)}, chưa có chuyến lấy mẫu tại khách để giao kèm`
-          : e.hops?.length
+          : e.job_id < 0
             ? e.leg_job
-              ? `${itemsText(e.items)} đang trên chuyến về ${e.leg_job} tới ${pscName(e.hops[0])}`
-              : `${itemsText(e.items)} đang ở ${pscName(e.at!)}, chưa có chuyến về ${pscName(e.hops[0])} để đi kèm`
+              ? `${itemsText(e.items)} đang trên chuyến về ${e.leg_job} tới ${pscName(e.hops![0])}`
+              : e.hops?.length
+                ? `${itemsText(e.items)} đang ở ${pscName(e.at!)}, chưa có chuyến về ${pscName(e.hops[0])} để đi kèm`
+                : `${itemsText(e.items)} đã tới ${e.psc_name}, chưa tạo được chuyến lấy`
             : `${itemsText(e.items)} chưa được lấy tại ${e.psc_name}`,
         level: "WARN",
         ts: vnTimestamp(),

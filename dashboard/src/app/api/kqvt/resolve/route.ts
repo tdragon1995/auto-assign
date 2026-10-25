@@ -14,7 +14,8 @@ export const preferredRegion = "sin1";
 
 export async function POST(req: NextRequest) {
   const jobId = Number((await req.json().catch(() => null))?.job_id);
-  if (!Number.isInteger(jobId) || jobId <= 0) {
+  // Negative = a multi-leg item still travelling, with no job yet (lib/kqvt.ts).
+  if (!Number.isInteger(jobId) || jobId === 0) {
     return NextResponse.json({ error: "Job không hợp lệ" }, { status: 400 });
   }
   try {

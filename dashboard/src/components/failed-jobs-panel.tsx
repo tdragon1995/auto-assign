@@ -250,7 +250,7 @@ function FailedRow({
   const [resolved, setResolved] = useState(false);
   const [resolving, setResolving] = useState(false);
   const resolveKqvt = async () => {
-    if (!window.confirm(`Đánh dấu KQ/VT của job ${job.job_id} là đã xử lý?\nCảnh báo sẽ không hiện lại và hệ thống ngừng tự giao kèm. Job trên Cartrack giữ nguyên.`)) return;
+    if (!window.confirm(`Đánh dấu KQ/VT ${job.job_id < 0 ? job.customer : `của job ${job.job_id}`} là đã xử lý?\nCảnh báo sẽ không hiện lại và hệ thống ngừng tự giao kèm. Job trên Cartrack giữ nguyên.`)) return;
     setResolving(true);
     try {
       const res = await fetch("/api/kqvt/resolve", {
@@ -261,7 +261,7 @@ function FailedRow({
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "Không lưu được");
       setResolved(true);
-      toast.success(`Đã xử lý KQ/VT job ${job.job_id}`);
+      toast.success(`Đã xử lý KQ/VT ${job.job_id < 0 ? job.customer : `job ${job.job_id}`}`);
     } catch (e) {
       toast.error(`Chưa lưu được: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -274,16 +274,21 @@ function FailedRow({
     <div className="px-2 py-1.5 hover:bg-slate-50">
       {/* Line 1: job link · route (reason lives in the section header) */}
       <div className="flex flex-wrap md:flex-nowrap items-center gap-x-2 gap-y-1 min-w-0">
-        {/* Each destination has its own link; the job number opens its Cartrack record. */}
-        <a
-          href={cartrackJob(job.job_id)}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="shrink-0 font-mono font-semibold text-indigo-600 underline hover:text-indigo-800"
-          title="Mở job trên Cartrack"
-        >
-          Job {job.job_id}
-        </a>
+        {/* Each destination has its own link; the job number opens its Cartrack record.
+            A negative id is a KQ/VT item still riding return trips — no job yet. */}
+        {job.job_id < 0 ? (
+          <span className="shrink-0 font-semibold text-slate-600">Chưa có job</span>
+        ) : (
+          <a
+            href={cartrackJob(job.job_id)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="shrink-0 font-mono font-semibold text-indigo-600 underline hover:text-indigo-800"
+            title="Mở job trên Cartrack"
+          >
+            Job {job.job_id}
+          </a>
+        )}
         {mapUrl && (
           <a
             href={mapUrl}
@@ -317,7 +322,7 @@ function FailedRow({
             S
           </a>
         )}
-        {onOpenJob && <OpenInAdminButton jobId={job.job_id} onOpen={onOpenJob} />}
+        {onOpenJob && job.job_id > 0 && <OpenInAdminButton jobId={job.job_id} onOpen={onOpenJob} />}
         {/* Give the route its own line on mobile so the controls cannot squeeze it out. */}
         <span className="min-w-0 order-last basis-full md:order-none md:basis-auto md:flex-1 break-words md:truncate text-sm font-medium text-slate-800" title={job.customer}>
           {job.customer}
