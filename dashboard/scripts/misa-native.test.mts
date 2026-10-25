@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { NextRequest } from 'next/server';
-import { misaMonths, syncWait, getMisaSyncStatus } from '../src/lib/misa-sync';
+import { misaMonths, syncWait, getMisaSyncStatus, inLabcenterShare } from '../src/lib/misa-sync';
 import { morningSyncDue, maybeMorningSync, morningResumeDue, shouldResume, morningRunFailure, MAX_SELF_CALLS } from '../src/lib/morning-sync-trigger';
 import { POST } from '../src/app/api/misa-sync/continue/route';
 import { GET } from '../src/app/api/morning-sync/route';
@@ -16,6 +16,11 @@ assert.equal(syncWait({...run,status:'completed',conclusion:'failure'},time+6000
 assert.equal(morningSyncDue(new Date('2026-10-06T21:59:00Z')),false);
 assert.equal(morningSyncDue(new Date('2026-10-06T22:00:00Z')),true);
 assert.equal(morningSyncDue(new Date('2026-10-06T23:00:00Z')),false);
+// Every code falls in exactly one day of any 7 in a row.
+for(const code of ['1','6','7','10234','999999999','123456789012']) {
+  const days=Array.from({length:7},(_,i)=>new Date(Date.UTC(2026,9,26+i)).toISOString().slice(0,10)).filter(d=>inLabcenterShare(code,d));
+  assert.equal(days.length,1,code);
+}
 // Hop cap: Vercel let 4 self-calls through on 2026-10-19 and refused the 5th.
 assert.ok(MAX_SELF_CALLS<4);
 assert.equal(morningResumeDue(new Date('2026-10-06T21:59:00Z')),false);

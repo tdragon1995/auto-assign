@@ -117,6 +117,10 @@ assert.equal(second.processed,1);assert.equal(second.nextCursor,null);assert.equ
 const response=await refresh(new NextRequest('https://dashboard.invalid/api/master-client-info/sync?phase=metadata&limit=1&after=1',{method:'POST'}));
 assert.equal(response.status,200);assert.equal((await response.json()).labcenter.issues[0].client_code,'2');
 assert.equal((await refresh(new NextRequest('https://dashboard.invalid/api/master-client-info/sync?phase=metadata&limit=201',{method:'POST'}))).status,400);
+const shared=await syncLabcenterMetadata(0,99,undefined,'',{include:c=>c==='2',parallel:2});
+assert.equal(shared.processed,1);assert.equal(shared.nextCursor,null);assert.equal(shared.issues[0].client_code,'2');
+const late=await syncLabcenterMetadata(0,99,undefined,'',{parallel:1,deadline:Date.now()-1});
+assert.equal(late.processed,1,'a past deadline still does the first code');assert.equal(late.nextCursor,'1');
 scenario='owners';writes.length=0;
 const withOwners=await syncLabcenterMetadata(0,2);
 assert.equal(withOwners.owners,2);assert.equal(withOwners.issues.length,0);assert.equal(accountWrites.flat().length,2);

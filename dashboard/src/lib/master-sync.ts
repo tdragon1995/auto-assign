@@ -208,7 +208,13 @@ export async function syncCartrackDetailPage(kind: "customers" | "drivers", offs
 
 export type LabcenterMetadataIssue = { client_code: string; customer_id: string; name: string; kind: string; detail: string };
 export type LabcenterMetadataReport = { matched: number; owners: number; errors: number; totalCodes: number; processed: number; nextCursor: string | null; issues: LabcenterMetadataIssue[] };
-export async function syncLabcenterMetadata(offset = 0, limit = 200, onlyCodes?: string[], after?: string): Promise<LabcenterMetadataReport> {
+/**
+ * `opts` is for the morning run, which must go easy on Labcenter: `include` limits it to
+ * that day's share of the codes, `parallel` sets how many codes are asked at once, and
+ * `deadline` stops it starting new codes (it returns a cursor to carry on from).
+ */
+export async function syncLabcenterMetadata(offset = 0, limit = 200, onlyCodes?: string[], after?: string,
+  opts: { include?: (code: string) => boolean; parallel?: number; deadline?: number } = {}): Promise<LabcenterMetadataReport> {
   const [admin, receptionist] = await Promise.all([getAdminToken(), getReceptionistToken()]);
   if (!admin || !receptionist) throw new Error("Labcenter credentials unavailable");
   const [clients, pickDrops] = await Promise.all([
@@ -233,14 +239,18 @@ export async function syncLabcenterMetadata(offset = 0, limit = 200, onlyCodes?:
     byCode.set(code, [...(byCode.get(code) ?? []), c]);
   }
   let matched = 0, owners = 0, errors = 0;
-  const remaining = [...byCode.keys()].sort().filter(code => after === undefined || code > after);
+  const remaining = [...byCode.keys()].sort().filter(code => (after === undefined || code > after) && (!opts.include || opts.include(code)));
   const codes = onlyCodes ? [...new Set(onlyCodes)].filter((c) => byCode.has(c)) : remaining.slice(after === undefined ? offset : 0, (after === undefined ? offset : 0) + limit);
   const issues: LabcenterMetadataIssue[] = [];
   const flag = (c: (typeof clients)[number], kind: string, detail: string) => {
     issues.push({client_code: c.client_code ?? "", customer_id: c.customer_id, name: c.customer_name ?? c.customer_id, kind, detail});
   };
-  for (let i = 0; i < codes.length; i += 4) {
-    await Promise.all(codes.slice(i, i + 4).map(async (code) => {
+  const parallel = opts.parallel ?? 4;
+  let done = codes.length;
+  for (let i = 0; i < codes.length; i += parallel) {
+    // Never on the first group, so every call moves the cursor.
+    if (i > 0 && opts.deadline && Date.now() > opts.deadline) { done = i; break; }
+    await Promise.all(codes.slice(i, i + parallel).map(async (code) => {
       const group = byCode.get(code)!;
       try {
       const all = await listLocationsByClientCode(code, admin, false);
@@ -309,6 +319,6 @@ export async function syncLabcenterMetadata(offset = 0, limit = 200, onlyCodes?:
   }
   if (changed.size || accounts.length) await sbRpc("master_refresh_metadata", {updates:[...changed.values()], accounts});
   issues.sort((a,b) => a.client_code.localeCompare(b.client_code) || a.customer_id.localeCompare(b.customer_id) || a.kind.localeCompare(b.kind));
-  const hasMore = !onlyCodes && (after === undefined ? offset + codes.length < remaining.length : codes.length < remaining.length);
-  return { matched, owners, errors, totalCodes: byCode.size, processed: codes.length, nextCursor: hasMore ? codes.at(-1) ?? null : null, issues };
+  const hasMore = !onlyCodes && (done < codes.length || (after === undefined ? offset + codes.length < remaining.length : codes.length < remaining.length));
+  return { matched, owners, errors, totalCodes: byCode.size, processed: done, nextCursor: hasMore ? codes[done - 1] ?? null : null, issues };
 }

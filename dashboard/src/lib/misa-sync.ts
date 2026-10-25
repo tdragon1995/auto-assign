@@ -6,12 +6,16 @@ import { invalidateConfigCache, invalidateDriversCache, loadConfigFromSheets } f
 import { invalidateLeaveCache } from "./leave-config";
 import { invalidateShiftCache } from "./shift-window";
 import { syncCartrackProfiles, syncLabcenterMetadata } from "./master-sync";
-import { sbDelete, sbInsert, sbSelectAll } from "./supabase-rest";
+import { sbDelete, sbInsert } from "./supabase-rest";
 import { MAX_SELF_CALLS, MORNING_RUN_KEY, MORNING_RUN_LOCK, postContinuation } from "./morning-sync-trigger";
 
 const KEY=MORNING_RUN_KEY, LOCK=MORNING_RUN_LOCK, TTL=7*86400, COOLDOWN=15;
-// Room inside maxDuration 300 for the Labcenter batch loop to stop starting batches.
+// Room inside maxDuration 300 for the Labcenter check to stop starting new codes.
 const STEP_BUDGET_MS=240_000;
+/** Which seventh of the client codes a day checks. By code, not position, so a new client never shifts the others. */
+export function inLabcenterShare(code:string,day:string) {
+  return Number(code.slice(-9))%7===Math.floor(Date.parse(day)/86400000)%7;
+}
 type Run={id:number,status:"queued"|"in_progress"|"completed",conclusion:"success"|"failure"|null,
   created_at:string,updated_at:string,daily:boolean,phase:"profiles"|"metadata"|"misa"|"cache",
   cursor:string,months:string[],monthIndex:number,processed:number,issues:number,shiftRows:number,error?:string};
@@ -89,24 +93,21 @@ export async function runMisaSyncStep(id:number,hop=MAX_SELF_CALLS) {
     if(run.phase==="profiles") {
       await syncCartrackProfiles();invalidateDriversCache();await invalidateConfigCache();run.phase="misa";
     }else if(run.phase==="metadata") {
-      // The list, not just its count, so the dashboard can show what the morning found.
-      if(!run.cursor)await sbDelete("master_sync_issues",`run_id=neq.${run.id}`);
-      // ~1,600 client codes: one 40-code batch per invocation was ~40 hops. Fit as many as
-      // the budget allows, checkpointing each, and stop before the slowest batch so far
-      // could run past maxDuration.
-      let slowest=0;
-      do {
-        const batchStart=Date.now();
-        const report=await syncLabcenterMetadata(0,40,undefined,run.cursor);
-        if(report.issues.length)await sbInsert("master_sync_issues",report.issues.map(i=>({...i,run_id:run!.id})));
-        run.processed+=report.processed;run.issues+=report.issues.length;
-        if(report.nextCursor) {
-          if(!/^\d+$/.test(report.nextCursor)||report.nextCursor<=run.cursor)throw new Error("Labcenter cursor did not advance");
-          run.cursor=report.nextCursor;
-        }else run.phase="cache";
-        run.updated_at=new Date().toISOString();await db.set(KEY,run,{ex:TTL});
-        slowest=Math.max(slowest,Date.now()-batchStart);
-      }while(run.phase==="metadata" && Date.now()-started+slowest*1.5<STEP_BUDGET_MS);
+      // Go easy on Labcenter: a seventh of the ~1,600 client codes a morning, so each client
+      // is checked once a week (~230 codes, ~500 requests), 2 at a time, pick-drop list
+      // fetched once. It was every code daily, 4 at a time, the list re-fetched per 40.
+      // The list, not just its count, so the dashboard can show what the morning found:
+      // today's share replaces its own findings from a week ago, the other six days' stay.
+      if(!run.cursor)await sbDelete("master_sync_issues",`created_at=lt.${new Date(Date.now()-6*86400000).toISOString()}`);
+      const day=vnDate(new Date(run.created_at));
+      const report=await syncLabcenterMetadata(0,Number.MAX_SAFE_INTEGER,undefined,run.cursor,
+        {include:code=>inLabcenterShare(code,day),parallel:2,deadline:started+STEP_BUDGET_MS});
+      if(report.issues.length)await sbInsert("master_sync_issues",report.issues.map(i=>({...i,run_id:run!.id})));
+      run.processed+=report.processed;run.issues+=report.issues.length;
+      if(report.nextCursor) {
+        if(!/^\d+$/.test(report.nextCursor)||report.nextCursor<=run.cursor)throw new Error("Labcenter cursor did not advance");
+        run.cursor=report.nextCursor;
+      }else run.phase="cache";
       await invalidateConfigCache();
     }else if(run.phase==="misa") {
       const {runNativeMisa}=await import("./misa-native");

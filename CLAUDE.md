@@ -620,8 +620,10 @@ These are the things most likely to burn a future agent working on this codebase
     `/api/misa-sync/continue` calls passed and the next was refused, and since the
     Labcenter phase had ~1,600 client codes at 40 a hop (~40 hops) the morning run never
     reached MISA — no MISA leave was written from 16/10. Now: phases run profiles → MISA →
-    Labcenter → cache (leave lands on the 2nd self-call); each Labcenter invocation does as
-    many batches as fit in 240 s; each chain stops at `MAX_SELF_CALLS` (2) and the next
+    Labcenter → cache (leave lands on the 2nd self-call). The Labcenter check takes a
+    SEVENTH of the client codes each morning (`inLabcenterShare`, by code — each client
+    once a week, ~500 requests instead of ~3,200), 2 at a time, the pick-drop list fetched
+    once, and stops starting codes at 240 s; each chain stops at `MAX_SELF_CALLS` (2) and the next
     cron-job.org ping, a new chain from outside, resumes the run (05:00–08:00 VN only,
     `maybeMorningSync`). A failed or stalled run shows as a red line above the tabs
     (`/api/morning-issues` → `sync_failure`) and counts in the Cần xử lý badge.
