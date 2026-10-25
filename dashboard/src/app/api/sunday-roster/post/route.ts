@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isSunday } from "@/lib/sunday-roster";
-import { imageUrl, loadSundayLines, postWeekly } from "@/lib/sunday-roster-zalo";
+import { loadSundayLines, postWeekly, preparedImageUrl } from "@/lib/sunday-roster-zalo";
 import { weeklyPostText } from "@/lib/sunday-roster-post";
 
 export const runtime = "nodejs";
@@ -14,7 +14,8 @@ export const maxDuration = 30;
 export async function GET(req: NextRequest) {
   const date = req.nextUrl.searchParams.get("date");
   if (!isSunday(date)) return NextResponse.json({ error: "Ngày phải là Chủ nhật" }, { status: 400 });
-  return NextResponse.json({ text: weeklyPostText(date, await loadSundayLines(date)), image: imageUrl(date) });
+  const lines = await loadSundayLines(date);
+  return NextResponse.json({ text: weeklyPostText(date, lines), image: await preparedImageUrl(date, lines) });
 }
 
 export async function POST(req: NextRequest) {

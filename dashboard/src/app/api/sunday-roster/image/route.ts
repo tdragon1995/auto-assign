@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isSunday } from "@/lib/sunday-roster";
-import { imageSigOk, loadSundayLines } from "@/lib/sunday-roster-zalo";
+import { imageSigOk, loadSundayLines, preparedImage } from "@/lib/sunday-roster-zalo";
 import { renderRosterImage } from "@/lib/sunday-roster-image";
 import { isPublished } from "@/lib/sunday-roster-post";
 
@@ -16,6 +16,14 @@ export async function GET(req: NextRequest) {
   const date = req.nextUrl.searchParams.get("date");
   if (!isSunday(date) || !imageSigOk(date, req.nextUrl.searchParams.get("sig"))) {
     return NextResponse.json({ error: "not found" }, { status: 404 });
+  }
+  // A link the bot sent carries the picture drawn just before sending: answer
+  // with it at once, sized, so Zalo's fetch does not wait on a 6–8 s render.
+  const ready = await preparedImage(date, req.nextUrl.searchParams.get("v"));
+  if (ready) {
+    return new Response(new Uint8Array(ready), {
+      headers: { "Content-Type": "image/png", "Content-Length": String(ready.length), "Cache-Control": "public, max-age=86400" },
+    });
   }
   const lines = (await loadSundayLines(date)).filter((l) => isPublished(l.area));
   return renderRosterImage(date, lines);

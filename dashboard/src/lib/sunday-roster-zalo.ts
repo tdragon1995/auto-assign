@@ -14,7 +14,8 @@ import { notifyAdminGroup, sendZaloMessage } from "./zalo";
 import { getRedis } from "./tat-archive";
 import { vnDate, vnMinutesSinceMidnight } from "./time";
 import { rosterSunday } from "./sunday-roster";
-import { adminAlertText, awayFor, weeklyPostText, type AwayFact, type PostLine } from "./sunday-roster-post";
+import { adminAlertText, awayFor, isPublished, weeklyPostText, type AwayFact, type PostLine } from "./sunday-roster-post";
+import { renderRosterImage } from "./sunday-roster-image";
 
 // The deployment that signs the picture URL must be the one serving it: the two
 // Vercel accounts need not share the secret, and "Đăng Zalo" runs on account B.
@@ -83,7 +84,30 @@ function imageSig(date: string): string {
   return crypto.createHmac("sha256", key).update(`sunday-roster:${date}`).digest("base64url").slice(0, 22);
 }
 export const imageSigOk = (date: string, sig: string | null) => !!sig && sig === imageSig(date);
-export const imageUrl = (date: string) => `${BASE_URL}/api/sunday-roster/image?date=${date}&sig=${imageSig(date)}&v=${Date.now()}`;
+const imageUrl = (date: string, v: string) => `${BASE_URL}/api/sunday-roster/image?date=${date}&sig=${imageSig(date)}&v=${v}`;
+const imageKey = (date: string, v: string) => `sunday_roster:img:${date}:${v}`;
+
+/** Draw the picture NOW and keep it for a day, so the link answers at once.
+ *  Drawing takes 6–8 s, and Zalo refused a link that slow ("photo URL is
+ *  invalid") while taking instant Cartrack images. Without Redis the link still
+ *  works, drawing on request. ~0.7 MB per post, a few posts a week. */
+export async function preparedImageUrl(date: string, lines: SundayLine[]): Promise<string> {
+  const v = String(Date.now());
+  const redis = getRedis();
+  if (redis) {
+    const res = await renderRosterImage(date, lines.filter((l) => isPublished(l.area)));
+    const png = Buffer.from(await res.arrayBuffer());
+    await redis.set(imageKey(date, v), png.toString("base64"), { ex: 86_400 }).catch((e) => console.error("[sunday-roster] image cache:", e));
+  }
+  return imageUrl(date, v);
+}
+
+/** The picture prepared for this link, or null (expired, or never stored). */
+export async function preparedImage(date: string, v: string | null): Promise<Buffer | null> {
+  if (!v || !/^\d+$/.test(v)) return null;
+  const b64 = await getRedis()?.get<string>(imageKey(date, v)).catch(() => null);
+  return typeof b64 === "string" && b64 ? Buffer.from(b64, "base64") : null;
+}
 
 async function sendZaloPhoto(botToken: string, chatId: string, photo: string, caption?: string): Promise<boolean> {
   try {
@@ -91,7 +115,8 @@ async function sendZaloPhoto(botToken: string, chatId: string, photo: string, ca
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, photo, ...(caption ? { caption } : {}) }),
     });
-    return res.ok;
+    // Zalo refuses with HTTP 200 and ok:false in the body.
+    return res.ok && (await res.json().catch(() => null))?.ok === true;
   } catch {
     return false;
   }
@@ -117,7 +142,7 @@ export async function postWeekly(date: string): Promise<{ ok: boolean; sent: boo
     await notifyAdminGroup(`⚠️ Chưa lưu Lịch CN ${dm(date)} — bài đăng thứ Sáu cho tài xế chưa được gửi. Lưu Lịch Chủ nhật rồi đăng lại.`);
     return { ok: false, sent: true, reason: "no roster saved" };
   }
-  const photo = await sendZaloPhoto(g.token, g.chat, imageUrl(date));
+  const photo = await sendZaloPhoto(g.token, g.chat, await preparedImageUrl(date, lines));
   const text = await sendZaloMessage(g.token, g.chat, weeklyPostText(date, lines));
   return photo && text ? { ok: true, sent: true } : { ok: false, sent: photo || text, reason: `photo=${photo} text=${text}` };
 }
