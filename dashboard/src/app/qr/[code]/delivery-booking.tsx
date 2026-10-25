@@ -123,12 +123,10 @@ export function DeliveryBooking({ pickup, date }: { pickup: string; date: string
   const [hits, setHits] = useState<Customer[]>([]);
   const [searching, setSearching] = useState(false);
   const [rows, setRows] = useState<Row[]>([]);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // Names of the clients just sent. The server answers before the trips exist (they
   // are created in the background), so this is the whole confirmation.
   const [sent, setSent] = useState<string[]>([]);
-  const [photosSkipped, setPhotosSkipped] = useState(false);
 
   // Searches already answered on this page, so going back to one costs nothing.
   const seen = useRef(new Map<string, Customer[]>());
@@ -161,58 +159,62 @@ export function DeliveryBooking({ pickup, date }: { pickup: string; date: string
     setQ(""); setHits([]);
   };
 
-  const submit = async () => {
-    setBusy(true); setError("");
-    try {
-      // Each photo is shrunk to its share of the server's limit (with room to spare),
-      // so photos always fit. Past ~4.5 MB the platform drops the request with no
-      // answer — a long wait ending in "Kiểm tra mạng" (2026-10-25).
-      const count = rows.reduce((n, r) => n + r.files.length, 0);
-      // ~300 KB a photo at most: still readable, and small enough to go in time.
-      const budget = Math.min(300_000, Math.floor(MAX_PROOF_BYTES * 0.9 / Math.max(1, count)));
-      const deliveries = await Promise.all(rows.map(async (r) => ({
-        customer_id: r.c.customer_id, kind: r.kind, note: r.note, files: await Promise.all(r.files.map((f) => fit(f, budget))),
-      })));
-      // What is still too big could not be redrawn: a PDF, or a photo the phone cannot read.
-      const files = deliveries.flatMap((d) => d.files).map((f) => ({ name: f.name, bytes: bytesOf(f.dataUrl) }));
-      const total = files.reduce((n, f) => n + f.bytes, 0);
-      if (total > MAX_PROOF_BYTES) {
-        const big = files.filter((f) => f.bytes > budget).map((f) => `${f.name} (${(f.bytes / 1e6).toFixed(1)} MB)`);
-        setError(`Tệp quá lớn — tổng ${(total / 1e6).toFixed(1)} MB, tối đa ${MAX_PROOF_BYTES / 1e6} MB. Không thu nhỏ được: ${big.join(", ")}. Hãy chụp ảnh thay cho tệp này.`);
-        return;
+  /**
+   * "Đã gửi" at once; everything after runs in the background (supervisor, 2026-10-25:
+   * the PSC should neither wait nor hear about photos). Photos are best effort: shrunk,
+   * dropped if they cannot be made small, and dropped altogether when sending them is
+   * slow. Only a booking that could not be sent at all brings the form back.
+   */
+  const submit = () => {
+    const snapshot = rows;
+    setError("");
+    setSent(rows.map((r) => placeLabel(r.c.customer_name)));
+    setRows([]);
+    void (async () => {
+      let why = "Không gửi được yêu cầu. Kiểm tra mạng rồi thử lại.";
+      try {
+        const count = snapshot.reduce((n, r) => n + r.files.length, 0);
+        // ~300 KB a photo at most: readable, and small enough to go in time. Past
+        // ~4.5 MB a request is dropped with no answer at all.
+        const budget = Math.min(300_000, Math.floor(MAX_PROOF_BYTES * 0.9 / Math.max(1, count)));
+        const deliveries = await Promise.all(snapshot.map(async (r) => ({
+          customer_id: r.c.customer_id, kind: r.kind, note: r.note,
+          // A file that stays too big (a PDF, a photo the phone cannot read) is left off.
+          files: (await Promise.all(r.files.map((f) => fit(f, budget).catch(() => null))))
+            .filter((f): f is { name: string; dataUrl: string } => !!f && bytesOf(f.dataUrl) <= budget),
+        })));
+        const post = (body: unknown, signal?: AbortSignal) => fetch("/api/psc-delivery", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal,
+        });
+        // The upload link can be very slow (2026-10-25: 160 KB took 17 s to 8 min).
+        // Past PHOTO_WAIT_MS the booking goes again WITHOUT photos. If the first got
+        // through after all, the double-booking lock answers 409: already booked.
+        const photos = deliveries.some((d) => d.files.length);
+        let res: Response | null = null;
+        if (photos) {
+          const ac = new AbortController();
+          const t = setTimeout(() => ac.abort(), PHOTO_WAIT_MS);
+          res = await post({ pickup, deliveries }, ac.signal).catch(() => null);
+          clearTimeout(t);
+        }
+        if (!res) {
+          res = await post({ pickup, deliveries: deliveries.map((d) => ({ ...d, files: [] })) });
+          if (photos && res.status === 409) res = new Response("{}", { status: 202 });
+        }
+        if (!res.ok) {
+          why = (await res.json().catch(() => ({}))).error ?? "Không gửi được yêu cầu.";
+          throw new Error(why);
+        }
+        // The trips are made in the background; give them a moment before reading back.
+        setTimeout(() => void loadBooked(), 5000);
+      } catch {
+        // The booking itself did not go: put it back so nothing is lost without a word.
+        setRows((cur) => [...snapshot, ...cur]);
+        setSent([]);
+        setOpen(true);
+        setError(why);
       }
-      const post = (body: unknown, signal?: AbortSignal) => fetch("/api/psc-delivery", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal,
-      });
-      // Photos make the request slow where the upload link is (2026-10-25: 160 KB took
-      // 17 s to 8 min). Past PHOTO_WAIT_MS the booking goes again WITHOUT them rather
-      // than fail. If the first one got through after all, the server's double-booking
-      // lock answers the second with 409 — which here means "already booked".
-      let res: Response | null = null;
-      let skipped = false;
-      if (count > 0) {
-        const ac = new AbortController();
-        const t = setTimeout(() => ac.abort(), PHOTO_WAIT_MS);
-        res = await post({ pickup, deliveries }, ac.signal).catch(() => null);
-        clearTimeout(t);
-      }
-      if (!res) {
-        skipped = count > 0;
-        res = await post({ pickup, deliveries: deliveries.map((d) => ({ ...d, files: [] })) });
-        if (skipped && res.status === 409) res = new Response("{}", { status: 202 });
-      }
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) { setError(j.error ?? "Không gửi được yêu cầu."); return; }
-      setPhotosSkipped(skipped);
-      setSent(rows.map((r) => placeLabel(r.c.customer_name)));
-      setRows([]);
-      // The trips are made in the background; give them a moment before reading back.
-      setTimeout(() => void loadBooked(), 5000);
-    } catch {
-      setError("Không gửi được yêu cầu. Kiểm tra mạng rồi thử lại.");
-    } finally {
-      setBusy(false);
-    }
+    })();
   };
 
   const list = <Booked list={booked} loading={bookedLoading} onRefresh={() => void loadBooked()} onCancel={cancel} cancelling={cancelling} error={cancelError} />;
@@ -238,7 +240,6 @@ export function DeliveryBooking({ pickup, date }: { pickup: string; date: string
         <div role="status" className="text-sm text-green-800 bg-green-50 border border-green-200 rounded-xl p-3 space-y-1">
           <p className="font-bold flex items-center gap-1.5"><Check aria-hidden className="w-4 h-4" />Đã gửi {sent.length} yêu cầu</p>
           {sent.map((n, i) => <p key={i} className="pl-5.5">{n}</p>)}
-          {photosSkipped && <p className="pl-5.5 text-amber-800 font-medium">Mạng chậm — đã gửi không kèm ảnh. Gửi ảnh cho tài xế qua Zalo nếu cần.</p>}
         </div>
         <button onClick={() => setSent([])}
           className="w-full min-h-[48px] rounded-xl bg-blue-700 text-white font-bold inline-flex items-center justify-center gap-2">
@@ -305,9 +306,9 @@ export function DeliveryBooking({ pickup, date }: { pickup: string; date: string
 
       {error && <p role="alert" className="text-sm font-medium text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">{error}</p>}
       {rows.length > 0 && (
-        <button onClick={submit} disabled={busy}
+        <button onClick={submit}
           className="w-full min-h-[48px] rounded-xl bg-blue-700 text-white font-bold inline-flex items-center justify-center gap-2 disabled:opacity-60">
-          {busy ? <Loader2 aria-hidden className="w-4 h-4 animate-spin" /> : <Send aria-hidden className="w-4 h-4" />}
+          <Send aria-hidden className="w-4 h-4" />
           Gửi {rows.length} chuyến
         </button>
       )}
