@@ -582,7 +582,7 @@ export function Dashboard() {
         let completed = false;
         while (Date.now() < deadline) {
           await new Promise((resolve) => setTimeout(resolve, 15_000));
-          let status: { id?: number; status?: string; conclusion?: string | null; error?:string };
+          let status: { id?: number; status?: string; conclusion?: string | null; error?:string; month?: string | null };
           try {
             const statusRes = await fetch("/api/misa-sync", { cache: "no-store" });
             if (!statusRes.ok) continue;
@@ -591,7 +591,11 @@ export function Dashboard() {
             // A transient status check should not discard a still-running workflow.
             continue;
           }
-          if (!status.id || status.id === previousRunId || (targetRunId && status.id !== targetRunId) || status.status !== "completed") continue;
+          if (!status.id || status.id === previousRunId || (targetRunId && status.id !== targetRunId)) continue;
+          // MISA is written once the run has no month left; a morning run still has
+          // Labcenter ahead of it, which can outlast this wait and is not what was asked for.
+          if (status.status !== "completed" && status.month === null) { completed = true; break; }
+          if (status.status !== "completed") continue;
           if (status.conclusion !== "success") throw new Error(status.error ?? `Lần chạy MISA kết thúc: ${status.conclusion ?? "không rõ"}`);
           completed = true;
           break;
