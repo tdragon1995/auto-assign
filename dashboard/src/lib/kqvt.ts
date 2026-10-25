@@ -85,7 +85,8 @@ export function chainFrom(psc: string): string[] {
 /** Where the collect job goes, the return-trip hops to get there, and whether it is
  *  given to the client's driver at booking. See the header. */
 export function planDelivery(booking: string, dropoff: string | null): { collectAt: string; hops: string[]; autoAssign: boolean } {
-  if (!dropoff) return { collectAt: booking, hops: [], autoAssign: true };
+  // No default drop-off on the master list means D001 (supervisor, 2026-10-25).
+  dropoff ??= LAB_CUSTOMER_ID;
   if (dropoff === booking) return { collectAt: booking, hops: [], autoAssign: dropoff !== LAB_CUSTOMER_ID };
   const chain = chainFrom(dropoff);
   const k = chain.indexOf(booking);
