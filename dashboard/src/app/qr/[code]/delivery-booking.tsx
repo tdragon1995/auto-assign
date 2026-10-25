@@ -13,6 +13,9 @@ import { shrink } from "@/components/correction-form";
 import { MAX_PROOF_BYTES, MAX_PROOF_FILES } from "@/lib/pay-corrections";
 import { placeLabel } from "@/lib/place-label";
 
+/** How long a booking with photos may take before it is sent again without them. */
+const PHOTO_WAIT_MS = 15_000;
+
 const bytesOf = (dataUrl: string) => Math.floor((dataUrl.length - dataUrl.indexOf(",") - 1) * 3 / 4);
 
 /**
@@ -125,6 +128,7 @@ export function DeliveryBooking({ pickup, date }: { pickup: string; date: string
   // Names of the clients just sent. The server answers before the trips exist (they
   // are created in the background), so this is the whole confirmation.
   const [sent, setSent] = useState<string[]>([]);
+  const [photosSkipped, setPhotosSkipped] = useState(false);
 
   // Searches already answered on this page, so going back to one costs nothing.
   const seen = useRef(new Map<string, Customer[]>());
@@ -164,7 +168,8 @@ export function DeliveryBooking({ pickup, date }: { pickup: string; date: string
       // so photos always fit. Past ~4.5 MB the platform drops the request with no
       // answer — a long wait ending in "Kiểm tra mạng" (2026-10-25).
       const count = rows.reduce((n, r) => n + r.files.length, 0);
-      const budget = Math.min(1_000_000, Math.floor(MAX_PROOF_BYTES * 0.9 / Math.max(1, count)));
+      // ~300 KB a photo at most: still readable, and small enough to go in time.
+      const budget = Math.min(300_000, Math.floor(MAX_PROOF_BYTES * 0.9 / Math.max(1, count)));
       const deliveries = await Promise.all(rows.map(async (r) => ({
         customer_id: r.c.customer_id, kind: r.kind, note: r.note, files: await Promise.all(r.files.map((f) => fit(f, budget))),
       })));
@@ -176,11 +181,29 @@ export function DeliveryBooking({ pickup, date }: { pickup: string; date: string
         setError(`Tệp quá lớn — tổng ${(total / 1e6).toFixed(1)} MB, tối đa ${MAX_PROOF_BYTES / 1e6} MB. Không thu nhỏ được: ${big.join(", ")}. Hãy chụp ảnh thay cho tệp này.`);
         return;
       }
-      const res = await fetch("/api/psc-delivery", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pickup, deliveries }),
+      const post = (body: unknown, signal?: AbortSignal) => fetch("/api/psc-delivery", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal,
       });
+      // Photos make the request slow where the upload link is (2026-10-25: 160 KB took
+      // 17 s to 8 min). Past PHOTO_WAIT_MS the booking goes again WITHOUT them rather
+      // than fail. If the first one got through after all, the server's double-booking
+      // lock answers the second with 409 — which here means "already booked".
+      let res: Response | null = null;
+      let skipped = false;
+      if (count > 0) {
+        const ac = new AbortController();
+        const t = setTimeout(() => ac.abort(), PHOTO_WAIT_MS);
+        res = await post({ pickup, deliveries }, ac.signal).catch(() => null);
+        clearTimeout(t);
+      }
+      if (!res) {
+        skipped = count > 0;
+        res = await post({ pickup, deliveries: deliveries.map((d) => ({ ...d, files: [] })) });
+        if (skipped && res.status === 409) res = new Response("{}", { status: 202 });
+      }
       const j = await res.json().catch(() => ({}));
       if (!res.ok) { setError(j.error ?? "Không gửi được yêu cầu."); return; }
+      setPhotosSkipped(skipped);
       setSent(rows.map((r) => placeLabel(r.c.customer_name)));
       setRows([]);
       // The trips are made in the background; give them a moment before reading back.
@@ -215,6 +238,7 @@ export function DeliveryBooking({ pickup, date }: { pickup: string; date: string
         <div role="status" className="text-sm text-green-800 bg-green-50 border border-green-200 rounded-xl p-3 space-y-1">
           <p className="font-bold flex items-center gap-1.5"><Check aria-hidden className="w-4 h-4" />Đã gửi {sent.length} yêu cầu</p>
           {sent.map((n, i) => <p key={i} className="pl-5.5">{n}</p>)}
+          {photosSkipped && <p className="pl-5.5 text-amber-800 font-medium">Mạng chậm — đã gửi không kèm ảnh. Gửi ảnh cho tài xế qua Zalo nếu cần.</p>}
         </div>
         <button onClick={() => setSent([])}
           className="w-full min-h-[48px] rounded-xl bg-blue-700 text-white font-bold inline-flex items-center justify-center gap-2">
