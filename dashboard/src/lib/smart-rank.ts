@@ -4,6 +4,7 @@
  */
 
 import type { TimelineStop } from "./types";
+import { isFarWindowPickup } from "./job-filters";
 
 export type RefLabel =
   | "Arrived"
@@ -310,20 +311,41 @@ export function rankingComparator(
 }
 
 /**
- * A driver already carrying this many samples is left out of smart ranking, so
- * the samples on board are not held back by yet another pickup (supervisor,
- * 2026-10-21). "Carrying" = a drop-off still open on a job whose pickup is
- * collected; jobs assigned but not yet picked up do not count.
+ * A driver with this many jobs already on their plate is left out of smart ranking
+ * (supervisor: 2026-10-21 for samples on board, 2026-10-25 widened to every open job).
  */
-export const MAX_ONBOARD_DROPOFFS = 3;
+export const MAX_OPEN_TASKS = 3;
 
-export function onboardDropoffs(stops: TimelineStop[]): number {
-  const collected = new Set(stops.filter((s) => s.stopTypeId === 1 && s.stopStatusId === 4).map((s) => s.jobId));
-  return stops.filter((s) => s.stopTypeId === 2 && collected.has(s.jobId) && s.stopStatusId !== 4 && s.stopStatusId !== 5).length;
+/**
+ * Jobs a driver still has to work: a sample collected and not yet dropped off, or a
+ * job assigned and not yet collected. A pickup not yet started whose window opens
+ * more than an hour from now does not count — it is a booking for later, the same
+ * 60-minute line the engine parks by. Neither does an untouched Cartrack plan slot:
+ * plans lay the whole day out in advance (footgun 9), so counting them would mark
+ * every plan driver full from the morning on. Finished and rejected jobs never count.
+ */
+export function openTasks(stops: TimelineStop[], nowMinutes: number): number {
+  const byJob = new Map<number, TimelineStop[]>();
+  for (const s of stops) if (s.jobId) byJob.set(s.jobId, [...(byJob.get(s.jobId) ?? []), s]);
+  let n = 0;
+  for (const js of byJob.values()) {
+    const first = js.find((s) => s.stopTypeId === 1) ?? js[0];
+    if (first.stopStatusId === 5) continue;
+    if (first.stopStatusId === 4) {
+      if (js.some((s) => s !== first && s.stopStatusId !== 4 && s.stopStatusId !== 5)) n++;
+      continue;
+    }
+    if (first.stopStatusId === 1) {
+      if (js.some(isPlanStop)) continue;
+      if (isFarWindowPickup({ delivery_windows: [{ time_from: first.deliveryWindows?.[0]?.timeFrom }] }, nowMinutes)) continue;
+    }
+    n++;
+  }
+  return n;
 }
 
 /**
- * The pool without drivers at MAX_ONBOARD_DROPOFFS. When that would leave nobody,
+ * The pool without drivers at MAX_OPEN_TASKS. When that would leave nobody,
  * everyone stays and `allFull` is set — the job still goes to the best of them
  * (supervisor's choice). `keep` is never left out: the re-check's current holder.
  */
@@ -332,7 +354,7 @@ export function withoutFullDrivers<T>(
   loadOf: (x: T) => number,
   keep?: (x: T) => boolean,
 ): { pool: T[]; full: T[]; allFull: boolean } {
-  const isFull = (x: T) => loadOf(x) >= MAX_ONBOARD_DROPOFFS && !keep?.(x);
+  const isFull = (x: T) => loadOf(x) >= MAX_OPEN_TASKS && !keep?.(x);
   const full = pool.filter(isFull);
   if (full.length === 0) return { pool, full, allFull: false };
   const open = pool.filter((x) => !isFull(x));

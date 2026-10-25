@@ -2,8 +2,8 @@
  * Smart re-check rules (lib/smart-recheck.ts): which assigned jobs may be looked
  * at again, and when a better driver is better ENOUGH to move the job.
  *
- * Also the samples-on-board limit: a driver carrying MAX_ONBOARD_DROPOFFS samples
- * is left out of smart ranking, unless that leaves nobody.
+ * Also the load cap: a driver with MAX_OPEN_TASKS open jobs is left out of smart
+ * ranking, unless that leaves nobody.
  *
  * Plus the one trap the re-check exists around: the driver holding a job must be
  * measured with that job taken off their route. Left on, its pickup is their next
@@ -12,7 +12,7 @@
  *   npx tsx scripts/smart-recheck.test.mts
  */
 import { isRecheckable, moveGain, RECHECK_MIN_AGE_MIN, RECHECK_MIN_GAIN_MIN } from "../src/lib/smart-recheck";
-import { selectReferenceStop, onboardDropoffs, withoutFullDrivers, MAX_ONBOARD_DROPOFFS } from "../src/lib/smart-rank";
+import { selectReferenceStop, openTasks, withoutFullDrivers, MAX_OPEN_TASKS } from "../src/lib/smart-rank";
 import type { Job, TimelineStop } from "../src/lib/types";
 
 let failures = 0;
@@ -64,19 +64,26 @@ const withoutJob = selectReferenceStop(route.filter((s) => s.jobId !== 9), null)
 ok("with the job on, the holder is anchored ON its pickup", withJob?.lat === 10.7);
 ok("with it off, they are anchored where they really are", withoutJob?.lat === 10.9 && withoutJob?.label === "Available");
 
-console.log("Samples on board");
-const s2 = (jobId: number, type: number, status: number) =>
-  ({ jobId, stopTypeId: type, stopStatusId: status }) as unknown as TimelineStop;
-const carrying = [
-  s2(1, 1, 4), s2(1, 2, 1),   // collected, drop-off open → counts
-  s2(2, 1, 4), s2(2, 2, 2),   // collected, driving to drop-off → counts
-  s2(3, 1, 4), s2(3, 2, 3),   // collected, at the drop-off → counts
-  s2(4, 1, 4), s2(4, 2, 4),   // delivered → no
-  s2(5, 1, 1), s2(5, 2, 1),   // assigned, not picked up yet → no
-  s2(6, 1, 5), s2(6, 2, 1),   // pickup rejected → no
+console.log("Open jobs");
+const s2 = (jobId: number, type: number, status: number, extra: Partial<TimelineStop> = {}) =>
+  ({ jobId, stopTypeId: type, stopStatusId: status, deliveryWindows: [], ...extra }) as unknown as TimelineStop;
+const at = (from: string) => ({ deliveryWindows: [{ stopId: 0, timeFrom: `${from}:00+07`, timeTo: "" }] });
+const TEN_AM = 10 * 60;
+const plate = [
+  s2(1, 1, 4), s2(1, 2, 1),                    // collected, drop-off open → counts
+  s2(2, 1, 4), s2(2, 2, 3),                    // collected, at the drop-off → counts
+  s2(3, 1, 4), s2(3, 2, 4),                    // delivered → no
+  s2(4, 1, 1), s2(4, 2, 1),                    // assigned, not picked up yet → counts
+  s2(5, 1, 2), s2(5, 2, 1),                    // driving to the pickup → counts
+  s2(6, 1, 5), s2(6, 2, 1),                    // pickup rejected → no
+  s2(7, 1, 1, at("11:00")), s2(7, 2, 1),       // window exactly an hour away → counts
+  s2(8, 1, 1, at("11:01")), s2(8, 2, 1),       // window 61 min away → no
+  s2(9, 1, 1, { lastAssignedPlanId: 77 } as Partial<TimelineStop>), s2(9, 2, 1), // untouched plan slot → no
+  s2(10, 1, 3, { lastAssignedPlanId: 77 } as Partial<TimelineStop>), s2(10, 2, 1), // plan slot under way → counts
+  s2(11, 3, 1),                                // delivery-only job, open → counts
 ];
-ok("counts only open drop-offs of collected samples", onboardDropoffs(carrying) === 3);
-ok(`the limit is ${MAX_ONBOARD_DROPOFFS}`, MAX_ONBOARD_DROPOFFS === 3);
+ok("counts collected, assigned and under-way jobs; not far windows, plan slots, done or rejected", openTasks(plate, TEN_AM) === 7);
+ok(`the limit is ${MAX_OPEN_TASKS}`, MAX_OPEN_TASKS === 3);
 const load: Record<string, number> = { A: 3, B: 2, C: 4 };
 const r1 = withoutFullDrivers(["A", "B", "C"], (x) => load[x]);
 ok("drivers at 3 or more are left out", r1.pool.join() === "B" && r1.full.join() === "A,C" && !r1.allFull);
