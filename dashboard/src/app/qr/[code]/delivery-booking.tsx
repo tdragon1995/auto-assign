@@ -13,6 +13,33 @@ import { shrink } from "@/components/correction-form";
 import { MAX_PROOF_BYTES, MAX_PROOF_FILES } from "@/lib/pay-corrections";
 import { placeLabel } from "@/lib/place-label";
 
+const bytesOf = (dataUrl: string) => Math.floor((dataUrl.length - dataUrl.indexOf(",") - 1) * 3 / 4);
+
+/**
+ * A photo redrawn smaller and smaller until it fits `budget` bytes. Decoded with
+ * createImageBitmap first — it reads camera shots the plain <img> path sometimes
+ * cannot, which then went up full size — and with `shrink` (the <img> path) after.
+ * A PDF, or a photo neither can draw, comes back as it is.
+ */
+async function fit(file: File, budget: number): Promise<{ name: string; dataUrl: string }> {
+  if (!file.type.startsWith("image/") || typeof createImageBitmap !== "function") return shrink(file);
+  let bmp: ImageBitmap;
+  try { bmp = await createImageBitmap(file); } catch { return shrink(file); }
+  const name = file.name.replace(/\.\w+$/, "") + ".jpg";
+  let dataUrl = "";
+  for (const [side, q] of [[1600, 0.8], [1280, 0.7], [1024, 0.6], [800, 0.5], [640, 0.45]] as const) {
+    const k = Math.min(1, side / Math.max(bmp.width, bmp.height));
+    const c = document.createElement("canvas");
+    c.width = Math.round(bmp.width * k);
+    c.height = Math.round(bmp.height * k);
+    c.getContext("2d")!.drawImage(bmp, 0, 0, c.width, c.height);
+    dataUrl = c.toDataURL("image/jpeg", q);
+    if (bytesOf(dataUrl) <= budget) break;
+  }
+  bmp.close();
+  return { name, dataUrl };
+}
+
 interface Customer { customer_id: string; customer_name: string; address_line_1?: string | null }
 const KINDS = [["KQ", "Kết quả"], ["VT", "Vật tư"], ["KV", "Kết quả + Vật tư"]] as const;
 interface Row { c: Customer; kind: (typeof KINDS)[number][0]; note: string; files: File[] }
@@ -133,17 +160,20 @@ export function DeliveryBooking({ pickup, date }: { pickup: string; date: string
   const submit = async () => {
     setBusy(true); setError("");
     try {
+      // Each photo is shrunk to its share of the server's limit (with room to spare),
+      // so photos always fit. Past ~4.5 MB the platform drops the request with no
+      // answer — a long wait ending in "Kiểm tra mạng" (2026-10-25).
+      const count = rows.reduce((n, r) => n + r.files.length, 0);
+      const budget = Math.min(1_000_000, Math.floor(MAX_PROOF_BYTES * 0.9 / Math.max(1, count)));
       const deliveries = await Promise.all(rows.map(async (r) => ({
-        customer_id: r.c.customer_id, kind: r.kind, note: r.note, files: await Promise.all(r.files.map(shrink)),
+        customer_id: r.c.customer_id, kind: r.kind, note: r.note, files: await Promise.all(r.files.map((f) => fit(f, budget))),
       })));
-      // Checked here, before the upload: a PDF or a photo the phone cannot redraw goes
-      // as it is, and past ~4.5 MB the platform drops the request with no answer — a
-      // long wait ending in "Kiểm tra mạng" (2026-10-25), never the server's message.
-      const files = deliveries.flatMap((d) => d.files).map((f) => ({ name: f.name, bytes: Math.floor((f.dataUrl.length - f.dataUrl.indexOf(",") - 1) * 3 / 4) }));
+      // What is still too big could not be redrawn: a PDF, or a photo the phone cannot read.
+      const files = deliveries.flatMap((d) => d.files).map((f) => ({ name: f.name, bytes: bytesOf(f.dataUrl) }));
       const total = files.reduce((n, f) => n + f.bytes, 0);
       if (total > MAX_PROOF_BYTES) {
-        const big = files.filter((f) => f.bytes > 500_000).map((f) => `${f.name} (${(f.bytes / 1e6).toFixed(1)} MB)`);
-        setError(`Tệp quá lớn — tổng ${(total / 1e6).toFixed(1)} MB, tối đa ${MAX_PROOF_BYTES / 1e6} MB.${big.length ? ` Bỏ bớt: ${big.join(", ")}.` : ""} Ảnh chụp sẽ được thu nhỏ; PDF thì không.`);
+        const big = files.filter((f) => f.bytes > budget).map((f) => `${f.name} (${(f.bytes / 1e6).toFixed(1)} MB)`);
+        setError(`Tệp quá lớn — tổng ${(total / 1e6).toFixed(1)} MB, tối đa ${MAX_PROOF_BYTES / 1e6} MB. Không thu nhỏ được: ${big.join(", ")}. Hãy chụp ảnh thay cho tệp này.`);
         return;
       }
       const res = await fetch("/api/psc-delivery", {
