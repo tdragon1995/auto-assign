@@ -52,7 +52,11 @@ export const WAIT_ALERT_MS = 24 * 3600_000;
 const RECHECK_MS = 30 * 60_000;
 const PHOTO = 2;
 
-export interface KqvtItem { text: string; note: string; links: string[] }
+export interface KqvtItem {
+  text: string; note: string; links: string[];
+  /** Its row in the booking PSC's record (BookedRow): key suffix "<psc>:<day>" and row id. */
+  log?: string; bid?: string;
+}
 export interface KqvtEntry {
   job_id: number;
   psc: string; psc_name: string;
@@ -148,6 +152,64 @@ export async function savePending(e: KqvtEntry): Promise<void> {
 }
 export async function dropPending(jobId: number): Promise<void> {
   await redis()?.hdel(KEY, String(jobId));
+}
+
+/**
+ * What a PSC booked, for its /qr page: one hash per booking PSC per day, a row per
+ * item, kept 7 days. How it ENDED is a separate "<bid>:s" field, written once when the
+ * item leaves the waiting list; everything before that is read off the list itself.
+ */
+export interface BookedRow { bid: string; ts: string; client: string; text: string; note: string }
+type Ending = { state: "giao" | "huy" | "xong"; job?: number };
+const BOOKED_TTL_S = 7 * 86400;
+
+export async function logBooking(log: string, row: BookedRow): Promise<void> {
+  const r = redis();
+  if (!r) return;
+  await r.hset(`kqvt:booked:${log}`, { [row.bid]: JSON.stringify(row) });
+  await r.expire(`kqvt:booked:${log}`, BOOKED_TTL_S);
+}
+
+/** Record how an entry's items ended, on their booking rows. Never fails the caller. */
+export async function closeItems(e: KqvtEntry, ending: Ending): Promise<void> {
+  const r = redis();
+  if (!r) return;
+  for (const i of e.items) {
+    if (!i.log || !i.bid) continue;
+    await r.hset(`kqvt:booked:${i.log}`, { [`${i.bid}:s`]: JSON.stringify(ending) }).catch(() => {});
+    await r.expire(`kqvt:booked:${i.log}`, BOOKED_TTL_S).catch(() => {});
+  }
+}
+
+export interface BookedView extends BookedRow { status: string; tone: "wait" | "move" | "done" | "off"; job: number | null }
+
+export async function loadBooked(psc: string, day: string): Promise<BookedView[]> {
+  const r = redis();
+  if (!r) return [];
+  const all = (await r.hgetall<Record<string, unknown>>(`kqvt:booked:${psc}:${day}`)) ?? {};
+  const parse = <T,>(v: unknown) => (typeof v === "string" ? JSON.parse(v) : v) as T;
+  const rows = Object.entries(all).filter(([k]) => !k.endsWith(":s")).map(([, v]) => parse<BookedRow>(v));
+  const open = rows.some((x) => all[`${x.bid}:s`] == null) ? await loadPending() : [];
+  return rows
+    .map((x) => ({ ...x, ...bookedStatus(x.bid, all[`${x.bid}:s`] == null ? null : parse<Ending>(all[`${x.bid}:s`]), open) }))
+    .sort((a, b) => b.ts.localeCompare(a.ts));
+}
+
+/** One booking's state in words for the PSC: its ending, else where it is on the list. */
+export function bookedStatus(bid: string, ending: Ending | null, entries: KqvtEntry[]): Pick<BookedView, "status" | "tone" | "job"> {
+  if (ending?.state === "giao") return { status: "Đã giao kèm chuyến lấy mẫu tại khách", tone: "done", job: ending.job ?? null };
+  if (ending?.state === "huy") return { status: "Chuyến lấy đã bị huỷ", tone: "off", job: ending.job ?? null };
+  if (ending?.state === "xong") return { status: "Điều phối đã xử lý", tone: "done", job: ending.job ?? null };
+  const e = entries.find((x) => x.items.some((i) => i.bid === bid));
+  if (!e) return { status: "Đang cập nhật", tone: "wait", job: null };
+  if (e.job_id < 0) {
+    const hop = e.hops?.[0];
+    if (e.leg_job && hop) return { status: `Đang trên chuyến về ${pscName(hop)}`, tone: "move", job: e.leg_job };
+    if (hop) return { status: `Chờ chuyến về ${pscName(hop)} tại ${pscName(e.at!)}`, tone: "wait", job: null };
+    return { status: `Đã tới ${e.psc_name}, đang tạo chuyến lấy`, tone: "move", job: null };
+  }
+  if (e.holder) return { status: `${e.holder_name ?? "Tài xế"} đã lấy, sẽ giao kèm chuyến lấy mẫu tại khách`, tone: "move", job: e.job_id };
+  return { status: `Chờ ${e.collector_name ?? "điều phối"} lấy tại ${e.psc_name}`, tone: "wait", job: e.job_id };
 }
 
 /** The collect to-do / hand-over to-do text for one booking. */
@@ -382,6 +444,7 @@ export async function kqvtCycle(
     const r = await appendStopTodos(job.job_id, { [e.client_id]: [handoverTodo(e)] }, env);
     if (r === "ok") {
       await dropPending(e.job_id);
+      await closeItems(e, { state: "giao", job: job.job_id });
       log(`Job ${job.job_id} - KQ/VT giao kèm (${itemsText(e.items)}) | ${e.psc_name} → ${e.client_name}`, "OK");
       return true;
     }
@@ -403,7 +466,7 @@ export async function kqvtCycle(
         if (collectVerdict(collect) === "wait") await savePending(e);
       }
       const verdict = collectVerdict(collect);
-      if (verdict === "drop") { await dropPending(e.job_id); continue; }
+      if (verdict === "drop") { await dropPending(e.job_id); await closeItems(e, { state: "huy", job: e.job_id }); continue; }
       if (verdict === "collected" && collect && collect !== "gone") {
         e.holder = collect.delivery_driver_id!;
         e.holder_name = e.holder === e.collector ? e.collector_name : (collect as Job).driver?.last_name ?? undefined;

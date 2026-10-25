@@ -5,7 +5,7 @@
  * is — cancel or finish it there if that is what handling it meant.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { dropPending, loadPending } from "@/lib/kqvt";
+import { closeItems, dropPending, loadPending } from "@/lib/kqvt";
 import { pushRunLog } from "@/lib/smart-log-kv";
 import { vnTimestamp } from "@/lib/time";
 
@@ -22,6 +22,7 @@ export async function POST(req: NextRequest) {
     const entry = (await loadPending()).find((e) => e.job_id === jobId);
     await dropPending(jobId);
     if (entry) {
+      await closeItems(entry, { state: "xong", job: jobId > 0 ? jobId : undefined });
       await pushRunLog([{ ts: vnTimestamp(), level: "INFO", msg: `Job ${jobId} - KQ/VT đánh dấu đã xử lý | ${entry.psc_name} → ${entry.client_name}` }]).catch(() => {});
     }
     // Already gone (another tab, or the engine dropped it) is still a success.

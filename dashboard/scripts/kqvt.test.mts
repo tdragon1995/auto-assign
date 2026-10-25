@@ -5,7 +5,7 @@
  * in a smart ranking, and who collects for a smart client.
  */
 import assert from "node:assert/strict";
-import { chainFrom, collectVerdict, handoverTarget, itemsText, legTodos, legVerdict, nearest, planDelivery, rankWithHolderFirst, rideFor, waitingTooLong, WAIT_ALERT_MS, type KqvtEntry } from "../src/lib/kqvt";
+import { bookedStatus, chainFrom, collectVerdict, handoverTarget, itemsText, legTodos, legVerdict, nearest, planDelivery, rankWithHolderFirst, rideFor, waitingTooLong, WAIT_ALERT_MS, type KqvtEntry } from "../src/lib/kqvt";
 import { returnRideable } from "../src/lib/return-trips";
 import { PSC_DELIVERY_LABEL, PSC_RETURN_LABEL } from "../src/lib/job-filters";
 import type { Job, Mapping } from "../src/lib/types";
@@ -114,4 +114,14 @@ assert.equal(returnRideable([shift(7, 17)], at(16, 31)), false);
 assert.equal(returnRideable([shift(7, 17)], at(18, 0)), false);
 assert.equal(returnRideable([shift(7, 17), shift(16, 22)], at(16, 45)), true);
 assert.equal(returnRideable([], at(23, 0)), true);
+// What the PSC sees on /qr: its ending first, else where the item is on the list.
+const tagged = (x: Partial<KqvtEntry>): KqvtEntry => ({ ...entry, holder: undefined, items: [{ text: "📄 Kết quả", note: "", links: [], bid: "b1" }], ...x });
+assert.equal(bookedStatus("b1", { state: "giao", job: 9 }, []).tone, "done");
+assert.equal(bookedStatus("b1", { state: "huy" }, []).status, "Chuyến lấy đã bị huỷ");
+assert.equal(bookedStatus("b1", null, []).status, "Đang cập nhật");
+assert.equal(bookedStatus("b1", null, [tagged({ job_id: 5, collector_name: "An" })]).status, "Chờ An lấy tại D030");
+assert.equal(bookedStatus("b1", null, [tagged({ job_id: 5, holder: "H", holder_name: "An" })]).tone, "move");
+assert.deepEqual(bookedStatus("b1", null, [tagged({ job_id: -1, at: D001, hops: [D007, D014] })]), { status: "Chờ chuyến về D007 tại D001", tone: "wait", job: null });
+assert.deepEqual(bookedStatus("b1", null, [tagged({ job_id: -1, at: D001, hops: [D007, D014], leg_job: 77 })]), { status: "Đang trên chuyến về D007", tone: "move", job: 77 });
+assert.equal(bookedStatus("b2", null, [tagged({ job_id: 5 })]).status, "Đang cập nhật");
 console.log("kqvt: ok");

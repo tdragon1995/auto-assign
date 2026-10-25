@@ -16,13 +16,13 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { BASE_URL, getHeaders, getCustomerById } from "@/lib/cartrack";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
-import { appendStopTodos, collectTodo, createCollectJob, defaultDropoff, loadPending, pickCollector, planDelivery, pscName, savePending, waitingKey, type KqvtEntry, type KqvtItem } from "@/lib/kqvt";
+import { appendStopTodos, collectTodo, createCollectJob, defaultDropoff, loadBooked, loadPending, logBooking, pickCollector, planDelivery, pscName, savePending, waitingKey, type KqvtEntry, type KqvtItem } from "@/lib/kqvt";
 import { loadConfigFromSheets } from "@/lib/config";
 import { loadLeaveEntries } from "@/lib/leave-config";
 import { shortCode } from "@/lib/psc-dup";
 import { placeLabel } from "@/lib/place-label";
 import { indexCustomer, rankCustomers, type Customer, type Indexed } from "@/lib/customer-search";
-import { vnTimestamp } from "@/lib/time";
+import { vnDate, vnTimestamp } from "@/lib/time";
 import { acquireCreateLock, releaseCreateLock, pushRunLog } from "@/lib/smart-log-kv";
 import { uploadToCartrack, proofUploadConfigured, type UploadFile } from "@/lib/cartrack-files";
 import { MAX_PROOF_FILES, MAX_PROOF_BYTES } from "@/lib/pay-corrections";
@@ -74,6 +74,19 @@ function directory(): Promise<Map<string, Indexed>> {
 }
 
 export async function GET(req: NextRequest) {
+  // ?booked=<PSC id>&date=YYYY-MM-DD → what that PSC booked that day, with where each is now.
+  const booked = req.nextUrl.searchParams.get("booked");
+  if (booked) {
+    const date = req.nextUrl.searchParams.get("date") ?? vnDate();
+    if (!PSC_ROUTES.some((r) => r.pickup === booked) || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return NextResponse.json({ error: "Yêu cầu không hợp lệ." }, { status: 400 });
+    }
+    try {
+      return NextResponse.json({ bookings: await loadBooked(booked, date) });
+    } catch (e) {
+      return NextResponse.json({ error: String(e).slice(0, 200) }, { status: 502 });
+    }
+  }
   const q = req.nextUrl.searchParams.get("q") ?? "";
   if (q.trim().length < 3) return NextResponse.json({ customers: [] });
   try {
@@ -161,13 +174,16 @@ export async function POST(req: NextRequest) {
         loadLeaveEntries().catch(() => null),
       ]);
       const pending = await loadPending();
+      const log = `${route.pickup}:${vnDate()}`;
       let li = 0;
       for (const d of deliveries) {
         const mine = links.slice(li, li += d.files.length);
         const full = await nameOf(d.customer_id);
         if (!full) { await failed(d.customer_id, "không có khách hàng này trên Cartrack"); continue; }
         const client = placeLabel(full);
-        const item: KqvtItem = { text: KINDS[d.kind].items.join(" + "), note: d.note, links: mine };
+        const item: KqvtItem = { text: KINDS[d.kind].items.join(" + "), note: d.note, links: mine, log, bid: crypto.randomUUID().slice(0, 8) };
+        // The PSC's own record (shown on /qr), written once the booking is safely held.
+        const record = () => logBooking(log, { bid: item.bid!, ts: vnTimestamp().slice(11, 16), client, text: item.text, note: item.note }).catch(() => {});
         // Multi-leg clients ride the return trips to their default drop-off (lib/kqvt.ts).
         const plan = planDelivery(route.pickup, await defaultDropoff(d.customer_id));
         const route_ = plan.hops.map(pscName).join(" → ");
@@ -185,6 +201,7 @@ export async function POST(req: NextRequest) {
           if (r === "ok") {
             open.items.push(item);
             await savePending(open);
+            await record();
             await pushRunLog([{ ts: vnTimestamp(), level: "INFO", msg: `${open.job_id < 0 ? "KQ/VT" : `Job ${open.job_id}`} - thêm ${item.text} vào chuyến lấy KQ/VT | ${psc} → ${client}` }]).catch(() => {});
             continue;
           }
@@ -203,6 +220,7 @@ export async function POST(req: NextRequest) {
           const entry: KqvtEntry = { ...base, job_id: waitingKey(), origin: route.pickup, at: route.pickup, hops: plan.hops };
           await savePending(entry);
           pending.push(entry);
+          await record();
           await pushRunLog([{ ts: vnTimestamp(), level: "INFO", msg: `KQ/VT ${item.text} chờ chuyến về qua ${route_} | ${psc} → ${client}` }]).catch(() => {});
           continue;
         }
@@ -217,6 +235,7 @@ export async function POST(req: NextRequest) {
         const entry: KqvtEntry = { ...base, job_id: res.jobId, collector: res.driverId ?? undefined, collector_name: res.driverId ? who?.name ?? undefined : undefined };
         await savePending(entry);
         pending.push(entry);
+        await record();
         await pushRunLog([{ ts: vnTimestamp(), level: "INFO", msg: `Job ${res.jobId} - lấy ${item.text} tại PSC: ${res.driverId ? who?.name ?? "tài xế" : "chờ điều phối"} | ${psc} → ${client}` }]).catch(() => {});
       }
     } catch (e) {

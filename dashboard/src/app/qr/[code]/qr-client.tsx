@@ -1461,7 +1461,7 @@ export default function QrPage() {
           </div>
         )}
 
-        <DeliveryBooking pickup={route.pickup} />
+        <DeliveryBooking pickup={route.pickup} date={date} />
 
         {notesFailed && (
           <p role="alert" className="mb-3 px-3 py-2 rounded-xl text-[12px] font-semibold text-amber-700 bg-amber-50 border border-amber-200">

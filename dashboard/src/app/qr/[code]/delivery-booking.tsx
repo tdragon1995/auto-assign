@@ -4,10 +4,11 @@
  * "Giao Kết Quả / Vật Tư": the PSC picks clients, says per client whether it is
  * results or supplies, adds a note and photos/files, and gets one trip each, PSC →
  * client, waiting for the dispatcher (/api/psc-delivery). Photos are shrunk here
- * exactly as in "Cập nhật công".
+ * exactly as in "Cập nhật công". Below it, what this PSC booked on the page's day and
+ * where each is now (Booked).
  */
-import { useEffect, useRef, useState } from "react";
-import { Check, Loader2, Package, Paperclip, Plus, Search, Send, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Check, Loader2, Package, Paperclip, Plus, RefreshCw, Search, Send, X } from "lucide-react";
 import { shrink } from "@/components/correction-form";
 import { MAX_PROOF_FILES } from "@/lib/pay-corrections";
 import { placeLabel } from "@/lib/place-label";
@@ -16,7 +17,51 @@ interface Customer { customer_id: string; customer_name: string; address_line_1?
 const KINDS = [["KQ", "Kết quả"], ["VT", "Vật tư"], ["KV", "Kết quả + Vật tư"]] as const;
 interface Row { c: Customer; kind: (typeof KINDS)[number][0]; note: string; files: File[] }
 
-export function DeliveryBooking({ pickup }: { pickup: string }) {
+interface Booking { bid: string; ts: string; client: string; text: string; note: string; status: string; tone: "wait" | "move" | "done" | "off"; job: number | null }
+const TONE = { wait: "text-amber-700", move: "text-blue-700", done: "text-green-700", off: "text-slate-500" } as const;
+
+/** This PSC's KQ/VT bookings for `date`. Read when the page opens or the day changes,
+ *  after a booking, and on the refresh button — no polling, like the rest of /qr. */
+function Booked({ list, loading, onRefresh }: { list: Booking[]; loading: boolean; onRefresh: () => void }) {
+  if (list.length === 0) return null;
+  return (
+    <div className="bg-white rounded-2xl shadow-sm p-4 mb-5">
+      <div className="flex items-center justify-between mb-1">
+        <h2 className="text-[15px] font-bold text-slate-800">KQ / VT đã gửi ({list.length})</h2>
+        <button aria-label="Tải lại" onClick={onRefresh} disabled={loading} className="p-2 -m-2 text-slate-500 disabled:opacity-50">
+          <RefreshCw aria-hidden className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+        </button>
+      </div>
+      <ul className="divide-y divide-slate-100">
+        {list.map((b) => (
+          <li key={b.bid} className="py-2.5 flex gap-3">
+            <span className="w-10 shrink-0 text-xs tabular-nums text-slate-500 pt-0.5">{b.ts}</span>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-slate-800 break-words">{b.client}</p>
+              <p className="text-xs text-slate-600 break-words">{b.text}{b.note ? ` — ${b.note}` : ""}</p>
+              <p className={`text-xs font-semibold ${TONE[b.tone]}`}>{b.status}{b.job ? ` · Job ${b.job}` : ""}</p>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export function DeliveryBooking({ pickup, date }: { pickup: string; date: string }) {
+  const [booked, setBooked] = useState<Booking[]>([]);
+  const [bookedLoading, setBookedLoading] = useState(false);
+  const loadBooked = useCallback(async () => {
+    setBookedLoading(true);
+    try {
+      const r = await fetch(`/api/psc-delivery?booked=${encodeURIComponent(pickup)}&date=${date}`);
+      const j = await r.json();
+      if (r.ok) setBooked(j.bookings ?? []);
+    } catch { /* offline: keep what is shown */ }
+    finally { setBookedLoading(false); }
+  }, [pickup, date]);
+  useEffect(() => { setBooked([]); void loadBooked(); }, [loadBooked]);
+
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<Customer[]>([]);
@@ -72,6 +117,8 @@ export function DeliveryBooking({ pickup }: { pickup: string }) {
       if (!res.ok) { setError(j.error ?? "Không gửi được yêu cầu."); return; }
       setSent(rows.map((r) => placeLabel(r.c.customer_name)));
       setRows([]);
+      // The trips are made in the background; give them a moment before reading back.
+      setTimeout(() => void loadBooked(), 5000);
     } catch {
       setError("Không gửi được yêu cầu. Kiểm tra mạng rồi thử lại.");
     } finally {
@@ -79,16 +126,19 @@ export function DeliveryBooking({ pickup }: { pickup: string }) {
     }
   };
 
+  const list = <Booked list={booked} loading={bookedLoading} onRefresh={() => void loadBooked()} />;
+
   if (!open) {
-    return (
+    return (<>
       <button onClick={() => setOpen(true)}
         className="w-full rounded-2xl py-3.5 mb-5 bg-white shadow-sm text-blue-700 text-base font-bold flex items-center justify-center gap-2 active:scale-[.97] transition">
         <Package aria-hidden className="w-5 h-5" />Đề nghị Giao kết quả / vật tư
       </button>
-    );
+      {list}
+    </>);
   }
 
-  return (
+  return (<>
     <div className="bg-white rounded-2xl shadow-sm p-4 mb-5 space-y-3">
       <div className="flex items-center justify-between">
         <h2 className="text-[15px] font-bold text-slate-800">Đề nghị Giao kết quả / vật tư</h2>
@@ -173,5 +223,6 @@ export function DeliveryBooking({ pickup }: { pickup: string }) {
       )}
       </>)}
     </div>
-  );
+    {list}
+  </>);
 }
