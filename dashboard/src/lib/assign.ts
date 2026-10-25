@@ -2591,7 +2591,7 @@ export async function autoAssignCycle(
   // exit like the sweep above; one Redis read when nothing is waiting.
   let kqvt: KqvtCycle = { holders: new Map(), afterAssign: async () => {} };
   if (!onlyJobIds) {
-    kqvt = await kqvtCycle([...s2Jobs, ...(assignedJobsToday ?? []), ...(cycleS5 ?? [])], env, log, failedJobs)
+    kqvt = await kqvtCycle([...s2Jobs, ...(assignedJobsToday ?? []), ...(cycleS5 ?? [])], env, log, failedJobs, config, leaveEntries)
       .catch((e) => { log(`KQ/VT step failed: ${String(e).slice(0, 120)}`, "WARN"); return kqvt; });
   }
 

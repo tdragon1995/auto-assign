@@ -5,9 +5,10 @@
  * in a smart ranking, and who collects for a smart client.
  */
 import assert from "node:assert/strict";
-import { collectVerdict, handoverTarget, itemsText, nearest, rankWithHolderFirst, waitingTooLong, WAIT_ALERT_MS, type KqvtEntry } from "../src/lib/kqvt";
-import { PSC_DELIVERY_LABEL } from "../src/lib/job-filters";
-import type { Job } from "../src/lib/types";
+import { chainFrom, collectVerdict, handoverTarget, itemsText, legTodos, legVerdict, nearest, planDelivery, rankWithHolderFirst, rideFor, waitingTooLong, WAIT_ALERT_MS, type KqvtEntry } from "../src/lib/kqvt";
+import { returnRideable } from "../src/lib/return-trips";
+import { PSC_DELIVERY_LABEL, PSC_RETURN_LABEL } from "../src/lib/job-filters";
+import type { Job, Mapping } from "../src/lib/types";
 
 const entry: KqvtEntry = {
   job_id: 1, psc: "PSC", psc_name: "D030", client_id: "X", client_name: "Khách X",
@@ -67,4 +68,49 @@ assert.equal(collectVerdict(undefined), "wait");
 const it = (text: string) => ({ text, note: "", links: [] });
 assert.equal(itemsText([it("📄 Kết quả"), it("📄 Kết quả")]), "📄 Kết quả ×2");
 assert.equal(itemsText([it("📦 Vật tư"), it("📄 Kết quả"), it("📦 Vật tư")]), "📦 Vật tư ×2 + 📄 Kết quả");
+// Multi-leg: trace back from the client's default drop-off along the PSC routes.
+const D001 = "3927b076-3af9-11ed-b939-506b8dbc8dfb", D002 = "7bc36d6c-3d6a-11ed-a1ac-506b8dbc8dfb";
+const D007 = "debfa9a0-3d81-11ed-9ba7-506b8dbc8dfb", D014 = "c79d5fa2-3d85-11ed-a6db-506b8dbc8dfb";
+assert.deepEqual(chainFrom(D014), [D014, D007, D001]);
+assert.deepEqual(chainFrom(D001), [D001]);
+// Plain case: booked where the client drops → auto-assigned there; unknown drop-off too.
+assert.deepEqual(planDelivery(D002, D002), { collectAt: D002, hops: [], autoAssign: true });
+assert.deepEqual(planDelivery(D002, null), { collectAt: D002, hops: [], autoAssign: true });
+// D001 clients are never auto-assigned, booked there or anywhere else.
+assert.deepEqual(planDelivery(D001, D001), { collectAt: D001, hops: [], autoAssign: false });
+assert.deepEqual(planDelivery(D002, D001), { collectAt: D002, hops: [], autoAssign: false });
+// On the chain → ride the returns down it; collect job waits at the drop-off.
+assert.deepEqual(planDelivery(D001, D014), { collectAt: D014, hops: [D007, D014], autoAssign: false });
+assert.deepEqual(planDelivery(D007, D014), { collectAt: D014, hops: [D014], autoAssign: false });
+// Off the chain (no return runs D007 → D002) → collect at the booking PSC, unassigned.
+assert.deepEqual(planDelivery(D007, D002), { collectAt: D007, hops: [], autoAssign: false });
+
+const moving: KqvtEntry = { ...entry, holder: undefined, psc: D014, at: D001, hops: [D007, D014] };
+assert.match(legTodos(moving).pickup, /mang về D007/);
+assert.match(legTodos(moving).dropoff, /tại D007 \(chuyển tiếp D014\)/);
+const ret = (id: number, from: string, to: string, pick: number, extra: Partial<Job> = {}) => ({
+  job_id: id, job_status_id: 4, delivery_driver_id: "R", labels: [PSC_RETURN_LABEL],
+  stops: [{ stop_type_id: 1, customer_id: from, stop_status_id: pick }, { stop_type_id: 2, customer_id: to, stop_status_id: 1 }],
+  ...extra,
+}) as unknown as Job;
+const yes = () => true;
+// The not-started return from where the items are to the next hop — nothing else.
+assert.equal(rideFor(moving, [ret(1, D001, D002, 1), ret(2, D001, D007, 4), ret(3, D001, D007, 1)], yes)?.job_id, 3);
+assert.equal(rideFor(moving, [ret(4, D001, D007, 1, { labels: [] })], yes), null);
+assert.equal(rideFor(moving, [ret(5, D001, D007, 1)], () => false), null);
+// Following the carrying return.
+assert.equal(legVerdict({ job_status_id: 5, delivery_driver_id: "R", stops: [{ stop_type_id: 2, customer_id: D007, stop_status_id: 4 }] } as unknown as Job, D007), "arrived");
+assert.equal(legVerdict(ret(6, D001, D007, 4), D007), "wait");
+assert.equal(legVerdict(ret(7, D001, D007, 1, { job_status_id: 7 }), D007), "lost");
+assert.equal(legVerdict("gone", D007), "lost");
+assert.equal(legVerdict(null, D007), "wait");
+
+// Not the end-of-shift ride: due off within 30 min, or off shift, → no ride.
+const at = (h: number, m: number) => new Date(Date.UTC(2026, 9, 25, h - 7, m));
+const shift = (s: number, e: number) => ({ shift_start: { hours: s, minutes: 0 }, shift_end: { hours: e, minutes: 0 } }) as unknown as Mapping;
+assert.equal(returnRideable([shift(7, 17)], at(16, 0)), true);
+assert.equal(returnRideable([shift(7, 17)], at(16, 31)), false);
+assert.equal(returnRideable([shift(7, 17)], at(18, 0)), false);
+assert.equal(returnRideable([shift(7, 17), shift(16, 22)], at(16, 45)), true);
+assert.equal(returnRideable([], at(23, 0)), true);
 console.log("kqvt: ok");

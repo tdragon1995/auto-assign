@@ -17,16 +17,29 @@
  * State is one small Redis hash, keyed by the collect job. The engine reads it once a
  * cycle and does nothing else when it is empty.
  *
+ * MULTI-LEG (supervisor, 2026-10-25): a client whose default drop-off is not the
+ * booking PSC is reached by tracing back from that drop-off along the PSC routes
+ * (D014 → D007 → D001). When the booking PSC is on that chain the items RIDE THE
+ * RETURN TRIPS down it, one hop at a time — never one whose driver is due off within
+ * 30 min, the ride home the cleanup cancels. The collect job is made at the drop-off
+ * at booking, unassigned, and given to the client's driver only once the items
+ * arrive. Anything else that is not the plain case — a booking PSC off the chain, a
+ * client dropping at D001 — gets its collect job unassigned, for the dispatcher.
+ *
  * Adding a to-do to a live job: the REST stop PUT REPLACES a stop's to-do list, so the
  * existing ones are echoed back with their stop_todo_id (kept untouched) plus the new
  * one — verified on throwaway prod jobs 2026-10-18. Only a stop still "Chờ lấy" is ever
  * touched, so no photo a driver already took is at stake.
  */
-import { BASE_URL, getHeaders, getJobDetails, getLiveDrivers, updateJobStops, type Env } from "./cartrack";
+import { assignJob, BASE_URL, getHeaders, getJobDetails, getLiveDrivers, updateJobStops, type Env } from "./cartrack";
 import { sharedRedis } from "./redis";
 import { haversineKm } from "./distance";
 import { resolveDriverChoices, resolveFixedDriver } from "./fixed-driver";
-import { PSC_DELIVERY_LABEL } from "./job-filters";
+import { LAB_CUSTOMER_ID, PSC_DELIVERY_LABEL, PSC_RETURN_LABEL } from "./job-filters";
+import { PSC_ROUTES } from "./psc-routes-data";
+import { shortCode } from "./psc-dup";
+import { returnRideable, shiftMappingsForPsc, subToCoveredDriver } from "./return-trips";
+import { sbSelect } from "./supabase-rest";
 import { vnTimestamp } from "./time";
 import type { Config, FailedJob, Job, LogLevel } from "./types";
 import type { LeaveEntry } from "./leave-config";
@@ -49,6 +62,70 @@ export interface KqvtEntry {
   holder?: string; holder_name?: string; collected_ms?: number;
   /** Last direct lookup of the collect job (see kqvtCycle). */
   checked_ms?: number;
+  /** Multi-leg only: the booking PSC, where the items are now, the PSCs still to reach
+   *  (next first, last = psc), and the return trip carrying them. */
+  origin?: string; at?: string; hops?: string[]; leg_job?: number; leg_checked_ms?: number;
+}
+
+export const pscName = (id: string) => {
+  const r = PSC_ROUTES.find((x) => x.pickup === id);
+  return r ? shortCode(r.psc_pickup) : id.slice(0, 8);
+};
+
+/** A PSC and the PSCs its samples travel through: D014 → [D014, D007, D001]. */
+export function chainFrom(psc: string): string[] {
+  const chain = [psc];
+  for (;;) {
+    const r = PSC_ROUTES.find((x) => x.pickup === chain[chain.length - 1]);
+    if (!r || chain.includes(r.dropoff)) return chain;
+    chain.push(r.dropoff);
+  }
+}
+
+/** Where the collect job goes, the return-trip hops to get there, and whether it is
+ *  given to the client's driver at booking. See the header. */
+export function planDelivery(booking: string, dropoff: string | null): { collectAt: string; hops: string[]; autoAssign: boolean } {
+  if (!dropoff) return { collectAt: booking, hops: [], autoAssign: true };
+  if (dropoff === booking) return { collectAt: booking, hops: [], autoAssign: dropoff !== LAB_CUSTOMER_ID };
+  const chain = chainFrom(dropoff);
+  const k = chain.indexOf(booking);
+  if (k > 0) return { collectAt: dropoff, hops: chain.slice(0, k).reverse(), autoAssign: false };
+  return { collectAt: booking, hops: [], autoAssign: false };
+}
+
+/** The client's default drop-off from the master client list; null when unknown. */
+export async function defaultDropoff(clientId: string): Promise<string | null> {
+  const rows = await sbSelect<{ default_dropoff_id: string | null }>(
+    "master_clients_read", `select=default_dropoff_id&customer_id=eq.${clientId}&limit=1`,
+  ).catch(() => []);
+  return rows[0]?.default_dropoff_id ?? null;
+}
+
+/** The two to-dos a return trip carries for one item: take it at `at`, leave it at the hop. */
+export function legTodos(e: KqvtEntry): { pickup: string; dropoff: string } {
+  const [hop, next] = e.hops ?? [];
+  const what = `${itemsText(e.items)} cho ${e.client_name}`;
+  return {
+    pickup: `Nhận ${what} → mang về ${pscName(hop)}`.slice(0, 250),
+    dropoff: `Gửi lại ${what} tại ${pscName(hop)}${next ? ` (chuyển tiếp ${pscName(next)})` : ""}`.slice(0, 250),
+  };
+}
+
+/** A not-started, assigned return trip from where the items are to their next hop. */
+export function rideFor(e: KqvtEntry, jobs: Job[], ok: (j: Job) => boolean): Job | null {
+  const hop = e.hops?.[0];
+  return jobs.find((j) =>
+    j.job_status_id !== 7 && !!j.delivery_driver_id && (j.labels ?? []).includes(PSC_RETURN_LABEL) &&
+    (j.stops ?? []).some((s) => s.stop_type_id === 1 && s.customer_id === e.at && s.stop_status_id === 1) &&
+    (j.stops ?? []).some((s) => s.stop_type_id === 2 && s.customer_id === hop) && ok(j),
+  ) ?? null;
+}
+
+/** The carrying return trip: drop-off at the hop done → arrived; cancelled/deleted → lost. */
+export function legVerdict(job: CollectState | "gone" | null | undefined, hop: string): "arrived" | "lost" | "wait" {
+  if (job === "gone" || job?.job_status_id === 7) return "lost";
+  if (job?.stops?.some((s) => s.stop_type_id === 2 && s.customer_id === hop && s.stop_status_id === 4)) return "arrived";
+  return "wait";
 }
 
 function redis() {
@@ -135,36 +212,40 @@ export function nearest<T extends { deliveryDriverId: string; latitude?: number 
 }
 
 /**
- * Add photo to-dos to one stop of a live job, keeping every existing to-do. Refuses
- * (returns why) unless that stop is still "Chờ lấy". Read back: the API answers 200
- * on writes it discards.
+ * Add photo to-dos to stops of a live job (customer → descriptions), keeping every
+ * existing to-do; `noteLine` goes on the first. Refuses (returns why) unless every
+ * stop touched is still "Chờ lấy". Read back: the API answers 200 on writes it discards.
  */
 export async function appendStopTodos(
-  jobId: number, customerId: string, descriptions: string[], env: Env, noteLine?: string,
+  jobId: number, adds: Record<string, string[]>, env: Env, noteLine?: string,
 ): Promise<"ok" | "started" | "missing" | "failed"> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const job: any = (await getJobDetails(jobId, env))?.data;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stops: any[] = job?.stops ?? [];
-  const target = stops.find((s) => s.customer_id === customerId);
-  if (!target || job.job_status_id === 7) return "missing";
-  if (Number(target.stop_status_id) !== 1) return "started";
-  const before = (target.todos ?? []).length;
-  const res = await updateJobStops(jobId, stops.map((s) => s === target
-    ? {
-        stop_id: s.stop_id, stop_type_id: s.stop_type_id, customer_id: s.customer_id,
-        ...(noteLine ? { note: [s.note, noteLine].filter(Boolean).join("\n") } : {}),
-        todos: [
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          ...(s.todos ?? []).map((t: any) => ({ stop_todo_id: t.stop_todo_id, todo_type_id: t.todo_type_id, description: t.description, is_required: t.is_required !== false })),
-          ...descriptions.map((description) => ({ todo_type_id: PHOTO, description, is_required: true })),
-        ],
-      }
-    : { stop_id: s.stop_id, stop_type_id: s.stop_type_id, customer_id: s.customer_id }), env, job.job_type_id);
+  const ids = Object.keys(adds);
+  const targets = ids.map((id) => stops.find((s) => s.customer_id === id));
+  if (job?.job_status_id === 7 || targets.some((t) => !t)) return "missing";
+  if (targets.some((t) => Number(t.stop_status_id) !== 1)) return "started";
+  const res = await updateJobStops(jobId, stops.map((s) => {
+    const i = targets.indexOf(s);
+    if (i < 0) return { stop_id: s.stop_id, stop_type_id: s.stop_type_id, customer_id: s.customer_id };
+    return {
+      stop_id: s.stop_id, stop_type_id: s.stop_type_id, customer_id: s.customer_id,
+      ...(noteLine && i === 0 ? { note: [s.note, noteLine].filter(Boolean).join("\n") } : {}),
+      todos: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ...(s.todos ?? []).map((t: any) => ({ stop_todo_id: t.stop_todo_id, todo_type_id: t.todo_type_id, description: t.description, is_required: t.is_required !== false })),
+        ...adds[ids[i]].map((description) => ({ todo_type_id: PHOTO, description, is_required: true })),
+      ],
+    };
+  }), env, job.job_type_id);
   if (!res.ok) return "failed";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const after = (await getJobDetails(jobId, env))?.data?.stops?.find((s: any) => s.stop_id === target.stop_id);
-  return (after?.todos ?? []).length === before + descriptions.length ? "ok" : "failed";
+  const after: any[] = (await getJobDetails(jobId, env))?.data?.stops ?? [];
+  return targets.every((t, i) =>
+    (after.find((s) => s.stop_id === t.stop_id)?.todos ?? []).length === (t.todos ?? []).length + adds[ids[i]].length,
+  ) ? "ok" : "failed";
 }
 
 /** The holder's not-started sample pickup at the client, if today's lists have one. */
@@ -203,6 +284,7 @@ export interface KqvtCycle {
  */
 export async function kqvtCycle(
   jobsToday: Job[], env: Env, log: (msg: string, level?: LogLevel) => void, failed: FailedJob[],
+  config: Config, leave: LeaveEntry[],
 ): Promise<KqvtCycle> {
   const entries = await loadPending();
   const holders = new Map<string, string>();
@@ -211,9 +293,52 @@ export async function kqvtCycle(
 
   const byId = new Map(jobsToday.map((j) => [j.job_id, j]));
   const now = Date.now();
+  let subCovers: Map<string, string> | null = null;
+  const rideable = (j: Job, hop: string) =>
+    returnRideable(shiftMappingsForPsc(config, hop, j.delivery_driver_id!, subCovers ??= subToCoveredDriver(config, leave)), new Date(now));
+
+  /** One hop of a multi-leg item: follow the return carrying it, or load it on one. */
+  const travel = async (e: KqvtEntry) => {
+    const hop = e.hops![0];
+    if (e.leg_job) {
+      let leg: CollectState | "gone" | null | undefined = byId.get(e.leg_job);
+      if (!leg && now - (e.leg_checked_ms ?? 0) > RECHECK_MS) {
+        leg = await lookupJob(e.leg_job, env);
+        e.leg_checked_ms = now;
+        await savePending(e);
+      }
+      const v = legVerdict(leg, hop);
+      if (v === "wait") return;
+      log(`Job ${e.leg_job} - KQ/VT ${v === "arrived" ? `đã tới ${pscName(hop)}` : `chuyến về bị huỷ, chờ chuyến khác tại ${pscName(e.at!)}`} | ${e.psc_name} → ${e.client_name}`, v === "arrived" ? "OK" : "WARN");
+      e.leg_job = undefined;
+      if (v === "arrived") { e.at = hop; e.hops!.shift(); }
+      if (!e.hops!.length) await arrive(e);
+      await savePending(e);
+      if (!e.hops?.length) return;
+    }
+    const ride = rideFor(e, jobsToday, (j) => rideable(j, e.hops![0]));
+    if (!ride) return;
+    const t = legTodos(e);
+    const r = await appendStopTodos(ride.job_id, { [e.at!]: [t.pickup], [e.hops![0]]: [t.dropoff] }, env);
+    if (r !== "ok") return;
+    e.leg_job = ride.job_id;
+    await savePending(e);
+    log(`Job ${ride.job_id} - KQ/VT đi kèm chuyến về (${itemsText(e.items)}) | ${pscName(e.at!)} → ${pscName(e.hops![0])} → ${e.client_name}`, "OK");
+  };
+
+  /** At the client's drop-off: the waiting collect job goes to the client's driver. */
+  const arrive = async (e: KqvtEntry) => {
+    e.hops = undefined;
+    const psc = PSC_ROUTES.find((r) => r.pickup === e.psc);
+    const who = psc ? await pickCollector(config, leave, e.client_id, psc, env).catch(() => null) : null;
+    const res = who ? await assignJob(who.driverId, e.job_id, env).catch(() => null) : null;
+    const ok = !!res && res.status >= 200 && res.status < 300;
+    if (ok) { e.collector = who!.driverId; e.collector_name = who!.name ?? undefined; }
+    log(`Job ${e.job_id} - lấy KQ/VT tại PSC: ${ok ? who!.name ?? "tài xế" : "chờ điều phối"} | ${e.psc_name} → ${e.client_name}`, ok ? "OK" : "WARN");
+  };
 
   const attach = async (e: KqvtEntry, job: Job) => {
-    const r = await appendStopTodos(job.job_id, e.client_id, [handoverTodo(e)], env);
+    const r = await appendStopTodos(job.job_id, { [e.client_id]: [handoverTodo(e)] }, env);
     if (r === "ok") {
       await dropPending(e.job_id);
       log(`Job ${job.job_id} - KQ/VT giao kèm (${itemsText(e.items)}) | ${e.psc_name} → ${e.client_name}`, "OK");
@@ -242,6 +367,7 @@ export async function kqvtCycle(
         e.collected_ms = now;
         await savePending(e);
       }
+      if (!e.holder && e.hops?.length) await travel(e);
     }
     if (e.holder) {
       const target = handoverTarget(e, jobsToday);
@@ -256,7 +382,11 @@ export async function kqvtCycle(
         reason: "KQVT_WAITING",
         detail: e.holder
           ? `${e.holder_name ?? "Tài xế"} đang giữ ${itemsText(e.items)}, chưa có chuyến lấy mẫu tại khách để giao kèm`
-          : `${itemsText(e.items)} chưa được lấy tại ${e.psc_name}`,
+          : e.hops?.length
+            ? e.leg_job
+              ? `${itemsText(e.items)} đang trên chuyến về ${e.leg_job} tới ${pscName(e.hops[0])}`
+              : `${itemsText(e.items)} đang ở ${pscName(e.at!)}, chưa có chuyến về ${pscName(e.hops[0])} để đi kèm`
+            : `${itemsText(e.items)} chưa được lấy tại ${e.psc_name}`,
         level: "WARN",
         ts: vnTimestamp(),
       });

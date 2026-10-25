@@ -4,6 +4,7 @@ import { vnDate, vnHoursMinutes, parseVnTimestamp } from "./time";
 import { isDriverOnLeave, resolveSubstitute, type LeaveEntry } from "./leave-config";
 import { loadCleanedReturns } from "./return-suppress";
 import { claimTripAction, releaseTripClaim } from "./smart-log-kv";
+import { legTodos, loadPending, savePending, type KqvtEntry } from "./kqvt";
 
 export { PSC_RETURN_LABEL } from "./job-filters";
 import { PSC_RETURN_LABEL, PICKUP_PHOTO_TODO, DROPOFF_PHOTO_TODO } from "./job-filters";
@@ -35,6 +36,17 @@ export function isOnShift(mapping: Mapping, now: Date): boolean {
   return nowMin > startMin && nowMin <= endMin;
 }
 
+/** KQ/VT rides a return only while its driver is on shift at the return's PSC and not
+ *  due off within `leadMin` — the end-of-shift ride home is the one the cleanup cancels
+ *  (supervisor, 2026-10-25). No mapping there at all → nothing to judge, it rides. */
+export function returnRideable(mappings: Mapping[], now: Date, leadMin = 30): boolean {
+  if (mappings.length === 0) return true;
+  const { hours, minutes } = vnHoursMinutes(now);
+  const nowMin = hours * 60 + minutes;
+  return mappings.some((m) => isOnShift(m, now) &&
+    (!m.shift_start || !m.shift_end || (m.shift_end.hours * 60 + m.shift_end.minutes - nowMin + 1440) % 1440 > leadMin));
+}
+
 function shortName(name: string): string {
   return name.replace(/^BRA\s*-\s*/i, "");
 }
@@ -54,7 +66,9 @@ async function createReturnJob(
   fromCustomerName: string,
   toCustomerId: string,
   toCustomerName: string,
-  env: Env
+  env: Env,
+  // KQ/VT riding along (lib/kqvt.ts): extra required photo to-dos on each stop.
+  ride: { pickup: string[]; dropoff: string[] } = { pickup: [], dropoff: [] },
 ): Promise<CreateReturnOutcome> {
   const payload = {
     job_type_id: 1,
@@ -69,13 +83,13 @@ async function createReturnJob(
         duration: 5,
         // Optional: most returns ride back empty, and a compulsory photo of nothing is a
         // photo of the floor.
-        todos: [{ ...PICKUP_PHOTO_TODO, is_required: false }],
+        todos: [{ ...PICKUP_PHOTO_TODO, is_required: false }, ...ride.pickup.map((description) => ({ todo_type_id: 2, description, is_required: true }))],
       },
       {
         stop_type_id: 2,
         customer_id: toCustomerId,
         duration: 10,
-        todos: [{ ...DROPOFF_PHOTO_TODO, is_required: false }],
+        todos: [{ ...DROPOFF_PHOTO_TODO, is_required: false }, ...ride.dropoff.map((description) => ({ todo_type_id: 2, description, is_required: true }))],
       },
     ],
   };
@@ -239,6 +253,8 @@ export async function detectAndCreateReturnTrips(
   }
 
   const createTasks: Array<() => Promise<void>> = [];
+  // KQ/VT waiting to ride this way — read once, only when a return is being made.
+  let kqvtP: Promise<KqvtEntry[]> | null = null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const outbound of completedJobs as any[]) {
     const labels: string[] = outbound.labels ?? [];
@@ -312,12 +328,24 @@ export async function detectAndCreateReturnTrips(
     inFlightReturns.add(outbound.job_id);
     setTimeout(() => inFlightReturns.delete(outbound.job_id), IN_FLIGHT_TTL_MS);
     blockingReturnKeys.add(returnKey); // protect same driver in same cycle
+    const canRide = returnRideable(driverMappings, now);
 
     createTasks.push(async () => {
+      // Claimed (leg_job = -1) before the create, in one synchronous step after the
+      // read, so two returns made this cycle never carry the same item.
+      const riders = canRide
+        ? (await (kqvtP ??= loadPending().catch(() => []))).filter((e) =>
+            !e.holder && !e.leg_job && e.at === fromCustomerId && e.hops?.[0] === toCustomerId)
+        : [];
+      for (const e of riders) e.leg_job = -1;
       try {
-        const result = await createReturnJob(outbound.delivery_driver_id, fromCustomerId, fromCustomerName, toCustomerId, toCustomerName, env);
+        const todos = riders.map(legTodos);
+        const result = await createReturnJob(outbound.delivery_driver_id, fromCustomerId, fromCustomerName, toCustomerId, toCustomerName, env,
+          { pickup: todos.map((t) => t.pickup), dropoff: todos.map((t) => t.dropoff) });
+        for (const e of riders) e.leg_job = result.ok ? result.jobId : undefined;
         if (result.ok) {
-          log(`Return trip #${result.jobId} : driver (from outbound ${outbound.job_id}) | ${fromCustomerName} → ${toCustomerName}`, "OK");
+          await Promise.all(riders.map(savePending)).catch((err) => log(`KQ/VT: không lưu được chuyến về ${result.jobId}: ${err}`, "ERROR"));
+          log(`Return trip #${result.jobId} : driver (from outbound ${outbound.job_id})${riders.length ? ` + KQ/VT ${riders.length} khách` : ""} | ${fromCustomerName} → ${toCustomerName}`, "OK");
           return;
         }
         // On-break/offline is an expected end-of-shift state, not a bug — WARN,
@@ -330,6 +358,7 @@ export async function detectAndCreateReturnTrips(
         blockingReturnKeys.delete(returnKey); // allow retry next cycle
         await releaseTripClaim("return", outbound.job_id, env);
       } catch (e) {
+        for (const r of riders) if (r.leg_job === -1) r.leg_job = undefined;
         log(`Return trip failed for outbound ${outbound.job_id}: ${e} | ${fromCustomerName} → ${toCustomerName}`, "ERROR");
         inFlightReturns.delete(outbound.job_id);
         blockingReturnKeys.delete(returnKey); // allow retry next cycle
