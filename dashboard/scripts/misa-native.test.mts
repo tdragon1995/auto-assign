@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { NextRequest } from 'next/server';
 import { misaMonths, syncWait, getMisaSyncStatus } from '../src/lib/misa-sync';
-import { morningSyncDue, maybeMorningSync } from '../src/lib/morning-sync-trigger';
+import { morningSyncDue, maybeMorningSync, morningResumeDue, shouldResume, morningRunFailure, MAX_SELF_CALLS } from '../src/lib/morning-sync-trigger';
 import { POST } from '../src/app/api/misa-sync/continue/route';
 import { GET } from '../src/app/api/morning-sync/route';
 assert.deepEqual(misaMonths(null,new Date('2026-12-31T18:00:00Z')),['2026-11','2026-12','2027-01','2027-02']);
@@ -16,6 +16,23 @@ assert.equal(syncWait({...run,status:'completed',conclusion:'failure'},time+6000
 assert.equal(morningSyncDue(new Date('2026-10-06T21:59:00Z')),false);
 assert.equal(morningSyncDue(new Date('2026-10-06T22:00:00Z')),true);
 assert.equal(morningSyncDue(new Date('2026-10-06T23:00:00Z')),false);
+// Hop cap: Vercel let 4 self-calls through on 2026-10-19 and refused the 5th.
+assert.ok(MAX_SELF_CALLS<4);
+assert.equal(morningResumeDue(new Date('2026-10-06T21:59:00Z')),false);
+assert.equal(morningResumeDue(new Date('2026-10-07T00:59:00Z')),true);
+assert.equal(morningResumeDue(new Date('2026-10-07T01:00:00Z')),false);
+const today=new Date(time);
+assert.equal(shouldResume({...run,id:time},false,today),true);
+assert.equal(shouldResume({...run,id:time},true,today),false,'a step is running');
+assert.equal(shouldResume({...run,id:time,daily:false},false,today),false,'manual runs never resume from cron');
+assert.equal(shouldResume({...run,id:time,status:'completed'},false,today),false);
+assert.equal(shouldResume({...run,id:time-86400000},false,today),false,'yesterday');
+assert.equal(morningRunFailure({...run,id:time},time+60000),null);
+assert.equal(morningRunFailure({...run,id:time},time+335000)?.error,'Sync interrupted');
+const failed=morningRunFailure({...run,id:time,status:'completed',conclusion:'failure',phase:'metadata',error:'Sync continuation HTTP 508'},time);
+assert.equal(failed?.error,'Sync continuation HTTP 508');assert.equal(failed?.misaDone,false);
+assert.equal(morningRunFailure({...run,id:time,status:'completed',conclusion:'failure',monthIndex:1},time)?.misaDone,true);
+assert.equal(morningRunFailure({...run,id:time,status:'completed',conclusion:'success'},time+999999),null);
 const old=process.env.CRON_SECRET;delete process.env.CRON_SECRET;
 try {
 assert.equal((await GET(new NextRequest('https://dashboard.invalid/api/morning-sync'))).status,401);

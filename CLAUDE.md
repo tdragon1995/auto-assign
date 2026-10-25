@@ -613,6 +613,20 @@ These are the things most likely to burn a future agent working on this codebase
       lookups, and a pair once answered keeps its original provider's figure forever
       — which is exactly why no archived number moves when the chain is reordered.
 
+13. **The 05:00 morning sync must never chain more than 2 calls to itself.** Vercel
+    answers a deployment calling itself with `508 INFINITE_LOOP_DETECTED` once one request
+    chain gets too long; it links the hops itself (our fetch sends only the secret), so
+    code cannot start a fresh chain. On 2026-10-19 cron → `/api/morning-sync` → three
+    `/api/misa-sync/continue` calls passed and the next was refused, and since the
+    Labcenter phase had ~1,600 client codes at 40 a hop (~40 hops) the morning run never
+    reached MISA — no MISA leave was written from 16/10. Now: phases run profiles → MISA →
+    Labcenter → cache (leave lands on the 2nd self-call); each Labcenter invocation does as
+    many batches as fit in 240 s; each chain stops at `MAX_SELF_CALLS` (2) and the next
+    cron-job.org ping, a new chain from outside, resumes the run (05:00–08:00 VN only,
+    `maybeMorningSync`). A failed or stalled run shows as a red line above the tabs
+    (`/api/morning-issues` → `sync_failure`) and counts in the Cần xử lý badge.
+    `scripts/misa-native.test.mts`.
+
 See `docs/business-rules.md` for deeper detail, `docs/cartrack-api.md` for API reference,
 `docs/driver-tat.md` for the TAT module, and `docs/driver-pay.md` for part-time pay.
 

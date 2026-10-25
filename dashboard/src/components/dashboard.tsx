@@ -62,6 +62,7 @@ export function Dashboard() {
   const [syncingMisa, setSyncingMisa] = useState(false);
   const [failed, setFailed] = useState<FailedJob[]>([]);
   const [sheetAlarms, setSheetAlarms] = useState<SheetAlarm[]>([]);
+  const [syncFailure, setSyncFailure] = useState<{at:string; daily:boolean; phase:string|null; misaDone:boolean; error:string} | null>(null);
   const [unfinished, setUnfinished] = useState<UnfinishedConfigRow[]>([]);
   const [gaps, setGaps] = useState<CoverageGap[]>([]);
   const [overlaps, setOverlaps] = useState<ShiftOverlap[]>([]);
@@ -419,6 +420,7 @@ export function Dashboard() {
     fetch("/api/morning-issues", { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => {
+        setSyncFailure(d.sync_failure ?? null);
         if (!Array.isArray(d.issues) || !d.issues.length) return;
         setMetadataReport((prev) => prev ?? {matched:0, owners:0, errors:0, totalCodes:0, processed:0, nextCursor:null,
           issues:d.issues, state:"complete", morningAt:d.checked_at ?? ""});
@@ -600,6 +602,7 @@ export function Dashboard() {
       }
       await syncSettings();
       setConfigRefreshKey(key => key + 1);
+      setSyncFailure(null);
       toast.success("Đã đồng bộ MISA, cài đặt auto-assign và lịch nghỉ phép");
     } catch (err) {
       toast.error(`Đồng bộ MISA thất bại: ${err instanceof Error ? err.message : String(err)}`);
@@ -627,7 +630,7 @@ export function Dashboard() {
   // engine is blocked on, not the work waiting on a person.
   const attentionCount =
     held.length + failed.length + warnings.length + scheduleErrors.length +
-    sheetAlarms.length +
+    sheetAlarms.length + (syncFailure ? 1 : 0) +
     // Only rows the engine still cannot see. A recovered row is already being
     // honoured, so it is a tidy-up, not something to handle today.
     leave.invalid.filter((r) => !r.recovered).length;
@@ -693,6 +696,19 @@ export function Dashboard() {
           the landing tab, Live Log is just the log). */}
       <div className="flex flex-col lg:flex-1 lg:min-h-0 p-2 sm:p-3">
         <div className="min-w-0 flex flex-col gap-1.5 lg:flex-1 lg:min-h-0">
+          {syncFailure && (
+            <p role="alert" className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-xs leading-relaxed text-red-900 shrink-0">
+              <span className="font-semibold">
+                {syncFailure.daily ? "Đồng bộ buổi sáng" : "Đồng bộ MISA"}{" "}
+                {new Date(syncFailure.at).toLocaleString("vi-VN", {timeZone:"Asia/Ho_Chi_Minh", hour:"2-digit", minute:"2-digit", day:"2-digit", month:"2-digit"})} không hoàn tất
+              </span>
+              {` ở bước ${({profiles:"Cartrack", misa:"MISA", metadata:"Labcenter", cache:"cập nhật cài đặt"} as Record<string,string>)[syncFailure.phase ?? ""] ?? "không rõ"} (${syncFailure.error}). `}
+              {syncFailure.misaDone
+                ? "Lịch ca và ngày nghỉ MISA đã cập nhật; "
+                : "Lịch ca và ngày nghỉ từ MISA chưa được cập nhật — "}
+              chọn Đồng Bộ Thông Tin → MISA để chạy lại.
+            </p>
+          )}
           <RemovedCartrackClients refreshKey={configRefreshKey} onDeleted={async()=>{await syncSettings();setConfigRefreshKey(key=>key+1);}} />
           {metadataReport && (
             <details className={`rounded-md border px-3 py-2 text-xs shrink-0 ${metadataReport.issues.length || metadataReport.state === "failed" ? "border-amber-200 bg-amber-50 text-amber-900" : "border-slate-200 bg-slate-50 text-slate-700"}`}>

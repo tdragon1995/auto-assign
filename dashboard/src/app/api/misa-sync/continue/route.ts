@@ -8,5 +8,7 @@ export async function POST(req:NextRequest) {
     return NextResponse.json({error:"unauthorized"},{status:401});
   const id=Number(req.nextUrl.searchParams.get("run"));
   if(!Number.isSafeInteger(id)||id<=0)return NextResponse.json({error:"Invalid run"},{status:400});
-  after(()=>runMisaSyncStep(id));return NextResponse.json({accepted:true},{status:202});
+  // A call without hop (a deploy mid-run) is treated as at the cap: the cron ping resumes it.
+  const hop=Number(req.nextUrl.searchParams.get("hop")??NaN);
+  after(()=>runMisaSyncStep(id,Number.isSafeInteger(hop)&&hop>0?hop:undefined));return NextResponse.json({accepted:true},{status:202});
 }

@@ -7,8 +7,11 @@ import { invalidateLeaveCache } from "./leave-config";
 import { invalidateShiftCache } from "./shift-window";
 import { syncCartrackProfiles, syncLabcenterMetadata } from "./master-sync";
 import { sbDelete, sbInsert, sbSelectAll } from "./supabase-rest";
+import { MAX_SELF_CALLS, MORNING_RUN_KEY, MORNING_RUN_LOCK, postContinuation } from "./morning-sync-trigger";
 
-const KEY="sync:morning:v1", LOCK=KEY+":lock", TTL=7*86400, COOLDOWN=15;
+const KEY=MORNING_RUN_KEY, LOCK=MORNING_RUN_LOCK, TTL=7*86400, COOLDOWN=15;
+// Room inside maxDuration 300 for the Labcenter batch loop to stop starting batches.
+const STEP_BUDGET_MS=240_000;
 type Run={id:number,status:"queued"|"in_progress"|"completed",conclusion:"success"|"failure"|null,
   created_at:string,updated_at:string,daily:boolean,phase:"profiles"|"metadata"|"misa"|"cache",
   cursor:string,months:string[],monthIndex:number,processed:number,issues:number,shiftRows:number,error?:string};
@@ -63,13 +66,20 @@ export async function dispatchMisaSync(month:string|null=null,syncMaster=false) 
     const run:Run={id:Date.now(),status:"queued",conclusion:null,created_at:timestamp,updated_at:timestamp,daily:syncMaster,
       phase:syncMaster?"profiles":"misa",cursor:"",months,monthIndex:0,processed:0,issues:0,shiftRows:0};
     await db.set(KEY,run,{ex:TTL});
-    after(()=>runMisaSyncStep(run.id));
+    // The morning dispatch is already one self-call (cron route → /api/morning-sync); the dashboard's is none.
+    after(()=>runMisaSyncStep(run.id,syncMaster?1:0));
     return NextResponse.json({status:"dispatched",id:run.id,previous_run_id:previous?.id??null},{status:202});
   }finally{await release(db,startLock,owner);}
 }
-/** One bounded phase per invocation; checkpoints survive cold starts. No recurring polling job. */
-export async function runMisaSyncStep(id:number) {
-  const db=redis(),owner=crypto.randomUUID();
+/**
+ * One bounded phase per invocation; checkpoints survive cold starts. No recurring polling job.
+ * Order is profiles → misa → metadata → cache: MISA (shifts and leave) runs on the morning
+ * chain's 2nd self-call, so a slow or failing Labcenter can never hold leave back again.
+ * hop = self-calls this request chain has made; past MAX_SELF_CALLS the run waits for the
+ * next cron ping (maybeMorningSync), which starts a fresh chain.
+ */
+export async function runMisaSyncStep(id:number,hop=MAX_SELF_CALLS) {
+  const db=redis(),owner=crypto.randomUUID(),started=Date.now();
   if(await db.set(LOCK,owner,{nx:true,ex:330})!=="OK")return;
   let run:Run|null=null,more=false;
   try {
@@ -77,24 +87,33 @@ export async function runMisaSyncStep(id:number) {
     if(!run||run.id!==id||run.status==="completed")return;
     run.status="in_progress";run.updated_at=new Date().toISOString();await db.set(KEY,run,{ex:TTL});
     if(run.phase==="profiles") {
-      await syncCartrackProfiles();invalidateDriversCache();await invalidateConfigCache();run.phase="metadata";
+      await syncCartrackProfiles();invalidateDriversCache();await invalidateConfigCache();run.phase="misa";
     }else if(run.phase==="metadata") {
       // The list, not just its count, so the dashboard can show what the morning found.
       if(!run.cursor)await sbDelete("master_sync_issues",`run_id=neq.${run.id}`);
-      const report=await syncLabcenterMetadata(0,40,undefined,run.cursor);
-      if(report.issues.length)await sbInsert("master_sync_issues",report.issues.map(i=>({...i,run_id:run!.id})));
-      run.processed+=report.processed;run.issues+=report.issues.length;
-      if(report.nextCursor) {
-        if(!/^\d+$/.test(report.nextCursor)||report.nextCursor<=run.cursor)throw new Error("Labcenter cursor did not advance");
-        run.cursor=report.nextCursor;
-      }else run.phase="misa";
+      // ~1,600 client codes: one 40-code batch per invocation was ~40 hops. Fit as many as
+      // the budget allows, checkpointing each, and stop before the slowest batch so far
+      // could run past maxDuration.
+      let slowest=0;
+      do {
+        const batchStart=Date.now();
+        const report=await syncLabcenterMetadata(0,40,undefined,run.cursor);
+        if(report.issues.length)await sbInsert("master_sync_issues",report.issues.map(i=>({...i,run_id:run!.id})));
+        run.processed+=report.processed;run.issues+=report.issues.length;
+        if(report.nextCursor) {
+          if(!/^\d+$/.test(report.nextCursor)||report.nextCursor<=run.cursor)throw new Error("Labcenter cursor did not advance");
+          run.cursor=report.nextCursor;
+        }else run.phase="cache";
+        run.updated_at=new Date().toISOString();await db.set(KEY,run,{ex:TTL});
+        slowest=Math.max(slowest,Date.now()-batchStart);
+      }while(run.phase==="metadata" && Date.now()-started+slowest*1.5<STEP_BUDGET_MS);
       await invalidateConfigCache();
     }else if(run.phase==="misa") {
       const {runNativeMisa}=await import("./misa-native");
       const result=await runNativeMisa(run.months);
       run.shiftRows+=result?.shiftRows??0;run.monthIndex=run.months.length;
       await Promise.all([invalidateShiftCache(),invalidateLeaveCache(),invalidateConfigCache()]);
-      run.phase="cache";
+      run.phase=run.daily?"metadata":"cache";
     }else {
       invalidateDriversCache();await Promise.all([invalidateConfigCache(),invalidateShiftCache(),invalidateLeaveCache()]);
       if(!await loadConfigFromSheets())throw new Error("Configuration cache refresh failed");
@@ -110,12 +129,9 @@ export async function runMisaSyncStep(id:number) {
     console.error("[morning-sync]",message.slice(0,300));
     if(run?.id===id){run.status="completed";run.conclusion="failure";run.error=message.slice(0,300);run.updated_at=new Date().toISOString();await db.set(KEY,run,{ex:TTL});}
   }finally{await release(db,LOCK,owner);}
-  if(more) {
+  if(more && hop<MAX_SELF_CALLS) {
     try {
-      // Fixed production origin prevents forwarding the secret to caller-controlled hosts.
-      const response=await fetch(`https://diag-logistics.vercel.app/api/misa-sync/continue?run=${id}`,{
-        method:"POST",headers:{Authorization:`Bearer ${process.env.CRON_SECRET}`},signal:AbortSignal.timeout(15000)});
-      if(!response.ok)throw new Error(`Sync continuation HTTP ${response.status}`);
+      await postContinuation(id,hop+1);
     }catch(e) {
       const latest=await db.get<Run>(KEY);
       if(latest?.id===id && latest.status!=="completed"){latest.status="completed";latest.conclusion="failure";latest.error=e instanceof Error?e.message:"Continuation failed";latest.updated_at=new Date().toISOString();await db.set(KEY,latest,{ex:TTL});}
