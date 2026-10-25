@@ -60,6 +60,8 @@ interface LeaveRowView {
   subs: LeaveOnDate["subs"];
   leave_from: string;
   duplicate: boolean;
+  /** A resignation's line for one date: its cover is saved for this date only. */
+  cover_date?: string;
 }
 
 /** One card per driver: same-driver entries (split-shift coverage) merge into
@@ -76,7 +78,7 @@ function groupByDriver(drivers: LeaveOnDate[]): DriverGroup[] {
   const map = new Map<string, DriverGroup>();
   for (const d of drivers) {
     const g = map.get(d.driver_id);
-    const row = { leave_id: d.leave_id, revision: d.revision, loai_nghi: d.loai_nghi, timeLabel: d.timeLabel, subs: d.subs, leave_from: d.leave_from, duplicate: d.duplicate };
+    const row = { leave_id: d.leave_id, revision: d.revision, loai_nghi: d.loai_nghi, timeLabel: d.timeLabel, subs: d.subs, leave_from: d.leave_from, duplicate: d.duplicate, cover_date: d.cover_date };
     if (!g) {
       map.set(d.driver_id, {
         driver_id: d.driver_id,
@@ -1001,6 +1003,8 @@ export type LeaveRowIdentity = {
   leave_from: string;
   timeLabel: string | null;
   loai_nghi?: string | null;
+  /** Set on a resignation's line for one date — see LeaveOnDate.cover_date. */
+  cover_date?: string;
 };
 
 export type DeleteRowFn = (identity: LeaveRowIdentity) => Promise<boolean>;
@@ -1371,8 +1375,12 @@ function DriverCard({
                 <span className="font-semibold text-orange-700">{typeLabel(r.loai_nghi)}</span>
               )}
               {r.timeLabel && <span className="font-mono text-slate-500">{r.timeLabel}</span>}
-              {r.loai_nghi === "Nghỉ việc" && <span className="text-slate-500">người thay từ {ddmm(r.leave_from)} trở đi</span>}
-              {r.subs.length > 0 ? (
+              {r.cover_date && <span className="text-slate-500">còn tuyến trong config — người thay ngày {ddmm(r.cover_date)}</span>}
+              {r.loai_nghi === "Nghỉ việc" && !r.cover_date && r.subs.length === 0 ? (
+                // Nothing to cover on this date: the config no longer gives them
+                // work. Covering is per date, on the dates it does.
+                <span className="text-slate-500">không còn tuyến trong config ngày này</span>
+              ) : r.subs.length > 0 ? (
                 <>
                   <span
                     className="text-emerald-700 break-words"
@@ -1443,7 +1451,7 @@ function DriverCard({
                 onCancel={() => setEditRow(null)}
                 onSave={(subs, split) =>
                   onFill(
-                    { driver_id: g.driver_id, leave_from: r.leave_from, timeLabel: r.timeLabel, loai_nghi: r.loai_nghi, leave_id: r.leave_id, revision: r.revision },
+                    { driver_id: g.driver_id, leave_from: r.leave_from, timeLabel: r.timeLabel, loai_nghi: r.loai_nghi, leave_id: r.leave_id, revision: r.revision, cover_date: r.cover_date },
                     subs,
                     {
                       split,
@@ -1464,11 +1472,12 @@ function DriverCard({
   );
 }
 
-/** Uncovered = day-leave drivers (not resigned) with a window that has no
- *  substitute — the actionable count surfaced in the collapsed header. */
+/** Uncovered = a window with no substitute — the actionable count surfaced in
+ *  the collapsed header. A resignation counts only on a date the config still
+ *  gives that driver work (cover_date). Same rule as uncoveredWindows. */
 function uncoveredCount(groups: DriverGroup[]): number {
   return groups.filter(
-    (g) => g.loai_nghi !== "Nghỉ việc" && g.rows.some((r) => r.subs.length === 0),
+    (g) => g.rows.some((r) => r.subs.length === 0 && (g.loai_nghi !== "Nghỉ việc" || !!r.cover_date)),
   ).length;
 }
 
@@ -1485,11 +1494,11 @@ interface UncoveredRow {
 function uncoveredWindows(groups: DriverGroup[]): UncoveredRow[] {
   const out: UncoveredRow[] = [];
   for (const g of groups) {
-    // Resigned drivers are excluded on purpose: a substitute is the wrong answer
-    // for a permanent departure — that needs the mapping sheet re-planned, which
-    // is what the reference panel below says. Same rule as uncoveredCount.
-    if (g.loai_nghi === "Nghỉ việc") continue;
     for (const row of g.rows) {
+      // A resignation needs a substitute only on a date the config still gives
+      // that driver work — each such date, until their routes are moved to
+      // someone else. Same rule as uncoveredCount.
+      if (g.loai_nghi === "Nghỉ việc" && !row.cover_date) continue;
       if (row.subs.length === 0) {
         out.push({ driver_id: g.driver_id, driver_name: g.driver_name, loai_nghi: g.loai_nghi, row });
       }
@@ -1562,9 +1571,10 @@ function UncoveredRowItem({
           row={item.row}
           driverId={item.driver_id}
           drivers={drivers}
+          allowSplit={(item.row.loai_nghi ?? item.loai_nghi) !== "Nghỉ việc"}
           onSave={(subs, split) =>
             onFill(
-              { driver_id: item.driver_id, leave_from: item.row.leave_from, timeLabel: item.row.timeLabel, loai_nghi: item.row.loai_nghi ?? item.loai_nghi, leave_id: item.row.leave_id, revision: item.row.revision },
+              { driver_id: item.driver_id, leave_from: item.row.leave_from, timeLabel: item.row.timeLabel, loai_nghi: item.row.loai_nghi ?? item.loai_nghi, leave_id: item.row.leave_id, revision: item.row.revision, cover_date: item.row.cover_date },
               subs,
               { split, expectedSubs: [] },
             )

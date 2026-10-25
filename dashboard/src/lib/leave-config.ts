@@ -45,6 +45,50 @@ export interface LeaveEntry {
   recovered?: boolean;
 }
 
+/**
+ * RESIGNATIONS.
+ *
+ * A "Nghỉ việc" row starts the day after the last working day and runs until
+ * its `leave_to`, or forever when that is blank. People do come back: naming a
+ * resigned driver as a substitute is the sign, and it closes the resignation
+ * the day before (`/api/leave-status`).
+ *
+ * Its routes are covered ONE DATE AT A TIME, never by a substitute on the
+ * resignation itself: a forever-sub outlived the sub's own resignation and kept
+ * handing a gone driver's routes to another gone driver (Phi → Toán, 10/2026).
+ * A day's cover is its own whole-day row carrying RESIGN_COVER_NOTE, created on
+ * the first sub named for that date. It only counts while a resignation still
+ * covers its date — `dropStaleResignCovers` hides the rest — so ending or
+ * deleting a resignation can never leave its covers keeping the driver off.
+ */
+export const RESIGN_COVER_NOTE = "Thay người nghỉ việc";
+
+export function isResignCover(e: Pick<LeaveEntry, "loai_nghi" | "note">): boolean {
+  return e.loai_nghi === "Nghỉ nguyên buổi" && (e.note ?? "").trim() === RESIGN_COVER_NOTE;
+}
+
+/** The resignation keeping `driverId` off on `date`, if any. */
+export function resignationOn(driverId: string, date: string, entries: readonly LeaveEntry[]): LeaveEntry | null {
+  return entries.find((e) =>
+    e.driver_id === driverId && e.loai_nghi === "Nghỉ việc" &&
+    date >= e.leave_from && (!e.leave_to || date <= e.leave_to)) ?? null;
+}
+
+export function dropStaleResignCovers(entries: LeaveEntry[]): LeaveEntry[] {
+  return entries.filter((e) => !isResignCover(e) || resignationOn(e.driver_id, e.leave_from, entries) !== null);
+}
+
+/** Whether a resigned driver still holds work on a day's rules: named on a fixed
+ *  rule, or the ONLY candidate of a smart one. A smart pool with anyone else in
+ *  it still runs without them. */
+export function holdsRouteOn(
+  driverId: string,
+  mappings: readonly { driver_id: string; smart_driver_id: readonly string[] }[],
+): boolean {
+  return mappings.some((m) => m.driver_id === driverId ||
+    (m.smart_driver_id.length === 1 && m.smart_driver_id[0] === driverId));
+}
+
 /** Recovering a leave row from its typed name is ON unless this is set to "0".
  *
  *  It changes who the engine believes is working, so it gets a way to be turned
@@ -199,6 +243,11 @@ export interface LeaveOnDate {
    *  filled the sub into). We collapse to the best-covered row so the engine
    *  still works, but flag it so the panel can prompt a sheet cleanup. */
   duplicate: boolean;
+  /** Set on a resignation shown because the driver still holds routes this
+   *  date: the sub editor covers THIS date only (see RESIGN_COVER_NOTE), and
+   *  `subs` are that date's cover. `leave_from` stays the resignation's own, so
+   *  the delete button still addresses the resignation. */
+  cover_date?: string;
 }
 
 /**
@@ -249,9 +298,9 @@ function coverageOnDate(
     return label ? { covers: true, timeLabel: label } : NONE;
   }
   if (e.loai_nghi === "Nghỉ việc") {
-    // Engine skips resigned drivers from leave_from onward; the 7-day display
-    // cap is applied by the caller (leaveEntriesOnDate), not here.
-    return date >= e.leave_from ? { covers: true, timeLabel: null } : NONE;
+    // Engine skips resigned drivers from leave_from until leave_to (blank =
+    // forever); which days the panel shows is decided by leaveEntriesOnDate.
+    return date >= e.leave_from && (!e.leave_to || date <= e.leave_to) ? { covers: true, timeLabel: null } : NONE;
   }
   // Unlabeled manual row: date range + optional window; blank window = full day.
   const to = e.leave_to ?? e.leave_from;
@@ -405,15 +454,35 @@ export function spanningLeaveRows(
   return out.sort((a, b) => (a.leave_from < b.leave_from ? -1 : a.leave_from > b.leave_from ? 1 : 0));
 }
 
-export function leaveEntriesOnDate(date: string, entries: LeaveEntry[]): LeaveOnDate[] {
+export function leaveEntriesOnDate(
+  date: string,
+  entries: LeaveEntry[],
+  /** Whether the driver still holds routes on `date` (holdsRouteOn over that
+   *  date's rules). Omitted = nobody does, which is the old display. */
+  holdsRoute?: (driverId: string) => boolean,
+): LeaveOnDate[] {
   const raw: LeaveOnDate[] = [];
   for (const e of entries) {
+    // Shown on their resignation's line for the date, below.
+    if (isResignCover(e)) continue;
     if (e.loai_nghi === "Nghỉ việc") {
-      // Resigned drivers: the engine skips them forever, but the panel only
-      // flags the transition — the day before the first day off (their last
-      // working day) through the day after — then they drop off. leave_from is
-      // already last_working_day + 1 (see /api/nghi-phep). addDays is throw-safe,
-      // so a malformed leave_from just fails this range instead of 500-ing.
+      // A day the resignation covers while the config still gives them work:
+      // that lane fails every cycle until someone covers it, so it is listed
+      // every such day until the routes are moved to someone else.
+      if (coverageOnDate(e, date).covers && holdsRoute?.(e.driver_id)) {
+        const cover = entries.find((c) => isResignCover(c) && c.driver_id === e.driver_id && c.leave_from === date);
+        raw.push({
+          driver_id: e.driver_id, driver_name: e.driver_name, loai_nghi: e.loai_nghi,
+          leave_from: e.leave_from, timeLabel: null, subs: cover?.subs ?? [], duplicate: false,
+          leave_id: e.leave_id, revision: e.revision, cover_date: date,
+        });
+        continue;
+      }
+      // Otherwise the panel only flags the transition — the day before the
+      // first day off (their last working day) through the day after — then
+      // they drop off. leave_from is already last_working_day + 1 (see
+      // /api/nghi-phep). addDays is throw-safe, so a malformed leave_from just
+      // fails this range instead of 500-ing.
       if (date >= addDays(e.leave_from, -1) && date <= addDays(e.leave_from, 1)) {
         raw.push({
           driver_id: e.driver_id, driver_name: e.driver_name, loai_nghi: e.loai_nghi,
@@ -529,7 +598,9 @@ export function findLeaveConflict(
       .map(orphanAsEntry),
   ];
   if (candidate.loai_nghi === "Nghỉ việc") {
-    const already = same.find((e) => e.loai_nghi === "Nghỉ việc");
+    // An ENDED resignation is history — the driver came back — and does not
+    // stop them resigning again.
+    const already = same.find((e) => e.loai_nghi === "Nghỉ việc" && !e.leave_to);
     if (already) return already;
   }
   const dates = candidateDates(candidate);
@@ -781,7 +852,7 @@ async function loadLeaveSheet(
     // reporting.
     const orphans = parsed.filter((e) => !e.driver_id && e.leave_from && e.driver_name);
     const { recovered, invalid } = await recoverOrphanRows(orphans);
-    const entries = [...resolved, ...recovered];
+    const entries = dropStaleResignCovers([...resolved, ...recovered]);
 
     // The same zero-guard the shared copy below has always had, now one level
     // up. Only L2 was protected before, so a bad parse still poisoned THIS
@@ -878,7 +949,7 @@ function leaveMatchNow(
     return null;
   }
   if (e.loai_nghi === "Nghỉ việc") {
-    if (today >= e.leave_from) {
+    if (today >= e.leave_from && (!e.leave_to || today <= e.leave_to)) {
       return { onLeave: true, driverName, reason: `Nghỉ việc (từ ${e.leave_from})`, entry: e };
     }
     return null;

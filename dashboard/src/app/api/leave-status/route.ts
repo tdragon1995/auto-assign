@@ -6,7 +6,12 @@ import {
   invalidLeaveRowsOnDate,
   invalidateLeaveCache,
   spanningLeaveRows,
+  holdsRouteOn,
+  loadLeaveEntriesStrict,
+  resignationOn,
 } from "@/lib/leave-config";
+import { mappingsForDate } from "@/lib/day-config";
+import { dropResignCovers, endResignationOn, ensureResignCover } from "@/lib/resignation-write";
 import {
   updateLeaveSubs, replaceLeaveSubs, splitLeaveRow, deleteLeaveRow, appendLeaveDeletion,
   LeaveWriteError, type LeaveSubWrite,
@@ -58,9 +63,17 @@ export async function GET(req: NextRequest) {
     // Shares the same cached parse as the call above — no second sheet read.
     const dropped = await loadInvalidLeaveRows();
     const suppressed = await loadLeaveSuppressions(fresh);
-    const onDate = (date: string) => leaveEntriesOnDate(date, entries);
     const today = vnDate();
     const tomorrow = addDays(today, 1);
+    const dates = [today, tomorrow, ...(picked ? Array.from({ length: days }, (_, i) => addDays(picked, i)) : [])];
+    // A resigned driver is listed on every date the rules still give them work
+    // (holdsRouteOn). An unreadable config lists nobody extra rather than
+    // everyone who ever resigned.
+    const holds = new Map(await Promise.all(dates.map(async (d) => {
+      const rules = await mappingsForDate(d);
+      return [d, (id: string) => !!rules && holdsRouteOn(id, rules)] as const;
+    })));
+    const onDate = (date: string) => leaveEntriesOnDate(date, entries, holds.get(date));
     return NextResponse.json({
       today: onDate(today),
       tomorrow: onDate(tomorrow),
@@ -131,7 +144,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== "object") return bad("Body không hợp lệ");
-    const { driver_id, leave_from, timeLabel, loai_nghi, subs, replace, mode, expectedSubs } = body as {
+    const { driver_id, leave_from, timeLabel, loai_nghi, subs, mode, expectedSubs, cover_date } = body as {
       driver_id?: string;
       leave_from?: string;
       timeLabel?: string | null;
@@ -140,8 +153,16 @@ export async function POST(req: NextRequest) {
       replace?: boolean;
       mode?: "split";
       expectedSubs?: { name?: string; from?: string | null; to?: string | null }[];
+      /** One date of a resignation — see RESIGN_COVER_NOTE. */
+      cover_date?: string;
     };
+    let { replace } = body as { replace?: boolean };
     if (!driver_id || !leave_from) return bad("Thiếu driver_id / leave_from");
+    if (cover_date !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(cover_date)) return bad("Ngày thay không hợp lệ");
+    // A resignation is covered one date at a time, never by a sub on the
+    // resignation itself, which would run forever.
+    if (loai_nghi === "Nghỉ việc" && !cover_date)
+      return bad("Người thay cho tài xế nghỉ việc chọn theo từng ngày — chọn trên ngày cần thay");
     if (!Array.isArray(subs) || (!replace && subs.length < 1) || subs.length > 3)
       return bad("Cần 1–3 người thay");
 
@@ -181,8 +202,22 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const identity = { driver_id, leave_from, timeLabel: timeLabel ?? null, loai_nghi: loai_nghi ?? null, leave_id: body.leave_id, revision: body.revision };
+    let identity: {
+      driver_id: string; leave_from: string; timeLabel: string | null; loai_nghi: string | null;
+      leave_id?: number; revision?: number;
+    } = { driver_id, leave_from, timeLabel: timeLabel ?? null, loai_nghi: loai_nghi ?? null, leave_id: body.leave_id, revision: body.revision };
     const split = mode === "split";
+    if (cover_date) {
+      if (split) return bad("Ngày thay người nghỉ việc không chia ca được");
+      const resigned = resignationOn(driver_id, cover_date, (await loadLeaveEntriesStrict()).entries);
+      if (!resigned) return bad("Tài xế không còn nghỉ việc ngày này — Refresh");
+      await ensureResignCover(driver_id, resigned.driver_name, cover_date);
+      await invalidateLeaveCache();
+      // The date's own row, whatever it carried: what the editor shows is that
+      // date's cover, so saving replaces it (an empty list clears it).
+      identity = { driver_id, leave_from: cover_date, timeLabel: null, loai_nghi: "Nghỉ nguyên buổi" };
+      replace = true;
+    }
     let result: { row: number; warning?: string; rows?: number[]; created?: number };
     if (split) {
       const [sourceFrom = "", sourceTo = ""] = (timeLabel ?? "").split("–");
@@ -203,7 +238,22 @@ export async function POST(req: NextRequest) {
     }
     await invalidateLeaveCache();
 
-    const warning = result.warning ?? null;
+    // Being named as a substitute means working that day, so a sub who had
+    // resigned is back: their resignation ends the day before.
+    const workDate = cover_date ?? leave_from;
+    const ended: string[] = [];
+    for (const s of clean) {
+      const subId = idByName.get(s.name)!;
+      if (subId === driver_id) continue;
+      const name = await endResignationOn(subId, workDate);
+      if (name) ended.push(name);
+    }
+    if (ended.length) await invalidateLeaveCache();
+    const endedNote = ended.length
+      ? `Đã kết thúc nghỉ việc của ${ended.join(", ")} từ ${workDate.slice(8, 10)}/${workDate.slice(5, 7)}.`
+      : null;
+
+    const warning = [result.warning, endedNote].filter(Boolean).join(" ") || null;
     let thayCa: { created: number; updated: number; deleted: number } | null = null;
     let thayCaWarning: string | null = null;
     try {
@@ -267,6 +317,8 @@ export async function DELETE(req: NextRequest) {
       timeLabel: timeLabel ?? null,
       loai_nghi: loai_nghi ?? null,
     });
+    // A resignation's per-date covers mean nothing without it.
+    if (deleted.loai_nghi === "Nghỉ việc") await dropResignCovers(driver_id, deleted.leave_from);
     await invalidateLeaveCache();
 
     // The row is gone; now make it STAY gone. Without this line the MISA sync

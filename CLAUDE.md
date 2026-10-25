@@ -261,6 +261,17 @@ ever named, which is how a warning stops being read.
   and make the feature a no-op. A morning half-day copies as nothing. The twin
   must match by name to exactly one active PT account or the day is left alone
   and reported. `misa-fetcher/scripts/pt-companion.test.mjs`.
+- **A resignation ends, and is covered one date at a time.** "Nghỉ việc" runs
+  from `leave_from` to `leave_to` (blank = forever). Naming a resigned driver as
+  anyone's substitute means they are working again: `POST /api/leave-status`
+  ends the resignation the day before (or removes it when it starts that day).
+  A resignation takes no substitute of its own — a forever-sub outlived the
+  sub's own resignation (Phi → Toán, 10/2026). Instead it is listed on every
+  date the config still gives the driver work (fixed rule, or the only
+  candidate of a smart rule — `holdsRouteOn`), and that date's cover is a
+  whole-day row noted `RESIGN_COVER_NOTE`, which counts only while its
+  resignation still covers its date (`dropStaleResignCovers`). Moving the
+  routes in the Config tab is what ends the to-do. `scripts/resignation-cover.test.mts`.
 
 ## Architecture
 

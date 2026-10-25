@@ -20,7 +20,7 @@ const dm = (d: string) => `${d.slice(8, 10)}/${d.slice(5, 7)}`;
 function leaveOn(date: string, entries: LeaveEntry[]): Record<string, RosterLeave> {
   const out: Record<string, RosterLeave> = {};
   for (const e of entries) {
-    if (e.loai_nghi === "Nghỉ việc" && e.leave_from <= date) out[e.driver_id] = { kind: "resigned", label: `Nghỉ việc từ ${dm(e.leave_from)}` };
+    if (e.loai_nghi === "Nghỉ việc" && e.leave_from <= date && (!e.leave_to || date <= e.leave_to)) out[e.driver_id] = { kind: "resigned", label: `Nghỉ việc từ ${dm(e.leave_from)}` };
   }
   for (const e of leaveEntriesOnDate(date, entries)) {
     if (out[e.driver_id] || e.loai_nghi === "Nghỉ việc") continue;
