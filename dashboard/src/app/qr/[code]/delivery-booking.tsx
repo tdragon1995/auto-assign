@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, Loader2, Package, Paperclip, Plus, RefreshCw, Search, Send, X } from "lucide-react";
 import { shrink } from "@/components/correction-form";
-import { MAX_PROOF_FILES } from "@/lib/pay-corrections";
+import { MAX_PROOF_BYTES, MAX_PROOF_FILES } from "@/lib/pay-corrections";
 import { placeLabel } from "@/lib/place-label";
 
 interface Customer { customer_id: string; customer_name: string; address_line_1?: string | null }
@@ -136,6 +136,16 @@ export function DeliveryBooking({ pickup, date }: { pickup: string; date: string
       const deliveries = await Promise.all(rows.map(async (r) => ({
         customer_id: r.c.customer_id, kind: r.kind, note: r.note, files: await Promise.all(r.files.map(shrink)),
       })));
+      // Checked here, before the upload: a PDF or a photo the phone cannot redraw goes
+      // as it is, and past ~4.5 MB the platform drops the request with no answer — a
+      // long wait ending in "Kiểm tra mạng" (2026-10-25), never the server's message.
+      const files = deliveries.flatMap((d) => d.files).map((f) => ({ name: f.name, bytes: Math.floor((f.dataUrl.length - f.dataUrl.indexOf(",") - 1) * 3 / 4) }));
+      const total = files.reduce((n, f) => n + f.bytes, 0);
+      if (total > MAX_PROOF_BYTES) {
+        const big = files.filter((f) => f.bytes > 500_000).map((f) => `${f.name} (${(f.bytes / 1e6).toFixed(1)} MB)`);
+        setError(`Tệp quá lớn — tổng ${(total / 1e6).toFixed(1)} MB, tối đa ${MAX_PROOF_BYTES / 1e6} MB.${big.length ? ` Bỏ bớt: ${big.join(", ")}.` : ""} Ảnh chụp sẽ được thu nhỏ; PDF thì không.`);
+        return;
+      }
       const res = await fetch("/api/psc-delivery", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pickup, deliveries }),
       });
