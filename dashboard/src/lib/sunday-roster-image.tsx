@@ -5,7 +5,7 @@
  */
 import { ImageResponse } from "next/og";
 import type { SundayLine } from "./sunday-roster-zalo";
-import { displayArea, isMorning, isOpen, openLines, SUNDAY_TAB_URL, STAGE_LABEL, type PostLine, type Stage } from "./sunday-roster-post";
+import { displayArea, displayShift, isMorning, isOpen, openLines, SUNDAY_TAB_URL, STAGE_LABEL, type PostLine, type Stage } from "./sunday-roster-post";
 
 // Two columns, so the picture comes out about square. A single 1080-wide
 // column was ~1:3.5 and showed in Zalo as a thin strip nobody could read.
@@ -91,7 +91,7 @@ function SegmentCard({ seg }: { seg: Segment }) {
                 {!l.name ? "— Còn trống —" : l.away ? "Cần người thay" : l.name}
               </div>
               <div style={{ display: "flex", width: COLS.area, paddingRight: 16, color: "#374151" }}>{displayArea(l.area)}</div>
-              <div style={{ display: "flex", width: COLS.shift, fontWeight: 700, color: "#111827", whiteSpace: "nowrap" }}>{l.shift}</div>
+              <div style={{ display: "flex", width: COLS.shift, fontWeight: 700, color: "#111827", whiteSpace: "nowrap" }}>{displayShift(l.shift)}</div>
             </div>
             {l.note && (
               <div style={{ display: "flex", marginTop: 4, marginLeft: COLS.n, paddingRight: 16, color: "#92400e", fontSize: NOTE_FONT, lineHeight: `${NOTE_LINE}px`, whiteSpace: "pre-wrap" }}>
@@ -125,7 +125,7 @@ export async function renderRosterImage(date: string, lines: SundayLine[], stage
   const sub = `Ngày ${dmy(date)} · ${STAGE_LABEL[stage]}`;
   const legend = open ? `Dòng đỏ: còn trống ${open} vị trí — xem hình "Ca còn trống"` : "Đã đủ người";
   const headers = ["#", "Họ và tên", "Địa điểm", "Ca", "Ca sáng", "Ca chiều", "(tiếp)", "— Còn trống —", "Cần người thay", "·"];
-  const text = [title, sub, legend, ...headers, ...lines.flatMap((l) => [l.name, displayArea(l.area), l.shift, l.note]), "0123456789"].join(" ");
+  const text = [title, sub, legend, ...headers, ...lines.flatMap((l) => [l.name, displayArea(l.area), displayShift(l.shift), l.note]), "0123456789"].join(" ");
   const fontList = await fonts(text);
 
   const cols = columns([
@@ -175,10 +175,10 @@ export async function renderOpenSlotsImage(date: string, lines: SundayLine[], st
   const sub = `Chủ nhật ${dmy(date)} · ${open.length} vị trí · ${STAGE_LABEL[stage]}`;
   const cta = `Bấm "Nhận ca" trong Tab "Lịch CN" — ai nhận trước sẽ được xếp ca`;
   const link = SUNDAY_TAB_URL.replace(/^https:\/\//, "");
-  const fontList = await fonts([title, sub, cta, link, "Cần người thay", ...open.flatMap((l) => [displayArea(l.area), l.shift, l.note]), "0123456789"].join(" "));
+  const fontList = await fonts([title, sub, cta, link, ...open.flatMap((l) => [displayArea(l.area), displayShift(l.shift), l.note]), "0123456789"].join(" "));
 
   const cardH = (l: PostLine) =>
-    56 + wrap(displayArea(l.area), O_BODY_W, O_FONT) * O_LINE + (l.away ? 44 : 0) + (l.note ? 8 + wrap(l.note, O_BODY_W, O_NOTE) * O_NOTE_LINE : 0);
+    56 + wrap(displayArea(l.area), O_BODY_W, O_FONT) * O_LINE + (l.note ? 8 + wrap(l.note, O_BODY_W, O_NOTE) * O_NOTE_LINE : 0);
   const height = O_PAD * 2 + 190 + open.reduce((h, l) => h + Math.max(cardH(l), 112) + 20, 0) + 150;
 
   return new ImageResponse(
@@ -191,14 +191,9 @@ export async function renderOpenSlotsImage(date: string, lines: SundayLine[], st
         <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
           {open.map((l) => (
             <div key={l.id} style={{ display: "flex", background: "white", border: "3px solid #fca5a5", borderRadius: 16, padding: 28, minHeight: 112 }}>
-              <div style={{ display: "flex", width: O_SHIFT_W, fontWeight: 700, color: "#b91c1c", whiteSpace: "nowrap" }}>{l.shift}</div>
+              <div style={{ display: "flex", width: O_SHIFT_W, fontWeight: 700, color: "#b91c1c", whiteSpace: "nowrap" }}>{displayShift(l.shift)}</div>
               <div style={{ display: "flex", flexDirection: "column", width: O_BODY_W }}>
                 <div style={{ display: "flex", fontWeight: 700, color: "#111827" }}>{displayArea(l.area)}</div>
-                {l.away && (
-                  <div style={{ display: "flex", marginTop: 8 }}>
-                    <div style={{ display: "flex", fontSize: O_NOTE, lineHeight: "36px", fontWeight: 700, color: "#b91c1c", background: "#fee2e2", borderRadius: 8, padding: "0 12px" }}>Cần người thay</div>
-                  </div>
-                )}
                 {l.note && (
                   <div style={{ display: "flex", marginTop: 8, fontSize: O_NOTE, lineHeight: `${O_NOTE_LINE}px`, color: "#92400e", whiteSpace: "pre-wrap" }}>{l.note}</div>
                 )}

@@ -11,7 +11,7 @@
  */
 
 import {
-  awayFor, displayArea, hoursMeet, isMorning, isOpen, openLines, shiftRange,
+  awayFor, displayArea, displayShift, hoursMeet, isMorning, isOpen, openLines, shiftRange,
   weeklyPostText, claimText, adminAlertText, stageFor, type PostLine,
 } from "../src/lib/sunday-roster-post";
 
@@ -49,6 +49,12 @@ eq("Phòng khám → PK, bars → commas", displayArea("Phòng khám Q2 | Bình 
 eq("unspaced bars too", displayArea("D001 (Phòng khám Q1|3|4|5|10) ca 1"), "D001 (PK Q1, 3, 4, 5, 10) ca 1");
 eq("a plain branch is untouched", displayArea("D022"), "D022");
 eq("mid-name", displayArea("Hub D003 + Phòng khám Phú Nhuận"), "Hub D003 + PK Phú Nhuận");
+
+console.log("times line up");
+eq("one-digit hours get a zero", displayShift("8:00 - 12:00"), "08:00 - 12:00");
+eq("both ends", displayShift("6:00 - 9:30"), "06:00 - 09:30");
+eq("two-digit hours untouched", displayShift("06:00 - 15:00"), "06:00 - 15:00");
+eq("blank stays blank", displayShift(""), "");
 
 console.log("open lines");
 eq("nobody on it", isOpen(line({})), true);
