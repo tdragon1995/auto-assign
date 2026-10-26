@@ -5,6 +5,14 @@ export const THAY_CA_NOTE_PREFIX = "THAY_CA_V1:";
 export const SWAP_NOTE_PREFIX = "THAY_CA_SWAP_V1:";
 const DAY_MINUTES = 24 * 60;
 
+/** A resigned driver's cover for one date — see the RESIGNATIONS note in
+ *  `leave-config.ts`. Here because this module is pure and the leave reader
+ *  imports it, not the other way round. */
+export const RESIGN_COVER_NOTE = "Thay người nghỉ việc";
+export function isResignCover(e: { loai_nghi: string; note?: string | null }): boolean {
+  return e.loai_nghi === "Nghỉ nguyên buổi" && (e.note ?? "").trim() === RESIGN_COVER_NOTE;
+}
+
 export interface ThayCaMeta {
   recordKey: string;
   logicalKey: string;
@@ -79,11 +87,15 @@ function rowWindows(mapping: Mapping): Window[] {
  * the engine takes an on-leave candidate out of a pool just as it takes a fixed
  * driver off a route. A pool the source is also in is not extra work — the
  * engine ranks the sub in the source's place and dedups them. A source with no
- * config rows at all is treated as on duty all day. */
+ * config rows at all is treated as on duty all day — except a resigned one
+ * (`noRulesMeansFree`): once their routes are moved to someone else there is
+ * nothing left to hand over, and the all-day reading took the new owner off
+ * the very routes he had just been given (Toán → Nhân, 26/10). */
 function sharedDutyWindows(
   sourceDriverId: string,
   substituteId: string,
   mappings: readonly Mapping[],
+  noRulesMeansFree = false,
 ): Window[] {
   const source = mappings
     .filter((m) => m.driver_id === sourceDriverId || m.smart_driver_id.includes(sourceDriverId))
@@ -92,7 +104,7 @@ function sharedDutyWindows(
     .filter((m) => m.driver_id === substituteId ||
       (m.smart_driver_id.includes(substituteId) && !m.smart_driver_id.includes(sourceDriverId)))
     .flatMap(rowWindows);
-  if (source.length === 0) return substitute;
+  if (source.length === 0) return noRulesMeansFree ? [] : substitute;
   return source.flatMap((a) => substitute.flatMap((b) => {
     const hit = intersection(a, b);
     return hit ? [hit] : [];
@@ -224,7 +236,7 @@ export function deriveThayCaRows(
         const coverage = windows(sub.from ?? entry.gio_bat_dau, sub.to ?? entry.gio_ket_thuc);
         // Overnight windows are split before intersection so each generated
         // row remains a normal same-day leave row.
-        const allHits = merge(coverage.flatMap((a) => sharedDutyWindows(entry.driver_id, sub.id, rulesOn(date)).flatMap((b) =>
+        const allHits = merge(coverage.flatMap((a) => sharedDutyWindows(entry.driver_id, sub.id, rulesOn(date), isResignCover(entry)).flatMap((b) =>
           parentWindow.flatMap((p) => {
             const dutyHit = intersection(b, p);
             const hit = dutyHit ? intersection(a, dutyHit) : null;

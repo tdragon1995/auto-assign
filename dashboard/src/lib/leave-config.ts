@@ -10,6 +10,8 @@ import { loadDriversFromSheet } from "./config";
 import { matchDriverByName } from "./driver-match";
 import { addDays, timeToMins, vnDate, vnMinutesSinceMidnight } from "./time";
 import { unwrapLeaveSplitNote } from "./leave-split";
+import { RESIGN_COVER_NOTE, isResignCover } from "./thay-ca";
+export { RESIGN_COVER_NOTE, isResignCover };
 
 /** The 3PL-express (Grab) booking proxy. When a substitute slot resolves to
  *  this UUID it means the leave is covered by a 3PL-express booking, NOT a real
@@ -61,12 +63,6 @@ export interface LeaveEntry {
  * covers its date — `dropStaleResignCovers` hides the rest — so ending or
  * deleting a resignation can never leave its covers keeping the driver off.
  */
-export const RESIGN_COVER_NOTE = "Thay người nghỉ việc";
-
-export function isResignCover(e: Pick<LeaveEntry, "loai_nghi" | "note">): boolean {
-  return e.loai_nghi === "Nghỉ nguyên buổi" && (e.note ?? "").trim() === RESIGN_COVER_NOTE;
-}
-
 /** The resignation keeping `driverId` off on `date`, if any. */
 export function resignationOn(driverId: string, date: string, entries: readonly LeaveEntry[]): LeaveEntry | null {
   return entries.find((e) =>

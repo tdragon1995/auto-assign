@@ -15,6 +15,8 @@ import {
   leaveEntriesOnDate, dropStaleResignCovers, holdsRouteOn, resignationOn, findLeaveConflict,
   RESIGN_COVER_NOTE, type LeaveEntry,
 } from "../src/lib/leave-config";
+import { deriveThayCaRows } from "../src/lib/thay-ca";
+import type { Mapping } from "../src/lib/types";
 
 let failures = 0;
 const eq = (label: string, got: unknown, want: unknown) => {
@@ -72,6 +74,23 @@ eq("dropped once it has ended", dropStaleResignCovers([ended, cover]).map((e) =>
 eq("dropped when the resignation is gone", dropStaleResignCovers([cover]), []);
 eq("an ordinary whole day is never touched",
   dropStaleResignCovers([entry({ loai_nghi: "Nghỉ nguyên buổi", note: "Nhập từ dashboard" })]).length, 1);
+
+console.log("Thay ca for the person covering");
+const rule = (driver_id: string, start: string, end: string): Mapping => ({
+  customer_id: `branch-${driver_id}`, driver_id, smart_driver_id: [], dropoff_id: "", first_name_last_name: driver_id,
+  shift_start: { hours: Number(start.slice(0, 2)), minutes: Number(start.slice(3)) },
+  shift_end: { hours: Number(end.slice(0, 2)), minutes: Number(end.slice(3)) },
+  bot_token: "", chat_id: "", alt_drop_off_id: "",
+});
+const nhanCover = { ...cover, subs: [{ id: "nhan", name: "Nguyễn Hoàng Nhân", from: null, to: null }] };
+const windows = (rules: Mapping[], e = nhanCover) =>
+  deriveThayCaRows([e], rules).map((r) => `${r.driver_id} ${r.leave_from_hr}–${r.leave_to_hr}`);
+eq("while the resigned driver still holds routes, the sub's own clashing hours are handed over",
+  windows([rule("toan", "08:00", "22:00"), rule("nhan", "16:00", "22:00")]), ["nhan 16:00–22:00"]);
+eq("once the routes are moved to the sub there is nothing to hand over (Toán → Nhân, 26/10)",
+  windows([rule("nhan", "16:00", "22:00")]), []);
+eq("ordinary leave of a driver with no rules still reads as all day",
+  windows([rule("nhan", "16:00", "22:00")], { ...nhanCover, note: "Nhập từ dashboard" }), ["nhan 16:00–22:00"]);
 
 console.log(failures === 0 ? "\nAll passed." : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
