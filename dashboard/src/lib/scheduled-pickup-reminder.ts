@@ -48,7 +48,7 @@ export async function remindScheduledPickup(
     // Claim before sending: a stale queue-driver list cannot repeat the reminder.
     if (!(await claimLateAlert(job.job_id, env, 86400, PICKUP_REMINDER_CLAIM))) return;
     const mention = isSampleBot ? "@Bot Giao nhận mẫu" : "@Bot Điều Phối X";
-    const text = `${MESSAGE}\n👉 Tag **${mention}** để báo không có mẫu`;
+    const text = `${MESSAGE}\n👉 Nếu hôm nay không có mẫu, tag **${mention}** và nhắn "không có mẫu", "chưa có mẫu" hoặc tương tự!`;
     if (!(await sendZaloMessage(token, chatId, text, "markdown"))) {
       log(`Job ${job.job_id} - Fixed-pickup Zalo reminder failed`, "WARN");
     } else {
