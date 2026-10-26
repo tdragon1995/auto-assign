@@ -65,7 +65,7 @@ export async function GET(req: NextRequest) {
     if (n) console.log(`[cron] geofence restored for ${n} driver(s)`);
   });
   after(() => maybeAutoUpdatePickupEtas().catch(e => console.error("[cron] pickup ETA update:", e)));
-  // Friday 17:00 roster post to the drivers' group, Saturday 18:00 admin check.
+  // Sunday roster to the drivers' groups: Wednesday 13:00 draft, Friday 13:00 final; Saturday 18:00 admin check.
   after(() => maybeSundayRosterPost().catch(e => console.error("[cron] sunday roster post:", e)));
 
   // 1) Switch off? Inside 05:30–22:00 the engine should be running, so self-heal

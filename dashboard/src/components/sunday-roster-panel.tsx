@@ -6,6 +6,7 @@ import { Button } from "./ui/button";
 import { DriverCombobox } from "./driver-combobox";
 import { addDays, vnDate } from "@/lib/time";
 import { areaKey, rosterGaps, rosterSunday, validShift, type RosterLine, type RosterWeek } from "@/lib/sunday-roster";
+import { stageFor, STAGE_LABEL } from "@/lib/sunday-roster-post";
 import type { ConfigDriver } from "@/lib/types";
 
 const box = "w-full rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-900 placeholder:text-slate-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:opacity-60";
@@ -109,27 +110,16 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
     }
   };
 
-  // The Friday post on demand — after fixing the roster, or before 17:00 Friday.
+  // The drivers' post on demand — after fixing the roster, or ahead of the
+  // Wednesday/Friday 13:00 posts. Draft until the Friday before the Sunday.
   const [posting, setPosting] = useState(false);
-  const preview = async () => {
-    // Opened first, filled after: a window opened after an await is a blocked popup.
-    const win = window.open("", "_blank");
-    try {
-      const res = await fetch(`/api/sunday-roster/post?date=${date}`, { cache: "no-store" });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Không tạo được ảnh");
-      if (win) win.location.href = data.image;
-    } catch (e) {
-      win?.close();
-      toast.error(e instanceof Error ? e.message : String(e));
-    }
-  };
+  const stage = stageFor(vnDate(), date);
   const post = async () => {
-    if (!confirm(`Đăng ảnh lịch + danh sách ca trống Chủ nhật ${dmy(date)} lên nhóm Zalo tài xế?`)) return;
+    if (!confirm(`Đăng lịch Chủ nhật ${dmy(date)} (${STAGE_LABEL[stage].toLowerCase()}: ảnh lịch, ảnh ca trống, tin nhắn) lên các nhóm Zalo tài xế?`)) return;
     setPosting(true);
     try {
       const res = await fetch("/api/sunday-roster/post", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ date }),
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ date, stage }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Không đăng được lên Zalo");
@@ -187,8 +177,8 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
             <Button variant="outline" disabled={busy || !source} onClick={() => void copyFrom(source)}><Copy className="size-4" />Sao chép</Button>
           </>}
           <Button variant="outline" disabled={busy} onClick={() => { if (discard()) void load(); }}><RefreshCw className="size-4" />Tải lại</Button>
-          <Button variant="outline" disabled={busy || unsaved || !lines.length} title={unsaved ? "Lưu lịch trước" : "Xem ảnh sẽ đăng lên Zalo"} onClick={() => void preview()}><ImageIcon className="size-4" />Xem ảnh</Button>
-          <Button variant="outline" disabled={busy || posting || unsaved || !lines.length} title={unsaved ? "Lưu lịch trước" : "Đăng ảnh + ca trống lên nhóm Zalo tài xế (tự động lúc 17:00 thứ Sáu)"} onClick={() => void post()}><Send className="size-4" />{posting ? "Đang đăng…" : "Đăng Zalo"}</Button>
+          <Button variant="outline" disabled={busy || unsaved || !lines.length} title={unsaved ? "Lưu lịch trước" : "Xem trước ảnh và tin nhắn sẽ đăng lên Zalo"} onClick={() => window.open(`/api/sunday-roster/post?date=${date}&stage=${stage}`, "_blank", "noopener")}><ImageIcon className="size-4" />Xem ảnh</Button>
+          <Button variant="outline" disabled={busy || posting || unsaved || !lines.length} title={unsaved ? "Lưu lịch trước" : "Đăng ngay lên các nhóm Zalo tài xế (tự động 13:00 thứ Tư bản dự kiến, 13:00 thứ Sáu bản chính thức)"} onClick={() => void post()}><Send className="size-4" />{posting ? "Đang đăng…" : "Đăng Zalo"}</Button>
           <Button disabled={busy || !unsaved || !week || incomplete} title={incomplete ? "Mỗi dòng cần khu vực, ca dạng 06:00 - 15:00" : undefined} onClick={() => void save()}>{saving ? "Đang lưu…" : "Lưu lịch"}</Button>
         </div>
       </div>

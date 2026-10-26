@@ -5,7 +5,7 @@
  */
 import { ImageResponse } from "next/og";
 import type { SundayLine } from "./sunday-roster-zalo";
-import { displayArea, isMorning, isOpen } from "./sunday-roster-post";
+import { displayArea, isMorning, isOpen, openLines, SUNDAY_TAB_URL, STAGE_LABEL, type PostLine, type Stage } from "./sunday-roster-post";
 
 // Two columns, so the picture comes out about square. A single 1080-wide
 // column was ~1:3.5 and showed in Zalo as a thin strip nobody could read.
@@ -25,6 +25,14 @@ async function font(weight: 400 | 700, text: string): Promise<ArrayBuffer | null
   } catch {
     return null;
   }
+}
+
+type Font = { name: string; data: ArrayBuffer; weight: 400 | 700 };
+async function fonts(text: string): Promise<Font[]> {
+  const [regular, bold] = await Promise.all([font(400, text), font(700, text)]);
+  if (!regular || !bold) console.warn("[sunday-roster] image font not loaded — Vietnamese will not render");
+  return [regular && { name: "BVP", data: regular, weight: 400 as const }, bold && { name: "BVP", data: bold, weight: 700 as const }]
+    .filter((f): f is Font => !!f);
 }
 
 /** Satori needs the height up front: estimate each row's wrapped line count. */
@@ -109,17 +117,16 @@ function Labels() {
 }
 
 /** `lines` already filtered to the published ones. */
-export async function renderRosterImage(date: string, lines: SundayLine[]): Promise<ImageResponse> {
+export async function renderRosterImage(date: string, lines: SundayLine[], stage: Stage = "final"): Promise<ImageResponse> {
   const morning = lines.filter((l) => isMorning(l.shift)), afternoon = lines.filter((l) => !isMorning(l.shift));
   const open = lines.filter(isOpen).length;
 
   const title = "LỊCH LÀM VIỆC CHỦ NHẬT";
-  const sub = `Ngày ${dmy(date)}`;
-  const legend = open ? `Dòng đỏ: còn trống ${open} vị trí — bấm "Nhận ca" trong Tab "Lịch CN"` : "Đã đủ người";
+  const sub = `Ngày ${dmy(date)} · ${STAGE_LABEL[stage]}`;
+  const legend = open ? `Dòng đỏ: còn trống ${open} vị trí — xem hình "Ca còn trống"` : "Đã đủ người";
   const headers = ["#", "Họ và tên", "Địa điểm", "Ca", "Ca sáng", "Ca chiều", "(tiếp)", "— Còn trống —", "Cần người thay", "·"];
   const text = [title, sub, legend, ...headers, ...lines.flatMap((l) => [l.name, displayArea(l.area), l.shift, l.note]), "0123456789"].join(" ");
-  const [regular, bold] = await Promise.all([font(400, text), font(700, text)]);
-  if (!regular || !bold) console.warn("[sunday-roster] image font not loaded — Vietnamese will not render");
+  const fontList = await fonts(text);
 
   const cols = columns([
     { title: "Ca sáng", color: "#f59e0b", rows: morning },
@@ -149,9 +156,62 @@ export async function renderRosterImage(date: string, lines: SundayLine[]): Prom
     ),
     {
       width: W, height,
-      fonts: [regular && { name: "BVP", data: regular, weight: 400 as const }, bold && { name: "BVP", data: bold, weight: 700 as const }]
-        .filter((f): f is { name: string; data: ArrayBuffer; weight: 400 | 700 } => !!f),
+      fonts: fontList,
       headers: { "Cache-Control": "no-store" },
     },
+  );
+}
+
+// The open slots on their own, big: in the roster picture they were three red
+// rows among sixty, and in the text three lines inside a wall of it.
+const OW = 1200, O_PAD = 48, O_FONT = 34, O_LINE = 44, O_NOTE = 24, O_NOTE_LINE = 32;
+const O_SHIFT_W = 300, O_BODY_W = OW - 2 * O_PAD - O_SHIFT_W - 2 * 28;
+
+/** Null when nothing is open — there is no second picture to send. */
+export async function renderOpenSlotsImage(date: string, lines: SundayLine[], stage: Stage = "final"): Promise<ImageResponse | null> {
+  const open = openLines(lines);
+  if (!open.length) return null;
+  const title = "CA CÒN TRỐNG";
+  const sub = `Chủ nhật ${dmy(date)} · ${open.length} vị trí · ${STAGE_LABEL[stage]}`;
+  const cta = `Bấm "Nhận ca" trong Tab "Lịch CN" — ai nhận trước sẽ được xếp ca`;
+  const link = SUNDAY_TAB_URL.replace(/^https:\/\//, "");
+  const fontList = await fonts([title, sub, cta, link, "Cần người thay", ...open.flatMap((l) => [displayArea(l.area), l.shift, l.note]), "0123456789"].join(" "));
+
+  const cardH = (l: PostLine) =>
+    56 + wrap(displayArea(l.area), O_BODY_W, O_FONT) * O_LINE + (l.away ? 44 : 0) + (l.note ? 8 + wrap(l.note, O_BODY_W, O_NOTE) * O_NOTE_LINE : 0);
+  const height = O_PAD * 2 + 190 + open.reduce((h, l) => h + Math.max(cardH(l), 112) + 20, 0) + 150;
+
+  return new ImageResponse(
+    (
+      <div style={{ display: "flex", flexDirection: "column", width: OW, height, padding: O_PAD, background: "#fff7f7", fontFamily: "BVP", fontSize: O_FONT, lineHeight: `${O_LINE}px` }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", height: 190 }}>
+          <div style={{ display: "flex", fontSize: 64, fontWeight: 700, color: "#b91c1c", lineHeight: "80px" }}>{title}</div>
+          <div style={{ display: "flex", fontSize: 32, fontWeight: 700, color: "#111827", lineHeight: "44px" }}>{sub}</div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+          {open.map((l) => (
+            <div key={l.id} style={{ display: "flex", background: "white", border: "3px solid #fca5a5", borderRadius: 16, padding: 28, minHeight: 112 }}>
+              <div style={{ display: "flex", width: O_SHIFT_W, fontWeight: 700, color: "#b91c1c", whiteSpace: "nowrap" }}>{l.shift}</div>
+              <div style={{ display: "flex", flexDirection: "column", width: O_BODY_W }}>
+                <div style={{ display: "flex", fontWeight: 700, color: "#111827" }}>{displayArea(l.area)}</div>
+                {l.away && (
+                  <div style={{ display: "flex", marginTop: 8 }}>
+                    <div style={{ display: "flex", fontSize: O_NOTE, lineHeight: "36px", fontWeight: 700, color: "#b91c1c", background: "#fee2e2", borderRadius: 8, padding: "0 12px" }}>Cần người thay</div>
+                  </div>
+                )}
+                {l.note && (
+                  <div style={{ display: "flex", marginTop: 8, fontSize: O_NOTE, lineHeight: `${O_NOTE_LINE}px`, color: "#92400e", whiteSpace: "pre-wrap" }}>{l.note}</div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginTop: 32, background: "#1d4ed8", color: "white", borderRadius: 16, padding: "20px 24px" }}>
+          <div style={{ display: "flex", fontSize: 30, fontWeight: 700, lineHeight: "40px" }}>{cta}</div>
+          <div style={{ display: "flex", fontSize: 26, lineHeight: "36px" }}>{link}</div>
+        </div>
+      </div>
+    ),
+    { width: OW, height, fonts: fontList, headers: { "Cache-Control": "no-store" } },
   );
 }

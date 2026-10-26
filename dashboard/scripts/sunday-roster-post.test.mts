@@ -12,7 +12,7 @@
 
 import {
   awayFor, displayArea, hoursMeet, isMorning, isOpen, openLines, shiftRange,
-  weeklyPostText, claimText, adminAlertText, type PostLine,
+  weeklyPostText, claimText, adminAlertText, stageFor, type PostLine,
 } from "../src/lib/sunday-roster-post";
 
 let failures = 0;
@@ -63,8 +63,17 @@ const week = [
 eq("internal roles are never offered", openLines(week).map((l) => l.id), [1, 3]);
 
 console.log("what the bot says");
-const post = weeklyPostText("2026-10-25", week);
-eq("dated like the admins write it", post.includes("dự kiến ngày 25/10/2026"), true);
+console.log("draft on Wednesday, final from Friday");
+eq("Wednesday before the Sunday is the draft", stageFor("2026-10-28", "2026-11-01"), "draft");
+eq("Thursday is still the draft", stageFor("2026-10-29", "2026-11-01"), "draft");
+eq("Friday is the final", stageFor("2026-10-30", "2026-11-01"), "final");
+eq("so is the Sunday itself", stageFor("2026-11-01", "2026-11-01"), "final");
+const draft = weeklyPostText("2026-10-25", week, "draft");
+eq("the draft says dự kiến and when the final comes", draft.startsWith("Team gửi lịch làm việc chủ nhật dự kiến ngày 25/10/2026 (lịch chính thức gửi lúc 13:00 thứ Sáu)"), true);
+const post = weeklyPostText("2026-10-25", week, "final");
+eq("the final says chính thức", post.startsWith("Team gửi lịch làm việc chủ nhật chính thức ngày 25/10/2026\n"), true);
+eq("no @All in either", (draft + post).includes("@All"), false);
+eq("points at the open-slots picture", post.includes('(xem hình "Ca còn trống")'), true);
 eq("counts two digits, as before", post.includes("Hiện đang trống 02 vị trí"), true);
 eq("lists an empty slot with its hours", post.includes("D022\t06:00 - 15:00\n"), true);
 eq("marks the leave-opened slot, by its short name", post.includes("PK Q2, Bình Thạnh ca 2\t15:00 - 20:00 (cần người thay)"), true);

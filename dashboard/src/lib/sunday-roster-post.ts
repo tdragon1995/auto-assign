@@ -5,6 +5,7 @@
  * text, the picture and the "Nhận ca" button can never disagree about which
  * slots are open. `scripts/sunday-roster-post.test.mts`.
  */
+import { addDays } from "./time";
 
 /** One line of a Sunday, with the rostered person already resolved. */
 export type PostLine = {
@@ -70,18 +71,30 @@ function slotList(open: PostLine[]): string {
   return open.map((l) => `${displayArea(l.area)}\t${l.shift}${l.away ? " (cần người thay)" : ""}`).join("\n");
 }
 
-/** Friday's post, in the wording admins already use — the sign-up step now
+/** Wednesday 13:00 sends the DRAFT, Friday 13:00 the FINAL. */
+export type Stage = "draft" | "final";
+
+/** Which post a send made on `today` is, for Sunday `sunday`: from the Friday
+ *  before it on, the final one. ("Đăng Zalo" uses this; the cron knows its day.) */
+export function stageFor(today: string, sunday: string): Stage {
+  return today >= addDays(sunday, -2) ? "final" : "draft";
+}
+
+export const STAGE_LABEL: Record<Stage, string> = { draft: "Bản dự kiến", final: "Bản chính thức" };
+
+/** The post's text, in the wording admins already use — the sign-up step now
  *  points at the "Nhận ca" button rather than replies in the group. */
-export function weeklyPostText(date: string, lines: PostLine[]): string {
+export function weeklyPostText(date: string, lines: PostLine[], stage: Stage = "final"): string {
   const open = openLines(lines);
   const head = [
-    "@All",
-    `Team gửi lịch làm việc chủ nhật dự kiến ngày ${dmy(date)}`,
+    stage === "draft"
+      ? `Team gửi lịch làm việc chủ nhật dự kiến ngày ${dmy(date)} (lịch chính thức gửi lúc 13:00 thứ Sáu)`
+      : `Team gửi lịch làm việc chủ nhật chính thức ngày ${dmy(date)}`,
     `Kiểm tra ca làm việc chủ nhật tương ứng trên link chấm công => Mục/Tab "Lịch CN" (Xem hình đính kèm)*`,
   ];
   const slots = open.length
     ? [
-        `Hiện đang trống ${pad2(open.length)} vị trí, ai có thể làm thì bấm "Nhận ca" trong Tab "Lịch CN" (ai nhận trước sẽ được xếp ca):`,
+        `Hiện đang trống ${pad2(open.length)} vị trí (xem hình "Ca còn trống"), ai có thể làm thì bấm "Nhận ca" trong Tab "Lịch CN" (ai nhận trước sẽ được xếp ca):`,
         slotList(open),
       ]
     : ["Lịch chủ nhật đã đủ người, cảm ơn cả nhà!"];

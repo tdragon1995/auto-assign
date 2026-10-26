@@ -1,7 +1,8 @@
 /**
- * The Sunday roster's Zalo side: Friday 17:00 the drivers' group gets the
- * roster picture plus the open slots, every "Nhận ca" claim is announced there,
- * and Saturday 18:00 the admin group hears about anything still open.
+ * The Sunday roster's Zalo side: Wednesday 13:00 (draft) and Friday 13:00
+ * (final) the drivers' groups get the roster picture, an open-slots picture and
+ * the text; every "Nhận ca" claim is announced there; Saturday 18:00 the admin
+ * group hears about anything still open.
  *
  * Rides the assign cron like the pickup-ETA update — no schedule of its own.
  * Sent by the admin bot (ZALO_ADMIN_BOT_TOKEN), which must be a member of the
@@ -14,8 +15,8 @@ import { notifyAdminGroup, sendZaloMessage } from "./zalo";
 import { getRedis } from "./tat-archive";
 import { vnDate, vnMinutesSinceMidnight } from "./time";
 import { rosterSunday } from "./sunday-roster";
-import { adminAlertText, awayFor, isPublished, weeklyPostText, type AwayFact, type PostLine } from "./sunday-roster-post";
-import { renderRosterImage } from "./sunday-roster-image";
+import { adminAlertText, awayFor, isPublished, openLines, weeklyPostText, type AwayFact, type PostLine, type Stage } from "./sunday-roster-post";
+import { renderOpenSlotsImage, renderRosterImage } from "./sunday-roster-image";
 
 // The deployment that signs the picture URL must be the one serving it: the two
 // Vercel accounts need not share the secret, and "Đăng Zalo" runs on account B.
@@ -84,28 +85,44 @@ function imageSig(date: string): string {
   return crypto.createHmac("sha256", key).update(`sunday-roster:${date}`).digest("base64url").slice(0, 22);
 }
 export const imageSigOk = (date: string, sig: string | null) => !!sig && sig === imageSig(date);
-const imageUrl = (date: string, v: string) => `${BASE_URL}/api/sunday-roster/image?date=${date}&sig=${imageSig(date)}&v=${v}`;
-const imageKey = (date: string, v: string) => `sunday_roster:img:${date}:${v}`;
+/** The two pictures: the whole roster, and the open slots on their own. */
+export type ImageKind = "roster" | "open";
+const imageUrl = (date: string, kind: ImageKind, stage: Stage, v: string) =>
+  `${BASE_URL}/api/sunday-roster/image?date=${date}&kind=${kind}&stage=${stage}&sig=${imageSig(date)}&v=${v}`;
+const imageKey = (date: string, kind: ImageKind, v: string) => `sunday_roster:img:${date}:${kind}:${v}`;
 
-/** Draw the picture NOW and keep it for a day, so the link answers at once.
- *  Drawing takes 6–8 s, and Zalo refused a link that slow ("photo URL is
- *  invalid") while taking instant Cartrack images. Without Redis the link still
- *  works, drawing on request. ~0.7 MB per post, a few posts a week. */
-export async function preparedImageUrl(date: string, lines: SundayLine[]): Promise<string> {
-  const v = String(Date.now());
-  const redis = getRedis();
-  if (redis) {
-    const res = await renderRosterImage(date, lines.filter((l) => isPublished(l.area)));
-    const png = Buffer.from(await res.arrayBuffer());
-    await redis.set(imageKey(date, v), png.toString("base64"), { ex: 86_400 }).catch((e) => console.error("[sunday-roster] image cache:", e));
-  }
-  return imageUrl(date, v);
+/** Draw one picture; null for "open" when nothing is open. */
+export async function drawImage(date: string, kind: ImageKind, stage: Stage, lines: SundayLine[]): Promise<Buffer | null> {
+  const published = lines.filter((l) => isPublished(l.area));
+  const res = kind === "roster" ? await renderRosterImage(date, published, stage) : await renderOpenSlotsImage(date, published, stage);
+  return res ? Buffer.from(await res.arrayBuffer()) : null;
 }
 
+/** Draw the pictures NOW and keep them for a day, so the links answer at once.
+ *  Drawing takes 6–8 s, and Zalo refused a link that slow ("photo URL is
+ *  invalid") while taking instant Cartrack images. ~0.8 MB per post, two posts
+ *  a week. The open-slots picture is left out when nothing is open. */
+export async function preparedImageUrls(date: string, lines: SundayLine[], stage: Stage): Promise<string[]> {
+  const v = String(Date.now());
+  const redis = getRedis();
+  const urls: string[] = [];
+  for (const kind of ["roster", "open"] as const) {
+    const png = await drawImage(date, kind, stage, lines);
+    if (!png) continue;
+    await redis?.set(imageKey(date, kind, v), png.toString("base64"), { ex: 86_400 }).catch((e) => console.error("[sunday-roster] image cache:", e));
+    urls.push(imageUrl(date, kind, stage, v));
+  }
+  return urls;
+}
+
+/** Links that draw on request — the admin preview, which nobody times out. */
+export const previewImageUrls = (date: string, lines: SundayLine[], stage: Stage): string[] =>
+  (openLines(lines).length ? (["roster", "open"] as const) : (["roster"] as const)).map((k) => imageUrl(date, k, stage, "0"));
+
 /** The picture prepared for this link, or null (expired, or never stored). */
-export async function preparedImage(date: string, v: string | null): Promise<Buffer | null> {
-  if (!v || !/^\d+$/.test(v)) return null;
-  const b64 = await getRedis()?.get<string>(imageKey(date, v)).catch(() => null);
+export async function preparedImage(date: string, kind: ImageKind, v: string | null): Promise<Buffer | null> {
+  if (!v || !/^\d+$/.test(v) || v === "0") return null;
+  const b64 = await getRedis()?.get<string>(imageKey(date, kind, v)).catch(() => null);
   return typeof b64 === "string" && b64 ? Buffer.from(b64, "base64") : null;
 }
 
@@ -137,24 +154,27 @@ export async function sendDriverGroup(text: string): Promise<boolean> {
   return sent.every(Boolean);
 }
 
-/** Friday's post: the picture, then the text (a caption is too short for it). */
-export async function postWeekly(date: string): Promise<{ ok: boolean; sent: boolean; reason?: string }> {
+/** The post — Wednesday's draft or Friday's final: the roster picture, the
+ *  open-slots picture (when anything is open), then the text. */
+export async function postWeekly(date: string, stage: Stage): Promise<{ ok: boolean; sent: boolean; reason?: string }> {
   const g = driverGroups();
   if (!g) return { ok: false, sent: false, reason: "ZALO_ADMIN_BOT_TOKEN / ZALO_DRIVER_CHAT_ID chưa cấu hình" };
   const lines = await loadSundayLines(date);
   if (!lines.length) {
-    await notifyAdminGroup(`⚠️ Chưa lưu Lịch CN ${dm(date)} — bài đăng thứ Sáu cho tài xế chưa được gửi. Lưu Lịch Chủ nhật rồi đăng lại.`);
+    const which = stage === "draft" ? "bản dự kiến thứ Tư" : "bản chính thức thứ Sáu";
+    await notifyAdminGroup(`⚠️ Chưa lưu Lịch CN ${dm(date)} — ${which} cho tài xế chưa được gửi. Lưu Lịch Chủ nhật rồi bấm "Đăng Zalo".`);
     return { ok: false, sent: true, reason: "no roster saved" };
   }
-  const url = await preparedImageUrl(date, lines), text = weeklyPostText(date, lines);
-  // Per group, picture first then text, so each group reads them in order.
+  const urls = await preparedImageUrls(date, lines, stage), text = weeklyPostText(date, lines, stage);
+  // Per group in order — pictures first, then the text — so each group reads them as one post.
   const results = await Promise.all(g.chats.map(async (c) => {
-    const photo = await sendZaloPhoto(g.token, c, url);
-    return { c, photo, text: await sendZaloMessage(g.token, c, text) };
+    const photos: boolean[] = [];
+    for (const u of urls) photos.push(await sendZaloPhoto(g.token, c, u));
+    return { c, photos, text: await sendZaloMessage(g.token, c, text) };
   }));
-  const failed = results.filter((r) => !r.photo || !r.text);
+  const failed = results.filter((r) => !r.text || r.photos.some((p) => !p));
   return failed.length
-    ? { ok: false, sent: results.some((r) => r.photo || r.text), reason: failed.map((r) => `${r.c}: photo=${r.photo} text=${r.text}`).join("; ") }
+    ? { ok: false, sent: results.some((r) => r.text || r.photos.some(Boolean)), reason: failed.map((r) => `${r.c}: photos=${r.photos} text=${r.text}`).join("; ") }
     : { ok: true, sent: true };
 }
 
@@ -164,14 +184,17 @@ async function alertAdmins(date: string): Promise<void> {
   if (text) await notifyAdminGroup(text);
 }
 
-/** Called on every assign-cron ping. Free outside its two windows; inside, one
- *  Redis SET NX per ping until the week's post is done. A failed send releases
- *  the key so the next ping (3 minutes on) tries again. */
+/** Called on every assign-cron ping. Free outside its windows; inside, one
+ *  Redis SET NX per ping until that window's job is done. A send where nothing
+ *  went out releases the key so the next ping (3 minutes on) tries again.
+ *  Wednesday 13:00 draft, Friday 13:00 final (supervisor, 2026-10-26),
+ *  Saturday 18:00 admin alert for anything still open. */
 export async function maybeSundayRosterPost(now = new Date()): Promise<void> {
-  const day = new Date(`${vnDate(now)}T00:00:00Z`).getUTCDay(); // 5 = Friday, 6 = Saturday
-  const minute = vnMinutesSinceMidnight(now);
-  const job = day === 5 && minute >= 17 * 60 && minute < 18 * 60 ? "post"
-    : day === 6 && minute >= 18 * 60 && minute < 19 * 60 ? "alert" : null;
+  const day = new Date(`${vnDate(now)}T00:00:00Z`).getUTCDay(); // 3 = Wednesday, 5 = Friday, 6 = Saturday
+  const hour = Math.floor(vnMinutesSinceMidnight(now) / 60);
+  const job = day === 3 && hour === 13 ? "draft"
+    : day === 5 && hour === 13 ? "final"
+    : day === 6 && hour === 18 ? "alert" : null;
   if (!job) return;
   const redis = getRedis();
   if (!redis) return;
@@ -179,14 +202,14 @@ export async function maybeSundayRosterPost(now = new Date()): Promise<void> {
   const key = `sunday_roster:${job}:${date}`;
   if (await redis.set(key, Date.now(), { nx: true, ex: 3 * 86_400 }) !== "OK") return;
   try {
-    if (job === "post") {
-      const res = await postWeekly(date);
-      console.log(`[sunday-roster] weekly post ${date}:`, JSON.stringify(res));
-      // Retry only when NOTHING went out: a half-sent post retried would post the
-      // picture twice, and "no roster saved" has already alerted the admins.
-      if (!res.sent) await redis.del(key);
-    } else {
+    if (job === "alert") {
       await alertAdmins(date);
+    } else {
+      const res = await postWeekly(date, job);
+      console.log(`[sunday-roster] ${job} post ${date}:`, JSON.stringify(res));
+      // Retry only when NOTHING went out: a half-sent post retried would post the
+      // pictures twice, and "no roster saved" has already alerted the admins.
+      if (!res.sent) await redis.del(key);
     }
   } catch (e) {
     console.error(`[sunday-roster] ${job} ${date}:`, e);
