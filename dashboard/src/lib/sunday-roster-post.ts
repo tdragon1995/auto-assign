@@ -54,6 +54,10 @@ export function awayFor(shift: string, facts: AwayFact[]): string | null {
   return null;
 }
 
+/** An area as drivers read it: "Phòng khám Q2 | Bình Thạnh ca 2" → "PK Q2, Bình
+ *  Thạnh ca 2". Display only — the saved name is what Sunday rules match on. */
+export const displayArea = (area: string) => area.replace(/Phòng khám/gi, "PK").replace(/\s*\|\s*/g, ", ");
+
 /** Morning = starts before 15:00, as the Lịch CN tab splits it. */
 export const isMorning = (shift: string) => (shiftRange(shift)?.[0] ?? 0) < 15 * 60;
 
@@ -63,7 +67,7 @@ const dmy = (d: string) => `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}`
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
 function slotList(open: PostLine[]): string {
-  return open.map((l) => `${l.area}\t${l.shift}${l.away ? " (cần người thay)" : ""}`).join("\n");
+  return open.map((l) => `${displayArea(l.area)}\t${l.shift}${l.away ? " (cần người thay)" : ""}`).join("\n");
 }
 
 /** Friday's post, in the wording admins already use — the sign-up step now
@@ -95,7 +99,7 @@ export function weeklyPostText(date: string, lines: PostLine[]): string {
 /** The group line after a driver takes a slot. `lines` is the roster AFTER the claim. */
 export function claimText(date: string, name: string, line: Pick<PostLine, "area" | "shift">, lines: PostLine[]): string {
   const open = openLines(lines);
-  const took = `✅ ${name} đã nhận ca ${line.area} ${line.shift} — Chủ nhật ${dmy(date).slice(0, 5)}.`;
+  const took = `✅ ${name} đã nhận ca ${displayArea(line.area)} ${line.shift} — Chủ nhật ${dmy(date).slice(0, 5)}.`;
   return open.length
     ? `${took}\nCòn ${pad2(open.length)} vị trí trống:\n${slotList(open)}\nBấm "Nhận ca" trong Tab "Lịch CN": ${SUNDAY_TAB_URL}`
     : `${took}\nLịch chủ nhật đã đủ người 🎉`;

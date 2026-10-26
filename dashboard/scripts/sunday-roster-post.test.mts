@@ -11,7 +11,7 @@
  */
 
 import {
-  awayFor, hoursMeet, isMorning, isOpen, openLines, shiftRange,
+  awayFor, displayArea, hoursMeet, isMorning, isOpen, openLines, shiftRange,
   weeklyPostText, claimText, adminAlertText, type PostLine,
 } from "../src/lib/sunday-roster-post";
 
@@ -44,6 +44,12 @@ eq("afternoon half-day opens the evening line", awayFor("15:00 - 20:00", [leave(
 eq("resigned is away whatever the hours", awayFor("15:00 - 20:00", [{ resigned: true, window: null, covered: false, label: "Nghỉ việc từ 20/10" }]), "Nghỉ việc từ 20/10");
 eq("no leave → not away", awayFor("06:00 - 15:00", []), null);
 
+console.log("area names as drivers read them");
+eq("Phòng khám → PK, bars → commas", displayArea("Phòng khám Q2 | Bình Thạnh ca 2"), "PK Q2, Bình Thạnh ca 2");
+eq("unspaced bars too", displayArea("D001 (Phòng khám Q1|3|4|5|10) ca 1"), "D001 (PK Q1, 3, 4, 5, 10) ca 1");
+eq("a plain branch is untouched", displayArea("D022"), "D022");
+eq("mid-name", displayArea("Hub D003 + Phòng khám Phú Nhuận"), "Hub D003 + PK Phú Nhuận");
+
 console.log("open lines");
 eq("nobody on it", isOpen(line({})), true);
 eq("someone on it", isOpen(line({ name: "Nam", driver_id: "x" })), false);
@@ -61,7 +67,7 @@ const post = weeklyPostText("2026-10-25", week);
 eq("dated like the admins write it", post.includes("dự kiến ngày 25/10/2026"), true);
 eq("counts two digits, as before", post.includes("Hiện đang trống 02 vị trí"), true);
 eq("lists an empty slot with its hours", post.includes("D022\t06:00 - 15:00\n"), true);
-eq("marks the leave-opened slot", post.includes("Bình Thạnh ca 2\t15:00 - 20:00 (cần người thay)"), true);
+eq("marks the leave-opened slot, by its short name", post.includes("PK Q2, Bình Thạnh ca 2\t15:00 - 20:00 (cần người thay)"), true);
 eq("never names who is on leave", post.includes("Hùng"), false);
 eq("keeps the B1–B3 leave steps", post.includes("B3: Thường xuyên kiểm tra"), true);
 eq("fits one Zalo message", post.length <= 2000, true);

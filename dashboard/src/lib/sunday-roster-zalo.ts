@@ -122,29 +122,40 @@ async function sendZaloPhoto(botToken: string, chatId: string, photo: string, ca
   }
 }
 
-const driverGroup = () => {
-  const token = process.env.ZALO_ADMIN_BOT_TOKEN, chat = process.env.ZALO_DRIVER_CHAT_ID;
-  return token && chat ? { token, chat } : null;
+/** The drivers' groups — ZALO_DRIVER_CHAT_ID is comma-separated (there are two). */
+const driverGroups = () => {
+  const token = process.env.ZALO_ADMIN_BOT_TOKEN;
+  const chats = (process.env.ZALO_DRIVER_CHAT_ID ?? "").split(",").map((c) => c.trim()).filter(Boolean);
+  return token && chats.length ? { token, chats } : null;
 };
 
-/** Text to the drivers' group; false when unconfigured or Zalo refused. */
+/** Text to every drivers' group; false when unconfigured or any group refused. */
 export async function sendDriverGroup(text: string): Promise<boolean> {
-  const g = driverGroup();
-  return g ? sendZaloMessage(g.token, g.chat, text) : false;
+  const g = driverGroups();
+  if (!g) return false;
+  const sent = await Promise.all(g.chats.map((c) => sendZaloMessage(g.token, c, text)));
+  return sent.every(Boolean);
 }
 
 /** Friday's post: the picture, then the text (a caption is too short for it). */
 export async function postWeekly(date: string): Promise<{ ok: boolean; sent: boolean; reason?: string }> {
-  const g = driverGroup();
+  const g = driverGroups();
   if (!g) return { ok: false, sent: false, reason: "ZALO_ADMIN_BOT_TOKEN / ZALO_DRIVER_CHAT_ID chưa cấu hình" };
   const lines = await loadSundayLines(date);
   if (!lines.length) {
     await notifyAdminGroup(`⚠️ Chưa lưu Lịch CN ${dm(date)} — bài đăng thứ Sáu cho tài xế chưa được gửi. Lưu Lịch Chủ nhật rồi đăng lại.`);
     return { ok: false, sent: true, reason: "no roster saved" };
   }
-  const photo = await sendZaloPhoto(g.token, g.chat, await preparedImageUrl(date, lines));
-  const text = await sendZaloMessage(g.token, g.chat, weeklyPostText(date, lines));
-  return photo && text ? { ok: true, sent: true } : { ok: false, sent: photo || text, reason: `photo=${photo} text=${text}` };
+  const url = await preparedImageUrl(date, lines), text = weeklyPostText(date, lines);
+  // Per group, picture first then text, so each group reads them in order.
+  const results = await Promise.all(g.chats.map(async (c) => {
+    const photo = await sendZaloPhoto(g.token, c, url);
+    return { c, photo, text: await sendZaloMessage(g.token, c, text) };
+  }));
+  const failed = results.filter((r) => !r.photo || !r.text);
+  return failed.length
+    ? { ok: false, sent: results.some((r) => r.photo || r.text), reason: failed.map((r) => `${r.c}: photo=${r.photo} text=${r.text}`).join("; ") }
+    : { ok: true, sent: true };
 }
 
 /** Saturday evening: tell the admins what is still open. */

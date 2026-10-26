@@ -5,7 +5,7 @@
  */
 import { ImageResponse } from "next/og";
 import type { SundayLine } from "./sunday-roster-zalo";
-import { isMorning, isOpen } from "./sunday-roster-post";
+import { displayArea, isMorning, isOpen } from "./sunday-roster-post";
 
 // Two columns, so the picture comes out about square. A single 1080-wide
 // column was ~1:3.5 and showed in Zalo as a thin strip nobody could read.
@@ -31,7 +31,7 @@ async function font(weight: 400 | 700, text: string): Promise<ArrayBuffer | null
 const wrap = (s: string, w: number, font: number) =>
   s.split("\n").reduce((n, p) => n + Math.max(1, Math.ceil((p.length * font * 0.58) / (w - 16))), 0);
 function rowH(l: SundayLine): number {
-  const main = Math.max(wrap(l.name || "— Còn trống —", COLS.name, FONT), wrap(l.area, COLS.area, FONT), 1);
+  const main = Math.max(wrap(l.name || "— Còn trống —", COLS.name, FONT), wrap(displayArea(l.area), COLS.area, FONT), 1);
   return 17 + main * LINE + (l.note ? 4 + wrap(l.note, COLS.name + COLS.area + COLS.shift, NOTE_FONT) * NOTE_LINE : 0);
 }
 
@@ -82,7 +82,7 @@ function SegmentCard({ seg }: { seg: Segment }) {
               <div style={{ display: "flex", width: COLS.name, paddingRight: 16, fontWeight: 700, color: open ? "#b91c1c" : "#111827" }}>
                 {!l.name ? "— Còn trống —" : l.away ? "Cần người thay" : l.name}
               </div>
-              <div style={{ display: "flex", width: COLS.area, paddingRight: 16, color: "#374151" }}>{l.area}</div>
+              <div style={{ display: "flex", width: COLS.area, paddingRight: 16, color: "#374151" }}>{displayArea(l.area)}</div>
               <div style={{ display: "flex", width: COLS.shift, fontWeight: 700, color: "#111827", whiteSpace: "nowrap" }}>{l.shift}</div>
             </div>
             {l.note && (
@@ -117,7 +117,7 @@ export async function renderRosterImage(date: string, lines: SundayLine[]): Prom
   const sub = `Ngày ${dmy(date)}`;
   const legend = open ? `Dòng đỏ: còn trống ${open} vị trí — bấm "Nhận ca" trong Tab "Lịch CN"` : "Đã đủ người";
   const headers = ["#", "Họ và tên", "Địa điểm", "Ca", "Ca sáng", "Ca chiều", "(tiếp)", "— Còn trống —", "Cần người thay", "·"];
-  const text = [title, sub, legend, ...headers, ...lines.flatMap((l) => [l.name, l.area, l.shift, l.note]), "0123456789"].join(" ");
+  const text = [title, sub, legend, ...headers, ...lines.flatMap((l) => [l.name, displayArea(l.area), l.shift, l.note]), "0123456789"].join(" ");
   const [regular, bold] = await Promise.all([font(400, text), font(700, text)]);
   if (!regular || !bold) console.warn("[sunday-roster] image font not loaded — Vietnamese will not render");
 

@@ -3,7 +3,7 @@ import { fetchSheetRowsByName, SHEET_CONTRACT } from "@/lib/sheets";
 import { masterEnabled } from "@/lib/master-store";
 import { sbSelectAll } from "@/lib/supabase-rest";
 import { loadSundayLines } from "@/lib/sunday-roster-zalo";
-import { isMorning, isOpen, isPublished } from "@/lib/sunday-roster-post";
+import { displayArea, isMorning, isOpen, isPublished } from "@/lib/sunday-roster-post";
 
 /** The roster ops edit in Lịch Chủ nhật: the next saved Sunday from today on,
  *  else the latest one before. Lines carry their id and whether they are open,
@@ -21,7 +21,7 @@ async function masterSchedule(today: string): Promise<ScheduleResponse> {
     if (!isPublished(l.area)) continue;
     const open = isOpen(l);
     const entry: ScheduleEntry = {
-      stt: "", name: l.away ? "" : l.name, addr: l.area, ca: l.shift, note: l.note, phone: l.phone,
+      stt: "", name: l.away ? "" : l.name, addr: displayArea(l.area), ca: l.shift, note: l.note, phone: l.phone,
       id: l.id, open, ...(l.away ? { away: true } : {}), ...(claimable && open ? { claimable: true } : {}),
     };
     (isMorning(l.shift) ? out.morning : out.afternoon).push(entry);
