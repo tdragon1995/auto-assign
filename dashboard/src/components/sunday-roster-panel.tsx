@@ -114,16 +114,18 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
   // Wednesday/Friday 13:00 posts. Draft until the Friday before the Sunday.
   const [posting, setPosting] = useState(false);
   const stage = stageFor(vnDate(), date);
-  const post = async () => {
-    if (!confirm(`Đăng lịch Chủ nhật ${dmy(date)} (${STAGE_LABEL[stage].toLowerCase()}: ảnh lịch, ảnh ca trống, tin nhắn) lên các nhóm Zalo tài xế?`)) return;
+  // test = the same post to the admin group only, to check it before drivers see it.
+  const post = async (test = false) => {
+    const what = `lịch Chủ nhật ${dmy(date)} (${STAGE_LABEL[stage].toLowerCase()}: ảnh lịch, ảnh ca trống, tin nhắn)`;
+    if (!confirm(test ? `Gửi thử ${what} vào nhóm admin?` : `Đăng ${what} lên các nhóm Zalo tài xế?`)) return;
     setPosting(true);
     try {
-      const res = await fetch("/api/sunday-roster/post", {
+      const res = await fetch(test ? "/api/sunday-roster/post/test" : "/api/sunday-roster/post", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ date, stage }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Không đăng được lên Zalo");
-      toast.success(`Đã đăng lịch Chủ nhật ${dmy(date)} lên nhóm tài xế`);
+      toast.success(test ? `Đã gửi thử lịch Chủ nhật ${dmy(date)} vào nhóm admin` : `Đã đăng lịch Chủ nhật ${dmy(date)} lên nhóm tài xế`);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
@@ -178,6 +180,7 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
           </>}
           <Button variant="outline" disabled={busy} onClick={() => { if (discard()) void load(); }}><RefreshCw className="size-4" />Tải lại</Button>
           <Button variant="outline" disabled={busy || unsaved || !lines.length} title={unsaved ? "Lưu lịch trước" : "Xem trước ảnh và tin nhắn sẽ đăng lên Zalo"} onClick={() => window.open(`/api/sunday-roster/post?date=${date}&stage=${stage}`, "_blank", "noopener")}><ImageIcon className="size-4" />Xem ảnh</Button>
+          <Button variant="outline" disabled={busy || posting || unsaved || !lines.length} title={unsaved ? "Lưu lịch trước" : "Gửi thử đúng bài đăng vào nhóm admin — tài xế không nhận"} onClick={() => void post(true)}><Send className="size-4" />Gửi thử</Button>
           <Button variant="outline" disabled={busy || posting || unsaved || !lines.length} title={unsaved ? "Lưu lịch trước" : "Đăng ngay lên các nhóm Zalo tài xế (tự động 13:00 thứ Tư bản dự kiến, 13:00 thứ Sáu bản chính thức)"} onClick={() => void post()}><Send className="size-4" />{posting ? "Đang đăng…" : "Đăng Zalo"}</Button>
           <Button disabled={busy || !unsaved || !week || incomplete} title={incomplete ? "Mỗi dòng cần khu vực, ca dạng 06:00 - 15:00" : undefined} onClick={() => void save()}>{saving ? "Đang lưu…" : "Lưu lịch"}</Button>
         </div>

@@ -156,16 +156,22 @@ export async function sendDriverGroup(text: string): Promise<boolean> {
 
 /** The post — Wednesday's draft or Friday's final: the roster picture, the
  *  open-slots picture (when anything is open), then the text. */
-export async function postWeekly(date: string, stage: Stage): Promise<{ ok: boolean; sent: boolean; reason?: string }> {
-  const g = driverGroups();
-  if (!g) return { ok: false, sent: false, reason: "ZALO_ADMIN_BOT_TOKEN / ZALO_DRIVER_CHAT_ID chưa cấu hình" };
+export async function postWeekly(date: string, stage: Stage, opts: { test?: boolean } = {}): Promise<{ ok: boolean; sent: boolean; reason?: string }> {
+  // A test send is the same post to the ADMIN group only, marked as a test.
+  const adminChat = process.env.ZALO_ADMIN_CHAT_ID;
+  const g = opts.test
+    ? (process.env.ZALO_ADMIN_BOT_TOKEN && adminChat ? { token: process.env.ZALO_ADMIN_BOT_TOKEN, chats: [adminChat] } : null)
+    : driverGroups();
+  if (!g) return { ok: false, sent: false, reason: opts.test ? "ZALO_ADMIN_BOT_TOKEN / ZALO_ADMIN_CHAT_ID chưa cấu hình" : "ZALO_ADMIN_BOT_TOKEN / ZALO_DRIVER_CHAT_ID chưa cấu hình" };
   const lines = await loadSundayLines(date);
   if (!lines.length) {
+    if (opts.test) return { ok: false, sent: false, reason: `chưa lưu Lịch CN ${dm(date)}` };
     const which = stage === "draft" ? "bản dự kiến thứ Tư" : "bản chính thức thứ Sáu";
     await notifyAdminGroup(`⚠️ Chưa lưu Lịch CN ${dm(date)} — ${which} cho tài xế chưa được gửi. Lưu Lịch Chủ nhật rồi bấm "Đăng Zalo".`);
     return { ok: false, sent: true, reason: "no roster saved" };
   }
-  const urls = await preparedImageUrls(date, lines, stage), text = weeklyPostText(date, lines, stage);
+  const urls = await preparedImageUrls(date, lines, stage);
+  const text = (opts.test ? "[GỬI THỬ — chỉ nhóm admin, tài xế chưa nhận]\n\n" : "") + weeklyPostText(date, lines, stage);
   // Per group in order — pictures first, then the text — so each group reads them as one post.
   const results = await Promise.all(g.chats.map(async (c) => {
     const photos: boolean[] = [];
