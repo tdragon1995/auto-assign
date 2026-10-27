@@ -121,10 +121,14 @@ export function claimText(date: string, name: string, line: Pick<PostLine, "area
     : `${took}\nLịch chủ nhật đã đủ người 🎉`;
 }
 
-/** To the admin group right after each drivers' post, only when something is still open. */
-export function adminAlertText(date: string, lines: PostLine[], stage?: Stage): string | null {
+/** When each drivers' post goes out (13:00 that day). */
+export const POST_DAY: Record<Stage, string> = { draft: "thứ Tư", final: "thứ Sáu" };
+
+/** To the admin group the day BEFORE a drivers' post (Tuesday before the draft,
+ *  Thursday before the final), only when something is still open. */
+export function adminAlertText(date: string, lines: PostLine[], next?: Stage): string | null {
   const open = openLines(lines);
   if (!open.length) return null;
-  const after = stage ? ` (đã gửi ${STAGE_LABEL[stage].toLowerCase()} cho tài xế)` : "";
-  return `⚠️ Lịch CN ${dmy(date).slice(0, 5)}${after} còn ${pad2(open.length)} vị trí chưa có người:\n${slotList(open)}\nCần điều phối xếp người trong Lịch Chủ nhật.`;
+  const when = next ? ` — ${STAGE_LABEL[next].toLowerCase()} gửi tài xế lúc 13:00 ${POST_DAY[next]}` : "";
+  return `⚠️ Lịch CN ${dmy(date).slice(0, 5)} còn ${pad2(open.length)} vị trí chưa có người${when}:\n${slotList(open)}\nCần điều phối xếp người trong Lịch Chủ nhật.`;
 }

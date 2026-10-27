@@ -1,8 +1,8 @@
 /**
  * The Sunday roster's Zalo side: Wednesday 13:00 (draft) and Friday 13:00
  * (final) the drivers' groups get the roster picture, an open-slots picture and
- * the text; every "Nhận ca" claim is announced there; right after each post
- * the admin group hears about anything still open.
+ * the text; every "Nhận ca" claim is announced there; on Tuesday and Thursday
+ * 13:00, the day before each post, the admin group hears about anything still open.
  *
  * Rides the assign cron like the pickup-ETA update — no schedule of its own.
  * Sent by the admin bot (ZALO_ADMIN_BOT_TOKEN), which must be a member of the
@@ -15,7 +15,7 @@ import { notifyAdminGroup, sendZaloMessage } from "./zalo";
 import { getRedis } from "./tat-archive";
 import { vnDate, vnMinutesSinceMidnight } from "./time";
 import { rosterSunday } from "./sunday-roster";
-import { adminAlertText, awayFor, isPublished, openLines, weeklyPostText, type AwayFact, type PostLine, type Stage } from "./sunday-roster-post";
+import { adminAlertText, awayFor, isPublished, openLines, POST_DAY, STAGE_LABEL, weeklyPostText, type AwayFact, type PostLine, type Stage } from "./sunday-roster-post";
 import { renderOpenSlotsImage, renderRosterImage } from "./sunday-roster-image";
 
 // The deployment that signs the picture URL must be the one serving it: the two
@@ -184,36 +184,46 @@ export async function postWeekly(date: string, stage: Stage, opts: { test?: bool
     : { ok: true, sent: true };
 }
 
-/** Right after each drivers' post: tell the admins what is still open. */
-async function alertAdmins(date: string, stage: Stage): Promise<void> {
-  const text = adminAlertText(date, await loadSundayLines(date), stage);
+/** The day before a drivers' post: tell the admins what is still open — or
+ *  that the roster is not saved at all, which would stop the post. */
+async function alertAdmins(date: string, next: Stage): Promise<void> {
+  const lines = await loadSundayLines(date);
+  const text = lines.length
+    ? adminAlertText(date, lines, next)
+    : `⚠️ Chưa lưu Lịch CN ${dm(date)} — ${STAGE_LABEL[next].toLowerCase()} gửi tài xế lúc 13:00 ${POST_DAY[next]}. Lưu Lịch Chủ nhật trước giờ đó.`;
   if (text) await notifyAdminGroup(text);
 }
 
-/** Called on every assign-cron ping. Free outside its windows; inside, one
- *  Redis SET NX per ping until that window's job is done. A send where nothing
- *  went out releases the key so the next ping (3 minutes on) tries again.
- *  Wednesday 13:00 draft, Friday 13:00 final (supervisor, 2026-10-26), each
- *  followed by an admin-group alert listing anything still open (2026-10-27). */
+/** The week, all at 13:00 VN (supervisor, 2026-10-27): Tuesday admin alert,
+ *  Wednesday draft to drivers, Thursday admin alert, Friday final to drivers. */
+const WEEK: Record<number, { kind: "alert" | "post"; stage: Stage }> = {
+  2: { kind: "alert", stage: "draft" },
+  3: { kind: "post", stage: "draft" },
+  4: { kind: "alert", stage: "final" },
+  5: { kind: "post", stage: "final" },
+};
+
+/** Called on every assign-cron ping. Free outside 13:00–13:59 Tue–Fri; inside,
+ *  one Redis SET NX per ping until that day's job is done. A post where nothing
+ *  went out releases the key so the next ping (3 minutes on) tries again. */
 export async function maybeSundayRosterPost(now = new Date()): Promise<void> {
-  const day = new Date(`${vnDate(now)}T00:00:00Z`).getUTCDay(); // 3 = Wednesday, 5 = Friday
-  const hour = Math.floor(vnMinutesSinceMidnight(now) / 60);
-  const job: Stage | null = hour !== 13 ? null : day === 3 ? "draft" : day === 5 ? "final" : null;
+  const day = new Date(`${vnDate(now)}T00:00:00Z`).getUTCDay();
+  const job = Math.floor(vnMinutesSinceMidnight(now) / 60) === 13 ? WEEK[day] : undefined;
   if (!job) return;
   const redis = getRedis();
   if (!redis) return;
   const date = rosterSunday(vnDate(now));
-  const key = `sunday_roster:${job}:${date}`;
+  const key = `sunday_roster:${job.kind}:${job.stage}:${date}`;
   if (await redis.set(key, Date.now(), { nx: true, ex: 3 * 86_400 }) !== "OK") return;
   try {
-    const res = await postWeekly(date, job);
-    console.log(`[sunday-roster] ${job} post ${date}:`, JSON.stringify(res));
+    if (job.kind === "alert") return await alertAdmins(date, job.stage);
+    const res = await postWeekly(date, job.stage);
+    console.log(`[sunday-roster] ${job.stage} post ${date}:`, JSON.stringify(res));
     // Retry only when NOTHING went out: a half-sent post retried would post the
     // pictures twice, and "no roster saved" has already alerted the admins.
-    if (!res.sent) { await redis.del(key); return; }
-    if (res.reason !== "no roster saved") await alertAdmins(date, job);
+    if (!res.sent) await redis.del(key);
   } catch (e) {
-    console.error(`[sunday-roster] ${job} ${date}:`, e);
+    console.error(`[sunday-roster] ${job.kind} ${job.stage} ${date}:`, e);
     await redis.del(key).catch(() => {});
   }
 }
