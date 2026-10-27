@@ -279,7 +279,10 @@ export function Dashboard() {
   }, []);
 
   // The one Cartrack assign call behind every "Gán thủ công" picker. Throws with
-  // the server's message so each caller can put its own row back.
+  // the server's message so each caller can put its own row back — except a 409
+  // (the job was cancelled or finished since the list was built), whose row stays
+  // hidden: it is gone from the next snapshot anyway, and back on screen it only
+  // invites a second click.
   const postManualAssign = useCallback(
     async (jobId: number, driverId: string) => {
       const res = await fetch("/api/admin/assign", {
@@ -288,7 +291,7 @@ export function Dashboard() {
         body: JSON.stringify({ job_id: jobId, driver_id: driverId, env }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      if (!res.ok) throw Object.assign(new Error(data.error ?? `HTTP ${res.status}`), { closed: res.status === 409 });
     },
     [env],
   );
@@ -309,10 +312,12 @@ export function Dashboard() {
           // Reconcile after the cycle that clears the snapshot, so a success stays gone.
           setTimeout(() => syncStatus(), FAILED_DISMISS_MS + 500);
         } catch (err) {
-          dismissedFailedRef.current.delete(job.job_id);
-          setFailed((prev) =>
-            prev.some((j) => j.job_id === job.job_id) ? prev : [...prev, job],
-          );
+          if (!(err as { closed?: boolean }).closed) {
+            dismissedFailedRef.current.delete(job.job_id);
+            setFailed((prev) =>
+              prev.some((j) => j.job_id === job.job_id) ? prev : [...prev, job],
+            );
+          }
           toast.error(`Gán Job ${job.job_id} thất bại: ${err instanceof Error ? err.message : String(err)}`);
         }
       })();
@@ -337,10 +342,12 @@ export function Dashboard() {
           toast.success(`Đã gán Job ${job.job_id}`);
           setTimeout(() => syncStatus(), FAILED_DISMISS_MS + 500);
         } catch (err) {
-          dismissedHeldRef.current.delete(job.job_id);
-          setHeld((prev) =>
-            prev.some((j) => j.job_id === job.job_id) ? prev : [...prev, job],
-          );
+          if (!(err as { closed?: boolean }).closed) {
+            dismissedHeldRef.current.delete(job.job_id);
+            setHeld((prev) =>
+              prev.some((j) => j.job_id === job.job_id) ? prev : [...prev, job],
+            );
+          }
           toast.error(`Gán Job ${job.job_id} thất bại: ${err instanceof Error ? err.message : String(err)}`);
         }
       })();
