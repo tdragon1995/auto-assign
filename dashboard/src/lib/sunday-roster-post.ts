@@ -121,9 +121,10 @@ export function claimText(date: string, name: string, line: Pick<PostLine, "area
     : `${took}\nLịch chủ nhật đã đủ người 🎉`;
 }
 
-/** Saturday evening, to the admin group, only when something is still open. */
-export function adminAlertText(date: string, lines: PostLine[]): string | null {
+/** To the admin group right after each drivers' post, only when something is still open. */
+export function adminAlertText(date: string, lines: PostLine[], stage?: Stage): string | null {
   const open = openLines(lines);
   if (!open.length) return null;
-  return `⚠️ Lịch CN ${dmy(date).slice(0, 5)} còn ${pad2(open.length)} vị trí chưa có người:\n${slotList(open)}\nCần điều phối xếp người trong Lịch Chủ nhật.`;
+  const after = stage ? ` (đã gửi ${STAGE_LABEL[stage].toLowerCase()} cho tài xế)` : "";
+  return `⚠️ Lịch CN ${dmy(date).slice(0, 5)}${after} còn ${pad2(open.length)} vị trí chưa có người:\n${slotList(open)}\nCần điều phối xếp người trong Lịch Chủ nhật.`;
 }

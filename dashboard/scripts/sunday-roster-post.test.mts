@@ -96,6 +96,7 @@ eq("the last claim closes the week", claimText("2026-10-25", "Lan", week[0], [we
 
 eq("Saturday alert lists what is open", adminAlertText("2026-10-25", week)?.includes("còn 02 vị trí"), true);
 eq("and stays quiet when nothing is", adminAlertText("2026-10-25", [week[1]]), null);
+eq("says which post just went out", adminAlertText("2026-10-25", week, "draft")?.startsWith("⚠️ Lịch CN 25/10 (đã gửi bản dự kiến cho tài xế) còn 02 vị trí"), true);
 
 if (failures) { console.error(`\n${failures} failure(s)`); process.exit(1); }
 console.log("\nall passed");
