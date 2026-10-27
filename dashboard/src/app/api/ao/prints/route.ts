@@ -16,7 +16,10 @@ export async function GET(req: NextRequest) {
         status: print ? 200 : 404, headers: { "Cache-Control": "no-store" },
       });
     }
-    const prints = (await readPrintHistory(db)).map(({ id, printedAt, title, rows }) => ({ id, printedAt, title, count: rows.length }));
+    // ?vid= narrows the list to the prints that carried that VID (any part of it, 4+ digits).
+    const vid = req.nextUrl.searchParams.get("vid")?.trim();
+    if (vid && !/^\d{4,32}$/.test(vid)) return NextResponse.json({ error: "VID không hợp lệ" }, { status: 400 });
+    const prints = (await readPrintHistory(db)).filter((p) => !vid || p.rows.some((r) => r.vid.includes(vid))).map(({ id, printedAt, title, rows }) => ({ id, printedAt, title, count: rows.length }));
     return NextResponse.json({ prints }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("[ao/prints] read", error);

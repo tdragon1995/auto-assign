@@ -307,6 +307,9 @@ export function HardCopyHandover() {
   const [history, setHistory] = useState<PrintHistorySummary[]>([]);
   const [historyDate, setHistoryDate] = useState(vnDate);
   const [historyError, setHistoryError] = useState("");
+  const [vidQuery, setVidQuery] = useState("");
+  const [vidSearch, setVidSearch] = useState<{ vid: string; ids: Set<string> } | null>(null); // set = the date filter is off
+  const [vidSearching, setVidSearching] = useState(false);
   const [draftError, setDraftError] = useState("");
   const [draftLoading, setDraftLoading] = useState(true);
   const [clearingDraft, setClearingDraft] = useState(false);
@@ -431,7 +434,27 @@ export function HardCopyHandover() {
   const hubGroups = groupRows(allRows.filter((r) => r.dest === HUB));
   const outsideGroups = groupRows(allRows.filter((r) => r.dest !== HUB));
   const failed = Object.values(orders).filter((o) => o.error);
-  const datedHistory = history.filter((item) => !historyDate || vnDate(new Date(item.printedAt)) === historyDate);
+  const datedHistory = vidSearch
+    ? history.filter((item) => vidSearch.ids.has(item.id))
+    : history.filter((item) => !historyDate || vnDate(new Date(item.printedAt)) === historyDate);
+
+  const searchVid = async () => {
+    const vid = vidQuery.replace(/\D/g, "");
+    if (!vid) { setVidSearch(null); return; }
+    if (vid.length < 4) { setHistoryError("Nhập ít nhất 4 chữ số VID"); return; }
+    setVidSearching(true);
+    try {
+      const res = await fetch(`/api/ao/prints?vid=${vid}`, { cache: "no-store" });
+      const data: { prints?: PrintHistorySummary[]; error?: string } = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Không tìm được VID");
+      setVidSearch({ vid, ids: new Set((data.prints ?? []).map((p) => p.id)) });
+      setHistoryError("");
+    } catch (error) {
+      setHistoryError(String(error));
+    } finally {
+      setVidSearching(false);
+    }
+  };
   const historyGroups = ["D001", "Ngoài D001"].map((title) => ({
     title, prints: datedHistory.filter((item) => item.title === title),
   }));
@@ -581,6 +604,24 @@ export function HardCopyHandover() {
           </label>
           <button onClick={() => setHistoryDate("")} className="rounded-lg px-2 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-blue-700">Tất cả</button>
         </div>
+        <form className="flex items-end gap-2" onSubmit={(e) => { e.preventDefault(); void searchVid(); }}>
+          <label htmlFor="ao-history-vid" className="flex-1 text-xs font-semibold text-slate-600">
+            Tìm VID đã in
+            <input id="ao-history-vid" inputMode="numeric" value={vidQuery} onChange={(e) => setVidQuery(e.target.value)} placeholder="Nhập VID"
+              className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400" />
+          </label>
+          <button type="submit" disabled={vidSearching} className="rounded-lg px-2 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-blue-700 disabled:opacity-40">
+            {vidSearching ? "Đang tìm…" : "Tìm"}
+          </button>
+          {vidSearch && (
+            <button type="button" onClick={() => { setVidSearch(null); setVidQuery(""); }} className="rounded-lg px-2 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-blue-700">Bỏ tìm</button>
+          )}
+        </form>
+        {vidSearch && (
+          <p role="status" className="text-xs text-slate-700">
+            {vidSearch.ids.size ? `VID ${vidSearch.vid} có trong ${datedHistory.length} bản in (mọi ngày trong 7 ngày).` : `Không có bản in nào chứa VID ${vidSearch.vid} trong 7 ngày.`}
+          </p>
+        )}
         {historyError && <p role="alert" className="text-xs text-red-700">{historyError}</p>}
         <div className="space-y-3">
           {historyGroups.map((group) => (
