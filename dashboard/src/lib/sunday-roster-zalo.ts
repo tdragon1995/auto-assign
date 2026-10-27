@@ -210,8 +210,9 @@ async function alertAdmins(date: string, next: Stage): Promise<void> {
 }
 
 /**
- * Save `date`'s roster as a copy of the latest saved Sunday before it — only
- * when nothing is saved for `date` yet. Returns the Sunday copied from, or null
+ * Save `date`'s roster as a copy of the template (Lịch CN mẫu) — or, with no
+ * template, of the latest saved Sunday before it — only when nothing is saved
+ * for `date` yet. Returns what it copied from, or null
  * (already saved, nothing to copy, or an admin saved first). It is exactly what
  * the Lịch Chủ nhật editor offers when it opens an unsaved week, done without
  * waiting for someone to press Lưu (supervisor, 2026-10-27).
@@ -222,12 +223,18 @@ async function alertAdmins(date: string, next: Stage): Promise<void> {
 export async function autoSaveRoster(date: string): Promise<string | null> {
   if (!masterEnabled()) return null;
   if ((await sbSelect<{ id: number }>("master_sunday_roster", `select=id&work_date=eq.${date}&limit=1`)).length) return null;
-  const [src] = await sbSelect<{ work_date: string }>("master_sunday_roster",
-    `select=work_date&work_date=lt.${date}&order=work_date.desc&limit=1`);
-  if (!src) return null;
   type Line = { area: string; driver_id: string | null; raw_name: string | null; shift: string | null; note: string | null };
-  const rows = await sbSelectAll<Line>("master_sunday_roster",
-    `select=area,driver_id,raw_name,shift,note&work_date=eq.${src.work_date}`, "sort.asc,id.asc");
+  const cols = "select=area,driver_id,raw_name,shift,note";
+  // The template (lines with no date) first; without one, the latest saved Sunday.
+  let rows = await sbSelectAll<Line>("master_sunday_roster", `${cols}&work_date=is.null`, "sort.asc,id.asc");
+  let from = "Lịch CN mẫu";
+  if (!rows.length) {
+    const [src] = await sbSelect<{ work_date: string }>("master_sunday_roster",
+      `select=work_date&work_date=lt.${date}&order=work_date.desc&limit=1`);
+    if (!src) return null;
+    rows = await sbSelectAll<Line>("master_sunday_roster", `${cols}&work_date=eq.${src.work_date}`, "sort.asc,id.asc");
+    from = `CN ${dm(src.work_date)}`;
+  }
   try {
     await sbRpc<number>("master_write_sunday_roster", {
       roster_date: date, expected_ids: [],
@@ -239,9 +246,9 @@ export async function autoSaveRoster(date: string): Promise<string | null> {
   }
   // The roster decides who drives every Sunday rule.
   await invalidateConfigCache();
-  console.log(`[sunday-roster] auto-saved ${date} from ${src.work_date} (${rows.length} lines)`);
-  await notifyAdminGroup(`📋 Đã tự lưu Lịch CN ${dm(date)} (sao chép từ CN ${dm(src.work_date)}). Kiểm tra và sửa trong Lịch Chủ nhật — tài xế nhận bản dự kiến 13:00 thứ Tư, bản chính thức 13:00 thứ Sáu.`);
-  return src.work_date;
+  console.log(`[sunday-roster] auto-saved ${date} from ${from} (${rows.length} lines)`);
+  await notifyAdminGroup(`📋 Đã tự lưu Lịch CN ${dm(date)} (sao chép từ ${from}). Kiểm tra và sửa trong Lịch Chủ nhật — tài xế nhận bản dự kiến 13:00 thứ Tư, bản chính thức 13:00 thứ Sáu.`);
+  return from;
 }
 
 /** The week, all at 13:00 VN (supervisor, 2026-10-27): Monday auto-save of the

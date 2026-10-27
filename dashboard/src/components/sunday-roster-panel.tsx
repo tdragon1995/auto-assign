@@ -1,17 +1,19 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ChevronLeft, ChevronRight, Copy, Image as ImageIcon, Plus, RefreshCw, Send, Trash2 } from "lucide-react";
+import { AlertTriangle, ChevronLeft, ChevronRight, Copy, Image as ImageIcon, LayoutTemplate, Plus, RefreshCw, Send, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "./ui/button";
 import { DriverCombobox } from "./driver-combobox";
 import { addDays, vnDate } from "@/lib/time";
-import { areaKey, rosterGaps, rosterSunday, validShift, type RosterLine, type RosterWeek } from "@/lib/sunday-roster";
+import { areaKey, rosterGaps, rosterSunday, TEMPLATE, validShift, type RosterLine, type RosterWeek } from "@/lib/sunday-roster";
 import { stageFor, STAGE_LABEL } from "@/lib/sunday-roster-post";
 import type { ConfigDriver } from "@/lib/types";
 
 const box = "w-full rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-900 placeholder:text-slate-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:opacity-60";
 const field = `h-8 ${box}`;
 const dmy = (d: string) => `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}`;
+/** A Sunday or the template, as a reader names it. */
+const named = (d: string) => (d === TEMPLATE ? "Lịch CN mẫu" : `Chủ nhật ${dmy(d)}`);
 
 /**
  * Lịch Chủ nhật — who covers which area on a given Sunday.
@@ -62,28 +64,31 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
     setDirty(true);
   };
 
+  const isTemplate = date === TEMPLATE;
   // Weeks that can be copied: they have a roster and are not this one. The default
-  // is the nearest earlier one, else the nearest later one.
-  const copyable = useMemo(() => (week?.weeks ?? []).filter((w) => w !== date), [week, date]);
-  const before = copyable.find((w) => w < date) ?? null;
-  const after = [...copyable].reverse().find((w) => w > date) ?? null;
-  useEffect(() => { setSource(before ?? after ?? ""); }, [before, after]);
+  // is the template, else the nearest earlier Sunday, else the nearest later one.
+  const dated = useMemo(() => (week?.weeks ?? []).filter((w) => w !== date), [week, date]);
+  const withTemplate = !isTemplate && !!week?.hasTemplate;
+  const copyable = useMemo(() => (withTemplate ? [TEMPLATE, ...dated] : dated), [withTemplate, dated]);
+  const before = isTemplate ? dated[0] ?? null : dated.find((w) => w < date) ?? null;
+  const after = isTemplate ? null : [...dated].reverse().find((w) => w > date) ?? null;
+  useEffect(() => { setSource(withTemplate ? TEMPLATE : before ?? after ?? ""); }, [withTemplate, before, after]);
 
   const copyFrom = async (from: string) => {
     if (from === date) { toast.error("Chọn một Chủ nhật khác để sao chép"); return; }
-    if (lines.length && !confirm(`Thay ${lines.length} dòng hiện tại bằng lịch Chủ nhật ${dmy(from)}?`)) return;
+    if (lines.length && !confirm(`Thay ${lines.length} dòng hiện tại bằng ${named(from)}?`)) return;
     setSaving(true);
     try {
       const res = await fetch(`/api/sunday-roster?date=${from}`, { cache: "no-store" });
       const data: RosterWeek & { error?: string } = await res.json();
       if (!res.ok) throw new Error(data.error || "Không tải được lịch tuần được chọn");
-      if (!data.lines.length) throw new Error(`Chủ nhật ${dmy(from)} chưa có lịch`);
+      if (!data.lines.length) throw new Error(`${named(from)} chưa có lịch`);
       // Copied as unsaved lines: the version check still points at THIS week,
       // so saving replaces what is here.
       setLines(keyed(data.lines));
       setWeek((w) => (w ? { ...w, names: { ...w.names, ...data.names } } : w));
       setDirty(true);
-      toast.info(`Đã sao chép từ Chủ nhật ${dmy(from)} — sửa các dòng khác rồi bấm Lưu.`);
+      toast.info(`Đã sao chép từ ${named(from)} — sửa các dòng khác rồi bấm Lưu.`);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
@@ -101,7 +106,7 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Không lưu được lịch Chủ nhật");
-      toast.success(`Đã lưu ${data.saved} dòng cho Chủ nhật ${dmy(date)}`);
+      toast.success(`Đã lưu ${data.saved} dòng cho ${named(date)}`);
       await load();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
@@ -113,7 +118,7 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
   // The drivers' post on demand — after fixing the roster, or ahead of the
   // Wednesday/Friday 13:00 posts. Draft until the Friday before the Sunday.
   const [posting, setPosting] = useState(false);
-  const stage = stageFor(vnDate(), date);
+  const stage = isTemplate ? "draft" : stageFor(vnDate(), date);
   // test = the same post to the admin group only, to check it before drivers see it.
   const post = async (test = false) => {
     const what = `lịch Chủ nhật ${dmy(date)} (${STAGE_LABEL[stage].toLowerCase()}: ảnh lịch, ảnh ca trống, tin nhắn)`;
@@ -161,34 +166,50 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
   return (
     <section className="flex h-full min-h-0 flex-col rounded-xl border border-slate-200 bg-white text-slate-900">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 p-3">
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="icon" aria-label="Chủ nhật trước" disabled={busy} onClick={() => leave(addDays(date, -7))}><ChevronLeft /></Button>
-          <h2 className="min-w-[10rem] text-center font-semibold tabular-nums">Chủ nhật {dmy(date)}</h2>
-          <Button variant="outline" size="icon" aria-label="Chủ nhật sau" disabled={busy} onClick={() => leave(addDays(date, 7))}><ChevronRight /></Button>
-          {date !== today && <Button variant="ghost" size="sm" disabled={busy} onClick={() => leave(today)}>CN tới</Button>}
-        </div>
+        {isTemplate ? (
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => leave(today)}><ChevronLeft className="size-4" />CN tới</Button>
+            <h2 className="font-semibold">Lịch CN mẫu</h2>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="icon" aria-label="Chủ nhật trước" disabled={busy} onClick={() => leave(addDays(date, -7))}><ChevronLeft /></Button>
+            <h2 className="min-w-[10rem] text-center font-semibold tabular-nums">Chủ nhật {dmy(date)}</h2>
+            <Button variant="outline" size="icon" aria-label="Chủ nhật sau" disabled={busy} onClick={() => leave(addDays(date, 7))}><ChevronRight /></Button>
+            {date !== today && <Button variant="ghost" size="sm" disabled={busy} onClick={() => leave(today)}>CN tới</Button>}
+            <Button variant="ghost" size="sm" disabled={busy} title="Lịch mỗi Chủ nhật mới bắt đầu từ đây" onClick={() => leave(TEMPLATE)}><LayoutTemplate className="size-4" />Lịch mẫu</Button>
+          </div>
+        )}
         <div className="flex flex-wrap items-center gap-2">
           {copyable.length > 0 && <>
             <label className="flex items-center gap-1.5 text-sm text-slate-600">
-              Sao chép từ CN
-              <select className={`${field} w-auto`} value={source} disabled={busy} aria-label="Chủ nhật để sao chép"
+              Sao chép từ
+              <select className={`${field} w-auto`} value={source} disabled={busy} aria-label="Lịch để sao chép"
                 onChange={(e) => setSource(e.target.value)}>
-                {copyable.map((w) => <option key={w} value={w}>{dmy(w)}</option>)}
+                {copyable.map((w) => <option key={w} value={w}>{w === TEMPLATE ? "Lịch mẫu" : `CN ${dmy(w)}`}</option>)}
               </select>
             </label>
             <Button variant="outline" disabled={busy || !source} onClick={() => void copyFrom(source)}><Copy className="size-4" />Sao chép</Button>
           </>}
           <Button variant="outline" disabled={busy} onClick={() => { if (discard()) void load(); }}><RefreshCw className="size-4" />Tải lại</Button>
+          {!isTemplate && <>
           <Button variant="outline" disabled={busy || unsaved || !lines.length} title={unsaved ? "Lưu lịch trước" : "Xem trước ảnh và tin nhắn sẽ đăng lên Zalo"} onClick={() => window.open(`/api/sunday-roster/post?date=${date}&stage=${stage}`, "_blank", "noopener")}><ImageIcon className="size-4" />Xem ảnh</Button>
           <Button variant="outline" disabled={busy || posting || unsaved || !lines.length} title={unsaved ? "Lưu lịch trước" : "Gửi thử đúng bài đăng vào nhóm admin — tài xế không nhận"} onClick={() => void post(true)}><Send className="size-4" />Gửi thử</Button>
           <Button variant="outline" disabled={busy || posting || unsaved || !lines.length} title={unsaved ? "Lưu lịch trước" : "Đăng ngay lên các nhóm Zalo tài xế (tự động 13:00 thứ Tư bản dự kiến, 13:00 thứ Sáu bản chính thức)"} onClick={() => void post()}><Send className="size-4" />{posting ? "Đang đăng…" : "Đăng Zalo"}</Button>
+          </>}
           <Button disabled={busy || !unsaved || !week || incomplete} title={incomplete ? "Mỗi dòng cần khu vực, ca dạng 06:00 - 15:00" : undefined} onClick={() => void save()}>{saving ? "Đang lưu…" : "Lưu lịch"}</Button>
         </div>
       </div>
 
+      {!loading && !error && isTemplate && (
+        <p role="status" className="border-b border-indigo-200 bg-indigo-50 px-3 py-2 text-sm text-indigo-900">
+          Mỗi Chủ nhật chưa lưu bắt đầu từ lịch này (thứ Hai 13:00 tự lưu cho Chủ nhật tới). Sửa ở đây những thay đổi lâu dài; đổi người cho một tuần thì sửa tuần đó. Lịch mẫu không dùng để phân công và không gửi cho tài xế.
+        </p>
+      )}
+
       {!loading && !error && week?.copiedFrom && (
         <p role="status" className="border-b border-indigo-200 bg-indigo-50 px-3 py-2 text-sm text-indigo-900">
-          Chủ nhật này chưa lưu — đang hiện lịch <span className="font-medium">Chủ nhật {dmy(week.copiedFrom)}</span>. Sửa những dòng khác tuần này rồi bấm Lưu lịch.
+          Chủ nhật này chưa lưu — đang hiện <span className="font-medium">{named(week.copiedFrom)}</span>. Sửa những dòng khác tuần này rồi bấm Lưu lịch.
         </p>
       )}
 
@@ -209,9 +230,10 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
           </div>
         ) : lines.length === 0 ? (
           <div className="p-6 text-sm text-slate-600">
-            <p className="mb-3">Chủ nhật {dmy(date)} chưa có lịch.</p>
-            {before || after ? (
+            <p className="mb-3">{named(date)} chưa có lịch.</p>
+            {withTemplate || before || after ? (
               <div className="flex flex-wrap gap-2">
+                {withTemplate && <Button variant="outline" disabled={busy} onClick={() => void copyFrom(TEMPLATE)}><Copy className="size-4" />Sao chép lịch mẫu</Button>}
                 {before && <Button variant="outline" disabled={busy} onClick={() => void copyFrom(before)}><Copy className="size-4" />Sao chép CN {dmy(before)}</Button>}
                 {after && <Button variant="outline" disabled={busy} onClick={() => void copyFrom(after)}><Copy className="size-4" />Sao chép CN {dmy(after)}</Button>}
               </div>
@@ -278,7 +300,7 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
 
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 px-3 py-2">
         <p className="text-xs text-slate-600">
-          {loading ? "Đang đọc Supabase" : `${lines.length} dòng${unsaved ? " · chưa lưu" : ""} · Supabase · Chưa dùng để phân công — động cơ vẫn đọc Google Sheet`}
+          {loading ? "Đang đọc Supabase" : `${lines.length} dòng${unsaved ? " · chưa lưu" : ""}`}
         </p>
         {!loading && !error && (
           <p className="flex flex-wrap items-center gap-3 text-xs text-slate-600" aria-label="Chú thích màu">

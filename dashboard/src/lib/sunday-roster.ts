@@ -13,11 +13,22 @@ export type RosterLine = { area: string; driver_id: string | null; raw_name: str
 export type RosterArea = { area: string; rules: number };
 /** Why a rostered driver will not drive that Sunday. */
 export type RosterLeave = { kind: "leave" | "resigned"; label: string };
+/**
+ * The standing Sunday roster ("Lịch CN mẫu"), addressed as this `date`: its
+ * lines are stored with NO work_date (the table's own template slot). Every
+ * reader filters on a date, so it never drives a rule or reaches drivers — it
+ * is only what an unsaved Sunday starts from (supervisor, 2026-10-27).
+ */
+export const TEMPLATE = "template";
+
 export type RosterWeek = {
+  /** A Sunday, or TEMPLATE. */
   date: string;
-  /** Nothing saved for this Sunday yet: `lines` are copied, unsaved, from this
-   *  earlier Sunday (the most recent one with a roster). */
+  /** Nothing saved for this Sunday yet: `lines` are copied, unsaved, from the
+   *  template (TEMPLATE) or, with no template, the most recent earlier Sunday. */
   copiedFrom?: string;
+  /** The template has lines, so it can be copied. */
+  hasTemplate: boolean;
   /** Leave filed for that Sunday, by driver id. */
   leave: Record<string, RosterLeave>;
   /** The version check a save sends back: every save mints new ids. */
