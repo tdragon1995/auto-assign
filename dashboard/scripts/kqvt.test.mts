@@ -140,7 +140,11 @@ assert.equal(directVerdict(two(7, 1, 1)), "drop");
 assert.equal(directVerdict("gone"), "drop");
 assert.equal(directVerdict(null), "wait");
 assert.equal(deliverTodo({ text: "📄 Kết quả", note: "gửi chị Lan", links: [] }), "Giao 📄 Kết quả — gửi chị Lan");
-assert.match(bookedStatus("b1", null, [tagged({ job_id: 5, direct: true, collector_name: "An" })]).status, /Giao trực tiếp — An/);
+assert.match(bookedStatus("b1", null, [tagged({ job_id: 5, direct: true, collector: "A", collector_name: "An" })]).status, /Giao trực tiếp — An, chưa lấy/);
+assert.match(bookedStatus("b1", null, [tagged({ job_id: 5, direct: true })]).status, /chờ điều phối/);
+assert.deepEqual(bookedStatus("b1", null, [tagged({ job_id: 5, direct: true, collector: "A", collector_name: "An", collected_ms: 1 })]), { status: "An đang giao tận nơi", tone: "move", job: 5 });
+assert.deepEqual(bookedStatus("b1", { state: "toi", job: 5, who: "An" }, []), { status: "Đã giao tận nơi — An", tone: "done", job: 5 });
+assert.match(cancelBlock(tagged({ job_id: 5, direct: true, collected_ms: 1 }))!, /đã lấy/);
 // Far by straight line → no road lookup at all, not near (D001 → D014 is ~30 km).
 assert.equal(await isNear({ lat: 10.775, lon: 106.673 }, { lat: 10.979, lon: 106.655 }), false);
 assert.equal(await isNear({ lat: 10.775, lon: 106.673 }, null), false);

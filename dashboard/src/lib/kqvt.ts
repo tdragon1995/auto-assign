@@ -189,7 +189,8 @@ export async function dropPending(jobId: number): Promise<void> {
  * item leaves the waiting list; everything before that is read off the list itself.
  */
 export interface BookedRow { bid: string; ts: string; client: string; text: string; note: string; links?: string[] }
-type Ending = { state: "giao" | "huy" | "xong" | "psc"; job?: number };
+/** "toi" = a direct job delivered, by `who`. */
+type Ending = { state: "giao" | "huy" | "xong" | "psc" | "toi"; job?: number; who?: string };
 const BOOKED_TTL_S = 7 * 86400;
 
 export async function logBooking(log: string, row: BookedRow): Promise<void> {
@@ -230,7 +231,7 @@ export async function loadBooked(psc: string, day: string): Promise<BookedView[]
 
 /** Why the PSC may no longer call an item off — null while nobody has taken it. */
 export function cancelBlock(e: KqvtEntry): string | null {
-  if (e.holder) return "Tài xế đã lấy — liên hệ điều phối để huỷ.";
+  if (e.holder || (e.direct && e.collected_ms)) return "Tài xế đã lấy — liên hệ điều phối để huỷ.";
   if (e.job_id < 0 && e.leg_job) return "Đang trên chuyến về — liên hệ điều phối để huỷ.";
   return null;
 }
@@ -311,6 +312,7 @@ export function bookedStatus(bid: string, ending: Ending | null, entries: KqvtEn
   if (ending?.state === "huy") return { status: "Chuyến lấy đã bị huỷ", tone: "off", job: ending.job ?? null };
   if (ending?.state === "xong") return { status: "Điều phối đã xử lý", tone: "done", job: ending.job ?? null };
   if (ending?.state === "psc") return { status: "Đã huỷ", tone: "off", job: null };
+  if (ending?.state === "toi") return { status: `Đã giao tận nơi${ending.who ? ` — ${ending.who}` : ""}`, tone: "done", job: ending.job ?? null };
   const e = entries.find((x) => x.items.some((i) => i.bid === bid));
   if (!e) return { status: "Đang cập nhật", tone: "wait", job: null };
   if (e.job_id < 0) {
@@ -319,7 +321,10 @@ export function bookedStatus(bid: string, ending: Ending | null, entries: KqvtEn
     if (hop) return { status: `Chờ chuyến về ${pscName(hop)} tại ${pscName(e.at!)}`, tone: "wait", job: null };
     return { status: `Đã tới ${e.psc_name}, đang tạo chuyến lấy`, tone: "move", job: null };
   }
-  if (e.direct) return { status: `Giao trực tiếp — ${e.collector_name ?? "chờ điều phối"}`, tone: "wait", job: e.job_id };
+  if (e.direct) {
+    if (e.collected_ms) return { status: `${e.collector_name ?? "Tài xế"} đang giao tận nơi`, tone: "move", job: e.job_id };
+    return { status: `Giao trực tiếp — ${e.collector ? `${e.collector_name ?? "tài xế"}, chưa lấy` : "chờ điều phối"}`, tone: "wait", job: e.job_id };
+  }
   if (e.holder) return { status: `${e.holder_name ?? "Tài xế"} đã lấy, sẽ giao kèm chuyến lấy mẫu tại khách`, tone: "move", job: e.job_id };
   return { status: `Chờ ${e.collector_name ?? "điều phối"} lấy tại ${e.psc_name}`, tone: "wait", job: e.job_id };
 }
@@ -373,6 +378,9 @@ export function itemsText(items: KqvtItem[]): string {
   for (const i of items) counts.set(i.text, (counts.get(i.text) ?? 0) + 1);
   return [...counts].map(([t, n]) => (n > 1 ? `${t} ×${n}` : t)).join(" + ");
 }
+
+/** List rows from the route timeline carry the full name in first_name. */
+const driverName = (j: Job) => `${j.driver?.first_name ?? ""} ${j.driver?.last_name ?? ""}`.trim() || undefined;
 
 type CollectState = Pick<Job, "job_status_id" | "delivery_driver_id" | "stops">;
 
@@ -583,10 +591,23 @@ export async function kqvtCycle(
         if ((e.direct ? directVerdict(collect) : collectVerdict(collect)) === "wait") await savePending(e);
       }
       if (e.direct) {
+        // Follow the job as Cartrack has it: whoever holds it now (the dispatcher may
+        // have given or moved it), and whether the PSC stop is done.
+        if (collect && collect !== "gone") {
+          const id = collect.delivery_driver_id || undefined;
+          const picked = collect.stops?.[0]?.stop_status_id === 4;
+          if (id !== e.collector || picked !== !!e.collected_ms) {
+            const name = driverName(collect as Job);
+            e.collector_name = id === e.collector ? e.collector_name : id ? name : undefined;
+            e.collector = id;
+            e.collected_ms = picked ? e.collected_ms ?? now : undefined;
+            await savePending(e);
+          }
+        }
         const v = directVerdict(collect);
         if (v !== "wait") {
           await dropPending(e.job_id);
-          await closeItems(e, { state: v === "done" ? "giao" : "huy", job: e.job_id });
+          await closeItems(e, v === "done" ? { state: "toi", job: e.job_id, who: e.collector_name } : { state: "huy", job: e.job_id });
           continue;
         }
       }
@@ -594,7 +615,7 @@ export async function kqvtCycle(
       if (verdict === "drop") { await dropPending(e.job_id); await closeItems(e, { state: "huy", job: e.job_id }); continue; }
       if (verdict === "collected" && collect && collect !== "gone") {
         e.holder = collect.delivery_driver_id!;
-        e.holder_name = e.holder === e.collector ? e.collector_name : (collect as Job).driver?.last_name ?? undefined;
+        e.holder_name = e.holder === e.collector ? e.collector_name : driverName(collect as Job);
         e.collected_ms = now;
         await savePending(e);
       }
