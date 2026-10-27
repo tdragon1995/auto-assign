@@ -131,8 +131,10 @@ export function BatchLookupPanel() {
 
   function lookup(event: React.FormEvent) {
     event.preventDefault();
-    const query = vid.trim();
-    if (!/^\d{8,20}$/.test(query)) { setError("VID phải gồm 8–20 chữ số."); return; }
+    // Same rule as the server's normalizeLookupQuery (lib/batch-lookup.ts is server-only):
+    // spaces anywhere are dropped, a batch code is B + 15 digits.
+    const query = vid.replace(/\s+/g, "").toUpperCase();
+    if (!/^(\d{8,20}|B\d{15})$/.test(query)) { setError("Nhập VID (8–20 chữ số) hoặc mã batch (B + 15 chữ số)."); return; }
     source.current?.close();
     setBusy(true); setProgress("Đang tìm đơn và mẫu…"); setSteps([]); setResult(null); setError(""); setAllEvents(false); setMobileContext(false);
     const events = new EventSource(`/api/admin/batch-lookup?vid=${encodeURIComponent(query)}`);
@@ -162,7 +164,7 @@ export function BatchLookupPanel() {
     <header className={`grid shrink-0 items-center gap-3 ${idle ? "mx-auto w-full max-w-lg text-center" : "lg:grid-cols-[1fr_auto_1fr]"}`}>
       <div><h2 className="text-base font-semibold">Tra cứu VID / Batch</h2><p className={`${muted} mt-0.5`}>Hành trình mẫu từ điểm lấy đến phòng xét nghiệm.</p></div>
       <form onSubmit={lookup} className="mx-auto flex w-full max-w-md items-center gap-2"><label htmlFor="batch-lookup-vid" className="sr-only">VID</label>
-        <div className="relative min-w-0 flex-1 sm:min-w-64"><Search aria-hidden="true" className="absolute left-3 top-3 size-4 text-slate-500" /><input id="batch-lookup-vid" inputMode="numeric" autoComplete="off" placeholder="Nhập VID…" value={vid} onChange={event => setVid(event.target.value)} maxLength={20} pattern="[0-9]{8,20}" required disabled={busy} aria-invalid={!!error && !result} className={`h-10 w-full rounded-md border border-slate-300 bg-white pl-9 pr-3 text-sm tabular-nums caret-indigo-600 placeholder:text-slate-500 disabled:opacity-60 ${focus}`} /></div>
+        <div className="relative min-w-0 flex-1 sm:min-w-64"><Search aria-hidden="true" className="absolute left-3 top-3 size-4 text-slate-500" /><input id="batch-lookup-vid" autoComplete="off" placeholder="Nhập VID hoặc mã batch…" value={vid} onChange={event => setVid(event.target.value)} maxLength={40} required disabled={busy} aria-invalid={!!error && !result} className={`h-10 w-full rounded-md border border-slate-300 bg-white pl-9 pr-3 text-sm tabular-nums caret-indigo-600 placeholder:text-slate-500 disabled:opacity-60 ${focus}`} /></div>
         <Button type="submit" disabled={busy} className="h-10">{busy ? "Đang tra…" : "Tra cứu"}</Button>
         {busy && <Button type="button" variant="outline" className="h-10" onClick={() => { source.current?.close(); source.current = null; setBusy(false); setProgress("Đã dừng tra cứu. Nhấn Tra cứu để bắt đầu lại."); }}>Dừng</Button>}
       </form>{!idle && <div aria-hidden="true" className="hidden lg:block" />}

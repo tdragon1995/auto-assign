@@ -223,18 +223,37 @@ function durations(timeline: LookupEvent[]): BatchLookupResult["phases"] {
   return out;
 }
 
-export async function lookupBatch(vid: string, emit: Emit = () => {}, signal = AbortSignal.timeout(240_000)): Promise<BatchLookupResult> {
+/** What the lookup box accepts: a VID, or a batch code (B + branch + yymmdd + hhmmss).
+ *  Whitespace anywhere is dropped — pasted codes arrive with leading spaces. */
+export function normalizeLookupQuery(raw: string): string | null {
+  const q = raw.replace(/\s+/g, "").toUpperCase();
+  return /^\d{8,20}$/.test(q) || BATCH_RE.test(q) ? q : null;
+}
+export const LOOKUP_QUERY_ERROR = "Nhập VID (8–20 chữ số) hoặc mã batch (B + 15 chữ số).";
+
+export async function lookupBatch(query: string, emit: Emit = () => {}, signal = AbortSignal.timeout(240_000)): Promise<BatchLookupResult> {
+  let vid = query;
   const out: BatchLookupResult = { vid, summary: null, timeline: [], phases: [], related_routes: [], driver_days: [], branch_batches: [], steps: [] };
   const log = (step: string, msg: string) => { const row = { step, msg }; out.steps.push(row); emit("step", row); };
   const doing = (msg: string) => emit("doing", { msg });
   try {
-    if (!/^\d{8,20}$/.test(vid)) throw new Error("VID phải gồm 8–20 chữ số.");
+    if (!/^\d{8,20}$/.test(vid) && !BATCH_RE.test(vid)) throw new Error(LOOKUP_QUERY_ERROR);
     async function lab<T>(path: string, params: URLSearchParams): Promise<{ data: T; pagination?: { last_page?: number; total_pages?: number } }> {
       const res = await receptionistFetch(`https://api.labcenter.vn${path}?${params}`, { headers: { Accept: "application/json", Origin: "https://labcenter.vn", Referer: "https://labcenter.vn/" }, cache: "no-store", signal });
       if (!res) throw new Error("Labcenter lookup access is not configured. Ask an administrator to configure a POS/LIS account or lookup token.");
       if (res.status === 404 && path.endsWith("/orders")) throw new Error(`No order found for VID ${vid}`);
       if (!res.ok) throw new Error(`Labcenter ${path}: HTTP ${res.status}${res.status === 403 ? " — this account needs POS/LIS access; configure an authorized lookup token" : res.status === 401 ? " — Labcenter refused the receptionist login and the lookup token" : ""}`);
       return res.json();
+    }
+    if (BATCH_RE.test(vid)) {
+      // A batch code: trace it through the first visit inside it — the timeline below
+      // finds and shows that batch alongside the visit's own samples.
+      doing(`Looking up batch ${query} in LIS`);
+      const b = (await lab<Batch>("/spc-lis/api/v1/batch/details", new URLSearchParams({ batch_code: query }))).data;
+      const first = Array.isArray(b?.samples) ? b.samples.find(s => s.order_id != null) : undefined;
+      if (!first) throw new Error(`Batch ${query} không có mẫu nào trong LIS`);
+      vid = out.vid = String(first.order_id);
+      log("batch", `${query} · ${b.samples!.length} mẫu · tra theo VID ${vid}`);
     }
     doing("Looking up the order and samples in Labcenter");
     const order = (await lab<Order>("/spc-pos/api/orders", new URLSearchParams({ visit_number: vid }))).data;

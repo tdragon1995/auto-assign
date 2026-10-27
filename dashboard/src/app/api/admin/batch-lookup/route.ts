@@ -1,15 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { lookupBatch } from "@/lib/batch-lookup";
+import { LOOKUP_QUERY_ERROR, lookupBatch, normalizeLookupQuery } from "@/lib/batch-lookup";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
 export const maxDuration = 300;
 
 export async function GET(req: NextRequest) {
-  const vid = req.nextUrl.searchParams.get("vid")?.trim() ?? "";
-  if (!/^\d{8,20}$/.test(vid)) {
-    return NextResponse.json({ error: "VID phải gồm 8–20 chữ số." }, { status: 400 });
-  }
+  const vid = normalizeLookupQuery(req.nextUrl.searchParams.get("vid") ?? "");
+  if (!vid) return NextResponse.json({ error: LOOKUP_QUERY_ERROR }, { status: 400 });
   const abort = new AbortController();
   const signal = AbortSignal.any([req.signal, abort.signal, AbortSignal.timeout(240_000)]);
   const encoder = new TextEncoder();
