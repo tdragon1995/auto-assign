@@ -5,8 +5,10 @@ import { readConfigGen } from "./config-gen";
 import { PSC_ROUTES } from "./psc-routes-data";
 
 export const PSC_TINH_LABEL = "🛵 Vận chuyển mẫu tỉnh";
-export const DANANG_PICKUP_UUID = "43cc0fee-b9a9-11f1-9378-fa163ee8d8ac";
-export const DANANG_PICKUP_ADDRESS = "306a Đ. Hồng Lạc, Bảy Hiền";
+// Cartrack customer "3PL - Nhà Xe Thanh Tĩnh" (was Nhà Xe Đình Nhân 43cc0fee-…, 306a Hồng Lạc, until 2026-10-27).
+export const DANANG_PICKUP_UUID = "e904a4f0-d1da-11f1-9378-fa163ee8d8ac";
+export const DANANG_PICKUP_NAME = "3PL - Nhà Xe Thanh Tĩnh";
+export const DANANG_PICKUP_ADDRESS = "121 Nguyễn Hữu Tiến, Tây Thạnh";
 
 export interface PscRoute {
   psc_pickup: string;

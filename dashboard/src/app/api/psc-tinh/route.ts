@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { DANANG_PICKUP_ADDRESS, DANANG_PICKUP_UUID, invalidatePscCache, loadTplEntries, PSC_TINH_LABEL } from "@/lib/psc-config";
+import { DANANG_PICKUP_ADDRESS, DANANG_PICKUP_NAME, DANANG_PICKUP_UUID, invalidatePscCache, loadTplEntries, PSC_TINH_LABEL } from "@/lib/psc-config";
 import { cancelJob, jobVnDate, BASE_URL, getHeaders, getStopsByLabels, createJob, type Env } from "@/lib/cartrack";
 import { addDays, vnDate, vnTimestamp } from "@/lib/time";
 import { pscTinhSchedule } from "@/lib/psc-tinh-time";
@@ -193,7 +193,7 @@ export async function GET(req: NextRequest) {
     if (psc === "DANANG") {
       return NextResponse.json({ options: [{
         tpl_uuid: DANANG_PICKUP_UUID,
-        tpl_name: "Hồ Chí Minh",
+        tpl_name: DANANG_PICKUP_NAME,
         address: DANANG_PICKUP_ADDRESS,
       }] });
     }
@@ -364,7 +364,7 @@ export async function POST(req: NextRequest) {
     if (psc_code === "DANANG") {
       await notifyAdminGroup(
         `🧪 **Yêu cầu lấy mẫu Đà Nẵng** (${deliveryDate} ${eta})\n` +
-        `Từ: Hồ Chí Minh — ${DANANG_PICKUP_ADDRESS}\n` +
+        `Từ: ${DANANG_PICKUP_NAME} — ${DANANG_PICKUP_ADDRESS}\n` +
         `Đến: D001 — Cao Thắng\n` +
         `Ghi chú:\n${pickupNote}\n` +
         `Job #${jobId ?? "?"}` +
