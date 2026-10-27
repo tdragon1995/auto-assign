@@ -157,7 +157,11 @@ th, td { white-space: nowrap; } /* one line per record, always; a too-long row r
   w.document.open();
   w.document.write(html);
   w.document.close();
-  if (autoPrint) w.onload = () => w.print();
+  // A window already showing "Đang lưu…" is complete after close() and never fires load again.
+  if (autoPrint) {
+    if (w.document.readyState === "complete") w.print();
+    else w.onload = () => w.print();
+  }
   return true;
 }
 
@@ -313,7 +317,6 @@ export function HardCopyHandover() {
   const [draftError, setDraftError] = useState("");
   const [draftLoading, setDraftLoading] = useState(true);
   const [clearingDraft, setClearingDraft] = useState(false);
-  const [deletingPrintId, setDeletingPrintId] = useState<string | null>(null);
   const [statusLoading, setStatusLoading] = useState(false);
   const [statusDone, setStatusDone] = useState(0);
   const [statusTotal, setStatusTotal] = useState(0);
@@ -438,6 +441,9 @@ export function HardCopyHandover() {
     ? history.filter((item) => vidSearch.ids.has(item.id))
     : history.filter((item) => !historyDate || vnDate(new Date(item.printedAt)) === historyDate);
 
+  // Search results come from saved prints only; a VID waiting in today's draft has not been printed yet.
+  const draftHit = vidSearch ? allRows.find((r) => r.vid.includes(vidSearch.vid)) : undefined;
+
   const searchVid = async () => {
     const vid = vidQuery.replace(/\D/g, "");
     if (!vid) { setVidSearch(null); return; }
@@ -459,17 +465,32 @@ export function HardCopyHandover() {
     title, prints: datedHistory.filter((item) => item.title === title),
   }));
 
-  const handlePrint = (title: string, groups: Group[]) => {
-    if (!printA4(title, groups)) return;
-    void fetch("/api/ao/prints", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, rows: printRows(groups) }),
-    }).then(async (res) => {
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Không lưu được lịch sử in");
-      setHistory((prev) => [data.print, ...prev]);
-      setHistoryError("");
-    }).catch((error) => setHistoryError(String(error)));
+  // Saved first, printed second: a sheet on paper always has its copy in Lịch sử in.
+  const handlePrint = async (title: string, groups: Group[]) => {
+    const w = window.open("", "_blank"); // opened inside the click, or the browser blocks it
+    if (!w) { alert("Trình duyệt đã chặn cửa sổ in — hãy cho phép cửa sổ bật lên."); return; }
+    w.document.body.textContent = "Đang lưu vào lịch sử in…";
+    const body = JSON.stringify({ id: crypto.randomUUID(), title, rows: printRows(groups) });
+    for (let attempt = 1; ; attempt++) {
+      let retryable = true;
+      try {
+        const res = await fetch("/api/ao/prints", { method: "POST", headers: { "Content-Type": "application/json" }, body });
+        const data = await res.json().catch(() => ({}));
+        retryable = res.status >= 500;
+        if (!res.ok || !data.print) throw new Error(data.error ?? "Không lưu được lịch sử in");
+        setHistory((prev) => [data.print, ...prev.filter((p) => p.id !== data.print.id)]);
+        setHistoryError("");
+        printA4(title, groups, true, data.print.printedAt, w);
+        return;
+      } catch (error) {
+        if (!retryable || attempt === 3) {
+          w.document.body.textContent = "Chưa lưu được vào lịch sử in nên chưa in. Hãy đóng cửa sổ này và bấm In A4 lại.";
+          setHistoryError(`${String(error)} · Chưa in.`);
+          return;
+        }
+        await new Promise((r) => setTimeout(r, attempt * 2000));
+      }
+    }
   };
 
   const openHistory = async (item: PrintHistorySummary) => {
@@ -509,22 +530,6 @@ export function HardCopyHandover() {
       setDraftError(String(error));
     } finally {
       setClearingDraft(false);
-    }
-  };
-
-  const deleteHistory = async (item: PrintHistorySummary) => {
-    if (!window.confirm(`Xóa bản in ${item.title} lúc ${new Date(item.printedAt).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })}?`)) return;
-    setDeletingPrintId(item.id);
-    try {
-      const res = await fetch(`/api/ao/prints?id=${encodeURIComponent(item.id)}`, { method: "DELETE" });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Không xóa được bản in");
-      setHistory((prev) => prev.filter((print) => print.id !== item.id));
-      setHistoryError("");
-    } catch (error) {
-      setHistoryError(String(error));
-    } finally {
-      setDeletingPrintId(null);
     }
   };
 
@@ -620,6 +625,7 @@ export function HardCopyHandover() {
         {vidSearch && (
           <p role="status" className="text-xs text-slate-700">
             {vidSearch.ids.size ? `VID ${vidSearch.vid} có trong ${datedHistory.length} bản in (mọi ngày trong 7 ngày).` : `Không có bản in nào chứa VID ${vidSearch.vid} trong 7 ngày.`}
+            {draftHit && <span className="block font-semibold text-amber-700">Đang nằm trong bản nháp hôm nay, danh sách {draftHit.dest === HUB ? HUB : `Ngoài ${HUB}`} (gửi về {draftHit.dest}){vidSearch.ids.size ? "" : " — chưa in"}.</span>}
           </p>
         )}
         {historyError && <p role="alert" className="text-xs text-red-700">{historyError}</p>}
@@ -632,10 +638,7 @@ export function HardCopyHandover() {
                   {group.prints.map((print) => (
                     <li key={print.id} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 py-2 text-xs">
                       <span className="min-w-0 text-slate-600">{new Date(print.printedAt).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })} · {print.count} hồ sơ</span>
-                      <span className="flex shrink-0 items-center gap-3">
-                        <button className="font-semibold text-blue-700 hover:underline focus-visible:outline-2 focus-visible:outline-blue-700" onClick={() => void openHistory(print)}>Xem bản in</button>
-                        <button className="font-semibold text-red-700 hover:underline focus-visible:outline-2 focus-visible:outline-red-700 disabled:opacity-40" disabled={deletingPrintId === print.id} onClick={() => void deleteHistory(print)}>{deletingPrintId === print.id ? "Đang xóa…" : "Xóa"}</button>
-                      </span>
+                      <button className="shrink-0 font-semibold text-blue-700 hover:underline focus-visible:outline-2 focus-visible:outline-blue-700" onClick={() => void openHistory(print)}>Xem bản in</button>
                     </li>
                   ))}
                 </ul>

@@ -104,15 +104,12 @@ export async function readPrintHistoryItem(db: Redis, id: string): Promise<Print
   return db.get<PrintHistory>(HISTORY_PREFIX + id);
 }
 
-export async function deletePrintHistoryItem(db: Redis, id: string): Promise<boolean> {
-  return (await db.del(HISTORY_PREFIX + id)) === 1;
-}
-
-export async function savePrintHistory(db: Redis, title: string, rows: PrintDraftRow[]): Promise<PrintHistory> {
+/** The browser picks the id so a retried save lands once; NX means a save can never overwrite (and so erase) a print. */
+export async function savePrintHistory(db: Redis, title: string, rows: PrintDraftRow[], id: string = randomUUID()): Promise<PrintHistory> {
   const print: PrintHistory = {
-    id: randomUUID(), printedAt: new Date().toISOString(), title,
+    id, printedAt: new Date().toISOString(), title,
     rows: [...new Map(rows.map((r) => [printRowKey(r), r])).values()],
   };
-  await db.set(HISTORY_PREFIX + print.id, print, { ex: TTL });
-  return print;
+  if (await db.set(HISTORY_PREFIX + id, print, { ex: TTL, nx: true })) return print;
+  return (await readPrintHistoryItem(db, id)) ?? print;
 }
