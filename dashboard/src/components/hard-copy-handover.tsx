@@ -599,7 +599,7 @@ export function HardCopyHandover() {
         <section className="bg-white rounded-2xl shadow-sm p-5 space-y-3 min-w-0">
         <div className="flex items-baseline justify-between gap-2">
           <h2 className="text-base font-bold text-slate-900">Lịch sử in</h2>
-          <span className="text-xs text-slate-500">Lưu 7 ngày</span>
+          <span className="text-xs text-slate-500">Lưu 60 ngày</span>
         </div>
         <div className="flex items-end gap-2">
           <label htmlFor="ao-history-date" className="flex-1 text-xs font-semibold text-slate-600">
@@ -624,7 +624,7 @@ export function HardCopyHandover() {
         </form>
         {vidSearch && (
           <p role="status" className="text-xs text-slate-700">
-            {vidSearch.ids.size ? `VID ${vidSearch.vid} có trong ${datedHistory.length} bản in (mọi ngày trong 7 ngày).` : `Không có bản in nào chứa VID ${vidSearch.vid} trong 7 ngày.`}
+            {vidSearch.ids.size ? `VID ${vidSearch.vid} có trong ${datedHistory.length} bản in (mọi ngày trong 60 ngày).` : `Không có bản in nào chứa VID ${vidSearch.vid} trong 60 ngày.`}
             {draftHit && <span className="block font-semibold text-amber-700">Đang nằm trong bản nháp hôm nay, danh sách {draftHit.dest === HUB ? HUB : `Ngoài ${HUB}`} (gửi về {draftHit.dest}){vidSearch.ids.size ? "" : " — chưa in"}.</span>}
           </p>
         )}

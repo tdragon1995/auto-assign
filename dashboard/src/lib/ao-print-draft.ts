@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Redis } from "@upstash/redis";
 import { sharedRedis } from "./redis";
-import { printRowKey, type PrintDraftRow, type PrintHistory } from "./handover";
+import { printRowKey, type PrintDraftRow, type PrintHistory, type PrintHistorySummary } from "./handover";
+import { sbRpc, sbSelect, sbSelectAll } from "./supabase-rest";
 import { vnDate } from "./time";
 
 const draftPrefix = (day: string) => `ao:hardcopy:day:${day}:`;
 const draftUpdatedAtKey = (day: string) => `ao:hardcopy:updated:${day}`;
-const HISTORY_PREFIX = "ao:hardcopy:history:";
 const TTL = 7 * 24 * 60 * 60;
 
 export function draftRedis(): Redis | null {
@@ -78,38 +78,29 @@ export async function clearPrintDraft(db: Redis, day = vnDate()) {
   return readPrintDraftState(db, day);
 }
 
-export async function readPrintHistory(db: Redis): Promise<PrintHistory[]> {
-  const keys: string[] = [];
-  let cursor = "0";
-  do {
-    const [next, batch] = await db.scan(cursor, { match: `${HISTORY_PREFIX}*`, count: 500 });
-    keys.push(...batch);
-    if (keys.length > 1000) throw new Error("AO print history exceeds 1000 prints");
-    cursor = String(next);
-  } while (cursor !== "0");
-  const prints: PrintHistory[] = [];
-  for (let i = 0; i < keys.length; i += 100) {
-    const values = await db.mget<(PrintHistory | string | null)[]>(...keys.slice(i, i + 100));
-    for (const value of values) {
-      const parsed = typeof value === "string" ? JSON.parse(value) : value;
-      if (parsed && typeof parsed.id === "string" && typeof parsed.printedAt === "string"
-        && typeof parsed.title === "string" && Array.isArray(parsed.rows)) prints.push(parsed);
-    }
-  }
-  return prints.sort((a, b) => b.printedAt.localeCompare(a.printedAt));
+// Lịch sử in lives in Supabase (ao_prints + ao_print_rows), kept 60 days.
+const KEEP_DAYS = 60;
+interface PrintDb { id: string; printed_at: string; title: string; row_count: number }
+const since = () => new Date(Date.now() - KEEP_DAYS * 86_400_000).toISOString();
+const summaryOf = (p: PrintDb): PrintHistorySummary => ({ id: p.id, printedAt: p.printed_at, title: p.title, count: p.row_count });
+
+/** Summaries only, newest first; `vid` keeps the prints carrying it (digits, any part). */
+export async function listPrints(vid?: string): Promise<PrintHistorySummary[]> {
+  const byVid = vid ? `,ao_print_rows!inner()&ao_print_rows.vid=like.*${vid}*` : "";
+  const prints = await sbSelect<PrintDb>("ao_prints", `select=id,printed_at,title,row_count${byVid}&printed_at=gte.${since()}&order=printed_at.desc`);
+  return prints.map(summaryOf);
 }
 
-export async function readPrintHistoryItem(db: Redis, id: string): Promise<PrintHistory | null> {
+export async function readPrint(id: string): Promise<PrintHistory | null> {
   if (!/^[0-9a-f-]{36}$/i.test(id)) return null;
-  return db.get<PrintHistory>(HISTORY_PREFIX + id);
+  const [print] = await sbSelect<PrintDb>("ao_prints", `select=id,printed_at,title,row_count&id=eq.${id}&printed_at=gte.${since()}`);
+  if (!print) return null;
+  const rows = await sbSelectAll<PrintDraftRow>("ao_print_rows", `select=dest,client,vid,patient,billing,note&print_id=eq.${id}`, "idx.asc");
+  return { id: print.id, printedAt: print.printed_at, title: print.title, rows };
 }
 
-/** The browser picks the id so a retried save lands once; NX means a save can never overwrite (and so erase) a print. */
-export async function savePrintHistory(db: Redis, title: string, rows: PrintDraftRow[], id: string = randomUUID()): Promise<PrintHistory> {
-  const print: PrintHistory = {
-    id, printedAt: new Date().toISOString(), title,
-    rows: [...new Map(rows.map((r) => [printRowKey(r), r])).values()],
-  };
-  if (await db.set(HISTORY_PREFIX + id, print, { ex: TTL, nx: true })) return print;
-  return (await readPrintHistoryItem(db, id)) ?? print;
+/** The browser picks the id so a retried save lands once; ao_save_print never overwrites (and so never erases) a print. */
+export async function savePrint(title: string, rows: PrintDraftRow[], id: string = randomUUID()): Promise<PrintHistorySummary> {
+  const unique = [...new Map(rows.map((r) => [printRowKey(r), r])).values()];
+  return summaryOf(await sbRpc<PrintDb>("ao_save_print", { print_id: id, print_title: title, print_rows: unique }));
 }
