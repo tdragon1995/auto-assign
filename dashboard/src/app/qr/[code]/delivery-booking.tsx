@@ -47,7 +47,21 @@ interface Customer { customer_id: string; customer_name: string; address_line_1?
 const KINDS = [["KQ", "Kết quả"], ["VT", "Vật tư"], ["KV", "Kết quả + Vật tư"]] as const;
 interface Row { c: Customer; kind: (typeof KINDS)[number][0]; note: string; files: File[] }
 
-interface Booking { bid: string; ts: string; client: string; text: string; note: string; status: string; tone: "wait" | "move" | "done" | "off"; job: number | null; cancellable: boolean }
+interface Booking { bid: string; ts: string; client: string; text: string; note: string; links?: string[]; status: string; tone: "wait" | "move" | "done" | "off"; job: number | null; cancellable: boolean }
+
+/** One booked photo, opening full size; a file that is not a picture (a PDF) shows as a link. */
+function Thumb({ url, n }: { url: string; n: number }) {
+  const [broken, setBroken] = useState(false);
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer" aria-label={`Mở ảnh ${n}`}
+      className="block w-14 h-14 shrink-0 rounded-lg overflow-hidden border border-slate-200 bg-slate-50">
+      {broken
+        ? <span className="flex w-full h-full items-center justify-center text-[11px] font-semibold text-blue-700">Tệp {n}</span>
+        // eslint-disable-next-line @next/next/no-img-element
+        : <img src={url} alt={`Ảnh ${n}`} loading="lazy" onError={() => setBroken(true)} className="w-full h-full object-cover" />}
+    </a>
+  );
+}
 const TONE = { wait: "text-amber-700", move: "text-blue-700", done: "text-green-700", off: "text-slate-500" } as const;
 
 /** This PSC's KQ/VT bookings for `date`. Read when the page opens or the day changes,
@@ -73,6 +87,9 @@ function Booked({ list, loading, onRefresh, onCancel, cancelling, error }: {
               <p className="text-sm font-semibold text-slate-800 break-words">{b.client}</p>
               <p className="text-xs text-slate-600 break-words">{b.text}{b.note ? ` — ${b.note}` : ""}</p>
               <p className={`text-xs font-semibold ${TONE[b.tone]}`}>{b.status}{b.job ? ` · Job ${b.job}` : ""}</p>
+              {!!b.links?.length && (
+                <div className="flex gap-1.5 mt-1.5 flex-wrap">{b.links.map((u, i) => <Thumb key={u} url={u} n={i + 1} />)}</div>
+              )}
             </div>
             {b.cancellable && (
               <button onClick={() => onCancel(b)} disabled={!!cancelling}

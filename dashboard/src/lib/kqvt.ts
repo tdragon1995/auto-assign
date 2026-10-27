@@ -28,6 +28,11 @@
  * (or with no drop-off, which means D001) — gets its collect job unassigned, for the
  * dispatcher.
  *
+ * NEAR (supervisor, 2026-10-27): a client less than NEAR_KM by road from the booking
+ * PSC gets one DIRECT 2-stop job instead — pick up at the PSC, deliver to the client —
+ * given to the client's driver (D001 clients unassigned). It wins over multi-leg. Its
+ * item is done when the delivery stop is.
+ *
  * Adding a to-do to a live job: the REST stop PUT REPLACES a stop's to-do list, so the
  * existing ones are echoed back with their stop_todo_id (kept untouched) plus the new
  * one — verified on throwaway prod jobs 2026-10-18. Only a stop still "Chờ lấy" is ever
@@ -36,6 +41,7 @@
 import { BASE_URL, cancelJob, createJob, jobVnDate, getHeaders, getJobDetails, getLiveDrivers, updateJobStops, type Env } from "./cartrack";
 import { sharedRedis } from "./redis";
 import { haversineKm } from "./distance";
+import { roadDistancesFromPoint } from "./distance-cache";
 import { resolveDriverChoices, resolveFixedDriver } from "./fixed-driver";
 import { LAB_CUSTOMER_ID, PSC_DELIVERY_LABEL, PSC_RETURN_LABEL } from "./job-filters";
 import { PSC_ROUTES } from "./psc-routes-data";
@@ -71,7 +77,30 @@ export interface KqvtEntry {
   /** Multi-leg only: the booking PSC, where the items are now, the PSCs still to reach
    *  (next first, last = psc), and the return trip carrying them. */
   origin?: string; at?: string; hops?: string[]; leg_job?: number; leg_checked_ms?: number;
+  /** A direct PSC → client job (NEAR_KM): no collect/hand-over halves. */
+  direct?: boolean;
 }
+
+export const NEAR_KM = 3;
+
+/** Under NEAR_KM by road. The road lookup (cached, billed when new) is asked only when
+ *  the straight line is already under — a road is never shorter. A failed lookup falls
+ *  back to the straight line. */
+export async function isNear(psc: { lat: number; lon: number }, client: { lat: number; lon: number } | null): Promise<boolean> {
+  if (!client || haversineKm(psc.lat, psc.lon, client.lat, client.lon) >= NEAR_KM) return false;
+  const [road] = await roadDistancesFromPoint(psc, [client]).catch(() => [null]);
+  return road ? road.distance_km < NEAR_KM : true;
+}
+
+/** The direct job's state: cancelled/deleted → drop; delivery stop done → done. */
+export function directVerdict(job: CollectState | "gone" | null | undefined): "drop" | "done" | "wait" {
+  if (job === "gone" || job?.job_status_id === 7) return "drop";
+  if (job?.job_status_id === 5 || job?.stops?.some((s) => s.stop_type_id === 2 && s.stop_status_id === 4)) return "done";
+  return "wait";
+}
+
+/** The delivery to-do of one item on a direct job. */
+export const deliverTodo = (item: KqvtItem) => `Giao ${item.text}${item.note ? ` — ${item.note}` : ""}`.slice(0, 250);
 
 export const pscName = (id: string) => {
   const r = PSC_ROUTES.find((x) => x.pickup === id);
@@ -159,7 +188,7 @@ export async function dropPending(jobId: number): Promise<void> {
  * item, kept 7 days. How it ENDED is a separate "<bid>:s" field, written once when the
  * item leaves the waiting list; everything before that is read off the list itself.
  */
-export interface BookedRow { bid: string; ts: string; client: string; text: string; note: string }
+export interface BookedRow { bid: string; ts: string; client: string; text: string; note: string; links?: string[] }
 type Ending = { state: "giao" | "huy" | "xong" | "psc"; job?: number };
 const BOOKED_TTL_S = 7 * 86400;
 
@@ -234,7 +263,9 @@ export async function cancelBooking(psc: string, day: string, bid: string, env: 
         return { ok: false, status: 502, error: "Huỷ thất bại, vui lòng thử lại." };
       }
     } else {
-      const res = await removeStopTodo(e.job_id, e.psc, collectTodo(item, e.client_name), env);
+      let res = await removeStopTodo(e.job_id, e.psc, collectTodo(item, e.client_name), env);
+      // A direct job carries the item twice: collected at the PSC, delivered at the client.
+      if (res === "ok" && e.direct) res = await removeStopTodo(e.job_id, e.client_id, deliverTodo(item), env);
       if (res === "started") return { ok: false, status: 409, error: "Tài xế đã bắt đầu đi lấy — liên hệ điều phối để huỷ." };
       if (res !== "ok") return { ok: false, status: 502, error: "Huỷ thất bại, vui lòng thử lại." };
     }
@@ -288,6 +319,7 @@ export function bookedStatus(bid: string, ending: Ending | null, entries: KqvtEn
     if (hop) return { status: `Chờ chuyến về ${pscName(hop)} tại ${pscName(e.at!)}`, tone: "wait", job: null };
     return { status: `Đã tới ${e.psc_name}, đang tạo chuyến lấy`, tone: "move", job: null };
   }
+  if (e.direct) return { status: `Giao trực tiếp — ${e.collector_name ?? "chờ điều phối"}`, tone: "wait", job: e.job_id };
   if (e.holder) return { status: `${e.holder_name ?? "Tài xế"} đã lấy, sẽ giao kèm chuyến lấy mẫu tại khách`, tone: "move", job: e.job_id };
   return { status: `Chờ ${e.collector_name ?? "điều phối"} lấy tại ${e.psc_name}`, tone: "wait", job: e.job_id };
 }
@@ -309,20 +341,25 @@ export const waitingKey = () => -(Date.now() * 100 + (seq++ % 100));
  * jobId 0 = not created.
  */
 export async function createCollectJob(
-  e: Pick<KqvtEntry, "psc" | "origin" | "client_name" | "items">, extraNote: string, who: { driverId: string } | null, env: Env,
+  e: Pick<KqvtEntry, "psc" | "origin" | "client_name" | "items"> & { client_id?: string }, extraNote: string, who: { driverId: string } | null, env: Env,
+  /** A DIRECT job: also a delivery stop at e.client_id (NEAR_KM). */
+  direct = false,
 ): Promise<{ jobId: number; driverId: string | null; status: number; body: unknown }> {
   const { hours, minutes } = vnHoursMinutes();
   const links = e.items.flatMap((i) => i.links);
   const payload = {
-    job_type_id: 3,
+    job_type_id: direct ? 1 : 3,
     schedule_type_id: 1,
     reference_number: `${pscName(e.origin ?? e.psc)}→${e.client_name.slice(0, 60)}_${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`,
     labels: [PSC_DELIVERY_LABEL],
     stops: [{
-      stop_type_id: 3, customer_id: e.psc, duration: 5,
+      stop_type_id: direct ? 1 : 3, customer_id: e.psc, duration: 5,
       note: [...e.items.map((i) => collectTodo(i, e.client_name)), extraNote, ...links.map((u, i) => `Ảnh ${i + 1}: ${u}`)].filter(Boolean).join("\n"),
       todos: e.items.map((i) => ({ todo_type_id: PHOTO, description: collectTodo(i, e.client_name), is_required: true })),
-    }],
+    }, ...(direct ? [{
+      stop_type_id: 2, customer_id: e.client_id, duration: 5,
+      todos: e.items.map((i) => ({ todo_type_id: PHOTO, description: deliverTodo(i), is_required: true })),
+    }] : [])],
   };
   let res = await createJob(who ? { ...payload, delivery_driver_id: who.driverId } : payload, env);
   let driverId = who?.driverId ?? null;
@@ -543,9 +580,17 @@ export async function kqvtCycle(
       if (!collect && now - (e.checked_ms ?? 0) > RECHECK_MS) {
         collect = await lookupJob(e.job_id, env);
         e.checked_ms = now;
-        if (collectVerdict(collect) === "wait") await savePending(e);
+        if ((e.direct ? directVerdict(collect) : collectVerdict(collect)) === "wait") await savePending(e);
       }
-      const verdict = collectVerdict(collect);
+      if (e.direct) {
+        const v = directVerdict(collect);
+        if (v !== "wait") {
+          await dropPending(e.job_id);
+          await closeItems(e, { state: v === "done" ? "giao" : "huy", job: e.job_id });
+          continue;
+        }
+      }
+      const verdict = e.direct ? "wait" : collectVerdict(collect);
       if (verdict === "drop") { await dropPending(e.job_id); await closeItems(e, { state: "huy", job: e.job_id }); continue; }
       if (verdict === "collected" && collect && collect !== "gone") {
         e.holder = collect.delivery_driver_id!;

@@ -16,11 +16,12 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { BASE_URL, getHeaders, getCustomerById } from "@/lib/cartrack";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
-import { appendStopTodos, cancelBooking, collectTodo, createCollectJob, defaultDropoff, loadBooked, loadPending, logBooking, pickCollector, planDelivery, pscName, savePending, waitingKey, type KqvtEntry, type KqvtItem } from "@/lib/kqvt";
+import { appendStopTodos, cancelBooking, collectTodo, createCollectJob, defaultDropoff, deliverTodo, isNear, loadBooked, loadPending, logBooking, pickCollector, planDelivery, pscName, savePending, waitingKey, type KqvtEntry, type KqvtItem } from "@/lib/kqvt";
 import { loadConfigFromSheets } from "@/lib/config";
 import { loadLeaveEntries } from "@/lib/leave-config";
 import { shortCode } from "@/lib/psc-dup";
 import { placeLabel } from "@/lib/place-label";
+import { LAB_CUSTOMER_ID } from "@/lib/job-filters";
 import { indexCustomer, rankCustomers, type Customer, type Indexed } from "@/lib/customer-search";
 import { vnDate, vnTimestamp } from "@/lib/time";
 import { acquireCreateLock, releaseCreateLock, pushRunLog } from "@/lib/smart-log-kv";
@@ -162,8 +163,14 @@ export async function POST(req: NextRequest) {
     try {
       // The client's name: from this instance's directory if it holds one, else one
       // small lookup per client — never a whole-directory load just to name a trip.
-      const nameOf = async (id: string) =>
-        dir?.rows.get(id)?.customer_name ?? (await getCustomerById(id, "prod"))?.data?.customer_name;
+      const infoOf = async (id: string) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const c: any = dir?.rows.get(id) ?? (await getCustomerById(id, "prod"))?.data;
+        const lat = Number(c?.latitude), lon = Number(c?.longitude);
+        return c?.customer_name
+          ? { name: c.customer_name as string, at: Number.isFinite(lat) && Number.isFinite(lon) && lat && lon ? { lat, lon } : null }
+          : null;
+      };
       // One upload for the whole booking (one login, one lock), split back per client.
       // Only when there are files: the uploader refuses outright where it is not configured.
       const links = allFiles.length ? await uploadToCartrack(allFiles) : [];
@@ -178,14 +185,20 @@ export async function POST(req: NextRequest) {
       let li = 0;
       for (const d of deliveries) {
         const mine = links.slice(li, li += d.files.length);
-        const full = await nameOf(d.customer_id);
+        const info = await infoOf(d.customer_id);
+        const full = info?.name;
         if (!full) { await failed(d.customer_id, "không có khách hàng này trên Cartrack"); continue; }
         const client = placeLabel(full);
         const item: KqvtItem = { text: KINDS[d.kind].items.join(" + "), note: d.note, links: mine, log, bid: crypto.randomUUID().slice(0, 8) };
         // The PSC's own record (shown on /qr), written once the booking is safely held.
-        const record = () => logBooking(log, { bid: item.bid!, ts: vnTimestamp().slice(11, 16), client, text: item.text, note: item.note }).catch(() => {});
-        // Multi-leg clients ride the return trips to their default drop-off (lib/kqvt.ts).
-        const plan = planDelivery(route.pickup, await defaultDropoff(d.customer_id));
+        const record = () => logBooking(log, { bid: item.bid!, ts: vnTimestamp().slice(11, 16), client, text: item.text, note: item.note, links: mine }).catch(() => {});
+        // Under NEAR_KM by road → one direct PSC → client job; else multi-leg clients ride
+        // the return trips to their default drop-off (lib/kqvt.ts). Near wins.
+        const dropoff = await defaultDropoff(d.customer_id);
+        const near = route.lat != null && route.lon != null && await isNear({ lat: route.lat, lon: route.lon }, info.at).catch(() => false);
+        const plan = near
+          ? { collectAt: route.pickup, hops: [] as string[], autoAssign: (dropoff ?? LAB_CUSTOMER_ID) !== LAB_CUSTOMER_ID }
+          : planDelivery(route.pickup, dropoff);
         const route_ = plan.hops.map(pscName).join(" → ");
         const noteLine = [collectTodo(item, client), ...mine.map((u, i) => `Ảnh ${i + 1}: ${u}`)].join("\n");
 
@@ -193,11 +206,12 @@ export async function POST(req: NextRequest) {
         // The NEWEST one: an older one that set off stays on the list until collected.
         // A multi-leg one only while its items still wait here for their first ride —
         // it has no job yet, so the item just joins the list.
-        const open = pending.filter((e) => e.client_id === d.customer_id && !e.holder && e.psc === plan.collectAt &&
+        const open = pending.filter((e) => e.client_id === d.customer_id && !e.holder && e.psc === plan.collectAt && !!e.direct === near &&
           (e.origin ? e.job_id < 0 && e.at === route.pickup && !e.leg_job : e.psc === route.pickup))
           .sort((a, b) => b.created_ms - a.created_ms)[0];
         if (open) {
-          const r = open.job_id < 0 ? "ok" : await appendStopTodos(open.job_id, { [open.psc]: [collectTodo(item, client)] }, "prod", noteLine).catch(() => "failed" as const);
+          const adds = { [open.psc]: [collectTodo(item, client)], ...(open.direct ? { [open.client_id]: [deliverTodo(item)] } : {}) };
+          const r = open.job_id < 0 ? "ok" : await appendStopTodos(open.job_id, adds, "prod", noteLine).catch(() => "failed" as const);
           if (r === "ok") {
             open.items.push(item);
             await savePending(open);
@@ -226,17 +240,20 @@ export async function POST(req: NextRequest) {
         }
 
         const who = plan.autoAssign && config && leave ? await pickCollector(config, leave, d.customer_id, route, "prod").catch(() => null) : null;
-        const res = await createCollectJob(base, "", who, "prod");
+        const res = await createCollectJob(base, "", who, "prod", near);
         if (!res.jobId) {
           console.error("[psc-delivery] create failed:", res.status, JSON.stringify(res.body).slice(0, 300));
           await failed(client, res.status >= 500 ? `chưa xác nhận được (${res.status}), kiểm tra trước khi tạo lại` : `Cartrack từ chối (${res.status})`);
           continue;
         }
-        const entry: KqvtEntry = { ...base, job_id: res.jobId, collector: res.driverId ?? undefined, collector_name: res.driverId ? who?.name ?? undefined : undefined };
+        const entry: KqvtEntry = {
+          ...base, job_id: res.jobId, collector: res.driverId ?? undefined, collector_name: res.driverId ? who?.name ?? undefined : undefined,
+          ...(near ? { direct: true } : {}),
+        };
         await savePending(entry);
         pending.push(entry);
         await record();
-        await pushRunLog([{ ts: vnTimestamp(), level: "INFO", msg: `Job ${res.jobId} - lấy ${item.text} tại PSC: ${res.driverId ? who?.name ?? "tài xế" : "chờ điều phối"} | ${psc} → ${client}` }]).catch(() => {});
+        await pushRunLog([{ ts: vnTimestamp(), level: "INFO", msg: `Job ${res.jobId} - ${near ? "giao trực tiếp" : "lấy"} ${item.text}${near ? "" : " tại PSC"}: ${res.driverId ? who?.name ?? "tài xế" : "chờ điều phối"} | ${psc} → ${client}` }]).catch(() => {});
       }
     } catch (e) {
       console.error("[psc-delivery] error:", e);

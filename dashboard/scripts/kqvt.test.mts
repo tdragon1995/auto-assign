@@ -5,7 +5,7 @@
  * in a smart ranking, and who collects for a smart client.
  */
 import assert from "node:assert/strict";
-import { bookedStatus, cancelBlock, chainFrom, collectVerdict, handoverTarget, itemsText, legTodos, legVerdict, nearest, planDelivery, rankWithHolderFirst, rideFor, waitingTooLong, WAIT_ALERT_MS, type KqvtEntry } from "../src/lib/kqvt";
+import { bookedStatus, cancelBlock, chainFrom, deliverTodo, directVerdict, isNear, collectVerdict, handoverTarget, itemsText, legTodos, legVerdict, nearest, planDelivery, rankWithHolderFirst, rideFor, waitingTooLong, WAIT_ALERT_MS, type KqvtEntry } from "../src/lib/kqvt";
 import { returnRideable } from "../src/lib/return-trips";
 import { PSC_DELIVERY_LABEL, PSC_RETURN_LABEL } from "../src/lib/job-filters";
 import type { Job, Mapping } from "../src/lib/types";
@@ -130,4 +130,18 @@ assert.equal(cancelBlock(tagged({ job_id: 5 })), null);
 assert.equal(cancelBlock(tagged({ job_id: -1, at: D001, hops: [D007] })), null);
 assert.match(cancelBlock(tagged({ job_id: 5, holder: "H" }))!, /đã lấy/);
 assert.match(cancelBlock(tagged({ job_id: -1, at: D001, hops: [D007], leg_job: 77 }))!, /chuyến về/);
+// Direct jobs (under NEAR_KM): done when the delivery stop is, dropped when cancelled.
+const two = (status: number, pick: number, drop: number) =>
+  ({ job_status_id: status, delivery_driver_id: "H", stops: [{ stop_type_id: 1, stop_status_id: pick }, { stop_type_id: 2, stop_status_id: drop }] }) as unknown as Job;
+assert.equal(directVerdict(two(4, 4, 1)), "wait");   // collected at the PSC, not yet delivered
+assert.equal(directVerdict(two(4, 4, 4)), "done");
+assert.equal(directVerdict(two(5, 4, 4)), "done");
+assert.equal(directVerdict(two(7, 1, 1)), "drop");
+assert.equal(directVerdict("gone"), "drop");
+assert.equal(directVerdict(null), "wait");
+assert.equal(deliverTodo({ text: "📄 Kết quả", note: "gửi chị Lan", links: [] }), "Giao 📄 Kết quả — gửi chị Lan");
+assert.match(bookedStatus("b1", null, [tagged({ job_id: 5, direct: true, collector_name: "An" })]).status, /Giao trực tiếp — An/);
+// Far by straight line → no road lookup at all, not near (D001 → D014 is ~30 km).
+assert.equal(await isNear({ lat: 10.775, lon: 106.673 }, { lat: 10.979, lon: 106.655 }), false);
+assert.equal(await isNear({ lat: 10.775, lon: 106.673 }, null), false);
 console.log("kqvt: ok");
