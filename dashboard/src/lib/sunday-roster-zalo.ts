@@ -1,7 +1,8 @@
 /**
  * The Sunday roster's Zalo side: Wednesday 13:00 (draft) and Friday 13:00
  * (final) the drivers' groups get the roster picture, an open-slots picture and
- * the text; every "Nhận ca" claim is announced there; on Tuesday and Thursday
+ * the text; every "Nhận ca" claim is announced there; Monday 13:00 the coming
+ * Sunday is saved as a copy of the last one if nobody saved it; on Tuesday and Thursday
  * 13:00, the day before each post, the admin group gets the open-slots picture
  * and list.
  *
@@ -10,7 +11,9 @@
  * drivers' group ZALO_DRIVER_CHAT_ID. Unset chat id = nothing is posted.
  */
 import crypto from "crypto";
-import { sbSelectAll } from "./supabase-rest";
+import { sbRpc, sbSelect, sbSelectAll } from "./supabase-rest";
+import { masterEnabled } from "./master-store";
+import { invalidateConfigCache } from "./config";
 import { loadLeaveEntries, leaveEntriesOnDate, resignationOn, type LeaveEntry } from "./leave-config";
 import { notifyAdminGroup, sendZaloMessage } from "./zalo";
 import { getRedis } from "./tat-archive";
@@ -206,16 +209,53 @@ async function alertAdmins(date: string, next: Stage): Promise<void> {
   await notifyAdminGroup(text);
 }
 
-/** The week, all at 13:00 VN (supervisor, 2026-10-27): Tuesday admin alert,
- *  Wednesday draft to drivers, Thursday admin alert, Friday final to drivers. */
-const WEEK: Record<number, { kind: "alert" | "post"; stage: Stage }> = {
+/**
+ * Save `date`'s roster as a copy of the latest saved Sunday before it — only
+ * when nothing is saved for `date` yet. Returns the Sunday copied from, or null
+ * (already saved, nothing to copy, or an admin saved first). It is exactly what
+ * the Lịch Chủ nhật editor offers when it opens an unsaved week, done without
+ * waiting for someone to press Lưu (supervisor, 2026-10-27).
+ *
+ * Never overwrites: `expected_ids: []` makes master_write_sunday_roster refuse
+ * if any line exists for that Sunday by the time it runs.
+ */
+export async function autoSaveRoster(date: string): Promise<string | null> {
+  if (!masterEnabled()) return null;
+  if ((await sbSelect<{ id: number }>("master_sunday_roster", `select=id&work_date=eq.${date}&limit=1`)).length) return null;
+  const [src] = await sbSelect<{ work_date: string }>("master_sunday_roster",
+    `select=work_date&work_date=lt.${date}&order=work_date.desc&limit=1`);
+  if (!src) return null;
+  type Line = { area: string; driver_id: string | null; raw_name: string | null; shift: string | null; note: string | null };
+  const rows = await sbSelectAll<Line>("master_sunday_roster",
+    `select=area,driver_id,raw_name,shift,note&work_date=eq.${src.work_date}`, "sort.asc,id.asc");
+  try {
+    await sbRpc<number>("master_write_sunday_roster", {
+      roster_date: date, expected_ids: [],
+      lines: rows.map((r) => ({ area: r.area, driver_id: r.driver_id, raw_name: r.driver_id ? null : r.raw_name, shift: r.shift ?? "", note: r.note ?? "" })),
+    });
+  } catch (e) {
+    if (String(e).includes("Roster changed since it was loaded")) return null; // an admin saved it meanwhile
+    throw e;
+  }
+  // The roster decides who drives every Sunday rule.
+  await invalidateConfigCache();
+  console.log(`[sunday-roster] auto-saved ${date} from ${src.work_date} (${rows.length} lines)`);
+  await notifyAdminGroup(`📋 Đã tự lưu Lịch CN ${dm(date)} (sao chép từ CN ${dm(src.work_date)}). Kiểm tra và sửa trong Lịch Chủ nhật — tài xế nhận bản dự kiến 13:00 thứ Tư, bản chính thức 13:00 thứ Sáu.`);
+  return src.work_date;
+}
+
+/** The week, all at 13:00 VN (supervisor, 2026-10-27): Monday auto-save of the
+ *  coming Sunday, Tuesday admin alert, Wednesday draft to drivers, Thursday
+ *  admin alert, Friday final to drivers. Every job saves first if still unsaved. */
+const WEEK: Record<number, { kind: "save" | "alert" | "post"; stage: Stage }> = {
+  1: { kind: "save", stage: "draft" },
   2: { kind: "alert", stage: "draft" },
   3: { kind: "post", stage: "draft" },
   4: { kind: "alert", stage: "final" },
   5: { kind: "post", stage: "final" },
 };
 
-/** Called on every assign-cron ping. Free outside 13:00–13:59 Tue–Fri; inside,
+/** Called on every assign-cron ping. Free outside 13:00–13:59 Mon–Fri; inside,
  *  one Redis SET NX per ping until that day's job is done. A post where nothing
  *  went out releases the key so the next ping (3 minutes on) tries again. */
 export async function maybeSundayRosterPost(now = new Date()): Promise<void> {
@@ -228,6 +268,8 @@ export async function maybeSundayRosterPost(now = new Date()): Promise<void> {
   const key = `sunday_roster:${job.kind}:${job.stage}:${date}`;
   if (await redis.set(key, Date.now(), { nx: true, ex: 3 * 86_400 }) !== "OK") return;
   try {
+    await autoSaveRoster(date);
+    if (job.kind === "save") return;
     if (job.kind === "alert") return await alertAdmins(date, job.stage);
     const res = await postWeekly(date, job.stage);
     console.log(`[sunday-roster] ${job.stage} post ${date}:`, JSON.stringify(res));
