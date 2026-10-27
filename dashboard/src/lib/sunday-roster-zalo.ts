@@ -2,7 +2,8 @@
  * The Sunday roster's Zalo side: Wednesday 13:00 (draft) and Friday 13:00
  * (final) the drivers' groups get the roster picture, an open-slots picture and
  * the text; every "Nhận ca" claim is announced there; on Tuesday and Thursday
- * 13:00, the day before each post, the admin group hears about anything still open.
+ * 13:00, the day before each post, the admin group gets the open-slots picture
+ * and list.
  *
  * Rides the assign cron like the pickup-ETA update — no schedule of its own.
  * Sent by the admin bot (ZALO_ADMIN_BOT_TOKEN), which must be a member of the
@@ -102,11 +103,13 @@ export async function drawImage(date: string, kind: ImageKind, stage: Stage, lin
  *  Drawing takes 6–8 s, and Zalo refused a link that slow ("photo URL is
  *  invalid") while taking instant Cartrack images. ~0.8 MB per post, two posts
  *  a week. The open-slots picture is left out when nothing is open. */
-export async function preparedImageUrls(date: string, lines: SundayLine[], stage: Stage): Promise<string[]> {
+export async function preparedImageUrls(
+  date: string, lines: SundayLine[], stage: Stage, kinds: readonly ImageKind[] = ["roster", "open"],
+): Promise<string[]> {
   const v = String(Date.now());
   const redis = getRedis();
   const urls: string[] = [];
-  for (const kind of ["roster", "open"] as const) {
+  for (const kind of kinds) {
     const png = await drawImage(date, kind, stage, lines);
     if (!png) continue;
     await redis?.set(imageKey(date, kind, v), png.toString("base64"), { ex: 86_400 }).catch((e) => console.error("[sunday-roster] image cache:", e));
@@ -188,10 +191,19 @@ export async function postWeekly(date: string, stage: Stage, opts: { test?: bool
  *  that the roster is not saved at all, which would stop the post. */
 async function alertAdmins(date: string, next: Stage): Promise<void> {
   const lines = await loadSundayLines(date);
-  const text = lines.length
-    ? adminAlertText(date, lines, next)
-    : `⚠️ Chưa lưu Lịch CN ${dm(date)} — ${STAGE_LABEL[next].toLowerCase()} gửi tài xế lúc 13:00 ${POST_DAY[next]}. Lưu Lịch Chủ nhật trước giờ đó.`;
-  if (text) await notifyAdminGroup(text);
+  if (!lines.length) {
+    await notifyAdminGroup(`⚠️ Chưa lưu Lịch CN ${dm(date)} — ${STAGE_LABEL[next].toLowerCase()} gửi tài xế lúc 13:00 ${POST_DAY[next]}. Lưu Lịch Chủ nhật trước giờ đó.`);
+    return;
+  }
+  const text = adminAlertText(date, lines, next);
+  if (!text) return;
+  // The same "Ca còn trống" picture the drivers will get, then the list.
+  const token = process.env.ZALO_ADMIN_BOT_TOKEN, chat = process.env.ZALO_ADMIN_CHAT_ID;
+  if (token && chat) {
+    const [url] = await preparedImageUrls(date, lines, next, ["open"]);
+    if (url && !(await sendZaloPhoto(token, chat, url))) console.warn("[sunday-roster] admin alert picture not sent", date);
+  }
+  await notifyAdminGroup(text);
 }
 
 /** The week, all at 13:00 VN (supervisor, 2026-10-27): Tuesday admin alert,
