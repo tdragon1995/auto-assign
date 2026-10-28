@@ -1499,7 +1499,7 @@ export default function SalesPage() {
         <div>
           <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">Sales</p>
           <h1 className="text-xl font-bold text-slate-800 mt-0.5">Đăng nhập Labcenter</h1>
-          <p className="text-xs text-slate-400 mt-1">Dùng tài khoản Labcenter của bạn. Chỉ hiện khách hàng bạn quản lý.</p>
+          <p className="text-xs text-slate-400 mt-1">Dùng tài khoản Labcenter (Sapoche) của bạn!</p>
         </div>
         <label className="block">
           <span className="block text-sm font-semibold text-slate-700 mb-1">Email</span>
