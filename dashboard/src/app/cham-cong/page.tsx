@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState, useMemo, useRef } from "react";
 import { Calendar, Clock, ClipboardCheck, FileText, NotepadText, CalendarDays, Search, Truck, MapPin, ArrowLeftRight, CheckCircle2, LogOut, RefreshCw, AlertCircle, LogIn, Loader2, ChevronRight, ChevronLeft, Wallet } from "lucide-react";
 import { DIAG_LOCATIONS } from "@/lib/diag-locations";
+import { pscAddresses } from "@/lib/sunday-roster-post";
 import { driverDisplayName, placeName } from "@/lib/display-names";
 import { employmentOf } from "@/lib/driver-label";
 import { CorrectionForm, CorrectionChip } from "@/components/correction-form";
@@ -2110,6 +2111,7 @@ export default function ChamCongPage() {
                             <span className="text-xs text-gray-400 w-5 shrink-0 pt-0.5 self-start">{i + 1}</span>
                             <div className="min-w-0 flex-1">
                               {r.addr && <p className="text-sm text-gray-600">{r.addr}</p>}
+                              {pscAddresses(r.addr).map((a) => <p key={a} className="text-xs text-gray-400">{a}</p>)}
                               <div className="mt-1 flex flex-wrap gap-1.5">
                                 {r.ca && <span className="inline-block text-xs font-medium text-gray-700 bg-gray-100 rounded px-1.5 py-0.5">{r.ca}</span>}
                                 {r.away && <span className="inline-block text-xs font-medium text-red-700 bg-red-50 border border-red-200 rounded px-1.5 py-0.5">Cần người thay</span>}

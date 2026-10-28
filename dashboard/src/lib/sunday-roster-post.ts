@@ -5,6 +5,7 @@
  * text, the picture and the "Nhận ca" button can never disagree about which
  * slots are open. `scripts/sunday-roster-post.test.mts`.
  */
+import { DIAG_LOCATIONS } from "./diag-locations";
 import { addDays } from "./time";
 
 /** One line of a Sunday, with the rostered person already resolved. */
@@ -58,6 +59,12 @@ export function awayFor(shift: string, facts: AwayFact[]): string | null {
 /** An area as drivers read it: "Phòng khám Q2 | Bình Thạnh ca 2" → "PK Q2, Bình
  *  Thạnh ca 2". Display only — the saved name is what Sunday rules match on. */
 export const displayArea = (area: string) => area.replace(/Phòng khám/gi, "PK").replace(/\s*\|\s*/g, ", ");
+
+const PSC_ADDRESS = new Map(DIAG_LOCATIONS.map((l) => [l.name, l.address]));
+
+/** The address of every PSC an area names ("D029 + D046" → both), in order. */
+export const pscAddresses = (area: string) =>
+  [...new Set(area.toUpperCase().match(/\bD\d{3}\b/g) ?? [])].flatMap((c) => PSC_ADDRESS.get(c) ?? []);
 
 /** A shift with two-digit hours ("8:00 - 12:00" → "08:00 - 12:00"), so times line up in a column. */
 export const displayShift = (shift: string) => shift.replace(/(^|[^\d])(\d)([:.h])/g, "$10$2$3");

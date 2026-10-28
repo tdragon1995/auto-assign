@@ -5,7 +5,7 @@
  */
 import { ImageResponse } from "next/og";
 import type { SundayLine } from "./sunday-roster-zalo";
-import { displayArea, displayShift, isMorning, isOpen, openLines, SUNDAY_TAB_URL, STAGE_LABEL, type PostLine, type Stage } from "./sunday-roster-post";
+import { displayArea, displayShift, isMorning, isOpen, openLines, pscAddresses, SUNDAY_TAB_URL, STAGE_LABEL, type PostLine, type Stage } from "./sunday-roster-post";
 
 // Two columns, so the picture comes out about square. A single 1080-wide
 // column was ~1:3.5 and showed in Zalo as a thin strip nobody could read.
@@ -175,10 +175,11 @@ export async function renderOpenSlotsImage(date: string, lines: SundayLine[], st
   const sub = `Chủ nhật ${dmy(date)} · ${open.length} vị trí · ${STAGE_LABEL[stage]}`;
   const cta = `Bấm "Nhận ca" trong Tab "Lịch CN" — ai nhận trước sẽ được xếp ca`;
   const link = SUNDAY_TAB_URL.replace(/^https:\/\//, "");
-  const fontList = await fonts([title, sub, cta, link, ...open.flatMap((l) => [displayArea(l.area), displayShift(l.shift), l.note]), "0123456789"].join(" "));
+  const fontList = await fonts([title, sub, cta, link, ...open.flatMap((l) => [displayArea(l.area), ...pscAddresses(l.area), displayShift(l.shift), l.note]), "0123456789"].join(" "));
 
   const cardH = (l: PostLine) =>
-    56 + wrap(displayArea(l.area), O_BODY_W, O_FONT) * O_LINE + (l.note ? 8 + wrap(l.note, O_BODY_W, O_NOTE) * O_NOTE_LINE : 0);
+    56 + wrap(displayArea(l.area), O_BODY_W, O_FONT) * O_LINE
+    + pscAddresses(l.area).reduce((h, a) => h + 4 + wrap(a, O_BODY_W, O_NOTE) * O_NOTE_LINE, 0) + (l.note ? 8 + wrap(l.note, O_BODY_W, O_NOTE) * O_NOTE_LINE : 0);
   const height = O_PAD * 2 + 190 + open.reduce((h, l) => h + Math.max(cardH(l), 112) + 20, 0) + 150;
 
   return new ImageResponse(
@@ -194,6 +195,9 @@ export async function renderOpenSlotsImage(date: string, lines: SundayLine[], st
               <div style={{ display: "flex", width: O_SHIFT_W, fontWeight: 700, color: "#b91c1c", whiteSpace: "nowrap" }}>{displayShift(l.shift)}</div>
               <div style={{ display: "flex", flexDirection: "column", width: O_BODY_W }}>
                 <div style={{ display: "flex", fontWeight: 700, color: "#111827" }}>{displayArea(l.area)}</div>
+                {pscAddresses(l.area).map((a) => (
+                  <div key={a} style={{ display: "flex", marginTop: 4, fontSize: O_NOTE, lineHeight: `${O_NOTE_LINE}px`, color: "#4b5563" }}>{a}</div>
+                ))}
                 {l.note && (
                   <div style={{ display: "flex", marginTop: 8, fontSize: O_NOTE, lineHeight: `${O_NOTE_LINE}px`, color: "#92400e", whiteSpace: "pre-wrap" }}>{l.note}</div>
                 )}

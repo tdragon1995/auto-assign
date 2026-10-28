@@ -12,7 +12,7 @@
 
 import {
   awayFor, displayArea, displayShift, hoursMeet, isMorning, isOpen, openLines, shiftRange,
-  weeklyPostText, claimText, adminAlertText, stageFor, type PostLine,
+  weeklyPostText, claimText, adminAlertText, stageFor, pscAddresses, type PostLine,
 } from "../src/lib/sunday-roster-post";
 
 let failures = 0;
@@ -98,6 +98,12 @@ eq("Saturday alert lists what is open", adminAlertText("2026-10-25", week)?.incl
 eq("and stays quiet when nothing is", adminAlertText("2026-10-25", [week[1]]), null);
 eq("says which post comes next", adminAlertText("2026-10-25", week, "draft")?.startsWith("⚠️ Lịch CN 25/10 còn 02 vị trí chưa có người — bản dự kiến gửi tài xế lúc 13:00 thứ Tư:"), true);
 eq("Thursday's points at Friday's final", adminAlertText("2026-10-25", week, "final")?.includes("bản chính thức gửi tài xế lúc 13:00 thứ Sáu"), true);
+
+console.log("PSC addresses under an area");
+eq("one PSC", pscAddresses("D007 ca 1").length, 1);
+eq("two PSCs, in order", pscAddresses("D029 + D046").map((a) => a.split(" ")[0]), ["101", "227A"]);
+eq("no code, no address", pscAddresses("Q2/Bình Thạnh"), []);
+eq("not inside a longer number", pscAddresses("D0071"), []);
 
 if (failures) { console.error(`\n${failures} failure(s)`); process.exit(1); }
 console.log("\nall passed");
