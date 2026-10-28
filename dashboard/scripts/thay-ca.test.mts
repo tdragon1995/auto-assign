@@ -26,6 +26,14 @@ assert.equal(rows[0].leave_to_hr, "12:00");
 assert.equal(rows[0].driver_id, "b");
 
 assert.equal(deriveThayCaRows([base], [mapping("b", "12:00", "14:00")]).length, 0);
+
+// A source with no rules: all day on a weekday, nothing on a Sunday — the
+// roster names everyone who works (Vân An → Thành Vinh, 01/11).
+const unrostered = { ...base, gio_bat_dau: null, gio_ket_thuc: null };
+assert.equal(deriveThayCaRows([unrostered], [mapping("b", "07:00", "15:00")]).length, 1);
+const sunday = { ...unrostered, leave_from: "2026-11-01", leave_to: "2026-11-01" };
+assert.equal(deriveThayCaRows([sunday], [mapping("b", "07:00", "15:00")]).length, 0);
+assert.equal(deriveThayCaRows([sunday], [mapping("a", "07:00", "15:00"), mapping("b", "10:00", "16:00", "other")]).length, 1);
 assert.equal(deriveThayCaRows([base], [mapping("b", "13:00", "14:00")]).length, 0);
 
 const sourceAndSub = {

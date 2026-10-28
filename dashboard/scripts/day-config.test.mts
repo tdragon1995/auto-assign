@@ -60,10 +60,12 @@ const row = (driver_id: string, start: string, end: string): Mapping => ({
 });
 
 // NHAN is the Sunday-only driver: on duty 06:00–08:00 on the Sunday tab, absent
-// from the weekday one. SON is on leave and NHAN covers for him.
+// from the weekday one. SON is on leave and NHAN covers for him. SON has a
+// Sunday line of his own: on a Sunday the roster names everyone who works, so
+// a source with none has nothing to hand over and makes no Thay ca at all.
 const NHAN = "uuid-nhan";
 const weekdayRules: Mapping[] = [row("uuid-someone-else", "06:00", "20:00")];
-const sundayRules: Mapping[] = [row(NHAN, "06:00", "08:00")];
+const sundayRules: Mapping[] = [row(NHAN, "06:00", "08:00"), { ...row("uuid-son", "06:00", "12:00"), customer_id: "D041" }];
 
 const leaveOn = (date: string) => [{
   driver_id: "uuid-son", driver_name: "Sơn",

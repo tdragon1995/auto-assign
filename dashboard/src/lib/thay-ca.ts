@@ -90,7 +90,11 @@ function rowWindows(mapping: Mapping): Window[] {
  * config rows at all is treated as on duty all day — except a resigned one
  * (`noRulesMeansFree`): once their routes are moved to someone else there is
  * nothing left to hand over, and the all-day reading took the new owner off
- * the very routes he had just been given (Toán → Nhân, 26/10). */
+ * the very routes he had just been given (Toán → Nhân, 26/10). The same holds
+ * on a SUNDAY: the roster names everyone who works, so a source with no line
+ * has nothing to hand over — reading it as all day made every hour of the
+ * sub's own Sunday a Thay ca (Vân An → Thành Vinh, 01/11, whose D041 line had
+ * already moved to him). */
 function sharedDutyWindows(
   sourceDriverId: string,
   substituteId: string,
@@ -131,6 +135,8 @@ function intersection(a: Window, b: Window): Window | null {
   // Strict inequality makes touching boundaries harmless.
   return start < end ? { start, end } : null;
 }
+
+const isSunday = (date: string) => new Date(`${date}T00:00:00Z`).getUTCDay() === 0;
 
 function dateRange(from: string, to: string | null): string[] {
   const end = to || from;
@@ -236,7 +242,7 @@ export function deriveThayCaRows(
         const coverage = windows(sub.from ?? entry.gio_bat_dau, sub.to ?? entry.gio_ket_thuc);
         // Overnight windows are split before intersection so each generated
         // row remains a normal same-day leave row.
-        const allHits = merge(coverage.flatMap((a) => sharedDutyWindows(entry.driver_id, sub.id, rulesOn(date), isResignCover(entry)).flatMap((b) =>
+        const allHits = merge(coverage.flatMap((a) => sharedDutyWindows(entry.driver_id, sub.id, rulesOn(date), isResignCover(entry) || isSunday(date)).flatMap((b) =>
           parentWindow.flatMap((p) => {
             const dutyHit = intersection(b, p);
             const hit = dutyHit ? intersection(a, dutyHit) : null;
