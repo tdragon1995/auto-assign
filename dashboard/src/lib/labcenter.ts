@@ -55,6 +55,37 @@ async function freshLogin(kind: "admin" | "receptionist"): Promise<string | null
 export const getAdminToken = () => login("admin");
 export const getReceptionistToken = () => login("receptionist");
 
+/** Check a person's OWN Labcenter credentials (the /sales sign-in). Only the
+ *  confirmed identity is kept; their token is not, every read still goes through
+ *  the service accounts. null = Labcenter refused the credentials. */
+export async function verifyLabcenterUser(email: string, password: string): Promise<{ email: string; name: string } | null> {
+  const res = await fetch(LOGIN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password, "g-recaptcha-response": "randString" }),
+  });
+  if (res.status === 401 || res.status === 403 || res.status === 422) return null;
+  if (!res.ok) throw new Error(`Labcenter login ${res.status}`);
+  const data = await res.json().catch(() => ({}));
+  if (!data?.token) return null;
+  return { email: String(data.user?.email ?? email).trim().toLowerCase(), name: String(data.user?.full_name ?? "").trim() };
+}
+
+export type ClientHit = { code: string; client_legal_name: string };
+
+/** spc-pos client search limited to the clients `email` owns or supervises.
+ *  Labcenter can't filter by owner (an `owner` param 500s), so the whole match
+ *  list is fetched (limit=5000; its default page is 10) and filtered here. */
+export async function searchManagedClients(email: string, q: string): Promise<ClientHit[]> {
+  const res = await receptionistFetch(`https://api.labcenter.vn/spc-pos/api/client?q=${encodeURIComponent(q)}&limit=5000`);
+  if (!res?.ok) throw new Error(`Labcenter ${res?.status ?? "login failed"}`);
+  const data = await res.json().catch(() => ({}));
+  const me = email.toLowerCase();
+  return ((data?.data ?? []) as { code: string; client_legal_name?: string; owner?: string; supervisor_email?: string }[])
+    .filter((c) => c.owner?.toLowerCase() === me || c.supervisor_email?.toLowerCase() === me)
+    .map((c) => ({ code: c.code, client_legal_name: c.client_legal_name?.trim() ?? "" }));
+}
+
 export class LabcenterAuthenticationError extends Error {
   constructor() { super("Labcenter từ chối phiên đăng nhập sau khi thử đăng nhập lại (401); đồng bộ đã dừng, dữ liệu hiện có được giữ nguyên"); }
 }

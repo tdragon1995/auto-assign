@@ -4,8 +4,10 @@ import {
   getAdminToken,
   getCartrackCustomerId,
   listLocationsByClientCode,
+  searchManagedClients,
   updateLocationPhone,
 } from "@/lib/labcenter";
+import { salesUser } from "@/lib/sales-session";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -24,6 +26,13 @@ function normalizePhone(raw: string): string | null {
 export async function GET(req: NextRequest) {
   const clientCode = req.nextUrl.searchParams.get("client_code")?.trim();
   if (!clientCode) return NextResponse.json({ error: "Missing client_code" }, { status: 400 });
+
+  const user = salesUser(req);
+  if (!user) return NextResponse.json({ error: "Chưa đăng nhập" }, { status: 401 });
+  const mine = await searchManagedClients(user.email, clientCode).catch(() => []);
+  if (!mine.some((c) => c.code === clientCode)) {
+    return NextResponse.json({ error: "Khách hàng này không thuộc quản lý của bạn" }, { status: 403 });
+  }
 
   const token = await getAdminToken();
   if (!token) {

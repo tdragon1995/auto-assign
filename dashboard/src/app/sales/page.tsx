@@ -12,6 +12,7 @@ type Prediction = {
 };
 
 type ClientResult = { code: string; client_legal_name: string };
+type SalesUser = { email: string; name: string };
 
 const CLIENT_OVERRIDES: Record<string, string> = {
   "21362": "PS315",
@@ -255,26 +256,20 @@ const REJECT_REASONS = [
 // Client lookup against Labcenter, shared by the "Khách hàng mới" and
 // "Cập nhật SĐT" tabs. The parent owns what a pick means; this only handles
 // the search box, the dropdown and the clear button. Remount it (via `key`)
-// to reset the query after a successful submit.
-// `onSelectCode` opts into a fallback: some clients have live locations in
-// spc-delivery but are missing from the spc-pos client list (e.g. 22303), so the
-// search can never find them. When it's set and a numeric query returns nothing,
-// offer to look the code up directly. Only the phone tab wants this — creating a
-// customer still requires a client that actually exists in the list.
+// to reset the query after a successful submit. Results are only the signed-in
+// rep's own clients (owner or supervisor in Labcenter).
 function ClientSearch({
   display,
   selected,
   onSelect,
   onClear,
   onBlurUnselected,
-  onSelectCode,
 }: {
   display: string;
   selected: boolean;
   onSelect: (r: ClientResult) => void;
   onClear: () => void;
   onBlurUnselected?: () => void;
-  onSelectCode?: (code: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<ClientResult[]>([]);
@@ -289,7 +284,7 @@ function ClientSearch({
     const t = setTimeout(async () => {
       setLoading(true);
       try {
-        const res = await fetch(`/api/labcenter/client?q=${encodeURIComponent(q)}`, { signal: ac.signal });
+        const res = await fetch(`/api/sales/clients?q=${encodeURIComponent(q)}`, { signal: ac.signal });
         const data = await res.json();
         if (res.ok) setResults(data.results ?? []);
       } catch {
@@ -306,10 +301,6 @@ function ClientSearch({
     setResults([]);
     onClear();
   };
-
-  const codeQuery = query.trim();
-  const showCodeFallback =
-    !!onSelectCode && !loading && results.length === 0 && /^\d{4,8}$/.test(codeQuery);
 
   return (
     <div className="relative">
@@ -340,7 +331,7 @@ function ClientSearch({
           </button>
         )}
       </div>
-      {showResults && !selected && (loading || results.length > 0 || showCodeFallback) && (
+      {showResults && !selected && (loading || results.length > 0) && (
         <ul className="absolute z-10 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-64 overflow-y-auto">
           {loading && results.length === 0 && (
             <li className="px-3 py-2 text-sm text-slate-400">Đang tìm...</li>
@@ -355,19 +346,6 @@ function ClientSearch({
               <span className="font-medium text-slate-800">{r.client_legal_name}</span>
             </li>
           ))}
-          {showCodeFallback && (
-            <li
-              onMouseDown={(e) => { e.preventDefault(); onSelectCode!(codeQuery); setShowResults(false); }}
-              className="px-3 py-2 hover:bg-slate-50 cursor-pointer"
-            >
-              <p className="text-sm font-medium text-slate-800">
-                Tra địa điểm theo mã KH <span className="font-mono">{codeQuery}</span>
-              </p>
-              <p className="text-[11px] text-slate-400 mt-0.5">
-                Không tìm thấy trong danh sách khách hàng — tìm trực tiếp theo mã.
-              </p>
-            </li>
-          )}
         </ul>
       )}
     </div>
@@ -376,7 +354,7 @@ function ClientSearch({
 
 type SalesLocation = { id: number; name: string; phone: string; address: string };
 
-export default function SalesPage() {
+function SalesTool({ user, onLogout }: { user: SalesUser; onLogout: () => void }) {
   const [tab, setTab] = useState<"customer" | "edit" | "reject">("customer");
 
   // Reject job state — manual reference entry (existing)
@@ -917,7 +895,13 @@ export default function SalesPage() {
           bottom edge. Corners are white-on-white so nothing else changes. */}
       <div className="w-full max-w-md bg-white rounded-2xl shadow border">
         <div className="px-6 pt-5 pb-4">
-          <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">Sales</p>
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">Sales</p>
+            <p className="text-xs text-slate-400 truncate">
+              {user.name || user.email} ·{" "}
+              <button onClick={onLogout} className="font-medium text-blue-600 hover:underline">Đăng xuất</button>
+            </p>
+          </div>
           <h1 className="text-xl font-bold text-slate-800 mt-0.5">
             {tab === "customer"
               ? "Tạo địa điểm lấy mẫu cho khách hàng mới"
@@ -957,7 +941,6 @@ export default function SalesPage() {
                 selected={edClientSelected}
                 onSelect={edSelectClient}
                 onClear={edClearClient}
-                onSelectCode={(code) => edLoadLocations(code, `${code} — (tra theo mã)`)}
               />
             </div>
 
@@ -1466,6 +1449,82 @@ export default function SalesPage() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// Sign-in with the rep's own Labcenter account. The server keeps only the
+// confirmed email (signed cookie) and scopes every client lookup to it.
+export default function SalesPage() {
+  const [user, setUser] = useState<SalesUser | null | undefined>(undefined);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    fetch("/api/sales/login").then((r) => r.json()).then((d) => setUser(d.user ?? null)).catch(() => setUser(null));
+  }, []);
+
+  const login = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true); setError("");
+    try {
+      const res = await fetch("/api/sales/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) { setUser(data.user); setPassword(""); }
+      else setError(data.error ?? "Đăng nhập thất bại");
+    } catch {
+      setError("Không kết nối được máy chủ");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const logout = async () => {
+    await fetch("/api/sales/login", { method: "DELETE" }).catch(() => {});
+    setUser(null);
+  };
+
+  if (user === undefined) return <div className="min-h-screen bg-slate-100" />;
+  if (user) return <SalesTool user={user} onLogout={logout} />;
+
+  return (
+    <div className="min-h-screen bg-slate-100 flex flex-col items-center p-4">
+      <form onSubmit={login} className="w-full max-w-sm bg-white rounded-2xl shadow border p-6 space-y-4 mt-12">
+        <div>
+          <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">Sales</p>
+          <h1 className="text-xl font-bold text-slate-800 mt-0.5">Đăng nhập Labcenter</h1>
+          <p className="text-xs text-slate-400 mt-1">Dùng tài khoản Labcenter của bạn. Chỉ hiện khách hàng bạn quản lý.</p>
+        </div>
+        <label className="block">
+          <span className="block text-sm font-semibold text-slate-700 mb-1">Email</span>
+          <input
+            type="email" autoComplete="username" required value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="w-full border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+          />
+        </label>
+        <label className="block">
+          <span className="block text-sm font-semibold text-slate-700 mb-1">Mật khẩu</span>
+          <input
+            type="password" autoComplete="current-password" required value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+          />
+        </label>
+        {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+        <button
+          type="submit" disabled={busy}
+          className="w-full bg-blue-600 text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-blue-700 disabled:opacity-60"
+        >
+          {busy ? "Đang đăng nhập..." : "Đăng nhập"}
+        </button>
+      </form>
     </div>
   );
 }
