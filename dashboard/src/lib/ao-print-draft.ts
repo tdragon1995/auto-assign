@@ -99,6 +99,23 @@ export async function readPrint(id: string): Promise<PrintHistory | null> {
   return { id: print.id, printedAt: print.printed_at, title: print.title, rows };
 }
 
+export interface PscPrint { id: string; printedAt: string; rows: Pick<PrintDraftRow, "vid" | "patient" | "client" | "billing">[] }
+
+/** The records AO printed to send back to one PSC, on sheets printed `date` or the evening
+ *  before (a sheet printed at night goes out the next morning). Newest sheet first; a
+ *  record that was printed again shows only on its newest sheet. */
+export async function printsForPsc(psc: string, date: string): Promise<PscPrint[]> {
+  const to = new Date(`${date}T00:00:00+07:00`).getTime() + 86_400_000;
+  const prints = await sbSelect<{ id: string; printed_at: string; ao_print_rows: PscPrint["rows"] }>("ao_prints",
+    `select=id,printed_at,ao_print_rows!inner(vid,patient,client,billing)&ao_print_rows.dest=eq.${psc}&ao_print_rows.order=idx`
+    + `&printed_at=gte.${new Date(to - 2 * 86_400_000).toISOString()}&printed_at=lt.${new Date(to).toISOString()}&order=printed_at.desc`);
+  const seen = new Set<string>();
+  return prints.map((p) => ({
+    id: p.id, printedAt: p.printed_at,
+    rows: p.ao_print_rows.filter((r) => { const k = printRowKey(r); return !seen.has(k) && !!seen.add(k); }),
+  })).filter((p) => p.rows.length);
+}
+
 /** The browser picks the id so a retried save lands once; ao_save_print never overwrites (and so never erases) a print. */
 export async function savePrint(title: string, rows: PrintDraftRow[], id: string = randomUUID()): Promise<PrintHistorySummary> {
   const unique = [...new Map(rows.map((r) => [printRowKey(r), r])).values()];

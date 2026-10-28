@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { listPrints, printRowOf, readPrint, savePrint } from "@/lib/ao-print-draft";
+import { listPrints, printRowOf, printsForPsc, readPrint, savePrint } from "@/lib/ao-print-draft";
+import { PSC_ROUTES } from "@/lib/psc-routes-data";
 import type { PrintDraftRow } from "@/lib/handover";
 import { supabaseConfigured } from "@/lib/supabase-rest";
 
@@ -15,6 +16,14 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(print ? { print } : { error: "Không tìm thấy bản in" }, {
         status: print ? 200 : 404, headers: { "Cache-Control": "no-store" },
       });
+    }
+    // ?psc=<QR code>&date= — the PSC's own records only, for its /qr page.
+    const psc = req.nextUrl.searchParams.get("psc");
+    if (psc) {
+      const branch = PSC_ROUTES.find((r) => r.pickup === psc)?.psc_pickup.replace(/^BRA\s*-\s*/i, "");
+      const date = req.nextUrl.searchParams.get("date") ?? "";
+      if (!branch || !/^D\d{3}$/.test(branch) || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return NextResponse.json({ error: "Yêu cầu không hợp lệ" }, { status: 400 });
+      return NextResponse.json({ prints: await printsForPsc(branch, date) }, { headers: { "Cache-Control": "no-store" } });
     }
     // ?vid= narrows the list to the prints that carried that VID (any part of it, 4+ digits).
     const vid = req.nextUrl.searchParams.get("vid")?.trim();

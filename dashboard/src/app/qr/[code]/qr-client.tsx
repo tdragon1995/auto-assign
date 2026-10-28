@@ -17,6 +17,7 @@ import { driverDisplayName } from "@/lib/display-names";
 import type { PickerDriver } from "@/lib/psc-driver-choices";
 import { retirePending, type PendingReq } from "@/lib/pending-cards";
 import { DeliveryBooking } from "./delivery-booking";
+import { ExpectedResults } from "./expected-results";
 
 interface Stop {
   stop_id: number;
@@ -1462,6 +1463,8 @@ export default function QrPage() {
         )}
 
         <DeliveryBooking pickup={route.pickup} date={date} />
+        {/* D001 is where AO prints them; its own list is AO's page. */}
+        {!isLab && <ExpectedResults pickup={route.pickup} date={date} />}
 
         {notesFailed && (
           <p role="alert" className="mb-3 px-3 py-2 rounded-xl text-[12px] font-semibold text-amber-700 bg-amber-50 border border-amber-200">
