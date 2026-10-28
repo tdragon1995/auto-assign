@@ -18,7 +18,7 @@ import { loadLeaveEntries, leaveEntriesOnDate, resignationOn, type LeaveEntry } 
 import { notifyAdminGroup, sendZaloMessage } from "./zalo";
 import { getRedis } from "./tat-archive";
 import { vnDate, vnMinutesSinceMidnight } from "./time";
-import { rosterSunday } from "./sunday-roster";
+import { averageRoster, rosterSunday, TEMPLATE_WEEKS, type RosterLine } from "./sunday-roster";
 import { adminAlertText, awayFor, isPublished, openLines, POST_DAY, STAGE_LABEL, weeklyPostText, type AwayFact, type PostLine, type Stage } from "./sunday-roster-post";
 import { renderOpenSlotsImage, renderRosterImage } from "./sunday-roster-image";
 
@@ -209,10 +209,28 @@ async function alertAdmins(date: string, next: Stage): Promise<void> {
   await notifyAdminGroup(text);
 }
 
+/** Lịch CN mẫu: the last TEMPLATE_WEEKS saved Sundays, averaged (`averageRoster`). */
+export async function loadTemplate(): Promise<{ weeks: string[]; lines: RosterLine[] }> {
+  const dates = await sbSelectAll<{ work_date: string }>("master_sunday_roster", "select=work_date&work_date=not.is.null", "work_date.desc");
+  const weeks = [...new Set(dates.map((d) => d.work_date))].slice(0, TEMPLATE_WEEKS);
+  if (!weeks.length) return { weeks, lines: [] };
+  type Row = { work_date: string; area: string; driver_id: string | null; raw_name: string | null; shift: string | null; note: string | null };
+  const rows = await sbSelectAll<Row>("master_sunday_roster",
+    `select=work_date,area,driver_id,raw_name,shift,note&work_date=in.(${weeks.join(",")})`, "sort.asc,id.asc");
+  // Someone who has resigned by the coming Sunday gets no vote, or a driver who
+  // left would keep their areas for weeks (Phi, D007, 2026-10-28).
+  const entries = await loadLeaveEntries().catch(() => [] as LeaveEntry[]);
+  const sunday = rosterSunday(vnDate());
+  const byWeek = weeks.map((w) => rows.filter((r) => r.work_date === w).map((r) => ({
+    area: r.area, driver_id: r.driver_id && !resignationOn(r.driver_id, sunday, entries) ? r.driver_id : null,
+    raw_name: r.raw_name, shift: r.shift ?? "", note: r.note ?? "",
+  })));
+  return { weeks, lines: averageRoster(byWeek) };
+}
+
 /**
- * Save `date`'s roster as a copy of the template (Lịch CN mẫu) — or, with no
- * template, of the latest saved Sunday before it — only when nothing is saved
- * for `date` yet. Returns what it copied from, or null
+ * Save `date`'s roster as a copy of the template (Lịch CN mẫu) — only when
+ * nothing is saved for `date` yet. Returns what it copied from, or null
  * (already saved, nothing to copy, or an admin saved first). It is exactly what
  * the Lịch Chủ nhật editor offers when it opens an unsaved week, done without
  * waiting for someone to press Lưu (supervisor, 2026-10-27).
@@ -223,18 +241,9 @@ async function alertAdmins(date: string, next: Stage): Promise<void> {
 export async function autoSaveRoster(date: string): Promise<string | null> {
   if (!masterEnabled()) return null;
   if ((await sbSelect<{ id: number }>("master_sunday_roster", `select=id&work_date=eq.${date}&limit=1`)).length) return null;
-  type Line = { area: string; driver_id: string | null; raw_name: string | null; shift: string | null; note: string | null };
-  const cols = "select=area,driver_id,raw_name,shift,note";
-  // The template (lines with no date) first; without one, the latest saved Sunday.
-  let rows = await sbSelectAll<Line>("master_sunday_roster", `${cols}&work_date=is.null`, "sort.asc,id.asc");
-  let from = "Lịch CN mẫu";
-  if (!rows.length) {
-    const [src] = await sbSelect<{ work_date: string }>("master_sunday_roster",
-      `select=work_date&work_date=lt.${date}&order=work_date.desc&limit=1`);
-    if (!src) return null;
-    rows = await sbSelectAll<Line>("master_sunday_roster", `${cols}&work_date=eq.${src.work_date}`, "sort.asc,id.asc");
-    from = `CN ${dm(src.work_date)}`;
-  }
+  const { weeks, lines: rows } = await loadTemplate();
+  if (!rows.length) return null;
+  const from = `Lịch CN mẫu (${weeks.length} CN gần nhất)`;
   try {
     await sbRpc<number>("master_write_sunday_roster", {
       roster_date: date, expected_ids: [],

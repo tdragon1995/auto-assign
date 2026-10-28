@@ -14,21 +14,53 @@ export type RosterArea = { area: string; rules: number };
 /** Why a rostered driver will not drive that Sunday. */
 export type RosterLeave = { kind: "leave" | "resigned"; label: string };
 /**
- * The standing Sunday roster ("Lịch CN mẫu"), addressed as this `date`: its
- * lines are stored with NO work_date (the table's own template slot). Every
- * reader filters on a date, so it never drives a rule or reaches drivers — it
- * is only what an unsaved Sunday starts from (supervisor, 2026-10-27).
+ * The standing Sunday roster ("Lịch CN mẫu"), addressed as this `date`. It is
+ * never stored: it is worked out on every read from the last TEMPLATE_WEEKS
+ * saved Sundays (`averageRoster`), so it never drives a rule or reaches drivers
+ * — it is only what an unsaved Sunday starts from (supervisor, 2026-10-28).
  */
 export const TEMPLATE = "template";
+export const TEMPLATE_WEEKS = 6;
+
+/**
+ * Lịch CN mẫu from saved Sundays, NEWEST FIRST: each area goes to whoever held
+ * it on the most of them, a tie to the one who held it most recently, with the
+ * shift and note of their latest Sunday there. Which areas, in what order and
+ * how many lines each takes follow the newest Sunday, so an area added or
+ * dropped shows at once; a line nobody voted for stays empty.
+ */
+export function averageRoster(weeks: RosterLine[][]): RosterLine[] {
+  const newest = weeks[0] ?? [];
+  const out: RosterLine[] = [];
+  const done = new Set<string>();
+  for (const l of newest) {
+    const k = areaKey(l.area);
+    if (done.has(k)) continue;
+    done.add(k);
+    // Insertion order = most recent first, and sort is stable, so ties keep it.
+    const votes = new Map<string, { n: number; line: RosterLine }>();
+    for (const w of weeks) for (const x of w) {
+      if (!x.driver_id || areaKey(x.area) !== k) continue;
+      const v = votes.get(x.driver_id);
+      if (v) v.n++; else votes.set(x.driver_id, { n: 1, line: x });
+    }
+    const slots = newest.filter((x) => areaKey(x.area) === k);
+    const picked = [...votes.values()].sort((a, b) => b.n - a.n).slice(0, slots.length);
+    out.push(...picked.map(({ line }) => ({ ...line, area: l.area, raw_name: null })));
+    out.push(...slots.slice(picked.length).map((s) => ({ ...s, driver_id: null })));
+  }
+  return out;
+}
 
 export type RosterWeek = {
   /** A Sunday, or TEMPLATE. */
   date: string;
-  /** Nothing saved for this Sunday yet: `lines` are copied, unsaved, from the
-   *  template (TEMPLATE) or, with no template, the most recent earlier Sunday. */
+  /** Nothing saved for this Sunday yet: `lines` are copied, unsaved, from the template. */
   copiedFrom?: string;
-  /** The template has lines, so it can be copied. */
+  /** Some Sunday is saved, so there is a template to copy. */
   hasTemplate: boolean;
+  /** On the template: the Sundays it was worked out from, newest first. */
+  averagedFrom?: string[];
   /** Leave filed for that Sunday, by driver id. */
   leave: Record<string, RosterLeave>;
   /** The version check a save sends back: every save mints new ids. */

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { sbRpc, sbSelect, sbSelectAll } from "@/lib/supabase-rest";
+import { sbRpc, sbSelectAll } from "@/lib/supabase-rest";
+import { loadTemplate } from "@/lib/sunday-roster-zalo";
 import { assertMasterWritable, masterDriverNames } from "@/lib/master-store";
 import { invalidateConfigCache } from "@/lib/config";
 import { addDays, vnDate } from "@/lib/time";
@@ -10,10 +11,6 @@ export const runtime = "nodejs";
 export const preferredRegion = "sin1";
 
 type Row = { id: number; area: string; driver_id: string | null; raw_name: string | null; shift: string | null; note: string | null };
-
-const LINES = "select=id,area,driver_id,raw_name,shift,note";
-/** The template is the lines with no date. */
-const on = (date: string) => (date === TEMPLATE ? "work_date=is.null" : `work_date=eq.${date}`);
 
 const dm = (d: string) => `${d.slice(8, 10)}/${d.slice(5, 7)}`;
 
@@ -42,9 +39,8 @@ export async function GET(req: NextRequest) {
     const date = req.nextUrl.searchParams.get("date") || rosterSunday(vnDate());
     const template = date === TEMPLATE;
     if (!template && !isSunday(date)) throw new Error("Ngày phải là Chủ nhật");
-    const [saved, hasTemplate, rules, recent, dates, entries] = await Promise.all([
-      sbSelectAll<Row>("master_sunday_roster", `${LINES}&${on(date)}`, "sort.asc,id.asc"),
-      template ? Promise.resolve([]) : sbSelect<{ id: number }>("master_sunday_roster", "select=id&work_date=is.null&limit=1"),
+    const [saved, rules, recent, dates, entries] = await Promise.all([
+      template ? Promise.resolve([] as Row[]) : sbSelectAll<Row>("master_sunday_roster", `select=id,area,driver_id,raw_name,shift,note&work_date=eq.${date}`, "sort.asc,id.asc"),
       sbSelectAll<{ id: number; areas: string[] | null }>("master_config_rules", "select=id,areas&day_type=eq.sunday&active=eq.true", "id.asc"),
       sbSelectAll<{ id: number; area: string }>("master_sunday_roster", `select=id,area&work_date=gte.${addDays(template ? vnDate() : date, -56)}`, "id.asc"),
       // Dated lines only: a line with no date is never a Sunday to copy.
@@ -59,12 +55,11 @@ export async function GET(req: NextRequest) {
       if (hit) hit.rules++; else areas.set(k, { area: a.trim(), rules: 1 });
     }
     for (const r of [...saved, ...recent]) if (!areas.has(areaKey(r.area))) areas.set(areaKey(r.area), { area: r.area, rules: 0 });
-    // A Sunday nobody has saved opens as a copy of the template — or, with no
-    // template, of the most recent saved Sunday before it — unsaved: ops edit
-    // what differs and save.
-    const copiedFrom = saved.length || template ? undefined
-      : hasTemplate.length ? TEMPLATE : dates.map((d) => d.work_date).find((d) => d < date);
-    const rows = copiedFrom ? await sbSelectAll<Row>("master_sunday_roster", `${LINES}&${on(copiedFrom)}`, "sort.asc,id.asc") : saved;
+    // A Sunday nobody has saved opens as a copy of the template, unsaved: ops
+    // edit what differs and save.
+    const copiedFrom = saved.length || template || !dates.length ? undefined : TEMPLATE;
+    const avg = template || copiedFrom ? await loadTemplate() : undefined;
+    const rows = avg ? avg.lines : saved;
     const names = await masterDriverNames(rows.flatMap((r) => (r.driver_id ? [r.driver_id] : [])));
     const body: RosterWeek = {
       date,
@@ -72,7 +67,8 @@ export async function GET(req: NextRequest) {
       // The version check is THIS Sunday's saved lines, never the copied ones.
       ids: saved.map((r) => r.id),
       copiedFrom,
-      hasTemplate: template || hasTemplate.length > 0,
+      hasTemplate: dates.length > 0,
+      averagedFrom: template ? avg?.weeks : undefined,
       // Shown in the rules' spelling, so the area picker has one entry per area.
       lines: rows.map((r) => ({
         area: areas.get(areaKey(r.area))?.area ?? r.area, driver_id: r.driver_id, raw_name: r.raw_name,
@@ -88,19 +84,18 @@ export async function GET(req: NextRequest) {
   }
 }
 
-/** Replace one Sunday's roster, or the template. `ids` is the version the editor loaded. */
+/** Replace one Sunday's roster. `ids` is the version the editor loaded. */
 export async function POST(req: NextRequest) {
   try {
     assertMasterWritable();
     const body = await req.json();
-    const template = body?.date === TEMPLATE;
-    if (!template && !isSunday(body?.date)) throw new Error("Ngày phải là Chủ nhật");
+    if (body?.date === TEMPLATE) throw new Error("Lịch mẫu tự tính từ các Chủ nhật đã lưu — sửa từng Chủ nhật");
+    if (!isSunday(body?.date)) throw new Error("Ngày phải là Chủ nhật");
     if (!Array.isArray(body.ids) || body.ids.some((id: unknown) => !Number.isSafeInteger(id))) throw new Error("Phiên bản lịch không hợp lệ");
     const lines = parseRosterLines(body.lines);
-    // The template is the lines with no date (the RPC compares with IS NOT DISTINCT FROM).
-    const saved = await sbRpc<number>("master_write_sunday_roster", { roster_date: template ? null : body.date, expected_ids: body.ids, lines });
-    // A roster save changes who drives every Sunday rule on those areas; the template drives none.
-    if (!template) await invalidateConfigCache();
+    const saved = await sbRpc<number>("master_write_sunday_roster", { roster_date: body.date, expected_ids: body.ids, lines });
+    // A roster save changes who drives every Sunday rule on those areas.
+    await invalidateConfigCache();
     return NextResponse.json({ ok: true, saved });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

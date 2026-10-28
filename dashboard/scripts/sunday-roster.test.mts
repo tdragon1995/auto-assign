@@ -7,7 +7,7 @@
  *   npx tsx scripts/sunday-roster.test.mts
  */
 import assert from "node:assert/strict";
-import { areaKey, isSunday, parseRosterLines, rosterGaps, rosterSunday, sundayDrivers } from "../src/lib/sunday-roster";
+import { areaKey, averageRoster, isSunday, parseRosterLines, rosterGaps, rosterSunday, sundayDrivers } from "../src/lib/sunday-roster";
 
 const ID = "8094d712-0f78-11f0-b96d-506b8d982279";
 
@@ -124,3 +124,24 @@ console.log("sunday suggestions: ok");
   assert.deepEqual(mergeSundayOverlaps(clean), clean);
 }
 console.log("sunday overlaps: ok");
+
+// Lịch CN mẫu: most Sundays wins, a tie goes to the most recent, shift from
+// their latest Sunday there; areas and order follow the newest Sunday.
+{
+  const A = "a", B = "b", C = "c";
+  const line = (area: string, driver_id: string | null, shift = "06:00 - 15:00") => ({ area, driver_id, raw_name: null, shift, note: "" });
+  const avg = averageRoster([
+    [line("Q1", B, "07:00 - 16:00"), line("Q2", C), line("New", null)],
+    [line("q1", B), line("Q2", A), line("Gone", A)],
+    [line("Q1", A), line("Q2", A)],
+    [line("Q1", A, "05:00 - 14:00"), line("Q2", C)],
+  ]);
+  assert.deepEqual(avg.map((l) => [l.area, l.driver_id, l.shift]), [
+    ["Q1", B, "07:00 - 16:00"], // 2–2 tie: B held it most recently
+    ["Q2", C, "06:00 - 15:00"], // 2–2 tie: C is on the newest Sunday
+    ["New", null, "06:00 - 15:00"],
+  ]);
+  assert.equal(averageRoster([[line("Q1", A)], [line("Q1", B)], [line("Q1", B)]])[0].driver_id, B);
+  assert.deepEqual(averageRoster([]), []);
+}
+console.log("averageRoster ok");

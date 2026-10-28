@@ -157,6 +157,8 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
     return opts;
   }, [week, lines]);
   const busy = loading || saving;
+  // The template is worked out from saved Sundays, never saved itself.
+  const locked = saving || isTemplate;
   // A Sunday pre-filled from last week is savable as it stands; leaving it loses
   // nothing, so only a real edit asks before navigating away.
   const unsaved = dirty || !!week?.copiedFrom;
@@ -181,7 +183,7 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
           </div>
         )}
         <div className="flex flex-wrap items-center gap-2">
-          {copyable.length > 0 && <>
+          {!isTemplate && copyable.length > 0 && <>
             <label className="flex items-center gap-1.5 text-sm text-slate-600">
               Sao chép từ
               <select className={`${field} w-auto`} value={source} disabled={busy} aria-label="Lịch để sao chép"
@@ -197,13 +199,13 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
           <Button variant="outline" disabled={busy || posting || unsaved || !lines.length} title={unsaved ? "Lưu lịch trước" : "Gửi thử đúng bài đăng vào nhóm admin — tài xế không nhận"} onClick={() => void post(true)}><Send className="size-4" />Gửi thử</Button>
           <Button variant="outline" disabled={busy || posting || unsaved || !lines.length} title={unsaved ? "Lưu lịch trước" : "Đăng ngay lên các nhóm Zalo tài xế (tự động 13:00 thứ Tư bản dự kiến, 13:00 thứ Sáu bản chính thức)"} onClick={() => void post()}><Send className="size-4" />{posting ? "Đang đăng…" : "Đăng Zalo"}</Button>
           </>}
-          <Button disabled={busy || !unsaved || !week || incomplete} title={incomplete ? "Mỗi dòng cần khu vực, ca dạng 06:00 - 15:00" : undefined} onClick={() => void save()}>{saving ? "Đang lưu…" : "Lưu lịch"}</Button>
+          {!isTemplate && <Button disabled={busy || !unsaved || !week || incomplete} title={incomplete ? "Mỗi dòng cần khu vực, ca dạng 06:00 - 15:00" : undefined} onClick={() => void save()}>{saving ? "Đang lưu…" : "Lưu lịch"}</Button>}
         </div>
       </div>
 
       {!loading && !error && isTemplate && (
         <p role="status" className="border-b border-indigo-200 bg-indigo-50 px-3 py-2 text-sm text-indigo-900">
-          Mỗi Chủ nhật chưa lưu bắt đầu từ lịch này (thứ Hai 13:00 tự lưu cho Chủ nhật tới). Sửa ở đây những thay đổi lâu dài; đổi người cho một tuần thì sửa tuần đó. Lịch mẫu không dùng để phân công và không gửi cho tài xế.
+          Tự tính từ {week?.averagedFrom?.length ?? 0} Chủ nhật đã lưu gần nhất{week?.averagedFrom?.length ? ` (${week.averagedFrom.map((d) => dmy(d).slice(0, 5)).reverse().join(", ")})` : ""}: mỗi khu vực là người nhận nhiều lần nhất, bằng nhau thì người gần nhất. Mỗi Chủ nhật chưa lưu bắt đầu từ lịch này (thứ Hai 13:00 tự lưu cho Chủ nhật tới). Muốn đổi thì sửa từng Chủ nhật — lịch mẫu theo sau. Không dùng để phân công và không gửi cho tài xế.
         </p>
       )}
 
@@ -263,16 +265,16 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
                   <tr key={l.k} className={`border-t border-slate-200 align-top ${tone}`}>
                     <td className="px-2 py-1 pt-2.5 text-xs tabular-nums text-slate-500">{i + 1}</td>
                     <td className="px-2 py-1">
-                      <select aria-label={`Khu vực dòng ${i + 1}`} className={field} value={l.area} disabled={saving}
+                      <select aria-label={`Khu vực dòng ${i + 1}`} className={field} value={l.area} disabled={locked}
                         onChange={(e) => edit(i, { area: e.target.value })}>
                         {!l.area && <option value="">Chọn khu vực…</option>}
                         {areaOptions.map((a) => <option key={a.area} value={a.area}>{a.area}</option>)}
                       </select>
                     </td>
                     <td className="px-2 py-1">
-                      <DriverCombobox max={1} drivers={drivers} ariaLabel={`Tài xế dòng ${i + 1}`} placeholder="Chưa có người"
+                      {isTemplate ? <p className="pt-1.5">{l.driver_id ? label(l.driver_id) : "Chưa có người"}</p> : <DriverCombobox max={1} drivers={drivers} ariaLabel={`Tài xế dòng ${i + 1}`} placeholder="Chưa có người"
                         names={l.driver_id ? [label(l.driver_id)] : []}
-                        onChange={(_, picked) => edit(i, { driver_id: picked?.driver_id ?? null, raw_name: null })} />
+                        onChange={(_, picked) => edit(i, { driver_id: picked?.driver_id ?? null, raw_name: null })} />}
                       {off && <p className={`mt-0.5 inline-block rounded px-1.5 py-0.5 text-xs font-medium ${off.kind === "resigned" ? "bg-slate-900 text-white" : "bg-slate-300 text-slate-800"}`}>{off.label}</p>}
                       {inactive && !off && <p className="mt-0.5 text-xs text-amber-800">Tài khoản đã ngừng hoạt động — chọn người khác</p>}
                       {!l.driver_id && l.raw_name && <p className="mt-0.5 text-xs text-amber-800">Tên “{l.raw_name}” chưa khớp tài xế nào</p>}
@@ -280,15 +282,15 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
                     <td className="px-2 py-1">
                       <input aria-label={`Ca dòng ${i + 1}`} aria-invalid={!validShift(l.shift)}
                         className={`${validShift(l.shift) ? field : field.replace("border-slate-300", "border-red-600")} tabular-nums`}
-                        placeholder="06:00 - 15:00" value={l.shift} disabled={saving} onChange={(e) => edit(i, { shift: e.target.value })} />
+                        placeholder="06:00 - 15:00" value={l.shift} disabled={locked} onChange={(e) => edit(i, { shift: e.target.value })} />
                     </td>
                     <td className="px-2 py-1">
                       <textarea aria-label={`Ghi chú dòng ${i + 1}`} rows={1} className={`${box} min-h-8 py-1`}
-                        value={l.note} disabled={saving} onChange={(e) => edit(i, { note: e.target.value })} />
+                        value={l.note} disabled={locked} onChange={(e) => edit(i, { note: e.target.value })} />
                     </td>
                     <td className="px-2 py-1">
-                      <Button variant="ghost" size="icon" className="size-8 text-red-700" aria-label={`Xoá dòng ${i + 1}`} disabled={saving}
-                        onClick={() => { setLines((prev) => prev.filter((_, j) => j !== i)); setDirty(true); }}><Trash2 className="size-4" /></Button>
+                      {!isTemplate && <Button variant="ghost" size="icon" className="size-8 text-red-700" aria-label={`Xoá dòng ${i + 1}`} disabled={saving}
+                        onClick={() => { setLines((prev) => prev.filter((_, j) => j !== i)); setDirty(true); }}><Trash2 className="size-4" /></Button>}
                     </td>
                   </tr>
                 );
@@ -309,7 +311,7 @@ export function SundayRosterPanel({ drivers }: { drivers: ConfigDriver[] }) {
             <span className="inline-flex items-center gap-1"><span aria-hidden="true" className="size-3 rounded-sm bg-slate-900" />Nghỉ việc</span>
           </p>
         )}
-        {!loading && !error && (
+        {!loading && !error && !isTemplate && (
           <Button variant="outline" size="sm" disabled={saving}
             onClick={() => { setLines((prev) => [...prev, ...keyed([{ area: "", driver_id: null, raw_name: null, shift: "", note: "" }])]); setDirty(true); }}>
             <Plus className="size-4" />Thêm dòng
