@@ -98,8 +98,8 @@ export function ExpectedResults({ pickup, date }: { pickup: string; date: string
                   </span>
                   <button onClick={() => void tick(p.id, r.idx, true)} disabled={busy === `${p.id}|${r.idx}`}
                     aria-label={`Đã nhận ${r.vid}`}
-                    className="shrink-0 min-h-10 inline-flex items-center gap-1 px-3 rounded-xl text-[13px] font-bold text-green-700 border border-green-300 bg-green-50 active:bg-green-100 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-green-600">
-                    <Check aria-hidden className="w-4 h-4" />Đã nhận
+                    className="shrink-0 min-h-10 px-3.5 rounded-xl text-[13px] font-bold text-white bg-blue-700 shadow-sm active:bg-blue-800 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600">
+                    Đã nhận
                   </button>
                 </li>
               ))}
