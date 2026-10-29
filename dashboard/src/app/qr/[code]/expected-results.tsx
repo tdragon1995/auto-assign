@@ -91,17 +91,16 @@ export function ExpectedResults({ pickup, date }: { pickup: string; date: string
             <p className="text-xs font-semibold text-slate-600">In lúc {printedLabel(p.printedAt)} · {p.rows.filter((r) => !r.received_at).length} hồ sơ</p>
             <ul className="divide-y divide-slate-100">
               {p.rows.filter((r) => !r.received_at).map((r) => (
-                <li key={r.idx}>
-                  <label className="flex items-start gap-3 py-2.5 cursor-pointer">
-                    <input type="checkbox" checked={false} disabled={busy === `${p.id}|${r.idx}`}
-                      onChange={() => void tick(p.id, r.idx, true)}
-                      aria-label={`Đã nhận ${r.vid}`}
-                      className="mt-0.5 h-5 w-5 shrink-0 accent-green-600" />
-                    <span className="min-w-0">
-                      <span className="block text-sm text-slate-800 break-words"><span className="font-mono text-slate-700">{r.vid}</span> · <span className="font-semibold">{r.patient || "—"}</span></span>
-                      <span className="block text-xs text-slate-600 break-words">{r.client}{r.billing ? ` — ${r.billing}` : ""}</span>
-                    </span>
-                  </label>
+                <li key={r.idx} className="flex items-center gap-3 py-2.5">
+                  <span className="flex-1 min-w-0">
+                    <span className="block text-sm text-slate-800 break-words"><span className="font-mono text-slate-700">{r.vid}</span> · <span className="font-semibold">{r.patient || "—"}</span></span>
+                    <span className="block text-xs text-slate-600 break-words">{r.client}{r.billing ? ` — ${r.billing}` : ""}</span>
+                  </span>
+                  <button onClick={() => void tick(p.id, r.idx, true)} disabled={busy === `${p.id}|${r.idx}`}
+                    aria-label={`Đã nhận ${r.vid}`}
+                    className="shrink-0 min-h-10 inline-flex items-center gap-1 px-3 rounded-xl text-[13px] font-bold text-green-700 border border-green-300 bg-green-50 active:bg-green-100 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-green-600">
+                    <Check aria-hidden className="w-4 h-4" />Đã nhận
+                  </button>
                 </li>
               ))}
             </ul>
@@ -115,16 +114,13 @@ export function ExpectedResults({ pickup, date }: { pickup: string; date: string
             </summary>
             <ul className="mt-1 divide-y divide-slate-100">
               {received.map(({ p, r }) => (
-                <li key={`${p.id}|${r.idx}`}>
-                  <label className="flex items-start gap-3 py-2 cursor-pointer">
-                    <input type="checkbox" checked disabled={busy === `${p.id}|${r.idx}`}
-                      onChange={() => void tick(p.id, r.idx, false)}
-                      aria-label={`Bỏ đánh dấu đã nhận ${r.vid}`}
-                      className="mt-0.5 h-5 w-5 shrink-0 accent-green-600" />
-                    <span className="min-w-0 text-slate-500">
-                      <span className="block text-sm line-through break-words"><span className="font-mono">{r.vid}</span> · {r.patient || "—"}</span>
-                    </span>
-                  </label>
+                <li key={`${p.id}|${r.idx}`} className="flex items-center gap-3 py-2">
+                  <span className="flex-1 min-w-0 text-sm text-slate-500 line-through break-words"><span className="font-mono">{r.vid}</span> · {r.patient || "—"}</span>
+                  <button onClick={() => void tick(p.id, r.idx, false)} disabled={busy === `${p.id}|${r.idx}`}
+                    aria-label={`Hoàn tác đã nhận ${r.vid}`}
+                    className="shrink-0 min-h-9 px-2.5 rounded-lg text-[12px] font-semibold text-slate-600 border border-slate-200 active:bg-slate-50 disabled:opacity-50">
+                    Hoàn tác
+                  </button>
                 </li>
               ))}
             </ul>
