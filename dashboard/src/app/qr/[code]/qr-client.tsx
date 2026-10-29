@@ -1480,17 +1480,6 @@ export default function QrPage() {
           </p>
         )}
 
-        {!isLab && ((isToday && pendingShown.length > 0) || ownRequests.length > 0) && (
-          <div className="space-y-3 mb-5">
-            {isToday && pendingShown.map((p) => (
-              <div key={p.job_id} id={`trip-${p.job_id}`} className={ring(Number(p.job_id))}>
-                <PendingCard req={p} pickup={route.pickup} dropoff={route.dropoff} noDriver={noDriverFor(route.pickup, route.dropoff)} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }}
-                  onSendVia3pl={openVia3pl} onChangeDriver={openChangeDriver} />
-              </div>
-            ))}
-            {ownRequests.map(tripCard)}
-          </div>
-        )}
         </div>
 
         <div className="min-w-0">
@@ -1550,6 +1539,20 @@ export default function QrPage() {
             </span>
             </span>
         </div>
+
+        {/* The branch's own bookings lead its trip section: the cards it acts on, right
+            under the heading rather than below the hard-copy list. */}
+        {!isLab && ((isToday && pendingShown.length > 0) || ownRequests.length > 0) && (
+          <div className="space-y-3 mb-4">
+            {isToday && pendingShown.map((p) => (
+              <div key={p.job_id} id={`trip-${p.job_id}`} className={ring(Number(p.job_id))}>
+                <PendingCard req={p} pickup={route.pickup} dropoff={route.dropoff} noDriver={noDriverFor(route.pickup, route.dropoff)} onCancel={(t) => { setCancelTarget(t); setCancelError(""); }}
+                  onSendVia3pl={openVia3pl} onChangeDriver={openChangeDriver} />
+              </div>
+            ))}
+            {ownRequests.map(tripCard)}
+          </div>
+        )}
 
         {incoming.length > 0 && (
           <IncomingBlock jobs={incoming} etaMins={etaMins} now={loadedAt} notes={notes} onOpen={setSheetJob} />
