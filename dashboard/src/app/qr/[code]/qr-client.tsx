@@ -704,16 +704,15 @@ function D001Receivers() {
   );
 }
 
-/** In place of "Chỉ định GNM" when every driver rostered for the route is on leave:
- *  Grab/Be, and — for a trip to the lab — who to name as the receiver there. */
-function NoDriverBlock({ onGrab, toLab }: { onGrab: () => void; toLab: boolean }) {
+/** In place of "Chỉ định GNM" when every driver rostered for the route is on leave. (The
+ *  D001 receivers sit once at the top of a lab-bound branch's page.) */
+function NoDriverBlock({ onGrab }: { onGrab: () => void }) {
   return (
     <div className="mt-3 pt-3 border-t border-slate-100 space-y-3">
       <p className="text-[13px] font-semibold text-amber-700">Giao Nhận Mẫu của chi nhánh đang nghỉ lúc này.</p>
       <button onClick={onGrab} className={PICK_CTA}>
         <Bike aria-hidden className="w-4 h-4" />Gửi mẫu qua Grab
       </button>
-      {toLab && <D001Receivers />}
     </div>
   );
 }
@@ -802,7 +801,7 @@ function TripCard({ job, code, notes, noDriver = false, onOpen, onCancel, onSend
       {/* Outside the card's open-button: a button inside a button is invalid, and the
           driver action must not also open the trip sheet. */}
       {state === 0 && changeDriverEligible && noDriver ? (
-        <NoDriverBlock onGrab={() => onSendVia3pl(target)} toLab={/\bD001$/.test(d?.customer_name ?? "")} />
+        <NoDriverBlock onGrab={() => onSendVia3pl(target)} />
       ) : state === 0 && changeDriverEligible ? (
         <div className="mt-3 pt-3 border-t border-slate-100">
           <button onClick={() => onChangeDriver(change)} className={PICK_CTA}>Chỉ định GNM</button>
@@ -869,7 +868,7 @@ function PendingCard({ req, pickup, dropoff, noDriver = false, onCancel, onSendV
       {req.driver_name ? (
         <DriverRow name={driverText(req.driver_name)} onChange={() => onChangeDriver(change)} />
       ) : noDriver ? (
-        <NoDriverBlock onGrab={() => onSendVia3pl(target)} toLab={to === "D001"} />
+        <NoDriverBlock onGrab={() => onSendVia3pl(target)} />
       ) : (
         <div className="mt-3 pt-3 border-t border-slate-100">
           <button onClick={() => onChangeDriver(change)} className={PICK_CTA}>Chỉ định GNM</button>
@@ -1435,7 +1434,6 @@ export default function QrPage() {
               className={`w-full rounded-2xl py-4 text-white text-lg font-extrabold flex items-center justify-center gap-2.5 active:scale-[.97] transition ${GRAB_BG}`}>
               <Bike aria-hidden className="w-5 h-5" />Đề nghị giao mẫu qua Grab
             </button>
-            {/\bD001$/.test(route.dropoff_location) && <div className="mt-3"><D001Receivers /></div>}
           </div>
         )}
         {!route.no_request && !(isToday && noDriverFor(route.pickup, route.dropoff)) && (
@@ -1460,6 +1458,12 @@ export default function QrPage() {
               <p role="alert" className="mt-3 text-sm font-medium text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">{assignError}</p>
             )}
           </div>
+        )}
+        {/* Every branch sending to the lab, driver or not: who receives there, for the Grab
+            app or to call when a run is on its way. One copy for the page; the cards below
+            no longer repeat it. */}
+        {!route.no_request && /\bD001$/.test(route.dropoff_location) && (
+          <div className="bg-white rounded-2xl shadow-sm p-4 mb-5"><D001Receivers /></div>
         )}
 
         <DeliveryBooking pickup={route.pickup} date={date} />
