@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { listPrints, printRowOf, printsForPsc, readPrint, savePrint } from "@/lib/ao-print-draft";
+import { listPrints, markPscReceived, printRowOf, printsForPsc, readPrint, savePrint } from "@/lib/ao-print-draft";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
 import type { PrintDraftRow } from "@/lib/handover";
 import { supabaseConfigured } from "@/lib/supabase-rest";
@@ -32,6 +32,26 @@ export async function GET(req: NextRequest) {
   } catch (error) {
     console.error("[ao/prints] read", error);
     return NextResponse.json({ error: "Không tải được lịch sử in" }, { status: 502 });
+  }
+}
+
+/** PATCH { psc, print_id, idx, received } — the PSC ticks one hard-copy result off as
+ *  arrived (or undoes it). A mark on the row; the print itself is never touched. */
+export async function PATCH(req: NextRequest) {
+  if (!supabaseConfigured()) return NextResponse.json({ error: "Lịch sử in chưa được cấu hình" }, { status: 503 });
+  const body = await req.json().catch(() => null);
+  const branch = PSC_ROUTES.find((r) => r.pickup === body?.psc)?.psc_pickup.replace(/^BRA\s*-\s*/i, "");
+  const printId = String(body?.print_id ?? "");
+  const idx = Number(body?.idx);
+  if (!branch || !/^D\d{3}$/.test(branch) || !/^[0-9a-f-]{36}$/i.test(printId) || !Number.isInteger(idx) || idx < 0) {
+    return NextResponse.json({ error: "Yêu cầu không hợp lệ" }, { status: 400 });
+  }
+  try {
+    const ok = await markPscReceived(branch, printId, idx, body?.received !== false);
+    return NextResponse.json(ok ? { ok } : { error: "Không tìm thấy hồ sơ" }, { status: ok ? 200 : 404 });
+  } catch (error) {
+    console.error("[ao/prints] received", error);
+    return NextResponse.json({ error: "Không lưu được" }, { status: 502 });
   }
 }
 

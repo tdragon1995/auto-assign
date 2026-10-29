@@ -1419,13 +1419,17 @@ export default function QrPage() {
 
   return (
     <div className="min-h-screen bg-slate-100 flex justify-center">
-      <div className={`w-full px-4 pb-12 ${isLab ? "max-w-[1280px] lg:px-6" : "max-w-[430px]"}`}>
+      {/* A branch on a PC: two columns — the actions on the left at phone width, the trips
+          and photos beside them. A phone stacks the same pieces at 430px. */}
+      <div className={`w-full px-4 pb-12 ${isLab ? "max-w-[1280px] lg:px-6" : "max-w-[430px] lg:max-w-[1180px] lg:px-6"}`}>
 
         <header className="pt-5 pb-3.5 px-1">
           <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">{route.psc_pickup.replace(/^BRA\s*-\s*/i, "PSC ")}</h1>
           <p className="text-sm text-slate-500 mt-0.5">Điểm đến: {route.dropoff_location.replace(/^BRA\s*-\s*/i, "PSC ")}</p>
         </header>
 
+        <div className={isLab ? "" : "lg:grid lg:grid-cols-[400px_minmax(0,1fr)] lg:gap-8 lg:items-start"}>
+        <div>
         {!route.no_request && isToday && noDriverFor(route.pickup, route.dropoff) && (
           // Every on-duty driver for this route is on leave: book and hand to Grab in one go.
           <div className="bg-white rounded-2xl shadow-sm p-4 mb-5">
@@ -1487,7 +1491,9 @@ export default function QrPage() {
             {ownRequests.map(tripCard)}
           </div>
         )}
+        </div>
 
+        <div className="min-w-0">
         {/* On a PC: drivers in a side column, the gallery first on the right — picking a
             driver shows their photos without scrolling. A phone stacks the same pieces. */}
         <div className={driverChips.length > 1 ? "lg:grid lg:grid-cols-[17rem_minmax(0,1fr)] lg:gap-6 lg:items-start" : ""}>
@@ -1570,7 +1576,7 @@ export default function QrPage() {
             )}
             {/* A branch: full page width, more than one swiped sideways with the next one peeking. */}
             <div className={`grid gap-3 ${isLab ? "grid-cols-[repeat(auto-fill,minmax(17rem,1fr))]"
-              : gallery.length > 1 ? "grid-flow-col auto-cols-[88%] overflow-x-auto snap-x snap-mandatory -mx-4 px-4 scroll-px-4 pb-1" : "grid-cols-1"}`}>
+              : gallery.length > 1 ? "grid-flow-col auto-cols-[88%] overflow-x-auto snap-x snap-mandatory -mx-4 px-4 scroll-px-4 pb-1 lg:grid-flow-row lg:auto-cols-auto lg:grid-cols-2 lg:overflow-visible lg:mx-0 lg:px-0" : "grid-cols-1 lg:grid-cols-2"}`}>
               {gallery.map(({ j, imgs, tile, at }) => {
                 const from = placeLabel(j.stops.find((st) => st.stop_type_id === 1)?.customer_name ?? "");
                 const [big, ...rest] = tile;
@@ -1616,7 +1622,7 @@ export default function QrPage() {
         )}
 
         <div className="space-y-3">
-          <div className={`space-y-3 ${isLab ? "lg:space-y-0 lg:grid lg:grid-cols-3 lg:gap-3" : ""}`}>
+          <div className={`space-y-3 ${isLab ? "lg:space-y-0 lg:grid lg:grid-cols-3 lg:gap-3" : "lg:space-y-0 lg:grid lg:grid-cols-2 lg:gap-3 lg:items-start"}`}>
             {active.map(tripCard)}
           </div>
           {loading && !jobs.length && <p className="text-sm text-slate-600 py-2">Đang tải…</p>}
@@ -1639,6 +1645,8 @@ export default function QrPage() {
               )}
             </div>
           )}
+        </div>
+        </div>
         </div>
         </div>
         </div>

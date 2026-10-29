@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Redis } from "@upstash/redis";
 import { sharedRedis } from "./redis";
 import { printRowKey, type PrintDraftRow, type PrintHistory, type PrintHistorySummary } from "./handover";
-import { sbRpc, sbSelect, sbSelectAll } from "./supabase-rest";
+import { sbPatch, sbRpc, sbSelect, sbSelectAll } from "./supabase-rest";
 import { vnDate } from "./time";
 
 const draftPrefix = (day: string) => `ao:hardcopy:day:${day}:`;
@@ -99,7 +99,11 @@ export async function readPrint(id: string): Promise<PrintHistory | null> {
   return { id: print.id, printedAt: print.printed_at, title: print.title, rows };
 }
 
-export interface PscPrint { id: string; printedAt: string; rows: Pick<PrintDraftRow, "vid" | "patient" | "client" | "billing">[] }
+export interface PscPrint {
+  id: string; printedAt: string;
+  /** `idx` addresses the row on its sheet; `received_at` is set when the PSC ticked it off. */
+  rows: (Pick<PrintDraftRow, "vid" | "patient" | "client" | "billing"> & { idx: number; received_at: string | null })[];
+}
 
 /** The records AO printed to send back to one PSC, on sheets printed `date` or the evening
  *  before (a sheet printed at night goes out the next morning). Newest sheet first; a
@@ -107,13 +111,21 @@ export interface PscPrint { id: string; printedAt: string; rows: Pick<PrintDraft
 export async function printsForPsc(psc: string, date: string): Promise<PscPrint[]> {
   const to = new Date(`${date}T00:00:00+07:00`).getTime() + 86_400_000;
   const prints = await sbSelect<{ id: string; printed_at: string; ao_print_rows: PscPrint["rows"] }>("ao_prints",
-    `select=id,printed_at,ao_print_rows!inner(vid,patient,client,billing)&ao_print_rows.dest=eq.${psc}&ao_print_rows.order=idx`
+    `select=id,printed_at,ao_print_rows!inner(idx,vid,patient,client,billing,received_at)&ao_print_rows.dest=eq.${psc}&ao_print_rows.order=idx`
     + `&printed_at=gte.${new Date(to - 2 * 86_400_000).toISOString()}&printed_at=lt.${new Date(to).toISOString()}&order=printed_at.desc`);
   const seen = new Set<string>();
   return prints.map((p) => ({
     id: p.id, printedAt: p.printed_at,
     rows: p.ao_print_rows.filter((r) => { const k = printRowKey(r); return !seen.has(k) && !!seen.add(k); }),
   })).filter((p) => p.rows.length);
+}
+
+/** The PSC's tick on one printed row ("Đã nhận"), or its undo. Scoped to that PSC's own
+ *  rows by `dest`, so a page can only mark what it was sent. False when no row matched. */
+export async function markPscReceived(psc: string, printId: string, idx: number, received: boolean): Promise<boolean> {
+  const rows = await sbPatch<{ idx: number }>("ao_print_rows",
+    `print_id=eq.${printId}&idx=eq.${idx}&dest=eq.${psc}`, { received_at: received ? new Date().toISOString() : null });
+  return rows.length > 0;
 }
 
 /** The browser picks the id so a retried save lands once; ao_save_print never overwrites (and so never erases) a print. */
