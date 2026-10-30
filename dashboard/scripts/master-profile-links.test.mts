@@ -16,20 +16,13 @@ const other='22222222-2222-4222-8222-222222222222';
 const drop='33333333-3333-4333-8333-333333333333';
 const sheets=getSheetsClient();
 const tabs=[{gid:SHEET_GID.sunday,title:'Sunday'},{gid:SHEET_GID.drivers,title:'Driver'},{gid:SHEET_GID.locations,title:'Location Table'}];
-let sundayRows: string[][]=[[pickup,'Old name']];
-sheets.spreadsheets.get=(async()=>({data:{sheets:[...tabs.map(t=>({properties:{sheetId:Number(t.gid),title:t.title}})),
-  {properties:{sheetId:99,title:'(Edit weekly) PUBLIC SUNDAY SCHEDULE'}}]}})) as unknown as typeof sheets.spreadsheets.get;
-sheets.spreadsheets.values.batchGet=(async(params:{ranges:string[]})=>{
-  assert.ok(!params.ranges.some(r=>r.includes('PUBLIC SUNDAY'))); // Display-only names are harmless.
-  return {data:{valueRanges:[{range:'Sunday!A1:N10',values:sundayRows},
-    {range:'Driver!A1:P10',values:[[other,'Driver alias',pickup]]},
-    {range:'Location Table!A1:Z10',values:[['Old name',pickup]]}]}};
-}) as unknown as typeof sheets.spreadsheets.values.batchGet;
-await assertSheetRenameSafe(pickup,['Old name']); // Old aliases and resolved Sunday IDs survive rename.
-sundayRows=[['Old name','unresolved']];
-await assert.rejects(assertSheetRenameSafe(pickup,['Old name']),/Sunday.*dòng 1/);
-sundayRows=[[other,`${other},${pickup}`,'Old name']];
-await assertSheetRenameSafe(pickup,['Old name']); // Effective Smart selections use UUID lists.
+// Supabase mode never touches the workbook: the service account has no access to it.
+sheets.spreadsheets.get=(async()=>{throw new Error('The caller does not have permission');}) as unknown as typeof sheets.spreadsheets.get;
+await assertSheetRenameSafe(pickup,['Old name']);
+// Sheet mode still refuses a rename while a tab uses the old name.
+sheets.spreadsheets.get=(async()=>({data:{sheets:tabs.map(t=>({properties:{sheetId:Number(t.gid),title:t.title}}))}})) as unknown as typeof sheets.spreadsheets.get;
+sheets.spreadsheets.values.batchGet=(async()=>({data:{valueRanges:[{range:'Sunday!A1:N10',values:[['Old name','unresolved']]},
+  {range:'Driver!A1:P10',values:[]},{range:'Location Table!A1:Z10',values:[]}]}})) as unknown as typeof sheets.spreadsheets.values.batchGet;
 process.env.MASTER_CLIENT_INFO_SOURCE='sheet';
 await assert.rejects(assertSheetRenameSafe(pickup,['Old name']));
 process.env.MASTER_CLIENT_INFO_SOURCE='supabase';

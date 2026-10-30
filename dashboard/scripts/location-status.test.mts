@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { activeLocationRules, hasInactiveStop, isInactiveLocation, locationName } from "../src/lib/location-status";
 import { editClient, editDriver } from "../src/lib/master-profile";
 import { getSheetsClient } from "../src/lib/sheets-writer";
-import { SHEET_GID } from "../src/lib/sheets";
 import { profilePatch } from "../src/components/master-profile-editor";
 import { writeMasterRules } from "../src/lib/master-store";
 
@@ -22,8 +21,8 @@ assert.ok(!hasInactiveStop([{customer_id:driver}],new Set([pickup])));
 Object.assign(process.env,{SUPABASE_URL:"https://supabase.invalid",SUPABASE_SERVICE_ROLE_KEY:"test-only",
   MASTER_CLIENT_INFO_SOURCE:"supabase",CARTRACK_AUTH:"test-only",GOOGLE_SERVICE_ACCOUNT_KEY:"{}",LABCENTER_EMAIL:"test@example.invalid",LABCENTER_PASSWORD:"test-only"});
 const sheets=getSheetsClient();
-sheets.spreadsheets.get=(async()=>({data:{sheets:[SHEET_GID.sunday,SHEET_GID.drivers,SHEET_GID.locations].map(gid=>({properties:{sheetId:Number(gid),title:gid}}))}})) as unknown as typeof sheets.spreadsheets.get;
-sheets.spreadsheets.values.batchGet=(async()=>({data:{valueRanges:[{values:[[pickup,"Location"]]},{values:[[driver,"Old Name"]]},{values:[]}]}})) as unknown as typeof sheets.spreadsheets.values.batchGet;
+// Production's service account cannot read the workbook; renames must not need it.
+sheets.spreadsheets.get=(async()=>{throw new Error("The caller does not have permission");}) as unknown as typeof sheets.spreadsheets.get;
 let customer={customer_id:pickup,customer_name:"Location",latitude:10.5,longitude:106.5,address_line_1:"Address",contact_number:"123"};
 let cartrackDriver={first_name:"Old",last_name:"Name",phone_number:"123"};
 const roster={Driver:"Old Name",employee_code:"unchanged",employee_full_name:"Payroll name",code_name:"internal"};

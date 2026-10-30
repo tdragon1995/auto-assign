@@ -9,12 +9,15 @@ import { commitPickupSetup, type SetupRow } from "./pickup-setup";
 import { isInactiveLocation, locationName } from "./location-status";
 
 export async function assertSheetRenameSafe(id:string,names:string[]) {
+  // Supabase mode reads none of these tabs (config, Sunday, roster, locations all
+  // resolve by id), and the service account no longer has access to the workbook:
+  // the read failed every rename, including "ngừng hoạt động", with Google's 403.
+  if (masterEnabled()) return;
   const sheets=getSheetsClient();
   const meta=await sheets.spreadsheets.get({spreadsheetId:SHEET_ID,fields:"sheets.properties"});
-  const gids=new Set<string>([SHEET_GID.sunday,SHEET_GID.drivers,SHEET_GID.locations,
-    ...(masterEnabled() ? [] : [SHEET_GID.mapping,SHEET_GID.nghi_phep])]);
+  const gids=new Set<string>([SHEET_GID.sunday,SHEET_GID.drivers,SHEET_GID.locations,SHEET_GID.mapping,SHEET_GID.nghi_phep]);
   const relevant=meta.data.sheets?.filter(s=>gids.has(String(s.properties?.sheetId)) ||
-    (!masterEnabled() && s.properties?.title?.startsWith("(Edit weekly) PUBLIC SUNDAY")))??[];
+    s.properties?.title?.startsWith("(Edit weekly) PUBLIC SUNDAY"))??[];
   if(relevant.length<gids.size) throw new Error("Không xác minh được các tab Google Sheet còn dùng tên");
   const ranges=relevant.map(s=>`'${s.properties!.title!.replace(/'/g,"''")}'`);
   const values=await sheets.spreadsheets.values.batchGet({spreadsheetId:SHEET_ID,ranges});
@@ -23,10 +26,8 @@ export async function assertSheetRenameSafe(id:string,names:string[]) {
   for(const sheet of values.data.valueRanges??[]) for(const [index,row] of (sheet.values??[]).entries()) {
     const cells=row.map(value=>String(value??"").trim());
     const hasName=cells.some(cell=>oldNames.has(cell) || cell.split(/[,;\n]/).some(v=>oldNames.has(v.trim())));
-    // Retained Sheet directories are aliases for Sunday formulas. Renaming the
-    // profile does not change those aliases or the already-resolved UUIDs.
     const hasId=cells.some(cell=>cell.split(/[,;\n]/).some(v=>v.trim()===id));
-    if (masterEnabled() ? hasName && !hasId : hasName || hasId)
+    if (hasName || hasId)
       throw new Error(`Chưa thể đổi tên: ${sheet.range}, dòng ${index+1} còn dùng tên chưa liên kết ID trong Google Sheet`);
   }
 }
