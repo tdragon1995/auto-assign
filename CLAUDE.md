@@ -650,8 +650,14 @@ The **GitHub→Vercel integration auto-deploys `master` to production** within ~
 
 **`./deploy.sh` is a fallback only** — use it if the GitHub integration is ever disabled or stalls. It enforces a clean tree in sync with `origin/master`, then runs `npx vercel --prod` from the repo root. **Never run `npx vercel --prod` directly** (especially from `dashboard/`, which has no `.vercel/` link — the CLI would create an orphan project instead of deploying to `diag-logistics`). The correct `.vercel/project.json` (`prj_DQHaXcRc31jOI58J7NU8cNK1iO4C` / `diag-logistics`) lives at the repo root.
 
-Production URL: **https://diag-logistics.vercel.app**.
-Account B (a second Vercel account, same repo, same Redis): **https://diag-bo.vercel.app** — serves the admin dashboard; `/` on A redirects there (`next.config.ts`). The old alias auto-assign-opal.vercel.app is gone (retired 2026-10-14).
+Production URL: **https://diag-logistics.vercel.app** — the one address every link,
+QR code, Zalo hook and cron job uses. It is a *movable* address, not tied to an account:
+since 2026-10-31 it sits on **account B** (project `auto-assign`, also
+`https://diag-bo.vercel.app`), because account A was paused for going over the Hobby
+limits. **Failover runbook:** if the account holding it is paused, remove the domain in
+that project's Settings → Domains and add it to the other account's project straight
+away; nothing else needs to change. Never set `STANDBY=1` on the account that holds it.
+Code that calls its own site uses `SELF_URL` (`lib/self-url.ts`), never a fixed host.
 
 One GitHub Actions workflow exists: `.github/workflows/kiotviet-daily-report.yml`,
 `workflow_dispatch`-only (manual run + `dry_run` toggle, no `schedule:`). The actual
