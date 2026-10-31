@@ -2,7 +2,7 @@ import { NextResponse, after } from "next/server";
 import type { Redis } from "@upstash/redis";
 import { sharedRedis } from "./redis";
 import { vnDate } from "./time";
-import { invalidateConfigCache, invalidateDriversCache, loadConfigFromSheets } from "./config";
+import { invalidateConfigCache, invalidateDriversCache, loadConfig } from "./config";
 import { invalidateLeaveCache } from "./leave-config";
 import { invalidateShiftCache } from "./shift-window";
 import { syncCartrackProfiles, syncLabcenterMetadata } from "./master-sync";
@@ -117,7 +117,7 @@ export async function runMisaSyncStep(id:number,hop=MAX_SELF_CALLS) {
       run.phase=run.daily?"metadata":"cache";
     }else {
       invalidateDriversCache();await Promise.all([invalidateConfigCache(),invalidateShiftCache(),invalidateLeaveCache()]);
-      if(!await loadConfigFromSheets())throw new Error("Configuration cache refresh failed");
+      if(!await loadConfig())throw new Error("Configuration cache refresh failed");
       run.status="completed";run.conclusion="success";
       if(run.daily)await db.set(KEY+":done:"+vnDate(new Date(run.created_at)),"1",{ex:TTL});
     }

@@ -12,14 +12,10 @@ import {
 } from "@/lib/leave-config";
 import { mappingsForDate } from "@/lib/day-config";
 import { dropResignCovers, endResignationOn, ensureResignCover } from "@/lib/resignation-write";
-import {
-  updateLeaveSubs, replaceLeaveSubs, splitLeaveRow, deleteLeaveRow, appendLeaveDeletion,
-  LeaveWriteError, type LeaveSubWrite,
-} from "@/lib/sheets-writer";
-import {
-  loadLeaveSuppressions, liveSuppressions, invalidateSuppressionCache,
-} from "@/lib/leave-suppression";
-import { loadDriversFromSheet } from "@/lib/config";
+import { LeaveWriteError, type LeaveSubWrite } from "@/lib/leave-rows";
+import { deleteMasterLeave, editMasterLeaveSubs, splitMasterLeave } from "@/lib/master-leave";
+import { appendMasterLeaveDeletion, loadLeaveSuppressions, liveSuppressions } from "@/lib/leave-suppression";
+import { loadDrivers } from "@/lib/config";
 import { THAY_CA_LABEL } from "@/lib/thay-ca";
 import { addDays, timeToMins, vnDate } from "@/lib/time";
 import { buildLeaveSplit, LeaveSplitValidationError } from "@/lib/leave-split";
@@ -62,7 +58,7 @@ export async function GET(req: NextRequest) {
     const entries = await loadLeaveEntries(fresh ? "revalidate" : false);
     // Shares the same cached parse as the call above — no second sheet read.
     const dropped = await loadInvalidLeaveRows();
-    const suppressed = await loadLeaveSuppressions(fresh);
+    const suppressed = await loadLeaveSuppressions();
     const today = vnDate();
     const tomorrow = addDays(today, 1);
     const dates = [today, tomorrow, ...(picked ? Array.from({ length: days }, (_, i) => addDays(picked, i)) : [])];
@@ -169,14 +165,14 @@ export async function POST(req: NextRequest) {
     // Validate names against the Driver tab (the xlookup source). A name not in
     // that tab writes fine but resolves to a blank sub_id — the engine would
     // silently ignore it, so reject up front.
-    const drivers = await loadDriversFromSheet();
+    const drivers = await loadDrivers();
     const idByName = new Map(drivers.map((d) => [d.name, d.driver_id]));
     const clean: LeaveSubWrite[] = [];
     for (const s of subs) {
       const name = (s.name ?? "").trim();
       if (!name) return bad("Người thay chưa được chọn");
       const subId = idByName.get(name);
-      if (!subId) return bad(`"${name}" không có trong tab Driver — chọn từ danh sách`);
+      if (!subId) return bad(`"${name}" không có trong danh sách tài xế — chọn từ danh sách`);
       // Thay ca can keep the same driver covering both areas.
       // The writer verifies the type against the actual leave row.
       if (subId === driver_id && loai_nghi !== THAY_CA_LABEL)
@@ -229,12 +225,12 @@ export async function POST(req: NextRequest) {
           to: String(sub.to ?? "").trim() || null,
         }))
         : [];
-      const saved = await splitLeaveRow(identity, parts, expected);
-      result = { row: saved.rows[0], rows: saved.rows, created: saved.created, warning: saved.warning };
+      const saved = await splitMasterLeave(identity, parts, expected);
+      result = { row: saved.rows[0], rows: saved.rows, created: saved.created };
     } else {
       result = replace
-        ? await replaceLeaveSubs(identity, clean)
-        : await updateLeaveSubs(identity, clean);
+        ? await editMasterLeaveSubs(identity, clean, true)
+        : await editMasterLeaveSubs(identity, clean, false);
     }
     await invalidateLeaveCache();
 
@@ -310,7 +306,7 @@ export async function DELETE(req: NextRequest) {
     };
     if (!driver_id || !leave_from) return bad("Thiếu driver_id / leave_from");
 
-    const deleted = await deleteLeaveRow({
+    const deleted = await deleteMasterLeave({
       leave_id: body.leave_id, revision: body.revision,
       driver_id,
       leave_from,
@@ -332,8 +328,7 @@ export async function DELETE(req: NextRequest) {
     // supervisor should hear that now rather than discover it.
     let warning: string | null = null;
     try {
-      await appendLeaveDeletion(deleted, driver_id);
-      invalidateSuppressionCache();
+      await appendMasterLeaveDeletion(deleted, driver_id);
     } catch (e) {
       console.error("[leave-status] deleted the row but could not log the suppression", e);
       warning =

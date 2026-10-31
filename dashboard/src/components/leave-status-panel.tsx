@@ -2406,13 +2406,12 @@ export function LeaveStatusPanel({
               <div className="mb-2 rounded-md border border-red-300 bg-red-50 px-2 py-1.5">
                 <div className="flex items-center gap-1.5 text-[11px] font-semibold text-red-800">
                   <AlertTriangle className="size-3.5 shrink-0" strokeWidth={2} />
-                  Dòng nghỉ thiếu driver_id — hệ thống KHÔNG thấy, cần sửa sheet
+                  Dòng nghỉ chưa liên kết tài xế — hệ thống KHÔNG thấy
                 </div>
                 <p className="mt-0.5 text-[11px] leading-snug text-red-900/80">
-                  Cột driver_id trống và tên không khớp duy nhất một tài xế nào, nên dòng bị bỏ qua
-                  hoàn toàn: không hiện ở trên, và engine vẫn giao việc cho tài xế này trong khung
-                  giờ đó. Sửa tên trong cột{" "}
-                  <span className="font-mono">driver</span> cho khớp tab Driver để xlookup ra id.
+                  Dòng nghỉ không liên kết với tài xế nào, nên bị bỏ qua hoàn toàn: không hiện ở
+                  trên, và engine vẫn giao việc cho tài xế này trong khung giờ đó. Cần liên kết lại
+                  tài xế cho dòng nghỉ này.
                 </p>
                 <ul className="mt-1 space-y-0.5">
                   {invalidIgnored.map((r, i) => {

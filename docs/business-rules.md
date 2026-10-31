@@ -131,7 +131,7 @@ Main mapping sheet (GID `0`) columns:
 
 Sheet ID and GIDs are hardcoded in `dashboard/src/lib/sheets.ts`, which also owns `parseCSV` and `fetchSheetRows(gid)`. Both `config.ts` and `psc-config.ts` import from there — do not add another CSV parser.
 
-`config.ts` (`loadConfigFromSheets`) is intentionally uncached — the 30 s assign cycle must see fresh edits. `psc-config.ts` caches for 5 minutes and is invalidated by the dashboard Refresh button.
+`config.ts` (`loadConfig`) is intentionally uncached — the 30 s assign cycle must see fresh edits. `psc-config.ts` caches for 5 minutes and is invalidated by the dashboard Refresh button.
 
 ## Time helpers
 

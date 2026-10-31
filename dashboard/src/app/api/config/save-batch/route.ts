@@ -1,7 +1,6 @@
 import { resolveConfigDay } from "@/lib/config-day";
 import { NextRequest, NextResponse } from "next/server";
 import { saveMasterConfigBatch } from "@/lib/master-config-actions";
-import { masterEnabled } from "@/lib/master-store";
 import { invalidateConfigCache } from "@/lib/config";
 
 export const runtime = "nodejs";
@@ -12,7 +11,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const configDay = resolveConfigDay(body?.config_day);
-    if (!masterEnabled() || configDay === "sunday") throw new Error("Lưu nhiều dòng chỉ áp dụng cho config Supabase ngày thường");
+    if (configDay === "sunday") throw new Error("Lưu nhiều dòng chỉ áp dụng cho config Supabase ngày thường");
     const saved = await saveMasterConfigBatch(body?.branches);
     const writeMs = Math.round(performance.now() - start);
     await invalidateConfigCache();

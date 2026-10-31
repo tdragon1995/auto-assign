@@ -13,7 +13,7 @@ import type { ConfigDriver } from "@/lib/types";
  *
  * The result list stays hidden until something is typed: the roster is ~160
  * active drivers, so an always-open list would bury the row it belongs to.
- * `drivers` is already filtered to active accounts (loadDriversFromSheet), so
+ * `drivers` is already filtered to active accounts (loadDrivers), so
  * every name here is one Cartrack will actually accept.
  */
 export function DriverPicker({

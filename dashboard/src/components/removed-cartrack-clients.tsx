@@ -33,7 +33,7 @@ export function RemovedCartrackClients({refreshKey,onDeleted}:{refreshKey:number
   if(!rows.length)return null;
   return <details className="shrink-0 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
     <summary className="cursor-pointer font-semibold"><AlertTriangle aria-hidden="true" className="mr-2 inline size-4" />{rows.length} địa điểm không còn trong danh sách Cartrack · Kiểm tra trước khi xoá</summary>
-    <p className="mt-2 leading-5">Supabase đang giữ các địa điểm này. Chỉ cho phép xoá sau khi kiểm tra config, lịch, điểm giao, lịch sử và Google Sheet.</p>
+    <p className="mt-2 leading-5">Supabase đang giữ các địa điểm này. Chỉ cho phép xoá sau khi kiểm tra config, lịch, điểm giao và lịch sử.</p>
     <ul className="mt-2 max-h-64 overflow-y-auto divide-y divide-amber-200">{rows.map(row=>{
       const refs=checks[row.customer_id],blocked=refs&&Object.keys(refs).length>0;
       return <li key={row.customer_id} className="flex flex-col items-start gap-3 py-2 sm:flex-row sm:items-center sm:justify-between">

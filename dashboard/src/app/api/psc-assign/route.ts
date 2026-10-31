@@ -7,7 +7,7 @@ import { acquireCreateLock, releaseCreateLock, markPscPair, unmarkPscPair, looku
 import { slimJob } from "@/lib/day-snapshot";
 import { livePairDuplicate, shortCode } from "@/lib/psc-dup";
 import type { Stop } from "@/lib/types";
-import { loadConfigFromSheets } from "@/lib/config";
+import { loadConfig } from "@/lib/config";
 import { loadLeaveEntries } from "@/lib/leave-config";
 import { resolveFixedDriver } from "@/lib/fixed-driver";
 import { pushRunLog } from "@/lib/smart-log-kv";
@@ -142,7 +142,7 @@ export async function POST(req: NextRequest) {
     // pick anyway, so an off switch only made the trip wait (2026-09-15, D027 sat 6 min).
     const driverPrep = Promise.all([
       // Today's roster or none: a stale-day copy would name yesterday's driver.
-      loadConfigFromSheets({ requireCurrentDay: true }).catch(() => null),
+      loadConfig({ requireCurrentDay: true }).catch(() => null),
       // An unreadable leave sheet is NOT an empty one. Book the trip driverless and let
       // the engine sort it out rather than send someone who is off today.
       loadLeaveEntries().catch(() => null),

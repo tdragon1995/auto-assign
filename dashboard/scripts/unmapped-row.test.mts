@@ -171,31 +171,5 @@ section("telling our own rows from ones that were always driverless");
   ok("but a whole day is not", !looksAutoCreated("00:00–00:00"));
 }
 
-section("what the writer is allowed to touch");
-{
-  const { CONFIG_TABS, WRITE_COLS, currentConfigTab } = await import("../src/lib/sheets-writer");
-  const names: string[] = Object.values(WRITE_COLS);
-
-  eq("four columns, by NAME — letters differ per tab and move when the sheet is reorganised",
-     names.sort(), ["shift_end", "shift_start", "Điểm Drop-off", "Điểm Pick-up"].sort());
-
-  // The safety property is what is ABSENT. None of these can be reached, because
-  // no code path names them.
-  for (const forbidden of [
-    "customer_id", "dropoff_id", "alt_drop_off_id", "driver_id",  // spilling / per-row id formulas
-    "Driver",                                                     // a FORMULA on the Sunday tab
-    "Điểm Drop-off thay thế",                                     // an OVERRIDE — rewrites a destination
-    "smart_driver_id", "bot_token", "chat_id",                    // derived
-    "area_public_on_schedule", "f=fx", "drop_off_name",           // Sunday derivations
-  ]) {
-    ok(`never writes "${forbidden}"`, !names.includes(forbidden));
-  }
-
-  eq("two tabs, named as the workbook names them",
-     [CONFIG_TABS.weekday.title, CONFIG_TABS.sunday.title], ["config", "(NO edit) CONFIG SUNDAY"]);
-  ok("the tab chosen today is one of the two",
-     [CONFIG_TABS.weekday.title, CONFIG_TABS.sunday.title].includes(currentConfigTab().title));
-}
-
 console.log(failed === 0 ? "\nAll checks passed." : `\n${failed} check(s) FAILED.`);
 process.exit(failed === 0 ? 0 : 1);

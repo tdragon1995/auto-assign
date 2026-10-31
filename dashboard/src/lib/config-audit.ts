@@ -4,13 +4,11 @@
  * WHY THIS EXISTS. Every fault below is currently found the same way: a job
  * turns up, fails, and is reported as "customer not configured" — a message that
  * names the wrong culprit and only arrives once a pickup is already stuck. These
- * checks run when the config is parsed, so the same faults are named while the
- * sheet is still on screen and before any job depends on them.
+ * checks run when the config is parsed, so the same faults are named before any
+ * job depends on them.
  *
  * All of it is pure — rows in, sentences out — so a test can drive every branch
- * without touching the network. Step 2 of the config plan retires most of it:
- * a unique constraint refuses a duplicate name at the point of entry, and a
- * driver picker cannot produce a name that fails to resolve.
+ * without touching the network.
  */
 
 /** Just enough of a parsed mapping row to audit it. */
@@ -46,73 +44,6 @@ export interface AuditableRow {
    * row is a sentence rather than a task.
    */
   row?: number;
-}
-
-/** One place as the Location Table lists it. */
-export interface LocationRow {
-  customer_name: string;
-  customer_id: string;
-}
-
-// ── Branch names that mean two different places ──────────────────────────────
-//
-// The workbook resolves a branch NAME to a branch id with a lookup, the same way
-// it resolves a driver name. When one name appears twice pointing at two
-// different Cartrack records, the lookup takes whichever sits higher in the
-// sheet — arbitrarily, by row order — and the other record becomes unreachable
-// through that name.
-//
-// Nothing notices. The engine never reads the Location Table; it sees only the id
-// the lookup already produced, so the mapping row looks perfectly valid. The
-// failure surfaces much later and in the wrong words. Measured on the live
-// workbook 2026-08-26: 15 duplicated names, 5 of them clinics the mapping table
-// covers.
-
-export interface DuplicateBranch {
-  name: string;
-  /** The distinct ids this one name resolves to, in sheet order. The first is
-   *  the one the workbook's lookup actually returns. */
-  ids: string[];
-  /** Whether the mapping table routes pickups for this name. A duplicate nobody
-   *  collects from is untidy; one that IS collected from is a live trap. */
-  usedAsPickup: boolean;
-}
-
-/**
- * Names appearing more than once with more than one id. Same place listed twice
- * under the same id is untidy but harmless — the lookup answers correctly either
- * way — so only differing ids are reported.
- *
- * `pickupNames` is passed in rather than fetched: the caller has just parsed the
- * mapping tab, and re-reading it would double a large download for nothing.
- */
-export function findDuplicateBranches(
-  rows: readonly LocationRow[],
-  pickupNames: ReadonlySet<string>,
-): DuplicateBranch[] {
-  const byName = new Map<string, string[]>();
-  for (const r of rows) {
-    const name = (r.customer_name ?? "").trim();
-    const id = (r.customer_id ?? "").trim();
-    if (!name || !id) continue;
-    const ids = byName.get(name);
-    if (ids) {
-      if (!ids.includes(id)) ids.push(id);   // distinct ids only, sheet order kept
-    } else {
-      byName.set(name, [id]);
-    }
-  }
-
-  const dupes: DuplicateBranch[] = [];
-  for (const [name, ids] of byName) {
-    if (ids.length < 2) continue;
-    dupes.push({ name, ids, usedAsPickup: pickupNames.has(name) });
-  }
-
-  // Collected-from ones first: those are the only ones that can strand a booking.
-  return dupes.sort(
-    (a, b) => Number(b.usedAsPickup) - Number(a.usedAsPickup) || a.name.localeCompare(b.name),
-  );
 }
 
 // ── Two rules for one branch, live at the same minute ────────────────────────
@@ -323,17 +254,6 @@ function list(names: readonly string[]): string {
   const shown = names.slice(0, NAMES_SHOWN).join("; ");
   const rest = names.length - Math.min(names.length, NAMES_SHOWN);
   return rest > 0 ? `${shown} và ${rest} dòng nữa` : shown;
-}
-
-export function duplicateBranchWarning(dupes: readonly DuplicateBranch[]): string | null {
-  const live = dupes.filter((d) => d.usedAsPickup);
-  if (live.length === 0) return null;
-  const others = dupes.length - live.length;
-  const othersTail = others > 0 ? ` (thêm ${others} tên trùng chưa dùng làm điểm lấy mẫu)` : "";
-  return (
-    `${live.length} điểm lấy mẫu có TÊN TRÙNG trong Location Table, mỗi tên ra 2 mã khách khác nhau — ` +
-    `sheet chỉ lấy mã nằm trên, mã còn lại sẽ báo "chưa cấu hình" khi có job: ${list(live.map((d) => d.name))}${othersTail}`
-  );
 }
 
 /**

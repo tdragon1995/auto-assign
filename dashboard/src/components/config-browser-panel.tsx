@@ -1034,7 +1034,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
                 {noAreaCount} ca chưa có khu vực
               </Button>}
             </div>
-          : <p className="text-xs leading-5 text-slate-600">Chủ nhật · chỉ xem. Tài xế và ca được lấy từ lịch trực Chủ nhật trên Google Sheet.</p>)}
+          : <p className="text-xs leading-5 text-slate-600">Chủ nhật · chỉ xem. Tài xế và ca được lấy từ Lịch Chủ nhật.</p>)}
         <div className="flex items-center gap-2">
           <Button size="sm" variant="ghost" type="button" className="h-8 px-2 text-xs text-indigo-700"
             aria-expanded={advancedFilters} aria-controls={filterId}
@@ -1281,7 +1281,7 @@ export function ConfigBrowserPanel({ drivers, refreshKey = 0, beforeTable }: {
                   <th className="px-2 py-1 text-left font-medium">Thời gian</th>
                   <th className="px-2 py-1 text-left font-medium">{readOnly ? "Khu vực · tài xế" : "Tài xế"}</th>
                   <th className="px-2 py-1 text-left font-medium whitespace-nowrap">Điểm giao thay thế</th>
-                  {showSheetRow && <th className="px-2 py-1 text-right font-medium" title="Số dòng Google Sheet Chủ nhật">Dòng</th>}
+                  {showSheetRow && <th className="px-2 py-1 text-right font-medium" title="Số dòng">Dòng</th>}
                 </tr>
               </thead>
               <tbody>

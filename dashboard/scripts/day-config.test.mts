@@ -2,7 +2,7 @@
  * Which config tab governs a date, and what follows from getting it wrong.
  *
  * The workbook has two complete config tabs — the weekday mapping table and
- * "CONFIG SUNDAY" — and `loadConfigFromSheets` returns whichever governs RIGHT
+ * "CONFIG SUNDAY" — and `loadConfig` returns whichever governs RIGHT
  * NOW. That is correct for the assign cycle, which only dispatches today, and
  * wrong for every question about a leave row, because a leave row carries its
  * own date.

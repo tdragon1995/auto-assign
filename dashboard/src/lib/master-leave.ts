@@ -1,8 +1,8 @@
 import { sbRpc,sbSelectAll } from "./supabase-rest";
-import { assertMasterWritable,uniqueNameId } from "./master-store";
+import { uniqueNameId } from "./master-store";
 import { normalizeLeave,PROXY_ID } from "./master-reconcile";
 import { matchLeaveRows,pickLeaveRowToEdit,pickLeaveRowToDelete,normDate,rowSubs,sameSubs,
-  type LeaveCells,type LeaveRowMatch,type LeaveSubWrite } from "./sheets-writer";
+  type LeaveCells,type LeaveRowMatch,type LeaveSubWrite } from "./leave-rows";
 import { encodeLeaveSplitNote,leaveSplitOperationKey,parseLeaveSplitNote,unwrapLeaveSplitNote,type LeaveSplitPart } from "./leave-split";
 import { sourceKey } from "./thay-ca";
 
@@ -12,6 +12,11 @@ export type MasterLeave={id:number;source_uid:string;source_row:number;revision:
 export async function masterLeaveRows():Promise<MasterLeave[]> {
   return sbSelectAll<MasterLeave>("master_leave_read",
     "select=id,source_uid,source_row,revision,row_data,linked_driver_id,starts_on,ends_on,starts_at,ends_at,master_leave_substitutes&active=eq.true","source_row.asc,id.asc");
+}
+/** One active leave record as a sheet-shaped row, for reconciliation jobs. */
+export type LeaveRecordRow = { row: number; revision?: number; values: Record<string, string> };
+export async function masterLeaveRecords(): Promise<LeaveRecordRow[]> {
+  return (await masterLeaveRows()).map(r=>({row:r.id,revision:r.revision,values:leaveLegacyRow(r)}));
 }
 export function leaveLegacyRow(row:MasterLeave):Record<string,string> {
   const raw:Record<string,string>={...row.row_data,driver_id:row.linked_driver_id??"",
@@ -59,10 +64,9 @@ async function changesFor(rows:{old?:MasterLeave;raw:Record<string,string>}[]) {
   });
 }
 async function write(changes:Record<string,unknown>[]) {
-  assertMasterWritable();
   return sbRpc<{id:number;revision:number}[]>("master_write_leave",{changes});
 }
-export async function appendMasterLeave(rows:LeaveCells[]) { await write(await changesFor(rows.map(r=>({raw:rawFields(r)})))); }
+export async function appendMasterLeave(rows:LeaveCells[]) { if(!rows.length) return; await write(await changesFor(rows.map(r=>({raw:rawFields(r)})))); }
 export async function updateMasterLeave(id:number,values:LeaveCells,revision?:number) {
   const old=(await masterLeaveRows()).find(r=>r.id===id);
   if(!old || old.revision!==revision) throw new Error("Stale leave revision; refresh");

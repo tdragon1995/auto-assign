@@ -13,9 +13,9 @@ import { cleanupStaleTrips } from "./cleanup-trips";
 import type { MorningReads } from "./morning-reads";
 import { setCycleSnapshot, recordCoverageGap, claimMorningPass, deferMorningPass, confirmMorningPass, pushRunLog, runDailyMaintenance, claimLateAlert, getAcceptedNotes, getResolvedCreateTs, saveResolvedCreateTs, readDropoffSwaps, writeDropoffSwap, deleteDropoffSwap, type HeldJob } from "./smart-log-kv";
 import { PSC_TABLE, isClosingWindow, closingClockMin, pickAssignedSwitches, planDropoff, resolveOpenDropoff, fmtMin, pscCode, type PscTable, type DropoffSwapRecord } from "./psc-closing";
-import { isValidDriverId, invalidateConfigCache, loadConfigFromSheets } from "./config";
+import { isValidDriverId, invalidateConfigCache, loadConfig } from "./config";
 import { hasInactiveStop } from "./location-status";
-import { drainSheetAlarms } from "./sheets";
+import { drainConfigAlarms } from "./config-alarms";
 // Driver labels carry a routing prefix and a payroll code ("F - C - DC100993
 // Nguyễn Hồng Sơn"). Those identify the Cartrack RECORD; every message below is
 // read by a person, so they are stripped at the point the sentence is built.
@@ -2637,7 +2637,7 @@ export async function autoAssignCycle(
           held: heldJobs,
           failed: failedJobs,
           warnings: quietWarnings,
-          sheetAlarms: drainSheetAlarms() ?? undefined,
+          sheetAlarms: drainConfigAlarms() ?? undefined,
           unfinished: config?.unfinished ?? [],
           gaps: config?.gaps ?? [],
           overlaps: config?.overlaps ?? [],
@@ -3155,7 +3155,7 @@ export async function autoAssignCycle(
     if (status === "no_mapping") {
       const who = jobCustomerName ?? customerId ?? "—";
       log(`Job ${jobId} - NO MAPPING | ${route}`, "ERROR");
-      fail("NO_MAPPING", jobId, who, "Khách hàng chưa được cấu hình trong Google Sheet");
+      fail("NO_MAPPING", jobId, who, "Khách hàng chưa được cấu hình trong Config");
       // Everything needed to start the missing line is right here — the branch,
       // where the trip was going, and when it was due. Collected now, written
       // once at the end of the cycle so one branch with five stuck jobs gets one
@@ -3179,7 +3179,7 @@ export async function autoAssignCycle(
       const who = jobCustomerName ?? customerId ?? "—";
       const dropName = job.stops?.find((s) => s.stop_type_id === 2)?.customer_name ?? dropoffId ?? "—";
       log(`Job ${jobId} - NO DROPOFF RULE for ${dropName} | ${route}`, "ERROR");
-      fail("NO_DROPOFF_RULE", jobId, who, `Chưa cấu hình tuyến tới ${dropName} — cần thêm dòng dropoff_id trong Google Sheet`);
+      fail("NO_DROPOFF_RULE", jobId, who, `Chưa cấu hình tuyến tới ${dropName} — cần thêm quy tắc có điểm giao này trong Config`);
       // The fix is the same object as an unconfigured branch's — a row, this time
       // scoped to THIS destination — so it goes down the same path. Until this,
       // the failure was reported in "Cần xử lý" and NOWHERE ELSE: nothing put it in
@@ -3272,7 +3272,7 @@ export async function autoAssignCycle(
     if (!isValidDriverId(driverId)) {
       const who = jobCustomerName ?? customerId ?? "—";
       log(`Job ${jobId} - invalid driver_id "${driverId}" | ${route}`, "ERROR");
-      fail("INVALID_DRIVER", jobId, who, `driver_id sai trong Sheet: "${driverId}" — cần sửa Google Sheet`);
+      fail("INVALID_DRIVER", jobId, who, `driver_id sai trong config: "${driverId}" — cần sửa trong Config`);
       continue;
     }
 
@@ -3449,7 +3449,7 @@ export async function autoAssignCycle(
     if ((await Promise.all(gapWrites)).some(Boolean)) {
       try {
         await invalidateConfigCache();
-        published = (await loadConfigFromSheets()) ?? config;
+        published = (await loadConfig()) ?? config;
       } catch (e) {
         log(`Config refresh after new coverage gap failed: ${e}`, "WARN");
       }
@@ -3462,7 +3462,7 @@ export async function autoAssignCycle(
         warnings: pickupWarnings,
         // null when nothing changed, which leaves the published field alone —
         // the point being that a healthy fleet never rewrites it.
-        sheetAlarms: drainSheetAlarms() ?? undefined,
+        sheetAlarms: drainConfigAlarms() ?? undefined,
         unfinished: published?.unfinished ?? [],
         gaps: published?.gaps ?? [],
         overlaps: published?.overlaps ?? [],

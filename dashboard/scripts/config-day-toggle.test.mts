@@ -6,7 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { resolveConfigDay } from "../src/lib/config-day";
 import { GET } from "../src/app/api/config/rows/route";
 import { POST as saveBatch } from "../src/app/api/config/save-batch/route";
-import { completeConfigRow, currentConfigTab, CONFIG_TABS, bulkUpdateConfigRows, bulkDeleteConfigRows, replaceConfigDriver, deleteConfigRow, adjustConfigRowWindow } from "../src/lib/sheets-writer";
+import { weekdayOnly } from "../src/lib/master-config-actions";
 import { MasterProfileEditor, profilePatch } from "../src/components/master-profile-editor";
 
 const RealDate = Date;
@@ -15,7 +15,7 @@ globalThis.Date = class extends RealDate {
   constructor(value?: string | number) { super(value ?? today); }
   static now() { return new RealDate(today).getTime(); }
 } as typeof Date;
-Object.assign(process.env, { MASTER_CLIENT_INFO_SOURCE: "supabase", SUPABASE_URL: "https://supabase.invalid", SUPABASE_SERVICE_ROLE_KEY: "test-only" });
+Object.assign(process.env, { SUPABASE_URL: "https://supabase.invalid", SUPABASE_SERVICE_ROLE_KEY: "test-only" });
 delete process.env.KV_REST_API_URL; delete process.env.UPSTASH_REDIS_REST_URL;
 const pickup = "11111111-1111-4111-8111-111111111111", driver = "22222222-2222-4222-8222-222222222222";
 const rule = { id: 1, source_row: 2, revision: 3, assignment_mode: "fixed", row_data: {},
@@ -46,8 +46,6 @@ const read = async (query: string) => {
 const save = (config_day?: string) => saveBatch(new NextRequest("http://test.invalid/api/config/save-batch", {method: "POST", body: JSON.stringify({config_day, branches: [{pickup_name: "Weekday location", pickup_customer_id: pickup, rows: [{row: 2, driver: "Driver", start: "07:00", end: "11:00", dropoff: "", assignment_mode: "fixed", expected_row: {rule_id: 1, revision: 3, driver: "Driver", start: "07:00", end: "12:00", dropoff: ""}}], removed: []}]})}));
 try {
   assert.equal(resolveConfigDay(), "sunday");
-  assert.equal(currentConfigTab("weekday"), CONFIG_TABS.weekday);
-  assert.equal(currentConfigTab("sunday"), CONFIG_TABS.sunday);
   assert.throws(() => resolveConfigDay("other"));
   const weekday = await read("?day=weekday");
   assert.equal(weekday.tab, "Supabase"); assert.equal(weekday.rows[0].pickup, "Weekday location");
@@ -69,15 +67,8 @@ try {
   assert.equal((await save("sunday")).status, 409); assert.equal((await save()).status, 409); assert.equal(writes, 1);
   today = "2026-10-05T05:00:00Z";
   assert.equal(resolveConfigDay(), "weekday"); assert.equal((await read("")).day, "weekday");
-  const target = {row: 3, expectPickup: "Sunday location"};
-  for (const action of [
-    () => completeConfigRow({...target, config_day: "sunday", driverName: "Driver"}),
-    () => bulkUpdateConfigRows({targets: [target], config_day: "sunday", start: "09:00"}),
-    () => bulkDeleteConfigRows({targets: [target], config_day: "sunday"}),
-    () => replaceConfigDriver({targets: [target], config_day: "sunday", from: "Driver", to: "Other"}),
-    () => deleteConfigRow({...target, config_day: "sunday"}),
-    () => adjustConfigRowWindow({...target, config_day: "sunday", edge: "start", value: "09:00"}),
-  ]) await assert.rejects(action, /Chủ nhật/);
+  assert.throws(() => weekdayOnly("sunday"), /Chủ nhật/);
+  assert.doesNotThrow(() => weekdayOnly("weekday"));
   assert.equal(writes, 1, "Sunday edits never reach Supabase");
   const html = renderToStaticMarkup(createElement(MasterProfileEditor, {kind: "client", id: pickup, initial: {customer_name: "{inactive} Location"}, clients: [], onCancel() {}, async onSaved() {}}));
   assert.match(html, /role="switch" aria-checked="false"/);

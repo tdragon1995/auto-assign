@@ -17,7 +17,7 @@ import { NextRequest, NextResponse, after } from "next/server";
 import { BASE_URL, getHeaders, getCustomerById } from "@/lib/cartrack";
 import { PSC_ROUTES } from "@/lib/psc-routes-data";
 import { appendStopTodos, cancelBooking, collectTodo, createCollectJob, defaultDropoff, deliverTodo, isNear, loadBooked, loadPending, logBooking, pickCollector, planDelivery, pscName, savePending, waitingKey, type KqvtEntry, type KqvtItem } from "@/lib/kqvt";
-import { loadConfigFromSheets } from "@/lib/config";
+import { loadConfig } from "@/lib/config";
 import { loadLeaveEntries } from "@/lib/leave-config";
 import { shortCode } from "@/lib/psc-dup";
 import { placeLabel } from "@/lib/place-label";
@@ -177,7 +177,7 @@ export async function POST(req: NextRequest) {
       // Today's roster or none, and an unreadable leave sheet is not an empty one: either
       // missing → the collect job goes out driverless, for the dispatcher.
       const [config, leave] = await Promise.all([
-        loadConfigFromSheets({ requireCurrentDay: true }).catch(() => null),
+        loadConfig({ requireCurrentDay: true }).catch(() => null),
         loadLeaveEntries().catch(() => null),
       ]);
       const pending = await loadPending();

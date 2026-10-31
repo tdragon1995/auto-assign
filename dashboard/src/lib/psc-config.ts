@@ -1,5 +1,3 @@
-import { fetchSheetRows, isSheetShapeError, noteSheetLoad, SHEET_CONTRACT, SHEET_GID } from "./sheets";
-import { masterEnabled } from "./master-store";
 import { sbSelectAll } from "./supabase-rest";
 import { readConfigGen } from "./config-gen";
 import { PSC_ROUTES } from "./psc-routes-data";
@@ -34,8 +32,8 @@ export interface TplEntry {
   address: string;
 }
 
-// TPL entries change rarely; cache for 5 min so the provincial page's 3PL dropdown
-// and the orders fallback don't re-download the sheet CSV on every request.
+// TPL entries change rarely; cache for 5 min (or until the config stamp moves) so
+// the provincial page's 3PL dropdown and the orders fallback don't re-read on every request.
 const TPL_CACHE_MS = 5 * 60 * 1000;
 let _tplCache: TplEntry[] | null = null;
 let _tplCacheAt = 0;
@@ -49,37 +47,10 @@ export function invalidatePscCache() {
 }
 
 export async function loadTplEntries(): Promise<TplEntry[]> {
-  const gen = masterEnabled() ? await readConfigGen() : null;
+  const gen = await readConfigGen();
   if (_tplCache && gen === _tplGen && Date.now() - _tplCacheAt < TPL_CACHE_MS) return _tplCache;
-  if (masterEnabled()) {
-    const entries = await sbSelectAll<TplEntry>("master_tpl_entries", "select=psc_tinh,tpl_name,tpl_uuid,address&active=eq.true", "id.asc");
-    _tplCache = entries; _tplCacheAt = Date.now(); _tplGen = gen;
-    return entries;
-  }
-
-  const rows = await fetchSheetRows(SHEET_GID.tpl, SHEET_CONTRACT.tpl).catch((e) => {
-    // Record and rethrow: the caller's existing error handling is unchanged, but
-    // a tab edited out of shape now says so instead of just yielding no 3PL
-    // options and letting the provincial screens look empty on purpose.
-    if (isSheetShapeError(e)) noteSheetLoad(e.sheetLabel, e);
-    throw e;
-  });
-  noteSheetLoad(SHEET_CONTRACT.tpl.label, null);
-  const entries = rows
-    .filter((r) => r["psc-tinh"] && r["3pl_uuid"])
-    .map((r) => ({
-      psc_tinh: r["psc-tinh"] ?? "",
-      tpl_name: r["3pl"] ?? "",
-      tpl_uuid: r["3pl_uuid"] ?? "",
-      address: r["address"] ?? "",
-    }));
-
-  // Never cache an empty result — a transient bad sheet fetch would otherwise stick
-  // for 5 min (the same failure mode as the config-cache footgun in CLAUDE.md #3).
-  if (entries.length > 0) {
-    _tplCache = entries;
-    _tplCacheAt = Date.now();
-  }
+  const entries = await sbSelectAll<TplEntry>("master_tpl_entries", "select=psc_tinh,tpl_name,tpl_uuid,address&active=eq.true", "id.asc");
+  _tplCache = entries; _tplCacheAt = Date.now(); _tplGen = gen;
   return entries;
 }
 

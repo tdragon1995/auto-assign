@@ -2,17 +2,18 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { Redis } from "@upstash/redis";
-import { CONFIG_CACHE_WRITE_SCRIPT, invalidateConfigCache, loadConfigFromSheets, unpackConfigBlob } from "../src/lib/config";
+import { CONFIG_CACHE_WRITE_SCRIPT, invalidateConfigCache, loadConfig, unpackConfigBlob } from "../src/lib/config";
 import { vnDate } from "../src/lib/time";
 
 const { lua, lauxlib, lualib, to_luastring, to_jsstring } = createRequire(import.meta.url)("fengari");
 const store = new Map<string, string>();
 const KEY = "config:parsed";
-let sheetReads = 0;
-let emptySheet = false;
+let dbReads = 0;
+let emptyRead = false;
 process.env.KV_REST_API_URL = "https://config-cache.test";
 process.env.KV_REST_API_TOKEN = "test";
-process.env.MASTER_CLIENT_INFO_SOURCE = "sheet";
+process.env.SUPABASE_URL = "https://supabase.invalid";
+process.env.SUPABASE_SERVICE_ROLE_KEY = "test";
 
 function command([name, key, ...args]: string[]): unknown {
   switch (name.toUpperCase()) {
@@ -60,15 +61,19 @@ globalThis.fetch = async (input, init) => {
     const results = (batched ? body : [body]).map((c: unknown[]) => ({ result: encode(command(c.map(String))) }));
     return Response.json(batched ? results : results[0]);
   }
-  assert.ok(url.startsWith("https://docs.google.com/spreadsheets/"), `Unexpected request: ${url}`);
-  if (url.includes("gid=232994825")) return new Response("customer_name,customer_id\nBranch,D001");
-  sheetReads++;
-  const header = "customer_id,driver_id,smart_driver_id,Driver,shift_start,shift_end,dropoff_id,Điểm Drop-off";
-  return new Response(`${header}\n${emptySheet ? ",,,,,,," : "D001,00000000-0000-0000-0000-000000000001,,Sheet driver,00:00,23:59,,"}`);
+  assert.ok(url.startsWith("https://supabase.invalid/rest/v1/"), `Unexpected request: ${url}`);
+  if (url.includes("master_rules_read")) {
+    dbReads++;
+    return Response.json(emptyRead ? [] : [{ id: 1, source_row: 2, revision: 1, assignment_mode: "fixed", row_data: { customer_id: "D001", driver_id: "00000000-0000-0000-0000-000000000001", Driver: "Sheet driver", shift_start: "00:00", shift_end: "23:59" },
+      pickup_customer_id: "D001", dropoff_customer_id: null, alternate_dropoff_customer_id: null,
+      shift_start: "00:00:00", shift_end: "23:59:00", review_issues: [],
+      master_rule_drivers: [{ driver_id: "00000000-0000-0000-0000-000000000001", selection_order: 0 }] }]);
+  }
+  return Response.json([]);
 };
 
 const payload = (extra = {}) => ({
-  version: 12, gen: "current", day: vnDate(),
+  version: 16, gen: "current", day: vnDate(),
   mappings: [{ customer_id: "cached", driver_id: "cached", smart_driver_id: [], first_name_last_name: "Cached driver" }],
   ...extra,
 });
@@ -76,35 +81,30 @@ async function reset(value: unknown) {
   await invalidateConfigCache();
   store.set("config:gen", "current");
   store.set(KEY, JSON.stringify(value));
-  sheetReads = 0;
+  dbReads = 0;
 }
 
 try {
   await reset(payload());
-  assert.equal((await loadConfigFromSheets())?.mappings[0].customer_id, "cached");
-  assert.equal(sheetReads, 0, "A cold instance reuses the shared copy");
+  assert.equal((await loadConfig())?.mappings[0].customer_id, "cached");
+  assert.equal(dbReads, 0, "A cold instance reuses the shared copy");
 
-  for (const stale of [{ gen: "previous" }, { day: "2000-01-01" }, { version: 11 }, { mappings: [] }]) {
+  for (const stale of [{ gen: "previous" }, { day: "2000-01-01" }, { version: 15 }, { mappings: [] }]) {
     await reset(payload(stale));
-    assert.equal((await loadConfigFromSheets())?.mappings[0].customer_id, "D001");
-    assert.equal(sheetReads, 1, "Mismatched metadata or an empty cache requires a sheet read");
+    assert.equal((await loadConfig())?.mappings[0].customer_id, "D001");
+    assert.equal(dbReads, 1, "Mismatched metadata or an empty cache requires a full read");
     const saved = unpackConfigBlob<{ version: number; gen: string; day: string; mappings: unknown[] }>(store.get(KEY))!;
     assert.equal(saved.gen, "current");
     assert.equal(saved.day, vnDate());
-    assert.equal(saved.version, 12);
+    assert.equal(saved.version, 16);
     assert.deepEqual([...store.keys()].filter(k => k !== "config:gen"), [KEY], "All generations replace one payload key");
   }
 
-  await reset(payload({ version: 14, inactiveLocationIds: ["inactive"] }));
-  process.env.MASTER_CLIENT_INFO_SOURCE = "supabase";
-  const masterConfig = await loadConfigFromSheets();
+  await reset(payload({ inactiveLocationIds: ["inactive"] }));
+  const masterConfig = await loadConfig();
   assert.equal(masterConfig?.mappings[0].customer_id, "cached");
   assert.deepEqual(masterConfig?.inactiveLocationIds, ["inactive"]);
-  assert.equal(sheetReads, 0, "The master-source cache preserves inactive locations");
-  process.env.MASTER_CLIENT_INFO_SOURCE = "sheet";
-  await reset(payload({ version: 14 }));
-  assert.equal((await loadConfigFromSheets())?.mappings[0].customer_id, "D001");
-  assert.equal(sheetReads, 1, "A sheet reader cannot reuse the master-source payload");
+  assert.equal(dbReads, 0, "The cache preserves inactive locations");
 
   const latest = store.get(KEY);
   const redis = new Redis({ url: process.env.KV_REST_API_URL!, token: "test" });
@@ -113,10 +113,10 @@ try {
 
   await reset(payload({ gen: "previous" }));
   const beforeEmptyParse = store.get(KEY);
-  emptySheet = true;
-  assert.equal(await loadConfigFromSheets(), null);
-  assert.equal(store.get(KEY), beforeEmptyParse, "An empty sheet must not overwrite the shared cache");
-  console.log("PASS: one config payload, metadata validation, stale-writer rejection and empty-sheet protection");
+  emptyRead = true;
+  assert.equal(await loadConfig(), null);
+  assert.equal(store.get(KEY), beforeEmptyParse, "An empty read must not overwrite the shared cache");
+  console.log("PASS: one config payload, metadata validation, stale-writer rejection and empty-read protection");
 } finally {
   globalThis.fetch = originalFetch;
 }

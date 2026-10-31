@@ -1,18 +1,15 @@
 import { resolveConfigDay } from "@/lib/config-day";
 import { NextRequest, NextResponse } from "next/server";
-import { bulkUpdateConfigRows } from "@/lib/sheets-writer";
+import { bulkMasterConfig, weekdayOnly } from "@/lib/master-config-actions";
 import { splitDriverNames, DRIVER_SEP } from "@/lib/driver-cell";
-import { loadDriversFromSheet, invalidateConfigCache } from "@/lib/config";
+import { loadDrivers, invalidateConfigCache } from "@/lib/config";
 import { parseConfigTargets } from "@/lib/config-targets";
 
 export const preferredRegion = "sin1";
 
 /**
  * The Config tab's bulk "Đổi tài xế" / "Đổi ca": one driver cell or one window
- * written onto every ticked row, in one Sheets write.
- *
- * It replaces a loop of complete-row calls that ran out of Google's per-minute
- * read quota after ~25 rows (see bulkUpdateConfigRows). The checks are
+ * written onto every ticked rule, in one write (bulkMasterConfig). The checks are
  * complete-row's: every name on the roster and a valid resulting window.
  * Omitted or blank boundaries keep each row's current time. The cache is bumped once.
  */
@@ -38,16 +35,16 @@ export async function POST(req: NextRequest) {
     if (typeof driver_name === "string") {
       const names = splitDriverNames(driver_name);
       if (names.length === 0) return bad("Chưa chọn tài xế");
-      const drivers = await loadDriversFromSheet();
+      const drivers = await loadDrivers();
       if (drivers.length === 0) return bad("Chưa đọc được danh sách tài xế — thử lại sau", 503);
       const unknown = names.find((n) => !drivers.some((d) => d.name === n));
-      if (unknown) return bad(`"${unknown}" không có trong tab Driver — chọn từ danh sách`);
+      if (unknown) return bad(`"${unknown}" không có trong danh sách tài xế — chọn từ danh sách`);
       driverName = names.join(DRIVER_SEP);
     }
     if (driverName === undefined && !start && !end) return bad("Không có gì để ghi");
 
-    const result = await bulkUpdateConfigRows({ config_day: configDay,
-      targets: parsed.targets,
+    weekdayOnly(configDay);
+    const result = await bulkMasterConfig(parsed.targets, {
       driverName,
       start: start || undefined,
       end: end || undefined,

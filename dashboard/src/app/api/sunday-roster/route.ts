@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sbRpc, sbSelectAll } from "@/lib/supabase-rest";
 import { loadTemplate } from "@/lib/sunday-roster-zalo";
-import { assertMasterWritable, masterDriverNames } from "@/lib/master-store";
+import { masterDriverNames } from "@/lib/master-store";
 import { invalidateConfigCache } from "@/lib/config";
 import { addDays, vnDate } from "@/lib/time";
 import { loadLeaveEntries, leaveEntriesOnDate, type LeaveEntry } from "@/lib/leave-config";
@@ -87,7 +87,6 @@ export async function GET(req: NextRequest) {
 /** Replace one Sunday's roster. `ids` is the version the editor loaded. */
 export async function POST(req: NextRequest) {
   try {
-    assertMasterWritable();
     const body = await req.json();
     if (body?.date === TEMPLATE) throw new Error("Lịch mẫu tự tính từ các Chủ nhật đã lưu — sửa từng Chủ nhật");
     if (!isSunday(body?.date)) throw new Error("Ngày phải là Chủ nhật");

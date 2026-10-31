@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sbRpc } from "@/lib/supabase-rest";
-import { assertMasterWritable, inactiveMasterClientIds } from "@/lib/master-store";
+import { inactiveMasterClientIds } from "@/lib/master-store";
 import { invalidateConfigCache } from "@/lib/config";
 import { timeToMins } from "@/lib/time";
 
@@ -19,7 +19,6 @@ const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 export async function POST(req: NextRequest) {
   const bad = (error: string, status = 400) => NextResponse.json({ ok: false, error }, { status });
   try {
-    assertMasterWritable();
     const body = await req.json().catch(() => null);
     const pickup = body?.customer_id;
     if (typeof pickup !== "string" || !UUID.test(pickup)) return bad("Điểm lấy mẫu không hợp lệ");

@@ -15,7 +15,6 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { sbRpc, sbSelectAll, supabaseConfigured } from "@/lib/supabase-rest";
-import { assertMasterWritable } from "@/lib/master-store";
 import { validShiftRow, resolveDriver, type ShiftImportRow } from "@/lib/pay-shifts";
 import { payrollPeriod } from "@/lib/pay-period";
 
@@ -62,7 +61,6 @@ export async function POST(req: NextRequest) {
     ]);
     const known = [...new Map([...a, ...b].map((k) => [`${k.driver_id}|${k.driver_name}`, k])).values()];
 
-    assertMasterWritable();
     const byKey = new Map<string, { driver_id: string; shift_date: string; start_time: string; end_time: string }>();
     const unmatched = new Set<string>();
     for (const r of rows) {
@@ -91,7 +89,6 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[pay/shifts] import error:", msg);
-    // assertMasterWritable's message is meant for the person; anything else is not.
-    return NextResponse.json({ ok: false, error: msg.startsWith("Supabase đang") ? msg : "Không lưu được ca vào Lịch ca. Thử lại sau." }, { status: 502 });
+    return NextResponse.json({ ok: false, error: "Không lưu được ca vào Lịch ca. Thử lại sau." }, { status: 502 });
   }
 }

@@ -1,11 +1,10 @@
 import { resolveConfigDay } from "@/lib/config-day";
 import { NextRequest, NextResponse } from "next/server";
-import { completeConfigRow, ConfigRowChangedError } from "@/lib/sheets-writer";
+import { editMasterConfig, weekdayOnly } from "@/lib/master-config-actions";
 import { parseConfigRowSnapshot } from "@/lib/config-row-match";
 import { splitDriverNames, DRIVER_SEP } from "@/lib/driver-cell";
-import { loadDriversFromSheet, invalidateConfigCache } from "@/lib/config";
+import { loadDrivers, invalidateConfigCache } from "@/lib/config";
 import { timeToMins } from "@/lib/time";
-import { masterEnabled } from "@/lib/master-store";
 
 /**
  * Finish a config line the engine created for an unconfigured branch: put a
@@ -29,9 +28,9 @@ export async function POST(req: NextRequest) {
     if (!body || typeof body !== "object") return bad("Body không hợp lệ");
     const configDay = resolveConfigDay(body.config_day);
     if (body.alt_drop_off_id !== undefined && typeof body.alt_drop_off_id !== "string") return bad("Điểm giao thay thế không hợp lệ");
-    const { row, pickup_name, driver_name, shift_start, shift_end, dropoff_name, copy_from_row, expected_row } = body as {
+    const { row, pickup_name, driver_name, shift_start, shift_end, dropoff_name, expected_row } = body as {
       row?: number; pickup_name?: string; driver_name?: string;
-      shift_start?: string; shift_end?: string; dropoff_name?: string; copy_from_row?: number; expected_row?: unknown;
+      shift_start?: string; shift_end?: string; dropoff_name?: string; expected_row?: unknown;
     };
 
     if (!Number.isInteger(row) || (row as number) < 2) return bad("Thiếu số dòng hợp lệ");
@@ -58,22 +57,18 @@ export async function POST(req: NextRequest) {
     // how a smart row is written — the engine then ranks them by distance rather
     // than always using one person. Validating the cell as a single name refused
     // every such row, so their hours could not be edited either.
-    const drivers = await loadDriversFromSheet();
+    const drivers = await loadDrivers();
     if (drivers.length === 0) return bad("Chưa đọc được danh sách tài xế — thử lại sau", 503);
     const names = splitDriverNames(name);
     const unknown = names.find((n) => !drivers.some((d) => d.name === n));
-    if (unknown) return bad(`"${unknown}" không có trong tab Driver — chọn từ danh sách`);
+    if (unknown) return bad(`"${unknown}" không có trong danh sách tài xế — chọn từ danh sách`);
 
-    const result = await completeConfigRow({ config_day: configDay,
-      row: row as number,
-      expectPickup: pickup_name,
-      expected: expected ?? undefined,
-      // Rejoined on the one separator the id formula beside it splits on.
+    weekdayOnly(configDay);
+    const result = await editMasterConfig({ row: row as number, expectPickup: pickup_name, expected: expected ?? undefined }, {
       driverName: names.join(DRIVER_SEP),
-      start: masterEnabled() ? start : start || undefined,
-      end: masterEnabled() ? end : end || undefined,
+      start,
+      end,
       dropoff: typeof dropoff_name === "string" ? dropoff_name.trim() : undefined,
-      copyFromRow: copy_from_row,
       assignment_mode:body.assignment_mode,
       driver_ids:body.driver_ids,
       alt_drop_off_id:body.alt_drop_off_id,
@@ -84,12 +79,8 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true, ...result });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (e instanceof ConfigRowChangedError) {
-      return NextResponse.json({ ok: false, code: e.code, error: msg }, { status: 409 });
-    }
-    // A stale row number or a Sunday attempt is the caller's to resolve, not a
+    // A changed rule or a Sunday attempt is the caller's to resolve, not a
     // server fault — say what happened rather than returning a bare 500.
-    return bad(msg, 409);
+    return bad(e instanceof Error ? e.message : String(e), 409);
   }
 }

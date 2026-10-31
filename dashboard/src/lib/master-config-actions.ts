@@ -1,10 +1,17 @@
-import { masterRules,ruleChange,writeMasterRules,uniqueNameId,assertMasterWritable,type MasterRule,type AssignmentMode } from "./master-store";
+import { masterRules,ruleChange,writeMasterRules,uniqueNameId,type MasterRule,type AssignmentMode } from "./master-store";
 import { sbSelectAll,sbRpc } from "./supabase-rest";
 import { findClash, type Line } from "./config-shift";
 import { parseConfigRowSnapshot } from "./config-row-match";
 import type { ConfigRowSnapshot } from "./config-row-match";
 import { replaceDriverInCell } from "./driver-cell";
 import { UUID } from "./master-reconcile";
+import { resolveConfigDay } from "./config-day";
+
+/** Line edits are weekday-only: a Sunday rule names AREAS, edited through
+ *  /api/config/sunday-rules and the Lịch Chủ nhật roster. */
+export function weekdayOnly(day?: unknown) {
+  if (resolveConfigDay(day) === "sunday") throw new Error("Chủ nhật: sửa khu vực ở tab Chủ nhật, không sửa từng dòng");
+}
 
 type Target={row:number;expectPickup:string;expected?:ConfigRowSnapshot};
 type Patch={driverName?:string;driver_ids?:string[];assignment_mode?:AssignmentMode;start?:string;end?:string;dropoff?:string;alt_drop_off_id?:string};
@@ -89,7 +96,6 @@ export async function replaceMasterConfig(opts:{from:string;to:string;from_drive
   }
   let scheduled_replaced=0;
   if(changes.length) {
-    assertMasterWritable();
     const saved=await sbRpc<{scheduled_replaced:number}>("master_replace_config_driver",{changes,from_driver:from,to_driver:to});
     scheduled_replaced=saved.scheduled_replaced;
   }

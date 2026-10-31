@@ -3,18 +3,17 @@ import type { Redis } from "@upstash/redis";
 import { sharedRedis } from "./redis";
 import { gzipSync, gunzipSync } from "node:zlib";
 import type { Config, ConfigDriver, Mapping, UnfinishedConfigRow, CoverageGap, BranchRule } from "./types";
-import { fetchSheetRows, isSheetShapeError, noteSheetLoad, noteSheetWarning, SHEET_CONTRACT, SHEET_GID } from "./sheets";
+import { noteConfigWarning } from "./config-alarms";
 import {
-  findDuplicateBranches, findShiftOverlaps, resolveGaps, coversWindow,
-  duplicateBranchWarning, unresolvedWarning,
-  type LocationRow, type UnresolvedRows, type RuleRow,
+  findShiftOverlaps, resolveGaps, coversWindow, unresolvedWarning,
+  type UnresolvedRows, type RuleRow,
   type AuditableRow, type ShiftOverlap,
 } from "./config-audit";
 import { vnDate, vnIsSunday, vnTimestamp } from "./time";
 import { mergeSundayOverlaps } from "./sunday-roster";
 import { looksAutoCreated, scopedDropoffName } from "./unmapped-row";
 import { GEN_KEY, readConfigGen } from "./config-gen";
-import { masterEnabled, masterRuleRows, inactiveMasterClientIds } from "./master-store";
+import { masterRuleRows, inactiveMasterClientIds } from "./master-store";
 import { activeLocationRules } from "./location-status";
 import { sbSelectAll } from "./supabase-rest";
 
@@ -28,8 +27,8 @@ function getRedis(): Redis | null {
 // Shared invalidation stamp — what makes Refresh reach every instance instead of only the
 // one that served it. In-memory caches are per-instance by nature, so the button could
 // never clear the others; they kept their copy until they were recycled. Each load now
-// compares a few bytes against the stamp its copy was built under and re-reads the sheet
-// only when they differ. One tiny GET in place of a ~100 KB CSV download.
+// compares a few bytes against the stamp its copy was built under and re-reads the rules
+// only when they differ.
 let cachedGen: string | null = null;
 
 /** Re-exported shape kept for this file's readers; the stamp itself lives in
@@ -39,8 +38,8 @@ const readGen = readConfigGen;
 
 // L2 — the parsed mapping, shared by every instance and every deployment on this Redis.
 // GEN_KEY stops an instance serving a STALE copy; it does nothing for a COLD one, which
-// still re-downloads and re-parses ~100 KB of CSV before it can assign anything. Running
-// the engine from two Vercel projects makes cold starts more frequent, so that download
+// would still re-read and re-parse every rule before it can assign anything. Running
+// the engine from two Vercel projects makes cold starts more frequent, so that read
 // is the cost this closes. Mirrors the two-tier cache leave-config.ts already has.
 //
 // One shared payload, replaced on refresh instead of retaining every generation.
@@ -81,7 +80,7 @@ return 1`;
 
 let cachedConfig: Config | null = null;
 // The VN date the cached config was built for. NOT a TTL — the cache is held until
-// something invalidates it, because a clock-based one was near-useless here: 108 sheet
+// something invalidates it, because a clock-based one was near-useless here: 108 config
 // downloads for 124 cron cycles over 12h, an 87% miss rate on a 5-minute TTL.
 //
 // Note WHY a 5-minute TTL missed against a 3-minute cron, since the arithmetic looks like
@@ -89,13 +88,13 @@ let cachedConfig: Config | null = null;
 // instances, so any one instance sees the cron far less often than every 3 minutes and its
 // timer has usually lapsed by the time it is called again. No TTL is short enough to fix
 // that and long enough to be worth having — the problem was never the duration, it was
-// that each instance was alone. GEN_KEY below is the actual fix. A sheet edit is applied
-// by the dashboard's Refresh button (invalidateConfigCache), a deliberate act rather than
+// that each instance was alone. GEN_KEY below is the actual fix. An edit made outside the
+// dashboard is applied by the Refresh button (invalidateConfigCache), a deliberate act rather than
 // something to poll for.
 //
 // The date is still checked because the mapping SOURCE changes with the day: vnIsSunday()
-// picks a different tab, so an instance that cached Saturday's mapping and survived into
-// Sunday would assign every job from the wrong sheet, silently and all day. Comparing a
+// picks the Sunday rules, so an instance that cached Saturday's mapping and survived into
+// Sunday would assign every job from the wrong rules, silently and all day. Comparing a
 // date string costs nothing and closes that.
 //
 // Cross-instance invalidation is handled by GEN_KEY above, not by a timer.
@@ -145,145 +144,54 @@ export function parseTime(
 
 const DRIVER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Driver IDs from the sheet are usable only if they're real UUIDs. Broken
- *  spreadsheet references (#REF!, #N/A, …), blanks, or other junk would build a
- *  malformed assign URL (e.g. PUT /jobs/assign/#REF → Cartrack HTML 404), so we
+/** Driver IDs are usable only if they're real UUIDs. Blanks or other junk
+ *  would build a malformed assign URL (e.g. PUT /jobs/assign/#REF → Cartrack HTML 404), so we
  *  drop them at load time. */
 export function isValidDriverId(id: string): boolean {
   return DRIVER_ID_RE.test(id.trim());
 }
 
-/** The Driver tab keeps every driver Cartrack returns, active or not, with the
- *  account flag in `is_active`. A blank (or missing column) counts as active —
- *  the flag is written by the Apps Script fetcher, so if that ever stops running
- *  we want a full picker, not an empty one. Only an explicit false excludes. */
-function isDeactivatedRow(row: Record<string, string>): boolean {
-  const v = (row["is_active"] ?? "").trim().toLowerCase();
-  return v === "false" || v === "0" || v === "no";
-}
-
-export async function loadDriversFromSheet(): Promise<ConfigDriver[]> {
+export async function loadDrivers(): Promise<ConfigDriver[]> {
   if (cachedDrivers && Date.now() - cachedDriversAt < DRIVERS_TTL_MS) return cachedDrivers;
-  if (masterEnabled()) {
-    try {
-      const rows = await sbSelectAll<{driver_id:string;first_name:string;last_name:string;is_active:boolean}>("master_drivers","select=driver_id,first_name,last_name,is_active","driver_id.asc");
-      const drivers = rows.filter((r) => r.is_active !== false).map((r) => ({
-        driver_id: r.driver_id,
-        name: `${r.first_name ?? ""} ${r.last_name ?? ""}`.trim() || r.driver_id,
-      }));
-      if (drivers.length < 100) throw new Error("Master driver roster is suspiciously short");
-      cachedDrivers = drivers.sort((a, b) => a.name.localeCompare(b.name));
-      cachedDriversAt = Date.now();
-      return cachedDrivers;
-    } catch (e) {
-      console.error("Master driver roster load failed:", e);
-      return cachedDrivers ?? [];
-    }
-  }
   try {
-    const rows = await fetchSheetRows(SHEET_GID.drivers, SHEET_CONTRACT.drivers);
-    const drivers: ConfigDriver[] = [];
-    let skipped = 0;
-    for (const row of rows) {
-      const driver_id = (row["delivery_driver_id"] ?? "").trim();
-      const name = (row["Driver"] ?? "").trim();
-      if (!driver_id) continue;
-      // A deactivated account can never take a job — Cartrack 422s the assign
-      // ("Driver is deactivated…"). Leaving them in the picker only offers a
-      // guaranteed failure, so they're dropped at load time.
-      if (isDeactivatedRow(row)) {
-        skipped++;
-        continue;
-      }
-      drivers.push({ driver_id, name: name || driver_id });
-    }
-    // An empty roster is never real — there are always hundreds. Caching one
-    // used to hold for the full 5 minutes and made the substitute picker reject
-    // every name typed into it, because the only list it validates against was
-    // briefly blank. Same discipline the mapping load has had all along.
-    if (drivers.length === 0) {
-      console.error("Driver roster load returned 0 rows — not caching");
-      return cachedDrivers || [];
-    }
-    console.log(`Loaded ${drivers.length} active drivers from sheet (${skipped} deactivated skipped)`);
-    noteSheetLoad(SHEET_CONTRACT.drivers.label, null);
+    const rows = await sbSelectAll<{driver_id:string;first_name:string;last_name:string;is_active:boolean}>("master_drivers","select=driver_id,first_name,last_name,is_active","driver_id.asc");
+    // A deactivated account can never take a job — Cartrack 422s the assign.
+    const drivers = rows.filter((r) => r.is_active !== false).map((r) => ({
+      driver_id: r.driver_id,
+      name: `${r.first_name ?? ""} ${r.last_name ?? ""}`.trim() || r.driver_id,
+    }));
+    // A short roster is never real — there are always hundreds.
+    if (drivers.length < 100) throw new Error("Master driver roster is suspiciously short");
     cachedDrivers = drivers.sort((a, b) => a.name.localeCompare(b.name));
     cachedDriversAt = Date.now();
     return cachedDrivers;
   } catch (e) {
-    if (isSheetShapeError(e)) noteSheetLoad(e.sheetLabel, e);
-    console.error("Error loading drivers from sheet:", e);
-    return cachedDrivers || [];
+    console.error("Master driver roster load failed:", e);
+    return cachedDrivers ?? [];
   }
 }
 
-// Distinct alarm labels, one per fault. They share the banner with a refused tab
-// but must never overwrite each other — a tab can be perfectly readable and still
-// be carrying rows the engine cannot use.
+// Distinct alarm labels, one per fault, so one clearing never silences the other.
 const A_UNRESOLVED = "config — tên không ra mã";
 const A_OVERLAP    = "config — trùng giờ";
-const A_DUPE_LOC   = "Location Table — tên trùng";
+const TAB_LABEL = { weekday: "config (mapping)", sunday: "CONFIG SUNDAY" } as const;
 
-/** The VN date the Location Table was last checked on this instance. That tab is
- *  ~700 KB and duplicates appear when someone creates a customer, not minute to
- *  minute — so it is read once a day per instance rather than on every parse. */
-let locationsAuditedOn = "";
-
-/**
- * Everything decidable from the sheet alone, reported the moment it is parsed.
- *
- * Never throws: an audit that broke the config load would be far worse than the
- * faults it looks for. The Location Table read is the only part that can fail,
- * and it is allowed to fail quietly and be retried tomorrow.
- */
 /** The sentences, from data alone. Separate so the cached path can rebuild them
- *  without re-reading the sheet — see the version note on the L2 key. */
+ *  without re-reading the rules — see the version note on the L2 key. */
 // Narrower than it was: the overlap sentence used to live here and needed the
 // mappings and the branch names to build. It is a to-do row now, so all that is
 // left is the unresolved-lookups line — and the retraction that clears the old
 // overlap sentence off any banner still holding one.
 function emitConfigWarnings(tabLabel: string, unresolved: UnresolvedRows): void {
   const dropped = unresolvedWarning(unresolved);
-  noteSheetWarning(A_UNRESOLVED, dropped && `${tabLabel}: ${dropped}`);
+  noteConfigWarning(A_UNRESOLVED, dropped && `${tabLabel}: ${dropped}`);
   // NOT reported here any more. An overlap is now a row in "Cần tạo config"
   // with the boundary move offered on it — saying it twice, once as a task and
   // once as a paragraph of banner text, would leave the banner standing after
   // the task was done, because the two are computed from different things (the
   // banner from the cached mappings, the task from a parse that carries rows).
   // The retraction below is what clears any sentence a previous deploy left.
-  noteSheetWarning(A_OVERLAP, null);
-}
-
-async function auditParsedConfig(
-  tabLabel: string,
-  mappings: Mapping[],
-  unresolved: UnresolvedRows,
-  pickupNames: Set<string>,
-  nameByCustomer: Map<string, string>,
-  today: string,
-  sheetLookups: boolean,
-): Promise<void> {
-  emitConfigWarnings(tabLabel, unresolved);
-  if (!sheetLookups) return;
-
-  if (locationsAuditedOn === today) return;
-  try {
-    const locRows = await fetchSheetRows(SHEET_GID.locations, SHEET_CONTRACT.locations);
-    // Stamped only on success, so a failed read is retried on the next parse
-    // rather than skipped for the rest of the day.
-    locationsAuditedOn = today;
-    noteSheetLoad(SHEET_CONTRACT.locations.label, null);
-    const locations = locRows.map((r): LocationRow => ({
-      customer_name: r["customer_name"] ?? "",
-      customer_id: r["customer_id"] ?? "",
-    }));
-    noteSheetWarning(A_DUPE_LOC, duplicateBranchWarning(findDuplicateBranches(locations, pickupNames)));
-  } catch (e) {
-    // The engine does not read this tab, so a broken one costs only the check —
-    // worth saying, never worth failing the config load for.
-    if (isSheetShapeError(e)) noteSheetLoad(e.sheetLabel, e);
-    console.error("Location Table audit skipped:", e);
-  }
+  noteConfigWarning(A_OVERLAP, null);
 }
 
 /**
@@ -292,7 +200,7 @@ async function auditParsedConfig(
  * The engine keeps the default (a stale copy beats no copy for a cycle); a caller that
  * hands a trip to a named person would rather have nothing than yesterday's roster.
  */
-export async function loadConfigFromSheets(opts?: { requireCurrentDay?: boolean }): Promise<Config | null> {
+export async function loadConfig(opts?: { requireCurrentDay?: boolean }): Promise<Config | null> {
   const now = new Date();
   const config = await loadConfigAt(now);
   if (opts?.requireCurrentDay && (cachedDay !== vnDate(now) || vnDate() !== vnDate(now))) return null;
@@ -304,57 +212,50 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
   // crossed midnight cache Saturday's tab under Sunday's date.
   const today = vnDate(now);
   const sunday = vnIsSunday(now);
-  // Sunday reads Supabase too: rules carry areas, the weekly roster
-  // (Lịch Chủ nhật) says who drives each area — see masterRules.
-  const sheetLookups = !masterEnabled();
-  // Supabase rules use IDs; duplicate Sheet names cannot change their lookup.
-  // Retract old alarms before either cache can return.
-  if (!sheetLookups) noteSheetWarning(A_DUPE_LOC, null);
-  const version = masterEnabled() ? 16 : 12;
+  // Sunday rules carry areas; the weekly roster (Lịch Chủ nhật) says who drives
+  // each area — see masterRules.
+  const version = 16;
   // Read once and reuse for the write below, so a hit costs exactly one Redis GET.
   const gen = await readGen();
   if (cachedConfig && cachedDay === today && (gen === null || gen === cachedGen)) {
     return cachedConfig;
   }
 
-  // L2 before the sheet: a cold instance pays one small Redis GET instead of the CSV
-  // download plus parse. Skipped when gen is null (Redis absent, or a blip) — with no
-  // stamp there is no safe key to read under, so fall through to the sheet.
+  // L2 before Supabase: a cold instance pays one small Redis GET instead of the read
+  // plus parse. Skipped when gen is null (Redis absent, or a blip) — with no stamp
+  // there is no safe key to read under, so fall through to Supabase.
   if (gen !== null) {
     const redis = getRedis();
     if (redis) {
       try {
         const hit = unpackConfigBlob<{ version: number; gen: string; day: string; mappings: Mapping[]; inactiveLocationIds?:string[]; unfinished?: UnfinishedConfigRow[]; gaps?: CoverageGap[]; overlaps?: ShiftOverlap[]; branchRules?: Record<string, BranchRule[]>; parsedAt?: string; unresolved?: UnresolvedRows; names?: [string, string][] }>(await redis.get(L2_KEY));
-        // Same zero-length suspicion as the sheet path below: never adopt an empty
+        // Same zero-length suspicion as the full parse below: never adopt an empty
         // mapping, whatever it came from.
         if (hit?.version === version && hit.gen === gen && hit.day === today && Array.isArray(hit.mappings) && hit.mappings.length > 0) {
           // Overlaps are READ from the blob, never recomputed here: deriving them
-          // needs the sheet rows, which the cached mappings deliberately do not
+          // needs the rule rows, which the cached mappings deliberately do not
           // carry. A blob written before this feature simply has none, and the
           // next full parse fills them in.
           cachedConfig = { mappings: hit.mappings, inactiveLocationIds:hit.inactiveLocationIds ?? [], unfinished: hit.unfinished ?? [], gaps: hit.gaps ?? [], overlaps: hit.overlaps ?? [], branchRules: hit.branchRules ?? {}, parsedAt: hit.parsedAt ?? "" };
           cachedDay = today;
           cachedGen = gen;
           // Rebuild the sentences from the cached inputs. Pure string work, and
-          // noteSheetWarning only marks a change when the text actually differs,
+          // noteConfigWarning only marks a change when the text actually differs,
           // so a warm instance writes nothing — but a freshly deployed one now
           // says what the CURRENT code says instead of leaving an old sentence
           // standing until the underlying condition happens to move.
           emitConfigWarnings(
-            SHEET_CONTRACT[sunday ? "sunday" : "mapping"].label,
+            TAB_LABEL[sunday ? "sunday" : "weekday"],
             hit.unresolved ?? { pickups: [], drivers: [], dropoffs: [], invalidDriverIds: [] },
           );
           return cachedConfig;
         }
-      } catch { /* fall through to the sheet fetch */ }
+      } catch { /* fall through to the full read */ }
     }
   }
 
-  const tab = sunday ? "sunday" : "mapping";
   try {
-    const rawRows = !sheetLookups
-      ? await masterRuleRows(sunday ? "sunday" : "weekday", today)
-      : await fetchSheetRows(SHEET_GID[tab], SHEET_CONTRACT[tab]);
+    const rawRows = await masterRuleRows(sunday ? "sunday" : "weekday", today);
     const inactiveLocationIds = await inactiveMasterClientIds();
     const rows = activeLocationRules(rawRows,inactiveLocationIds);
 
@@ -364,21 +265,20 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
     // dropped row said — afterwards there is nothing left to report.
     const unresolved: UnresolvedRows = { pickups: [], drivers: [], dropoffs: [], invalidDriverIds: [] };
     // Branches with a line but nobody on it — the to-do list, read back out of
-    // the sheet rather than kept anywhere else. See UnfinishedConfigRow.
+    // the rules rather than kept anywhere else. See UnfinishedConfigRow.
     const unfinished: UnfinishedConfigRow[] = [];
     const recordedMissing = await (await import("./smart-log-kv")).readCoverageGaps();
-    const pickupNames = new Set<string>();
     // customer id → branch name, so a warning can say the place rather than the id.
     const nameByCustomer = new Map<string, string>();
-    // Rules per branch, carrying the sheet row so a boundary can later be moved.
+    // Rules per branch, carrying the rule id so a boundary can later be moved.
     const rulesByCustomer = new Map<string, RuleRow[]>();
     // Rows in the shape the overlap check wants. See the push below.
     const auditRows: AuditableRow[] = [];
     for (const [idx, row] of rows.entries()) {
       const customer_id = row["customer_id"] ?? "";
       const driver_id = (row["driver_id"] ?? "").trim();
-      // Drop junk smart-driver entries (e.g. a broken #REF sheet ref) so they
-      // can never build a malformed assign URL. An invalid fixed driver_id is
+      // Drop junk smart-driver entries so they can never build a malformed
+      // assign URL. An invalid fixed driver_id is
       // left in place and reported at assign time (assign.ts), where it shows
       // in the Activity Log.
       const smart_driver_id = (row["smart_driver_id"] ?? "")
@@ -387,7 +287,6 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
       const pickupName = (row["Điểm Pick-up"] ?? "").trim();
       const driverName = (row["Driver"] ?? "").trim();
       const dropoffName = (row["Điểm Drop-off"] ?? "").trim();
-      if (pickupName) pickupNames.add(pickupName);
       if (customer_id && pickupName && !nameByCustomer.has(customer_id)) nameByCustomer.set(customer_id, pickupName);
       // Checked BEFORE the drop test, and on rows that survive it: unlike the
       // other two this row is not thrown away, it just loses its destination
@@ -417,13 +316,10 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
           // A branch that resolved, with the driver cell left empty. Nothing is
           // wrong with it — it is simply unfinished, and it is what the "Cần xử
           // lý" tab now offers to complete.
-          //
-          // +2 maps the parsed index to the sheet row: one for the header, one
-          // for 1-based counting. Only a HINT — a save re-reads the row and
-          // checks it still holds this branch before writing anything.
+          // A save is matched by rule id + revision, never by `row`.
           const ws = (row["shift_start"] ?? "").trim(), we = (row["shift_end"] ?? "").trim();
           const window = ws && we ? `${ws}–${we}` : null;
-          // Only lines this system created. The sheet also carries rows that have
+          // Only lines this system created. The config also carries rules that have
           // simply never had a driver — a years-old test row, something abandoned
           // half-finished — and those are not work waiting on anyone. Listing
           // them buries the ones that are.
@@ -447,7 +343,7 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
         dropoff: dropoffName,
       };
       if (rules) rules.push(thisRule); else rulesByCustomer.set(customer_id, [thisRule]);
-      // The same rows the overlap check reads, carrying the sheet row so the
+      // The same rows the overlap check reads, carrying the rule id so the
       // pair it finds can be FIXED from the dashboard rather than only reported.
       // Kept beside the mapping rather than on it: this array is derived and
       // dropped, while a row number on every Mapping would be cached forever.
@@ -467,17 +363,10 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
         customer_id,
         driver_id,
         smart_driver_id,
-        // Optional. Absent column ⇒ blank on every row ⇒ identical behaviour to
-        // before it existed, which is what lets the code ship before the column
-        // is added to the sheet. Deliberately NOT in SHEET_CONTRACT for the same
-        // reason (footgun 3: requiring a column that isn't there refuses the tab
-        // on every load and the engine then runs on a stale copy indefinitely).
+        // Blank = any destination.
         dropoff_id: (row["dropoff_id"] ?? "").trim(),
-        // The sheet's name column is headed "Driver" — the same header the Driver tab
-        // uses. Reading "first_name_last_name" found nothing on all 1390 rows, which is
-        // why anything printing this name fell back to a raw UUID (the instant-assign
-        // log line, the held-job preview). Old key kept as a fallback so a renamed
-        // column degrades instead of blanking.
+        // Rule rows keep the sheet-era "Driver" key. Old key kept as a fallback so
+        // a renamed field degrades instead of blanking.
         first_name_last_name: row["Driver"] ?? row["first_name_last_name"] ?? "",
         shift_start: parseTime(row["shift_start"]),
         shift_end: parseTime(row["shift_end"]),
@@ -495,7 +384,6 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
       return cachedConfig;
     }
 
-    noteSheetLoad(SHEET_CONTRACT[tab].label, null);
     // A to-do row is only outstanding while the branch is still uncovered. It was
     // written when the branch had NO rule; by the time anyone looks, one may have
     // been added — by hand or from the dashboard — and the empty row is then
@@ -512,11 +400,9 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
     });
 
     // Weekdays only, deliberately. Everything the panel offers for these rows
-    // refuses on the Sunday tab — its Driver column is a formula deriving cover
-    // from the public roster — so listing them there would be offering an action
-    // that cannot work. Today that tab happens to have none, which is luck
-    // rather than design.
-    const isWeekday = tab === "mapping";
+    // refuses on Sunday — Sunday rules name areas, not drivers — so listing them
+    // there would be offering an action that cannot work.
+    const isWeekday = !sunday;
 
     // Which recorded gaps are still open, and which the config now covers. The
     // CLOSING is decided here, from the data, rather than by whoever recorded
@@ -536,10 +422,8 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
 
     // Two routing rules live at the same minute for one branch. Derived on every
     // parse rather than recorded at runtime the way a gap is: unlike a hole, an
-    // overlap is fully visible in the sheet, so nothing has to fall into it
-    // first. It used to be reported only as a sentence in the sheet-alarm
-    // banner while a gap — the same fault, opposite sign — got an actionable
-    // row; this is what closes that gap.
+    // overlap is fully visible in the rules, so nothing has to fall into it
+    // first.
     const overlaps = isWeekday ? findShiftOverlaps(auditRows, nameByCustomer) : [];
 
     // The rules each listed branch already has. Only those branches, because the
@@ -566,7 +450,7 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
 
     // Sunday: a clinic's overlapping rules share the work instead of clashing.
     if (sunday) mappings.splice(0, mappings.length, ...mergeSundayOverlaps(mappings));
-    await auditParsedConfig(SHEET_CONTRACT[tab].label, mappings, unresolved, pickupNames, nameByCustomer, today, sheetLookups);
+    emitConfigWarnings(TAB_LABEL[sunday ? "sunday" : "weekday"], unresolved);
     const parsedAt = vnTimestamp();
     cachedConfig = { mappings, inactiveLocationIds, unfinished: isWeekday ? stillNeeded : [], gaps: isWeekday ? gaps : [], overlaps, branchRules, parsedAt };
     cachedDay = today;
@@ -580,17 +464,12 @@ async function loadConfigAt(now: Date): Promise<Config | null> {
       if (redis) {
         try {
           await redis.eval(CONFIG_CACHE_WRITE_SCRIPT, [GEN_KEY, L2_KEY], [gen, packConfigBlob({ version, gen, day: today, mappings, inactiveLocationIds, unfinished: isWeekday ? stillNeeded : [], gaps: isWeekday ? gaps : [], overlaps, branchRules, parsedAt, unresolved, names: [...nameByCustomer] }), String(L2_TTL_S)]);
-        } catch { /* best-effort; the sheet is always the fallback */ }
+        } catch { /* best-effort; Supabase is always the fallback */ }
       }
     }
     return cachedConfig;
   } catch (e) {
-    // A SHAPE failure is a person to tell, not a request to retry: someone has
-    // edited the tab into a state this parser cannot read. The stale copy still
-    // serves, so the engine keeps running — which is exactly why it has to be
-    // said out loud somewhere.
-    if (isSheetShapeError(e)) noteSheetLoad(e.sheetLabel, e);
-    console.error("Error loading config from sheets:", e);
+    console.error("Error loading config:", e);
     // Prefer stale cache over nothing on a transient fetch failure.
     return cachedConfig;
   }

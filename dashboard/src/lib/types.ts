@@ -163,7 +163,7 @@ export interface Config {
 }
 
 // A driver read from the sheet's Driver tab (not a live Cartrack fetch), with
-// deactivated accounts dropped — see loadDriversFromSheet. Used to populate the
+// deactivated accounts dropped — see loadDrivers. Used to populate the
 // manual "Gán thủ công" picker in the Cần xử lý panel, and the substitute picker
 // in the leave panel, without an /api/drivers call.
 export interface ConfigDriver {

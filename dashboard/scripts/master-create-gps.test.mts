@@ -30,7 +30,7 @@ assert.ok(hover([]).includes('Chưa có ca được lưu'));
 const dutyHtml=hover([{day_type:'working',start_time:'07:00',end_time:'12:00',source:'MISA'},{day_type:'working',start_time:'15:00',end_time:'19:00',source:'PT',leave_start:'17:00',leave_end:'19:00'}]);
 assert.ok(dutyHtml.includes('07:00–12:00')&&dutyHtml.includes('15:00–19:00')&&dutyHtml.includes('Nghỉ phép 17:00–19:00')&&dutyHtml.includes('08/10/2026'));
 assert.ok(hover([{day_type:'off',source:'MISA'}]).includes('Nghỉ'));
-const env={SUPABASE_URL:'https://supabase.invalid',SUPABASE_SERVICE_ROLE_KEY:'test',CARTRACK_AUTH:'test',KV_REST_API_URL:'https://redis.invalid',KV_REST_API_TOKEN:'test',LABCENTER_EMAIL:'test',LABCENTER_PASSWORD:'test',MASTER_CLIENT_INFO_SOURCE:'supabase'};
+const env={SUPABASE_URL:'https://supabase.invalid',SUPABASE_SERVICE_ROLE_KEY:'test',CARTRACK_AUTH:'test',KV_REST_API_URL:'https://redis.invalid',KV_REST_API_TOKEN:'test',LABCENTER_EMAIL:'test',LABCENTER_PASSWORD:'test'};
 const before=Object.fromEntries(Object.keys(env).map(k=>[k,process.env[k]])),previousFetch=globalThis.fetch;
 Object.assign(process.env,env);
 const saved=new Map<string,string>();let creates=0,dbFails=false,uncertain=false,lcAccepts=true,linked=false;

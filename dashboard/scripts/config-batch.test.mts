@@ -28,8 +28,8 @@ const rule = {id:1,source_row:2,revision:3,assignment_mode:"smart",pickup_custom
 const expected = {rule_id:1,revision:3,driver:"Driver",start:"07:00",end:"12:00",dropoff:""};
 const line = {row:2,expected_row:expected,driver:"Driver",start:"07:00",end:"12:00",dropoff:"",assignment_mode:"smart"};
 const previousFetch = globalThis.fetch;
-const previousEnv = {SUPABASE_URL:process.env.SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY:process.env.SUPABASE_SERVICE_ROLE_KEY,MASTER_CLIENT_INFO_SOURCE:process.env.MASTER_CLIENT_INFO_SOURCE};
-Object.assign(process.env,{SUPABASE_URL:"https://supabase.invalid",SUPABASE_SERVICE_ROLE_KEY:"test",MASTER_CLIENT_INFO_SOURCE:"supabase"});
+const previousEnv = {SUPABASE_URL:process.env.SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY:process.env.SUPABASE_SERVICE_ROLE_KEY,};
+Object.assign(process.env,{SUPABASE_URL:"https://supabase.invalid",SUPABASE_SERVICE_ROLE_KEY:"test"});
 let reads = 0;
 let addPeer = false;
 let extraRules: typeof rule[] = [];

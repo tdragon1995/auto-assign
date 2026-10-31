@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { loadConfigFromSheets } from "@/lib/config";
+import { loadConfig } from "@/lib/config";
 import { autoAssignCycle } from "@/lib/assign";
 import type { Env } from "@/lib/cartrack";
 import { vnTimestamp } from "@/lib/time";
@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
   const env = (req.nextUrl.searchParams.get("env") ?? "prod") as Env;
   const skipSmart = req.nextUrl.searchParams.get("skipSmart") === "1";
   try {
-    const config = await loadConfigFromSheets();
+    const config = await loadConfig();
     if (!config) {
       return NextResponse.json(
         { logs: [{ ts: vnTimestamp(), level: "ERROR", msg: "Failed to load config" }] },

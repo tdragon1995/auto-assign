@@ -14,8 +14,7 @@ const drivers=[
   {driver_id:toId,first_name:"Nguyễn",last_name:"Trần Toán",is_active:true},
   {driver_id:peerId,first_name:"Nguyễn",last_name:"Trần Toán",is_active:true},
 ];
-const testEnv={SUPABASE_URL:"https://supabase.invalid",SUPABASE_SERVICE_ROLE_KEY:"test",MASTER_CLIENT_INFO_SOURCE:"supabase",
-  CARTRACK_AUTH:"Basic test",KV_REST_API_URL:"",KV_REST_API_TOKEN:"",UPSTASH_REDIS_REST_URL:"",UPSTASH_REDIS_REST_TOKEN:""};
+const testEnv={SUPABASE_URL:"https://supabase.invalid",SUPABASE_SERVICE_ROLE_KEY:"test",CARTRACK_AUTH:"Basic test",KV_REST_API_URL:"",KV_REST_API_TOKEN:"",UPSTASH_REDIS_REST_URL:"",UPSTASH_REDIS_REST_TOKEN:""};
 const previousEnv=Object.fromEntries(Object.keys(testEnv).map(k=>[k,process.env[k]])), previousFetch=globalThis.fetch;
 Object.assign(process.env,testEnv);
 let cartrackActive=true;

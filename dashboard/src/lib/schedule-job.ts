@@ -1,18 +1,7 @@
 import { BASE_URL, PROXY_DRIVER_ID, assignJob, createJob, getHeaders, getStopsByLabels, type Env } from "./cartrack";
-import { SHEET_GID, SHEET_CONTRACT, fetchSheetRows, isSheetShapeError, noteSheetLoad } from "./sheets";
 import { vnDate, vnTimestamp } from "./time";
 import { PICKUP_PHOTO_TODO, DROPOFF_PHOTO_TODO } from "./job-filters";
-import { masterScheduleEnabled,masterScheduleRows } from "./master-schedule";
-
-const WEEKDAY_COLUMNS = [
-  "sunday",
-  "monday",
-  "tuesday",
-  "wednesday",
-  "thursday",
-  "friday",
-  "saturday",
-] as const;
+import { masterScheduleRows } from "./master-schedule";
 
 const TZ = "Asia/Ho_Chi_Minh";
 
@@ -32,7 +21,7 @@ export interface ScheduleJobRow {
   reference: string;
   sent_to_driver_before: number;
   days: boolean[];
-  /** Pre-assigned driver (sheet `driver` / `driver_id`). Empty = no pre-assign:
+  /** Pre-assigned driver. Empty = no pre-assign:
    *  the released job goes through the normal assign cycle (mapping / smart). */
   driver_name: string;
   driver_id: string;
@@ -51,46 +40,13 @@ export interface ScheduleJobResult {
   job_id?: number;
 }
 
-function parseBool(value: string | undefined): boolean {
-  if (!value) return false;
-  const v = value.trim().toLowerCase();
-  return v === "true" || v === "1" || v === "yes" || v === "x" || v === "checked";
-}
-
 /** Today's weekday index in Asia/Ho_Chi_Minh: 0=Sun .. 6=Sat. */
 export function vnWeekdayIndex(d: Date = new Date()): number {
   const name = new Intl.DateTimeFormat("en-US", { timeZone: TZ, weekday: "short" }).format(d);
   return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(name);
 }
 
-export async function loadScheduleJobRows(): Promise<ScheduleJobRow[]> {
-  if(masterScheduleEnabled()) return masterScheduleRows();
-  const rows = await fetchSheetRows(SHEET_GID.schedule_job, SHEET_CONTRACT.schedule_job).catch((e) => {
-    if (isSheetShapeError(e)) noteSheetLoad(e.sheetLabel, e);
-    throw e;
-  });
-  noteSheetLoad(SHEET_CONTRACT.schedule_job.label, null);
-  return parseScheduleSheetRows(rows);
-}
-
-/** Shared by the read-only migration snapshot and the legacy engine. */
-export function parseScheduleSheetRows(rows:Record<string,string>[]):ScheduleJobRow[] {
-  return rows.map((r, i) => ({
-    rowIndex: i + 2,
-    pickup_id: (r.master_pickup_id || r.pickup_id || "").trim(),
-    pickup_name: (r.pickup ?? "").trim(),
-    dropoff_id: (r.master_dropoff_id || r.dropoff_id || "").trim(),
-    dropoff_name: (r.dropoff ?? "").trim(),
-    delivery_window: (r.delivery_windows ?? "").trim(),
-    reference: (r.reference ?? "").trim(),
-    sent_to_driver_before: parseInt(r.sent_to_driver_before ?? "", 10) || 60,
-    days: WEEKDAY_COLUMNS.map((col) => parseBool(r[col])),
-    // The sheet's header is "Driver"; a lowercase "driver" is accepted too.
-    driver_name: (r.Driver || r.driver || "").trim(),
-    // A Master row may deliberately clear its pre-assignment; ignore stale formulas.
-    driver_id: (r.master_pickup_id ? r.master_driver_id ?? "" : r.driver_id ?? "").trim(),
-  }));
-}
+export const loadScheduleJobRows = (): Promise<ScheduleJobRow[]> => masterScheduleRows();
 
 /** Strip the `_YYYY-MM-DD` suffix buildReferenceNumber appends, giving back the
  *  sheet's `reference` value. Null when the job wasn't created by this module. */

@@ -6,7 +6,7 @@ import {POST,PUT,DELETE} from "../src/app/api/schedule-job/row/route";
 import {loadScheduleJobRows,loadSchedulePreassignments,filterRowsForToday,buildReferenceNumber} from "../src/lib/schedule-job";
 
 const pickup="11111111-1111-4111-8111-111111111111",dropoff="22222222-2222-4222-8222-222222222222",driver="33333333-3333-4333-8333-333333333333";
-Object.assign(process.env,{MASTER_CLIENT_INFO_SOURCE:"supabase",MASTER_SCHEDULE_SOURCE:"supabase",SUPABASE_URL:"https://supabase.invalid",SUPABASE_SERVICE_ROLE_KEY:"test-only",KV_REST_API_URL:"https://cache.invalid",KV_REST_API_TOKEN:"test-only"});
+Object.assign(process.env,{SUPABASE_URL:"https://supabase.invalid",SUPABASE_SERVICE_ROLE_KEY:"test-only",KV_REST_API_URL:"https://cache.invalid",KV_REST_API_TOKEN:"test-only"});
 const cache=new Map<string,string>([["config:gen","generation-1"]]);
 let reads=0,name="New client",inactive=false;
 let stored={id:1,source_row:2,revision:1,pickup_id:pickup,dropoff_id:dropoff,driver_id:driver as string|null,

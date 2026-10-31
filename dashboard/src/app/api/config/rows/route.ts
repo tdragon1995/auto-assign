@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchSheetRows, SHEET_CONTRACT, SHEET_GID } from "@/lib/sheets";
 import { readConfigGen } from "@/lib/config-gen";
 import { dailyDriverShifts } from "@/lib/driver-shifts";
 import { vnDate, vnTimestamp } from "@/lib/time";
 import { rosterSunday } from "@/lib/sunday-roster";
-import { masterClients, masterDrivers, masterEnabled, masterRuleRows } from "@/lib/master-store";
+import { masterClients, masterDrivers, masterRuleRows } from "@/lib/master-store";
 import { publicClient, publicDriver } from "@/lib/master-public";
 import { loadPickupVolumes } from "@/lib/pickup-setup";
 
@@ -23,7 +22,7 @@ export const preferredRegion = "sin1";
  * through Redis and the browser on a loop to answer a question nobody is asking
  * most of the time.
  *
- * It also does NOT go through loadConfigFromSheets. That returns the parsed
+ * It also does NOT go through loadConfig. That returns the parsed
  * Mapping, which by design carries no sheet row and no branch NAME — a row
  * number on all 1,700 would grow the cached blob to label a handful. Browsing
  * needs exactly those two things, so this reads the tab on its own and keeps a
@@ -55,7 +54,7 @@ export interface ConfigRowView {
   /** True when the cell names several drivers: the engine ranks them by
    *  distance rather than treating them as competing rules. */
   smart: boolean;
-  /** Display-only Cartrack client without a weekday Google Sheet mapping. */
+  /** Display-only Cartrack client without a weekday rule. */
   unmapped?: boolean;
   /** Sunday rules: the roster areas that decide who drives (drivers shown are that week's). */
   areas?: string[];
@@ -107,17 +106,14 @@ export async function GET(req: NextRequest) {
   let day: ConfigDay;
   try { day = resolveConfigDay(req.nextUrl.searchParams.get("day")); }
   catch (e) { return NextResponse.json({error:String(e)}, {status:400}); }
-  const sunday = day === "sunday";
   let cache = caches[day];
-  const contract = sunday ? SHEET_CONTRACT.sunday : SHEET_CONTRACT.mapping;
-  const gid = sunday ? SHEET_GID.sunday : SHEET_GID.mapping;
   // A Sunday's drivers come from that week's roster, so the label says which week.
-  const tab = !masterEnabled() ? contract.label : sunday ? `Supabase · lịch CN ${rosterSunday(vnDate()).slice(8)}/${rosterSunday(vnDate()).slice(5, 7)}` : "Supabase";
+  const tab = day === "sunday" ? `Supabase · lịch CN ${rosterSunday(vnDate()).slice(8)}/${rosterSunday(vnDate()).slice(5, 7)}` : "Supabase";
   if (cache?.tab !== tab) cache = undefined;
   // The explicit reload. Belt and braces beside the stamp: it also covers the
   // case where Redis is unconfigured or unreachable, where `readConfigGen`
   // deliberately reports "no reason to invalidate" and the stamp can never move.
-  // A button that says Tải lại has to re-read the sheet every time it is pressed.
+  // A button that says Tải lại has to re-read the rules every time it is pressed.
   const fresh = !!new URL(req.url).searchParams.get("fresh");
 
   try {
@@ -127,9 +123,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ day, rows: cache.rows, tab: cache.tab, fetchedAt: cache.fetchedAt, cached: true });
     }
 
-    const raw = masterEnabled()
-      ? await masterRuleRows(day)
-      : await fetchSheetRows(gid, { label: contract.label, require: contract.require });
+    const raw = await masterRuleRows(day);
     const rows: ConfigRowView[] = [];
     raw.forEach((r, idx) => {
       const pickup = (r["Điểm Pick-up"] ?? "").trim();

@@ -1,6 +1,6 @@
 import { resolveConfigDay } from "@/lib/config-day";
 import { NextRequest, NextResponse } from "next/server";
-import { adjustConfigRowWindow, ConfigRowChangedError } from "@/lib/sheets-writer";
+import { editMasterConfig, weekdayOnly } from "@/lib/master-config-actions";
 import { parseConfigRowSnapshot } from "@/lib/config-row-match";
 import { invalidateConfigCache } from "@/lib/config";
 import { timeToMins } from "@/lib/time";
@@ -33,14 +33,12 @@ export async function POST(req: NextRequest) {
     const v = (value ?? "").trim();
     if (timeToMins(v) < 0) return bad(`Giờ không hợp lệ: ${v || "(trống)"}`);
 
-    const result = await adjustConfigRowWindow({ config_day: configDay, row: row as number, expectPickup: pickup_name, expected: expected ?? undefined, edge, value: v });
+    weekdayOnly(configDay);
+    const result = await editMasterConfig({ row: row as number, expectPickup: pickup_name, expected: expected ?? undefined }, { [edge]: v });
     await invalidateConfigCache();
     return NextResponse.json({ ok: true, ...result });
   } catch (e) {
-    if (e instanceof ConfigRowChangedError) {
-      return NextResponse.json({ ok: false, code: e.code, error: e.message }, { status: 409 });
-    }
-    // A moved row or a Sunday attempt is the caller's to resolve, not a fault.
+    // A changed rule or a Sunday attempt is the caller's to resolve, not a fault.
     return bad(e instanceof Error ? e.message : String(e), 409);
   }
 }

@@ -1,36 +1,10 @@
 import { BASE_URL, clearCustomerFields, getCustomerById, getHeaders } from "./cartrack";
 import { DELIVERY_BASE, getAdminToken, updateLocationAddress, updateLocationPhone, updatePickDropLocation } from "./labcenter";
 import { nearestPsc, newWard, GEO_DATASET_VERSION } from "./master-geo";
-import { masterClient, masterDriver, masterEnabled } from "./master-store";
+import { masterClient, masterDriver } from "./master-store";
 import { sbPatch, sbSelect, sbUpsert } from "./supabase-rest";
-import { SHEET_GID, SHEET_ID } from "./sheets";
-import { getSheetsClient } from "./sheets-writer";
 import { commitPickupSetup, type SetupRow } from "./pickup-setup";
 import { isInactiveLocation, locationName } from "./location-status";
-
-export async function assertSheetRenameSafe(id:string,names:string[]) {
-  // Supabase mode reads none of these tabs (config, Sunday, roster, locations all
-  // resolve by id), and the service account no longer has access to the workbook:
-  // the read failed every rename, including "ngừng hoạt động", with Google's 403.
-  if (masterEnabled()) return;
-  const sheets=getSheetsClient();
-  const meta=await sheets.spreadsheets.get({spreadsheetId:SHEET_ID,fields:"sheets.properties"});
-  const gids=new Set<string>([SHEET_GID.sunday,SHEET_GID.drivers,SHEET_GID.locations,SHEET_GID.mapping,SHEET_GID.nghi_phep]);
-  const relevant=meta.data.sheets?.filter(s=>gids.has(String(s.properties?.sheetId)) ||
-    s.properties?.title?.startsWith("(Edit weekly) PUBLIC SUNDAY"))??[];
-  if(relevant.length<gids.size) throw new Error("Không xác minh được các tab Google Sheet còn dùng tên");
-  const ranges=relevant.map(s=>`'${s.properties!.title!.replace(/'/g,"''")}'`);
-  const values=await sheets.spreadsheets.values.batchGet({spreadsheetId:SHEET_ID,ranges});
-  if(values.data.valueRanges?.length!==ranges.length) throw new Error("Không đọc đủ tham chiếu Google Sheet");
-  const oldNames=new Set(names.filter(Boolean).map(n=>n.trim()));
-  for(const sheet of values.data.valueRanges??[]) for(const [index,row] of (sheet.values??[]).entries()) {
-    const cells=row.map(value=>String(value??"").trim());
-    const hasName=cells.some(cell=>oldNames.has(cell) || cell.split(/[,;\n]/).some(v=>oldNames.has(v.trim())));
-    const hasId=cells.some(cell=>cell.split(/[,;\n]/).some(v=>v.trim()===id));
-    if (hasName || hasId)
-      throw new Error(`Chưa thể đổi tên: ${sheet.range}, dòng ${index+1} còn dùng tên chưa liên kết ID trong Google Sheet`);
-  }
-}
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function requiredText(value: unknown, name: string): string {
@@ -59,7 +33,6 @@ export async function editClient(id: string, patch: Record<string, unknown>) {
   const active = patch.is_active === undefined ? !isInactiveLocation(current.customer_name) : patch.is_active as boolean;
   const name = patch.is_active === undefined && patch.customer_name === undefined ? requestedName : locationName(requestedName, active);
   if (!locationName(name,true)) throw new Error("Tên không hợp lệ");
-  if (name !== current.customer_name) await assertSheetRenameSafe(id,[String(current.customer_name??"")]);
   const address = patch.address_line_1 === undefined ? current.address_line_1 : requiredText(patch.address_line_1, "Địa chỉ");
   // 6 dp (~10 cm): Cartrack keeps ~14 significant digits, so a pasted 15-dp map pin came
   // back shortened and failed the read-back below. 6 dp round-trips exactly.
@@ -157,11 +130,6 @@ export async function editDriver(id: string, patch: Record<string, unknown>) {
   const cartrackPatch = Object.fromEntries(Object.entries(patch).filter(([k]) => profileFields.includes(k)));
   const localPatch = Object.fromEntries(Object.entries(patch).filter(([k]) => localFields.includes(k)));
   const rosterPatch = Object.fromEntries(Object.entries(patch).filter(([k]) => rosterFields.includes(k)));
-  if (["first_name", "last_name"].some(k => k in patch && patch[k] !== row.cartrack[k]) ||
-      Object.entries(rosterPatch).some(([k,v]) => row.roster[k] !== v)) {
-    await assertSheetRenameSafe(id,[`${row.cartrack.first_name??""} ${row.cartrack.last_name??""}`,
-      String(row.roster?.Driver??""),String(row.roster?.employee_full_name??"")]);
-  }
   for (const [key, value] of Object.entries(patch)) {
     if (value !== null && typeof value !== "string") throw new Error(`${key} không hợp lệ`);
     if (["start_location_customer_id", "end_location_customer_id"].includes(key) && value !== null) {

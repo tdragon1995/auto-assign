@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { loadScheduleJobRows } from "@/lib/schedule-job";
-import { masterScheduleEnabled } from "@/lib/master-schedule";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -9,7 +8,7 @@ export const preferredRegion = "sin1";
 export async function GET() {
   try {
     const rows = await loadScheduleJobRows();
-    return NextResponse.json({ rows,source:masterScheduleEnabled()?"supabase":"sheet" });
+    return NextResponse.json({ rows,source:"supabase" });
   } catch (e) {
     return NextResponse.json({ rows: [], error: String(e) }, { status: 500 });
   }

@@ -12,14 +12,12 @@
  * when the config is parsed, so a half-finished line cannot route anything, cannot
  * clash with the branch's other rules, and cannot be picked up by mistake. It is
  * inert until a person fills it in — which is the property that makes writing to
- * the live config sheet safe at all.
+ * the live config safe at all.
  *
- * Pure: dates and strings in, cell values out, no network. The sheet mechanics
- * live in `sheets-writer.ts`, which knows the far more dangerous half — that the
- * id columns are one spilling ARRAYFORMULA each and must never be written to.
+ * Pure apart from writeUnmappedConfigRows: dates and strings in, rule cells out.
  */
 
-import { vnHoursMinutes } from "./time";
+import { vnHoursMinutes, vnIsSunday } from "./time";
 import { DIAG_LOCATIONS } from "./diag-locations";
 
 export interface UnmappedBranch {
@@ -206,14 +204,12 @@ export const branchKey = (b: Pick<UnmappedBranch, "customer_id" | "dropoff_name"
 /**
  * Append a config line for every branch that turned out to have none.
  *
- * Runs at the end of a cycle, and is never allowed to affect it: a sheet that
- * refuses the write, a revoked service account, a Google outage — all of them
- * cost a log line and nothing else. Assignment has already happened by this
+ * Runs at the end of a cycle, and is never allowed to affect it: a refused write
+ * costs a log line and nothing else. Assignment has already happened by this
  * point; this is paperwork.
  *
- * The config cache is deliberately NOT invalidated afterwards. The new row has no
- * driver, so re-reading the sheet would find nothing the engine can use, while
- * costing every server on both deployments a fresh download of the whole table.
+ * The config cache is deliberately NOT invalidated afterwards. The new rule has
+ * no driver, so re-reading the config would find nothing the engine can use.
  * The row matters when a person fills it in, and pressing Refresh is part of
  * doing that.
  */
@@ -229,6 +225,8 @@ export async function writeUnmappedConfigRows(
     const { hours, minutes } = vnHoursMinutes(b.at);
     await kv.recordCoverageGap(b.customer_id, b.pickup_name, HHMM(hours * 60 + minutes), scopedDropoffName(b.customer_id, b.dropoff_name));
   }
+  // A Sunday rule names areas, not a driver-less line; the gap above is the to-do.
+  if (vnIsSunday()) return;
   // Taken BEFORE the per-branch claims, not after: a branch marked as written by
   // a run that then failed to get the lock would never be written by anyone.
   if (!(await kv.acquireSheetWriteLock())) return;
@@ -240,8 +238,8 @@ export async function writeUnmappedConfigRows(
     }
     if (mine.length === 0) return;
 
-    const { writeConfigRows } = await import("./sheets-writer");
-    await writeConfigRows(mine.map(configCellsFor));
+    const { createMasterConfigRows } = await import("./master-store");
+    await createMasterConfigRows(mine.map(configCellsFor));
     mine.forEach((b) => {
       const { hours, minutes } = vnHoursMinutes(b.at);
       // No row number: on Supabase it is a leftover sheet position, not the rule

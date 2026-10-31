@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { verifySession, NV_COOKIE } from "@/lib/driver-session";
 import { sbRpc, sbSelect } from "@/lib/supabase-rest";
-import { assertMasterWritable } from "@/lib/master-store";
 import { invalidateConfigCache } from "@/lib/config";
 import { vnDate } from "@/lib/time";
 import { loadSunday, loadSundayLines, sendDriverGroup } from "@/lib/sunday-roster-zalo";
@@ -19,7 +18,6 @@ export async function POST(req: NextRequest) {
   const session = verifySession(req.cookies.get(NV_COOKIE)?.value);
   if (!session) return fail("Đăng nhập ở Tab Nhận Việc trước khi nhận ca.", 401);
   try {
-    assertMasterWritable();
     const id = Number((await req.json().catch(() => null))?.id);
     if (!Number.isSafeInteger(id)) return fail("Ca không hợp lệ");
 

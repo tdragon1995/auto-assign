@@ -1,17 +1,14 @@
 /**
- * Pins the config audit: duplicate branch names, overlapping shift rules, and
- * lookups that stopped resolving.
- *
- * Offline and pure — no sheet, no network. The live counterpart is
- * `config-audit-live.mts`, which runs the same checks against the real workbook.
+ * Pins the config audit: overlapping shift rules and lookups that stopped
+ * resolving. Offline and pure — no network.
  *
  *   npx tsx scripts/config-audit.test.mts
  */
 
-import type { AuditableRow, LocationRow } from "../src/lib/config-audit";
+import type { AuditableRow } from "../src/lib/config-audit";
 const {
-  findDuplicateBranches, findShiftOverlaps,
-  duplicateBranchWarning, shiftOverlapWarning, unresolvedWarning, resolveGaps,
+  findShiftOverlaps,
+  shiftOverlapWarning, unresolvedWarning, resolveGaps,
 } = await import("../src/lib/config-audit");
 
 let failed = 0;
@@ -24,7 +21,6 @@ function ok(label: string, cond: boolean, detail?: string) {
 const eq = (label: string, got: unknown, want: unknown) =>
   ok(label, JSON.stringify(got) === JSON.stringify(want), `got ${JSON.stringify(got)}\n       want ${JSON.stringify(want)}`);
 
-const loc = (customer_name: string, customer_id: string): LocationRow => ({ customer_name, customer_id });
 
 // The audit only counts a row whose driver cell holds a REAL id, so fixtures have
 // to carry one. Short keys are mapped to stable uuid-shaped ids for readability.
@@ -49,42 +45,6 @@ section("destination-scoped coverage gaps");
   eq("two D001 destinations at one minute remain two to-dos",
     open.map((g) => g.dropoff_name).sort(), ["Lab A", "Lab B"]);
 }
-
-// ── duplicate branch names ───────────────────────────────────────────────────
-section("a branch name that means two places");
-{
-  const rows = [loc("A", "id1"), loc("B", "id2"), loc("A", "id9")];
-  const d = findDuplicateBranches(rows, new Set(["A"]));
-  eq("the duplicate is found", d.map((x) => x.name), ["A"]);
-  eq("both ids reported, sheet order kept", d[0].ids, ["id1", "id9"]);
-  ok("and it is flagged as collected-from", d[0].usedAsPickup);
-}
-{
-  const d = findDuplicateBranches([loc("A", "id1"), loc("A", "id1")], new Set(["A"]));
-  eq("the same place listed twice under ONE id is not a fault", d, []);
-}
-{
-  const d = findDuplicateBranches([loc("A", "id1"), loc("A", "id2")], new Set());
-  ok("a duplicate nobody collects from is still found", d.length === 1);
-  ok("...but not flagged as collected-from", d[0].usedAsPickup === false);
-  eq("and it raises no banner on its own", duplicateBranchWarning(d), null);
-}
-{
-  const rows = [loc("Z", "1"), loc("Z", "2"), loc("A", "3"), loc("A", "4")];
-  const d = findDuplicateBranches(rows, new Set(["A"]));
-  eq("collected-from ones sort first", d.map((x) => x.name), ["A", "Z"]);
-}
-{
-  const rows = [loc("", "id1"), loc("", "id2"), loc("X", ""), loc("X", "")];
-  eq("blank names and blank ids are ignored", findDuplicateBranches(rows, new Set()), []);
-}
-{
-  const d = findDuplicateBranches([loc("A", "1"), loc("A", "2")], new Set(["A"]));
-  const msg = duplicateBranchWarning(d) ?? "";
-  ok("the banner names the place", msg.includes("A"));
-  ok("...and says what it will look like when it bites", msg.includes("chưa cấu hình"));
-}
-eq("nothing duplicated, nothing said", duplicateBranchWarning([]), null);
 
 // ── overlapping shift rules ──────────────────────────────────────────────────
 section("two rules for one branch, live at the same minute");

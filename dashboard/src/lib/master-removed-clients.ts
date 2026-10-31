@@ -1,6 +1,5 @@
 import { BASE_URL, getHeaders } from "./cartrack";
 import { sbRpc, sbSelectAll } from "./supabase-rest";
-import { fetchSheetRows, SHEET_GID, SHEET_CONTRACT } from "./sheets";
 import { loadTplEntries } from "./psc-config";
 import { PSC_ROUTES } from "./psc-routes-data";
 import { UUID } from "./master-reconcile";
@@ -9,14 +8,12 @@ export type RemovedClient = {customer_id:string;customer_name:string;cartrack_mi
 export const removedCartrackClients=()=>sbSelectAll<RemovedClient>("master_clients","select=customer_id,customer_name,cartrack_missing_at&cartrack_missing_at=not.is.null","customer_id.asc");
 export async function removedClientReferences(id:string) {
   if(!UUID.test(id)) throw new Error("Mã địa điểm không hợp lệ");
-  const [references,sunday,tpl]=await Promise.all([
+  const [references,tpl]=await Promise.all([
     sbRpc<Record<string,number>>("master_client_references",{p_id:id}),
-    fetchSheetRows(SHEET_GID.sunday,SHEET_CONTRACT.sunday),
     loadTplEntries(),
   ]);
   const contains=(value:unknown):boolean=>JSON.stringify(value).includes(id);
-  const sundayCount=sunday.filter(contains).length,tplCount=tpl.filter(contains).length,pscCount=PSC_ROUTES.filter(contains).length;
-  if(sundayCount) references["Sunday (Google Sheet)"]=sundayCount;
+  const tplCount=tpl.filter(contains).length,pscCount=PSC_ROUTES.filter(contains).length;
   if(tplCount) references["3PL (Supabase)"]=tplCount;
   if(pscCount) references["PSC routes"]=pscCount;
   return references;

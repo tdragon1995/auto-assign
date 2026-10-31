@@ -44,7 +44,7 @@ assert.deepEqual(profilePatch("client", {}, { default_dropoff_id: destination, e
 
 // No live writes: exercise both default-dropoff owners with a strict fetch stub.
 const oldFetch = globalThis.fetch;
-const testEnv = { SUPABASE_URL: "https://supabase.invalid", SUPABASE_SERVICE_ROLE_KEY: "test-only", MASTER_CLIENT_INFO_SOURCE: "supabase", CARTRACK_AUTH: "test-only", LABCENTER_EMAIL: "test-only", LABCENTER_PASSWORD: "test-only" };
+const testEnv = { SUPABASE_URL: "https://supabase.invalid", SUPABASE_SERVICE_ROLE_KEY: "test-only", CARTRACK_AUTH: "test-only", LABCENTER_EMAIL: "test-only", LABCENTER_PASSWORD: "test-only" };
 const previousEnv = Object.fromEntries(Object.keys(testEnv).map(k => [k, process.env[k]]));
 Object.assign(process.env, testEnv);
 let linked = false;

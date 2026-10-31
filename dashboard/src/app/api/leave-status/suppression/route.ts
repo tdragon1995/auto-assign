@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { removeLeaveSuppression, LeaveWriteError } from "@/lib/sheets-writer";
-import { invalidateSuppressionCache } from "@/lib/leave-suppression";
+import { LeaveWriteError } from "@/lib/leave-rows";
+import { removeMasterLeaveSuppression } from "@/lib/leave-suppression";
 import { invalidateLeaveCache } from "@/lib/leave-config";
 import { THAY_CA_LABEL } from "@/lib/thay-ca";
 import { reconcileThayCa } from "@/lib/thay-ca-reconcile";
@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 export const preferredRegion = "sin1";
 
 /**
- * DELETE — drop one line from the "Nghỉ phép đã xoá" tab, so the MISA sync may
+ * DELETE — drop one line from the deleted-days list, so the MISA sync may
  * write that day again. Body: { driver_id, leave_from, timeLabel }.
  *
  * The undo half of the delete button, and the reason the suppression list is
@@ -17,7 +17,7 @@ export const preferredRegion = "sin1";
  * MISA says about one day; the failure mode of any such list is that it outlives
  * the reason for it and nobody remembers it is there. So it is shown in the
  * panel while it can still block anything, and removing it is one click rather
- * than a trip into the workbook.
+ * than a trip into the database.
  *
  * Restoring an ordinary leave lifts the MISA bar. Restoring a generated Thay ca
  * suppression reconciles immediately so the operational row can return.
@@ -34,12 +34,11 @@ export async function DELETE(req: NextRequest) {
     };
     if (!driver_id || !leave_from) return bad("Thiếu driver_id / leave_from");
 
-    const result = await removeLeaveSuppression({
+    const result = await removeMasterLeaveSuppression({
       driver_id,
       leave_from,
       timeLabel: timeLabel ?? null,
     });
-    invalidateSuppressionCache();
     let thayCa = null;
     let warning = null;
     if (result.loai_nghi === THAY_CA_LABEL) {

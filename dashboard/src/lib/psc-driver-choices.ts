@@ -1,5 +1,5 @@
 import { getLiveDrivers, type Env, type LiveDriver } from "./cartrack";
-import { loadConfigFromSheets } from "./config";
+import { loadConfig } from "./config";
 import { loadLeaveEntries, type LeaveEntry } from "./leave-config";
 import { resolveDriverChoices } from "./fixed-driver";
 import { driverDisplayName } from "./display-names";
@@ -17,7 +17,7 @@ type Inputs = [Config | null, LeaveEntry[] | null, LiveDriver[] | null];
  *  this BEFORE anything else they must fetch rather than queueing behind it. */
 export function loadChoiceInputs(env: Env): Promise<Inputs> {
   return Promise.all([
-    loadConfigFromSheets({ requireCurrentDay: true }).catch(() => null),
+    loadConfig({ requireCurrentDay: true }).catch(() => null),
     loadLeaveEntries().catch(() => null),
     getLiveDrivers(env).catch(() => null),
   ]);

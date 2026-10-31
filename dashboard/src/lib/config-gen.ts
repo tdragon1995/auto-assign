@@ -11,7 +11,7 @@ import { sharedRedis } from "./redis";
  * bytes against a stamp fixes that for the price of one tiny GET.
  *
  * It lives here rather than in `config.ts` because `/api/config/rows` needs the
- * same signal and deliberately does NOT go through `loadConfigFromSheets` — it
+ * same signal and deliberately does NOT go through `loadConfig` — it
  * keeps its own slim copy of the table, with sheet rows and branch names that
  * the parsed `Mapping` does not carry. Importing the whole parser just to read a
  * key would drag the config engine into that route's bundle.

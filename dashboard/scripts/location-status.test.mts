@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { activeLocationRules, hasInactiveStop, isInactiveLocation, locationName } from "../src/lib/location-status";
 import { editClient, editDriver } from "../src/lib/master-profile";
-import { getSheetsClient } from "../src/lib/sheets-writer";
 import { profilePatch } from "../src/components/master-profile-editor";
 import { writeMasterRules } from "../src/lib/master-store";
 
@@ -19,10 +18,7 @@ assert.ok(!hasInactiveStop([{customer_id:driver}],new Set([pickup])));
 
 // All writes stay in these strict stubs; no real profiles or assignments change.
 Object.assign(process.env,{SUPABASE_URL:"https://supabase.invalid",SUPABASE_SERVICE_ROLE_KEY:"test-only",
-  MASTER_CLIENT_INFO_SOURCE:"supabase",CARTRACK_AUTH:"test-only",GOOGLE_SERVICE_ACCOUNT_KEY:"{}",LABCENTER_EMAIL:"test@example.invalid",LABCENTER_PASSWORD:"test-only"});
-const sheets=getSheetsClient();
-// Production's service account cannot read the workbook; renames must not need it.
-sheets.spreadsheets.get=(async()=>{throw new Error("The caller does not have permission");}) as unknown as typeof sheets.spreadsheets.get;
+  CARTRACK_AUTH:"test-only",LABCENTER_EMAIL:"test@example.invalid",LABCENTER_PASSWORD:"test-only"});
 let customer={customer_id:pickup,customer_name:"Location",latitude:10.5,longitude:106.5,address_line_1:"Address",contact_number:"123"};
 let cartrackDriver={first_name:"Old",last_name:"Name",phone_number:"123"};
 const roster={Driver:"Old Name",employee_code:"unchanged",employee_full_name:"Payroll name",code_name:"internal"};

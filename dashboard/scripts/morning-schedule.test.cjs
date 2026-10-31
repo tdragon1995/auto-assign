@@ -23,12 +23,7 @@ function fixture({ rows = [{ reference: 'ABC' }], stops = [], rest = async () =>
     createJob: async (...args) => { calls.create++; return create(...args); },
     assignJob: async () => { calls.park++; return { status: 200 }; },
   };
-  const sheets = {
-    SHEET_GID: { schedule_job: 1 }, SHEET_CONTRACT: { schedule_job: { label: 'test' } },
-    fetchSheetRows: async () => rows.map(r => ({ pickup_id: 'pick', dropoff_id: 'drop', delivery_windows: '08:00', ...Object.fromEntries(['sunday','monday','tuesday','wednesday','thursday','friday','saturday'].map(d => [d, 'true'])), ...r })),
-    isSheetShapeError: () => false, noteSheetLoad: () => {},
-  };
-  const mod = load('src/lib/schedule-job.ts', { './cartrack': cartrack, './sheets': sheets, './time': { vnDate: () => date, vnTimestamp: () => '2026-09-27 07:00:00' } });
+  const mod = load('src/lib/schedule-job.ts', { './cartrack': cartrack, './time': { vnDate: () => date, vnTimestamp: () => '2026-09-27 07:00:00' } });
   const original = global.fetch;
   global.fetch = async (url) => {
     const u = new URL(url);

@@ -1,32 +1,16 @@
 import assert from 'node:assert/strict';
-import {assertSheetRenameSafe} from '../src/lib/master-profile';
-import {getSheetsClient} from '../src/lib/sheets-writer';
-import {SHEET_GID} from '../src/lib/sheets';
 import {syncLabcenterMetadata, labcenterClientCode} from '../src/lib/master-sync';
 import {POST as refresh} from '../src/app/api/master-client-info/sync/route';
 import {NextRequest} from 'next/server';
 
-// Strict in-process stubs: no Sheet, Cartrack or Labcenter writes.
-Object.assign(process.env,{GOOGLE_SERVICE_ACCOUNT_KEY:'{}',MASTER_CLIENT_INFO_SOURCE:'supabase',
+// Strict in-process stubs: no Cartrack or Labcenter writes.
+Object.assign(process.env,{
   SUPABASE_URL:'https://supabase.invalid',SUPABASE_SERVICE_ROLE_KEY:'test-only',
   LABCENTER_EMAIL:'test-only',LABCENTER_PASSWORD:'test-only',
   LABCENTER_RECEPTIONIST_EMAIL:'test-only',LABCENTER_RECEPTIONIST_PASSWORD:'test-only'});
 const pickup='11111111-1111-4111-8111-111111111111';
 const other='22222222-2222-4222-8222-222222222222';
 const drop='33333333-3333-4333-8333-333333333333';
-const sheets=getSheetsClient();
-const tabs=[{gid:SHEET_GID.sunday,title:'Sunday'},{gid:SHEET_GID.drivers,title:'Driver'},{gid:SHEET_GID.locations,title:'Location Table'}];
-// Supabase mode never touches the workbook: the service account has no access to it.
-sheets.spreadsheets.get=(async()=>{throw new Error('The caller does not have permission');}) as unknown as typeof sheets.spreadsheets.get;
-await assertSheetRenameSafe(pickup,['Old name']);
-// Sheet mode still refuses a rename while a tab uses the old name.
-sheets.spreadsheets.get=(async()=>({data:{sheets:tabs.map(t=>({properties:{sheetId:Number(t.gid),title:t.title}}))}})) as unknown as typeof sheets.spreadsheets.get;
-sheets.spreadsheets.values.batchGet=(async()=>({data:{valueRanges:[{range:'Sunday!A1:N10',values:[['Old name','unresolved']]},
-  {range:'Driver!A1:P10',values:[]},{range:'Location Table!A1:Z10',values:[]}]}})) as unknown as typeof sheets.spreadsheets.values.batchGet;
-process.env.MASTER_CLIENT_INFO_SOURCE='sheet';
-await assert.rejects(assertSheetRenameSafe(pickup,['Old name']));
-process.env.MASTER_CLIENT_INFO_SOURCE='supabase';
-
 let destinationReads=0,existingLink:number|null=null,scenario='linked', inactive=false, inactiveName=false;
 const writes:Record<string,unknown>[][]=[];
 const accountWrites:Record<string,unknown>[][]=[];

@@ -12,7 +12,7 @@
  *
  *   npx tsx scripts/alarm-retraction.test.mts
  */
-const { noteSheetWarning, drainSheetAlarms } = await import("../src/lib/sheets");
+const { noteConfigWarning: noteSheetWarning, drainConfigAlarms: drainSheetAlarms } = await import("../src/lib/config-alarms");
 
 let failed = 0;
 function ok(label: string, cond: boolean, detail?: string) {

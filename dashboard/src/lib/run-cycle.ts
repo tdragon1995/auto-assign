@@ -1,4 +1,4 @@
-import { loadConfigFromSheets } from "./config";
+import { loadConfig } from "./config";
 import { autoAssignCycle } from "./assign";
 import { pushRunLog, type ArmState } from "./smart-log-kv";
 import type { LogEntry } from "./types";
@@ -13,7 +13,7 @@ import type { MorningReads } from "./morning-reads";
 export async function runArmedCycle(arm: ArmState, reads?: MorningReads): Promise<LogEntry[]> {
   let logs: LogEntry[];
 
-  const config = await loadConfigFromSheets();
+  const config = await loadConfig();
   if (!config) {
     logs = [{ ts: vnTimestamp(), level: "ERROR", msg: "Failed to load config" }];
   } else {

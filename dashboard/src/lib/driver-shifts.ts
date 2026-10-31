@@ -1,7 +1,6 @@
 import { sbRpc, sbSelect, sbSelectAll, sbUpsert } from "./supabase-rest";
 import { cartrackHistoryCutoff, vnDate } from "./time";
 import { UUID } from "./master-reconcile";
-import { assertMasterWritable } from "./master-store";
 import { employmentOf } from "./driver-label";
 import type { MasterRule } from "./master-store";
 
@@ -45,7 +44,6 @@ export function visiblePtPatterns(patterns:ShiftPattern[],drivers:ShiftDriver[])
  return patterns.filter(p=>p.active&&p.driver_id&&ids.has(p.driver_id)&&!p.review_issues.length);
 }
 export async function applyPtPlan(driverId:unknown,date:unknown) {
- assertMasterWritable();
  if(typeof driverId!=="string"||!UUID.test(driverId)||!validShiftDate(date)||date<cartrackHistoryCutoff())throw new Error("Tài xế hoặc ngày áp dụng không hợp lệ");
  const [drivers,patterns]=await Promise.all([shiftDrivers(),shiftPatterns()]);
  const driver=drivers.find(d=>d.driver_id===driverId&&d.active&&employmentOf(d.name)==="part-time");
@@ -79,7 +77,6 @@ export async function applyPtPlan(driverId:unknown,date:unknown) {
  return {from:date,to};
 }
 export async function saveDriverShift(input:unknown,pattern=false) {
- assertMasterWritable();
  if(!input||typeof input!=="object")throw new Error("Ca không hợp lệ");
  const data={...input} as Record<string,unknown>;
  if(typeof data.employee_code!=="string"||!data.employee_code.trim()||data.employee_code.length>200 ||

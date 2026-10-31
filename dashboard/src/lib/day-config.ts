@@ -2,7 +2,7 @@
  * Which config rules govern a GIVEN DATE — not today.
  *
  * The workbook holds two complete config tabs: the weekday mapping table and a
- * separate "CONFIG SUNDAY". `loadConfigFromSheets` returns whichever one
+ * separate "CONFIG SUNDAY". `loadConfig` returns whichever one
  * governs RIGHT NOW, which is exactly right for the assign cycle — it only ever
  * dispatches today's jobs — and exactly wrong for anything that reasons about a
  * leave row, because a leave row carries its own date.
@@ -19,7 +19,7 @@
  * to be today costs nothing extra, because that tab is already loaded and
  * cached; the other one is fetched here.
  *
- * THE READ HERE IS DELIBERATELY NARROW. `loadConfigFromSheets` parses far more
+ * THE READ HERE IS DELIBERATELY NARROW. `loadConfig` parses far more
  * than duty hours — branch names, coverage gaps, overlaps, the unfinished-row
  * to-do list — and all of it exists to be shown on the dashboard for TODAY.
  * Nothing that asks this module a question wants any of that; they want to know
@@ -31,9 +31,8 @@
 import { mergeSundayOverlaps } from "./sunday-roster";
 import type { Mapping } from "./types";
 import { isValidDriverId, parseTime } from "./config";
-import { SHEET_CONTRACT, SHEET_GID, fetchSheetRows } from "./sheets";
 import { vnDate } from "./time";
-import { masterEnabled,masterRuleRows,inactiveMasterClientIds } from "./master-store";
+import { masterRuleRows,inactiveMasterClientIds } from "./master-store";
 import { activeLocationRules } from "./location-status";
 import { readConfigGen } from "./config-gen";
 
@@ -81,7 +80,7 @@ function dutyRows(rows: readonly Record<string, string>[]): Mapping[] {
 // have to keep honest.
 //
 // BOTH tabs are read here, including the one that happens to be today's, rather
-// than borrowing today's from `loadConfigFromSheets`. Borrowing it would mean
+// than borrowing today's from `loadConfig`. Borrowing it would mean
 // deciding separately which tab that is, and the config loader carries a note
 // about exactly that: reading the clock twice let a fetch crossing midnight
 // cache Saturday's tab under Sunday's date. Here the same slip would hand back
@@ -93,22 +92,22 @@ const tabs: Partial<Record<ConfigTab, { day: string; mappings: Mapping[] }>> = {
 export function invalidateDayConfigCache() { delete tabs.mapping; delete tabs.sunday; }
 
 async function loadTab(tab: ConfigTab): Promise<Mapping[] | null> {
-  const today = `${vnDate()}:${masterEnabled()?"master":"sheet"}:${await readConfigGen()}`;
+  const today = `${vnDate()}:${await readConfigGen()}`;
   const hit = tabs[tab];
   if (hit && hit.day === today) return hit.mappings;
   try {
-    const rows = masterEnabled() ? await masterRuleRows(tab==="sunday" ? "sunday" : "weekday") : await fetchSheetRows(SHEET_GID[tab], SHEET_CONTRACT[tab]);
+    const rows = await masterRuleRows(tab==="sunday" ? "sunday" : "weekday");
     const duty = dutyRows(activeLocationRules(rows,await inactiveMasterClientIds()));
     // The same Sunday reading the engine uses: overlapping rules share, not clash.
     const mappings = tab === "sunday" ? mergeSundayOverlaps(duty) : duty;
     // The same zero-length suspicion the config loader has: a tab that parses to
     // nothing is a bad read, not an empty roster, and adopting it would answer
     // "nobody is on duty" to every question for the rest of the day.
-    // Except a Supabase Sunday whose rules came back but whose roster is not filled
+    // Except a Sunday whose rules came back but whose roster is not filled
     // in yet (every Monday, for the coming Sunday): nobody is rostered, which is a
     // true answer, and refusing it blocked every Thay ca for the whole week.
     // A failed Supabase read throws, so rules present here means the read worked.
-    const unrostered = masterEnabled() && tab === "sunday" && rows.some((row) => row.customer_id);
+    const unrostered = tab === "sunday" && rows.some((row) => row.customer_id);
     if (mappings.length === 0 && !unrostered) return null;
     tabs[tab] = { day: today, mappings };
     return mappings;

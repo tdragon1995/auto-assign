@@ -1,8 +1,6 @@
-import { masterEnabled } from "./master-store";
 import { sbRpc,sbSelectAll } from "./supabase-rest";
 import type { ScheduleJobRow } from "./schedule-job";
 
-export const masterScheduleEnabled=()=>masterEnabled();
 export async function masterScheduleRows():Promise<ScheduleJobRow[]> {
   type Stored={id:number;source_row:number;revision:number;pickup_id:string;dropoff_id:string;driver_id:string|null;
     delivery_window:string;sent_to_driver_before:number;reference:string;days:boolean[];

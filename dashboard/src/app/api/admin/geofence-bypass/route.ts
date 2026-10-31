@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { getJobDetailsFast, type Env } from "@/lib/cartrack";
-import { loadDriversFromSheet } from "@/lib/config";
+import { loadDrivers } from "@/lib/config";
 import { openGeofence, queueBypassLog } from "@/lib/geofence-bypass";
 import { isCompletedOrRejectedStop } from "@/lib/job-filters";
 import { vnTimestamp } from "@/lib/time";
@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
     try {
       const [data, drivers] = await Promise.all([
         getJobDetailsFast(jobId, env).then((r) => r.data),
-        loadDriversFromSheet().catch(() => []),
+        loadDrivers().catch(() => []),
       ]);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const stops: any[] = data?.stops ?? [];

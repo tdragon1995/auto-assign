@@ -32,7 +32,7 @@ Two independent implementations exist:
 
 They share the same reference-stop priority logic and Goong re-rank. If you change ranking in one place, change it in the other too. There is no shared `lib/distance.ts` yet.
 
-### 5. `loadConfigFromSheets` is intentionally uncached
+### 5. `loadConfig` is intentionally uncached
 
 The mapping sheet is re-fetched on every assign cycle (every 30s) so that sheet edits take effect immediately. Do not add caching here without also adding a manual refresh path. In contrast, `psc-config.ts` uses a 5-minute in-memory cache (`PSC_CONFIG_TTL_MS = 5 * 60 * 1000`) and exposes invalidation via the dashboard Refresh button.
 
@@ -113,7 +113,7 @@ Phase 1 uses haversine to pre-filter to the top-N candidates. Phase 2 re-ranks w
 ```
 POST /api/assign
   └─ autoAssignCycle(config, env, skipSmart)
-       ├─ loadConfigFromSheets()            # uncached, every cycle
+       ├─ loadConfig()            # uncached, every cycle
        ├─ getUnassignedJobs()               # status=2 only; age-filtered locally
        ├─ buildActiveRouteMap()             # status=4 jobs for duplicate detection
        └─ for each job:

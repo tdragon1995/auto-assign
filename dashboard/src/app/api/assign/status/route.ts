@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { loadConfigFromSheets } from "@/lib/config";
+import { loadConfig } from "@/lib/config";
 import { getStatusBundle, statusPayload } from "@/lib/smart-log-kv";
 
 /**
@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
   // list to keep in step. It has fallen out of step three times.
   // Lists come from the parsed config when there is one, so the bundle skips its Redis
   // copy of them; only a failed config load pays for the full hash.
-  const [light, config] = await Promise.all([getStatusBundle(100, false), loadConfigFromSheets()]);
+  const [light, config] = await Promise.all([getStatusBundle(100, false), loadConfig()]);
   const bundle = config ? light : await getStatusBundle(100);
   return NextResponse.json({ ...statusPayload(bundle, req.nextUrl.searchParams.get("since")),
     ...(config ? { unfinished: config.unfinished, gaps: config.gaps, overlaps: config.overlaps,

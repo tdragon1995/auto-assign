@@ -12,7 +12,6 @@
  */
 import crypto from "crypto";
 import { sbRpc, sbSelect, sbSelectAll } from "./supabase-rest";
-import { masterEnabled } from "./master-store";
 import { invalidateConfigCache } from "./config";
 import { loadLeaveEntries, leaveEntriesOnDate, resignationOn, type LeaveEntry } from "./leave-config";
 import { notifyAdminGroup, sendZaloMessage } from "./zalo";
@@ -238,7 +237,6 @@ export async function loadTemplate(): Promise<{ weeks: string[]; lines: RosterLi
  * if any line exists for that Sunday by the time it runs.
  */
 export async function autoSaveRoster(date: string): Promise<string | null> {
-  if (!masterEnabled()) return null;
   if ((await sbSelect<{ id: number }>("master_sunday_roster", `select=id&work_date=eq.${date}&limit=1`)).length) return null;
   const { weeks, lines: rows } = await loadTemplate();
   if (!rows.length) return null;

@@ -2,7 +2,6 @@
 import assert from "node:assert/strict";
 import { reconcile, normalizeRule, normalizeLeave, sourceHash, PROXY_ID } from "../src/lib/master-reconcile";
 import {ruleChange} from "../src/lib/master-store";
-import {configWriteRanges,leaveWriteRanges} from "../src/lib/sheets-writer";
 import {publicDriver,publicRule} from "../src/lib/master-public";
 const a="00000000-0000-0000-0000-000000000001", b="00000000-0000-0000-0000-000000000002";
 const old={id:9,source_uid:a,source_row:2,active:true,row_data:{customer_id:a,driver_id:b,shift_start:"6:00",shift_end:"15:00"}};
@@ -40,15 +39,6 @@ assert.throws(()=>ruleChange({...input,driver_ids:[PROXY_ID]}));
 assert.throws(()=>ruleChange({...input,driver_ids:[b,b]}));
 assert.throws(()=>ruleChange({...input,shift_end:""}));
 assert.throws(()=>ruleChange({...input,shift_end:"23:00"}));
-const ranges=configWriteRanges("config",{pickup:"E",dropoff:"F",driver:"H",start:"I",end:"J",identity:"O"},
-  [{pickup:"a",dropoff:"",start:"",end:""},{pickup:"a",dropoff:"",start:"",end:""}],50);
-const ids=ranges.find(r=>r.range.includes("!O"))!.values.flat();
-assert.equal(new Set(ids).size,2);assert.ok(ids.every(id=>/^[0-9a-f-]{36}$/.test(id)));
-assert.ok(ranges.every(r=>!/[!][ABCDKL]/.test(r.range)),"Formula columns remain untouched");
-const header=["Ngày Nộp Đơn","driver","Loại Nghỉ","leave_from","leave_to","leave_from_hr","leave_to_hr","note","_master_record_id"];
-const leaveRanges=leaveWriteRanges("'Leave'",h=>header.includes(h)?String.fromCharCode(65+header.indexOf(h)):null,
-  [{submitted_at:"2026-09-29",driver_name:"A",loai_nghi:"Nghỉ nguyên buổi",leave_from:"2026-09-30"}],20);
-assert.ok(leaveRanges.find(r=>r.range.includes("!I"))?.values[0][0]);
 assert.equal(normalizeLeave({...r.rows[0],row_data:{driver_id:b,leave_from:"2026-09-29",leave_to_hr:"24:00"}},new Set([b])).ends_at,"24:00");
 const publicProfile=publicDriver({driver_id:b,cartrack:{first_name:"A",token:"private",remember_token:"private"},roster:{bot_token:"private"},bot_token:"private",driver_zalo_id:null,phone_number_update:null});
 assert.ok(!JSON.stringify(publicProfile).includes("private"));assert.equal(publicProfile.has_bot_token,true);

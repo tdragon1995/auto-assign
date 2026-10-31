@@ -60,7 +60,7 @@ export function resolveDriverCell(
     const hits = exact.length ? exact : drivers.filter((d) => foldName(d.name).includes(q));
     // Names the offending PART, not the whole cell — quoting two names back at
     // someone when only the second is wrong tells them nothing about which.
-    if (hits.length === 0) return { error: `"${part}" không có trong tab Driver — chọn từ danh sách` };
+    if (hits.length === 0) return { error: `"${part}" không có trong danh sách tài xế — chọn từ danh sách` };
     if (hits.length > 1) return { error: `"${part}" khớp ${hits.length} tài xế — gõ rõ hơn` };
     if (names.includes(hits[0].name)) return { error: `"${hits[0].name}" bị lặp lại trong cùng một dòng` };
     names.push(hits[0].name);

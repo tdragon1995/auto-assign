@@ -79,7 +79,7 @@ const F_FAILED = "failed";
 const F_WARNINGS = "warnings";
 const F_WARNINGS_TS = "warnings_ts";
 // Tabs the engine currently refuses to read. Written only when the set CHANGES
-// (see drainSheetAlarms), so a healthy day costs nothing — and it rides the same
+// (see drainConfigAlarms), so a healthy day costs nothing — and it rides the same
 // HSET as the fields above, which is one command regardless of how many fields
 // it carries.
 const F_SHEET_ALARMS = "sheet_alarms";
@@ -1294,7 +1294,7 @@ export async function getStatusBundle(logLimit = 100, withConfigLists = true): P
   pipe.lrange(RUN_LOG_KEY, 0, logLimit - 1);
   // The config lists (coverage_gaps + config_branch_rules ≈ 115 KB of the hash's
   // ~125 KB) are only needed when the caller has no parsed config of its own — the
-  // status route normally overrides them from loadConfigFromSheets. Reading them anyway
+  // status route normally overrides them from loadConfig. Reading them anyway
   // on every 90s poll of every open tab was a measurable share of the Redis bandwidth
   // that hit the 10 GB cap (2026-10-12).
   if (withConfigLists) pipe.hgetall(CYCLE_SNAPSHOT_KEY);

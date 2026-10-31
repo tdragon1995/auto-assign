@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRunLog, getFailedJobs, getHeldJobs } from "@/lib/smart-log-kv";
-import { loadDriversFromSheet } from "@/lib/config";
+import { loadDrivers } from "@/lib/config";
 import { searchActiveStops, type Env } from "@/lib/cartrack";
 import { driversJobs, snapJobsByIds, FEED_MAX_AGE_MS, type SnapJob } from "@/lib/day-snapshot";
 import { vnDate } from "@/lib/time";
@@ -83,7 +83,7 @@ async function unfinishedJobs(stops: any[], today: string, env: Env): Promise<Jo
     .slice(0, 60);
   const [stored, drivers] = await Promise.all([
     snapJobsByIds(today, env, ids),
-    loadDriversFromSheet().catch(() => []),
+    loadDrivers().catch(() => []),
   ]);
   const nameOf = new Map(drivers.map((d) => [d.driver_id, d.name]));
 
@@ -109,7 +109,7 @@ async function fallback(q: string, today: string, env: Env): Promise<JobSearchHi
     getRunLog(500),
     getFailedJobs(),
     getHeldJobs(),
-    loadDriversFromSheet().catch(() => []),
+    loadDrivers().catch(() => []),
   ]);
 
   const found = new Map<number, JobSearchHit>();

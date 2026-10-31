@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { NextRequest } from "next/server";
 import { GET } from "../src/app/api/psc-tinh/route";
-const keys=["MASTER_CLIENT_INFO_SOURCE","SUPABASE_URL","SUPABASE_SERVICE_ROLE_KEY","KV_REST_API_URL","KV_REST_API_TOKEN","UPSTASH_REDIS_REST_URL","UPSTASH_REDIS_REST_TOKEN"];
+const keys=["SUPABASE_URL","SUPABASE_SERVICE_ROLE_KEY","KV_REST_API_URL","KV_REST_API_TOKEN","UPSTASH_REDIS_REST_URL","UPSTASH_REDIS_REST_TOKEN"];
 const previous=keys.map(k=>process.env[k]), savedFetch=globalThis.fetch, savedError=console.error;
 for(const key of keys)delete process.env[key];
-Object.assign(process.env,{MASTER_CLIENT_INFO_SOURCE:"supabase",SUPABASE_URL:"https://supabase.invalid",SUPABASE_SERVICE_ROLE_KEY:"test"});
+Object.assign(process.env,{SUPABASE_URL:"https://supabase.invalid",SUPABASE_SERVICE_ROLE_KEY:"test"});
 let reads=0,fail=false,entries=[{psc_tinh:"D021",tpl_name:"3PL destination",tpl_uuid:"11111111-1111-4111-8111-111111111111",address:"Test address"}];
 globalThis.fetch=async(input,init)=>{
  const url=new URL(String(input));assert.equal(url.origin,"https://supabase.invalid");assert.equal(init?.method??"GET","GET");

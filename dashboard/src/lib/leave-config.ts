@@ -1,13 +1,6 @@
 import type { Redis } from "@upstash/redis";
 import { sharedRedis } from "./redis";
-import { masterEnabled } from "./master-store";
 import { masterLeaveGrid } from "./master-leave";
-import {
-  assertCsvResponse, assertHeaders, isSheetShapeError, noteSheetLoad,
-  sheetCsvUrl, SHEET_CONTRACT, SHEET_GID,
-} from "./sheets";
-import { loadDriversFromSheet } from "./config";
-import { matchDriverByName } from "./driver-match";
 import { addDays, timeToMins, vnDate, vnMinutesSinceMidnight } from "./time";
 import { unwrapLeaveSplitNote } from "./leave-split";
 import { RESIGN_COVER_NOTE, isResignCover } from "./thay-ca";
@@ -42,9 +35,6 @@ export interface LeaveEntry {
   subs: SubEntry[];         // substitutes covering this driver's leave (0–4)
   /** Free-text provenance. Generated “Thay ca” rows use a versioned marker here. */
   note?: string | null;
-  /** The sheet gave no id and the driver was worked out from the typed name
-   *  instead — see `recoverOrphanRows`. The row still needs repairing. */
-  recovered?: boolean;
 }
 
 /**
@@ -85,21 +75,11 @@ export function holdsRouteOn(
     (m.smart_driver_id.length === 1 && m.smart_driver_id[0] === driverId));
 }
 
-/** Recovering a leave row from its typed name is ON unless this is set to "0".
- *
- *  It changes who the engine believes is working, so it gets a way to be turned
- *  off without a code change. Read at call time rather than module load so a
- *  changed environment variable takes effect on the next cold start. */
-function nameRecoveryEnabled(): boolean {
-  return (process.env.LEAVE_NAME_RECOVERY ?? "1") !== "0";
-}
-
 // Two-tier cache. L1 is a per-instance in-memory copy (zero network on a warm
 // lambda — keeps the assign engine's hot path fast). L2 is a shared Redis copy
 // so a *cold* instance (every /api/leave-status tap lands on one) reads the
-// parsed roster back instead of re-fetching + re-parsing the 68 KB sheet over
-// TLS. Same 5-min freshness on both. The Redis blob is the slimmed LeaveEntry[],
-// so it's far smaller than the raw CSV (drops scheduled_trips/note).
+// parsed roster back instead of re-reading + re-parsing Supabase. Same 5-min
+// freshness on both. The Redis blob is the slimmed LeaveEntry[].
 let cache: { entries: LeaveEntry[]; invalid: InvalidLeaveRow[]; fetchedAt: number; loadedAt?: number; gen?: string | null } | null = null;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 // When L1 passes CACHE_TTL_MS it asks this stamp (a few bytes) whether the leave
@@ -110,14 +90,10 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 // cover that, and the 4h L2 TTL alone would be a long time to serve stale leave.
 const LEAVE_GEN_KEY = "leave:gen";
 const L1_MAX_AGE_MS = 60 * 60 * 1000;
-// v2, not decoration: this blob holds a PARSE, and the parse changed when
-// name-recovered rows started arriving in `entries` and `invalid` gained its
-// `recovered` flag. Leaving the key alone would have every warm server serving a
-// blob built by the old code — recovery doing nothing, and every broken row
-// reported as urgent — with nothing to show anything was wrong. Bump this
-// whenever the shape or the meaning of what is stored changes.
-const redisKey = () => masterEnabled() ? "leave:master:v1:entries" : "leave:v3:entries";
-let cacheSource = "";
+// Versioned, not decoration: this blob holds a PARSE. Bump it whenever the shape
+// or the meaning of what is stored changes, or every warm server keeps serving a
+// blob built by the old code.
+const REDIS_KEY = "leave:master:v1:entries";
 
 /**
  * 4 hours, up from 5 minutes — a BACKSTOP, not the freshness mechanism.
@@ -169,7 +145,7 @@ export async function invalidateLeaveCache(): Promise<void> {
   if (!redis) return;
   try {
     const p = redis.pipeline();
-    p.del(redisKey());
+    p.del(REDIS_KEY);
     p.set(LEAVE_GEN_KEY, String(Date.now()));
     await p.exec();
   } catch { /* best-effort; the TTL is the backstop */ }
@@ -185,38 +161,6 @@ async function readLeaveGen(): Promise<string | null> {
 
 function parseField(f: string | undefined): string {
   return (f ?? "").trim();
-}
-
-// Full CSV tokenizer (RFC-4180-ish): handles quoted fields containing commas,
-// escaped quotes ("") AND embedded newlines. A line-by-line parser is unsafe
-// here because scheduled_trips/note cells span multiple lines — and they sit
-// BEFORE the substitute columns, so a naive split would shift every sub field.
-export function parseLeaveCsv(text: string): string[][] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let cur = "";
-  let inQ = false;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (inQ) {
-      if (ch === '"') {
-        if (text[i + 1] === '"') { cur += '"'; i++; }
-        else inQ = false;
-      } else cur += ch;
-    } else if (ch === '"') {
-      inQ = true;
-    } else if (ch === ",") {
-      row.push(cur); cur = "";
-    } else if (ch === "\r") {
-      /* ignore CR */
-    } else if (ch === "\n") {
-      row.push(cur); rows.push(row); row = []; cur = "";
-    } else {
-      cur += ch;
-    }
-  }
-  if (cur !== "" || row.length > 0) { row.push(cur); rows.push(row); }
-  return rows;
 }
 
 /** One leave entry as it applies to a specific calendar date, for display
@@ -666,31 +610,9 @@ export async function loadInvalidLeaveRows(force: boolean | "revalidate" = false
   return (await loadLeaveSheet(force)).invalid;
 }
 
-/**
- * Decide what to do with leave rows whose driver link went blank.
- *
- * The blank is nearly always a rename: the roster tab's name column is rebuilt
- * verbatim from Cartrack, so correcting someone's name there silently orphans
- * every row elsewhere that was typed against the old spelling. Until 2026-08-19
- * these rows vanished entirely, which meant the engine kept handing work to a
- * driver who was off and nothing anywhere said so.
- *
- * A row is recovered only when exactly ONE driver who can actually work could be
- * meant. The refusal to guess is the important half: roughly a dozen drivers hold
- * two accounts under one personal name, and picking the wrong one would move a
- * day's work onto the wrong record off the back of a cell already known to be
- * wrong. Ambiguous and unmatched rows behave exactly as before.
- *
- * Every recovered row is STILL reported, so the sheet gets repaired rather than
- * quietly propped up forever.
- *
- * The roster is only fetched when there is something to recover, so the ordinary
- * case — no orphans at all — costs nothing.
- */
-async function recoverOrphanRows(
-  orphans: LeaveEntry[],
-): Promise<{ recovered: LeaveEntry[]; invalid: InvalidLeaveRow[] }> {
-  const report = (e: LeaveEntry, wasRecovered: boolean): InvalidLeaveRow => {
+/** Leave rows with a name and a date but no linked driver, reported for repair. */
+function reportOrphans(orphans: LeaveEntry[]): InvalidLeaveRow[] {
+  return orphans.map((e) => {
     const start = timeToMins(e.gio_bat_dau);
     const end = timeToMins(e.gio_ket_thuc);
     return {
@@ -700,41 +622,9 @@ async function recoverOrphanRows(
       leave_to: e.leave_to,
       timeLabel: start >= 0 && end > start ? `${e.gio_bat_dau}–${e.gio_ket_thuc}` : null,
       hasSub: e.subs.length > 0,
-      recovered: wasRecovered,
+      recovered: false,
     };
-  };
-
-  if (orphans.length === 0) return { recovered: [], invalid: [] };
-  const noneRecovered = () => ({ recovered: [], invalid: orphans.map((e) => report(e, false)) });
-  if (masterEnabled() || !nameRecoveryEnabled()) return noneRecovered();
-
-  // Only rows that could still affect someone's day are worth resolving. The tab
-  // is a rolling log, so most orphans are months old and belong to staff who have
-  // since left — on 2026-08-24, 23 of the 25 were exactly that. Skipping them is
-  // not just tidiness: without this gate every leave load would also pull the
-  // roster, roughly doubling its cost, to answer a question about July.
-  const today = vnDate();
-  const stillMatters = (e: LeaveEntry) => (e.leave_to || e.leave_from) >= today;
-  if (!orphans.some(stillMatters)) return noneRecovered();
-
-  // Active accounts only — the roster reader already drops deactivated ones, and
-  // matching a driver who cannot take a job would be worse than not matching.
-  const roster = await loadDriversFromSheet().catch(() => []);
-  if (roster.length === 0) return noneRecovered();
-
-  const recovered: LeaveEntry[] = [];
-  const invalid: InvalidLeaveRow[] = [];
-  for (const e of orphans) {
-    const m = stillMatters(e) ? matchDriverByName(e.driver_name, roster) : ({ status: "none" } as const);
-    if (m.status === "unique") {
-      recovered.push({ ...e, driver_id: m.driver_id, recovered: true });
-      console.log(
-        `Leave row recovered by ${m.via}: "${e.driver_name}" → ${m.matched_name} (${e.leave_from})`,
-      );
-    }
-    invalid.push(report(e, m.status === "unique"));
-  }
-  return { recovered, invalid };
+  });
 }
 
 /** `"revalidate"` is the dashboard's refresh after a write: it skips only the
@@ -746,8 +636,7 @@ async function loadLeaveSheet(
   mode: boolean | "revalidate" = false,
 ): Promise<{ entries: LeaveEntry[]; invalid: InvalidLeaveRow[]; trusted: boolean }> {
   const force = mode === true;
-  const key = redisKey();
-  if (cacheSource !== key) { cache = null; cacheSource = key; }
+  const key = REDIS_KEY;
   if (!mode && cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS) {
     return { entries: cache.entries, invalid: cache.invalid, trusted: true };
   }
@@ -771,34 +660,23 @@ async function loadLeaveSheet(
           cache = { ...shaped, invalid: shaped.invalid ?? [], fetchedAt: Date.now(), loadedAt: Date.now(), gen };
           return { entries: cache.entries, invalid: cache.invalid, trusted: true };
         }
-      } catch { /* fall through to the sheet fetch */ }
+      } catch { /* fall through to the Supabase read */ }
     }
   }
 
   try {
-    let rows: string[][];
-    if (masterEnabled()) rows = (await masterLeaveGrid()).all;
-    else {
-      const url = `${sheetCsvUrl(SHEET_GID.nghi_phep)}&_cb=${Date.now()}`;
-      const res = await fetch(url, { cache: "no-store" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      assertCsvResponse(SHEET_CONTRACT.nghi_phep.label, res);
-      rows = parseLeaveCsv(await res.text());
-    }
+    const rows = (await masterLeaveGrid()).all;
     if (rows.length < 2) {
-      // Do NOT cache this. An empty answer is never real — the tab is a rolling
+      // Do NOT cache this. An empty answer is never real — leave is a rolling
       // log of hundreds of rows — so caching it held "nobody is on leave" for a
       // full 5 minutes per instance, during which the engine hands work to
       // drivers who are off AND the repair panel stays empty, because a row has
       // to carry a name to be reported as broken and a garbage parse has none.
-      console.error("Leave load returned an empty sheet — not caching");
+      console.error("Leave load returned nothing — not caching");
       return { entries: cache?.entries ?? [], invalid: cache?.invalid ?? [], trusted: false };
     }
 
-    assertHeaders(SHEET_CONTRACT.nghi_phep.label, rows[0], SHEET_CONTRACT.nghi_phep.require);
-
-    // Header-keyed access — robust to column re-ordering/additions (the sub
-    // blocks). First occurrence of each header name wins.
+    // Header-keyed access over the sheet-shaped grid masterLeaveGrid builds. First occurrence of each header name wins.
     const col: Record<string, number> = {};
     rows[0].forEach((h, i) => { const k = h.trim(); if (!(k in col)) col[k] = i; });
     const get = (f: string[], name: string): string => {
@@ -835,20 +713,16 @@ async function loadLeaveSheet(
         // assignment and Thay ca layers must continue to see that original note.
         note: unwrapLeaveSplitNote(get(f, "note")) || null,
       };
-      // NOTE: do NOT require loai_nghi here. Many rows are typed straight into
-      // the sheet with a date + time window but a blank "Loại Nghỉ" cell; those
-      // are still real leave and must reach isDriverOnLeave (see its else-branch).
+      // NOTE: do NOT require loai_nghi here. Many rows carry a date + time window
+      // but a blank "Loại Nghỉ"; those are still real leave and must reach isDriverOnLeave (see its else-branch).
     });
 
     const resolved = parsed.filter((e) => e.driver_id && e.leave_from);
 
     // Rows that look like real leave — a named driver and a start date — but
-    // carry no id, because the sheet's lookup stopped resolving the name. A row
-    // with neither a name nor a date is just an empty sheet row and is not worth
-    // reporting.
-    const orphans = parsed.filter((e) => !e.driver_id && e.leave_from && e.driver_name);
-    const { recovered, invalid } = await recoverOrphanRows(orphans);
-    const entries = dropStaleResignCovers([...resolved, ...recovered]);
+    // carry no linked driver.
+    const invalid = reportOrphans(parsed.filter((e) => !e.driver_id && e.leave_from && e.driver_name));
+    const entries = dropStaleResignCovers(resolved);
 
     // The same zero-guard the shared copy below has always had, now one level
     // up. Only L2 was protected before, so a bad parse still poisoned THIS
@@ -859,7 +733,6 @@ async function loadLeaveSheet(
       return { entries: cache?.entries ?? [], invalid: cache?.invalid ?? [], trusted: false };
     }
 
-    noteSheetLoad(SHEET_CONTRACT.nghi_phep.label, null);
     cache = { entries, invalid, fetchedAt: Date.now(), loadedAt: Date.now(), gen };
     // Write-behind to L2 — but only a non-empty roster. A transient bad read
     // that parses to zero entries must never be shared to every instance (it
@@ -871,8 +744,7 @@ async function loadLeaveSheet(
       }
     }
     return { entries, invalid, trusted: true };
-  } catch (e) {
-    if (isSheetShapeError(e)) noteSheetLoad(e.sheetLabel, e);
+  } catch {
     // On fetch failure keep stale cache if available; otherwise return empty
     return { entries: cache?.entries ?? [], invalid: cache?.invalid ?? [], trusted: false };
   }

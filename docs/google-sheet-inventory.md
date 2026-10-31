@@ -1,73 +1,43 @@
-# Google Sheet inventory (2026-10-29)
+# Google Sheet inventory
 
-Production runs with `MASTER_CLIENT_INFO_SOURCE=supabase`, so the workbook
-(`SHEET_ID` in `dashboard/src/lib/sheets.ts`) is meant to be fallback-only. On
-2026-10-29 the service account was found to have lost access to it ("The caller
-does not have permission" on disabling a location), so anything below that still
-runs in production either fails or reads stale data.
+**Done 2026-10-31.** Every Google Sheet dependency is gone from the code. Kept as a
+record of what was removed and the one thing left outside the repo.
 
-Each line: what it is → where → status.
+On 2026-10-29 the app's Google service account was found to have lost access to the
+workbook ("The caller does not have permission" when turning a location off). The
+decision was to delete the sheet path rather than restore access: production had
+run on Supabase (`MASTER_CLIENT_INFO_SOURCE=supabase`) since the cutover, so the
+sheet was only a fallback that could no longer work.
 
-## A. Still runs in production — to fix
+## Fixed (were still live in production)
 
-- [x] **Rename safety check** — renaming / disabling a location or driver read the
-  workbook first. `assertSheetRenameSafe` in `lib/master-profile.ts`. Fixed
-  2026-10-29: skips in Supabase mode.
-- [ ] **Deleting a removed client** — the reference check reads the retired
-  "(NO edit) CONFIG SUNDAY" tab over the public CSV export, ungated.
-  `removedClientReferences` in `lib/master-removed-clients.ts`. Sunday rules are
-  in Supabase now; drop the sheet read (or check `master_sunday_*` instead).
-- [ ] **Sunday edits through the old config-row routes** — the sheet writers only
-  divert WEEKDAY to Supabase; a `config_day: "sunday"` request falls through to the
-  workbook. `completeConfigRow`, `bulkUpdateConfigRows`, `replaceConfigDriver`
-  (`lib/sheets-writer.ts`), reached from `/api/config/complete-row`,
-  `/bulk-update`, `/replace-driver`. Check whether the Config tab can still send a
-  Sunday request in Supabase mode; either way, refuse it server-side.
-- [ ] **Sheet import** — `/api/master-client-info/sync?phase=bootstrap` and the
-  `dryRun=1` import read the workbook with the service account
-  (`syncMasterSheet`, `stampMasterIds` in `lib/master-sheet-sync.ts`). Real import
-  is already refused after cutover; manual-only. Delete once nobody needs a dry run.
-- [ ] **Apps Script files in the repo root** — `cartrack_fetcher_all_drivers.gs`,
-  `cartrack_fetcher_all_drivers_with_active_column.gs`, `misa_shift_webapp.gs`.
-  They run inside Google, not on Vercel, and fill tabs (Driver, shifts) that
-  production no longer reads. Turn off their triggers in Apps Script, then delete.
+- [x] Rename / disable a location or driver read the workbook first (`assertSheetRenameSafe`). Deleted.
+- [x] Deleting a removed Cartrack client also checked the retired Sunday config tab. Dropped; the Supabase reference check stays.
+- [x] Sunday edits through the old config line routes fell through to the sheet writer. These routes now refuse Sunday (`weekdayOnly`); Sunday is edited by area.
+- [x] On a Sunday the engine's "add config for an unconfigured branch" aimed at the sheet. It now skips Sundays; the coverage gap is still recorded.
+- [x] Sheet import (`master-sheet-sync.ts`, sync `phase=bootstrap` / `phase=sheet`). Deleted with its two scripts.
+- [x] Apps Script files in the repo root (`cartrack_fetcher_all_drivers*.gs`, `misa_shift_webapp.gs`). Deleted from the repo.
 
-## B. Fallback-only — every one is behind `masterEnabled()`
+## Removed (fallback only)
 
-Dead code in production; it only runs if the switch is turned off.
+- The `MASTER_CLIENT_INFO_SOURCE` switch (`masterEnabled`, `masterScheduleEnabled`, `assertMasterWritable`) — Supabase is the only path.
+- `lib/sheets.ts` and `lib/sheets-writer.ts` (~3,000 lines): CSV/gviz readers, column contracts, every sheet writer.
+- Sheet branches in config, day-config, shift windows, 3PL, leave, deleted-days, Lịch cố định, public Sunday schedule, Thay ca sync and the two activity logs.
+- `LEAVE_NAME_RECOVERY` and name-based leave recovery (sheet-only; Supabase leave carries the linked driver).
+- The Location Table duplicate-name audit (sheet-only).
+- `googleapis` package; `GOOGLE_SERVICE_ACCOUNT_KEY`, `MASTER_CLIENT_INFO_SOURCE`, `LEAVE_NAME_RECOVERY` from `.env.example`.
+- Sheet-only scripts (contract checks, live audits, write-range tests, snapshots, migration helpers).
 
-| Data | Sheet reader / writer |
-|---|---|
-| Weekday + Sunday config | `lib/config.ts`, `lib/day-config.ts`, `/api/config/rows`, config writers in `lib/sheets-writer.ts` (`writeConfigRows`, `deleteConfigRow`, `bulkDeleteConfigRows`, `adjustConfigRowWindow`, …) |
-| Driver roster + Location Table audit | `lib/config.ts` (`SHEET_GID.drivers`, `.locations`), `lib/shift-window.ts` |
-| Driver Shift tab | `lib/shift-window.ts` |
-| Leave (Nghỉ phép) | `lib/leave-config.ts` (CSV), leave writers in `lib/sheets-writer.ts` (`appendNghiPhep`, `updateLeaveSubs`, `splitLeaveRow`, `deleteLeaveRow`, …), Thay ca sync (`syncThayCaRows`, built on those) |
-| Deleted-day tombstones | `lib/leave-suppression.ts` (gviz by name), `appendLeaveDeletion`, `removeLeaveSuppression` |
-| Lịch cố định | `lib/schedule-job.ts`, `/api/schedule-job/locations`, `/api/schedule-job/row` (`appendScheduleRow` …) |
-| PSC tỉnh 3PL | `lib/psc-config.ts` |
-| Public Sunday schedule | `/api/sunday-schedule` |
-| Nhận Việc + Mở geofence logs | `appendLogRows` in `lib/sheets-writer.ts` (Supabase `master_action_logs` in production) |
+What moved rather than went: leave types and pure helpers → `lib/leave-rows.ts`;
+activity logs → `lib/action-log.ts`; config warning banner → `lib/config-alarms.ts`;
+the Thay ca row sync → `lib/thay-ca-reconcile.ts`. `loadConfigFromSheets` /
+`loadDriversFromSheet` are now `loadConfig` / `loadDrivers`.
 
-## C. Dev / ops scripts that read the live workbook
+## Left to do by hand (outside the repo)
 
-`dashboard/scripts/`: `sheet-contract-live.mts`, `config-audit-live.mts`,
-`shift-overlap-live.mts`, `leave-profile.mts`, `schedule-snapshot.mts`,
-`migrate-remaining-sheets.cjs`. Plus ~15 offline tests that stub the sheet
-(`*-write-ranges`, `leave-*`, `config-*`, `sheet-contract.test.mts`) — they go
-with the code they test.
+- [ ] Turn off the Apps Script triggers in the `cartrack_combined` project (Driver tab fetcher, MISA web app). Deleting the files here does not stop them.
+- [ ] Remove `GOOGLE_SERVICE_ACCOUNT_KEY`, `MASTER_CLIENT_INFO_SOURCE` and `LEAVE_NAME_RECOVERY` from both Vercel projects once this is deployed. Harmless if left; nothing reads them.
 
-## D. Plumbing that goes last
+## Not done
 
-- `lib/sheets.ts` — `SHEET_ID`, `SHEET_GID`, `SHEET_CONTRACT`, CSV/gviz fetch,
-  the sheet-alarm list behind the "Cần xử lý" banner (`components/sheet-alarm-banner.tsx`).
-- `lib/sheets-writer.ts` — ~2,600 lines, `getSheetsClient`.
-- `googleapis` dependency, `GOOGLE_SERVICE_ACCOUNT_KEY` env var (Vercel A + B).
-- CLAUDE.md: "Where the data lives", "Google Sheet", footgun 3 and the leave
-  sections that still describe rows / tabs.
-
-## Order
-
-1. Section A (small, each a real bug or dead dependency today).
-2. Decide whether the Supabase→sheet switch must stay as an emergency fallback.
-   The service account can no longer open the workbook, so today it would not
-   work anyway. If not: delete B, C and D together and drop `googleapis`.
+- The config screens still use a row number as their handle for a rule. Nothing writes by it (every save is matched by rule id + revision); switching the screens to the rule id is a separate change.

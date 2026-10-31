@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a **Fleet Auto-Assign** service for Cartrack (a Telematics fleet management platform). It automatically assigns unassigned delivery jobs to drivers based on customer–driver mappings stored in Supabase (the "master" tables; the Google Sheet they came from is now only the fallback — see "Where the data lives" below).
+This is a **Fleet Auto-Assign** service for Cartrack (a Telematics fleet management platform). It automatically assigns unassigned delivery jobs to drivers based on customer–driver mappings stored in Supabase (the "master" tables — see "Where the data lives" below).
 
 The active codebase is `dashboard/` — a Next.js 15 (React 19, TypeScript) web app deployed to **Vercel**.
 
@@ -51,54 +51,40 @@ LABCENTER_EMAIL=                 # Labcenter API login (used by /api/customers P
 LABCENTER_PASSWORD=              # Labcenter API password
 LABCENTER_RECEPTIONIST_EMAIL=    # Separate receptionist account for /api/labcenter/client (client search in sales form)
 LABCENTER_RECEPTIONIST_PASSWORD= # Password for receptionist account
-LEAVE_NAME_RECOVERY=             # Set to "0" to stop recovering a leave row from its typed name
-MASTER_CLIENT_INFO_SOURCE=        # "supabase" = config, roster, leave, schedule read from/written to Supabase (production). Unset = the Google Sheet
 SMART_RECHECK=                   # Smart re-check (lib/smart-recheck.ts): unset = log-only ("RECHECK" lines + 14-day list smart:recheck:log:<env>:<date>), "live" = moves jobs, "off" = disabled
 STANDBY=                         # "1" on the BACKUP Vercel account only: its cron ping idles while another deployment's heartbeat is fresh (<6 min) and takes over the engine when it goes stale (primary paused over a plan limit, or its cron job died)
 ```
 
 ### Where the data lives
 
-Production runs with `MASTER_CLIENT_INFO_SOURCE=supabase` (`masterEnabled()` in
-`master-store.ts`). In that mode every one of these is read from AND written to
-Supabase, and the Google Sheet is not touched — `master-sheet-sync.ts` even refuses a
-sheet import ("disabled after operational cutover"):
+Everything is in Supabase. The Google Sheet the config came from is gone from the
+code (2026-10-31): no reader, no writer, no fallback switch, no `googleapis`. The
+app's Google service account can no longer open the workbook anyway.
 
-| Data | Supabase (production) | Sheet path (switch off) |
-|---|---|---|
-| Weekday config rules | `masterRuleRows("weekday")`; writes via `master-config-actions.ts` (`bulkMasterConfig`, `editMasterConfig`, `createMasterConfigRows`) | mapping tab (GID 0) |
-| Sunday config | rules carry areas + the Lịch Chủ nhật roster (`/api/sunday-roster`, `/api/config/sunday-rules`) | "(NO edit) CONFIG SUNDAY" tab |
-| Driver roster | `master_drivers` | Driver tab |
-| Leave (Nghỉ phép) | view `master_leave_read` (`masterLeaveGrid`); writes via `appendMasterLeave`, `updateMasterLeave`, `deleteMasterLeave`, `editMasterLeaveSubs`, `splitMasterLeave` | Nghỉ phép tab |
-| Deleted-day tombstones | `master_leave_suppressions` | "Nghỉ phép đã xoá" tab |
-| Lịch cố định | `master_schedule_jobs` (validated ids, not name formulas) | schedule sheet |
-| PSC tỉnh 3PL list | `master_tpl_entries` | 3PL tab |
+| Data | Supabase |
+|---|---|
+| Weekday config rules | `masterRuleRows("weekday")`; writes via `master-config-actions.ts` (`bulkMasterConfig`, `editMasterConfig`, `replaceMasterConfig`) and `createMasterConfigRows` |
+| Sunday config | rules carry areas + the Lịch Chủ nhật roster (`/api/sunday-roster`, `/api/config/sunday-rules`). The line-edit routes (`complete-row`, `bulk-*`, `delete-row`, `stretch-rule`, `replace-driver`, `add-rule`) refuse Sunday (`weekdayOnly`) |
+| Driver roster | `master_drivers` (`loadDrivers` in `config.ts`) |
+| Leave (Nghỉ phép) | view `master_leave_read` (`masterLeaveGrid`); writes via `appendMasterLeave`, `updateMasterLeave`, `deleteMasterLeave`, `editMasterLeaveSubs`, `splitMasterLeave`. Types and pure matching helpers: `leave-rows.ts` |
+| Deleted-day tombstones | `master_leave_suppressions` |
+| Lịch cố định | `master_schedule_jobs` (by `schedule_id` + `revision`) |
+| PSC tỉnh 3PL list | `master_tpl_entries` |
+| Nhận Việc / Mở geofence logs | `master_action_logs` (`action-log.ts`) |
 
-Each sheet writer in `sheets-writer.ts` begins with `if (masterEnabled()) return <master…>`,
-so a function named after a sheet may well be writing Supabase. Config and leave still
-keep a Redis L2 copy (`config:parsed`; leave `leave:master:v1:entries`), so a cold
-instance reads Redis first, not Supabase. The leave, config and gap/overlap sections
-below were written for the sheet and still say "row", "tab" and "sheet": the RULES they
-describe (duplicate check, tombstones, automated-only blocking, whole-day twin, overlap =
-CLASH) hold in both modes, but row-number guards — row 2 refused, ARRAYFORMULA spill
-read-back, "re-resolved against the sheet" — are the sheet path's. PSC routes and PSC
-closing hours are neither: they are hard-coded in `psc-routes-data.ts`.
+Config and leave keep a Redis L2 copy (`config:parsed`; leave `leave:master:v1:entries`),
+so a cold instance reads Redis first, not Supabase. Records are matched by id +
+revision, never by row number: a `row` still travels with config rows and to-dos as
+the screens' handle, but nothing writes by it. Some sections below were written for
+the sheet and still say "row" or "tab" — read them as "record"; the RULES they describe
+(duplicate check, tombstones, automated-only blocking, whole-day twin, overlap = CLASH)
+are unchanged. PSC routes and PSC closing hours are hard-coded in `psc-routes-data.ts`.
 
-`LEAVE_NAME_RECOVERY` is ON unless set to `0`. **Sheet mode only** — in Supabase mode a
-leave row carries `linked_driver_id`, so there is no orphaned name to recover and
-`recoverOrphanRows` returns at once. When a leave row's `driver_id` comes
-back blank — nearly always because the driver was renamed in Cartrack, which rewrites
-the roster tab's name column and orphans every row typed against the old spelling —
-the engine resolves the typed name against the *active* roster and honours the leave
-if **exactly one** working driver could be meant. It never guesses between two: about
-a dozen drivers hold both a PT and a DC account under one personal name, so a bare
-name matching both is left alone. Recovered rows are still reported for repair, in
-blue rather than red. See `driver-match.ts`; step 4 of the config plan deletes it.
 
 ### Leave rows: written by MISA, removable by hand
 
-(Production stores these in Supabase — see "Where the data lives". "Row", "tab" and
-"sheet" below mean a leave record; the gviz/first-tab story is the sheet path's.)
+("Row", "tab" and "sheet" below mean a leave record in Supabase — see "Where the data
+lives".)
 
 The MISA sync (`misa-fetcher/`) writes one Nghỉ phép row per day MISA charged,
 through the same `POST /api/nghi-phep` a driver's own form uses — so
@@ -161,21 +147,19 @@ row is one candidate among several and would fire on nearly every substitute
 ever named, which is how a warning stops being read.
 
 - **A partly-approved request leaves rows behind.** Cancelling the rest in MISA
-  does not reach back into the sheet, so the engine keeps the driver off on days
-  they are working. `DELETE /api/leave-status` removes ONE row, identified the
-  way `updateLeaveSubs` identifies one (driver + `leave_from` + window,
-  re-resolved against the sheet at write time — never a row number the dashboard
-  is holding). Where several rows answer to the same identity the UNCOVERED one
-  goes first and the response says how many are left, so the substitute on a
-  duplicate's twin is never the thing that disappears. It refuses the first data
-  row: the tab is an append log so row 2 is months old, but it is also where a
-  column-wide formula would be anchored. `scripts/leave-row-delete.test.mts`.
+  does not reach back into the app, so the engine keeps the driver off on days
+  they are working. `DELETE /api/leave-status` removes ONE record, identified the
+  way `editMasterLeaveSubs` identifies one (driver + `leave_from` + window, plus
+  the leave id + revision — never a row number the dashboard is holding). Where
+  several records answer to the same identity the UNCOVERED one goes first and the
+  response says how many are left, so the substitute on a duplicate's twin is
+  never the thing that disappears. `scripts/leave-row-delete.test.mts`.
 
   **A delete IS a tombstone, because on its own it would not be.** The MISA
   pusher re-derives every charged day from today forward on each run and dedupes
   purely on the row being present, so a deleted future day MISA still charges
-  would be written straight back at 04:45. Every delete therefore also appends a
-  line to the **"Nghỉ phép đã xoá"** tab (created on first use), and
+  would be written straight back at 04:45. Every delete therefore also records
+  the day in **`master_leave_suppressions`** ("Nghỉ phép đã xoá"), and
   `/api/nghi-phep` refuses to re-create a day carrying one — see
   `leave-suppression.ts`. Matching is EXACT on driver + day + window: two
   half-days on one date are two rows, and deleting the morning must not silence
@@ -186,7 +170,7 @@ ever named, which is how a warning stops being read.
   - **It only blocks an AUTOMATED push** (`automated: true`, or a note starting
     `MISA auto`). A person filing leave — the driver's form, the panel — is never
     blocked, so a stale suppression can never be why a real day off failed to
-    register, and the way past one is the ordinary action rather than sheet
+    register, and the way past one is the ordinary action rather than database
     surgery.
   - **It is visible and reversible.** Lines that can still block something are
     listed in the leave panel with a "Khôi phục" button
@@ -195,13 +179,9 @@ ever named, which is how a warning stops being read.
     Restoring only lifts the bar — the day returns at the next sync if MISA
     still charges it, and stays gone if it does not.
 
-  The read **fails open**, deliberately. A missing tab and an unreadable one look
-  identical through the gviz by-name endpoint (an unknown name returns the
-  workbook's FIRST tab), and the tab genuinely does not exist until the first
-  delete — so failing closed would refuse every leave submission on a fresh
-  deploy, driver form included. An untrusted read lets the write through, which
-  is exactly the pre-feature behaviour; once a process has read the tab once, a
-  later failure raises the dashboard's sheet alarm instead of going quiet.
+  The read **fails open**, deliberately: failing closed would refuse every leave
+  submission, driver form included, whenever Supabase blinks. An untrusted read
+  lets the write through, which is exactly the pre-feature behaviour.
   `scripts/leave-suppression.test.mts`.
 
   The panel is a **week as seven columns**, paged with the arrows plus named
@@ -277,7 +257,7 @@ ever named, which is how a warning stops being read.
 
 ### Data Flow
 
-1. **Config** is loaded on each assign cycle via `src/lib/config.ts` — from Supabase master rules in production (Redis L2 copy first), from the Google Sheet CSV when `MASTER_CLIENT_INFO_SOURCE` is unset. It maps `customer_id → driver_id` with optional shift windows and Zalo notification tokens.
+1. **Config** is loaded on each assign cycle via `src/lib/config.ts` — from Supabase master rules (Redis L2 copy first). It maps `customer_id → driver_id` with optional shift windows and Zalo notification tokens.
 
 2. **Dashboard UI** (`src/components/dashboard.tsx`) polls `POST /api/assign` every 3 minutes when running (hardcoded `180_000` ms in `dashboard.tsx`). It calls `POST /api/assign`, which handles all jobs (smart + fixed) in one cycle.
 
@@ -301,10 +281,10 @@ ever named, which is how a warning stops being read.
 | Route | Purpose |
 |---|---|
 | `POST /api/assign` | Main assign cycle; `?env=prod\|uat`, `?skipSmart=1` |
-| `GET /api/config` | Returns mapping/PSC route counts from sheets. `?refresh=1` (the Refresh buttons, morning sync) first busts every config/leave/driver cache and bumps the shared stamp; a plain GET only reads — busting on every dashboard page open forced every instance, the cron engine included, to re-parse the config |
+| `GET /api/config` | Returns mapping/PSC route counts. `?refresh=1` (the Refresh buttons, morning sync) first busts every config/leave/driver cache and bumps the shared stamp; a plain GET only reads — busting on every dashboard page open forced every instance, the cron engine included, to re-parse the config |
 | `GET /api/config/rows` | The config table itself, for the dashboard's Config tab and the copy-a-branch picker. NOT on the status poll — ~1,700 rows, fetched on demand behind a 5-min in-process cache |
 | `POST /api/config/delete-row` | Deletes one config row. Weekday only; refuses row 2 (the id ARRAYFORMULA anchor) and read-back-checks the spill afterwards |
-| `POST /api/config/replace-driver` | Config tab's "Thay tài xế": swaps driver A for B on the ticked rows, NAME BY NAME (a smart row keeps its other candidates; hours and destination untouched). Weekday only; `to` must be on the roster, `from` need not be (a driver who left). One header read + one column read + one batchUpdate + one cache bump for the whole set, each row re-checked against the live sheet |
+| `POST /api/config/replace-driver` | Config tab's "Thay tài xế": swaps driver A for B on the ticked rows, NAME BY NAME (a smart row keeps its other candidates; hours and destination untouched). Weekday only; `to` must be on the roster, `from` need not be (a driver who left). One write + one cache bump for the whole set, each rule re-checked by id + revision |
 | `POST /api/config/bulk-update` / `bulk-delete` | Config tab's bulk "Đổi tài xế" / "Đổi ca" / "Xoá" on ticked rows. ONE header read + ONE column read + ONE write for the whole selection, each row's branch re-checked in memory and skipped (not written) if it moved; deletes go highest-row-first in one atomic batch, row 2 refused. Replaced a loop of per-row `complete-row`/`delete-row` calls that hit Google's 60-reads/min/user quota after ~25 rows (~15 for deletes) and failed the rest with 429. `scripts/config-bulk-write.test.mts` |
 | `GET /api/drivers` | Proxy to Cartrack drivers list |
 | `POST /api/psc-assign` | PSC sample-transport job creation (creates unassigned job; auto-assign picks it up) |
@@ -320,7 +300,7 @@ ever named, which is how a warning stops being read.
 | `GET /api/sales/locations` | Lists a client's Labcenter locations (`?client_code=`); `PUT` updates the contact phone in **both** Cartrack (`contact_number`) and Labcenter (`phone`), joined via the location's `cartrack_vn` integration link |
 | `PUT /api/sales/address` | Updates a location's address + GPS in **both** Cartrack and Labcenter. Cartrack needs a full-record PUT (`address_line_1` is ignored by a partial PUT); Labcenter takes a direct address PUT. Both use read-back guards (the APIs 200 on writes they discard). Body must be proper UTF-8 — a Windows `curl` with inline Vietnamese mangles it and the write no-ops |
 | `POST /api/sales/reject-job` | Rejects a sales job by reference number via JSON-RPC (guards against started jobs) |
-| `POST\|PUT\|DELETE /api/schedule-job/row` | Add / edit / delete a Lịch cố định row in the schedule sheet (service-account write; PUT/DELETE re-check `rowIndex` against `original.reference`+`pickup_id`). The sheet's `pickup_id`, `dropoff_id` and `driver_id` are **formulas keyed on the names** (`pickup`, `dropoff` = full Cartrack customer name like `BRA - D001`; `Driver` = Driver-tab name) — formula cells are never overwritten, the row is read back, and an id that didn't resolve comes back as `warning`. Optional driver → at release from the proxy, `releaseDueProxyJobs` assigns the job straight to that driver unless they're on leave or the assign fails, then it releases normally |
+| `POST\|PUT\|DELETE /api/schedule-job/row` | Add / edit / delete a Lịch cố định entry in `master_schedule_jobs` (PUT/DELETE by `schedule_id` + `revision`; pickup, drop-off and driver are ids checked against the master tables, inactive ones refused). Optional driver → at release from the proxy, `releaseDueProxyJobs` assigns the job straight to that driver unless they're on leave or the assign fails, then it releases normally |
 | `GET\|POST /api/sunday-roster` | Master Setup → "Lịch Chủ nhật": one Sunday's roster (`master_sunday_roster`: area → driver) plus every area a line can take, with how many Sunday rules name it. POST replaces the whole week through `master_write_sunday_roster`, which refuses unless the row ids on the table are exactly the ones the editor loaded (every save mints new ids) and logs the replaced lines to `master_action_logs`. Sunday rules carry `areas` instead of drivers; a rule's drivers are everyone rostered that Sunday on one of its areas (exact area match, case/spacing aside — `sundayDrivers`, the old sheet formula's rule, checked equal on all 1,529 rows 2026-10-14). The engine, day-config, the Config tab and chấm-công's Sunday schedule all read this when `MASTER_CLIENT_INFO_SOURCE=supabase`; the "(NO edit) CONFIG SUNDAY" / "PUBLIC SUNDAY SCHEDULE" tabs are no longer read. On a Sunday a clinic's OVERLAPPING rules share instead of clashing (`mergeSundayOverlaps`, engine + day-config): they are cut into time slices and each slice gets everyone on duty in it — one driver fixed, several smart. Only rules with the same destination scope and alternate drop-off merge; different drop-offs still clash. Weekdays keep the row-count CLASH |
 | `POST /api/sunday-roster/claim` | Lịch CN tab's "Nhận ca": the signed-in driver (`nv_session` only) takes an OPEN line of an upcoming Sunday — no driver, or its driver away (resigned, or leave with no sub that meets the shift; `isOpen` in `sunday-roster-post.ts`, shared with the post and the picture). First one in wins via `master_claim_sunday_slot`, which re-inserts the line so its id changes and an admin editor holding the old roster is refused on save rather than erasing the claim. Refuses a claimer with an overlapping line or leave that day. Announced to the drivers' group. Admins undo it by editing Lịch Chủ nhật |
 | `GET /api/sunday-roster/image` | A roster picture as a PNG — `kind=roster` (two columns, `renderRosterImage`) or `kind=open` (the open slots alone, `renderOpenSlotsImage`), `stage=draft` or `final` (labels the picture). Drawn with next/og + Be Vietnam Pro fetched from Google Fonts per render — the bundled font has no Vietnamese. Public for Zalo's `sendPhoto`, so it needs `sig` (HMAC of the date). Drawing takes 6–8 s and Zalo refuses a link that slow ("photo URL is invalid"), so the bot draws both just before sending into Redis (`preparedImageUrls`, 1 day) and the link's `v` serves that copy instantly with a Content-Length |
@@ -355,7 +335,7 @@ ever named, which is how a warning stops being read.
 
 ### Key Types (`src/lib/types.ts`)
 
-- `Mapping` — customer→driver config row, from a Supabase rule or a sheet row (includes `smart_driver_id[]`, shift times, Zalo tokens, `alt_drop_off_id`, `dropoff_id`)
+- `Mapping` — customer→driver config row, from a Supabase rule (includes `smart_driver_id[]`, shift times, Zalo tokens, `alt_drop_off_id`, `dropoff_id`)
 - `Job` / `Stop` — Cartrack delivery job with stops (stop_type_id 1=pickup, 2=dropoff, 3=delivery)
 - `Driver` — Cartrack driver with GPS coords and status
 - `LogEntry` — `{ ts, level: "OK"|"INFO"|"WARN"|"ERROR", msg }`
@@ -372,39 +352,13 @@ These are the things most likely to burn a future agent working on this codebase
 
 2. **Fetch jobs by `scheduled_delivery_ts`, not `create_ts`.** The cycle fetches today's jobs with `getJobsByDate` (all statuses, one call) / `getJobsByStatusAndDate`, both filtered on `scheduled_delivery_ts` — so multi-day parked jobs released from the proxy driver surface on their scheduled day. A `create_ts` filter (the old `getUnassignedJobs` approach, now removed) is fine for ad-hoc jobs but silently drops scheduled/planned ones; don't reintroduce it.
 
-3. **`loadConfigFromSheets` has an in-memory cache** (despite the name it reads Supabase
-   in production; the Redis L2 blob sits between the two). It only re-fetches the sheet after `invalidateConfigCache()` is called (dashboard Refresh button). If the sheet fetch ever returns suspiciously few rows (network hiccup), the bad result gets cached and all subsequent cycles see an empty mapping — causing widespread NO MAPPING errors until the server restarts or Refresh is clicked.
+3. **`loadConfig` has an in-memory cache** (the Redis L2 blob sits between it and
+   Supabase). It only re-reads after `invalidateConfigCache()` moves the shared stamp
+   (dashboard Refresh, every config write). A read that parses to zero mappings is
+   never cached, and the last good copy keeps serving.
 
-   **Every reader now declares the columns it cannot work without** (`SHEET_CONTRACT`
-   in `sheets.ts`). A tab missing one is refused, the last good copy keeps serving, and
-   the tab is named in the dashboard's "Cần xử lý" tab. This catches a hand-edited
-   column, an HTML error page served with a 200, and the by-name lookup being answered
-   with the WRONG TAB — that endpoint returns the *first tab in the workbook* for an
-   unknown name, which here is the ~1,700-row mapping table and parses perfectly.
-
-   **Never add a column to a contract without checking the live header row first.**
-   Requiring one that isn't there refuses the tab on every load, and the engine then
-   runs on a stale copy indefinitely with only the alarm to show for it. Run
-   `npx tsx scripts/sheet-contract-live.mts` — it drives every real reader against the
-   live workbook and fails if any tab is refused. `scripts/sheet-contract.test.mts`
-   pins the logic offline.
-
-   **A NEW column goes in `expect`, not `require`.** `require` cannot express a
-   column that is arriving: it starts life absent, so requiring it refuses the tab
-   from the moment the code ships until someone adds it by hand. Declaring nothing
-   has the opposite failure — the column later vanishes, every row reads blank, the
-   feature quietly reverts to its default and nothing says so. `expect` is the
-   middle: read it, default it, and put a line on the dashboard when the sheet and
-   the code disagree. Promote to `require` once it is on every tab that needs it
-   AND carrying data. `npx tsx scripts/config-audit-live.mts` prints exactly that
-   for every declared column, so promotion is a look rather than a guess.
-
-   **A failed lookup is not always blank.** Some cells come back with the words
-   `KHÔNG TÌM THẤY` in them, which pass any truthiness test — the same trap as an
-   `#N/A` leave row. Test ids with `isValidDriverId`, never `if (id)`. Note that on
-   a SMART row this is normal and harmless: the name cell holds several drivers, so
-   the fixed-driver lookup is expected to fail, and ~218 rows look like that today.
-   Only a row with no smart fallback is actually broken.
+   **Test ids with `isValidDriverId`, never `if (id)`.** A rule's `row_data` was
+   imported from the sheet and can still carry junk where an id belongs.
 
 4. **`CARTRACK_WEB_PASS` is required for JSON-RPC calls** (`getFleetwebCookie`). Without it, route optimisation and duplicate-rejection both fail silently at login.
 
@@ -667,14 +621,13 @@ because GitHub's own `schedule:` trigger is best-effort and was observed firing
 ~85 minutes late. Keep the schedule in exactly one place (cron-job.org) or the
 report goes out twice; do not re-add `schedule:` to the workflow file.
 
-## Google Sheet
+## Config rule fields
 
-**Fallback only in production** — with `MASTER_CLIENT_INFO_SOURCE=supabase` the mapping,
-Sunday, Driver, Nghỉ phép and 3PL tabs below are not read (see "Where the data lives").
-The column names still matter: master rules keep a sheet-shaped `row_data`, and every
-reader parses that through the same code.
-
-Sheet ID and GIDs are hardcoded in `src/lib/sheets.ts` (`SHEET_GID` enum). Both `config.ts` and `psc-config.ts` import from there. The mapping sheet (GID 0) has columns: `customer_id`, `driver_id`, `smart_driver_id` (comma-separated UUIDs), `first_name_last_name`, `shift_start`, `shift_end`, `bot_token`, `chat_id`, `alt_drop_off_id`, `dropoff_id`.
+Removed from the code 2026-10-31; see "Where the data lives". Master rules still
+carry the sheet-shaped `row_data` the engine parses (`masterRuleRows` derives it),
+with keys `customer_id`, `driver_id`, `smart_driver_id` (comma-separated UUIDs),
+`Driver`, `shift_start`, `shift_end`, `bot_token`, `chat_id`, `alt_drop_off_id`,
+`dropoff_id`, `Điểm Pick-up`, `Điểm Drop-off`.
 
 `dropoff_id` scopes a row to ONE destination, so a branch can send to two places
 under two drivers ("D014 → D001 is Nam, D014 → D007 is Hùng"). Blank = any
@@ -685,8 +638,6 @@ off-shift destination row falls back to the blank row rather than blocking the j
 A branch whose rows all name other destinations fails as `NO_DROPOFF_RULE`, not
 `NO MAPPING` — different problem, different fix. Do NOT confuse it with
 `alt_drop_off_id`, which REWRITES a job's destination; `dropoff_id` only matches.
-It is deliberately absent from `SHEET_CONTRACT` (see footgun 3), so the code is
-safe to deploy before the column exists — every row simply reads blank.
 
 ### PSC closing hours move a job to its next best PSC, and back
 
@@ -718,31 +669,19 @@ an edit + deploy; `scripts/psc-closing.test.mts` fails on any code that is not a
 
 ### A gap and an overlap are the same fault, so both are to-dos
 
-(The rule holds in both modes. The row-deletion and ARRAYFORMULA mechanics below are the
-sheet path's; in production a weekday fix writes Supabase through
-`master-config-actions.ts` — `editMasterConfig` / `bulkMasterConfig`.)
+(A weekday fix writes Supabase through `master-config-actions.ts` — `editMasterConfig` /
+`bulkMasterConfig`.)
 
 Two fixed rules covering one branch at the same minute fail the job as `CLASH`,
-exactly as an uncovered hour fails it as `NO_DRIVER`. Overlaps used to be
-reported only as a sentence in the sheet-alarm banner while gaps got an
-actionable row; both are now rows in "Cần tạo config", and `A_OVERLAP` is
-retracted rather than written (`emitConfigWarnings`).
+exactly as an uncovered hour fails it as `NO_DRIVER`. Both are rows in "Cần tạo
+config", and `A_OVERLAP` is retracted rather than written (`emitConfigWarnings`).
 
 The fix offered is the same one-boundary move a gap gets, through the same
 `/api/config/stretch-rule`: the earlier rule hands over sooner, or the later one
-starts later — or the row is removed outright via `/api/config/delete-row`, which
-is what most same-driver pairs actually need.
+starts later — or the rule is switched off outright via `/api/config/delete-row`,
+which is what most same-driver pairs actually need.
 
-That DELETES the sheet row. It blanked the value cells at first, on the reasoning
-that a blank-pickup row is what `writeConfigRows` means by free space — which is
-only true BELOW the table's last used row. `configTableBounds` puts
-`firstFreeRow` after the LAST non-blank pickup, so a blank in the middle is
-skipped over forever: the hole stayed and no capacity came back. Deleting a row
-inside the id columns' spill is safe where WRITING into one is not — a literal
-collapses the ARRAYFORMULA to `#REF!`, a deleted row just shrinks it — so row 2,
-the anchor, is refused and the delete is followed by a read-back that would catch
-a collapse loudly. Rows below shift up by one; every writer re-reads its row and
-compares the branch first, so a stale number refuses rather than writes. `shrinkOptions` refuses a move that would **open a hole** — a rule
+`shrinkOptions` refuses a move that would **open a hole** — a rule
 wholly inside another looks closable and is not, and trading a CLASH for a
 five-hour gap is the worse outcome. Those rows say so and send you to the
 full-day editor.
@@ -757,12 +696,10 @@ can differ in `alt_drop_off_id`, which REWRITES where the job goes — so this
 reports rather than letting the engine pick.
 
 Unlike a gap this needs no runtime record: an overlap is fully visible in the
-sheet, so it is derived on every parse. That derivation needs SHEET ROWS, which
+rules, so it is derived on every parse. That derivation needs the rule rows, which
 the cached `Mapping` deliberately does not carry — so `overlaps` is cached in the
 L2 blob beside `gaps` and read back, never recomputed from the cached mappings.
-`scripts/config-shift.test.mts` pins the arithmetic;
-`npx tsx scripts/shift-overlap-live.mts` prints the live pairs and says how many
-are fixable in one click.
+`scripts/config-shift.test.mts` pins the arithmetic.
 
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph

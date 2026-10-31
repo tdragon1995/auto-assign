@@ -15,11 +15,6 @@ export type MasterRule = {
 };
 export type MasterClient = { customer_id: string; cartrack: Record<string, unknown>; client_code: string | null; new_ward: string | null; nearest_psc_id: string | null; nearest_psc_name: string | null; nearest_psc_km: number | null; labcenter_location_id: number | null; default_dropoff_id: string | null; default_dropoff_name: string | null; eta_minutes: number | null; sales_name: string | null; sales_email: string | null; supervisor_name: string | null; supervisor_email: string | null };
 export type MasterDriver = { driver_id: string; cartrack: Record<string, unknown>; roster: Record<string, string>; driver_zalo_id: string | null; bot_token: string | null; has_bot_token?:boolean; phone_number_update: string | null };
-export const masterEnabled = () => process.env.MASTER_CLIENT_INFO_SOURCE === "supabase";
-export function assertMasterWritable() {
-  if (!masterEnabled()) throw new Error("Supabase đang là bản đối chiếu. Hãy sửa cấu hình trên Google Sheet trong thời gian kiểm tra.");
-}
-
 /**
  * A Sunday rule names AREAS, never a driver: its drivers are whoever the
  * roster puts on those areas for `sundayDate` (default: this week's Sunday, the
@@ -70,7 +65,6 @@ export async function masterRuleRows(day:"weekday"|"sunday", sundayDate?:string)
 }
 export const masterClients=()=>sbSelectAll<MasterClient>("master_clients_read","select=customer_id,cartrack,is_active,client_code,new_ward,nearest_psc_id,nearest_psc_name,nearest_psc_km,labcenter_location_id,default_dropoff_id,default_dropoff_name,eta_minutes,sales_name,sales_email,supervisor_name,supervisor_email","customer_id.asc");
 export async function inactiveMasterClientIds():Promise<string[]> {
-  if (!masterEnabled()) return [];
   return (await sbSelectAll<{customer_id:string;is_active:boolean}>("master_clients","select=customer_id,is_active&is_active=eq.false","customer_id.asc")).filter(c=>c.is_active===false).map(c=>c.customer_id);
 }
 export const masterDrivers=()=>sbSelectAll<MasterDriver>("master_drivers","select=driver_id,cartrack,roster,driver_zalo_id,bot_token,phone_number_update","driver_id.asc");
@@ -116,7 +110,6 @@ export function ruleChange(input:RuleInput,old?:MasterRule) {
     shift_start:start||null,shift_end:end||null,row_data};
 }
 export async function writeMasterRules(changes:Record<string,unknown>[], existingRules:readonly MasterRule[] = []) {
-  assertMasterWritable();
   const references=new Set(changes.filter(c=>c.active!==false).flatMap(c=>{
     const old=existingRules.find(r=>r.id===c.id && r.revision===c.revision);
     return (["pickup_customer_id","dropoff_customer_id","alternate_dropoff_customer_id"] as const)
@@ -139,7 +132,6 @@ export function uniqueNameId(name:string,items:{id:string;names:string[]}[]):str
   return matches[0].id;
 }
 export async function createMasterConfigRows(cells:ConfigCells[]):Promise<number[]> {
-  assertMasterWritable();
   const [clients,drivers,rules]=await Promise.all([masterClients(),masterDrivers(),masterRules("weekday")]);
   const c=clients.map(c=>({id:c.customer_id,names:[String(c.cartrack.customer_name??"")]}));
   const d=drivers.map(d=>({id:d.driver_id,names:[d.roster?.Driver??"",`${d.cartrack.first_name??""} ${d.cartrack.last_name??""}`.trim()]}));

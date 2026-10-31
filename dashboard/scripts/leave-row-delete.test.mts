@@ -19,12 +19,12 @@
  *      the identity — deleting "the 06:00–15:00 one" must never hit the
  *      15:00–20:00 one that hands over to the other substitute.
  *
- * Pure logic — no Google client, no network:
+ * Pure logic — no network:
  *
  *   npx tsx scripts/leave-row-delete.test.mts
  */
 
-import { matchLeaveRows, pickLeaveRowToDelete } from "../src/lib/sheets-writer";
+import { matchLeaveRows, pickLeaveRowToDelete } from "../src/lib/leave-rows";
 
 let failures = 0;
 function check(label: string, cond: boolean, detail = "") {

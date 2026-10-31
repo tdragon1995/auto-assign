@@ -2,10 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   getTimelineRoutes, getDrivers, getJobDetails, assignJobViaUpdate, type Env,
 } from "@/lib/cartrack";
-import { loadConfigFromSheets, isValidDriverId } from "@/lib/config";
+import { loadConfig, isValidDriverId } from "@/lib/config";
 import { isCompletedOrRejectedStop, STOP_STATUS } from "@/lib/job-filters";
 import { verifySession, NV_COOKIE } from "@/lib/driver-session";
-import { appendNhanViecLog } from "@/lib/sheets-writer";
+import { appendNhanViecLog } from "@/lib/action-log";
 import { vnDate, vnTimestamp } from "@/lib/time";
 import type { Job, Stop, TimelineStop } from "@/lib/types";
 
@@ -32,7 +32,7 @@ async function fetchTimelineStops(dateVn: string, env: Env = "prod"): Promise<Ti
 
 /** customer_ids whose config mapping lists this driver in smart_driver_id[]. */
 async function customerIdsForDriver(driverId: string): Promise<Set<string>> {
-  const config = await loadConfigFromSheets();
+  const config = await loadConfig();
   const set = new Set<string>();
   for (const m of config?.mappings ?? []) {
     if (m.smart_driver_id.includes(driverId) && m.customer_id) set.add(m.customer_id);
@@ -179,7 +179,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Best-effort audit log to Google Sheets — never fail the claim if it errors.
+    // Best-effort audit log — never fail the claim if it errors.
     try {
       const dropoff = (job.stops ?? []).find((s) => s.stop_type_id === DROPOFF);
       const statusId = pickup?.stop_status_id ?? null;

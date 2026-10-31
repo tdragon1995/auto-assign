@@ -1019,7 +1019,7 @@ function UnfinishedRow({
   return (
     <div className="px-2 py-1.5 hover:bg-slate-50">
       <div className="flex flex-wrap items-center gap-2 min-w-0">
-        <span className="shrink-0 font-mono text-[11px] text-slate-500" title="Dòng trong Google Sheet">
+        <span className="shrink-0 font-mono text-[11px] text-slate-500" title="Số dòng">
           #{u.row}{rows.length > 1 ? ` +${rows.length - 1}` : ""}
         </span>
         <span

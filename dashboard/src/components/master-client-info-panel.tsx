@@ -164,7 +164,6 @@ export function MasterClientInfoPanel() {
       <button className="rounded-md border px-2 py-1.5 text-sm hover:bg-accent" onClick={() => void load()} disabled={loading}>Tải lại</button>
     </div>
     <div className="flex gap-2"><input className={field} aria-label="Tìm trong Master Client Info" placeholder="Tìm tên, mã, địa chỉ…" value={query} onChange={(e) => setQuery(e.target.value)} />{view === "rules" && !readOnly && <button className="shrink-0 rounded-md bg-primary px-3 text-sm text-primary-foreground" onClick={() => choose({ view: "rules", id: "new" })}>Thêm quy tắc</button>}</div>
-    {view === "rules" && readOnly && <p className="text-sm text-muted-foreground">Bản đối chiếu. Chỉnh sửa quy tắc trong Config / Google Sheet cho đến khi hoàn tất kiểm tra.</p>}
     <div className="min-h-0 flex-1 grid gap-3 lg:grid-cols-[minmax(0,1fr)_22rem]">
       <div className="overflow-y-auto rounded-lg border" role="list" aria-label="Master Client Info">
         {loading && <p className="p-3 text-sm">Đang tải…</p>}

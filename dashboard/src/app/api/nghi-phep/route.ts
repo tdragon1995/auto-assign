@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { appendNghiPhep, type LeaveCells } from "@/lib/sheets-writer";
+import { appendMasterLeave } from "@/lib/master-leave";
+import type { LeaveCells } from "@/lib/leave-rows";
 import { vnTimestamp } from "@/lib/time";
 import { notifyAdminGroup } from "@/lib/zalo";
 import {
@@ -266,7 +267,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    await appendNghiPhep(rows);
+    await appendMasterLeave(rows);
     // The append changed the sheet — drop the cache we just refreshed so the
     // next read (dashboard panel / next submission) sees this new row.
     await invalidateLeaveCache();

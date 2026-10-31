@@ -1,22 +1,15 @@
 import { resolveConfigDay } from "@/lib/config-day";
 import { NextRequest, NextResponse } from "next/server";
-import { deleteConfigRow, ConfigRowChangedError } from "@/lib/sheets-writer";
+import { editMasterConfig, weekdayOnly } from "@/lib/master-config-actions";
 import { parseConfigRowSnapshot } from "@/lib/config-row-match";
 import { invalidateConfigCache } from "@/lib/config";
 
 /**
- * Delete one config row — the fix for a duplicate rule, where the answer is not
- * "move a boundary" but "this line should not be here".
+ * Delete one config rule — the fix for a duplicate rule, where the answer is not
+ * "move a boundary" but "this line should not be here". The rule is switched off
+ * (history kept), matched by rule id + revision.
  *
- * The row is REMOVED, not blanked. Blanking was the first attempt and it left a
- * hole in the middle of the table that nothing ever reused: `configTableBounds`
- * looks for free space after the LAST non-blank pickup, so a blank in the middle
- * is skipped over. See deleteConfigRow for why removing a row inside the id
- * columns' spill is safe where writing into one is not.
- *
- * Invalidates the config so the branch stops clashing on the very next cycle,
- * and so the row numbers the dashboard is holding — every one below this row has
- * just shifted up — are re-derived rather than left stale.
+ * Invalidates the config so the branch stops clashing on the very next cycle.
  */
 export async function POST(req: NextRequest) {
   const bad = (msg: string, code = 400) => NextResponse.json({ ok: false, error: msg }, { status: code });
@@ -30,14 +23,12 @@ export async function POST(req: NextRequest) {
     const expected = expected_row === undefined ? undefined : parseConfigRowSnapshot(expected_row);
     if (expected_row !== undefined && !expected) return bad("Thông tin dòng cũ không hợp lệ");
 
-    const result = await deleteConfigRow({ config_day: configDay, row: row as number, expectPickup: pickup_name, expected: expected ?? undefined });
+    weekdayOnly(configDay);
+    const result = await editMasterConfig({ row: row as number, expectPickup: pickup_name, expected: expected ?? undefined }, { delete: true });
     await invalidateConfigCache();
     return NextResponse.json({ ok: true, ...result });
   } catch (e) {
-    if (e instanceof ConfigRowChangedError) {
-      return NextResponse.json({ ok: false, code: e.code, error: e.message }, { status: 409 });
-    }
-    // A moved row, row 2, or a Sunday attempt is the caller's to resolve.
+    // A changed rule or a Sunday attempt is the caller's to resolve.
     return bad(e instanceof Error ? e.message : String(e), 409);
   }
 }

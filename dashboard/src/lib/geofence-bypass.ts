@@ -1,7 +1,7 @@
 import type { Redis } from "@upstash/redis";
 import { sharedRedis } from "./redis";
 import { BASE_URL, getHeaders, jsonRpc, type Env } from "./cartrack";
-import { appendGeofenceLog } from "./sheets-writer";
+import { appendGeofenceLog } from "./action-log";
 
 /**
  * Temporarily lets a driver complete stops outside the arrival geofence.
@@ -23,7 +23,7 @@ import { appendGeofenceLog } from "./sheets-writer";
 export const BYPASS_MINUTES = 5;
 const KEY = "geofence:bypass:v1"; // zset: member `${env}|${deliveryDriverId}`, score = revert-at ms
 const RADIUS_M = "200";
-// list of sheet rows (JSON arrays, GF_LOG_HEADERS order) not yet written to "Mở Geofence Log"
+// list of log rows (JSON arrays, GF_LOG_HEADERS order) not yet written to the "Mở Geofence Log" action log
 const LOG_KEY = "geofence:log:v1";
 
 function getRedis() {
@@ -93,7 +93,7 @@ export async function openGeofence(deliveryDriverId: string, env: Env): Promise<
   return { until };
 }
 
-/** Queue one log row. Written to the sheet later by the cron, so the button never waits
+/** Queue one log row. Written to the action log later by the cron, so the button never waits
  *  on Google. */
 export async function queueBypassLog(row: (string | number)[]): Promise<void> {
   await getRedis()?.rpush(LOG_KEY, JSON.stringify(row));
@@ -109,7 +109,7 @@ async function flushBypassLog(redis: Redis): Promise<void> {
   await redis.ltrim(LOG_KEY, rows.length, -1);
 }
 
-/** Called from the assign cron. One ZRANGE per ping when nothing is due. The sheet log
+/** Called from the assign cron. One ZRANGE per ping when nothing is due. The action log
  *  is flushed only when something IS due: every open queues its row before its restore
  *  comes due, so this costs no command on an idle ping. */
 export async function restoreExpiredGeofences(): Promise<number> {
@@ -117,7 +117,7 @@ export async function restoreExpiredGeofences(): Promise<number> {
   if (!redis) return 0;
   const due = await redis.zrange<string[]>(KEY, 0, Date.now(), { byScore: true });
   if (due.length) {
-    await flushBypassLog(redis).catch((e) => console.error("[geofence] sheet log flush failed:", e instanceof Error ? e.message : e));
+    await flushBypassLog(redis).catch((e) => console.error("[geofence] action log flush failed:", e instanceof Error ? e.message : e));
   }
   let restored = 0;
   for (const member of due) {

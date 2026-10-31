@@ -4,7 +4,6 @@ import { deleteMasterRule, masterClient, masterClients, masterDrivers, masterRul
 import { invalidateConfigCache, invalidateDriversCache } from "@/lib/config";
 import { syncLabcenterMetadata } from "@/lib/master-sync";
 import { publicClient, publicDriver, publicRule } from "@/lib/master-public";
-import { masterEnabled } from "@/lib/master-store";
 
 export const runtime = "nodejs";
 export const preferredRegion = "sin1";
@@ -22,7 +21,7 @@ export async function GET(req: NextRequest) {
     const view = req.nextUrl.searchParams.get("view");
     if (view === "clients") return NextResponse.json({ rows: (await masterClients()).map(publicClient) });
     if (view === "drivers") return NextResponse.json({ rows: (await masterDrivers()).map(publicDriver) });
-    if (view === "rules") return NextResponse.json({ rows: (await masterRules("weekday")).map(publicRule), readOnly:!masterEnabled() });
+    if (view === "rules") return NextResponse.json({ rows: (await masterRules("weekday")).map(publicRule), readOnly:false });
     return NextResponse.json({ error: "Unknown view" }, { status: 400 });
   } catch (e) { return error(e); }
 }
