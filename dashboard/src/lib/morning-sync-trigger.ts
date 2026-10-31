@@ -1,6 +1,7 @@
 import type { Redis } from "@upstash/redis";
 import { sharedRedis } from "./redis";
 import { vnDate, vnMinutesSinceMidnight } from "./time";
+import { SELF_URL } from "./self-url";
 
 /** Here rather than in misa-sync.ts so the cron route and /api/morning-issues can read the
  * run without bundling the whole sync. */
@@ -32,10 +33,10 @@ export function morningRunFailure(run:RunHead|null,now=Date.now()) {
     error:stale?"Sync interrupted":run.error??"Sync failed"};
 }
 
-function continueUrl(id:number,hop:number) { return `https://diag-logistics.vercel.app/api/misa-sync/continue?run=${id}&hop=${hop}`; }
+function continueUrl(id:number,hop:number) { return `${SELF_URL}/api/misa-sync/continue?run=${id}&hop=${hop}`; }
 /** POST the next step. hop = how many self-calls this request chain will have made. */
 export async function postContinuation(id:number,hop:number) {
-  // Fixed production origin prevents forwarding the secret to caller-controlled hosts.
+  // Own production origin (set by Vercel), never a caller-controlled host, so the secret stays ours.
   const response=await fetch(continueUrl(id,hop),{
     method:"POST",headers:{Authorization:`Bearer ${process.env.CRON_SECRET}`},signal:AbortSignal.timeout(15000)});
   if(!response.ok)throw new Error(`Sync continuation HTTP ${response.status}`);
@@ -54,7 +55,7 @@ export async function maybeMorningSync(now=new Date()) {
   const db=sharedRedis()!,key="sync:morning:trigger:"+vnDate(now),owner=crypto.randomUUID();
   if(!morningSyncDue(now) || await db.set(key,owner,{nx:true,ex:86400})!=="OK")return resumeMorningSync(db,now);
   try {
-    const response=await fetch("https://diag-logistics.vercel.app/api/morning-sync",{
+    const response=await fetch(`${SELF_URL}/api/morning-sync`,{
       headers:{Authorization:`Bearer ${process.env.CRON_SECRET}`},signal:AbortSignal.timeout(15000)});
     const data=await response.json();
     if(!response.ok||!["dispatched","already_completed"].includes(data.status))throw new Error(`Morning sync not started: ${data.status}`);

@@ -21,12 +21,11 @@ import { vnDate, vnMinutesSinceMidnight } from "./time";
 import { averageRoster, rosterSunday, TEMPLATE_WEEKS, type RosterLine } from "./sunday-roster";
 import { adminAlertText, awayFor, isPublished, openLines, POST_DAY, STAGE_LABEL, weeklyPostText, type AwayFact, type PostLine, type Stage } from "./sunday-roster-post";
 import { renderOpenSlotsImage, renderRosterImage } from "./sunday-roster-image";
+import { SELF_URL } from "./self-url";
 
 // The deployment that signs the picture URL must be the one serving it: the two
 // Vercel accounts need not share the secret, and "Đăng Zalo" runs on account B.
-const BASE_URL = process.env.VERCEL_PROJECT_PRODUCTION_URL
-  ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
-  : "https://diag-logistics.vercel.app";
+const BASE_URL = SELF_URL;
 
 type Row = {
   id: number; area: string; driver_id: string | null; raw_name: string | null; shift: string | null; note: string | null;

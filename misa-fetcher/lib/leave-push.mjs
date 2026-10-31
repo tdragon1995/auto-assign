@@ -262,7 +262,10 @@ export function buildLeaveSubmissions(
  * `dryRun` reports exactly what would be written without touching the sheet.
  */
 export async function pushLeave(submissions, { dryRun = false, baseUrl } = {}) {
-  const base = (baseUrl || process.env.DASHBOARD_URL || DEFAULT_BASE).replace(/\/$/, "");
+  // Inside Vercel (the morning sync) post to the account doing the work: the other
+  // one may be paused (2026-10-31). The GitHub Action has no such variable.
+  const own = process.env.VERCEL_PROJECT_PRODUCTION_URL && `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+  const base = (baseUrl || process.env.DASHBOARD_URL || own || DEFAULT_BASE).replace(/\/$/, "");
   const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
   const result = { written: 0, duplicate: 0, suppressed: 0, failed: 0, aborted: false, errors: [] };
 

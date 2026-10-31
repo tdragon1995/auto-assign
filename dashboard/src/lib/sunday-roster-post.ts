@@ -7,6 +7,7 @@
  */
 import { DIAG_LOCATIONS } from "./diag-locations";
 import { addDays } from "./time";
+import { SELF_URL } from "./self-url";
 
 /** One line of a Sunday, with the rostered person already resolved. */
 export type PostLine = {
@@ -25,7 +26,7 @@ export type PostLine = {
 /** The one leave fact a line needs: when, and whether someone already covers it. */
 export type AwayFact = { resigned: boolean; window: string | null; covered: boolean; label: string };
 
-export const SUNDAY_TAB_URL = "https://diag-logistics.vercel.app/cham-cong";
+export const SUNDAY_TAB_URL = `${SELF_URL}/cham-cong`;
 
 /** Internal roles are not part of the published driver schedule (same rule as the tab). */
 export const isPublished = (area: string) => !area.includes("BO Runner") && !area.includes("Logistics General");

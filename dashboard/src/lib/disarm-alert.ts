@@ -1,7 +1,8 @@
 import { vnTimestamp } from "./time";
 import { getArmHold, claimDisarmAlert, clearDisarmAlert } from "./smart-log-kv";
+import { SELF_URL } from "./self-url";
 
-const DASHBOARD_URL = "https://diag-logistics.vercel.app";
+const DASHBOARD_URL = SELF_URL;
 
 function escapeHtml(s: string): string {
   return s
